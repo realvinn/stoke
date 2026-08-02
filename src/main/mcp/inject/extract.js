@@ -11,7 +11,7 @@
  * automatically after a navigation clears it.
  */
 ;(() => {
-  if (window.__stoke && window.__stoke.version === 1) return
+  if (window.__stoke && window.__stoke.version === 2) return
 
   /** ref -> element, rebuilt by snapshot(). Cleared implicitly on navigation. */
   const refs = new Map()
@@ -95,6 +95,32 @@
     return String(s).replace(/\s+/g, ' ').trim()
   }
 
+  /* ------------------------------------------------------------ shadow DOM */
+
+  /*
+   * Web components put their real content behind a shadow root, where an
+   * ordinary querySelectorAll cannot reach. Piercing open roots is the
+   * difference between reading a component-built page and reading an empty one.
+   * Closed roots are unreachable by design and are simply invisible here.
+   */
+  function deepQueryAll(root, selector) {
+    const out = root.querySelectorAll ? [...root.querySelectorAll(selector)] : []
+    const hosts = root.querySelectorAll ? root.querySelectorAll('*') : []
+    for (const host of hosts) {
+      if (host.shadowRoot) out.push(...deepQueryAll(host.shadowRoot, selector))
+    }
+    return out
+  }
+
+  /** Every root holding text: the document plus each open shadow root. */
+  function textRoots() {
+    const roots = document.body ? [document.body] : []
+    for (const host of document.querySelectorAll('*')) {
+      if (host.shadowRoot) roots.push(host.shadowRoot)
+    }
+    return roots
+  }
+
   /* -------------------------------------------------------------- snapshot */
 
   const INTERACTIVE = [
@@ -126,7 +152,7 @@
     const out = []
     const seen = new Set()
 
-    for (const el of document.querySelectorAll(INTERACTIVE)) {
+    for (const el of deepQueryAll(document, INTERACTIVE)) {
       if (seen.has(el) || !visible(el)) continue
       seen.add(el)
 
@@ -174,32 +200,132 @@
 
   /* ------------------------------------------------- main content picking */
 
-  const STRIP =
-    'script,style,noscript,svg,canvas,iframe,template,nav,header,footer,aside,form[role="search"],' +
-    '[role="navigation"],[role="banner"],[role="contentinfo"],[role="complementary"],' +
-    '[aria-hidden="true"],.advertisement,.ad,.cookie,.newsletter'
+  /*
+   * Site chrome differs from content structurally rather than textually, and
+   * three signals catch nearly all of it: an ARIA landmark that says "this is
+   * not the article", a sectioning tag meaning the same thing, and the small
+   * set of class-name conventions that are genuinely unambiguous.
+   *
+   * A previous version of this file declared a STRIP selector list and then
+   * never referenced it anywhere. The filter that actually ran was a tag-only
+   * set with no HEADER and no landmark rules, which is why documentation sites
+   * leaked their navigation into every read.
+   */
+  const CHROME_ROLES = new Set([
+    'navigation',
+    'banner',
+    'contentinfo',
+    'complementary',
+    'search',
+    'menubar',
+    'menu',
+    'toolbar',
+    'tablist'
+  ])
+
+  const CHROME_NAME =
+    /(^|[\s_-])(nav|navbar|navigation|menu|sidebar|breadcrumbs?|pagination|paginator|toolbar|masthead|banner|advert|advertisement|cookie|consent|newsletter|subscribe|social|share|skip-link|screen-reader|sr-only|visually-hidden)([\s_-]|$)/i
+
+  const HARD_SKIP = new Set([
+    'SCRIPT',
+    'STYLE',
+    'NOSCRIPT',
+    'SVG',
+    'CANVAS',
+    'TEMPLATE',
+    'LINK',
+    'META',
+    'OBJECT',
+    'EMBED'
+  ])
+
+  function isChrome(el) {
+    if (HARD_SKIP.has(el.tagName)) return true
+    if (el.getAttribute('aria-hidden') === 'true') return true
+
+    const role = (el.getAttribute('role') || '').toLowerCase()
+    if (role && CHROME_ROLES.has(role)) return true
+
+    const tag = el.tagName
+    if (tag === 'NAV' || tag === 'FOOTER' || tag === 'ASIDE') return true
+    // <header> is chrome at page level but legitimate inside an article.
+    if (tag === 'HEADER' && !el.closest('article,[role="article"]')) return true
+    if (tag === 'FORM' && (role === 'search' || el.querySelector('input[type="search"]'))) return true
+
+    const cls = typeof el.className === 'string' ? el.className : ''
+    return CHROME_NAME.test(cls) || CHROME_NAME.test(el.id || '')
+  }
+
+  /** True when any ancestor up to (but excluding) `stopAt` is site chrome. */
+  function inChrome(el, stopAt) {
+    let node = el.parentElement
+    while (node && node !== stopAt) {
+      if (isChrome(node)) return true
+      node = node.parentElement
+    }
+    return false
+  }
+
+  /*
+   * Controls and links need opposite treatment, which one rule cannot give.
+   *
+   * A button or tab is never prose: "Copy page", "Open search", "iOS" are pure
+   * chrome. A link very often IS the prose — on an aggregator the headline is a
+   * link and nothing else, so dropping links empties the page. Treating the two
+   * alike is what first stripped Hacker News down to rank numbers and scores.
+   */
+  const CONTROL_ROLES = new Set([
+    'button',
+    'tab',
+    'menuitem',
+    'menuitemcheckbox',
+    'menuitemradio',
+    'option',
+    'switch',
+    'checkbox',
+    'radio'
+  ])
+
+  function isControl(el) {
+    if (el.tagName === 'BUTTON') return true
+    if (el.tagName === 'A' && !el.hasAttribute('href')) return true
+    return CONTROL_ROLES.has((el.getAttribute('role') || '').toLowerCase())
+  }
+
+  /** Share of an element's text that sits inside a control rather than prose. */
+  function linkRatio(el) {
+    const total = clean(el.textContent || '').length
+    if (!total) return 1
+    let linked = 0
+    for (const a of el.querySelectorAll('a,button,[role="link"],[role="button"],[role="tab"]')) {
+      linked += clean(a.textContent || '').length
+    }
+    return linked / total
+  }
 
   /**
    * Score by text that is NOT inside links: navigation and related-link blocks
-   * are link-dense, article bodies are not. Cheap and works on most sites.
+   * are link-dense, article bodies are not. Paragraph count breaks ties toward
+   * prose when two candidates carry a similar number of characters.
    */
   function density(el) {
-    const total = (el.textContent || '').trim().length
+    const total = clean(el.textContent || '').length
     if (total < 200) return 0
     let linkChars = 0
-    for (const a of el.querySelectorAll('a')) linkChars += (a.textContent || '').length
-    return total - linkChars * 1.5
+    for (const a of el.querySelectorAll('a')) linkChars += clean(a.textContent || '').length
+    return total - linkChars * 1.5 + el.querySelectorAll('p').length * 60
   }
 
   function mainContent() {
     for (const sel of ['main', '[role="main"]', 'article', '#content', '#main']) {
       const el = document.querySelector(sel)
-      if (el && (el.textContent || '').trim().length > 200) return el
+      if (el && clean(el.textContent || '').length > 200) return el
     }
+    if (!document.body) return document.documentElement
     let best = document.body
     let bestScore = 0
-    const candidates = document.body ? document.body.querySelectorAll('div,section,article,td') : []
-    for (const el of candidates) {
+    for (const el of document.body.querySelectorAll('div,section,article,td')) {
+      if (isChrome(el)) continue
       const score = density(el)
       if (score > bestScore) {
         bestScore = score
@@ -237,8 +363,38 @@
     return out
   }
 
+  /**
+   * Tables do two unrelated jobs. A data table has headers and uniform scalar
+   * cells and belongs in markdown. A layout table is a grid of page regions and
+   * has to be walked as ordinary content instead, or every region collapses
+   * into one crammed row — which is precisely what Hacker News produced.
+   */
+  function isLayoutTable(table) {
+    const role = (table.getAttribute('role') || '').toLowerCase()
+    if (role === 'presentation' || role === 'none') return true
+    if (role === 'table' || role === 'grid') return false
+
+    // A table containing another table is scaffolding around it.
+    if (table.querySelector('table')) return true
+
+    const rows = [...table.rows]
+    if (rows.length <= 1) return true
+    let cols = 0
+    for (const r of rows) if (r.cells.length > cols) cols = r.cells.length
+    if (cols <= 1) return true
+
+    // Headers or a caption are a deliberate statement that this is data.
+    if (table.querySelector('th') || table.querySelector('caption')) return false
+
+    // Cells holding block-level content are positioning it, not tabulating it.
+    for (const cell of table.querySelectorAll('td')) {
+      if (cell.querySelector('div,p,ul,ol,form,section,article,h1,h2,h3,h4,pre')) return true
+    }
+    return false
+  }
+
   function tableToMarkdown(table) {
-    const rows = [...table.querySelectorAll('tr')].filter(visible)
+    const rows = [...table.rows].filter(visible).slice(0, 60)
     if (!rows.length) return ''
     const cells = rows.map((tr) =>
       [...tr.children].map((td) => clean(inlineText(td)).replace(/\|/g, '\\|') || ' ')
@@ -259,29 +415,26 @@
     return lines.join('\n')
   }
 
-  const BLOCK_SKIP = new Set([
-    'SCRIPT',
-    'STYLE',
-    'NOSCRIPT',
-    'SVG',
-    'CANVAS',
-    'IFRAME',
-    'TEMPLATE',
-    'NAV',
-    'FOOTER',
-    'ASIDE'
-  ])
-
   function toMarkdown(root) {
     const parts = []
 
     const walk = (node, depth) => {
       if (depth > 40) return
-      for (const el of node.children) {
-        if (BLOCK_SKIP.has(el.tagName)) continue
+      for (const el of [...(node.children || [])]) {
+        if (isChrome(el) || el.tagName === 'IFRAME') continue
         if (!visible(el)) continue
 
         const tag = el.tagName.toLowerCase()
+
+        /*
+         * Drop controls, keep links. The old leaf branch printed any childless
+         * element's text, so a bare button became a paragraph and documentation
+         * pages emitted "Copy page" / "iOS" / "Android" as prose. Long controls
+         * are cards wrapping real content, so those are still walked. Nothing
+         * is lost: every control still reaches the agent through
+         * browser_snapshot, with a ref to act on.
+         */
+        if (isControl(el) && clean(el.textContent || '').length < 200) continue
 
         if (/^h[1-6]$/.test(tag)) {
           const text = clean(inlineText(el))
@@ -302,16 +455,25 @@
           continue
         }
         if (tag === 'ul' || tag === 'ol') {
+          const items = [...el.children].filter((li) => li.tagName === 'LI' && visible(li))
+          // Several short entries that are nothing but links: a menu, not content.
+          if (items.length >= 3 && linkRatio(el) > 0.85) {
+            const chars = items.reduce((n, li) => n + clean(li.textContent || '').length, 0)
+            if (chars / items.length < 40) continue
+          }
           const ordered = tag === 'ol'
           let i = 1
-          for (const li of el.children) {
-            if (li.tagName !== 'LI' || !visible(li)) continue
+          for (const li of items) {
             const text = clean(inlineText(li))
             if (text) parts.push(`${ordered ? `${i++}.` : '-'} ${text}`)
           }
           continue
         }
         if (tag === 'table') {
+          if (isLayoutTable(el)) {
+            walkLayout(el, depth)
+            continue
+          }
           const md = tableToMarkdown(el)
           if (md) parts.push(md)
           continue
@@ -325,13 +487,50 @@
           parts.push('---')
           continue
         }
+        // A web component keeps its content behind a shadow root; the light
+        // children, when there are any, are the slotted content beside it.
+        if (el.shadowRoot) {
+          walk(el.shadowRoot, depth + 1)
+          if (el.children.length) walk(el, depth + 1)
+          continue
+        }
         // Leaf-ish container with text and no block children: emit it directly.
         if (!el.children.length) {
           const text = clean(inlineText(el))
-          if (text) parts.push(text)
+          if (!text) continue
+          // Keep a standalone link recognisable as one, so the agent can follow
+          // it without a second round trip through browser_snapshot.
+          if (tag === 'a' && el.getAttribute('href')) {
+            parts.push(`[${text}](${shortUrl(el.href)})`)
+          } else {
+            parts.push(text)
+          }
           continue
         }
         walk(el, depth + 1)
+      }
+    }
+
+    /*
+     * A layout table's row is one record — a story, a search result, a file in
+     * a listing — spread across cells for positioning. Descending into it cell
+     * by cell shreds that record into a line per fragment, which is how Hacker
+     * News came out as a column of bare rank numbers and scores. Joining the
+     * cells of a row back together restores the thing the row was describing.
+     */
+    const walkLayout = (table, depth) => {
+      for (const row of [...table.rows]) {
+        if (!visible(row)) continue
+        // A row carrying real structure is a region, not a record: descend.
+        if (row.querySelector('table,ul,ol,pre,h1,h2,h3,h4,article,section')) {
+          walk(row, depth + 1)
+          continue
+        }
+        const cells = [...row.cells]
+          .filter(visible)
+          .map((cell) => clean(inlineText(cell)))
+          .filter(Boolean)
+        if (cells.length) parts.push(cells.join(' · '))
       }
     }
 
@@ -349,9 +548,20 @@
 
   /* --------------------------------------------------------------- outline */
 
+  /*
+   * One definition, used by both outline() and section(). They index into the
+   * same list, so any divergence would make browser_read({section: n}) return
+   * a different section than the outline advertised.
+   */
+  function headings(root) {
+    return deepQueryAll(root, 'h1,h2,h3,h4,h5,h6').filter(
+      (h) => visible(h) && !inChrome(h, root)
+    )
+  }
+
   function outline() {
     const root = mainContent()
-    const heads = [...root.querySelectorAll('h1,h2,h3,h4,h5,h6')].filter(visible)
+    const heads = headings(root)
     return heads.map((h, i) => ({
       index: i,
       level: Number(h.tagName[1]),
@@ -362,7 +572,7 @@
   /** Everything from heading `index` until the next heading of same-or-higher level. */
   function section(index) {
     const root = mainContent()
-    const heads = [...root.querySelectorAll('h1,h2,h3,h4,h5,h6')].filter(visible)
+    const heads = headings(root)
     const start = heads[index]
     if (!start) return null
 
@@ -388,28 +598,31 @@
     const q = String(query).toLowerCase()
     const max = limit || 12
     const hits = []
-    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT)
-    let node
-    while ((node = walker.nextNode())) {
-      const text = node.nodeValue
-      if (!text || text.length < 2) continue
-      const idx = text.toLowerCase().indexOf(q)
-      if (idx === -1) continue
-      const parent = node.parentElement
-      if (!parent || !visible(parent)) continue
+    for (const root of textRoots()) {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+      let node
+      while ((node = walker.nextNode())) {
+        const text = node.nodeValue
+        if (!text || text.length < 2) continue
+        const idx = text.toLowerCase().indexOf(q)
+        if (idx === -1) continue
+        const parent = node.parentElement
+        if (!parent || !visible(parent)) continue
 
-      const from = Math.max(0, idx - 90)
-      const to = Math.min(text.length, idx + q.length + 90)
-      const nearest = parent.closest(INTERACTIVE)
-      let ref = null
-      if (nearest) {
-        for (const [k, v] of refs) if (v === nearest) ref = k
+        const from = Math.max(0, idx - 90)
+        const to = Math.min(text.length, idx + q.length + 90)
+        const nearest = parent.closest(INTERACTIVE)
+        let ref = null
+        if (nearest) {
+          for (const [k, v] of refs) if (v === nearest) ref = k
+        }
+        hits.push({
+          text: clean(text.slice(from, to)),
+          heading: nearestHeading(parent),
+          ref
+        })
+        if (hits.length >= max) break
       }
-      hits.push({
-        text: clean(text.slice(from, to)),
-        heading: nearestHeading(parent),
-        ref
-      })
       if (hits.length >= max) break
     }
     return hits
@@ -480,7 +693,7 @@
   }
 
   window.__stoke = {
-    version: 1,
+    version: 2,
     snapshot,
     read,
     outline,

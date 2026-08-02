@@ -19,6 +19,15 @@ export interface Signature {
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 
+/**
+ * Read the extractor's version out of its own source rather than restating it.
+ *
+ * These two ends drifted once, and the symptom is silent rather than loud: the
+ * guard simply never matches, so every single call re-injects the whole script
+ * and the page pays for it forever.
+ */
+const EXTRACT_VERSION = Number(/version:\s*(\d+)/.exec(extractSource)?.[1] ?? 0)
+
 export class PageAgent {
   private readonly browser: EmbeddedBrowser
   /** Last content signature, used to answer "what changed?" after an action. */
@@ -39,7 +48,7 @@ export class PageAgent {
   /** The extractor is wiped by every navigation, so re-inject on demand. */
   private async ensureInjected(): Promise<void> {
     const present = await this.evaluate<boolean>(
-      'typeof window.__stoke !== "undefined" && window.__stoke.version === 1'
+      `typeof window.__stoke !== "undefined" && window.__stoke.version === ${EXTRACT_VERSION}`
     )
     if (!present) await this.wc().executeJavaScript(extractSource, true)
   }
