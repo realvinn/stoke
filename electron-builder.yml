@@ -1,0 +1,37 @@
+appId: dev.vinn.hearth
+productName: Hearth
+directories:
+  output: release
+  buildResources: build
+files:
+  - out/**
+  - package.json
+  - '!**/*.map'
+# @lydell/node-pty ships prebuilt .node binaries; they must live outside the asar
+# archive so the OS loader can dlopen them.
+asarUnpack:
+  - '**/node_modules/@lydell/node-pty*/**'
+win:
+  target:
+    - target: nsis
+      arch: [x64, arm64]
+  artifactName: ${productName}-${version}-${arch}-setup.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  shortcutName: Hearth
+mac:
+  target:
+    - target: dmg
+      arch: [x64, arm64]
+  category: public.app-category.developer-tools
+  artifactName: ${productName}-${version}-${arch}.${ext}
+  # A PTY spawns child processes; the JIT/unsigned-memory entitlements keep
+  # hardened runtime from killing them.
+  hardenedRuntime: true
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+linux:
+  target: [AppImage]
+  category: Development

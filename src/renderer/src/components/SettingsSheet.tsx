@@ -1,0 +1,220 @@
+import type { CliInfo, EffortLevel, PermissionMode, Settings, Theme } from '@shared/types'
+import { BUILT_IN_THEMES } from '@shared/themes'
+import { IconClose } from './Icons'
+import { EFFORT_LEVELS, MODEL_OPTIONS, PERMISSION_MODES } from '../lib/permissions'
+
+interface Props {
+  settings: Settings
+  cli: CliInfo | null
+  onPatch: (patch: Partial<Settings>) => void
+  onAddRoot: () => void
+  onClose: () => void
+}
+
+export function SettingsSheet({
+  settings,
+  cli,
+  onPatch,
+  onAddRoot,
+  onClose
+}: Props): React.JSX.Element {
+  const themes: Theme[] = [...BUILT_IN_THEMES, ...settings.customThemes]
+
+  return (
+    <>
+      <div className="backdrop" onClick={onClose} />
+      <aside className="sheet" role="dialog" aria-modal="true" aria-label="Settings">
+        <div className="sheet-head">
+          <h2>Settings</h2>
+          <button className="icon-btn" onClick={onClose} title="Close settings">
+            <IconClose />
+            <span className="sr-only">Close settings</span>
+          </button>
+        </div>
+
+        <div className="sheet-body">
+          <div className="field">
+            <span className="field-label">Theme</span>
+            <div className="theme-grid">
+              {themes.map((t) => (
+                <button
+                  key={t.id}
+                  className="theme-swatch"
+                  aria-pressed={settings.themeId === t.id}
+                  onClick={() => onPatch({ themeId: t.id })}
+                >
+                  <span className="theme-chips">
+                    <span className="theme-chip" style={{ background: t.colors.bg }} />
+                    <span className="theme-chip" style={{ background: t.colors.surface }} />
+                    <span className="theme-chip" style={{ background: t.colors.accent }} />
+                    <span className="theme-chip" style={{ background: t.colors.text }} />
+                  </span>
+                  <span className="theme-name">{t.name}</span>
+                </button>
+              ))}
+            </div>
+            <span className="field-hint">
+              Themes are plain CSS custom properties. Add your own by editing
+              <span className="mono"> settings.json</span> in the app data folder — anything you
+              put in <span className="mono">customThemes</span> shows up here.
+            </span>
+          </div>
+
+          <div className="field">
+            <span className="field-label">Terminal font</span>
+            <input
+              className="input mono"
+              value={settings.fontFamily}
+              spellCheck={false}
+              onChange={(e) => onPatch({ fontFamily: e.target.value })}
+            />
+            <span className="field-hint">A CSS font stack. The first installed family wins.</span>
+          </div>
+
+          <div className="field">
+            <span className="field-label">Terminal size</span>
+            <input
+              className="input"
+              type="number"
+              min={8}
+              max={28}
+              value={settings.fontSize}
+              onChange={(e) => onPatch({ fontSize: Number(e.target.value) || 13 })}
+            />
+          </div>
+
+          <div className="field">
+            <span className="field-label">Interface scale</span>
+            <input
+              className="input"
+              type="number"
+              min={0.8}
+              max={1.6}
+              step={0.05}
+              value={settings.uiScale}
+              onChange={(e) => onPatch({ uiScale: Number(e.target.value) || 1 })}
+            />
+            <span className="field-hint">Scales everything except the terminal contents.</span>
+          </div>
+
+          <div className="field">
+            <span className="field-label">Default permissions</span>
+            <div className="segmented" role="group" aria-label="Default permission mode">
+              {PERMISSION_MODES.map((m) => (
+                <button
+                  key={m.id}
+                  aria-pressed={settings.defaults.permissionMode === m.id}
+                  data-danger={m.danger ? 'true' : undefined}
+                  title={m.hint}
+                  onClick={() =>
+                    onPatch({
+                      defaults: { ...settings.defaults, permissionMode: m.id as PermissionMode }
+                    })
+                  }
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
+            <span className="field-hint">Applied to every new session unless changed at launch.</span>
+          </div>
+
+          <div className="field">
+            <span className="field-label">Default model</span>
+            <select
+              className="select"
+              value={settings.defaults.model}
+              onChange={(e) => onPatch({ defaults: { ...settings.defaults, model: e.target.value } })}
+            >
+              {MODEL_OPTIONS.map((m) => (
+                <option key={m.id || 'default'} value={m.id}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="field">
+            <span className="field-label">Default effort</span>
+            <select
+              className="select"
+              value={settings.defaults.effort}
+              onChange={(e) =>
+                onPatch({
+                  defaults: { ...settings.defaults, effort: e.target.value as EffortLevel }
+                })
+              }
+            >
+              {EFFORT_LEVELS.map((e) => (
+                <option key={e.id} value={e.id}>
+                  {e.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="field">
+            <span className="field-label">Scanned folders</span>
+            {settings.projectRoots.length === 0 && (
+              <span className="field-hint">
+                None yet. Add a folder such as your code directory and every project inside it
+                appears in the sidebar, even ones Claude has never opened.
+              </span>
+            )}
+            {settings.projectRoots.map((root) => (
+              <div
+                key={root}
+                style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-2)' }}
+              >
+                <span className="mono truncate" style={{ flex: 1, fontSize: 'var(--fs-xs)' }}>
+                  {root}
+                </span>
+                <button
+                  className="icon-btn"
+                  title={`Stop scanning ${root}`}
+                  onClick={() =>
+                    onPatch({ projectRoots: settings.projectRoots.filter((r) => r !== root) })
+                  }
+                >
+                  <IconClose width={12} height={12} />
+                  <span className="sr-only">Remove {root}</span>
+                </button>
+              </div>
+            ))}
+            <button className="btn" onClick={onAddRoot}>
+              Add a folder
+            </button>
+          </div>
+
+          <div className="field">
+            <span className="field-label">Claude CLI</span>
+            <input
+              className="input mono"
+              placeholder="Auto-detected"
+              value={settings.claudePath ?? ''}
+              spellCheck={false}
+              onChange={(e) => onPatch({ claudePath: e.target.value.trim() || null })}
+            />
+            <span className="field-hint">
+              {cli?.ok
+                ? `Using ${cli.path}${cli.version ? ` — ${cli.version}` : ''}`
+                : (cli?.error ?? 'Looking for the claude executable…')}
+            </span>
+          </div>
+
+          {settings.hiddenProjects.length > 0 && (
+            <div className="field">
+              <span className="field-label">Hidden projects</span>
+              <span className="field-hint">
+                {settings.hiddenProjects.length} hidden from the sidebar.
+              </span>
+              <button className="btn" onClick={() => onPatch({ hiddenProjects: [] })}>
+                Show them all again
+              </button>
+            </div>
+          )}
+        </div>
+      </aside>
+    </>
+  )
+}

@@ -1,0 +1,13 @@
+# This repo is worked on from both Windows and macOS, so normalise line endings
+# in the repository and check out LF everywhere. Without this, files touched on
+# Windows land as CRLF and every cross-machine diff is noise.
+* text=auto eol=lf
+
+# Never mangle binaries.
+*.png binary
+*.jpg binary
+*.ico binary
+*.icns binary
+*.node binary
+*.dll binary
+*.exe binary
