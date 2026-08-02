@@ -222,6 +222,13 @@ export interface Settings {
      */
     sttUrl: string
   }
+  /**
+   * Which profile's projects to show, by `Project.group`. Null shows all.
+   *
+   * Never an access control: every profile can reach every file, and a chat can
+   * be started or resumed in any directory regardless of what is selected here.
+   */
+  activeProfile: string | null
   sidebarWidth: number
   /** Explicit path to the claude executable; null means auto-detect. */
   claudePath: string | null

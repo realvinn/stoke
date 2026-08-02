@@ -1448,6 +1448,60 @@ body {
   }
 }
 
+/* -------------------------------------------------------------- profiles */
+
+.profiles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+}
+
+/*
+ * Quiet until chosen. Only the selected profile carries its colour, so the row
+ * reads as one decision rather than four competing ones.
+ */
+.profile-chip {
+  padding: 0.1875rem var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-full);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.6875rem;
+  line-height: 1.6;
+  cursor: pointer;
+  transition:
+    background var(--dur) var(--ease),
+    color var(--dur) var(--ease),
+    border-color var(--dur) var(--ease);
+}
+
+.profile-chip:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+  background: var(--surface);
+}
+
+.profile-chip[aria-pressed='true'] {
+  background: var(--chip, var(--accent));
+  border-color: var(--chip, var(--accent));
+  color: var(--chip-ink, var(--accent-contrast));
+  font-weight: 600;
+}
+
+/*
+ * Study is the one profile with a second colour. A gradient would be gaudy on a
+ * chip this small, so the pairing shows as a hairline along the bottom edge.
+ */
+.profile-chip[aria-pressed='true'] {
+  box-shadow: inset 0 -2px 0 0 var(--chip-second, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .profile-chip {
+    transition: none;
+  }
+}
+
 /* ----------------------------------------------------------- plan limits */
 
 .usage-meter {

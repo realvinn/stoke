@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import type { Project, SessionMeta } from '@shared/types'
 import { ContextBar } from './ContextMeter'
+import { PROFILES } from '@shared/profiles'
 import { IconChevron, IconFolder, IconPin, IconPlus, IconSearch } from './Icons'
 import { UsageMeter } from './UsageMeter'
 import { relativeTime } from '../lib/format'
@@ -22,6 +23,9 @@ interface Props {
   onAddRoot: () => void
   onOpenFolder: () => void
   onStartScratch: () => void
+  /** Profile whose projects are shown; null shows everything. */
+  activeProfile: string | null
+  onSelectProfile: (id: string | null) => void
 }
 
 export function Sidebar({
@@ -40,15 +44,32 @@ export function Sidebar({
   onPin,
   onAddRoot,
   onOpenFolder,
-  onStartScratch
+  onStartScratch,
+  activeProfile,
+  onSelectProfile
 }: Props): React.JSX.Element {
+  /*
+   * Only show profiles that actually have projects on this machine, so the row
+   * never advertises a folder the user does not use.
+   */
+  const available = useMemo(() => {
+    const present = new Set(projects.map((p) => p.group))
+    return PROFILES.filter((p) => present.has(p.id))
+  }, [projects])
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
-    if (!q) return projects
-    return projects.filter(
+    /*
+     * Searching reaches across every profile on purpose. The profile narrows
+     * what you browse; it must never hide something you went looking for by
+     * name — it is a view, not a permission.
+     */
+    const scoped = q || !activeProfile ? projects : projects.filter((p) => p.group === activeProfile)
+    if (!q) return scoped
+    return scoped.filter(
       (p) => p.name.toLowerCase().includes(q) || p.path.toLowerCase().includes(q)
     )
-  }, [projects, query])
+  }, [projects, query, activeProfile])
 
   /*
    * Three stable buckets, ordered the way you actually reach for a project.
@@ -82,6 +103,38 @@ export function Sidebar({
   return (
     <nav className="sidebar" style={{ width: '100%' }} aria-label="Projects">
       <div className="sidebar-head">
+        {available.length > 1 && (
+          <div className="profiles" role="group" aria-label="Profile">
+            <button
+              className="profile-chip"
+              aria-pressed={activeProfile === null}
+              onClick={() => onSelectProfile(null)}
+              title="Every project"
+            >
+              All
+            </button>
+            {available.map((p) => (
+              <button
+                key={p.id}
+                className="profile-chip"
+                aria-pressed={activeProfile === p.id}
+                onClick={() => onSelectProfile(activeProfile === p.id ? null : p.id)}
+                title={`${p.label} — ${p.id}`}
+                style={
+                  {
+                    '--chip': p.accent,
+                    '--chip-ink': p.accentContrast,
+                    '--chip-soft': p.accentSoft,
+                    '--chip-second': p.secondary ?? p.accent
+                  } as React.CSSProperties
+                }
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+        )}
+
         <label className="sr-only" htmlFor="project-search">
           Search projects
         </label>

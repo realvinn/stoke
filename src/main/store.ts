@@ -45,6 +45,7 @@ const DEFAULTS: Settings = {
      */
     sttUrl: 'http://127.0.0.1:17890'
   },
+  activeProfile: null,
   sidebarWidth: 260,
   claudePath: null,
   confirmBypass: true

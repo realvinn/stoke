@@ -10,6 +10,7 @@ import type {
   Settings
 } from '@shared/types'
 import type { UpdateInfo } from '@shared/api'
+import { profileFor } from '@shared/profiles'
 import { resolveTheme } from '@shared/themes'
 import { BrowserPanel } from './components/BrowserPanel'
 import { CommandPalette } from './components/CommandPalette'
@@ -149,6 +150,25 @@ export function App(): React.JSX.Element {
   /* ---------------------------------------------------------------- theme */
 
   useEffect(() => applyTheme(theme), [theme])
+
+  /*
+   * The active profile repaints the accent over the theme's. Keyed on the theme
+   * too, and applied after it, so switching either always lands in the right
+   * order rather than leaving the previous profile's colour behind.
+   */
+  useEffect(() => {
+    const root = document.documentElement
+    const profile = profileFor(settings?.activeProfile ?? null)
+    const vars = ['--accent', '--accent-hover', '--accent-soft', '--accent-contrast']
+    if (!profile) {
+      for (const v of vars) root.style.removeProperty(v)
+      return
+    }
+    root.style.setProperty('--accent', profile.accent)
+    root.style.setProperty('--accent-hover', profile.accentHover)
+    root.style.setProperty('--accent-soft', profile.accentSoft)
+    root.style.setProperty('--accent-contrast', profile.accentContrast)
+  }, [settings?.activeProfile, theme])
 
   useEffect(() => {
     if (settings) applyTypography(settings.fontFamily, settings.fontSize, settings.uiScale)
@@ -514,6 +534,8 @@ export function App(): React.JSX.Element {
                 onAddRoot={() => void addRoot()}
                 onOpenFolder={() => void openFolder()}
                 onStartScratch={() => void startScratch()}
+                activeProfile={settings?.activeProfile ?? null}
+                onSelectProfile={(id) => void patchSettings({ activeProfile: id })}
               />
             </div>
             <Resizer
