@@ -11,7 +11,7 @@
  * automatically after a navigation clears it.
  */
 ;(() => {
-  if (window.__stoke && window.__stoke.version === 2) return
+  if (window.__stoke && window.__stoke.version === 6) return
 
   /** ref -> element, rebuilt by snapshot(). Cleared implicitly on navigation. */
   const refs = new Map()
@@ -25,6 +25,22 @@
     const style = getComputedStyle(el)
     if (style.display === 'none' || style.visibility === 'hidden') return false
     if (Number(style.opacity) === 0) return false
+    /*
+     * `display: contents` generates no box at all, so getBoundingClientRect is
+     * 0x0 even though every child renders normally. Judging it by its rect
+     * prunes the whole subtree: claude.com wraps its entire page in one
+     * (`.cds-root`), and the extractor returned 0 characters for a document
+     * holding 4,688. The element is a pass-through, so defer to its children.
+     */
+    if (style.display === 'contents') {
+      /*
+       * `display` computes to `contents` even inside a `display: none` ancestor,
+       * so returning true unconditionally would let genuinely hidden content
+       * reach find() and snapshot(), which call visible() without walking up.
+       * checkVisibility consults the whole ancestor chain.
+       */
+      return el.checkVisibility ? el.checkVisibility() : true
+    }
     const r = el.getBoundingClientRect()
     if (r.width < 2 || r.height < 2) return false
     // Parked far offscreen (a common way to hide things without display:none).
@@ -553,19 +569,145 @@
    * same list, so any divergence would make browser_read({section: n}) return
    * a different section than the outline advertised.
    */
+  /*
+   * The dominant body text size, measured rather than declared. A page whose
+   * <body> says 16px may set every paragraph to 18px, and the comparison that
+   * matters for spotting a heading is against the prose the reader is actually
+   * looking at. Weighted by characters so one stray large caption cannot win.
+   */
+  function bodyFontSize(root) {
+    const tally = new Map()
+    /*
+     * Only the characters an element renders *itself*, not its whole subtree.
+     * Counting subtree text charges every wrapper for the prose beneath it, so
+     * ten nesting levels at 16px outweigh the 18px paragraphs they contain and
+     * the answer drifts to the outermost container's size - the opposite of
+     * what this is for.
+     */
+    for (const el of deepQueryAll(root, 'p,li,td,dd,blockquote,span,div')) {
+      let own = 0
+      for (const node of el.childNodes) {
+        if (node.nodeType === 3) own += clean(node.nodeValue || '').length
+      }
+      if (own < 20 || !visible(el)) continue
+      const px = Math.round(parseFloat(getComputedStyle(el).fontSize))
+      if (!px) continue
+      tally.set(px, (tally.get(px) || 0) + own)
+    }
+    let best = 16
+    let bestChars = 0
+    for (const [px, chars] of tally) {
+      if (chars > bestChars) {
+        bestChars = chars
+        best = px
+      }
+    }
+    return best
+  }
+
+  /*
+   * Marketing pages routinely ship no headings at all. mistral.ai renders every
+   * section title as a plain <div> with a large font, so an outline built from
+   * h1-h6 reported "no headings found" on a page carrying sixty of them.
+   *
+   * A heading is a visual fact before it is a semantic one, so when the markup
+   * is silent, infer it the way a reader does: short standalone text set larger
+   * than the surrounding prose, or the same size and markedly heavier. Distinct
+   * sizes then rank onto levels, largest first.
+   */
+  function visualHeadings(root) {
+    const base = bodyFontSize(root)
+    const found = []
+
+    for (const el of deepQueryAll(root, 'div,span,p,dt,figcaption,summary')) {
+      if (isChrome(el) || inChrome(el, root) || isControl(el)) continue
+      // A real heading's own <span> is not a second heading.
+      if (el.closest('h1,h2,h3,h4,h5,h6,[role="heading"]')) continue
+      // Emphasis inside prose is not a heading, however bold.
+      if (el.parentElement && el.parentElement.closest('p,blockquote,dd')) continue
+
+      const text = clean(inlineText(el))
+      if (!text || text.length > 120) continue
+
+      /*
+       * An inline box surrounded by more text is a phrase within a run of
+       * prose, not a title above one. Excluding list items and table cells
+       * outright was too blunt - a store's product grid keeps its names in
+       * <li>, and scorptec.com.au lost its entire outline to that rule.
+       */
+      const disp = getComputedStyle(el).display
+      if (disp === 'inline' || disp === 'inline-block') {
+        const around = clean(el.parentElement ? el.parentElement.textContent || '' : '')
+        if (around.length > text.length * 1.3) continue
+      }
+      // Leaf-ish: nothing beneath it carries text of its own, so we name the
+      // element that actually paints the words rather than a wrapper.
+      if ([...el.children].some((c) => clean(c.textContent || '').length)) continue
+      if (!visible(el)) continue
+
+      const style = getComputedStyle(el)
+      const px = Math.round(parseFloat(style.fontSize)) || base
+      const weight = parseInt(style.fontWeight, 10) || 400
+      if (px < base * 1.15 && !(px >= base && weight >= 700)) continue
+
+      found.push({ el, px, text })
+    }
+
+    const sizes = [...new Set(found.map((f) => f.px))].sort((a, b) => b - a)
+    return found.map((f) => ({
+      el: f.el,
+      rank: sizes.indexOf(f.px) + 1,
+      text: f.text
+    }))
+  }
+
+  /*
+   * Below this many real headings a page is treated as unmarked-up and the
+   * visual pass takes over. Pages that do mark their headings keep their own
+   * structure untouched - inferring alongside good markup only adds noise.
+   */
+  const HEADING_FLOOR = 4
+
   function headings(root) {
-    return deepQueryAll(root, 'h1,h2,h3,h4,h5,h6').filter(
-      (h) => visible(h) && !inChrome(h, root)
-    )
+    const real = deepQueryAll(root, 'h1,h2,h3,h4,h5,h6,[role="heading"]')
+      .filter((h) => visible(h) && !inChrome(h, root))
+      .map((h) => ({
+        el: h,
+        level: Number(h.tagName[1]) || Number(h.getAttribute('aria-level')) || 2,
+        text: clean(h.textContent).slice(0, 120)
+      }))
+
+    if (real.length >= HEADING_FLOOR) return real
+
+    /*
+     * The two level scales mean different things - an h-tag number is semantic,
+     * an inferred rank is "how big relative to the other sizes on this page".
+     * Comparing them directly lets a large pull-quote outrank a real <h2> and
+     * truncate its section, so inferred headings are pushed below every real
+     * one instead of competing with them.
+     */
+    const floor = real.length ? Math.max(...real.map((h) => h.level)) : 0
+    const seen = new Set(real.map((h) => h.el))
+    const inferred = visualHeadings(root)
+      .filter((h) => !seen.has(h.el))
+      .map((h) => ({ el: h.el, text: h.text, level: Math.min(6, floor + h.rank) }))
+    const merged = [...real, ...inferred]
+    merged.sort((a, b) => {
+      if (a.el === b.el) return 0
+      const rel = a.el.compareDocumentPosition(b.el)
+      if (rel & Node.DOCUMENT_POSITION_FOLLOWING) return -1
+      if (rel & Node.DOCUMENT_POSITION_PRECEDING) return 1
+      return 0
+    })
+    return merged
   }
 
   function outline() {
     const root = mainContent()
-    const heads = headings(root)
-    return heads.map((h, i) => ({
+    return headings(root).map((h, i) => ({
       index: i,
-      level: Number(h.tagName[1]),
-      text: clean(h.textContent).slice(0, 120)
+      level: h.level,
+      text: h.text.slice(0, 120)
     }))
   }
 
@@ -573,23 +715,42 @@
   function section(index) {
     const root = mainContent()
     const heads = headings(root)
-    const start = heads[index]
-    if (!start) return null
+    const head = heads[index]
+    if (!head) return null
 
-    const level = Number(start.tagName[1])
-    const holder = document.createElement('div')
-    holder.appendChild(start.cloneNode(true))
+    const start = head.el
+    const level = head.level
+
+    /*
+     * Collect the LIVE elements of the section, never clones.
+     *
+     * This used to copy each node into a detached <div> and render that. Every
+     * clone has `isConnected === false`, `visible()` rejects on exactly that,
+     * and so toMarkdown filtered out the entire section: `read({section})`
+     * returned an empty body on every page, real <h2> headings included. It went
+     * unnoticed because nothing asserted on it.
+     *
+     * toMarkdown only ever reads `node.children`, so a plain object holding the
+     * live elements is a valid root and keeps them attached to the document.
+     */
+    const stops = new Map(heads.map((h) => [h.el, h.level]))
+    const range = [start]
+    // Descendants follow their ancestor contiguously in document order, so one
+    // guard is enough to avoid emitting a subtree twice.
+    let guard = start
 
     let node = start
-    // Walk forward in document order, stopping at the next peer heading.
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT)
     walker.currentNode = start
     while ((node = walker.nextNode())) {
-      if (/^H[1-6]$/.test(node.tagName) && Number(node.tagName[1]) <= level) break
-      if (node.parentElement && holder.contains(node.parentElement)) continue
-      holder.appendChild(node.cloneNode(true))
+      const stopLevel = stops.get(node)
+      if (stopLevel !== undefined && stopLevel <= level) break
+      if (guard.contains(node)) continue
+      range.push(node)
+      guard = node
     }
-    return { heading: clean(start.textContent), markdown: toMarkdown(holder) }
+
+    return { heading: head.text, markdown: toMarkdown({ children: range }) }
   }
 
   /* ------------------------------------------------------------------ find */
@@ -654,7 +815,17 @@
     } else if (typeof o.section === 'number') {
       const s = section(o.section)
       if (!s) return { error: `no section at index ${o.section}` }
-      return { url: location.href, title: document.title, heading: s.heading, markdown: s.markdown }
+      // Sections are bounded by the next peer heading, but the last heading on
+      // a page runs to the end of it, so the cap still has to apply here.
+      const cap = o.maxChars || 20000
+      return {
+        url: location.href,
+        title: document.title,
+        heading: s.heading,
+        markdown: s.markdown.slice(0, cap),
+        truncated: s.markdown.length > cap,
+        totalChars: s.markdown.length
+      }
     } else if (o.full) {
       root = document.body
     } else {
@@ -693,7 +864,7 @@
   }
 
   window.__stoke = {
-    version: 2,
+    version: 6,
     snapshot,
     read,
     outline,
