@@ -77,6 +77,15 @@ export interface StokeApi {
     stop(): void
     openExternal(): void
     devtools(): void
+    newTab(url?: string): void
+    closeTab(id: string): void
+    selectTab(id: string): void
+    /** findNext advances through matches instead of restarting the search. */
+    find(text: string, forward?: boolean, findNext?: boolean): void
+    stopFind(): void
+    zoom(level: number): void
+    /** Toggle the bookmark for the active tab's URL. */
+    bookmark(): void
     onState(cb: (state: BrowserState) => void): () => void
   }
 

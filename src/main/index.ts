@@ -69,6 +69,7 @@ function createWindow(): void {
   })
 
   browser = new EmbeddedBrowser(win, (state) => send(CH.browserState, state))
+  browser.setBookmarks(settings.browser.bookmarks)
 
   // Expose the docked browser to Claude Code. Started eagerly so the config
   // file exists before the first session is launched.
@@ -203,6 +204,26 @@ function registerIpc(): void {
   ipcMain.on(CH.browserStop, () => browser?.stop())
   ipcMain.on(CH.browserOpenExternal, () => browser?.openExternal())
   ipcMain.on(CH.browserDevtools, () => browser?.toggleDevtools())
+  ipcMain.on(CH.browserNewTab, (_e, url?: string) => browser?.newTab(url))
+  ipcMain.on(CH.browserCloseTab, (_e, id: string) => browser?.closeTab(id))
+  ipcMain.on(CH.browserSelectTab, (_e, id: string) => browser?.selectTab(id))
+  ipcMain.on(CH.browserFind, (_e, t: string, fwd?: boolean, next?: boolean) =>
+    browser?.find(t, fwd ?? true, next ?? false)
+  )
+  ipcMain.on(CH.browserStopFind, () => browser?.stopFind())
+  ipcMain.on(CH.browserZoom, (_e, level: number) => browser?.setZoom(level))
+
+  ipcMain.on(CH.browserBookmark, () => {
+    const url = browser?.currentState().url
+    if (!url || url === 'about:blank') return
+    const s = getSettings()
+    const list = s.browser.bookmarks.includes(url)
+      ? s.browser.bookmarks.filter((b) => b !== url)
+      : [...s.browser.bookmarks, url]
+    const next = setSettings({ browser: { ...s.browser, bookmarks: list } })
+    browser?.setBookmarks(list)
+    send(CH.settingsChanged, next)
+  })
 
   /* -------------------------------------------------------------- settings */
   ipcMain.handle(CH.settingsGet, () => getSettings())

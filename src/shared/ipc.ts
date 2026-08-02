@@ -49,6 +49,13 @@ export const CH = {
   browserOpenExternal: 'browser:openExternal',
   browserState: 'browser:state',
   browserDevtools: 'browser:devtools',
+  browserNewTab: 'browser:newTab',
+  browserCloseTab: 'browser:closeTab',
+  browserSelectTab: 'browser:selectTab',
+  browserFind: 'browser:find',
+  browserStopFind: 'browser:stopFind',
+  browserZoom: 'browser:zoom',
+  browserBookmark: 'browser:bookmark',
 
   // settings
   settingsGet: 'settings:get',

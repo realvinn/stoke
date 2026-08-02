@@ -26,8 +26,9 @@ Windows and macOS.
   live from the session transcript. Turns amber at 70% and red at 90%.
 - **Permissions on one control.** Ask / Plan / Edits / Auto / Bypass, switchable per
   session before launch, with the active mode always visible in the status bar.
-- **A docked browser.** A real Chromium view inside the window. Links clicked in the
-  terminal open there instead of pulling you out to another app.
+- **A docked browser Claude shares.** A real Chromium view with tabs, find-in-page,
+  bookmarks, zoom and devtools. Links clicked in the terminal open there — and Claude
+  can drive the very same pane. See below.
 - **Themes as plain CSS variables.** Four built in (Ember, Nocturne, Moss, Daylight).
   Add your own to `customThemes` in `settings.json` and it appears in the picker.
 
@@ -90,6 +91,43 @@ path is known before the process starts and the meter can attach immediately.
 records its model as plain `claude-opus-5` — no `[1m]` suffix survives into the transcript
 and no `context_window` field is written. Stoke therefore treats observed usage as the
 authority: crossing 200k proves the extended tier. See `src/main/sessionFile.ts`.
+
+## Claude drives the same browser you do
+
+Stoke launches the CLI, so it injects `--mcp-config` at spawn time pointing at an MCP
+server it runs in-process (loopback only, ephemeral port, per-run bearer token). Every
+session gets browser tools automatically — nothing to install or configure.
+
+The point is that it is *your* pane: same tabs, same cookies, same logins. Claude can read
+a dashboard you are signed into, which a cold headless browser cannot, and you watch it
+work and can take the wheel at any moment.
+
+The tools are shaped for an agent rather than for a DOM:
+
+| Tool | What it does |
+| --- | --- |
+| `browser_open` | Navigate, wait for the page to settle, return the heading outline and a token estimate |
+| `browser_read` | Main content as markdown — nav and ads stripped, tables and code blocks intact. Scopes to a section or an element |
+| `browser_outline` | Heading map, for skimming before reading |
+| `browser_find` | Matching passages with their heading and nearest clickable ref |
+| `browser_snapshot` | Visible interactive elements with short refs |
+| `browser_click` / `_type` / `_select` | Act by ref, never a CSS selector |
+| `browser_inspect` | Console and network, filterable to just the problems |
+| `browser_screenshot` | Whole page or one element |
+| `browser_changes` | What changed since the last read |
+
+Two decisions do most of the work. **Actions return a diff, not the page** — after a click,
+re-sending an entire page that is 95% identical is what makes browser agents expensive.
+And **every read waits for the page to settle**, because reading a skeleton loader produces
+confidently wrong answers rather than obviously wrong ones.
+
+### Worth knowing before you use it
+
+These tools go through Claude Code's normal permission system, so in **Bypass** mode Claude
+can click and type in a browser holding your logged-in sessions, and a hostile page can
+attempt prompt injection to steer that. The shared session is what makes this useful, and
+it is also the risk. If that trade stops being worth it, the partition is a one-line change
+in `src/main/browser.ts`.
 
 ## Layout
 

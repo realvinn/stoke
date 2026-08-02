@@ -1,6 +1,7 @@
+import { randomUUID } from 'node:crypto'
 import { BrowserWindow, session, shell, WebContentsView } from 'electron'
 import type { WebContents } from 'electron'
-import type { BrowserState, Rect } from '@shared/types'
+import type { BrowserState, BrowserTabState, Rect } from '@shared/types'
 
 /** Recent console output, exposed to the agent through the MCP tools. */
 export interface ConsoleEntry {
@@ -20,7 +21,7 @@ export interface NetEntry {
   at: number
 }
 
-/** Ring buffer size for each log. Enough for a page load, cheap to keep. */
+/** Ring buffer size per tab for each log. Enough for a page load, cheap to keep. */
 const LOG_LIMIT = 300
 
 /**
@@ -32,40 +33,59 @@ const LOG_LIMIT = 300
 const PARTITION = 'persist:stoke-browser'
 
 /**
- * Size the page gets whenever it is not showing in the panel. It must be a real
+ * Size a page gets whenever it is not showing in the panel. It must be a real
  * rect: Chromium only lays a document out if its view has a non-zero viewport,
  * and the agent reads layout-dependent things (visibility, geometry, innerText).
  */
 const DEFAULT_VIEWPORT = { x: 0, y: 0, width: 1280, height: 900 }
 
+interface Tab {
+  id: string
+  view: WebContentsView
+  consoleLog: ConsoleEntry[]
+  netLog: NetEntry[]
+  findTotal: number
+  findActive: number
+}
+
 /**
- * A real Chromium view docked inside the window, so Claude's links and docs open
- * in the app instead of pulling you out to another program.
+ * The docked browser: a set of real Chromium views inside the window.
  *
- * It is a native child view rather than a <webview> tag: <webview> is deprecated
- * and janky, whereas WebContentsView gets a full renderer with proper devtools.
+ * Native child views rather than <webview> tags — <webview> is deprecated and
+ * janky, whereas WebContentsView gets a full renderer with working devtools.
  */
 export class EmbeddedBrowser {
-  private view: WebContentsView | null = null
+  private tabs: Tab[] = []
+  private activeId: string | null = null
   /** True only while the panel is open in the UI. */
   private userVisible = false
   private bounds: Rect = { x: 0, y: 0, width: 0, height: 0 }
+  private netHooked = false
 
   private readonly win: BrowserWindow
   private readonly emit: (state: BrowserState) => void
-
-  private consoleLog: ConsoleEntry[] = []
-  private netLog: NetEntry[] = []
-  private netHooked = false
+  /** Bookmarks live in settings; this reads them for the `bookmarked` flag. */
+  private bookmarks: string[] = []
 
   constructor(win: BrowserWindow, emit: (state: BrowserState) => void) {
     this.win = win
     this.emit = emit
   }
 
-  private ensure(): WebContentsView {
-    if (this.view) return this.view
+  /* ------------------------------------------------------------------ tabs */
 
+  private active(): Tab | null {
+    return this.tabs.find((t) => t.id === this.activeId) ?? null
+  }
+
+  /** Create the first tab lazily so an unopened panel costs nothing. */
+  private ensure(): Tab {
+    const current = this.active()
+    if (current) return current
+    return this.newTab()
+  }
+
+  newTab(url?: string): Tab {
     const view = new WebContentsView({
       webPreferences: {
         // Nothing from Stoke is exposed to browsed pages.
@@ -75,53 +95,114 @@ export class EmbeddedBrowser {
         partition: PARTITION
       }
     })
-    this.view = view
+
+    const tab: Tab = {
+      id: randomUUID(),
+      view,
+      consoleLog: [],
+      netLog: [],
+      findTotal: 0,
+      findActive: 0
+    }
+    this.tabs.push(tab)
 
     const wc = view.webContents
     const push = (): void => this.emit(this.state())
 
-    wc.on('did-start-loading', push)
+    wc.on('did-start-loading', () => {
+      // Reset per page load. This must be did-start-loading, not did-navigate:
+      // did-navigate fires after the main document response, which would wipe
+      // the very request the agent asks about when a page fails to load.
+      tab.consoleLog = []
+      tab.netLog = []
+      push()
+    })
     wc.on('did-stop-loading', push)
     wc.on('did-navigate', push)
     wc.on('did-navigate-in-page', push)
     wc.on('page-title-updated', push)
     wc.on('did-fail-load', push)
 
-    // Reset per page load. This must hook did-start-loading, not did-navigate:
-    // did-navigate fires *after* the main document response, so resetting there
-    // wiped the very request the agent asks about when a page fails to load.
-    wc.on('did-start-loading', () => {
-      this.consoleLog = []
-      this.netLog = []
+    wc.on('found-in-page', (_e, result) => {
+      tab.findTotal = result.matches ?? 0
+      tab.findActive = result.activeMatchOrdinal ?? 0
+      push()
     })
 
-    this.hookConsole(wc)
-    this.hookNetwork()
-
-    // Popups become navigations in the same view; anything explicitly external
-    // goes to the system browser.
-    wc.setWindowOpenHandler(({ url }) => {
-      void wc.loadURL(url)
+    // A link that asks for a new window gets a real new tab, like a browser.
+    wc.setWindowOpenHandler(({ url: target }) => {
+      this.newTab(target)
       return { action: 'deny' }
     })
 
+    this.hookConsole(wc, tab)
+    this.hookNetwork()
+
     view.setBackgroundColor('#00000000')
 
-    // Mount immediately but hidden. The view must live in the window's tree
-    // with a real rect to lay out at all, which is what lets the agent read a
-    // page before the user has ever opened the panel.
+    // Mount immediately but hidden. A view outside the window's tree gets a 0x0
+    // viewport and never lays out, which silently hands the agent a blank page.
     this.win.contentView.addChildView(view)
     view.setBounds(DEFAULT_VIEWPORT)
     view.setVisible(false)
 
-    return view
+    this.activeId = tab.id
+    this.applyVisibility()
+
+    if (url) this.navigate(url)
+    this.emit(this.state())
+    return tab
   }
+
+  closeTab(id: string): void {
+    const index = this.tabs.findIndex((t) => t.id === id)
+    if (index === -1) return
+    const [tab] = this.tabs.splice(index, 1)
+
+    this.win.contentView.removeChildView(tab.view)
+    tab.view.webContents.close()
+
+    if (this.activeId === id) {
+      const next = this.tabs[index] ?? this.tabs[index - 1] ?? null
+      this.activeId = next?.id ?? null
+    }
+    this.applyVisibility()
+    this.emit(this.state())
+  }
+
+  selectTab(id: string): void {
+    if (!this.tabs.some((t) => t.id === id)) return
+    this.activeId = id
+    this.applyVisibility()
+    this.emit(this.state())
+  }
+
+  /** Only the active tab is ever visible; the rest keep a viewport but hide. */
+  private applyVisibility(): void {
+    for (const tab of this.tabs) {
+      const isActive = tab.id === this.activeId
+      const shown = isActive && this.userVisible
+      tab.view.setVisible(shown)
+      tab.view.setBounds(
+        shown && this.bounds.width > 0
+          ? {
+              x: Math.round(this.bounds.x),
+              y: Math.round(this.bounds.y),
+              width: Math.max(1, Math.round(this.bounds.width)),
+              height: Math.max(1, Math.round(this.bounds.height))
+            }
+          : DEFAULT_VIEWPORT
+      )
+    }
+  }
+
+  /* ------------------------------------------------------------- capture */
 
   /**
    * Electron changed this event from positional arguments to a details object.
-   * Both shapes are handled so the capture keeps working across versions.
+   * Both shapes are handled so capture keeps working across versions.
    */
-  private hookConsole(wc: WebContents): void {
+  private hookConsole(wc: WebContents, tab: Tab): void {
     wc.on('console-message', (...args: unknown[]) => {
       const first = args[0] as Record<string, unknown> | undefined
       let level = 'log'
@@ -138,22 +219,30 @@ export class EmbeddedBrowser {
         source = String(args[4] ?? '')
       }
 
-      this.push(this.consoleLog, { level, message, source, at: Date.now() })
+      this.push(tab.consoleLog, { level, message, source, at: Date.now() })
     })
   }
 
   /**
-   * The webRequest API is used rather than attaching a CDP debugger: only one
-   * debugger client may be attached at a time, and that slot must stay free for
-   * DevTools.
+   * The webRequest API is used rather than a CDP debugger: only one debugger
+   * client may attach at a time, and that slot must stay free for DevTools.
+   * Entries are routed back to their tab via webContentsId.
    */
   private hookNetwork(): void {
     if (this.netHooked) return
     this.netHooked = true
     const wr = session.fromPartition(PARTITION).webRequest
 
+    const route = (id: number | undefined): NetEntry[] | null => {
+      if (id === undefined) return this.active()?.netLog ?? null
+      const tab = this.tabs.find((t) => t.view.webContents.id === id)
+      return tab ? tab.netLog : null
+    }
+
     wr.onCompleted((d) => {
-      this.push(this.netLog, {
+      const log = route(d.webContentsId)
+      if (!log) return
+      this.push(log, {
         url: d.url,
         method: d.method,
         status: d.statusCode ?? null,
@@ -163,7 +252,9 @@ export class EmbeddedBrowser {
     })
 
     wr.onErrorOccurred((d) => {
-      this.push(this.netLog, {
+      const log = route(d.webContentsId)
+      if (!log) return
+      this.push(log, {
         url: d.url,
         method: d.method,
         status: null,
@@ -179,134 +270,175 @@ export class EmbeddedBrowser {
     if (buf.length > LOG_LIMIT) buf.splice(0, buf.length - LOG_LIMIT)
   }
 
-  /** Live WebContents, or null when the panel has never been opened. */
+  /* --------------------------------------------------------- agent access */
+
   webContents(): WebContents | null {
-    return this.view?.webContents ?? null
+    return this.active()?.view.webContents ?? null
   }
 
-  /**
-   * Ensure the view exists without attaching it to the window, so the agent can
-   * drive the browser before the user has opened the panel.
-   */
+  /** Guarantees a live page for the agent even if the panel was never opened. */
   ensureHeadless(): WebContents {
-    return this.ensure().webContents
+    return this.ensure().view.webContents
   }
 
   consoleEntries(): ConsoleEntry[] {
-    return this.consoleLog
+    return this.active()?.consoleLog ?? []
   }
 
   networkEntries(): NetEntry[] {
-    return this.netLog
-  }
-
-  clearLogs(): void {
-    this.consoleLog = []
-    this.netLog = []
+    return this.active()?.netLog ?? []
   }
 
   isAttached(): boolean {
     return this.userVisible
   }
 
-  private state(): BrowserState {
-    const wc = this.view?.webContents
-    if (!wc) {
-      return { url: '', title: '', canGoBack: false, canGoForward: false, loading: false }
-    }
-    return {
-      url: wc.getURL(),
-      title: wc.getTitle(),
-      canGoBack: wc.navigationHistory.canGoBack(),
-      canGoForward: wc.navigationHistory.canGoForward(),
-      loading: wc.isLoading()
-    }
-  }
+  /* ----------------------------------------------------------------- state */
 
-  setBounds(rect: Rect): void {
-    this.bounds = rect
-    if (this.userVisible && this.view) {
-      this.view.setBounds({
-        x: Math.round(rect.x),
-        y: Math.round(rect.y),
-        width: Math.max(0, Math.round(rect.width)),
-        height: Math.max(0, Math.round(rect.height))
-      })
-    }
-  }
-
-  show(url?: string): void {
-    const view = this.ensure()
-    this.userVisible = true
-    view.setVisible(true)
-    if (this.bounds.width > 0) this.setBounds(this.bounds)
-    if (url) this.navigate(url)
-    else if (!view.webContents.getURL()) this.navigate('about:blank')
+  setBookmarks(list: string[]): void {
+    this.bookmarks = list
     this.emit(this.state())
   }
 
-  /**
-   * Hide from the user without unmounting.
-   *
-   * The view deliberately stays in the window's view tree at a full-size
-   * rect — a WebContentsView that is detached (or sized to nothing) gets a 0x0
-   * viewport and never lays out, so `getBoundingClientRect`, `innerText` and
-   * every visibility check return empty. That silently gave the agent a blank
-   * page whenever the panel was closed.
-   */
-  hide(): void {
-    this.userVisible = false
-    if (this.view) {
-      this.view.setVisible(false)
-      this.view.setBounds(DEFAULT_VIEWPORT)
+  private tabState(): BrowserTabState[] {
+    return this.tabs.map((t) => ({
+      id: t.id,
+      title: t.view.webContents.getTitle() || 'New tab',
+      url: t.view.webContents.getURL(),
+      loading: t.view.webContents.isLoading()
+    }))
+  }
+
+  private state(): BrowserState {
+    const tab = this.active()
+    const wc = tab?.view.webContents
+    if (!wc) {
+      return {
+        url: '',
+        title: '',
+        canGoBack: false,
+        canGoForward: false,
+        loading: false,
+        tabs: [],
+        activeId: null,
+        zoom: 0,
+        findTotal: 0,
+        findActive: 0,
+        bookmarked: false
+      }
     }
-  }
-
-  navigate(input: string): void {
-    const view = this.ensure()
-    void view.webContents.loadURL(normalizeUrl(input)).catch(() => {
-      /* bad address; did-fail-load already reported it */
-    })
-  }
-
-  back(): void {
-    const wc = this.view?.webContents
-    if (wc?.navigationHistory.canGoBack()) wc.navigationHistory.goBack()
-  }
-
-  forward(): void {
-    const wc = this.view?.webContents
-    if (wc?.navigationHistory.canGoForward()) wc.navigationHistory.goForward()
-  }
-
-  reload(): void {
-    this.view?.webContents.reload()
-  }
-
-  stop(): void {
-    this.view?.webContents.stop()
-  }
-
-  toggleDevtools(): void {
-    const wc = this.view?.webContents
-    if (!wc) return
-    if (wc.isDevToolsOpened()) wc.closeDevTools()
-    else wc.openDevTools({ mode: 'detach' })
-  }
-
-  openExternal(): void {
-    const url = this.view?.webContents.getURL()
-    if (url && /^https?:/i.test(url)) void shell.openExternal(url)
+    const url = wc.getURL()
+    return {
+      url,
+      title: wc.getTitle(),
+      canGoBack: wc.navigationHistory.canGoBack(),
+      canGoForward: wc.navigationHistory.canGoForward(),
+      loading: wc.isLoading(),
+      tabs: this.tabState(),
+      activeId: this.activeId,
+      zoom: wc.getZoomLevel(),
+      findTotal: tab.findTotal,
+      findActive: tab.findActive,
+      bookmarked: this.bookmarks.includes(url)
+    }
   }
 
   currentState(): BrowserState {
     return this.state()
   }
 
+  /* ------------------------------------------------------------- controls */
+
+  setBounds(rect: Rect): void {
+    this.bounds = rect
+    this.applyVisibility()
+  }
+
+  show(url?: string): void {
+    const tab = this.ensure()
+    this.userVisible = true
+    this.applyVisibility()
+    if (url) this.navigate(url)
+    else if (!tab.view.webContents.getURL()) this.navigate('about:blank')
+    this.emit(this.state())
+  }
+
+  /**
+   * Hide from the user without unmounting, so pages keep their state — and keep
+   * a real viewport, which the agent depends on.
+   */
+  hide(): void {
+    this.userVisible = false
+    this.applyVisibility()
+  }
+
+  navigate(input: string): void {
+    const tab = this.ensure()
+    void tab.view.webContents.loadURL(normalizeUrl(input)).catch(() => {
+      /* bad address; did-fail-load already reported it */
+    })
+  }
+
+  back(): void {
+    const wc = this.webContents()
+    if (wc?.navigationHistory.canGoBack()) wc.navigationHistory.goBack()
+  }
+
+  forward(): void {
+    const wc = this.webContents()
+    if (wc?.navigationHistory.canGoForward()) wc.navigationHistory.goForward()
+  }
+
+  reload(): void {
+    this.webContents()?.reload()
+  }
+
+  stop(): void {
+    this.webContents()?.stop()
+  }
+
+  find(text: string, forward = true, findNext = false): void {
+    const wc = this.webContents()
+    if (!wc) return
+    if (!text) {
+      this.stopFind()
+      return
+    }
+    wc.findInPage(text, { forward, findNext })
+  }
+
+  stopFind(): void {
+    this.webContents()?.stopFindInPage('clearSelection')
+    const tab = this.active()
+    if (tab) {
+      tab.findTotal = 0
+      tab.findActive = 0
+    }
+    this.emit(this.state())
+  }
+
+  /** Chromium zoom levels are logarithmic; +-0.5 is roughly a 10% step. */
+  setZoom(level: number): void {
+    const wc = this.webContents()
+    if (!wc) return
+    wc.setZoomLevel(Math.max(-5, Math.min(5, level)))
+    this.emit(this.state())
+  }
+
+  toggleDevtools(): void {
+    const wc = this.webContents()
+    if (!wc) return
+    if (wc.isDevToolsOpened()) wc.closeDevTools()
+    else wc.openDevTools({ mode: 'detach' })
+  }
+
+  openExternal(): void {
+    const url = this.webContents()?.getURL()
+    if (url && /^https?:/i.test(url)) void shell.openExternal(url)
+  }
+
   destroy(): void {
-    this.hide()
-    this.view?.webContents.close()
-    this.view = null
+    for (const tab of [...this.tabs]) this.closeTab(tab.id)
   }
 }
 

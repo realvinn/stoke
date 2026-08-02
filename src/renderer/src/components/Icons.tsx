@@ -109,6 +109,32 @@ export const IconSidebar = (p: SVGProps<SVGSVGElement>): React.JSX.Element => (
   </Base>
 )
 
+export const IconMinus = (p: SVGProps<SVGSVGElement>): React.JSX.Element => (
+  <Base {...p}>
+    <path d="M3.5 8h9" />
+  </Base>
+)
+
+export const IconStar = (p: SVGProps<SVGSVGElement>): React.JSX.Element => (
+  <Base {...p}>
+    <path d="M8 2.3l1.75 3.55 3.92.57-2.84 2.76.67 3.9L8 11.24l-3.5 1.84.67-3.9L2.33 6.42l3.92-.57z" />
+  </Base>
+)
+
+export const IconCode = (p: SVGProps<SVGSVGElement>): React.JSX.Element => (
+  <Base {...p}>
+    <path d="M6 4.5L2.5 8 6 11.5M10 4.5L13.5 8 10 11.5" />
+  </Base>
+)
+
+/** Hand the current page to Claude. */
+export const IconAsk = (p: SVGProps<SVGSVGElement>): React.JSX.Element => (
+  <Base {...p}>
+    <path d="M13.5 9.6a1.4 1.4 0 0 1-1.4 1.4H6.2L3.5 13.4V4.3a1.4 1.4 0 0 1 1.4-1.4h7.2a1.4 1.4 0 0 1 1.4 1.4z" />
+    <path d="M6.6 6.6h3.8M6.6 8.6h2.4" />
+  </Base>
+)
+
 export const IconMinimize = (p: SVGProps<SVGSVGElement>): React.JSX.Element => (
   <Base {...p} strokeWidth="1.2">
     <path d="M3 8h10" />

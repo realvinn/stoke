@@ -71,6 +71,14 @@ const api: StokeApi = {
     stop: () => ipcRenderer.send(CH.browserStop),
     openExternal: () => ipcRenderer.send(CH.browserOpenExternal),
     devtools: () => ipcRenderer.send(CH.browserDevtools),
+    newTab: (url?: string) => ipcRenderer.send(CH.browserNewTab, url),
+    closeTab: (id: string) => ipcRenderer.send(CH.browserCloseTab, id),
+    selectTab: (id: string) => ipcRenderer.send(CH.browserSelectTab, id),
+    find: (text: string, forward?: boolean, findNext?: boolean) =>
+      ipcRenderer.send(CH.browserFind, text, forward, findNext),
+    stopFind: () => ipcRenderer.send(CH.browserStopFind),
+    zoom: (level: number) => ipcRenderer.send(CH.browserZoom, level),
+    bookmark: () => ipcRenderer.send(CH.browserBookmark),
     onState: (cb) => on<[Parameters<typeof cb>[0]]>(CH.browserState, cb)
   },
 

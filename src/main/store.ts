@@ -26,7 +26,8 @@ const DEFAULTS: Settings = {
     // Canonical URL — the older docs.claude.com path 301s here.
     homepage: 'https://code.claude.com/docs',
     lastUrl: '',
-    width: 460
+    width: 460,
+    bookmarks: []
   },
   sidebarWidth: 260,
   claudePath: null,
@@ -48,7 +49,11 @@ function hydrate(raw: unknown): Settings {
     ...DEFAULTS,
     ...r,
     defaults: { ...DEFAULTS.defaults, ...(r.defaults ?? {}) },
-    browser: { ...DEFAULTS.browser, ...(r.browser ?? {}) },
+    browser: {
+      ...DEFAULTS.browser,
+      ...(r.browser ?? {}),
+      bookmarks: Array.isArray(r.browser?.bookmarks) ? r.browser.bookmarks : []
+    },
     customThemes: Array.isArray(r.customThemes) ? r.customThemes : [],
     projectRoots: Array.isArray(r.projectRoots) ? r.projectRoots : [],
     pinnedProjects: Array.isArray(r.pinnedProjects) ? r.pinnedProjects : [],

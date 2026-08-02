@@ -30,7 +30,13 @@ const EMPTY_BROWSER: BrowserState = {
   title: '',
   canGoBack: false,
   canGoForward: false,
-  loading: false
+  loading: false,
+  tabs: [],
+  activeId: null,
+  zoom: 0,
+  findTotal: 0,
+  findActive: 0,
+  bookmarked: false
 }
 
 export function App(): React.JSX.Element {
@@ -328,6 +334,27 @@ export function App(): React.JSX.Element {
     window.stoke.browser.show(url)
   }, [])
 
+  /**
+   * Hand the current page to the running session by typing an opening line into
+   * its prompt — deliberately unfinished, so the question is still the user's.
+   */
+  const askClaude = useCallback(
+    (url: string, title: string): void => {
+      const target = tabs.find((t) => t.id === activeTabId) ?? tabs[tabs.length - 1]
+      if (!target) {
+        setError('Start a session first — then Ask Claude types the page into its prompt.')
+        return
+      }
+      const label = title ? `"${title}" (${url})` : url
+      window.stoke.pty.write(
+        target.ptyId,
+        `Using the stoke browser tools, look at the page open in the browser — ${label} — and `
+      )
+      setActiveTabId(target.id)
+    },
+    [tabs, activeTabId]
+  )
+
   /* ------------------------------------------------------------- shortcuts */
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null
@@ -569,7 +596,12 @@ export function App(): React.JSX.Element {
               }}
             />
             <div style={{ width: browserWidth, display: 'flex', flexShrink: 0 }}>
-              <BrowserPanel state={browserState} onClose={() => setBrowserOpen(false)} />
+              <BrowserPanel
+                state={browserState}
+                bookmarks={settings?.browser.bookmarks ?? []}
+                onAskClaude={askClaude}
+                onClose={() => setBrowserOpen(false)}
+              />
             </div>
           </>
         )}

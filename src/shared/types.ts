@@ -197,6 +197,7 @@ export interface Settings {
     homepage: string
     lastUrl: string
     width: number
+    bookmarks: string[]
   }
   sidebarWidth: number
   /** Explicit path to the claude executable; null means auto-detect. */
@@ -207,12 +208,27 @@ export interface Settings {
 
 /* --------------------------------------------------------------- browser */
 
+export interface BrowserTabState {
+  id: string
+  title: string
+  url: string
+  loading: boolean
+}
+
 export interface BrowserState {
+  /** Active tab. Kept flat because most of the UI only cares about this one. */
   url: string
   title: string
   canGoBack: boolean
   canGoForward: boolean
   loading: boolean
+  tabs: BrowserTabState[]
+  activeId: string | null
+  /** Chromium zoom level (logarithmic; 0 is 100%). */
+  zoom: number
+  findTotal: number
+  findActive: number
+  bookmarked: boolean
 }
 
 export interface Rect {
