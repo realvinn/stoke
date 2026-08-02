@@ -10,6 +10,7 @@ import { listProjects, listSessions } from './projects.ts'
 import { PtyManager } from './pty.ts'
 import { getSettings, setSettings } from './store.ts'
 import { createScratchDir, resolveDefaultCwd } from './workspace.ts'
+import { BrowserMcpServer } from './mcp/server.ts'
 
 const isMac = process.platform === 'darwin'
 
@@ -17,6 +18,9 @@ let win: BrowserWindow | null = null
 let browser: EmbeddedBrowser | null = null
 let ptys: PtyManager | null = null
 let watcher: ContextWatcher | null = null
+let mcp: BrowserMcpServer | null = null
+/** Path of the generated --mcp-config file; null until the server is up. */
+let mcpConfigPath: string | null = null
 
 function send(channel: string, ...args: unknown[]): void {
   if (win && !win.isDestroyed() && !win.webContents.isDestroyed()) {
@@ -65,6 +69,17 @@ function createWindow(): void {
   })
 
   browser = new EmbeddedBrowser(win, (state) => send(CH.browserState, state))
+
+  // Expose the docked browser to Claude Code. Started eagerly so the config
+  // file exists before the first session is launched.
+  mcp = new BrowserMcpServer(browser)
+  void mcp
+    .start()
+    .then((path) => {
+      mcpConfigPath = path
+    })
+    .catch((err) => console.error('[stoke] browser MCP server failed to start', err))
+
   ptys = new PtyManager(
     (ptyId, data) => send(CH.ptyData, ptyId, data),
     (ptyId, code, signal) => send(CH.ptyExit, ptyId, code, signal)
@@ -81,9 +96,12 @@ function createWindow(): void {
   win.on('closed', () => {
     ptys?.killAll()
     watcher?.disposeAll()
+    mcp?.stop()
     browser = null
     ptys = null
     watcher = null
+    mcp = null
+    mcpConfigPath = null
     win = null
   })
 }
@@ -155,7 +173,7 @@ function registerIpc(): void {
   /* ------------------------------------------------------------------- pty */
   ipcMain.handle(CH.ptyStart, async (_e, opts: LaunchOptions) => {
     if (!ptys) throw new Error('Window is not ready')
-    const result = await ptys.start(opts, getSettings().claudePath)
+    const result = await ptys.start(opts, getSettings().claudePath, mcpConfigPath)
     watcher?.watch(result.sessionId)
     return result
   })
@@ -231,5 +249,6 @@ if (!app.requestSingleInstanceLock()) {
   app.on('before-quit', () => {
     ptys?.killAll()
     watcher?.disposeAll()
+    mcp?.stop()
   })
 }

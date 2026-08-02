@@ -63,7 +63,11 @@ export class PtyManager {
     this.onExit = onExit
   }
 
-  async start(opts: LaunchOptions, claudePathOverride: string | null): Promise<StartResult> {
+  async start(
+    opts: LaunchOptions,
+    claudePathOverride: string | null,
+    mcpConfigPath?: string | null
+  ): Promise<StartResult> {
     const exe = await findClaude(claudePathOverride)
     if (!exe) {
       throw new Error(
@@ -78,6 +82,12 @@ export class PtyManager {
       opts.resume || opts.continueLast ? (opts.sessionId ?? '') : (opts.sessionId ?? randomUUID())
 
     const args = buildArgs({ ...opts, sessionId })
+
+    // Hand the session Stoke's own browser tools. A file path rather than an
+    // inline JSON string: quoting JSON through a shell differs per platform and
+    // fails silently when it goes wrong.
+    if (mcpConfigPath) args.push('--mcp-config', mcpConfigPath)
+
     const spec = spawnSpec(exe, args)
 
     const env: Record<string, string> = {}

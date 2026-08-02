@@ -21,7 +21,9 @@
     "dist:mac:universal": "npm run build && electron-builder --mac --universal"
   },
   "dependencies": {
-    "@lydell/node-pty": "1.2.0-beta.14"
+    "@lydell/node-pty": "1.2.0-beta.14",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
