@@ -11,10 +11,16 @@ files:
 # archive so the OS loader can dlopen them.
 asarUnpack:
   - '**/node_modules/@lydell/node-pty*/**'
+# build/icon.png (1024x1024) is the single source; electron-builder derives the
+# .ico and .icns from it. Regenerate with `npm run icon` after editing icon.svg.
+# Architectures are chosen by the npm scripts (--x64 / --arm64) rather than
+# pinned here: an explicit `arch:` list in this file overrides the CLI flag, so
+# `dist:win --x64` would still build every architecture and take three times as
+# long.
 win:
+  icon: build/icon.png
   target:
     - target: nsis
-      arch: [x64, arm64]
   artifactName: ${productName}-${version}-${arch}-setup.${ext}
 nsis:
   oneClick: false
@@ -22,13 +28,18 @@ nsis:
   allowToChangeInstallationDirectory: true
   shortcutName: Stoke
 mac:
+  icon: build/icon.png
   target:
     - target: dmg
-      arch: [x64, arm64]
   category: public.app-category.developer-tools
   artifactName: ${productName}-${version}-${arch}.${ext}
   # A PTY spawns child processes; the JIT/unsigned-memory entitlements keep
   # hardened runtime from killing them.
+  #
+  # Signing is left on auto-discovery. With no Developer ID installed,
+  # electron-builder falls back to an ad-hoc signature, which is enough for a
+  # personal build — Apple Silicon refuses to launch arm64 binaries that carry
+  # no signature at all. See BUILDING.md if macOS still objects.
   hardenedRuntime: true
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist

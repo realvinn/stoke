@@ -37,12 +37,17 @@ npm run check        # typecheck + context-meter tests + production build
 Packaging:
 
 ```bash
-npm run dist:win     # NSIS installer, x64 + arm64
-npm run dist:mac     # dmg, x64 + arm64
+npm run dist:win     # -> release/Stoke-0.1.0-x64-setup.exe
+npm run dist:mac     # -> release/Stoke-0.1.0-arm64.dmg   (must run on a Mac)
 ```
 
 `@lydell/node-pty` ships prebuilt N-API binaries for all six platform/arch targets, so
-there is no native rebuild step on either OS.
+there is no native rebuild step on either OS. Do not copy `node_modules` between machines,
+though — run `npm install` on each, or the Mac ends up with a Windows-only PTY binary.
+
+**macOS packages can only be built on macOS.** Windows can emit Windows and Linux
+packages; a Mac can emit all three. See [BUILDING.md](BUILDING.md) for the M1 walkthrough
+and the Gatekeeper fixes an unsigned personal build needs.
 
 ## Keyboard
 
