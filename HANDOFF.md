@@ -1,120 +1,103 @@
 # HANDOFF — Stoke
 
-Repo: `G:\Code\personal\Stoke` · `github.com/realvinn/stoke` (public) · branch `main` · v0.2.0 shipped
+Repo: `G:\Code\personal\Stoke` · `github.com/realvinn/stoke` · `main` · **v0.3.0 built and installed**
 
 ## Task
 
-Original request (voice, verbatim):
+The overnight brief, verbatim:
 
-> Can you help me create somewhat of a, like, terminal, but, like, a a wrapper or a skin for
-> Claude code? [...] I wanted to make it look nice [...] be easy for me to navigate through
-> projects [...] immediately into Claude code, and I can easily access bypass permissions. I can
-> easily see all the context windows [...] Maybe even have, like, a built in browser for Claude to
-> use [...] also if possible, make it also on Mac. [...] I kind of like it simplistic. Something
-> like... it's like simplistic, but also with detail [...] I don't want it to just be just simple
-> black boxes from ShadCN or some random library. I want it to be a bit bespoke [...] accents of
-> light orange [...] I just use a basucx CSS for theming, kinda Discord.
+> okay im going to sleep now can you build all of that then build profiles I want study to be
+> red/blue personal to stay orange and work green, if possible since I work with 2 monitors some way
+> to have multiple terminals and a live page view of what claude is doing but most importantly we
+> need to double check spawn a few sub agents to try out all the features make sure all the
+> endpoints work and is secure [...] also if you can test installing the application then first time
+> setup
 
-Later, verbatim: *"we also need to figure out how to make that Chrome harness better [...] make
-Chrome more efficient and actually effective for Claude Code [...] especially something really good
-for understanding design elements. Also [...] how we can make websites better, faster, and make
-sure the tech stack and also have, like, a tool or something to check all for security."*
-
-Standing constraint: **macOS is last** — the user runs it after moving the repo to an external drive.
+Earlier in the same session: voice mode, typing directly into the terminal on the site, shortcut
+buttons, and the 5-hour / weekly / Fable limits with a pace marker.
 
 ## State
 
-**SHIPPED — v0.2.0**, released at `github.com/realvinn/stoke/releases/tag/v0.2.0` with the
-installer, blockmap and `latest.yml`. Feed verified fetchable anonymously, so self-update works.
+**DONE and verified.** 0.3.0 is installed and running; every claim below was measured.
 
-- Core app: Electron 43, electron-vite, React 19, `@lydell/node-pty`, xterm 6, hand-written CSS.
-- 17 browser MCP tools. The four new ones (`browser_design`, `browser_stack`, `browser_security`,
-  `browser_perf`) are all CDP-based. `143b519`, `f29f37a`.
-- Extractor rewritten for pages that are not articles. `dbb3754`.
-- Remote access serves **past** conversations, not just live ones. `d28bc00`.
-- Cloudflare: tunnel `stoke` (`3795de1d-087b-48e1-a7dc-d1259b3711a5`), `code.vinn.dev` CNAMEd to it,
-  and the user's installed app already has `hostname: code.vinn.dev`, `requireAccessHeader: true`.
+| area | evidence |
+|---|---|
+| Extractor: `display: contents`, inferred outline, `section()` | `fbe9e18`. claude.com 0 -> 1,553 chars; mistral outline 0 -> 34; Wikipedia section 0 -> 11,098 |
+| Voice on the phone | `d787bf7`. Live through the installed build: WAV in, correct transcript out |
+| Type into the terminal on the site | `d787bf7`. `term.onData` was never wired; composer kept for phones |
+| Terminal fills its pane | `d787bf7`. 96-98% on a phone, 99% on a desktop; was rendering the desktop's fixed grid |
+| Security | `172ac46`, `21a85db`. `npm run verify:security` — **16/16 against the installed app** |
+| Plan limits + pace marker | `c05216f`. `npm run verify:usage` — 16 assertions plus a live call |
+| Profiles | `43e3a88`. Four colours, all clearing 4.5:1 (6.83:1 worst) |
+| 0.3.0 installer | `282ad21`. Built, installed silently, relaunched, serving on 7878 and through the tunnel |
 
 **NOT DONE**
 
-1. **macOS entirely unverified.** No Mac in this environment; zero Mac code paths have ever run.
-   `/mac-release` walks through it.
-2. **`browser_responsive`** — sweep viewports, report horizontal overflow, clipped text, overlapping
-   boxes, touch targets under 24x24. Designed, not written.
-3. **Harness gaps** — `browser_wait_for` is the highest value (without it the agent polls with
-   repeated reads). Then `browser_tabs`, `browser_dialog`, batch `browser_fill_form`, schema-based
-   `browser_extract`, incremental snapshots.
-4. **Paint metrics need a visible page.** LCP, FCP and CLS do not exist for the agent's hidden view.
-   Currently reported as unavailable, which is honest but not useful; briefly showing the view
-   during a measurement would fix it.
+1. **Multi-terminal and the per-terminal browser.** Not started. The design is settled and written
+   down in `PLAN-OVERNIGHT.md` — edge-hugging FAB, `+` opens a panel offering new chat here / new
+   temp chat / different folder, each terminal with its own browser view.
+2. **First-run setup was never tested.** The install was an upgrade over 0.2.0, so existing settings
+   were already present. A genuine first run needs a clean `%APPDATA%\Stoke`.
+3. **Shortcut buttons on the site.** A `.keys` row already exists (esc/tab/arrows/ctrl-c/enter/
+   shift-tab/ctrl-r); it was never reviewed for what is missing or how discoverable it is.
+4. **No `sttUrl` field in desktop Settings.** It defaults to `http://127.0.0.1:17890` and can only
+   be changed by editing `settings.json`.
+5. **macOS still unverified.** No Mac code path has ever run.
+6. **A git tree showing features** — asked for as "would be cool". Not started.
 
-## Files
+## Security findings that were fixed
 
-- `src/main/mcp/cdp.ts` — attach/detach CDP sessions, queued per WebContents; `DESIGN_PROPS`
-  whitelist; `captureSnapshot`.
-- `src/main/mcp/color.ts` — WCAG 2, APCA, OKLab. Pinned to reference values by `verify-color.mts`.
-- `src/main/mcp/design.ts` — the design report.
-- `src/main/mcp/stack.ts`, `audit.ts`, `perf.ts` — the other three analyses.
-- `src/main/mcp/inject/extract.js` — in-page extractor. `page.ts` reads its version out of its own
-  source rather than restating it.
-- `src/main/browser.ts` — tabs, console/network capture with document headers.
-- `src/main/remote/server.ts` — 5 routes now: sessions (GET/POST), projects, **history**,
-  **transcript**.
-- `src/main/sessionFile.ts` — `parseSession` (metadata), `readTranscript` (the conversation),
-  `contextLimitFor`.
-- `src/remote/` — phone UI, built separately to `out/remote`.
-- `PLAN-HARNESS.md` — full gotcha list and phase status.
+Worth knowing, because they were all silent:
 
-## Decisions & gotchas
-
-Every bug this project has produced **plausible wrong output rather than an error**. A passing
-typecheck has never once caught one. Run the thing and disbelieve the output.
-
-- **CDP is available alongside DevTools.** `browser.ts` long claimed otherwise and it cost the
-  entire analysis surface. Chromium allows several protocol clients per target; verified on 43.
-- **`did-start-loading` fires again after load** when a client-side router prefetches, wiping the
-  console and network logs. Clear on `did-start-navigation`, main-frame, cross-document only.
-- **Computed colours are not `rgb()`** — Tailwind v4 reports `oklab()`/`lab()`. Resolve them by
-  painting to a 1x1 canvas and reading it back rather than hand-rolling conversions.
-- **`DOMSnapshot`'s `includeBlendedBackgroundColors` returns empty strings** at the right length.
-- **`Profiler.startPreciseCoverage({detailed: true})` crashes the app** on a large bundle.
-- **V8 coverage ranges nest**; merge the `count === 0` ones or every script reads 0% unused.
-- **`CSS.stopRuleUsageTracking` reports exercised rules, not all rules.** The denominator must come
-  from `CSS.getStyleSheetText`.
-- **A hidden `WebContentsView` never paints**, so paint timing does not exist for it.
-- **Inherited `CLAUDE_*` env vars disable transcript saving.** Stripped in `pty.ts`. Never re-add.
-- **Context window is not derivable from the model id.** Observed usage is the authority.
-- **PowerShell 5.1 `Set-Content -Encoding utf8` writes a BOM**, `JSON.parse` throws, and
-  `getSettings()` silently falls back to defaults. Use `[System.IO.File]::WriteAllText` with
-  `UTF8Encoding($false)`. This is written down and was still walked into.
-- **Rejected, do not re-propose:** Claude Code's native Remote Control. The user rejected it — auth
-  kept failing for them and they want a customised surface.
-
-## Next actions
-
-1. `browser_wait_for` in `src/main/mcp/server.ts` + `page.ts` — wait for text to appear or vanish,
-   or for the network to go quiet. Highest value of anything left.
-2. `browser_responsive` — resize via `Emulation.setDeviceMetricsOverride`, diff computed styles and
-   box rects at each width, report overflow and clipping.
-3. Make the browser view briefly visible during `browser_perf` so LCP/FCP/CLS become real.
-4. On the M1: run `/mac-release`.
+- `POST /api/sessions` forwarded `permissionMode` verbatim, so one request could start
+  `--dangerously-skip-permissions` **anywhere on disk**. The desktop guards this behind a
+  confirmation; the remote route had none and the UI never offered it.
+- `cwd` went straight into spawn unvalidated; a bad one threw a message leaking absolute paths.
+- `?id=../../../../x` on `/api/transcript` read any `.jsonl` on the machine.
+- `readJson` was unbounded while `readBody` two lines above capped at 25 MB.
+- A malformed body read as "no body" and quietly started a session in the default directory.
+- The cookie — a shell credential — lacked `Secure`.
+- The WebSocket upgrade had no origin check.
+- Wrong methods on `/api/*` returned the app shell with status 200.
+- Attaching to a dead pty succeeded silently.
 
 ## How to verify
 
 ```bash
 cd G:\Code\personal\Stoke
-npm run check            # typecheck + context tests + build. Must pass.
-npm run verify:color     # APCA/OKLab against reference values, no app needed
-npm run verify:context   # context meter against real transcripts
+npm run typecheck
+npm run verify:usage       # plan limits + pace marker, includes a live call
+npm run verify:extract -- <profile>\mcp-browser.json   # needs a running app
+npm run verify:security http://127.0.0.1:7878 <token> --access
 ```
 
-The browser tools need a running app. Launch a dev instance against a **separate** user-data dir so
-it does not collide with the installed app's single-instance lock:
+`--access` is required against the installed app: it has `requireAccessHeader` on, so without the
+header every check fails identically for a reason unrelated to what it tests.
 
-```
-node_modules\electron\dist\electron.exe . --user-data-dir=<scratch>\stoke-dev
-npm run verify:extract -- <scratch>\stoke-dev\mcp-browser.json
-```
+The token is in `%APPDATA%\Stoke\settings.json` under `remote.token`.
 
-That reads the MCP endpoint and bearer token the app writes on start, then drives the tools over
-HTTP exactly as Claude Code does.
+## Decisions & gotchas
+
+- **Profiles are a view filter, never access control.** Every profile reaches every file; search
+  deliberately crosses all of them. Do not let this grow into permissions.
+- **Verify by running.** Every bug in this project has produced plausible wrong output, never an
+  error. A passing typecheck has caught none of them.
+- **A metric can reward the failure it should catch.** "Words not in the DOM" scored a hallucinated
+  OCR result as the best run of the night. Read outputs; do not only count them.
+- **Do not force-kill Stoke.** It orphans the CLI children and the restarted app cannot reattach.
+  Both the tunnel outage and the "nothing active" confusion this session came from that.
+- **Electron ESM:** `app.whenReady().then(main)`, never top-level await. Add
+  `app.on('window-all-closed', () => {})` or a loop destroying windows quits the app mid-run.
+  `app.exit()` does not flush a piped stdout.
+- **Nested backticks inside a template literal** end it early — a SyntaxError before anything runs.
+- **Do not patch JS with Python heredocs.** Escaping ate a string literal twice.
+- **PowerShell 5.1 `Set-Content -Encoding utf8` writes a BOM** that silently breaks `settings.json`.
+- **The usage endpoint is undocumented.** Report unavailable rather than guess.
+- **Rejected, do not re-propose:** Claude Code's native Remote Control.
+
+## Next actions
+
+1. Multi-terminal, to the design in `PLAN-OVERNIGHT.md`.
+2. Test first-run against a clean `%APPDATA%\Stoke`.
+3. Add `sttUrl` to desktop Settings.
+4. Review the site's shortcut row.
