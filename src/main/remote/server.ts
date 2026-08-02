@@ -6,9 +6,10 @@ import { extname, join, normalize, sep } from 'node:path'
 import type { Duplex } from 'node:stream'
 import { app } from 'electron'
 import { WebSocketServer, type WebSocket } from 'ws'
-import type { ContextSnapshot, LaunchOptions, Project } from '@shared/types'
+import type { ContextSnapshot, LaunchOptions, Project, SessionMeta } from '@shared/types'
 import type { ContextWatcher } from '../context.ts'
 import type { PtyManager, StartResult } from '../pty.ts'
+import type { Transcript } from '../sessionFile.ts'
 
 /**
  * Serves Stoke's sessions to a phone or another browser.
@@ -26,6 +27,10 @@ export interface RemoteDeps {
   listProjects: () => Promise<Project[]>
   startSession: (opts: LaunchOptions) => Promise<StartResult>
   defaultCwd: () => string
+  /** Past sessions for a project, read from Claude Code's own transcripts. */
+  listSessions: (projectPath: string) => Promise<SessionMeta[]>
+  /** The conversation in a past session, for reading it back. */
+  readTranscript: (sessionId: string) => Promise<Transcript | null>
 }
 
 export interface RemoteConfig {
@@ -254,11 +259,37 @@ export class RemoteServer {
           setCookie
         )
       }
+      /*
+       * Past sessions. Without these the phone can only see what happens to be
+       * running on the desktop this second, which is almost never what someone
+       * opening the site is looking for — the work they did earlier is in
+       * Claude Code's transcripts, and the desktop app has always read them.
+       */
+      if (url.pathname === '/api/history' && req.method === 'GET') {
+        const cwd = url.searchParams.get('cwd')
+        if (!cwd) return this.json(res, { error: 'cwd is required' }, setCookie, 400)
+        const sessions = await this.deps.listSessions(cwd)
+        return this.json(res, { cwd, sessions: sessions.slice(0, 100) }, setCookie)
+      }
+
+      if (url.pathname === '/api/transcript' && req.method === 'GET') {
+        const id = url.searchParams.get('id')
+        if (!id) return this.json(res, { error: 'id is required' }, setCookie, 400)
+        const transcript = await this.deps.readTranscript(id)
+        if (!transcript) return this.json(res, { error: 'no such session' }, setCookie, 404)
+        return this.json(res, transcript, setCookie)
+      }
+
       if (url.pathname === '/api/sessions' && req.method === 'POST') {
         const body = (await this.readJson(req)) as Partial<LaunchOptions> | null
         const cwd = body?.cwd || this.deps.defaultCwd()
         const started = await this.deps.startSession({
           cwd,
+          // Resuming needs both flags: the id says which transcript, and
+          // resume turns it into --resume rather than --session-id, which
+          // would instead try to create a session that already exists.
+          sessionId: body?.sessionId,
+          resume: body?.resume === true && Boolean(body?.sessionId),
           permissionMode: body?.permissionMode ?? 'default',
           model: body?.model ?? '',
           effort: body?.effort ?? 'default',
@@ -302,8 +333,13 @@ export class RemoteServer {
     }))
   }
 
-  private json(res: ServerResponse, body: unknown, extra: Record<string, string> = {}): void {
-    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', ...extra })
+  private json(
+    res: ServerResponse,
+    body: unknown,
+    extra: Record<string, string> = {},
+    status = 200
+  ): void {
+    res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', ...extra })
     res.end(JSON.stringify(body))
   }
 

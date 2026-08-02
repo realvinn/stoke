@@ -211,6 +211,88 @@ button {
   line-height: 1.6;
 }
 
+.empty p {
+  margin: 0 0 8px;
+}
+
+.empty .btn {
+  margin-top: 12px;
+}
+
+/* ----------------------------------------------------------- transcript */
+
+/*
+ * A read-back of a past conversation. Deliberately not chat bubbles: turns run
+ * long and are often mostly code, so full-width blocks read far better on a
+ * narrow screen than a column of pinched speech balloons. The speaker is
+ * carried by ground tone and label rather than by alignment or a side stripe.
+ */
+
+.note {
+  margin: 12px 16px 4px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-faint);
+  font-size: 12px;
+  background: var(--bg-sunken);
+}
+
+.turn {
+  margin: 10px 16px;
+  padding: 12px 14px;
+  border-radius: 10px;
+}
+
+/* The person's own words are the landmark when scrolling back, so those sit
+   on a raised ground and everything Claude said stays on the page itself. */
+.turn[data-role='user'] {
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+
+.turn[data-role='assistant'] {
+  padding-top: 4px;
+}
+
+.turn-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.turn[data-role='user'] .turn-head span:first-child {
+  color: var(--accent);
+}
+
+.turn-text {
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--text);
+  /* Transcripts carry code and indentation; keep both without a horizontal
+     scrollbar on the whole page. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.turn-tools {
+  margin-top: 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .turn {
+    transition: none;
+  }
+}
+
 /* ------------------------------------------------------------ terminal */
 
 .term-wrap {

@@ -6,12 +6,13 @@ import type { LaunchOptions, Rect, Settings } from '@shared/types'
 import { EmbeddedBrowser } from './browser.ts'
 import { probeClaude } from './cli.ts'
 import { ContextWatcher } from './context.ts'
-import { listProjects, listSessions } from './projects.ts'
+import { findSessionFile, listProjects, listSessions } from './projects.ts'
+import { readTranscript } from './sessionFile.ts'
 import { PtyManager, type StartResult } from './pty.ts'
 import { getSettings, setSettings } from './store.ts'
 import { createScratchDir, resolveDefaultCwd } from './workspace.ts'
 import { BrowserMcpServer } from './mcp/server.ts'
-import { connectUrl, generateToken, RemoteServer } from './remote/server.ts'
+import { connectUrl, generateToken, RemoteServer, type RemoteDeps } from './remote/server.ts'
 import { TunnelManager } from './remote/tunnel.ts'
 import { checkForUpdate, runDoctor, runUpdate } from './updates.ts'
 import {
@@ -51,6 +52,27 @@ function remoteConfig(): Settings['remote'] {
     return next.remote
   }
   return s.remote
+}
+
+/**
+ * One definition of what the remote server can reach into, used by both places
+ * a RemoteServer is constructed. They had drifted apart before as separate
+ * literals, which is the kind of divergence that shows up as a feature working
+ * only when the app happens to have started with remote access already on.
+ */
+function remoteDeps(): RemoteDeps {
+  return {
+    ptys: () => ptys,
+    watcher: () => watcher,
+    listProjects: () => listProjects(getSettings()),
+    startSession: (opts) => launchSession(opts),
+    defaultCwd: () => resolveDefaultCwd(getSettings().defaultCwd),
+    listSessions: (projectPath) => listSessions(projectPath),
+    readTranscript: async (sessionId) => {
+      const file = await findSessionFile(sessionId)
+      return file ? readTranscript(file) : null
+    }
+  }
 }
 
 function send(channel: string, ...args: unknown[]): void {
@@ -137,13 +159,7 @@ function createWindow(): void {
   // Bring remote access back up if it was left on.
   if (getSettings().remote.enabled) {
     const cfg = remoteConfig()
-    remote = new RemoteServer({
-      ptys: () => ptys,
-      watcher: () => watcher,
-      listProjects: () => listProjects(getSettings()),
-      startSession: (opts) => launchSession(opts),
-      defaultCwd: () => resolveDefaultCwd(getSettings().defaultCwd)
-    })
+    remote = new RemoteServer(remoteDeps())
     void remote.start(cfg).then(() => {
       if (cfg.autoStartTunnel && cfg.hostname) {
         tunnel.start('named', { port: cfg.port, tunnelName: cfg.tunnelName, hostname: cfg.hostname })
@@ -305,13 +321,7 @@ function registerIpc(): void {
   ipcMain.handle(CH.remoteStart, async () => {
     const cfg = remoteConfig()
     if (!remote) {
-      remote = new RemoteServer({
-        ptys: () => ptys,
-        watcher: () => watcher,
-        listProjects: () => listProjects(getSettings()),
-        startSession: (opts) => launchSession(opts),
-        defaultCwd: () => resolveDefaultCwd(getSettings().defaultCwd)
-      })
+      remote = new RemoteServer(remoteDeps())
     }
     await remote.start(cfg)
     if (cfg.autoStartTunnel && cfg.hostname) {

@@ -89,12 +89,22 @@ async function showList(): Promise<void> {
   app.replaceChildren()
 
   const refresh = el('button', { class: 'btn', title: 'Refresh' }, '↻')
+  const history = el('button', { class: 'btn' }, 'History')
   const create = el('button', { class: 'btn', 'data-variant': 'primary' }, '+ New')
-  const bar = el('div', { class: 'bar' }, el('h1', {}, 'Stoke'), el('div', { class: 'spacer' }), refresh, create)
+  const bar = el(
+    'div',
+    { class: 'bar' },
+    el('h1', {}, 'Stoke'),
+    el('div', { class: 'spacer' }),
+    refresh,
+    history,
+    create
+  )
   const scroll = el('div', { class: 'scroll' })
   app.append(bar, scroll)
 
   refresh.addEventListener('click', () => void load())
+  history.addEventListener('click', () => void showHistory())
   create.addEventListener('click', () => void showNew())
 
   async function load(): Promise<void> {
@@ -102,11 +112,20 @@ async function showList(): Promise<void> {
     try {
       const sessions = await api<SessionRow[]>('/api/sessions')
       if (!sessions.length) {
+        /*
+         * This list is live processes only, so an idle desktop makes it empty.
+         * That read as "there is nothing here" when in fact every past
+         * conversation was one tap away, so the empty state now says where.
+         */
+        const toHistory = el('button', { class: 'btn', 'data-variant': 'primary' }, 'Open history')
+        toHistory.addEventListener('click', () => void showHistory())
         scroll.replaceChildren(
           el(
             'div',
             { class: 'empty' },
-            'No sessions running on your machine. Start one here, or at your desk.'
+            el('p', {}, 'Nothing is running on your machine right now.'),
+            el('p', {}, 'Your past conversations are still here — open one and resume it.'),
+            toHistory
           )
         )
         return
@@ -199,6 +218,222 @@ async function showNew(): Promise<void> {
         )
       )
     )
+  } catch (err) {
+    scroll.replaceChildren(el('div', { class: 'empty' }, (err as Error).message))
+  }
+}
+
+/* --------------------------------------------------------------- history */
+
+/*
+ * Past sessions, which is what someone opening this on their phone is usually
+ * after. The live list only ever showed sessions running on the desktop at that
+ * moment; everything done earlier lives in Claude Code's own transcripts, and
+ * until now nothing here could reach them.
+ */
+
+interface SessionMetaRow {
+  id: string
+  projectPath: string
+  title: string | null
+  firstPrompt: string | null
+  modified: number
+  messageCount: number
+  model: string | null
+  contextTokens: number
+  contextLimit: number
+  gitBranch: string | null
+}
+
+interface TurnRow {
+  role: 'user' | 'assistant'
+  text: string
+  tools: string[]
+  at: number | null
+}
+
+const folderName = (path: string): string => path.split(/[\\/]/).filter(Boolean).pop() ?? path
+
+async function showHistory(): Promise<void> {
+  app.replaceChildren()
+  const back = el('button', { class: 'btn' }, '‹')
+  app.append(el('div', { class: 'bar' }, back, el('h1', {}, 'History')))
+  const scroll = el('div', { class: 'scroll' })
+  app.append(scroll)
+  back.addEventListener('click', () => void showList())
+
+  scroll.replaceChildren(el('div', { class: 'empty' }, 'Loading projects…'))
+  try {
+    const data = await api<{
+      projects: { path: string; name: string; sessionCount: number; lastModified: number | null }[]
+    }>('/api/projects')
+
+    const withHistory = data.projects.filter((p) => p.sessionCount > 0)
+    if (!withHistory.length) {
+      scroll.replaceChildren(el('div', { class: 'empty' }, 'No past sessions found on this machine.'))
+      return
+    }
+
+    scroll.replaceChildren(
+      ...withHistory.map((p) =>
+        el(
+          'button',
+          { class: 'card', onclick: () => void showProjectHistory(p.path, p.name) },
+          el('div', { class: 'card-title' }, p.name),
+          el('div', { class: 'card-sub' }, p.path),
+          el(
+            'div',
+            { class: 'card-meta' },
+            el('span', {}, `${p.sessionCount} session${p.sessionCount === 1 ? '' : 's'}`),
+            el('span', {}, p.lastModified ? ago(p.lastModified) : '')
+          )
+        )
+      )
+    )
+  } catch (err) {
+    scroll.replaceChildren(el('div', { class: 'empty' }, (err as Error).message))
+  }
+}
+
+async function showProjectHistory(cwd: string, name: string): Promise<void> {
+  app.replaceChildren()
+  const back = el('button', { class: 'btn' }, '‹')
+  app.append(el('div', { class: 'bar' }, back, el('h1', {}, name)))
+  const scroll = el('div', { class: 'scroll' })
+  app.append(scroll)
+  back.addEventListener('click', () => void showHistory())
+
+  scroll.replaceChildren(el('div', { class: 'empty' }, 'Loading sessions…'))
+  try {
+    const data = await api<{ sessions: SessionMetaRow[] }>(
+      `/api/history?cwd=${encodeURIComponent(cwd)}`
+    )
+    if (!data.sessions.length) {
+      scroll.replaceChildren(el('div', { class: 'empty' }, 'No transcripts for this project.'))
+      return
+    }
+    scroll.replaceChildren(
+      ...data.sessions.map((s) => {
+        const ratio = s.contextLimit ? Math.min(1, s.contextTokens / s.contextLimit) : 0
+        const meter = el('div', {
+          class: 'meter',
+          'data-level': ratio >= 0.9 ? 'critical' : ratio >= 0.7 ? 'warn' : 'ok'
+        })
+        meter.append(el('i', { style: `transform: scaleX(${ratio})` }))
+        return el(
+          'button',
+          { class: 'card', onclick: () => void showTranscript(s) },
+          el('div', { class: 'card-title' }, s.title || s.firstPrompt || 'Untitled session'),
+          el(
+            'div',
+            { class: 'card-meta' },
+            el('span', {}, ago(s.modified)),
+            el('span', {}, `${s.messageCount} msg`),
+            meter,
+            el('span', {}, s.gitBranch || '')
+          )
+        )
+      })
+    )
+  } catch (err) {
+    scroll.replaceChildren(el('div', { class: 'empty' }, (err as Error).message))
+  }
+}
+
+async function showTranscript(meta: SessionMetaRow): Promise<void> {
+  app.replaceChildren()
+  const back = el('button', { class: 'btn' }, '‹')
+  const resumeBtn = el('button', { class: 'btn', 'data-variant': 'primary' }, 'Resume')
+  app.append(
+    el(
+      'div',
+      { class: 'bar' },
+      back,
+      el('h1', {}, meta.title || folderName(meta.projectPath)),
+      el('div', { class: 'spacer' }),
+      resumeBtn
+    )
+  )
+  const scroll = el('div', { class: 'scroll' })
+  app.append(scroll)
+  back.addEventListener('click', () => void showProjectHistory(meta.projectPath, folderName(meta.projectPath)))
+
+  /*
+   * Resuming hands the session back to a real CLI process rather than replaying
+   * it: --resume is what Claude Code itself uses, so the conversation continues
+   * with its full context instead of starting again from a summary.
+   */
+  resumeBtn.addEventListener('click', () => {
+    void (async () => {
+      resumeBtn.textContent = 'Resuming…'
+      try {
+        const started = await api<{ ptyId: string; sessionId: string }>('/api/sessions', {
+          method: 'POST',
+          body: JSON.stringify({ cwd: meta.projectPath, sessionId: meta.id, resume: true })
+        })
+        // The CLI needs a moment to replay the transcript and print its banner.
+        setTimeout(() => {
+          void showTerminal({
+            ptyId: started.ptyId,
+            sessionId: started.sessionId,
+            cwd: meta.projectPath,
+            name: meta.title || folderName(meta.projectPath),
+            startedAt: Date.now(),
+            cols: 100,
+            rows: 30,
+            context: null
+          })
+        }, 1600)
+      } catch (err) {
+        resumeBtn.textContent = 'Resume'
+        toast((err as Error).message)
+      }
+    })()
+  })
+
+  scroll.replaceChildren(el('div', { class: 'empty' }, 'Loading conversation…'))
+  try {
+    const data = await api<{ turns: TurnRow[]; total: number; truncated: boolean }>(
+      `/api/transcript?id=${encodeURIComponent(meta.id)}`
+    )
+    if (!data.turns.length) {
+      scroll.replaceChildren(el('div', { class: 'empty' }, 'This transcript has no readable turns.'))
+      return
+    }
+
+    const nodes: HTMLElement[] = []
+    if (data.truncated) {
+      nodes.push(
+        el(
+          'div',
+          { class: 'note' },
+          `Showing the last ${data.turns.length} of ${data.total} messages.`
+        )
+      )
+    }
+    for (const turn of data.turns) {
+      const body = el('div', { class: 'turn-body' })
+      if (turn.text) body.append(el('div', { class: 'turn-text' }, turn.text))
+      if (turn.tools.length) {
+        body.append(
+          el('div', { class: 'turn-tools' }, turn.tools.map((t) => `⚙ ${t}`).join('  '))
+        )
+      }
+      nodes.push(
+        el(
+          'div',
+          { class: 'turn', 'data-role': turn.role },
+          el(
+            'div',
+            { class: 'turn-head' },
+            el('span', {}, turn.role === 'user' ? 'You' : 'Claude'),
+            el('span', {}, turn.at ? ago(turn.at) : '')
+          ),
+          body
+        )
+      )
+    }
+    scroll.replaceChildren(...nodes)
   } catch (err) {
     scroll.replaceChildren(el('div', { class: 'empty' }, (err as Error).message))
   }

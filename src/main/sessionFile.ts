@@ -90,6 +90,10 @@ function isUsefulPrompt(s: string): boolean {
   const t = s.trim()
   if (!t) return false
   if (t.startsWith('<command-name>')) return false
+  // A slash command can lead with either tag depending on how it was invoked,
+  // and the message form was leaking through as a session title.
+  if (t.startsWith('<command-message>')) return false
+  if (t.startsWith('<command-args>')) return false
   if (t.startsWith('<local-command')) return false
   if (t.startsWith('<system-reminder>')) return false
   if (t.startsWith("Caveat: The messages below")) return false
@@ -185,6 +189,82 @@ export const WINDOW_EXTENDED = 1_000_000
  * the 200k window until it crosses over. That reads conservatively (it can
  * over-state pressure, never under-state it) and it can never exceed 100%.
  */
+export interface TranscriptTurn {
+  role: 'user' | 'assistant'
+  text: string
+  /** Names of tools called in this turn, for turns that are mostly tool work. */
+  tools: string[]
+  at: number | null
+}
+
+export interface Transcript {
+  turns: TranscriptTurn[]
+  total: number
+  truncated: boolean
+  exact: boolean
+}
+
+/**
+ * The conversation itself, for reading a past session back.
+ *
+ * parseSession answers "what is this session" from the same file; this answers
+ * "what was said". Three kinds of record look like conversation and are not:
+ * sidechain records belong to a subagent rather than the user's own thread,
+ * meta records are Stoke and Claude Code talking to each other, and a user
+ * record whose content is a tool_result is the output of a tool being fed back
+ * rather than anything a person typed. Including any of them produces a
+ * transcript that reads nothing like the session the user remembers.
+ */
+export async function readTranscript(file: string, limit = 400): Promise<Transcript> {
+  const { lines, exact } = await readLines(file)
+  const turns: TranscriptTurn[] = []
+
+  for (const line of lines) {
+    const rec = safeParse(line)
+    if (!rec) continue
+    if (rec.type !== 'user' && rec.type !== 'assistant') continue
+    if (rec.isSidechain === true || rec.isMeta === true) continue
+
+    const content = (rec.message as { content?: unknown } | undefined)?.content
+    const blocks = Array.isArray(content) ? content : []
+    const isToolResult = blocks.some(
+      (b) => b && typeof b === 'object' && (b as { type?: string }).type === 'tool_result'
+    )
+    if (isToolResult) continue
+
+    const tools: string[] = []
+    for (const b of blocks) {
+      if (b && typeof b === 'object' && (b as { type?: string }).type === 'tool_use') {
+        const name = (b as { name?: unknown }).name
+        if (typeof name === 'string') tools.push(name)
+      }
+    }
+
+    const raw = textOf(content)
+    const text = raw ? raw.trim() : ''
+    if (!text && !tools.length) continue
+    if (rec.type === 'user' && text && !isUsefulPrompt(text)) continue
+
+    const stamp = typeof rec.timestamp === 'string' ? Date.parse(rec.timestamp) : NaN
+    turns.push({
+      role: rec.type,
+      text,
+      tools,
+      at: Number.isNaN(stamp) ? null : stamp
+    })
+  }
+
+  // Keep the end of a long conversation: the recent part is what someone
+  // returning to a session on their phone is looking for.
+  const truncated = turns.length > limit
+  return {
+    turns: truncated ? turns.slice(-limit) : turns,
+    total: turns.length,
+    truncated,
+    exact
+  }
+}
+
 export function contextLimitFor(model: string | null, observedTokens = 0): number {
   if (model && /\[1m\]|-1m\b|_1m\b/i.test(model)) return WINDOW_EXTENDED
   return observedTokens > WINDOW_STANDARD ? WINDOW_EXTENDED : WINDOW_STANDARD
