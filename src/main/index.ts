@@ -14,6 +14,13 @@ import { BrowserMcpServer } from './mcp/server.ts'
 import { connectUrl, generateToken, RemoteServer } from './remote/server.ts'
 import { TunnelManager } from './remote/tunnel.ts'
 import { checkForUpdate, runDoctor, runUpdate } from './updates.ts'
+import {
+  checkSelfUpdate,
+  downloadSelfUpdate,
+  initSelfUpdate,
+  installSelfUpdate,
+  selfUpdateState
+} from './selfUpdate.ts'
 import QRCode from 'qrcode'
 
 const isMac = process.platform === 'darwin'
@@ -92,8 +99,17 @@ function createWindow(): void {
     return { action: 'deny' }
   })
 
-  browser = new EmbeddedBrowser(win, (state) => send(CH.browserState, state))
+  browser = new EmbeddedBrowser(
+    win,
+    (state) => send(CH.browserState, state),
+    () => send(CH.browserFindRequested)
+  )
   browser.setBookmarks(settings.browser.bookmarks)
+
+  // Self-update: report progress to the UI, and check once shortly after launch
+  // so the check never competes with startup work.
+  initSelfUpdate((s) => send(CH.selfState, s))
+  setTimeout(() => void checkSelfUpdate(), 8000)
 
   // Expose the docked browser to Claude Code. Started eagerly so the config
   // file exists before the first session is launched.
@@ -331,6 +347,15 @@ function registerIpc(): void {
   ipcMain.handle(CH.tunnelStop, () => {
     tunnel.stop()
     return remoteState()
+  })
+
+  /* ---------------------------------------------------------- self update */
+  ipcMain.handle(CH.selfState, () => selfUpdateState())
+  ipcMain.handle(CH.selfCheck, () => checkSelfUpdate())
+  ipcMain.handle(CH.selfDownload, () => downloadSelfUpdate())
+  ipcMain.handle(CH.selfInstall, () => {
+    installSelfUpdate()
+    return true
   })
 
   /* --------------------------------------------------------------- updates */

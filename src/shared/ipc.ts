@@ -70,6 +70,15 @@ export const CH = {
   updateRun: 'update:run',
   updateDoctor: 'update:doctor',
 
+  // stoke's own updates
+  selfCheck: 'self:check',
+  selfDownload: 'self:download',
+  selfInstall: 'self:install',
+  selfState: 'self:state',
+
+  // browser find, requested from inside the page view
+  browserFindRequested: 'browser:findRequested',
+
   // settings
   settingsGet: 'settings:get',
   settingsSet: 'settings:set',

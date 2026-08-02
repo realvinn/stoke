@@ -1,5 +1,12 @@
 appId: dev.vinn.stoke
 productName: Stoke
+# Where electron-updater looks for new versions. Publishing a GitHub release
+# with the installer and the generated latest.yml is what makes installed copies
+# notice an update.
+publish:
+  provider: github
+  owner: realvinn
+  repo: stoke
 directories:
   output: release
   buildResources: build

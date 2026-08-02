@@ -35,6 +35,18 @@ export interface RemoteState {
   setup: string[]
 }
 
+export interface SelfUpdateState {
+  /** False in development, where there is no installed app to replace. */
+  supported: boolean
+  currentVersion: string
+  availableVersion: string | null
+  downloaded: boolean
+  downloading: boolean
+  progress: number
+  error: string | null
+  checkedAt: number | null
+}
+
 export interface UpdateInfo {
   current: string | null
   latest: string | null
@@ -94,6 +106,8 @@ export interface StokeApi {
   }
 
   browser: {
+    /** Ctrl/Cmd+F pressed inside the page view, which owns keyboard focus. */
+    onFindRequested(cb: () => void): () => void
     setBounds(rect: Rect): void
     show(url?: string): void
     hide(): void
@@ -129,6 +143,15 @@ export interface StokeApi {
     check(): Promise<UpdateInfo>
     run(): Promise<string>
     doctor(): Promise<string>
+  }
+
+  /** Stoke updating itself, via electron-updater and GitHub releases. */
+  self: {
+    state(): Promise<SelfUpdateState>
+    check(): Promise<SelfUpdateState>
+    download(): Promise<SelfUpdateState>
+    install(): Promise<boolean>
+    onState(cb: (state: SelfUpdateState) => void): () => void
   }
 
   settings: {

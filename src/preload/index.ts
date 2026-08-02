@@ -61,6 +61,7 @@ const api: StokeApi = {
   },
 
   browser: {
+    onFindRequested: (cb) => on<[]>(CH.browserFindRequested, cb),
     setBounds: (rect: Rect) => ipcRenderer.send(CH.browserSetBounds, rect),
     show: (url?: string) => ipcRenderer.send(CH.browserShow, url),
     hide: () => ipcRenderer.send(CH.browserHide),
@@ -95,6 +96,14 @@ const api: StokeApi = {
     check: () => ipcRenderer.invoke(CH.updateCheck),
     run: () => ipcRenderer.invoke(CH.updateRun),
     doctor: () => ipcRenderer.invoke(CH.updateDoctor)
+  },
+
+  self: {
+    state: () => ipcRenderer.invoke(CH.selfState),
+    check: () => ipcRenderer.invoke(CH.selfCheck),
+    download: () => ipcRenderer.invoke(CH.selfDownload),
+    install: () => ipcRenderer.invoke(CH.selfInstall),
+    onState: (cb) => on<[Parameters<typeof cb>[0]]>(CH.selfState, cb)
   },
 
   settings: {

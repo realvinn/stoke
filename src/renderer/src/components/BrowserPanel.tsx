@@ -50,6 +50,31 @@ export function BrowserPanel({ state, bookmarks, onAskClaude, onClose }: Props):
     if (findOpen) findRef.current?.focus()
   }, [findOpen])
 
+  // Ctrl/Cmd+F from either side: the main process forwards it when the page
+  // view has focus, and this handler covers the case where focus is in the
+  // app's own chrome.
+  useEffect(() => {
+    const open = (): void => {
+      setFindOpen(true)
+      findRef.current?.focus()
+      findRef.current?.select()
+    }
+    const off = window.stoke.browser.onFindRequested(open)
+
+    const onKey = (e: KeyboardEvent): void => {
+      const primary = window.stoke.platform === 'darwin' ? e.metaKey : e.ctrlKey
+      if (primary && !e.altKey && e.key.toLowerCase() === 'f') {
+        e.preventDefault()
+        open()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => {
+      off()
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [])
+
   useLayoutEffect(() => {
     const hole = holeRef.current
     if (!hole) return

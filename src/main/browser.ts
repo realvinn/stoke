@@ -64,12 +64,18 @@ export class EmbeddedBrowser {
 
   private readonly win: BrowserWindow
   private readonly emit: (state: BrowserState) => void
+  private readonly onFindRequested: () => void
   /** Bookmarks live in settings; this reads them for the `bookmarked` flag. */
   private bookmarks: string[] = []
 
-  constructor(win: BrowserWindow, emit: (state: BrowserState) => void) {
+  constructor(
+    win: BrowserWindow,
+    emit: (state: BrowserState) => void,
+    onFindRequested: () => void = () => {}
+  ) {
     this.win = win
     this.emit = emit
+    this.onFindRequested = onFindRequested
   }
 
   /* ------------------------------------------------------------------ tabs */
@@ -127,6 +133,28 @@ export class EmbeddedBrowser {
       tab.findTotal = result.matches ?? 0
       tab.findActive = result.activeMatchOrdinal ?? 0
       push()
+    })
+
+    /*
+     * Find-on-page has to be caught here rather than in the renderer. The page
+     * view is a separate WebContents that owns keyboard focus whenever you are
+     * looking at a site, so a keydown listener in the app's DOM never sees
+     * Ctrl/Cmd+F at all.
+     */
+    wc.on('before-input-event', (event, input) => {
+      if (input.type !== 'keyDown' || typeof input.key !== 'string') return
+      const primary = process.platform === 'darwin' ? input.meta : input.control
+      if (primary && !input.alt && input.key.toLowerCase() === 'f') {
+        event.preventDefault()
+        this.onFindRequested()
+        return
+      }
+      // Escape closes an active find, but is left alone otherwise so pages can
+      // still use it to dismiss their own dialogs.
+      if (input.key === 'Escape' && tab.findTotal > 0) {
+        event.preventDefault()
+        this.stopFind()
+      }
     })
 
     // A link that asks for a new window gets a real new tab, like a browser.

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { RemoteState, UpdateInfo } from '@shared/api'
+import type { RemoteState, SelfUpdateState, UpdateInfo } from '@shared/api'
 import type { Settings } from '@shared/types'
 
 interface Props {
@@ -249,6 +249,90 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
         )}
       </div>
     </>
+  )
+}
+
+/** Stoke updating itself from GitHub releases. */
+export function SelfUpdateSettings(): React.JSX.Element {
+  const [state, setState] = useState<SelfUpdateState | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    void window.stoke.self.state().then(setState)
+    return window.stoke.self.onState(setState)
+  }, [])
+
+  if (!state) return <></>
+
+  return (
+    <div className="field">
+      <span className="field-label">
+        Stoke{' '}
+        {state.availableVersion && (
+          <span className="pill" data-tone="accent">
+            {state.availableVersion} available
+          </span>
+        )}
+      </span>
+
+      {!state.supported ? (
+        <span className="field-hint">
+          Running from source, so there is no installed copy to replace. Self-update applies to
+          the packaged app.
+        </span>
+      ) : (
+        <span className="field-hint">
+          Version {state.currentVersion}.{' '}
+          {state.downloaded
+            ? 'An update is ready to install.'
+            : state.downloading
+              ? `Downloading… ${state.progress}%`
+              : state.availableVersion
+                ? 'An update is available.'
+                : state.error
+                  ? `No update found: ${state.error}`
+                  : 'Up to date.'}
+        </span>
+      )}
+
+      {state.supported && (
+        <div style={{ display: 'flex', gap: 'var(--sp-2)', flexWrap: 'wrap' }}>
+          <button
+            className="btn"
+            disabled={busy || state.downloading}
+            onClick={() => {
+              setBusy(true)
+              void window.stoke.self
+                .check()
+                .then(setState)
+                .finally(() => setBusy(false))
+            }}
+          >
+            Check for updates
+          </button>
+          {state.availableVersion && !state.downloaded && (
+            <button
+              className="btn"
+              data-variant="primary"
+              disabled={state.downloading}
+              onClick={() => void window.stoke.self.download().then(setState)}
+            >
+              Download
+            </button>
+          )}
+          {state.downloaded && (
+            <button
+              className="btn"
+              data-variant="primary"
+              onClick={() => void window.stoke.self.install()}
+              title="Stoke restarts and any running sessions end"
+            >
+              Restart and install
+            </button>
+          )}
+        </div>
+      )}
+    </div>
   )
 }
 
