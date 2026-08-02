@@ -1,5 +1,5 @@
-appId: dev.vinn.hearth
-productName: Hearth
+appId: dev.vinn.stoke
+productName: Stoke
 directories:
   output: release
   buildResources: build
@@ -20,7 +20,7 @@ nsis:
   oneClick: false
   perMachine: false
   allowToChangeInstallationDirectory: true
-  shortcutName: Hearth
+  shortcutName: Stoke
 mac:
   target:
     - target: dmg

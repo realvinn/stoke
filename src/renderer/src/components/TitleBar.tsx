@@ -64,7 +64,7 @@ export function TitleBar({
       {!isMac && (
         <div className="brand">
           <BrandMark />
-          <span className="brand-name">Hearth</span>
+          <span className="brand-name">Stoke</span>
         </div>
       )}
 
@@ -146,7 +146,7 @@ export function TitleBar({
           <div className="win-controls">
             <button
               className="win-btn"
-              onClick={() => window.hearth.window.minimize()}
+              onClick={() => window.stoke.window.minimize()}
               title="Minimize"
             >
               <IconMinimize />
@@ -154,7 +154,7 @@ export function TitleBar({
             </button>
             <button
               className="win-btn"
-              onClick={() => window.hearth.window.maximize()}
+              onClick={() => window.stoke.window.maximize()}
               title={maximized ? 'Restore' : 'Maximize'}
             >
               {maximized ? <IconRestore /> : <IconMaximize />}
@@ -163,7 +163,7 @@ export function TitleBar({
             <button
               className="win-btn"
               data-variant="close"
-              onClick={() => window.hearth.window.close()}
+              onClick={() => window.stoke.window.close()}
               title="Close"
             >
               <IconClose />

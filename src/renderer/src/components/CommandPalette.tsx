@@ -8,7 +8,7 @@ interface Props {
   onClose: () => void
 }
 
-/** Subsequence match, so "hrth" still finds "hearth". */
+/** Subsequence match, so "hrth" still finds "stoke". */
 function score(project: Project, query: string): number {
   if (!query) return 1
   const name = project.name.toLowerCase()

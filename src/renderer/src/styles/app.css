@@ -1,5 +1,5 @@
 /* =========================================================================
-   Hearth — design system
+   Stoke — design system
    Colour tokens are injected at runtime by lib/theme.ts, so every rule here
    reads from custom properties and a theme switch costs one style write.
    ========================================================================= */

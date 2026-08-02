@@ -118,7 +118,7 @@ export function Sidebar({
           <div className="empty">
             <h3>No projects yet</h3>
             <p>
-              Hearth lists every folder you have used Claude Code in. Open a folder to start
+              Stoke lists every folder you have used Claude Code in. Open a folder to start
               your first session, or add a folder to scan for projects.
             </p>
             <button className="btn" data-variant="primary" onClick={onOpenFolder}>

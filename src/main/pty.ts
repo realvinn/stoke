@@ -24,12 +24,12 @@ interface Session {
  *
  * The Electron entries stop Node from re-launching itself as Electron.
  *
- * The CLAUDE_* entries matter more than they look: if Hearth is itself started
+ * The CLAUDE_* entries matter more than they look: if Stoke is itself started
  * from inside a Claude Code session, those markers are inherited, and the
  * session we spawn is treated as a *nested child*. Claude then disables
  * transcript saving entirely ("Transcript saving is off — inherited
  * CLAUDE_CODE_CHILD_SESSION marker"), which silently breaks both session resume
- * and Hearth's own context meter, since both read the transcript.
+ * and Stoke's own context meter, since both read the transcript.
  *
  * Only session/runtime markers are stripped. Configuration and credentials
  * (ANTHROPIC_API_KEY, CLAUDE_CONFIG_DIR, proxy settings, ...) are passed
@@ -91,7 +91,7 @@ export class PtyManager {
     env.TERM = 'xterm-256color'
     env.COLORTERM = 'truecolor'
     // Tell Claude Code it is inside a wrapper, in case that ever matters to it.
-    env.TERM_PROGRAM = 'Hearth'
+    env.TERM_PROGRAM = 'Stoke'
 
     const proc = nodePty.spawn(spec.file, spec.args, {
       name: 'xterm-256color',

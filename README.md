@@ -1,9 +1,9 @@
-# Hearth
+# Stoke
 
 A desktop shell for Claude Code. One window for every project, every session, and
 the browser — instead of a pile of terminals.
 
-Hearth wraps the real `claude` CLI in a PTY rather than reimplementing it against the
+Stoke wraps the real `claude` CLI in a PTY rather than reimplementing it against the
 SDK, so every Claude Code feature (skills, MCP, plugins, hooks, slash commands, the
 whole TUI) works exactly as it does in a terminal.
 
@@ -64,7 +64,7 @@ Copy and paste inside the terminal use the platform's normal keys. With no selec
 
 ## How it reads Claude Code's state
 
-Everything comes from files Claude Code already writes; Hearth never modifies them.
+Everything comes from files Claude Code already writes; Stoke never modifies them.
 
 - `~/.claude.json` → the `projects` map, for known folders and their last activity.
   This file can contain keys differing only in case, so paths are compared case-folded.
@@ -73,12 +73,12 @@ Everything comes from files Claude Code already writes; Hearth never modifies th
 - Context in use is `input_tokens + cache_read_input_tokens + cache_creation_input_tokens`
   from the most recent assistant turn.
 
-New sessions are launched with a `--session-id` that Hearth generates, so the transcript
+New sessions are launched with a `--session-id` that Stoke generates, so the transcript
 path is known before the process starts and the meter can attach immediately.
 
 **The context window cannot be inferred from the model id.** A session on the 1M tier
 records its model as plain `claude-opus-5` — no `[1m]` suffix survives into the transcript
-and no `context_window` field is written. Hearth therefore treats observed usage as the
+and no `context_window` field is written. Stoke therefore treats observed usage as the
 authority: crossing 200k proves the extended tier. See `src/main/sessionFile.ts`.
 
 ## Layout
@@ -92,7 +92,7 @@ src/main/      index.ts   app lifecycle, window, IPC
                sessionFile.ts transcript parsing
                browser.ts  docked WebContentsView
                store.ts    settings persistence
-src/preload/   contextBridge -> window.hearth
+src/preload/   contextBridge -> window.stoke
 src/renderer/  React UI; all colour via CSS custom properties
 src/shared/    types, IPC channel names, themes
 scripts/       verify-context.mts — runs the meter against your real transcripts

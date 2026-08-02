@@ -16,8 +16,8 @@ export interface StartResult {
   args: string[]
 }
 
-/** The surface exposed to the renderer as `window.hearth`. */
-export interface HearthApi {
+/** The surface exposed to the renderer as `window.stoke`. */
+export interface StokeApi {
   platform: string
 
   window: {

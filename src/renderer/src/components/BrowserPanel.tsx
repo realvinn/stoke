@@ -31,7 +31,7 @@ export function BrowserPanel({ state, onClose }: Props): React.JSX.Element {
 
     const report = (): void => {
       const r = hole.getBoundingClientRect()
-      window.hearth.browser.setBounds({
+      window.stoke.browser.setBounds({
         x: r.left,
         y: r.top,
         width: r.width,
@@ -55,7 +55,7 @@ export function BrowserPanel({ state, onClose }: Props): React.JSX.Element {
       <div className="browser-bar">
         <button
           className="icon-btn"
-          onClick={() => window.hearth.browser.back()}
+          onClick={() => window.stoke.browser.back()}
           disabled={!state.canGoBack}
           title="Back"
         >
@@ -64,7 +64,7 @@ export function BrowserPanel({ state, onClose }: Props): React.JSX.Element {
         </button>
         <button
           className="icon-btn"
-          onClick={() => window.hearth.browser.forward()}
+          onClick={() => window.stoke.browser.forward()}
           disabled={!state.canGoForward}
           title="Forward"
         >
@@ -73,7 +73,7 @@ export function BrowserPanel({ state, onClose }: Props): React.JSX.Element {
         </button>
         <button
           className="icon-btn"
-          onClick={() => (state.loading ? window.hearth.browser.stop() : window.hearth.browser.reload())}
+          onClick={() => (state.loading ? window.stoke.browser.stop() : window.stoke.browser.reload())}
           title={state.loading ? 'Stop' : 'Reload'}
         >
           {state.loading ? <IconClose /> : <IconRefresh />}
@@ -97,7 +97,7 @@ export function BrowserPanel({ state, onClose }: Props): React.JSX.Element {
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
-              window.hearth.browser.navigate(draft)
+              window.stoke.browser.navigate(draft)
               e.currentTarget.blur()
             } else if (e.key === 'Escape') {
               setEditing(false)
@@ -108,7 +108,7 @@ export function BrowserPanel({ state, onClose }: Props): React.JSX.Element {
 
         <button
           className="icon-btn"
-          onClick={() => window.hearth.browser.openExternal()}
+          onClick={() => window.stoke.browser.openExternal()}
           title="Open in your default browser"
         >
           <IconExternal />

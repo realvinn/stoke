@@ -78,7 +78,7 @@ export function setSettings(patch: Partial<Settings>): Settings {
   try {
     persist(next)
   } catch (err) {
-    console.error('[hearth] failed to persist settings', err)
+    console.error('[stoke] failed to persist settings', err)
   }
   for (const fn of listeners) fn(next)
   return next

@@ -43,7 +43,7 @@ export interface LaunchOptions {
 }
 
 export interface TabDescriptor {
-  /** Hearth's own tab id. Not the Claude session id. */
+  /** Stoke's own tab id. Not the Claude session id. */
   id: string
   ptyId: string
   sessionId: string

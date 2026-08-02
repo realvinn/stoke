@@ -1,4 +1,4 @@
-# Hearth — a bespoke desktop shell for Claude Code
+# Stoke — a bespoke desktop shell for Claude Code
 
 ## Goal (user's words)
 
@@ -72,7 +72,7 @@ and can never exceed 100%.
 
 ```
 src/main/      index.ts  pty.ts  projects.ts  context.ts  browser.ts  store.ts  cli.ts  ipc.ts
-src/preload/   index.ts        (contextBridge -> window.hearth)
+src/preload/   index.ts        (contextBridge -> window.stoke)
 src/renderer/  index.html + src/{App.tsx, components/, styles/, state/}
 ```
 
@@ -117,7 +117,7 @@ browser appears as its own CDP page target, so scripts must match the app render
 
 - electron-vite 5 does **not** peer-accept vite 8 (`^5||^6||^7`). Pinned vite ^7.
 - `@lydell/node-pty` must stay external in the main bundle and be `asarUnpack`ed by electron-builder.
-- **Inherited Claude env vars silently break transcripts.** If Hearth is launched from
+- **Inherited Claude env vars silently break transcripts.** If Stoke is launched from
   inside a Claude Code session it inherits `CLAUDE_CODE_CHILD_SESSION`, `CLAUDECODE`,
   `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_ENTRYPOINT` and `CLAUDE_PID`. The spawned session
   is then treated as a nested child and **transcript saving is disabled** — which kills both

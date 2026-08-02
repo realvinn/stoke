@@ -33,7 +33,7 @@ const EMPTY_BROWSER: BrowserState = {
 }
 
 export function App(): React.JSX.Element {
-  const platform = window.hearth.platform
+  const platform = window.stoke.platform
   const isMac = platform === 'darwin'
 
   const [settings, setSettings] = useState<Settings | null>(null)
@@ -73,13 +73,13 @@ export function App(): React.JSX.Element {
   )
 
   const refreshProjects = useCallback(async (): Promise<void> => {
-    const list = await window.hearth.projects.list()
+    const list = await window.stoke.projects.list()
     setProjects(list)
     setProjectsLoading(false)
   }, [])
 
   const patchSettings = useCallback(async (patch: Partial<Settings>): Promise<void> => {
-    const next = await window.hearth.settings.set(patch)
+    const next = await window.stoke.settings.set(patch)
     setSettings(next)
   }, [])
 
@@ -88,26 +88,26 @@ export function App(): React.JSX.Element {
   useEffect(() => {
     initPtyBus()
 
-    const offCtx = window.hearth.context.onUpdate((snap) =>
+    const offCtx = window.stoke.context.onUpdate((snap) =>
       setContexts((prev) => ({ ...prev, [snap.sessionId]: snap }))
     )
-    const offBrowser = window.hearth.browser.onState(setBrowserState)
-    const offMax = window.hearth.window.onMaximizedChanged(setMaximized)
-    const offSettings = window.hearth.settings.onChange(setSettings)
+    const offBrowser = window.stoke.browser.onState(setBrowserState)
+    const offMax = window.stoke.window.onMaximizedChanged(setMaximized)
+    const offSettings = window.stoke.settings.onChange(setSettings)
 
     void (async () => {
-      const s = await window.hearth.settings.get()
+      const s = await window.stoke.settings.get()
       setSettings(s)
       setSidebarWidth(s.sidebarWidth)
       setBrowserWidth(s.browser.width)
       setMode(s.defaults.permissionMode)
       setModel(s.defaults.model)
       setEffort(s.defaults.effort)
-      void window.hearth.cli.info().then(setCli)
+      void window.stoke.cli.info().then(setCli)
       await refreshProjects()
     })()
 
-    void window.hearth.window.isMaximized().then(setMaximized)
+    void window.stoke.window.isMaximized().then(setMaximized)
 
     return () => {
       offCtx()
@@ -141,7 +141,7 @@ export function App(): React.JSX.Element {
     }
     let cancelled = false
     setSessionsLoading(true)
-    void window.hearth.projects.sessions(selectedPath).then((list) => {
+    void window.stoke.projects.sessions(selectedPath).then((list) => {
       if (cancelled) return
       setSessions(list)
       setSessionsLoading(false)
@@ -196,7 +196,7 @@ export function App(): React.JSX.Element {
     }): Promise<void> => {
       setError(null)
       try {
-        const res = await window.hearth.pty.start({
+        const res = await window.stoke.pty.start({
           cwd: opts.cwd,
           sessionId: opts.sessionId,
           resume: opts.resume,
@@ -235,7 +235,7 @@ export function App(): React.JSX.Element {
     (id: string): void => {
       const tab = tabs.find((t) => t.id === id)
       if (!tab) return
-      window.hearth.pty.kill(tab.ptyId)
+      window.stoke.pty.kill(tab.ptyId)
       forgetPty(tab.ptyId)
       const next = tabs.filter((t) => t.id !== id)
       setTabs(next)
@@ -263,13 +263,13 @@ export function App(): React.JSX.Element {
     if (!settings) return
     if (browserOpen && !overlayOpen) {
       if (seededBrowser.current) {
-        window.hearth.browser.show()
+        window.stoke.browser.show()
       } else {
         seededBrowser.current = true
-        window.hearth.browser.show(settings.browser.lastUrl || settings.browser.homepage)
+        window.stoke.browser.show(settings.browser.lastUrl || settings.browser.homepage)
       }
     } else {
-      window.hearth.browser.hide()
+      window.stoke.browser.hide()
     }
   }, [browserOpen, overlayOpen, settings])
 
@@ -286,7 +286,7 @@ export function App(): React.JSX.Element {
 
   const openUrl = useCallback((url: string): void => {
     setBrowserOpen(true)
-    window.hearth.browser.show(url)
+    window.stoke.browser.show(url)
   }, [])
 
   /* ------------------------------------------------------------- shortcuts */
@@ -339,7 +339,7 @@ export function App(): React.JSX.Element {
   /* ---------------------------------------------------------------- render */
 
   const openFolder = useCallback(async (): Promise<void> => {
-    const dir = await window.hearth.projects.open()
+    const dir = await window.stoke.projects.open()
     if (!dir) return
     await refreshProjects()
     setSelectedPath(dir)
@@ -347,9 +347,9 @@ export function App(): React.JSX.Element {
   }, [refreshProjects])
 
   const addRoot = useCallback(async (): Promise<void> => {
-    const dir = await window.hearth.projects.addRoot()
+    const dir = await window.stoke.projects.addRoot()
     if (!dir) return
-    const s = await window.hearth.settings.get()
+    const s = await window.stoke.settings.get()
     setSettings(s)
     await refreshProjects()
   }, [refreshProjects])
@@ -435,7 +435,7 @@ export function App(): React.JSX.Element {
                 onStartNew={(p) => void startSession({ cwd: p.path, name: p.name })}
                 onResume={resumeSession}
                 onPin={(p) => {
-                  void window.hearth.projects.pin(p.path, !p.pinned).then(async (s) => {
+                  void window.stoke.projects.pin(p.path, !p.pinned).then(async (s) => {
                     setSettings(s)
                     await refreshProjects()
                   })
@@ -536,7 +536,7 @@ export function App(): React.JSX.Element {
         tab={activeTab}
         context={activeTab ? (contexts[activeTab.sessionId] ?? null) : null}
         cli={cli}
-        onRevealProject={(p) => void window.hearth.projects.reveal(p)}
+        onRevealProject={(p) => void window.stoke.projects.reveal(p)}
       />
 
       {paletteOpen && (

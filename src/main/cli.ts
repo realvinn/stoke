@@ -133,7 +133,7 @@ export function spawnSpec(exe: string, args: string[]): { file: string; args: st
 }
 
 /**
- * Translate Hearth's launch options into claude CLI arguments.
+ * Translate Stoke's launch options into claude CLI arguments.
  *
  * Note `bypassPermissions` maps to `--dangerously-skip-permissions` rather than
  * `--permission-mode bypassPermissions`: the latter requires the mode to already

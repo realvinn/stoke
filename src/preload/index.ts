@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { IpcRendererEvent } from 'electron'
 import { CH } from '@shared/ipc'
-import type { HearthApi } from '@shared/api'
+import type { StokeApi } from '@shared/api'
 import type { Rect, LaunchOptions, Settings } from '@shared/types'
 
 /** Subscribe helper that hands back an unsubscribe function. */
@@ -14,7 +14,7 @@ function on<A extends unknown[]>(
   return () => ipcRenderer.removeListener(channel, handler)
 }
 
-const api: HearthApi = {
+const api: StokeApi = {
   platform: process.platform,
 
   window: {
@@ -78,4 +78,4 @@ const api: HearthApi = {
   openExternal: (url: string) => ipcRenderer.send(CH.openExternal, url)
 }
 
-contextBridge.exposeInMainWorld('hearth', api)
+contextBridge.exposeInMainWorld('stoke', api)

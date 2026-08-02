@@ -40,7 +40,7 @@ export function initPtyBus(): void {
   if (started) return
   started = true
 
-  window.hearth.pty.onData((ptyId, data) => {
+  window.stoke.pty.onData((ptyId, data) => {
     const e = entry(ptyId)
     e.chunks.push(data)
     e.length += data.length
@@ -51,7 +51,7 @@ export function initPtyBus(): void {
     e.sink?.(data)
   })
 
-  window.hearth.pty.onExit((ptyId, code, signal) => {
+  window.stoke.pty.onExit((ptyId, code, signal) => {
     const e = entry(ptyId)
     e.exit = { code, signal }
     e.exitSink?.(code, signal)

@@ -84,14 +84,14 @@ export function TerminalView({
     fitRef.current = fit
 
     const detach = attachSink(tab.ptyId, (data) => term.write(data))
-    const onInput = term.onData((data) => window.hearth.pty.write(tab.ptyId, data))
+    const onInput = term.onData((data) => window.stoke.pty.write(tab.ptyId, data))
 
     // Keep the OS clipboard shortcuts working; everything else goes to the PTY.
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== 'keydown') return true
       const mod = e.ctrlKey && e.shiftKey
       const cmd = e.metaKey && !e.ctrlKey
-      const isMac = window.hearth.platform === 'darwin'
+      const isMac = window.stoke.platform === 'darwin'
 
       // Swallow app shortcuts so they act on the window instead of being sent
       // to Claude as keystrokes. App.tsx handles them on the window listener.
@@ -108,7 +108,7 @@ export function TerminalView({
       }
       if ((mod || (isMac && cmd)) && e.key.toLowerCase() === 'v') {
         void navigator.clipboard.readText().then((text) => {
-          if (text) window.hearth.pty.write(tab.ptyId, text)
+          if (text) window.stoke.pty.write(tab.ptyId, text)
         })
         return false
       }
@@ -118,7 +118,7 @@ export function TerminalView({
     const applyFit = (): void => {
       try {
         fit.fit()
-        window.hearth.pty.resize(tab.ptyId, term.cols, term.rows)
+        window.stoke.pty.resize(tab.ptyId, term.cols, term.rows)
       } catch {
         /* host detached mid-measure */
       }
@@ -154,7 +154,7 @@ export function TerminalView({
     term.options.fontSize = fontSize
     try {
       fitRef.current?.fit()
-      window.hearth.pty.resize(tab.ptyId, term.cols, term.rows)
+      window.stoke.pty.resize(tab.ptyId, term.cols, term.rows)
     } catch {
       /* ignore */
     }
@@ -168,7 +168,7 @@ export function TerminalView({
       if (!term) return
       try {
         fitRef.current?.fit()
-        window.hearth.pty.resize(tab.ptyId, term.cols, term.rows)
+        window.stoke.pty.resize(tab.ptyId, term.cols, term.rows)
       } catch {
         /* ignore */
       }

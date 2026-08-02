@@ -26,7 +26,7 @@ export class EmbeddedBrowser {
 
     const view = new WebContentsView({
       webPreferences: {
-        // Nothing from Hearth is exposed to browsed pages.
+        // Nothing from Stoke is exposed to browsed pages.
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true
