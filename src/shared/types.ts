@@ -215,6 +215,12 @@ export interface Settings {
     autoStartTunnel: boolean
     /** Name of the pre-created cloudflared tunnel to run. */
     tunnelName: string
+    /**
+     * Speech-to-text sidecar used for dictation from the phone, for example
+     * `http://127.0.0.1:17890`. Empty hides the microphone button. Stoke
+     * proxies to it so the sidecar itself never has to face the internet.
+     */
+    sttUrl: string
   }
   sidebarWidth: number
   /** Explicit path to the claude executable; null means auto-detect. */
@@ -261,5 +267,34 @@ export interface CliInfo {
   path: string
   version: string | null
   ok: boolean
+  error: string | null
+}
+
+/* ----------------------------------------------------------- plan limits */
+
+export interface UsageWindow {
+  kind: 'session' | 'weekly' | 'weekly_scoped'
+  /** "5 hours", "Weekly", or the model name for a scoped window. */
+  label: string
+  /** 0-100. */
+  percent: number
+  severity: string
+  resetsAt: number | null
+  /**
+   * How far through the window we are, 0-1, or null when the reset time is
+   * unknown. This is the pace marker: 2.5 hours into a 5-hour window puts it at
+   * 0.5, so usage sitting to the right of it means burning faster than the
+   * window refills.
+   */
+  elapsed: number | null
+  active: boolean
+}
+
+export interface UsageSnapshot {
+  windows: UsageWindow[]
+  /** Paid overage, when the account has it switched on. */
+  extraCredits: { percent: number; enabled: boolean } | null
+  fetchedAt: number
+  /** Non-null means the numbers are unavailable, not that usage is zero. */
   error: string | null
 }

@@ -2,6 +2,7 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import './style.css'
+import { createRecorder, voiceSupported } from './voice'
 
 /**
  * Stoke on a phone.
@@ -449,7 +450,13 @@ async function showTerminal(session: SessionRow): Promise<void> {
   const back = el('button', { class: 'btn' }, '‹')
   const title = el('h1', {}, session.context?.title || session.name)
   const meterChip = el('span', { class: 'chip' }, 'idle')
-  let fit = localStorage.getItem(FIT_KEY) === '1'
+  /*
+   * Fit to the screen unless explicitly turned off. This used to default to off,
+   * which meant a first visit rendered the desktop's fixed grid - a small panel
+   * parked in the top-left of a much larger scrollable area - and looked broken.
+   * Showing the desktop layout is the deliberate choice, not the default one.
+   */
+  let fit = localStorage.getItem(FIT_KEY) !== '0'
   const fitBtn = el('button', { class: 'btn', 'aria-pressed': String(fit) }, 'Fit')
 
   app.append(
@@ -469,7 +476,70 @@ async function showTerminal(session: SessionRow): Promise<void> {
     spellcheck: false
   })
   const send = el('button', { class: 'send' }, '↑')
-  app.append(el('div', { class: 'composer' }, input, send))
+
+  /*
+   * Push-to-talk. The transcript lands in the textarea rather than being sent,
+   * because dictation mishears and a prompt you cannot correct before it runs
+   * is worse than typing it.
+   */
+  const composer = el('div', { class: 'composer' }, input, send)
+  if (voiceSupported()) {
+    const mic = el('button', { class: 'mic', title: 'Hold to dictate' }, '🎙')
+    const recorder = createRecorder()
+
+    const setState = (state: 'idle' | 'recording' | 'working', label?: string): void => {
+      mic.dataset.state = state
+      mic.textContent = state === 'recording' ? '●' : state === 'working' ? '…' : '🎙'
+      if (label) input.placeholder = label
+      else input.placeholder = 'Message Claude…'
+      mic.disabled = state === 'working'
+    }
+
+    const begin = async (e: Event): Promise<void> => {
+      e.preventDefault()
+      if (recorder.recording()) return
+      try {
+        await recorder.start()
+        setState('recording', 'Listening…')
+      } catch {
+        setState('idle')
+        input.placeholder = 'Microphone blocked — allow access and retry'
+      }
+    }
+
+    const end = async (e: Event): Promise<void> => {
+      e.preventDefault()
+      if (!recorder.recording()) return
+      setState('working', 'Transcribing…')
+      try {
+        const text = await recorder.finish()
+        setState('idle')
+        if (text) {
+          input.value = input.value ? `${input.value.replace(/\s*$/, '')} ${text}` : text
+          input.focus()
+          input.dispatchEvent(new Event('input'))
+        }
+      } catch (err) {
+        setState('idle')
+        input.placeholder = err instanceof Error ? err.message.slice(0, 60) : 'Transcription failed'
+      }
+    }
+
+    // Pointer events cover touch and mouse without a second code path.
+    mic.addEventListener('pointerdown', begin)
+    mic.addEventListener('pointerup', end)
+    mic.addEventListener('pointerleave', end)
+    mic.addEventListener('pointercancel', (e) => {
+      e.preventDefault()
+      recorder.cancel()
+      setState('idle')
+    })
+    // Holding a button on iOS otherwise raises the selection callout.
+    mic.addEventListener('contextmenu', (e) => e.preventDefault())
+
+    composer.insertBefore(mic, send)
+  }
+  app.append(composer)
 
   const term = new Terminal({
     fontFamily: "'JetBrains Mono', 'SF Mono', Menlo, monospace",
@@ -501,10 +571,51 @@ async function showTerminal(session: SessionRow): Promise<void> {
     }
     try {
       fitAddon.fit()
-      ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows, force: true }))
+      // The socket is not open on the first fit, and an unguarded send throws
+      // into the catch below - which would silently swallow real fit errors.
+      if (ws.readyState === 1) {
+        ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows, force: true }))
+      }
     } catch {
       /* not laid out yet */
     }
+  }
+
+  /*
+   * Type straight into the terminal.
+   *
+   * This was deliberately left unwired - a soft keyboard fighting a TUI is
+   * miserable, so the composer below was the only way in. But that also meant
+   * clicking the terminal on a laptop did nothing, which is what everyone
+   * expects to work. Both now: keystrokes go through when the terminal has
+   * focus, and the composer stays for phones.
+   */
+  term.onData((data) => {
+    if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'input', data }))
+  })
+
+  /*
+   * Fit once the wrapper actually has a box. Calling fit() straight after
+   * open() measures a zero-height element and produces a minimum-size grid.
+   */
+  requestAnimationFrame(() => applyFit())
+
+  /*
+   * The soft keyboard and rotation resize the container without firing a
+   * window resize event on mobile, so watch the element itself.
+   */
+  if (typeof ResizeObserver !== 'undefined') {
+    let queued = false
+    const observer = new ResizeObserver(() => {
+      if (queued) return
+      queued = true
+      requestAnimationFrame(() => {
+        queued = false
+        applyFit()
+      })
+    })
+    observer.observe(wrap)
+    ws.addEventListener('close', () => observer.disconnect())
   }
 
   fitBtn.addEventListener('click', () => {

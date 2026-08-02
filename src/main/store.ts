@@ -37,7 +37,13 @@ const DEFAULTS: Settings = {
     bindLan: false,
     requireAccessHeader: false,
     autoStartTunnel: false,
-    tunnelName: 'stoke'
+    tunnelName: 'stoke',
+    /*
+     * The speech sidecar's documented local port. Nothing is contacted unless
+     * the microphone is actually used, and if no sidecar is listening the phone
+     * gets a plain "unreachable" message rather than a silent failure.
+     */
+    sttUrl: 'http://127.0.0.1:17890'
   },
   sidebarWidth: 260,
   claudePath: null,

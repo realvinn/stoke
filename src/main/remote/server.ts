@@ -33,13 +33,29 @@ export interface RemoteDeps {
   readTranscript: (sessionId: string) => Promise<Transcript | null>
 }
 
+/** Session ids are UUIDs, and they are joined onto filesystem paths. */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** Returned by readJson for a body that arrived but would not parse. */
+const BAD_JSON = Symbol('bad-json')
+
 export interface RemoteConfig {
   port: number
   token: string
+  /** Public hostname the tunnel points at; used to police WebSocket origins. */
+  hostname: string
   /** Bind on the LAN too, not just loopback. Off by default. */
   bindLan: boolean
   /** Reject anything without Cloudflare Access headers, so only the tunnel works. */
   requireAccessHeader: boolean
+  /**
+   * Speech-to-text sidecar, e.g. `http://127.0.0.1:17890`. Empty disables voice.
+   *
+   * Stoke proxies to it rather than letting the phone reach it directly: the
+   * sidecar has no authentication of its own, so publishing it through the
+   * tunnel would put an open transcription endpoint on the internet.
+   */
+  sttUrl: string
 }
 
 export interface RemoteStatus {
@@ -203,6 +219,48 @@ export class RemoteServer {
     return match ? decodeURIComponent(match[1]) : null
   }
 
+  /**
+   * Is this handshake from our own page?
+   *
+   * A missing Origin is allowed: non-browser clients (the verification scripts,
+   * curl) send none, and they are already gated by the token. What must be
+   * refused is an Origin belonging to somebody else's site.
+   */
+  private sameOrigin(req: IncomingMessage): boolean {
+    const origin = req.headers.origin
+    if (!origin) return true
+
+    let host: string
+    try {
+      host = new URL(origin).host
+    } catch {
+      return false
+    }
+
+    const configured = this.config?.hostname?.trim()
+    if (configured && host === configured) return true
+    // The Host header covers loopback and LAN use, where there is no
+    // configured public hostname to compare against.
+    return Boolean(req.headers.host) && host === req.headers.host
+  }
+
+  /**
+   * Is this a directory the desktop already knows about?
+   *
+   * `cwd` came straight from the request body into spawn, so any path on the
+   * machine could be used as a working directory for a new agent. Sessions may
+   * only start where a project already exists.
+   */
+  private async knownCwd(cwd: string): Promise<boolean> {
+    if (!cwd || typeof cwd !== 'string') return false
+    if (cwd === this.deps.defaultCwd()) return true
+    const normalised = normalize(cwd).replace(/[\\/]+$/, '').toLowerCase()
+    const projects = await this.deps.listProjects()
+    return projects.some(
+      (p) => normalize(p.path).replace(/[\\/]+$/, '').toLowerCase() === normalised
+    )
+  }
+
   private authorized(req: IncomingMessage): boolean {
     if (!this.config) return false
 
@@ -235,7 +293,23 @@ export class RemoteServer {
     const queryKey = url.searchParams.get('k')
     const setCookie: Record<string, string> = queryKey
       ? {
-          'set-cookie': `stoke_key=${encodeURIComponent(queryKey)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000`
+          /*
+           * The cookie is a shell credential, so it carries Secure and must
+           * never ride a plaintext request - except in bindLan mode, which is
+           * plain HTTP by definition and where Secure would simply stop the
+           * cookie being stored at all.
+           *
+           * SameSite stays Lax, not Strict: Cloudflare Access bounces the user
+           * to its own hostname and back, and Strict withholds the cookie on
+           * that return navigation, locking the user out of their own site.
+           * Cross-site WebSocket handshakes are non-navigational, so Lax
+           * already withholds there, which is the case that mattered.
+           *
+           * Ninety days rather than a year.
+           */
+          'set-cookie':
+            `stoke_key=${encodeURIComponent(queryKey)}; Path=/; HttpOnly;` +
+            `${this.config?.bindLan ? '' : ' Secure;'} SameSite=Lax; Max-Age=7776000`
         }
       : {}
 
@@ -275,23 +349,102 @@ export class RemoteServer {
       if (url.pathname === '/api/transcript' && req.method === 'GET') {
         const id = url.searchParams.get('id')
         if (!id) return this.json(res, { error: 'id is required' }, setCookie, 400)
+        /*
+         * Session ids are UUIDs and are joined onto a path. Without this an
+         * `id` of `../../../../something` escaped the transcript directory and
+         * read any .jsonl on the machine.
+         */
+        if (!UUID.test(id)) return this.json(res, { error: 'bad session id' }, setCookie, 400)
         const transcript = await this.deps.readTranscript(id)
         if (!transcript) return this.json(res, { error: 'no such session' }, setCookie, 404)
         return this.json(res, transcript, setCookie)
       }
 
+      /*
+       * Dictation. The phone records, converts to 16-bit PCM WAV in the browser
+       * and posts the bytes here; we forward them to the speech sidecar. The
+       * conversion has to happen on the phone because the sidecar validates the
+       * RIFF header and rejects anything that is not 16-bit PCM WAV, and doing
+       * it here would mean shipping ffmpeg.
+       */
+      if (url.pathname === '/api/transcribe' && req.method === 'POST') {
+        const stt = this.config?.sttUrl?.trim()
+        if (!stt) {
+          return this.json(res, { error: 'No speech server configured.' }, setCookie, 503)
+        }
+        const audio = await this.readBody(req, 25 * 1024 * 1024)
+        if (!audio) {
+          return this.json(res, { error: 'Recording too large or empty.' }, setCookie, 400)
+        }
+        try {
+          const upstream = await fetch(`${stt.replace(/\/$/, '')}/transcribe`, {
+            method: 'POST',
+            headers: { 'content-type': 'audio/wav' },
+            body: new Uint8Array(audio),
+            signal: AbortSignal.timeout(120_000)
+          })
+          if (!upstream.ok) {
+            const detail = (await upstream.text()).slice(0, 200)
+            return this.json(res, { error: `Speech server: ${upstream.status} ${detail}` }, setCookie, 502)
+          }
+          const data = (await upstream.json()) as { text?: unknown }
+          return this.json(res, { text: typeof data.text === 'string' ? data.text : '' }, setCookie)
+        } catch (err) {
+          const why = err instanceof Error ? err.message : String(err)
+          return this.json(res, { error: `Speech server unreachable: ${why}` }, setCookie, 502)
+        }
+      }
+
       if (url.pathname === '/api/sessions' && req.method === 'POST') {
-        const body = (await this.readJson(req)) as Partial<LaunchOptions> | null
+        const parsed = await this.readJson(req)
+        /*
+         * A body that failed to parse used to read as "no body" and quietly
+         * started a session in the default directory. A truncated request now
+         * fails loudly instead of launching a real process somewhere unasked.
+         */
+        if (parsed === BAD_JSON) {
+          return this.json(res, { error: 'Malformed JSON body.' }, setCookie, 400)
+        }
+        const body = parsed as Partial<LaunchOptions> | null
+
+        /*
+         * The phone may not start an unsandboxed agent. `bypassPermissions`
+         * becomes --dangerously-skip-permissions, and the desktop guards it
+         * behind an explicit confirmation; this route had no equivalent and the
+         * UI never offered it, so accepting it turned "drive a terminal someone
+         * is watching" into "spawn a silent autonomous agent anywhere on disk".
+         */
+        const requested = body?.permissionMode ?? 'default'
+        if (requested === 'bypassPermissions') {
+          return this.json(
+            res,
+            { error: 'Bypass permissions cannot be started remotely. Use the desktop app.' },
+            setCookie,
+            403
+          )
+        }
+
+        /*
+         * The working directory has to be one the desktop already knows about.
+         * It was passed straight to spawn, so any path on the machine was fair
+         * game, and a bad one threw a message that leaked absolute paths back.
+         */
         const cwd = body?.cwd || this.deps.defaultCwd()
+        if (!(await this.knownCwd(cwd))) {
+          return this.json(res, { error: 'Unknown project directory.' }, setCookie, 400)
+        }
+
         const started = await this.deps.startSession({
           cwd,
           // Resuming needs both flags: the id says which transcript, and
           // resume turns it into --resume rather than --session-id, which
           // would instead try to create a session that already exists.
-          sessionId: body?.sessionId,
+          sessionId: typeof body?.sessionId === 'string' && UUID.test(body.sessionId)
+            ? body.sessionId
+            : undefined,
           resume: body?.resume === true && Boolean(body?.sessionId),
-          permissionMode: body?.permissionMode ?? 'default',
-          model: body?.model ?? '',
+          permissionMode: requested,
+          model: typeof body?.model === 'string' ? body.model : '',
           effort: body?.effort ?? 'default',
           cols: 100,
           rows: 30
@@ -299,10 +452,24 @@ export class RemoteServer {
         return this.json(res, started, setCookie)
       }
 
+      /*
+       * Anything under /api that reached here matched no route - usually the
+       * right path with the wrong method. It must not fall through to the
+       * static handler, which answers unknown paths with the SPA shell: a
+       * client calling .json() on that gets a parse error instead of a status
+       * it can act on.
+       */
+      if (url.pathname.startsWith('/api/')) {
+        return this.json(res, { error: 'No such endpoint or method.' }, setCookie, 404)
+      }
+
       await this.serveStatic(url.pathname, res, setCookie)
     } catch (err) {
+      // The message can carry absolute paths and internal detail, so it goes to
+      // the log rather than to whoever asked.
+      console.error('[remote]', err)
       res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' })
-      res.end(err instanceof Error ? err.message : String(err))
+      res.end('Internal error.')
     }
   }
 
@@ -343,15 +510,31 @@ export class RemoteServer {
     res.end(JSON.stringify(body))
   }
 
-  private async readJson(req: IncomingMessage): Promise<unknown> {
+  /** Raw request body, refused past `limit` so a bad client cannot exhaust memory. */
+  private async readBody(req: IncomingMessage, limit: number): Promise<Buffer | null> {
     const chunks: Buffer[] = []
-    for await (const chunk of req) chunks.push(chunk as Buffer)
-    const raw = Buffer.concat(chunks).toString('utf8')
+    let size = 0
+    for await (const chunk of req) {
+      const buf = chunk as Buffer
+      size += buf.length
+      if (size > limit) return null
+      chunks.push(buf)
+    }
+    return size ? Buffer.concat(chunks) : null
+  }
+
+  private async readJson(req: IncomingMessage): Promise<unknown> {
+    // Bounded like readBody. Unbounded, an endless request body exhausts the
+    // main process, which takes down every running session rather than one call.
+    const body = await this.readBody(req, 256 * 1024)
+    const raw = body ? body.toString('utf8') : ''
     if (!raw) return null
     try {
       return JSON.parse(raw)
     } catch {
-      return null
+      // Distinct from null: "you sent something broken" and "you sent nothing"
+      // must not lead to the same behaviour.
+      return BAD_JSON
     }
   }
 
@@ -401,6 +584,22 @@ export class RemoteServer {
     head: Buffer,
     wss: WebSocketServer
   ): void {
+    /*
+     * Reject cross-origin handshakes before authorising.
+     *
+     * A WebSocket handshake is not subject to the same-origin policy, and the
+     * cookie is a complete credential on its own, so any page the user visits
+     * could otherwise open a socket here and drive the terminal. Current
+     * browsers withhold a SameSite=Lax cookie from this non-navigational
+     * request, which blocks the drive-by today - but that is browser behaviour,
+     * not this server's doing, and it does not hold for embedded WebViews or
+     * any non-browser client. An origin allowlist is the actual defence.
+     */
+    if (!this.sameOrigin(req)) {
+      socket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
+      socket.destroy()
+      return
+    }
     if (!this.authorized(req)) {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')
       socket.destroy()
@@ -416,6 +615,19 @@ export class RemoteServer {
     const ptys = this.deps.ptys()
 
     if (!ptyId || !ptys) {
+      ws.close()
+      this.clients.delete(ws)
+      return
+    }
+
+    /*
+     * Attaching to a pty that does not exist used to succeed: the client got an
+     * `attached` frame with empty history and then sat forever on a terminal
+     * that would never produce a byte. Say so instead - a session that died on
+     * startup is the common cause, and silence makes it look like a hang.
+     */
+    if (!ptys.list().some((s) => s.ptyId === ptyId)) {
+      ws.send(JSON.stringify({ type: 'exit', code: null, reason: 'That session is no longer running.' }))
       ws.close()
       this.clients.delete(ws)
       return
