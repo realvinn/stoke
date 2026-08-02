@@ -34,21 +34,20 @@ M1 is `arm64`, which is what `npm run dist:mac` targets by default.
 
 There is no remote configured yet. Either push to GitHub once:
 
-```bash
-# on Windows, using the personal SSH alias
-git remote add origin git@github-personal:realvinn/stoke.git
-git push -u origin main
-```
+The repo is on GitHub and public, so this is a clone:
 
 ```bash
-# then on the Mac
-cd ~/Code            # wherever you keep personal projects
+cd ~/Code/personal          # wherever you keep personal projects
 git clone git@github-personal:realvinn/stoke.git
 cd stoke
 ```
 
-…or just copy the folder across. If you copy it, **delete `node_modules` first** — see the
-warning below.
+Already cloned? `git pull` is enough. But pulling only brings **source** — there is no Mac
+artifact to download. The releases page carries a Windows installer only, because a `.dmg`
+can only be produced on a Mac. You build it in the next step.
+
+…or copy the folder across instead. If you copy it, **delete `node_modules` first** — see
+the warning below.
 
 ### 2. Build
 
@@ -57,7 +56,15 @@ npm install
 npm run dist:mac
 ```
 
-Produces `release/Stoke-0.1.0-arm64.dmg`. Open it, drag Stoke to Applications, done.
+Produces `release/Stoke-<version>-arm64.dmg`. Open it, drag Stoke to Applications, done.
+
+To just run it without packaging — quicker, and the right move the first time, since no
+Mac code path in this project has ever been executed:
+
+```bash
+npm install
+npm run dev
+```
 
 Other targets if you ever need them:
 
@@ -125,6 +132,29 @@ Settings and window state are stored per OS and are not synced:
 Your themes and defaults will need setting once on each. The projects list is not stored
 there at all — it is read live from Claude Code's own `~/.claude.json` and
 `~/.claude/projects`, so each machine naturally shows that machine's projects.
+
+## Two things that will differ on the Mac
+
+Neither has been tested — no Mac code path in this project has ever run — but both are
+predictable enough to say in advance.
+
+**Dictation will point at nothing.** `remote.sttUrl` defaults to `http://127.0.0.1:17890`,
+which is the speech sidecar on the Windows machine. On the Mac either run a sidecar
+locally, or point the setting at the Windows box over Tailscale:
+
+```jsonc
+// ~/Library/Application Support/Stoke/settings.json
+"remote": { "sttUrl": "http://<windows-tailscale-name>:17890" }
+```
+
+Do not put that address on the public tunnel: the sidecar has no authentication of its
+own, which is exactly why Stoke proxies to it rather than exposing it.
+
+**The plan-limit meter will probably be blank.** It reads Claude Code's OAuth token from
+`~/.claude/.credentials.json`. On macOS Claude Code keeps credentials in the **Keychain**
+instead, so `readOauthToken()` in `src/main/usage.ts` will find nothing and the meter
+renders nothing rather than guessing. Fixing it means reading the Keychain — `security
+find-generic-password` — on darwin. Unverified, but expect it.
 
 ## Regenerating the icon
 
