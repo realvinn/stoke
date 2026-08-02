@@ -10,6 +10,9 @@ export const CH = {
   // cli
   cliInfo: 'cli:info',
 
+  // plan limits
+  usageRead: 'usage:read',
+
   // projects & sessions
   projectsList: 'projects:list',
   projectsAdd: 'projects:add',

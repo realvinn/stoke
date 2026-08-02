@@ -6,7 +6,8 @@ import type {
   Project,
   Rect,
   SessionMeta,
-  Settings
+  Settings,
+  UsageSnapshot
 } from './types'
 
 export interface StartResult {
@@ -69,6 +70,11 @@ export interface StokeApi {
 
   cli: {
     info(): Promise<CliInfo>
+  }
+
+  usage: {
+    /** Plan limits: the 5-hour window, the weekly window, and any model-scoped one. */
+    read(): Promise<UsageSnapshot>
   }
 
   projects: {

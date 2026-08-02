@@ -15,6 +15,7 @@ import { BrowserMcpServer } from './mcp/server.ts'
 import { connectUrl, generateToken, RemoteServer, type RemoteDeps } from './remote/server.ts'
 import { TunnelManager } from './remote/tunnel.ts'
 import { checkForUpdate, runDoctor, runUpdate } from './updates.ts'
+import { fetchUsage, type UsageSnapshot } from './usage.ts'
 import {
   checkSelfUpdate,
   downloadSelfUpdate,
@@ -34,6 +35,7 @@ let mcp: BrowserMcpServer | null = null
 /** Path of the generated --mcp-config file; null until the server is up. */
 let mcpConfigPath: string | null = null
 let remote: RemoteServer | null = null
+let usageCache: UsageSnapshot | null = null
 const tunnel = new TunnelManager()
 
 /** Starting a session, shared by the renderer's IPC and the remote server. */
@@ -196,6 +198,19 @@ function registerIpc(): void {
 
   /* ------------------------------------------------------------------- cli */
   ipcMain.handle(CH.cliInfo, () => probeClaude(getSettings().claudePath))
+
+  /* ---------------------------------------------------------- plan limits */
+  /*
+   * Cached for a minute. The renderer polls so the countdown stays honest, but
+   * the endpoint is undocumented and the numbers move in whole percentage
+   * points, so there is nothing to gain from hammering it.
+   */
+  ipcMain.handle(CH.usageRead, async () => {
+    const now = Date.now()
+    if (usageCache && now - usageCache.fetchedAt < 60_000) return usageCache
+    usageCache = await fetchUsage(now)
+    return usageCache
+  })
 
   /* -------------------------------------------------------------- projects */
   ipcMain.handle(CH.projectsList, () => listProjects(getSettings()))

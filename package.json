@@ -13,6 +13,8 @@
     "build:remote": "vite build --config vite.remote.config.ts",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "verify:context": "node scripts/verify-context.mts",
+    "verify:usage": "node scripts/verify-usage.mts",
+    "verify:security": "node scripts/verify-remote-security.mjs",
     "verify:extract": "node scripts/verify-extract.mjs",
     "check": "npm run typecheck && npm run verify:context && npm run build",
     "icon": "electron scripts/make-icon.cjs",

@@ -29,6 +29,10 @@ const api: StokeApi = {
     info: () => ipcRenderer.invoke(CH.cliInfo)
   },
 
+  usage: {
+    read: () => ipcRenderer.invoke(CH.usageRead)
+  },
+
   projects: {
     list: () => ipcRenderer.invoke(CH.projectsList),
     sessions: (projectPath: string) => ipcRenderer.invoke(CH.sessionsList, projectPath),

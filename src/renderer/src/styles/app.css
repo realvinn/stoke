@@ -1447,3 +1447,103 @@ body {
     animation: spin 700ms linear infinite;
   }
 }
+
+/* ----------------------------------------------------------- plan limits */
+
+.usage-meter {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4) var(--sp-4);
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.usage-row {
+  /* label · bar · percent · countdown. Fixed outer columns keep the numbers
+     aligned down all three rows; the bar absorbs the remainder. */
+  display: grid;
+  grid-template-columns: 3.25rem 1fr 2.25rem 2.75rem;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: 0.6875rem;
+  color: var(--text-muted);
+}
+
+.usage-label,
+.usage-reset {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-pct,
+.usage-reset {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-pct {
+  color: var(--text);
+}
+
+.usage-reset {
+  color: var(--text-faint);
+}
+
+.usage-track {
+  position: relative;
+  height: 0.375rem;
+  border-radius: var(--r-full);
+  background: var(--bg-sunken);
+  /* Deliberately not clipped: the pace marker stands proud of the track. */
+  overflow: visible;
+}
+
+/* Scaled rather than width-animated, matching .meter-fill: animating width
+   thrashes layout on every tick. The track rounds and clips it. */
+.usage-fill {
+  position: absolute;
+  inset: 0;
+  border-radius: var(--r-full);
+  transform-origin: left center;
+  transform: scaleX(var(--usage-fill, 0));
+  background: var(--accent);
+  transition: transform var(--dur-slow) var(--ease);
+}
+
+.usage-track[data-tone='warning'] .usage-fill {
+  background: var(--warning);
+}
+
+.usage-track[data-tone='critical'] .usage-fill,
+.usage-track[data-tone='severe'] .usage-fill {
+  background: var(--danger);
+}
+
+/*
+ * The pace marker: where usage would sit if it were spread evenly across the
+ * window. White so it reads against every fill colour, taller than the track so
+ * it stays legible once the fill passes under it, and ringed in the track
+ * colour so it separates from the fill rather than dissolving into it.
+ */
+.usage-pace {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  border-radius: 1px;
+  background: #fff;
+  /* Centred on its position, so 50% reads as exactly half way. */
+  translate: -1px 0;
+  box-shadow: 0 0 0 1px var(--bg-sunken);
+  /* Not transitioned: it advances about a third of a percent per minute, so a
+     transition would buy nothing and animating `left` costs a layout. */
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .usage-fill,
+  .usage-pace {
+    transition: none;
+  }
+}
