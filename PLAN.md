@@ -102,6 +102,28 @@ src/renderer/  index.html + src/{App.tsx, components/, styles/, state/}
 | Theme switch to Daylight | every surface + the xterm palette swapped live |
 | Renderer console | clean throughout |
 
+### Browser integration (added later)
+
+| Check | Result |
+| --- | --- |
+| MCP server over loopback HTTP, token-gated | initialize + tools/list return 13 tools |
+| Real `claude` CLI against the injected config | called the tools, returned correct page content |
+| Sessions launched from the app | carry `--mcp-config` on their command line |
+| Packaged app, real session, Bypass mode | `Called stoke` -> "Example Domain"; meter live at 54k/200k |
+| Tabs, find, bookmarks, zoom, devtools | two tabs, bookmark toggles, find drives Chromium's own search |
+
+Three bugs found by verification, all of which produced empty output rather than errors:
+
+1. A `WebContentsView` outside the window's view tree gets a 0x0 viewport and never lays
+   out — `getBoundingClientRect`, `innerText` and every visibility check came back empty,
+   so the agent silently read a blank page. Views are now mounted immediately and merely
+   hidden.
+2. Console/network logs were reset on `did-navigate`, which fires *after* the main document
+   response — wiping the exact request the agent asks about when a page fails. Now reset on
+   `did-start-loading`.
+3. `waitForStable` required non-zero text to settle, so an empty page burned the full
+   timeout on every call.
+
 **Not verified: macOS.** No Mac available in this environment. The mac-specific code paths
 are `frame: true` + `titleBarStyle: 'hiddenInset'` + traffic-light padding, the login-shell
 PATH probe in `cli.ts`, and Cmd-based shortcuts. They are written but unexercised.
