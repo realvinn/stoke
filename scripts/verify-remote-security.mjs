@@ -12,8 +12,21 @@
 const base = (process.argv[2] || 'http://127.0.0.1:7878').replace(/\/$/, '')
 const key = process.argv[3]
 
+/*
+ * An instance configured for the tunnel sets requireAccessHeader, and then
+ * refuses everything that did not arrive through Cloudflare Access - including
+ * this script, which makes all sixteen checks fail identically for a reason
+ * that has nothing to do with what they test. --access stands in for the header
+ * Cloudflare injects, so a production-shaped instance can be checked too.
+ */
+const withAccess = process.argv.includes('--access')
+const ACCESS = withAccess ? { 'cf-access-authenticated-user-email': 'verify@localhost' } : {}
+
 if (!key) {
-  console.error('usage: node scripts/verify-remote-security.mjs <baseUrl> <token>')
+  console.error(
+    'usage: node scripts/verify-remote-security.mjs <baseUrl> <token> [--access]\n' +
+      '  --access  send a Cloudflare Access header, for an instance with requireAccessHeader on'
+  )
   process.exit(2)
 }
 
@@ -32,7 +45,11 @@ function check(name, expected, actual) {
 
 async function status(path, init) {
   try {
-    const res = await fetch(`${base}${path}`, { ...init, signal: AbortSignal.timeout(20_000) })
+    const res = await fetch(`${base}${path}`, {
+      ...init,
+      headers: { ...ACCESS, ...(init?.headers ?? {}) },
+      signal: AbortSignal.timeout(20_000)
+    })
     return res.status
   } catch (e) {
     return `error:${e.name}`
@@ -82,7 +99,10 @@ check('DELETE on sessions', 404, await status(`/api/sessions?k=${key}`, { method
 
 console.log('\ncookie flags')
 try {
-  const res = await fetch(`${base}/?k=${key}`, { signal: AbortSignal.timeout(20_000) })
+  const res = await fetch(`${base}/?k=${key}`, {
+    headers: ACCESS,
+    signal: AbortSignal.timeout(20_000)
+  })
   const cookie = res.headers.get('set-cookie') || ''
   console.log(`  ${cookie || '(no set-cookie)'}`)
   check('HttpOnly, so script cannot read the credential', true, /HttpOnly/i.test(cookie))
@@ -109,6 +129,7 @@ async function handshakeStatus(origin) {
           'Connection: Upgrade\r\nUpgrade: websocket\r\n' +
           'Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n' +
           (origin ? `Origin: ${origin}\r\n` : '') +
+          (withAccess ? 'Cf-Access-Authenticated-User-Email: verify@localhost\r\n' : '') +
           '\r\n'
       )
     })
