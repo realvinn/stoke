@@ -1,12 +1,15 @@
 import { useEffect, useRef } from 'react'
 import type { CliInfo, EffortLevel, PermissionMode, Project, SessionMeta } from '@shared/types'
 import { ContextBar } from './ContextMeter'
-import { IconFolder } from './Icons'
+import { IconFolder, IconPlus } from './Icons'
 import { relativeTime } from '../lib/format'
 import { EFFORT_LEVELS, MODEL_OPTIONS, PERMISSION_MODES } from '../lib/permissions'
 
 interface Props {
+  /** null when nothing is selected — the quick-start state. */
   project: Project | null
+  /** Where a session started without a project will run. */
+  defaultCwd: string
   permissionMode: PermissionMode
   model: string
   effort: EffortLevel
@@ -19,10 +22,13 @@ interface Props {
   onContinueLast: () => void
   onResume: (s: SessionMeta) => void
   onOpenFolder: () => void
+  onStartDefault: () => void
+  onStartScratch: () => void
 }
 
 export function Launcher({
   project,
+  defaultCwd,
   permissionMode,
   model,
   effort,
@@ -34,34 +40,19 @@ export function Launcher({
   onStart,
   onContinueLast,
   onResume,
-  onOpenFolder
+  onOpenFolder,
+  onStartDefault,
+  onStartScratch
 }: Props): React.JSX.Element {
   const startRef = useRef<HTMLButtonElement>(null)
 
-  // Focus the primary action so the app is one keystroke from a live session.
+  // Focus the primary action so the app is one keystroke from a live session,
+  // whether or not a project is selected.
   useEffect(() => {
     startRef.current?.focus()
   }, [project?.path])
 
-  if (!project) {
-    return (
-      <div className="launcher">
-        <div className="empty">
-          <h3>Pick a project to begin</h3>
-          <p>
-            Choose a project on the left to start a Claude Code session in it, or open any
-            folder on disk. Sessions you have run before can be resumed with their full
-            history.
-          </p>
-          <button className="btn" data-variant="primary" onClick={onOpenFolder}>
-            <IconFolder />
-            Open a folder
-          </button>
-        </div>
-      </div>
-    )
-  }
-
+  const cliBroken = !!cli && !cli.ok
   const bypass = permissionMode === 'bypassPermissions'
   const activeMode = PERMISSION_MODES.find((m) => m.id === permissionMode)
   const recent = sessions.slice(0, 4)
@@ -70,15 +61,24 @@ export function Launcher({
     <div className="launcher">
       <div className="launcher-card">
         <div className="launcher-head">
-          <h1 className="launcher-title">{project.name}</h1>
-          <span className="launcher-path mono">{project.path}</span>
-          {!project.exists && (
+          <h1 className="launcher-title">{project ? project.name : 'Start a session'}</h1>
+          <span className="launcher-path mono">{project ? project.path : defaultCwd}</span>
+          {project && !project.exists && (
             <span className="pill" data-tone="danger">
               This folder no longer exists on disk
             </span>
           )}
+          {!project && (
+            <span className="field-hint">
+              No project needed — Claude Code opens in your default folder. Pick a project on
+              the left to work somewhere specific, or start a scratch session for something
+              throwaway.
+            </span>
+          )}
         </div>
 
+        {/* Shown in both states, so the launch options apply to a quick start
+            just as much as to a project. */}
         <div>
           <div className="launcher-row">
             <span className="launcher-row-label">
@@ -142,41 +142,75 @@ export function Launcher({
         {/* Inline rather than a confirmation dialog: the warning stays visible
             for as long as the setting is armed, instead of once at launch. */}
         {bypass && (
-          <div className="banner" style={{ borderRadius: 'var(--r-lg)', border: '1px solid var(--border)' }}>
+          <div
+            className="banner"
+            style={{ borderRadius: 'var(--r-lg)', border: '1px solid var(--border)' }}
+          >
             <span>
-              <b>Permissions are bypassed.</b> Claude will run commands and edit files in this
-              folder without asking. Use it only where you trust the contents.
+              <b>Permissions are bypassed.</b> Claude will run commands and edit files
+              without asking. Use it only where you trust the contents.
             </span>
           </div>
         )}
 
-        {cli && !cli.ok && (
+        {cliBroken && (
           <div className="banner">
-            <span>{cli.error}</span>
+            <span>{cli?.error}</span>
           </div>
         )}
 
-        <div className="launcher-actions">
-          <button
-            ref={startRef}
-            className="btn"
-            data-variant="primary"
-            onClick={onStart}
-            disabled={!!cli && !cli.ok}
-          >
-            Start session
-          </button>
-          {sessions.length > 0 && (
-            <button className="btn" onClick={onContinueLast} disabled={!!cli && !cli.ok}>
-              Continue last
+        {project ? (
+          <div className="launcher-actions">
+            <button
+              ref={startRef}
+              className="btn"
+              data-variant="primary"
+              onClick={onStart}
+              disabled={cliBroken}
+            >
+              Start session
             </button>
-          )}
-          <span className="launcher-hint">
-            <span className="kbd">Enter</span> to start
-          </span>
-        </div>
+            {sessions.length > 0 && (
+              <button className="btn" onClick={onContinueLast} disabled={cliBroken}>
+                Continue last
+              </button>
+            )}
+            <span className="launcher-hint">
+              <span className="kbd">Enter</span> to start
+            </span>
+          </div>
+        ) : (
+          <div className="launcher-actions">
+            <button
+              ref={startRef}
+              className="btn"
+              data-variant="primary"
+              onClick={onStartDefault}
+              disabled={cliBroken}
+              title={defaultCwd}
+            >
+              Start here
+            </button>
+            <button
+              className="btn"
+              onClick={onStartScratch}
+              disabled={cliBroken}
+              title="Create a dated throwaway folder and open a session in it"
+            >
+              <IconPlus />
+              Scratch session
+            </button>
+            <button className="btn" data-variant="ghost" onClick={onOpenFolder}>
+              <IconFolder />
+              Open a folder
+            </button>
+            <span className="launcher-hint">
+              <span className="kbd">Enter</span> to start
+            </span>
+          </div>
+        )}
 
-        {recent.length > 0 && (
+        {project && recent.length > 0 && (
           <div>
             <div className="sidebar-group" style={{ padding: '0 0 var(--sp-2)' }}>
               Resume a session

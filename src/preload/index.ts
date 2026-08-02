@@ -39,6 +39,11 @@ const api: StokeApi = {
     reveal: (path: string) => ipcRenderer.invoke(CH.projectsReveal, path)
   },
 
+  workspace: {
+    defaultCwd: () => ipcRenderer.invoke(CH.workspaceDefault),
+    createScratch: () => ipcRenderer.invoke(CH.workspaceScratch)
+  },
+
   pty: {
     start: (opts: LaunchOptions) => ipcRenderer.invoke(CH.ptyStart, opts),
     write: (ptyId: string, data: string) => ipcRenderer.send(CH.ptyWrite, ptyId, data),

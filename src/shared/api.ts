@@ -44,6 +44,13 @@ export interface StokeApi {
     reveal(path: string): Promise<string>
   }
 
+  workspace: {
+    /** Resolved working directory for a session started without a project. */
+    defaultCwd(): Promise<string>
+    /** Create a fresh throwaway folder and return its path. */
+    createScratch(): Promise<string>
+  }
+
   pty: {
     start(opts: LaunchOptions): Promise<StartResult>
     write(ptyId: string, data: string): void

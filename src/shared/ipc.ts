@@ -20,6 +20,10 @@ export const CH = {
   sessionsList: 'sessions:list',
   sessionsChanged: 'sessions:changed',
 
+  // sessions that are not tied to a saved project
+  workspaceDefault: 'workspace:default',
+  workspaceScratch: 'workspace:scratch',
+
   // pty
   ptyStart: 'pty:start',
   ptyWrite: 'pty:write',

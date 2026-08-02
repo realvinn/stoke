@@ -15,6 +15,11 @@ Windows and macOS.
   from `~/.claude.json` and `~/.claude/projects`, grouped as Pinned / Recent / Other.
   Point it at a folder like `G:\Code\personal` and it also lists projects you have never
   opened in Claude yet.
+- **Start without picking a project.** The launcher opens on a default folder
+  (`G:\Code` on Windows, `~/Code` on macOS, configurable in Settings) — press Enter and
+  you are in a session. **Scratch session** instead creates a dated throwaway folder for
+  something you do not want landing in a real project. Turn on *Start a session on launch*
+  in Settings and opening Stoke drops you straight into one.
 - **Sessions as tabs.** Several live sessions at once, each its own PTY. Resume any past
   session with its full history, or continue the most recent one in a folder.
 - **Context windows at a glance.** A ring on each tab and a bar in the status bar, read

@@ -17,6 +17,9 @@ const DEFAULTS: Settings = {
     effort: 'default'
   },
   projectRoots: [],
+  // null = auto-detect. workspace.ts prefers G:\Code on Windows, then ~/Code.
+  defaultCwd: null,
+  startOnLaunch: false,
   pinnedProjects: [],
   hiddenProjects: [],
   browser: {

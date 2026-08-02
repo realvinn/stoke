@@ -19,6 +19,7 @@ import { Sidebar } from './components/Sidebar'
 import { StatusBar } from './components/StatusBar'
 import { TerminalView } from './components/TerminalView'
 import { TitleBar } from './components/TitleBar'
+import { baseName } from './lib/format'
 import { attachExit, forgetPty, initPtyBus } from './lib/ptyBus'
 import { matchShortcut } from './lib/shortcuts'
 import { applyTheme, applyTypography } from './lib/theme'
@@ -41,6 +42,8 @@ export function App(): React.JSX.Element {
 
   const [projects, setProjects] = useState<Project[]>([])
   const [projectsLoading, setProjectsLoading] = useState(true)
+  /** Resolved folder for sessions started without picking a project. */
+  const [defaultCwd, setDefaultCwd] = useState('')
   const [query, setQuery] = useState('')
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
   const [expandedPath, setExpandedPath] = useState<string | null>(null)
@@ -104,6 +107,7 @@ export function App(): React.JSX.Element {
       setModel(s.defaults.model)
       setEffort(s.defaults.effort)
       void window.stoke.cli.info().then(setCli)
+      void window.stoke.workspace.defaultCwd().then(setDefaultCwd)
       await refreshProjects()
     })()
 
@@ -116,6 +120,13 @@ export function App(): React.JSX.Element {
       offSettings()
     }
   }, [refreshProjects])
+
+  // The configured folder can change in Settings; re-resolve when it does so
+  // the launcher and Settings hint never disagree.
+  useEffect(() => {
+    if (!settings) return
+    void window.stoke.workspace.defaultCwd().then(setDefaultCwd)
+  }, [settings?.defaultCwd, settings])
 
   // Project timestamps go stale while the window is in the background.
   useEffect(() => {
@@ -230,6 +241,34 @@ export function App(): React.JSX.Element {
     },
     [mode, model, effort]
   )
+
+  /** Quick start with no project: run in the configured default folder. */
+  const startDefault = useCallback((): void => {
+    if (!defaultCwd) return
+    void startSession({ cwd: defaultCwd, name: baseName(defaultCwd) })
+  }, [defaultCwd, startSession])
+
+  /** Quick start in a fresh throwaway folder. */
+  const startScratch = useCallback(async (): Promise<void> => {
+    try {
+      const dir = await window.stoke.workspace.createScratch()
+      await startSession({ cwd: dir, name: `Scratch ${baseName(dir)}` })
+      // The new folder becomes a real project once Claude writes a transcript.
+      await refreshProjects()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }, [startSession, refreshProjects])
+
+  // Optional "open straight into a session" behaviour. The ref keeps it to a
+  // single attempt, including under StrictMode's double-invoked effects.
+  const autoStarted = useRef(false)
+  useEffect(() => {
+    if (autoStarted.current) return
+    if (!settings?.startOnLaunch || !defaultCwd || !cli?.ok) return
+    autoStarted.current = true
+    startDefault()
+  }, [settings?.startOnLaunch, defaultCwd, cli, startDefault])
 
   const closeTab = useCallback(
     (id: string): void => {
@@ -442,6 +481,7 @@ export function App(): React.JSX.Element {
                 }}
                 onAddRoot={() => void addRoot()}
                 onOpenFolder={() => void openFolder()}
+                onStartScratch={() => void startScratch()}
               />
             </div>
             <Resizer
@@ -484,6 +524,7 @@ export function App(): React.JSX.Element {
           {activeTabId === null && (
             <Launcher
               project={selectedProject}
+              defaultCwd={defaultCwd}
               permissionMode={mode}
               model={model}
               effort={effort}
@@ -508,6 +549,8 @@ export function App(): React.JSX.Element {
               }}
               onResume={resumeSession}
               onOpenFolder={() => void openFolder()}
+              onStartDefault={startDefault}
+              onStartScratch={() => void startScratch()}
             />
           )}
         </div>
@@ -554,6 +597,7 @@ export function App(): React.JSX.Element {
       {settingsOpen && settings && (
         <SettingsSheet
           settings={settings}
+          defaultCwd={defaultCwd}
           cli={cli}
           onPatch={(patch) => void patchSettings(patch)}
           onAddRoot={() => void addRoot()}

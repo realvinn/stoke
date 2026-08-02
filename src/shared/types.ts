@@ -184,6 +184,13 @@ export interface Settings {
   }
   /** Extra folders to scan one level deep for projects (e.g. G:\Code\personal). */
   projectRoots: string[]
+  /**
+   * Working directory for a session started without picking a project.
+   * null means auto-detect — see main/workspace.ts.
+   */
+  defaultCwd: string | null
+  /** Open a session in the default folder as soon as the app starts. */
+  startOnLaunch: boolean
   pinnedProjects: string[]
   hiddenProjects: string[]
   browser: {

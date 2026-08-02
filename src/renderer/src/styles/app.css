@@ -1237,6 +1237,28 @@ body {
   line-height: 1.5;
 }
 
+/* Native checkbox, themed rather than reinvented. */
+.check-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  cursor: default;
+}
+
+.check-row input[type='checkbox'] {
+  width: 1rem;
+  height: 1rem;
+  margin: 0.125rem 0 0;
+  accent-color: var(--accent);
+  flex-shrink: 0;
+}
+
+.check-row > span {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
 /* ---------------------------------------------------------- theme picker */
 
 .theme-grid {

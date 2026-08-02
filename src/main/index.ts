@@ -9,6 +9,7 @@ import { ContextWatcher } from './context.ts'
 import { listProjects, listSessions } from './projects.ts'
 import { PtyManager } from './pty.ts'
 import { getSettings, setSettings } from './store.ts'
+import { createScratchDir, resolveDefaultCwd } from './workspace.ts'
 
 const isMac = process.platform === 'darwin'
 
@@ -128,6 +129,10 @@ function registerIpc(): void {
     })
     return res.canceled ? null : (res.filePaths[0] ?? null)
   })
+
+  /* ------------------------------------------------------------- workspaces */
+  ipcMain.handle(CH.workspaceDefault, () => resolveDefaultCwd(getSettings().defaultCwd))
+  ipcMain.handle(CH.workspaceScratch, () => createScratchDir())
 
   ipcMain.handle(CH.projectsHide, (_e, path: string, hidden: boolean) => {
     const s = getSettings()

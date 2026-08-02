@@ -5,6 +5,8 @@ import { EFFORT_LEVELS, MODEL_OPTIONS, PERMISSION_MODES } from '../lib/permissio
 
 interface Props {
   settings: Settings
+  /** Resolved default working directory, shown when none is configured. */
+  defaultCwd: string
   cli: CliInfo | null
   onPatch: (patch: Partial<Settings>) => void
   onAddRoot: () => void
@@ -13,6 +15,7 @@ interface Props {
 
 export function SettingsSheet({
   settings,
+  defaultCwd,
   cli,
   onPatch,
   onAddRoot,
@@ -152,6 +155,47 @@ export function SettingsSheet({
               ))}
             </select>
           </div>
+
+          <div className="field">
+            <span className="field-label">Default folder</span>
+            <div style={{ display: 'flex', gap: 'var(--sp-2)' }}>
+              <input
+                className="input mono"
+                placeholder={defaultCwd}
+                value={settings.defaultCwd ?? ''}
+                spellCheck={false}
+                onChange={(e) => onPatch({ defaultCwd: e.target.value.trim() || null })}
+              />
+              <button
+                className="btn"
+                onClick={async () => {
+                  const dir = await window.stoke.projects.open()
+                  if (dir) onPatch({ defaultCwd: dir })
+                }}
+              >
+                Choose
+              </button>
+            </div>
+            <span className="field-hint">
+              Where <b>Start here</b> opens a session when no project is selected. Leave it
+              empty to auto-detect — currently <span className="mono">{defaultCwd}</span>.
+            </span>
+          </div>
+
+          <label className="check-row">
+            <input
+              type="checkbox"
+              checked={settings.startOnLaunch}
+              onChange={(e) => onPatch({ startOnLaunch: e.target.checked })}
+            />
+            <span>
+              <span className="field-label">Start a session on launch</span>
+              <span className="field-hint">
+                Opens a session in the default folder the moment Stoke starts, so the app is
+                never sitting on an empty screen.
+              </span>
+            </span>
+          </label>
 
           <div className="field">
             <span className="field-label">Scanned folders</span>

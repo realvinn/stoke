@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import type { Project, SessionMeta } from '@shared/types'
 import { ContextBar } from './ContextMeter'
-import { IconChevron, IconFolder, IconPin, IconSearch } from './Icons'
+import { IconChevron, IconFolder, IconPin, IconPlus, IconSearch } from './Icons'
 import { relativeTime } from '../lib/format'
 
 interface Props {
@@ -20,6 +20,7 @@ interface Props {
   onPin: (p: Project) => void
   onAddRoot: () => void
   onOpenFolder: () => void
+  onStartScratch: () => void
 }
 
 export function Sidebar({
@@ -37,7 +38,8 @@ export function Sidebar({
   onResume,
   onPin,
   onAddRoot,
-  onOpenFolder
+  onOpenFolder,
+  onStartScratch
 }: Props): React.JSX.Element {
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -101,10 +103,22 @@ export function Sidebar({
             spellCheck={false}
           />
         </div>
-        <button className="btn" onClick={onOpenFolder}>
-          <IconFolder />
-          Open a folder
-        </button>
+        {/* Both routes into a session that is not a saved project. */}
+        <div style={{ display: 'flex', gap: 'var(--sp-2)' }}>
+          <button className="btn" style={{ flex: 1 }} onClick={onOpenFolder}>
+            <IconFolder />
+            Open
+          </button>
+          <button
+            className="btn"
+            style={{ flex: 1 }}
+            onClick={onStartScratch}
+            title="Start a session in a fresh throwaway folder"
+          >
+            <IconPlus />
+            Scratch
+          </button>
+        </div>
       </div>
 
       <div className="sidebar-scroll">

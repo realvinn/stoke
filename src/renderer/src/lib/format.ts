@@ -28,6 +28,12 @@ export function formatCost(usd: number | null): string | null {
   return usd < 0.01 ? '<$0.01' : `$${usd.toFixed(2)}`
 }
 
+/** Last path segment, tolerant of either separator. */
+export function baseName(p: string): string {
+  const parts = p.split(/[\\/]/).filter(Boolean)
+  return parts[parts.length - 1] ?? p
+}
+
 /** Shorten a long path for display, keeping the tail. */
 export function shortPath(p: string, max = 46): string {
   if (p.length <= max) return p
