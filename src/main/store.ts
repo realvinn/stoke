@@ -29,6 +29,16 @@ const DEFAULTS: Settings = {
     width: 460,
     bookmarks: []
   },
+  remote: {
+    enabled: false,
+    port: 7878,
+    token: '',
+    hostname: '',
+    bindLan: false,
+    requireAccessHeader: false,
+    autoStartTunnel: false,
+    tunnelName: 'stoke'
+  },
   sidebarWidth: 260,
   claudePath: null,
   confirmBypass: true
@@ -54,6 +64,7 @@ function hydrate(raw: unknown): Settings {
       ...(r.browser ?? {}),
       bookmarks: Array.isArray(r.browser?.bookmarks) ? r.browser.bookmarks : []
     },
+    remote: { ...DEFAULTS.remote, ...(r.remote ?? {}) },
     customThemes: Array.isArray(r.customThemes) ? r.customThemes : [],
     projectRoots: Array.isArray(r.projectRoots) ? r.projectRoots : [],
     pinnedProjects: Array.isArray(r.pinnedProjects) ? r.pinnedProjects : [],

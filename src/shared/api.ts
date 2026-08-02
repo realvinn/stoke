@@ -16,6 +16,33 @@ export interface StartResult {
   args: string[]
 }
 
+/** Combined remote-access state: local server, tunnel, and the phone link. */
+export interface RemoteState {
+  server: { running: boolean; port: number; error: string | null; clients: number }
+  tunnel: {
+    installed: boolean
+    path: string | null
+    running: boolean
+    mode: 'named' | 'quick' | null
+    url: string | null
+    log: string[]
+    error: string | null
+  }
+  url: string
+  /** Data URL of a QR code for `url`, or null if generation failed. */
+  qr: string | null
+  /** One-time cloudflared commands the user runs themselves. */
+  setup: string[]
+}
+
+export interface UpdateInfo {
+  current: string | null
+  latest: string | null
+  updateAvailable: boolean
+  checkedAt: number
+  error: string | null
+}
+
 /** The surface exposed to the renderer as `window.stoke`. */
 export interface StokeApi {
   platform: string
@@ -87,6 +114,21 @@ export interface StokeApi {
     /** Toggle the bookmark for the active tab's URL. */
     bookmark(): void
     onState(cb: (state: BrowserState) => void): () => void
+  }
+
+  remote: {
+    status(): Promise<RemoteState>
+    start(): Promise<RemoteState>
+    stop(): Promise<RemoteState>
+    newToken(): Promise<RemoteState>
+    tunnelStart(mode: 'named' | 'quick'): Promise<RemoteState>
+    tunnelStop(): Promise<RemoteState>
+  }
+
+  updates: {
+    check(): Promise<UpdateInfo>
+    run(): Promise<string>
+    doctor(): Promise<string>
   }
 
   settings: {

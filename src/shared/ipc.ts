@@ -57,6 +57,19 @@ export const CH = {
   browserZoom: 'browser:zoom',
   browserBookmark: 'browser:bookmark',
 
+  // remote access (phone / tunnel)
+  remoteStatus: 'remote:status',
+  remoteStart: 'remote:start',
+  remoteStop: 'remote:stop',
+  remoteNewToken: 'remote:newToken',
+  tunnelStart: 'tunnel:start',
+  tunnelStop: 'tunnel:stop',
+
+  // claude cli updates
+  updateCheck: 'update:check',
+  updateRun: 'update:run',
+  updateDoctor: 'update:doctor',
+
   // settings
   settingsGet: 'settings:get',
   settingsSet: 'settings:set',

@@ -82,6 +82,21 @@ const api: StokeApi = {
     onState: (cb) => on<[Parameters<typeof cb>[0]]>(CH.browserState, cb)
   },
 
+  remote: {
+    status: () => ipcRenderer.invoke(CH.remoteStatus),
+    start: () => ipcRenderer.invoke(CH.remoteStart),
+    stop: () => ipcRenderer.invoke(CH.remoteStop),
+    newToken: () => ipcRenderer.invoke(CH.remoteNewToken),
+    tunnelStart: (mode: 'named' | 'quick') => ipcRenderer.invoke(CH.tunnelStart, mode),
+    tunnelStop: () => ipcRenderer.invoke(CH.tunnelStop)
+  },
+
+  updates: {
+    check: () => ipcRenderer.invoke(CH.updateCheck),
+    run: () => ipcRenderer.invoke(CH.updateRun),
+    doctor: () => ipcRenderer.invoke(CH.updateDoctor)
+  },
+
   settings: {
     get: () => ipcRenderer.invoke(CH.settingsGet),
     set: (patch: Partial<Settings>) => ipcRenderer.invoke(CH.settingsSet, patch),

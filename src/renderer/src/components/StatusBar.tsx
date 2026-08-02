@@ -8,15 +8,38 @@ interface Props {
   tab: Tab | null
   context: ContextSnapshot | null
   cli: CliInfo | null
+  /** Newer CLI version found at launch, or null when up to date. */
+  updateAvailable: string | null
   onRevealProject: (path: string) => void
+  onOpenSettings: () => void
 }
 
-export function StatusBar({ tab, context, cli, onRevealProject }: Props): React.JSX.Element {
+export function StatusBar({
+  tab,
+  context,
+  cli,
+  updateAvailable,
+  onRevealProject,
+  onOpenSettings
+}: Props): React.JSX.Element {
+  const updatePill = updateAvailable ? (
+    <button
+      className="status-btn"
+      onClick={onOpenSettings}
+      title={`Claude Code ${updateAvailable} is available — open Settings to update`}
+    >
+      <span className="pill" data-tone="accent">
+        {updateAvailable} available
+      </span>
+    </button>
+  ) : null
+
   if (!tab) {
     return (
       <footer className="statusbar">
         <span className="status-item">No active session</span>
         <span className="status-spacer" />
+        {updatePill}
         {cli?.version && <span className="status-item mono">{cli.version}</span>}
       </footer>
     )
@@ -44,6 +67,8 @@ export function StatusBar({ tab, context, cli, onRevealProject }: Props): React.
       {tab.effort !== 'default' && <span className="status-item">effort: {tab.effort}</span>}
 
       <span className="status-spacer" />
+
+      {updatePill}
 
       {context?.ready ? (
         <>

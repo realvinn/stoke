@@ -26,6 +26,8 @@ interface Watch {
 
 export class ContextWatcher {
   private watches = new Map<string, Watch>()
+  /** Most recent snapshot per session, so a late joiner gets a meter at once. */
+  private latest = new Map<string, ContextSnapshot>()
   private readonly emit: (snap: ContextSnapshot) => void
 
   // Written as an explicit field rather than a TS parameter property so this
@@ -33,6 +35,16 @@ export class ContextWatcher {
   // scripts/verify-context.mts uses to test it without a build step.
   constructor(emit: (snap: ContextSnapshot) => void) {
     this.emit = emit
+  }
+
+  /** Last known reading for a session, or null if it has not reported yet. */
+  snapshot(sessionId: string): ContextSnapshot | null {
+    return this.latest.get(sessionId) ?? null
+  }
+
+  private publish(snap: ContextSnapshot): void {
+    this.latest.set(snap.sessionId, snap)
+    this.emit(snap)
   }
 
   watch(sessionId: string): void {
@@ -76,7 +88,7 @@ export class ContextWatcher {
       if (!w.file) {
         // Claude has not written the transcript yet — report an empty meter so
         // the tab renders something instead of staying blank.
-        this.emit(emptySnapshot(w.sessionId))
+        this.publish(emptySnapshot(w.sessionId))
         this.schedule(w, DISCOVER_MS)
         return
       }
@@ -88,7 +100,7 @@ export class ContextWatcher {
         w.lastMtime = st.mtimeMs
         const parsed = await parseSession(w.file)
         const used = contextUsed(parsed)
-        this.emit({
+        this.publish({
           sessionId: w.sessionId,
           contextTokens: used,
           contextLimit: contextLimitFor(parsed.model, used),

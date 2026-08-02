@@ -17,7 +17,31 @@ interface Session {
   proc: IPty
   cwd: string
   exited: boolean
+  /** Retained output so a client joining late can replay the session. */
+  chunks: string[]
+  length: number
+  startedAt: number
+  cols: number
+  rows: number
 }
+
+/** Summary of a live session, used by the remote UI's session list. */
+export interface SessionInfo {
+  ptyId: string
+  sessionId: string
+  cwd: string
+  exited: boolean
+  startedAt: number
+  cols: number
+  rows: number
+}
+
+/**
+ * Retained output per session. The desktop renderer keeps its own copy, but the
+ * remote client needs one held in the main process — a phone attaching to a
+ * session that started an hour ago has no other way to see what happened.
+ */
+const MAX_HISTORY = 512 * 1024
 
 /**
  * Environment variables that must never reach the spawned CLI.
@@ -113,14 +137,36 @@ export class PtyManager {
     })
 
     const ptyId = randomUUID()
-    const session: Session = { ptyId, sessionId, proc, cwd: opts.cwd, exited: false }
+    const session: Session = {
+      ptyId,
+      sessionId,
+      proc,
+      cwd: opts.cwd,
+      exited: false,
+      chunks: [],
+      length: 0,
+      startedAt: Date.now(),
+      cols: Math.max(20, opts.cols || 120),
+      rows: Math.max(5, opts.rows || 30)
+    }
     this.sessions.set(ptyId, session)
 
-    proc.onData((data) => this.onData(ptyId, data))
+    proc.onData((data) => {
+      session.chunks.push(data)
+      session.length += data.length
+      // Drop whole chunks so a replay never starts mid-escape-sequence.
+      while (session.length > MAX_HISTORY && session.chunks.length > 1) {
+        session.length -= (session.chunks.shift() as string).length
+      }
+      this.onData(ptyId, data)
+      for (const fn of this.subscribers) fn(ptyId, data)
+    })
+
     proc.onExit(({ exitCode, signal }) => {
       session.exited = true
       this.sessions.delete(ptyId)
       this.onExit(ptyId, exitCode, signal)
+      for (const fn of this.exitSubscribers) fn(ptyId, exitCode)
     })
 
     return { ptyId, sessionId, command: spec.file, args: spec.args }
@@ -139,8 +185,12 @@ export class PtyManager {
   resize(ptyId: string, cols: number, rows: number): void {
     const s = this.sessions.get(ptyId)
     if (!s || s.exited) return
+    const c = Math.max(20, Math.floor(cols))
+    const r = Math.max(5, Math.floor(rows))
     try {
-      s.proc.resize(Math.max(20, Math.floor(cols)), Math.max(5, Math.floor(rows)))
+      s.proc.resize(c, r)
+      s.cols = c
+      s.rows = r
     } catch {
       /* resizing a dead pty throws on Windows */
     }
@@ -159,6 +209,40 @@ export class PtyManager {
 
   sessionIdFor(ptyId: string): string | null {
     return this.sessions.get(ptyId)?.sessionId ?? null
+  }
+
+  /* ------------------------------------------------------ remote clients */
+
+  private subscribers = new Set<(ptyId: string, data: string) => void>()
+  private exitSubscribers = new Set<(ptyId: string, code: number) => void>()
+
+  /** Extra output sink, used by the remote server to fan out to phones. */
+  subscribe(fn: (ptyId: string, data: string) => void): () => void {
+    this.subscribers.add(fn)
+    return () => this.subscribers.delete(fn)
+  }
+
+  subscribeExit(fn: (ptyId: string, code: number) => void): () => void {
+    this.exitSubscribers.add(fn)
+    return () => this.exitSubscribers.delete(fn)
+  }
+
+  /** Everything this session has printed so far, for replay on attach. */
+  historyFor(ptyId: string): string {
+    const s = this.sessions.get(ptyId)
+    return s ? s.chunks.join('') : ''
+  }
+
+  list(): SessionInfo[] {
+    return [...this.sessions.values()].map((s) => ({
+      ptyId: s.ptyId,
+      sessionId: s.sessionId,
+      cwd: s.cwd,
+      exited: s.exited,
+      startedAt: s.startedAt,
+      cols: s.cols,
+      rows: s.rows
+    }))
   }
 
   killAll(): void {

@@ -1,6 +1,7 @@
 import type { CliInfo, EffortLevel, PermissionMode, Settings, Theme } from '@shared/types'
 import { BUILT_IN_THEMES } from '@shared/themes'
 import { IconClose } from './Icons'
+import { RemoteSettings, UpdatesSettings } from './RemoteSettings'
 import { EFFORT_LEVELS, MODEL_OPTIONS, PERMISSION_MODES } from '../lib/permissions'
 
 interface Props {
@@ -230,8 +231,12 @@ export function SettingsSheet({
             </button>
           </div>
 
+          <UpdatesSettings />
+
+          <RemoteSettings settings={settings} onPatch={onPatch} />
+
           <div className="field">
-            <span className="field-label">Claude CLI</span>
+            <span className="field-label">Claude CLI path</span>
             <input
               className="input mono"
               placeholder="Auto-detected"

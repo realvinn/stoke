@@ -7,10 +7,14 @@ import { EmbeddedBrowser } from './browser.ts'
 import { probeClaude } from './cli.ts'
 import { ContextWatcher } from './context.ts'
 import { listProjects, listSessions } from './projects.ts'
-import { PtyManager } from './pty.ts'
+import { PtyManager, type StartResult } from './pty.ts'
 import { getSettings, setSettings } from './store.ts'
 import { createScratchDir, resolveDefaultCwd } from './workspace.ts'
 import { BrowserMcpServer } from './mcp/server.ts'
+import { connectUrl, generateToken, RemoteServer } from './remote/server.ts'
+import { TunnelManager } from './remote/tunnel.ts'
+import { checkForUpdate, runDoctor, runUpdate } from './updates.ts'
+import QRCode from 'qrcode'
 
 const isMac = process.platform === 'darwin'
 
@@ -21,6 +25,26 @@ let watcher: ContextWatcher | null = null
 let mcp: BrowserMcpServer | null = null
 /** Path of the generated --mcp-config file; null until the server is up. */
 let mcpConfigPath: string | null = null
+let remote: RemoteServer | null = null
+const tunnel = new TunnelManager()
+
+/** Starting a session, shared by the renderer's IPC and the remote server. */
+async function launchSession(opts: LaunchOptions): Promise<StartResult> {
+  if (!ptys) throw new Error('Window is not ready')
+  const result = await ptys.start(opts, getSettings().claudePath, mcpConfigPath)
+  watcher?.watch(result.sessionId)
+  return result
+}
+
+/** Ensure a remote key exists before the server or a QR link needs one. */
+function remoteConfig(): Settings['remote'] {
+  const s = getSettings()
+  if (!s.remote.token) {
+    const next = setSettings({ remote: { ...s.remote, token: generateToken() } })
+    return next.remote
+  }
+  return s.remote
+}
 
 function send(channel: string, ...args: unknown[]): void {
   if (win && !win.isDestroyed() && !win.webContents.isDestroyed()) {
@@ -94,10 +118,30 @@ function createWindow(): void {
     void win.loadFile(join(__dirname, '../renderer/index.html'))
   }
 
+  // Bring remote access back up if it was left on.
+  if (getSettings().remote.enabled) {
+    const cfg = remoteConfig()
+    remote = new RemoteServer({
+      ptys: () => ptys,
+      watcher: () => watcher,
+      listProjects: () => listProjects(getSettings()),
+      startSession: (opts) => launchSession(opts),
+      defaultCwd: () => resolveDefaultCwd(getSettings().defaultCwd)
+    })
+    void remote.start(cfg).then(() => {
+      if (cfg.autoStartTunnel && cfg.hostname) {
+        tunnel.start('named', { port: cfg.port, tunnelName: cfg.tunnelName, hostname: cfg.hostname })
+      }
+    })
+  }
+
   win.on('closed', () => {
     ptys?.killAll()
     watcher?.disposeAll()
     mcp?.stop()
+    void remote?.stop()
+    tunnel.stop()
+    remote = null
     browser = null
     ptys = null
     watcher = null
@@ -172,12 +216,7 @@ function registerIpc(): void {
   ipcMain.handle(CH.projectsReveal, (_e, path: string) => shell.openPath(path))
 
   /* ------------------------------------------------------------------- pty */
-  ipcMain.handle(CH.ptyStart, async (_e, opts: LaunchOptions) => {
-    if (!ptys) throw new Error('Window is not ready')
-    const result = await ptys.start(opts, getSettings().claudePath, mcpConfigPath)
-    watcher?.watch(result.sessionId)
-    return result
-  })
+  ipcMain.handle(CH.ptyStart, (_e, opts: LaunchOptions) => launchSession(opts))
 
   ipcMain.on(CH.ptyWrite, (_e, ptyId: string, data: string) => ptys?.write(ptyId, data))
   ipcMain.on(CH.ptyResize, (_e, ptyId: string, cols: number, rows: number) =>
@@ -225,6 +264,80 @@ function registerIpc(): void {
     send(CH.settingsChanged, next)
   })
 
+  /* ---------------------------------------------------------------- remote */
+
+  const remoteState = async (): Promise<unknown> => {
+    const cfg = remoteConfig()
+    const url = connectUrl(cfg)
+    let qr: string | null = null
+    try {
+      qr = await QRCode.toDataURL(url, { margin: 1, width: 320, color: { dark: '#14110f', light: '#f2e9e1' } })
+    } catch {
+      qr = null
+    }
+    return {
+      server: remote?.status() ?? { running: false, port: cfg.port, error: null, clients: 0 },
+      tunnel: tunnel.status(),
+      url,
+      qr,
+      setup: tunnel.setupCommands(cfg.tunnelName, cfg.hostname, cfg.port)
+    }
+  }
+
+  ipcMain.handle(CH.remoteStatus, () => remoteState())
+
+  ipcMain.handle(CH.remoteStart, async () => {
+    const cfg = remoteConfig()
+    if (!remote) {
+      remote = new RemoteServer({
+        ptys: () => ptys,
+        watcher: () => watcher,
+        listProjects: () => listProjects(getSettings()),
+        startSession: (opts) => launchSession(opts),
+        defaultCwd: () => resolveDefaultCwd(getSettings().defaultCwd)
+      })
+    }
+    await remote.start(cfg)
+    if (cfg.autoStartTunnel && cfg.hostname) {
+      tunnel.start('named', { port: cfg.port, tunnelName: cfg.tunnelName, hostname: cfg.hostname })
+    }
+    setSettings({ remote: { ...cfg, enabled: true } })
+    return remoteState()
+  })
+
+  ipcMain.handle(CH.remoteStop, async () => {
+    await remote?.stop()
+    tunnel.stop()
+    const s = getSettings()
+    setSettings({ remote: { ...s.remote, enabled: false } })
+    return remoteState()
+  })
+
+  ipcMain.handle(CH.remoteNewToken, async () => {
+    const s = getSettings()
+    const next = setSettings({ remote: { ...s.remote, token: generateToken() } })
+    // Existing phones must re-open the link; restart so the old key stops working.
+    if (remote?.status().running) await remote.start(next.remote)
+    send(CH.settingsChanged, next)
+    return remoteState()
+  })
+
+  ipcMain.handle(CH.tunnelStart, (_e, mode: 'named' | 'quick') => {
+    const cfg = remoteConfig()
+    tunnel.start(mode, { port: cfg.port, tunnelName: cfg.tunnelName, hostname: cfg.hostname })
+    return remoteState()
+  })
+
+  ipcMain.handle(CH.tunnelStop, () => {
+    tunnel.stop()
+    return remoteState()
+  })
+
+  /* --------------------------------------------------------------- updates */
+  ipcMain.handle(CH.updateCheck, () => checkForUpdate(getSettings().claudePath))
+  ipcMain.handle(CH.updateRun, () => runUpdate(getSettings().claudePath))
+  ipcMain.handle(CH.updateDoctor, () => runDoctor(getSettings().claudePath))
+
   /* -------------------------------------------------------------- settings */
   ipcMain.handle(CH.settingsGet, () => getSettings())
   ipcMain.handle(CH.settingsSet, (_e, patch: Partial<Settings>) => {
@@ -271,5 +384,7 @@ if (!app.requestSingleInstanceLock()) {
     ptys?.killAll()
     watcher?.disposeAll()
     mcp?.stop()
+    void remote?.stop()
+    tunnel.stop()
   })
 }

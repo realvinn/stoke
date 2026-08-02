@@ -9,7 +9,8 @@
   "scripts": {
     "dev": "electron-vite dev",
     "start": "electron-vite preview",
-    "build": "electron-vite build",
+    "build": "electron-vite build && vite build --config vite.remote.config.ts",
+    "build:remote": "vite build --config vite.remote.config.ts",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "verify:context": "node scripts/verify-context.mts",
     "check": "npm run typecheck && npm run verify:context && npm run build",
@@ -23,12 +24,16 @@
   "dependencies": {
     "@lydell/node-pty": "1.2.0-beta.14",
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "qrcode": "^1.5.4",
+    "ws": "^8.21.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "@types/qrcode": "^1.5.6",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
+    "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^5.0.0",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-search": "^0.16.0",

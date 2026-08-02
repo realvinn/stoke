@@ -199,6 +199,23 @@ export interface Settings {
     width: number
     bookmarks: string[]
   }
+  /** Serving Stoke's sessions to a phone, normally behind a Cloudflare Tunnel. */
+  remote: {
+    enabled: boolean
+    port: number
+    /** Bearer key; generated on first use. Also carried in the QR link. */
+    token: string
+    /** Public hostname the tunnel points at, e.g. code.vinn.dev. */
+    hostname: string
+    /** Listen on the LAN as well as loopback. Off by default. */
+    bindLan: boolean
+    /** Refuse requests that did not arrive through Cloudflare Access. */
+    requireAccessHeader: boolean
+    /** Start the named cloudflared tunnel when the remote server starts. */
+    autoStartTunnel: boolean
+    /** Name of the pre-created cloudflared tunnel to run. */
+    tunnelName: string
+  }
   sidebarWidth: number
   /** Explicit path to the claude executable; null means auto-detect. */
   claudePath: string | null

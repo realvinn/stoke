@@ -9,6 +9,7 @@ import type {
   SessionMeta,
   Settings
 } from '@shared/types'
+import type { UpdateInfo } from '@shared/api'
 import { resolveTheme } from '@shared/themes'
 import { BrowserPanel } from './components/BrowserPanel'
 import { CommandPalette } from './components/CommandPalette'
@@ -70,6 +71,8 @@ export function App(): React.JSX.Element {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [maximized, setMaximized] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  /** Result of the launch-time CLI version check. */
+  const [update, setUpdate] = useState<UpdateInfo | null>(null)
 
   // Launch options for the next session, seeded from the saved defaults.
   const [mode, setMode] = useState<PermissionMode>('default')
@@ -114,6 +117,8 @@ export function App(): React.JSX.Element {
       setEffort(s.defaults.effort)
       void window.stoke.cli.info().then(setCli)
       void window.stoke.workspace.defaultCwd().then(setDefaultCwd)
+      // Quiet check; surfaces as a status-bar pill only when something is newer.
+      void window.stoke.updates.check().then(setUpdate)
       await refreshProjects()
     })()
 
@@ -611,7 +616,9 @@ export function App(): React.JSX.Element {
         tab={activeTab}
         context={activeTab ? (contexts[activeTab.sessionId] ?? null) : null}
         cli={cli}
+        updateAvailable={update?.updateAvailable ? update.latest : null}
         onRevealProject={(p) => void window.stoke.projects.reveal(p)}
+        onOpenSettings={() => setSettingsOpen(true)}
       />
 
       {paletteOpen && (

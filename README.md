@@ -129,6 +129,41 @@ attempt prompt injection to steer that. The shared session is what makes this us
 it is also the risk. If that trade stops being worth it, the partition is a one-line change
 in `src/main/browser.ts`.
 
+## From your phone
+
+Stoke can serve your live sessions to a phone. Turn it on in **Settings → Remote access** and
+scan the QR code.
+
+It binds to loopback and every request needs a key, which the QR link carries. The intended
+shape is a Cloudflare Tunnel pointing a hostname at that port with Cloudflare Access in
+front, so the machine never opens an inbound port:
+
+```bash
+cloudflared tunnel login
+cloudflared tunnel create stoke
+cloudflared tunnel route dns stoke code.example.com
+```
+
+Then set the hostname in Settings and press **Run named tunnel** — Stoke supervises
+`cloudflared` from there. Add an Access policy allowing only your email, and turn on
+**Require Cloudflare Access** so the server refuses anything that did not arrive through the
+tunnel. **Quick tunnel** gets a throwaway `trycloudflare.com` address with no Access policy
+in front of it, which is fine for a one-off test and nothing more.
+
+The phone UI lists running sessions with their context meters, attaches to one and replays
+its scrollback, and can start new sessions in any project. Text goes in through a normal
+input rather than the terminal — typing into an xterm on a soft keyboard is miserable and
+autocorrect fights the TUI — with a row of keys the TUI needs and a phone has none of
+(`esc`, `tab`, arrows, `ctrl-c`).
+
+By default the phone renders at the desktop's terminal width and scrolls sideways. **Fit**
+resizes to the phone instead, which reflows the desktop terminal too, so it is opt-in.
+
+Two things worth being clear about: your desktop must be awake and running Stoke, since
+this is remote control of a local process rather than anything cloud-hosted; and the connect
+link is a password — anyone holding it can drive a shell on your machine. **New key** in
+Settings revokes it.
+
 ## Layout
 
 ```
