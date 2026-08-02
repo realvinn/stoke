@@ -41,6 +41,15 @@ export class PageAgent {
     return this.browser.ensureHeadless()
   }
 
+  /**
+   * The page itself, for the analyses that go over CDP rather than through the
+   * injected extractor. Design, performance and security all need computed
+   * styles, traces and response metadata that no in-page script can reach.
+   */
+  webContents(): WebContents {
+    return this.wc()
+  }
+
   private async evaluate<T>(expression: string): Promise<T> {
     return (await this.wc().executeJavaScript(expression, true)) as T
   }

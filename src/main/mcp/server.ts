@@ -8,6 +8,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { z } from 'zod'
 import type { EmbeddedBrowser } from '../browser.ts'
 import { PageAgent } from './page.ts'
+import { analyseDesign } from './design.ts'
 
 /**
  * An MCP server exposing the docked browser to Claude Code.
@@ -478,6 +479,34 @@ export class BrowserMcpServer {
             }
           ]
         }
+      }
+    )
+
+    /* ------------------------------------------------------------ analysis */
+
+    mcp.registerTool(
+      'browser_design',
+      {
+        title: 'Read the page as a design',
+        description:
+          "Extract the page's design system from what is actually rendered: the type " +
+          'scale, ink and surface palettes with usage share, the spacing scale and every ' +
+          'value that drifts off it, radii, shadows, layout mode, z-layers, declared ' +
+          'breakpoints, and every text run that fails contrast. Reports both WCAG 2 ratio ' +
+          'and APCA lightness contrast, because they disagree on dark and near-black pairs. ' +
+          'Use this instead of a screenshot when the question is about styling, consistency ' +
+          'or accessibility — it is far cheaper and far more precise.',
+        inputSchema: {
+          limit: z.number().optional().describe('Entries per section (default 12)'),
+          contrastDetail: z
+            .boolean()
+            .optional()
+            .describe('List up to 40 contrast failures rather than 12')
+        }
+      },
+      async ({ limit, contrastDetail }) => {
+        await agent.waitForStable()
+        return text(await analyseDesign(agent.webContents(), { limit, contrastDetail }))
       }
     )
 
