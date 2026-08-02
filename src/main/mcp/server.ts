@@ -9,6 +9,9 @@ import { z } from 'zod'
 import type { EmbeddedBrowser } from '../browser.ts'
 import { PageAgent } from './page.ts'
 import { analyseDesign } from './design.ts'
+import { detectStack } from './stack.ts'
+import { auditSecurity } from './audit.ts'
+import { analysePerformance } from './perf.ts'
 
 /**
  * An MCP server exposing the docked browser to Claude Code.
@@ -507,6 +510,68 @@ export class BrowserMcpServer {
       async ({ limit, contrastDetail }) => {
         await agent.waitForStable()
         return text(await analyseDesign(agent.webContents(), { limit, contrastDetail }))
+      }
+    )
+
+    mcp.registerTool(
+      'browser_stack',
+      {
+        title: 'Identify the tech stack',
+        description:
+          'Report what the page is built with — framework, meta-framework, build tool, CSS ' +
+          'approach, CMS, hosting, CDN, analytics — from runtime globals the framework ' +
+          'installs, DOM markers, build output paths and response headers. Works on a local ' +
+          'dev server as well as a public site, and reports current versions rather than ' +
+          'matching against a signature database frozen in 2023.',
+        inputSchema: {}
+      },
+      async () => {
+        await agent.waitForStable()
+        return text(await detectStack(agent.webContents(), this.browser.networkEntries()))
+      }
+    )
+
+    mcp.registerTool(
+      'browser_security',
+      {
+        title: 'Review the page for security hygiene',
+        description:
+          'Passive security review of the loaded page: CSP graded on strength rather than ' +
+          'presence, HSTS, framing, cross-origin isolation, cookie flags, mixed content, ' +
+          'subresource integrity, exposed source maps, development builds left live, and ' +
+          'the third parties the page contacts. Reads only what the browser already ' +
+          'received — it never probes paths, sends payloads, or makes a request the page ' +
+          'did not make itself, so it is safe to point at any site. Reload the page first ' +
+          'if response headers have not been captured yet.',
+        inputSchema: {}
+      },
+      async () => {
+        await agent.waitForStable()
+        return text(await auditSecurity(agent.webContents(), this.browser.networkEntries()))
+      }
+    )
+
+    mcp.registerTool(
+      'browser_perf',
+      {
+        title: 'Measure why the page is slow',
+        description:
+          'Core Web Vitals with verdicts (LCP and its element, CLS and what shifted, FCP, ' +
+          'TTFB, TBT), request weight by type, the heaviest resources, unused JS and CSS ' +
+          'bytes, render-blocking resources, oversized and unsized images, font-display ' +
+          'problems, DOM size and third-party cost. Reloads with the cache disabled by ' +
+          'default, because unused-byte coverage is only meaningful when tracking starts ' +
+          'before the bytes arrive.',
+        inputSchema: {
+          reload: z
+            .boolean()
+            .optional()
+            .describe('Reload to measure a cold load (default true). False keeps the current page.')
+        }
+      },
+      async ({ reload }) => {
+        await agent.waitForStable()
+        return text(await analysePerformance(agent.webContents(), { reload }))
       }
     )
 

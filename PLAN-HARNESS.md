@@ -41,22 +41,24 @@ wants CDP.
       Consequences: CDP is available unconditionally, no mutex against DevTools is needed, and the
       payloads confirm the architecture — analysis runs in the main process and only the digest
       reaches Claude. A 2.3 MB snapshot must never be serialised toward the model.
-- [ ] **1. Extractor quality.** The known-broken thing from HANDOFF.md. Nav chrome leaks on docs
-      sites; layout tables render as crammed markdown rows. Add shadow-DOM piercing and iframe
-      handling while in there.
-- [ ] **2. `browser_design`.** Type scale, colour palette with usage frequency, spacing scale and its
-      drift, radii, shadows, z-layers, grid/layout, breakpoints actually hit. Contrast under both
-      WCAG 2 and APCA.
+- [x] **1. Extractor quality.** Done, `dbb3754`. `STRIP` turned out to be dead code — declared and
+      never referenced — which is why nav leaked. Controls are now dropped and links kept (the
+      first fix treated them alike and emptied Hacker News). Layout tables are walked as records.
+      Shadow roots are pierced. `scripts/verify-extract.mjs` holds the three pages as a regression
+      set.
+- [x] **2. `browser_design`.** Done, `143b519`.
+- [x] **4. `browser_perf`.** Done.
+- [x] **5. `browser_stack`.** Done.
+- [x] **6. `browser_security`.** Done, passive only.
 - [ ] **3. `browser_responsive`.** Resize through breakpoints; report horizontal overflow, clipped
-      text, overlapping boxes, touch targets under 24x24.
-- [ ] **4. `browser_perf`.** Trace-derived insights, coverage (unused CSS/JS bytes), image sizing,
-      font-display, DOM size, long tasks, third-party cost.
-- [ ] **5. `browser_stack`.** Framework/library detection from runtime globals plus header, meta and
-      script-URL signatures.
-- [ ] **6. `browser_security`.** Passive only: headers, CSP grading, cookies, mixed content, cert,
-      SRI, third-party inventory, exposed source maps, known-vulnerable libraries.
-- [ ] **7. Harness gaps.** `browser_wait_for`, `browser_tabs`, `browser_dialog`, batch
-      `browser_fill_form`, schema-based `browser_extract`, incremental snapshots.
+      text, overlapping boxes, touch targets under 24x24. Not started.
+- [ ] **7. Harness gaps.** `browser_wait_for` (highest value — without it the agent polls),
+      `browser_tabs`, `browser_dialog`, batch `browser_fill_form`, schema-based `browser_extract`,
+      incremental snapshots. Not started.
+- [ ] **8. Paint metrics need a visible page.** LCP, FCP and CLS are unavailable while the agent's
+      view is hidden, because Chromium does not paint a hidden view. Currently reported as
+      unavailable, which is honest but not useful. Making the view briefly visible during a
+      measurement would fix it.
 
 ## Research conclusions worth keeping
 
@@ -92,6 +94,34 @@ Five subagents surveyed the field. What actually changes the design:
   itself request is not, and must stay out unless the user explicitly targets their own host.
 
 ## Gotchas discovered this phase
+
+Every one of these produced confident, plausible, wrong output rather than an error. None would
+have been caught by a typecheck, and several survived a first round of eyeballing.
+
+- **`did-start-loading` fires again after the page has loaded.** A client-side router starting a
+  prefetch counts as "loading", so the console and network logs were wiped moments after being
+  filled. Measured on tailwindcss.com: the second event arrives with 53 completed requests already
+  recorded and takes all of them. This is why the security audit saw no headers. The log is now
+  cleared on `did-start-navigation` filtered to main-frame, cross-document — which fires *before*
+  the document request, unlike `did-navigate`, and only once, unlike `did-start-loading`.
+- **Computed colours are not `rgb()` any more.** Tailwind v4 and anything authored in OKLCH report
+  `oklab(...)` and `lab(...)`. Painting each distinct value to a 1x1 canvas and reading it back is
+  both simpler and safer than hand-rolling the conversions.
+- **`DOMSnapshot`'s `includeBlendedBackgroundColors` returns an array of empty strings.** It is the
+  right length, so it looks like it worked. Contrast is now composited from the ancestor chain.
+- **`Profiler.startPreciseCoverage({detailed: true})` crashes the app on a large bundle.** Function
+  granularity (`detailed: false`) is enough and does not.
+- **V8 coverage ranges nest.** Summing covered ranges double-counts and reports 0% unused for every
+  script. Merge the `count === 0` ranges instead.
+- **`CSS.stopRuleUsageTracking` reports rules that were exercised, not every rule.** Deriving
+  "unused" from its `used: false` entries gave 0% unused on Wikipedia, which loads a large shared
+  stylesheet. The denominator has to come from `CSS.getStyleSheetText`. Correct answer: 80%.
+- **A hidden `WebContentsView` never paints**, so LCP, FCP and CLS do not exist for it. Reporting
+  the zeros as "LCP 0ms, good" was the single most misleading thing the tool did.
+- **"Header absent" and "headers never captured" look identical once rendered.** The audit
+  confidently reported a missing CSP, HSTS and nosniff on a site that sends all three.
+
+Earlier:
 
 - `cloudflared tunnel route dns` refuses to replace an existing record; `--overwrite-dns` is needed.
   `code.vinn.dev` already held an orphaned proxied A record serving HTTP 530 (Cloudflare "tunnel not

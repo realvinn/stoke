@@ -19,6 +19,14 @@ export interface NetEntry {
   type: string
   error?: string
   at: number
+  fromCache?: boolean
+  /**
+   * Response headers, kept only for documents. Every passive security check
+   * worth running reads them — CSP, HSTS, framing, cross-origin isolation —
+   * and holding them for three hundred subresources as well would cost far
+   * more memory than it could ever answer.
+   */
+  headers?: Record<string, string[]>
 }
 
 /** Ring buffer size per tab for each log. Enough for a page load, cheap to keep. */
@@ -115,14 +123,35 @@ export class EmbeddedBrowser {
     const wc = view.webContents
     const push = (): void => this.emit(this.state())
 
-    wc.on('did-start-loading', () => {
-      // Reset per page load. This must be did-start-loading, not did-navigate:
-      // did-navigate fires after the main document response, which would wipe
-      // the very request the agent asks about when a page fails to load.
+    /*
+     * Discard the logs per navigation, not per loading spinner.
+     *
+     * did-navigate was the first attempt and fires after the main document
+     * response, wiping the very request the agent asks about when a page fails
+     * to load. did-start-loading was the second, and it is wrong in a subtler
+     * and more damaging way: it fires again every time a client-side router
+     * starts fetching, so on any framework that prefetches — which is to say
+     * most of them — the whole log is cleared moments after the page finished
+     * loading. Measured on tailwindcss.com: the second did-start-loading
+     * arrives with 53 completed requests already recorded and takes all of
+     * them, which is why the security audit found no headers to read.
+     *
+     * A real main-frame, cross-document navigation is the only event that
+     * should discard anything, and it fires before the document request goes
+     * out rather than after it comes back.
+     */
+    wc.on('did-start-navigation', (...args: unknown[]) => {
+      const details = (args[0] ?? {}) as { isMainFrame?: boolean; isSameDocument?: boolean }
+      const isMainFrame =
+        typeof details.isMainFrame === 'boolean' ? details.isMainFrame : args[3] === true
+      const isSameDocument =
+        typeof details.isSameDocument === 'boolean' ? details.isSameDocument : args[2] === true
+      if (!isMainFrame || isSameDocument) return
       tab.consoleLog = []
       tab.netLog = []
       push()
     })
+    wc.on('did-start-loading', push)
     wc.on('did-stop-loading', push)
     wc.on('did-navigate', push)
     wc.on('did-navigate-in-page', push)
@@ -252,8 +281,17 @@ export class EmbeddedBrowser {
   }
 
   /**
-   * The webRequest API is used rather than a CDP debugger: only one debugger
-   * client may attach at a time, and that slot must stay free for DevTools.
+   * The webRequest API rather than CDP's Network domain, because this listens
+   * for the life of the session with no attach, no reload and no observer
+   * effect — a page's very first request is captured, which a debugger session
+   * opened on demand would already have missed.
+   *
+   * The original reason given here was that only one debugger client may attach
+   * at a time and the slot had to stay free for DevTools. That turned out to be
+   * false: Chromium allows several protocol clients per target, and mcp/cdp.ts
+   * now attaches freely alongside DevTools. This hook stays because it is the
+   * better tool for the job, not because CDP is unavailable.
+   *
    * Entries are routed back to their tab via webContentsId.
    */
   private hookNetwork(): void {
@@ -270,12 +308,15 @@ export class EmbeddedBrowser {
     wr.onCompleted((d) => {
       const log = route(d.webContentsId)
       if (!log) return
+      const isDocument = d.resourceType === 'mainFrame' || d.resourceType === 'subFrame'
       this.push(log, {
         url: d.url,
         method: d.method,
         status: d.statusCode ?? null,
         type: d.resourceType ?? 'other',
-        at: Date.now()
+        at: Date.now(),
+        fromCache: d.fromCache,
+        headers: isDocument ? d.responseHeaders : undefined
       })
     })
 

@@ -22,13 +22,27 @@ export type Send = <T = Record<string, unknown>>(
 ) => Promise<T>
 
 /**
+ * Subscribe to protocol events for the life of the session; returns an
+ * unsubscribe function. Some questions are only answerable from events —
+ * enabling the Debugger domain replays a scriptParsed for every script already
+ * loaded, which is how exposed source maps are found without issuing a single
+ * extra request, and so without crossing from observation into probing.
+ */
+export type OnEvent = (
+  handler: (method: string, params: Record<string, unknown>) => void
+) => () => void
+
+/**
  * One queue per WebContents. Two tools running at once would otherwise race on
  * attach and detach, and the loser sees "Debugger is already attached" or has
  * the session pulled out from under it mid-command.
  */
 const queues = new Map<number, Promise<unknown>>()
 
-export async function withCdp<T>(wc: WebContents, fn: (send: Send) => Promise<T>): Promise<T> {
+export async function withCdp<T>(
+  wc: WebContents,
+  fn: (send: Send, on: OnEvent) => Promise<T>
+): Promise<T> {
   const id = wc.id
   const prior = queues.get(id) ?? Promise.resolve()
 
@@ -46,7 +60,10 @@ export async function withCdp<T>(wc: WebContents, fn: (send: Send) => Promise<T>
   return run
 }
 
-async function attachRunDetach<T>(wc: WebContents, fn: (send: Send) => Promise<T>): Promise<T> {
+async function attachRunDetach<T>(
+  wc: WebContents,
+  fn: (send: Send, on: OnEvent) => Promise<T>
+): Promise<T> {
   // Someone else may already hold a session — DevTools being open does not show
   // up here, but a nested call would.
   const borrowed = wc.debugger.isAttached()
@@ -55,9 +72,19 @@ async function attachRunDetach<T>(wc: WebContents, fn: (send: Send) => Promise<T
   const send: Send = async (method, params) =>
     (await wc.debugger.sendCommand(method, params ?? {})) as never
 
+  const listeners: ((...args: never[]) => void)[] = []
+  const on: OnEvent = (handler) => {
+    const wrapped = (_event: unknown, method: string, params: Record<string, unknown>): void =>
+      handler(method, params ?? {})
+    wc.debugger.on('message', wrapped as never)
+    listeners.push(wrapped as never)
+    return () => wc.debugger.off('message', wrapped as never)
+  }
+
   try {
-    return await fn(send)
+    return await fn(send, on)
   } finally {
+    for (const l of listeners) wc.debugger.off('message', l as never)
     if (!borrowed && wc.debugger.isAttached()) {
       try {
         wc.debugger.detach()
