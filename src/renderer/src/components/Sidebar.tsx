@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import type { Project, SessionMeta } from '@shared/types'
 import { ContextBar } from './ContextMeter'
-import { PROFILES } from '@shared/profiles'
+import { profilesFor } from '@shared/profiles'
 import { IconChevron, IconFolder, IconPin, IconPlus, IconSearch } from './Icons'
 import { UsageMeter } from './UsageMeter'
 import { relativeTime } from '../lib/format'
@@ -53,8 +53,9 @@ export function Sidebar({
    * never advertises a folder the user does not use.
    */
   const available = useMemo(() => {
-    const present = new Set(projects.map((p) => p.group))
-    return PROFILES.filter((p) => present.has(p.id))
+    const counts = new Map<string, number>()
+    for (const p of projects) counts.set(p.group, (counts.get(p.group) ?? 0) + 1)
+    return profilesFor(counts)
   }, [projects])
 
   const filtered = useMemo(() => {
@@ -103,7 +104,9 @@ export function Sidebar({
   return (
     <nav className="sidebar" style={{ width: '100%' }} aria-label="Projects">
       <div className="sidebar-head">
-        {available.length > 1 && (
+        {/* One profile plus All is still a useful choice; hiding the row below
+            two meant a machine with a single work folder saw nothing at all. */}
+        {available.length > 0 && (
           <div className="profiles" role="group" aria-label="Profile">
             <button
               className="profile-chip"
