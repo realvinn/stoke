@@ -177,6 +177,23 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
         </span>
       </label>
 
+      <label className="check-row">
+        <input
+          type="checkbox"
+          checked={remote.bindTailscale}
+          disabled={remote.bindLan}
+          onChange={(e) => onPatch({ remote: { ...remote, bindTailscale: e.target.checked } })}
+        />
+        <span>
+          <span className="field-label">Also listen on Tailscale</span>
+          <span className="field-hint">
+            {remote.bindLan
+              ? 'Already covered: listening on the local network includes the tailnet.'
+              : 'Reaches this machine from anywhere your phone can see the tailnet, with no tunnel. Unlike the local network option it opens the port to the tailnet only. Loopback stays bound, so the Cloudflare tunnel keeps working alongside it.'}
+          </span>
+        </span>
+      </label>
+
       <div className="field">
         <span className="field-label">Speech server</span>
         <input

@@ -111,9 +111,59 @@ Derived from a 7-agent recon pass. Wave 0 is shared plumbing and blocks the rest
 
 ### Voice: Stoke owns the Windows default recording device — settled
 
-`/voice` reads the Windows **default** capture endpoint and cannot be pointed at a device -
-no flag, no setting, no env var. So passthrough means owning that default, and the user has
-agreed Stoke should manage it.
+`/voice` reads the Windows **default** capture endpoint and cannot be pointed at a device.
+Settled against the 2.1.220 binary, not inferred: the settings schema is a *closed* three-key
+Zod object, extracted verbatim —
+
+```
+voice: { enabled?: boolean,
+         mode?: "hold" | "tap",     // hold (default) = hold to talk; tap = tap to start, tap to stop+submit
+         autoSubmit?: boolean }     // hold mode only
+```
+
+A byte scan for `inputDevice`, `audioInputDevice`, `captureDevice`, `deviceIndex`,
+`enumerateDevices` and six other candidate names returned **zero hits**, and the recording
+call site takes two callbacks and no options argument at all. The default keybinding is
+`voice:pushToTalk` → `space`, context `Chat`. Re-check this on every CLI upgrade; it is proven
+for 2.1.220 only.
+
+So passthrough means owning that default, and the user has agreed Stoke should manage it.
+
+**`tap` mode exists and the phone must use it.** Hold mode infers key-hold from terminal
+auto-repeat, which a synthesised PTY write cannot faithfully reproduce from a phone. Set
+`"mode": "tap"` before launching, or send `/voice tap` once, which persists it.
+
+**Two facts about `/voice` that were not previously known and change the calculus:**
+
+- **It is not local.** Audio is streamed to Anthropic over
+  `wss://…/api/ws/speech_to_text/voice_stream` at 16 kHz mono linear16. Nothing is
+  transcribed on the machine. Transcription itself costs no tokens.
+- **It requires an OAuth Claude.ai login.** It fails on a raw API key, and on Bedrock, Vertex
+  and Foundry, and is blocked under HIPAA org policy. Stoke must hide the mic affordance for
+  those sessions rather than let it fail silently.
+
+That matters because the user already runs faster-whisper large-v3-turbo on CUDA locally. The
+existing transcribe path keeps audio on the machine and works on any auth mode; `/voice` does
+neither. Neither is strictly better - but "use the built-in because it already transcribes" is
+not the whole story, and the choice should be made knowing this.
+
+`CLAUDE_CODE_VOICE_FORWARD_INTERIMS_TYPED` forwards interim transcripts as typed text, which is
+the cheapest way to show live dictation in the Stoke or phone UI. Recording auto-stops after
+15 s of silence or 2 minutes. `VOICE_STREAM_BASE_URL` overrides the endpoint.
+
+**Build detect-and-warn first, hijack second and opt-in.** Detection is nearly free and helps
+under every outcome; the hijack is a global machine setting Stoke does not own, and it carries
+restore-on-crash bookkeeping.
+
+**Correction to a claim made during research:** setting the default capture endpoint does *not*
+require a native addon or a bundled third-party binary. `src/main/audio/defaultDevice.ts` does
+it with `powershell.exe -NoProfile` plus `Add-Type -Language CSharp`, compiling COM interop
+against `MMDeviceEnumerator` and `IPolicyConfig` at runtime with nothing installed. The read
+path is verified working on this machine; **the write path is written but unexercised**, having
+been blocked by a permission guard, and must be run before it is trusted.
+
+**The open risk that could sink phone push-to-talk:** `space` is the push-to-talk binding, and
+what it does with a *non-empty* prompt buffer is unresolved. Test that before building on it.
 
 **This is already causing a live fault.** The default capture endpoint is currently
 `CABLE Output (VB-Audio Virtual Cable)` on all three roles, which is a silent virtual cable,
@@ -261,6 +311,47 @@ The design is settled and should not be re-litigated:
 - Pressing `+` offers: new chat in this folder, new temp chat, or a different folder/chat.
 - **Each terminal gets its own browser view**, not one shared browser.
 - Two monitors is the motivating case.
+
+### 7a. Tailscale — DONE 2026-08-03, and it retires the Worker router
+
+Stoke can now bind the tailnet address **alongside** loopback, so a phone on the tailnet
+reaches the machine directly from anywhere while the Cloudflare tunnel keeps working.
+
+Why alongside and not instead: **cloudflared runs on this machine and dials `127.0.0.1`**
+(`tunnel.ts:92`), so binding only the tailnet address would leave the tunnel with nothing to
+reach. `bindLan` stays all-or-nothing via `0.0.0.0`, which already covers loopback and the
+tailnet — binding it next to `127.0.0.1` would collide on the port.
+
+Detection matches the address range, not the interface name: Tailscale hands every node an
+address in `100.64.0.0/10`, and the interface is variously `Tailscale`, `tailscale0` and a
+`utun` device. On this machine that correctly picks `100.83.239.24` while ignoring the
+ZeroTier (`10.144.99.183`) and NordLynx (`10.5.0.2`) interfaces.
+
+**Access policy is now per-listener, which resolves a conflict the single flag could not.**
+Cloudflare requests carry `Cf-Access-*`; tailnet requests can never carry them. So
+`requireAccessHeader` is enforced **only on the loopback listener**, read from
+`req.socket.localAddress` so it reflects which listener accepted the connection and cannot be
+forged by a header. Each path gets the check that fits it and neither weakens the other.
+
+**The cookie's `Secure` flag is keyed off the same thing**, and this was a live trap: a tailnet
+connection is plain `http://100.x.y.z:port`, so keying `Secure` off `bindLan` — as the code did
+— would have sent `Secure` to a phone on the tailnet, the browser would have silently dropped
+the cookie, and every request after the first would have 401'd with nothing to explain why.
+
+Verified against a running build, 7 assertions: loopback without Access headers 401s, loopback
+with them 200s, the tailnet path 200s on the token alone, a wrong token and a missing token
+both 401 on the tailnet, and `Secure` is present on loopback and absent on the tailnet.
+`Get-NetTCPConnection` confirmed exactly two listeners, `127.0.0.1` and `100.83.239.24`, with
+no `0.0.0.0`.
+
+**Consequence for the plan: phases 3 and 4 below are dropped.** Tailscale MagicDNS gives every
+machine a stable name for free, so the Cloudflare Worker routing `/u/0` and `/u/1`, the sticky
+cookie, the picker page and the prefix-awareness work are all unnecessary. It also retires the
+trap that design was built around — one named tunnel and one hostname per machine — for any
+machine reached over the tailnet rather than a tunnel.
+
+`code.vinn.dev` is still worth keeping for devices that cannot join the tailnet, and for
+networks that block WireGuard where Tailscale's DERP fallback does not get through.
 
 ### 7. More than one machine
 

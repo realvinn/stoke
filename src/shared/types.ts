@@ -209,6 +209,12 @@ export interface Settings {
     hostname: string
     /** Listen on the LAN as well as loopback. Off by default. */
     bindLan: boolean
+    /**
+     * Listen on the Tailscale address as well as loopback, so a phone on the
+     * tailnet connects directly without the tunnel. Narrower than `bindLan`:
+     * it exposes the port to the tailnet only, never to the local network.
+     */
+    bindTailscale: boolean
     /** Refuse requests that did not arrive through Cloudflare Access. */
     requireAccessHeader: boolean
     /** Start the named cloudflared tunnel when the remote server starts. */

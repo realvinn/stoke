@@ -35,6 +35,7 @@ const DEFAULTS: Settings = {
     token: '',
     hostname: '',
     bindLan: false,
+    bindTailscale: false,
     requireAccessHeader: false,
     autoStartTunnel: false,
     tunnelName: 'stoke',
