@@ -1198,6 +1198,51 @@ body {
   animation: fade var(--dur) var(--ease);
 }
 
+/*
+ * Right-click menu for the terminal. Drawn here rather than with Electron's
+ * native Menu so it picks up the theme like everything else.
+ */
+.context-menu {
+  position: fixed;
+  z-index: var(--z-modal);
+  min-width: 11rem;
+  padding: var(--sp-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-lg);
+  animation: pop var(--dur) var(--ease);
+}
+
+.context-menu-item {
+  display: block;
+  width: 100%;
+  padding: var(--sp-2) var(--sp-3);
+  border: none;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font-size: var(--fs-sm);
+  cursor: default;
+}
+
+.context-menu-item:hover:not(:disabled) {
+  background: var(--accent-soft);
+}
+
+.context-menu-item:disabled {
+  color: var(--text-muted);
+  opacity: 0.5;
+}
+
+.context-menu-item[data-separated='true'] {
+  margin-top: var(--sp-2);
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 var(--r-md) var(--r-md);
+  padding-top: calc(var(--sp-2) + 1px);
+}
+
 .palette {
   position: fixed;
   top: 12vh;

@@ -87,6 +87,10 @@ export const CH = {
   settingsSet: 'settings:set',
   settingsChanged: 'settings:changed',
 
+  // clipboard
+  clipboardRead: 'clipboard:read',
+  clipboardWrite: 'clipboard:write',
+
   // misc
   openExternal: 'shell:openExternal',
   pickFolder: 'dialog:pickFolder'

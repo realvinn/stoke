@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron'
 import { join } from 'node:path'
 import { CH } from '@shared/ipc'
 import { resolveTheme } from '@shared/themes'
@@ -426,6 +426,27 @@ function registerIpc(): void {
     }
     send(CH.settingsChanged, next)
     return next
+  })
+
+  /* ------------------------------------------------------------- clipboard */
+  /*
+   * Read synchronously. xterm's key handler must decide whether to swallow a
+   * paste before it returns, so an async round trip would always land a
+   * keystroke too late. Reading the clipboard is microseconds, so blocking the
+   * renderer for it is cheaper than the alternative of caching and going stale.
+   *
+   * hasImage is what lets plain Ctrl+V fall through to Claude Code's own image
+   * handler: the CLI reads the image off the OS clipboard itself, so no image
+   * bytes ever have to cross the PTY.
+   */
+  ipcMain.on(CH.clipboardRead, (e) => {
+    e.returnValue = {
+      text: clipboard.readText(),
+      hasImage: !clipboard.readImage().isEmpty()
+    }
+  })
+  ipcMain.on(CH.clipboardWrite, (_e, text: string) => {
+    if (typeof text === 'string' && text) clipboard.writeText(text)
   })
 
   /* ------------------------------------------------------------------ misc */

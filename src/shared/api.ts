@@ -10,6 +10,12 @@ import type {
   UsageSnapshot
 } from './types'
 
+/** What is on the OS clipboard right now, read in one synchronous hop. */
+export interface ClipboardPeek {
+  text: string
+  hasImage: boolean
+}
+
 export interface StartResult {
   ptyId: string
   sessionId: string
@@ -164,6 +170,16 @@ export interface StokeApi {
     get(): Promise<Settings>
     set(patch: Partial<Settings>): Promise<Settings>
     onChange(cb: (settings: Settings) => void): () => void
+  }
+
+  clipboard: {
+    /*
+     * Synchronous by design. xterm's key handler has to decide whether to
+     * swallow the event before it returns, so an async read would always be
+     * one keystroke too late.
+     */
+    readSync(): ClipboardPeek
+    writeText(text: string): void
   }
 
   openExternal(url: string): void

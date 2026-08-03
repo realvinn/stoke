@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { IpcRendererEvent } from 'electron'
 import { CH } from '@shared/ipc'
-import type { StokeApi } from '@shared/api'
+import type { ClipboardPeek, StokeApi } from '@shared/api'
 import type { Rect, LaunchOptions, Settings } from '@shared/types'
 
 /** Subscribe helper that hands back an unsubscribe function. */
@@ -114,6 +114,11 @@ const api: StokeApi = {
     get: () => ipcRenderer.invoke(CH.settingsGet),
     set: (patch: Partial<Settings>) => ipcRenderer.invoke(CH.settingsSet, patch),
     onChange: (cb) => on<[Settings]>(CH.settingsChanged, cb)
+  },
+
+  clipboard: {
+    readSync: () => ipcRenderer.sendSync(CH.clipboardRead) as ClipboardPeek,
+    writeText: (text: string) => ipcRenderer.send(CH.clipboardWrite, text)
   },
 
   openExternal: (url: string) => ipcRenderer.send(CH.openExternal, url)
