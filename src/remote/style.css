@@ -420,6 +420,24 @@ button {
   opacity: 0.6;
 }
 
+/* Quiet: you need it when you look, not shouting the rest of the time. */
+.machine {
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 9rem;
+}
+
+.machine:empty {
+  display: none;
+}
+
 /*
  * Voice mode changes what the space bar means, so it has to be unmistakable
  * while it is on — a mode you can forget you are in is a trap.

@@ -1,7 +1,7 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { readFile } from 'node:fs/promises'
-import { networkInterfaces } from 'node:os'
+import { hostname, networkInterfaces } from 'node:os'
 import { extname, join, normalize, sep } from 'node:path'
 import type { Duplex } from 'node:stream'
 import { app } from 'electron'
@@ -317,6 +317,15 @@ export class RemoteServer {
       if (url.pathname === '/api/sessions' && req.method === 'GET') {
         return this.json(res, await this.sessionList(), setCookie)
       }
+      /*
+       * Which machine this is. With one desktop it is noise; with a laptop and
+       * a desktop behind the same bookmarks, two tabs are indistinguishable and
+       * it is entirely possible to start work on the wrong computer.
+       */
+      if (url.pathname === '/api/host' && req.method === 'GET') {
+        return this.json(res, { machine: hostname(), platform: process.platform }, setCookie)
+      }
+
       if (url.pathname === '/api/projects' && req.method === 'GET') {
         const projects = await this.deps.listProjects()
         return this.json(

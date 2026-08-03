@@ -92,10 +92,26 @@ async function showList(): Promise<void> {
   const refresh = el('button', { class: 'btn', title: 'Refresh' }, '↻')
   const history = el('button', { class: 'btn' }, 'History')
   const create = el('button', { class: 'btn', 'data-variant': 'primary' }, '+ New')
+  /*
+   * Name the machine. With one desktop this is noise; with a laptop and a
+   * desktop behind similar bookmarks the two are indistinguishable, and it is
+   * entirely possible to start work on the wrong computer without noticing.
+   */
+  const machine = el('span', { class: 'machine' }, '')
+  void fetch('/api/host')
+    .then((r) => (r.ok ? r.json() : null))
+    .then((h) => {
+      if (h?.machine) machine.textContent = String(h.machine).toLowerCase()
+    })
+    .catch(() => {
+      /* a missing name is better than a wrong one */
+    })
+
   const bar = el(
     'div',
     { class: 'bar' },
     el('h1', {}, 'Stoke'),
+    machine,
     el('div', { class: 'spacer' }),
     refresh,
     history,
