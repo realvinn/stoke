@@ -2,6 +2,9 @@
 
 Repo: `G:\Code\personal\Stoke` · `github.com/realvinn/stoke` · `main` · **v0.3.0 built and installed**
 
+> **Superseded.** This is the 0.3.0 handoff, kept as a record of that session. The current
+> state of the project and everything still open live in `PLAN.md`; 0.3.2 has since shipped.
+
 ## Task
 
 The overnight brief, verbatim:
@@ -34,7 +37,7 @@ buttons, and the 5-hour / weekly / Fable limits with a pace marker.
 **NOT DONE**
 
 1. **Multi-terminal and the per-terminal browser.** Not started. The design is settled and written
-   down in `PLAN-OVERNIGHT.md` — edge-hugging FAB, `+` opens a panel offering new chat here / new
+   down in `PLAN.md` — edge-hugging FAB, `+` opens a panel offering new chat here / new
    temp chat / different folder, each terminal with its own browser view.
 2. **First-run setup was never tested.** The install was an upgrade over 0.2.0, so existing settings
    were already present. A genuine first run needs a clean `%APPDATA%\Stoke`.
@@ -97,7 +100,7 @@ The token is in `%APPDATA%\Stoke\settings.json` under `remote.token`.
 
 ## Next actions
 
-1. Multi-terminal, to the design in `PLAN-OVERNIGHT.md`.
+1. Multi-terminal, to the design in `PLAN.md`.
 2. Test first-run against a clean `%APPDATA%\Stoke`.
-3. Add `sttUrl` to desktop Settings.
-4. Review the site's shortcut row.
+3. ~~Add `sttUrl` to desktop Settings.~~ Done, `9ddd435`.
+4. ~~Review the site's shortcut row.~~ Done, `44e0df4`.
