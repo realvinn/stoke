@@ -481,8 +481,18 @@ async function showTerminal(session: SessionRow): Promise<void> {
    * Push-to-talk. The transcript lands in the textarea rather than being sent,
    * because dictation mishears and a prompt you cannot correct before it runs
    * is worse than typing it.
+   *
+   * Claude Code has its own /voice with hold-space, but it records on the
+   * machine running the CLI — which over the tunnel is the desktop, in another
+   * room. Typing /voice here would hold open a microphone nobody is near, so
+   * the command is intercepted and answered with the phone's own microphone
+   * instead, keeping the same gesture.
    */
   const composer = el('div', { class: 'composer' }, input, send)
+  /** Set by the voice block below; lets submit() intercept /voice. */
+  let toggleVoiceMode: (() => void) | null = null
+  /** Unbinds the hold-space handlers when this screen goes away. */
+  let cleanupVoice: (() => void) | null = null
   if (voiceSupported()) {
     const mic = el('button', { class: 'mic', title: 'Hold to dictate' }, '🎙')
     const recorder = createRecorder()
@@ -536,6 +546,55 @@ async function showTerminal(session: SessionRow): Promise<void> {
     })
     // Holding a button on iOS otherwise raises the selection callout.
     mic.addEventListener('contextmenu', (e) => e.preventDefault())
+
+    /*
+     * Voice mode, matching the CLI's gesture: hold space to speak, escape to
+     * leave. Space cannot be bound globally without it — it is an ordinary
+     * keystroke the TUI needs — so this is opt-in and clearly signposted while
+     * it is on.
+     */
+    const banner = el('div', { class: 'voice-banner' }, 'hold space to speak · esc to exit')
+    let voiceOn = false
+
+    const setVoiceMode = (on: boolean): void => {
+      voiceOn = on
+      document.body.classList.toggle('voice-on', on)
+      if (on) {
+        composer.before(banner)
+        // Space must not land in the textarea while it means "talk".
+        input.blur()
+        term.blur()
+      } else {
+        banner.remove()
+        recorder.cancel()
+        setState('idle')
+      }
+    }
+    toggleVoiceMode = () => setVoiceMode(!voiceOn)
+
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (!voiceOn) return
+      if (e.key === 'Escape') {
+        setVoiceMode(false)
+        return
+      }
+      if (e.code !== 'Space' || e.repeat) return
+      void begin(e)
+    }
+    const onKeyUp = (e: KeyboardEvent): void => {
+      if (!voiceOn || e.code !== 'Space') return
+      void end(e)
+    }
+    document.addEventListener('keydown', onKeyDown)
+    document.addEventListener('keyup', onKeyUp)
+    // Registered on the socket further down, once it exists. Without this the
+    // handlers outlive the screen and holding space on the session list starts
+    // recording into a terminal that is no longer there.
+    cleanupVoice = () => {
+      document.removeEventListener('keydown', onKeyDown)
+      document.removeEventListener('keyup', onKeyUp)
+      setVoiceMode(false)
+    }
 
     composer.insertBefore(mic, send)
   }
@@ -618,6 +677,8 @@ async function showTerminal(session: SessionRow): Promise<void> {
     ws.addEventListener('close', () => observer.disconnect())
   }
 
+  ws.addEventListener('close', () => cleanupVoice?.())
+
   fitBtn.addEventListener('click', () => {
     fit = !fit
     localStorage.setItem(FIT_KEY, fit ? '1' : '0')
@@ -659,6 +720,19 @@ async function showTerminal(session: SessionRow): Promise<void> {
   const submit = (): void => {
     const value = input.value
     if (!value.trim()) return
+
+    /*
+     * /voice is answered here rather than sent on. The CLI would take it and
+     * open the microphone on the desktop, which over the tunnel is a machine
+     * nobody is sitting at; the phone's microphone is the one in the room.
+     */
+    if (value.trim() === '/voice' && toggleVoiceMode) {
+      toggleVoiceMode()
+      input.value = ''
+      input.style.height = 'auto'
+      return
+    }
+
     write(`${value}\r`)
     input.value = ''
     input.style.height = 'auto'

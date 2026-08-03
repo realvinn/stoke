@@ -420,6 +420,27 @@ button {
   opacity: 0.6;
 }
 
+/*
+ * Voice mode changes what the space bar means, so it has to be unmistakable
+ * while it is on — a mode you can forget you are in is a trap.
+ */
+.voice-banner {
+  padding: var(--sp-2, 8px) 12px;
+  border-top: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+body.voice-on .mic {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .mic {
     transition: none;
