@@ -207,7 +207,10 @@ function registerIpc(): void {
    */
   ipcMain.handle(CH.usageRead, async () => {
     const now = Date.now()
-    if (usageCache && now - usageCache.fetchedAt < 60_000) return usageCache
+    // A rate-limited or failing endpoint asks for a longer wait than the
+    // ordinary poll; honour it rather than knocking every minute regardless.
+    const wait = usageCache?.retryAfter ?? 60_000
+    if (usageCache && now - usageCache.fetchedAt < wait) return usageCache
     usageCache = await fetchUsage(now)
     return usageCache
   })

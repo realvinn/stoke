@@ -150,7 +150,21 @@ export async function fetchUsage(now = Date.now()): Promise<UsageSnapshot> {
       },
       signal: AbortSignal.timeout(15_000)
     })
-    if (!res.ok) return empty(`Usage unavailable (${res.status}).`)
+    if (!res.ok) {
+      /*
+       * 429 is the endpoint asking to be left alone, and it does happen - it
+       * arrived during development after a run of repeated calls. Honour
+       * Retry-After when it is sent, and otherwise back off far longer than the
+       * normal poll, because continuing to knock on an undocumented endpoint
+       * that has just said no is how access gets worse rather than better.
+       */
+      const snapshot = empty(`Usage unavailable (${res.status}).`)
+      if (res.status === 429 || res.status >= 500) {
+        const header = Number(res.headers.get('retry-after'))
+        snapshot.retryAfter = Number.isFinite(header) && header > 0 ? header * 1000 : 15 * 60_000
+      }
+      return snapshot
+    }
     return parseUsage(await res.json(), now)
   } catch (err) {
     return empty(err instanceof Error ? err.message : 'Usage request failed.')

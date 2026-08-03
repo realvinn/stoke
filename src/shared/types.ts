@@ -304,4 +304,9 @@ export interface UsageSnapshot {
   fetchedAt: number
   /** Non-null means the numbers are unavailable, not that usage is zero. */
   error: string | null
+  /**
+   * How long to wait before asking again, in ms. Set when the endpoint has
+   * rate-limited or failed; absent means the normal poll interval applies.
+   */
+  retryAfter?: number
 }

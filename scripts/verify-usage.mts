@@ -91,7 +91,14 @@ check(
 
 console.log('\nthe live account')
 const live = await fetchUsage()
-if (live.error) {
+if (live.retryAfter) {
+  /*
+   * The endpoint is rate-limiting or down. That is the environment, not the
+   * code, and failing the suite for it would train everyone to ignore a red
+   * run. Reporting unavailability here is the parser behaving correctly.
+   */
+  console.log(`  SKIP  ${live.error} Backing off ${Math.round(live.retryAfter / 60_000)} min.`)
+} else if (live.error) {
   console.log(`  FAIL  ${live.error}`)
   failures++
 } else if (!live.windows.length) {
