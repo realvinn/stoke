@@ -24,7 +24,7 @@ import { TitleBar } from './components/TitleBar'
 import { baseName } from './lib/format'
 import { attachExit, forgetPty, initPtyBus } from './lib/ptyBus'
 import { matchShortcut } from './lib/shortcuts'
-import { applyTheme, applyTypography } from './lib/theme'
+import { applyAppearance, applyTypography } from './lib/theme'
 import type { Tab } from './types'
 
 const EMPTY_BROWSER: BrowserState = {
@@ -149,11 +149,9 @@ export function App(): React.JSX.Element {
 
   /* ---------------------------------------------------------------- theme */
 
-  useEffect(() => applyTheme(theme), [theme])
-
   /*
-   * Derived here rather than only inside the sidebar, because the accent below
-   * has to resolve against the same list. It was resolving against the hardcoded
+   * Derived here rather than only inside the sidebar, because the accent has to
+   * resolve against the same list. It was resolving against the hardcoded
    * PROFILES instead, so a folder-derived profile coloured its sidebar chip and
    * then failed to repaint the accent - the one place the two lists could
    * disagree was the one place it mattered.
@@ -165,23 +163,15 @@ export function App(): React.JSX.Element {
   }, [projects])
 
   /*
-   * The active profile repaints the accent over the theme's. Keyed on the theme
-   * too, and applied after it, so switching either always lands in the right
-   * order rather than leaving the previous profile's colour behind.
+   * One effect, one writer. The theme and the profile accent used to be applied
+   * from two separate effects, and the profile one cleared the four accent
+   * tokens with removeProperty whenever no profile was selected - the default
+   * state - which removed the theme's accent along with them. See
+   * applyAppearance for why that failed silently rather than loudly.
    */
   useEffect(() => {
-    const root = document.documentElement
-    const profile = profileFor(settings?.activeProfile ?? null, availableProfiles)
-    const vars = ['--accent', '--accent-hover', '--accent-soft', '--accent-contrast']
-    if (!profile) {
-      for (const v of vars) root.style.removeProperty(v)
-      return
-    }
-    root.style.setProperty('--accent', profile.accent)
-    root.style.setProperty('--accent-hover', profile.accentHover)
-    root.style.setProperty('--accent-soft', profile.accentSoft)
-    root.style.setProperty('--accent-contrast', profile.accentContrast)
-  }, [settings?.activeProfile, availableProfiles, theme])
+    applyAppearance(theme, profileFor(settings?.activeProfile ?? null, availableProfiles))
+  }, [theme, settings?.activeProfile, availableProfiles])
 
   useEffect(() => {
     if (settings) applyTypography(settings.fontFamily, settings.fontSize, settings.uiScale)

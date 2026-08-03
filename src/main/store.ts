@@ -1,8 +1,19 @@
 import { app } from 'electron'
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import type { Settings } from '@shared/types'
-import { DEFAULT_THEME_ID } from '@shared/themes'
+import type { ProfileConfig, Settings, Theme } from '@shared/types'
+import { DEFAULT_THEME_ID, validateTheme } from '@shared/themes'
+
+/**
+ * Structural check only. A stored profile that is missing colours is still
+ * useful - resolveProfiles fills them from the derived seed - so this rejects
+ * only what cannot be identified at all.
+ */
+function isProfileConfig(v: unknown): v is ProfileConfig {
+  if (!v || typeof v !== 'object') return false
+  const p = v as Partial<ProfileConfig>
+  return typeof p.id === 'string' && p.id.length > 0 && Array.isArray(p.groups)
+}
 
 const DEFAULTS: Settings = {
   themeId: DEFAULT_THEME_ID,
@@ -47,6 +58,8 @@ const DEFAULTS: Settings = {
     sttUrl: 'http://127.0.0.1:17890'
   },
   activeProfile: null,
+  profiles: [],
+  worklogGroups: [],
   sidebarWidth: 260,
   claudePath: null,
   confirmBypass: true
@@ -73,7 +86,20 @@ function hydrate(raw: unknown): Settings {
       bookmarks: Array.isArray(r.browser?.bookmarks) ? r.browser.bookmarks : []
     },
     remote: { ...DEFAULTS.remote, ...(r.remote ?? {}) },
-    customThemes: Array.isArray(r.customThemes) ? r.customThemes : [],
+    /*
+     * Themes are repaired rather than trusted. applyTheme writes whatever keys
+     * are on the object, so a custom theme missing a token used to render an
+     * unreadable app - or throw during boot, before a window exists to show the
+     * error. validateTheme fills gaps from the matching built-in and drops what
+     * cannot be salvaged; it must never throw.
+     */
+    customThemes: Array.isArray(r.customThemes)
+      ? r.customThemes.map(validateTheme).filter((t): t is Theme => t !== null)
+      : [],
+    profiles: Array.isArray(r.profiles) ? r.profiles.filter(isProfileConfig) : [],
+    worklogGroups: Array.isArray(r.worklogGroups)
+      ? r.worklogGroups.filter((g): g is string => typeof g === 'string')
+      : [],
     projectRoots: Array.isArray(r.projectRoots) ? r.projectRoots : [],
     pinnedProjects: Array.isArray(r.pinnedProjects) ? r.pinnedProjects : [],
     hiddenProjects: Array.isArray(r.hiddenProjects) ? r.hiddenProjects : []

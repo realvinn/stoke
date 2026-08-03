@@ -227,3 +227,53 @@ export function resolveTheme(id: string, custom: Theme[]): Theme {
     EMBER
   )
 }
+
+/**
+ * Repair a persisted theme, or drop it.
+ *
+ * A theme is applied by writing whatever keys are on the object onto `:root`,
+ * and `app.css` declares no fallbacks for the colour tokens. So a theme missing
+ * a key does not fail loudly - it renders an app with invisible text, or throws
+ * during boot before there is a window to show an error in. Themes also carry
+ * no version field, so a token added in a later release is simply absent from
+ * every theme a user already saved.
+ *
+ * Every missing token is therefore filled from the built-in with the same
+ * appearance. Only something that cannot be identified at all is dropped, and
+ * this must never throw: it runs inside `hydrate`, before the window exists.
+ *
+ * `builtIn` is deliberately NOT carried through. This only ever runs on themes
+ * read from `settings.json`, and a stored theme claiming to be built-in would
+ * present as uneditable and undeletable in the editor with no way to undo it.
+ */
+export function validateTheme(input: unknown): Theme | null {
+  try {
+    if (!input || typeof input !== 'object') return null
+    const t = input as Partial<Theme>
+    if (typeof t.id !== 'string' || !t.id) return null
+
+    const appearance: Theme['appearance'] = t.appearance === 'light' ? 'light' : 'dark'
+    const base = appearance === 'light' ? DAYLIGHT : EMBER
+    const colors = (t.colors ?? {}) as Partial<Theme['colors']>
+    const terminal = (t.terminal ?? {}) as Partial<Theme['terminal']>
+
+    const pick = <T extends object>(from: Partial<T>, fallback: T): T => {
+      const out = { ...fallback }
+      for (const key of Object.keys(fallback) as (keyof T)[]) {
+        const v = from[key]
+        if (typeof v === 'string' && v.trim()) out[key] = v as T[keyof T]
+      }
+      return out
+    }
+
+    return {
+      id: t.id,
+      name: typeof t.name === 'string' && t.name.trim() ? t.name : t.id,
+      appearance,
+      colors: pick(colors, base.colors),
+      terminal: pick(terminal, base.terminal)
+    }
+  } catch {
+    return null
+  }
+}

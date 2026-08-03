@@ -169,6 +169,29 @@ export interface Theme {
   builtIn?: boolean
 }
 
+/* ---------------------------------------------------------------- profiles */
+
+/**
+ * A stored profile. Seeded from the folders on this machine, then overridden by
+ * whatever the user changes.
+ *
+ * Lives here rather than in profiles.ts so Settings can reference it without the
+ * two modules importing each other.
+ */
+export interface ProfileConfig {
+  /** Stable id. For a derived record this is the folder group name. */
+  id: string
+  /** Project.group values this profile covers, compared case-folded. */
+  groups: string[]
+  label: string
+  accent: string
+  accentHover: string
+  accentSoft: string
+  accentContrast: string
+  /** Marks records the user made, so a derived seed never overwrites one. */
+  createdByUser?: boolean
+}
+
 /* ---------------------------------------------------------------- settings */
 
 export interface Settings {
@@ -242,6 +265,21 @@ export interface Settings {
    * be started or resumed in any directory regardless of what is selected here.
    */
   activeProfile: string | null
+  /**
+   * Stored overrides for the profiles derived from folder names. Empty means
+   * "derive everything", which is how an untouched machine behaves.
+   *
+   * A profile is only ever two things: a colour, so projects are tellable
+   * apart at a glance, and a switch for the worklog agent. It carries no
+   * defaults and grants no access.
+   */
+  profiles: ProfileConfig[]
+  /**
+   * Project groups the worklog agent watches. Keyed on the group rather than
+   * the active sidebar chip, because the chip is a view filter and a work
+   * session can be running while a different profile is being browsed.
+   */
+  worklogGroups: string[]
   sidebarWidth: number
   /** Explicit path to the claude executable; null means auto-detect. */
   claudePath: string | null
