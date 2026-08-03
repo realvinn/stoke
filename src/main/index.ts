@@ -26,6 +26,9 @@ import {
 import QRCode from 'qrcode'
 
 const isMac = process.platform === 'darwin'
+const isWindows = process.platform === 'win32'
+/** Must match --titlebar-h in app.css, or the overlay and the bar disagree. */
+const TITLEBAR_H = 44
 
 let win: BrowserWindow | null = null
 let browser: EmbeddedBrowser | null = null
@@ -94,10 +97,22 @@ function createWindow(): void {
     minHeight: 580,
     show: false,
     backgroundColor: theme.colors.bg,
-    // macOS keeps its native frame so the traffic lights stay in the right
-    // place; Windows and Linux get a fully custom title bar.
-    frame: isMac,
-    titleBarStyle: isMac ? 'hiddenInset' : 'default',
+    /*
+     * macOS keeps its native frame so the traffic lights stay put. Windows now
+     * uses a native overlay rather than buttons drawn in the renderer: those
+     * looked close but never right, and more importantly a hand-drawn maximise
+     * button loses Windows 11's Snap Layouts, which appear on hover over the
+     * real one. Linux has no overlay and keeps the custom row.
+     */
+    frame: isMac || !isWindows,
+    titleBarStyle: isMac ? 'hiddenInset' : isWindows ? 'hidden' : 'default',
+    titleBarOverlay: isWindows
+      ? {
+          color: theme.colors.bgSunken,
+          symbolColor: theme.colors.textMuted,
+          height: TITLEBAR_H
+        }
+      : undefined,
     trafficLightPosition: isMac ? { x: 16, y: 18 } : undefined,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -395,6 +410,20 @@ function registerIpc(): void {
   ipcMain.handle(CH.settingsGet, () => getSettings())
   ipcMain.handle(CH.settingsSet, (_e, patch: Partial<Settings>) => {
     const next = setSettings(patch)
+    /*
+     * The Windows overlay is painted by the OS, not the page, so a theme change
+     * leaves the buttons on the old colour until it is told. Profiles repaint
+     * the accent only, which the overlay does not use, so the theme is the
+     * trigger that matters.
+     */
+    if (isWindows && win && !win.isDestroyed()) {
+      const theme = resolveTheme(next.themeId, next.customThemes)
+      win.setTitleBarOverlay({
+        color: theme.colors.bgSunken,
+        symbolColor: theme.colors.textMuted,
+        height: TITLEBAR_H
+      })
+    }
     send(CH.settingsChanged, next)
     return next
   })

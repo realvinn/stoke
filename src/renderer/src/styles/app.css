@@ -204,9 +204,24 @@ body {
   padding-left: 4.875rem;
 }
 
+/*
+ * Keep clear of the native window controls on Windows. The overlay reports its
+ * own width, which varies with display scaling, so ask for it rather than
+ * hardcoding three button widths and being wrong at 125%.
+ */
+.titlebar[data-platform='win32'] {
+  padding-right: calc(100% - env(titlebar-area-width, 100%) + var(--sp-2));
+}
+
+/*
+ * The tab strip is flex:1, so marking the whole strip no-drag left the middle
+ * of the title bar - nearly all of it - ungrabbable, and the window could
+ * barely be moved. Only the tabs themselves need to opt out; the empty space
+ * beside them is the natural place to grab a window.
+ */
 .titlebar button,
 .titlebar input,
-.titlebar .tabs {
+.titlebar .tab {
   -webkit-app-region: no-drag;
 }
 

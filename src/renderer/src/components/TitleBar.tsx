@@ -142,7 +142,12 @@ export function TitleBar({
           <span className="sr-only">Settings</span>
         </button>
 
-        {!isMac && (
+        {/*
+          Windows draws its own controls in a native overlay, which is also what
+          keeps Snap Layouts working when you hover maximise. Only Linux, which
+          has no overlay, still needs these drawn here.
+        */}
+        {!isMac && platform !== 'win32' && (
           <div className="win-controls">
             <button
               className="win-btn"
