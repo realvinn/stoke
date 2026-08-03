@@ -16,7 +16,7 @@ import {
   perceptualDistance,
   toHex,
   toOklch
-} from '../src/main/mcp/color.ts'
+} from '../src/shared/color.ts'
 
 let failures = 0
 

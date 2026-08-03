@@ -105,6 +105,32 @@ Derived from a 7-agent recon pass. Wave 0 is shared plumbing and blocks the rest
   the exit handler. Capture ids first — this blocks any exit-triggered work.
 - Four hardcoded `#fff` remain in `app.css`, against the no-hardcoded-colour rule.
 
+### Worklog execution — settled by probe, 2026-08-04
+
+**A headless `claude -p` run does expose the claude.ai connector tools.** This was the load
+-bearing unverified assumption under the whole worklog design, and it is now confirmed rather
+than inferred: a one-shot run with `--allowedTools mcp__claude_ai_Notion__notion-search`
+returned `AVAILABLE 25`, with `is_error: false` and `permission_denials: []`. So the execution
+model stands — run the real CLI headless, no Agent SDK, no separate credit pool.
+
+`--allowedTools` is the right lever for this. It let the probe reach exactly one read-only tool
+instead of opening permissions, and the worklog runner should use the same narrow allowlist
+rather than `bypassPermissions`, which PLAN already flags as a real blast radius for an
+unattended agent against write-capable MCP servers.
+
+**The probe also priced the feature, and the number is a design constraint.** That single
+trivial prompt cost **$0.50**, because it defaulted to Opus and paid 44k tokens of cache
+creation against a 104k cached context. A proposal run on every chat at that price is not
+viable. So the runner must:
+
+- pass `--model sonnet` explicitly — the user asked for a "sonnet subagent" and this is why it
+  matters, not merely a preference;
+- send the smallest possible prompt, since `readTranscript()` already yields structured turns
+  and the run does not need the repo loaded;
+- avoid re-sending context per proposal — batch a session's worth rather than firing per turn.
+
+Left unchecked this is the kind of feature that quietly costs more than it saves.
+
 ### Worklog destinations — settled
 
 - **Notion:** the `✅ Tasks` data source, `collection://368d3f2d-1f02-817c-b193-000b208e36bd`.

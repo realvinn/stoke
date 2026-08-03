@@ -121,9 +121,20 @@ export function connectUrl(opts: {
   port: number
   token: string
   bindLan: boolean
+  bindTailscale?: boolean
 }): string {
   const key = `?k=${encodeURIComponent(opts.token)}`
   if (opts.hostname.trim()) return `https://${opts.hostname.trim()}/${key}`
+  /*
+   * The tailnet address before the LAN sweep and before loopback. Without this
+   * the link and the QR code fall through to 127.0.0.1, which is useless on the
+   * phone that is meant to scan it - the feature would look broken while the
+   * server was in fact listening correctly.
+   */
+  if (opts.bindTailscale && !opts.bindLan) {
+    const tailnet = tailnetAddress()
+    if (tailnet) return `http://${tailnet}:${opts.port}/${key}`
+  }
   if (opts.bindLan) {
     const nets = networkInterfaces()
     for (const list of Object.values(nets)) {
@@ -349,7 +360,15 @@ export class RemoteServer {
      * requests are gated by tailnet membership plus the token instead, which is
      * why binding the tailnet is opt-in and off by default.
      */
-    if (this.config.requireAccessHeader && this.viaLoopback(req)) {
+    /*
+     * The exemption is for the tailnet listener only, so it is scoped to the
+     * case that has one: bindLan collapses everything onto a single 0.0.0.0
+     * listener, where localAddress is the interface IP and viaLoopback is false
+     * for LAN traffic. Without the bindLan guard this silently stopped enforcing
+     * the check on the LAN, which is the opposite of what the setting's own
+     * description promises.
+     */
+    if (this.config.requireAccessHeader && (!this.config.bindLan || this.viaLoopback(req))) {
       // Cloudflare Access injects these; their absence means the request did not
       // come through the tunnel.
       const hasAccess =

@@ -41,7 +41,14 @@ export interface StartResult {
 
 /** Combined remote-access state: local server, tunnel, and the phone link. */
 export interface RemoteState {
-  server: { running: boolean; port: number; error: string | null; clients: number }
+  server: {
+    running: boolean
+    port: number
+    error: string | null
+    clients: number
+    /** Addresses actually bound, e.g. 127.0.0.1 and the tailnet address. */
+    addresses: string[]
+  }
   tunnel: {
     installed: boolean
     path: string | null

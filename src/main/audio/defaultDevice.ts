@@ -74,8 +74,16 @@ const NAME_SCRIPT = [
  * Names that mean "this is not a microphone". Matched against the endpoint's
  * friendly name, which carries the driver's own branding.
  */
+/*
+ * Deliberately NOT a bare "Virtual Audio Device": that matched
+ * "Headset Microphone (Oculus Virtual Audio Device)", which is a real
+ * microphone reached through a virtual driver, and telling a user their working
+ * mic is broken is worse than staying quiet. Voicemod is named explicitly since
+ * it was the only device that token covered on its own. OBS is word-anchored so
+ * it cannot match inside an unrelated name.
+ */
 const VIRTUAL =
-  /VB-?Audio|CABLE Output|Virtual (Audio )?Cable|VoiceMeeter|Line \d \(Virtual|NVIDIA Broadcast|Steam Streaming|Wave Link|OBS|Streamlabs|Virtual Audio Device/i
+  /VB-?Audio|CABLE Output|Virtual (Audio )?Cable|VoiceMeeter|Voicemod|Line \d \(Virtual|NVIDIA Broadcast|Steam Streaming|Wave Link|\bOBS\b|Streamlabs/i
 
 /**
  * Exported so the matcher can be tested against real device names without
@@ -120,7 +128,10 @@ export async function checkMicrophone(): Promise<MicrophoneCheck> {
         'Write-Output ("DEFAULT`t$def`t$n")',
         '$root = "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\MMDevices\\Audio\\Capture"',
         'Get-ChildItem $root | ForEach-Object {',
-        '  if ((Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue).DeviceState -ne 1) { return }',
+        // DeviceState is a bitmask, not an enum: ACTIVE is bit 0, and a live
+        // endpoint can read 0x10000001. Comparing -ne 1 silently drops those.
+        '  $st = (Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue).DeviceState',
+        '  if (($st -band 1) -ne 1) { return }',
         '  $id = "{0.0.1.00000000}." + $_.PSChildName',
         '  $name = EndpointName $id',
         '  if ($name) { Write-Output ("ACTIVE`t$id`t$name") }',

@@ -1,6 +1,19 @@
 import type { WebContents } from 'electron'
 import { captureSnapshot, DESIGN_PROPS, withCdp, type SnapshotDoc, type Send } from './cdp.ts'
-import { apcaContrast, contrastRatio, over, toHex, toOklch, perceptualDistance, type Rgb } from './color.ts'
+import {
+  apcaContrast,
+  contrastRatio,
+  over,
+  toHex,
+  toOklch,
+  perceptualDistance,
+  type Rgb
+  /*
+   * Relative with an explicit .ts, not the @shared alias: main-process modules
+   * run directly under node --experimental-strip-types, which does not resolve
+   * the alias. Type-only imports may use it, since those are erased.
+   */
+} from '../../shared/color.ts'
 
 /**
  * What a page looks like, as text an agent can reason about.

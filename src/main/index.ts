@@ -342,7 +342,13 @@ function registerIpc(): void {
       qr = null
     }
     return {
-      server: remote?.status() ?? { running: false, port: cfg.port, error: null, clients: 0 },
+      server: remote?.status() ?? {
+        running: false,
+        port: cfg.port,
+        error: null,
+        clients: 0,
+        addresses: []
+      },
       tunnel: tunnel.status(),
       url,
       qr,

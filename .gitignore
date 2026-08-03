@@ -8,3 +8,4 @@ release/
 
 # Local tool caches
 .impeccable/
+.playwright-mcp/
