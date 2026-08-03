@@ -9,6 +9,7 @@ import { ContextWatcher } from './context.ts'
 import { findSessionFile, listProjects, listSessions } from './projects.ts'
 import { readTranscript } from './sessionFile.ts'
 import { PtyManager, type StartResult } from './pty.ts'
+import { checkMicrophone } from './audio/defaultDevice.ts'
 import { getSettings, setSettings } from './store.ts'
 import { createScratchDir, resolveDefaultCwd } from './workspace.ts'
 import { BrowserMcpServer } from './mcp/server.ts'
@@ -427,6 +428,9 @@ function registerIpc(): void {
     send(CH.settingsChanged, next)
     return next
   })
+
+  /* ----------------------------------------------------------------- audio */
+  ipcMain.handle(CH.micCheck, () => checkMicrophone())
 
   /* ------------------------------------------------------------- clipboard */
   /*

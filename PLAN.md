@@ -160,12 +160,26 @@ the cheapest way to show live dictation in the Stoke or phone UI. Recording auto
 under every outcome; the hijack is a global machine setting Stoke does not own, and it carries
 restore-on-crash bookkeeping.
 
-**Correction to a claim made during research:** setting the default capture endpoint does *not*
-require a native addon or a bundled third-party binary. `src/main/audio/defaultDevice.ts` does
-it with `powershell.exe -NoProfile` plus `Add-Type -Language CSharp`, compiling COM interop
-against `MMDeviceEnumerator` and `IPolicyConfig` at runtime with nothing installed. The read
-path is verified working on this machine; **the write path is written but unexercised**, having
-been blocked by a permission guard, and must be run before it is trusted.
+**Detect-and-warn is built and the write path was dropped.** `src/main/audio/defaultDevice.ts`
+reads the default capture endpoint through `powershell.exe -NoProfile` plus `Add-Type`,
+compiling COM interop against `MMDeviceEnumerator` at runtime with nothing installed, and
+`MicrophoneNotice` surfaces it in Settings — amber when the default looks like a virtual cable.
+
+Stoke deliberately does **not** set the device. Under the settled design nothing needs it: the
+desktop uses `/voice` against a correct default and the phone uses Stoke's own transcription, so
+`setDefaultCapture` had no consumer, was never exercised, and would have been an untested write
+to a global machine setting Stoke does not own. Deleted rather than kept as dead code.
+
+Read via PowerShell rather than `navigator.mediaDevices`, which is the other way to learn the
+default: `enumerateDevices()` hides labels until a `getUserMedia` grant, and prompting for the
+microphone purely to warn about the microphone is a bad trade when the desktop captures no
+audio and has no other reason to hold that permission.
+
+Verified: 17 assertions on the matcher — 7 virtual devices flagged, 7 real microphones not,
+3 against the live machine — plus the healthy state read out of the running Settings sheet, and
+the warning styling confirmed to resolve (`--warning` `#e8b552`, amber against a muted hint).
+Note that `window.stoke` cannot be monkey-patched from the page: contextBridge freezes it, so
+stubbing the IPC call to force the warning branch silently does nothing.
 
 **The open risk that could sink phone push-to-talk:** `space` is the push-to-talk binding, and
 what it does with a *non-empty* prompt buffer is unresolved. Test that before building on it.

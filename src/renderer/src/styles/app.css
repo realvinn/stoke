@@ -1450,6 +1450,15 @@ body {
   background: color-mix(in srgb, var(--warning) 14%, var(--bg));
 }
 
+/*
+ * A hint that is reporting a fault rather than explaining a field. Used when the
+ * default recording device is a virtual cable, which makes voice dictation
+ * record silence with no error anywhere.
+ */
+.field-hint[data-tone='warning'] {
+  color: var(--warning);
+}
+
 /* -------------------------------------------------------------- keyframes */
 
 @keyframes fade {

@@ -116,6 +116,10 @@ const api: StokeApi = {
     onChange: (cb) => on<[Settings]>(CH.settingsChanged, cb)
   },
 
+  audio: {
+    micCheck: () => ipcRenderer.invoke(CH.micCheck)
+  },
+
   clipboard: {
     readSync: () => ipcRenderer.sendSync(CH.clipboardRead) as ClipboardPeek,
     writeText: (text: string) => ipcRenderer.send(CH.clipboardWrite, text)

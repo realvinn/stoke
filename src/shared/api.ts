@@ -10,6 +10,22 @@ import type {
   UsageSnapshot
 } from './types'
 
+export interface AudioDevice {
+  /** Endpoint id in the form {0.0.1.00000000}.{guid}. */
+  id: string
+  name: string
+}
+
+/** Whether voice dictation is pointed at something that can actually hear you. */
+export interface MicrophoneCheck {
+  /** Null when the platform is not Windows, or nothing could be read. */
+  device: AudioDevice | null
+  /** True when the default looks like a virtual cable, so dictation records silence. */
+  suspect: boolean
+  /** Real microphones that could be selected instead. */
+  alternatives: AudioDevice[]
+}
+
 /** What is on the OS clipboard right now, read in one synchronous hop. */
 export interface ClipboardPeek {
   text: string
@@ -170,6 +186,11 @@ export interface StokeApi {
     get(): Promise<Settings>
     set(patch: Partial<Settings>): Promise<Settings>
     onChange(cb: (settings: Settings) => void): () => void
+  }
+
+  audio: {
+    /** What voice dictation will record from, and whether it looks like a virtual cable. */
+    micCheck(): Promise<MicrophoneCheck>
   }
 
   clipboard: {

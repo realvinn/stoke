@@ -1,6 +1,7 @@
 import type { CliInfo, EffortLevel, PermissionMode, Settings, Theme } from '@shared/types'
 import { BUILT_IN_THEMES } from '@shared/themes'
 import { IconClose } from './Icons'
+import { MicrophoneNotice } from './MicrophoneNotice'
 import { RemoteSettings, SelfUpdateSettings, UpdatesSettings } from './RemoteSettings'
 import { EFFORT_LEVELS, MODEL_OPTIONS, PERMISSION_MODES } from '../lib/permissions'
 
@@ -234,6 +235,8 @@ export function SettingsSheet({
           <SelfUpdateSettings />
 
           <UpdatesSettings />
+
+          <MicrophoneNotice />
 
           <RemoteSettings settings={settings} onPatch={onPatch} />
 

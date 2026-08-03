@@ -91,6 +91,9 @@ export const CH = {
   clipboardRead: 'clipboard:read',
   clipboardWrite: 'clipboard:write',
 
+  // audio
+  micCheck: 'audio:micCheck',
+
   // misc
   openExternal: 'shell:openExternal',
   pickFolder: 'dialog:pickFolder'
