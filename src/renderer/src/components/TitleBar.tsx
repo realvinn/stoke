@@ -1,5 +1,6 @@
 import type { ContextSnapshot } from '@shared/types'
 import { ContextRing } from './ContextMeter'
+import { UsageChip } from './UsageMeter'
 import {
   BrandMark,
   IconClose,
@@ -137,6 +138,8 @@ export function TitleBar({
           <IconGlobe />
           <span className="sr-only">Toggle browser</span>
         </button>
+        <UsageChip />
+
         <button className="icon-btn" onClick={onOpenSettings} title="Settings">
           <IconGear />
           <span className="sr-only">Settings</span>

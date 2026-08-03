@@ -61,9 +61,18 @@ function Bar({ window: w, now }: { window: UsageWindow; now: number }): React.JS
   )
 }
 
-export function UsageMeter(): React.JSX.Element | null {
+/**
+ * The numbers in the title bar, and the bars behind them.
+ *
+ * Most of the time the only question is "how much is left", which is two
+ * numbers and belongs where it can be read without looking for it. The bars
+ * answer the second question — am I ahead of the clock — and that is worth a
+ * deliberate click rather than permanent screen space.
+ */
+export function UsageChip(): React.JSX.Element | null {
   const [snap, setSnap] = useState<UsageSnapshot | null>(null)
   const [now, setNow] = useState(() => Date.now())
+  const [open, setOpen] = useState(false)
 
   useEffect(() => {
     let live = true
@@ -72,8 +81,8 @@ export function UsageMeter(): React.JSX.Element | null {
       if (live) setSnap(next)
     }
     void pull()
-    // The main process caches for a minute; this only has to be often enough
-    // that the countdown does not visibly stall.
+    // The main process caches, and backs off further when rate-limited; this
+    // only has to be often enough that the countdown does not visibly stall.
     const poll = setInterval(() => void pull(), 60_000)
     const tick = setInterval(() => setNow(Date.now()), 30_000)
     return () => {
@@ -83,15 +92,54 @@ export function UsageMeter(): React.JSX.Element | null {
     }
   }, [])
 
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [open])
+
   // Nothing at all rather than a row of zeroes: an unreachable endpoint is not
   // the same as no usage, and a wrong number here would be believed.
   if (!snap || snap.error || !snap.windows.length) return null
 
+  // The two windows that actually run out. A model-scoped one is shown in the
+  // panel but would make the chip a wall of digits.
+  const session = snap.windows.find((w) => w.kind === 'session')
+  const weekly = snap.windows.find((w) => w.kind === 'weekly')
+  const ahead = snap.windows.some((w) => w.elapsed !== null && w.percent > w.elapsed * 100)
+
   return (
-    <div className="usage-meter">
-      {snap.windows.map((w) => (
-        <Bar key={`${w.kind}-${w.label}`} window={w} now={now} />
-      ))}
+    <div className="usage-chip-wrap">
+      <button
+        className="usage-chip"
+        data-ahead={ahead || undefined}
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        title="Plan limits — click for detail"
+      >
+        {session && <span>{session.percent}%</span>}
+        {session && weekly && <span className="usage-chip-sep">·</span>}
+        {weekly && <span>{weekly.percent}%</span>}
+      </button>
+
+      {open && (
+        <>
+          {/* Click-away, behind the panel and above everything else. */}
+          <div className="usage-backdrop" onClick={() => setOpen(false)} />
+          <div className="usage-panel" role="dialog" aria-label="Plan limits">
+            {snap.windows.map((w) => (
+              <Bar key={`${w.kind}-${w.label}`} window={w} now={now} />
+            ))}
+            <p className="usage-note">
+              the white mark is where you would be using it evenly. fill past it means
+              you are going faster than it refills.
+            </p>
+          </div>
+        </>
+      )}
     </div>
   )
 }

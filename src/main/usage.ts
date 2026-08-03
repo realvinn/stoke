@@ -130,7 +130,35 @@ export function parseUsage(body: unknown, now: number): UsageSnapshot {
   }
 }
 
+/*
+ * A fixture, for when the real numbers cannot be had.
+ *
+ * The endpoint rate-limits, and when it does the meter correctly renders
+ * nothing — which makes the meter itself impossible to look at. Stubbing from
+ * the page does not work either: contextBridge freezes `window.stoke`, so
+ * assigning over the IPC method silently does nothing and every assertion fails
+ * for a reason that has nothing to do with the component.
+ *
+ * Off unless STOKE_FAKE_USAGE is set, so it can never reach a real window by
+ * accident. The two windows straddle the pace marker deliberately: one under,
+ * one over, so both styles are exercised.
+ */
+function fakeUsage(now: number): UsageSnapshot {
+  return {
+    windows: [
+      { kind: 'session', label: '5 hours', percent: 9, severity: 'normal', resetsAt: now + 84 * 60_000, elapsed: 0.72, active: true },
+      { kind: 'weekly', label: 'Weekly', percent: 64, severity: 'normal', resetsAt: now + 3 * 86_400_000, elapsed: 0.41, active: true },
+      { kind: 'weekly_scoped', label: 'Fable', percent: 0, severity: 'normal', resetsAt: null, elapsed: null, active: false }
+    ],
+    extraCredits: null,
+    fetchedAt: now,
+    error: null
+  }
+}
+
 export async function fetchUsage(now = Date.now()): Promise<UsageSnapshot> {
+  if (process.env.STOKE_FAKE_USAGE) return fakeUsage(now)
+
   const empty = (error: string): UsageSnapshot => ({
     windows: [],
     extraCredits: null,

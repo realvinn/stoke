@@ -3,7 +3,6 @@ import type { Project, SessionMeta } from '@shared/types'
 import { ContextBar } from './ContextMeter'
 import { profilesFor } from '@shared/profiles'
 import { IconChevron, IconFolder, IconPin, IconPlus, IconSearch } from './Icons'
-import { UsageMeter } from './UsageMeter'
 import { relativeTime } from '../lib/format'
 
 interface Props {
@@ -346,12 +345,6 @@ export function Sidebar({
         )}
       </div>
 
-      {/*
-        Outside the scrolling list deliberately. How much of the window is left
-        is something you glance at mid-task, and it is no use if you have to
-        scroll to find it.
-      */}
-      <UsageMeter />
     </nav>
   )
 }

@@ -1519,13 +1519,74 @@ body {
 
 /* ----------------------------------------------------------- plan limits */
 
-.usage-meter {
+.usage-chip-wrap {
+  position: relative;
+  -webkit-app-region: no-drag;
+}
+
+/*
+ * Two numbers, read without looking for them. Quiet unless you are burning the
+ * window faster than it refills, which is the only state worth interrupting for.
+ */
+.usage-chip {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.125rem var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-full);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.6875rem;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition:
+    color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease);
+}
+
+.usage-chip:hover,
+.usage-chip[aria-expanded='true'] {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.usage-chip[data-ahead] {
+  color: var(--warning);
+  border-color: var(--warning);
+}
+
+.usage-chip-sep {
+  color: var(--text-faint);
+}
+
+.usage-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-dropdown, 40);
+}
+
+.usage-panel {
+  position: absolute;
+  top: calc(100% + var(--sp-2));
+  right: 0;
+  z-index: calc(var(--z-dropdown, 40) + 1);
   display: flex;
   flex-direction: column;
   gap: var(--sp-2);
-  padding: var(--sp-3) var(--sp-4) var(--sp-4);
-  border-top: 1px solid var(--border);
-  flex-shrink: 0;
+  width: 19rem;
+  padding: var(--sp-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md, 10px);
+  background: var(--surface);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.45);
+}
+
+.usage-note {
+  margin: var(--sp-1) 0 0;
+  color: var(--text-faint);
+  font-size: 0.625rem;
+  line-height: 1.45;
 }
 
 .usage-row {
