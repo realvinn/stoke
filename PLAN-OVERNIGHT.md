@@ -84,3 +84,41 @@ currently demotes it deliberately; that comment needs updating, not ignoring.
   cannot reattach. Both the tunnel outage and the "nothing active" confusion
   this session came from that.
 - The usage endpoint is undocumented. Report unavailable rather than guess.
+
+## Running Stoke on more than one machine (design note)
+
+Nothing in `src/main` or `src/remote` calls `os.hostname()` — the phone has no idea
+which machine it is driving. With one machine that is fine; with several it is the
+first thing to fix.
+
+**The trap:** `tunnelName` defaults to `stoke` and `hostname` to whatever was set.
+Copying `settings.json` to a second machine — or just accepting the defaults and
+reusing the same named tunnel — registers both as connectors on *one* tunnel.
+Cloudflare then load-balances between them, so `code.vinn.dev` reaches a random
+machine per request. It fails as "my sessions vanished", never as an error.
+
+**The rule: one named tunnel and one hostname per machine.** Never share either.
+
+| machine | tunnel | hostname |
+|---|---|---|
+| windows desktop | `stoke` | `code.vinn.dev` |
+| m1 mac | `stoke-mac` | `mac.vinn.dev` |
+| anything else | `stoke-<name>` | `<name>.vinn.dev` |
+
+One Cloudflare Access application over `*.vinn.dev` covers all of them with one policy.
+
+**Never copy `settings.json` between machines.** It carries the token, the hostname
+and the tunnel name — every field that must differ. Set each up from scratch.
+
+Worth building, in order:
+
+1. `os.hostname()` in the remote header, the connect link and the QR caption. Small,
+   and without it two bookmarks are indistinguishable.
+2. A machine picker. Cheapest useful version is a bookmark folder; a nicer one is a
+   static page listing the hosts, which needs no code in Stoke at all.
+3. Settings do not sync and are per-OS. If profiles and themes should match across
+   machines, that wants a synced file, not a per-machine one.
+
+**Servers are a different problem.** Stoke is Electron and needs a display; a headless
+box has none. For a server, plain `claude` over SSH in tmux is the right tool, and
+Stoke is the wrong one. Do not bend the app into being a daemon.
