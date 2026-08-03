@@ -483,7 +483,13 @@ async function showTerminal(session: SessionRow): Promise<void> {
   app.append(wrap)
 
   const keys = el('div', { class: 'keys' })
-  app.append(keys)
+  /*
+   * The row is wider than any phone, so it scrolls sideways. The wrapper exists
+   * only to hang the edge fades on: they have to be painted over the keys, and
+   * a pseudo-element on the scroller itself would scroll away with them.
+   */
+  const keyRow = el('div', { class: 'key-row' }, keys)
+  app.append(keyRow)
 
   const input = el('textarea', {
     rows: 1,
@@ -761,19 +767,106 @@ async function showTerminal(session: SessionRow): Promise<void> {
     input.style.height = `${Math.min(input.scrollHeight, 104)}px`
   })
 
-  // The TUI needs these and a phone keyboard has none of them.
+  /*
+   * The TUI needs these and a phone keyboard has none of them.
+   *
+   * Ordered by how often a thumb reaches for one, because only the first six
+   * fit across a 390px screen and the rest have to be scrolled to. esc, enter,
+   * the arrows and shift-tab are the whole vocabulary of answering a permission
+   * prompt and cycling permission modes, so they lead; tab and ←/→ only matter
+   * once you are editing the CLI's own input line rather than the composer,
+   * which is the laptop case and the pager/REPL case.
+   *
+   * The arrows sit between esc and enter deliberately. Those two are reject and
+   * accept on a permission prompt - the highest-traffic pair here - and putting
+   * them side by side means one mistap inverts the answer. Both still land
+   * above the fold.
+   *
+   * ctrl-l clears a screen that is only a few dozen rows tall here. ctrl-d is
+   * handled separately below.
+   */
   const KEYS: [string, string][] = [
     ['esc', '\x1b'],
-    ['tab', '\t'],
     ['↑', '\x1b[A'],
     ['↓', '\x1b[B'],
-    ['ctrl-c', '\x03'],
     ['enter', '\r'],
     ['shift-tab', '\x1b[Z'],
-    ['ctrl-r', '\x12']
+    ['ctrl-c', '\x03'],
+    ['tab', '\t'],
+    ['←', '\x1b[D'],
+    ['→', '\x1b[C'],
+    ['ctrl-r', '\x12'],
+    ['ctrl-l', '\x0c']
   ]
   for (const [label, seq] of KEYS) {
     keys.append(el('button', { class: 'key', onclick: () => write(seq) }, label))
+  }
+
+  /*
+   * ctrl-d is the only way to send EOF - nothing else in this row can close a
+   * REPL or a heredoc - but on an empty prompt it ends the session, and the
+   * composer sends text+CR, so the prompt is empty essentially always.
+   *
+   * "Put it last so reaching it costs a scroll" does not hold: the row keeps
+   * its scroll position, so after one legitimate scroll to ctrl-r this key sits
+   * permanently under the thumb, styled like the harmless ones. That cost is
+   * paid once, not per tap. So it arms on the first tap and fires on the
+   * second, and disarms itself if the second never comes.
+   */
+  const eof = el('button', { class: 'key key-eof' }, 'ctrl-d')
+  let armed: ReturnType<typeof setTimeout> | null = null
+  const disarm = (): void => {
+    if (armed) clearTimeout(armed)
+    armed = null
+    eof.classList.remove('armed')
+    eof.textContent = 'ctrl-d'
+    // The relabel changes the row's scrollWidth, so the fade has to re-measure.
+    markOverflow()
+  }
+  let armedAt = 0
+  eof.addEventListener('click', () => {
+    if (armed) {
+      // A double-tap is a mistap, not a decision - arming is worthless if the
+      // second tap of one can fire it. Stay armed so a deliberate tap still works.
+      if (Date.now() - armedAt < 350) return
+      disarm()
+      write('\x04')
+      return
+    }
+    eof.classList.add('armed')
+    eof.textContent = 'ctrl-d?'
+    markOverflow()
+    armedAt = Date.now()
+    armed = setTimeout(disarm, 3000)
+  })
+  keys.append(eof)
+
+  /*
+   * Say which sides still have keys hidden behind them. The scrollbar is hidden
+   * in CSS - mobile overlay scrollbars only appear once you are already
+   * scrolling, so they never advertise anything - which left the row looking
+   * like a complete set that happened to end at the screen edge. ctrl-r was
+   * entirely off-screen on a phone and nothing hinted it was there.
+   */
+  const markOverflow = (): void => {
+    const trailing = keys.scrollWidth - keys.clientWidth - keys.scrollLeft
+    const start = keys.scrollLeft > 1
+    const end = trailing > 1
+    keyRow.dataset.more = start && end ? 'both' : start ? 'start' : end ? 'end' : 'none'
+  }
+  keys.addEventListener('scroll', markOverflow, { passive: true })
+  // The row has no width until it is laid out; measuring now reports zero.
+  requestAnimationFrame(markOverflow)
+  /*
+   * Scroll alone is not enough. Per the terminal's own fit logic above, the
+   * soft keyboard and rotation resize elements on mobile without firing a
+   * window resize, so watch the row itself. Rotating to landscape can fit every
+   * key; without this the fade keeps claiming there are hidden ones.
+   */
+  if (typeof ResizeObserver !== 'undefined') {
+    const keyObserver = new ResizeObserver(() => markOverflow())
+    keyObserver.observe(keys)
+    ws.addEventListener('close', () => keyObserver.disconnect())
   }
 
   back.addEventListener('click', () => {
@@ -802,7 +895,11 @@ async function showTerminal(session: SessionRow): Promise<void> {
   }, 6000)
 
   window.addEventListener('beforeunload', () => window.clearInterval(poll))
-  window.addEventListener('resize', () => applyFit())
+  window.addEventListener('resize', () => {
+    applyFit()
+    // Rotating changes how many keys fit, and so which edges have more behind them.
+    markOverflow()
+  })
 }
 
 void showList()

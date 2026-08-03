@@ -303,6 +303,50 @@ button {
   padding: 6px 4px;
 }
 
+/*
+ * The key row holds more than a phone can show, so it scrolls sideways. Two
+ * fades, switched on per side by the data-more flag main.ts keeps updated, are
+ * the only thing telling you so - the scrollbar is hidden below, and a mobile
+ * overlay scrollbar only appears once you are already scrolling, which is too
+ * late to be an invitation. They have to live on this wrapper: painted on the
+ * scroller itself they would scroll away with the keys, and a background on the
+ * scroller would sit behind the opaque buttons instead of over them.
+ */
+.key-row {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.key-row::before,
+.key-row::after {
+  content: '';
+  position: absolute;
+  /* Clear the row's top border, or the fade puts a gap in it. */
+  top: 1px;
+  bottom: 0;
+  width: 34px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.key-row::before {
+  left: 0;
+  background: linear-gradient(to right, var(--bg-sunken) 30%, rgb(14 12 11 / 0));
+}
+
+.key-row::after {
+  right: 0;
+  background: linear-gradient(to left, var(--bg-sunken) 30%, rgb(14 12 11 / 0));
+}
+
+.key-row[data-more='start']::before,
+.key-row[data-more='both']::before,
+.key-row[data-more='end']::after,
+.key-row[data-more='both']::after {
+  opacity: 1;
+}
+
 .keys {
   display: flex;
   gap: 6px;
@@ -312,6 +356,8 @@ button {
   background: var(--bg-sunken);
   flex-shrink: 0;
   scrollbar-width: none;
+  /* A flick along the row must not become a page bounce or a back-swipe. */
+  overscroll-behavior-x: contain;
 }
 
 .keys::-webkit-scrollbar {
@@ -320,16 +366,50 @@ button {
 
 .key {
   flex-shrink: 0;
+  /* 30px was below every touch-target guideline, and ctrl-c sits next to
+     enter. Taller costs a few pixels of terminal and buys far fewer mistaps. */
+  display: inline-flex;
+  align-items: center;
+  min-height: 38px;
   padding: 7px 11px;
   border: 1px solid var(--border-strong);
   border-radius: 8px;
   background: var(--surface);
   font-family: var(--mono);
   font-size: 12px;
+  /* No double-tap zoom delay on the arrows, no selection callout on a fast
+     repeat tap. */
+  touch-action: manipulation;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .key:active {
   background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+/*
+ * ctrl-d ends the session on an empty prompt, which on a phone is nearly always.
+ * It reads as dangerous at rest, and main.ts makes the first tap arm rather than
+ * fire - .armed is what that looks like, so the second tap is a decision.
+ */
+.key-eof {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border-strong));
+}
+
+.key-eof.armed {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: var(--bg-sunken);
+}
+
+/* Restate the press feedback: .key:active is earlier and would otherwise lose
+   to .armed at equal specificity, leaving the firing tap looking inert. */
+.key-eof.armed:active {
+  background: var(--accent);
+  border-color: var(--accent);
   color: var(--accent-contrast);
 }
 
