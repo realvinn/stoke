@@ -217,8 +217,15 @@ export interface Settings {
     tunnelName: string
     /**
      * Speech-to-text sidecar used for dictation from the phone, for example
-     * `http://127.0.0.1:17890`. Empty hides the microphone button. Stoke
-     * proxies to it so the sidecar itself never has to face the internet.
+     * `http://127.0.0.1:17890`. Stoke proxies to it so the sidecar itself never
+     * has to face the internet.
+     *
+     * Empty does NOT hide the microphone: the button is gated on browser
+     * capability alone (`voiceSupported()`), so an empty value instead fails at
+     * press time with a 503 from `/api/transcribe`. Settings repairs an emptied
+     * box both on blur and on close, so the UI will not persist one - but
+     * `hydrate` keeps an empty string written by hand, since own properties
+     * override the defaults.
      */
     sttUrl: string
   }

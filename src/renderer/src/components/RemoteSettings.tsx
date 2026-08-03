@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { RemoteState, SelfUpdateState, UpdateInfo } from '@shared/api'
 import type { Settings } from '@shared/types'
 
@@ -6,6 +6,9 @@ interface Props {
   settings: Settings
   onPatch: (patch: Partial<Settings>) => void
 }
+
+/** Mirrors the store default; an emptied box falls back here rather than to ''. */
+const DEFAULT_STT_URL = 'http://127.0.0.1:17890'
 
 /**
  * Remote access: a loopback server that a Cloudflare Tunnel can point a real
@@ -15,6 +18,27 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
   const [state, setState] = useState<RemoteState | null>(null)
   const [busy, setBusy] = useState(false)
   const remote = settings.remote
+
+  /*
+   * Escape closes the sheet by unmounting this input (App.tsx binds it on
+   * window), and React delivers no blur to a node that is being unmounted - so
+   * the onBlur repair on the speech-server box never runs on that path. An
+   * emptied box would then persist '' through hydrate, which keeps own
+   * properties over the defaults, and survive a restart: the field renders its
+   * placeholder so it still looks configured, while the microphone 503s.
+   *
+   * Repair on the way out as well. The ref keeps the dep array empty so this
+   * runs only on a real unmount, never on the 4s status poll's re-renders.
+   */
+  const latest = useRef({ remote, onPatch })
+  latest.current = { remote, onPatch }
+  useEffect(
+    () => () => {
+      const { remote: r, onPatch: patch } = latest.current
+      if (!r.sttUrl.trim()) patch({ remote: { ...r, sttUrl: DEFAULT_STT_URL } })
+    },
+    []
+  )
 
   const refresh = useCallback(async (): Promise<void> => {
     setState(await window.stoke.remote.status())
@@ -152,6 +176,29 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
           </span>
         </span>
       </label>
+
+      <div className="field">
+        <span className="field-label">Speech server</span>
+        <input
+          className="input mono"
+          placeholder={DEFAULT_STT_URL}
+          value={remote.sttUrl}
+          spellCheck={false}
+          onChange={(e) => onPatch({ remote: { ...remote, sttUrl: e.target.value.trim() } })}
+          onBlur={(e) => {
+            // Fall back on blur, never on change: this input is controlled, so
+            // substituting the default mid-edit re-renders, drops the selection
+            // and parks the caret at the end — select-all, delete, retype would
+            // silently append to the default instead of replacing it.
+            if (!e.target.value.trim()) onPatch({ remote: { ...remote, sttUrl: DEFAULT_STT_URL } })
+          }}
+        />
+        <span className="field-hint">
+          The transcription sidecar the microphone on the phone dictates through. Stoke proxies to
+          it, so it never has to face the internet. Takes effect the next time the remote server
+          starts.
+        </span>
+      </div>
 
       <div className="field">
         <span className="field-label">

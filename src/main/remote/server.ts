@@ -49,7 +49,10 @@ export interface RemoteConfig {
   /** Reject anything without Cloudflare Access headers, so only the tunnel works. */
   requireAccessHeader: boolean
   /**
-   * Speech-to-text sidecar, e.g. `http://127.0.0.1:17890`. Empty disables voice.
+   * Speech-to-text sidecar, e.g. `http://127.0.0.1:17890`.
+   *
+   * Empty does not hide the microphone — the button is gated on browser
+   * capability alone — it fails at press time with a 503 from `/api/transcribe`.
    *
    * Stoke proxies to it rather than letting the phone reach it directly: the
    * sidecar has no authentication of its own, so publishing it through the
