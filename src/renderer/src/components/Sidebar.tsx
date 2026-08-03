@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import type { Project, SessionMeta } from '@shared/types'
 import { ContextBar } from './ContextMeter'
-import { profilesFor } from '@shared/profiles'
+import type { Profile } from '@shared/profiles'
 import { IconChevron, IconFolder, IconPin, IconPlus, IconSearch } from './Icons'
 import { relativeTime } from '../lib/format'
 
@@ -22,6 +22,11 @@ interface Props {
   onAddRoot: () => void
   onOpenFolder: () => void
   onStartScratch: () => void
+  /**
+   * Profiles this machine actually has. Derived once in App and passed down, so
+   * the chip row and the accent can never resolve against different lists.
+   */
+  profiles: Profile[]
   /** Profile whose projects are shown; null shows everything. */
   activeProfile: string | null
   onSelectProfile: (id: string | null) => void
@@ -44,18 +49,15 @@ export function Sidebar({
   onAddRoot,
   onOpenFolder,
   onStartScratch,
+  profiles,
   activeProfile,
   onSelectProfile
 }: Props): React.JSX.Element {
   /*
-   * Only show profiles that actually have projects on this machine, so the row
-   * never advertises a folder the user does not use.
+   * Only profiles that actually have projects on this machine, so the row never
+   * advertises a folder the user does not use. Derived in App and passed in.
    */
-  const available = useMemo(() => {
-    const counts = new Map<string, number>()
-    for (const p of projects) counts.set(p.group, (counts.get(p.group) ?? 0) + 1)
-    return profilesFor(counts)
-  }, [projects])
+  const available = profiles
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()

@@ -92,8 +92,13 @@ Derived from a 7-agent recon pass. Wave 0 is shared plumbing and blocks the rest
   double-submit. `term.paste()` normalises newlines and brackets only when the CLI actually
   advertises DECSET 2004. **Fixed in wave 1-A.** The same bug exists independently in the
   phone UI's `submit()`.
-- **A derived profile never repaints the accent.** `App.tsx:161` resolves against the static
-  `PROFILES` list, so a folder-derived profile colours its sidebar chip and nothing else.
+- ~~**A derived profile never repaints the accent.**~~ **Fixed.** `App.tsx` resolved against the
+  static `PROFILES` list while the sidebar derived its own, so a folder-derived profile coloured
+  its chip and nothing else. The list is now derived once in `App` and passed down, which
+  removes the only place the two could disagree rather than patching the symptom. Proven by unit
+  test — `profileFor('Code')` returns null without the derived list — and the named path
+  re-verified in the running app: All clears the accent, Personal `#ff9552`, Study `#ff6b6b`,
+  Work `#5fd08a`. **`verify:profiles` is now part of `npm run check`**, which it was not.
 - **A malformed persisted custom theme takes the renderer down at boot** — `applyTheme` throws
   and `store.ts` validates only `Array.isArray`.
 - **`pty.ts:167` deletes the session before `onExit` fires**, so a session id is unavailable in

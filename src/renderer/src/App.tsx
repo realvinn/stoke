@@ -10,7 +10,7 @@ import type {
   Settings
 } from '@shared/types'
 import type { UpdateInfo } from '@shared/api'
-import { profileFor } from '@shared/profiles'
+import { profileFor, profilesFor } from '@shared/profiles'
 import { resolveTheme } from '@shared/themes'
 import { BrowserPanel } from './components/BrowserPanel'
 import { CommandPalette } from './components/CommandPalette'
@@ -152,13 +152,26 @@ export function App(): React.JSX.Element {
   useEffect(() => applyTheme(theme), [theme])
 
   /*
+   * Derived here rather than only inside the sidebar, because the accent below
+   * has to resolve against the same list. It was resolving against the hardcoded
+   * PROFILES instead, so a folder-derived profile coloured its sidebar chip and
+   * then failed to repaint the accent - the one place the two lists could
+   * disagree was the one place it mattered.
+   */
+  const availableProfiles = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const p of projects) counts.set(p.group, (counts.get(p.group) ?? 0) + 1)
+    return profilesFor(counts)
+  }, [projects])
+
+  /*
    * The active profile repaints the accent over the theme's. Keyed on the theme
    * too, and applied after it, so switching either always lands in the right
    * order rather than leaving the previous profile's colour behind.
    */
   useEffect(() => {
     const root = document.documentElement
-    const profile = profileFor(settings?.activeProfile ?? null)
+    const profile = profileFor(settings?.activeProfile ?? null, availableProfiles)
     const vars = ['--accent', '--accent-hover', '--accent-soft', '--accent-contrast']
     if (!profile) {
       for (const v of vars) root.style.removeProperty(v)
@@ -168,7 +181,7 @@ export function App(): React.JSX.Element {
     root.style.setProperty('--accent-hover', profile.accentHover)
     root.style.setProperty('--accent-soft', profile.accentSoft)
     root.style.setProperty('--accent-contrast', profile.accentContrast)
-  }, [settings?.activeProfile, theme])
+  }, [settings?.activeProfile, availableProfiles, theme])
 
   useEffect(() => {
     if (settings) applyTypography(settings.fontFamily, settings.fontSize, settings.uiScale)
@@ -534,6 +547,7 @@ export function App(): React.JSX.Element {
                 onAddRoot={() => void addRoot()}
                 onOpenFolder={() => void openFolder()}
                 onStartScratch={() => void startScratch()}
+                profiles={availableProfiles}
                 activeProfile={settings?.activeProfile ?? null}
                 onSelectProfile={(id) => void patchSettings({ activeProfile: id })}
               />
