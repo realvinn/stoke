@@ -8,6 +8,7 @@ import type {
   Project,
   SessionMeta,
   Settings,
+  SshHost,
   WorklogProposal
 } from '@shared/types'
 import type { UpdateInfo } from '@shared/api'
@@ -356,6 +357,50 @@ export function App(): React.JSX.Element {
     }
   }, [worklog])
 
+  /**
+   * Open a session on a remote machine.
+   *
+   * Same PTY machinery, different argv. It deliberately does not watch context:
+   * the transcript lives on the far machine, so there is nothing local to read
+   * and a meter would have to invent a number.
+   */
+  const startHostSession = useCallback(
+    async (host: SshHost): Promise<void> => {
+      setError(null)
+      try {
+        const res = await window.stoke.pty.start({
+          cwd: defaultCwd || '.',
+          host,
+          permissionMode: mode,
+          model,
+          effort,
+          cols: 120,
+          rows: 30
+        })
+        setTabs((list) => [
+          ...list,
+          {
+            id: res.ptyId,
+            ptyId: res.ptyId,
+            sessionId: res.sessionId,
+            cwd: host.alias,
+            projectName: host.label || host.alias,
+            title: host.label || host.alias,
+            permissionMode: mode,
+            model,
+            effort,
+            status: 'running',
+            exitCode: null
+          }
+        ])
+        setActiveTabId(res.ptyId)
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e))
+      }
+    },
+    [defaultCwd, mode, model, effort]
+  )
+
   /** Quick start with no project: run in the configured default folder. */
   const startDefault = useCallback((): void => {
     if (!defaultCwd) return
@@ -701,6 +746,8 @@ export function App(): React.JSX.Element {
               onResume={resumeSession}
               onOpenFolder={() => void openFolder()}
               onStartDefault={startDefault}
+              hosts={settings?.hosts ?? []}
+              onConnectHost={(h) => void startHostSession(h)}
               onStartScratch={() => void startScratch()}
             />
           )}

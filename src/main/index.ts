@@ -576,8 +576,13 @@ function registerIpc(): void {
  *
  * Must happen before requestSingleInstanceLock, which reads the path.
  * STOKE_USER_DATA overrides, for running two dev copies side by side.
+ *
+ * An explicit --user-data-dir always wins. Without that guard this silently
+ * ignored the flag and booted a different profile than the one asked for, which
+ * is a confusing way to lose an afternoon: the app starts, looks fine, and none
+ * of the settings under test are loaded.
  */
-if (!app.isPackaged) {
+if (!app.isPackaged && !app.commandLine.hasSwitch('user-data-dir')) {
   app.setPath('userData', process.env.STOKE_USER_DATA || `${app.getPath('userData')} (dev)`)
 }
 

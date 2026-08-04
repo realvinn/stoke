@@ -86,6 +86,14 @@ export interface RemoteStatus {
  * keeps this working everywhere, since the interface is variously "Tailscale",
  * "tailscale0" and a "utun" device depending on the platform.
  */
+/** True for an address in 100.64.0.0/10, the CGNAT range Tailscale uses. */
+export function isTailnetAddress(address: string): boolean {
+  // Node reports an IPv4 socket as ::ffff:100.x on a dual-stack listener.
+  const plain = address.replace(/^::ffff:/i, '')
+  const [first, second] = plain.split('.').map(Number)
+  return first === 100 && second >= 64 && second <= 127
+}
+
 export function tailnetAddress(): string | null {
   for (const addrs of Object.values(networkInterfaces())) {
     for (const a of addrs ?? []) {
@@ -349,6 +357,19 @@ export class RemoteServer {
     return local === '127.0.0.1' || local === '::1' || local === '::ffff:127.0.0.1'
   }
 
+  /**
+   * True when this request came in on the dedicated tailnet listener.
+   *
+   * Requires `bindTailscale` and NOT `bindLan`: with the LAN open there is a
+   * single 0.0.0.0 listener and no separate tailnet socket to be sure about, so
+   * the exemption is withheld and Access is enforced as it was in 0.3.2. Read
+   * from the local end of the socket, so a header cannot forge it.
+   */
+  private viaTailnet(req: IncomingMessage): boolean {
+    if (!this.config?.bindTailscale || this.config.bindLan) return false
+    return isTailnetAddress(req.socket.localAddress ?? '')
+  }
+
   private authorized(req: IncomingMessage): boolean {
     if (!this.config) return false
 
@@ -361,14 +382,18 @@ export class RemoteServer {
      * why binding the tailnet is opt-in and off by default.
      */
     /*
-     * The exemption is for the tailnet listener only, so it is scoped to the
-     * case that has one: bindLan collapses everything onto a single 0.0.0.0
-     * listener, where localAddress is the interface IP and viaLoopback is false
-     * for LAN traffic. Without the bindLan guard this silently stopped enforcing
-     * the check on the LAN, which is the opposite of what the setting's own
-     * description promises.
+     * Exempt exactly one thing: a request that arrived on the dedicated tailnet
+     * listener. Ask that directly rather than inferring it.
+     *
+     * Two earlier attempts got this wrong in opposite directions, both silently.
+     * Keying on `viaLoopback` alone also exempted the LAN, because bindLan
+     * collapses everything onto one 0.0.0.0 listener where localAddress is the
+     * interface IP. Adding a `!bindLan` guard then inverted the common case: with
+     * bindLan off - which is the whole Tailscale configuration - the condition
+     * was always true, so every tailnet request 401'd, including the WebSocket
+     * upgrade, and the terminal simply never opened.
      */
-    if (this.config.requireAccessHeader && (!this.config.bindLan || this.viaLoopback(req))) {
+    if (this.config.requireAccessHeader && !this.viaTailnet(req)) {
       // Cloudflare Access injects these; their absence means the request did not
       // come through the tunnel.
       const hasAccess =

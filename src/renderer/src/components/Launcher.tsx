@@ -1,5 +1,12 @@
 import { useEffect, useRef } from 'react'
-import type { CliInfo, EffortLevel, PermissionMode, Project, SessionMeta } from '@shared/types'
+import type {
+  CliInfo,
+  EffortLevel,
+  PermissionMode,
+  Project,
+  SessionMeta,
+  SshHost
+} from '@shared/types'
 import { ContextBar } from './ContextMeter'
 import { IconFolder, IconPlus } from './Icons'
 import { relativeTime } from '../lib/format'
@@ -26,6 +33,9 @@ interface Props {
    * toggle up yet; an unwired toggle simply reads as off.
    */
   ultracode?: boolean
+  /** Remote machines from settings. Empty hides the row entirely. */
+  hosts?: SshHost[]
+  onConnectHost?: (host: SshHost) => void
   sessions: SessionMeta[]
   cli: CliInfo | null
   onChangeMode: (m: PermissionMode) => void
@@ -47,6 +57,8 @@ export function Launcher({
   model,
   effort,
   ultracode = false,
+  hosts = [],
+  onConnectHost,
   sessions,
   cli,
   onChangeMode,
@@ -215,6 +227,35 @@ export function Launcher({
         {cliBroken && (
           <div className="banner">
             <span>{cli?.error}</span>
+          </div>
+        )}
+
+        {/*
+          Remote machines, when any are configured. Not gated on cliBroken: an
+          ssh session runs the CLI on the far machine, so a missing local claude
+          is irrelevant to it.
+        */}
+        {hosts.length > 0 && (
+          <div className="launcher-row">
+            <span className="launcher-row-label">
+              <b>Remote</b>
+              <span>
+                Opens an SSH session on that machine. The context meter and session resume do
+                not apply — both read transcripts that live on the far machine.
+              </span>
+            </span>
+            <div style={{ display: 'flex', gap: 'var(--sp-2)', flexWrap: 'wrap' }}>
+              {hosts.map((h) => (
+                <button
+                  key={h.id}
+                  className="btn"
+                  onClick={() => onConnectHost?.(h)}
+                  title={h.command ? `ssh ${h.alias} → ${h.command}` : `ssh ${h.alias}`}
+                >
+                  {h.label || h.alias}
+                </button>
+              ))}
+            </div>
           </div>
         )}
 

@@ -58,9 +58,19 @@ export function WorklogSettings({
         )}
       </span>
       <span className="field-hint">
-        When a watched session finishes, a Sonnet agent reads its transcript and{' '}
-        <strong>proposes</strong> Notion pages and ClickUp tasks in a review list. Nothing is
-        written to either until you accept it — Accept all is still you accepting.
+        A Sonnet agent reads a session&apos;s transcript and <strong>proposes</strong> Notion
+        pages and ClickUp tasks in a review list. Nothing is written to either until you accept
+        it — Accept all is still you accepting.
+      </span>
+      {/*
+        Say what it does today. Nothing watches yet: shouldWatch has no caller,
+        and a scan only happens when the button is pressed. Describing it as
+        automatic would have the user waiting for entries that never arrive.
+      */}
+      <span className="field-hint" data-tone="warning">
+        Scanning is manual for now — open the worklog panel and press Scan on the session you
+        want written up. These checkboxes are remembered for when it runs automatically, but
+        nothing runs on its own yet.
       </span>
 
       {profiles.length === 0 ? (

@@ -169,11 +169,12 @@ export function WorklogPanel({
         {proposals.length === 0 && (
           <div className="empty">
             <h3>Nothing to review</h3>
+            {/* Present tense, and only what actually happens: a scan runs when
+                this button is pressed, against the session in the active tab. */}
             <p>
-              The worklog agent reads finished sessions in the project groups you have it
-              watching and drafts an entry for each: a summary for Notion, a task for
-              ClickUp. Drafts land here first — nothing reaches either service until you
-              accept it.
+              Scan reads the current session&apos;s transcript and drafts an entry for the work
+              in it: a summary for Notion, a task for ClickUp. Drafts land here first — nothing
+              reaches either service until you accept it.
             </p>
             <button className="btn" data-variant="primary" onClick={onScan} disabled={busy}>
               {busy ? 'Scanning…' : 'Scan now'}

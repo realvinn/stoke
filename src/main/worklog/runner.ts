@@ -452,7 +452,7 @@ export function parseProposals(reply: string): ModelProposal[] {
 }
 
 /** The URL of the thing that was just created, from a write run's reply. */
-export function parseWrittenUrl(reply: string): string | null {
+export function parseWrittenUrl(reply: string, target: WorklogTarget): string | null {
   const text = (reply ?? '').trim()
   if (!text) return null
   for (const candidate of candidates(text)) {
@@ -464,8 +464,26 @@ export function parseWrittenUrl(reply: string): string | null {
       /* fall through to the plain scan */
     }
   }
-  const loose = /https?:\/\/[^\s"'<>)\]]+/i.exec(text)
-  return loose ? loose[0].replace(/[.,;]+$/, '') : null
+  /*
+   * A loose scan for any URL is not good enough here. The reply routinely
+   * mentions unrelated links - a doc it consulted, an example - and accepting
+   * one of those marks the item written and files a dead link the user can only
+   * discover by clicking it. Require the host to belong to the destination.
+   */
+  const host = HOST_FOR[target]
+  for (const m of text.matchAll(/https?:\/\/[^\s"'<>)\]]+/gi)) {
+    const url = m[0].replace(/[.,;]+$/, '')
+    // No pattern for an unknown destination means no way to tell a real record
+    // from an incidental link, so report nothing rather than guess.
+    if (host?.test(url)) return url
+  }
+  return null
+}
+
+/** Hosts a created record can legitimately live on, per destination. */
+const HOST_FOR: Record<WorklogTarget, RegExp> = {
+  clickup: /^https?:\/\/(app\.)?clickup\.com\//i,
+  notion: /^https?:\/\/([\w-]+\.)?notion\.(so|site)\//i
 }
 
 /* ---------------------------------------------------------------- the runs */
@@ -641,7 +659,7 @@ export async function applyProposal(
      * surface. Carry the existing URL through so the outcome still reports it.
      */
     const already = proposal.urls?.[target]
-    if (already) {
+    if (already !== undefined) {
       urls[target] = already
       continue
     }
@@ -654,10 +672,21 @@ export async function applyProposal(
         throw new Error(clip(oneLine(result.text), 300) || result.subtype || 'the run reported an error')
       }
 
-      const url = parseWrittenUrl(result.text)
+      const url = parseWrittenUrl(result.text, target)
       if (url) {
         urls[target] = url
       } else {
+        /*
+         * Mark the destination reached even without a link.
+         *
+         * The run succeeded, so a record very probably exists. Leaving this
+         * unset made the guard above see nothing on a retry, and the panel
+         * offers Try again on a failed item - so the retry created a SECOND
+         * real task while "fixing" the missing link. An empty string records
+         * "written, no link"; the panel renders links truthily, so it shows
+         * nothing rather than a broken one.
+         */
+        urls[target] = ''
         // Deliberately not silent: the run succeeded, so something may well have
         // been created, and the user needs to know to go and look.
         errors[target] = 'the run finished but returned no URL, so the item could not be linked'

@@ -185,19 +185,42 @@ check(
 )
 
 console.log('\nthe URL a write run reports')
-check('JSON holding a url', parseWrittenUrl('{"url":"https://app.clickup.com/t/abc"}'), 'https://app.clickup.com/t/abc')
+check(
+  'JSON holding a url',
+  parseWrittenUrl('{"url":"https://app.clickup.com/t/abc"}', 'clickup'),
+  'https://app.clickup.com/t/abc'
+)
 check(
   'a fenced url',
-  parseWrittenUrl('```json\n{"url":"https://www.notion.so/page-1"}\n```'),
+  parseWrittenUrl('```json\n{"url":"https://www.notion.so/page-1"}\n```', 'notion'),
   'https://www.notion.so/page-1'
 )
 check(
   'a url mentioned in prose',
-  parseWrittenUrl('Created the task: https://app.clickup.com/t/xyz.'),
+  parseWrittenUrl('Created the task: https://app.clickup.com/t/xyz.', 'clickup'),
   'https://app.clickup.com/t/xyz'
 )
-check('no url at all is null, not a guess', parseWrittenUrl('Done.'), null)
-check('a non-http url is not accepted from JSON', parseWrittenUrl('{"url":"clickup://t/abc"}'), null)
+check('no url at all is null, not a guess', parseWrittenUrl('Done.', 'clickup'), null)
+check(
+  'a non-http url is not accepted from JSON',
+  parseWrittenUrl('{"url":"clickup://t/abc"}', 'clickup'),
+  null
+)
+/*
+ * The reply routinely mentions links that are not the record: a doc it read, an
+ * example. Accepting one marks the item written and files a dead link the user
+ * only discovers by clicking it.
+ */
+check(
+  'an unrelated link is not mistaken for the record',
+  parseWrittenUrl('Created it. See https://example.com/docs for background.', 'clickup'),
+  null
+)
+check(
+  'the other destination\'s link is not accepted either',
+  parseWrittenUrl('https://www.notion.so/page-1', 'clickup'),
+  null
+)
 
 /* ------------------------------------------------------------------ digest */
 

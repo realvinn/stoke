@@ -147,21 +147,24 @@ export function TitleBar({
           <span className="sr-only">Toggle browser</span>
         </button>
         {/*
-          Only offered when there is something to review or a session to scan.
-          A permanent button would advertise a feature most sessions never use,
-          and the count is the only thing that makes it worth a glance.
+          Always rendered. Hiding it until something is pending made the feature
+          unreachable on a clean install: proposals only arrive from the Scan
+          button inside the panel, so nothing could ever raise the count that
+          was gating the only way in.
         */}
-        {(worklogCount > 0 || worklogOpen) && (
-          <button
-            className="icon-btn"
-            onClick={onToggleWorklog}
-            aria-pressed={worklogOpen}
-            title={`Worklog — ${worklogCount} awaiting review`}
-          >
-            <IconPin />
-            <span className="sr-only">Toggle worklog review</span>
-          </button>
-        )}
+        <button
+          className="icon-btn"
+          onClick={onToggleWorklog}
+          aria-pressed={worklogOpen}
+          title={
+            worklogCount > 0
+              ? `Worklog — ${worklogCount} awaiting review`
+              : 'Worklog — scan this session for Notion and ClickUp entries'
+          }
+        >
+          <IconPin />
+          <span className="sr-only">Toggle worklog review</span>
+        </button>
         <UsageChip />
 
         <button className="icon-btn" onClick={onOpenSettings} title="Settings">

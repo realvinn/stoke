@@ -40,12 +40,13 @@ function recorder(fail?: string): { calls: string[]; run: never } {
     const target = /notion/i.test(tool) ? 'notion' : 'clickup'
     calls.push(target)
     if (target === fail) throw new Error('simulated failure')
-    return {
-      text: `https://example.com/${target}/123`,
-      isError: false,
-      costUsd: 0.01,
-      subtype: 'success'
-    }
+    // Realistic hosts: parseWrittenUrl only accepts a link the destination owns,
+    // so a placeholder domain is correctly treated as "no link returned".
+    const text =
+      target === 'clickup'
+        ? 'Created https://app.clickup.com/t/abc123'
+        : 'Created https://www.notion.so/Fix-the-thing-abc123'
+    return { text, isError: false, costUsd: 0.01, subtype: 'success' }
   }
   return { calls, run: run as never }
 }
@@ -78,6 +79,29 @@ console.log('\nretrying that half-success must not write clickup twice')
   check('only the missing destination ran', r.calls.join(',') === 'notion', r.calls.join(','))
   check('the existing url is carried through', out.urls.clickup === halfOut.urls.clickup)
   check('and the retry completes the item', out.ok)
+}
+
+console.log('\na write that returns no usable link still counts as written')
+{
+  // The run succeeds but the reply carries no link the destination owns. This
+  // used to leave urls[target] unset, so a retry wrote the record a second time.
+  const calls: string[] = []
+  const run = (async (o: { allowedTools?: string[] }) => {
+    calls.push(/notion/i.test(o.allowedTools?.[0] ?? '') ? 'notion' : 'clickup')
+    return { text: 'Created it. See https://example.com/docs for context.', isError: false, costUsd: 0, subtype: 'success' }
+  }) as never
+  const out = await applyProposal(base, { run })
+  check('both destinations attempted once', calls.join(',') === 'clickup,notion', calls.join(','))
+  check('an unrelated link is not accepted as the record', !out.urls.clickup, JSON.stringify(out.urls))
+  check('but the destination is marked reached', out.urls.clickup === '', JSON.stringify(out.urls))
+
+  const retryCalls: string[] = []
+  const retryRun = (async (o: { allowedTools?: string[] }) => {
+    retryCalls.push(/notion/i.test(o.allowedTools?.[0] ?? '') ? 'notion' : 'clickup')
+    return { text: 'ok', isError: false, costUsd: 0, subtype: 'success' }
+  }) as never
+  await applyProposal({ ...base, status: 'failed', urls: out.urls }, { run: retryRun })
+  check('so a retry writes nothing again', retryCalls.length === 0, `wrote: ${retryCalls.join(',') || 'nothing'}`)
 }
 
 console.log('\na destination not on the proposal is never written')
