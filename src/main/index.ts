@@ -10,6 +10,8 @@ import { findSessionFile, listProjects, listSessions } from './projects.ts'
 import { readTranscript } from './sessionFile.ts'
 import { PtyManager, type StartResult } from './pty.ts'
 import { checkMicrophone } from './audio/defaultDevice.ts'
+import { createProfile, planProfile } from './profiles.ts'
+import type { CreateProfileInput } from '@shared/profiles'
 import { getSettings, setSettings } from './store.ts'
 import { createScratchDir, resolveDefaultCwd } from './workspace.ts'
 import { BrowserMcpServer } from './mcp/server.ts'
@@ -435,6 +437,22 @@ function registerIpc(): void {
     return next
   })
 
+  /* -------------------------------------------------------------- profiles */
+  /*
+   * Creating a profile writes a folder and a scan root, so it happens here and
+   * the renderer only ever sees the plan and the resulting settings. `plan` is
+   * a dry run: the UI shows what will happen before anything is written.
+   */
+  ipcMain.handle(CH.profilesPlan, (_e, folder: string, name: string) => planProfile(folder, name))
+  ipcMain.handle(CH.profilesCreate, async (_e, input: CreateProfileInput) => {
+    const { patch } = await createProfile(getSettings(), input)
+    const next = setSettings(patch)
+    send(CH.settingsChanged, next)
+    // The new root only becomes visible once its children have been scanned.
+    send(CH.sessionsChanged)
+    return next
+  })
+
   /* ----------------------------------------------------------------- audio */
   ipcMain.handle(CH.micCheck, () => checkMicrophone())
 
@@ -468,6 +486,23 @@ function registerIpc(): void {
     const res = await dialog.showOpenDialog(win, { properties: ['openDirectory'] })
     return res.canceled ? null : (res.filePaths[0] ?? null)
   })
+}
+
+/*
+ * An unpackaged run gets its own data directory.
+ *
+ * The single-instance lock and the settings file are both keyed on userData, so
+ * a dev build previously fought the installed app for both: launching one while
+ * the other ran made the new process quit on the spot, and any dev run that did
+ * start wrote through the same settings.json. The workaround was to remember a
+ * --user-data-dir flag on every launch, which electron-vite gives no way to pass
+ * anyway.
+ *
+ * Must happen before requestSingleInstanceLock, which reads the path.
+ * STOKE_USER_DATA overrides, for running two dev copies side by side.
+ */
+if (!app.isPackaged) {
+  app.setPath('userData', process.env.STOKE_USER_DATA || `${app.getPath('userData')} (dev)`)
 }
 
 // A second launch should focus the existing window rather than open a rival one

@@ -266,6 +266,24 @@ body {
   display: none;
 }
 
+/*
+ * The new-session button is not a tab.
+ *
+ * The strip is padded at the top and stretches its children so tabs meet the
+ * pane below like real tabs. This button has its own fixed height, so stretch
+ * degrades to flex-start and it sat at the top of the padded box - 4px above
+ * every other icon in the title bar, which read as it floating.
+ *
+ * Cancel the strip's top padding for this one child and centre it, so it lines
+ * up with the icons outside the strip rather than with the tab tops. The margin
+ * is the full padding, not half: align-self centres the MARGIN box, so half
+ * lands it a pixel low. Measured, not reasoned - both icons now centre at 22.
+ */
+.tabs > .icon-btn {
+  align-self: center;
+  margin-top: calc(var(--sp-1) * -1);
+}
+
 .tab {
   position: relative;
   display: flex;

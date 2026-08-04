@@ -263,6 +263,18 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
               </span>
             )}
 
+            {/*
+              Say why the button is dead. It was disabled with the reason only in
+              a title attribute, so it read as broken unless you happened to hover
+              it - and a fresh profile always starts with no hostname.
+            */}
+            {!remote.hostname && (
+              <span className="field-hint" data-tone="warning">
+                Run named tunnel needs a Public hostname above — that is the name your tunnel
+                already routes to this port. Quick tunnel works without one.
+              </span>
+            )}
+
             <span className="field-hint">
               A quick tunnel gets a throwaway trycloudflare.com address with no Access policy in
               front of it — only the key protects it. Use the named tunnel for anything lasting.

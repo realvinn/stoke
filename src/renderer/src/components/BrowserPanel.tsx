@@ -124,19 +124,25 @@ export function BrowserPanel({ state, bookmarks, onAskClaude, onClose }: Props):
             }}
           >
             <span className="btab-label">{tab.loading ? 'Loading…' : tab.title || 'New tab'}</span>
-            {state.tabs.length > 1 && (
-              <button
-                className="tab-close"
-                title="Close tab"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  window.stoke.browser.closeTab(tab.id)
-                }}
-              >
-                <IconClose width={10} height={10} />
-                <span className="sr-only">Close tab</span>
-              </button>
-            )}
+            {/*
+              Always offered, including on the last tab. Hiding it there left no
+              way to close a single tab at all, which reads as the button being
+              broken. Closing the last one dismisses the whole panel, since that
+              is what closing the only tab means - the main process already
+              handles an empty tab list, it just left an empty browser on screen.
+            */}
+            <button
+              className="tab-close"
+              title={state.tabs.length > 1 ? 'Close tab' : 'Close tab and hide the browser'}
+              onClick={(e) => {
+                e.stopPropagation()
+                window.stoke.browser.closeTab(tab.id)
+                if (state.tabs.length <= 1) onClose()
+              }}
+            >
+              <IconClose width={10} height={10} />
+              <span className="sr-only">Close tab</span>
+            </button>
           </div>
         ))}
 
