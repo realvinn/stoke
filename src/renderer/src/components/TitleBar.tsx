@@ -8,6 +8,7 @@ import {
   IconGlobe,
   IconMaximize,
   IconMinimize,
+  IconPin,
   IconPlus,
   IconRestore,
   IconSearch,
@@ -28,6 +29,10 @@ interface Props {
   onNewTab: () => void
   onToggleSidebar: () => void
   onToggleBrowser: () => void
+  /** Proposals awaiting review. Zero hides the control entirely. */
+  worklogCount: number
+  worklogOpen: boolean
+  onToggleWorklog: () => void
   onOpenPalette: () => void
   onOpenSettings: () => void
 }
@@ -45,6 +50,9 @@ export function TitleBar({
   onNewTab,
   onToggleSidebar,
   onToggleBrowser,
+  worklogCount,
+  worklogOpen,
+  onToggleWorklog,
   onOpenPalette,
   onOpenSettings
 }: Props): React.JSX.Element {
@@ -138,6 +146,22 @@ export function TitleBar({
           <IconGlobe />
           <span className="sr-only">Toggle browser</span>
         </button>
+        {/*
+          Only offered when there is something to review or a session to scan.
+          A permanent button would advertise a feature most sessions never use,
+          and the count is the only thing that makes it worth a glance.
+        */}
+        {(worklogCount > 0 || worklogOpen) && (
+          <button
+            className="icon-btn"
+            onClick={onToggleWorklog}
+            aria-pressed={worklogOpen}
+            title={`Worklog — ${worklogCount} awaiting review`}
+          >
+            <IconPin />
+            <span className="sr-only">Toggle worklog review</span>
+          </button>
+        )}
         <UsageChip />
 
         <button className="icon-btn" onClick={onOpenSettings} title="Settings">

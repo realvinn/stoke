@@ -91,6 +91,16 @@ export const CH = {
   profilesPlan: 'profiles:plan',
   profilesCreate: 'profiles:create',
 
+  // ssh
+  sshHosts: 'ssh:hosts',
+
+  // worklog
+  worklogQueue: 'worklog:queue',
+  worklogScan: 'worklog:scan',
+  worklogAccept: 'worklog:accept',
+  worklogReject: 'worklog:reject',
+  worklogChanged: 'worklog:changed',
+
   // clipboard
   clipboardRead: 'clipboard:read',
   clipboardWrite: 'clipboard:write',

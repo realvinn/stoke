@@ -11,6 +11,10 @@ import { readTranscript } from './sessionFile.ts'
 import { PtyManager, type StartResult } from './pty.ts'
 import { checkMicrophone } from './audio/defaultDevice.ts'
 import { createProfile, planProfile } from './profiles.ts'
+import { readSshConfigHosts } from './ssh.ts'
+import { getWorklogQueue } from './worklog/queue.ts'
+import { applyProposal, scanSession } from './worklog/runner.ts'
+import { groupForCwd } from './worklog/gate.ts'
 import type { CreateProfileInput } from '@shared/profiles'
 import { getSettings, setSettings } from './store.ts'
 import { createScratchDir, resolveDefaultCwd } from './workspace.ts'
@@ -167,7 +171,12 @@ function createWindow(): void {
     (ptyId, data) => send(CH.ptyData, ptyId, data),
     (ptyId, code, signal) => send(CH.ptyExit, ptyId, code, signal)
   )
-  watcher = new ContextWatcher((snap) => send(CH.ctxUpdate, snap))
+  // The second argument lets the meter read the tier off the CLI's own banner,
+  // which is the only place it is stated - the transcript never carries it.
+  watcher = new ContextWatcher(
+    (snap) => send(CH.ctxUpdate, snap),
+    (sessionId) => ptys?.bannerWindowFor(sessionId) ?? null
+  )
 
   const devUrl = process.env.ELECTRON_RENDERER_URL
   if (!app.isPackaged && devUrl) {
@@ -451,6 +460,73 @@ function registerIpc(): void {
     // The new root only becomes visible once its children have been scanned.
     send(CH.sessionsChanged)
     return next
+  })
+
+  /* ------------------------------------------------------------------- ssh */
+  ipcMain.handle(CH.sshHosts, () => readSshConfigHosts())
+
+  /* --------------------------------------------------------------- worklog */
+  /*
+   * Both runs cost money and can fail, so every handler returns a result object
+   * rather than throwing across the bridge - a rejected invoke in the renderer
+   * arrives as an opaque Error string and the panel could not tell "nothing to
+   * propose" from "the run broke".
+   */
+  const queue = (): ReturnType<typeof getWorklogQueue> => getWorklogQueue(app.getPath('userData'))
+
+  ipcMain.handle(CH.worklogQueue, () => queue().list())
+
+  ipcMain.handle(CH.worklogScan, async (_e, sessionId: string) => {
+    try {
+      const file = await findSessionFile(sessionId)
+      if (!file) return { added: 0, error: 'no transcript found for that session yet' }
+      const projects = await listProjects(getSettings())
+      const cwd = ptys?.list().find((s) => s.sessionId === sessionId)?.cwd ?? ''
+      const group = groupForCwd(cwd, projects) ?? ''
+      const outcome = await scanSession({ sessionId, transcriptFile: file, cwd, group })
+      const added = queue().add(outcome.proposals)
+      send(CH.worklogChanged, queue().list())
+      return { added: added.length, error: null }
+    } catch (err) {
+      return { added: 0, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  ipcMain.handle(CH.worklogAccept, async (_e, id: string) => {
+    const q = queue()
+    const item = q.list().find((p) => p.id === id)
+    if (!item) return { ok: false, error: 'that proposal is no longer in the queue' }
+    try {
+      const outcome = await applyProposal(item, {
+        // Persist each URL the moment its write returns, so a failure on the
+        // second destination cannot lose the first - and so a retry can tell
+        // what has already been written and skip it.
+        onWritten: async (target, url) => {
+          if (!url) return
+          const current = q.list().find((p) => p.id === id)
+          q.update(id, { urls: { ...(current?.urls ?? {}), [target]: url } })
+          send(CH.worklogChanged, q.list())
+        }
+      })
+      const errors = Object.values(outcome.errors)
+      q.update(id, {
+        status: outcome.ok ? 'accepted' : 'failed',
+        urls: { ...(q.list().find((p) => p.id === id)?.urls ?? {}), ...outcome.urls },
+        error: errors.join('; ')
+      })
+      send(CH.worklogChanged, q.list())
+      return { ok: outcome.ok, error: errors.join('; ') || null }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      q.update(id, { status: 'failed', error: message })
+      send(CH.worklogChanged, q.list())
+      return { ok: false, error: message }
+    }
+  })
+
+  ipcMain.handle(CH.worklogReject, (_e, id: string) => {
+    queue().reject(id)
+    send(CH.worklogChanged, queue().list())
   })
 
   /* ----------------------------------------------------------------- audio */

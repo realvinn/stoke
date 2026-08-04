@@ -1,7 +1,7 @@
 import { app } from 'electron'
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import type { ProfileConfig, Settings, Theme } from '@shared/types'
+import type { ProfileConfig, Settings, SshHost, Theme } from '@shared/types'
 import { DEFAULT_THEME_ID, validateTheme } from '@shared/themes'
 
 /**
@@ -60,6 +60,7 @@ const DEFAULTS: Settings = {
   },
   activeProfile: null,
   profiles: [],
+  hosts: [],
   worklogGroups: [],
   sidebarWidth: 260,
   claudePath: null,
@@ -98,6 +99,12 @@ function hydrate(raw: unknown): Settings {
       ? r.customThemes.map(validateTheme).filter((t): t is Theme => t !== null)
       : [],
     profiles: Array.isArray(r.profiles) ? r.profiles.filter(isProfileConfig) : [],
+    hosts: Array.isArray(r.hosts)
+      ? r.hosts.filter(
+          (h): h is SshHost =>
+            !!h && typeof h === 'object' && typeof h.id === 'string' && typeof h.alias === 'string'
+        )
+      : [],
     worklogGroups: Array.isArray(r.worklogGroups)
       ? r.worklogGroups.filter((g): g is string => typeof g === 'string')
       : [],

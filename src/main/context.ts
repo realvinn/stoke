@@ -29,12 +29,27 @@ export class ContextWatcher {
   /** Most recent snapshot per session, so a late joiner gets a meter at once. */
   private latest = new Map<string, ContextSnapshot>()
   private readonly emit: (snap: ContextSnapshot) => void
+  /**
+   * Context window as stated by the live session's startup banner, if it has
+   * one. Injected rather than imported so this module stays free of the PTY
+   * layer and keeps running under node's type stripping.
+   *
+   * It exists because the transcript cannot say: a 1M session records its model
+   * as plain `claude-opus-5`, so without the banner the meter reads a 1M
+   * session against 200k until it crosses over - showing 92% full at 182k when
+   * 82% of the window was still free.
+   */
+  private readonly bannerWindow: (sessionId: string) => number | null
 
-  // Written as an explicit field rather than a TS parameter property so this
+  // Written as explicit fields rather than TS parameter properties so this
   // module runs directly under `node --experimental-strip-types`, which is what
   // scripts/verify-context.mts uses to test it without a build step.
-  constructor(emit: (snap: ContextSnapshot) => void) {
+  constructor(
+    emit: (snap: ContextSnapshot) => void,
+    bannerWindow: (sessionId: string) => number | null = () => null
+  ) {
     this.emit = emit
+    this.bannerWindow = bannerWindow
   }
 
   /** Last known reading for a session, or null if it has not reported yet. */
@@ -103,7 +118,7 @@ export class ContextWatcher {
         this.publish({
           sessionId: w.sessionId,
           contextTokens: used,
-          contextLimit: contextLimitFor(parsed.model, used),
+          contextLimit: contextLimitFor(parsed.model, used, this.bannerWindow(w.sessionId)),
           inputTokens: parsed.inputTokens,
           cacheReadTokens: parsed.cacheReadTokens,
           cacheCreationTokens: parsed.cacheCreationTokens,

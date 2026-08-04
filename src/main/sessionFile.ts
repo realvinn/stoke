@@ -265,7 +265,46 @@ export async function readTranscript(file: string, limit = 400): Promise<Transcr
   }
 }
 
-export function contextLimitFor(model: string | null, observedTokens = 0): number {
+/**
+ * Pull the context window out of the CLI's own startup banner.
+ *
+ * The banner reads like `Opus 5 (1M context) with xhigh effort · Claude Max`,
+ * and it is the only place the tier is stated before any tokens are spent. The
+ * transcript never carries it: a session verified at 713,617 tokens still
+ * recorded its model as plain `claude-opus-5`, and the only tier-ish field
+ * anywhere in the file is `usage.service_tier`, which is billing, not context.
+ *
+ * Without this the meter reads a 1M session against 200k until it crosses over,
+ * so a session at 182k showed "92% full" when 82% of the window was still free
+ * — alarming, and precisely backwards.
+ *
+ * Returns null when the banner has not been seen, which is not the same as
+ * "standard tier": the caller keeps its observed-usage fallback for that.
+ */
+export function windowFromBanner(text: string): number | null {
+  // Strip escape sequences first: the banner is styled, so the digits and the
+  // word "context" are routinely separated by colour codes in the raw stream.
+  const plain = text.replace(/\[[0-9;?]*[A-Za-z]/g, '')
+  const m = /\(\s*(\d+)\s*(M|K)\s*context\s*\)/i.exec(plain)
+  if (!m) return null
+  const n = Number(m[1])
+  if (!Number.isFinite(n) || n <= 0) return null
+  const tokens = m[2].toUpperCase() === 'M' ? n * 1_000_000 : n * 1_000
+  // Sanity-bound it: a malformed match must never produce a window so large
+  // that the meter reads 0% forever, which would hide a real overflow.
+  return tokens >= WINDOW_STANDARD && tokens <= 10_000_000 ? tokens : null
+}
+
+/**
+ * @param bannerLimit window read from the CLI banner, when one has been seen.
+ *   It wins over both the id and observed usage, being a direct statement.
+ */
+export function contextLimitFor(
+  model: string | null,
+  observedTokens = 0,
+  bannerLimit: number | null = null
+): number {
+  if (bannerLimit && observedTokens <= bannerLimit) return bannerLimit
   if (model && /\[1m\]|-1m\b|_1m\b/i.test(model)) return WINDOW_EXTENDED
   return observedTokens > WINDOW_STANDARD ? WINDOW_EXTENDED : WINDOW_STANDARD
 }

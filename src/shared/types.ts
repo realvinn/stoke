@@ -43,6 +43,14 @@ export interface LaunchOptions {
    * Requires workflows enabled and an xhigh-capable model.
    */
   ultracode?: boolean
+  /**
+   * Open an SSH session on this host instead of running Claude Code locally.
+   *
+   * The PTY machinery is identical - only the argv differs - but the context
+   * meter and session resume do not apply, because both read transcript files
+   * that live on the far machine.
+   */
+  host?: SshHost
   /** `--name`, shown in Claude Code's own prompt box and /resume picker. */
   name?: string
   addDirs?: string[]
@@ -178,6 +186,57 @@ export interface Theme {
   builtIn?: boolean
 }
 
+/* --------------------------------------------------------------------- ssh */
+
+/**
+ * A remote machine Stoke can open a session on.
+ *
+ * Connection details are deliberately NOT stored here. `alias` names a Host
+ * entry in the user's own `~/.ssh/config`, so keys, ports, usernames and jump
+ * hosts stay in the one file that already works and that every other tool on
+ * the machine reads. Stoke keeps only what is Stoke's: a label and what to run.
+ */
+export interface SshHost {
+  id: string
+  label: string
+  /** A Host alias from ~/.ssh/config, or a bare user@host. */
+  alias: string
+  /**
+   * Run this instead of a login shell.
+   *
+   * `byobu` or `tmux new -A -s stoke` is the useful answer: a remote session
+   * cannot use Stoke's own resume, because the transcript lives on the far
+   * machine, so a multiplexer is the only thing that survives a dropped link.
+   * Empty means a plain login shell.
+   */
+  command: string
+}
+
+/* ----------------------------------------------------------------- worklog */
+
+export type WorklogTarget = 'notion' | 'clickup'
+
+/**
+ * One proposed entry, awaiting review. Nothing reaches Notion or ClickUp until
+ * the user accepts it, so this is the whole product of a scan.
+ */
+export interface WorklogProposal {
+  id: string
+  /** The session it was derived from, and the folder that session ran in. */
+  sessionId: string
+  cwd: string
+  /** `Project.group`, which is what the watch list is keyed on. */
+  group: string
+  title: string
+  body: string
+  targets: WorklogTarget[]
+  status: 'pending' | 'accepted' | 'rejected' | 'failed'
+  createdAt: number
+  /** Set once accepted, so a half-succeeded write is visible rather than lost. */
+  urls?: Partial<Record<WorklogTarget, string>>
+  error?: string
+}
+
 /* ---------------------------------------------------------------- profiles */
 
 /**
@@ -285,6 +344,8 @@ export interface Settings {
    * defaults and grants no access.
    */
   profiles: ProfileConfig[]
+  /** Remote machines offered in the launcher. See SshHost. */
+  hosts: SshHost[]
   /**
    * Project groups the worklog agent watches. Keyed on the group rather than
    * the active sidebar chip, because the chip is a view filter and a work

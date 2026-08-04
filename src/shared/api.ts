@@ -8,7 +8,8 @@ import type {
   Rect,
   SessionMeta,
   Settings,
-  UsageSnapshot
+  UsageSnapshot,
+  WorklogProposal
 } from './types'
 
 export interface AudioDevice {
@@ -203,6 +204,25 @@ export interface StokeApi {
   profiles: {
     plan(folder: string, name: string): Promise<ProfilePlan>
     create(input: CreateProfileInput): Promise<Settings>
+  }
+
+  ssh: {
+    /** Host aliases read from the user's own ~/.ssh/config, for the picker. */
+    configHosts(): Promise<string[]>
+  }
+
+  /**
+   * The worklog review queue. A scan only ever proposes; nothing reaches Notion
+   * or ClickUp until `accept` is called on an item.
+   */
+  worklog: {
+    queue(): Promise<WorklogProposal[]>
+    /** Scan a session's transcript for proposals. Read-only. */
+    scan(sessionId: string): Promise<{ added: number; error: string | null }>
+    /** The only call that writes to an external service. */
+    accept(id: string): Promise<{ ok: boolean; error: string | null }>
+    reject(id: string): Promise<void>
+    onChange(cb: (items: WorklogProposal[]) => void): () => void
   }
 
   audio: {

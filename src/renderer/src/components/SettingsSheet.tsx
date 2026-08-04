@@ -2,6 +2,8 @@ import type { CliInfo, EffortLevel, PermissionMode, Settings, Theme } from '@sha
 import type { ResolvedProfile } from '@shared/profiles'
 import { BUILT_IN_THEMES } from '@shared/themes'
 import { IconClose } from './Icons'
+import { useEffect, useState } from 'react'
+import { HostsSettings } from './HostsSettings'
 import { MicrophoneNotice } from './MicrophoneNotice'
 import { ProfilesSettings } from './ProfilesSettings'
 import { RemoteSettings, SelfUpdateSettings, UpdatesSettings } from './RemoteSettings'
@@ -34,6 +36,22 @@ export function SettingsSheet({
   onClose
 }: Props): React.JSX.Element {
   const themes: Theme[] = [...BUILT_IN_THEMES, ...settings.customThemes]
+
+  /*
+   * Offer the Host aliases the user already has rather than making them retype
+   * connection details. Read once when the sheet opens; ~/.ssh/config is not
+   * something that changes while it is on screen.
+   */
+  const [sshAliases, setSshAliases] = useState<string[]>([])
+  useEffect(() => {
+    let live = true
+    void window.stoke.ssh.configHosts().then((a) => {
+      if (live) setSshAliases(a)
+    })
+    return () => {
+      live = false
+    }
+  }, [])
 
   return (
     <>
@@ -252,6 +270,12 @@ export function SettingsSheet({
             profiles={profiles}
             worklogGroups={settings.worklogGroups}
             onChange={(worklogGroups) => onPatch({ worklogGroups })}
+          />
+
+          <HostsSettings
+            hosts={settings.hosts}
+            suggestions={sshAliases}
+            onChange={(hosts) => onPatch({ hosts })}
           />
 
           <MicrophoneNotice />

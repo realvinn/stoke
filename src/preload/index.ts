@@ -121,6 +121,18 @@ const api: StokeApi = {
     create: (input) => ipcRenderer.invoke(CH.profilesCreate, input)
   },
 
+  ssh: {
+    configHosts: () => ipcRenderer.invoke(CH.sshHosts)
+  },
+
+  worklog: {
+    queue: () => ipcRenderer.invoke(CH.worklogQueue),
+    scan: (sessionId: string) => ipcRenderer.invoke(CH.worklogScan, sessionId),
+    accept: (id: string) => ipcRenderer.invoke(CH.worklogAccept, id),
+    reject: (id: string) => ipcRenderer.invoke(CH.worklogReject, id),
+    onChange: (cb) => on<[Parameters<typeof cb>[0]]>(CH.worklogChanged, cb)
+  },
+
   audio: {
     micCheck: () => ipcRenderer.invoke(CH.micCheck)
   },

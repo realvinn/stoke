@@ -7,7 +7,8 @@ import type {
   PermissionMode,
   Project,
   SessionMeta,
-  Settings
+  Settings,
+  WorklogProposal
 } from '@shared/types'
 import type { UpdateInfo } from '@shared/api'
 import { profileFor, resolveProfiles, visibleProfiles } from '@shared/profiles'
@@ -21,6 +22,7 @@ import { Sidebar } from './components/Sidebar'
 import { StatusBar } from './components/StatusBar'
 import { TerminalView } from './components/TerminalView'
 import { TitleBar } from './components/TitleBar'
+import { WorklogPanel } from './components/WorklogPanel'
 import { baseName } from './lib/format'
 import { attachExit, forgetPty, initPtyBus } from './lib/ptyBus'
 import { matchShortcut } from './lib/shortcuts'
@@ -68,6 +70,15 @@ export function App(): React.JSX.Element {
   const [browserWidth, setBrowserWidth] = useState(460)
   const [browserState, setBrowserState] = useState<BrowserState>(EMPTY_BROWSER)
 
+  /*
+   * The worklog review queue. Proposals only ever arrive from a scan; nothing
+   * reaches Notion or ClickUp until accept is called on an item, so this state
+   * is a review surface rather than a record of anything written.
+   */
+  const [worklogOpen, setWorklogOpen] = useState(false)
+  const [worklog, setWorklog] = useState<WorklogProposal[]>([])
+  const [worklogBusy, setWorklogBusy] = useState(false)
+
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [maximized, setMaximized] = useState(false)
@@ -113,6 +124,8 @@ export function App(): React.JSX.Element {
     const offBrowser = window.stoke.browser.onState(setBrowserState)
     const offMax = window.stoke.window.onMaximizedChanged(setMaximized)
     const offSettings = window.stoke.settings.onChange(setSettings)
+    const offWorklog = window.stoke.worklog.onChange(setWorklog)
+    void window.stoke.worklog.queue().then(setWorklog)
 
     void (async () => {
       const s = await window.stoke.settings.get()
@@ -137,6 +150,7 @@ export function App(): React.JSX.Element {
       offBrowser()
       offMax()
       offSettings()
+      offWorklog()
     }
   }, [refreshProjects])
 
@@ -300,6 +314,47 @@ export function App(): React.JSX.Element {
     },
     [mode, model, effort, ultracode]
   )
+
+  /* --------------------------------------------------------------- worklog */
+
+  const scanWorklog = useCallback(async (): Promise<void> => {
+    const sessionId = tabs.find((t) => t.id === activeTabId)?.sessionId
+    if (!sessionId) return
+    setWorklogBusy(true)
+    try {
+      const res = await window.stoke.worklog.scan(sessionId)
+      if (res.error) setError(res.error)
+    } finally {
+      setWorklogBusy(false)
+    }
+  }, [tabs, activeTabId])
+
+  const acceptProposal = useCallback(async (id: string): Promise<void> => {
+    setWorklogBusy(true)
+    try {
+      const res = await window.stoke.worklog.accept(id)
+      if (res.error) setError(res.error)
+    } finally {
+      setWorklogBusy(false)
+    }
+  }, [])
+
+  /*
+   * Sequential, not Promise.all. Each accept spawns a headless CLI run that
+   * writes to two external services; firing them together would race the queue
+   * file and multiply the cost spike with no way to stop partway.
+   */
+  const acceptAllProposals = useCallback(async (): Promise<void> => {
+    setWorklogBusy(true)
+    try {
+      for (const p of worklog.filter((x) => x.status === 'pending')) {
+        const res = await window.stoke.worklog.accept(p.id)
+        if (res.error) setError(res.error)
+      }
+    } finally {
+      setWorklogBusy(false)
+    }
+  }, [worklog])
 
   /** Quick start with no project: run in the configured default folder. */
   const startDefault = useCallback((): void => {
@@ -534,6 +589,9 @@ export function App(): React.JSX.Element {
         onNewTab={() => setActiveTabId(null)}
         onToggleSidebar={() => setSidebarOpen((v) => !v)}
         onToggleBrowser={() => setBrowserOpen((v) => !v)}
+        worklogCount={worklog.filter((p) => p.status === 'pending').length}
+        worklogOpen={worklogOpen}
+        onToggleWorklog={() => setWorklogOpen((v) => !v)}
         onOpenPalette={() => setPaletteOpen(true)}
         onOpenSettings={() => setSettingsOpen(true)}
       />
@@ -670,6 +728,25 @@ export function App(): React.JSX.Element {
               />
             </div>
           </>
+        )}
+
+        {/*
+          A sibling column, never an overlay. The docked browser is a native
+          WebContentsView that paints above all renderer DOM, so an overlaid
+          panel would be invisible whenever the browser was open.
+        */}
+        {worklogOpen && (
+          <div style={{ width: 340, display: 'flex', flexShrink: 0 }}>
+            <WorklogPanel
+              proposals={worklog}
+              busy={worklogBusy}
+              onScan={() => void scanWorklog()}
+              onAccept={(id) => void acceptProposal(id)}
+              onReject={(id) => void window.stoke.worklog.reject(id)}
+              onAcceptAll={() => void acceptAllProposals()}
+              onClose={() => setWorklogOpen(false)}
+            />
+          </div>
         )}
       </div>
 

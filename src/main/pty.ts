@@ -3,6 +3,8 @@ import * as nodePty from '@lydell/node-pty'
 import type { IPty } from '@lydell/node-pty'
 import type { LaunchOptions } from '@shared/types'
 import { buildArgs, buildEnvPath, findClaude, spawnSpec } from './cli.ts'
+import { windowFromBanner } from './sessionFile.ts'
+import { buildSshArgs, sshExecutable } from './ssh.ts'
 
 export interface StartResult {
   ptyId: string
@@ -20,6 +22,16 @@ interface Session {
   /** Retained output so a client joining late can replay the session. */
   chunks: string[]
   length: number
+  /**
+   * Context window as stated by the CLI's own startup banner, once seen.
+   *
+   * The transcript never records the tier - a session verified at 713k tokens
+   * still wrote its model as plain `claude-opus-5` - so the banner is the only
+   * statement of it, and the only one available before tokens are spent.
+   */
+  bannerWindow: number | null
+  /** Bytes of output still worth scanning for the banner. */
+  bannerScanned: number
   startedAt: number
   cols: number
   rows: number
@@ -42,6 +54,16 @@ export interface SessionInfo {
  * session that started an hour ago has no other way to see what happened.
  */
 const MAX_HISTORY = 512 * 1024
+
+/**
+ * How much output to search for the startup banner before giving up.
+ *
+ * The banner is in the first frames, so this only has to survive a slow start.
+ * Bounding it stops a long-running session re-scanning its whole buffer on
+ * every chunk for a line that is never coming - a resumed session, say, which
+ * prints no banner at all.
+ */
+const BANNER_SCAN_LIMIT = 64 * 1024
 
 /**
  * Environment variables that must never reach the spawned CLI.
@@ -92,7 +114,17 @@ export class PtyManager {
     claudePathOverride: string | null,
     mcpConfigPath?: string | null
   ): Promise<StartResult> {
-    const exe = await findClaude(claudePathOverride)
+    /*
+     * A remote session is the same machinery with a different argv: ssh instead
+     * of claude. Nothing else changes - the PTY, the scrollback and the fan-out
+     * to the phone all work identically, which is the whole reason this is small.
+     *
+     * What does NOT carry over is anything that reads a transcript, because a
+     * remote session's transcript lives on the far machine: no context meter and
+     * no Stoke-side resume. A multiplexer in `host.command` is the only resume
+     * such a session can have.
+     */
+    const exe = opts.host ? sshExecutable() : await findClaude(claudePathOverride)
     if (!exe) {
       throw new Error(
         'Could not find the `claude` executable. Install Claude Code, or set an explicit path in Settings.'
@@ -105,12 +137,14 @@ export class PtyManager {
     const sessionId =
       opts.resume || opts.continueLast ? (opts.sessionId ?? '') : (opts.sessionId ?? randomUUID())
 
-    const args = buildArgs({ ...opts, sessionId })
+    const args = opts.host ? buildSshArgs(opts.host) : buildArgs({ ...opts, sessionId })
 
     // Hand the session Stoke's own browser tools. A file path rather than an
     // inline JSON string: quoting JSON through a shell differs per platform and
     // fails silently when it goes wrong.
-    if (mcpConfigPath) args.push('--mcp-config', mcpConfigPath)
+    // Only meaningful locally: the flags belong to claude, and a remote session
+    // is running ssh. The remote's own CLI config governs there.
+    if (mcpConfigPath && !opts.host) args.push('--mcp-config', mcpConfigPath)
 
     // Ultracode needs nothing here: buildArgs has already turned it into
     // `--settings <file>`. Do not be tempted to write `/effort ultracode` into
@@ -153,6 +187,8 @@ export class PtyManager {
       exited: false,
       chunks: [],
       length: 0,
+      bannerWindow: null,
+      bannerScanned: 0,
       startedAt: Date.now(),
       cols: Math.max(20, opts.cols || 120),
       rows: Math.max(5, opts.rows || 30)
@@ -165,6 +201,17 @@ export class PtyManager {
       // Drop whole chunks so a replay never starts mid-escape-sequence.
       while (session.length > MAX_HISTORY && session.chunks.length > 1) {
         session.length -= (session.chunks.shift() as string).length
+      }
+      /*
+       * Read the context window off the banner, which the CLI prints in its
+       * first frames. Scanning the joined buffer rather than this chunk alone
+       * because the banner is styled and routinely arrives split across chunks
+       * mid-escape-sequence. Bounded so a long session is not re-scanned
+       * forever, and stops entirely once found.
+       */
+      if (session.bannerWindow === null && session.bannerScanned < BANNER_SCAN_LIMIT) {
+        session.bannerScanned += data.length
+        session.bannerWindow = windowFromBanner(session.chunks.join(''))
       }
       this.onData(ptyId, data)
       for (const fn of this.subscribers) fn(ptyId, data)
@@ -213,6 +260,18 @@ export class PtyManager {
       /* already gone */
     }
     this.sessions.delete(ptyId)
+  }
+
+  /**
+   * Context window stated by the banner of the session with this id, or null
+   * when none was seen. Keyed on the Claude session id rather than the pty id,
+   * because that is what the context watcher knows about.
+   */
+  bannerWindowFor(sessionId: string): number | null {
+    for (const s of this.sessions.values()) {
+      if (s.sessionId === sessionId && s.bannerWindow) return s.bannerWindow
+    }
+    return null
   }
 
   sessionIdFor(ptyId: string): string | null {
