@@ -2,19 +2,27 @@ import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron'
 import { join } from 'node:path'
 import { CH } from '@shared/ipc'
 import { resolveTheme } from '@shared/themes'
-import type { LaunchOptions, Rect, Settings } from '@shared/types'
+import type { LaunchOptions, Rect, Settings, SshHost } from '@shared/types'
 import { EmbeddedBrowser } from './browser.ts'
 import { probeClaude } from './cli.ts'
 import { ContextWatcher } from './context.ts'
 import { findSessionFile, listProjects, listSessions } from './projects.ts'
-import { readTranscript } from './sessionFile.ts'
+import { parseSession, readTranscript } from './sessionFile.ts'
+import { fetchRemoteTranscript } from './sshTranscript.ts'
 import { PtyManager, type StartResult } from './pty.ts'
 import { checkMicrophone } from './audio/defaultDevice.ts'
 import { createProfile, planProfile } from './profiles.ts'
 import { readSshConfigHosts } from './ssh.ts'
 import { getWorklogQueue } from './worklog/queue.ts'
-import { applyProposal, scanSession } from './worklog/runner.ts'
-import { groupForCwd } from './worklog/gate.ts'
+import {
+  applyProposal,
+  scanSession,
+  CLICKUP_LIST_ID,
+  NOTION_DATA_SOURCE
+} from './worklog/runner.ts'
+import { groupForCwd, shouldWatch } from './worklog/gate.ts'
+import { AutoScanner } from './worklog/autoscan.ts'
+import { invalidateRecall, recall } from './worklog/recall.ts'
 import type { CreateProfileInput } from '@shared/profiles'
 import { getSettings, setSettings } from './store.ts'
 import { createScratchDir, resolveDefaultCwd } from './workspace.ts'
@@ -41,6 +49,7 @@ let win: BrowserWindow | null = null
 let browser: EmbeddedBrowser | null = null
 let ptys: PtyManager | null = null
 let watcher: ContextWatcher | null = null
+let autoscan: AutoScanner | null = null
 let mcp: BrowserMcpServer | null = null
 /** Path of the generated --mcp-config file; null until the server is up. */
 let mcpConfigPath: string | null = null
@@ -48,11 +57,89 @@ let remote: RemoteServer | null = null
 let usageCache: UsageSnapshot | null = null
 const tunnel = new TunnelManager()
 
+/**
+ * Where each session was started, kept past the life of its PTY.
+ *
+ * `ptys.list()` is the live answer and is gone the moment a tab closes — but
+ * closing a tab is when a work block usually ends, and the worklog gate needs a
+ * folder to resolve the group from. Without this, finishing and closing means
+ * the session can never be placed and so is never logged. Bounded by the
+ * sessions started in one run, which is a handful of strings.
+ */
+const sessionCwds = new Map<string, string>()
+
+/**
+ * Which sessions are running on another machine, and on which host.
+ *
+ * An SSH session spawns `ssh -t <alias> <command>`, so `claude` runs over there
+ * and its transcript is written over there. Nothing in `SessionInfo` records
+ * that, and every transcript reader needs to know — a remote session looked up
+ * locally simply never resolves, which is why the context meter has always been
+ * blank for one.
+ */
+const sessionHosts = new Map<string, SshHost>()
+
+/**
+ * How often a remote session's transcript is pulled back.
+ *
+ * The local cadence is 1.5s, which is a `stat` on this disk. This is an SSH
+ * round trip and a file transfer, so it gets a cadence that suits a network:
+ * slow enough to be unnoticeable on the link, fast enough that the meter is not
+ * telling the user something untrue.
+ */
+const REMOTE_POLL_MS = 30_000
+
+
+/** The folder a session ran in, live or remembered. */
+function cwdForSession(sessionId: string): string {
+  return (
+    ptys?.list().find((s) => s.sessionId === sessionId)?.cwd || sessionCwds.get(sessionId) || ''
+  )
+}
+
+/** The host a session is running on, or null when it is local. */
+function hostForSession(sessionId: string): SshHost | null {
+  const remembered = sessionHosts.get(sessionId)
+  if (!remembered) return null
+  // Re-read from settings rather than trusting the copy taken at launch: the
+  // worklog switch can be turned off while the session is still open, and that
+  // has to take effect at once.
+  return getSettings().hosts.find((h) => h.id === remembered.id) ?? remembered
+}
+
+/**
+ * The transcript for a session, wherever it lives.
+ *
+ * For a local session this is the file Claude wrote. For a remote one it is a
+ * local cache of the file Claude wrote on the far machine, pulled back over the
+ * same connection the session is already using. Both are plain JSONL, so every
+ * caller downstream is unchanged.
+ */
+async function transcriptFor(sessionId: string): Promise<string | null> {
+  const host = hostForSession(sessionId)
+  if (!host) return findSessionFile(sessionId)
+  /*
+   * The per-host switch gates the *copy*, not just the write-up.
+   *
+   * Fetching pulls a conversation off somebody's machine and puts it on this
+   * one. Doing that for the context meter alone — a nicety — while the user has
+   * said no to the worklog would be taking the opt-in for one thing as consent
+   * for another. So an unticked host is never read at all, and its meter stays
+   * blank exactly as it always has.
+   */
+  if (host.worklog !== true) return null
+  const fetched = await fetchRemoteTranscript(host, sessionId, app.getPath('userData'))
+  return fetched?.file ?? null
+}
+
 /** Starting a session, shared by the renderer's IPC and the remote server. */
 async function launchSession(opts: LaunchOptions): Promise<StartResult> {
   if (!ptys) throw new Error('Window is not ready')
   const result = await ptys.start(opts, getSettings().claudePath, mcpConfigPath)
   watcher?.watch(result.sessionId)
+  const cwd = ptys.list().find((s) => s.sessionId === result.sessionId)?.cwd
+  if (cwd) sessionCwds.set(result.sessionId, cwd)
+  if (opts.host) sessionHosts.set(result.sessionId, opts.host)
   return result
 }
 
@@ -91,6 +178,88 @@ function send(channel: string, ...args: unknown[]): void {
   if (win && !win.isDestroyed() && !win.webContents.isDestroyed()) {
     win.webContents.send(channel, ...args)
   }
+}
+
+/* --------------------------------------------------------------- worklog */
+
+/** The process-wide review queue. */
+function worklogQueue(): ReturnType<typeof getWorklogQueue> {
+  return getWorklogQueue(app.getPath('userData'))
+}
+
+/**
+ * One worklog scan, however it was asked for.
+ *
+ * Shared by the Scan button and the automatic trigger deliberately: the two
+ * differ only in who asked, and every other behaviour — reading the boards
+ * first, resolving the group, folding the result into the queue — has to stay
+ * identical or the automatic path becomes a second, less-tested feature.
+ *
+ * Throws. Both callers want to report the failure differently.
+ */
+async function runWorklogScan(sessionId: string, auto: boolean): Promise<number> {
+  const host = hostForSession(sessionId)
+  const file = await transcriptFor(sessionId)
+  if (!file) {
+    throw new Error(
+      host
+        ? `could not read a transcript on ${host.label || host.alias} — the session may not have started Claude yet`
+        : 'no transcript found for that session yet'
+    )
+  }
+
+  const settings = getSettings()
+  const projects = await listProjects(settings)
+
+  /*
+   * A remote session is placed by the machine it runs on, not by a folder.
+   * `SessionInfo.cwd` for one is wherever Stoke happened to be pointed locally,
+   * so resolving a project group from it would name the wrong project. The real
+   * working directory is recorded in the transcript itself, which by this point
+   * has been fetched — so the proposal names the remote path, and the host takes
+   * the place of the project group.
+   */
+  const cwd = host ? ((await parseSession(file)).cwd ?? '') : cwdForSession(sessionId)
+  const group = host ? host.label || host.alias : (groupForCwd(cwd, projects) ?? '')
+
+  // Cached and single-flighted, so a scan of two sessions a second apart reads
+  // the boards once. A failure here is reported to the scan rather than thrown:
+  // proposing creates with no idea what exists is degraded, not broken.
+  const snapshot = await recall({
+    clickupListId: CLICKUP_LIST_ID,
+    notionDataSource: NOTION_DATA_SOURCE,
+    // The same directory the write would use, so both runs see the same MCP
+    // servers. runHeadless falls back to a scratch dir if it has been deleted.
+    cwd,
+    claudePath: settings.claudePath
+  })
+  if (snapshot.error) console.warn('[stoke] worklog recall failed:', snapshot.error)
+
+  const outcome = await scanSession({
+    sessionId,
+    transcriptFile: file,
+    cwd,
+    group,
+    recall: snapshot,
+    auto,
+    claudePath: settings.claudePath
+  })
+  if (outcome.demoted > 0) {
+    // Not silent: a steady count means recall is truncating or the model is
+    // inventing ids, and both look exactly like the feature working.
+    console.warn(
+      `[stoke] worklog: ${outcome.demoted} update(s) named a record that is not on the boards, filed as new instead`
+    )
+  }
+
+  const added = worklogQueue().add(outcome.proposals)
+  send(CH.worklogChanged, worklogQueue().list())
+  if (auto && added.length) {
+    // Reversed to match `list()`, which is newest first — so the prompt walks
+    // them in the same order the panel shows them.
+    send(CH.worklogProposed, { sessionId, ids: added.map((p) => p.id).reverse() })
+  }
+  return added.length
 }
 
 function createWindow(): void {
@@ -171,11 +340,74 @@ function createWindow(): void {
     (ptyId, data) => send(CH.ptyData, ptyId, data),
     (ptyId, code, signal) => send(CH.ptyExit, ptyId, code, signal)
   )
+  /*
+   * The worklog's automatic trigger.
+   *
+   * Built before the watcher because the watcher feeds it: every context
+   * reading is also an activity reading, so noticing that a work block finished
+   * costs no new polling, no new file handles and no new IPC. See
+   * worklog/autoscan.ts for why the transcript is the right signal.
+   */
+  autoscan = new AutoScanner({
+    enabled: () => getSettings().worklogAuto && getSettings().worklogGroups.length > 0,
+    watched: async (sessionId) => {
+      const settings = getSettings()
+      if (!settings.worklogAuto) return false
+      /*
+       * A remote session is gated by the machine it runs on, not by a folder.
+       * Its local cwd is whatever Stoke was pointed at when the connection was
+       * opened, so the folder gate would either match by accident — filing a
+       * remote box's work under a local project — or never match at all. Both
+       * are silent, so SSH gets its own explicit switch.
+       */
+      const host = hostForSession(sessionId)
+      if (host) return host.worklog === true
+      // A current project list, not one cached at boot: a repository cloned
+      // during this run is a project the gate has to be able to see.
+      return shouldWatch(cwdForSession(sessionId), await listProjects(settings), settings.worklogGroups)
+    },
+    scan: async (sessionId) => {
+      try {
+        return await runWorklogScan(sessionId, true)
+      } catch (err) {
+        // Swallowed here on purpose: an unattended scan that failed is a log
+        // line, not a dialog over whatever the user is doing.
+        console.warn('[stoke] automatic worklog scan failed', err)
+        return 0
+      }
+    }
+  })
+  autoscan.start()
+
   // The second argument lets the meter read the tier off the CLI's own banner,
   // which is the only place it is stated - the transcript never carries it.
   watcher = new ContextWatcher(
-    (snap) => send(CH.ctxUpdate, snap),
-    (sessionId) => ptys?.bannerWindowFor(sessionId) ?? null
+    (snap) => {
+      send(CH.ctxUpdate, snap)
+      // `ready` is false for the placeholder emitted while a brand-new session
+      // has no transcript yet; its counts are zeroes and would set a baseline
+      // the real first reading then blows straight past.
+      if (snap.ready) autoscan?.observe(snap.sessionId, snap.messageCount, snap.updatedAt)
+    },
+    (sessionId) => ptys?.bannerWindowFor(sessionId) ?? null,
+    {
+      /*
+       * One poller, both kinds of session.
+       *
+       * A remote transcript is fetched back over the same connection rather
+       * than read off this disk, and routing it through the watcher rather
+       * than beside it is what makes everything downstream work unchanged:
+       * the context meter starts reading for SSH sessions, and the auto-scan
+       * trigger — which is fed from these very snapshots — starts firing for
+       * them too. Without it the worklog over SSH would only ever run from the
+       * Scan button.
+       */
+      resolve: (sessionId) => transcriptFor(sessionId),
+      volatile: (sessionId) => hostForSession(sessionId) !== null,
+      // A network round trip cannot run at the local 1.5s. Slow enough to be
+      // unnoticeable on the link, fast enough that the meter is not a lie.
+      pollMs: (sessionId) => (hostForSession(sessionId) ? REMOTE_POLL_MS : null)
+    }
   )
 
   const devUrl = process.env.ELECTRON_RENDERER_URL
@@ -199,6 +431,8 @@ function createWindow(): void {
   win.on('closed', () => {
     ptys?.killAll()
     watcher?.disposeAll()
+    autoscan?.dispose()
+    autoscan = null
     mcp?.stop()
     void remote?.stop()
     tunnel.stop()
@@ -472,30 +706,38 @@ function registerIpc(): void {
    * arrives as an opaque Error string and the panel could not tell "nothing to
    * propose" from "the run broke".
    */
-  const queue = (): ReturnType<typeof getWorklogQueue> => getWorklogQueue(app.getPath('userData'))
+  const queue = worklogQueue
 
   ipcMain.handle(CH.worklogQueue, () => queue().list())
 
   ipcMain.handle(CH.worklogScan, async (_e, sessionId: string) => {
     try {
-      const file = await findSessionFile(sessionId)
-      if (!file) return { added: 0, error: 'no transcript found for that session yet' }
-      const projects = await listProjects(getSettings())
-      const cwd = ptys?.list().find((s) => s.sessionId === sessionId)?.cwd ?? ''
-      const group = groupForCwd(cwd, projects) ?? ''
-      const outcome = await scanSession({ sessionId, transcriptFile: file, cwd, group })
-      const added = queue().add(outcome.proposals)
-      send(CH.worklogChanged, queue().list())
-      return { added: added.length, error: null }
+      return { added: await runWorklogScan(sessionId, false), error: null }
     } catch (err) {
       return { added: 0, error: err instanceof Error ? err.message : String(err) }
     }
   })
 
+  /*
+   * Accepts in flight, by proposal id.
+   *
+   * The renderer disables its buttons while one runs, but there are now two
+   * independent controls that can accept the same proposal — the panel and the
+   * auto-scan prompt — and a renderer flag is not a lock anyway. Two invokes
+   * arriving together would each read a proposal with no urls yet and each run
+   * the write, creating the record twice in a live workspace. Nothing else in
+   * this file can undo that, so the guard belongs here.
+   */
+  const accepting = new Set<string>()
+
   ipcMain.handle(CH.worklogAccept, async (_e, id: string) => {
     const q = queue()
     const item = q.list().find((p) => p.id === id)
     if (!item) return { ok: false, error: 'that proposal is no longer in the queue' }
+    if (item.status === 'accepted') return { ok: true, error: null }
+    if (item.status === 'rejected') return { ok: false, error: 'that proposal was rejected' }
+    if (accepting.has(id)) return { ok: false, error: 'that proposal is already being written' }
+    accepting.add(id)
     try {
       const outcome = await applyProposal(item, {
         // Persist each URL the moment its write returns, so a failure on the
@@ -514,6 +756,16 @@ function registerIpc(): void {
         urls: { ...(q.list().find((p) => p.id === id)?.urls ?? {}), ...outcome.urls },
         error: errors.join('; ')
       })
+      /*
+       * The boards have moved, so the cached reading of them is stale.
+       *
+       * This matters more than it looks: the record just written is the one the
+       * next scan most needs to know about. Left cached, that record stays
+       * invisible for the rest of the TTL and the next scan of the same session
+       * proposes creating it all over again - which is the exact duplication
+       * recall was added to prevent.
+       */
+      if (Object.keys(outcome.urls).length) invalidateRecall()
       send(CH.worklogChanged, q.list())
       return { ok: outcome.ok, error: errors.join('; ') || null }
     } catch (err) {
@@ -521,6 +773,8 @@ function registerIpc(): void {
       q.update(id, { status: 'failed', error: message })
       send(CH.worklogChanged, q.list())
       return { ok: false, error: message }
+    } finally {
+      accepting.delete(id)
     }
   })
 

@@ -210,11 +210,46 @@ export interface SshHost {
    * Empty means a plain login shell.
    */
   command: string
+  /**
+   * Let the worklog agent write up sessions on this machine.
+   *
+   * Per host rather than per project group, because a remote session has no
+   * local project to key on: `SessionInfo.cwd` for an SSH session is the folder
+   * Stoke was pointed at locally, not the directory the remote shell is in. The
+   * folder gate would therefore match by accident or not at all, and both are
+   * silent. Off unless asked, like `worklogGroups`.
+   */
+  worklog?: boolean
 }
 
 /* ----------------------------------------------------------------- worklog */
 
 export type WorklogTarget = 'notion' | 'clickup'
+
+/**
+ * Create a new record, or change one that already exists.
+ *
+ * The second kind is why the scan is given a list of what is already tracked:
+ * finishing a task the user filed last week should move that task, not file a
+ * near-duplicate beside it.
+ */
+export type WorklogKind = 'create' | 'update'
+
+/**
+ * A record that already exists in a destination, as the recall run read it.
+ *
+ * `status` is the destination's *own* word for the state — "in progress",
+ * "Complete" — never a normalised one. A status this app invented would be
+ * rejected by ClickUp's API with an error the user cannot act on, so the only
+ * statuses ever written back are ones that were read out first.
+ */
+export interface WorklogExistingItem {
+  /** The destination's identifier, which is what the write is addressed to. */
+  id: string
+  title: string
+  status?: string
+  url?: string
+}
 
 /**
  * One proposed entry, awaiting review. Nothing reaches Notion or ClickUp until
@@ -230,11 +265,37 @@ export interface WorklogProposal {
   title: string
   body: string
   targets: WorklogTarget[]
+  /**
+   * Absent on records written before updates existed, which is why every reader
+   * treats a missing value as `'create'` rather than requiring it.
+   */
+  kind?: WorklogKind
+  /** For an update: the record being changed, per destination. */
+  existing?: Partial<Record<WorklogTarget, WorklogExistingItem>>
+  /**
+   * For an update: the state to move it to, per destination, in that
+   * destination's own vocabulary. Only ever a status recall actually saw.
+   */
+  newStatus?: Partial<Record<WorklogTarget, string>>
   status: 'pending' | 'accepted' | 'rejected' | 'failed'
   createdAt: number
+  /** True when a scan the user did not ask for produced it. */
+  auto?: boolean
   /** Set once accepted, so a half-succeeded write is visible rather than lost. */
   urls?: Partial<Record<WorklogTarget, string>>
   error?: string
+}
+
+/**
+ * What an auto-scan produced, pushed at the renderer so it can ask about it.
+ *
+ * Carries the ids rather than the proposals themselves: the queue is already
+ * broadcast in full on every change, and two copies of the same records drift.
+ */
+export interface WorklogProposedEvent {
+  sessionId: string
+  /** Ids of the proposals this scan added, newest first. */
+  ids: string[]
 }
 
 /* ---------------------------------------------------------------- profiles */
@@ -352,6 +413,15 @@ export interface Settings {
    * session can be running while a different profile is being browsed.
    */
   worklogGroups: string[]
+  /**
+   * Scan a watched session on its own, once it goes quiet, instead of waiting
+   * for the button.
+   *
+   * On by default, because `worklogGroups` is the real switch: with no group
+   * watched this changes nothing at all, and with one watched the whole point
+   * of the feature is that it keeps up without being asked.
+   */
+  worklogAuto: boolean
   sidebarWidth: number
   /** Explicit path to the claude executable; null means auto-detect. */
   claudePath: string | null

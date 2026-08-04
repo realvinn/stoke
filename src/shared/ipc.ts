@@ -100,6 +100,8 @@ export const CH = {
   worklogAccept: 'worklog:accept',
   worklogReject: 'worklog:reject',
   worklogChanged: 'worklog:changed',
+  /** An auto-scan added proposals. The renderer asks about them; see WorklogPrompt. */
+  worklogProposed: 'worklog:proposed',
 
   // clipboard
   clipboardRead: 'clipboard:read',

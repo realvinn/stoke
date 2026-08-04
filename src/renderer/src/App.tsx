@@ -24,6 +24,7 @@ import { StatusBar } from './components/StatusBar'
 import { TerminalView } from './components/TerminalView'
 import { TitleBar } from './components/TitleBar'
 import { WorklogPanel } from './components/WorklogPanel'
+import { WorklogPrompt } from './components/WorklogPrompt'
 import { baseName } from './lib/format'
 import { attachExit, forgetPty, initPtyBus } from './lib/ptyBus'
 import { matchShortcut } from './lib/shortcuts'
@@ -79,6 +80,16 @@ export function App(): React.JSX.Element {
   const [worklogOpen, setWorklogOpen] = useState(false)
   const [worklog, setWorklog] = useState<WorklogProposal[]>([])
   const [worklogBusy, setWorklogBusy] = useState(false)
+  /*
+   * What the last automatic scan proposed, and what has been waved past here.
+   *
+   * Ids rather than proposals: the queue is broadcast in full on every change,
+   * so keeping a second copy of the records would drift the moment one is
+   * accepted. `asked` is the strip's own memory — skipping something must not
+   * reject it, only stop this one control from asking again.
+   */
+  const [proposedIds, setProposedIds] = useState<string[]>([])
+  const [asked, setAsked] = useState<Set<string>>(new Set())
 
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -126,6 +137,19 @@ export function App(): React.JSX.Element {
     const offMax = window.stoke.window.onMaximizedChanged(setMaximized)
     const offSettings = window.stoke.settings.onChange(setSettings)
     const offWorklog = window.stoke.worklog.onChange(setWorklog)
+    /*
+     * Only an automatic scan raises the prompt.
+     *
+     * The queue is restored on every launch and the panel already shows it, so
+     * asking about whatever happens to be sitting in it would greet the user
+     * with a question about work from last week. This fires when Stoke went and
+     * looked without being asked, which is the only case where the user does
+     * not already know there is something to decide.
+     */
+    const offProposed = window.stoke.worklog.onProposed((e) => {
+      setProposedIds(e.ids)
+      setAsked(new Set())
+    })
     void window.stoke.worklog.queue().then(setWorklog)
 
     void (async () => {
@@ -152,6 +176,7 @@ export function App(): React.JSX.Element {
       offMax()
       offSettings()
       offWorklog()
+      offProposed()
     }
   }, [refreshProjects])
 
@@ -356,6 +381,22 @@ export function App(): React.JSX.Element {
       setWorklogBusy(false)
     }
   }, [worklog])
+
+  /*
+   * What the prompt still has to ask about.
+   *
+   * Read off the live queue rather than stored, so a proposal accepted from the
+   * panel — or one that has since failed — drops out of the strip on its own
+   * instead of being offered twice. Ordered by the event, which is newest first.
+   */
+  const promptQueue = useMemo(() => {
+    if (!proposedIds.length) return []
+    const byId = new Map(worklog.map((p) => [p.id, p]))
+    return proposedIds
+      .filter((id) => !asked.has(id))
+      .map((id) => byId.get(id))
+      .filter((p): p is WorklogProposal => !!p && p.status === 'pending')
+  }, [proposedIds, asked, worklog])
 
   /**
    * Open a session on a remote machine.
@@ -698,6 +739,32 @@ export function App(): React.JSX.Element {
               </button>
             </div>
           )}
+
+          {/*
+            In the flow above the terminal, exactly like the error banner, and
+            deliberately not floating. The docked browser is a native
+            WebContentsView that paints over every pixel of renderer DOM — but
+            its bounds are this row's *sibling* column, so anything inside
+            `.main-col` stays visible with the browser open. An overlay would
+            not.
+          */}
+          <WorklogPrompt
+            proposals={promptQueue}
+            busy={worklogBusy}
+            onAccept={(id) => {
+              // Dropped from the strip at once. The write takes tens of seconds
+              // and the answer has already been given; leaving the question up
+              // while it runs invites a second press.
+              setAsked((prev) => new Set(prev).add(id))
+              void acceptProposal(id)
+            }}
+            onSkip={(id) => setAsked((prev) => new Set(prev).add(id))}
+            onReviewAll={() => {
+              setWorklogOpen(true)
+              setProposedIds([])
+            }}
+            onDismiss={() => setProposedIds([])}
+          />
 
           <div className="term-stack" style={{ display: activeTabId ? 'block' : 'none' }}>
             {tabs.map((tab) => (

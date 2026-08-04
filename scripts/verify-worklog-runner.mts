@@ -24,17 +24,21 @@ import { join } from 'node:path'
 import { buildHeadlessArgs, DEFAULT_HEADLESS_MODEL } from '../src/main/agent.ts'
 import {
   MAX_DIGEST_CHARS,
+  MAX_TITLE_CHARS,
   SCAN_DISALLOWED_TOOLS,
   WRITE_ORDER,
   WorklogParseError,
   applyRunOptions,
   buildApplyPrompt,
   buildScanPrompt,
+  groundProposals,
   parseProposals,
   parseWrittenUrl,
   scanRunOptions,
-  summariseTurns
+  summariseTurns,
+  tidyTitle
 } from '../src/main/worklog/runner.ts'
+import { MAX_RECALL_CHARS, formatRecall, type RecallSnapshot } from '../src/main/worklog/recall.ts'
 import {
   MAX_ENTRIES,
   WorklogQueue,
@@ -113,12 +117,18 @@ check(
   ['Fixed the meter']
 )
 
+/*
+ * The single letters below come back capitalised because every parsed title now
+ * goes through tidyTitle. That is the point of it, so these assert the tidied
+ * form rather than the raw one - the shapes being tested here are the JSON, not
+ * the wording.
+ */
 check(
   'prose either side of the JSON parses',
   parseProposals(
     'I reviewed the session and produced two entries: [{"title":"a","body":"","targets":["notion"]},{"title":"b","body":"","targets":["clickup"]}] — let me know if you want more.'
   ).map((p) => p.title),
-  ['a', 'b']
+  ['A', 'B']
 )
 
 check(
@@ -126,19 +136,19 @@ check(
   parseProposals('I found [3] things worth logging: [{"title":"a"},{"title":"b"},{"title":"c"}]').map(
     (p) => p.title
   ),
-  ['a', 'b', 'c']
+  ['A', 'B', 'C']
 )
 
 check(
   'a {"proposals": [...]} wrapper parses',
   parseProposals('{"proposals":[{"title":"a","body":"x","targets":["clickup"]}]}').map((p) => p.title),
-  ['a']
+  ['A']
 )
 
 check(
   'a lone object is treated as one proposal',
   parseProposals('{"title":"a","body":"x","targets":["notion"]}').map((p) => p.title),
-  ['a']
+  ['A']
 )
 
 check(
@@ -506,6 +516,432 @@ q7.reject(second.id)
 q7.add(Array.from({ length: MAX_ENTRIES }, (_, i) => draft({ title: `filler ${i}` })))
 check('an accepted entry is evicted first', q7.get(first.id), null)
 check('the rejection is kept, so it cannot come back', q7.get(second.id)?.status, 'rejected')
+
+/* ------------------------------------------------------------------ titles */
+
+/*
+ * The user's ask, verbatim: titles should read like "Added [Feature]" or
+ * "Fixed [Bug]" - plain enough for someone who was not there, specific enough to
+ * be worth reading. Prompt wording moves the average; these are the cases it
+ * does not catch, and the title is the only part of a proposal the user reads
+ * before deciding.
+ */
+console.log('\ntitles are plain English, whatever the model sends')
+
+check('a conventional-commit prefix is stripped', tidyTitle('feat: add ssh sessions'), 'Add ssh sessions')
+check(
+  'so is a scoped one, including the breaking-change bang',
+  tidyTitle('fix(worklog)!: dedupe key collision'),
+  'Dedupe key collision'
+)
+check('bold markers go', tidyTitle('**Added SSH sessions**'), 'Added SSH sessions')
+check('so do backticks', tidyTitle('Fixed `contextLimitFor`'), 'Fixed contextLimitFor')
+check('a heading marker goes', tidyTitle('## Added the worklog panel'), 'Added the worklog panel')
+check('a bullet marker goes', tidyTitle('- Added the worklog panel'), 'Added the worklog panel')
+check('a trailing full stop goes', tidyTitle('Added the worklog panel.'), 'Added the worklog panel')
+check('surrounding quotes go', tidyTitle('"Added the worklog panel"'), 'Added the worklog panel')
+check('newlines collapse', tidyTitle('Added the\n  worklog panel'), 'Added the worklog panel')
+check('the first letter is raised', tidyTitle('added the worklog panel'), 'Added the worklog panel')
+check('a markdown-wrapped commit prefix is still caught', tidyTitle('**fix:** the meter'), 'The meter')
+check('an empty title stays empty', tidyTitle('   '), '')
+
+const longSource = 'Added SSH sessions to the launcher and wired the host picker into settings as well'
+const longTitle = tidyTitle(longSource)
+ok(
+  'a long title is cut to the cap',
+  longTitle.length <= MAX_TITLE_CHARS + 1,
+  `${longTitle.length} chars: ${longTitle}`
+)
+/*
+ * A word-boundary cut, checked against the source rather than by pattern: the
+ * kept text must be a prefix of the original AND the very next character must be
+ * the space it was cut at. A title chopped mid-word reads as a bug in Stoke, and
+ * it is the first thing the user sees.
+ */
+const kept = longTitle.slice(0, -1)
+ok(
+  'and cut at a word boundary, not mid-word',
+  longSource.startsWith(kept) && longSource[kept.length] === ' ',
+  `kept "${kept}", next char ${JSON.stringify(longSource[kept.length])}`
+)
+ok('and says it was cut', longTitle.endsWith('…'), longTitle)
+
+/* ------------------------------------------------------ create, or update */
+
+console.log('\nan update names one board and one record')
+
+const updateReply =
+  '[{"kind":"update","target":"clickup","id":"abc123","status":"complete","title":"finished the ssh work","body":"done"},' +
+  ' {"kind":"create","title":"Cover the 1M tier","body":"x","targets":["clickup"]}]'
+const parsedUpdate = parseProposals(updateReply)
+
+check('the kind survives', parsedUpdate[0].kind, 'update')
+check('so does the board', parsedUpdate[0].target, 'clickup')
+check('and the id', parsedUpdate[0].existingId, 'abc123')
+check('and the status', parsedUpdate[0].newStatus, 'complete')
+check(
+  'an update targets only the board holding the record',
+  parsedUpdate[0].targets,
+  ['clickup']
+)
+check('a create alongside it is still a create', parsedUpdate[1].kind, 'create')
+
+check(
+  'an update with no id is read as a create, because it addresses nothing',
+  parseProposals('[{"kind":"update","target":"clickup","title":"a","body":"b"}]')[0].kind,
+  'create'
+)
+check(
+  'and so is one with no board',
+  parseProposals('[{"kind":"update","id":"abc","title":"a","body":"b"}]')[0].kind,
+  'create'
+)
+
+/* ------------------------------------------------- grounding against recall */
+
+/*
+ * The point where a model's claim about somebody else's workspace stops being
+ * taken on trust. Both checks exist because the alternative is a write that
+ * fails at ClickUp's API with an error the user can do nothing about.
+ */
+console.log('\nupdates are checked against what the boards actually hold')
+
+const snapshot: RecallSnapshot = {
+  readAt: 1_000,
+  items: {
+    clickup: [
+      { id: 'abc123', title: 'Ship SSH sessions', status: 'in progress', url: 'https://app.clickup.com/t/abc123' },
+      { id: 'def456', title: 'Theme editor', status: 'open' }
+    ],
+    notion: [{ id: 'n-1', title: 'Week of 4 August', status: 'Draft' }]
+  },
+  /*
+   * The closed state is here and on no task, which is exactly the point. Recall
+   * lists *open* records, so a vocabulary inferred from them could never contain
+   * "complete" - and the agent could read a board but never finish anything on
+   * it. It is read off the list itself for that reason.
+   */
+  statuses: { clickup: ['open', 'in progress', 'complete'], notion: ['Draft', 'Published'] }
+}
+const where = { sessionId: 's1', cwd: 'G:\\Code\\personal\\Stoke', group: 'personal' }
+
+const grounded = groundProposals(
+  [
+    { kind: 'update', target: 'clickup', existingId: 'abc123', newStatus: 'complete', title: 'A', body: '', targets: ['clickup'] },
+    { kind: 'update', target: 'clickup', existingId: 'nope999', title: 'B', body: '', targets: ['clickup'] },
+    { kind: 'update', target: 'clickup', existingId: 'def456', newStatus: 'Done', title: 'C', body: '', targets: ['clickup'] },
+    { kind: 'create', title: 'D', body: '', targets: ['notion'] }
+  ],
+  where,
+  snapshot
+)
+
+check('a real id stays an update', grounded.drafts[0].kind, 'update')
+check('and carries the record it changes', grounded.drafts[0].existing?.clickup?.id, 'abc123')
+check(
+  'a status the board actually uses is kept',
+  grounded.drafts[0].newStatus?.clickup,
+  'complete'
+)
+check('an id nobody has seen is filed as a create instead', grounded.drafts[1].kind, 'create')
+check('and it is counted, not swallowed', grounded.demoted, 1)
+check('an invented status is dropped', grounded.drafts[2].newStatus, undefined)
+check('but the update itself survives as a note', grounded.drafts[2].kind, 'update')
+check('a create is left alone', grounded.drafts[3].kind, 'create')
+check('a manual scan does not mark anything auto', grounded.drafts[0].auto, undefined)
+check(
+  'an automatic scan marks every draft',
+  groundProposals([{ kind: 'create', title: 'A', body: '', targets: ['notion'] }], { ...where, auto: true }, snapshot)
+    .drafts[0].auto,
+  true
+)
+
+/* ------------------------------------------------- the update write itself */
+
+console.log('\nwriting an update touches one record and nothing else')
+
+const updateProposal: WorklogProposal = {
+  id: 'p1',
+  sessionId: 's1',
+  cwd: 'G:\\Code\\personal\\Stoke',
+  group: 'personal',
+  title: 'Finished the SSH work',
+  body: 'Shipped it.',
+  targets: ['clickup'],
+  kind: 'update',
+  existing: { clickup: { id: 'abc123', title: 'Ship SSH sessions', status: 'in progress', url: 'https://app.clickup.com/t/abc123' } },
+  newStatus: { clickup: 'complete' },
+  status: 'pending',
+  createdAt: 0
+}
+
+const updateOpts = applyRunOptions(updateProposal, 'clickup')
+check(
+  'an update uses the update tools, never the create one',
+  updateOpts.allowedTools,
+  ['mcp__claude_ai_ClickUp__clickup_update_task', 'mcp__claude_ai_ClickUp__clickup_create_comment']
+)
+ok(
+  'no create tool is reachable from an update run',
+  !updateOpts.allowedTools?.some((t) => t.includes('create_task')),
+  JSON.stringify(updateOpts.allowedTools)
+)
+
+const updatePrompt = buildApplyPrompt(updateProposal, 'clickup')
+ok('the prompt names the record id', updatePrompt.includes('abc123'), updatePrompt.slice(0, 200))
+ok('and the status to set', updatePrompt.includes('"complete"'), updatePrompt.slice(0, 300))
+ok(
+  'the note goes on as a comment, because update_task replaces the description',
+  updatePrompt.includes('clickup_create_comment'),
+  updatePrompt
+)
+ok('and it creates nothing', /Do not.*creat/i.test(updatePrompt), updatePrompt)
+
+const noStatus = buildApplyPrompt({ ...updateProposal, newStatus: {} }, 'clickup')
+ok('with no status, the prompt says leave it', /Do not change its status/.test(noStatus), noStatus)
+
+/*
+ * An update with no record to change must refuse rather than fall back to
+ * creating: guessing there would file a duplicate into a live board.
+ */
+const orphan = buildApplyPrompt({ ...updateProposal, existing: {} }, 'clickup')
+ok('an update naming no record does nothing at all', /Do nothing and change nothing/.test(orphan), orphan)
+ok('and says why', orphan.includes('names no record'), orphan)
+
+check(
+  'a create still uses exactly one tool',
+  applyRunOptions({ ...updateProposal, kind: 'create', existing: undefined }, 'clickup').allowedTools,
+  ['mcp__claude_ai_ClickUp__clickup_create_task']
+)
+check(
+  'and a proposal with no kind at all is treated as a create',
+  applyRunOptions({ ...updateProposal, kind: undefined, existing: undefined }, 'notion').allowedTools,
+  ['mcp__claude_ai_Notion__notion-create-pages']
+)
+
+/* --------------------------------------------------- recall in the prompt */
+
+console.log('\nrecall reaches the prompt without unbounding it')
+
+/*
+ * A realistically large recall block, not a one-line fixture: the ceiling below
+ * is what stops a busy board turning every scan into an expensive one, and a
+ * 60-character `existing` would pass it with formatRecall's clip deleted.
+ */
+const bigRecall = formatRecall({
+  readAt: 1,
+  statuses: { clickup: ['open', 'in progress', 'complete'] },
+  items: {
+    clickup: Array.from({ length: 30 }, (_, i) => ({
+      id: `task-${i}`,
+      title: `A tracked piece of work with a realistically long title, number ${i}`,
+      status: i % 2 ? 'open' : 'in progress'
+    }))
+  }
+})
+ok('the recall fixture is genuinely large', bigRecall.length > 1500, `${bigRecall.length} chars`)
+
+const withRecall = buildScanPrompt({
+  sessionId: 'abc-123',
+  cwd: 'G:\\Code\\personal\\Stoke',
+  group: 'personal',
+  digest,
+  existing: `ClickUp:\n- [clickup:abc123] Ship SSH sessions (status: in progress)\n${bigRecall}`
+})
+ok('the ids reach the model', withRecall.includes('clickup:abc123'), withRecall.slice(0, 400))
+ok('so do the statuses', withRecall.includes('in progress'), withRecall.slice(0, 400))
+ok(
+  'and the whole thing stays bounded',
+  withRecall.length <= MAX_DIGEST_CHARS + MAX_RECALL_CHARS + 2000,
+  `prompt was ${withRecall.length} characters`
+)
+
+/*
+ * The distinction that makes recall worth having. Told nothing, a model
+ * reasonably assumes the boards are empty and proposes a create for everything -
+ * which is the exact duplication recall was added to stop.
+ */
+const failedRecall = buildScanPrompt({ sessionId: 'a', cwd: 'x', group: 'g', digest, recallFailed: true })
+ok(
+  'a failed read is never reported as an empty board',
+  failedRecall.includes('could not be read') && !failedRecall.includes('boards are empty'),
+  failedRecall.slice(0, 600)
+)
+const emptyRecall = buildScanPrompt({ sessionId: 'a', cwd: 'x', group: 'g', digest })
+ok('and an empty board is stated as one', emptyRecall.includes('boards are empty'), emptyRecall.slice(0, 600))
+
+/* ------------------------------------------------- the queue holds updates */
+
+console.log('\nthe queue keeps an update distinct, and keeps old ids intact')
+
+/*
+ * The regression that would be silent and awful: proposal ids are a hash of the
+ * dedupe key and rejections are tombstones keyed on it, so any change to the
+ * *create* key resurrects every proposal the user has ever said no to.
+ */
+check(
+  'the create key is byte-for-byte what it was before updates existed',
+  dedupeKey({ sessionId: 's1', title: 'Fix the meter' }),
+  's1|fix the meter'
+)
+check(
+  'an explicit create kind does not change it either',
+  dedupeKey({ sessionId: 's1', title: 'Fix the meter', kind: 'create' }),
+  's1|fix the meter'
+)
+
+const updateIdentity = {
+  sessionId: 's1',
+  title: 'Finished the SSH work',
+  kind: 'update' as const,
+  existing: { clickup: { id: 'abc123', title: 'Ship SSH sessions' } }
+}
+check(
+  'an update is keyed on the record it changes, not its wording',
+  dedupeKey(updateIdentity),
+  's1|update|clickup:abc123'
+)
+check(
+  'so rewording it does not queue a second one',
+  dedupeKey({ ...updateIdentity, title: 'Wrapped up the SSH work' }),
+  dedupeKey(updateIdentity)
+)
+ok(
+  'but an update and a create never collide',
+  dedupeKey(updateIdentity) !== dedupeKey({ sessionId: 's1', title: 'Finished the SSH work' })
+)
+
+const qU = new WorklogQueue(queueFile('updates'))
+const addedUpdate = qU.add([
+  {
+    sessionId: 's1',
+    cwd: 'G:\\Code\\personal\\Stoke',
+    group: 'personal',
+    title: 'Finished the SSH work',
+    body: 'Shipped it.',
+    targets: ['clickup'],
+    kind: 'update',
+    existing: { clickup: { id: 'abc123', title: 'Ship SSH sessions', status: 'in progress' } },
+    newStatus: { clickup: 'complete' },
+    auto: true
+  }
+])
+check('one update queued', addedUpdate.length, 1)
+
+const reloadedUpdate = new WorklogQueue(queueFile('updates')).get(addedUpdate[0].id)
+check('the kind survives a reload', reloadedUpdate?.kind, 'update')
+check('so does the record it changes', reloadedUpdate?.existing?.clickup?.id, 'abc123')
+check('and the status move', reloadedUpdate?.newStatus?.clickup, 'complete')
+check('and the fact it was found automatically', reloadedUpdate?.auto, true)
+
+/*
+ * A stored update whose record did not survive names nothing that can be
+ * changed, so it must come back as the create the write path would treat it as -
+ * not as an update with nowhere to go.
+ */
+writeFileSync(
+  queueFile('broken'),
+  JSON.stringify([
+    {
+      id: 'x1',
+      sessionId: 's1',
+      cwd: '',
+      group: '',
+      title: 'Orphaned update',
+      body: '',
+      targets: ['clickup'],
+      kind: 'update',
+      newStatus: { clickup: 'complete' },
+      status: 'pending',
+      createdAt: 1
+    }
+  ]),
+  'utf8'
+)
+const rehydrated = new WorklogQueue(queueFile('broken')).get('x1')
+check('an update with no record rehydrates as a create', rehydrated?.kind, 'create')
+check('and drops the status it could not have applied', rehydrated?.newStatus, undefined)
+
+/* --------------------------------------------- written, but with no link */
+
+/*
+ * The marker that stops Try again duplicating a live record, checked ACROSS A
+ * RELOAD rather than in memory.
+ *
+ * `applyProposal` writes `urls[target] = ''` for "reached, no link back", and
+ * the retry guard keys off the *presence* of that entry. A reload used to drop
+ * it for being falsy, so the marker survived until the next restart and no
+ * longer — and the first Try again after a restart created a second real
+ * ClickUp task. Testing it in memory passed the whole time.
+ */
+console.log('\na destination reached without a link stays reached after a restart')
+
+const noLinkFile = queueFile('nolink')
+const qL = new WorklogQueue(noLinkFile)
+const half = qL.add([draft({ title: 'Wrote it, got no link back' })])[0]
+qL.update(half.id, { status: 'failed', urls: { clickup: '', notion: 'https://www.notion.so/x' } })
+
+const afterReload = new WorklogQueue(noLinkFile).get(half.id)
+check('the empty marker survives the reload', afterReload?.urls?.clickup, '')
+check('and so does the real link beside it', afterReload?.urls?.notion, 'https://www.notion.so/x')
+ok(
+  'so the retry guard still sees ClickUp as reached',
+  afterReload?.urls?.clickup !== undefined,
+  JSON.stringify(afterReload?.urls)
+)
+
+/* ------------------------------------------------- a rejection is a rejection */
+
+/*
+ * An update and a create are keyed differently on purpose, which leaves a hole:
+ * reject an update, let recall fail on the next scan, and the same sentence
+ * comes back as a create under a different key. The user said no once.
+ */
+console.log('\nsaying no to an update also says no to the same work as a create')
+
+const crossFile = queueFile('cross')
+const qX = new WorklogQueue(crossFile)
+const asUpdate = qX.add([
+  {
+    ...draft({ title: 'Finished the SSH work' }),
+    kind: 'update',
+    targets: ['clickup'],
+    existing: { clickup: { id: 'abc123', title: 'Ship SSH sessions' } }
+  }
+])[0]
+qX.reject(asUpdate.id)
+
+check(
+  'the same work proposed as a create is refused',
+  qX.add([draft({ title: 'Finished the SSH work' })]).length,
+  0
+)
+check('and still refused after a reload', new WorklogQueue(crossFile).add([draft({ title: 'Finished the SSH work' })]).length, 0)
+check(
+  'but genuinely different work is not',
+  qX.add([draft({ title: 'Started the theme editor' })]).length,
+  1
+)
+
+/*
+ * Only *rejections* cross-block. A pending create must not swallow an update
+ * that says the same thing, because the update is the better-informed of the
+ * two and losing it would be a silent downgrade.
+ */
+const qP = new WorklogQueue(queueFile('pending-cross'))
+qP.add([draft({ title: 'Finished the SSH work' })])
+check(
+  'a merely pending create does not block the update',
+  qP.add([
+    {
+      ...draft({ title: 'Finished the SSH work' }),
+      kind: 'update',
+      targets: ['clickup'],
+      existing: { clickup: { id: 'abc123', title: 'Ship SSH sessions' } }
+    }
+  ]).length,
+  1
+)
 
 rmSync(dir, { recursive: true, force: true })
 

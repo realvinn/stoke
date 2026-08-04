@@ -27,10 +27,12 @@ need a live instance or cost money:
 npm run verify:context        # context meter against the real transcripts on this machine
 npm run verify:profiles       # profile resolution + every accent clears 4.5:1
 npm run verify:color          # colour maths: contrast, APCA, oklch
-npm run verify:worklog-gate   # which sessions the worklog agent would watch
-npm run verify:worklog-runner # prompt building, JSON parsing, URL extraction
-npm run verify:worklog-retry  # writes happen once, and a retry never duplicates a record
-npm run verify:ssh            # ssh argv and ~/.ssh/config parsing
+npm run verify:worklog-gate     # which sessions the worklog agent would watch
+npm run verify:worklog-runner   # prompt building, JSON parsing, titles, create-vs-update
+npm run verify:worklog-retry    # writes happen once, and a retry never duplicates a record
+npm run verify:worklog-recall   # the read-only board read, its parse and its cache
+npm run verify:worklog-autoscan # when a session is scanned without being asked
+npm run verify:ssh            # ssh argv, ~/.ssh/config parsing, the remote transcript fetch
 npm run verify:extract        # page extractor regression set
 npm run verify:usage          # plan limits, incl. a live account call
 npm run verify:security <url> <token> --access   # remote server, against a running instance
@@ -52,13 +54,17 @@ src/main/         Electron main process
   updates.ts        claude CLI version/health
   selfUpdate.ts     Stoke's own updates (electron-updater)
   profiles.ts       plans and creates a profile's folder + scan root
-  ssh.ts            ~/.ssh/config parsing and the ssh argv
+  ssh.ts            ~/.ssh/config parsing, the ssh argv, the transcript command
+  sshTranscript.ts  pulls a remote session's JSONL back, so SSH sessions can be read
   agent.ts          headless `claude -p` runner (prompt on stdin, json out)
   audio/            reads the default capture device, to warn about virtual cables
   worklog/          the Notion/ClickUp review queue
     gate.ts           which project groups are watched
+    autoscan.ts       when a quiet session is scanned without being asked
+    recall.ts         reads the boards (read-only, cached) so updates beat duplicates
     runner.ts         scan (read-only) and apply (writes, on accept only)
     queue.ts          the persisted proposal list
+    json.ts           the shared "read JSON out of a model's reply" rescue
   mcp/              MCP server exposing the browser to Claude
     server.ts         HTTP transport + the 17 tool definitions
     page.ts           drives the page through the injected extractor
@@ -148,7 +154,52 @@ scripts/          the verify-*.mts suites, make-icon.cjs
 
 14. **A native `WebContentsView` paints above all renderer DOM.** Any panel that must remain
     visible while the browser is open has to be a sibling column in `.body-row`, never an
-    overlay.
+    overlay. `.app` is a fixed three-row grid (`titlebar / body / status`), so a new full-width
+    strip goes *inside* `.main-col` — adding a fourth row silently shifts the status bar into
+    the body's track.
+
+    Related, and it bit hard: **`.app` needs an explicit `grid-template-columns: minmax(0, 1fr)`.**
+    Left implicit the column is an `auto` track whose minimum is its content's min-content
+    width, so any row that resists shrinking makes the whole shell wider than the window rather
+    than clipping itself. That was already true at the 940px minimum with both side panels open;
+    a one-line prompt strip made the app grow 600px and clip the launcher. A nowrap flex row
+    needs `flex: 1 1 0%` **and** `min-width: 0` on the text for it to ellipsis rather than
+    push — and neither helps until the grid column can shrink. Found by measuring over CDP; no
+    amount of reading the CSS would have shown it.
+
+15. **`--safe-mode` and MCP are mutually exclusive.** Safe mode switches every MCP server off,
+    so a run cannot both be hermetic and read a connector. That is why the worklog reads the
+    boards in a *separate* run (`recall.ts`) and keeps the scan itself hermetic.
+
+16. **A board's closed statuses are on none of its open tasks.** Reading the tasks tells you
+    "open" and "in progress" and never "complete", so a status vocabulary inferred from them
+    can describe every state except the one a finished job needs. `clickup_get_list` is asked
+    for the list's own states separately, and only a status that came back from somewhere is
+    ever written.
+
+17. **The queue's dedupe key is load-bearing beyond dedupe.** Proposal ids are its sha1 and
+    rejections are tombstones keyed on it, so changing the key format for a `create` silently
+    resurrects every proposal the user has ever rejected. Updates got their own key shape
+    (`sessionId|update|board:id`) precisely so the create key could stay byte-for-byte.
+
+18. **An SSH session's `cwd` is the *local* folder, not the remote one.** `ssh -t <alias>` runs
+    `claude` on the far machine, so the transcript, the real working directory and the project
+    all live over there — but `SessionInfo.cwd` records wherever Stoke happened to be pointed
+    locally. Resolving a project group from it names the wrong project, or none. Anything that
+    gates on a folder needs a separate rule for SSH; the worklog uses a per-host switch
+    (`SshHost.worklog`) and reads the true cwd out of the fetched transcript.
+
+19. **Do not add flags to a user's remote connect command.** Passing `--session-id` to the
+    remote `claude` would correlate a session exactly, but a remote CLI that does not know the
+    flag exits with an unknown-option error — and the *terminal itself* then breaks on every
+    connection to that host. `sshTranscript.ts` asks for the newest transcript instead. The
+    cost is real: two Claude sessions on one host at once cannot be told apart.
+
+20. **An `await` inside a polling pass is a window two passes can both walk through.**
+    `AutoScanner.evaluate()` awaits the gate (a disk read), so a pass can outlive its own 15s
+    interval; without a reentrancy guard *and* claiming the session before the await, two
+    overlapping passes each started a paid scan for the same session. Setting the claim after
+    the await is not enough — that is the window.
 
 ## Verification expectations
 

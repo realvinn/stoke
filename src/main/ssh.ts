@@ -367,3 +367,105 @@ export function buildSshArgs(host: SshHost): string[] {
 export function sshSpawnSpec(host: SshHost): { file: string; args: string[] } {
   return { file: sshExecutable(), args: buildSshArgs(host) }
 }
+
+/* ------------------------------------------------------ the remote transcript */
+
+/**
+ * Reading a remote session's transcript.
+ *
+ * The far machine writes exactly the JSONL Stoke already parses; the only reason
+ * a remote session has never had a context meter or a worklog entry is that
+ * nothing ever went and fetched it. This is that fetch, expressed as a command
+ * for the remote login shell.
+ *
+ * **Nothing here mutates the user's own `host.command`.** Passing `--session-id`
+ * to the remote `claude` would correlate the session exactly, and was the
+ * obvious first design — but a remote CLI old enough not to know the flag would
+ * exit with an unknown-option error, and the *terminal itself* would break on
+ * every connection to that host. Breaking the thing that works to improve the
+ * thing that does not is the wrong trade, so the newest transcript is asked for
+ * instead. The cost is real and worth stating: two Claude sessions running on
+ * one host at the same time cannot be told apart, and the newer wins.
+ */
+
+/** Bytes of transcript pulled back. The tail is what matters; the head is history. */
+export const MAX_REMOTE_TRANSCRIPT_BYTES = 4_000_000
+
+/**
+ * Session ids that may be interpolated into a remote shell command.
+ *
+ * The command below is handed to the far machine's login shell, so anything
+ * placed in it is executed there. A uuid is hex and dashes; nothing else is
+ * allowed anywhere near it, whatever it claims to be.
+ */
+const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9-]{7,63}$/
+
+export function isSafeSessionId(id: string): boolean {
+  return SAFE_ID.test(id)
+}
+
+/**
+ * The command that prints a remote transcript: its path on the first line, then
+ * its last `MAX_REMOTE_TRANSCRIPT_BYTES` bytes.
+ *
+ * Plain POSIX `sh`, because the remote login shell is whatever the user has.
+ * `ls` failing (no such directory on a machine that has never run Claude) is
+ * routed to /dev/null and leaves `$f` empty, so the whole thing prints nothing
+ * and exits cleanly rather than looking like a broken connection.
+ *
+ * The path is printed first so the caller can say *which* transcript it read —
+ * which is the only defence the user has against the ambiguity noted above.
+ *
+ * `sessionId` narrows the glob when it is known and trustworthy. It is not
+ * passed today; the parameter exists because the narrowing is the correct
+ * behaviour the moment there is a reliable id, and a rule about what may be
+ * interpolated is worth having tested before then, not after.
+ */
+export function buildTranscriptCommand(sessionId?: string | null): string {
+  const name = sessionId && isSafeSessionId(sessionId) ? sessionId : '*'
+  return [
+    'd="$HOME/.claude/projects"',
+    `f=$(ls -1t "$d"/*/${name}.jsonl 2>/dev/null | head -n 1)`,
+    `if [ -n "$f" ]; then printf '%s\\n' "$f"; tail -c ${MAX_REMOTE_TRANSCRIPT_BYTES} "$f"; fi`
+  ].join('; ')
+}
+
+/**
+ * The argv for the fetch. Never `-t`: this is a pipe, not a terminal, and a
+ * pseudo-terminal would translate newlines and corrupt the JSONL.
+ *
+ * `BatchMode=yes` so a host that wants a passphrase fails in seconds instead of
+ * hanging a background poll on a prompt nobody will ever see.
+ */
+export function buildTranscriptArgs(host: SshHost, sessionId?: string | null): string[] {
+  const alias = host.alias.trim()
+  const args = ['-o', 'BatchMode=yes']
+  if (alias.startsWith('-')) args.push('--')
+  args.push(alias, buildTranscriptCommand(sessionId))
+  return args
+}
+
+/**
+ * Split what the fetch printed into the transcript's remote path and its JSONL.
+ *
+ * When the tail hit its cap the first line of content is half a record. The
+ * parsers already drop an unreadable line, so this is belt and braces — but a
+ * fragment that happens to parse is a made-up turn, and that is worse than a
+ * missing one.
+ */
+export function splitTranscriptOutput(
+  stdout: string,
+  cap = MAX_REMOTE_TRANSCRIPT_BYTES
+): { path: string; jsonl: string } | null {
+  const firstBreak = stdout.indexOf('\n')
+  if (firstBreak < 0) return null
+  const path = stdout.slice(0, firstBreak).trim()
+  if (!path) return null
+
+  let jsonl = stdout.slice(firstBreak + 1)
+  if (jsonl.length >= cap) {
+    const nextBreak = jsonl.indexOf('\n')
+    jsonl = nextBreak < 0 ? '' : jsonl.slice(nextBreak + 1)
+  }
+  return { path, jsonl }
+}

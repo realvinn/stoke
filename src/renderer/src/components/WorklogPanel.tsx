@@ -48,6 +48,21 @@ function entryCount(n: number): string {
 }
 
 /**
+ * "2 new and 1 update", or just "3 new".
+ *
+ * The Accept-all button writes to real workspaces, and creating three records is
+ * a different act from changing three that already exist. The sentence has to
+ * say which.
+ */
+function mixSummary(items: WorklogProposal[]): string {
+  const updates = items.filter((p) => p.kind === 'update').length
+  const creates = items.length - updates
+  if (!updates) return entryCount(creates)
+  if (!creates) return `${updates} ${updates === 1 ? 'update' : 'updates'}`
+  return `${creates} new and ${updates} ${updates === 1 ? 'update' : 'updates'}`
+}
+
+/**
  * The worklog review queue.
  *
  * A sibling column in `.body-row`, deliberately NOT an overlay: the docked
@@ -130,7 +145,7 @@ export function WorklogPanel({
                 pending items themselves, not assumed.
               */}
               <span className="worklog-confirm">
-                Write {entryCount(pending.length)} to {targetNames(pending)}?
+                Write {mixSummary(pending)} to {targetNames(pending)}?
               </span>
               <button
                 className="btn"
@@ -150,7 +165,7 @@ export function WorklogPanel({
           ) : (
             <>
               <span className="worklog-confirm">
-                {entryCount(pending.length)} waiting for {targetNames(pending)}
+                {mixSummary(pending)} waiting for {targetNames(pending)}
               </span>
               <button
                 className="btn"
@@ -169,12 +184,15 @@ export function WorklogPanel({
         {proposals.length === 0 && (
           <div className="empty">
             <h3>Nothing to review</h3>
-            {/* Present tense, and only what actually happens: a scan runs when
-                this button is pressed, against the session in the active tab. */}
+            {/* Present tense, and only what actually happens: watched sessions
+                are scanned on their own once they go quiet, and this button
+                scans the session in the active tab right now. */}
             <p>
-              Scan reads the current session&apos;s transcript and drafts an entry for the work
-              in it: a summary for Notion, a task for ClickUp. Drafts land here first — nothing
-              reaches either service until you accept it.
+              A scan reads a session&apos;s transcript, checks what is already on your boards,
+              and drafts the difference: a summary for Notion, a task for ClickUp, or a status
+              change to something already tracked. Watched profiles are scanned on their own
+              once a session goes quiet; this button scans the current one now. Drafts land here
+              first — nothing reaches either service until you accept it.
             </p>
             <button className="btn" data-variant="primary" onClick={onScan} disabled={busy}>
               {busy ? 'Scanning…' : 'Scan now'}
@@ -203,12 +221,20 @@ export function WorklogPanel({
             )
           }
 
+          const update = p.kind === 'update' ? (p.targets[0] ?? null) : null
+          const existing = update ? p.existing?.[update] : null
+
           return (
             <article key={p.id} className="worklog-item" data-status={p.status}>
               <div className="worklog-item-head">
                 <h4 className="worklog-item-title" title={p.title}>
                   {p.title}
                 </h4>
+                {p.auto && p.status === 'pending' && (
+                  <span className="pill" title="Found by an automatic scan, not by pressing Scan">
+                    Auto
+                  </span>
+                )}
                 {p.status === 'accepted' && (
                   <span className="pill" data-tone="success">
                     Written
@@ -228,6 +254,48 @@ export function WorklogPanel({
                 <span aria-hidden="true">·</span>
                 <span>{relativeTime(p.createdAt)}</span>
               </div>
+
+              {/*
+                What an update actually does, spelled out before it is accepted.
+                The title describes the work; this describes the change to
+                somebody else's workspace, which is the part that cannot be
+                undone from in here.
+              */}
+              {existing && update && (
+                <p className="worklog-change">
+                  Changes{' '}
+                  {existing.url ? (
+                    <a
+                      className="worklog-link"
+                      href={existing.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      title={existing.url}
+                    >
+                      {existing.title}
+                    </a>
+                  ) : (
+                    <span className="worklog-change-title">{existing.title}</span>
+                  )}{' '}
+                  in {TARGET_LABEL[update]}
+                  {p.newStatus?.[update] ? (
+                    <>
+                      {' — '}
+                      {existing.status && (
+                        <>
+                          <span className="worklog-status">{existing.status}</span>
+                          {' → '}
+                        </>
+                      )}
+                      <span className="worklog-status" data-tone="next">
+                        {p.newStatus[update]}
+                      </span>
+                    </>
+                  ) : (
+                    ', leaving its status alone'
+                  )}
+                </p>
+              )}
 
               <p className="worklog-body" data-clamped={isLong(p.body) && !open}>
                 {p.body}
@@ -252,7 +320,7 @@ export function WorklogPanel({
 
               {written.length > 0 ? (
                 <div className="worklog-targets">
-                  <span className="worklog-targets-label">Written to</span>
+                  <span className="worklog-targets-label">{update ? 'Updated in' : 'Written to'}</span>
                   {written.map((t) => (
                     <a
                       key={t}
@@ -269,7 +337,13 @@ export function WorklogPanel({
               ) : (
                 <div className="worklog-targets">
                   <span className="worklog-targets-label">
-                    {p.status === 'failed' ? 'Was to write to' : 'Will write to'}
+                    {p.status === 'failed'
+                      ? update
+                        ? 'Was to update in'
+                        : 'Was to write to'
+                      : update
+                        ? 'Will update in'
+                        : 'Will write to'}
                   </span>
                   {p.targets.map((t) => (
                     <span key={t} className="pill">

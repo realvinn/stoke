@@ -17,13 +17,19 @@ import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import {
+  MAX_REMOTE_TRANSCRIPT_BYTES,
   buildSshArgs,
+  buildTranscriptArgs,
+  buildTranscriptCommand,
   isConnectableAlias,
+  isSafeSessionId,
   parseSshConfig,
   readSshConfigHosts,
+  splitTranscriptOutput,
   sshConfigPath,
   sshExecutable
 } from '../src/main/ssh.ts'
+import { fetchRemoteTranscript } from '../src/main/sshTranscript.ts'
 import type { SshHost } from '../src/shared/types.ts'
 
 const execFileAsync = promisify(execFile)
@@ -424,6 +430,229 @@ try {
 } finally {
   await rm(dir, { recursive: true, force: true })
 }
+
+/* ------------------------------------------- fetching a remote transcript */
+
+/*
+ * A remote session's `claude` runs on the far machine and writes its JSONL
+ * there, which is why the context meter and the worklog have never worked for
+ * one. This fetch is what closes that, and the command it builds is executed by
+ * somebody else's login shell — so what may be interpolated into it is a
+ * security property, not a detail.
+ */
+console.log('\nthe remote transcript command')
+
+const cmd = buildTranscriptCommand()
+check('it globs every transcript when no id is known', cmd.includes('/*/*.jsonl'), cmd)
+check('it takes the newest', cmd.includes('ls -1t') && cmd.includes('head -n 1'), cmd)
+check('it prints the path first, so the user can see which one was read', cmd.includes("printf '%s\\n'"), cmd)
+check('it bounds the transfer', cmd.includes(`tail -c ${MAX_REMOTE_TRANSCRIPT_BYTES}`), cmd)
+check(
+  'a machine that has never run Claude is silence, not an error',
+  cmd.includes('2>/dev/null') && cmd.includes('if [ -n "$f" ]'),
+  cmd
+)
+check('it reads and nothing else', !/\b(rm|mv|cp|chmod|curl|wget|dd|>)\b/.test(cmd), cmd)
+
+/*
+ * The user's own connect command is deliberately left alone. Passing
+ * --session-id to the remote claude would correlate the session exactly, but a
+ * remote CLI old enough not to know the flag would exit with an unknown-option
+ * error and break the terminal itself on every connection to that host.
+ */
+const remoteHost: SshHost = { id: 'h1', label: 'Work box', alias: 'work', command: 'tmux new -A -s stoke' }
+const fetchArgs = buildTranscriptArgs(remoteHost)
+check('the fetch never allocates a tty, which would corrupt the JSONL', !fetchArgs.includes('-t'), fetchArgs.join(' '))
+check('it fails fast rather than hanging on a passphrase prompt', fetchArgs.includes('BatchMode=yes'), fetchArgs.join(' '))
+check("it does not carry the user's own connect command", !fetchArgs.some((a) => a.includes('tmux')), fetchArgs.join(' '))
+check('and never asks the remote claude for a session id', !fetchArgs.some((a) => a.includes('--session-id')), fetchArgs.join(' '))
+same(
+  'an alias starting with a dash is still not read as an option',
+  buildTranscriptArgs({ ...remoteHost, alias: '-oProxyCommand=x' }).includes('--'),
+  true
+)
+
+/*
+ * Run the thing, rather than pattern-match the string it is.
+ *
+ * Every assertion above is about what the command *says*; none of them would
+ * notice a quoting mistake that makes a real `sh` behave differently — and the
+ * only shell that ever runs this is somebody else's, over a link, where a
+ * mistake reads as "no transcript found". So the command is executed here
+ * against a fixture home, exactly as the remote login shell would.
+ */
+console.log('\nthe command, run by a real shell')
+
+const shell = process.platform === 'win32' ? 'sh.exe' : 'sh'
+const fixtureHome = await mkdtemp(join(tmpdir(), 'stoke-home-'))
+await mkdir(join(fixtureHome, '.claude', 'projects', 'proj-a'), { recursive: true })
+await mkdir(join(fixtureHome, '.claude', 'projects', 'proj-b'), { recursive: true })
+await writeFile(join(fixtureHome, '.claude', 'projects', 'proj-a', 'older.jsonl'), '{"type":"user","cwd":"/srv/old"}\n')
+// A second apart, because the whole selection rule is "newest wins" and two
+// files written in the same millisecond do not test it.
+await new Promise((r) => setTimeout(r, 1100))
+await writeFile(
+  join(fixtureHome, '.claude', 'projects', 'proj-b', 'newer.jsonl'),
+  '{"type":"user","cwd":"/srv/api"}\n{"type":"assistant"}\n'
+)
+
+const runInShell = async (home: string): Promise<{ out: string; code: number } | null> => {
+  try {
+    const { stdout } = await execFileAsync(shell, ['-c', buildTranscriptCommand()], {
+      env: { ...process.env, HOME: home },
+      maxBuffer: 8 * 1024 * 1024
+    })
+    return { out: stdout, code: 0 }
+  } catch (err) {
+    const e = err as { code?: number; stdout?: string }
+    // No POSIX shell on this machine — the assertions below cannot run, and
+    // pretending they passed would be worse than saying so.
+    if (typeof e.code !== 'number') return null
+    return { out: e.stdout ?? '', code: e.code }
+  }
+}
+
+const ran = await runInShell(fixtureHome)
+if (!ran) {
+  console.log(`  SKIP  no \`${shell}\` on this machine, so the command was not executed`)
+} else {
+  const parsed = splitTranscriptOutput(ran.out)
+  check('a real shell produces a readable answer', !!parsed, JSON.stringify(ran.out.slice(0, 80)))
+  check(
+    'and it picked the newest transcript, not just any',
+    parsed?.path.endsWith('newer.jsonl') === true,
+    parsed?.path ?? '(none)'
+  )
+  same(
+    'the transcript came back whole',
+    parsed?.jsonl,
+    '{"type":"user","cwd":"/srv/api"}\n{"type":"assistant"}\n'
+  )
+
+  const bare = await mkdtemp(join(tmpdir(), 'stoke-bare-'))
+  const empty = await runInShell(bare)
+  same('a machine that has never run Claude prints nothing', empty?.out, '')
+  same('and exits cleanly rather than looking like a broken link', empty?.code, 0)
+  await rm(bare, { recursive: true, force: true })
+}
+await rm(fixtureHome, { recursive: true, force: true })
+
+console.log('\nwhat may reach the remote shell')
+
+check('a plain uuid is accepted', isSafeSessionId('0b9c1a2d-3e4f-5678-9abc-def012345678'), '')
+for (const nasty of [
+  '../../etc/passwd',
+  'a; rm -rf ~',
+  'a$(id)',
+  'a`id`',
+  'a b',
+  'a|b',
+  "a'b",
+  'a*',
+  '',
+  'sh'
+]) {
+  check(`refused: ${JSON.stringify(nasty)}`, !isSafeSessionId(nasty), '')
+}
+check(
+  'and an id that was refused never reaches the command',
+  buildTranscriptCommand('a; rm -rf ~').includes('/*/*.jsonl') &&
+    !buildTranscriptCommand('a; rm -rf ~').includes('rm -rf'),
+  buildTranscriptCommand('a; rm -rf ~')
+)
+check(
+  'a trustworthy id narrows the glob to exactly it',
+  buildTranscriptCommand('0b9c1a2d-3e4f-5678-9abc-def012345678').includes(
+    '/*/0b9c1a2d-3e4f-5678-9abc-def012345678.jsonl'
+  ),
+  ''
+)
+
+console.log('\nreading what came back')
+
+const body = '{"type":"user"}\n{"type":"assistant"}\n'
+same('the path is taken off the first line', splitTranscriptOutput(`/home/v/.claude/projects/x/y.jsonl\n${body}`)?.path, '/home/v/.claude/projects/x/y.jsonl')
+same('and the rest is the transcript', splitTranscriptOutput(`/home/v/x.jsonl\n${body}`)?.jsonl, body)
+same('no output at all is not a transcript', splitTranscriptOutput(''), null)
+same('neither is a path with nothing after it', splitTranscriptOutput('/home/v/x.jsonl'), null)
+
+/*
+ * `tail -c` cuts at a byte, so a capped fetch starts mid-record. The parsers
+ * would drop the fragment anyway — but a fragment that happens to parse is an
+ * invented turn, which is worse than a missing one.
+ */
+const truncated = splitTranscriptOutput(`/home/v/x.jsonl\nype":"user"}\n{"type":"assistant"}\n`, 20)
+same('a half record at the cut is dropped', truncated?.jsonl, '{"type":"assistant"}\n')
+same(
+  'an uncapped fetch keeps its first line',
+  splitTranscriptOutput(`/home/v/x.jsonl\n${body}`, 10_000)?.jsonl,
+  body
+)
+
+console.log('\ncaching it locally')
+
+const cacheDir = await mkdtemp(join(tmpdir(), 'stoke-ssh-'))
+const fetched = await fetchRemoteTranscript(remoteHost, 'sess-1', cacheDir, {
+  run: async () => `/home/v/.claude/projects/proj/abc.jsonl\n${body}`
+})
+check('the fetch produced a local file', !!fetched?.file, fetched?.file ?? '(none)')
+same('and reports where it came from', fetched?.remotePath, '/home/v/.claude/projects/proj/abc.jsonl')
+same('the cached bytes are the transcript', (await import('node:fs')).readFileSync(fetched!.file, 'utf8'), body)
+same('the first fetch counts as a change', fetched?.changed, true)
+
+/*
+ * The one that would have killed the feature silently.
+ *
+ * Everything that reads a transcript decides "has anything happened?" from the
+ * file's mtime — the meter re-parses on it, and auto-scan measures how long a
+ * session has been *quiet* from it. Rewriting an identical cache on every poll
+ * moves that mtime forward every 30 seconds forever, so a remote session would
+ * never once look idle and would never be scanned. It would look like it worked.
+ */
+const { statSync } = await import('node:fs')
+const mtimeBefore = statSync(fetched!.file).mtimeMs
+await new Promise((r) => setTimeout(r, 1100))
+const again = await fetchRemoteTranscript(remoteHost, 'sess-1', cacheDir, {
+  run: async () => `/home/v/.claude/projects/proj/abc.jsonl\n${body}`
+})
+same('an unchanged transcript is reported as unchanged', again?.changed, false)
+same(
+  'and the cache is not touched, so the session can still go quiet',
+  statSync(again!.file).mtimeMs,
+  mtimeBefore
+)
+
+const moved = await fetchRemoteTranscript(remoteHost, 'sess-1', cacheDir, {
+  run: async () => `/home/v/.claude/projects/proj/abc.jsonl\n${body}{"type":"user"}\n`
+})
+same('but real new output is written', moved?.changed, true)
+check('and moves the clock on', statSync(moved!.file).mtimeMs > mtimeBefore, '')
+
+/*
+ * Every one of these is ordinary for a background poll against a machine that
+ * is asleep, locked, or has simply never run Claude. None may throw: a poll that
+ * raises turns a quiet nothing into an error the user has to dismiss.
+ */
+same(
+  'a host that cannot be reached is null, not a throw',
+  await fetchRemoteTranscript(remoteHost, 's', cacheDir, {
+    run: async () => {
+      throw new Error('ssh: connect to host work port 22: Connection refused')
+    }
+  }),
+  null
+)
+same(
+  'a machine with no transcripts is null too',
+  await fetchRemoteTranscript(remoteHost, 's', cacheDir, { run: async () => '' }),
+  null
+)
+same(
+  'and so is a path with an empty transcript behind it',
+  await fetchRemoteTranscript(remoteHost, 's', cacheDir, { run: async () => '/home/v/x.jsonl\n\n' }),
+  null
+)
+await rm(cacheDir, { recursive: true, force: true })
 
 /* ------------------------------------------------------------------------ */
 

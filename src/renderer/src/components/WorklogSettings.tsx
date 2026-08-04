@@ -5,8 +5,11 @@ interface Props {
   profiles: ProfileConfig[]
   /** `Settings.worklogGroups`: the `Project.group` values the agent watches. */
   worklogGroups: string[]
+  /** `Settings.worklogAuto`: scan a watched session once it goes quiet. */
+  auto: boolean
   /** Called with the whole replacement list; the caller persists it. */
   onChange: (worklogGroups: string[]) => void
+  onChangeAuto: (auto: boolean) => void
 }
 
 /** Matches `foldGroup` in src/main/worklog/gate.ts — the switch is case-blind. */
@@ -24,7 +27,9 @@ const fold = (group: string): string => group.trim().toLowerCase()
 export function WorklogSettings({
   profiles,
   worklogGroups,
-  onChange
+  auto,
+  onChange,
+  onChangeAuto
 }: Props): React.JSX.Element {
   const watched = new Set(worklogGroups.map(fold).filter(Boolean))
 
@@ -58,20 +63,28 @@ export function WorklogSettings({
         )}
       </span>
       <span className="field-hint">
-        A Sonnet agent reads a session&apos;s transcript and <strong>proposes</strong> Notion
-        pages and ClickUp tasks in a review list. Nothing is written to either until you accept
-        it — Accept all is still you accepting.
+        A Sonnet agent reads a session&apos;s transcript, checks what is already on your Notion
+        and ClickUp boards, and <strong>proposes</strong> the difference — a new page, a new
+        task, or a status change to something already tracked. Nothing is written to either
+        until you accept it; Accept all is still you accepting.
       </span>
+
       {/*
-        Say what it does today. Nothing watches yet: shouldWatch has no caller,
-        and a scan only happens when the button is pressed. Describing it as
-        automatic would have the user waiting for entries that never arrive.
+        The switch, not a claim. Auto-scan is on by default but does nothing at
+        all until a profile below is ticked, so the two controls read in that
+        order: what happens, then where.
       */}
-      <span className="field-hint" data-tone="warning">
-        Scanning is manual for now — open the worklog panel and press Scan on the session you
-        want written up. These checkboxes are remembered for when it runs automatically, but
-        nothing runs on its own yet.
-      </span>
+      <label className="check-row">
+        <input type="checkbox" checked={auto} onChange={(e) => onChangeAuto(e.target.checked)} />
+        <span>
+          <span className="field-label">Scan while I work</span>
+          <span className="field-hint">
+            A watched session is reviewed on its own once it has been quiet for a couple of
+            minutes, and Stoke asks whether to file it. Off, and scanning only happens when you
+            press Scan in the worklog panel.
+          </span>
+        </span>
+      </label>
 
       {profiles.length === 0 ? (
         <span className="field-hint">
@@ -150,9 +163,11 @@ export function WorklogSettings({
       )}
 
       <span className="field-hint">
-        Each watched session costs tokens: the review is a real Claude run on top of the work you
-        just did. It uses Sonnet and reads the transcript rather than your repo to keep that as
-        small as it can be, but it is not free — leave profiles you do not report on switched off.
+        Each review costs tokens: it is a real Claude run on top of the work you just did. It
+        uses Sonnet, reads the transcript rather than your repo, and reads your boards at most
+        once every ten minutes however many sessions are scanned. Automatic scans are capped at
+        six an hour and one per session every twenty minutes — but it is not free, so leave
+        profiles you do not report on switched off.
       </span>
     </div>
   )

@@ -167,6 +167,18 @@ body {
 .app {
   display: grid;
   grid-template-rows: var(--titlebar-h) minmax(0, 1fr) var(--status-h);
+  /*
+   * The column is declared, and `minmax(0, ...)` is the whole reason.
+   *
+   * Left implicit it is an `auto` track, whose minimum is its content's
+   * min-content width — so any row wide enough to resist shrinking makes the
+   * track, and therefore the window's whole contents, wider than the window.
+   * That was already true with the sidebar and the worklog panel both open at
+   * the 940px minimum size, and a one-line prompt strip above the terminal made
+   * it dramatic: the app grew by 600px and clipped the launcher. `minmax(0, 1fr)`
+   * lets the row clip its own content instead of pushing the shell.
+   */
+  grid-template-columns: minmax(0, 1fr);
   height: 100%;
   background: var(--bg);
 }
@@ -1342,6 +1354,126 @@ body {
   display: flex;
   gap: var(--sp-2);
   padding-top: var(--sp-1);
+}
+
+/*
+ * What an update would change: which record, on which board, and the status
+ * move. Set apart from the body because the body describes the work while this
+ * describes an edit to somebody else's workspace — the part that cannot be
+ * undone from in here.
+ */
+.worklog-change {
+  width: 100%;
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-sunken);
+  font-size: var(--fs-xs);
+  line-height: 1.6;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.worklog-change-title {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.worklog-status {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.0625rem var(--sp-2);
+  border-radius: var(--r-full);
+  background: var(--surface-hover);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+
+.worklog-status[data-tone='next'] {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 500;
+}
+
+/* ------------------------------------------------- the auto-scan prompt */
+
+/*
+ * Sits in the flow above the terminal, the same as the error banner, and for
+ * the same reason: the docked browser is a native WebContentsView painting
+ * above all renderer DOM, and only a sibling of that column survives it.
+ *
+ * Accent-tinted rather than danger-tinted — this is an offer, not a fault.
+ */
+.worklog-prompt {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg));
+  color: var(--text);
+  font-size: var(--fs-sm);
+  /* One line. A prompt that reflows the terminal underneath it as proposals
+     come and go is worse than no prompt. */
+  min-height: 2.5rem;
+  overflow: hidden;
+}
+
+.worklog-prompt-kind {
+  flex-shrink: 0;
+  padding: 0.0625rem var(--sp-2);
+  border-radius: var(--r-full);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+/*
+ * One truncating line, and deliberately NOT a flex row of its own.
+ *
+ * Nesting a flex container here to truncate just the title does not work and
+ * fails in an expensive way: a nowrap flex item's min-content width is its whole
+ * text, that width propagates up through `.main-col` into `.body-row`, and the
+ * grid track grows to fit it — so a long title pushed the *entire app* wider
+ * than its window and clipped the launcher, not merely itself. Measured, not
+ * reasoned about.
+ *
+ * `flex: 1 1 0%` with `min-width: 0` gives it no min-content contribution at
+ * all, so the sentence clips instead of the layout moving.
+ */
+.worklog-prompt-text {
+  flex: 1 1 0%;
+  min-width: 0;
+  margin: 0;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.worklog-prompt-text strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.worklog-prompt-meta {
+  flex-shrink: 0;
+  max-width: 12rem;
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+}
+
+/* Never shrink the answers. A half-width "Update it" is worse than a clipped
+   question, because the question can be read in the panel and the button cannot
+   be pressed anywhere else. */
+.worklog-prompt .btn,
+.worklog-prompt .icon-btn {
+  flex-shrink: 0;
 }
 
 /* Scoped rather than added to the shared control, which nothing else needs. */

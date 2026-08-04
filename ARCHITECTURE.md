@@ -180,6 +180,85 @@ Electron surface. Input goes through a normal `<textarea>` rather than the termi
 into an xterm on a soft keyboard is miserable and autocorrect fights the TUI. A key row
 supplies `esc`, `tab`, arrows and `ctrl-c`, which phone keyboards lack.
 
+## The worklog agent
+
+`src/main/worklog/` turns finished work into Notion pages and ClickUp tasks. It is a **review
+queue, not an auto-writer**: every run only ever proposes, and the sole code path that changes
+anything outside Stoke is an accept the user pressed.
+
+Four runs' worth of behaviour, and the ordering between them is the design:
+
+1. **The gate** (`gate.ts`) decides whether a session may be looked at, keyed on the session's
+   *own folder group* — never on the profile chip in the sidebar. The chip is a view filter, so
+   keying off it would either skip a work session running in a background tab or hand a personal
+   one to a work tracker. Both failures are silent.
+2. **Auto-scan** (`autoscan.ts`) decides *when*. The signal is the transcript file: `ContextWatcher`
+   already polls it at 1.5s for the context meter and already reports the message count and the
+   mtime, which is exactly "how much work" and "when did it stop". So nothing new watches
+   anything. A session is scanned once it has been quiet for two minutes, has at least six new
+   messages *since Stoke started watching it*, and has not been scanned in the last twenty —
+   with a ceiling of six scans an hour across everything. Closing a tab does not stop tracking:
+   finishing and closing is the most natural end of a work block there is.
+3. **Recall** (`recall.ts`) reads the boards before anything is proposed, so a job that is
+   already tracked gets a status change instead of a near-duplicate beside it. This has to be
+   its own run, because the scan is hermetic — `--safe-mode` plus an empty `--mcp-config` — and
+   safe mode switches every MCP server off. It is read-only by an exact four-name allowlist, and
+   cached with a TTL and a single-flight promise so two sessions scanned a second apart read the
+   boards once. It also asks the *list* for its status vocabulary, not just the tasks: recall
+   lists open records, so the states in use are precisely the ones a finished job does not need.
+4. **The scan** (`runner.ts`) is handed a bounded digest of the transcript plus the recall
+   block, and asked for entries. It never sees the repository: no cwd, no CLAUDE.md, no skills,
+   no MCP, and Read/Glob/Grep denied — given a working directory a model that decides to go
+   looking turns a fixed-price run into an open-ended one.
+
+Two things are checked in code rather than asked for in the prompt, because both fail at
+somebody else's API where the user can do nothing about it. An update naming an id recall never
+returned is filed as a *create* instead and counted; a status the destination does not actually
+offer is dropped, leaving a note-only update. Titles get the same treatment — every parsed title
+goes through `tidyTitle`, which strips commit prefixes and markdown and caps the length, because
+the title is the only part of a proposal the user reads before deciding.
+
+Cost drove most of it. The probe that proved connector tools reach a headless run cost $0.50 for
+one trivial prompt, because it defaulted to Opus against a large cached context. Everything here
+is pinned to Sonnet with an explicit `--max-budget-usd`.
+
+### Over SSH
+
+An SSH session spawns `ssh -t <alias> <command>`, so `claude` runs on the far machine and writes
+its transcript there. Everything above reads a local file, so none of it — nor the context meter —
+had ever worked for a remote session.
+
+`sshTranscript.ts` closes that by fetching the real JSONL back over the same connection. The
+alternative was scraping the PTY stream, which Stoke does retain (512KB per session), and it is a
+much worse signal: that stream is a recording of a *screen*, and Claude Code's TUI repaints as it
+streams, so the same sentence arrives dozens of times interleaved with box drawing and none of
+what matters — which tools ran, which subagents were spawned, how many tokens — is in it at all.
+
+Three decisions are worth keeping:
+
+- **The user's connect command is never modified.** Passing `--session-id` to the remote `claude`
+  would correlate the session exactly, but a remote CLI that does not know the flag exits with an
+  unknown-option error and the *terminal itself* breaks on every connection to that host. The
+  newest transcript is asked for instead, and the path it came from is reported so the user can
+  see which. Two Claude sessions on one host at once cannot be told apart; that is the price.
+- **The gate is per host**, not per folder. A remote session's `cwd` is wherever Stoke was pointed
+  locally, so the folder gate would match the wrong project or none. `SshHost.worklog` is the
+  switch, and the true working directory is read out of the fetched transcript.
+- **An unchanged transcript is not rewritten.** Every reader decides "has anything happened?" from
+  the cache file's mtime, and auto-scan measures how long a session has been *quiet* from it.
+  Rewriting an identical file each poll would move that forward forever, and a remote session
+  would never once look idle — the feature would appear to work and silently never fire.
+
+The fetch is routed through `ContextWatcher` rather than beside it, so one poller serves both:
+the meter starts reading for SSH sessions, and the auto-scan trigger, which is fed from those same
+snapshots, starts firing for them. Remote sessions poll at 30s rather than 1.5s, because it is a
+network round trip rather than a `stat`.
+
+The queue (`queue.ts`) is the safety property. Rejections are kept as tombstones rather than
+deleted, so "no, don't log that" is permanent — and because proposal ids are the sha1 of the
+dedupe key, updates were given their own key shape so the `create` key could stay byte-for-byte
+what it was and no old rejection could come back.
+
 ## Renderer
 
 React 19, hand-written CSS, no component library.

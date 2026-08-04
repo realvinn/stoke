@@ -62,6 +62,9 @@ const DEFAULTS: Settings = {
   profiles: [],
   hosts: [],
   worklogGroups: [],
+  // Safe to default on: worklogGroups is the switch that actually costs money,
+  // and it ships empty. With nothing watched this does nothing at all.
+  worklogAuto: true,
   sidebarWidth: 260,
   claudePath: null,
   confirmBypass: true
@@ -100,14 +103,22 @@ function hydrate(raw: unknown): Settings {
       : [],
     profiles: Array.isArray(r.profiles) ? r.profiles.filter(isProfileConfig) : [],
     hosts: Array.isArray(r.hosts)
-      ? r.hosts.filter(
-          (h): h is SshHost =>
-            !!h && typeof h === 'object' && typeof h.id === 'string' && typeof h.alias === 'string'
-        )
+      ? r.hosts
+          .filter(
+            (h): h is SshHost =>
+              !!h && typeof h === 'object' && typeof h.id === 'string' && typeof h.alias === 'string'
+          )
+          // `worklog` decides whether an agent reads that machine's transcripts,
+          // so anything that is not literally `true` is off. A truthy leftover
+          // from a hand-edited file must not switch it on.
+          .map((h) => ({ ...h, worklog: h.worklog === true }))
       : [],
     worklogGroups: Array.isArray(r.worklogGroups)
       ? r.worklogGroups.filter((g): g is string => typeof g === 'string')
       : [],
+    // A settings file written before 0.4.0 has no such key, and it must read as
+    // on rather than off — the default is what an untouched machine gets.
+    worklogAuto: typeof r.worklogAuto === 'boolean' ? r.worklogAuto : DEFAULTS.worklogAuto,
     projectRoots: Array.isArray(r.projectRoots) ? r.projectRoots : [],
     pinnedProjects: Array.isArray(r.pinnedProjects) ? r.pinnedProjects : [],
     hiddenProjects: Array.isArray(r.hiddenProjects) ? r.hiddenProjects : []

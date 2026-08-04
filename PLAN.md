@@ -38,7 +38,10 @@ or their cleanup becomes another agent's crash report.
 
 **Never exercised, in this sweep or any other.** These are the paths a user is first to run:
 
-- a live Notion or ClickUp write — nothing has ever been accepted, so no real record exists
+- a live Notion or ClickUp write — nothing has ever been accepted, so no real record exists.
+  0.4.0 adds a live *read* of both boards on top of that, which is equally unexercised: the
+  recall parse, the real status vocabularies and every update path are proven only against
+  injected runners
 - a real SSH connection — the argv is proven, no host has ever answered
 - `cloudflared` itself — only the Access header was simulated against a local listener
 - a profile *write* — create, rename, recolour and delete were planned or rendered, never committed
@@ -66,13 +69,13 @@ Ten commits sit unreleased on `main`. Against the four things originally asked f
 | A proper way to copy and paste | **Done.** Bracketed paste, a themed right-click menu, right-click no longer pastes, smart Ctrl+C. |
 | Windows mic passthrough | **Resolved differently.** The fault was VB-Cable claiming the default recording device, so `/voice` recorded silence. Stoke now *warns* about that. Passthrough itself was deliberately not built — see below. |
 | Theme and profile editors | **Half.** Profiles can be created, renamed, recoloured and deleted. **There is no theme editor**; Settings still says to hand-edit `customThemes`. |
-| Per-profile Notion/ClickUp agent | **Manual, not automatic.** Scan is a button on the current session. `worklogGroups` is stored and gates nothing yet — `shouldWatch` has no caller. |
+| Per-profile Notion/ClickUp agent | **Done, 0.4.0.** Watched sessions are scanned on their own once they go quiet, the agent reads the boards first so it can update rather than duplicate, and a prompt asks add-or-update. `shouldWatch` now has its caller. |
 
 Also landed, unasked: Tailscale binding, an ultracode launch toggle, SSH sessions, context-tier
 detection from the CLI banner, dev-profile isolation, and a run of real bug fixes.
 
-**Not done and not started:** the theme editor, an automatic worklog trigger, wiring `sttUrl`
-to the tailnet speech box, and any OCR.
+**Not done and not started:** the theme editor, wiring `sttUrl` to the tailnet speech box, and
+any OCR.
 
 ## Current build — four workstreams, started 2026-08-03
 
@@ -293,10 +296,181 @@ Consequences for the design:
 - **The worklog gate keys off the session's project group, not the active sidebar chip.** The
   chip is a view filter and a Work session can run while the user browses Personal. This keeps
   "a profile is a view filter, never access control" intact.
+- **Reading the boards is a separate run from the scan.** `--safe-mode` switches every MCP
+  server off, so one call cannot be both hermetic and able to reach a connector. Recall is its
+  own read-only run, cached and single-flighted so it is shared across every scan in the window.
+- **A status is only ever written back if it was read out first.** A model asked to close a task
+  will offer "Done" to a board whose states are "open" and "complete"; that fails at ClickUp's
+  API with an error the user can do nothing about. The vocabulary comes from `clickup_get_list`,
+  not from the open tasks — the open tasks are precisely the ones not in a closed state.
+- **An update naming a record recall never saw is filed as a create.** Dropping it loses real
+  work and keeping it queues a write with no address. The user reviews it either way.
+- **Auto-scan rides the context watcher.** It already polls every open session's transcript for
+  the meter and already reports the message count and mtime. A second watcher would be a second
+  set of file handles for a signal that was already being taken.
 - **Never write Claude's own config files** to deliver hooks; pass `--settings` the way
   `--mcp-config` is already injected in `cli.ts`.
 - **Never use `getUserMedia` with `chromeMediaSource: 'desktop'` for audio on Windows** — it
   kills the renderer outright, and the upstream issue is closed as not planned.
+
+## Worklog 0.4.0 — read the boards, update them, and do it unasked
+
+The ask, verbatim:
+
+> we need the sonnet agent to also read what we already have and we need it to check the
+> current tasks see if it can update it, also the tasks we submit should be simple and laymens
+> terms but not so simple it makes it sounds useless like if I added a feature it would be like
+> Added [Feature] or Fixed [Bug] or somethign simple with more details in the actual page and
+> also it should automatically scan (for now that manual scan is good for new projects but it
+> should auto scan while im working and it should just pop up a should I add this task or
+> update the status for this task.
+
+Four things, all built. `npm run check` passes, exit 0, with two new suites.
+
+**Recall — `src/main/worklog/recall.ts`.** Reads both boards before anything is proposed.
+It had to be its own run: the scan is hermetic (`--safe-mode` + empty `--mcp-config`) and safe
+mode switches every MCP server off, so one call cannot be both. Read-only by an exact four-name
+allowlist, `effort: low`, capped at $0.15, and cached ten minutes behind a single-flight promise
+— so two sessions scanned a second apart read the boards once, not twice. Invalidated after any
+successful write, because the record just created is the one the next scan most needs to know
+about.
+
+**Updates.** A proposal is now `create` or `update`; an update names one board and one record.
+Two things are checked in code rather than trusted from the model, and both because the failure
+lands at somebody else's API where the user can do nothing about it:
+
+- an id recall never returned is filed as a **create** instead, and counted (`ScanOutcome.demoted`)
+- a status the destination does not actually offer is dropped, leaving a note-only update
+
+The second exposed a real design hole found by the tests: recall lists *open* records, so a
+vocabulary inferred from them contains every state except "complete" — the agent could read a
+board but never finish anything on it. `clickup_get_list` is now asked for the list's own states.
+
+Writing an update uses different tools from creating one. ClickUp gets `update_task` **and**
+`create_comment`, because `update_task` replaces a description and the note would have deleted
+whatever the task already said.
+
+**Titles.** `TITLE_RULES` in the prompt plus `tidyTitle` in code — prompt wording moves the
+average, it does not stop the one reply in ten that arrives as `**fix(worklog):** dedupe key.`
+Strips commit prefixes, markdown, quotes and a trailing stop; caps at 72 characters cut on a
+word boundary; raises the first letter. The title is the only part of a proposal the user reads
+before deciding, so it is the part worth normalising mechanically.
+
+**Auto-scan — `src/main/worklog/autoscan.ts`.** `ContextWatcher` already polls every open
+session's transcript at 1.5s and already reports the message count and mtime, which is exactly
+"how much work" and "when did it stop" — so nothing new watches anything. Rules: quiet for two
+minutes, six new messages *since Stoke started watching*, twenty-minute per-session cooldown,
+six scans an hour across everything. The baseline on first sight is the one that matters — a
+resumed session arrives with 300 messages already in it and must not read as 300 messages of new
+work. Closing a tab does **not** stop tracking; finishing and closing is the most natural end of
+a work block there is, which is why `sessionCwds` in `index.ts` remembers a session's folder past
+the life of its PTY.
+
+**The prompt.** `WorklogPrompt.tsx`, one question at a time, in `.main-col` above the terminal.
+Not an overlay and not a new grid row: `.app` is a fixed three-row grid, so a fourth row would
+shift the status bar into the body's track, and an overlay would vanish behind the browser's
+WebContentsView. Skipping leaves the item in the queue; only Reject is permanent.
+
+**Six bugs found after it "worked", five of them by a fresh-context review of the diff and one
+by measuring the UI over CDP.** All fixed, each with a test that fails without the fix:
+
+1. **A retry duplicated a live ClickUp task after a restart.** `applyProposal` marks a
+   destination reached-but-unlinked with `urls[target] = ''`; `hydrate` dropped it for being
+   falsy. So the marker survived until the next restart and no longer, and the first Try again
+   after one created a second real record. The retry suite never round-tripped the queue file,
+   which is why it had been green throughout.
+2. **`invalidateRecall()` was a no-op against an in-flight read.** The pending `.then` assigned
+   `cached` after the invalidation, so a snapshot taken *before* an accept stayed cached for the
+   full TTL — the record just written was invisible for ten minutes and came back as a create.
+   Fixed with a generation counter.
+3. **A rejected update could return as a create.** The two kinds are keyed differently on
+   purpose, so recall failing once was enough for the same sentence to arrive under a different
+   key. Rejections now also block the other kind's key.
+4. **`worklogAccept` had no in-flight guard.** Two controls can now accept the same proposal —
+   the panel and the prompt — and a renderer flag is not a lock. Guarded in the main process.
+5. **A window closing during the gate's disk read still started a paid run.** `disposed` is
+   re-checked after the await.
+6. **The prompt strip made the whole app wider than its window.** See below.
+
+**The layout bug, which only measurement would ever have found.** `.app` had no explicit
+`grid-template-columns`, so its implicit `auto` column was sized by its content's *min-content*
+width. A one-line strip that resists shrinking therefore widened the entire shell by 600px and
+clipped the launcher, rather than clipping itself. The app was in fact already overflowing at its
+own 940px minimum with both side panels open — the strip only made it obvious. Fixed with
+`minmax(0, 1fr)`, which fixes the pre-existing case too. Verified over CDP at 1480/1200/1024/940
+with the panel open and closed: no horizontal overflow anywhere, and the question truncates
+instead of pushing its buttons off screen.
+
+**One more, found by reading the async paths rather than by a test.** `AutoScanner.evaluate()`
+awaits the gate, which reads the project list off disk — so a pass can outlive the 15s interval
+that started it. Two overlapping passes each saw the same session un-claimed and each started a
+run: two paid Claude runs for one work block, and two prompts asking the identical question. The
+fix is a reentrancy guard on the pass plus claiming `scanning` *before* the await rather than
+after. There is now a test that fails without both.
+
+**The thing that could have gone silently wrong.** Proposal ids are the sha1 of the dedupe key
+and rejections are tombstones keyed on it, so any change to the *create* key resurrects every
+proposal the user has ever rejected. Updates got their own key shape (`sessionId|update|board:id`,
+which also stops a reworded update queueing twice) so the create key stays byte-for-byte what it
+was. There is now a test asserting the literal string.
+
+**Verified:** `npm run check` exit 0 (typecheck + 9 suites + build). The panel and the prompt strip were rendered in the real app over CDP and measured at four widths.
+
+**Verified.** `npm run check` exits 0 — typecheck, nine suites and the full build. Both new
+suites were proved non-vacuous by reverting each fix by hand and watching the matching assertion
+fail. The panel and the prompt strip were rendered in the real app over CDP and measured at
+1480/1200/1024/940 with the side panels open and closed.
+
+**Still never exercised:** a live Notion or ClickUp write, and therefore recall against a real
+board, a real update, and the real status vocabularies. Everything is proven against injected
+runners. The first real accept is still the first real accept.
+
+## The worklog over SSH — 2026-08-04
+
+> is there a way we can live record/copy all the in put and output prompts so sonnet can get an
+> idea of what is happening in that ssh session? like what agents got spawned and essentially
+> when task is complete it will create a task complete or in progress based on what is happening?
+
+Yes, and not by recording the terminal. Stoke does retain the PTY stream (512KB per session,
+`historyFor`), but that stream is a recording of a *screen*: Claude Code's TUI repaints as it
+streams, so stripping the escapes yields the same sentence dozens of times interleaved with box
+drawing, and none of what actually matters — which tools ran, which subagents were spawned, how
+many tokens — is in it at all. The real JSONL has every one of them.
+
+So `sshTranscript.ts` fetches the remote transcript back over the same connection, and everything
+downstream is unchanged because what lands is the same JSONL the local path already parses.
+
+**Rejected: passing `--session-id` to the remote `claude`.** It would correlate the session
+exactly and was the obvious first design. But a remote CLI old enough not to know the flag exits
+with an unknown-option error, and the *terminal itself* then breaks on every connection to that
+host. Breaking what works to improve what does not is the wrong trade. Stoke asks for the newest
+transcript instead and reports which file it read. Known cost: two Claude sessions on one host at
+the same time cannot be told apart.
+
+**The gate is per host.** `SshHost.worklog`, off by default. A remote session's `cwd` is wherever
+Stoke was pointed locally, so the folder gate would either match the wrong project or never match
+— and both are silent. The true working directory is read out of the fetched transcript instead,
+and the host takes the place of the project group on the proposal.
+
+**Two bugs found while building, both of which would have looked like success:**
+
+1. **The auto-scanner is fed from context snapshots**, and those only exist for sessions with a
+   local transcript — so SSH sessions would only ever have scanned from the Scan button. Fixed by
+   routing the fetch through `ContextWatcher` (an injected resolver plus a `volatile` flag for
+   sources that go stale), which also gives remote sessions a context meter for the first time.
+   Remote polls at 30s rather than 1.5s, since it is a round trip rather than a `stat`.
+2. **Rewriting the cache on every poll moved its mtime forward forever.** Every reader decides
+   "has anything happened?" from that mtime, and auto-scan measures how long a session has been
+   *quiet* from it — so a remote session would never once have looked idle, and would never have
+   been scanned. The fetch now skips the write when the content is identical.
+
+**Verified.** `npm run check` exits 0. The remote command is not merely pattern-matched: the suite
+executes it with a real `sh` against a fixture home and asserts it picks the newest transcript,
+prints its path first, and prints nothing at all — exiting 0 — on a machine that has never run
+Claude. Every id that is not a plain uuid is refused before it can reach a remote shell.
+
+**Still never exercised:** a real SSH connection. The command is proven against a local shell and
+the fetch against an injected transport; no host has ever answered.
 
 ## Open work, in the order it is worth doing
 
@@ -530,7 +704,9 @@ worth building:
   separate Agent-SDK credit pool. Not built.
 - **A project "blueprint" that must not become a cage.** Never specified further.
 - **Dev-vs-prod logging into Sentry / PostHog.** Not started.
-- **ClickUp / Notion task sync.** Not started.
+- **ClickUp / Notion task sync.** Done in 0.4.0, one direction. The agent reads both boards and
+  can propose a status change to a record that already exists. What it is *not* is a sync: it
+  never reads a board change back into Stoke, and it never touches a record no session mentioned.
 - **A git tree showing features.** Recorded as a wish twice; still a wish.
 
 ### 9. Known defects, deliberately not fixed

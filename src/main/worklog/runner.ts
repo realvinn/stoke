@@ -1,7 +1,9 @@
 import { readTranscript, type TranscriptTurn } from '../sessionFile.ts'
 import { runHeadless, type HeadlessOptions } from '../agent.ts'
+import { asRecord, candidates, clip, oneLine } from './json.ts'
+import { EMPTY_RECALL, formatRecall, statusesFor, type RecallSnapshot } from './recall.ts'
 import type { ProposalDraft } from './queue.ts'
-import type { WorklogProposal, WorklogTarget } from '@shared/types'
+import type { WorklogKind, WorklogProposal, WorklogTarget } from '@shared/types'
 
 /**
  * The worklog agent itself: read one session back, propose entries, and — only
@@ -35,9 +37,32 @@ import type { WorklogProposal, WorklogTarget } from '@shared/types'
 export const NOTION_DATA_SOURCE = 'collection://368d3f2d-1f02-817c-b193-000b208e36bd'
 export const CLICKUP_LIST_ID = '901615258684'
 
-const WRITE_TOOL: Record<WorklogTarget, string> = {
-  clickup: 'mcp__claude_ai_ClickUp__clickup_create_task',
-  notion: 'mcp__claude_ai_Notion__notion-create-pages'
+/**
+ * The write tools, by what the proposal does and where it does it.
+ *
+ * An update to ClickUp gets two, and that pairing is deliberate:
+ * `clickup_update_task` *replaces* a description, so writing the note through it
+ * would delete whatever the task already said. The note goes on as a comment and
+ * only the status moves. Notion's update-page appends, so one tool is enough
+ * there.
+ */
+const WRITE_TOOLS: Record<WorklogKind, Record<WorklogTarget, string[]>> = {
+  create: {
+    clickup: ['mcp__claude_ai_ClickUp__clickup_create_task'],
+    notion: ['mcp__claude_ai_Notion__notion-create-pages']
+  },
+  update: {
+    clickup: [
+      'mcp__claude_ai_ClickUp__clickup_update_task',
+      'mcp__claude_ai_ClickUp__clickup_create_comment'
+    ],
+    notion: ['mcp__claude_ai_Notion__notion-update-page']
+  }
+}
+
+/** A proposal written before updates existed has no kind, and creates. */
+export function kindOf(proposal: Pick<WorklogProposal, 'kind'>): WorklogKind {
+  return proposal.kind === 'update' ? 'update' : 'create'
 }
 
 /**
@@ -109,14 +134,6 @@ export class WorklogParseError extends Error {
 
 /* ------------------------------------------------------------- the digest */
 
-function oneLine(text: string): string {
-  return text.replace(/\s+/g, ' ').trim()
-}
-
-function clip(text: string, max: number): string {
-  return text.length > max ? `${text.slice(0, max)}…` : text
-}
-
 /** `Read, Edit x3` — counts matter (three edits is different work from one). */
 function toolSummary(tools: string[]): string {
   const counts = new Map<string, number>()
@@ -172,6 +189,64 @@ export function summariseTurns(turns: TranscriptTurn[]): string {
   return clip(parts.join('\n'), MAX_DIGEST_CHARS)
 }
 
+/* ---------------------------------------------------------------- titles */
+
+/**
+ * How long a title may be. Short enough to read at a glance in a ClickUp list,
+ * long enough to name the actual thing rather than gesture at it.
+ */
+export const MAX_TITLE_CHARS = 72
+
+/**
+ * The house style, in one place, so the prompt and the tidier cannot disagree.
+ *
+ * From the user, verbatim: titles should be "simple and laymens terms but not so
+ * simple it makes it sounds useless … like Added [Feature] or Fixed [Bug] …
+ * with more details in the actual page". So: a verb, then the thing, in words
+ * someone who was not in the session would use.
+ */
+export const TITLE_RULES = [
+  '- Start with what was done: Added, Fixed, Updated, Removed, Sped up, Documented.',
+  '- Then name the actual thing, plainly: "Added SSH sessions to the launcher", not',
+  '  "Added a feature" (says nothing) and not "feat(cli): buildSshArgs" (jargon).',
+  `- Under ${MAX_TITLE_CHARS} characters. No file or function names, no markdown, no full stop.`,
+  '- The detail goes in the body. The title is the headline, not the report.'
+]
+
+/** Conventional-commit and changelog prefixes, which are exactly what to avoid. */
+const COMMIT_PREFIX = /^(feat|fix|chore|docs|refactor|perf|test|build|ci|style|revert)(\([^)]*\))?!?:\s*/i
+
+/**
+ * Mechanically fix what the wording alone does not.
+ *
+ * Prompt rules move the average; they do not stop the one reply in ten that
+ * arrives as "**fix(worklog):** dedupe key." — and a title is the only part of a
+ * proposal the user reads before deciding, so it is the part worth normalising
+ * in code. Everything here is removal: nothing invents words the model did not
+ * write.
+ */
+export function tidyTitle(raw: string): string {
+  let t = oneLine(raw ?? '')
+  // Markdown first: a bold or heading marker would otherwise hide the commit
+  // prefix behind it and survive the strip below.
+  t = t.replace(/^#{1,6}\s+/, '').replace(/^[-*+]\s+/, '')
+  t = t.replace(/\*\*/g, '').replace(/`/g, '').replace(/^_+|_+$/g, '')
+  t = t.replace(/^["'“”‘’]+|["'“”‘’]+$/g, '')
+  t = t.replace(COMMIT_PREFIX, '')
+  t = t.replace(/\s*[.。]+$/, '').trim()
+  if (!t) return ''
+
+  if (t.length > MAX_TITLE_CHARS) {
+    // Cut at a word boundary. A title chopped mid-word reads as a bug in Stoke
+    // rather than a long title, and it is the first thing the user sees.
+    const cut = t.slice(0, MAX_TITLE_CHARS)
+    const space = cut.lastIndexOf(' ')
+    t = `${(space > MAX_TITLE_CHARS * 0.6 ? cut.slice(0, space) : cut).replace(/[\s,;:-]+$/, '')}…`
+  }
+
+  return t.charAt(0).toUpperCase() + t.slice(1)
+}
+
 /* ------------------------------------------------------------- the prompts */
 
 export interface ScanContext {
@@ -181,6 +256,20 @@ export interface ScanContext {
   /** Claude Code's own title for the session, when it produced one. */
   title?: string | null
   digest: string
+  /**
+   * What the boards already hold, rendered by `formatRecall`. Empty when recall
+   * found nothing or could not run.
+   */
+  existing?: string
+  /**
+   * True when recall failed rather than came back empty.
+   *
+   * The distinction is the whole reason this flag exists: told nothing, the
+   * model reasonably assumes the boards are empty and proposes a create for
+   * everything, which is precisely the duplication recall was added to stop. It
+   * has to know the difference between "nothing there" and "could not look".
+   */
+  recallFailed?: boolean
 }
 
 function projectName(cwd: string): string {
@@ -196,6 +285,8 @@ function projectName(cwd: string): string {
  * for it to be wrong.
  */
 export function buildScanPrompt(ctx: ScanContext): string {
+  const existing = (ctx.existing ?? '').trim()
+
   return [
     'You are a work-log assistant for a software developer. Below is a compressed',
     'record of one Claude Code session. Turn it into task-tracker entries.',
@@ -208,12 +299,25 @@ export function buildScanPrompt(ctx: ScanContext): string {
     ctx.digest,
     'SESSION',
     '',
+    // What is already tracked. Ahead of the instructions on purpose: the model
+    // has to have read it before it is asked to decide create-or-update.
+    existing
+      ? ['Already on the boards:', '', existing, ''].join('\n')
+      : ctx.recallFailed
+        ? [
+            'The boards could not be read this time, so you do not know what is already',
+            'tracked. Propose creates only, and keep them to work that is clearly new.',
+            ''
+          ].join('\n')
+        : ['The boards are empty — nothing is tracked yet.', ''].join('\n'),
     'Produce:',
-    '1. Exactly one summary entry, targets ["notion"]. Body: what was worked on,',
-    '   what actually changed, and anything decided. Past tense, 2-5 sentences.',
-    '2. One entry per item still outstanding, targets ["clickup"]: unfinished,',
-    '   deferred, broken, or explicitly named as next. Body says what to do and',
-    '   why. Skip anything the session finished.',
+    '1. One summary entry: {"kind":"create","targets":["notion"]}. Body: what was worked',
+    '   on, what changed, what was decided. Past tense, 2-5 sentences.',
+    '2. For every item above this session moved on - finished, started or blocked - one',
+    '   {"kind":"update"} naming its board and its id. Never a second record for work',
+    '   that already has one.',
+    '3. One {"kind":"create","targets":["clickup"]} per outstanding item NOT listed above:',
+    '   unfinished, deferred, broken, or named as next. Body says what to do and why.',
     '',
     // The model tends to return the summary alone, which is half the feature
     // missing and looks like a complete answer. This paragraph pushes against
@@ -221,26 +325,29 @@ export function buildScanPrompt(ctx: ScanContext): string {
     // not by itself change the count, so it is a nudge, not a fix — if the
     // ClickUp half stays thin in use, the digest is the next thing to look at,
     // not the wording.
-    'Work through the record for the second kind before deciding there are none.',
-    'Most sessions leave something: work explicitly deferred, a bug found and not',
-    'fixed, a change made but not verified, or a stated next step.',
+    'Work through the record for kinds 2 and 3 before deciding there are none: most',
+    'sessions leave something deferred, unfixed, unverified, or named as next.',
+    '',
+    'Titles are read by someone who was not there:',
+    ...TITLE_RULES,
     '',
     'Rules:',
-    '- At most 6 entries in total.',
-    '- Titles at most 80 characters, no markdown, no trailing full stop.',
-    '- Bodies at most 600 characters, plain text, no markdown, no code fences.',
-    '- Invent nothing. If the record does not say it, it did not happen.',
+    '- At most 6 entries. Bodies at most 600 characters, plain text, no markdown.',
+    '- An update names one board and one id, copied exactly from the list above. Its',
+    '  "status" must be one shown there, or left out.',
+    '- Invent nothing. If the record does not say it, it did not happen; if an id is',
+    '  not listed above, it does not exist.',
     '- If there is nothing worth logging, reply with exactly: []',
     '',
     'Reply with a JSON array and nothing else - no prose, no code fence. Example:',
-    '[{"title":"Fixed the context meter on resumed sessions","body":"...","targets":["notion"]},',
-    ' {"title":"Cover the 1M tier in verify:context","body":"...","targets":["clickup"]}]'
+    '[{"kind":"create","title":"Added SSH sessions to the launcher","body":"...","targets":["notion"]},',
+    ' {"kind":"update","target":"clickup","id":"abc123","status":"complete","title":"Finished the SSH work","body":"..."}]'
   ]
     .filter((l) => l !== '')
     .join('\n')
 }
 
-/** The write prompt for one destination. One tool, one item, one URL back. */
+/** The write prompt for one destination. One item, one URL back. */
 export function buildApplyPrompt(proposal: WorklogProposal, target: WorklogTarget): string {
   const shared = [
     `Title: ${oneLine(proposal.title)}`,
@@ -249,6 +356,59 @@ export function buildApplyPrompt(proposal: WorklogProposal, target: WorklogTarge
     proposal.body.trim(),
     ''
   ]
+
+  if (kindOf(proposal) === 'update') {
+    const existing = proposal.existing?.[target]
+    const status = proposal.newStatus?.[target]
+
+    /*
+     * An update with no id is not an update.
+     *
+     * scanSession demotes those to creates before they ever reach the queue, so
+     * arriving here means a hand-edited or migrated record. Writing a create
+     * instead would be a guess that files a duplicate into a real board, so the
+     * prompt refuses out loud and the run comes back as an error the panel can
+     * show.
+     */
+    if (!existing?.id) {
+      return [
+        'Do nothing and change nothing.',
+        '',
+        'Reply with JSON and nothing else: {"error":"this update names no record to change"}'
+      ].join('\n')
+    }
+
+    const destination =
+      target === 'clickup'
+        ? [
+            `Update ONE existing ClickUp task, id ${existing.id} ("${oneLine(existing.title)}").`,
+            status
+              ? `Set its status to exactly "${status}" with clickup_update_task, changing nothing else.`
+              : 'Do not change its status.',
+            // The note is a comment because clickup_update_task's description
+            // field replaces rather than appends, and the description is where
+            // the original ask lives.
+            'Then add the body below as a comment with clickup_create_comment.',
+            'Do not touch the name, the description, the assignee or the due date.'
+          ]
+        : [
+            `Update ONE existing Notion page, id ${existing.id} ("${oneLine(existing.title)}").`,
+            status ? `Set its status property to exactly "${status}".` : 'Do not change its status.',
+            'Append the body below to the end of the page with notion-update-page.',
+            'Do not change the title and do not replace any existing content.'
+          ]
+
+    return [
+      ...destination,
+      '',
+      ...shared,
+      'Change exactly this one record. Do not search first, do not create anything, and',
+      'do not modify anything else.',
+      '',
+      'When it is done, reply with JSON and nothing else, holding the record\'s URL:',
+      '{"url":"https://..."}'
+    ].join('\n')
+  }
 
   const destination =
     target === 'clickup'
@@ -282,87 +442,18 @@ export interface ModelProposal {
   title: string
   body: string
   targets: WorklogTarget[]
+  kind: WorklogKind
+  /**
+   * For an update: the destination and the id it named. Unverified at this
+   * point — `scanSession` is what checks the id against what recall actually
+   * saw, because only it has the snapshot.
+   */
+  target?: WorklogTarget
+  existingId?: string
+  newStatus?: string
 }
 
 const TARGETS: WorklogTarget[] = ['notion', 'clickup']
-
-function stripFence(text: string): string {
-  const fenced = /```(?:json|jsonc|json5)?\s*\r?\n?([\s\S]*?)```/i.exec(text)
-  return fenced ? fenced[1].trim() : text
-}
-
-/**
- * The first balanced `[...]` or `{...}` in a string, string literals respected.
- *
- * A naive first-bracket-to-last-bracket slice breaks on the reply this exists
- * for: prose either side of the JSON, or a body text that itself contains a
- * bracket.
- */
-function balanced(text: string, open: '[' | '{', close: ']' | '}'): string | null {
-  const start = text.indexOf(open)
-  if (start < 0) return null
-  let depth = 0
-  let inString = false
-  let escaped = false
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i]
-    if (inString) {
-      if (escaped) escaped = false
-      else if (ch === '\\') escaped = true
-      else if (ch === '"') inString = false
-      continue
-    }
-    if (ch === '"') inString = true
-    else if (ch === open) depth++
-    else if (ch === close && --depth === 0) return text.slice(start, i + 1)
-  }
-  return null
-}
-
-function asRecord(v: unknown): Record<string, unknown> | null {
-  return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null
-}
-
-/**
- * Every balanced run of the given brackets, not just the first.
- *
- * The first one is often not the JSON: "I found [3] things worth logging: [...]"
- * puts a decoy ahead of the real list, and stopping at it would take the decoy —
- * or, worse, fall through to the first balanced *object*, which is proposal one
- * of several and looks like a perfectly good answer.
- */
-function allBalanced(text: string, open: '[' | '{', close: ']' | '}'): string[] {
-  const out: string[] = []
-  let from = 0
-  // Bounded: a reply needing more than a handful of attempts is not a reply this
-  // parser should be rescuing.
-  while (out.length < 8) {
-    const at = text.indexOf(open, from)
-    if (at < 0) break
-    const slice = balanced(text.slice(at), open, close)
-    if (slice) out.push(slice)
-    from = at + 1
-  }
-  return out
-}
-
-/** Every shape the JSON might arrive in, best first. */
-function candidates(text: string): string[] {
-  const out: string[] = []
-  const unfenced = stripFence(text).trim()
-  const push = (s: string | null): void => {
-    if (s && !out.includes(s)) out.push(s)
-  }
-  push(unfenced)
-  push(text.trim())
-  // Every array before any object: an array of proposals also contains balanced
-  // objects, and taking one of those would silently drop every proposal but it.
-  for (const s of allBalanced(unfenced, '[', ']')) push(s)
-  for (const s of allBalanced(text, '[', ']')) push(s)
-  for (const s of allBalanced(unfenced, '{', '}')) push(s)
-  for (const s of allBalanced(text, '{', '}')) push(s)
-  return out
-}
 
 function normaliseTargets(v: unknown): WorklogTarget[] {
   if (!Array.isArray(v)) return [...TARGETS]
@@ -402,13 +493,40 @@ function toProposals(value: unknown): { proposals: ModelProposal[] } | { reason:
     // Loud rather than lenient. Dropping the unreadable entry and keeping the
     // rest would file a partial worklog that looks complete.
     if (!entry) return { reason: `proposal ${i + 1} is not an object` }
-    const title = typeof entry.title === 'string' ? entry.title.trim() : ''
+    const title = tidyTitle(typeof entry.title === 'string' ? entry.title : '')
     if (!title) return { reason: `proposal ${i + 1} has no usable title` }
-    proposals.push({
-      title: clip(title, 200),
+
+    const target = TARGETS.includes(entry.target as WorklogTarget)
+      ? (entry.target as WorklogTarget)
+      : null
+    const existingId = typeof entry.id === 'string' ? entry.id.trim() : ''
+    /*
+     * An update is only an update when it says which record.
+     *
+     * `kind:"update"` with no board or no id names nothing that could be
+     * changed, so honouring the word alone would queue a write with no address.
+     * Reading it as a create is the recoverable half: the user still sees the
+     * entry and still decides, and `scanSession` applies the same demotion when
+     * the id turns out not to exist.
+     */
+    const kind: WorklogKind = entry.kind === 'update' && target && existingId ? 'update' : 'create'
+    const status = typeof entry.status === 'string' ? oneLine(entry.status).trim() : ''
+
+    const proposal: ModelProposal = {
+      title,
       body: typeof entry.body === 'string' ? entry.body.trim() : '',
-      targets: normaliseTargets(entry.targets)
-    })
+      // An update goes to exactly the one board that holds the record; asking
+      // for it on both would address the other board's copy, which does not
+      // exist.
+      targets: kind === 'update' && target ? [target] : normaliseTargets(entry.targets),
+      kind
+    }
+    if (kind === 'update' && target) {
+      proposal.target = target
+      proposal.existingId = existingId
+      if (status) proposal.newStatus = clip(status, 60)
+    }
+    proposals.push(proposal)
   }
   return { proposals }
 }
@@ -498,6 +616,10 @@ export interface ScanInput {
   claudePath?: string | null
   timeoutMs?: number
   maxBudgetUsd?: number
+  /** What the boards already hold. Omitted means "could not look". */
+  recall?: RecallSnapshot
+  /** True when a scan the user did not ask for produced this. */
+  auto?: boolean
 }
 
 export interface ScanOutcome {
@@ -507,6 +629,13 @@ export interface ScanOutcome {
   promptChars: number
   /** True when the transcript held no conversation to summarise. */
   emptyTranscript: boolean
+  /**
+   * Updates that named a record recall had never seen, and were therefore
+   * written down as creates instead. Surfaced rather than swallowed: a steady
+   * count here means recall is being truncated or the model is inventing ids,
+   * and both look like "the feature works" from outside.
+   */
+  demoted: number
 }
 
 /**
@@ -556,7 +685,7 @@ export function applyRunOptions(
     // The project directory, because MCP servers can be configured per project.
     // runHeadless falls back to a scratch dir if it has since been deleted.
     cwd: proposal.cwd,
-    allowedTools: [WRITE_TOOL[target]],
+    allowedTools: [...WRITE_TOOLS[kindOf(proposal)][target]],
     effort: 'medium',
     timeoutMs: opts.timeoutMs,
     maxBudgetUsd: opts.maxBudgetUsd,
@@ -573,15 +702,20 @@ export function applyRunOptions(
 export async function scanSession(input: ScanInput): Promise<ScanOutcome> {
   const transcript = await readTranscript(input.transcriptFile, TRANSCRIPT_TURNS)
   if (!transcript.turns.length) {
-    return { proposals: [], costUsd: null, promptChars: 0, emptyTranscript: true }
+    return { proposals: [], costUsd: null, promptChars: 0, emptyTranscript: true, demoted: 0 }
   }
 
+  const snapshot = input.recall ?? EMPTY_RECALL
   const prompt = buildScanPrompt({
     sessionId: input.sessionId,
     cwd: input.cwd,
     group: input.group,
     title: input.title ?? null,
-    digest: summariseTurns(transcript.turns)
+    digest: summariseTurns(transcript.turns),
+    existing: formatRecall(snapshot),
+    // A snapshot that was never taken counts as failed: both mean the model was
+    // not shown the boards, and only one of them may be reported as "empty".
+    recallFailed: !!snapshot.error || snapshot.readAt === 0
   })
 
   const result = await runHeadless(scanRunOptions(prompt, input))
@@ -590,16 +724,88 @@ export async function scanSession(input: ScanInput): Promise<ScanOutcome> {
     throw new Error(`The worklog scan failed: ${clip(oneLine(result.text), 300) || result.subtype || 'unknown error'}`)
   }
 
-  const proposals = parseProposals(result.text).map<ProposalDraft>((p) => ({
-    sessionId: input.sessionId,
-    cwd: input.cwd,
-    group: input.group,
-    title: p.title,
-    body: p.body,
-    targets: p.targets
-  }))
+  const { drafts, demoted } = groundProposals(parseProposals(result.text), input, snapshot)
 
-  return { proposals, costUsd: result.costUsd, promptChars: prompt.length, emptyTranscript: false }
+  return {
+    proposals: drafts,
+    costUsd: result.costUsd,
+    promptChars: prompt.length,
+    emptyTranscript: false,
+    demoted
+  }
+}
+
+/**
+ * Check every update against what recall actually saw, and turn the rest into
+ * drafts.
+ *
+ * This is where a model's claim about the outside world stops being taken on
+ * trust. Two checks, and both of them exist because the alternative is a write
+ * that fails at somebody else's API with an error the user can do nothing
+ * about:
+ *
+ *  - **The id must be one recall returned.** If it is not, the record either
+ *    does not exist or is outside the window recall read, and in both cases
+ *    there is nothing to address the update to. The entry is kept as a create,
+ *    because the work it describes is real even when the id is not.
+ *  - **The status must be one that destination already uses.** A model asked to
+ *    close a task will offer "Done" to a board whose states are "open" and
+ *    "complete". Dropping just the status leaves a note-only update, which is
+ *    still worth writing.
+ *
+ * Exported so scripts/verify-worklog-runner.mts can exercise both without a
+ * transcript or a live run.
+ */
+export function groundProposals(
+  proposals: ModelProposal[],
+  input: Pick<ScanInput, 'sessionId' | 'cwd' | 'group' | 'auto'>,
+  snapshot: RecallSnapshot
+): { drafts: ProposalDraft[]; demoted: number } {
+  const drafts: ProposalDraft[] = []
+  let demoted = 0
+
+  for (const p of proposals) {
+    const draft: ProposalDraft = {
+      sessionId: input.sessionId,
+      cwd: input.cwd,
+      group: input.group,
+      title: p.title,
+      body: p.body,
+      targets: p.targets,
+      kind: 'create'
+    }
+    if (input.auto) draft.auto = true
+
+    const target = p.target
+    const found =
+      p.kind === 'update' && target && p.existingId
+        ? (snapshot.items[target]?.find((i) => i.id.toLowerCase() === p.existingId!.toLowerCase()) ??
+          null)
+        : null
+
+    if (p.kind === 'update' && !found) {
+      demoted++
+      // Fall through as a create, and drop the single-board narrowing that only
+      // made sense while it was an update.
+      draft.targets = [...(target ? [target] : TARGETS)]
+      drafts.push(draft)
+      continue
+    }
+
+    if (found && target) {
+      draft.kind = 'update'
+      draft.targets = [target]
+      draft.existing = { [target]: found }
+      const wanted = p.newStatus?.trim()
+      if (wanted && statusesFor(snapshot, target).has(wanted.toLowerCase())) {
+        draft.newStatus = { [target]: wanted }
+      }
+    }
+
+    drafts.push(draft)
+  }
+
+  return { drafts, demoted }
 }
 
 export interface ApplyOptions {
@@ -672,7 +878,13 @@ export async function applyProposal(
         throw new Error(clip(oneLine(result.text), 300) || result.subtype || 'the run reported an error')
       }
 
-      const url = parseWrittenUrl(result.text, target)
+      /*
+       * An update already had a URL before the run started: the record exists,
+       * that is the whole point of it being an update. So a reply without a
+       * link is not "written, no link" — the link is known, and showing it is
+       * strictly better than showing nothing.
+       */
+      const url = parseWrittenUrl(result.text, target) ?? proposal.existing?.[target]?.url ?? null
       if (url) {
         urls[target] = url
       } else {

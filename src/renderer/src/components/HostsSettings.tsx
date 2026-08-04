@@ -117,7 +117,9 @@ export function HostsSettings({ hosts, suggestions, onChange }: Props): React.JS
   const add = useCallback((): void => {
     onChange([
       ...hosts,
-      { id: newHostId(hosts), label: '', alias: '', command: DEFAULT_COMMAND }
+      // Explicitly off. A new host must never arrive with an agent already
+      // reading its transcripts.
+      { id: newHostId(hosts), label: '', alias: '', command: DEFAULT_COMMAND, worklog: false }
     ])
   }, [hosts, onChange])
 
@@ -264,6 +266,34 @@ export function HostsSettings({ hosts, suggestions, onChange }: Props): React.JS
               losing it. Since Stoke&rsquo;s own resume cannot reach across, a multiplexer is the
               only thing that survives the link going down. Empty gives a plain login shell.
             </span>
+
+            {/*
+              Per host, not per folder. A remote session's folder is wherever
+              Stoke was pointed locally, so the profile checkboxes cannot mean
+              anything for it — the machine is the only honest unit.
+            */}
+            <label className="check-row">
+              <input
+                type="checkbox"
+                checked={host.worklog === true}
+                onChange={(e) =>
+                  onChange(
+                    hosts.map((h) => (h.id === host.id ? { ...h, worklog: e.target.checked } : h))
+                  )
+                }
+              />
+              <span>
+                <span className="field-label">Write up work done on this machine</span>
+                <span className="field-hint">
+                  Stoke copies this session&rsquo;s transcript back over the same connection so
+                  the worklog agent can read it, then proposes Notion and ClickUp entries the
+                  same way it does for a local session — and the context meter starts working,
+                  which it cannot without a transcript to read. Nothing is written to Notion or
+                  ClickUp until you accept it, and while this is off nothing is copied off the
+                  machine at all.
+                </span>
+              </span>
+            </label>
           </div>
         )
       })}

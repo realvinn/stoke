@@ -269,7 +269,9 @@ export function SettingsSheet({
           <WorklogSettings
             profiles={profiles}
             worklogGroups={settings.worklogGroups}
+            auto={settings.worklogAuto}
             onChange={(worklogGroups) => onPatch({ worklogGroups })}
+            onChangeAuto={(worklogAuto) => onPatch({ worklogAuto })}
           />
 
           <HostsSettings

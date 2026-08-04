@@ -1,7 +1,12 @@
 import { createHash } from 'node:crypto'
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import type { WorklogProposal, WorklogTarget } from '@shared/types'
+import type {
+  WorklogExistingItem,
+  WorklogKind,
+  WorklogProposal,
+  WorklogTarget
+} from '@shared/types'
 
 /**
  * The review queue: everything the worklog agent has proposed, and what became
@@ -57,16 +62,50 @@ export function worklogQueueFile(userDataDir: string): string {
  * produces a second entry, which is visible and dismissable. The opposite error
  * — collapsing two distinct proposals — silently loses work.
  */
-export function dedupeKey(p: { sessionId: string; title: string }): string {
+export interface Identity {
+  sessionId: string
+  title: string
+  kind?: WorklogKind
+  existing?: Partial<Record<WorklogTarget, WorklogExistingItem>>
+}
+
+export function dedupeKey(p: Identity): string {
+  /*
+   * An update is identified by the record it changes, not by its wording.
+   *
+   * Two scans of one session should never queue two "mark this task complete"
+   * entries for the same task just because the model phrased the second one
+   * differently — unlike a create, where two differently-worded entries really
+   * might be two different pieces of work.
+   */
+  if (p.kind === 'update') {
+    const ref = TARGETS.map((t) => {
+      const id = p.existing?.[t]?.id
+      return id ? `${t}:${id.toLowerCase()}` : ''
+    })
+      .filter(Boolean)
+      .join(',')
+    if (ref) return `${p.sessionId}|update|${ref}`
+    // No record named, so there is nothing to key on but the words. Falls
+    // through to the create key deliberately: such a proposal is written as a
+    // create anyway (see groundProposals).
+  }
+
   const title = p.title
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, ' ')
     .trim()
+  /*
+   * The create key is byte-for-byte what it was before updates existed, and has
+   * to stay that way. Ids are the sha1 of it and rejections are tombstones
+   * keyed on it, so any change here silently resurrects every proposal the user
+   * has ever said no to.
+   */
   return `${p.sessionId}|${title}`
 }
 
 /** Stable id, so the same proposal keeps its identity across rescans. */
-export function proposalId(p: { sessionId: string; title: string }): string {
+export function proposalId(p: Identity): string {
   return createHash('sha1').update(dedupeKey(p)).digest('hex').slice(0, 12)
 }
 
@@ -95,7 +134,17 @@ function hydrate(v: unknown): WorklogProposal | null {
   if (isRecord(v.urls)) {
     for (const t of TARGETS) {
       const u = v.urls[t]
-      if (typeof u === 'string' && u) urls[t] = u
+      /*
+       * An EMPTY string is kept, and that is the whole point of this branch.
+       *
+       * `applyProposal` writes `urls[target] = ''` to mean "this destination was
+       * reached but returned no link", and that marker is the only thing
+       * stopping Try again creating a second real record. Dropping it here
+       * because it is falsy made the marker survive until the next restart and
+       * no longer: the guard then saw `undefined`, and a retry duplicated a live
+       * ClickUp task. Presence is the signal; the value is only the link.
+       */
+      if (typeof u === 'string') urls[t] = u
     }
   }
 
@@ -116,7 +165,60 @@ function hydrate(v: unknown): WorklogProposal | null {
   }
   if (Object.keys(urls).length) proposal.urls = urls
   if (typeof v.error === 'string' && v.error) proposal.error = v.error
+  if (v.auto === true) proposal.auto = true
+
+  /*
+   * An update is only rebuilt as one if the record it points at survived too.
+   * A stored `kind: "update"` with no readable `existing` names nothing that can
+   * be changed, and the write path would have to guess — so it comes back as
+   * the create it will be treated as anyway.
+   */
+  const existing = hydrateExisting(v.existing)
+  if (v.kind === 'update' && Object.keys(existing).length) {
+    proposal.kind = 'update'
+    proposal.existing = existing
+    const newStatus = hydrateStatuses(v.newStatus, existing)
+    if (Object.keys(newStatus).length) proposal.newStatus = newStatus
+  } else if (v.kind === 'update' || v.kind === 'create') {
+    // Written down as a create rather than left blank. Every reader already
+    // treats a missing kind as one, so recording it makes the stored record say
+    // what it is instead of leaving the next reader to infer it.
+    proposal.kind = 'create'
+  }
+
   return proposal
+}
+
+function hydrateExisting(v: unknown): Partial<Record<WorklogTarget, WorklogExistingItem>> {
+  const out: Partial<Record<WorklogTarget, WorklogExistingItem>> = {}
+  if (!isRecord(v)) return out
+  for (const t of TARGETS) {
+    const entry = v[t]
+    if (!isRecord(entry)) continue
+    const id = typeof entry.id === 'string' ? entry.id.trim() : ''
+    const title = typeof entry.title === 'string' ? entry.title.trim() : ''
+    if (!id || !title) continue
+    const item: WorklogExistingItem = { id, title }
+    if (typeof entry.status === 'string' && entry.status.trim()) item.status = entry.status.trim()
+    if (typeof entry.url === 'string' && /^https?:\/\//i.test(entry.url)) item.url = entry.url.trim()
+    out[t] = item
+  }
+  return out
+}
+
+/** A status only survives for a destination this proposal actually addresses. */
+function hydrateStatuses(
+  v: unknown,
+  existing: Partial<Record<WorklogTarget, WorklogExistingItem>>
+): Partial<Record<WorklogTarget, string>> {
+  const out: Partial<Record<WorklogTarget, string>> = {}
+  if (!isRecord(v)) return out
+  for (const t of TARGETS) {
+    if (!existing[t]) continue
+    const s = v[t]
+    if (typeof s === 'string' && s.trim()) out[t] = s.trim()
+  }
+  return out
 }
 
 /** Fields the app is allowed to change after a proposal exists. */
@@ -212,17 +314,46 @@ export class WorklogQueue {
    */
   add(drafts: ProposalDraft[], now = Date.now()): WorklogProposal[] {
     const seen = new Set(this.items.map((p) => dedupeKey(p)))
+    /*
+     * A rejection also blocks the same work arriving under the other kind.
+     *
+     * An update and a create have deliberately different keys — the update is
+     * keyed on the record it changes, so rewording it does not queue a second
+     * one. The cost of that is a hole: reject "Finished the SSH work" as an
+     * update, then let recall fail on the next scan, and the model proposes the
+     * same sentence as a create under a completely different key. The user said
+     * no once and gets asked again, which is how a feature gets switched off.
+     *
+     * So every rejection contributes its title-based key as well as its own.
+     * Only rejections — a pending or accepted update must not block a genuinely
+     * new create that happens to share its wording.
+     */
+    const refused = new Set(
+      this.items
+        .filter((p) => p.status === 'rejected')
+        .map((p) => dedupeKey({ sessionId: p.sessionId, title: p.title }))
+    )
     const added: WorklogProposal[] = []
 
     for (const draft of drafts) {
       const title = draft.title.trim()
       if (!title || !draft.sessionId) continue
-      const key = dedupeKey({ sessionId: draft.sessionId, title })
-      if (seen.has(key)) continue
+      const identity: Identity = {
+        sessionId: draft.sessionId,
+        title,
+        kind: draft.kind,
+        existing: draft.existing
+      }
+      const key = dedupeKey(identity)
+      // Both ways round, and against `refused` rather than `seen`: a *rejected*
+      // create blocks the same words arriving as an update and vice versa, but a
+      // merely pending one must not — losing a better-informed update to an
+      // earlier create would be a silent downgrade.
+      if (seen.has(key) || refused.has(dedupeKey({ sessionId: draft.sessionId, title }))) continue
       seen.add(key)
 
-      added.push({
-        id: proposalId({ sessionId: draft.sessionId, title }),
+      const proposal: WorklogProposal = {
+        id: proposalId(identity),
         sessionId: draft.sessionId,
         cwd: draft.cwd,
         group: draft.group,
@@ -231,7 +362,14 @@ export class WorklogQueue {
         targets: draft.targets.length ? [...draft.targets] : [...TARGETS],
         status: 'pending',
         createdAt: now
-      })
+      }
+      if (draft.kind) proposal.kind = draft.kind
+      if (draft.existing && Object.keys(draft.existing).length) proposal.existing = { ...draft.existing }
+      if (draft.newStatus && Object.keys(draft.newStatus).length) {
+        proposal.newStatus = { ...draft.newStatus }
+      }
+      if (draft.auto) proposal.auto = true
+      added.push(proposal)
     }
 
     if (!added.length) return []

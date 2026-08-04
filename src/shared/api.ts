@@ -9,7 +9,8 @@ import type {
   SessionMeta,
   Settings,
   UsageSnapshot,
-  WorklogProposal
+  WorklogProposal,
+  WorklogProposedEvent
 } from './types'
 
 export interface AudioDevice {
@@ -223,6 +224,12 @@ export interface StokeApi {
     accept(id: string): Promise<{ ok: boolean; error: string | null }>
     reject(id: string): Promise<void>
     onChange(cb: (items: WorklogProposal[]) => void): () => void
+    /**
+     * A scan the user did not ask for produced something. Distinct from
+     * `onChange`, which fires for every queue mutation including their own
+     * accepts — only this one means "there is something new to ask about".
+     */
+    onProposed(cb: (event: WorklogProposedEvent) => void): () => void
   }
 
   audio: {

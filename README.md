@@ -16,6 +16,7 @@ windows and mac.
 - how much of your 5-hour and weekly limit is gone, and whether you're burning
   it faster than the clock is ticking
 - your phone can drive it. hold the mic button to talk instead of typing
+- it writes up your work into notion and clickup, if you let it. see below
 
 ## run it
 
@@ -51,6 +52,39 @@ your desktop has to be awake and running stoke — nothing is hosted anywhere.
 
 to reach it from outside your house, put a cloudflare tunnel in front of it and
 turn on cloudflare access. `BUILDING.md` has the steps.
+
+## the worklog
+
+settings -> worklog agent. tick the profiles you report on. off for everything
+by default.
+
+when a session you've ticked goes quiet for a couple of minutes, a cheap sonnet
+run reads what you just did, looks at what's already on your notion and clickup
+boards, and asks:
+
+> add **fixed the context meter on resumed sessions** to clickup?
+
+or, if the work was already on the board:
+
+> mark **ship ssh sessions** as complete in clickup?
+
+**nothing is written until you say yes.** every draft lands in the worklog panel
+first, and "accept all" is still you accepting. a "not now" leaves it in the
+panel; "reject" is permanent and never comes back.
+
+it works for remote machines too. tick **write up work done on this machine** on
+a host in settings, and stoke copies that session's transcript back over the
+same ssh connection so the agent can read it — which also gives remote sessions
+a context meter for the first time, since they've never had a transcript to read.
+that tickbox gates the copy itself: while it's off nothing leaves the machine,
+and the meter stays blank. if you run two claude sessions on one host at once it
+can't tell them apart and will take the newest.
+
+it costs tokens — it's a real claude run on top of the work you just did. it's
+capped at six scans an hour, one per session every twenty minutes, and it reads
+your boards at most once every ten minutes however many sessions get scanned.
+those counters live in memory, so restarting stoke starts them over. leave
+profiles you don't report on switched off.
 
 ## heads up
 
