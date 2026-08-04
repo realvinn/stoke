@@ -1,7 +1,8 @@
 import { useMemo } from 'react'
 import type { Project, SessionMeta } from '@shared/types'
 import { ContextBar } from './ContextMeter'
-import type { Profile } from '@shared/profiles'
+import type { ResolvedProfile } from '@shared/profiles'
+import { foldGroup } from '@shared/profiles'
 import { IconChevron, IconFolder, IconPin, IconPlus, IconSearch } from './Icons'
 import { relativeTime } from '../lib/format'
 
@@ -23,11 +24,11 @@ interface Props {
   onOpenFolder: () => void
   onStartScratch: () => void
   /**
-   * Profiles this machine actually has. Derived once in App and passed down, so
+   * Profiles this machine actually has. Resolved once in App and passed down, so
    * the chip row and the accent can never resolve against different lists.
    */
-  profiles: Profile[]
-  /** Profile whose projects are shown; null shows everything. */
+  profiles: ResolvedProfile[]
+  /** Id of the profile whose projects are shown; null shows everything. */
   activeProfile: string | null
   onSelectProfile: (id: string | null) => void
 }
@@ -59,6 +60,22 @@ export function Sidebar({
    */
   const available = profiles
 
+  /*
+   * The folders the selected chip covers, case-folded.
+   *
+   * A profile can cover more than one folder, and `Project.group` carries
+   * whatever casing the path had, so comparing the selection to the group
+   * directly matched nothing on a folder the user had typed differently.
+   *
+   * An id with no profile behind it is treated as a group name. App only passes
+   * a selection that resolves, so this is defence rather than a live path.
+   */
+  const activeGroups = useMemo(() => {
+    if (!activeProfile) return null
+    const hit = profiles.find((p) => foldGroup(p.id) === foldGroup(activeProfile))
+    return new Set((hit ? hit.groups : [activeProfile]).map(foldGroup))
+  }, [profiles, activeProfile])
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
     /*
@@ -66,12 +83,13 @@ export function Sidebar({
      * what you browse; it must never hide something you went looking for by
      * name — it is a view, not a permission.
      */
-    const scoped = q || !activeProfile ? projects : projects.filter((p) => p.group === activeProfile)
+    const scoped =
+      q || !activeGroups ? projects : projects.filter((p) => activeGroups.has(foldGroup(p.group)))
     if (!q) return scoped
     return scoped.filter(
       (p) => p.name.toLowerCase().includes(q) || p.path.toLowerCase().includes(q)
     )
-  }, [projects, query, activeProfile])
+  }, [projects, query, activeGroups])
 
   /*
    * Three stable buckets, ordered the way you actually reach for a project.
@@ -117,25 +135,28 @@ export function Sidebar({
             >
               All
             </button>
-            {available.map((p) => (
-              <button
-                key={p.id}
-                className="profile-chip"
-                aria-pressed={activeProfile === p.id}
-                onClick={() => onSelectProfile(activeProfile === p.id ? null : p.id)}
-                title={`${p.label} — ${p.id}`}
-                style={
-                  {
-                    '--chip': p.accent,
-                    '--chip-ink': p.accentContrast,
-                    '--chip-soft': p.accentSoft,
-                    '--chip-second': p.secondary ?? p.accent
-                  } as React.CSSProperties
-                }
-              >
-                {p.label}
-              </button>
-            ))}
+            {available.map((p) => {
+              const on = activeProfile !== null && foldGroup(activeProfile) === foldGroup(p.id)
+              return (
+                <button
+                  key={p.id}
+                  className="profile-chip"
+                  aria-pressed={on}
+                  onClick={() => onSelectProfile(on ? null : p.id)}
+                  title={`${p.label} — ${p.groups.join(', ')}`}
+                  style={
+                    {
+                      '--chip': p.accent,
+                      '--chip-ink': p.accentContrast,
+                      '--chip-soft': p.accentSoft,
+                      '--chip-second': p.secondary ?? p.accent
+                    } as React.CSSProperties
+                  }
+                >
+                  {p.label}
+                </button>
+              )
+            })}
           </div>
         )}
 

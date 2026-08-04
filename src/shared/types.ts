@@ -34,6 +34,15 @@ export interface LaunchOptions {
   /** Model alias or full id. Empty string means "use the configured default". */
   model: string
   effort: EffortLevel
+  /**
+   * Ultracode: xhigh effort plus standing dynamic-workflow orchestration.
+   *
+   * Not an effort level - `--effort` takes only low/medium/high/xhigh/max - but
+   * a boolean the CLI reads from its settings, so it is passed through
+   * `--settings` at launch rather than typed into the session afterwards.
+   * Requires workflows enabled and an xhigh-capable model.
+   */
+  ultracode?: boolean
   /** `--name`, shown in Claude Code's own prompt box and /resume picker. */
   name?: string
   addDirs?: string[]
@@ -204,6 +213,8 @@ export interface Settings {
     permissionMode: PermissionMode
     model: string
     effort: EffortLevel
+    /** Start sessions with ultracode on. See LaunchOptions.ultracode. */
+    ultracode: boolean
   }
   /** Extra folders to scan one level deep for projects (e.g. G:\Code\personal). */
   projectRoots: string[]

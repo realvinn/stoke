@@ -10,7 +10,7 @@ import type {
   Settings
 } from '@shared/types'
 import type { UpdateInfo } from '@shared/api'
-import { profileFor, profilesFor } from '@shared/profiles'
+import { profileFor, resolveProfiles, visibleProfiles } from '@shared/profiles'
 import { resolveTheme } from '@shared/themes'
 import { BrowserPanel } from './components/BrowserPanel'
 import { CommandPalette } from './components/CommandPalette'
@@ -79,6 +79,12 @@ export function App(): React.JSX.Element {
   const [mode, setMode] = useState<PermissionMode>('default')
   const [model, setModel] = useState('')
   const [effort, setEffort] = useState<EffortLevel>('default')
+  /*
+   * Ultracode is not an effort level - the CLI's --effort takes only
+   * low/medium/high/xhigh/max - but a boolean it reads from its settings, so it
+   * rides along as its own launch option rather than as a sixth effort.
+   */
+  const [ultracode, setUltracode] = useState(false)
 
   const theme = useMemo(
     () => resolveTheme(settings?.themeId ?? '', settings?.customThemes ?? []),
@@ -116,6 +122,7 @@ export function App(): React.JSX.Element {
       setMode(s.defaults.permissionMode)
       setModel(s.defaults.model)
       setEffort(s.defaults.effort)
+      setUltracode(s.defaults.ultracode)
       void window.stoke.cli.info().then(setCli)
       void window.stoke.workspace.defaultCwd().then(setDefaultCwd)
       // Quiet check; surfaces as a status-bar pill only when something is newer.
@@ -150,17 +157,22 @@ export function App(): React.JSX.Element {
   /* ---------------------------------------------------------------- theme */
 
   /*
-   * Derived here rather than only inside the sidebar, because the accent has to
+   * Resolved here rather than only inside the sidebar, because the accent has to
    * resolve against the same list. It was resolving against the hardcoded
    * PROFILES instead, so a folder-derived profile coloured its sidebar chip and
    * then failed to repaint the accent - the one place the two lists could
    * disagree was the one place it mattered.
+   *
+   * `resolveProfiles` keeps every stored record, including ones belonging to
+   * another machine; `visibleProfiles` is what the chips and the accent read, so
+   * a record that matches nothing here is not rendered and is not erased either.
    */
   const availableProfiles = useMemo(() => {
     const counts = new Map<string, number>()
     for (const p of projects) counts.set(p.group, (counts.get(p.group) ?? 0) + 1)
-    return profilesFor(counts)
-  }, [projects])
+    const resolved = resolveProfiles(counts, settings?.profiles ?? [])
+    return visibleProfiles(resolved, counts, settings?.projectRoots ?? [])
+  }, [projects, settings?.profiles, settings?.projectRoots])
 
   /*
    * One effect, one writer. The theme and the profile accent used to be applied
@@ -169,9 +181,21 @@ export function App(): React.JSX.Element {
    * state - which removed the theme's accent along with them. See
    * applyAppearance for why that failed silently rather than loudly.
    */
+  /*
+   * The selection, but only while it still resolves. Deleting the active profile
+   * in Settings must not leave the sidebar quietly filtered by a chip that is no
+   * longer in the row - the accent would clear and the project list would not,
+   * and there would be nothing on screen explaining why half the projects are
+   * missing. Restoring the profile brings the selection back with it.
+   */
+  const activeProfile = useMemo(
+    () => profileFor(settings?.activeProfile ?? null, availableProfiles),
+    [settings?.activeProfile, availableProfiles]
+  )
+
   useEffect(() => {
-    applyAppearance(theme, profileFor(settings?.activeProfile ?? null, availableProfiles))
-  }, [theme, settings?.activeProfile, availableProfiles])
+    applyAppearance(theme, activeProfile)
+  }, [theme, activeProfile])
 
   useEffect(() => {
     if (settings) applyTypography(settings.fontFamily, settings.fontSize, settings.uiScale)
@@ -249,6 +273,7 @@ export function App(): React.JSX.Element {
           permissionMode: mode,
           model,
           effort,
+          ultracode,
           // A real size arrives from the terminal's own resize observer as soon
           // as it mounts; this is only what the child sees for its first paint.
           cols: 120,
@@ -273,7 +298,7 @@ export function App(): React.JSX.Element {
         setError(e instanceof Error ? e.message : String(e))
       }
     },
-    [mode, model, effort]
+    [mode, model, effort, ultracode]
   )
 
   /** Quick start with no project: run in the configured default folder. */
@@ -472,6 +497,14 @@ export function App(): React.JSX.Element {
     [settings, patchSettings]
   )
 
+  const changeUltracode = useCallback(
+    (v: boolean): void => {
+      setUltracode(v)
+      if (settings) void patchSettings({ defaults: { ...settings.defaults, ultracode: v } })
+    },
+    [settings, patchSettings]
+  )
+
   const resumeSession = useCallback(
     (s: SessionMeta): void => {
       const project = projects.find((p) => p.path === s.projectPath)
@@ -538,7 +571,7 @@ export function App(): React.JSX.Element {
                 onOpenFolder={() => void openFolder()}
                 onStartScratch={() => void startScratch()}
                 profiles={availableProfiles}
-                activeProfile={settings?.activeProfile ?? null}
+                activeProfile={activeProfile?.id ?? null}
                 onSelectProfile={(id) => void patchSettings({ activeProfile: id })}
               />
             </div>
@@ -586,11 +619,13 @@ export function App(): React.JSX.Element {
               permissionMode={mode}
               model={model}
               effort={effort}
+              ultracode={ultracode}
               sessions={sessions}
               cli={cli}
               onChangeMode={changeMode}
               onChangeModel={changeModel}
               onChangeEffort={changeEffort}
+              onChangeUltracode={changeUltracode}
               onStart={() => {
                 if (selectedProject) {
                   void startSession({ cwd: selectedProject.path, name: selectedProject.name })
@@ -662,6 +697,7 @@ export function App(): React.JSX.Element {
       {settingsOpen && settings && (
         <SettingsSheet
           settings={settings}
+          profiles={availableProfiles}
           defaultCwd={defaultCwd}
           cli={cli}
           onPatch={(patch) => void patchSettings(patch)}

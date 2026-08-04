@@ -398,6 +398,47 @@ machine reached over the tailnet rather than a tunnel.
 `code.vinn.dev` is still worth keeping for devices that cannot join the tailnet, and for
 networks that block WireGuard where Tailscale's DERP fallback does not get through.
 
+### 7b. SSH sessions — designed, not built
+
+Asked for on 2026-08-04: reach the VPS and the NUC from Stoke the way the MacBook already does
+over SSH.
+
+This does **not** contradict the settled "servers are a different problem" decision below. That
+one is about running *Stoke* on a headless box, which stays rejected. This is the opposite and
+cleaner: don't put Stoke on the server, SSH out of the Stoke you already have.
+
+**Why it is small.** Stoke already spawns an arbitrary process in a PTY and fans its output to
+the phone. An SSH session is the same machinery with a different argv, so the work is a session
+*type*, not a new subsystem. Everything else is present on this machine already: `ssh.exe`
+(OpenSSH 9.5p2, ships with Windows), six hosts in `~/.ssh/config`, and five keys.
+
+**The real payoff is the phone, not the desktop.** PTY output already reaches the remote UI, so
+an SSH session in Stoke is reachable from the phone through the tunnel that already exists — the
+NUC and the VPS become phone-accessible without putting anything on them.
+
+Design:
+
+- A `hosts` list in settings: label, `user@host`, optional port, optional identity file, and an
+  optional **command on connect**. Empty means a login shell. That one field covers every case
+  without guessing: `claude` to land straight in a session, or `tmux new -A -s stoke` to get
+  resume and survive a dropped link.
+- `LaunchOptions` grows a session kind. `buildArgs` returns `ssh` argv instead of `claude` argv;
+  `pty.ts` spawns it the same way. `-t` is required when a command is given, or the remote gets
+  no TTY and Claude Code's TUI will not render.
+- The launcher lists hosts beside projects. A host session is a tab like any other.
+
+Three limits to state in the UI rather than discover:
+
+- **No context meter.** It reads local transcript files and a remote session's live on the far
+  machine. It must render nothing, not a zero — reporting 0% would be the plausible-wrong-output
+  failure this project keeps hitting.
+- **No session resume** in Stoke's sense, for the same reason. `tmux` on the remote is the answer,
+  which is why the connect-command field exists.
+- **Credentials stay out of Stoke.** A PTY is a real terminal, so passphrase and host-key prompts
+  work as they do in any shell. Stoke should never store or prompt for a secret itself.
+
+Blocked only by file contention: it needs `cli.ts` and `pty.ts`, which the ultracode work owns.
+
 ### 7. More than one machine
 
 Phase 2 is done — `ae212dc` puts `os.hostname()` in the remote header, the connect link and

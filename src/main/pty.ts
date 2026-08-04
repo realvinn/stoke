@@ -112,6 +112,14 @@ export class PtyManager {
     // fails silently when it goes wrong.
     if (mcpConfigPath) args.push('--mcp-config', mcpConfigPath)
 
+    // Ultracode needs nothing here: buildArgs has already turned it into
+    // `--settings <file>`. Do not be tempted to write `/effort ultracode` into
+    // the pty after start instead — a write races the TUI's warmup, so the text
+    // lands in the prompt buffer as often as it is interpreted, and from out here
+    // the two outcomes are indistinguishable. That is the same hazard the voice
+    // work hit. The settings key exists so the choice can be made before the
+    // process starts, which is the only moment that is reliable.
+
     const spec = spawnSpec(exe, args)
 
     const env: Record<string, string> = {}

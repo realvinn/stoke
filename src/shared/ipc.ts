@@ -87,6 +87,10 @@ export const CH = {
   settingsSet: 'settings:set',
   settingsChanged: 'settings:changed',
 
+  // profiles
+  profilesPlan: 'profiles:plan',
+  profilesCreate: 'profiles:create',
+
   // clipboard
   clipboardRead: 'clipboard:read',
   clipboardWrite: 'clipboard:write',

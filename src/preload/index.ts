@@ -116,6 +116,11 @@ const api: StokeApi = {
     onChange: (cb) => on<[Settings]>(CH.settingsChanged, cb)
   },
 
+  profiles: {
+    plan: (folder: string, name: string) => ipcRenderer.invoke(CH.profilesPlan, folder, name),
+    create: (input) => ipcRenderer.invoke(CH.profilesCreate, input)
+  },
+
   audio: {
     micCheck: () => ipcRenderer.invoke(CH.micCheck)
   },

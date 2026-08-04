@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
-import { existsSync, statSync } from 'node:fs'
-import { homedir } from 'node:os'
+import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { promisify } from 'node:util'
 import type { CliInfo, LaunchOptions } from '@shared/types'
@@ -133,6 +133,53 @@ export function spawnSpec(exe: string, args: string[]): { file: string; args: st
 }
 
 /**
+ * Ultracode is a *settings key*, not a flag and not an effort level. `--effort`
+ * accepts only low/medium/high/xhigh/max, and there is no `--ultracode`; the CLI
+ * describes it as "set per session via the `ultracode` settings key (--settings
+ * or apply_flag_settings)", meaning xhigh effort plus standing dynamic-workflow
+ * orchestration. What it does *not* mean is that the key always wins — see the
+ * measurements in buildArgs below.
+ *
+ * It goes in as a file path rather than an inline `--settings '{"ultracode":true}'`
+ * for exactly the reason recorded next to --mcp-config in pty.ts: quoting JSON
+ * through a shell differs per platform and fails silently when it goes wrong. A
+ * .cmd install is spawned through `cmd.exe /c`, which eats the quotes and braces,
+ * so the inline form loses on this machine before the CLI ever sees it.
+ *
+ * The contents never vary, so the file is written once per process and reused.
+ */
+const ULTRACODE_SETTINGS_JSON = '{\n  "ultracode": true\n}\n'
+
+let ultracodeSettingsPath: string | null = null
+
+/**
+ * Path to the JSON handed to `--settings` when ultracode is on, writing it first
+ * if needed. Re-checked on every call because a temp sweeper can delete it out
+ * from under a long-running app, and a `--settings` pointing at nothing would
+ * either abort the launch or quietly start a session without ultracode.
+ */
+export function ultracodeSettingsFile(): string {
+  if (ultracodeSettingsPath && isFile(ultracodeSettingsPath)) return ultracodeSettingsPath
+
+  const dir = join(tmpdir(), 'stoke')
+  const file = join(dir, 'ultracode-settings.json')
+  try {
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(file, ULTRACODE_SETTINGS_JSON, 'utf8')
+  } catch (err) {
+    // Loud rather than silent: dropping the flag would start a perfectly normal
+    // session that merely disagrees with what the launcher promised.
+    throw new Error(
+      `Could not write the ultracode settings file at ${file}: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    )
+  }
+  ultracodeSettingsPath = file
+  return file
+}
+
+/**
  * Translate Stoke's launch options into claude CLI arguments.
  *
  * Note `bypassPermissions` maps to `--dangerously-skip-permissions` rather than
@@ -159,7 +206,32 @@ export function buildArgs(opts: LaunchOptions): string[] {
   }
 
   if (opts.model) args.push('--model', opts.model)
-  if (opts.effort && opts.effort !== 'default') args.push('--effort', opts.effort)
+
+  // Ultracode pins the effort flag rather than sending it alongside the user's
+  // pick, because --effort *beats* the settings key and switching ultracode off
+  // is how it loses. Measured against 2.1.221 by reading the transcripts of four
+  // print-mode sessions:
+  //
+  //   --settings {ultracode:true}                  -> effort xhigh, ultra_effort_enter present
+  //   --settings {ultracode:true} --effort xhigh   -> effort xhigh, ultra_effort_enter present
+  //   --settings {ultracode:true} --effort high    -> effort high,  ultra_effort_enter GONE
+  //
+  // That third line is the trap: an ordinary high-effort session starts happily,
+  // with no warning anywhere that the thing the user ticked did not happen.
+  //
+  // xhigh is sent explicitly rather than simply omitting --effort, because
+  // omitting it falls back to whatever effort the machine defaults to, and on a
+  // machine that defaults below xhigh that lands straight back on line three.
+  //
+  // --settings sits before extraArgs so a hand-written `--settings` there still
+  // wins — a repeated option is last-wins.
+  if (opts.ultracode) {
+    args.push('--effort', 'xhigh')
+    args.push('--settings', ultracodeSettingsFile())
+  } else if (opts.effort && opts.effort !== 'default') {
+    args.push('--effort', opts.effort)
+  }
+
   if (opts.name) args.push('--name', opts.name)
   for (const dir of opts.addDirs ?? []) args.push('--add-dir', dir)
   if (opts.extraArgs?.length) args.push(...opts.extraArgs)

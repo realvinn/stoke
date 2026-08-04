@@ -1,12 +1,21 @@
 import type { CliInfo, EffortLevel, PermissionMode, Settings, Theme } from '@shared/types'
+import type { ResolvedProfile } from '@shared/profiles'
 import { BUILT_IN_THEMES } from '@shared/themes'
 import { IconClose } from './Icons'
 import { MicrophoneNotice } from './MicrophoneNotice'
+import { ProfilesSettings } from './ProfilesSettings'
 import { RemoteSettings, SelfUpdateSettings, UpdatesSettings } from './RemoteSettings'
+import { WorklogSettings } from './WorklogSettings'
 import { EFFORT_LEVELS, MODEL_OPTIONS, PERMISSION_MODES } from '../lib/permissions'
 
 interface Props {
   settings: Settings
+  /**
+   * The resolved profile list, passed in rather than derived here so the worklog
+   * checkboxes and the sidebar chips can never disagree about which profiles
+   * exist.
+   */
+  profiles: ResolvedProfile[]
   /** Resolved default working directory, shown when none is configured. */
   defaultCwd: string
   cli: CliInfo | null
@@ -17,6 +26,7 @@ interface Props {
 
 export function SettingsSheet({
   settings,
+  profiles,
   defaultCwd,
   cli,
   onPatch,
@@ -235,6 +245,14 @@ export function SettingsSheet({
           <SelfUpdateSettings />
 
           <UpdatesSettings />
+
+          <ProfilesSettings settings={settings} onPatch={onPatch} />
+
+          <WorklogSettings
+            profiles={profiles}
+            worklogGroups={settings.worklogGroups}
+            onChange={(worklogGroups) => onPatch({ worklogGroups })}
+          />
 
           <MicrophoneNotice />
 

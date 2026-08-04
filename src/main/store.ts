@@ -25,7 +25,8 @@ const DEFAULTS: Settings = {
   defaults: {
     permissionMode: 'default',
     model: '',
-    effort: 'default'
+    effort: 'default',
+    ultracode: false
   },
   projectRoots: [],
   // null = auto-detect. workspace.ts prefers G:\Code on Windows, then ~/Code.

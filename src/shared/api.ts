@@ -1,3 +1,4 @@
+import type { CreateProfileInput, ProfilePlan } from './profiles'
 import type {
   BrowserState,
   CliInfo,
@@ -193,6 +194,15 @@ export interface StokeApi {
     get(): Promise<Settings>
     set(patch: Partial<Settings>): Promise<Settings>
     onChange(cb: (settings: Settings) => void): () => void
+  }
+
+  /**
+   * Profile creation. Both calls touch the disk, so they live in main: working
+   * out what a folder and a name would do, and then doing it.
+   */
+  profiles: {
+    plan(folder: string, name: string): Promise<ProfilePlan>
+    create(input: CreateProfileInput): Promise<Settings>
   }
 
   audio: {
