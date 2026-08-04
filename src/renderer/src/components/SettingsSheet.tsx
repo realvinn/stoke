@@ -260,7 +260,10 @@ export function SettingsSheet({
             </button>
           </div>
 
-          <SelfUpdateSettings />
+          <SelfUpdateSettings
+            betaUpdates={settings.betaUpdates}
+            onChangeBeta={(betaUpdates) => onPatch({ betaUpdates })}
+          />
 
           <UpdatesSettings />
 

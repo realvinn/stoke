@@ -1,5 +1,6 @@
 import { app } from 'electron'
 import electronUpdater from 'electron-updater'
+import { getSettings } from './store.ts'
 
 /**
  * Stoke updating itself.
@@ -112,6 +113,16 @@ export async function checkSelfUpdate(): Promise<SelfUpdateState> {
   }
   state.supported = true
   wire()
+  /*
+   * Read on every check rather than wired once.
+   *
+   * GitHub's "latest release" endpoint excludes prereleases by definition, so
+   * with this false the app is told the newest stable version and correctly
+   * reports nothing new — a beta is invisible rather than declined. Setting it
+   * here means flipping the switch in Settings takes effect on the next press of
+   * Check, with no restart.
+   */
+  autoUpdater.allowPrerelease = getSettings().betaUpdates
   try {
     await autoUpdater.checkForUpdates()
     state.error = null

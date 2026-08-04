@@ -329,7 +329,13 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
 }
 
 /** Stoke updating itself from GitHub releases. */
-export function SelfUpdateSettings(): React.JSX.Element {
+export function SelfUpdateSettings({
+  betaUpdates,
+  onChangeBeta
+}: {
+  betaUpdates: boolean
+  onChangeBeta: (v: boolean) => void
+}): React.JSX.Element {
   const [state, setState] = useState<SelfUpdateState | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -407,6 +413,33 @@ export function SelfUpdateSettings(): React.JSX.Element {
             </button>
           )}
         </div>
+      )}
+
+      {state.supported && (
+        <label className="check-row">
+          <input
+            type="checkbox"
+            checked={betaUpdates}
+            onChange={(e) => onChangeBeta(e.target.checked)}
+          />
+          <span>
+            <span className="field-label">Offer beta releases</span>
+            {/*
+              Says what it cannot do as well as what it can. GitHub's "latest
+              release" excludes prereleases, so with this off a beta is invisible
+              rather than declined — and since the updater ships inside the app,
+              this only ever governs what THIS build is offered next. It can
+              never reach back and make an older install see a beta.
+            */}
+            <span className="field-hint">
+              Betas are builds whose riskiest paths have not been exercised yet, so they are not
+              offered unless you ask. Off, Check for updates only ever finds stable releases.
+              This governs what this copy of Stoke is offered from now on — an older install
+              cannot be made to see a beta it has already passed over, so the first beta after
+              turning this on is still a manual download.
+            </span>
+          </span>
+        </label>
       )}
     </div>
   )

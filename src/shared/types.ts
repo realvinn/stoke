@@ -422,6 +422,18 @@ export interface Settings {
    * of the feature is that it keeps up without being asked.
    */
   worklogAuto: boolean
+  /**
+   * Offer beta releases as updates.
+   *
+   * `allowPrerelease` for electron-updater, and off by default on purpose: a
+   * beta is by definition a build whose risky paths have not been exercised, and
+   * one that turns out to be broken must not be able to push itself at everyone.
+   *
+   * Note what this cannot do — the updater ships *inside* the app, so turning it
+   * on affects what the *current* build is offered next. It can never make an
+   * older build see a beta it already declined.
+   */
+  betaUpdates: boolean
   sidebarWidth: number
   /** Explicit path to the claude executable; null means auto-detect. */
   claudePath: string | null

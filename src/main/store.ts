@@ -65,6 +65,9 @@ const DEFAULTS: Settings = {
   // Safe to default on: worklogGroups is the switch that actually costs money,
   // and it ships empty. With nothing watched this does nothing at all.
   worklogAuto: true,
+  // Off. A beta is a build whose risky paths have not been run; it has to be
+  // asked for rather than arrive.
+  betaUpdates: false,
   sidebarWidth: 260,
   claudePath: null,
   confirmBypass: true
@@ -119,6 +122,7 @@ function hydrate(raw: unknown): Settings {
     // A settings file written before 0.4.0 has no such key, and it must read as
     // on rather than off — the default is what an untouched machine gets.
     worklogAuto: typeof r.worklogAuto === 'boolean' ? r.worklogAuto : DEFAULTS.worklogAuto,
+    betaUpdates: r.betaUpdates === true,
     projectRoots: Array.isArray(r.projectRoots) ? r.projectRoots : [],
     pinnedProjects: Array.isArray(r.pinnedProjects) ? r.pinnedProjects : [],
     hiddenProjects: Array.isArray(r.hiddenProjects) ? r.hiddenProjects : []
