@@ -31,8 +31,8 @@ npm run dev
 ## build an installer
 
 ```bash
-npm run dist:win     # windows -> release/Stoke-0.3.0-x64-setup.exe
-npm run dist:mac     # mac (m1) -> release/Stoke-0.3.0-arm64.dmg
+npm run dist:win     # windows -> release/Stoke-<version>-x64-setup.exe
+npm run dist:mac     # mac (m1) -> release/Stoke-<version>-arm64.dmg
 ```
 
 a mac app can only be built on a mac. windows can't make one.

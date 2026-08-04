@@ -11,13 +11,29 @@ version plus the things that will waste your time if you rediscover them the har
 ## Commands
 
 ```bash
-npm run dev             # electron-vite dev, live reload
-npm run check           # typecheck + context tests + full build. Run before claiming done.
+npm run dev             # electron-vite dev, live reload. Uses its own "(dev)" userData,
+                        # so it never fights an installed copy for the single-instance lock.
+npm run check           # typecheck + every verify suite + full build. Run before claiming done.
 npm run build           # electron-vite build + the separate remote/mobile bundle
-npm run verify:context  # runs the context meter against real transcripts on this machine
 npm run icon            # rasterise build/icon.svg -> build/icon.png
-npm run dist:win        # installer -> release/Stoke-0.1.0-x64-setup.exe
+npm run dist:win        # installer -> release/Stoke-<version>-x64-setup.exe
 npm run dist:mac        # dmg (arm64). MUST run on a Mac.
+```
+
+The verify suites, all runnable alone. `check` runs everything except the last two, which
+need a live instance or cost money:
+
+```bash
+npm run verify:context        # context meter against the real transcripts on this machine
+npm run verify:profiles       # profile resolution + every accent clears 4.5:1
+npm run verify:color          # colour maths: contrast, APCA, oklch
+npm run verify:worklog-gate   # which sessions the worklog agent would watch
+npm run verify:worklog-runner # prompt building, JSON parsing, URL extraction
+npm run verify:worklog-retry  # writes happen once, and a retry never duplicates a record
+npm run verify:ssh            # ssh argv and ~/.ssh/config parsing
+npm run verify:extract        # page extractor regression set
+npm run verify:usage          # plan limits, incl. a live account call
+npm run verify:security <url> <token> --access   # remote server, against a running instance
 ```
 
 ## Layout
@@ -35,18 +51,26 @@ src/main/         Electron main process
   store.ts          settings persistence
   updates.ts        claude CLI version/health
   selfUpdate.ts     Stoke's own updates (electron-updater)
+  profiles.ts       plans and creates a profile's folder + scan root
+  ssh.ts            ~/.ssh/config parsing and the ssh argv
+  agent.ts          headless `claude -p` runner (prompt on stdin, json out)
+  audio/            reads the default capture device, to warn about virtual cables
+  worklog/          the Notion/ClickUp review queue
+    gate.ts           which project groups are watched
+    runner.ts         scan (read-only) and apply (writes, on accept only)
+    queue.ts          the persisted proposal list
   mcp/              MCP server exposing the browser to Claude
-    server.ts         HTTP transport + the 13 tool definitions
+    server.ts         HTTP transport + the 17 tool definitions
     page.ts           drives the page through the injected extractor
     inject/extract.js runs IN the page; markdown + refs + find. No deps.
   remote/           phone access
-    server.ts         loopback HTTP + WebSocket, token auth
+    server.ts         loopback HTTP + WebSocket, token auth, tailnet listener
     tunnel.ts         supervises cloudflared
 src/preload/      contextBridge -> window.stoke
 src/renderer/     desktop React UI (all colour via CSS custom properties)
 src/remote/       mobile web UI, built separately to out/remote
-src/shared/       types, IPC channel names, themes
-scripts/          verify-context.mts, make-icon.cjs
+src/shared/       types, IPC channel names, themes, profiles, colour maths
+scripts/          the verify-*.mts suites, make-icon.cjs
 ```
 
 ## Conventions
@@ -72,8 +96,12 @@ scripts/          verify-context.mts, make-icon.cjs
 
 2. **The context window cannot be derived from the model id.** A 1M-tier session records its
    model as plain `claude-opus-5` — no `[1m]` suffix survives into the transcript and there
-   is no `context_window` field. `contextLimitFor(model, observedTokens)` treats observed
-   usage as the authority: over 200k proves the extended tier.
+   is no `context_window` field. Verified again on a session at 713,617 tokens; the only
+   tier-ish field anywhere is `usage.service_tier`, which is billing. The CLI *does* state it
+   in its startup banner, so `pty.ts` reads `(1M context)` out of the first frames and hands
+   it to the watcher; `contextLimitFor` falls back to observed usage, where over 200k proves
+   the extended tier. Strip escape codes before matching — the banner is styled, so the digits
+   routinely arrive separated from the word.
 
 3. **A `WebContentsView` outside the window's view tree gets a 0×0 viewport and never lays
    out.** `getBoundingClientRect`, `innerText` and every visibility check return empty, so
@@ -94,6 +122,33 @@ scripts/          verify-context.mts, make-icon.cjs
 
 8. **PowerShell 5.1 `Set-Content -Encoding utf8` writes a BOM.** Use
    `[System.IO.File]::WriteAllText` with `UTF8Encoding($false)` when rewriting source files.
+   Write `settings.json` with node for the same reason — a BOM breaks the parse silently.
+
+9. **`window.stoke` cannot be monkey-patched from the page.** contextBridge freezes it, so
+   assigning over a method to stub IPC in a test silently does nothing and the real value
+   comes back. A test that appears to pass this way is testing production behaviour.
+
+10. **Claude Code turns mouse reporting on, so a plain drag does not select.** xterm forwards
+    the drag to the application instead; **Shift**-drag is the bypass. A right-click is also
+    forwarded, which is why the CLI used to paste on right-click — `TerminalView` now takes
+    that event in the capture phase before xterm sees it.
+
+11. **`align-self: center` centres the *margin* box.** Cancelling a container's padding for
+    one child needs the full padding negated, not half — half lands it a pixel off. Measured,
+    not reasoned.
+
+12. **An explicit `--user-data-dir` must win over dev isolation.** An unpackaged run picks its
+    own `(dev)` userData so it never fights the installed app, but that override has to be
+    skipped when the flag is present, or a test profile boots the wrong settings and looks
+    fine doing it.
+
+13. **`execFile` defaults to a 1 MB `maxBuffer`, and `spawnSpec` routes `.cmd` installs
+    through `cmd.exe /c`**, which eats `&`, `|`, `^`, `<` and `>`. Feed a prompt on **stdin**,
+    never as an argv element, and raise `maxBuffer` well past the default.
+
+14. **A native `WebContentsView` paints above all renderer DOM.** Any panel that must remain
+    visible while the browser is open has to be a sibling column in `.body-row`, never an
+    overlay.
 
 ## Verification expectations
 

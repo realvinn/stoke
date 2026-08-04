@@ -22,9 +22,18 @@ npm install
 npm run dist:win
 ```
 
-Produces `release/Stoke-0.1.0-x64-setup.exe`. Run it; it installs per-user (no admin
-prompt) and creates a Start Menu entry. `npm run dist:win:arm64` covers Surface-class ARM
-machines.
+Produces `release/Stoke-<version>-x64-setup.exe`, named from `package.json`. Run it; it
+installs per-user (no admin prompt) and creates a Start Menu entry. `npm run dist:win:arm64`
+covers Surface-class ARM machines.
+
+**Bump `package.json` before building a release.** `electron-builder` templates both the
+artifact name and `latest.yml` from it, so building without the bump emits an installer
+carrying the old version and a `latest.yml` that tells every existing install it is already
+up to date.
+
+`dist:win` does **not** publish. Every release so far has uploaded three assets to the GitHub
+release by hand — the installer, its `.blockmap`, and `latest.yml`. Without `latest.yml`,
+electron-updater 404s and self-update silently never happens.
 
 ## macOS (M1 / Apple Silicon)
 

@@ -18,6 +18,34 @@ are summarised here as conclusions.
 
 That goal is met. Everything below is what is still open on top of it.
 
+## Feature sweep — 2026-08-04
+
+Five agents drove real builds, each with its own instance, profile and ports. **32 features
+verified working.** Two were reported broken; both turned out not to be, and the reasons are
+worth keeping because either would waste an afternoon again.
+
+- **"Ctrl+C does not copy."** It does. Claude Code enables mouse reporting, so xterm forwards
+  a plain drag to the application instead of selecting — **Shift**-drag is the bypass. The
+  agent's drag selected nothing, so `getSelection()` was empty and the handler correctly fell
+  through to SIGINT. Reproduced both ways: plain drag leaves the context menu's Copy disabled,
+  Shift-drag enables it, and Shift-select then Ctrl+C put the line on the clipboard.
+- **"Right-click kills the app."** It does not. Another agent had run a blanket
+  `taskkill /F /IM electron.exe /T`, which took down five process trees including the ones
+  under test. Re-run alone on an idle machine, the app survived every right-click.
+
+The lesson for the next sweep: give agents isolated instances *and* forbid process-wide kills,
+or their cleanup becomes another agent's crash report.
+
+**Never exercised, in this sweep or any other.** These are the paths a user is first to run:
+
+- a live Notion or ClickUp write — nothing has ever been accepted, so no real record exists
+- a real SSH connection — the argv is proven, no host has ever answered
+- `cloudflared` itself — only the Access header was simulated against a local listener
+- a profile *write* — create, rename, recolour and delete were planned or rendered, never committed
+- the phone UI end to end — remote auth was proven at the HTTP layer only
+- an installed build of any of it, and therefore the 0.3.2 → next self-update path
+- the virtual-cable microphone warning, which cannot fire while a real mic is default
+
 ## Where things stand — 2026-08-03
 
 **0.3.2**, tagged `10b4ad5`, installer built at `release/Stoke-0.3.2-x64-setup.exe` and
@@ -28,6 +56,23 @@ The app ships: PTY-wrapped real `claude` CLI, project and session discovery, the
 context meter, usage bars, profiles, a docked Chromium exposed to Claude over MCP as 17
 tools, themes, remote phone access over a Cloudflare tunnel with voice input, and
 self-update.
+
+## What shipped, and what did not — as of 2026-08-04
+
+Ten commits sit unreleased on `main`. Against the four things originally asked for:
+
+| Asked for | State |
+| --- | --- |
+| A proper way to copy and paste | **Done.** Bracketed paste, a themed right-click menu, right-click no longer pastes, smart Ctrl+C. |
+| Windows mic passthrough | **Resolved differently.** The fault was VB-Cable claiming the default recording device, so `/voice` recorded silence. Stoke now *warns* about that. Passthrough itself was deliberately not built — see below. |
+| Theme and profile editors | **Half.** Profiles can be created, renamed, recoloured and deleted. **There is no theme editor**; Settings still says to hand-edit `customThemes`. |
+| Per-profile Notion/ClickUp agent | **Manual, not automatic.** Scan is a button on the current session. `worklogGroups` is stored and gates nothing yet — `shouldWatch` has no caller. |
+
+Also landed, unasked: Tailscale binding, an ultracode launch toggle, SSH sessions, context-tier
+detection from the CLI banner, dev-profile isolation, and a run of real bug fixes.
+
+**Not done and not started:** the theme editor, an automatic worklog trigger, wiring `sttUrl`
+to the tailnet speech box, and any OCR.
 
 ## Current build — four workstreams, started 2026-08-03
 
