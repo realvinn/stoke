@@ -23,11 +23,15 @@ import {
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import {
+  clearSessionFiles,
   readStatusLine,
+  sessionSettingsJson,
   statusLineCommand,
   statusLineDir,
   statusLinePayloadFile,
   toSnapshot,
+  userStatusLineCommand,
+  writeSessionSettingsFile,
   writeStatusLineWrapper
 } from '../src/main/statusLine.ts'
 import type { StatusLinePayload } from '../src/shared/types.ts'
@@ -506,6 +510,131 @@ try {
   } finally {
     cleanup(join(statusLineDir(), `${flood}.cmd`), statusLinePayloadFile(flood), floodScript)
   }
+
+  console.log('\none settings file, never two')
+  const both = 'stoke-verify-settings'
+  const json = sessionSettingsJson({
+    sessionId: both,
+    ultracode: true,
+    hideStatusLine: true,
+    passthroughCommand: 'bash ~/.claude/statusline-command.sh'
+  })
+  check('ultracode and statusLine ride in the same object', Object.keys(json).sort(), [
+    'statusLine',
+    'ultracode'
+  ])
+  check('the statusLine entry is a command', (json.statusLine as { type: string }).type, 'command')
+  check(
+    'and it is the command the wrapper answers to',
+    (json.statusLine as { command: string }).command,
+    statusLineCommand(both)
+  )
+  check(
+    'no ultracode key when it was not asked for',
+    Object.keys(
+      sessionSettingsJson({
+        sessionId: both,
+        ultracode: false,
+        hideStatusLine: true,
+        passthroughCommand: ''
+      })
+    ),
+    ['statusLine']
+  )
+  check(
+    'an empty key gets no statusLine entry, because nothing would name the files',
+    Object.keys(
+      sessionSettingsJson({
+        sessionId: '',
+        ultracode: true,
+        hideStatusLine: true,
+        passthroughCommand: ''
+      })
+    ),
+    ['ultracode']
+  )
+  /*
+   * ...and that case is unreachable for a session Stoke spawns locally. A
+   * `--continue` has no session id at launch, so E Task 11 hands over a launch
+   * key, which is an ordinary key here. It gets a wrapper like anything else,
+   * which is what makes suppression and pass-through apply to it.
+   */
+  check(
+    'a --continue session is keyed on its launch key, and gets the wrapper like any other',
+    (
+      sessionSettingsJson({
+        sessionId: 'launch-6f1c2b',
+        ultracode: false,
+        hideStatusLine: true,
+        passthroughCommand: ''
+      }).statusLine as { command: string }
+    ).command,
+    statusLineCommand('launch-6f1c2b')
+  )
+  check(
+    'and nothing at all when there is nothing to say',
+    writeSessionSettingsFile({
+      sessionId: '',
+      ultracode: false,
+      hideStatusLine: true,
+      passthroughCommand: ''
+    }),
+    null
+  )
+
+  const settingsFile = writeSessionSettingsFile({
+    sessionId: both,
+    ultracode: false,
+    hideStatusLine: false,
+    passthroughCommand: ECHO_CMD
+  })
+  check('the file is written', typeof settingsFile === 'string' && existsSync(settingsFile), true)
+  check(
+    'and parses as the object we built',
+    Object.keys(JSON.parse(readFileSync(settingsFile as string, 'utf8'))),
+    ['statusLine']
+  )
+  check(
+    'the pass-through command is a file beside the payload, never part of the command string',
+    readFileSync(join(statusLineDir(), `${both}.cmd`), 'utf8'),
+    ECHO_CMD
+  )
+  check(
+    'and the wrapper honours it end to end',
+    runWrapper(both, JSON.stringify(REAL)).trim(),
+    'STOKE-PASSTHROUGH'
+  )
+
+  writeSessionSettingsFile({
+    sessionId: both,
+    ultracode: false,
+    hideStatusLine: true,
+    passthroughCommand: ECHO_CMD
+  })
+  check(
+    'switching suppression back on removes the pass-through file rather than leaving it armed',
+    existsSync(join(statusLineDir(), `${both}.cmd`)),
+    false
+  )
+  clearSessionFiles(both)
+  check(
+    'clearSessionFiles leaves nothing behind',
+    [existsSync(statusLinePayloadFile(both)), existsSync(settingsFile as string)],
+    [false, false]
+  )
+
+  console.log("\nthe user's own statusLine, read and never written")
+  const userFile = join(statusLineDir(), 'stoke-verify-user-settings.json')
+  writeFileSync(
+    userFile,
+    JSON.stringify({ statusLine: { type: 'command', command: 'bash ~/.claude/statusline-command.sh' } }),
+    'utf8'
+  )
+  check('a command statusLine is what gets passed through', userStatusLineCommand(userFile), 'bash ~/.claude/statusline-command.sh')
+  writeFileSync(userFile, JSON.stringify({ statusLine: { type: 'static', text: 'hi' } }), 'utf8')
+  check('anything that is not a command has nothing to pass through', userStatusLineCommand(userFile), '')
+  check('and a missing file is simply empty', userStatusLineCommand(join(statusLineDir(), 'nope.json')), '')
+  rmSync(userFile, { force: true })
 } finally {
   // The one directory-level fixture, torn down last so it actually runs
   // last regardless of which case above threw or failed a check.

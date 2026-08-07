@@ -3,10 +3,11 @@ import {
   mkdirSync,
   readFileSync,
   renameSync,
+  rmSync,
   statSync,
   writeFileSync
 } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type {
   StatusLinePayload,
@@ -321,5 +322,122 @@ export function readStatusLine(sessionId: string): StatusLineSnapshot | null {
     return toSnapshot(sessionId, payload as StatusLinePayload, at)
   } catch {
     return null
+  }
+}
+
+/** Where the pass-through command lives, when there is one. */
+function passthroughFile(sessionId: string): string {
+  return join(statusLineDir(), `${key(sessionId)}.cmd`)
+}
+
+function settingsFileFor(sessionId: string): string {
+  return join(statusLineDir(), `${key(sessionId) || 'default'}.settings.json`)
+}
+
+export interface SessionSettingsInput {
+  /**
+   * The statusLine KEY this session's three files are named after — not
+   * necessarily a session id. It is the session id for everything Stoke mints
+   * an id for, and a launch key for a `--continue`, whose id the CLI chooses
+   * after launch. See pty.ts, which is the only caller.
+   */
+  sessionId: string
+  ultracode: boolean
+  hideStatusLine: boolean
+  /** The user's own statusLine command, or '' when there is nothing to echo. */
+  passthroughCommand: string
+}
+
+/**
+ * Everything Stoke puts in one session's `--settings` file.
+ *
+ * One file, because a second `--settings` silently discards the first —
+ * measured against 2.1.221, and the reason this function exists at all rather
+ * than each feature appending its own flag.
+ *
+ * Every session with a key gets the statusLine entry, including a `--continue`
+ * — pty.ts gives that one a launch key precisely so it does. Without it, the
+ * setting "Hide Claude's status line in Stoke" would silently not apply to the
+ * one launch path whose id we do not know in advance.
+ *
+ * No key at all still means no statusLine entry: there would be nothing to
+ * name the payload, the pass-through file or the settings file after.
+ */
+export function sessionSettingsJson(input: SessionSettingsInput): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  if (input.ultracode) out.ultracode = true
+  if (input.sessionId) {
+    out.statusLine = { type: 'command', command: statusLineCommand(input.sessionId) }
+  }
+  return out
+}
+
+/**
+ * Write that file and the pass-through command beside it, and return the path
+ * for `--settings`. Null means there is nothing to pass.
+ *
+ * A failure returns null rather than throwing: buildArgs falls back to the
+ * ultracode-only file, which does throw if it cannot be written, so the one
+ * case that must stay loud — a session that promised ultracode and did not
+ * get it — still is.
+ */
+export function writeSessionSettingsFile(input: SessionSettingsInput): string | null {
+  const json = sessionSettingsJson(input)
+  if (!Object.keys(json).length) return null
+  try {
+    mkdirSync(statusLineDir(), { recursive: true })
+    if (json.statusLine) writeStatusLineWrapper()
+    if (input.sessionId) {
+      const cmdFile = passthroughFile(input.sessionId)
+      const passthrough = input.hideStatusLine ? '' : input.passthroughCommand.trim()
+      // Removed rather than left in place when suppression is on: a stale
+      // file would keep printing a line the user has just turned off.
+      if (passthrough) writeFileSync(cmdFile, passthrough, 'utf8')
+      else rmSync(cmdFile, { force: true })
+    }
+    const file = settingsFileFor(input.sessionId)
+    writeFileSync(file, `${JSON.stringify(json, null, 2)}\n`, 'utf8')
+    return file
+  } catch (err) {
+    console.error('[stoke] could not write the session settings file', err)
+    return null
+  }
+}
+
+/** Remove everything written for one session. Called when its PTY exits. */
+export function clearSessionFiles(sessionId: string): void {
+  if (!sessionId) return
+  for (const f of [
+    statusLinePayloadFile(sessionId),
+    passthroughFile(sessionId),
+    settingsFileFor(sessionId)
+  ]) {
+    try {
+      rmSync(f, { force: true })
+    } catch {
+      /* a temp sweeper got there first */
+    }
+  }
+}
+
+/**
+ * The user's own statusLine command, so it can be passed through when the
+ * line is not suppressed. Read at launch rather than cached, because the file
+ * is theirs and they can change it at any time.
+ *
+ * Read-only, always: Stoke never writes to Claude Code's own files.
+ */
+export function userStatusLineCommand(
+  settingsFile: string = join(homedir(), '.claude', 'settings.json')
+): string {
+  try {
+    const raw = JSON.parse(readFileSync(settingsFile, 'utf8')) as {
+      statusLine?: { type?: string; command?: string }
+    }
+    const sl = raw?.statusLine
+    if (!sl || sl.type !== 'command') return ''
+    return typeof sl.command === 'string' ? sl.command.trim() : ''
+  } catch {
+    return ''
   }
 }
