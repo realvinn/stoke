@@ -83,6 +83,8 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
   worklog.ts        the board targets the worklog can write to, and their defaults
   ui.ts             the uiScale / fontSize bounds, and the clamps both processes use
 scripts/          the verify-*.mts suites, make-icon.cjs
+  cdp-eval.mjs      evaluates one expression in the renderer, or screenshots it.
+                    Picks the target by its window.stoke object, never by URL
 ```
 
 ## Conventions
