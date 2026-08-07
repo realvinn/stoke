@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { ProfileConfig, Settings, SshHost, Theme } from '@shared/types'
 import { DEFAULT_THEME_ID, validateTheme } from '@shared/themes'
+import { DEFAULT_WORKLOG_BOARDS } from '@shared/worklog'
 
 /**
  * Structural check only. A stored profile that is missing colours is still
@@ -70,7 +71,10 @@ const DEFAULTS: Settings = {
   betaUpdates: false,
   sidebarWidth: 260,
   claudePath: null,
-  confirmBypass: true
+  confirmBypass: true,
+  projectMeta: {},
+  worklogBoards: DEFAULT_WORKLOG_BOARDS,
+  hideStatusLine: true
 }
 
 let cache: Settings | null = null

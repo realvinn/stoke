@@ -20,6 +20,7 @@ export const CH = {
   projectsHide: 'projects:hide',
   projectsPin: 'projects:pin',
   projectsReveal: 'projects:reveal',
+  projectsMeta: 'projects:meta',
   sessionsList: 'sessions:list',
   sessionsChanged: 'sessions:changed',
 
@@ -39,6 +40,10 @@ export const CH = {
   ctxWatch: 'ctx:watch',
   ctxUnwatch: 'ctx:unwatch',
   ctxUpdate: 'ctx:update',
+
+  // statusline channel (see the design spec, §3)
+  statusLineUpdate: 'statusline:update',
+  statusLineLast: 'statusline:last',
 
   // embedded browser
   browserSetBounds: 'browser:setBounds',
@@ -102,6 +107,10 @@ export const CH = {
   worklogChanged: 'worklog:changed',
   /** An auto-scan added proposals. The renderer asks about them; see WorklogPrompt. */
   worklogProposed: 'worklog:proposed',
+  worklogWatch: 'worklog:watch',
+  worklogWatchChanged: 'worklog:watchChanged',
+  worklogScanned: 'worklog:scanned',
+  worklogLastScan: 'worklog:lastScan',
 
   // clipboard
   clipboardRead: 'clipboard:read',

@@ -70,9 +70,34 @@ export interface TabDescriptor {
   model: string
   effort: EffortLevel
   createdAt: number
+  /** SshHost.id when this session runs on another machine. */
+  hostId?: string
 }
 
 /* ---------------------------------------------------------------- projects */
+
+/**
+ * What the user has said about one folder, over and above what Claude's own
+ * files record. Keyed by `Project.path`.
+ *
+ * Deliberately **not** the home of `pinned` or `hidden`. Those are already
+ * persisted as path arrays on real machines, and folding them in here would make
+ * "hidden" and "has an emoji" the same record — so clearing an emoji could
+ * resurrect a project the user hid. `addedManually` is the only key that affects
+ * membership, and it only ever adds.
+ */
+export interface ProjectMeta {
+  /** One emoji shown before the name. Absent means none. */
+  emoji?: string
+  /** Replaces the folder's basename in the sidebar. Absent means use the basename. */
+  label?: string
+  /**
+   * The user picked this folder themselves, so `listProjects` must emit it even
+   * with no Claude history and no scan root covering it. Spec §2.5: there was no
+   * source that could represent a single explicitly added folder.
+   */
+  addedManually?: boolean
+}
 
 export interface Project {
   /** Absolute path in the OS's native separator form. */
@@ -90,6 +115,12 @@ export interface Project {
   /** False when the folder has been moved or deleted since Claude last saw it. */
   exists: boolean
   pinned: boolean
+  /** ProjectMeta.emoji for this path, or null. */
+  emoji: string | null
+  /** ProjectMeta.label, or null when the basename is in use. */
+  label: string | null
+  /** True when this project exists only because the user added the folder. */
+  addedManually: boolean
 }
 
 export interface SessionMeta {
@@ -127,6 +158,88 @@ export interface ContextSnapshot {
   updatedAt: number
   /** False until the session file exists on disk. */
   ready: boolean
+  /** Newest `permission-mode` record in the transcript, or null when none. */
+  permissionMode: PermissionMode | null
+}
+
+/* -------------------------------------------------------------- statusline */
+
+/**
+ * The JSON Claude Code pipes to a `statusLine` command on stdin, as captured
+ * from 2.1.221. Every field is optional because this is somebody else's wire
+ * format: a CLI that drops one must degrade to the older inference, never throw.
+ */
+export interface StatusLinePayload {
+  session_id?: string
+  transcript_path?: string
+  cwd?: string
+  version?: string
+  model?: StatusLineModel
+  context_window?: StatusLineContextWindow
+  /** True once the session is past the 200k tier boundary. Billing-adjacent. */
+  exceeds_200k_tokens?: boolean
+  rate_limits?: StatusLineRateLimits
+}
+
+export interface StatusLineModel {
+  id?: string
+  display_name?: string
+}
+
+export interface StatusLineContextWindow {
+  /**
+   * The window this session actually has, stated by the CLI rather than
+   * inferred. 1000000 for Opus 5, 200000 for Haiku — per model, and correct
+   * from token zero, which is the whole reason this channel exists.
+   */
+  context_window_size?: number
+  used_percentage?: number
+  current_usage?: StatusLineUsage
+}
+
+export interface StatusLineUsage {
+  input_tokens?: number
+  output_tokens?: number
+  cache_read_input_tokens?: number
+  cache_creation_input_tokens?: number
+}
+
+/** `resets_at` is epoch **seconds**, not ms. Convert once, at the edge. */
+export interface StatusLineRateLimit {
+  used_percentage?: number
+  resets_at?: number
+}
+
+export interface StatusLineRateLimits {
+  five_hour?: StatusLineRateLimit
+  seven_day?: StatusLineRateLimit
+}
+
+/** One rate-limit window, in Stoke's own units. */
+export interface StatusLineWindowReading {
+  /** 0-100. */
+  percent: number
+  /** Epoch **ms**, converted from the payload's seconds. Null when absent. */
+  resetsAt: number | null
+}
+
+/**
+ * What the main process hands the renderer, once. Flat, camelCase, and in ms —
+ * so no component ever has to know the wire shape or the seconds/ms boundary.
+ */
+export interface StatusLineSnapshot {
+  sessionId: string
+  /** context_window_size, or null when this CLI did not state one. */
+  contextWindowSize: number | null
+  /** 0-100, as the CLI computed it. Null when absent. */
+  usedPercentage: number | null
+  modelId: string | null
+  modelName: string | null
+  exceeds200k: boolean
+  fiveHour: StatusLineWindowReading | null
+  sevenDay: StatusLineWindowReading | null
+  /** Epoch ms the payload file was written. Drives the "as of HH:MM" tooltip. */
+  receivedAt: number
 }
 
 /* ------------------------------------------------------------------ themes */
@@ -225,6 +338,74 @@ export interface SshHost {
 /* ----------------------------------------------------------------- worklog */
 
 export type WorklogTarget = 'notion' | 'clickup'
+
+/** Why a session is, or is not, the worklog agent's business. */
+export type WorklogWatchReason =
+  /** Its folder's group is in Settings.worklogGroups. */
+  | 'watched-group'
+  /** It runs over SSH on a host with `worklog: true`. */
+  | 'watched-host'
+  /** worklogGroups is empty and no host is ticked — the feature is off entirely. */
+  | 'off'
+  /** A group resolved, but the user does not watch it. */
+  | 'unwatched-group'
+  /** No project and no scan root contains the cwd, so there is no group to check. */
+  | 'unknown-folder'
+  /** An SSH session on a host the user has not ticked. */
+  | 'unwatched-host'
+
+/**
+ * Whether the worklog may look at one session, and why.
+ *
+ * The `reason` is not decoration: spec §2.4.4 records that "working but nothing
+ * to report" and "never ran" were indistinguishable, and this is the field that
+ * separates them. Every surface that says anything about watching reads it.
+ */
+export interface WorklogWatchState {
+  sessionId: string
+  watched: boolean
+  reason: WorklogWatchReason
+  /** The resolved project group, or the SSH host's label. Null when neither. */
+  group: string | null
+  /** True when the session runs on another machine, where the switch is per host. */
+  remote: boolean
+  /** Epoch ms this was decided. */
+  decidedAt: number
+}
+
+/** How a scan ended. `budget` is separate from `error` on purpose (spec §4 C.3). */
+export type WorklogScanOutcome = 'proposed' | 'nothing' | 'budget' | 'error'
+
+/**
+ * The last thing a scan did, so an empty panel can say which of the four it was.
+ */
+export interface WorklogScanReport {
+  sessionId: string
+  at: number
+  /** True when nobody pressed anything. */
+  auto: boolean
+  outcome: WorklogScanOutcome
+  /** Proposals added. Always 0 unless outcome is 'proposed'. */
+  added: number
+  /** Non-null for 'budget' and 'error'. Shown to the user verbatim. */
+  message: string | null
+}
+
+/**
+ * Where the worklog files things, and which board in each.
+ *
+ * Replaces the compiled-in ids at runner.ts:37-38. An id belongs in settings
+ * because it is one person's board: shipping it in the binary meant nobody else
+ * could use the feature and this machine could not narrow to one destination.
+ */
+export interface WorklogBoards {
+  /** Destinations, in canonical order. Empty means the worklog writes nowhere. */
+  targets: WorklogTarget[]
+  /** Notion data source URI, e.g. `collection://<uuid>`. */
+  notionDataSource: string
+  /** ClickUp list id, as digits. */
+  clickupListId: string
+}
 
 /**
  * Create a new record, or change one that already exists.
@@ -439,6 +620,18 @@ export interface Settings {
   claudePath: string | null
   /** Warn before launching a session with permissions bypassed. */
   confirmBypass: boolean
+  /** Per-folder metadata, keyed by `Project.path`. See ProjectMeta. */
+  projectMeta: Record<string, ProjectMeta>
+  /** Which boards the worklog writes to, and their ids. See WorklogBoards. */
+  worklogBoards: WorklogBoards
+  /**
+   * Replace Claude's own status line with Stoke's silent wrapper.
+   *
+   * On by default: the wrapper is how the context window and the plan limits
+   * reach the app at all, and the line it suppresses is a duplicate of chrome
+   * Stoke already draws. Off passes the user's own command through unchanged.
+   */
+  hideStatusLine: boolean
 }
 
 /* --------------------------------------------------------------- browser */

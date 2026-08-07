@@ -170,7 +170,10 @@ export async function listProjects(settings: Settings): Promise<Project[]> {
           ? (cfg.lastSessionFirstPrompt as string)
           : null,
       exists: existsSync(path),
-      pinned: settings.pinnedProjects.some((p) => dedupeKey(p) === key)
+      pinned: settings.pinnedProjects.some((p) => dedupeKey(p) === key),
+      emoji: null,
+      label: null,
+      addedManually: false
     }
     if (existing) {
       // Prefer whichever variant actually has history attached.

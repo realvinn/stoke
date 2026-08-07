@@ -321,6 +321,7 @@ export function App(): React.JSX.Element {
         })
         const tab: Tab = {
           id: res.ptyId,
+          kind: 'session',
           ptyId: res.ptyId,
           sessionId: res.sessionId,
           cwd: opts.cwd,
@@ -330,7 +331,10 @@ export function App(): React.JSX.Element {
           model,
           effort,
           status: 'running',
-          exitCode: null
+          exitCode: null,
+          hostId: null,
+          selectedPath: null,
+          expandedPath: null
         }
         setTabs((list) => [...list, tab])
         setActiveTabId(tab.id)
@@ -422,6 +426,7 @@ export function App(): React.JSX.Element {
           ...list,
           {
             id: res.ptyId,
+            kind: 'session',
             ptyId: res.ptyId,
             sessionId: res.sessionId,
             cwd: host.alias,
@@ -431,7 +436,10 @@ export function App(): React.JSX.Element {
             model,
             effort,
             status: 'running',
-            exitCode: null
+            exitCode: null,
+            hostId: host.id,
+            selectedPath: null,
+            expandedPath: null
           }
         ])
         setActiveTabId(res.ptyId)

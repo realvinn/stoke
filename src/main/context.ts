@@ -172,7 +172,8 @@ export class ContextWatcher {
           messageCount: parsed.messageCount,
           title: parsed.title,
           updatedAt: st.mtimeMs,
-          ready: true
+          ready: true,
+          permissionMode: null
         })
       }
     } catch {
@@ -199,6 +200,7 @@ function emptySnapshot(sessionId: string): ContextSnapshot {
     messageCount: 0,
     title: null,
     updatedAt: Date.now(),
-    ready: false
+    ready: false,
+    permissionMode: null
   }
 }
