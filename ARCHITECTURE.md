@@ -99,9 +99,18 @@ Context in use is `input_tokens + cache_read_input_tokens + cache_creation_input
 the most recent `assistant` record. These are overwritten, not accumulated: each turn's usage
 already reports the full context being resent.
 
-The window size is inferred from observed usage, not the model id — see gotcha 2. This was
-wrong in the first implementation and reported 140–320% occupancy; `npm run verify:context`
-exists because of it and asserts the invariant against real transcripts.
+The window size is **stated**, not derived. Stoke installs its own `statusLine` command for the
+sessions it spawns (`statusLine.ts`, folded into the one `--settings` file assembled at launch),
+and the CLI pipes that command a JSON payload whose `context_window.context_window_size` is the
+answer — per model, correct before a token is spent. The CLI's startup banner is the fallback
+for older versions, and inferring the tier from observed usage is the fallback below that; see
+gotcha 2. Inference alone was wrong in the first implementation and reported 140–320% occupancy,
+which is why `npm run verify:context` exists and asserts the invariant against real transcripts.
+
+That command is the only thing Stoke installs into a session, and it still writes nothing of
+Claude's: the settings file, the wrapper and the payloads all live under the system temp
+directory, and `~/.claude/settings.json` is read for the user's own status line and never
+modified.
 
 `ContextWatcher` polls rather than using `fs.watch`: transcripts are appended constantly,
 append semantics differ across macOS and Windows, and only the handful of sessions with an

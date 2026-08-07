@@ -25,6 +25,8 @@ need a live instance or cost money:
 
 ```bash
 npm run verify:context        # context meter against the real transcripts on this machine
+npm run verify:statusline     # the statusLine wrapper: payload, suppression, pass-through
+npm run verify:unicode        # xterm's cell widths for emoji and box drawing
 npm run verify:profiles       # profile resolution + every accent clears 4.5:1
 npm run verify:settings       # settings hydration: repair, clamps, and what it drops
 npm run verify:color          # colour maths: contrast, APCA, oklch
@@ -49,6 +51,7 @@ src/main/         Electron main process
   projects.ts       project + session discovery from Claude's own files
   context.ts        live context-window watcher (polls transcripts)
   sessionFile.ts    transcript parsing and the context maths
+  statusLine.ts     Stoke's statusLine wrapper: context window + plan limits
   browser.ts        docked Chromium: tabs, find, console/network capture
   workspace.ts      default folder + scratch folders
   store.ts          settings persistence
@@ -109,14 +112,33 @@ scripts/          the verify-*.mts suites, make-icon.cjs
    then a "nested child" and **transcript saving is disabled**, which kills session resume
    *and* the context meter. `pty.ts` strips them. Auth/config vars are preserved.
 
-2. **The context window cannot be derived from the model id.** A 1M-tier session records its
-   model as plain `claude-opus-5` — no `[1m]` suffix survives into the transcript and there
-   is no `context_window` field. Verified again on a session at 713,617 tokens; the only
-   tier-ish field anywhere is `usage.service_tier`, which is billing. The CLI *does* state it
-   in its startup banner, so `pty.ts` reads `(1M context)` out of the first frames and hands
-   it to the watcher; `contextLimitFor` falls back to observed usage, where over 200k proves
-   the extended tier. Strip escape codes before matching — the banner is styled, so the digits
-   routinely arrive separated from the word.
+2. **The context window is stated only by the statusLine payload.** It cannot be derived from
+   the model id: a 1M-tier session records its model as plain `claude-opus-5`, no `[1m]` suffix
+   survives into the transcript, and there is no `context_window` field. Verified again on a
+   session at 713,617 tokens; the only tier-ish field anywhere is `usage.service_tier`, which is
+   billing. The CLI *used* to state it in its startup banner and **2.1.221 does not** — the
+   banner is now `Claude Code v2.1.221    Opus 5 with low effort · Claude Max`, and the word
+   "context" appears nowhere in the startup output.
+
+   So Stoke installs its own `statusLine` command (`src/main/statusLine.ts`), folded into the
+   single `--settings` file at launch. The CLI pipes it a JSON payload on stdin whose
+   `context_window.context_window_size` is the window — per model, and correct from token zero.
+   The wrapper writes it to `<tmpdir>/stoke/statusline/<statusKey>.json` and prints nothing by
+   default, which is why suppressing the in-terminal line and reading the data are the same act.
+   `windowFromBanner` and `contextLimitFor`'s observed-usage inference are kept as **fallbacks**
+   for CLI versions that emit no payload; a banner that does say `(1M context)` still works, and
+   escape codes must still be stripped before matching, because the banner is styled.
+
+   Two things that cost time if you forget them. First, **a second `--settings` silently
+   discards the first**, so the statusLine key and the `ultracode` key have to arrive in one
+   file. Second, **the payload file is named after the launch key, not necessarily the CLI's own
+   session id** — `pty.ts` computes `statusKey = opts.host ? '' : sessionId || randomUUID()`.
+   For every session Stoke mints an id for, the two are the same string; a `--continue` session's
+   id is chosen by the CLI *after* launch, so it gets a fresh random key instead, and still gets
+   a wrapper and a payload — verified against a real session whose payload file was named
+   `78fe5553-…` while the payload's own `session_id` field read `840cbab5-…`. The payload states
+   its own id precisely so a reader keyed on the launch key can still recover the real one; code
+   that assumes the file name *is* the session id will not find a `--continue` session's data.
 
 3. **A `WebContentsView` outside the window's view tree gets a 0×0 viewport and never lays
    out.** `getBoundingClientRect`, `innerText` and every visibility check return empty, so
@@ -144,9 +166,13 @@ scripts/          the verify-*.mts suites, make-icon.cjs
    comes back. A test that appears to pass this way is testing production behaviour.
 
 10. **Claude Code turns mouse reporting on, so a plain drag does not select.** xterm forwards
-    the drag to the application instead; **Shift**-drag is the bypass. A right-click is also
-    forwarded, which is why the CLI used to paste on right-click — `TerminalView` now takes
-    that event in the capture phase before xterm sees it.
+    the drag to the application instead, and the bypass modifier is per-platform in xterm's own
+    `shouldForceSelection`: **Shift**-drag on Windows and Linux, **Alt**-drag on macOS — and on
+    macOS that path also needs xterm's `macOptionClickForcesSelection` option, which Stoke does
+    not set, so Alt-drag has not been confirmed to actually bypass here (macOS is otherwise
+    unverified — see the note at the end of this file). A right-click is also forwarded, which
+    is why the CLI used to paste on right-click — `TerminalView` now takes that event in the
+    capture phase before xterm sees it.
 
 11. **`align-self: center` centres the *margin* box.** Cancelling a container's padding for
     one child needs the full padding negated, not half — half lands it a pixel off. Measured,
@@ -209,6 +235,22 @@ scripts/          the verify-*.mts suites, make-icon.cjs
     interval; without a reentrancy guard *and* claiming the session before the await, two
     overlapping passes each started a paid scan for the same session. Setting the claim after
     the await is not enough — that is the window.
+
+21. **A statusLine payload's `rate_limits` has real gaps a naive reader gets wrong.** It is
+    absent at session mount and only starts appearing from the first render *after* an API
+    response completes — a brand-new session legitimately has none, and that absence must never
+    be drawn as "0% used." `used_percentage` is 0–100 but unrounded and carries float noise —
+    `7.000000000000001` is a real value the CLI sent, not a bug in Stoke — so round it before
+    display. `resets_at` is Unix epoch **seconds**, unlike every other timestamp in Stoke;
+    `statusLine.ts`'s `reading()` is the one place that converts it to ms. `five_hour` and
+    `seven_day` are independently optional, and the whole `rate_limits` key is omitted when
+    neither is present — check each window separately, not as a pair. It also appears to
+    populate only under Claude.ai subscription (OAuth) auth; under an API key it appears never
+    to arrive (inferred from the CLI's own bundle, not observed — API-key auth was not tested).
+    One more field worth knowing while you're in this payload: `model.id` carries the tier
+    suffix in full (`"claude-opus-5[1m]"`), unlike the transcript's bare `model` field (gotcha
+    2) — which is exactly why the payload can state the window directly instead of falling back
+    to inference.
 
 ## Verification expectations
 
