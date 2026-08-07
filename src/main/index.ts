@@ -775,6 +775,7 @@ function registerIpc(): void {
   /* -------------------------------------------------------------- settings */
   ipcMain.handle(CH.settingsGet, () => getSettings())
   ipcMain.handle(CH.settingsSet, (_e, patch: Partial<Settings>) => {
+    const prev = getSettings()
     const next = setSettings(patch)
     /*
      * The Windows overlay is painted by the OS, not the page, so a theme change
@@ -789,6 +790,20 @@ function registerIpc(): void {
         symbolColor: theme.colors.textMuted,
         height: TITLEBAR_H
       })
+    }
+    /*
+     * Recall's cache is keyed on which boards are switched *on* (see
+     * cacheKey in recall.ts), not on their ids — toggling a board already
+     * changes that key and misses on its own. Editing an id in place does
+     * not: the key is unchanged, so a stale read of the *old* Notion data
+     * source or ClickUp list could otherwise be served for up to
+     * RECALL_TTL_MS after the user points the setting at a different board.
+     */
+    if (
+      next.worklogBoards.notionDataSource !== prev.worklogBoards.notionDataSource ||
+      next.worklogBoards.clickupListId !== prev.worklogBoards.clickupListId
+    ) {
+      invalidateRecall()
     }
     send(CH.settingsChanged, next)
     return next
@@ -854,6 +869,12 @@ function registerIpc(): void {
     accepting.add(id)
     try {
       const outcome = await applyProposal(item, {
+        // The user's own switches and ids, not the shipped default — a board
+        // switched off in Settings must not still receive the write, and an
+        // edited id must be the one actually written to. hydrateSettings has
+        // already dropped any target whose id is empty, so this is trusted
+        // rather than re-validated (see settingsSchema.ts).
+        boards: getSettings().worklogBoards,
         // Persist each URL the moment its write returns, so a failure on the
         // second destination cannot lose the first - and so a retry can tell
         // what has already been written and skip it.

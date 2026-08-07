@@ -1,4 +1,5 @@
-import type { ProfileConfig } from '@shared/types'
+import type { ProfileConfig, WorklogBoards, WorklogTarget } from '@shared/types'
+import { WORKLOG_TARGETS } from '@shared/worklog'
 
 interface Props {
   /** The resolved profile list — the same one the sidebar chips are drawn from. */
@@ -7,6 +8,10 @@ interface Props {
   worklogGroups: string[]
   /** `Settings.worklogAuto`: scan a watched session once it goes quiet. */
   auto: boolean
+  /** `Settings.worklogBoards`: where reviews are filed, and which board in each. */
+  boards: WorklogBoards
+  /** Called with the whole replacement record; the caller persists it. */
+  onChangeBoards: (boards: WorklogBoards) => void
   /** Called with the whole replacement list; the caller persists it. */
   onChange: (worklogGroups: string[]) => void
   onChangeAuto: (auto: boolean) => void
@@ -14,6 +19,48 @@ interface Props {
 
 /** Matches `foldGroup` in src/main/worklog/gate.ts — the switch is case-blind. */
 const fold = (group: string): string => group.trim().toLowerCase()
+
+/** Labels and hints per destination, so the JSX below stays a loop. */
+const TARGET_UI: Record<WorklogTarget, { label: string; idLabel: string; placeholder: string; need: string }> = {
+  notion: {
+    label: 'Notion',
+    idLabel: 'Notion data source',
+    placeholder: 'collection://…',
+    need: 'Add a Notion data source first'
+  },
+  clickup: {
+    label: 'ClickUp',
+    idLabel: 'ClickUp list id',
+    placeholder: '901615258684',
+    need: 'Add a ClickUp list id first'
+  }
+}
+
+/** The id field that belongs to a destination. One place, so the tick box and
+ *  the disabled state cannot disagree about which id they mean. */
+const idFor = (boards: WorklogBoards, target: WorklogTarget): string =>
+  target === 'notion' ? boards.notionDataSource : boards.clickupListId
+
+/**
+ * The record to store, given what the user just did.
+ *
+ * The same filter `hydrateWorklogBoards` applies (contracts §0.5): canonical
+ * order, and a destination with no id is dropped. Applying it here rather than
+ * trusting the store means the panel can never show a destination the runner
+ * would refuse to write to — which is the failure Task 19's "no board is
+ * switched on" error exists to catch, one layer too late.
+ */
+function nextBoards(
+  boards: WorklogBoards,
+  ticked: Set<WorklogTarget>,
+  ids: Pick<WorklogBoards, 'notionDataSource' | 'clickupListId'>
+): WorklogBoards {
+  const merged: WorklogBoards = { ...boards, ...ids, targets: boards.targets }
+  return {
+    ...merged,
+    targets: WORKLOG_TARGETS.filter((t) => ticked.has(t) && idFor(merged, t).trim().length > 0)
+  }
+}
 
 /**
  * Which profiles the worklog agent reviews.
@@ -28,6 +75,8 @@ export function WorklogSettings({
   profiles,
   worklogGroups,
   auto,
+  boards,
+  onChangeBoards,
   onChange,
   onChangeAuto
 }: Props): React.JSX.Element {
@@ -161,6 +210,88 @@ export function WorklogSettings({
           </button>
         </span>
       )}
+
+      {/*
+        Where, not whether. The checkboxes above choose which sessions are
+        reviewed; these choose where the review is filed, and until Task 21 the
+        answer was compiled into runner.ts:37-38 — one person's board, in the
+        binary, with no way for anyone else to use the feature at all.
+      */}
+      <span className="field-label">Where reviews are filed</span>
+
+      {WORKLOG_TARGETS.map((target) => {
+        const ui = TARGET_UI[target]
+        const hasId = idFor(boards, target).trim().length > 0
+        return (
+          <label className="check-row" key={target}>
+            <input
+              type="checkbox"
+              checked={boards.targets.includes(target)}
+              disabled={!hasId}
+              title={hasId ? undefined : ui.need}
+              onChange={(e) => {
+                const ticked = new Set(boards.targets)
+                if (e.target.checked) ticked.add(target)
+                else ticked.delete(target)
+                onChangeBoards(
+                  nextBoards(boards, ticked, {
+                    notionDataSource: boards.notionDataSource,
+                    clickupListId: boards.clickupListId
+                  })
+                )
+              }}
+            />
+            <span>
+              <span className="field-label">{ui.label}</span>
+            </span>
+          </label>
+        )
+      })}
+
+      <label className="field-label" htmlFor="worklog-notion-id">
+        {TARGET_UI.notion.idLabel}
+      </label>
+      <input
+        id="worklog-notion-id"
+        className="input"
+        value={boards.notionDataSource}
+        placeholder={TARGET_UI.notion.placeholder}
+        spellCheck={false}
+        onChange={(e) =>
+          onChangeBoards(
+            nextBoards(boards, new Set(boards.targets), {
+              notionDataSource: e.target.value,
+              clickupListId: boards.clickupListId
+            })
+          )
+        }
+      />
+
+      <label className="field-label" htmlFor="worklog-clickup-id">
+        {TARGET_UI.clickup.idLabel}
+      </label>
+      <input
+        id="worklog-clickup-id"
+        className="input"
+        inputMode="numeric"
+        value={boards.clickupListId}
+        placeholder={TARGET_UI.clickup.placeholder}
+        spellCheck={false}
+        onChange={(e) =>
+          onChangeBoards(
+            nextBoards(boards, new Set(boards.targets), {
+              notionDataSource: boards.notionDataSource,
+              clickupListId: e.target.value
+            })
+          )
+        }
+      />
+
+      <span className="field-hint">
+        A destination with no id is not a destination — it is dropped on save, which is why the
+        box will not tick until the id is there. Clearing an id switches its board off rather
+        than leaving a tick that writes nowhere.
+      </span>
 
       <span className="field-hint">
         Each review costs tokens: it is a real Claude run on top of the work you just did. It

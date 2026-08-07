@@ -154,5 +154,35 @@ check(
   )
 }
 
+console.log('\nwhat the boards control is allowed to produce')
+
+/*
+ * These are already true of hydrateWorklogBoards. They are asserted here
+ * because the panel in WorklogSettings.tsx now applies the same three rules
+ * itself, and a panel that could show a destination the store would drop is a
+ * switch that lies about what it did.
+ */
+check(
+  'a target whose id is empty is not a target',
+  hydrateSettings({
+    worklogBoards: { targets: ['notion', 'clickup'], notionDataSource: 'x', clickupListId: '  ' }
+  }).worklogBoards.targets,
+  ['notion']
+)
+check(
+  'the stored order cannot change the canonical order',
+  hydrateSettings({
+    worklogBoards: { targets: ['clickup', 'notion'], notionDataSource: 'x', clickupListId: '1' }
+  }).worklogBoards.targets,
+  ['notion', 'clickup']
+)
+check(
+  'a name no write tool exists for is dropped',
+  hydrateSettings({
+    worklogBoards: { targets: ['jira', 'notion'], notionDataSource: 'x', clickupListId: '1' }
+  }).worklogBoards.targets,
+  ['notion']
+)
+
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
 process.exitCode = failures ? 1 : 0

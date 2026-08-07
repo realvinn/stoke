@@ -294,6 +294,8 @@ export function SettingsSheet({
             profiles={profiles}
             worklogGroups={settings.worklogGroups}
             auto={settings.worklogAuto}
+            boards={settings.worklogBoards}
+            onChangeBoards={(worklogBoards) => onPatch({ worklogBoards })}
             onChange={(worklogGroups) => onPatch({ worklogGroups })}
             onChangeAuto={(worklogAuto) => onPatch({ worklogAuto })}
           />
