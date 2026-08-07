@@ -120,28 +120,57 @@ check(
 const payloadId = 'verify-context-1m'
 const payloadFile = statusLinePayloadFile(payloadId)
 mkdirSync(dirname(payloadFile), { recursive: true })
-writeFileSync(
-  payloadFile,
-  JSON.stringify({
-    model: { id: 'claude-opus-5', display_name: 'Opus 5' },
-    context_window: { context_window_size: 1_000_000, used_percentage: 3 },
-    exceeds_200k_tokens: false
-  }),
-  'utf8'
-)
-const stated = readStatusLine(payloadId)?.contextWindowSize ?? null
-check('statusLine payload states the window', stated === 1_000_000, String(stated))
-check(
-  'a 1M session reads 1M at 50k tokens, with no banner anywhere',
-  contextLimitFor('claude-opus-5', 50_000, stated) === 1_000_000,
-  'the payload beat the observed-usage inference'
-)
-check(
-  'a 200k model in the payload stays 200k',
-  contextLimitFor('claude-haiku-4-5', 10_000, 200_000) === 200_000,
-  '200,000'
-)
-rmSync(payloadFile, { force: true })
+try {
+  writeFileSync(
+    payloadFile,
+    JSON.stringify({
+      model: { id: 'claude-opus-5', display_name: 'Opus 5' },
+      context_window: { context_window_size: 1_000_000, used_percentage: 3 },
+      exceeds_200k_tokens: false
+    }),
+    'utf8'
+  )
+  const stated = readStatusLine(payloadId)?.contextWindowSize ?? null
+  check('statusLine payload states the window', stated === 1_000_000, String(stated))
+  check(
+    'a 1M session reads 1M at 50k tokens, with no banner anywhere',
+    contextLimitFor('claude-opus-5', 50_000, stated) === 1_000_000,
+    'the payload beat the observed-usage inference'
+  )
+} finally {
+  rmSync(payloadFile, { force: true })
+}
+
+/*
+ * The check this replaces asserted contextLimitFor('claude-haiku-4-5', 10_000,
+ * 200_000) === 200_000 — but that model, at that token count, resolves to
+ * 200_000 from contextLimitFor(..., null) too: no payload was ever read, so
+ * the assertion passed whether the stated limit was honoured or discarded.
+ * Fixed by tagging the model id "[1m]", which contextLimitFor resolves to
+ * 1,000,000 entirely on its own (see the "opus-5[1m] suffix -> 1M" case
+ * above), and having the payload state 200,000 instead. Only a genuinely-read
+ * and honoured payload can pull that down to 200,000; discarding it falls
+ * straight back to the id-implied 1,000,000. Read through `windowFor` — the
+ * same function index.ts wires into the running app — not a hand-lifted
+ * `contextWindowSize`.
+ */
+const overrideId = 'verify-context-200k-override'
+const overrideFile = statusLinePayloadFile(overrideId)
+try {
+  writeFileSync(
+    overrideFile,
+    JSON.stringify({ context_window: { context_window_size: 200_000 } }),
+    'utf8'
+  )
+  const statedOverride = windowFor(overrideId, null)
+  check(
+    'a payload stating 200k overrides a [1m]-tagged model id, not the other way round',
+    contextLimitFor('claude-opus-5[1m]', 10_000, statedOverride) === 200_000,
+    String(statedOverride)
+  )
+} finally {
+  rmSync(overrideFile, { force: true })
+}
 
 /* ------------------------------------------------------------------------
    Live watcher: session id -> transcript lookup -> parse -> emitted snapshot.
@@ -185,34 +214,54 @@ if (snapshot) {
 /*
  * The same watcher, told the window by a payload instead of a banner. Written
  * against the live session id because that is the only id findSessionFile can
- * resolve, and removed immediately afterwards: leaving it would make a running
- * copy of Stoke read this session against 1M until its next real payload.
+ * resolve — a REAL session id, in the directory the boot sweep only clears
+ * after 6 hours, so the write and its removal are wrapped in try/finally:
+ * without it, an abnormal exit between the write and the `rmSync` below
+ * (Ctrl-C, or an unhandled rejection out of `void this.tick(...)`) would
+ * leave this session's genuine payload clobbered and its window claiming
+ * 2,000,000 tokens for up to 6 hours — understating context pressure for a
+ * real session, which is the one direction this codebase treats as
+ * dangerous.
+ *
+ * The window is 2,000,000, not 1,000,000: contextLimitFor's observed-usage
+ * fallback (what a broken windowFor would leave the watcher with) tops out at
+ * WINDOW_EXTENDED = 1,000,000 for any session over 200k tokens, and this
+ * transcript already sits around 605k. A check against 1,000,000 would pass
+ * identically whether windowFor read the payload or returned null — exactly
+ * the mistake this check exists to catch. 2,000,000 is inside windowSize's
+ * 1k-10M bound and above the observed count, so contextLimitFor's
+ * `observedTokens <= bannerLimit` guard still admits it, and it is a window
+ * the observed-usage inference can never produce on its own.
  */
 const livePayload = statusLinePayloadFile(liveId)
-writeFileSync(
-  livePayload,
-  JSON.stringify({ context_window: { context_window_size: 1_000_000 } }),
-  'utf8'
-)
-const viaPayload = await new Promise<ContextSnapshot | null>((resolve) => {
-  const payloadWatcher = new ContextWatcher(
-    (snap) => {
-      if (!snap.ready) return
-      payloadWatcher.disposeAll()
-      resolve(snap)
-    },
-    (id) => windowFor(id, null)
+let viaPayload: ContextSnapshot | null = null
+try {
+  writeFileSync(
+    livePayload,
+    JSON.stringify({ context_window: { context_window_size: 2_000_000 } }),
+    'utf8'
   )
-  payloadWatcher.watch(liveId)
-  setTimeout(() => {
-    payloadWatcher.disposeAll()
-    resolve(null)
-  }, 10_000)
-})
-rmSync(livePayload, { force: true })
+  viaPayload = await new Promise<ContextSnapshot | null>((resolve) => {
+    const payloadWatcher = new ContextWatcher(
+      (snap) => {
+        if (!snap.ready) return
+        payloadWatcher.disposeAll()
+        resolve(snap)
+      },
+      (id) => windowFor(id, null)
+    )
+    payloadWatcher.watch(liveId)
+    setTimeout(() => {
+      payloadWatcher.disposeAll()
+      resolve(null)
+    }, 10_000)
+  })
+} finally {
+  rmSync(livePayload, { force: true })
+}
 check(
   'the watcher takes its window from the payload, banner or no banner',
-  viaPayload?.contextLimit === 1_000_000,
+  viaPayload?.contextLimit === 2_000_000,
   String(viaPayload?.contextLimit ?? 'timed out')
 )
 

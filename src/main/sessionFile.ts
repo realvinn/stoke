@@ -301,8 +301,11 @@ export function windowFromBanner(text: string): number | null {
 }
 
 /**
- * @param bannerLimit window read from the CLI banner, when one has been seen.
- *   It wins over both the id and observed usage, being a direct statement.
+ * @param bannerLimit the stated window, when one has been seen — the
+ *   statusLine payload first (`statusLine.ts`'s `windowFor`), the CLI's
+ *   startup banner second for a CLI old enough to still print one. Despite
+ *   the parameter's name, a caller may hand either source in here; both are a
+ *   direct statement and win over both the id and observed usage.
  */
 export function contextLimitFor(
   model: string | null,

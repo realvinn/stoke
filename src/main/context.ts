@@ -30,12 +30,16 @@ export class ContextWatcher {
   private latest = new Map<string, ContextSnapshot>()
   private readonly emit: (snap: ContextSnapshot) => void
   /**
-   * Context window as stated by the live session's startup banner, if it has
-   * one. Injected rather than imported so this module stays free of the PTY
-   * layer and keeps running under node's type stripping.
+   * The stated context window for a session, if one has been stated. Despite
+   * the field's name, this is no longer only the startup banner: index.ts
+   * wires it to `statusLine.ts`'s `windowFor`, which reads the statusLine
+   * payload first and falls back to the banner only for a CLI old enough to
+   * still print one (see CLAUDE.md gotcha 2 — 2.1.221 dropped "(1M context)"
+   * from its startup output). Injected rather than imported so this module
+   * stays free of the PTY layer and keeps running under node's type stripping.
    *
    * It exists because the transcript cannot say: a 1M session records its model
-   * as plain `claude-opus-5`, so without the banner the meter reads a 1M
+   * as plain `claude-opus-5`, so with no statement at all the meter reads a 1M
    * session against 200k until it crosses over - showing 92% full at 182k when
    * 82% of the window was still free.
    */

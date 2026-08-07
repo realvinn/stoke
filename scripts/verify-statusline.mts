@@ -884,6 +884,24 @@ check(
   windowFor(winId, 200_000),
   200_000
 )
+writeFileSync(
+  statusLinePayloadFile(winId),
+  // Negative: the one bound of windowSize's [WINDOW_MIN, WINDOW_MAX] range
+  // that toSnapshot's own cases (a value below WINDOW_MIN, and one far above
+  // WINDOW_MAX) don't already cover on their own — see 'a window size outside
+  // anything plausible is refused' and 'a window size of zero is below
+  // WINDOW_MIN' above. Routed through windowFor rather than toSnapshot
+  // directly, so this pins the thing the review named: windowFor falling
+  // through to the banner when the payload it reads is out of bounds, not
+  // just that windowSize itself returns null in isolation.
+  JSON.stringify({ context_window: { context_window_size: -1 } }),
+  'utf8'
+)
+check(
+  'a payload whose window is out of bounds falls through the same way, not to zero or a clamp',
+  windowFor(winId, 200_000),
+  200_000
+)
 rmSync(statusLinePayloadFile(winId), { force: true })
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
