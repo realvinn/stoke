@@ -32,6 +32,7 @@ import {
   recall,
   readExisting,
   recallRunOptions,
+  recallToolsFor,
   statusesFor
 } from '../src/main/worklog/recall.ts'
 import type { HeadlessOptions, HeadlessResult } from '../src/main/agent.ts'
@@ -320,6 +321,61 @@ ok(
   !!next.items.clickup?.some((i) => i.id === 'new'),
   JSON.stringify(next.items.clickup)
 )
+
+console.log('\nreading one board when only one is switched on')
+
+const notionOnly = recallRunOptions({ ...BOARDS, targets: ['notion'] })
+check(
+  'the allowlist drops every ClickUp tool',
+  notionOnly.allowedTools,
+  recallToolsFor(['notion'])
+)
+ok(
+  'so a ClickUp read is not even possible',
+  !(notionOnly.allowedTools ?? []).some((t) => /clickup/i.test(t)),
+  (notionOnly.allowedTools ?? []).join(', ')
+)
+ok(
+  'the prompt names Notion',
+  notionOnly.prompt.includes('collection://abc'),
+  notionOnly.prompt
+)
+ok(
+  'and never mentions the ClickUp list, which nothing will read',
+  !notionOnly.prompt.includes('901615258684'),
+  notionOnly.prompt
+)
+ok(
+  'it still asks for the status vocabulary, which open pages do not carry',
+  /every value its status/.test(notionOnly.prompt),
+  notionOnly.prompt
+)
+
+const clickupOnly = recallRunOptions({ ...BOARDS, targets: ['clickup'] })
+ok(
+  'the mirror case drops Notion',
+  !(clickupOnly.allowedTools ?? []).some((t) => /notion/i.test(t)),
+  (clickupOnly.allowedTools ?? []).join(', ')
+)
+ok(
+  'and still asks the list for its own closed statuses',
+  /every status it offers/.test(clickupOnly.prompt),
+  clickupOnly.prompt
+)
+
+check('no targets at all allows no tools', recallToolsFor([]), [])
+{
+  /*
+   * Nowhere to read is a configuration, not a failure: `error` must stay
+   * unset, or the scan prompt would tell the model the boards "could not be
+   * read" and it would propose creates for everything.
+   */
+  const stubbed = stub('{"notion":[]}')
+  const snap = await readExisting({ ...BOARDS, targets: [], run: stubbed.run }, 42)
+  check('no board configured runs nothing at all', stubbed.calls(), 0)
+  check('and reports an empty reading rather than an error', snap.error, undefined)
+  check('stamped with the time it was decided', snap.readAt, 42)
+}
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
 process.exitCode = failures ? 1 : 0

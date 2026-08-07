@@ -1,5 +1,6 @@
 import { runHeadless, type HeadlessOptions, type HeadlessResult } from '../agent.ts'
 import { asRecord, clip, oneLine, parsedCandidates } from './json.ts'
+import { WORKLOG_TARGETS } from '../../shared/worklog.ts'
 import type { WorklogExistingItem, WorklogTarget } from '@shared/types'
 
 /**
@@ -31,22 +32,43 @@ import type { WorklogExistingItem, WorklogTarget } from '@shared/types'
 /* ------------------------------------------------------------------- tools */
 
 /**
- * The exact queries recall may run. Two for Notion because the data source id
- * is a `collection://` URI: `query-data-sources` is the direct route and
- * `search` is the fallback when that id will not resolve, and a recall that
- * silently returns nothing is indistinguishable from a board with nothing on
- * it — which would quietly turn every update back into a duplicate.
+ * The exact queries recall may run, per destination.
+ *
+ * Two for Notion because the data source id is a `collection://` URI:
+ * `query-data-sources` is the direct route and `search` is the fallback when
+ * that id will not resolve, and a recall that silently returns nothing is
+ * indistinguishable from a board with nothing on it — which would quietly turn
+ * every update back into a duplicate.
+ *
+ * Two for ClickUp because a list's own status vocabulary is NOT derivable from
+ * the tasks it holds: recall reads open tasks, so "complete" appears on none of
+ * them, and without asking the list directly the agent could read a board but
+ * never close anything on it (CLAUDE.md gotcha 16).
  */
-export const RECALL_TOOLS = [
-  'mcp__claude_ai_ClickUp__clickup_filter_tasks',
-  // The list's own status vocabulary, which is NOT derivable from the tasks it
-  // holds: recall reads open tasks, so "complete" appears on none of them, and
-  // without asking the list directly the agent could read a board but never
-  // close anything on it.
-  'mcp__claude_ai_ClickUp__clickup_get_list',
-  'mcp__claude_ai_Notion__notion-query-data-sources',
-  'mcp__claude_ai_Notion__notion-search'
-]
+const TOOLS_FOR: Record<WorklogTarget, string[]> = {
+  notion: [
+    'mcp__claude_ai_Notion__notion-query-data-sources',
+    'mcp__claude_ai_Notion__notion-search'
+  ],
+  clickup: [
+    'mcp__claude_ai_ClickUp__clickup_filter_tasks',
+    'mcp__claude_ai_ClickUp__clickup_get_list'
+  ]
+}
+
+/**
+ * The read tools for a set of destinations, in canonical order.
+ *
+ * A board that is switched off must not even be reachable. An allowlist is the
+ * only thing standing between this run and the write tools of the very same
+ * servers, so narrowing it is worth more than narrowing the prompt.
+ */
+export function recallToolsFor(targets: readonly WorklogTarget[]): string[] {
+  return WORKLOG_TARGETS.filter((t) => targets.includes(t)).flatMap((t) => TOOLS_FOR[t])
+}
+
+/** Every read tool. The allowlist when nothing narrows it. */
+export const RECALL_TOOLS = recallToolsFor(WORKLOG_TARGETS)
 
 /** Records kept per destination. Beyond this the prompt stops being small. */
 export const MAX_RECALL_ITEMS = 30
@@ -86,29 +108,64 @@ const TARGETS: WorklogTarget[] = ['notion', 'clickup']
 
 /* ------------------------------------------------------------- the prompt */
 
-export function buildRecallPrompt(opts: { clickupListId: string; notionDataSource: string }): string {
+/** What each destination is asked for. One entry per configured board. */
+const RECALL_ASK: Record<WorklogTarget, (opts: RecallOptions) => string[]> = {
+  notion: (o) => [
+    `Notion: the pages in data source ${o.notionDataSource}, using`,
+    'notion-query-data-sources. If that id will not resolve, fall back to',
+    'notion-search over the same workspace. Report every value its status',
+    'property allows, not only the ones in use.'
+  ],
+  clickup: (o) => [
+    `ClickUp: the tasks in list ${o.clickupListId}, using clickup_filter_tasks.`,
+    'Include every task that is not closed or archived. Then call clickup_get_list',
+    'on the same list and report every status it offers, including the closed ones.'
+  ]
+}
+
+/** The reply shape for one destination. Only configured boards are shown one. */
+const RECALL_EXAMPLE: Record<WorklogTarget, string> = {
+  notion:
+    '"notion":[{"id":"...","title":"...","status":"...","url":"https://www.notion.so/..."}],' +
+    '"notionStatuses":["Not started","In progress","Done"]',
+  clickup:
+    '"clickup":[{"id":"abc123","title":"Fix the context meter","status":"in progress",' +
+    '"url":"https://app.clickup.com/t/abc123"}],"clickupStatuses":["open","in progress","complete"]'
+}
+
+/**
+ * Read the configured boards, and only those.
+ *
+ * `targets` narrows both the prompt and the allowlist. Naming a board the run
+ * cannot reach is not harmless: the model spends turns trying, which is the
+ * budget this feature has never had enough of.
+ */
+export function buildRecallPrompt(opts: RecallOptions): string {
+  const targets = configuredTargets(opts)
+  const asks = targets.flatMap((t, i) => {
+    const lines = RECALL_ASK[t](opts)
+    return [`${i + 1}. ${lines[0]}`, ...lines.slice(1).map((l) => `   ${l}`)]
+  })
+
   return [
-    'List what is currently on two task boards. Read only — create nothing, change nothing.',
+    'List what is currently on your task boards. Read only — create nothing, change nothing.',
     '',
-    `1. ClickUp: the tasks in list ${opts.clickupListId}, using clickup_filter_tasks.`,
-    '   Include every task that is not closed or archived. Then call clickup_get_list',
-    '   on the same list and report every status it offers, including the closed ones.',
-    `2. Notion: the pages in data source ${opts.notionDataSource}, using`,
-    '   notion-query-data-sources. If that id will not resolve, fall back to',
-    '   notion-search over the same workspace. Report every value its status',
-    '   property allows, not only the ones in use.',
+    ...asks,
     '',
     `At most ${MAX_RECALL_ITEMS} of the most recent records from each. For every record give`,
     'its own id, its title, its status exactly as that board words it, and its URL.',
     '',
     'Reply with JSON and nothing else — no prose, no code fence:',
-    '{"clickup":[{"id":"abc123","title":"Fix the context meter","status":"in progress",',
-    '"url":"https://app.clickup.com/t/abc123"}],"clickupStatuses":["open","in progress","complete"],',
-    '"notion":[{"id":"...","title":"...","status":"...","url":"https://www.notion.so/..."}],',
-    '"notionStatuses":["Not started","In progress","Done"]}',
+    `{${targets.map((t) => RECALL_EXAMPLE[t]).join(',')}}`,
     '',
     'A board you cannot reach gets an empty array, not an invented one.'
   ].join('\n')
+}
+
+/** The destinations this read covers. Absent means both, which is what shipped. */
+function configuredTargets(opts: RecallOptions): WorklogTarget[] {
+  const wanted = opts.targets ?? WORKLOG_TARGETS
+  return WORKLOG_TARGETS.filter((t) => wanted.includes(t))
 }
 
 /* -------------------------------------------------------------- the parse */
@@ -214,6 +271,11 @@ export interface RecallOptions {
   clickupListId: string
   notionDataSource: string
   /**
+   * Which boards to read. Absent reads both, which is what shipped; the live
+   * caller passes `Settings.worklogBoards.targets`.
+   */
+  targets?: readonly WorklogTarget[]
+  /**
    * Project directory to run in, matching `applyRunOptions`.
    *
    * MCP servers can be configured per project, so a read from a neutral scratch
@@ -242,7 +304,7 @@ export function recallRunOptions(opts: RecallOptions): HeadlessOptions {
   return {
     prompt: buildRecallPrompt(opts),
     cwd: opts.cwd,
-    allowedTools: RECALL_TOOLS,
+    allowedTools: recallToolsFor(configuredTargets(opts)),
     effort: 'low',
     timeoutMs: opts.timeoutMs,
     maxBudgetUsd: opts.maxBudgetUsd ?? 0.15,
@@ -252,6 +314,17 @@ export function recallRunOptions(opts: RecallOptions): HeadlessOptions {
 
 /** Read both boards once. Never throws — a failure comes back as `error`. */
 export async function readExisting(opts: RecallOptions, now = Date.now()): Promise<RecallSnapshot> {
+  /*
+   * No destination is not a failure.
+   *
+   * Reporting an error here would tell the scan prompt the boards "could not be
+   * read", and the model's documented response to that is to propose creates
+   * for everything — which is the duplication recall exists to prevent. An
+   * empty, successful reading says the true thing: there is nothing tracked
+   * anywhere the worklog writes.
+   */
+  if (configuredTargets(opts).length === 0) return { items: {}, readAt: now }
+
   let result: HeadlessResult
   try {
     result = await (opts.run ?? runHeadless)(recallRunOptions(opts))
