@@ -227,6 +227,27 @@ export function SettingsSheet({
             </span>
           </label>
 
+          <label className="check-row">
+            <input
+              type="checkbox"
+              checked={settings.hideStatusLine}
+              onChange={(e) => onPatch({ hideStatusLine: e.target.checked })}
+            />
+            <span>
+              <span className="field-label">Hide Claude&rsquo;s status line in Stoke</span>
+              <span className="field-hint">
+                Stoke reads the context window and your plan limits from the status line the CLI
+                pipes to it, and by default prints nothing back — the line duplicates chrome the
+                app already draws. Turn this off to keep your own status line, which still runs and
+                still shows exactly what it did before. Your{' '}
+                <span className="mono">~/.claude/settings.json</span> is never modified, and either
+                way this applies to sessions started after the change. Plan limits also depend on
+                being signed in through a Claude.ai plan rather than an API key — with an API key
+                there is nothing for them to draw on, and they stay blank no matter how this is set.
+              </span>
+            </span>
+          </label>
+
           <div className="field">
             <span className="field-label">Scanned folders</span>
             {settings.projectRoots.length === 0 && (
