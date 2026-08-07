@@ -14,14 +14,25 @@
  * money and cannot run on a machine with no connectors — the same reason
  * verify:security is excluded.
  *
- *   node scripts/measure-worklog-cost.mts recall
- *   node scripts/measure-worklog-cost.mts budget
+ * A bare `node scripts/measure-worklog-cost.mts` (or `npm run measure:worklog`
+ * with no `-- recall`/`-- budget`) used to default to `recall` and quietly
+ * spend real money against the live boards before printing a word — that
+ * happened once, for real, during review of this file. There is no default
+ * mode any more: an absent or unrecognised argument always falls through to
+ * the usage line below and exits 1.
+ *
+ * Both paid modes additionally require STOKE_LIVE_WORKLOG_COST=1, the same
+ * opt-in shape verify-usage.mts uses for its live account call. Unset, empty,
+ * or "0" all refuse — only the literal string "1" runs anything.
+ *
+ *   STOKE_LIVE_WORKLOG_COST=1 node scripts/measure-worklog-cost.mts recall
+ *   STOKE_LIVE_WORKLOG_COST=1 node scripts/measure-worklog-cost.mts budget
  */
 import { runHeadless, type HeadlessResult } from '../src/main/agent.ts'
 import { readExisting, recallRunOptions } from '../src/main/worklog/recall.ts'
 import { DEFAULT_WORKLOG_BOARDS } from '../src/shared/worklog.ts'
 
-const mode = process.argv[2] ?? 'recall'
+const mode = process.argv[2]
 
 function report(label: string, result: Pick<HeadlessResult, 'isError' | 'subtype' | 'costUsd' | 'durationMs' | 'text'>): void {
   console.log(`\n${label}`)
@@ -32,7 +43,35 @@ function report(label: string, result: Pick<HeadlessResult, 'isError' | 'subtype
   console.log(`  text       ${JSON.stringify(String(result.text).slice(0, 600))}`)
 }
 
+/*
+ * The point of no return for either paid mode. Prints, in plain English,
+ * exactly what is about to happen and why it costs money, then refuses to go
+ * any further unless STOKE_LIVE_WORKLOG_COST is the literal string "1" — an
+ * unset, empty, or "0" value all fall through to the same refusal. This must
+ * run, and must be able to stop the script, before either mode's first real
+ * work — nothing above this point spends anything.
+ */
+function confirmLiveSpend(mode: 'recall' | 'budget'): void {
+  const envVar = 'STOKE_LIVE_WORKLOG_COST'
+  const readsBoards =
+    mode === 'recall'
+      ? ' It will also read your real, live Notion and ClickUp boards through their MCP connectors — this is your actual work data, not a test fixture.'
+      : ''
+  console.log(
+    `\nAbout to spend real money: this starts an actual "claude" process and that is billed like any other Claude usage.${readsBoards}\n` +
+      `Nothing has run yet, and nothing will unless you confirm.\n` +
+      `To confirm, set ${envVar}=1 and run this again, e.g.:\n` +
+      `  ${envVar}=1 npm run measure:worklog -- ${mode}\n`
+  )
+  if (process.env[envVar] !== '1') {
+    console.log(`Refusing to continue: ${envVar} is not set to "1". Nothing was spent.`)
+    process.exit(1)
+  }
+  console.log(`${envVar}=1 confirmed — continuing.`)
+}
+
 if (mode === 'recall') {
+  confirmLiveSpend('recall')
   /*
    * A deliberately generous ceiling. The point of this run is to find out what
    * the read costs, and a ceiling below that would abort it and measure the
@@ -68,6 +107,7 @@ if (mode === 'recall') {
       '>>> is the bug this whole workstream exists to fix.'
   )
 } else if (mode === 'budget') {
+  confirmLiveSpend('budget')
   /*
    * A ceiling nothing can fit inside, so the CLI has to refuse. The whole
    * purpose is the shape of that refusal: `subtype` and the result text are
