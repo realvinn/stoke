@@ -104,8 +104,6 @@ export interface RecallSnapshot {
 
 export const EMPTY_RECALL: RecallSnapshot = { items: {}, readAt: 0 }
 
-const TARGETS: WorklogTarget[] = ['notion', 'clickup']
-
 /* ------------------------------------------------------------- the prompt */
 
 /** What each destination is asked for. One entry per configured board. */
@@ -295,16 +293,35 @@ export interface RecallOptions {
 /**
  * The exact run recall performs.
  *
- * No `strictMcp` and no `safeMode`: it needs the user's own claude.ai
- * connectors, which is the whole reason the allowlist is three exact names.
- * `effort: 'low'` because this is a listing, not a judgement — the thinking
- * tokens that dominated the first measured scan buy nothing here.
+ * No `strictMcp` and no `safeMode` on the ordinary path: it needs the user's
+ * own claude.ai connectors, which is the whole reason the allowlist is exact
+ * names rather than a prefix. `effort: 'low'` because this is a listing, not a
+ * judgement — the thinking tokens that dominated the first measured scan buy
+ * nothing here.
+ *
+ * Zero configured targets is the one exception, and it is handled *here*
+ * rather than trusted to a caller's early return. `agent.ts`'s
+ * `--allowedTools` flag is only pushed when the array is non-empty
+ * (`opts.allowedTools?.length`) — an empty array omits the flag entirely, and
+ * a run with no `--allowedTools` inherits the CLI's default permissions,
+ * which include every Notion and ClickUp *write* tool. So an allowlist of
+ * `[]` is not "no tools", it is "no restriction" — the opposite of what an
+ * empty target list is supposed to mean. `safeMode` closes that gap
+ * unconditionally: it switches every MCP server off, so no tool of either
+ * server — read or write — is reachable regardless of what `allowedTools`
+ * says. Scoped to only this path, per the binding constraint that the
+ * ordinary recall run must stay non-hermetic.
  */
 export function recallRunOptions(opts: RecallOptions): HeadlessOptions {
+  const targets = configuredTargets(opts)
   return {
     prompt: buildRecallPrompt(opts),
     cwd: opts.cwd,
-    allowedTools: recallToolsFor(configuredTargets(opts)),
+    allowedTools: recallToolsFor(targets),
+    // See the comment above: this is what actually makes a zero-target run
+    // incapable of reaching a write tool, independent of the allowlist array
+    // being empty.
+    safeMode: targets.length === 0,
     effort: 'low',
     timeoutMs: opts.timeoutMs,
     maxBudgetUsd: opts.maxBudgetUsd ?? 0.15,
@@ -414,7 +431,7 @@ const LABEL: Record<WorklogTarget, string> = { clickup: 'ClickUp', notion: 'Noti
  */
 export function formatRecall(snapshot: RecallSnapshot): string {
   const blocks: string[] = []
-  for (const target of TARGETS) {
+  for (const target of WORKLOG_TARGETS) {
     const items = snapshot.items[target]
     if (!items?.length) continue
     const lines = items.map(

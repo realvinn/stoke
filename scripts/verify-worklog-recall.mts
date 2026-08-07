@@ -80,15 +80,41 @@ function stub(reply: string, isError = false): { run: Runner; calls: () => numbe
 
 const BOARDS = { clickupListId: '901615258684', notionDataSource: 'collection://abc' }
 
+/*
+ * Literal, by hand — deliberately NOT derived from `recallToolsFor` or
+ * `TOOLS_FOR`. Every assertion below that names one of these lists exists to
+ * catch the tool map in recall.ts being emptied or mis-split by accident; a
+ * comparison built from the same function under test would pass no matter
+ * what that function returned, including nothing at all. See the "empty
+ * TOOLS_FOR" demonstration this suite's fix pass ran by hand — these are the
+ * lines that must fail when it is.
+ */
+const NOTION_TOOLS_EXPECTED = [
+  'mcp__claude_ai_Notion__notion-query-data-sources',
+  'mcp__claude_ai_Notion__notion-search'
+]
+const CLICKUP_TOOLS_EXPECTED = [
+  'mcp__claude_ai_ClickUp__clickup_filter_tasks',
+  'mcp__claude_ai_ClickUp__clickup_get_list'
+]
+const RECALL_TOOLS_EXPECTED = [...NOTION_TOOLS_EXPECTED, ...CLICKUP_TOOLS_EXPECTED]
+
 /* --------------------------------------------------------------- the run */
 
 console.log('\nrecall reads, and can only read')
 
 const opts = recallRunOptions(BOARDS)
-check('the allowlist is exactly the read tools', opts.allowedTools, RECALL_TOOLS)
+check('the allowlist is exactly the read tools', opts.allowedTools, RECALL_TOOLS_EXPECTED)
+check('RECALL_TOOLS is the same four tools', RECALL_TOOLS, RECALL_TOOLS_EXPECTED)
 ok(
   'not one of them can create anything',
   !RECALL_TOOLS.some((t) => /create|update|delete|move|merge|comment/i.test(t)),
+  RECALL_TOOLS.join(', ')
+)
+ok(
+  'and it genuinely holds real tools rather than being vacuously empty',
+  RECALL_TOOLS.includes('mcp__claude_ai_Notion__notion-search') &&
+    RECALL_TOOLS.includes('mcp__claude_ai_ClickUp__clickup_get_list'),
   RECALL_TOOLS.join(', ')
 )
 ok('it runs cheap, because this is a listing not a judgement', opts.effort === 'low', String(opts.effort))
@@ -328,11 +354,19 @@ const notionOnly = recallRunOptions({ ...BOARDS, targets: ['notion'] })
 check(
   'the allowlist drops every ClickUp tool',
   notionOnly.allowedTools,
-  recallToolsFor(['notion'])
+  NOTION_TOOLS_EXPECTED
 )
 ok(
   'so a ClickUp read is not even possible',
   !(notionOnly.allowedTools ?? []).some((t) => /clickup/i.test(t)),
+  (notionOnly.allowedTools ?? []).join(', ')
+)
+ok(
+  // The check above (no clickup-shaped name) would also pass on an allowlist
+  // with nothing in it at all. This is the assertion that catches that: it
+  // fails unless a real Notion read tool is actually present.
+  'and it genuinely contains a real notion read tool, not just an absence of clickup ones',
+  (notionOnly.allowedTools ?? []).includes('mcp__claude_ai_Notion__notion-search'),
   (notionOnly.allowedTools ?? []).join(', ')
 )
 ok(
@@ -352,9 +386,22 @@ ok(
 )
 
 const clickupOnly = recallRunOptions({ ...BOARDS, targets: ['clickup'] })
+check(
+  'the mirror case keeps exactly the clickup read tools',
+  clickupOnly.allowedTools,
+  CLICKUP_TOOLS_EXPECTED
+)
 ok(
-  'the mirror case drops Notion',
+  'so it drops Notion entirely',
   !(clickupOnly.allowedTools ?? []).some((t) => /notion/i.test(t)),
+  (clickupOnly.allowedTools ?? []).join(', ')
+)
+ok(
+  // Names the specific tool CLAUDE.md gotcha 16 depends on: a board's closed
+  // statuses are on none of its open tasks, so this one has to survive every
+  // target combination or nothing can ever be marked done.
+  'including clickup_get_list, which is the only way a closed status is ever discovered',
+  (clickupOnly.allowedTools ?? []).includes('mcp__claude_ai_ClickUp__clickup_get_list'),
   (clickupOnly.allowedTools ?? []).join(', ')
 )
 ok(
@@ -364,6 +411,35 @@ ok(
 )
 
 check('no targets at all allows no tools', recallToolsFor([]), [])
+
+console.log('\nan empty allowlist is not the same as no tools')
+
+{
+  /*
+   * agent.ts only pushes `--allowedTools` when the array is non-empty
+   * (`opts.allowedTools?.length`), so `allowedTools: []` alone does not
+   * restrict anything — it omits the flag and the run inherits the CLI's
+   * default permissions, which include every Notion and ClickUp *write*
+   * tool. The property that actually matters is `safeMode`: it switches
+   * every MCP server off unconditionally, so no tool of either server is
+   * reachable no matter what `allowedTools` says. That is what this asserts
+   * directly, rather than trusting the empty array to mean what it looks
+   * like it means.
+   */
+  const zeroTargetRun = recallRunOptions({ ...BOARDS, targets: [] })
+  ok(
+    'a zero-target run turns safe mode on, so no MCP tool — read or write — is reachable',
+    zeroTargetRun.safeMode === true,
+    canon(zeroTargetRun)
+  )
+  const bothTargetsRun = recallRunOptions(BOARDS)
+  ok(
+    'the ordinary two-board run stays non-hermetic, since it exists to reach the boards',
+    bothTargetsRun.safeMode !== true,
+    canon(bothTargetsRun)
+  )
+}
+
 {
   /*
    * Nowhere to read is a configuration, not a failure: `error` must stay
