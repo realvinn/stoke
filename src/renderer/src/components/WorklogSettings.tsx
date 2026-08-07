@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { ProfileConfig, WorklogBoards, WorklogTarget } from '@shared/types'
 import { WORKLOG_TARGETS } from '@shared/worklog'
 import { idFor, nextBoards } from '../lib/worklogBoards'
@@ -126,6 +126,41 @@ export function WorklogSettings({
     if (next === boards.clickupListId) return
     commitIds({ notionDataSource: boards.notionDataSource, clickupListId: next })
   }
+
+  /*
+   * Escape closes the whole settings sheet by unmounting it (App.tsx binds
+   * the key on window and drops <SettingsSheet> outright) — the same failure
+   * mode RemoteSettings.tsx already found and repairs for its speech-server
+   * field: React delivers no blur to a node that is being unmounted, so a
+   * draft that lives only in this component's state is a promise this
+   * component cannot keep once it disappears. Flush both drafts on the way
+   * out, following that same precedent rather than inventing a second one.
+   *
+   * `latest` is written on every render, not captured once in a closure, so
+   * the cleanup below — registered a single time, with an empty dependency
+   * array — always reads whatever the most recent render actually held. A
+   * naive `useEffect(() => () => flush(notionDraft, boards), [])` would
+   * close over the *first* render's values instead, and an unmount minutes
+   * later would resurrect that stale snapshot over every commit made since —
+   * including one that landed after this component's last render but before
+   * it unmounted. Reading through the ref at unmount time is what rules that
+   * out: a draft already nulled by a commit stays null here too.
+   */
+  const latest = useRef({ boards, notionDraft, clickupDraft, onChangeBoards })
+  latest.current = { boards, notionDraft, clickupDraft, onChangeBoards }
+  useEffect(
+    () => () => {
+      const { boards: b, notionDraft: nd, clickupDraft: cd, onChangeBoards: change } = latest.current
+      if (nd === null && cd === null) return
+      change(
+        nextBoards(b, new Set(b.targets), {
+          notionDataSource: (nd ?? b.notionDataSource).trim(),
+          clickupListId: (cd ?? b.clickupListId).trim()
+        })
+      )
+    },
+    []
+  )
 
   /*
    * Ticking a checkbox is a discrete click, not a keystroke, so it commits
@@ -272,11 +307,17 @@ export function WorklogSettings({
         // someone is typing a valid id into it.
         const draftIds = { notionDataSource: notionValue, clickupListId: clickupValue }
         const hasId = idFor(draftIds, target).trim().length > 0
+        // Draft-aware here too, and for the same reason `disabled` is: clearing
+        // a previously-valid id commits as "off" the moment it is blurred (see
+        // the hint below), so showing the box still ticked in the meantime —
+        // while it is also disabled — would claim a board is on when nothing
+        // about the row agrees with that any more.
+        const checked = boards.targets.includes(target) && hasId
         return (
           <label className="check-row" key={target}>
             <input
               type="checkbox"
-              checked={boards.targets.includes(target)}
+              checked={checked}
               disabled={!hasId}
               onChange={(e) => toggle(target, e.target.checked)}
             />
@@ -327,9 +368,9 @@ export function WorklogSettings({
       <span className="field-hint">{TARGET_UI.clickup.findIt}</span>
 
       <span className="field-hint">
-        Type an id and its checkbox switches on by itself — no need to tick it separately. Clear
-        the id and the checkbox switches off too, so a board can never stay ticked with nothing
-        behind it to write to.
+        Typing an id does not switch the board on by itself — tick its box once the id is in
+        place. Clear the id, though, and the checkbox switches off on its own, so a board can
+        never stay ticked with nothing behind it to write to.
       </span>
 
       <span className="field-hint">
