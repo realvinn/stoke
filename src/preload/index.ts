@@ -64,6 +64,11 @@ const api: StokeApi = {
     onUpdate: (cb) => on<[Parameters<typeof cb>[0]]>(CH.ctxUpdate, cb)
   },
 
+  statusLine: {
+    last: () => ipcRenderer.invoke(CH.statusLineLast),
+    onUpdate: (cb) => on<[Parameters<typeof cb>[0]]>(CH.statusLineUpdate, cb)
+  },
+
   browser: {
     onFindRequested: (cb) => on<[]>(CH.browserFindRequested, cb),
     setBounds: (rect: Rect) => ipcRenderer.send(CH.browserSetBounds, rect),

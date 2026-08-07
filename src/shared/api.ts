@@ -8,6 +8,7 @@ import type {
   Rect,
   SessionMeta,
   Settings,
+  StatusLineSnapshot,
   UsageSnapshot,
   WorklogProposal,
   WorklogProposedEvent
@@ -141,6 +142,23 @@ export interface StokeApi {
     watch(sessionId: string): void
     unwatch(sessionId: string): void
     onUpdate(cb: (snapshot: ContextSnapshot) => void): () => void
+  }
+
+  /**
+   * The CLI's own statusLine payload: the context window and the plan limits.
+   *
+   * Only arrives while a session is open and rendering, which is the accepted
+   * trade-off for not bundling a Keychain binding — see `last()`.
+   */
+  statusLine: {
+    /**
+     * The newest reading seen this run, from whichever session produced it.
+     * Rate limits are account-wide, so any session answers for all of them,
+     * and this is what lets the usage chip show figures with an "as of HH:MM"
+     * when no session is open. Null before the first payload of the run.
+     */
+    last(): Promise<StatusLineSnapshot | null>
+    onUpdate(cb: (snapshot: StatusLineSnapshot) => void): () => void
   }
 
   browser: {

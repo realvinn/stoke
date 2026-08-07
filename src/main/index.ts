@@ -2,7 +2,7 @@ import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron'
 import { join } from 'node:path'
 import { CH } from '@shared/ipc'
 import { resolveTheme } from '@shared/themes'
-import type { LaunchOptions, Rect, Settings, SshHost } from '@shared/types'
+import type { LaunchOptions, Rect, Settings, SshHost, StatusLineSnapshot } from '@shared/types'
 import { EmbeddedBrowser } from './browser.ts'
 import { probeClaude } from './cli.ts'
 import { ContextWatcher } from './context.ts'
@@ -26,6 +26,7 @@ import { invalidateRecall, recall } from './worklog/recall.ts'
 import type { CreateProfileInput } from '@shared/profiles'
 import { getSettings, setSettings } from './store.ts'
 import {
+  readStatusLine,
   sweepStaleSessionFiles,
   userStatusLineCommand,
   windowFor,
@@ -61,6 +62,56 @@ let mcp: BrowserMcpServer | null = null
 let mcpConfigPath: string | null = null
 let remote: RemoteServer | null = null
 let usageCache: UsageSnapshot | null = null
+/**
+ * The newest statusLine reading seen this run, whichever session produced it.
+ *
+ * The rate limits in it are account-wide, so any open session's payload
+ * answers for all of them — and keeping one means the usage chip still has
+ * figures once every tab is closed, which is the whole "as of HH:MM" case.
+ */
+let lastStatusLine: StatusLineSnapshot | null = null
+/** receivedAt of the last payload pushed per session, so nothing is sent twice. */
+const statusLineSeen = new Map<string, number>()
+
+/**
+ * Push a session's payload at the renderer, if it has actually changed.
+ *
+ * The file is rewritten on every frame the CLI renders, so the mtime guard is
+ * load-bearing rather than tidy: without it this is several IPC messages a
+ * second per open session, carrying identical objects.
+ */
+function pushStatusLine(sessionId: string): void {
+  const snap = readStatusLine(sessionId)
+  if (!snap) return
+  if (statusLineSeen.get(sessionId) === snap.receivedAt) return
+  statusLineSeen.set(sessionId, snap.receivedAt)
+  lastStatusLine = snap
+  send(CH.statusLineUpdate, snap)
+}
+
+/**
+ * Bring `lastStatusLine` up to date from every live session's payload file.
+ *
+ * `pushStatusLine` above only runs for sessions the context watcher watches,
+ * which is every session Stoke minted an id for — but not a `--continue`,
+ * whose id the CLI chooses after launch and which is therefore watched by
+ * nothing. Its payload exists all the same, under its launch key.
+ *
+ * That matters because the rate limits in a payload are ACCOUNT-wide: any open
+ * session answers for all of them. Without this, the one launch path we cannot
+ * predict is also the one that contributes no usage figures at all.
+ *
+ * Called from the `statusline:last` invoke, not on a timer: the chip asks when
+ * it opens, and a handful of small reads on demand is cheaper than polling
+ * files that are rewritten three times a second anyway.
+ */
+function refreshLastStatusLine(): void {
+  for (const key of ptys?.statusKeys() ?? []) {
+    const snap = readStatusLine(key)
+    if (!snap) continue
+    if (!lastStatusLine || snap.receivedAt > lastStatusLine.receivedAt) lastStatusLine = snap
+  }
+}
 const tunnel = new TunnelManager()
 
 /**
@@ -411,6 +462,7 @@ function createWindow(): void {
   watcher = new ContextWatcher(
     (snap) => {
       send(CH.ctxUpdate, snap)
+      pushStatusLine(snap.sessionId)
       // `ready` is false for the placeholder emitted while a brand-new session
       // has no transcript yet; its counts are zeroes and would set a baseline
       // the real first reading then blows straight past.
@@ -563,12 +615,21 @@ function registerIpc(): void {
   ipcMain.on(CH.ptyKill, (_e, ptyId: string) => {
     const sessionId = ptys?.sessionIdFor(ptyId)
     ptys?.kill(ptyId)
-    if (sessionId) watcher?.unwatch(sessionId)
+    if (sessionId) {
+      watcher?.unwatch(sessionId)
+      statusLineSeen.delete(sessionId)
+    }
   })
 
   /* --------------------------------------------------------------- context */
   ipcMain.on(CH.ctxWatch, (_e, sessionId: string) => watcher?.watch(sessionId))
   ipcMain.on(CH.ctxUnwatch, (_e, sessionId: string) => watcher?.unwatch(sessionId))
+  ipcMain.handle(CH.statusLineLast, () => {
+    // Sweep first, so a session nothing watches — a --continue — still
+    // contributes its account-wide rate limits. See refreshLastStatusLine.
+    refreshLastStatusLine()
+    return lastStatusLine
+  })
 
   /* --------------------------------------------------------------- browser */
   ipcMain.on(CH.browserSetBounds, (_e, rect: Rect) => browser?.setBounds(rect))
