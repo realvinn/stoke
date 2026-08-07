@@ -34,7 +34,8 @@ import {
   writeSessionSettingsFile,
   writeStatusLineWrapper
 } from '../src/main/statusLine.ts'
-import type { StatusLinePayload } from '../src/shared/types.ts'
+import { buildArgs } from '../src/main/cli.ts'
+import type { LaunchOptions, StatusLinePayload } from '../src/shared/types.ts'
 
 let failures = 0
 
@@ -707,6 +708,51 @@ try {
   // last regardless of which case above threw or failed a check.
   if (!dirExistedBefore) cleanup(statusLineDir())
 }
+
+console.log('\nbuildArgs emits exactly one --settings')
+const base: LaunchOptions = {
+  cwd: '/tmp',
+  permissionMode: 'default',
+  model: '',
+  effort: 'default',
+  cols: 80,
+  rows: 24
+}
+
+const argsBoth = buildArgs({ ...base, ultracode: true, sessionId: 'sid' }, '/tmp/sid.settings.json')
+check('one --settings, not two', argsBoth.filter((a) => a === '--settings').length, 1)
+check(
+  'pointing at the file it was handed',
+  argsBoth[argsBoth.indexOf('--settings') + 1],
+  '/tmp/sid.settings.json'
+)
+check('ultracode still pins the effort flag', argsBoth[argsBoth.indexOf('--effort') + 1], 'xhigh')
+
+const argsPlain = buildArgs({ ...base, effort: 'high', sessionId: 'sid' }, '/tmp/sid.settings.json')
+check(
+  'a session with no ultracode still gets the file, because it carries the statusLine key',
+  argsPlain.filter((a) => a === '--settings').length,
+  1
+)
+check('and keeps the effort it asked for', argsPlain[argsPlain.indexOf('--effort') + 1], 'high')
+
+check('no file, no flag', buildArgs({ ...base, sessionId: 'sid' }, null).includes('--settings'), false)
+
+check(
+  'ultracode with no file falls back to its own, so a one-argument caller cannot lose it',
+  buildArgs({ ...base, ultracode: true, sessionId: 'sid' }).filter((a) => a === '--settings').length,
+  1
+)
+
+const argsUser = buildArgs(
+  { ...base, sessionId: 'sid', extraArgs: ['--settings', '/my/own.json'] },
+  '/tmp/sid.settings.json'
+)
+check(
+  "a hand-written --settings still comes last, so it still wins",
+  argsUser.slice(argsUser.lastIndexOf('--settings')),
+  ['--settings', '/my/own.json']
+)
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
 process.exitCode = failures ? 1 : 0

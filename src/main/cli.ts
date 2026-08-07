@@ -185,8 +185,13 @@ export function ultracodeSettingsFile(): string {
  * Note `bypassPermissions` maps to `--dangerously-skip-permissions` rather than
  * `--permission-mode bypassPermissions`: the latter requires the mode to already
  * be enabled for the workspace, the former always works.
+ *
+ * @param settingsFile the one `--settings` file for this session, holding both
+ *   the ultracode key and the statusLine wrapper. Null means the session needs
+ *   none — but note the ultracode fallback below, which keeps a caller that
+ *   passes nothing working exactly as it did.
  */
-export function buildArgs(opts: LaunchOptions): string[] {
+export function buildArgs(opts: LaunchOptions, settingsFile: string | null = null): string[] {
   const args: string[] = []
 
   if (opts.continueLast) {
@@ -227,10 +232,21 @@ export function buildArgs(opts: LaunchOptions): string[] {
   // wins — a repeated option is last-wins.
   if (opts.ultracode) {
     args.push('--effort', 'xhigh')
-    args.push('--settings', ultracodeSettingsFile())
   } else if (opts.effort && opts.effort !== 'default') {
     args.push('--effort', opts.effort)
   }
+
+  // Exactly one --settings, ever. A second silently discards the first
+  // (measured against 2.1.221), so ultracode and the statusLine wrapper have
+  // to share a file rather than each append a flag — which is why this is one
+  // push and not two. The fallback keeps a caller that hands over no file
+  // getting its ultracode key, including the deliberate throw when that file
+  // cannot be written.
+  //
+  // It sits before extraArgs so a hand-written `--settings` there still wins —
+  // a repeated option is last-wins.
+  const file = settingsFile ?? (opts.ultracode ? ultracodeSettingsFile() : null)
+  if (file) args.push('--settings', file)
 
   if (opts.name) args.push('--name', opts.name)
   for (const dir of opts.addDirs ?? []) args.push('--add-dir', dir)
