@@ -2,8 +2,9 @@ import { readTranscript, type TranscriptTurn } from '../sessionFile.ts'
 import { runHeadless, type HeadlessOptions } from '../agent.ts'
 import { asRecord, candidates, clip, oneLine } from './json.ts'
 import { EMPTY_RECALL, formatRecall, statusesFor, type RecallSnapshot } from './recall.ts'
+import { DEFAULT_WORKLOG_BOARDS, WORKLOG_TARGETS } from '../../shared/worklog.ts'
 import type { ProposalDraft } from './queue.ts'
-import type { WorklogKind, WorklogProposal, WorklogTarget } from '@shared/types'
+import type { WorklogBoards, WorklogKind, WorklogProposal, WorklogTarget } from '@shared/types'
 
 /**
  * The worklog agent itself: read one session back, propose entries, and — only
@@ -29,13 +30,18 @@ import type { WorklogKind, WorklogProposal, WorklogTarget } from '@shared/types'
 /* ------------------------------------------------------------- destinations */
 
 /**
- * Settled destinations. The Notion data source's schema already matches what is
- * written here, and the ClickUp list is the engineering list — deliberately not
+ * The shipped defaults, kept as named exports because other modules import
+ * them. The live values come from `Settings.worklogBoards`: an id is one
+ * person's board, and compiling it in meant nobody else could use the feature
+ * and this machine could not narrow to one destination.
+ *
+ * The default Notion data source's schema already matches what is written
+ * here, and the default ClickUp list is the engineering list — deliberately not
  * the Team Space's `IT Support Tasks`, which is a helpdesk queue whose statuses
  * would make engineering work unreadable.
  */
-export const NOTION_DATA_SOURCE = 'collection://368d3f2d-1f02-817c-b193-000b208e36bd'
-export const CLICKUP_LIST_ID = '901615258684'
+export const NOTION_DATA_SOURCE = DEFAULT_WORKLOG_BOARDS.notionDataSource
+export const CLICKUP_LIST_ID = DEFAULT_WORKLOG_BOARDS.clickupListId
 
 /**
  * The write tools, by what the proposal does and where it does it.
@@ -348,7 +354,11 @@ export function buildScanPrompt(ctx: ScanContext): string {
 }
 
 /** The write prompt for one destination. One item, one URL back. */
-export function buildApplyPrompt(proposal: WorklogProposal, target: WorklogTarget): string {
+export function buildApplyPrompt(
+  proposal: WorklogProposal,
+  target: WorklogTarget,
+  boards: WorklogBoards = DEFAULT_WORKLOG_BOARDS
+): string {
   const shared = [
     `Title: ${oneLine(proposal.title)}`,
     `Project: ${projectName(proposal.cwd)}`,
@@ -414,12 +424,12 @@ export function buildApplyPrompt(proposal: WorklogProposal, target: WorklogTarge
     target === 'clickup'
       ? [
           'Create ONE task in ClickUp using clickup_create_task.',
-          `List id: ${CLICKUP_LIST_ID}. Use the title as the task name and the body as`,
+          `List id: ${boards.clickupListId}. Use the title as the task name and the body as`,
           'its description. Set no assignee, no due date and no custom fields.'
         ]
       : [
           'Create ONE page in Notion using notion-create-pages.',
-          `Parent data source: ${NOTION_DATA_SOURCE}. Use the title as the page title`,
+          `Parent data source: ${boards.notionDataSource}. Use the title as the page title`,
           'and the body as the page content. Set no other properties.'
         ]
 
@@ -453,7 +463,7 @@ export interface ModelProposal {
   newStatus?: string
 }
 
-const TARGETS: WorklogTarget[] = ['notion', 'clickup']
+const TARGETS: WorklogTarget[] = [...WORKLOG_TARGETS]
 
 function normaliseTargets(v: unknown): WorklogTarget[] {
   if (!Array.isArray(v)) return [...TARGETS]
@@ -681,7 +691,7 @@ export function applyRunOptions(
   opts: ApplyOptions = {}
 ): HeadlessOptions {
   return {
-    prompt: buildApplyPrompt(proposal, target),
+    prompt: buildApplyPrompt(proposal, target, opts.boards ?? DEFAULT_WORKLOG_BOARDS),
     // The project directory, because MCP servers can be configured per project.
     // runHeadless falls back to a scratch dir if it has since been deleted.
     cwd: proposal.cwd,
@@ -811,6 +821,11 @@ export function groundProposals(
 export interface ApplyOptions {
   claudePath?: string | null
   /**
+   * Which boards to write to, and their ids. Absent means the shipped
+   * defaults — which is what every existing caller and test relies on.
+   */
+  boards?: WorklogBoards
+  /**
    * Called the instant a destination answers, before the next one is attempted.
    * Persist here — that is what makes a half-succeeded accept visible instead of
    * lost.
@@ -851,8 +866,40 @@ export async function applyProposal(
   const errors: Partial<Record<WorklogTarget, string>> = {}
   let cost: number | null = null
 
+  /*
+   * A destination the user has switched off is not written, however the
+   * proposal is addressed. A proposal can outlive the setting that produced it
+   * — it sits in the queue until someone reviews it — so the check belongs
+   * here, at the only point that changes anything outside Stoke.
+   *
+   * Absent `opts.boards` falls back to the shipped default (Notion only), not
+   * to every known target — an unconfigured install must never write to
+   * ClickUp by accident.
+   */
+  const allowed = opts.boards ? opts.boards.targets : DEFAULT_WORKLOG_BOARDS.targets
+  const wanted = proposal.targets.filter((t) => allowed.includes(t))
+  if (!wanted.length) {
+    /*
+     * Loud, not silent. Returning an empty success would mark the proposal
+     * accepted with nothing written anywhere, which is the exact class of
+     * failure this feature already had too much of. The error is keyed on the
+     * destination the proposal *asked* for, because that is the one the panel
+     * will name.
+     */
+    const named = proposal.targets[0] ?? 'notion'
+    return {
+      urls: {},
+      errors: {
+        [named]:
+          'no board is switched on for this entry — turn one on under Settings, Worklog agent'
+      },
+      costUsd: null,
+      ok: false
+    }
+  }
+
   for (const target of WRITE_ORDER) {
-    if (!proposal.targets.includes(target)) continue
+    if (!wanted.includes(target)) continue
 
     /*
      * Never write a destination this proposal already reached.

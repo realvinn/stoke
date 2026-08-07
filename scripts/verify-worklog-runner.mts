@@ -23,8 +23,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { buildHeadlessArgs, DEFAULT_HEADLESS_MODEL } from '../src/main/agent.ts'
 import {
+  CLICKUP_LIST_ID,
   MAX_DIGEST_CHARS,
   MAX_TITLE_CHARS,
+  NOTION_DATA_SOURCE,
   SCAN_DISALLOWED_TOOLS,
   WRITE_ORDER,
   WorklogParseError,
@@ -43,6 +45,9 @@ import {
   MAX_ENTRIES,
   WorklogQueue,
   dedupeKey,
+  dedupeKeys,
+  proposalId,
+  type Identity,
   type ProposalDraft
 } from '../src/main/worklog/queue.ts'
 import type { TranscriptTurn } from '../src/main/sessionFile.ts'
@@ -942,6 +947,212 @@ check(
   ]).length,
   1
 )
+
+console.log('\nthe board ids come from settings, not the binary')
+
+const otherBoards = {
+  targets: ['notion', 'clickup'] as const,
+  notionDataSource: 'collection://other-source',
+  clickupListId: '111222333'
+}
+
+ok(
+  'a configured Notion source reaches the prompt',
+  buildApplyPrompt(proposal(), 'notion', { ...otherBoards, targets: ['notion', 'clickup'] })
+    .includes('collection://other-source')
+)
+ok(
+  'and the shipped default is nowhere in it',
+  !buildApplyPrompt(proposal(), 'notion', { ...otherBoards, targets: ['notion', 'clickup'] })
+    .includes(NOTION_DATA_SOURCE)
+)
+ok(
+  'a configured ClickUp list reaches the prompt',
+  buildApplyPrompt(proposal(), 'clickup', { ...otherBoards, targets: ['notion', 'clickup'] })
+    .includes('111222333')
+)
+check('the defaults are still exported for anything that imports them', typeof CLICKUP_LIST_ID, 'string')
+
+/*
+ * CLAUDE.md gotcha 17. Proposal ids are the sha1 of the dedupe key and every
+ * rejection is a tombstone keyed on it, so a create key that changed by one
+ * byte would resurrect every proposal the user has ever said no to. Nothing in
+ * this workstream touches it; this is the assertion that keeps it that way.
+ */
+console.log('\nthe create dedupe key is byte-for-byte what it always was')
+check(
+  'the create key is session|flattened title',
+  dedupeKey({ sessionId: 'abc-123', title: 'Fixed the context meter!' }),
+  'abc-123|fixed the context meter'
+)
+check(
+  'and a kind of create does not change it',
+  dedupeKey({ sessionId: 'abc-123', title: 'Fixed the context meter!', kind: 'create' }),
+  dedupeKey({ sessionId: 'abc-123', title: 'Fixed the context meter!' })
+)
+check(
+  'nor does an update with no record to point at',
+  dedupeKey({ sessionId: 'abc-123', title: 'Fixed the context meter!', kind: 'update' }),
+  'abc-123|fixed the context meter'
+)
+check(
+  'while an update that names one is keyed on the record',
+  dedupeKey({
+    sessionId: 'abc-123',
+    title: 'Whatever the model called it this time',
+    kind: 'update',
+    existing: { clickup: { id: 'ABC123', title: 't' } }
+  }),
+  'abc-123|update|clickup:abc123'
+)
+/*
+ * And the id itself, which is the thing the tombstone is actually keyed on.
+ * Pinning the key alone would still let a change to `proposalId`'s hash or its
+ * 12-character slice resurrect every rejection, so both literals are stated:
+ * they are sha1(key).slice(0, 12) and they must never move.
+ */
+check(
+  'a create proposal keeps the id it has always had',
+  proposalId({ sessionId: 'abc-123', title: 'Fixed the context meter!' }),
+  '3409a9f77267'
+)
+check(
+  'and so does an update that names a record',
+  proposalId({
+    sessionId: 'abc-123',
+    title: 'Whatever the model called it this time',
+    kind: 'update',
+    existing: { clickup: { id: 'ABC123', title: 't' } }
+  }),
+  '59d970da5ff4'
+)
+
+/*
+ * CLAUDE.md gotcha 17, the other half.
+ *
+ * An update's key is a composite of every board record it names, so narrowing
+ * the configured boards narrows `existing` and changes it:
+ * `s1|update|notion:page-1,clickup:abc123` becomes `s1|update|notion:page-1`.
+ * Nothing already queued matches that, so the same update is proposed again
+ * and accepting it writes to the same Notion page twice.
+ *
+ * The key itself must not move — ids are its sha1. So a proposal answers to
+ * more than one key instead: the composite, plus one per record it names.
+ * "Already known" becomes "any record of mine is already spoken for", which is
+ * stable when boards are switched off AND when they are switched back on.
+ */
+console.log('\nthe update key survives a board being switched off')
+
+const twoBoards: Identity = {
+  sessionId: 's1',
+  title: 'Finished the SSH work',
+  kind: 'update',
+  existing: {
+    notion: { id: 'PAGE-1', title: 'Ship SSH sessions' },
+    clickup: { id: 'ABC123', title: 'Ship SSH sessions' }
+  }
+}
+const notionOnly: Identity = {
+  sessionId: 's1',
+  // Reworded on purpose: an update is keyed on the record, never the wording.
+  title: 'Wrapped up the SSH work',
+  kind: 'update',
+  existing: { notion: { id: 'PAGE-1', title: 'Ship SSH sessions' } }
+}
+
+check(
+  'the composite key is untouched, so no id and no tombstone moves',
+  dedupeKey(twoBoards),
+  's1|update|notion:page-1,clickup:abc123'
+)
+check(
+  'and it is still the first key the proposal answers to',
+  dedupeKeys(twoBoards)[0],
+  dedupeKey(twoBoards)
+)
+check('a two-board update also answers to one key per record', dedupeKeys(twoBoards), [
+  's1|update|notion:page-1,clickup:abc123',
+  's1|update|notion:page-1',
+  's1|update|clickup:abc123'
+])
+check('a one-board update answers to exactly one key, with no duplicate', dedupeKeys(notionOnly), [
+  's1|update|notion:page-1'
+])
+ok(
+  'so the Notion-only re-proposal shares a key with the two-board one',
+  dedupeKeys(notionOnly).some((k) => dedupeKeys(twoBoards).includes(k)),
+  dedupeKeys(notionOnly).join(' ')
+)
+check('a create answers to its one key and nothing else', dedupeKeys({ sessionId: 's1', title: 'Fixed the context meter!' }), [
+  's1|fixed the context meter'
+])
+check(
+  'and so does an update with no record to point at',
+  dedupeKeys({ sessionId: 's1', title: 'Fixed the context meter!', kind: 'update' }),
+  ['s1|fixed the context meter']
+)
+
+console.log('\nand the queue does not queue it twice')
+{
+  /** The same work, once with both boards read and once with only Notion. */
+  const bothDraft: ProposalDraft = {
+    sessionId: 's1',
+    cwd: 'G:\\Code\\personal\\Stoke',
+    group: 'personal',
+    title: 'Finished the SSH work',
+    body: 'Shipped it.',
+    targets: ['notion', 'clickup'],
+    kind: 'update',
+    existing: {
+      notion: { id: 'PAGE-1', title: 'Ship SSH sessions' },
+      clickup: { id: 'ABC123', title: 'Ship SSH sessions' }
+    },
+    newStatus: { notion: 'Done', clickup: 'complete' }
+  }
+  const narrowedDraft: ProposalDraft = {
+    ...bothDraft,
+    title: 'Wrapped up the SSH work',
+    targets: ['notion'],
+    existing: { notion: { id: 'PAGE-1', title: 'Ship SSH sessions' } },
+    newStatus: { notion: 'Done' }
+  }
+
+  const qN = new WorklogQueue(queueFile('narrowed'))
+  check('the first scan queues it', qN.add([bothDraft]).length, 1)
+  check(
+    'the rescan with ClickUp switched off adds nothing',
+    qN.add([narrowedDraft]).length,
+    0
+  )
+  check('so the panel still shows one entry', qN.list().length, 1)
+
+  // And the other direction: switched off first, switched back on later.
+  const qW = new WorklogQueue(queueFile('widened'))
+  check('narrow first', qW.add([narrowedDraft]).length, 1)
+  check('and widening the boards again adds nothing either', qW.add([bothDraft]).length, 0)
+  check('still one entry', qW.list().length, 1)
+
+  // A rejected update must not come back under the narrowed key either.
+  const qR = new WorklogQueue(queueFile('narrow-reject'))
+  const rejected = qR.add([bothDraft])[0]
+  qR.reject(rejected.id)
+  check('a rejected update stays rejected under the narrowed key', qR.add([narrowedDraft]).length, 0)
+  check(
+    'and it is still one record, still rejected',
+    qR.list().map((p) => p.status),
+    ['rejected']
+  )
+
+  // A different record in the same session is different work, and must not be
+  // swallowed by the rule above.
+  const otherRecord: ProposalDraft = {
+    ...narrowedDraft,
+    title: 'Started the worklog panel',
+    existing: { notion: { id: 'PAGE-2', title: 'Worklog panel' } },
+    newStatus: { notion: 'In progress' }
+  }
+  check('a different Notion page is still a second proposal', qN.add([otherRecord]).length, 1)
+}
 
 rmSync(dir, { recursive: true, force: true })
 

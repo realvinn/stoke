@@ -109,6 +109,43 @@ export function proposalId(p: Identity): string {
   return createHash('sha1').update(dedupeKey(p)).digest('hex').slice(0, 12)
 }
 
+/**
+ * Every key a proposal answers to, for the purposes of "already known".
+ *
+ * `dedupeKey` returns exactly one string, `proposalId` is its sha1, and both
+ * are frozen byte for byte — CLAUDE.md gotcha 17. This does not touch either.
+ *
+ * The problem it solves is that an update's key is a COMPOSITE of every board
+ * record the proposal names, and that composite is not stable when the user
+ * changes which boards are switched on. With ClickUp off, recall reads only
+ * Notion, so `existing` carries only Notion and the very same update arrives
+ * as `s1|update|notion:x` where it was `s1|update|notion:x,clickup:y`. It
+ * matches nothing already queued, so it is queued again and accepting it
+ * applies the same write to the same page twice.
+ *
+ * So an update also answers to one key per record it names, and "already
+ * known" becomes "any record of mine is already spoken for". That is stable
+ * both ways — switching a board off and switching it back on — and it needs no
+ * migration, because nothing on disk stores a key: `dedupeKey` is recomputed
+ * from `existing` every time the file is loaded.
+ *
+ * A create answers to its one key and nothing else. Its only identity is its
+ * flattened title, and a second key there would collapse two genuinely
+ * different pieces of work, which is the one error this file will not make.
+ */
+export function dedupeKeys(p: Identity): string[] {
+  const composite = dedupeKey(p)
+  if (p.kind !== 'update') return [composite]
+  // A Set, because a one-record update's composite IS its per-record key and
+  // the two must not be reported as two.
+  const keys = new Set<string>([composite])
+  for (const t of TARGETS) {
+    const id = p.existing?.[t]?.id
+    if (id) keys.add(`${p.sessionId}|update|${t}:${id.toLowerCase()}`)
+  }
+  return [...keys]
+}
+
 function isRecord(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === 'object' && !Array.isArray(v)
 }
@@ -313,7 +350,7 @@ export class WorklogQueue {
    * nothing new from one that found nothing at all.
    */
   add(drafts: ProposalDraft[], now = Date.now()): WorklogProposal[] {
-    const seen = new Set(this.items.map((p) => dedupeKey(p)))
+    const seen = new Set(this.items.flatMap((p) => dedupeKeys(p)))
     /*
      * A rejection also blocks the same work arriving under the other kind.
      *
@@ -344,13 +381,20 @@ export class WorklogQueue {
         kind: draft.kind,
         existing: draft.existing
       }
-      const key = dedupeKey(identity)
+      const keys = dedupeKeys(identity)
       // Both ways round, and against `refused` rather than `seen`: a *rejected*
       // create blocks the same words arriving as an update and vice versa, but a
       // merely pending one must not — losing a better-informed update to an
       // earlier create would be a silent downgrade.
-      if (seen.has(key) || refused.has(dedupeKey({ sessionId: draft.sessionId, title }))) continue
-      seen.add(key)
+      //
+      // `keys.some` rather than a single lookup so an update still matches when
+      // the configured boards have changed under it; see dedupeKeys.
+      if (
+        keys.some((k) => seen.has(k)) ||
+        refused.has(dedupeKey({ sessionId: draft.sessionId, title }))
+      )
+        continue
+      for (const k of keys) seen.add(k)
 
       const proposal: WorklogProposal = {
         id: proposalId(identity),

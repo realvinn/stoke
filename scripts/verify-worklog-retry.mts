@@ -32,6 +32,16 @@ const base: WorklogProposal = {
   createdAt: 0
 }
 
+/*
+ * The ordering/retry tests below are about what happens when TWO destinations
+ * are in play, which since this task means both have to be explicitly
+ * switched on: the safe default when `boards` is absent is Notion only (an
+ * unconfigured install must never write to ClickUp by accident), so a
+ * two-destination proposal run without this would silently narrow itself to
+ * one write and the tests would stop testing what their names say.
+ */
+const bothBoards = { targets: ['notion', 'clickup'], notionDataSource: 'x', clickupListId: '1' }
+
 /** Records which destinations were actually written, so a duplicate is visible. */
 function recorder(fail?: string): { calls: string[]; run: never } {
   const calls: string[] = []
@@ -54,14 +64,14 @@ function recorder(fail?: string): { calls: string[]; run: never } {
 console.log('a clean accept writes both, once each')
 {
   const r = recorder()
-  const out = await applyProposal(base, { run: r.run })
+  const out = await applyProposal(base, { run: r.run, boards: bothBoards })
   check('both written, in order', r.calls.join(',') === 'clickup,notion', r.calls.join(','))
   check('reported ok', out.ok)
 }
 
 console.log('\na half-success keeps the url that worked')
 const half = recorder('notion')
-const halfOut = await applyProposal(base, { run: half.run })
+const halfOut = await applyProposal(base, { run: half.run, boards: bothBoards })
 check('the clickup url survives', !!halfOut.urls.clickup)
 check('the notion failure is recorded', !!halfOut.errors.notion)
 check('the accept is not reported ok', !halfOut.ok)
@@ -74,7 +84,7 @@ console.log('\nretrying that half-success must not write clickup twice')
     urls: { clickup: halfOut.urls.clickup as string }
   }
   const r = recorder()
-  const out = await applyProposal(retried, { run: r.run })
+  const out = await applyProposal(retried, { run: r.run, boards: bothBoards })
   check('clickup was NOT written again', !r.calls.includes('clickup'), `wrote: ${r.calls.join(',') || 'nothing'}`)
   check('only the missing destination ran', r.calls.join(',') === 'notion', r.calls.join(','))
   check('the existing url is carried through', out.urls.clickup === halfOut.urls.clickup)
@@ -90,7 +100,7 @@ console.log('\na write that returns no usable link still counts as written')
     calls.push(/notion/i.test(o.allowedTools?.[0] ?? '') ? 'notion' : 'clickup')
     return { text: 'Created it. See https://example.com/docs for context.', isError: false, costUsd: 0, subtype: 'success' }
   }) as never
-  const out = await applyProposal(base, { run })
+  const out = await applyProposal(base, { run, boards: bothBoards })
   check('both destinations attempted once', calls.join(',') === 'clickup,notion', calls.join(','))
   check('an unrelated link is not accepted as the record', !out.urls.clickup, JSON.stringify(out.urls))
   check('but the destination is marked reached', out.urls.clickup === '', JSON.stringify(out.urls))
@@ -100,7 +110,7 @@ console.log('\na write that returns no usable link still counts as written')
     retryCalls.push(/notion/i.test(o.allowedTools?.[0] ?? '') ? 'notion' : 'clickup')
     return { text: 'ok', isError: false, costUsd: 0, subtype: 'success' }
   }) as never
-  await applyProposal({ ...base, status: 'failed', urls: out.urls }, { run: retryRun })
+  await applyProposal({ ...base, status: 'failed', urls: out.urls }, { run: retryRun, boards: bothBoards })
   check('so a retry writes nothing again', retryCalls.length === 0, `wrote: ${retryCalls.join(',') || 'nothing'}`)
 }
 
@@ -109,6 +119,32 @@ console.log('\na destination not on the proposal is never written')
   const r = recorder()
   await applyProposal({ ...base, targets: ['notion'] }, { run: r.run })
   check('clickup skipped', r.calls.join(',') === 'notion', r.calls.join(','))
+}
+
+console.log('\na board switched off in settings is never written')
+{
+  const r = recorder()
+  const out = await applyProposal(base, {
+    run: r.run,
+    boards: { targets: ['notion'], notionDataSource: 'collection://x', clickupListId: '1' }
+  })
+  check('only the configured board ran', r.calls.join(',') === 'notion', r.calls.join(','))
+  check('and it is reported as written', !!out.urls.notion)
+}
+
+console.log('\na proposal addressed only to a switched-off board fails out loud')
+{
+  const r = recorder()
+  const out = await applyProposal(
+    { ...base, targets: ['clickup'] },
+    {
+      run: r.run,
+      boards: { targets: ['notion'], notionDataSource: 'collection://x', clickupListId: '1' }
+    }
+  )
+  check('nothing was written', r.calls.length === 0, r.calls.join(','))
+  check('the accept is not reported ok', !out.ok)
+  check('and it says why', !!out.errors.clickup, JSON.stringify(out.errors))
 }
 
 console.log(failed === 0 ? '\nall pass' : `\n${failed} failure(s)`)
