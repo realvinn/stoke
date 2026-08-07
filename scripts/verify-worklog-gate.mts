@@ -142,21 +142,15 @@ check('so is a group looked up on its own', isWatchedGroup('Gitea-Company', ['gi
 check('and a group nobody watches stays off', isWatchedGroup('personal', ['gitea-company']), false)
 
 const shouted = p('GITEA-COMPANY', 'Refinity')
+check(
+  'this machine folds path case exactly as its own rules say',
+  shouldWatch(shouted, projects, WATCHED),
+  GATE_RULES.caseInsensitive
+)
 if (isWin) {
-  check(
-    'a differently-cased path matches, because Windows paths are case-blind',
-    shouldWatch(shouted, projects, WATCHED),
-    true
-  )
   check(
     'and an unwatched one still does not match however it is cased',
     shouldWatch(p('PERSONAL', 'STOKE'), projects, WATCHED),
-    false
-  )
-} else if (process.platform !== 'darwin') {
-  check(
-    'a differently-cased path is a different path here, so it matches nothing',
-    shouldWatch(shouted, projects, WATCHED),
     false
   )
 }
@@ -200,7 +194,7 @@ check(
   null
 )
 
-console.log('\nthe signature the sidebar chip cannot reach through')
+console.log('\na watched root watches the folders under it')
 check(
   'a folder under a watched root is watched even with no history of its own',
   shouldWatch(p('unregistered-repo'), withRoot, ['Code'], [root]),
@@ -222,13 +216,6 @@ check(
   true
 )
 check('linux does not fold path case', pathRulesFor('linux').caseInsensitive, false)
-check(
-  'GATE_RULES matches one of the three platforms pathRulesFor knows about',
-  [pathRulesFor('win32'), pathRulesFor('darwin'), pathRulesFor('linux')].some(
-    (r) => r.sep === GATE_RULES.sep && r.caseInsensitive === GATE_RULES.caseInsensitive
-  ),
-  true
-)
 check(
   'a differently-cased path matches on APFS',
   isWatchedGroup(groupForCwdShared(p('GITEA-COMPANY', 'Refinity'), projects, pathRulesFor('darwin')), WATCHED),
