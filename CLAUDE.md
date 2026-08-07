@@ -26,6 +26,7 @@ need a live instance or cost money:
 ```bash
 npm run verify:context        # context meter against the real transcripts on this machine
 npm run verify:profiles       # profile resolution + every accent clears 4.5:1
+npm run verify:settings       # settings hydration: repair, clamps, and what it drops
 npm run verify:color          # colour maths: contrast, APCA, oklch
 npm run verify:worklog-gate     # which sessions the worklog agent would watch
 npm run verify:worklog-runner   # prompt building, JSON parsing, titles, create-vs-update
@@ -51,6 +52,7 @@ src/main/         Electron main process
   browser.ts        docked Chromium: tabs, find, console/network capture
   workspace.ts      default folder + scratch folders
   store.ts          settings persistence
+  settingsSchema.ts defaults + hydrate, with no electron import so a suite can run it
   updates.ts        claude CLI version/health
   selfUpdate.ts     Stoke's own updates (electron-updater)
   profiles.ts       plans and creates a profile's folder + scan root
