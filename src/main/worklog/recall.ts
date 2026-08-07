@@ -360,11 +360,39 @@ export async function readExisting(opts: RecallOptions, now = Date.now()): Promi
 
 /* -------------------------------------------------------------- the cache */
 
-let cached: RecallSnapshot | null = null
-let inFlight: Promise<RecallSnapshot> | null = null
+/**
+ * The cache key for a target set: `configuredTargets` already filters and
+ * orders by the canonical `WORKLOG_TARGETS` list, so two callers who name the
+ * same boards in a different order — or one who omits `targets` entirely —
+ * land on the same key.
+ *
+ * Keyed on the target set, not merely on time. `targets` narrows both the
+ * prompt and the allowlist (see `recallRunOptions`), so a snapshot read for
+ * one target set is not a valid answer for another: a Notion-only reading has
+ * no ClickUp items in it at all, and serving it to a caller asking about both
+ * boards makes every ClickUp record look like it does not exist — which turns
+ * a real update into a duplicate create. The mirror direction is just as
+ * wrong: a two-board reading served to a Notion-only caller offers ClickUp
+ * ids nothing downstream is allowed to write to.
+ *
+ * The alternative — leave the cache keyed on time alone and invalidate it
+ * wherever `worklogBoards.targets` changes — was rejected on purpose. That
+ * makes correctness depend on every future caller of the settings remembering
+ * to call `invalidateRecall`, in a module the cache itself does not import.
+ * Keying on the input makes a stale cross-target read impossible by
+ * construction instead of by discipline.
+ */
+function cacheKey(opts: RecallOptions): string {
+  return configuredTargets(opts).join(',')
+}
+
+const cached = new Map<string, RecallSnapshot>()
+const inFlight = new Map<string, Promise<RecallSnapshot>>()
 /**
  * Bumped by every invalidation, so a read that was already running when the
  * boards changed cannot install its now-stale answer. See `invalidateRecall`.
+ * Shared across every key: a write can affect any board, so every cached
+ * target set has to be treated as stale, not only the one the write touched.
  */
 let generation = 0
 
@@ -373,17 +401,22 @@ let generation = 0
  *
  * The single-flight promise matters more than the TTL: auto-scan can fire for
  * two sessions in the same second, and without it that is two live reads of the
- * same two boards, billed twice, for one answer.
+ * same two boards, billed twice, for one answer. Single-flighted per target
+ * set, same as the cache: two scans reading different boards must not be
+ * collapsed into serving one of them the other's answer.
  *
  * A failed read is cached too, and on purpose. Retrying a broken connector once
  * per scan turns one misconfiguration into a steady drip of failing runs; the
  * TTL bounds how wrong that can stay.
  */
 export async function recall(opts: RecallOptions, now = Date.now()): Promise<RecallSnapshot> {
-  if (cached && now - cached.readAt < RECALL_TTL_MS) return cached
-  if (inFlight) return inFlight
+  const key = cacheKey(opts)
+  const hit = cached.get(key)
+  if (hit && now - hit.readAt < RECALL_TTL_MS) return hit
+  const running = inFlight.get(key)
+  if (running) return running
   const started = generation
-  inFlight = readExisting(opts, now)
+  const promise = readExisting(opts, now)
     .then((snap) => {
       /*
        * Only install the answer if the boards did not change under it.
@@ -395,24 +428,29 @@ export async function recall(opts: RecallOptions, now = Date.now()): Promise<Rec
        * ten minutes, and the same work came back as a create. That is exactly
        * the duplication recall exists to prevent.
        */
-      if (generation === started) cached = snap
+      if (generation === started) cached.set(key, snap)
       return snap
     })
     .finally(() => {
-      inFlight = null
+      inFlight.delete(key)
     })
-  return inFlight
+  inFlight.set(key, promise)
+  return promise
 }
 
 /**
- * Drop the cached reading.
+ * Drop every cached reading, for every target set.
  *
  * Called after a write, because the record just created is the one thing the
  * next scan most needs to know about: without this it stays invisible for up to
  * the TTL, and the next scan of the same session proposes it all over again.
+ * Cleared wholesale rather than by key: a write to one board can change what a
+ * *different* target set's next read ought to see too (an update moves a task
+ * off the "open" list `clickup`-only recall reads), so nothing short of every
+ * key is safe to keep.
  */
 export function invalidateRecall(): void {
-  cached = null
+  cached.clear()
   // A read already in flight was started before the write and cannot know about
   // it, so it must not be allowed to install itself once it lands.
   generation++

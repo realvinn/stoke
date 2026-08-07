@@ -348,6 +348,55 @@ ok(
   JSON.stringify(next.items.clickup)
 )
 
+/*
+ * The cache is keyed on the target set, not merely on time.
+ *
+ * Before this, unticking ClickUp and scanning within the TTL would still be
+ * served the two-board reading cached under the old settings — so the model
+ * would be shown ClickUp records that a board-off scan should never see, and
+ * the reverse: ticking ClickUp on would be served a Notion-only reading for
+ * up to ten minutes, proposing creates for ClickUp work that already exists.
+ * Both directions are asserted here: a narrower read is not served the wider
+ * cache, and the wider cache is not clobbered or reused by the narrower one.
+ */
+console.log('\na cached reading for one target set is not served to a different one')
+
+invalidateRecall()
+const bothBoards = stub(
+  '{"clickup":[{"id":"c1","title":"ClickUp thing"}],"notion":[{"id":"n1","title":"Notion thing"}]}'
+)
+const bothSnap = await recall({ ...BOARDS, targets: ['notion', 'clickup'], run: bothBoards.run }, 200_000)
+check('the two-board read sees both boards', Object.keys(bothSnap.items).sort(), ['clickup', 'notion'])
+check('read once so far', bothBoards.calls(), 1)
+
+const notionOnly2 = stub('{"notion":[{"id":"n1","title":"Notion thing"}]}')
+const notionSnap = await recall({ ...BOARDS, targets: ['notion'], run: notionOnly2.run }, 200_001)
+check(
+  'a notion-only read is not served the cached two-board answer — it reads for itself',
+  notionOnly2.calls(),
+  1
+)
+check('so its snapshot has no clickup key at all', notionSnap.items.clickup, undefined)
+
+const stillBoth = await recall({ ...BOARDS, targets: ['notion', 'clickup'], run: bothBoards.run }, 200_002)
+check(
+  'and the two-board cache is unaffected — the narrower read did not overwrite or evict it',
+  bothBoards.calls(),
+  1
+)
+check('it still holds the clickup record', stillBoth.items.clickup?.[0].id, 'c1')
+
+// The mirror order: cache the narrow reading first, then ask for the wider set.
+invalidateRecall()
+const clickupOnly2 = stub('{"clickup":[{"id":"c1","title":"ClickUp thing"}]}')
+await recall({ ...BOARDS, targets: ['clickup'], run: clickupOnly2.run }, 300_000)
+const widerAfterNarrow = await recall({ ...BOARDS, targets: ['notion', 'clickup'], run: bothBoards.run }, 300_001)
+check(
+  'asking for both boards after a narrower cache is not served the narrow answer',
+  widerAfterNarrow.items.notion?.[0]?.id,
+  'n1'
+)
+
 console.log('\nreading one board when only one is switched on')
 
 const notionOnly = recallRunOptions({ ...BOARDS, targets: ['notion'] })

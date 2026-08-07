@@ -829,16 +829,31 @@ export function groundProposals(
     if (input.auto) draft.auto = true
 
     const target = p.target
+    /*
+     * `allowed.includes(target)` is checked here, not only in the demotion
+     * branch below, and on purpose: this is the second, independent guard
+     * finding 2 exists to add. `recall()` is now keyed on the target set, so
+     * in the ordinary run `snapshot.items[target]` simply has nothing for a
+     * board that is off — but `groundProposals` is also called directly (see
+     * scripts/verify-worklog-runner.mts) with a hand-built snapshot, and nothing
+     * about its own signature stops a caller, now or later, from handing it a
+     * snapshot that names a board `allowed` does not. Gating `found` on the
+     * same `allowed` list that already governs the fallback below means a
+     * match against an off-board record is treated exactly like no match at
+     * all — it is demoted to a create addressed to a board that is actually
+     * switched on, never kept as an update to the one that is not.
+     */
     const found =
-      p.kind === 'update' && target && p.existingId
+      p.kind === 'update' && target && allowed.includes(target) && p.existingId
         ? (snapshot.items[target]?.find((i) => i.id.toLowerCase() === p.existingId!.toLowerCase()) ??
           null)
         : null
 
     if (p.kind === 'update' && !found) {
       demoted++
-      // An update whose record does not exist becomes a create — and a create
-      // may only go where a write is possible.
+      // An update whose record does not exist — or whose board is switched
+      // off, see above — becomes a create, and a create may only go where a
+      // write is possible.
       const fallback = allowed.length ? [...allowed] : [...TARGETS]
       draft.targets = target && allowed.includes(target) ? [target] : fallback
       drafts.push(draft)

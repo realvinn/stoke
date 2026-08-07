@@ -1168,9 +1168,25 @@ const onePrompt = buildScanPrompt({
 })
 ok('the prompt never asks for a ClickUp entry', !/clickup/i.test(onePrompt), onePrompt)
 ok('outstanding items still get asked for', /outstanding item/.test(onePrompt), onePrompt)
+/*
+ * Anchored to the parameterised instruction lines themselves, not a bare
+ * `"targets":["notion"]` — that literal also appears in the reply *example*
+ * near the end of the prompt (`runner.ts`'s hard-coded
+ * `{"kind":"create",...,"targets":["notion"]}`), which is untouched by this
+ * feature and would satisfy a bare regex whether or not `summaryTarget` /
+ * `taskTarget` actually substituted correctly. Matching the surrounding
+ * instruction text pins each check to the one place that computation feeds,
+ * so a broken fallback (e.g. `taskTarget` stuck on `clickup` regardless of
+ * `targets`) fails here instead of being hidden by the unrelated example.
+ */
 ok(
-  'and they are addressed to the board that is on',
-  /"targets":\["notion"\]/.test(onePrompt),
+  'the summary entry is addressed to the board that is on',
+  onePrompt.includes('One summary entry: {"kind":"create","targets":["notion"]}'),
+  onePrompt
+)
+ok(
+  'and so is every outstanding item',
+  onePrompt.includes('3. One {"kind":"create","targets":["notion"]} per outstanding item'),
   onePrompt
 )
 
@@ -1202,6 +1218,55 @@ check(
   ).drafts[0].targets,
   ['notion']
 )
+
+/*
+ * The guard that has to hold on its own, independent of recall ever being
+ * keyed correctly.
+ *
+ * `recall()` is now scoped to the configured target set, so in the live path
+ * a ClickUp match should never even be in the snapshot handed to a Notion-only
+ * scan. But `groundProposals` takes the snapshot as a plain argument — nothing
+ * in its signature stops a future caller (or a bug in some other module) from
+ * handing it one that names a board `allowed` does not. This is what proves
+ * the fix at runner.ts's `found` check holds by itself: fed a snapshot that
+ * *does* contain a ClickUp match, with `allowed` restricted to Notion, the
+ * matched update must still not be kept as a ClickUp-addressed write.
+ */
+console.log('\na matched update to a board that is switched off is not kept, even if recall saw it')
+
+const CLICKUP_MATCH_SNAPSHOT: RecallSnapshot = {
+  readAt: 1,
+  items: { clickup: [{ id: 'existing-1', title: 'Ship the thing' }] }
+}
+
+const offBoardMatch = groundProposals(
+  [
+    {
+      kind: 'update',
+      target: 'clickup',
+      existingId: 'existing-1',
+      newStatus: 'complete',
+      title: 'Ship the thing',
+      body: '',
+      targets: ['clickup']
+    }
+  ],
+  { sessionId: 's', cwd: 'c', group: 'g' },
+  CLICKUP_MATCH_SNAPSHOT,
+  ['notion']
+)
+check(
+  'the matched record is not addressed as an update to the board that is off',
+  offBoardMatch.drafts[0].kind,
+  'create'
+)
+check(
+  'it is filed against the board that is actually on instead',
+  offBoardMatch.drafts[0].targets,
+  ['notion']
+)
+check('and no existing record is carried onto a create', offBoardMatch.drafts[0].existing, undefined)
+check('it is counted as demoted, same as an id nobody has seen', offBoardMatch.demoted, 1)
 
 rmSync(dir, { recursive: true, force: true })
 
