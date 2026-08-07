@@ -312,6 +312,9 @@ async function runWorklogScan(sessionId: string, auto: boolean): Promise<number>
   const snapshot = await recall({
     clickupListId: CLICKUP_LIST_ID,
     notionDataSource: NOTION_DATA_SOURCE,
+    // Only read the boards the user has switched on — otherwise a ClickUp
+    // read is paid for on every scan even with ClickUp off.
+    targets: settings.worklogBoards.targets,
     // The same directory the write would use, so both runs see the same MCP
     // servers. runHeadless falls back to a scratch dir if it has been deleted.
     cwd,
@@ -326,7 +329,8 @@ async function runWorklogScan(sessionId: string, auto: boolean): Promise<number>
     group,
     recall: snapshot,
     auto,
-    claudePath: settings.claudePath
+    claudePath: settings.claudePath,
+    boards: settings.worklogBoards
   })
   if (outcome.demoted > 0) {
     // Not silent: a steady count means recall is truncating or the model is

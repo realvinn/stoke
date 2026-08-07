@@ -1154,6 +1154,55 @@ console.log('\nand the queue does not queue it twice')
   check('a different Notion page is still a second proposal', qN.add([otherRecord]).length, 1)
 }
 
+/* -------------------------------------------- the scan only asks for boards */
+/* -------------------------------------------- that are actually switched on */
+
+console.log('\nwith one board switched on, nothing unwritable is proposed')
+
+const onePrompt = buildScanPrompt({
+  sessionId: 'abc-123',
+  cwd: 'G:\\Code\\gitea-company\\refinity',
+  group: 'gitea-company',
+  digest,
+  targets: ['notion']
+})
+ok('the prompt never asks for a ClickUp entry', !/clickup/i.test(onePrompt), onePrompt)
+ok('outstanding items still get asked for', /outstanding item/.test(onePrompt), onePrompt)
+ok(
+  'and they are addressed to the board that is on',
+  /"targets":\["notion"\]/.test(onePrompt),
+  onePrompt
+)
+
+check(
+  'a destination that is off is dropped from a reply',
+  parseProposals('[{"title":"a","targets":["notion","clickup"]}]', ['notion'])[0].targets,
+  ['notion']
+)
+check(
+  'a reply naming only the board that is off falls back to the one that is on',
+  parseProposals('[{"title":"a","targets":["clickup"]}]', ['notion'])[0].targets,
+  ['notion']
+)
+check(
+  'and with nothing configured it falls back to everything, for the user to trim',
+  parseProposals('[{"title":"a","targets":["clickup"]}]', [])[0].targets,
+  ['notion', 'clickup']
+)
+
+const EMPTY_RECALL_FIXTURE: RecallSnapshot = { items: {}, readAt: 1 }
+
+check(
+  'a demoted update lands on the configured board, not both',
+  groundProposals(
+    [{ kind: 'update', target: 'clickup', existingId: 'gone', title: 'A', body: '', targets: ['clickup'] }],
+    { sessionId: 's', cwd: 'c', group: 'g' },
+    EMPTY_RECALL_FIXTURE,
+    ['notion']
+  ).drafts[0].targets,
+  ['notion']
+)
+
 rmSync(dir, { recursive: true, force: true })
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)

@@ -263,6 +263,13 @@ export interface ScanContext {
   title?: string | null
   digest: string
   /**
+   * Which boards are switched on. Absent means both, which is what shipped.
+   *
+   * A proposal addressed to a board nobody writes to is worse than no proposal:
+   * it sits in the queue looking reviewable and fails at accept time.
+   */
+  targets?: readonly WorklogTarget[]
+  /**
    * What the boards already hold, rendered by `formatRecall`. Empty when recall
    * found nothing or could not run.
    */
@@ -292,6 +299,15 @@ function projectName(cwd: string): string {
  */
 export function buildScanPrompt(ctx: ScanContext): string {
   const existing = (ctx.existing ?? '').trim()
+  const enabled = WORKLOG_TARGETS.filter((t) => (ctx.targets ?? WORKLOG_TARGETS).includes(t))
+  /*
+   * The summary is a narrative, so it goes to Notion when Notion is on; the
+   * outstanding items are actionable, so they go to ClickUp when ClickUp is on.
+   * With one board configured both collapse onto it, which is correct — the
+   * work still needs recording, and there is one place to record it.
+   */
+  const summaryTarget: WorklogTarget = enabled.includes('notion') ? 'notion' : (enabled[0] ?? 'notion')
+  const taskTarget: WorklogTarget = enabled.includes('clickup') ? 'clickup' : (enabled[0] ?? 'notion')
 
   return [
     'You are a work-log assistant for a software developer. Below is a compressed',
@@ -317,12 +333,12 @@ export function buildScanPrompt(ctx: ScanContext): string {
           ].join('\n')
         : ['The boards are empty — nothing is tracked yet.', ''].join('\n'),
     'Produce:',
-    '1. One summary entry: {"kind":"create","targets":["notion"]}. Body: what was worked',
+    `1. One summary entry: {"kind":"create","targets":["${summaryTarget}"]}. Body: what was worked`,
     '   on, what changed, what was decided. Past tense, 2-5 sentences.',
     '2. For every item above this session moved on - finished, started or blocked - one',
     '   {"kind":"update"} naming its board and its id. Never a second record for work',
     '   that already has one.',
-    '3. One {"kind":"create","targets":["clickup"]} per outstanding item NOT listed above:',
+    `3. One {"kind":"create","targets":["${taskTarget}"]} per outstanding item NOT listed above:`,
     '   unfinished, deferred, broken, or named as next. Body says what to do and why.',
     '',
     // The model tends to return the summary alone, which is half the feature
@@ -347,7 +363,7 @@ export function buildScanPrompt(ctx: ScanContext): string {
     '',
     'Reply with a JSON array and nothing else - no prose, no code fence. Example:',
     '[{"kind":"create","title":"Added SSH sessions to the launcher","body":"...","targets":["notion"]},',
-    ' {"kind":"update","target":"clickup","id":"abc123","status":"complete","title":"Finished the SSH work","body":"..."}]'
+    ` {"kind":"update","target":"${taskTarget}","id":"abc123","status":"complete","title":"Finished the SSH work","body":"..."}]`
   ]
     .filter((l) => l !== '')
     .join('\n')
@@ -465,13 +481,23 @@ export interface ModelProposal {
 
 const TARGETS: WorklogTarget[] = [...WORKLOG_TARGETS]
 
-function normaliseTargets(v: unknown): WorklogTarget[] {
-  if (!Array.isArray(v)) return [...TARGETS]
-  const picked = v.filter((t): t is WorklogTarget => TARGETS.includes(t as WorklogTarget))
-  // An unrecognised destination is dropped rather than guessed at, and a
-  // proposal with none left falls back to both: the user reviews it either way,
-  // and nothing is written until they do.
-  return picked.length ? [...new Set(picked)] : [...TARGETS]
+function normaliseTargets(v: unknown, allowed: readonly WorklogTarget[]): WorklogTarget[] {
+  // Nothing configured is not a licence to write nowhere: the user reviews
+  // every proposal anyway, so falling back to everything leaves them something
+  // to trim rather than a queue of entries addressed to no board at all.
+  const fallback: WorklogTarget[] = allowed.length ? [...allowed] : [...WORKLOG_TARGETS]
+  if (!Array.isArray(v)) return fallback
+  // Canonical order, not the model's: what is stored must not be able to change
+  // the order anything is written in.
+  const picked = WORKLOG_TARGETS.filter((t) => v.includes(t) && fallback.includes(t))
+  // With nothing configured, `fallback` is already "everything" — so a
+  // literal "what the model picked" answer here would still be a real board
+  // (e.g. ["clickup"]), never the empty set the sentence above is about. The
+  // guard has to be on `allowed`, not on whether anything was picked: nothing
+  // configured means there is nothing to validate the model's pick against,
+  // so it is never trusted alone, and the user always gets the full set to
+  // trim from.
+  return allowed.length && picked.length ? picked : fallback
 }
 
 /**
@@ -482,7 +508,10 @@ function normaliseTargets(v: unknown): WorklogTarget[] {
  * before it yields the real list, and giving up on the first bracket would fail
  * a perfectly good reply.
  */
-function toProposals(value: unknown): { proposals: ModelProposal[] } | { reason: string } {
+function toProposals(
+  value: unknown,
+  allowed: readonly WorklogTarget[]
+): { proposals: ModelProposal[] } | { reason: string } {
   let entries: unknown[]
   const record = asRecord(value)
   if (Array.isArray(value)) {
@@ -528,7 +557,7 @@ function toProposals(value: unknown): { proposals: ModelProposal[] } | { reason:
       // An update goes to exactly the one board that holds the record; asking
       // for it on both would address the other board's copy, which does not
       // exist.
-      targets: kind === 'update' && target ? [target] : normaliseTargets(entry.targets),
+      targets: kind === 'update' && target ? [target] : normaliseTargets(entry.targets, allowed),
       kind
     }
     if (kind === 'update' && target) {
@@ -549,7 +578,10 @@ function toProposals(value: unknown): { proposals: ModelProposal[] } | { reason:
  * returned only when the model genuinely produced an empty list, because
  * "nothing to log" and "the parse failed" have to stay tellable apart.
  */
-export function parseProposals(reply: string): ModelProposal[] {
+export function parseProposals(
+  reply: string,
+  allowed: readonly WorklogTarget[] = WORKLOG_TARGETS
+): ModelProposal[] {
   const text = (reply ?? '').trim()
   if (!text) throw new WorklogParseError('the model returned an empty reply', reply ?? '')
 
@@ -566,7 +598,7 @@ export function parseProposals(reply: string): ModelProposal[] {
     } catch {
       continue
     }
-    const outcome = toProposals(value)
+    const outcome = toProposals(value, allowed)
     if ('proposals' in outcome) return outcome.proposals
     // Keep the first complaint: it is about the shape the model most likely
     // meant, and the later candidates are fragments of it.
@@ -630,6 +662,8 @@ export interface ScanInput {
   recall?: RecallSnapshot
   /** True when a scan the user did not ask for produced this. */
   auto?: boolean
+  /** Which boards are switched on, and their ids. Absent means the defaults. */
+  boards?: WorklogBoards
 }
 
 export interface ScanOutcome {
@@ -716,10 +750,12 @@ export async function scanSession(input: ScanInput): Promise<ScanOutcome> {
   }
 
   const snapshot = input.recall ?? EMPTY_RECALL
+  const targets = (input.boards ?? DEFAULT_WORKLOG_BOARDS).targets
   const prompt = buildScanPrompt({
     sessionId: input.sessionId,
     cwd: input.cwd,
     group: input.group,
+    targets,
     title: input.title ?? null,
     digest: summariseTurns(transcript.turns),
     existing: formatRecall(snapshot),
@@ -734,7 +770,12 @@ export async function scanSession(input: ScanInput): Promise<ScanOutcome> {
     throw new Error(`The worklog scan failed: ${clip(oneLine(result.text), 300) || result.subtype || 'unknown error'}`)
   }
 
-  const { drafts, demoted } = groundProposals(parseProposals(result.text), input, snapshot)
+  const { drafts, demoted } = groundProposals(
+    parseProposals(result.text, targets),
+    input,
+    snapshot,
+    targets
+  )
 
   return {
     proposals: drafts,
@@ -769,7 +810,8 @@ export async function scanSession(input: ScanInput): Promise<ScanOutcome> {
 export function groundProposals(
   proposals: ModelProposal[],
   input: Pick<ScanInput, 'sessionId' | 'cwd' | 'group' | 'auto'>,
-  snapshot: RecallSnapshot
+  snapshot: RecallSnapshot,
+  allowed: readonly WorklogTarget[] = WORKLOG_TARGETS
 ): { drafts: ProposalDraft[]; demoted: number } {
   const drafts: ProposalDraft[] = []
   let demoted = 0
@@ -795,9 +837,10 @@ export function groundProposals(
 
     if (p.kind === 'update' && !found) {
       demoted++
-      // Fall through as a create, and drop the single-board narrowing that only
-      // made sense while it was an update.
-      draft.targets = [...(target ? [target] : TARGETS)]
+      // An update whose record does not exist becomes a create — and a create
+      // may only go where a write is possible.
+      const fallback = allowed.length ? [...allowed] : [...TARGETS]
+      draft.targets = target && allowed.includes(target) ? [target] : fallback
       drafts.push(draft)
       continue
     }
