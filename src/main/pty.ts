@@ -109,13 +109,22 @@ const STRIP_ENV = [
 export class PtyManager {
   private sessions = new Map<string, Session>()
   private readonly onData: (ptyId: string, data: string) => void
-  private readonly onExit: (ptyId: string, code: number, signal?: number) => void
+  /**
+   * `sessionId` is the fourth argument, not folded into a lookup the caller
+   * does itself, because by the time this fires `proc.onExit` has already
+   * removed the session from `this.sessions` (see below) — the caller has no
+   * way left to ask `sessionIdFor(ptyId)` and get an answer. Passing it here,
+   * straight out of the closure that still holds the session, is what lets
+   * index.ts clean up its own per-session state (`statusLineSeen`) for a
+   * session that ended on its own, not only one the user closed by hand.
+   */
+  private readonly onExit: (ptyId: string, code: number, signal: number | undefined, sessionId: string) => void
 
   // Explicit fields rather than TS parameter properties, matching ContextWatcher
   // so the main-process modules stay runnable under node's type stripping.
   constructor(
     onData: (ptyId: string, data: string) => void,
-    onExit: (ptyId: string, code: number, signal?: number) => void
+    onExit: (ptyId: string, code: number, signal: number | undefined, sessionId: string) => void
   ) {
     this.onData = onData
     this.onExit = onExit
@@ -288,7 +297,7 @@ export class PtyManager {
       // this callback cannot be trusted to run in time — a second call here
       // for the same key is a no-op, not a double-delete.
       clearSessionFiles(session.statusKey)
-      this.onExit(ptyId, exitCode, signal)
+      this.onExit(ptyId, exitCode, signal, session.sessionId)
       for (const fn of this.exitSubscribers) fn(ptyId, exitCode)
     })
 

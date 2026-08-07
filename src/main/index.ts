@@ -76,16 +76,28 @@ const statusLineSeen = new Map<string, number>()
 /**
  * Push a session's payload at the renderer, if it has actually changed.
  *
- * The file is rewritten on every frame the CLI renders, so the mtime guard is
- * load-bearing rather than tidy: without it this is several IPC messages a
- * second per open session, carrying identical objects.
+ * This only ever runs from the context watcher's emit callback below, which
+ * caps how often it can fire: at most once per POLL_MS (1.5s) per session,
+ * and only when the *transcript's* mtime has moved. The payload file itself
+ * is rewritten roughly three times a second by the CLI, but that cadence
+ * never reaches this function — by the time a call gets here, at least 1.5s
+ * has usually passed since the last one, which is long enough that the
+ * payload has almost always been rewritten too. So the `receivedAt` guard
+ * below suppresses close to nothing in practice; it stays because "almost
+ * always" is not "always" — a watcher publish can still land between two
+ * identical renders — and it is what keeps a caller from ever seeing the
+ * same `receivedAt` sent twice.
  */
 function pushStatusLine(sessionId: string): void {
   const snap = readStatusLine(sessionId)
   if (!snap) return
   if (statusLineSeen.get(sessionId) === snap.receivedAt) return
   statusLineSeen.set(sessionId, snap.receivedAt)
-  lastStatusLine = snap
+  // Same "only move forward" rule as refreshLastStatusLine: two sessions can
+  // both push in close succession, and without this the second to arrive
+  // would win even when its own reading is the older of the two, ticking the
+  // "as of HH:MM" chip and the rate-limit percentages backwards.
+  if (!lastStatusLine || snap.receivedAt > lastStatusLine.receivedAt) lastStatusLine = snap
   send(CH.statusLineUpdate, snap)
 }
 
@@ -410,7 +422,17 @@ function createWindow(): void {
 
   ptys = new PtyManager(
     (ptyId, data) => send(CH.ptyData, ptyId, data),
-    (ptyId, code, signal) => send(CH.ptyExit, ptyId, code, signal)
+    (ptyId, code, signal, sessionId) => {
+      send(CH.ptyExit, ptyId, code, signal)
+      // A session that ends on its own (`/exit`, a crash) never reaches the
+      // `CH.ptyKill` handler's cleanup below — by the time a user later
+      // closes that tab, `sessionIdFor` already returns null, because
+      // `proc.onExit` removed the session from PtyManager's own map before
+      // this callback ever ran. `sessionId` here comes straight from that
+      // same exit event, while it is still known, so this entry does not
+      // sit in `statusLineSeen` forever.
+      if (sessionId) statusLineSeen.delete(sessionId)
+    }
   )
   /*
    * The worklog's automatic trigger.
