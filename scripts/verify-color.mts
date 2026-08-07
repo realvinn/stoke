@@ -12,11 +12,13 @@
 import {
   apcaContrast,
   contrastRatio,
+  over,
   parseColor,
   perceptualDistance,
   toHex,
   toOklch
 } from '../src/shared/color.ts'
+import { BUILT_IN_THEMES } from '../src/shared/themes.ts'
 
 let failures = 0
 
@@ -106,6 +108,94 @@ console.log('\n-- perceptual distance --')
   if (!ok) failures++
   console.log(
     `${ok ? 'ok  ' : 'FAIL'} ${'blue and red stay apart'.padEnd(46)} ${d.toFixed(5).padStart(10)}  (expected > 0.2)`
+  )
+}
+
+console.log('\n-- the terminal: text on a translucent selection --')
+/*
+ * xterm composites `selectionBackground` over `background` itself and paints
+ * the blend, so the ground selected text actually sits on is the alpha blend —
+ * never the raw rgba() and never the theme background. `minimumContrastRatio`
+ * is 1 in TerminalView, which is xterm's off switch, so nothing corrects a bad
+ * pair afterwards: whatever these numbers say is what the user reads.
+ *
+ * The same `selectionForeground` is used whether the terminal has focus or not,
+ * so it has to clear 4.5:1 against both grounds.
+ */
+const SELECTION_ANSI = [
+  'black',
+  'red',
+  'green',
+  'yellow',
+  'blue',
+  'magenta',
+  'cyan',
+  'white',
+  'brightBlack',
+  'brightRed',
+  'brightGreen',
+  'brightYellow',
+  'brightBlue',
+  'brightMagenta',
+  'brightCyan',
+  'brightWhite'
+] as const
+
+for (const theme of BUILT_IN_THEMES) {
+  const term = theme.terminal
+  const bg = parseColor(term.background)!
+  const fg = parseColor(term.selectionForeground)
+  const focusedRaw = parseColor(term.selectionBackground)
+  const unfocusedRaw = parseColor(term.selectionInactiveBackground)
+
+  if (!fg || !focusedRaw || !unfocusedRaw) {
+    failures++
+    console.log(
+      `FAIL ${`${theme.id}: defines both selection keys`.padEnd(46)} ${'missing'.padStart(10)}  (selectionForeground=${String(
+        term.selectionForeground
+      )}, selectionInactiveBackground=${String(term.selectionInactiveBackground)})`
+    )
+    continue
+  }
+
+  const focused = over(focusedRaw, bg)
+  const unfocused = over(unfocusedRaw, bg)
+
+  for (const [state, ground] of [
+    ['focused', focused],
+    ['unfocused', unfocused]
+  ] as const) {
+    const ratio = contrastRatio(fg, ground)
+    const ok = ratio >= 4.5
+    if (!ok) failures++
+    console.log(
+      `${ok ? 'ok  ' : 'FAIL'} ${`${theme.id}: selected text, ${state} (${toHex(ground)})`.padEnd(
+        46
+      )} ${ratio.toFixed(2).padStart(10)}  (expected >= 4.5)`
+    )
+  }
+
+  // Why the override is not decorative: these are the palette entries that keep
+  // their own colour, and fail, when selectionForeground is absent.
+  const below = SELECTION_ANSI.filter((n) => contrastRatio(parseColor(term[n])!, focused) < 4.5)
+  const okBelow = below.length >= 1
+  if (!okBelow) failures++
+  console.log(
+    `${okBelow ? 'ok  ' : 'FAIL'} ${`${theme.id}: ansi colours needing the override`.padEnd(
+      46
+    )} ${`${below.length}/16`.padStart(10)}  (expected >= 1)`
+  )
+
+  // An unfocused selection must still read as a selection, and must not read as
+  // a focused one. Both are the point of having the second colour at all.
+  const seen = perceptualDistance(unfocused, bg)
+  const apart = perceptualDistance(focused, unfocused)
+  const okPair = seen > 0.02 && apart > 0.02
+  if (!okPair) failures++
+  console.log(
+    `${okPair ? 'ok  ' : 'FAIL'} ${`${theme.id}: unfocused is visible and weaker`.padEnd(
+      46
+    )} ${`${seen.toFixed(4)}/${apart.toFixed(4)}`.padStart(10)}  (expected both > 0.02)`
   )
 }
 

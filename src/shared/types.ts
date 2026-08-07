@@ -271,6 +271,25 @@ export interface TerminalColors {
   cursor: string
   cursorAccent: string
   selectionBackground: string
+  /**
+   * The colour selected text is drawn in.
+   *
+   * Required, not optional. Without it xterm replaces only the background of a
+   * selected cell and the text keeps whatever colour the CLI gave it, on a
+   * ground it was never checked against - and `minimumContrastRatio: 1` in
+   * TerminalView means nothing corrects the pair afterwards. Every value here
+   * is asserted against its own selection background composited over
+   * `background` in scripts/verify-color.mts.
+   */
+  selectionForeground: string
+  /**
+   * The selection background when the terminal does not have focus.
+   *
+   * Required for the same reason: xterm falls back to `selectionBackground`
+   * when it is absent, so a selection in an unfocused terminal is drawn exactly
+   * like the live one.
+   */
+  selectionInactiveBackground: string
   black: string
   red: string
   green: string

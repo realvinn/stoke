@@ -3,6 +3,7 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
+import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes'
 import type { ClipboardPeek } from '@shared/api'
 import type { Theme } from '@shared/types'
 import { attachSink } from '../lib/ptyBus'
@@ -72,6 +73,15 @@ export function TerminalView({
 
     const fit = new FitAddon()
     term.loadAddon(fit)
+
+    // Unicode 15 widths with grapheme clustering. xterm's built-in tables are
+    // Unicode 6, so every emoji added since 2010 is measured one cell wide
+    // while the CLI that drew it assumed two — which is why box drawing and
+    // status lines tear, locally and over SSH. Set explicitly even though the
+    // addon selects it, so the version this app depends on is greppable.
+    term.loadAddon(new UnicodeGraphemesAddon())
+    term.unicode.activeVersion = '15-graphemes'
+
     term.loadAddon(
       new WebLinksAddon((event, uri) => {
         event.preventDefault()
@@ -80,6 +90,19 @@ export function TerminalView({
     )
 
     term.open(host)
+
+    /*
+     * A read-only handle on the live terminals, keyed by pty id.
+     *
+     * xterm draws through WebGL, so `.xterm-rows` is empty and nothing about
+     * what the terminal renders is readable from the DOM (CLAUDE.md gotcha 5).
+     * Cell widths, the active Unicode version and the cursor column are only
+     * readable from the Terminal object, and a CDP probe has no other route to
+     * it. Nothing in the app reads this map.
+     */
+    const live = window as unknown as { stokeTerminals?: Map<string, Terminal> }
+    live.stokeTerminals ??= new Map()
+    live.stokeTerminals.set(tab.ptyId, term)
 
     // WebGL is a large win on a busy terminal but is unavailable on some GPUs
     // and inside remote sessions; the DOM renderer is the fallback.
@@ -230,6 +253,7 @@ export function TerminalView({
       detach()
       onInput.dispose()
       term.dispose()
+      live.stokeTerminals?.delete(tab.ptyId)
       termRef.current = null
       fitRef.current = null
     }
