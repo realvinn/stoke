@@ -117,8 +117,21 @@ console.log('\na write that returns no usable link still counts as written')
 console.log('\na destination not on the proposal is never written')
 {
   const r = recorder()
-  await applyProposal({ ...base, targets: ['notion'] }, { run: r.run })
+  await applyProposal({ ...base, targets: ['notion'] }, { run: r.run, boards: bothBoards })
   check('clickup skipped', r.calls.join(',') === 'notion', r.calls.join(','))
+}
+
+/*
+ * `boards` omitted entirely, not just "notion switched on" - this is the
+ * fallback an unconfigured install actually hits, and it must land on Notion
+ * only. `base.targets` includes clickup, so this only passes if the default
+ * itself excludes clickup, not because the proposal never asked for it.
+ */
+console.log('\nan unconfigured install writes Notion only')
+{
+  const r = recorder()
+  await applyProposal(base, { run: r.run }) // deliberately no boards
+  check('the default is Notion only', r.calls.join(',') === 'notion', r.calls.join(','))
 }
 
 console.log('\na board switched off in settings is never written')
