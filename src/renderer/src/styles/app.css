@@ -60,6 +60,50 @@ textarea {
   --sp-7: 1.75rem;
   --sp-8: 2.5rem;
 
+  /* Strict 4px scale. Named for the pixel value at scale 1, so a rule states
+     its own geometry and a wrong one is obvious on sight. */
+  --space-4: 0.25rem;
+  --space-8: 0.5rem;
+  --space-12: 0.75rem;
+  --space-16: 1rem;
+  --space-24: 1.5rem;
+  --space-32: 2rem;
+  --space-48: 3rem;
+
+  --lh-tight: 1.25;   /* single-line controls: tab labels, chips, buttons */
+  --lh-snug: 1.4;     /* headings, and two-line list rows */
+  --lh-normal: 1.55;  /* body copy: prompts, proposal text, settings help */
+
+  /* rem, so an icon grows with Interface scale. Today every icon is a px
+     attribute, which is why scale 1.0 -> 1.6 moved every button 37.5% and left
+     every glyph exactly where it was. */
+  --icon-xs: 0.625rem;  /* 10px at scale 1 */
+  --icon-sm: 0.75rem;   /* 12px */
+  --icon-md: 0.875rem;  /* 14px */
+  --icon-lg: 1rem;      /* 16px */
+
+  /* A fixed slot for the tab indicator, so the empty circle, the filled ring
+     and the ring-plus-dot are all the same width and the label never moves. */
+  --tab-indicator: 0.875rem;   /* 14px */
+  /* The only red in the tab strip: "the worklog is watching this session". */
+  --tab-dot-worklog: var(--danger);
+  /* A nearly-full context ring. No longer --danger: red means one thing now. */
+  --ring-full: var(--warning);
+  /* macOS traffic lights are fixed device px, so their clearance must be too.
+     A rem here is why Stoke only laid out correctly at Interface scale 1.0. */
+  --traffic-lights-w: 78px;
+  /* A selected row must out-rank a hovered one in every theme. The mix is
+     mirrored as SELECTED_ACCENT_MIX in scripts/verify-color.mts; change one and
+     you must change the other, which is what that assertion is for. */
+  --surface-selected: color-mix(in srgb, var(--accent) 18%, var(--surface-hover));
+  /* The disclosure chevron's box, and the metadata picker's. Four rules have to
+     agree with it - the two buttons, the project metadata's indent and where the
+     session list's guide rule falls. It was an inline style in Sidebar.tsx,
+     which is exactly how they drifted apart. */
+  --chevron: 1.125rem;
+  /* One height for every single-line control: .btn, .input, .select, .segmented. */
+  --control-h: 1.75rem;
+
   --r-sm: 0.25rem;
   --r-md: 0.375rem;
   --r-lg: 0.5rem;
@@ -86,12 +130,24 @@ textarea {
   --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.18);
   --shadow-md: 0 4px 14px rgb(0 0 0 / 0.22);
   --shadow-lg: 0 18px 48px rgb(0 0 0 / 0.34);
+  --scrim: rgb(0 0 0 / 0.42);
+  --swatch-ring: rgb(0 0 0 / 0.25);
+  --shadow-panel: 0 12px 32px rgb(0 0 0 / 0.45);
+  /* Text on a --danger fill. NOT white: recomputed from src/shared/themes.ts,
+     #ffffff on --danger measures 2.89 (Ember), 2.84 (Nocturne), 2.70 (Moss) and
+     6.01 (Daylight) - three of four fail 4.5:1, and two of those three sites are
+     button text. var(--bg) measures 6.50, 6.66, 6.85 and 5.46: all four clear it.
+     Mirrored by an assertion in scripts/verify-color.mts. */
+  --on-danger: var(--bg);
 }
 
 :root[data-appearance='light'] {
   --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.06);
   --shadow-md: 0 4px 14px rgb(0 0 0 / 0.09);
   --shadow-lg: 0 18px 48px rgb(0 0 0 / 0.14);
+  --scrim: rgb(0 0 0 / 0.28);
+  --swatch-ring: rgb(0 0 0 / 0.16);
+  --shadow-panel: 0 12px 32px rgb(0 0 0 / 0.16);
 }
 
 body {
