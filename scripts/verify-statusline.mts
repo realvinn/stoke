@@ -10,7 +10,7 @@
  *
  *   node scripts/verify-statusline.mts
  */
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname } from 'node:path'
 import {
@@ -97,27 +97,112 @@ check(
   null
 )
 check(
+  'a window size of zero is below WINDOW_MIN and is refused too',
+  toSnapshot('sess-3b', { context_window: { context_window_size: 0 } }, 5).contextWindowSize,
+  null
+)
+check(
+  'a legitimate 200k window (Haiku, not just the 1M tier) survives untouched',
+  toSnapshot('sess-3c', { context_window: { context_window_size: 200_000 } }, 5).contextWindowSize,
+  200_000
+)
+check(
   'a rate limit with a percentage but no reset is still a reading',
   toSnapshot('sess-4', { rate_limits: { five_hour: { used_percentage: 40 } } }, 5).fiveHour,
   { percent: 40, resetsAt: null }
 )
+check(
+  'a rate limit with a reset but no percentage is dropped entirely, reset and all — deliberate',
+  toSnapshot('sess-4b', { rate_limits: { five_hour: { resets_at: 1_786_078_200 } } }, 5).fiveHour,
+  null
+)
+
+console.log('\nnumeric fields are never coerced from strings')
+/*
+ * The whole point of this parser is that it trusts `typeof`, never `Number(v)`
+ * / `parseInt` / `+v`. A CLI that ever sent a numeric field as a string (or a
+ * refactor that started coercing one) must fall back to null, not a confident
+ * wrong number. Pinned on every numeric field the parser reads, not just the
+ * two context ones.
+ */
+check(
+  'a string-typed context_window_size is refused, not parsed',
+  toSnapshot(
+    's',
+    { context_window: { context_window_size: '1000000', used_percentage: '28' } } as never,
+    0
+  ).contextWindowSize,
+  null
+)
+check(
+  'a string-typed used_percentage is refused the same way',
+  toSnapshot(
+    's',
+    { context_window: { context_window_size: '1000000', used_percentage: '28' } } as never,
+    0
+  ).usedPercentage,
+  null
+)
+check(
+  'a string-typed rate-limit used_percentage is refused, dropping the whole reading',
+  toSnapshot(
+    'sess-6',
+    { rate_limits: { five_hour: { used_percentage: '40', resets_at: 1_786_078_200 } } } as never,
+    0
+  ).fiveHour,
+  null
+)
+check(
+  'a string-typed resets_at is refused on its own — the percent survives, the reset does not',
+  toSnapshot(
+    'sess-7',
+    { rate_limits: { five_hour: { used_percentage: 40, resets_at: '1786078200' } } } as never,
+    0
+  ).fiveHour,
+  { percent: 40, resetsAt: null }
+)
+
+console.log('\na non-string session id degrades instead of throwing')
+/*
+ * TypeScript blocks this in-repo, but Task 10 wires readStatusLine behind IPC,
+ * where a renderer argument arrives as `any`. A non-string id must not reach
+ * key()'s .replace unguarded.
+ */
+check('a numeric session id reads as nothing, never a throw', readStatusLine(12345 as never), null)
 
 console.log('\nreading it back off disk')
+const dirExistedBefore = existsSync(statusLineDir())
 const readId = 'stoke-verify-read'
 const readFile = statusLinePayloadFile(readId)
 mkdirSync(dirname(readFile), { recursive: true })
 writeFileSync(readFile, JSON.stringify(REAL), 'utf8')
+/*
+ * A known mtime, set after the write so the OS-assigned "now" doesn't get to
+ * masquerade as it. utimesSync takes epoch SECONDS; mtimeMs (and receivedAt)
+ * is epoch MILLISECONDS — this is the boundary itself, so the test has to
+ * cross it explicitly rather than accept whatever the clock says.
+ */
+const knownMtimeSeconds = 1_700_000_000
+utimesSync(readFile, knownMtimeSeconds, knownMtimeSeconds)
 const fromDisk = readStatusLine(readId)
 check('a written payload reads back', fromDisk?.contextWindowSize, 1_000_000)
 check(
-  'and is stamped with the mtime of the file it came from',
-  typeof fromDisk?.receivedAt === 'number' && fromDisk.receivedAt > 0,
-  true
+  'and receivedAt is the file mtime in milliseconds, not Date.now()',
+  fromDisk?.receivedAt,
+  knownMtimeSeconds * 1000
 )
 check('an unknown session reads as nothing at all', readStatusLine('stoke-verify-missing'), null)
 writeFileSync(readFile, 'not json', 'utf8')
 check('a truncated or garbled file reads as nothing, never a throw', readStatusLine(readId), null)
 rmSync(readFile, { force: true })
+if (!dirExistedBefore) {
+  try {
+    rmSync(statusLineDir(), { recursive: true, force: true })
+  } catch {
+    // Another process may be using the directory; leaving it behind is
+    // harmless, and this fixture must never fail the suite on cleanup.
+  }
+}
 check('the payload directory lives under the system temp dir', statusLineDir().startsWith(tmpdir()), true)
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)

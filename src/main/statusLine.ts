@@ -122,8 +122,8 @@ export function toSnapshot(
  */
 export function readStatusLine(sessionId: string): StatusLineSnapshot | null {
   if (!sessionId) return null
-  const file = statusLinePayloadFile(sessionId)
   try {
+    const file = statusLinePayloadFile(sessionId)
     const raw = readFileSync(file, 'utf8')
     const at = statSync(file).mtimeMs
     const payload = JSON.parse(raw) as unknown
