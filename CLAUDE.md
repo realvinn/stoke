@@ -20,7 +20,7 @@ npm run dist:win        # installer -> release/Stoke-<version>-x64-setup.exe
 npm run dist:mac        # dmg (arm64). MUST run on a Mac.
 ```
 
-The verify suites, all runnable alone. `check` runs everything except the last two, which
+The verify suites, all runnable alone. `check` runs everything except the last three, which
 need a live instance or cost money:
 
 ```bash
@@ -112,13 +112,13 @@ scripts/          the verify-*.mts suites, make-icon.cjs
    then a "nested child" and **transcript saving is disabled**, which kills session resume
    *and* the context meter. `pty.ts` strips them. Auth/config vars are preserved.
 
-2. **The context window is stated only by the statusLine payload.** It cannot be derived from
-   the model id: a 1M-tier session records its model as plain `claude-opus-5`, no `[1m]` suffix
-   survives into the transcript, and there is no `context_window` field. Verified again on a
-   session at 713,617 tokens; the only tier-ish field anywhere is `usage.service_tier`, which is
-   billing. The CLI *used* to state it in its startup banner and **2.1.221 does not** — the
-   banner is now `Claude Code v2.1.221    Opus 5 with low effort · Claude Max`, and the word
-   "context" appears nowhere in the startup output.
+2. **The context window's primary source is the statusLine payload, not the model id.** It
+   cannot be derived from the model id: a 1M-tier session records its model as plain
+   `claude-opus-5`, no `[1m]` suffix survives into the transcript, and there is no
+   `context_window` field. Verified again on a session at 713,617 tokens; the only tier-ish
+   field anywhere is `usage.service_tier`, which is billing. The CLI *used* to state it in its
+   startup banner and **2.1.221 does not** — the banner is now `Claude Code v2.1.221    Opus 5
+   with low effort · Claude Max`, and the word "context" appears nowhere in the startup output.
 
    So Stoke installs its own `statusLine` command (`src/main/statusLine.ts`), folded into the
    single `--settings` file at launch. The CLI pipes it a JSON payload on stdin whose
@@ -126,8 +126,11 @@ scripts/          the verify-*.mts suites, make-icon.cjs
    The wrapper writes it to `<tmpdir>/stoke/statusline/<statusKey>.json` and prints nothing by
    default, which is why suppressing the in-terminal line and reading the data are the same act.
    `windowFromBanner` and `contextLimitFor`'s observed-usage inference are kept as **fallbacks**
-   for CLI versions that emit no payload; a banner that does say `(1M context)` still works, and
-   escape codes must still be stripped before matching, because the banner is styled.
+   for CLI versions that emit no payload — and for a remote SSH session, which gets no wrapper
+   and no payload at all: its `claude` runs on the far machine, so `statusKey` is `''`
+   (`pty.ts:185,190`; `statusLine.ts:557-563`) and the banner is its only channel, exactly as
+   before the payload existed. A banner that does say `(1M context)` still works, and escape
+   codes must still be stripped before matching, because the banner is styled.
 
    Two things that cost time if you forget them. First, **a second `--settings` silently
    discards the first**, so the statusLine key and the `ultracode` key have to arrive in one
@@ -167,12 +170,13 @@ scripts/          the verify-*.mts suites, make-icon.cjs
 
 10. **Claude Code turns mouse reporting on, so a plain drag does not select.** xterm forwards
     the drag to the application instead, and the bypass modifier is per-platform in xterm's own
-    `shouldForceSelection`: **Shift**-drag on Windows and Linux, **Alt**-drag on macOS — and on
-    macOS that path also needs xterm's `macOptionClickForcesSelection` option, which Stoke does
-    not set, so Alt-drag has not been confirmed to actually bypass here (macOS is otherwise
-    unverified — see the note at the end of this file). A right-click is also forwarded, which
-    is why the CLI used to paste on right-click — `TerminalView` now takes that event in the
-    capture phase before xterm sees it.
+    `shouldForceSelection`: **Shift**-drag on Windows and Linux. On macOS it checks **Alt**, but
+    gates that check on xterm's own `macOptionClickForcesSelection` option, which defaults to
+    `false` in the bundled build and is never set anywhere in `src/` (confirmed by grep) — so on
+    macOS `shouldForceSelection` can only ever return `false`: Alt-drag **cannot** bypass today,
+    not merely "unconfirmed" (see the platform-verification note at the end of this file). A
+    right-click is also forwarded, which is why the CLI used to paste on right-click —
+    `TerminalView` now takes that event in the capture phase before xterm sees it.
 
 11. **`align-self: center` centres the *margin* box.** Cancelling a container's padding for
     one child needs the full padding negated, not half — half lands it a pixel off. Measured,
@@ -249,8 +253,10 @@ scripts/          the verify-*.mts suites, make-icon.cjs
     to arrive (inferred from the CLI's own bundle, not observed — API-key auth was not tested).
     One more field worth knowing while you're in this payload: `model.id` carries the tier
     suffix in full (`"claude-opus-5[1m]"`), unlike the transcript's bare `model` field (gotcha
-    2) — which is exactly why the payload can state the window directly instead of falling back
-    to inference.
+    2) — though nothing in Stoke actually reads it for window resolution; `windowFor` takes the
+    number straight from `context_window.context_window_size` instead
+    (`statusLine.ts:296,568-569`). `modelId`'s only two readers today are the type declaration
+    and a test assertion (`src/shared/types.ts:236`, `scripts/verify-statusline.mts:93`).
 
 ## Verification expectations
 
@@ -260,6 +266,33 @@ runs against the real transcripts on this machine — it has caught two genuine 
 For UI work, launch with `--remote-debugging-port` and drive it over CDP; screenshots are the
 only reliable way to confirm the terminal and the panels actually render.
 
-**macOS is unverified.** No Mac was available while building. The mac-specific paths are the
-`hiddenInset` title bar and traffic-light padding, the login-shell PATH probe in `cli.ts`,
-and the Cmd-based shortcuts. See `.claude/commands/mac-release.md`.
+**macOS has now been built, launched and driven through its real UI on this machine several
+times** — sessions started, prompts sent, the context ring and usage chip read out of the
+running DOM, screenshots taken over CDP. The statusLine channel is proven end to end here: live
+payloads were captured from `claude` 2.1.221 on darwin-arm64 through a real pty, and the POSIX
+shim branch (`statusLine.ts`'s `shimName`/`writeStatusLineWrapper`, `:159-161,220-226`) is the
+one that actually ran — every live session left `run.sh` behind, never `run.cmd`. That work also
+turned up a genuine macOS bug: `usage.ts` reads the OAuth token only from
+`~/.claude/.credentials.json`, but on macOS the token lives in the login Keychain instead
+(`statusLine.ts:27-29`), so `window.stoke.usage.read()` fails here with "Not signed in to Claude
+Code" — the statusLine payload's own `rate_limits` is the one plan-limit source that still works
+on this platform, which is why the usage chip prefers it.
+
+What that work did **not** exercise, and is still genuinely unverified: the `hiddenInset` title
+bar and traffic-light padding (every screenshot taken here came from CDP's
+`Page.captureScreenshot`, which paints page content, not Electron's native window chrome, and
+this sandbox has neither Accessibility nor Screen Recording permission for an OS-level capture
+to fall back on); the login-shell PATH probe in `cli.ts` (every launch here already inherited a
+working PATH from the shell that started Electron — never the Finder/Dock case with no inherited
+PATH the probe exists for); and the Cmd-based shortcuts (buttons were driven by dispatching
+`.click()` on the DOM, never a real `metaKey`-modified keystroke, so `shortcuts.ts`'s Mac branch
+has not actually fired). See `.claude/commands/mac-release.md` for the checklist.
+
+**Windows carries the opposite risk now: nothing in this round of work ran there.** One change
+in it is actively suspect on that platform: `statusLineCommand()` emits `"<path>" "<id>"` — two
+quoted arguments on one command line — and `cmd.exe`'s own quote-stripping rule only behaves
+like a POSIX shell for a single quoted pair; more than two quote characters on the line and its
+rules diverge, potentially stripping the outer quotes that keep the two arguments apart. That
+shim path has not been exercised since it was written. Treat it as unverified, not merely
+untested, until someone runs a statusLine-driven session through `cmd.exe` and checks the
+payload actually arrives.

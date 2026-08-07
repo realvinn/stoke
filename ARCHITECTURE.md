@@ -107,10 +107,11 @@ for older versions, and inferring the tier from observed usage is the fallback b
 gotcha 2. Inference alone was wrong in the first implementation and reported 140–320% occupancy,
 which is why `npm run verify:context` exists and asserts the invariant against real transcripts.
 
-That command is the only thing Stoke installs into a session, and it still writes nothing of
-Claude's: the settings file, the wrapper and the payloads all live under the system temp
-directory, and `~/.claude/settings.json` is read for the user's own status line and never
-modified.
+That command, together with the `ultracode` key it shares a file with, is the only thing Stoke
+puts into the session's `--settings` file — a separate mechanism from the `--mcp-config`
+injection that hands the CLI its browser tools (below). Neither writes anything of Claude's: the
+settings file, the wrapper and the payloads all live under the system temp directory, and
+`~/.claude/settings.json` is read for the user's own status line and never modified.
 
 `ContextWatcher` polls rather than using `fs.watch`: transcripts are appended constantly,
 append semantics differ across macOS and Windows, and only the handful of sessions with an
