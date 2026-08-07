@@ -582,59 +582,126 @@ try {
     null
   )
 
-  const settingsFile = writeSessionSettingsFile({
-    sessionId: both,
-    ultracode: false,
-    hideStatusLine: false,
-    passthroughCommand: ECHO_CMD
-  })
-  check('the file is written', typeof settingsFile === 'string' && existsSync(settingsFile), true)
-  check(
-    'and parses as the object we built',
-    Object.keys(JSON.parse(readFileSync(settingsFile as string, 'utf8'))),
-    ['statusLine']
-  )
-  check(
-    'the pass-through command is a file beside the payload, never part of the command string',
-    readFileSync(join(statusLineDir(), `${both}.cmd`), 'utf8'),
-    ECHO_CMD
-  )
-  check(
-    'and the wrapper honours it end to end',
-    runWrapper(both, JSON.stringify(REAL)).trim(),
-    'STOKE-PASSTHROUGH'
-  )
-
-  writeSessionSettingsFile({
-    sessionId: both,
-    ultracode: false,
-    hideStatusLine: true,
-    passthroughCommand: ECHO_CMD
-  })
-  check(
-    'switching suppression back on removes the pass-through file rather than leaving it armed',
-    existsSync(join(statusLineDir(), `${both}.cmd`)),
-    false
-  )
-  clearSessionFiles(both)
-  check(
-    'clearSessionFiles leaves nothing behind',
-    [existsSync(statusLinePayloadFile(both)), existsSync(settingsFile as string)],
-    [false, false]
-  )
-
-  console.log("\nthe user's own statusLine, read and never written")
+  /*
+   * Everything from here down writes real fixtures under statusLineDir() —
+   * both `both`'s three files and the standalone `userFile` — so it is
+   * wrapped in its own try/finally rather than relying solely on the
+   * directory-level teardown at the bottom of this file. That outer teardown
+   * only fires when `!dirExistedBefore`, so on a machine where a real Stoke
+   * run already created the directory, a throw partway through this section
+   * (a `null` settingsFile, a non-zero runWrapper exit) would otherwise leak
+   * these fixtures permanently.
+   */
   const userFile = join(statusLineDir(), 'stoke-verify-user-settings.json')
-  writeFileSync(
-    userFile,
-    JSON.stringify({ statusLine: { type: 'command', command: 'bash ~/.claude/statusline-command.sh' } }),
-    'utf8'
-  )
-  check('a command statusLine is what gets passed through', userStatusLineCommand(userFile), 'bash ~/.claude/statusline-command.sh')
-  writeFileSync(userFile, JSON.stringify({ statusLine: { type: 'static', text: 'hi' } }), 'utf8')
-  check('anything that is not a command has nothing to pass through', userStatusLineCommand(userFile), '')
-  check('and a missing file is simply empty', userStatusLineCommand(join(statusLineDir(), 'nope.json')), '')
-  rmSync(userFile, { force: true })
+  try {
+    const bothKeysFile = writeSessionSettingsFile({
+      sessionId: both,
+      ultracode: true,
+      hideStatusLine: true,
+      passthroughCommand: ''
+    })
+    check(
+      'both keys land in the one file ON DISK, not just in the pure builder above',
+      typeof bothKeysFile === 'string' && existsSync(bothKeysFile)
+        ? Object.keys(JSON.parse(readFileSync(bothKeysFile, 'utf8'))).sort()
+        : bothKeysFile,
+      ['statusLine', 'ultracode']
+    )
+
+    const settingsFile = writeSessionSettingsFile({
+      sessionId: both,
+      ultracode: false,
+      hideStatusLine: false,
+      passthroughCommand: ECHO_CMD
+    })
+    check('the file is written', typeof settingsFile === 'string' && existsSync(settingsFile), true)
+    check(
+      'and parses as the object we built',
+      Object.keys(JSON.parse(readFileSync(settingsFile as string, 'utf8'))),
+      ['statusLine']
+    )
+    check(
+      'the pass-through command is a file beside the payload, never part of the command string',
+      readFileSync(join(statusLineDir(), `${both}.cmd`), 'utf8'),
+      ECHO_CMD
+    )
+    check(
+      'and the wrapper honours it end to end',
+      runWrapper(both, JSON.stringify(REAL)).trim(),
+      'STOKE-PASSTHROUGH'
+    )
+
+    writeSessionSettingsFile({
+      sessionId: both,
+      ultracode: false,
+      hideStatusLine: true,
+      passthroughCommand: ECHO_CMD
+    })
+    check(
+      'switching suppression back on removes the pass-through file rather than leaving it armed',
+      existsSync(join(statusLineDir(), `${both}.cmd`)),
+      false
+    )
+
+    // Recreate the pass-through file so clearSessionFiles' removal of the
+    // `.cmd` file (statusLine.ts:412) is actually exercised below — every
+    // step above has already deleted it by the time clearSessionFiles used
+    // to run, so that removal was never hit against a file that existed.
+    writeSessionSettingsFile({
+      sessionId: both,
+      ultracode: false,
+      hideStatusLine: false,
+      passthroughCommand: ECHO_CMD
+    })
+    check(
+      'the pass-through file exists again, so clearSessionFiles below has something to remove',
+      existsSync(join(statusLineDir(), `${both}.cmd`)),
+      true
+    )
+    clearSessionFiles(both)
+    check(
+      'clearSessionFiles leaves nothing behind, the cmd file included',
+      [
+        existsSync(statusLinePayloadFile(both)),
+        existsSync(settingsFile as string),
+        existsSync(join(statusLineDir(), `${both}.cmd`))
+      ],
+      [false, false, false]
+    )
+
+    console.log("\nthe user's own statusLine, read and never written")
+    writeFileSync(
+      userFile,
+      JSON.stringify({ statusLine: { type: 'command', command: 'bash ~/.claude/statusline-command.sh' } }),
+      'utf8'
+    )
+    check('a command statusLine is what gets passed through', userStatusLineCommand(userFile), 'bash ~/.claude/statusline-command.sh')
+    writeFileSync(userFile, JSON.stringify({ statusLine: { type: 'static', text: 'hi' } }), 'utf8')
+    check('anything that is not a command has nothing to pass through', userStatusLineCommand(userFile), '')
+    check('and a missing file is simply empty', userStatusLineCommand(join(statusLineDir(), 'nope.json')), '')
+    writeFileSync(userFile, 'not json at all', 'utf8')
+    check('malformed JSON degrades to empty, not a throw', userStatusLineCommand(userFile), '')
+    writeFileSync(userFile, JSON.stringify({ statusLine: 'not an object' }), 'utf8')
+    check('a statusLine that is not an object has nothing to pass through', userStatusLineCommand(userFile), '')
+    writeFileSync(userFile, JSON.stringify({ statusLine: { type: 'command', command: 42 } }), 'utf8')
+    check('a non-string command has nothing to pass through', userStatusLineCommand(userFile), '')
+    writeFileSync(
+      userFile,
+      '﻿' +
+        JSON.stringify({
+          statusLine: { type: 'command', command: 'bash ~/.claude/statusline-command.sh' }
+        }),
+      'utf8'
+    )
+    check(
+      "a leading BOM (PowerShell 5.1's Set-Content -Encoding utf8, CLAUDE.md gotcha 8) still yields the user's command",
+      userStatusLineCommand(userFile),
+      'bash ~/.claude/statusline-command.sh'
+    )
+  } finally {
+    clearSessionFiles(both)
+    cleanup(userFile)
+  }
 } finally {
   // The one directory-level fixture, torn down last so it actually runs
   // last regardless of which case above threw or failed a check.

@@ -392,11 +392,18 @@ export function writeSessionSettingsFile(input: SessionSettingsInput): string | 
       const passthrough = input.hideStatusLine ? '' : input.passthroughCommand.trim()
       // Removed rather than left in place when suppression is on: a stale
       // file would keep printing a line the user has just turned off.
-      if (passthrough) writeFileSync(cmdFile, passthrough, 'utf8')
+      //
+      // The write is atomic (temp + rename), not a plain writeFileSync: the
+      // wrapper polls this exact file roughly every 300ms (see WRAPPER_JS
+      // above), so an in-place O_TRUNC rewrite is a window where a read lands
+      // on an empty or truncated command — and a truncation that still
+      // happens to parse as shell would run something other than what the
+      // user configured, not just nothing.
+      if (passthrough) writeAtomic(cmdFile, passthrough)
       else rmSync(cmdFile, { force: true })
     }
     const file = settingsFileFor(input.sessionId)
-    writeFileSync(file, `${JSON.stringify(json, null, 2)}\n`, 'utf8')
+    writeAtomic(file, `${JSON.stringify(json, null, 2)}\n`)
     return file
   } catch (err) {
     console.error('[stoke] could not write the session settings file', err)
@@ -431,7 +438,12 @@ export function userStatusLineCommand(
   settingsFile: string = join(homedir(), '.claude', 'settings.json')
 ): string {
   try {
-    const raw = JSON.parse(readFileSync(settingsFile, 'utf8')) as {
+    // A leading BOM makes JSON.parse throw. PowerShell 5.1's
+    // `Set-Content -Encoding utf8` writes one (CLAUDE.md gotcha 8), and a
+    // user hitting that on their own ~/.claude/settings.json would otherwise
+    // silently lose their status line here with no diagnostic. Stripped
+    // before parsing, never written back — this function still only reads.
+    const raw = JSON.parse(readFileSync(settingsFile, 'utf8').replace(/^﻿/, '')) as {
       statusLine?: { type?: string; command?: string }
     }
     const sl = raw?.statusLine
