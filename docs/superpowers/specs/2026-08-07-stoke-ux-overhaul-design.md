@@ -204,6 +204,128 @@ default theme. `hydrate` (`store.ts:82-127`) repairs every other structured fiel
   (`.usage-panel`), plus four `#fff`.
 - `role="tablist"` (`TitleBar.tsx:80`, `BrowserPanel.tsx:106`) contains non-tab children.
 
+### 2.12 The terminal measures emoji against Unicode 6
+
+Found during planning rather than in the original sweep, and measured the same way as §2.1–2.3.
+
+`TerminalView.tsx:66` sets `allowProposedApi: true` — the prerequisite for a Unicode width
+provider — but only `fit`, `web-links` and `webgl` are loaded, so **no provider is ever
+registered** and xterm falls back to its built-in **Unicode 6** tables, which are from 2010.
+Claude Code's own TUI lays out with modern (string-width) widths. The two disagree, and that
+disagreement is the misrendering: a glyph the CLI drew two cells wide is stored in one, so every
+character after it on the line is off by one and box drawing does not meet. It is not
+SSH-specific — the same tables are used for a local session.
+
+Measured under `@xterm/headless@6.0.0` against the real addons rather than their documentation:
+
+| provider | `U+1FA9F` 🪟 | `U+1F5D3 U+FE0F` 🗓️ | `U+2588` █ |
+|---|---|---|---|
+| built-in `'6'` (today) | width 1 | width 1 | width 1 |
+| `addon-unicode11` (`'11'`) | width 1 | width 1 | width 1 |
+| `addon-unicode-graphemes` at `'15'` | width 2 | cursorX **3** — the variation selector takes a cell of its own | width 1 |
+| `addon-unicode-graphemes` at `'15-graphemes'` | width 2 | width 2, one cell holding `🗓️` | width 1 |
+
+`addon-unicode11` is the obvious pick and fixes **neither** of the two characters at issue.
+Plain `'15'` is worse than today for the calendar glyph. `U+2588` is East-Asian Ambiguous and
+correctly stays one cell in every provider, which is what the CLI assumes too, so nothing drawn
+out of blocks moves.
+
+So: `@xterm/addon-unicode-graphemes` with `unicode.activeVersion = '15-graphemes'`. It is
+verifiable without the app, because a headless terminal reports cell widths directly where a
+WebGL one has no DOM to read at all (`CLAUDE.md` gotcha 5).
+
+### 2.13 Highlighting the status line makes it unreadable
+
+Reported as "the status line is broken when I highlight it", and worse over SSH. Found in the
+same planning pass as §2.12, in the same constructor. **The colour mechanism below is confirmed
+from the code and from arithmetic; that this mechanism is the specific thing the user is seeing
+is inference**, because the failure is a legibility judgement and no screenshot was taken. The
+inference is a strong one: the numbers say the status line's own colours are the ones that fall
+below the legibility floor while ordinary output stays well above it, which is exactly the split
+the report describes.
+
+**Stoke never tells xterm what colour selected text should be.** `terminalTheme()`
+(`theme.ts:59-61`) is `return { ...theme.terminal }`, so xterm's `ITheme` is populated by exactly
+the 21 keys of `TerminalColors` (`types.ts:155-177`). That set contains `selectionBackground`
+(`types.ts:160`) and **neither `selectionForeground` nor `selectionInactiveBackground`** — both
+of which xterm accepts (`node_modules/@xterm/xterm/typings/xterm.d.ts:355` and `:360`). Grepping
+the repo for either name outside `node_modules` returns nothing.
+
+Three settings then combine, all on the same `new Terminal({...})` call:
+
+- `selectionBackground` is **translucent in all four themes** — `themes.ts:44` `rgba(255, 149,
+  82, 0.28)`, `:94` `rgba(110, 168, 254, 0.28)`, `:144` `rgba(143, 214, 127, 0.26)`, `:199`
+  `rgba(183, 72, 10, 0.18)`.
+- `allowTransparency: true` (`TerminalView.tsx:67`), so that alpha is honoured.
+- `minimumContrastRatio: 1` (`TerminalView.tsx:69`), which is xterm's **off** switch:
+  `_applyMinimumContrast` returns immediately when the option is `1`, so no correction is applied
+  to anything, ever.
+
+With no `selectionForeground`, xterm's cell resolver replaces only the *background* of a selected
+cell and leaves its foreground alone — read out of the installed `lib/xterm.js`, where the
+selection branch reads
+`Y = isFocused ? selectionBackgroundOpaque : selectionInactiveBackgroundOpaque` and applies a
+foreground only `if (selectionForeground)`. So selected text keeps whatever colour it already
+had, under a coloured wash, with no contrast correction.
+
+`selectionBackgroundOpaque` is xterm's own alpha blend of the selection colour over the theme
+background, so the ground the text actually sits on is computable. Using `over()` and
+`contrastRatio()` from `src/shared/color.ts` — the app's own maths:
+
+| theme | background | selection | composited ground | ANSI colours below 4.5:1 on it |
+|---|---|---|---|---|
+| ember | `#14110f` | `rgba(255, 149, 82, 0.28)` | `#563622` | 3 of 16 — `black`, `red`, `brightBlack` |
+| nocturne | `#0d1117` | `rgba(110, 168, 254, 0.28)` | `#283b58` | 4 of 16 — `black`, `red`, `magenta`, `brightBlack` |
+| moss | `#101511` | `rgba(143, 214, 127, 0.26)` | `#31472e` | 4 of 16 — `black`, `red`, `magenta`, `brightBlack` |
+| daylight | `#f4f4f5` | `rgba(183, 72, 10, 0.18)` | `#e9d5cb` | 12 of 16 |
+
+That is the whole story, and it is the split the report describes. Ordinary output is drawn in the
+theme's `foreground` and stays legible under the wash — 9.01:1 on ember, 8.68:1 on moss. The
+status line is not ordinary output: it is drawn in ANSI colours and in SGR 2 dim, and both of
+those are the failing cases.
+
+- `brightBlack` — the slot secondary text conventionally uses — measures **1.88:1** on ember,
+  **1.98:1** on nocturne and **1.86:1** on moss against the composited ground. Measured. *That
+  the CLI's status line uses this slot is the inference*; which ANSI indices it emits was not
+  captured.
+- **Dim compounds it.** xterm renders SGR 2 by halving the *foreground's* alpha: its generated
+  stylesheet emits one `.xterm-dim { color: multiplyOpacity(<colour>, .5) }` rule per palette
+  entry. So a dim glyph is drawn at half strength over whatever is behind it, which under a
+  selection is the wash rather than the background. `minimumContrastRatio: 1` means the halved
+  colour is never corrected either — `_applyMinimumContrast` returns before reaching its own dim
+  branch (`minimumContrastRatio / 2`), which is unreachable while the ratio is 1.
+- Daylight is worse across the board, because a light theme has less headroom above the wash:
+  **12 of its 16** ANSI colours fall below 4.5:1, and its `white` (`#dedee1`) reaches **1.05:1**
+  — effectively the same colour twice.
+
+Two smaller consequences of the same omission:
+
+- **An unfocused selection is indistinguishable from a focused one.** xterm resolves
+  `selectionInactiveBackgroundTransparent` by falling back to `selectionBackgroundTransparent`
+  when the key is absent, so both states composite to the identical colour. Selecting in one
+  terminal and clicking into another leaves both looking selected.
+- **The phone UI has the same defect independently.** `src/remote/main.ts:625-639` builds its own
+  `Terminal` with a four-key inline theme and `selectionBackground: 'rgba(255,149,82,0.3)'`. It
+  does not read `src/shared/themes.ts` at all, so fixing the themes does not reach it. Out of
+  scope here — it is a separate bundle with no CDP route for verification — but recorded so the
+  omission is deliberate.
+
+**Why SSH is worse is §2.12's cause, not this one.** Over SSH two independent width tables have
+to agree: the remote CLI's `wcwidth`, which decides where it puts the cursor and how wide it
+believes it drew each glyph, and the local xterm's tables, which decide how wide each cell is
+painted. When they disagree the status line's segments no longer start where the CLI thinks they
+do, so the selection rectangle covers the wrong columns and the unreadable-colour problem is
+being applied to a line that is already torn. The two fixes are independent and both belong in
+the same terminal constructor.
+
+**The fix, and what it costs.** Set `selectionForeground` per theme, to a value measured against
+the composited ground rather than against the background. A single foreground for the whole
+selection is how VS Code's terminal behaves and it is the point: syntax colour inside the
+selection is *deliberately* discarded, because keeping it is the defect. Add
+`selectionInactiveBackground` at a lower alpha so an unfocused selection reads as weaker without
+disappearing. `validateTheme` (`themes.ts:249-279`) needs no change — its `pick` iterates the
+base theme's own keys, so both new keys are backfilled into every persisted theme for free.
+
 ---
 
 ## 3. Architecture decision: the statusLine data channel
@@ -320,6 +442,16 @@ CLI versions that do not emit the payload, but are no longer the primary source.
    fallbacks.
 5. Point the usage chip at `rate_limits`; show last-known with an "as of" tooltip when no session
    is open.
+6. Load a Unicode 15 grapheme width provider in `TerminalView`, per §2.12. Lands **first** in this
+   workstream: it touches nothing the payload work touches, and every terminal screenshot taken
+   after it shows a layout the CLI and the terminal agree about.
+7. Give all four themes a `selectionForeground` and a `selectionInactiveBackground`, per §2.13.
+   Same commit as item 6 — same constructor, same "the terminal disagrees with what the CLI drew"
+   defect, and the same requirement that it land before any terminal screenshot is taken.
+8. Extend `TerminalColors` with those two keys so a theme cannot omit them, and pin every value
+   with an assertion in `verify:color`: selected text must clear 4.5:1 against its own selection
+   background **composited over** its theme background, focused and unfocused alike. The
+   compositing is the whole point — the raw `rgba()` is never what the text sits on.
 
 ### F · Sidebar and spacing
 
@@ -347,7 +479,11 @@ CLI versions that do not emit the payload, but are no longer the primary source.
   (currently uncovered; the one existing test locks in the wrong behaviour).
 - `verify:worklog-gate` — add the root-aware fallback and a macOS case-folding case.
 - `verify:usage` — repoint at the statusLine payload.
+- `verify:color` — extend with §2.13: for every built-in theme, the composited selection ground
+  and the contrast of `selectionForeground` on it, focused and unfocused.
 - New: a statusLine wrapper suite covering payload parsing, suppression, and pass-through.
+- New: a Unicode width suite for §2.12, pinning which provider is loaded and what it measures
+  against the real addon under `@xterm/headless`.
 
 Per `CLAUDE.md`, UI work is verified by launching with `--remote-debugging-port` and driving over
 CDP; screenshots are the only reliable way to confirm the terminal and panels render. The tab
