@@ -6,11 +6,20 @@
  * place, which is the failure mode this project keeps producing. These anchors
  * have arithmetic answers, so a regression shows up as a wrong number.
  *
- * The last section calls the live account, so it needs Claude Code signed in.
+ * The last section calls the live account. It is opt-in behind
+ * STOKE_LIVE_USAGE=1 and does not run as part of `npm run check` — on macOS
+ * it fails every time, because the OAuth token lives in the login Keychain,
+ * not in ~/.claude/.credentials.json (CLAUDE.md, Task 14's finding). The
+ * section above it proves the path that works everywhere instead: the
+ * statusLine payload, merged with whatever the account route did or didn't
+ * answer, the same way UsageMeter.tsx merges them for real.
  *
  *   node scripts/verify-usage.mts
+ *   STOKE_LIVE_USAGE=1 node scripts/verify-usage.mts
  */
 import { fetchUsage, parseUsage } from '../src/main/usage.ts'
+import { toSnapshot } from '../src/main/statusLine.ts'
+import { mergeUsageWindows, statusLineWindows } from '../src/shared/statusLine.ts'
 
 let failures = 0
 
@@ -89,34 +98,131 @@ check(
   0
 )
 
-console.log('\nthe live account')
-const live = await fetchUsage()
-if (live.retryAfter) {
-  /*
-   * The endpoint is rate-limiting or down. That is the environment, not the
-   * code, and failing the suite for it would train everyone to ignore a red
-   * run. Reporting unavailability here is the parser behaving correctly.
-   */
-  console.log(`  SKIP  ${live.error} Backing off ${Math.round(live.retryAfter / 60_000)} min.`)
-} else if (live.error) {
-  console.log(`  FAIL  ${live.error}`)
-  failures++
-} else if (!live.windows.length) {
-  console.log('  FAIL  the endpoint answered but reported no windows')
-  failures++
+/*
+ * The account route needs the network and a token, and on macOS it has
+ * neither: the OAuth token is in the login Keychain, not in
+ * ~/.claude/.credentials.json, so this section reports "Not signed in to
+ * Claude Code." and fails. That is exactly why the merge section above
+ * exists — and why this half is opt-in, so the rest of the suite can be
+ * part of `npm run check`.
+ */
+if (process.env.STOKE_LIVE_USAGE === '1') {
+  console.log('\nthe live account')
+  const live = await fetchUsage()
+  if (live.retryAfter) {
+    /*
+     * The endpoint is rate-limiting or down. That is the environment, not the
+     * code, and failing the suite for it would train everyone to ignore a red
+     * run. Reporting unavailability here is the parser behaving correctly.
+     */
+    console.log(`  SKIP  ${live.error} Backing off ${Math.round(live.retryAfter / 60_000)} min.`)
+  } else if (live.error) {
+    console.log(`  FAIL  ${live.error}`)
+    failures++
+  } else if (!live.windows.length) {
+    console.log('  FAIL  the endpoint answered but reported no windows')
+    failures++
+  } else {
+    console.log(`  PASS  ${live.windows.length} windows`)
+    for (const w of live.windows) {
+      const resets = w.resetsAt
+        ? new Date(w.resetsAt).toISOString().slice(0, 16).replace('T', ' ')
+        : 'never used'
+      const pace = w.elapsed === null ? '  n/a' : `${String(Math.round(w.elapsed * 100)).padStart(3)}%`
+      const ahead = w.elapsed !== null && w.percent > w.elapsed * 100 ? '  <- ahead of pace' : ''
+      console.log(
+        `        ${w.label.padEnd(8)} used ${String(w.percent).padStart(3)}%   pace ${pace}   resets ${resets}${ahead}`
+      )
+    }
+  }
 } else {
-  console.log(`  PASS  ${live.windows.length} windows`)
-  for (const w of live.windows) {
-    const resets = w.resetsAt
-      ? new Date(w.resetsAt).toISOString().slice(0, 16).replace('T', ' ')
-      : 'never used'
-    const pace = w.elapsed === null ? '  n/a' : `${String(Math.round(w.elapsed * 100)).padStart(3)}%`
-    const ahead = w.elapsed !== null && w.percent > w.elapsed * 100 ? '  <- ahead of pace' : ''
-    console.log(
-      `        ${w.label.padEnd(8)} used ${String(w.percent).padStart(3)}%   pace ${pace}   resets ${resets}${ahead}`
-    )
+  console.log('\n  SKIP  the live account call (set STOKE_LIVE_USAGE=1 to run it)')
+}
+
+console.log('\nwhat the chip actually draws when both sources answer at once')
+/*
+ * verify-statusline.mts already proves statusLineWindows() and
+ * mergeUsageWindows() in detail, against the same captured 2.1.221 payload —
+ * repeating those checks here would be the exact duplication
+ * plan-resolutions.md's H3 ruling rules out. What that suite never does is
+ * call parseUsage(), the account-route parser this file alone owns, and
+ * merge ITS real output with a real payload the way UsageMeter.tsx actually
+ * does it. That composition — not either parser in isolation — is this
+ * suite's own job, and it is the thing that was never provable on a machine
+ * where the account route fails outright.
+ */
+const PAYLOAD = {
+  session_id: 'a0e0ee79-0000-4000-8000-000000000000',
+  model: { id: 'claude-opus-5', display_name: 'Opus 5' },
+  context_window: { context_window_size: 1_000_000, used_percentage: 28 },
+  exceeds_200k_tokens: false,
+  rate_limits: {
+    five_hour: { used_percentage: 15, resets_at: 1_786_078_200 },
+    seven_day: { used_percentage: 3, resets_at: 1_786_647_600 }
   }
 }
+/** Half an hour before the five-hour window in PAYLOAD resets. */
+const at = 1_786_076_400_000
+const fromLine = statusLineWindows(toSnapshot('usage-1', PAYLOAD, at), at)
+
+/**
+ * The account's own answer at the same instant: a warning severity on the
+ * very window the payload also reports — from an earlier poll, so its own
+ * percent and reset time are deliberately stale — plus the model-scoped
+ * window only the account route ever produces at all.
+ */
+const fromAccount = parseUsage(
+  {
+    limits: [
+      {
+        kind: 'session',
+        percent: 9,
+        severity: 'warning',
+        resets_at: new Date(1_786_070_000_000).toISOString(),
+        is_active: true
+      },
+      {
+        kind: 'weekly_scoped',
+        percent: 61,
+        severity: 'normal',
+        resets_at: null,
+        is_active: false,
+        scope: { model: { display_name: 'Fable' } }
+      }
+    ]
+  },
+  at
+).windows
+
+const merged = mergeUsageWindows(fromLine, fromAccount)
+check(
+  'all three windows reach the chip: the two the payload states, plus the one only the account can',
+  merged.map((w) => w.kind),
+  ['session', 'weekly', 'weekly_scoped']
+)
+check(
+  "the session window's figures are the payload's fresher ones, not the account's stale poll",
+  [merged[0].percent, merged[0].resetsAt],
+  [15, 1_786_078_200_000]
+)
+check(
+  "but its severity is the account's — the one field the payload has no way to state at all",
+  merged[0].severity,
+  'warning'
+)
+check(
+  'the Fable window rides along exactly as parseUsage itself built it from the account JSON',
+  [merged[2].label, merged[2].percent, merged[2].severity, merged[2].active],
+  ['Fable', 61, 'normal', false]
+)
+
+console.log('\nand on this machine, where the account route never answers at all')
+check(
+  'with nothing from the account, the payload alone still draws both its windows — ' +
+    'the meter does not go blank just because auth failed',
+  mergeUsageWindows(fromLine, []).map((w) => w.kind),
+  ['session', 'weekly']
+)
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
 // Setting the code rather than calling process.exit: the socket from the live

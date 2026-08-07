@@ -20,8 +20,8 @@ npm run dist:win        # installer -> release/Stoke-<version>-x64-setup.exe
 npm run dist:mac        # dmg (arm64). MUST run on a Mac.
 ```
 
-The verify suites, all runnable alone. `check` runs everything except the last three, which
-need a live instance or cost money:
+The verify suites, all runnable alone. `check` runs everything except `verify:extract` and
+`verify:security`, which need a live instance:
 
 ```bash
 npm run verify:context        # context meter against the real transcripts on this machine
@@ -37,7 +37,7 @@ npm run verify:worklog-recall   # the read-only board read, its parse and its ca
 npm run verify:worklog-autoscan # when a session is scanned without being asked
 npm run verify:ssh            # ssh argv, ~/.ssh/config parsing, the remote transcript fetch
 npm run verify:extract        # page extractor regression set
-npm run verify:usage          # plan limits, incl. a live account call
+npm run verify:usage          # plan limits from the statusLine payload; STOKE_LIVE_USAGE=1 adds the account call
 npm run verify:security <url> <token> --access   # remote server, against a running instance
 ```
 
