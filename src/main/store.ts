@@ -2,7 +2,7 @@ import { app } from 'electron'
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { Settings } from '@shared/types'
-import { DEFAULT_SETTINGS, hydrateSettings } from './settingsSchema.ts'
+import { hydrateSettings } from './settingsSchema.ts'
 
 let cache: Settings | null = null
 const listeners = new Set<(s: Settings) => void>()
@@ -16,7 +16,13 @@ export function getSettings(): Settings {
   try {
     cache = hydrateSettings(JSON.parse(readFileSync(file(), 'utf8')))
   } catch {
-    cache = { ...DEFAULT_SETTINGS }
+    // A fresh install (readFileSync throws ENOENT) or an unreadable file both
+    // land here. Route through the same repair as a real settings.json rather
+    // than a bare `{ ...DEFAULT_SETTINGS }` spread — that spread is shallow
+    // and would hand out DEFAULT_WORKLOG_BOARDS and DEFAULT_SETTINGS.projectMeta
+    // by reference, letting a later in-place mutation corrupt the shared
+    // module constants for the rest of the process.
+    cache = hydrateSettings(null)
   }
   return cache
 }

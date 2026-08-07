@@ -7,6 +7,7 @@
  *   node scripts/verify-settings.mts
  */
 import { DEFAULT_SETTINGS, hydrateSettings } from '../src/main/settingsSchema.ts'
+import { DEFAULT_WORKLOG_BOARDS } from '../src/shared/worklog.ts'
 
 let failures = 0
 function check(name: string, got: unknown, want: unknown): void {
@@ -18,11 +19,21 @@ function check(name: string, got: unknown, want: unknown): void {
   )
 }
 
+function ok(name: string, condition: boolean, detail = ''): void {
+  if (!condition) failures++
+  console.log(`  ${condition ? 'PASS' : 'FAIL'}  ${name}${condition || !detail ? '' : `\n        ${detail}`}`)
+}
+
 console.log('\nproject metadata')
 check('junk is dropped rather than kept', hydrateSettings({ projectMeta: 7 }).projectMeta, {})
 check(
+  // A plain array of strings would be dropped either way - by Array.isArray or
+  // by the `typeof value !== 'object'` continue further down. An array of
+  // objects is the input Array.isArray actually guards: without it,
+  // Object.entries would key each element on its array index and produce
+  // { '0': { label: 'x' } } instead of {}.
   'an array is not an object of records',
-  hydrateSettings({ projectMeta: ['/a'] }).projectMeta,
+  hydrateSettings({ projectMeta: [{ label: 'x' }] }).projectMeta,
   {}
 )
 check(
@@ -41,11 +52,17 @@ check(
   {}
 )
 check(
-  'a label is trimmed and capped',
-  hydrateSettings({ projectMeta: { '/a': { label: `  ${'x'.repeat(200)}  ` } } }).projectMeta[
-    '/a'
-  ].label?.length,
-  64
+  // Asserts the value, not just its length - a fixture whose length survives
+  // .trim() being dropped (e.g. a 200-char label padded with spaces) would
+  // pass this even with a broken tidy().
+  'a label is trimmed',
+  hydrateSettings({ projectMeta: { '/a': { label: '  x  ' } } }).projectMeta['/a'].label,
+  'x'
+)
+check(
+  'and capped at 64',
+  hydrateSettings({ projectMeta: { '/a': { label: 'x'.repeat(200) } } }).projectMeta['/a'].label,
+  'x'.repeat(64)
 )
 
 console.log('\nworklog boards')
@@ -82,6 +99,11 @@ check('so is 0', hydrateSettings({ uiScale: 0 }).uiScale, 0.8)
 check('and junk falls back to 1', hydrateSettings({ uiScale: 'big' }).uiScale, 1)
 check('a legitimate value is untouched', hydrateSettings({ uiScale: 1.25 }).uiScale, 1.25)
 
+console.log('\nterminal font size, which rounds as well as clamps')
+check('a hand-typed 3 is clamped up to the floor', hydrateSettings({ fontSize: 3 }).fontSize, 9)
+check('and 30 is clamped down to the ceiling', hydrateSettings({ fontSize: 30 }).fontSize, 24)
+check('a fractional 13.5 is rounded to 14', hydrateSettings({ fontSize: 13.5 }).fontSize, 14)
+
 console.log('\nthe status line')
 check('suppression is on for a machine that has never said', hydrateSettings({}).hideStatusLine, true)
 check('and off stays off', hydrateSettings({ hideStatusLine: false }).hideStatusLine, false)
@@ -92,6 +114,45 @@ check(
   hydrateSettings({ pinnedProjects: ['/a'], hiddenProjects: ['/b'] }),
   { ...DEFAULT_SETTINGS, pinnedProjects: ['/a'], hiddenProjects: ['/b'] }
 )
+
+console.log('\na fresh install, or a settings.json that parses to null')
+check(
+  'hydrateSettings(null) repairs to the same shape as hydrateSettings({})',
+  hydrateSettings(null),
+  hydrateSettings({})
+)
+{
+  // Identity, not deep-equality: this is exactly the bug the reviewer
+  // measured. A bare `{ ...DEFAULT_SETTINGS }` shallow-copy on the fresh-
+  // install path hands out DEFAULT_WORKLOG_BOARDS (and its .targets array)
+  // and DEFAULT_SETTINGS.projectMeta by reference; two objects can look
+  // identical under JSON.stringify while still being the one shared module
+  // constant that later worklog code relies on as a write-path fallback.
+  const fresh = hydrateSettings(null)
+  ok(
+    'worklogBoards is not the shared DEFAULT_WORKLOG_BOARDS object',
+    (fresh.worklogBoards as unknown) !== (DEFAULT_WORKLOG_BOARDS as unknown)
+  )
+  ok(
+    'worklogBoards.targets is not the shared DEFAULT_WORKLOG_BOARDS.targets array',
+    (fresh.worklogBoards.targets as unknown) !== (DEFAULT_WORKLOG_BOARDS.targets as unknown)
+  )
+  ok(
+    'projectMeta is not the shared DEFAULT_SETTINGS.projectMeta object',
+    (fresh.projectMeta as unknown) !== (DEFAULT_SETTINGS.projectMeta as unknown)
+  )
+  // Mutate what the fresh-install path handed out, then prove nothing else
+  // saw it - the actual failure mode, not just a reference check in isolation.
+  fresh.worklogBoards.targets.push('clickup')
+  ok(
+    'mutating the returned targets array leaves DEFAULT_WORKLOG_BOARDS.targets alone',
+    JSON.stringify(DEFAULT_WORKLOG_BOARDS.targets) === JSON.stringify(['notion'])
+  )
+  ok(
+    'a later hydrateSettings({}) is unaffected by that mutation',
+    JSON.stringify(hydrateSettings({}).worklogBoards.targets) === JSON.stringify(['notion'])
+  )
+}
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
 process.exitCode = failures ? 1 : 0

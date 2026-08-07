@@ -152,7 +152,15 @@ function hydrateWorklogBoards(raw: unknown): WorklogBoards {
 
 /** Shallow-merge persisted values over defaults so new keys appear on upgrade. */
 export function hydrateSettings(raw: unknown): Settings {
-  if (!raw || typeof raw !== 'object') return { ...DEFAULT_SETTINGS }
+  // `{}` is an object, so this falls straight into the main path below rather
+  // than short-circuiting to a bare `{ ...DEFAULT_SETTINGS }` spread. A bare
+  // spread is shallow: `worklogBoards` and `projectMeta` would still be the
+  // exact objects DEFAULT_SETTINGS points at (DEFAULT_WORKLOG_BOARDS itself,
+  // in the worklogBoards case), so an in-place mutation by a caller would
+  // corrupt the shared module constant for the rest of the process. Routing
+  // through `{}` rebuilds every structured field with its own repair logic,
+  // which already returns fresh objects.
+  if (!raw || typeof raw !== 'object') return hydrateSettings({})
   const r = raw as Partial<Settings>
   return {
     ...DEFAULT_SETTINGS,
