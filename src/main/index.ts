@@ -792,12 +792,25 @@ function registerIpc(): void {
       })
     }
     /*
-     * Recall's cache is keyed on which boards are switched *on* (see
-     * cacheKey in recall.ts), not on their ids — toggling a board already
-     * changes that key and misses on its own. Editing an id in place does
-     * not: the key is unchanged, so a stale read of the *old* Notion data
-     * source or ClickUp list could otherwise be served for up to
+     * Ahead of its own wiring, kept anyway.
+     *
+     * Recall's cache is keyed on which boards are switched *on* (see cacheKey
+     * in recall.ts), not on their ids, so toggling a board already misses the
+     * cache key on its own — editing an id in place would not, since the key
+     * is unchanged. That is the bug this call is written to prevent: a stale
+     * read of the *old* Notion data source or ClickUp list served for up to
      * RECALL_TTL_MS after the user points the setting at a different board.
+     *
+     * It cannot happen *yet*, though. runWorklogScan's recall() call still
+     * passes the compiled-in CLICKUP_LIST_ID / NOTION_DATA_SOURCE constants
+     * (re-exported from worklog/runner.ts), not
+     * settings.worklogBoards.notionDataSource / .clickupListId — so an id
+     * typed into this settings panel cannot yet be the thing a cached recall
+     * snapshot goes stale against. This call becomes load-bearing the moment
+     * that read site is rewired to settings (a later task); it stays here now
+     * because it is one comparison, correct in advance of that rewiring, and
+     * cheap regardless — a settings write happens far less often than a scan
+     * runs.
      */
     if (
       next.worklogBoards.notionDataSource !== prev.worklogBoards.notionDataSource ||

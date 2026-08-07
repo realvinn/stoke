@@ -1,5 +1,7 @@
+import { useState } from 'react'
 import type { ProfileConfig, WorklogBoards, WorklogTarget } from '@shared/types'
 import { WORKLOG_TARGETS } from '@shared/worklog'
+import { idFor, nextBoards } from '../lib/worklogBoards'
 
 interface Props {
   /** The resolved profile list — the same one the sidebar chips are drawn from. */
@@ -21,44 +23,27 @@ interface Props {
 const fold = (group: string): string => group.trim().toLowerCase()
 
 /** Labels and hints per destination, so the JSX below stays a loop. */
-const TARGET_UI: Record<WorklogTarget, { label: string; idLabel: string; placeholder: string; need: string }> = {
+const TARGET_UI: Record<
+  WorklogTarget,
+  { label: string; idLabel: string; placeholder: string; need: string; findIt: string }
+> = {
   notion: {
     label: 'Notion',
     idLabel: 'Notion data source',
     placeholder: 'collection://…',
-    need: 'Add a Notion data source first'
+    need: 'Add a Notion data source first',
+    findIt:
+      "Not the page's normal Notion link. Ask Claude to search Notion for the board you want " +
+      'reviews filed to — the connected Notion tool returns the id in exactly this form.'
   },
   clickup: {
     label: 'ClickUp',
     idLabel: 'ClickUp list id',
-    placeholder: '901615258684',
-    need: 'Add a ClickUp list id first'
-  }
-}
-
-/** The id field that belongs to a destination. One place, so the tick box and
- *  the disabled state cannot disagree about which id they mean. */
-const idFor = (boards: WorklogBoards, target: WorklogTarget): string =>
-  target === 'notion' ? boards.notionDataSource : boards.clickupListId
-
-/**
- * The record to store, given what the user just did.
- *
- * The same filter `hydrateWorklogBoards` applies (contracts §0.5): canonical
- * order, and a destination with no id is dropped. Applying it here rather than
- * trusting the store means the panel can never show a destination the runner
- * would refuse to write to — which is the failure Task 19's "no board is
- * switched on" error exists to catch, one layer too late.
- */
-function nextBoards(
-  boards: WorklogBoards,
-  ticked: Set<WorklogTarget>,
-  ids: Pick<WorklogBoards, 'notionDataSource' | 'clickupListId'>
-): WorklogBoards {
-  const merged: WorklogBoards = { ...boards, ...ids, targets: boards.targets }
-  return {
-    ...merged,
-    targets: WORKLOG_TARGETS.filter((t) => ticked.has(t) && idFor(merged, t).trim().length > 0)
+    placeholder: 'e.g. 123456789012',
+    need: 'Add a ClickUp list id first',
+    findIt:
+      "The number after /li/ in the list's ClickUp URL — open the list and check the address " +
+      'bar, e.g. app.clickup.com/…/li/123456789012.'
   }
 }
 
@@ -100,6 +85,67 @@ export function WorklogSettings({
   // no checkbox anywhere to show it.
   const covered = new Set(profiles.flatMap((p) => p.groups.map(fold)).filter(Boolean))
   const orphans = worklogGroups.filter((g) => fold(g) && !covered.has(fold(g)))
+
+  /*
+   * The two id fields are local drafts, committed on blur or Enter — the same
+   * pattern HostsSettings.tsx already uses for its text fields, and for the
+   * same reason: `onChangeBoards` round-trips through the main process, which
+   * writes settings.json (store.ts: a writeFileSync+rename pair) and, for these
+   * two fields specifically, drops the worklog's cached reading of the boards
+   * (index.ts's settingsSet handler). Firing that on every keystroke made
+   * typing a 40-character Notion id forty writes and forty cache drops for one
+   * edit the user was still in the middle of — and a cache drop while a read is
+   * already in flight makes that read discard its answer instead of caching it
+   * (recall.ts's `generation` guard), so a slow keystroke-triggered persist
+   * could throw away a paid run that was about to land. Deferring the persist
+   * to blur/Enter makes that one write, for the value the user actually meant.
+   */
+  const [notionDraft, setNotionDraft] = useState<string | null>(null)
+  const [clickupDraft, setClickupDraft] = useState<string | null>(null)
+  const notionValue = notionDraft ?? boards.notionDataSource
+  const clickupValue = clickupDraft ?? boards.clickupListId
+
+  const commitIds = (ids: Pick<WorklogBoards, 'notionDataSource' | 'clickupListId'>): void => {
+    onChangeBoards(nextBoards(boards, new Set(boards.targets), ids))
+  }
+
+  const commitNotion = (): void => {
+    if (notionDraft === null) return
+    const next = notionDraft.trim()
+    setNotionDraft(null)
+    // Same value back out (a focus-then-blur with no edit, or retyping what was
+    // already there) commits nothing — no round trip for a no-op.
+    if (next === boards.notionDataSource) return
+    commitIds({ notionDataSource: next, clickupListId: boards.clickupListId })
+  }
+
+  const commitClickup = (): void => {
+    if (clickupDraft === null) return
+    const next = clickupDraft.trim()
+    setClickupDraft(null)
+    if (next === boards.clickupListId) return
+    commitIds({ notionDataSource: boards.notionDataSource, clickupListId: next })
+  }
+
+  /*
+   * Ticking a checkbox is a discrete click, not a keystroke, so it commits
+   * immediately rather than waiting on a blur that may never come — but it has
+   * to use whatever is on screen, including an id typed into the other field a
+   * moment ago that has not been blurred yet, or the click would tick a board
+   * against a stale, still-empty id.
+   */
+  const toggle = (target: WorklogTarget, checked: boolean): void => {
+    const ids = {
+      notionDataSource: (notionDraft ?? boards.notionDataSource).trim(),
+      clickupListId: (clickupDraft ?? boards.clickupListId).trim()
+    }
+    setNotionDraft(null)
+    setClickupDraft(null)
+    const ticked = new Set(boards.targets)
+    if (checked) ticked.add(target)
+    else ticked.delete(target)
+    onChangeBoards(nextBoards(boards, ticked, ids))
+  }
 
   return (
     <div className="field">
@@ -221,28 +267,25 @@ export function WorklogSettings({
 
       {WORKLOG_TARGETS.map((target) => {
         const ui = TARGET_UI[target]
-        const hasId = idFor(boards, target).trim().length > 0
+        // Draft-aware: reflects what is on screen, including an id typed but
+        // not yet blurred, so the box does not sit disabled for the whole time
+        // someone is typing a valid id into it.
+        const draftIds = { notionDataSource: notionValue, clickupListId: clickupValue }
+        const hasId = idFor(draftIds, target).trim().length > 0
         return (
           <label className="check-row" key={target}>
             <input
               type="checkbox"
               checked={boards.targets.includes(target)}
               disabled={!hasId}
-              title={hasId ? undefined : ui.need}
-              onChange={(e) => {
-                const ticked = new Set(boards.targets)
-                if (e.target.checked) ticked.add(target)
-                else ticked.delete(target)
-                onChangeBoards(
-                  nextBoards(boards, ticked, {
-                    notionDataSource: boards.notionDataSource,
-                    clickupListId: boards.clickupListId
-                  })
-                )
-              }}
+              onChange={(e) => toggle(target, e.target.checked)}
             />
             <span>
               <span className="field-label">{ui.label}</span>
+              {/* Disabled inputs suppress the `title` tooltip in Chromium, so
+                  the reason lives in the row itself instead — same as the
+                  "no folders yet" case above. */}
+              {!hasId && <span className="field-hint">{ui.need}</span>}
             </span>
           </label>
         )
@@ -254,18 +297,16 @@ export function WorklogSettings({
       <input
         id="worklog-notion-id"
         className="input"
-        value={boards.notionDataSource}
+        value={notionValue}
         placeholder={TARGET_UI.notion.placeholder}
         spellCheck={false}
-        onChange={(e) =>
-          onChangeBoards(
-            nextBoards(boards, new Set(boards.targets), {
-              notionDataSource: e.target.value,
-              clickupListId: boards.clickupListId
-            })
-          )
-        }
+        onChange={(e) => setNotionDraft(e.target.value)}
+        onBlur={commitNotion}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') e.currentTarget.blur()
+        }}
       />
+      <span className="field-hint">{TARGET_UI.notion.findIt}</span>
 
       <label className="field-label" htmlFor="worklog-clickup-id">
         {TARGET_UI.clickup.idLabel}
@@ -274,23 +315,21 @@ export function WorklogSettings({
         id="worklog-clickup-id"
         className="input"
         inputMode="numeric"
-        value={boards.clickupListId}
+        value={clickupValue}
         placeholder={TARGET_UI.clickup.placeholder}
         spellCheck={false}
-        onChange={(e) =>
-          onChangeBoards(
-            nextBoards(boards, new Set(boards.targets), {
-              notionDataSource: boards.notionDataSource,
-              clickupListId: e.target.value
-            })
-          )
-        }
+        onChange={(e) => setClickupDraft(e.target.value)}
+        onBlur={commitClickup}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') e.currentTarget.blur()
+        }}
       />
+      <span className="field-hint">{TARGET_UI.clickup.findIt}</span>
 
       <span className="field-hint">
-        A destination with no id is not a destination — it is dropped on save, which is why the
-        box will not tick until the id is there. Clearing an id switches its board off rather
-        than leaving a tick that writes nowhere.
+        Type an id and its checkbox switches on by itself — no need to tick it separately. Clear
+        the id and the checkbox switches off too, so a board can never stay ticked with nothing
+        behind it to write to.
       </span>
 
       <span className="field-hint">

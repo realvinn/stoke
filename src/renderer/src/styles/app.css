@@ -1809,6 +1809,17 @@ body {
   gap: 0.125rem;
 }
 
+/* A disabled checkbox is only greyed by the browser's own default rendering;
+   the label beside it stayed full-strength with nothing to show the row is
+   off-limits. Dim the whole row so the two read as one state. */
+.check-row:has(input:disabled) {
+  cursor: not-allowed;
+}
+
+.check-row:has(input:disabled) > span {
+  opacity: 0.55;
+}
+
 /* ---------------------------------------------------------- theme picker */
 
 .theme-grid {

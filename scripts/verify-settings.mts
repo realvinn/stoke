@@ -8,6 +8,8 @@
  */
 import { DEFAULT_SETTINGS, hydrateSettings } from '../src/main/settingsSchema.ts'
 import { DEFAULT_WORKLOG_BOARDS } from '../src/shared/worklog.ts'
+import { nextBoards } from '../src/renderer/src/lib/worklogBoards.ts'
+import type { WorklogTarget } from '../src/shared/types.ts'
 
 let failures = 0
 function check(name: string, got: unknown, want: unknown): void {
@@ -181,6 +183,46 @@ check(
   hydrateSettings({
     worklogBoards: { targets: ['jira', 'notion'], notionDataSource: 'x', clickupListId: '1' }
   }).worklogBoards.targets,
+  ['notion']
+)
+
+console.log('\nnextBoards, the panel’s own copy of that rule')
+
+/*
+ * The three checks just above exercise hydrateWorklogBoards, in
+ * settingsSchema.ts — a file this task never touched. `nextBoards`
+ * (src/renderer/src/lib/worklogBoards.ts) is WorklogSettings.tsx's own
+ * re-implementation of the same three rules, applied before a keystroke ever
+ * reaches onChangeBoards, and nothing asserted it directly: every check above
+ * would keep passing even if `nextBoards` silently stopped agreeing with the
+ * store it is supposed to mirror. A dummy `boards` fixture is enough here —
+ * `nextBoards` only reads `ids` and `ticked`; its `boards` argument exists to
+ * satisfy the return type, and is fully overwritten by the `targets:` line
+ * that follows it.
+ */
+const noBoards = { targets: [] as WorklogTarget[], notionDataSource: '', clickupListId: '' }
+check(
+  'a target whose id is empty is not a target',
+  nextBoards(noBoards, new Set(['notion', 'clickup']), {
+    notionDataSource: 'x',
+    clickupListId: '  '
+  }).targets,
+  ['notion']
+)
+check(
+  'the ticked order cannot change the canonical order',
+  nextBoards(noBoards, new Set(['clickup', 'notion']), {
+    notionDataSource: 'x',
+    clickupListId: '1'
+  }).targets,
+  ['notion', 'clickup']
+)
+check(
+  'a name no write tool exists for is dropped',
+  nextBoards(noBoards, new Set(['jira', 'notion'] as WorklogTarget[]), {
+    notionDataSource: 'x',
+    clickupListId: '1'
+  }).targets,
   ['notion']
 )
 
