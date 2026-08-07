@@ -21,6 +21,15 @@
  * `resolveProfiles` merges the two. Everything else reads its output.
  */
 import type { ProfileConfig } from './types'
+/*
+ * Relative with an explicit `.ts`, even though this is a shared module and the
+ * rest of them import extensionlessly. Extensionless works only for type-only
+ * imports, which are erased — this is a value import, and
+ * `node scripts/verify-profiles.mts` loads this file directly under
+ * --experimental-strip-types, where './paths' resolves to nothing. Both
+ * tsconfigs allow the extension after Steps 5a and 5b.
+ */
+import { foldGroup } from './paths.ts'
 
 /** The derived seed's shape. `ResolvedProfile` is assignable to this. */
 export interface Profile {
@@ -203,9 +212,7 @@ const FALLBACK = PROFILE_SWATCHES.slice(4).map((s) => ({
  * and must be the same profile. Comparing them raw made a profile silently
  * match nothing.
  */
-export function foldGroup(value: string): string {
-  return value.trim().toLowerCase()
-}
+export { foldGroup }
 
 /** Last path segment, for either separator, ignoring a trailing one. */
 export function folderName(path: string): string {

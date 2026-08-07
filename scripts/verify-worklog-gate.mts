@@ -11,7 +11,8 @@
  *   node scripts/verify-worklog-gate.mts
  */
 import { sep } from 'node:path'
-import { groupForCwd, isWatchedGroup, shouldWatch } from '../src/main/worklog/gate.ts'
+import { GATE_RULES, groupForCwd, isWatchedGroup, shouldWatch } from '../src/main/worklog/gate.ts'
+import { groupForCwd as groupForCwdShared, pathRulesFor } from '../src/shared/paths.ts'
 import type { Project } from '../src/shared/types.ts'
 
 let failures = 0
@@ -43,7 +44,10 @@ function project(path: string, group: string): Project {
     lastCost: null,
     lastPrompt: null,
     exists: true,
-    pinned: false
+    pinned: false,
+    emoji: null,
+    label: null,
+    addedManually: false
   }
 }
 
@@ -149,7 +153,7 @@ if (isWin) {
     shouldWatch(p('PERSONAL', 'STOKE'), projects, WATCHED),
     false
   )
-} else {
+} else if (process.platform !== 'darwin') {
   check(
     'a differently-cased path is a different path here, so it matches nothing',
     shouldWatch(shouted, projects, WATCHED),
@@ -170,6 +174,65 @@ check(
     shouldWatch(p('gitea-company', 'refinity'), projects, WATCHED)
   ),
   [true, true, true, true]
+)
+
+console.log('\na scan root is not a project')
+/*
+ * `/Users/thevinh/dev/work` is itself a registered Claude project on the real
+ * machine, so the longest-prefix rule matched it and answered `dev` for every
+ * sibling under it — 7 of 12 work folders were unwatched. A root is a
+ * container of projects, not a project.
+ */
+const withRoot: Project[] = [...projects, project(root, isWin ? 'G:' : 'vinn')]
+check(
+  'a folder under a scan root resolves to the root name, not the root parent',
+  groupForCwd(p('unregistered-repo'), withRoot, [root]),
+  'Code'
+)
+check(
+  'and a real project inside the root still wins over the root fallback',
+  groupForCwd(p('gitea-company', 'refinity'), withRoot, [root]),
+  'gitea-company'
+)
+check(
+  'with no roots passed, an unregistered folder still resolves to nothing',
+  groupForCwd(p('unregistered-repo'), projects),
+  null
+)
+
+console.log('\nthe signature the sidebar chip cannot reach through')
+check(
+  'a folder under a watched root is watched even with no history of its own',
+  shouldWatch(p('unregistered-repo'), withRoot, ['Code'], [root]),
+  true
+)
+
+console.log('\nmacOS folds case like Windows does')
+/*
+ * Asserted for all three platforms with an explicit `pathRulesFor(...)` call
+ * rather than branched on `process.platform`, so every machine runs every
+ * assertion and `npm run check` gives identical results everywhere. Branching
+ * here would mean the darwin behaviour is exercised on nobody's machine but a
+ * Mac's.
+ */
+check('win32 folds path case', pathRulesFor('win32').caseInsensitive, true)
+check(
+  'darwin folds path case too, because APFS is case-insensitive by default',
+  pathRulesFor('darwin').caseInsensitive,
+  true
+)
+check('linux does not fold path case', pathRulesFor('linux').caseInsensitive, false)
+check(
+  'GATE_RULES matches one of the three platforms pathRulesFor knows about',
+  [pathRulesFor('win32'), pathRulesFor('darwin'), pathRulesFor('linux')].some(
+    (r) => r.sep === GATE_RULES.sep && r.caseInsensitive === GATE_RULES.caseInsensitive
+  ),
+  true
+)
+check(
+  'a differently-cased path matches on APFS',
+  isWatchedGroup(groupForCwdShared(p('GITEA-COMPANY', 'Refinity'), projects, pathRulesFor('darwin')), WATCHED),
+  true
 )
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)

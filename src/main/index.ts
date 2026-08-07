@@ -220,7 +220,7 @@ async function runWorklogScan(sessionId: string, auto: boolean): Promise<number>
    * the place of the project group.
    */
   const cwd = host ? ((await parseSession(file)).cwd ?? '') : cwdForSession(sessionId)
-  const group = host ? host.label || host.alias : (groupForCwd(cwd, projects) ?? '')
+  const group = host ? host.label || host.alias : (groupForCwd(cwd, projects, settings.projectRoots) ?? '')
 
   // Cached and single-flighted, so a scan of two sessions a second apart reads
   // the boards once. A failure here is reported to the scan rather than thrown:
@@ -364,7 +364,12 @@ function createWindow(): void {
       if (host) return host.worklog === true
       // A current project list, not one cached at boot: a repository cloned
       // during this run is a project the gate has to be able to see.
-      return shouldWatch(cwdForSession(sessionId), await listProjects(settings), settings.worklogGroups)
+      return shouldWatch(
+        cwdForSession(sessionId),
+        await listProjects(settings),
+        settings.worklogGroups,
+        settings.projectRoots
+      )
     },
     scan: async (sessionId) => {
       try {

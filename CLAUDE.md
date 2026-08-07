@@ -76,6 +76,8 @@ src/preload/      contextBridge -> window.stoke
 src/renderer/     desktop React UI (all colour via CSS custom properties)
 src/remote/       mobile web UI, built separately to out/remote
 src/shared/       types, IPC channel names, themes, profiles, colour maths
+  paths.ts          cwd -> project group. Pure, platform passed in, no node imports,
+                    so the renderer runs the identical rule for the profile chip
 scripts/          the verify-*.mts suites, make-icon.cjs
 ```
 

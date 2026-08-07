@@ -13,6 +13,10 @@
     "allowSyntheticDefaultImports": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
+    // Matches tsconfig.web.json — this file is what an editor loads, and without
+    // it every shared .ts import is underlined in red while both real projects
+    // compile cleanly.
+    "allowImportingTsExtensions": true,
     "baseUrl": ".",
     "paths": {
       "@/*": ["src/renderer/src/*"],

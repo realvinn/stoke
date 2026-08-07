@@ -14,6 +14,13 @@
     "allowSyntheticDefaultImports": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
+    // A shared module that value-imports another shared module has to carry the
+    // .ts extension: those files are also executed directly by node's
+    // strip-types mode from the verify suites, where an extensionless relative
+    // specifier resolves to nothing. Vite resolves the extension the same way.
+    // Legal because this project is noEmit. tsconfig.node.json:9 already sets
+    // it; src/main/mcp/design.ts:11-16 is the import style it exists for.
+    "allowImportingTsExtensions": true,
     "baseUrl": ".",
     "paths": {
       "@/*": ["src/renderer/src/*"],
