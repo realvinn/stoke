@@ -323,7 +323,6 @@ check(
   DEFAULT_HEADLESS_MODEL
 )
 check('sonnet really is the default', DEFAULT_HEADLESS_MODEL, 'sonnet')
-ok('a hard budget cap is set', scanArgs.includes('--max-budget-usd'))
 ok('agent runs are not persisted as sessions', scanArgs.includes('--no-session-persistence'))
 ok('the scan loads no MCP servers', scanArgs.includes('--strict-mcp-config'))
 ok('the scan loads no CLAUDE.md, skills or hooks', scanArgs.includes('--safe-mode'))
@@ -397,15 +396,55 @@ check(
   scanArgs[scanArgs.indexOf('--max-budget-usd') + 1],
   String(SCAN_MAX_BUDGET_USD)
 )
+/*
+ * The check above passes even with scanRunOptions's own
+ * `input.maxBudgetUsd ?? SCAN_MAX_BUDGET_USD` wiring deleted outright:
+ * SCAN_MAX_BUDGET_USD (0.3) and agent.ts's own DEFAULT_MAX_BUDGET_USD (0.3)
+ * are numerically identical today, so with the wiring gone `maxBudgetUsd` is
+ * `undefined` all the way to buildHeadlessArgs, which has its *own*
+ * `?? DEFAULT_MAX_BUDGET_USD` fallback — and the argv string comes out "0.3"
+ * either way. This checks scanRunOptions's return value directly, one layer
+ * before that second fallback gets a chance to paper over the first one being
+ * gone, so it fails on the removal regardless of the coincidence.
+ */
+check(
+  'scanRunOptions wires SCAN_MAX_BUDGET_USD in itself, not relying on agent.ts default falling through',
+  scanRunOptions('irrelevant prompt', {}).maxBudgetUsd,
+  SCAN_MAX_BUDGET_USD
+)
+/*
+ * SCAN_MAX_BUDGET_USD's own band. It had none before this pass, so setting it
+ * to 0 passed every existing assertion: the argv carried "0" and nothing
+ * compared that to a floor. The floor is above the scan's own measured worst
+ * case — a real 146-turn session cost $0.107 at default effort (see the
+ * constant's comment in runner.ts) — so a ceiling low enough to abort every
+ * scan before its first turn, which the brief's own Step 7 says to stop for,
+ * cannot ship with a passing suite. 0.15 clears that measurement with margin
+ * and is unrelated to recall's old $0.15 default (a different file, a
+ * different bug) despite the coincidence of the figure. The cap is tight on
+ * purpose: a scan is a bounded digest with no MCP and no project context, so
+ * a ceiling anywhere near what recall or apply legitimately need could only
+ * be a copy of the wrong constant.
+ */
+ok(
+  'the scan ceiling is above what would abort every scan before its first turn, not merely above zero',
+  SCAN_MAX_BUDGET_USD >= 0.15 && SCAN_MAX_BUDGET_USD <= 1.0,
+  String(SCAN_MAX_BUDGET_USD)
+)
 /* The write path states its own figure rather than aliasing the recall one, so
    tightening either cannot silently move the other. Same band, same reason as
-   recall's own check in verify-worklog-recall.mts: widened from 0.2-1.5 to
-   0.2-3.0 because the real measurement (a Notion-only recall against the live
-   board, 2026-08-07, costUsd 0.5144943 for 30 records) leaves 1.5 too tight
-   to survive ClickUp being switched on too or the board growing. */
+   recall's own check in verify-worklog-recall.mts: the floor moved from 0.2 to
+   0.6 because the real measurement (a Notion-only recall against the live
+   board, 2026-08-07, costUsd 0.5144943 for 30 records) left 0.3, 0.4 and 0.5
+   all passing the old band while sitting below the measured cost — a ceiling
+   that would exhaust before a write finishes, which is the half-written-accept
+   outcome APPLY_MAX_BUDGET_USD's own comment calls the worst outcome in the
+   feature. 0.6 clears the measurement with headroom; the cap stays 3.0,
+   unchanged, wide enough to survive ClickUp being switched on too or the
+   board growing. */
 ok(
-  'and the write path has its own, equally real',
-  APPLY_MAX_BUDGET_USD >= 0.2 && APPLY_MAX_BUDGET_USD <= 3.0,
+  'and the write path has its own, equally real, above what would reproduce the bug',
+  APPLY_MAX_BUDGET_USD >= 0.6 && APPLY_MAX_BUDGET_USD <= 3.0,
   String(APPLY_MAX_BUDGET_USD)
 )
 

@@ -709,7 +709,7 @@ export const SCAN_MAX_BUDGET_USD = 0.3
  * 2026-08-07 cost `costUsd 0.5144943` for 30 records returned. $1.50 is
  * roughly 3x that figure — a narrower margin than `RECALL_MAX_BUDGET_USD`'s
  * ~4x, and deliberately so: a write touches one record through one tool,
- * where the measured read pulled 30 across two. The margin is over a
+ * where the measured read pulled 30 across two tools. The margin is over a
  * *Notion-only* read of ~30 records specifically; turning ClickUp on as well,
  * or either board growing well past that count, is what would invalidate it.
  *

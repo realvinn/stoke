@@ -29,7 +29,8 @@
  *   STOKE_LIVE_WORKLOG_COST=1 node scripts/measure-worklog-cost.mts budget
  */
 import { runHeadless, type HeadlessResult } from '../src/main/agent.ts'
-import { readExisting, recallRunOptions } from '../src/main/worklog/recall.ts'
+import { RECALL_MAX_BUDGET_USD, readExisting, recallRunOptions } from '../src/main/worklog/recall.ts'
+import { APPLY_MAX_BUDGET_USD } from '../src/main/worklog/runner.ts'
 import { DEFAULT_WORKLOG_BOARDS } from '../src/shared/worklog.ts'
 
 const mode = process.argv[2]
@@ -99,12 +100,19 @@ if (mode === 'recall') {
   console.log(
     `\n>>> a Notion-only recall cost $${raw.costUsd} on ${new Date().toISOString().slice(0, 10)}.`
   )
+  // Printed from the constants themselves, not restated as literals, so this
+  // text cannot go stale the way the fixed "(0.6)" and "0.2–1.5" figures it
+  // replaced did — those were correct once and silently wrong after the next
+  // tightening pass moved the real numbers without anyone rereading this file.
   console.log(
-    '>>> If that is comfortably below RECALL_MAX_BUDGET_USD (0.6), you may tighten the constant\n' +
-      '>>> in src/main/worklog/recall.ts to about four times this figure, and APPLY_MAX_BUDGET_USD\n' +
-      '>>> in src/main/worklog/runner.ts alongside it. Keep both inside the 0.2–1.5 band the\n' +
-      '>>> suites assert. If it is ABOVE 0.6, raise them instead — a ceiling under the real cost\n' +
-      '>>> is the bug this whole workstream exists to fix.'
+    `>>> RECALL_MAX_BUDGET_USD is currently ${RECALL_MAX_BUDGET_USD} (src/main/worklog/recall.ts) and\n` +
+      `>>> APPLY_MAX_BUDGET_USD is currently ${APPLY_MAX_BUDGET_USD} (src/main/worklog/runner.ts).\n` +
+      `>>> If this measured cost sits comfortably below RECALL_MAX_BUDGET_USD, the ceilings can stay\n` +
+      `>>> as they are. If it is close to or above RECALL_MAX_BUDGET_USD, raise both — a ceiling under\n` +
+      `>>> the real cost is the bug this whole workstream exists to fix. Either way, re-check the band\n` +
+      `>>> assertions in scripts/verify-worklog-recall.mts and scripts/verify-worklog-runner.mts against\n` +
+      `>>> this fresh number rather than trusting a range quoted here: their floor is deliberately set\n` +
+      `>>> above a real measurement, and a new measurement — not this printout — is what should move it.`
   )
 } else if (mode === 'budget') {
   confirmLiveSpend('budget')

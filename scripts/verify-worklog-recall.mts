@@ -132,20 +132,25 @@ ok(
  * needs a second constant holding the measurement, and if nobody fills that in
  * the comparison reads `0 >= 0 * 3` and passes — so the suite goes green on a
  * $0 ceiling, which is a dead feature with a passing test. A band cannot pass
- * vacuously. The floor catches a value nobody filled in; the cap keeps it a
- * ceiling rather than a blank cheque.
+ * vacuously. The cap keeps it a ceiling rather than a blank cheque.
  *
- * The band is 0.2-3.0, not the original 0.2-1.5: a real measurement against
- * the live board (Notion-only, 2026-08-07) put a single recall at
- * `costUsd 0.5144943` for 30 records, so 1.5 is no longer generous enough to
- * survive turning ClickUp on as well or the board growing past what was
- * measured — 3.0 is roughly 6x that single-board figure, comfortably above
- * both boards at once, and still low enough to catch a stray zero on the low
- * end or an extra digit on the high end.
+ * The floor is 0.6, not the original 0.2. A floor of 0.2 only ever caught a
+ * value nobody filled in — it said nothing about whether the value filled in
+ * was actually workable. A real measurement against the live board
+ * (Notion-only, 2026-08-07) put a single recall at `costUsd 0.5144943` for 30
+ * records, so 0.2 admitted 0.3, 0.4 and 0.5 as "a real figure" while every one
+ * of them sits below the measured cost — a ceiling that exhausts before the
+ * read answers, reports an empty board, and has the scan propose creating
+ * everything already tracked. That is spec §2.4.1 verbatim, the exact bug
+ * this constant exists to fix. 0.6 is the smallest round number clear of the
+ * measurement, with headroom for a real run to vary without landing back
+ * under the floor by accident. The cap stays 3.0: roughly 6x the single-board
+ * figure, comfortably above both boards at once, and still low enough to
+ * catch a stray extra digit on the high end.
  */
 ok(
-  'the recall ceiling is a real figure, not a placeholder',
-  RECALL_MAX_BUDGET_USD >= 0.2 && RECALL_MAX_BUDGET_USD <= 3.0,
+  'the recall ceiling is above what would reproduce the budget-exhaustion bug, not merely above zero',
+  RECALL_MAX_BUDGET_USD >= 0.6 && RECALL_MAX_BUDGET_USD <= 3.0,
   String(RECALL_MAX_BUDGET_USD)
 )
 /*
