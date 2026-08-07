@@ -5,6 +5,7 @@ import type { LaunchOptions } from '@shared/types'
 import { buildArgs, buildEnvPath, findClaude, spawnSpec } from './cli.ts'
 import { windowFromBanner } from './sessionFile.ts'
 import { buildSshArgs, sshExecutable } from './ssh.ts'
+import { clearSessionFiles } from './statusLine.ts'
 
 export interface StartResult {
   ptyId: string
@@ -16,6 +17,17 @@ export interface StartResult {
 interface Session {
   ptyId: string
   sessionId: string
+  /**
+   * What this session's statusLine files are named after, or '' when it has
+   * none.
+   *
+   * The same string as `sessionId` for every local session Stoke mints an id
+   * for, a launch uuid for a `--continue` — whose id the CLI chooses after we
+   * spawn it — and empty for a remote session, which gets no wrapper because
+   * its `claude` runs on the far machine. Kept because the exit handler has to
+   * delete the files it names, and `statusKeys()` has to list them.
+   */
+  statusKey: string
   proc: IPty
   cwd: string
   exited: boolean
@@ -109,10 +121,17 @@ export class PtyManager {
     this.onExit = onExit
   }
 
+  /**
+   * @param sessionSettings builds this session's `--settings` file, given its
+   *   statusLine key — which is minted here, so it cannot be passed in
+   *   ready-made. Injected rather than read from the store so this module
+   *   stays free of electron, like every other dependency it takes.
+   */
   async start(
     opts: LaunchOptions,
     claudePathOverride: string | null,
-    mcpConfigPath?: string | null
+    mcpConfigPath?: string | null,
+    sessionSettings: (statusKey: string) => string | null = () => null
   ): Promise<StartResult> {
     /*
      * A remote session is the same machinery with a different argv: ssh instead
@@ -137,7 +156,32 @@ export class PtyManager {
     const sessionId =
       opts.resume || opts.continueLast ? (opts.sessionId ?? '') : (opts.sessionId ?? randomUUID())
 
-    const args = opts.host ? buildSshArgs(opts.host) : buildArgs({ ...opts, sessionId })
+    /*
+     * The statusLine files are named after THIS, not after the session id.
+     *
+     * A --continue session has no id here: the CLI chooses it after launch, so
+     * `sessionId` above is ''. Keying the wrapper on the id would leave that
+     * one launch path with no --settings at all, which means it keeps printing
+     * the user's own status line with suppression on and never writes a
+     * payload — and both failures look exactly like the feature working.
+     *
+     * For every local session that does have an id, this IS that id, byte for
+     * byte. The payload carries `session_id` itself, so `toSnapshot` can name
+     * the real session even when the file is named after a launch key.
+     *
+     * Empty for a remote session, which gets no wrapper at all: it runs ssh,
+     * and its `claude` and its settings live on the far machine. That is what
+     * makes `statusKeys()` below able to mean "has a payload to read".
+     */
+    const statusKey = opts.host ? '' : sessionId || randomUUID()
+
+    // One --settings, holding both the ultracode key and the statusLine
+    // wrapper: a second silently discards the first. Local only — a remote
+    // session runs ssh, and this file is on this disk.
+    const settingsFile = opts.host ? null : sessionSettings(statusKey)
+    const args = opts.host
+      ? buildSshArgs(opts.host)
+      : buildArgs({ ...opts, sessionId }, settingsFile)
 
     // Hand the session Stoke's own browser tools. A file path rather than an
     // inline JSON string: quoting JSON through a shell differs per platform and
@@ -146,9 +190,10 @@ export class PtyManager {
     // is running ssh. The remote's own CLI config governs there.
     if (mcpConfigPath && !opts.host) args.push('--mcp-config', mcpConfigPath)
 
-    // Ultracode needs nothing here: buildArgs has already turned it into
-    // `--settings <file>`. Do not be tempted to write `/effort ultracode` into
-    // the pty after start instead — a write races the TUI's warmup, so the text
+    // Ultracode and the statusLine wrapper both need nothing here: buildArgs
+    // has already folded them into the single `--settings <file>` above. Do
+    // not be tempted to write `/effort ultracode` into the pty after start
+    // instead — a write races the TUI's warmup, so the text
     // lands in the prompt buffer as often as it is interpreted, and from out here
     // the two outcomes are indistinguishable. That is the same hazard the voice
     // work hit. The settings key exists so the choice can be made before the
@@ -182,6 +227,7 @@ export class PtyManager {
     const session: Session = {
       ptyId,
       sessionId,
+      statusKey,
       proc,
       cwd: opts.cwd,
       exited: false,
@@ -220,6 +266,12 @@ export class PtyManager {
     proc.onExit(({ exitCode, signal }) => {
       session.exited = true
       this.sessions.delete(ptyId)
+      // The payload, the pass-through command and the settings file are all
+      // per-session temp files, named after the launch key rather than the
+      // session id — a --continue has no id here. Nothing reads them once the
+      // process is gone, and leaving them would accumulate one set per session
+      // ever started.
+      clearSessionFiles(session.statusKey)
       this.onExit(ptyId, exitCode, signal)
       for (const fn of this.exitSubscribers) fn(ptyId, exitCode)
     })
@@ -276,6 +328,21 @@ export class PtyManager {
 
   sessionIdFor(ptyId: string): string | null {
     return this.sessions.get(ptyId)?.sessionId ?? null
+  }
+
+  /**
+   * The statusLine key of every live local session.
+   *
+   * Exists for one caller: Task 13's `statusline:last` handler, which has to
+   * find the payload of a session whose id it does not know. That is the
+   * `--continue` case — the CLI names the session, we name the file, and only
+   * the payload joins the two. A session with no key (an SSH session, which
+   * gets no wrapper because its `claude` runs on the far machine) is skipped.
+   */
+  statusKeys(): string[] {
+    const keys: string[] = []
+    for (const s of this.sessions.values()) if (s.statusKey) keys.push(s.statusKey)
+    return keys
   }
 
   /* ------------------------------------------------------ remote clients */

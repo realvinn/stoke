@@ -25,6 +25,7 @@ import { AutoScanner } from './worklog/autoscan.ts'
 import { invalidateRecall, recall } from './worklog/recall.ts'
 import type { CreateProfileInput } from '@shared/profiles'
 import { getSettings, setSettings } from './store.ts'
+import { userStatusLineCommand, writeSessionSettingsFile } from './statusLine.ts'
 import { createScratchDir, resolveDefaultCwd } from './workspace.ts'
 import { BrowserMcpServer } from './mcp/server.ts'
 import { connectUrl, generateToken, RemoteServer, type RemoteDeps } from './remote/server.ts'
@@ -135,7 +136,22 @@ async function transcriptFor(sessionId: string): Promise<string | null> {
 /** Starting a session, shared by the renderer's IPC and the remote server. */
 async function launchSession(opts: LaunchOptions): Promise<StartResult> {
   if (!ptys) throw new Error('Window is not ready')
-  const result = await ptys.start(opts, getSettings().claudePath, mcpConfigPath)
+  const settings = getSettings()
+  // `statusKey` is what the files are named after, not necessarily a session
+  // id: a --continue session has no id until the CLI picks one. See pty.ts.
+  const result = await ptys.start(opts, settings.claudePath, mcpConfigPath, (statusKey) =>
+    writeSessionSettingsFile({
+      sessionId: statusKey,
+      ultracode: opts.ultracode === true,
+      hideStatusLine: settings.hideStatusLine,
+      // Read now rather than cached: it is the user's own settings.json and
+      // they can edit it between one session and the next.
+      passthroughCommand: settings.hideStatusLine ? '' : userStatusLineCommand()
+    })
+  )
+  // Empty for a --continue, and `watch('')` is a no-op by design (context.ts:99).
+  // Such a session has never had a context meter; see this task's header for
+  // why closing that gap belongs to a later change and not to this one.
   watcher?.watch(result.sessionId)
   const cwd = ptys.list().find((s) => s.sessionId === result.sessionId)?.cwd
   if (cwd) sessionCwds.set(result.sessionId, cwd)
