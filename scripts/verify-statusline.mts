@@ -29,6 +29,7 @@ import {
   statusLineCommand,
   statusLineDir,
   statusLinePayloadFile,
+  sweepStaleSessionFiles,
   toSnapshot,
   userStatusLineCommand,
   writeSessionSettingsFile,
@@ -702,6 +703,104 @@ try {
   } finally {
     clearSessionFiles(both)
     cleanup(userFile)
+  }
+
+  console.log('\nthe boot sweep ages out abandoned files, but never a live one')
+  /*
+   * sweepStaleSessionFiles is the only cleanup that ever runs for a session
+   * that crashed, was SIGKILLed, or never survived to register its exit
+   * handler — see pty.ts. Entirely hermetic: SWEEP_NOW is a fixed instant far
+   * from the real clock, and every fixture's mtime is set explicitly with
+   * utimesSync, never left to whatever the OS happens to stamp on write.
+   */
+  const SWEEP_NOW = 2_000_000_000_000 // an arbitrary fixed instant, not the real clock
+  const LONG_AGO = (SWEEP_NOW - 7 * 24 * 60 * 60 * 1000) / 1000 // well past any plausible threshold; utimesSync wants seconds
+  const JUST_NOW = (SWEEP_NOW - 1_000) / 1000 // one second old — plainly still live
+  const setMtime = (path: string, epochSeconds: number): void => utimesSync(path, epochSeconds, epochSeconds)
+
+  const staleKey = 'stoke-verify-sweep-stale'
+  const freshKey = 'stoke-verify-sweep-fresh'
+  const liveSessionKey = 'stoke-verify-sweep-live'
+  const deadSessionKey = 'stoke-verify-sweep-dead'
+  const staleFile = statusLinePayloadFile(staleKey)
+  const freshFile = statusLinePayloadFile(freshKey)
+  const liveSettingsFile = join(statusLineDir(), `${liveSessionKey}.settings.json`)
+  const liveCmdFile = join(statusLineDir(), `${liveSessionKey}.cmd`)
+  const livePayloadFile = statusLinePayloadFile(liveSessionKey)
+  const deadSettingsFile = join(statusLineDir(), `${deadSessionKey}.settings.json`)
+  const deadCmdFile = join(statusLineDir(), `${deadSessionKey}.cmd`)
+  const deadPayloadFile = statusLinePayloadFile(deadSessionKey)
+  const wrapperFile = join(statusLineDir(), 'wrapper.mjs')
+
+  try {
+    writeFileSync(staleFile, '{}', 'utf8')
+    setMtime(staleFile, LONG_AGO)
+
+    writeFileSync(freshFile, '{}', 'utf8')
+    setMtime(freshFile, JUST_NOW)
+
+    // A long-running session: its .settings.json/.cmd were written once at
+    // launch, long enough ago to look stale on their own, but its payload is
+    // still fresh because the wrapper keeps rewriting it on every render.
+    writeFileSync(liveSettingsFile, '{}', 'utf8')
+    setMtime(liveSettingsFile, LONG_AGO)
+    writeFileSync(liveCmdFile, 'echo hi', 'utf8')
+    setMtime(liveCmdFile, LONG_AGO)
+    writeFileSync(livePayloadFile, '{}', 'utf8')
+    setMtime(livePayloadFile, JUST_NOW)
+
+    // A session that is actually dead: nothing has touched any of its three
+    // files in a very long time, payload included.
+    writeFileSync(deadSettingsFile, '{}', 'utf8')
+    setMtime(deadSettingsFile, LONG_AGO)
+    writeFileSync(deadCmdFile, 'echo hi', 'utf8')
+    setMtime(deadCmdFile, LONG_AGO)
+    writeFileSync(deadPayloadFile, '{}', 'utf8')
+    setMtime(deadPayloadFile, LONG_AGO)
+
+    // wrapper.mjs and the shim (`shim`, written earlier in this suite) are
+    // shared infrastructure that writeStatusLineWrapper rewrites on every
+    // launch — backdated deliberately, so a sweep that treated them like any
+    // other file would remove them.
+    setMtime(wrapperFile, LONG_AGO)
+    setMtime(shim, LONG_AGO)
+
+    sweepStaleSessionFiles(SWEEP_NOW)
+
+    check('a stale payload with nobody left to own it is removed', existsSync(staleFile), false)
+    check(
+      "a fresh payload survives — the dev-vs-installed hazard: a concurrently-running " +
+        'Stoke install would look exactly like this to the sweep, and must not be touched',
+      existsSync(freshFile),
+      true
+    )
+    check(
+      "a long-running session's write-once .settings.json is protected by its sibling payload's freshness",
+      existsSync(liveSettingsFile),
+      true
+    )
+    check("and so is its .cmd, by the same rule", existsSync(liveCmdFile), true)
+    check(
+      'a genuinely dead session is fully reaped: settings, cmd and payload all gone',
+      [existsSync(deadSettingsFile), existsSync(deadCmdFile), existsSync(deadPayloadFile)],
+      [false, false, false]
+    )
+    check('wrapper.mjs is never removed, no matter its age', existsSync(wrapperFile), true)
+    check('and neither is the platform shim', existsSync(shim), true)
+  } finally {
+    cleanup(
+      staleFile,
+      freshFile,
+      liveSettingsFile,
+      liveCmdFile,
+      livePayloadFile,
+      deadSettingsFile,
+      deadCmdFile,
+      deadPayloadFile
+    )
+    // Both were deliberately backdated above; restore a wrapper an ordinary
+    // run would actually trust before this suite hands control back.
+    writeStatusLineWrapper()
   }
 } finally {
   // The one directory-level fixture, torn down last so it actually runs

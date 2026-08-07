@@ -207,21 +207,35 @@ export class PtyManager {
       if (STRIP_ENV.includes(k)) continue
       env[k] = v
     }
-    env.PATH = await buildEnvPath()
-    if (process.platform !== 'win32') env.Path = env.PATH
-    env.TERM = 'xterm-256color'
-    env.COLORTERM = 'truecolor'
-    // Tell Claude Code it is inside a wrapper, in case that ever matters to it.
-    env.TERM_PROGRAM = 'Stoke'
 
-    const proc = nodePty.spawn(spec.file, spec.args, {
-      name: 'xterm-256color',
-      cols: Math.max(20, opts.cols || 120),
-      rows: Math.max(5, opts.rows || 30),
-      cwd: opts.cwd,
-      env,
-      useConpty: process.platform === 'win32' ? true : undefined
-    })
+    // buildEnvPath and the native spawn are the only things between here and
+    // proc.onExit being registered below that can throw - and settingsFile
+    // above has already written statusKey's .settings.json (and maybe .cmd)
+    // to disk by this point. A project folder deleted since the launcher
+    // listed it, or a resource limit, would otherwise leave those ownerless:
+    // nothing else will ever clean them up, since clearSessionFiles only
+    // ever runs from an exit handler this session never gets to register.
+    let proc: IPty
+    try {
+      env.PATH = await buildEnvPath()
+      if (process.platform !== 'win32') env.Path = env.PATH
+      env.TERM = 'xterm-256color'
+      env.COLORTERM = 'truecolor'
+      // Tell Claude Code it is inside a wrapper, in case that ever matters to it.
+      env.TERM_PROGRAM = 'Stoke'
+
+      proc = nodePty.spawn(spec.file, spec.args, {
+        name: 'xterm-256color',
+        cols: Math.max(20, opts.cols || 120),
+        rows: Math.max(5, opts.rows || 30),
+        cwd: opts.cwd,
+        env,
+        useConpty: process.platform === 'win32' ? true : undefined
+      })
+    } catch (err) {
+      clearSessionFiles(statusKey)
+      throw err
+    }
 
     const ptyId = randomUUID()
     const session: Session = {
@@ -270,7 +284,9 @@ export class PtyManager {
       // per-session temp files, named after the launch key rather than the
       // session id — a --continue has no id here. Nothing reads them once the
       // process is gone, and leaving them would accumulate one set per session
-      // ever started.
+      // ever started. Also called from kill() for the app-quit path, where
+      // this callback cannot be trusted to run in time — a second call here
+      // for the same key is a no-op, not a double-delete.
       clearSessionFiles(session.statusKey)
       this.onExit(ptyId, exitCode, signal)
       for (const fn of this.exitSubscribers) fn(ptyId, exitCode)
@@ -312,6 +328,21 @@ export class PtyManager {
       /* already gone */
     }
     this.sessions.delete(ptyId)
+    /*
+     * Quitting the app is the ordinary way a session ends, and it does not
+     * give proc.onExit a reliable chance to run: killAll() calls this
+     * synchronously from `before-quit`, in the same tick chain Electron then
+     * tears the process down in, while onExit needs the child to actually
+     * die *and* the event loop to still be alive to fire it. Clearing here
+     * closes that race instead of leaving cleanup to a callback that might
+     * never get scheduled.
+     *
+     * Harmless to run twice: proc.onExit below still fires later - for a
+     * session that exits on its own, this is the only cleanup that runs -
+     * and clearSessionFiles' rmSync already tolerates a file that is already
+     * gone.
+     */
+    clearSessionFiles(s.statusKey)
   }
 
   /**

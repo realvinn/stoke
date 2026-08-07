@@ -25,7 +25,11 @@ import { AutoScanner } from './worklog/autoscan.ts'
 import { invalidateRecall, recall } from './worklog/recall.ts'
 import type { CreateProfileInput } from '@shared/profiles'
 import { getSettings, setSettings } from './store.ts'
-import { userStatusLineCommand, writeSessionSettingsFile } from './statusLine.ts'
+import {
+  sweepStaleSessionFiles,
+  userStatusLineCommand,
+  writeSessionSettingsFile
+} from './statusLine.ts'
 import { createScratchDir, resolveDefaultCwd } from './workspace.ts'
 import { BrowserMcpServer } from './mcp/server.ts'
 import { connectUrl, generateToken, RemoteServer, type RemoteDeps } from './remote/server.ts'
@@ -873,6 +877,11 @@ if (!app.requestSingleInstanceLock()) {
   })
 
   app.whenReady().then(() => {
+    // The only sweep for statusLine files that a crash, a SIGKILL or a failed
+    // launch left behind on a previous run — see statusLine.ts for why it is
+    // age-based rather than a blanket wipe. Once per boot, before any session
+    // (and so before any fresh file this run could mistake for stale) exists.
+    sweepStaleSessionFiles()
     registerIpc()
     createWindow()
     app.on('activate', () => {

@@ -1,6 +1,7 @@
 import {
   chmodSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -423,6 +424,115 @@ export function clearSessionFiles(sessionId: string): void {
       rmSync(f, { force: true })
     } catch {
       /* a temp sweeper got there first */
+    }
+  }
+}
+
+/**
+ * How stale a per-session file must be before the boot sweep below will
+ * remove it.
+ *
+ * Six hours: comfortably longer than any coding session Stoke is likely to
+ * hold open in one sitting, and nowhere near the sub-second cadence the
+ * wrapper renders on (WRAPPER_JS is re-run roughly three times a second by
+ * the CLI), so it cannot mistake a live session's own render gap for death.
+ * The failure mode on either side is asymmetric: too low risks deleting a
+ * slow-but-live session's files (rare, and only on the '.settings.json'/
+ * '.cmd' side — see the "protected keys" comment below for why that is
+ * actually contained); too high just means a dead session's few-KB files sit
+ * around longer, which is the entire status quo this sweep is fixing, only
+ * bounded now instead of unbounded.
+ */
+const STALE_AFTER_MS = 6 * 60 * 60 * 1000
+
+/** Shared infrastructure the sweep must never remove: `writeStatusLineWrapper` rewrites both unconditionally on every launch anyway, so deleting them only costs the next session a redundant write. */
+const NEVER_SWEEP = new Set(['wrapper.mjs', 'run.sh', 'run.cmd'])
+
+/**
+ * Split one directory entry into the key its session files share and which
+ * of the three kinds this particular file is. `.settings.json` is checked
+ * before the plainer `.json` suffix on purpose - the shorter suffix would
+ * otherwise match first and leave `.settings` glued onto the key.
+ */
+function fileKeyAndKind(name: string): { fileKey: string; kind: 'payload' | 'settings' | 'cmd' | 'other' } {
+  if (name.endsWith('.settings.json')) {
+    return { fileKey: name.slice(0, -'.settings.json'.length), kind: 'settings' }
+  }
+  if (name.endsWith('.json')) return { fileKey: name.slice(0, -'.json'.length), kind: 'payload' }
+  if (name.endsWith('.cmd')) return { fileKey: name.slice(0, -'.cmd'.length), kind: 'cmd' }
+  return { fileKey: name, kind: 'other' }
+}
+
+/**
+ * Remove per-session statusLine files that nothing else will ever clean up:
+ * a crash, a SIGKILL, or a launch that failed before its exit handler could
+ * be registered all skip `clearSessionFiles` entirely, and it has no other
+ * caller anywhere in the app besides pty.ts and the verify suite - so
+ * without this, three ordinary ways to end a session (see pty.ts's callers)
+ * leave a `.settings.json`/`.cmd`/`.json` triple behind forever. Each
+ * `.json` holds that session's token counts and plan-usage percentages, so
+ * this is not just tidiness.
+ *
+ * Meant to run once, at boot, before any session is started.
+ *
+ * `statusLineDir()` is one directory shared by every Stoke install on the
+ * machine - an unpackaged dev run gets its own userData so it never fights
+ * an installed copy for the single-instance lock, but both write into the
+ * SAME tmpdir. A blanket wipe here would delete the live session files of
+ * an already-running installed Stoke the moment a dev build boots, breaking
+ * its status line mid-session. So this only ever removes a file whose own
+ * mtime is older than `STALE_AFTER_MS` - old enough that no plausible live
+ * session, from either install, could have produced it.
+ *
+ * That age test is sound for a `.json` payload on its own: the wrapper
+ * rewrites it on every render (WRAPPER_JS above), so a live session's
+ * payload mtime never falls behind by more than a render gap. It is NOT
+ * sound on its own for `.settings.json` or `.cmd` - both are written once at
+ * launch and never touched again, so their mtime is the session's *start*
+ * time. Applying the threshold to them unmodified would eventually reap a
+ * long-running session's own settings out from under it. So a
+ * `.settings.json`/`.cmd` is protected whenever its sibling `<key>.json`
+ * payload is itself fresh - which is exactly the signal that the session
+ * that owns that key is still alive and still rendering.
+ *
+ * Never throws: every filesystem call is individually guarded, matching
+ * `writeStatusLineWrapper`'s contract, because a sweep that took the app's
+ * boot down with it would be strictly worse than the leak it exists to fix.
+ */
+export function sweepStaleSessionFiles(now: number = Date.now()): void {
+  const dir = statusLineDir()
+  let names: string[]
+  try {
+    names = readdirSync(dir)
+  } catch {
+    return // nothing written yet on this machine - nothing to sweep
+  }
+
+  // Pass 1: which keys have a fresh payload right now. Read before anything
+  // is removed, so pass 2's protection check never races its own deletions.
+  const freshPayloadKeys = new Set<string>()
+  for (const name of names) {
+    if (NEVER_SWEEP.has(name)) continue
+    const { fileKey, kind } = fileKeyAndKind(name)
+    if (kind !== 'payload') continue
+    try {
+      const age = now - statSync(join(dir, name)).mtimeMs
+      if (age <= STALE_AFTER_MS) freshPayloadKeys.add(fileKey)
+    } catch {
+      /* raced with something else removing it; irrelevant either way */
+    }
+  }
+
+  for (const name of names) {
+    if (NEVER_SWEEP.has(name)) continue
+    const { fileKey, kind } = fileKeyAndKind(name)
+    if ((kind === 'settings' || kind === 'cmd') && freshPayloadKeys.has(fileKey)) continue
+    try {
+      const full = join(dir, name)
+      const age = now - statSync(full).mtimeMs
+      if (age > STALE_AFTER_MS) rmSync(full, { force: true })
+    } catch {
+      /* already gone, or a live process is touching it right now - either way, leave it */
     }
   }
 }
