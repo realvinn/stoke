@@ -24,6 +24,7 @@ import {
   EMPTY_RECALL,
   MAX_RECALL_CHARS,
   MAX_RECALL_ITEMS,
+  RECALL_MAX_BUDGET_USD,
   RECALL_TOOLS,
   findExisting,
   formatRecall,
@@ -118,7 +119,35 @@ ok(
   RECALL_TOOLS.join(', ')
 )
 ok('it runs cheap, because this is a listing not a judgement', opts.effort === 'low', String(opts.effort))
-ok('and under a budget ceiling', (opts.maxBudgetUsd ?? 1) <= 0.15, String(opts.maxBudgetUsd))
+ok(
+  'the ceiling is the shared constant, not a literal buried in the options',
+  opts.maxBudgetUsd === RECALL_MAX_BUDGET_USD,
+  `${opts.maxBudgetUsd} vs ${RECALL_MAX_BUDGET_USD}`
+)
+/*
+ * An absolute band, deliberately, and not a comparison against a second
+ * constant.
+ *
+ * "At least three times the measured cost" sounds stronger and is weaker: it
+ * needs a second constant holding the measurement, and if nobody fills that in
+ * the comparison reads `0 >= 0 * 3` and passes — so the suite goes green on a
+ * $0 ceiling, which is a dead feature with a passing test. A band cannot pass
+ * vacuously. The floor catches a value nobody filled in; the cap keeps it a
+ * ceiling rather than a blank cheque.
+ *
+ * The band is 0.2-3.0, not the original 0.2-1.5: a real measurement against
+ * the live board (Notion-only, 2026-08-07) put a single recall at
+ * `costUsd 0.5144943` for 30 records, so 1.5 is no longer generous enough to
+ * survive turning ClickUp on as well or the board growing past what was
+ * measured — 3.0 is roughly 6x that single-board figure, comfortably above
+ * both boards at once, and still low enough to catch a stray zero on the low
+ * end or an extra digit on the high end.
+ */
+ok(
+  'the recall ceiling is a real figure, not a placeholder',
+  RECALL_MAX_BUDGET_USD >= 0.2 && RECALL_MAX_BUDGET_USD <= 3.0,
+  String(RECALL_MAX_BUDGET_USD)
+)
 /*
  * Deliberately NOT strictMcp and NOT safeMode: both switch MCP servers off
  * entirely, and recall exists to talk to them. That is exactly why the allowlist

@@ -23,11 +23,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { buildHeadlessArgs, DEFAULT_HEADLESS_MODEL } from '../src/main/agent.ts'
 import {
+  APPLY_MAX_BUDGET_USD,
   CLICKUP_LIST_ID,
   MAX_DIGEST_CHARS,
   MAX_TITLE_CHARS,
   NOTION_DATA_SOURCE,
   SCAN_DISALLOWED_TOOLS,
+  SCAN_MAX_BUDGET_USD,
   WRITE_ORDER,
   WorklogParseError,
   applyRunOptions,
@@ -385,7 +387,27 @@ ok(
   !writeArgs.some((a) => a.includes('dangerously') || a.includes('bypassPermissions')),
   writeArgs.join(' ')
 )
-ok('a write run is budget-capped too', writeArgs.includes('--max-budget-usd'))
+check(
+  'a write run carries its own explicit ceiling, even when the caller forgets',
+  writeArgs[writeArgs.indexOf('--max-budget-usd') + 1],
+  String(APPLY_MAX_BUDGET_USD)
+)
+check(
+  'and so does a scan',
+  scanArgs[scanArgs.indexOf('--max-budget-usd') + 1],
+  String(SCAN_MAX_BUDGET_USD)
+)
+/* The write path states its own figure rather than aliasing the recall one, so
+   tightening either cannot silently move the other. Same band, same reason as
+   recall's own check in verify-worklog-recall.mts: widened from 0.2-1.5 to
+   0.2-3.0 because the real measurement (a Notion-only recall against the live
+   board, 2026-08-07, costUsd 0.5144943 for 30 records) leaves 1.5 too tight
+   to survive ClickUp being switched on too or the board growing. */
+ok(
+  'and the write path has its own, equally real',
+  APPLY_MAX_BUDGET_USD >= 0.2 && APPLY_MAX_BUDGET_USD <= 3.0,
+  String(APPLY_MAX_BUDGET_USD)
+)
 
 /* ------------------------------------------------------------------- queue */
 

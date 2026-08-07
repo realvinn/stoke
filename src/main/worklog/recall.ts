@@ -291,6 +291,23 @@ export interface RecallOptions {
 }
 
 /**
+ * The ceiling one recall may spend.
+ *
+ * Measured, not provisional: a Notion-only recall against the real board on
+ * 2026-08-07 cost `costUsd 0.5144943` for 30 records returned (statuses
+ * "To Do", "Approved", "Done", "Ideas"). The previous $0.15 was well below
+ * that single figure, so every recall aborted before its first turn (spec
+ * §2.4.1) and the feature could never work regardless of configuration.
+ *
+ * $2.00 is roughly 4x that measured Notion-only read, and roughly 2x an
+ * estimated both-boards read — headroom over a *Notion-only* read of ~30
+ * records specifically. Turning ClickUp on as well, or letting either board
+ * grow well past that count, is what would eat into this margin and is the
+ * reason to re-measure rather than assume it still holds.
+ */
+export const RECALL_MAX_BUDGET_USD = 2.0
+
+/**
  * The exact run recall performs.
  *
  * No `strictMcp` and no `safeMode` on the ordinary path: it needs the user's
@@ -324,7 +341,7 @@ export function recallRunOptions(opts: RecallOptions): HeadlessOptions {
     safeMode: targets.length === 0,
     effort: 'low',
     timeoutMs: opts.timeoutMs,
-    maxBudgetUsd: opts.maxBudgetUsd ?? 0.15,
+    maxBudgetUsd: opts.maxBudgetUsd ?? RECALL_MAX_BUDGET_USD,
     claudePath: opts.claudePath ?? null
   }
 }

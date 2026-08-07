@@ -17,6 +17,7 @@ import { getWorklogQueue } from './worklog/queue.ts'
 import {
   applyProposal,
   scanSession,
+  APPLY_MAX_BUDGET_USD,
   CLICKUP_LIST_ID,
   NOTION_DATA_SOURCE
 } from './worklog/runner.ts'
@@ -881,13 +882,20 @@ function registerIpc(): void {
     if (accepting.has(id)) return { ok: false, error: 'that proposal is already being written' }
     accepting.add(id)
     try {
+      const settings = getSettings()
       const outcome = await applyProposal(item, {
+        // All three were missing before this task. Without claudePath a user
+        // with an explicit path in Settings got auto-detection instead;
+        // without a budget the write sat on the CLI's default; without boards
+        // it wrote to a destination the user may have switched off.
+        claudePath: settings.claudePath,
+        maxBudgetUsd: APPLY_MAX_BUDGET_USD,
         // The user's own switches and ids, not the shipped default — a board
         // switched off in Settings must not still receive the write, and an
         // edited id must be the one actually written to. hydrateSettings has
         // already dropped any target whose id is empty, so this is trusted
         // rather than re-validated (see settingsSchema.ts).
-        boards: getSettings().worklogBoards,
+        boards: settings.worklogBoards,
         // Persist each URL the moment its write returns, so a failure on the
         // second destination cannot lose the first - and so a retry can tell
         // what has already been written and skip it.

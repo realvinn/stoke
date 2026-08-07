@@ -683,6 +683,47 @@ export interface ScanOutcome {
 }
 
 /**
+ * Ceiling on one scan.
+ *
+ * The scan is hermetic and fixed-size — a bounded digest, no MCP, no CLAUDE.md
+ * — and the worst measured run of a real 146-turn session cost $0.107 at
+ * default effort (see scanRunOptions). Three times that, so a long session
+ * cannot silently truncate, and no more, because a prompt-building bug that
+ * pasted a whole transcript must fail loudly rather than bill for it.
+ *
+ * Unchanged by the recall/apply re-measurement below: the scan never talks to
+ * a board, so nothing about a Notion or ClickUp read touches what this run
+ * costs, and there is no reason for that measurement to move this figure.
+ */
+export const SCAN_MAX_BUDGET_USD = 0.3
+
+/**
+ * Ceiling on one destination's write.
+ *
+ * A write is one MCP call against the same connectors recall reads through,
+ * so it costs about what a recall does — and a write that runs out of budget
+ * half way through is the worst outcome in the feature, because a record may
+ * already exist. Deliberately generous for that reason.
+ *
+ * Measured, not provisional: a Notion-only recall against the real board on
+ * 2026-08-07 cost `costUsd 0.5144943` for 30 records returned. $1.50 is
+ * roughly 3x that figure — a narrower margin than `RECALL_MAX_BUDGET_USD`'s
+ * ~4x, and deliberately so: a write touches one record through one tool,
+ * where the measured read pulled 30 across two. The margin is over a
+ * *Notion-only* read of ~30 records specifically; turning ClickUp on as well,
+ * or either board growing well past that count, is what would invalidate it.
+ *
+ * Stated independently of the recall ceiling, so tightening one cannot
+ * silently move the other. They are close but not equal today; that is a
+ * coincidence of two derivations, not a dependency.
+ *
+ * This was previously absent entirely: `worklogAccept` called `applyProposal`
+ * with no budget and no claudePath (spec §2.4.2), so the write sat on the CLI's
+ * own default and auto-detected an executable the user may have set explicitly.
+ */
+export const APPLY_MAX_BUDGET_USD = 1.5
+
+/**
  * The exact run a scan performs.
  *
  * Split out so the promises it makes — read-only, sonnet, budget-capped — can be
@@ -708,7 +749,7 @@ export function scanRunOptions(
     effort: 'medium',
     disallowedTools: SCAN_DISALLOWED_TOOLS,
     timeoutMs: input.timeoutMs,
-    maxBudgetUsd: input.maxBudgetUsd,
+    maxBudgetUsd: input.maxBudgetUsd ?? SCAN_MAX_BUDGET_USD,
     claudePath: input.claudePath ?? null
   }
 }
@@ -732,7 +773,7 @@ export function applyRunOptions(
     allowedTools: [...WRITE_TOOLS[kindOf(proposal)][target]],
     effort: 'medium',
     timeoutMs: opts.timeoutMs,
-    maxBudgetUsd: opts.maxBudgetUsd,
+    maxBudgetUsd: opts.maxBudgetUsd ?? APPLY_MAX_BUDGET_USD,
     claudePath: opts.claudePath ?? null
   }
 }
