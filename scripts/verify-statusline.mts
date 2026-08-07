@@ -38,6 +38,7 @@ import {
 } from '../src/main/statusLine.ts'
 import { buildArgs } from '../src/main/cli.ts'
 import type { LaunchOptions, StatusLinePayload } from '../src/shared/types.ts'
+import { statusLineWindows } from '../src/shared/statusLine.ts'
 
 let failures = 0
 
@@ -903,6 +904,38 @@ check(
   200_000
 )
 rmSync(statusLinePayloadFile(winId), { force: true })
+
+console.log('\nthe usage bars the chip draws from it')
+// Half an hour before the five-hour window in REAL resets.
+const barsNow = 1_786_076_400_000
+const windows = statusLineWindows(toSnapshot('sess-5', REAL, barsNow), barsNow)
+check('two windows, in the order the chip reads them', windows.map((w) => w.kind), [
+  'session',
+  'weekly'
+])
+check('labels match the ones the account API produces', windows.map((w) => w.label), [
+  '5 hours',
+  'Weekly'
+])
+check('percentages carry over', windows.map((w) => w.percent), [15, 3])
+check(
+  'the five-hour window is 90% elapsed half an hour before it resets',
+  windows[0].elapsed,
+  0.9
+)
+check(
+  'a window with no reset time gets no pace marker, rather than a wrong one',
+  statusLineWindows(
+    toSnapshot('sess-6', { rate_limits: { five_hour: { used_percentage: 12 } } }, barsNow),
+    barsNow
+  )[0].elapsed,
+  null
+)
+check(
+  'no rate limits at all means no bars, so the chip hides instead of showing zeroes',
+  statusLineWindows(toSnapshot('sess-7', {}, barsNow), barsNow),
+  []
+)
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
 process.exitCode = failures ? 1 : 0

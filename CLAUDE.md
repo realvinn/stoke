@@ -82,6 +82,7 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     so the renderer runs the identical rule for the profile chip
   worklog.ts        the board targets the worklog can write to, and their defaults
   ui.ts             the uiScale / fontSize bounds, and the clamps both processes use
+  statusLine.ts     the two plan-limit windows the usage chip draws, from the payload
 scripts/          the verify-*.mts suites, make-icon.cjs
   cdp-eval.mjs      evaluates one expression in the renderer, or screenshots it.
                     Picks the target by its window.stoke object, never by URL

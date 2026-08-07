@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import type { UsageSnapshot, UsageWindow } from '@shared/types'
+import type { StatusLineSnapshot, UsageSnapshot, UsageWindow } from '@shared/types'
+import { statusLineWindows } from '@shared/statusLine'
 
 /**
  * Plan limits, and whether you are ahead of the clock.
@@ -21,6 +22,12 @@ function countdown(resetsAt: number | null, now: number): string {
   const hours = Math.floor(mins / 60)
   if (hours < 24) return `${hours}h ${mins % 60}m`
   return `${Math.floor(hours / 24)}d ${hours % 24}h`
+}
+
+/** Local wall-clock HH:MM, for the "as of" on a reading that may be stale. */
+function clock(at: number): string {
+  const d = new Date(at)
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
 /**
@@ -71,6 +78,7 @@ function Bar({ window: w, now }: { window: UsageWindow; now: number }): React.JS
  */
 export function UsageChip(): React.JSX.Element | null {
   const [snap, setSnap] = useState<UsageSnapshot | null>(null)
+  const [line, setLine] = useState<StatusLineSnapshot | null>(null)
   const [now, setNow] = useState(() => Date.now())
   const [open, setOpen] = useState(false)
 
@@ -93,6 +101,20 @@ export function UsageChip(): React.JSX.Element | null {
   }, [])
 
   useEffect(() => {
+    let live = true
+    // The last reading of the run, so closing every tab does not blank the
+    // chip — it goes quiet and says when it last heard anything.
+    void window.stoke.statusLine.last().then((s) => {
+      if (live && s) setLine(s)
+    })
+    const off = window.stoke.statusLine.onUpdate((s) => setLine(s))
+    return () => {
+      live = false
+      off()
+    }
+  }, [])
+
+  useEffect(() => {
     if (!open) return
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') setOpen(false)
@@ -101,15 +123,27 @@ export function UsageChip(): React.JSX.Element | null {
     return () => document.removeEventListener('keydown', onKey)
   }, [open])
 
-  // Nothing at all rather than a row of zeroes: an unreachable endpoint is not
-  // the same as no usage, and a wrong number here would be believed.
-  if (!snap || snap.error || !snap.windows.length) return null
+  /*
+   * The statusLine payload wins when there is one. It is the live account
+   * state as the CLI itself was just told it, and on macOS it is the only
+   * source there is — the OAuth token lives in the Keychain, not in
+   * ~/.claude/.credentials.json, which is why this chip rendered nothing there.
+   */
+  const fromLine = line ? statusLineWindows(line, now) : []
+  const windows: UsageWindow[] =
+    fromLine.length > 0 ? fromLine : snap && !snap.error ? snap.windows : []
+
+  // Nothing at all rather than a row of zeroes: no reading is not the same as
+  // no usage, and a wrong number here would be believed.
+  if (!windows.length) return null
+
+  const asOf = fromLine.length > 0 && line ? `as of ${clock(line.receivedAt)}` : null
 
   // The two windows that actually run out. A model-scoped one is shown in the
   // panel but would make the chip a wall of digits.
-  const session = snap.windows.find((w) => w.kind === 'session')
-  const weekly = snap.windows.find((w) => w.kind === 'weekly')
-  const ahead = snap.windows.some((w) => w.elapsed !== null && w.percent > w.elapsed * 100)
+  const session = windows.find((w) => w.kind === 'session')
+  const weekly = windows.find((w) => w.kind === 'weekly')
+  const ahead = windows.some((w) => w.elapsed !== null && w.percent > w.elapsed * 100)
 
   return (
     <div className="usage-chip-wrap">
@@ -118,7 +152,7 @@ export function UsageChip(): React.JSX.Element | null {
         data-ahead={ahead || undefined}
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
-        title="Plan limits — click for detail"
+        title={asOf ? `Plan limits, ${asOf} — click for detail` : 'Plan limits — click for detail'}
       >
         {session && <span>{session.percent}%</span>}
         {session && weekly && <span className="usage-chip-sep">·</span>}
@@ -130,13 +164,19 @@ export function UsageChip(): React.JSX.Element | null {
           {/* Click-away, behind the panel and above everything else. */}
           <div className="usage-backdrop" onClick={() => setOpen(false)} />
           <div className="usage-panel" role="dialog" aria-label="Plan limits">
-            {snap.windows.map((w) => (
+            {windows.map((w) => (
               <Bar key={`${w.kind}-${w.label}`} window={w} now={now} />
             ))}
             <p className="usage-note">
               the white mark is where you would be using it evenly. fill past it means
               you are going faster than it refills.
             </p>
+            {asOf && (
+              <p className="usage-note">
+                read from an open session&rsquo;s status line, {asOf}. it only updates while a
+                session is running.
+              </p>
+            )}
           </div>
         </>
       )}
