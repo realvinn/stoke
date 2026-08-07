@@ -37,8 +37,8 @@ import {
   writeStatusLineWrapper
 } from '../src/main/statusLine.ts'
 import { buildArgs } from '../src/main/cli.ts'
-import type { LaunchOptions, StatusLinePayload } from '../src/shared/types.ts'
-import { statusLineWindows } from '../src/shared/statusLine.ts'
+import type { LaunchOptions, StatusLinePayload, UsageWindow } from '../src/shared/types.ts'
+import { mergeUsageWindows, statusLineWindows } from '../src/shared/statusLine.ts'
 
 let failures = 0
 
@@ -917,7 +917,11 @@ check('labels match the ones the account API produces', windows.map((w) => w.lab
   '5 hours',
   'Weekly'
 ])
-check('percentages carry over', windows.map((w) => w.percent), [15, 3])
+check(
+  'percentages carry over from the snapshot into the windows the chip draws',
+  windows.map((w) => w.percent),
+  [15, 3]
+)
 check(
   'the five-hour window is 90% elapsed half an hour before it resets',
   windows[0].elapsed,
@@ -935,6 +939,104 @@ check(
   'no rate limits at all means no bars, so the chip hides instead of showing zeroes',
   statusLineWindows(toSnapshot('sess-7', {}, barsNow), barsNow),
   []
+)
+check(
+  // Deleting Math.round from statusLine.ts:38/51 leaves this failing while
+  // every other check in this suite (including the one above, whose REAL
+  // fixture values are already integers) stays green — see 'percentages
+  // carry over from the snapshot into the windows the chip draws' above,
+  // which cannot catch this on its own.
+  'genuine float noise in used_percentage (an observed value, not a made-up one) is rounded before it reaches the screen',
+  statusLineWindows(
+    toSnapshot(
+      'sess-8',
+      { rate_limits: { five_hour: { used_percentage: 7.000000000000001 } } },
+      barsNow
+    ),
+    barsNow
+  )[0].percent,
+  7
+)
+check(
+  'a seven-day-only payload still yields its one window — five_hour and seven_day are independently optional',
+  statusLineWindows(
+    toSnapshot('sess-9', { rate_limits: { seven_day: { used_percentage: 42 } } }, barsNow),
+    barsNow
+  ).map((w) => w.kind),
+  ['weekly']
+)
+
+console.log("\nmerging the payload's windows with the account's")
+/*
+ * mergeUsageWindows is what stops any payload existing at all from
+ * overwriting a severity the account itself flagged warning/critical — see
+ * UsageMeter.tsx. Matched on `kind`, so these fixtures use plain UsageWindow
+ * objects rather than routing through statusLineWindows/parseUsage; both of
+ * those already have their own coverage above and in verify-usage.mts.
+ */
+const scopedOnly: UsageWindow = {
+  kind: 'weekly_scoped',
+  label: 'Fable',
+  percent: 0,
+  severity: 'normal',
+  resetsAt: null,
+  elapsed: null,
+  active: false
+}
+check(
+  'account-only: a window the payload never produces rides along untouched',
+  mergeUsageWindows([], [scopedOnly]),
+  [scopedOnly]
+)
+
+const payloadOnly: UsageWindow = {
+  kind: 'session',
+  label: '5 hours',
+  percent: 15,
+  severity: 'normal',
+  resetsAt: 1_786_078_200_000,
+  elapsed: 0.9,
+  active: true
+}
+check(
+  'payload-only: nothing in the account to merge in, so the window is untouched, severity included',
+  mergeUsageWindows([payloadOnly], []),
+  [payloadOnly]
+)
+
+const bothPayload: UsageWindow = {
+  kind: 'session',
+  label: '5 hours',
+  percent: 95,
+  severity: 'normal',
+  resetsAt: 1_786_078_200_000,
+  elapsed: 0.95,
+  active: true
+}
+const bothAccount: UsageWindow = {
+  kind: 'session',
+  label: '5 hours',
+  percent: 80,
+  severity: 'critical',
+  resetsAt: 1_786_000_000_000,
+  elapsed: 0.5,
+  active: true
+}
+const bothMerged = mergeUsageWindows([bothPayload], [bothAccount])
+check(
+  'both present: the figures are the payload’s — percent and resetsAt, not the account’s',
+  [bothMerged[0].percent, bothMerged[0].resetsAt],
+  [bothPayload.percent, bothPayload.resetsAt]
+)
+check(
+  'both present: a critical account severity survives a payload that carries the very same window',
+  bothMerged[0].severity,
+  'critical'
+)
+check(
+  'both present, plus an account-only window: the scoped window still rides along beside the merged one',
+  mergeUsageWindows([bothPayload], [bothAccount, scopedOnly]),
+  [{ ...bothPayload, severity: 'critical' }, scopedOnly]
 )
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
