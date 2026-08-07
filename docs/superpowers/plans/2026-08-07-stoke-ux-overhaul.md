@@ -15451,9 +15451,54 @@ arrow-key tab semantics apply to controls that do not answer to them.
   }
   ```
 
-  Finally, keep the `+` button from being squeezed: in the `.tabs > .icon-btn` rule (the one whose
+  Then keep the `+` button from being squeezed: in the `.tabs > .icon-btn` rule (the one whose
   comment explains the margin-box trap), add `flex: none;` as a new declaration. It had implicit
   `flex-shrink: 1` and only survived because nothing had pushed it yet.
+
+- [ ] **Step 5a: Make the browser tab's close button visible to a mouse.**
+  Locate the reveal rule by its text —
+  `grep -n "\.tab:hover \.tab-close" src/renderer/src/styles/app.css` — which today reads:
+
+  ```css
+  .tab:hover .tab-close,
+  .tab[aria-selected='true'] .tab-close,
+  .tab-close:focus-visible {
+    opacity: 1;
+  }
+  ```
+
+  Replace it with:
+
+  ```css
+  /*
+   * Both strips, not just the session one. `.tab-close` is `opacity: 0` by
+   * default and browser tabs are `.btab`, so neither hover selector matched
+   * them: the ✕ on every browser tab was invisible to a mouse for as long as
+   * the panel has existed. It still hit-tested, which is worse than missing —
+   * an unmarked 18x18 target, with a click anywhere around it selecting the tab
+   * instead. `:focus-visible` did match, being unscoped, but that fires only on
+   * keyboard focus, so it rescued nobody who reaches for a mouse.
+   */
+  .tab:hover .tab-close,
+  .tab[aria-selected='true'] .tab-close,
+  .btab:hover .tab-close,
+  .btab[aria-selected='true'] .tab-close,
+  .tab-close:focus-visible {
+    opacity: 1;
+  }
+  ```
+
+- [ ] **Step 5b: Prove the browser ✕ is reachable.**
+  ```bash
+  cd /Users/thevinh/dev/personal/stoke && npm run build
+  ```
+  Reload the renderer, open the browser panel with at least two tabs, then:
+  ```bash
+  cd /Users/thevinh/dev/personal/stoke && node scripts/cdp-eval.mjs "(() => { const b = document.querySelector('.btab'); const x = b.querySelector('.tab-close'); const before = getComputedStyle(x).opacity; b.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); return { before, selected: getComputedStyle(document.querySelector('.btab[aria-selected=\"true\"] .tab-close')).opacity } })()"
+  ```
+  Expected: `{"before":"0","selected":"1"}` — an unhovered, unselected browser tab still hides its
+  ✕ exactly like a session tab does, and the selected one now shows it. Before this step the
+  `selected` value is `"0"`, which is the bug.
 
 - [ ] **Step 6: Rebuild, re-audit, and watch it pass.**
   ```bash
