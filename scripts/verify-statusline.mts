@@ -43,6 +43,25 @@ function check(name: string, got: unknown, want: unknown): void {
   )
 }
 
+/**
+ * Best-effort fixture teardown. Every case below writes its `.cmd`/script
+ * files and payload before running the wrapper, so a throw out of
+ * `runWrapper` (or an assertion helper, in principle) must not skip cleanup —
+ * hence `finally`, not "after". `rmSync(..., { force: true })` already
+ * tolerates a missing path; the try/catch here additionally tolerates a path
+ * still in use, matching the directory-level cleanup at the end of this file.
+ */
+function cleanup(...paths: string[]): void {
+  for (const p of paths) {
+    try {
+      rmSync(p, { recursive: true, force: true })
+    } catch {
+      // Another process may hold the file; leaving it behind is harmless,
+      // and a fixture must never fail the suite on its way out.
+    }
+  }
+}
+
 /** The payload captured from claude 2.1.221 after one real request. */
 const REAL: StatusLinePayload = {
   session_id: 'a0e0ee79-0000-4000-8000-000000000000',
@@ -181,189 +200,317 @@ console.log('\na non-string session id degrades instead of throwing')
  */
 check('a numeric session id reads as nothing, never a throw', readStatusLine(12345 as never), null)
 
-console.log('\nreading it back off disk')
+/*
+ * Every fixture from here on lives under statusLineDir(). Whether that
+ * directory pre-existed is captured now, before anything below creates it,
+ * so the directory-level teardown in the `finally` at the bottom of this
+ * file can tell "we made this" from "something else already had it" — the
+ * house rule is that a fixture is deleted again, not "the directory is
+ * always deleted".
+ */
 const dirExistedBefore = existsSync(statusLineDir())
-const readId = 'stoke-verify-read'
-const readFile = statusLinePayloadFile(readId)
-mkdirSync(dirname(readFile), { recursive: true })
-writeFileSync(readFile, JSON.stringify(REAL), 'utf8')
-/*
- * A known mtime, set after the write so the OS-assigned "now" doesn't get to
- * masquerade as it. utimesSync takes epoch SECONDS; mtimeMs (and receivedAt)
- * is epoch MILLISECONDS — this is the boundary itself, so the test has to
- * cross it explicitly rather than accept whatever the clock says.
- */
-const knownMtimeSeconds = 1_700_000_000
-utimesSync(readFile, knownMtimeSeconds, knownMtimeSeconds)
-const fromDisk = readStatusLine(readId)
-check('a written payload reads back', fromDisk?.contextWindowSize, 1_000_000)
-check(
-  'and receivedAt is the file mtime in milliseconds, not Date.now()',
-  fromDisk?.receivedAt,
-  knownMtimeSeconds * 1000
-)
-check('an unknown session reads as nothing at all', readStatusLine('stoke-verify-missing'), null)
-writeFileSync(readFile, 'not json', 'utf8')
-check('a truncated or garbled file reads as nothing, never a throw', readStatusLine(readId), null)
-rmSync(readFile, { force: true })
-if (!dirExistedBefore) {
+
+try {
+  console.log('\nreading it back off disk')
+  const readId = 'stoke-verify-read'
+  const readFile = statusLinePayloadFile(readId)
   try {
-    rmSync(statusLineDir(), { recursive: true, force: true })
-  } catch {
-    // Another process may be using the directory; leaving it behind is
-    // harmless, and this fixture must never fail the suite on cleanup.
+    mkdirSync(dirname(readFile), { recursive: true })
+    writeFileSync(readFile, JSON.stringify(REAL), 'utf8')
+    /*
+     * A known mtime, set after the write so the OS-assigned "now" doesn't get
+     * to masquerade as it. utimesSync takes epoch SECONDS; mtimeMs (and
+     * receivedAt) is epoch MILLISECONDS — this is the boundary itself, so the
+     * test has to cross it explicitly rather than accept whatever the clock
+     * says.
+     */
+    const knownMtimeSeconds = 1_700_000_000
+    utimesSync(readFile, knownMtimeSeconds, knownMtimeSeconds)
+    const fromDisk = readStatusLine(readId)
+    check('a written payload reads back', fromDisk?.contextWindowSize, 1_000_000)
+    check(
+      'and receivedAt is the file mtime in milliseconds, not Date.now()',
+      fromDisk?.receivedAt,
+      knownMtimeSeconds * 1000
+    )
+    check('an unknown session reads as nothing at all', readStatusLine('stoke-verify-missing'), null)
+    writeFileSync(readFile, 'not json', 'utf8')
+    check('a truncated or garbled file reads as nothing, never a throw', readStatusLine(readId), null)
+  } finally {
+    cleanup(readFile)
   }
+  check(
+    'the payload directory lives under the system temp dir',
+    statusLineDir().startsWith(tmpdir()),
+    true
+  )
+
+  console.log('\nthe wrapper, run exactly the way the CLI runs it')
+  const shim = writeStatusLineWrapper()
+  check('the shim exists where the command points at it', existsSync(shim), true)
+
+  console.log('\nwriteStatusLineWrapper never throws, even when writing is impossible')
+  /*
+   * Forced by making the wrapper's own write target a directory it cannot
+   * replace: writeAtomic's final renameSync(tmp, target) then fails
+   * (EISDIR/ENOTEMPTY on POSIX), which is the same class of error a
+   * read-only filesystem or a Windows sharing violation would also produce.
+   * What this proves is the contract in the doc comment — "returns a path,
+   * never throws" — not that a usable wrapper gets written; the case that
+   * matters for real is a caller (Task 9) that must never see an exception
+   * out of this call.
+   */
+  const wrapperTarget = join(statusLineDir(), 'wrapper.mjs')
+  try {
+    cleanup(wrapperTarget)
+    mkdirSync(wrapperTarget, { recursive: true })
+    let threw = false
+    let shimWhenBlocked = ''
+    try {
+      shimWhenBlocked = writeStatusLineWrapper()
+    } catch {
+      threw = true
+    }
+    check(
+      "writeStatusLineWrapper returns instead of throwing when its target can't be replaced",
+      threw,
+      false
+    )
+    check('and still returns the same shim path callers expect', shimWhenBlocked, shim)
+  } finally {
+    cleanup(wrapperTarget)
+    // Restore a real wrapper.mjs, so the directory is left exactly as an
+    // ordinary run would leave it rather than missing the file this block
+    // deliberately broke.
+    writeStatusLineWrapper()
+  }
+
+  const isWin = process.platform === 'win32'
+  const shell = isWin ? (process.env.COMSPEC ?? 'cmd.exe') : '/bin/sh'
+  const shellFlag = isWin ? '/c' : '-c'
+  /** A pass-through command that works on both shells and prints one marker. */
+  const ECHO_CMD = isWin ? 'echo STOKE-PASSTHROUGH' : "printf 'STOKE-PASSTHROUGH'"
+
+  /** Run the statusLine command the way a shell would, payload on stdin. */
+  function runWrapper(sessionId: string, input: string): string {
+    return execFileSync(shell, [shellFlag, statusLineCommand(sessionId)], {
+      input,
+      encoding: 'utf8'
+    })
+  }
+
+  const suppressed = 'stoke-verify-suppress'
+  try {
+    check(
+      'suppressed: the wrapper prints nothing at all',
+      runWrapper(suppressed, JSON.stringify(REAL)),
+      ''
+    )
+    check(
+      'suppressed: the payload landed anyway, byte for byte',
+      readFileSync(statusLinePayloadFile(suppressed), 'utf8'),
+      JSON.stringify(REAL)
+    )
+    check(
+      'suppressed: and it parses back through the reader',
+      readStatusLine(suppressed)?.contextWindowSize,
+      1_000_000
+    )
+  } finally {
+    cleanup(statusLinePayloadFile(suppressed))
+  }
+
+  const through = 'stoke-verify-passthrough'
+  try {
+    writeFileSync(join(statusLineDir(), `${through}.cmd`), ECHO_CMD, 'utf8')
+    check(
+      'pass-through: the user command owns stdout',
+      runWrapper(through, JSON.stringify(REAL)).trim(),
+      'STOKE-PASSTHROUGH'
+    )
+    check(
+      'pass-through: the payload is still captured',
+      readStatusLine(through)?.contextWindowSize,
+      1_000_000
+    )
+  } finally {
+    cleanup(join(statusLineDir(), `${through}.cmd`), statusLinePayloadFile(through))
+  }
+
+  console.log("\nELECTRON_RUN_AS_NODE does not leak into the user's command")
+  /*
+   * The shim sets this so <electron> runs as node for the wrapper itself —
+   * simulated here by setting it in this process, since runWrapper inherits
+   * this process's env with no override, exactly like the shim does for the
+   * wrapper. If the wrapper didn't strip it, it would still be set when the
+   * pass-through command below runs, and any Electron binary that command
+   * invoked would start as node instead of as an app.
+   */
+  const envLeak = 'stoke-verify-env-leak'
+  // %VAR% in cmd.exe stays literal when VAR is unset rather than expanding to
+  // empty, so the Windows probe needs `if defined` instead of the POSIX
+  // shell's plain interpolation — each branch's own value for "gone".
+  const envCmd = isWin
+    ? 'if defined ELECTRON_RUN_AS_NODE (echo LEAKED) else (echo CLEAN)'
+    : 'echo "[$ELECTRON_RUN_AS_NODE]"'
+  const envCmdWhenClean = isWin ? 'CLEAN' : '[]'
+  const previousElectronEnv = process.env.ELECTRON_RUN_AS_NODE
+  try {
+    writeFileSync(join(statusLineDir(), `${envLeak}.cmd`), envCmd, 'utf8')
+    process.env.ELECTRON_RUN_AS_NODE = '1'
+    check(
+      'the wrapper strips ELECTRON_RUN_AS_NODE before running the pass-through command',
+      runWrapper(envLeak, JSON.stringify(REAL)).trim(),
+      envCmdWhenClean
+    )
+  } finally {
+    if (previousElectronEnv === undefined) delete process.env.ELECTRON_RUN_AS_NODE
+    else process.env.ELECTRON_RUN_AS_NODE = previousElectronEnv
+    cleanup(join(statusLineDir(), `${envLeak}.cmd`), statusLinePayloadFile(envLeak))
+  }
+
+  const junk = 'stoke-verify-junk'
+  check('a non-JSON payload prints nothing', runWrapper(junk, 'Error: something went wrong\n'), '')
+  check('and is not stored, so the last good reading survives a bad frame', readStatusLine(junk), null)
+
+  check(
+    'the command is one quoted path and one quoted id, with no shell metacharacter',
+    /^"[^"]+" "stoke-verify-junk"$/.test(statusLineCommand(junk)),
+    true
+  )
+
+  console.log('\na slow or runaway status line cannot wedge the terminal')
+  /*
+   * The pass-through is the one place Stoke runs a string as a shell command.
+   * The string is the user's own statusLine.command out of their own
+   * ~/.claude/settings.json, and the CLI already runs it through this same
+   * shell — but the CLI re-renders about three times a second, so a command
+   * that hangs, floods or fails has to be contained here rather than reach
+   * the PTY.
+   *
+   * Every case below asserts the SAME outcome: an empty string. A status
+   * line that failed is shown as no status line, never as its own error
+   * text.
+   */
+  /** Prints, then hangs — so an empty result proves the timeout, not a dud command. */
+  const hangCmd = isWin ? 'ping -n 31 127.0.0.1' : 'printf PARTIAL; sleep 30'
+  /** The same command with the wait taken out. The control for the check above. */
+  const controlCmd = isWin ? 'ping -n 1 127.0.0.1' : 'printf PARTIAL'
+
+  const control = 'stoke-verify-slow-control'
+  try {
+    writeFileSync(join(statusLineDir(), `${control}.cmd`), controlCmd, 'utf8')
+    check(
+      'the hang case does print, when it is given no reason to hang',
+      runWrapper(control, JSON.stringify(REAL)).length > 0,
+      true
+    )
+  } finally {
+    cleanup(join(statusLineDir(), `${control}.cmd`), statusLinePayloadFile(control))
+  }
+
+  const slow = 'stoke-verify-slow'
+  try {
+    writeFileSync(join(statusLineDir(), `${slow}.cmd`), hangCmd, 'utf8')
+    const startedAt = Date.now()
+    const slowOut = runWrapper(slow, JSON.stringify(REAL))
+    const slowMs = Date.now() - startedAt
+    check('a status line that hangs prints nothing at all, partial output included', slowOut, '')
+    check('killed at the 2s timeout rather than waited out', slowMs < 10_000, true)
+    check(
+      'and the payload still landed, because the store happens before the pass-through',
+      readStatusLine(slow)?.contextWindowSize,
+      1_000_000
+    )
+  } finally {
+    cleanup(join(statusLineDir(), `${slow}.cmd`), statusLinePayloadFile(slow))
+  }
+
+  const bad = 'stoke-verify-badexit'
+  try {
+    writeFileSync(join(statusLineDir(), `${bad}.cmd`), isWin ? 'exit /b 3' : 'exit 3', 'utf8')
+    check('a non-zero exit prints nothing', runWrapper(bad, JSON.stringify(REAL)), '')
+    check('and does not stop the payload being stored', readStatusLine(bad)?.contextWindowSize, 1_000_000)
+  } finally {
+    cleanup(join(statusLineDir(), `${bad}.cmd`), statusLinePayloadFile(bad))
+  }
+
+  /*
+   * A quoted absolute path and nothing else — the same command shape as the
+   * shim, which the checks above already prove a shell runs correctly on
+   * this platform. Written as a file rather than inlined because the Windows
+   * form of an infinite loop needs `&`, and cmd.exe eats it (CLAUDE.md
+   * gotcha 13).
+   *
+   * 256 characters per line, so the 256KB cap is reached in about 1000
+   * lines. That is what makes the elapsed-time check below able to tell
+   * "maxBuffer killed it" from "the 2s timeout killed it" — without it, both
+   * look like an empty string and the cap could have stopped working
+   * unnoticed.
+   */
+  const flood = 'stoke-verify-flood'
+  const FLOOD_LINE = 'x'.repeat(256)
+  const FLOOD_MARKER = 'STOKE-FLOOD-CONTROL'
+  // Named so it cannot be mistaken for `${flood}.cmd`, which is the pass-through
+  // file pointing AT it rather than the script itself.
+  const floodScript = join(statusLineDir(), isWin ? 'runaway-script.cmd' : 'runaway-script.sh')
+  try {
+    /*
+     * Positive control FIRST, in the identical "<quoted script path>" shape
+     * as the real flood case below, and sharing the same file and the same
+     * single chmodSync call: prove the fixture itself actually runs before
+     * trusting an empty result to mean "the cap fired". Without this, a
+     * dropped chmodSync, a missing script, or an empty file all make the
+     * real command below exit 126/127 within milliseconds too — floodOut is
+     * '' and floodMs is ~100ms, and both real checks below pass while
+     * testing nothing. writeFileSync truncates content on the second write
+     * further down but does not touch existing permission bits, so this one
+     * chmodSync call covers both the control and the real payload — deleting
+     * it fails the control that runs first, not silently only the check it
+     * originally guarded.
+     */
+    if (isWin) {
+      writeFileSync(floodScript, `@echo off\r\necho ${FLOOD_MARKER}\r\n`, 'utf8')
+    } else {
+      writeFileSync(floodScript, `#!/bin/sh\necho ${FLOOD_MARKER}\n`, 'utf8')
+      chmodSync(floodScript, 0o755)
+    }
+    writeFileSync(join(statusLineDir(), `${flood}.cmd`), `"${floodScript}"`, 'utf8')
+    check(
+      'flood control: the identical quoted-script shape actually runs and prints its marker',
+      runWrapper(flood, JSON.stringify(REAL)).trim(),
+      FLOOD_MARKER
+    )
+    cleanup(statusLinePayloadFile(flood))
+
+    // The real runaway payload, same file and same executable bit.
+    if (isWin) {
+      writeFileSync(floodScript, `@echo off\r\n:loop\r\necho ${FLOOD_LINE}\r\ngoto loop\r\n`, 'utf8')
+    } else {
+      writeFileSync(floodScript, `#!/bin/sh\nwhile :; do echo ${FLOOD_LINE}; done\n`, 'utf8')
+    }
+    const floodStartedAt = Date.now()
+    const floodOut = runWrapper(flood, JSON.stringify(REAL))
+    const floodMs = Date.now() - floodStartedAt
+    check('output past the 256KB cap prints nothing', floodOut, '')
+    check(
+      'and it was the cap that stopped it, not the timeout: ~1000 lines take well under 2s',
+      floodMs < 1_500,
+      true
+    )
+    check(
+      'and the payload still landed, because the store happens before the pass-through',
+      readStatusLine(flood)?.contextWindowSize,
+      1_000_000
+    )
+  } finally {
+    cleanup(join(statusLineDir(), `${flood}.cmd`), statusLinePayloadFile(flood), floodScript)
+  }
+} finally {
+  // The one directory-level fixture, torn down last so it actually runs
+  // last regardless of which case above threw or failed a check.
+  if (!dirExistedBefore) cleanup(statusLineDir())
 }
-check('the payload directory lives under the system temp dir', statusLineDir().startsWith(tmpdir()), true)
-
-console.log('\nthe wrapper, run exactly the way the CLI runs it')
-const shim = writeStatusLineWrapper()
-check('the shim exists where the command points at it', existsSync(shim), true)
-
-const isWin = process.platform === 'win32'
-const shell = isWin ? (process.env.COMSPEC ?? 'cmd.exe') : '/bin/sh'
-const shellFlag = isWin ? '/c' : '-c'
-/** A pass-through command that works on both shells and prints one marker. */
-const ECHO_CMD = isWin ? 'echo STOKE-PASSTHROUGH' : "printf 'STOKE-PASSTHROUGH'"
-
-/** Run the statusLine command the way a shell would, payload on stdin. */
-function runWrapper(sessionId: string, input: string): string {
-  return execFileSync(shell, [shellFlag, statusLineCommand(sessionId)], {
-    input,
-    encoding: 'utf8'
-  })
-}
-
-const suppressed = 'stoke-verify-suppress'
-check('suppressed: the wrapper prints nothing at all', runWrapper(suppressed, JSON.stringify(REAL)), '')
-check(
-  'suppressed: the payload landed anyway, byte for byte',
-  readFileSync(statusLinePayloadFile(suppressed), 'utf8'),
-  JSON.stringify(REAL)
-)
-check(
-  'suppressed: and it parses back through the reader',
-  readStatusLine(suppressed)?.contextWindowSize,
-  1_000_000
-)
-rmSync(statusLinePayloadFile(suppressed), { force: true })
-
-const through = 'stoke-verify-passthrough'
-writeFileSync(join(statusLineDir(), `${through}.cmd`), ECHO_CMD, 'utf8')
-check(
-  'pass-through: the user command owns stdout',
-  runWrapper(through, JSON.stringify(REAL)).trim(),
-  'STOKE-PASSTHROUGH'
-)
-check(
-  'pass-through: the payload is still captured',
-  readStatusLine(through)?.contextWindowSize,
-  1_000_000
-)
-rmSync(join(statusLineDir(), `${through}.cmd`), { force: true })
-rmSync(statusLinePayloadFile(through), { force: true })
-
-const junk = 'stoke-verify-junk'
-check('a non-JSON payload prints nothing', runWrapper(junk, 'Error: something went wrong\n'), '')
-check(
-  'and is not stored, so the last good reading survives a bad frame',
-  readStatusLine(junk),
-  null
-)
-
-check(
-  'the command is one quoted path and one quoted id, with no shell metacharacter',
-  /^"[^"]+" "stoke-verify-junk"$/.test(statusLineCommand(junk)),
-  true
-)
-
-console.log("\na slow or runaway status line cannot wedge the terminal")
-/*
- * The pass-through is the one place Stoke runs a string as a shell command.
- * The string is the user's own statusLine.command out of their own
- * ~/.claude/settings.json, and the CLI already runs it through this same shell
- * — but the CLI re-renders about three times a second, so a command that
- * hangs, floods or fails has to be contained here rather than reach the PTY.
- *
- * Every case below asserts the SAME outcome: an empty string. A status line
- * that failed is shown as no status line, never as its own error text.
- */
-/** Prints, then hangs — so an empty result proves the timeout, not a dud command. */
-const hangCmd = isWin ? 'ping -n 31 127.0.0.1' : 'printf PARTIAL; sleep 30'
-/** The same command with the wait taken out. The control for the check above. */
-const controlCmd = isWin ? 'ping -n 1 127.0.0.1' : 'printf PARTIAL'
-
-const control = 'stoke-verify-slow-control'
-writeFileSync(join(statusLineDir(), `${control}.cmd`), controlCmd, 'utf8')
-check(
-  'the hang case does print, when it is given no reason to hang',
-  runWrapper(control, JSON.stringify(REAL)).length > 0,
-  true
-)
-rmSync(join(statusLineDir(), `${control}.cmd`), { force: true })
-rmSync(statusLinePayloadFile(control), { force: true })
-
-const slow = 'stoke-verify-slow'
-writeFileSync(join(statusLineDir(), `${slow}.cmd`), hangCmd, 'utf8')
-const startedAt = Date.now()
-const slowOut = runWrapper(slow, JSON.stringify(REAL))
-const slowMs = Date.now() - startedAt
-check('a status line that hangs prints nothing at all, partial output included', slowOut, '')
-check('killed at the 2s timeout rather than waited out', slowMs < 10_000, true)
-check(
-  'and the payload still landed, because the store happens before the pass-through',
-  readStatusLine(slow)?.contextWindowSize,
-  1_000_000
-)
-rmSync(join(statusLineDir(), `${slow}.cmd`), { force: true })
-rmSync(statusLinePayloadFile(slow), { force: true })
-
-const bad = 'stoke-verify-badexit'
-writeFileSync(join(statusLineDir(), `${bad}.cmd`), isWin ? 'exit /b 3' : 'exit 3', 'utf8')
-check('a non-zero exit prints nothing', runWrapper(bad, JSON.stringify(REAL)), '')
-check(
-  'and does not stop the payload being stored',
-  readStatusLine(bad)?.contextWindowSize,
-  1_000_000
-)
-rmSync(join(statusLineDir(), `${bad}.cmd`), { force: true })
-rmSync(statusLinePayloadFile(bad), { force: true })
-
-/*
- * A quoted absolute path and nothing else — the same command shape as the
- * shim, which the checks above already prove a shell runs correctly on this
- * platform. Written as a file rather than inlined because the Windows form of
- * an infinite loop needs `&`, and cmd.exe eats it (CLAUDE.md gotcha 13).
- *
- * 256 characters per line, so the 256KB cap is reached in about 1000 lines.
- * That is what makes the elapsed-time check below able to tell "maxBuffer
- * killed it" from "the 2s timeout killed it" — without it, both look like an
- * empty string and the cap could have stopped working unnoticed.
- */
-const flood = 'stoke-verify-flood'
-const FLOOD_LINE = 'x'.repeat(256)
-// Named so it cannot be mistaken for `${flood}.cmd`, which is the pass-through
-// file pointing AT it rather than the script itself.
-const floodScript = join(statusLineDir(), isWin ? 'runaway-script.cmd' : 'runaway-script.sh')
-if (isWin) {
-  writeFileSync(floodScript, `@echo off\r\n:loop\r\necho ${FLOOD_LINE}\r\ngoto loop\r\n`, 'utf8')
-} else {
-  writeFileSync(floodScript, `#!/bin/sh\nwhile :; do echo ${FLOOD_LINE}; done\n`, 'utf8')
-  chmodSync(floodScript, 0o755)
-}
-writeFileSync(join(statusLineDir(), `${flood}.cmd`), `"${floodScript}"`, 'utf8')
-const floodStartedAt = Date.now()
-const floodOut = runWrapper(flood, JSON.stringify(REAL))
-const floodMs = Date.now() - floodStartedAt
-check('output past the 256KB cap prints nothing', floodOut, '')
-check(
-  'and it was the cap that stopped it, not the timeout: ~1000 lines take well under 2s',
-  floodMs < 1_500,
-  true
-)
-rmSync(join(statusLineDir(), `${flood}.cmd`), { force: true })
-rmSync(statusLinePayloadFile(flood), { force: true })
-rmSync(floodScript, { force: true })
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
 process.exitCode = failures ? 1 : 0

@@ -1,4 +1,11 @@
-import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  writeFileSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type {
@@ -64,6 +71,13 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+// The shim sets this so <electron> runs as plain node for THIS script — but
+// with no env override on the execFileSync below, it would inherit straight
+// through into the user's own pass-through command too. Deleted before
+// anything else runs: any Electron binary the user's status line invokes
+// must start as an app, not as node.
+delete process.env.ELECTRON_RUN_AS_NODE
 
 const dir = dirname(fileURLToPath(import.meta.url))
 // basename() and nothing else: the id is already sanitised on the way in, and
@@ -145,6 +159,30 @@ function shimName(): string {
 }
 
 /**
+ * Write `content` to `target` without a reader ever observing a truncated
+ * file: write to a sibling temp name first, then `renameSync` it into place.
+ * `mode`, when given, is applied to the temp file before the rename, so the
+ * file that appears at `target` already has its final permissions — a
+ * rewrite is never briefly non-executable.
+ *
+ * Both `wrapper.mjs` and the shim live in one directory shared by every Stoke
+ * session on the machine, and are rewritten unconditionally on every call
+ * (see writeStatusLineWrapper's doc for why). A plain `writeFileSync` opens
+ * with O_TRUNC, so a second session's rewrite would zero the file out for an
+ * instant on *every* call, not only across an app update — on POSIX that
+ * instant is at worst an empty status line for one render, but on Windows a
+ * concurrent reader/executor of that same file hits a sharing violation
+ * (EBUSY/EACCES) instead. Rename replaces the directory entry atomically, so
+ * a concurrent reader sees either the whole old file or the whole new one.
+ */
+function writeAtomic(target: string, content: string, mode?: number): void {
+  const tmp = `${target}.${process.pid}.tmp`
+  writeFileSync(tmp, content, 'utf8')
+  if (mode !== undefined) chmodSync(tmp, mode)
+  renameSync(tmp, target)
+}
+
+/**
  * Write the wrapper and the shim that launches it, and return the shim path.
  *
  * The shim exists because the CLI runs a shell command and Stoke has no node
@@ -154,29 +192,38 @@ function shimName(): string {
  * either of them out from under a long-running session — and a shim pointing
  * at a deleted Electron fails as an empty status line, which looks exactly
  * like it working.
+ *
+ * Never throws — Task 9's caller relies on that. Every step (the directory,
+ * both writes) is inside one try/catch; a filesystem that refuses any of them
+ * (read-only, out of space, a permissions problem) degrades to the same
+ * "empty status line" the rest of this module already falls back to, instead
+ * of taking session spawn down with it. The shim path is still returned in
+ * that case — nothing exists at it, so the CLI's statusLine command simply
+ * fails to run, which the CLI already tolerates silently.
  */
 export function writeStatusLineWrapper(): string {
   const dir = statusLineDir()
-  mkdirSync(dir, { recursive: true })
-  const wrapper = join(dir, 'wrapper.mjs')
-  writeFileSync(wrapper, WRAPPER_JS, 'utf8')
-
   const shim = join(dir, shimName())
-  if (process.platform === 'win32') {
-    writeFileSync(
-      shim,
-      `@echo off\r\nset ELECTRON_RUN_AS_NODE=1\r\n"${process.execPath}" "${wrapper}" %*\r\n`,
-      'utf8'
-    )
-  } else {
-    writeFileSync(
-      shim,
-      `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec "${process.execPath}" "${wrapper}" "$@"\n`,
-      'utf8'
-    )
-    // Set explicitly rather than through writeFileSync's mode, which only
-    // applies when the file is created and so leaves a rewrite unexecutable.
-    chmodSync(shim, 0o755)
+  try {
+    mkdirSync(dir, { recursive: true })
+
+    const wrapper = join(dir, 'wrapper.mjs')
+    writeAtomic(wrapper, WRAPPER_JS)
+
+    if (process.platform === 'win32') {
+      writeAtomic(
+        shim,
+        `@echo off\r\nset ELECTRON_RUN_AS_NODE=1\r\n"${process.execPath}" "${wrapper}" %*\r\n`
+      )
+    } else {
+      writeAtomic(
+        shim,
+        `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec "${process.execPath}" "${wrapper}" "$@"\n`,
+        0o755
+      )
+    }
+  } catch {
+    // See the doc above: degrade to "empty status line", never throw.
   }
   return shim
 }
