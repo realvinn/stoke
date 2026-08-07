@@ -538,6 +538,38 @@ export function sweepStaleSessionFiles(now: number = Date.now()): void {
 }
 
 /**
+ * The context window for a session, in order of authority.
+ *
+ * 1. The statusLine payload. A direct statement, per model, correct from token
+ *    zero, and the only one that still exists — claude 2.1.221 dropped
+ *    "(1M context)" from its startup banner.
+ * 2. The banner, for a CLI old enough to still print it.
+ * 3. Null, and `contextLimitFor` falls back to inferring the tier from observed
+ *    usage. That cannot be right below 200k, but it is never wrong in the
+ *    dangerous direction.
+ *
+ * A named function rather than a lambda inside the ContextWatcher construction
+ * because this ordering is the whole point of the statusLine channel, and a
+ * lambda in a constructor call is the one shape no suite here can reach.
+ *
+ * `sessionId` is safe to use as the payload key here, though the two are not
+ * the same thing in general. This is only ever called from the context
+ * watcher, and there are exactly three kinds of session it watches:
+ *
+ *  - a local session Stoke minted an id for, whose statusLine key IS that id;
+ *  - a remote session, which has no key and no payload at all — its `claude`
+ *    runs on the far machine — so this falls through to the banner for it,
+ *    exactly as it did before the payload existed;
+ *  - and not a `--continue`, whose files are named after a launch key: it is
+ *    never watched, because context.ts:99 no-ops on the empty id it has.
+ *
+ * So no caller can reach here holding a key that names somebody else's file.
+ */
+export function windowFor(sessionId: string, bannerWindow: number | null): number | null {
+  return readStatusLine(sessionId)?.contextWindowSize ?? bannerWindow ?? null
+}
+
+/**
  * The user's own statusLine command, so it can be passed through when the
  * line is not suppressed. Read at launch rather than cached, because the file
  * is theirs and they can change it at any time.

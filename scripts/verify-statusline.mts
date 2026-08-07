@@ -32,6 +32,7 @@ import {
   sweepStaleSessionFiles,
   toSnapshot,
   userStatusLineCommand,
+  windowFor,
   writeSessionSettingsFile,
   writeStatusLineWrapper
 } from '../src/main/statusLine.ts'
@@ -852,6 +853,38 @@ check(
   argsUser.slice(argsUser.lastIndexOf('--settings')),
   ['--settings', '/my/own.json']
 )
+
+console.log('\nwhich source states the context window')
+const winId = 'stoke-verify-window'
+check(
+  'no payload and no banner is no statement at all, so the caller infers',
+  windowFor(winId, null),
+  null
+)
+check('no payload falls back to the banner', windowFor(winId, 1_000_000), 1_000_000)
+mkdirSync(statusLineDir(), { recursive: true })
+writeFileSync(
+  statusLinePayloadFile(winId),
+  JSON.stringify({ context_window: { context_window_size: 1_000_000 } }),
+  'utf8'
+)
+check('a payload states it', windowFor(winId, null), 1_000_000)
+check(
+  'and beats the banner, which is the older and now usually absent source',
+  windowFor(winId, 200_000),
+  1_000_000
+)
+writeFileSync(
+  statusLinePayloadFile(winId),
+  JSON.stringify({ context_window: { used_percentage: 4 } }),
+  'utf8'
+)
+check(
+  'a payload that omits the size falls through rather than reporting zero',
+  windowFor(winId, 200_000),
+  200_000
+)
+rmSync(statusLinePayloadFile(winId), { force: true })
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
 process.exitCode = failures ? 1 : 0

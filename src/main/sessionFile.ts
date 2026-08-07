@@ -176,18 +176,23 @@ export const WINDOW_EXTENDED = 1_000_000
  * Context window size for a session.
  *
  * The model id alone is NOT sufficient. A session running the 1M-context tier
- * records its model as plain `claude-opus-5` — the `[1m]` suffix that appears in
- * CLI flags does not survive into the transcript, and no `context_window` field
- * is written either. Verified against a live 1M session sitting at 269k tokens
- * whose every assistant record said `claude-opus-5`.
+ * records its model as plain `claude-opus-5` — the `[1m]` suffix that appears
+ * in CLI flags does not survive into the transcript, and no `context_window`
+ * field is written either. Verified against a live 1M session sitting at 269k
+ * tokens whose every assistant record said `claude-opus-5`.
  *
- * So the observed usage is the authority: exceeding the standard window is
- * proof the session is on the extended tier. The id is still checked first for
- * the cases where a suffix is present.
+ * The window is therefore *stated* rather than derived, by the caller: the
+ * statusLine payload first (`statusLine.ts`), then the startup banner for a
+ * CLI old enough to print one. Both arrive here as `bannerLimit`.
  *
- * Known imprecision: an extended-tier session below 200k is reported against
- * the 200k window until it crosses over. That reads conservatively (it can
- * over-state pressure, never under-state it) and it can never exceed 100%.
+ * With no statement at all, observed usage is the authority: exceeding the
+ * standard window is proof the session is on the extended tier. The id is
+ * still checked first for the cases where a suffix is present.
+ *
+ * Known imprecision in that last case only: an extended-tier session below
+ * 200k is reported against the 200k window until it crosses over. That reads
+ * conservatively (it can over-state pressure, never under-state it) and it can
+ * never exceed 100%.
  */
 export interface TranscriptTurn {
   role: 'user' | 'assistant'

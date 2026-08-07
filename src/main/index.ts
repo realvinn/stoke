@@ -28,6 +28,7 @@ import { getSettings, setSettings } from './store.ts'
 import {
   sweepStaleSessionFiles,
   userStatusLineCommand,
+  windowFor,
   writeSessionSettingsFile
 } from './statusLine.ts'
 import { createScratchDir, resolveDefaultCwd } from './workspace.ts'
@@ -404,8 +405,9 @@ function createWindow(): void {
   })
   autoscan.start()
 
-  // The second argument lets the meter read the tier off the CLI's own banner,
-  // which is the only place it is stated - the transcript never carries it.
+  // The window size comes from the statusLine payload first and the CLI's own
+  // startup banner second; see windowFor. The banner used to be the only
+  // source and 2.1.221 stopped printing it.
   watcher = new ContextWatcher(
     (snap) => {
       send(CH.ctxUpdate, snap)
@@ -414,7 +416,7 @@ function createWindow(): void {
       // the real first reading then blows straight past.
       if (snap.ready) autoscan?.observe(snap.sessionId, snap.messageCount, snap.updatedAt)
     },
-    (sessionId) => ptys?.bannerWindowFor(sessionId) ?? null,
+    (sessionId) => windowFor(sessionId, ptys?.bannerWindowFor(sessionId) ?? null),
     {
       /*
        * One poller, both kinds of session.

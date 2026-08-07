@@ -4,12 +4,14 @@
  * Run with:  node scripts/verify-context.mts
  * (Node strips the type annotations natively; there is no build step.)
  */
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { readdir, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { basename, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { ContextWatcher } from '../src/main/context.ts'
 import { findSessionFile } from '../src/main/projects.ts'
 import { contextLimitFor, contextUsed, parseSession } from '../src/main/sessionFile.ts'
+import { readStatusLine, statusLinePayloadFile, windowFor } from '../src/main/statusLine.ts'
 import type { ContextSnapshot } from '../src/shared/types.ts'
 
 const root = join(homedir(), '.claude', 'projects')
@@ -107,6 +109,40 @@ check(
   'inferred from observed usage'
 )
 
+/* ---------------------------------------------------------------------------
+   The statusLine payload, which is now the primary source for the window size.
+   The banner this used to depend on is gone: claude 2.1.221 prints
+   "Claude Code v2.1.221    Opus 5 with low effort · Claude Max" and the word
+   "context" appears nowhere in its startup output. So these cases assert the
+   1M tier is read with no banner at all, at a token count far below 200k —
+   which is exactly where the observed-usage inference gets it wrong.
+   --------------------------------------------------------------------------- */
+const payloadId = 'verify-context-1m'
+const payloadFile = statusLinePayloadFile(payloadId)
+mkdirSync(dirname(payloadFile), { recursive: true })
+writeFileSync(
+  payloadFile,
+  JSON.stringify({
+    model: { id: 'claude-opus-5', display_name: 'Opus 5' },
+    context_window: { context_window_size: 1_000_000, used_percentage: 3 },
+    exceeds_200k_tokens: false
+  }),
+  'utf8'
+)
+const stated = readStatusLine(payloadId)?.contextWindowSize ?? null
+check('statusLine payload states the window', stated === 1_000_000, String(stated))
+check(
+  'a 1M session reads 1M at 50k tokens, with no banner anywhere',
+  contextLimitFor('claude-opus-5', 50_000, stated) === 1_000_000,
+  'the payload beat the observed-usage inference'
+)
+check(
+  'a 200k model in the payload stays 200k',
+  contextLimitFor('claude-haiku-4-5', 10_000, 200_000) === 200_000,
+  '200,000'
+)
+rmSync(payloadFile, { force: true })
+
 /* ------------------------------------------------------------------------
    Live watcher: session id -> transcript lookup -> parse -> emitted snapshot.
    This is the exact path the running app uses for the context meter, minus the
@@ -145,6 +181,40 @@ if (snapshot) {
   )
   check('watcher snapshot carries a model', snapshot.model !== null, snapshot.model ?? 'null')
 }
+
+/*
+ * The same watcher, told the window by a payload instead of a banner. Written
+ * against the live session id because that is the only id findSessionFile can
+ * resolve, and removed immediately afterwards: leaving it would make a running
+ * copy of Stoke read this session against 1M until its next real payload.
+ */
+const livePayload = statusLinePayloadFile(liveId)
+writeFileSync(
+  livePayload,
+  JSON.stringify({ context_window: { context_window_size: 1_000_000 } }),
+  'utf8'
+)
+const viaPayload = await new Promise<ContextSnapshot | null>((resolve) => {
+  const payloadWatcher = new ContextWatcher(
+    (snap) => {
+      if (!snap.ready) return
+      payloadWatcher.disposeAll()
+      resolve(snap)
+    },
+    (id) => windowFor(id, null)
+  )
+  payloadWatcher.watch(liveId)
+  setTimeout(() => {
+    payloadWatcher.disposeAll()
+    resolve(null)
+  }, 10_000)
+})
+rmSync(livePayload, { force: true })
+check(
+  'the watcher takes its window from the payload, banner or no banner',
+  viaPayload?.contextLimit === 1_000_000,
+  String(viaPayload?.contextLimit ?? 'timed out')
+)
 
 console.log(`\n${failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} FAILED: ${failures.join(', ')}`}`)
 process.exit(failures.length === 0 ? 0 : 1)
