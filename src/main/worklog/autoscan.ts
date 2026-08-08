@@ -118,6 +118,31 @@ export function autoScanVerdict(
   return { scan: true }
 }
 
+/**
+ * The part of a session's activity worth keeping across a restart.
+ *
+ * Note what is NOT here: `messageCount`, `updatedAt` and `scanning`.
+ *
+ * The first two are re-read off the transcript within a tick of launching, so
+ * storing them would only create a chance of them being wrong. `scanning`
+ * cannot survive a restart by definition — the run it referred to died with the
+ * process — and persisting it as true would leave a session permanently
+ * unscannable, because `scanning` is the flag every other path checks.
+ */
+export interface StoredActivity {
+  sessionId: string
+  scannedMessages: number
+  lastScanAt: number
+  mutedUntil: number
+}
+
+export interface AutoScanSnapshot {
+  sessions: StoredActivity[]
+  /** Start times of automatic scans, so the hourly ceiling is not cleared by
+   *  quitting the app — which would make it not a ceiling. */
+  recentScans: number[]
+}
+
 export interface AutoScannerOptions {
   config?: Partial<AutoScanConfig>
   /** Is auto-scanning switched on at all? Read fresh, so Settings takes effect at once. */
@@ -133,6 +158,17 @@ export interface AutoScannerOptions {
   onProposed?: (sessionId: string, added: number) => void
   /** Injectable clock and timer, so the tests do not wait in real time. */
   now?: () => number
+  /** Read the state left by the last run. Called once, in the constructor. */
+  restore?: () => AutoScanSnapshot | null
+  /**
+   * Write the state out. Called at the two points that change it: after a scan
+   * finishes, and when the gate mutes a session.
+   *
+   * Deliberately not called on `observe`, which runs on every context reading —
+   * that would be a disk write per session per 1.5s for a value that is
+   * re-derived at launch anyway.
+   */
+  persist?: (snapshot: AutoScanSnapshot) => void
 }
 
 /**
@@ -153,6 +189,8 @@ export class AutoScanner {
   private disposed = false
   /** A pass is in flight. See evaluate() for why one at a time is the rule. */
   private evaluating = false
+  /** Baselines from the last run, consumed the first time each session is seen. */
+  private readonly restored = new Map<string, StoredActivity>()
 
   // Explicit assignment rather than TS parameter properties, matching the other
   // main-process modules so this stays runnable under node's type stripping.
@@ -160,6 +198,20 @@ export class AutoScanner {
     this.opts = opts
     this.config = { ...DEFAULT_AUTOSCAN, ...opts.config }
     this.now = opts.now ?? Date.now
+    const saved = opts.restore?.() ?? null
+    if (saved) {
+      const now = this.now()
+      // Only the last hour matters to the ceiling, and a stored list from
+      // yesterday would otherwise suppress today's first six scans.
+      for (const t of saved.recentScans) {
+        if (typeof t === 'number' && now - t < HOUR_MS) this.recentScans.push(t)
+      }
+      this.recentScans.sort((a, b) => a - b)
+      // Newest first, then capped: a file from a long-running install must not
+      // be able to grow this map beyond what the live one is allowed.
+      const ordered = [...saved.sessions].sort((a, b) => b.lastScanAt - a.lastScanAt)
+      for (const s of ordered.slice(0, MAX_TRACKED)) this.restored.set(s.sessionId, s)
+    }
   }
 
   /** Start evaluating. Idempotent. */
@@ -225,6 +277,25 @@ export class AutoScanner {
   state(sessionId: string): SessionActivity | null {
     const found = this.sessions.get(sessionId)
     return found ? { ...found } : null
+  }
+
+  /**
+   * What is worth writing down. Public so the caller owns the disk and this
+   * file keeps importing nothing.
+   *
+   * `scanning` is dropped rather than stored — see StoredActivity.
+   */
+  snapshot(): AutoScanSnapshot {
+    const now = this.now()
+    return {
+      sessions: [...this.sessions.values()].map((s) => ({
+        sessionId: s.sessionId,
+        scannedMessages: s.scannedMessages,
+        lastScanAt: s.lastScanAt,
+        mutedUntil: s.mutedUntil
+      })),
+      recentScans: this.recentScans.filter((t) => now - t < HOUR_MS)
+    }
   }
 
   dispose(): void {

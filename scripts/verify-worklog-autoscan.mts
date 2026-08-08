@@ -17,6 +17,9 @@
  *
  *   node scripts/verify-worklog-autoscan.mts
  */
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
   AutoScanner,
   DEFAULT_AUTOSCAN,
@@ -24,8 +27,14 @@ import {
   MAX_TRACKED,
   autoScanVerdict,
   type AutoScanConfig,
+  type AutoScanSnapshot,
   type SessionActivity
 } from '../src/main/worklog/autoscan.ts'
+import {
+  autoScanStateFile,
+  readAutoScanState,
+  writeAutoScanState
+} from '../src/main/worklog/autoscanStore.ts'
 
 let failures = 0
 
@@ -433,6 +442,71 @@ console.log('\ntracking is bounded, and outlives a closed tab')
   await pass
   await new Promise((r) => setTimeout(r, 20))
   check('a window closing mid-gate does not start a paid run', scans, [])
+}
+
+/* --------------------------------------------------------------- the state */
+
+console.log('\nthe file the state survives in')
+{
+  const dir = mkdtempSync(join(tmpdir(), 'stoke-autoscan-'))
+  const file = autoScanStateFile(dir)
+  const written: AutoScanSnapshot = {
+    sessions: [{ sessionId: 's1', scannedMessages: 7, lastScanAt: 3, mutedUntil: 4 }],
+    recentScans: [1, 2]
+  }
+  writeAutoScanState(file, written)
+  check('it round-trips', readAutoScanState(file), written)
+  check('a missing file is an empty state, not a crash', readAutoScanState(join(dir, 'nope.json')), {
+    sessions: [],
+    recentScans: []
+  })
+  writeAutoScanState(file, {
+    sessions: [{ sessionId: '', scannedMessages: 1, lastScanAt: 0, mutedUntil: 0 }],
+    recentScans: ['x' as never]
+  })
+  check('and junk is dropped rather than restored', readAutoScanState(file), {
+    sessions: [],
+    recentScans: []
+  })
+  rmSync(dir, { recursive: true, force: true })
+}
+
+console.log('\nwhat the scanner offers up to be written')
+{
+  /*
+   * The hourly ceiling is a spending control. Held in memory it was cleared by
+   * quitting the app, which is not a control at all.
+   */
+  const spent = Array.from({ length: DEFAULT_AUTOSCAN.maxPerHour }, (_, i) => NOW - i * 1000)
+  const scanner = new AutoScanner({
+    enabled: () => true,
+    watched: () => true,
+    scan: async () => 0,
+    now: () => NOW,
+    restore: () => ({ sessions: [], recentScans: [...spent, NOW - 2 * HOUR_MS] })
+  })
+  // Two readings, because the first sets the baseline. Without the second this
+  // session is 'too-little-work', which autoScanVerdict answers *before* it
+  // ever looks at the hourly ceiling — so the assertion below would pass for
+  // entirely the wrong reason.
+  scanner.observe('s1', 40, NOW - cfg.idleMs - 1)
+  scanner.observe('s1', 40 + cfg.minNewMessages, NOW - cfg.idleMs - 1)
+  check(
+    'the hourly ceiling survives a restart',
+    autoScanVerdict(scanner.state('s1')!, NOW, scanner.snapshot().recentScans, cfg),
+    { scan: false, reason: 'hourly-limit' }
+  )
+  check(
+    'scans older than an hour are not carried forward',
+    scanner.snapshot().recentScans.length,
+    DEFAULT_AUTOSCAN.maxPerHour
+  )
+  check(
+    'and nothing is ever offered up mid-scan',
+    scanner.snapshot().sessions.every((s) => !('scanning' in s)),
+    true
+  )
+  scanner.dispose()
 }
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
