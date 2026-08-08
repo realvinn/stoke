@@ -34,8 +34,10 @@ import {
   readExisting,
   recallRunOptions,
   recallToolsFor,
+  scanOutcomeFor,
   statusesFor
 } from '../src/main/worklog/recall.ts'
+import type { RecallSnapshot } from '../src/main/worklog/recall.ts'
 import type { HeadlessOptions, HeadlessResult } from '../src/main/agent.ts'
 /*
  * The assumed shape a budget-exhausted headless run returns, shared with
@@ -560,12 +562,32 @@ console.log('\na recall that ran out of money does not report an empty board')
   const snap = await readExisting({ ...BOARDS, run: refused }, 7)
   check('it is flagged as a budget failure', snap.budget, true)
   // Plain English, not internal vocabulary: this string reaches the user
-  // verbatim as a `budget` scan's report message (runWorklogScan), so
-  // "recall run" - the name for this file's own concept - must not be in it.
-  ok('and says so in plain words', /budget limit/.test(snap.error ?? ''), snap.error ?? '')
+  // verbatim, from two different reports - a `budget` scan's message, and
+  // (since the H5 fix) a `proposed` scan's when the drafts were written blind
+  // - so "recall run", the name for this file's own concept, must not be in
+  // it, and it must name an actor rather than reading as a bare verb phrase.
+  ok('and says so in plain words', /budget ceiling/.test(snap.error ?? ''), snap.error ?? '')
+  ok('naming who could not check', /^The worklog scan/.test(snap.error ?? ''), snap.error ?? '')
   ok(
     'does not use internal vocabulary the user never typed',
     !/\brecall\b/i.test(snap.error ?? ''),
+    snap.error ?? ''
+  )
+  ok(
+    // Same word as WorklogBudgetError's message (runner.ts): both land in the
+    // same banner, and a scan that hit its own ceiling and a recall that hit
+    // its ceiling should not read like two unrelated features. Whichever one
+    // of "ceiling" / "limit" wins, it must be this one, everywhere.
+    'the same word runner.ts uses for its own budget stop, not a second one',
+    !/budget limit/.test(snap.error ?? ''),
+    snap.error ?? ''
+  )
+  ok(
+    // Written for a `budget` outcome (nothing added) and a `proposed` one
+    // (something was) alike - it must not claim a consequence that is only
+    // true in one of the two.
+    'does not claim a consequence that is only true when nothing was added',
+    !/nothing was logged/.test(snap.error ?? ''),
     snap.error ?? ''
   )
   ok(
@@ -600,6 +622,44 @@ console.log('\na recall that ran out of money does not report an empty board')
   const snap = await readExisting({ ...BOARDS, run: broken }, 8)
   check('an ordinary failure is not flagged as a budget one', snap.budget, undefined)
   ok('and carries its own reason', /502/.test(snap.error ?? ''), snap.error ?? '')
+}
+
+/* --------------------------------------------------- the scan's own verdict */
+
+/*
+ * Task 26 review, Finding 1 / H5: a scan drafted against a starved board read
+ * used to report `outcome: 'proposed', message: null` - a clean banner over
+ * proposals that could easily be duplicates. `scanOutcomeFor` is the function
+ * `runWorklogScan` (src/main/index.ts) now defers to for this decision, so it
+ * is exercised directly here rather than through the electron-dependent
+ * caller.
+ */
+console.log('\nwhat the scan reports, once recall and the drafting are both done')
+
+{
+  const budgeted: RecallSnapshot = {
+    items: {},
+    readAt: 1,
+    budget: true,
+    error: 'The worklog scan could not check what is already on your boards before hitting its $2.00 budget ceiling.'
+  }
+  const clean: RecallSnapshot = { items: {}, readAt: 1 }
+
+  const draftedBlind = scanOutcomeFor(budgeted, 3)
+  check('proposals drafted against a starved read still show up for review', draftedBlind.outcome, 'proposed')
+  check('and the warning rides along with them', draftedBlind.message, budgeted.error)
+
+  const draftedClean = scanOutcomeFor(clean, 2)
+  check('an ordinary successful scan reports the same outcome', draftedClean.outcome, 'proposed')
+  check('but carries no message at all', draftedClean.message, null)
+
+  const nothingBlind = scanOutcomeFor(budgeted, 0)
+  check('nothing added and the read was starved is reported as budget, not nothing', nothingBlind.outcome, 'budget')
+  check('carrying the same reason', nothingBlind.message, budgeted.error)
+
+  const nothingClean = scanOutcomeFor(clean, 0)
+  check('nothing added and the read succeeded is reported as nothing', nothingClean.outcome, 'nothing')
+  check('silently', nothingClean.message, null)
 }
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)

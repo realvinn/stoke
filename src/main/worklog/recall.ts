@@ -1,7 +1,7 @@
 import { isBudgetExhausted, runHeadless, type HeadlessOptions, type HeadlessResult } from '../agent.ts'
 import { asRecord, clip, oneLine, parsedCandidates } from './json.ts'
 import { WORKLOG_TARGETS } from '../../shared/worklog.ts'
-import type { WorklogExistingItem, WorklogTarget } from '@shared/types'
+import type { WorklogExistingItem, WorklogScanOutcome, WorklogTarget } from '@shared/types'
 
 /**
  * Recall: what is *already* on the boards.
@@ -378,11 +378,20 @@ export async function readExisting(opts: RecallOptions, now = Date.now()): Promi
         items: {},
         readAt: now,
         budget: true,
-        // Plain English on purpose, not "the recall run stopped…": a scan
-        // that adds nothing carries this straight to the user as the reason
-        // (runWorklogScan's `budget` outcome), and "recall" is vocabulary
-        // from inside this file, not a sentence a person outside it wrote.
-        error: `could not check what is already on your boards before hitting its $${limit.toFixed(2)} budget limit, so nothing was logged this time`
+        // Plain English on purpose, not "the recall run stopped…": "recall"
+        // is vocabulary from inside this file, not a sentence a person
+        // outside it wrote. Named actor ("The worklog scan"), and the same
+        // wording ("budget ceiling") as WorklogBudgetError's message
+        // (runner.ts) — both land in the same banner and should not read
+        // like two different features. Deliberately states the fact alone,
+        // with no consequence clause: this string reaches the user from two
+        // different reports — a 'budget' outcome when the scan drafted
+        // nothing, and a 'proposed' one when it drafted proposals anyway
+        // (H5, .superpowers/sdd/plan-resolutions.md) — and "so nothing was
+        // logged" is only true in the first of those. It is also what
+        // `console.warn` below prints on every failed read, including the
+        // 'proposed' case, so it cannot assume either consequence.
+        error: `The worklog scan could not check what is already on your boards before hitting its $${limit.toFixed(2)} budget ceiling.`
       }
     }
     return {
@@ -554,4 +563,44 @@ export function findExisting(
   const wanted = id.trim().toLowerCase()
   if (!wanted) return null
   return snapshot.items[target]?.find((i) => i.id.toLowerCase() === wanted) ?? null
+}
+
+/* ---------------------------------------------------------- the scan's verdict */
+
+/**
+ * What a scan reports once recall and the drafting are both done: which
+ * outcome, and whether a warning rides along.
+ *
+ * Proposals win even when the board could not be checked — the drafts are
+ * real work worth reviewing, and hiding them behind an error-styled banner
+ * would leave a session's genuinely new work unlogged with nothing to accept
+ * — but a starved read is not proof there was nothing to log, and it is not
+ * proof the drafts are safe to accept either: they were written against an
+ * empty view of the board, so one of them may already be sitting there under
+ * another name. `outcome` stays 'proposed' so the drafts still show up for
+ * review; `message` is where the warning travels so the banner can say the
+ * board could not be checked first instead of staying clean (H5,
+ * .superpowers/sdd/plan-resolutions.md, overriding the brief's pinned
+ * conjunction that checked `added.length` before `snapshot.budget`).
+ *
+ * An ordinary successful scan — board read fine, proposals drafted or not —
+ * carries no message at all.
+ *
+ * 'error' never comes out of here: that outcome only ever comes from
+ * `runWorklogScan`'s own catch block, for a failure recall cannot see (a
+ * missing transcript, a thrown `WorklogBudgetError` from the scan itself).
+ */
+export function scanOutcomeFor(
+  snapshot: RecallSnapshot,
+  added: number
+): { outcome: WorklogScanOutcome; message: string | null } {
+  if (added > 0) {
+    return { outcome: 'proposed', message: snapshot.budget ? (snapshot.error ?? null) : null }
+  }
+  // Nothing added, and recall could not afford to look. Reported as `budget`
+  // rather than `nothing`, because a scan that never saw the boards is not
+  // evidence that there was nothing to log — it is the exact silent failure
+  // spec §2.4.1 names.
+  if (snapshot.budget) return { outcome: 'budget', message: snapshot.error ?? null }
+  return { outcome: 'nothing', message: null }
 }

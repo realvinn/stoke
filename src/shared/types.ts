@@ -406,7 +406,14 @@ export interface WorklogScanReport {
   outcome: WorklogScanOutcome
   /** Proposals added. Always 0 unless outcome is 'proposed'. */
   added: number
-  /** Non-null for 'budget' and 'error'. Shown to the user verbatim. */
+  /**
+   * Non-null for 'budget' and 'error'. Also non-null for 'proposed' when the
+   * drafts were written without a look at the boards first — the scan still
+   * ran and still produced proposals, so the outcome stays 'proposed' rather
+   * than getting recast as a failure, but the user is owed the same warning
+   * either way (H5, .superpowers/sdd/plan-resolutions.md). Shown to the user
+   * verbatim.
+   */
   message: string | null
 }
 

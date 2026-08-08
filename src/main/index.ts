@@ -30,7 +30,7 @@ import {
 } from './worklog/runner.ts'
 import { groupForCwd, shouldWatch } from './worklog/gate.ts'
 import { AutoScanner } from './worklog/autoscan.ts'
-import { invalidateRecall, recall } from './worklog/recall.ts'
+import { invalidateRecall, recall, scanOutcomeFor } from './worklog/recall.ts'
 import type { CreateProfileInput } from '@shared/profiles'
 import { getSettings, setSettings } from './store.ts'
 import {
@@ -369,6 +369,8 @@ async function runWorklogScan(sessionId: string, auto: boolean): Promise<Worklog
     const snapshot = await recall({
       clickupListId: boards.clickupListId,
       notionDataSource: boards.notionDataSource,
+      // Only the boards the user has switched on — otherwise a ClickUp read
+      // is paid for on every scan even with ClickUp off.
       targets: boards.targets,
       // The same directory the write would use, so both runs see the same MCP
       // servers. runHeadless falls back to a scratch dir if it has been deleted.
@@ -402,17 +404,19 @@ async function runWorklogScan(sessionId: string, auto: boolean): Promise<Worklog
       // them in the same order the panel shows them.
       send(CH.worklogProposed, { sessionId, ids: added.map((p) => p.id).reverse() })
     }
-    if (added.length) return end('proposed', added.length, null)
     /*
-     * Nothing added, and recall could not afford to look. Reported as `budget`
-     * rather than `nothing`, because a scan that never saw the boards is not
-     * evidence that there was nothing to log — it is the exact silent failure
-     * spec §2.4.1 names. When proposals *were* added the run is reported as
-     * `proposed` and the recall failure stays in the console: the user has
-     * something to review either way, which is the outcome that matters to them.
+     * A starved board read is not silent just because the scan still drafted
+     * something (H5, .superpowers/sdd/plan-resolutions.md, overriding the
+     * brief's pinned `if (added.length) return end('proposed', …, null)`
+     * ahead of the budget test below). Proposals win — the outcome stays
+     * `proposed` so the drafts are not hidden behind an error-styled banner —
+     * but they were written against an empty view of the board, so the
+     * warning rides along in `message` instead of being dropped. An ordinary
+     * scan, where the board read succeeded, still reports no message at all.
+     * See scanOutcomeFor for the full decision.
      */
-    if (snapshot.budget) return end('budget', 0, snapshot.error ?? null)
-    return end('nothing', 0, null)
+    const verdict = scanOutcomeFor(snapshot, added.length)
+    return end(verdict.outcome, added.length, verdict.message)
   } catch (err) {
     /*
      * Every ending is a report, including this one. The old code let the throw
@@ -550,9 +554,13 @@ function createWindow(): void {
       // returns. AutoScanner only needs the count for its own prompt. The push
       // alone is not yet a substitute for a log line — nothing reads
       // `worklog:scanned` until the panel lands, so until then a failed
-      // automatic scan needs to show up here or it shows up nowhere.
+      // automatic scan needs to show up here or it shows up nowhere. Keyed on
+      // `message` rather than `outcome === 'budget' || outcome === 'error'`:
+      // a 'proposed' outcome can now carry a message too, when the drafts
+      // were written blind (H5), and that warning would otherwise go nowhere
+      // for an automatic scan just as surely as a budget stop would.
       const report = await runWorklogScan(sessionId, true)
-      if (report.outcome === 'budget' || report.outcome === 'error') {
+      if (report.message) {
         console.warn('[stoke] automatic worklog scan:', report.outcome, report.message)
       }
       return report.added
@@ -930,12 +938,12 @@ function registerIpc(): void {
   ipcMain.handle(CH.worklogScan, async (_e, sessionId: string) => {
     const report = await runWorklogScan(sessionId, false)
     // The panel reads the full report off `worklog:scanned`; this return value
-    // stays the shape it always was so the existing caller is untouched. Only
-    // a genuine failure becomes an `error` — "nothing to log" is not one.
-    return {
-      added: report.added,
-      error: report.outcome === 'budget' || report.outcome === 'error' ? report.message : null
-    }
+    // stays the shape it always was so the existing caller is untouched.
+    // `report.message` is already exactly the right condition: non-null for
+    // 'budget' and 'error', and now also for a 'proposed' scan whose drafts
+    // were written without a look at the boards first (H5) — "nothing to
+    // log" and an ordinary successful 'proposed' both leave it null.
+    return { added: report.added, error: report.message }
   })
 
   ipcMain.handle(CH.worklogLastScan, () => lastScanReport)
