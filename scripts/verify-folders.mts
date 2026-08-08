@@ -25,6 +25,7 @@ import {
   manualProjectPatch,
   projectMetaPatch
 } from '../src/main/projectMeta.ts'
+import { listProjects } from '../src/main/projects.ts'
 
 let failures = 0
 
@@ -371,6 +372,81 @@ function runFor(platform: 'darwin' | 'win32' | 'linux'): void {
 runFor('darwin')
 runFor('win32')
 runFor('linux')
+
+console.log('\nlistProjects, against this machine’s real Claude config')
+/*
+ * A real run, not a fake: listProjects reads ~/.claude.json and
+ * ~/.claude/projects itself, so the only honest way to test the added-folder
+ * source is to add a folder that really exists and assert about that one
+ * path — never over the whole returned list.
+ *
+ * readClaudeConfig() and scanHistoryDirs() (projects.ts) both swallow their
+ * own errors and return empty, and scanRoots([]) returns empty too, so
+ * listProjects cannot throw on a machine with no Claude config. A folder
+ * appended from projectMeta is therefore present regardless of what the real
+ * config holds, and its path comes from mkdtempSync, so it can never collide
+ * with a real project. This block is deliberately not run per-platform: it
+ * exercises the real `process.platform` this machine is actually on.
+ */
+function listSettings(patch: Partial<Settings>): Settings {
+  return {
+    projectMeta: {},
+    pinnedProjects: [],
+    hiddenProjects: [],
+    projectRoots: [],
+    ...patch
+  } as Settings
+}
+
+const tmp = mkdtempSync(join(tmpdir(), 'stoke-folders-'))
+const added = join(tmp, 'added-by-hand')
+mkdirSync(added)
+try {
+  const withAdded = await listProjects(
+    listSettings({
+      projectMeta: { [added]: { addedManually: true, emoji: '🧪', label: 'Bench' } }
+    })
+  )
+  const hit = withAdded.find((x) => x.path === added)
+  check('a folder the user added by hand is listed', hit !== undefined, true)
+  check('it carries its emoji', hit?.emoji, '🧪')
+  check('it carries its label', hit?.label, 'Bench')
+  check('it knows it is there only because someone added it', hit?.addedManually, true)
+  check('it reports the folder really exists', hit?.exists, true)
+  check('and it has no history attached', [hit?.sessionCount, hit?.encodedDir], [0, null])
+
+  const alsoHidden = await listProjects(
+    listSettings({
+      projectMeta: { [added]: { addedManually: true } },
+      hiddenProjects: [added]
+    })
+  )
+  check(
+    'a manually added folder can still be hidden',
+    alsoHidden.some((x) => x.path === added),
+    false
+  )
+
+  /*
+   * Machine-independent replacement for a whole-list assertion: the tmpdir's
+   * own child is discovered as a scan-root project (source 3 in
+   * listProjects), with no projectMeta record at all, so the rule — every
+   * project carries the three metadata fields, record or no record — is
+   * checked on that one known path rather than over this machine's real
+   * project list, where `[].every(...)` would pass on a machine with no
+   * Claude projects while proving nothing.
+   */
+  const scanned = await listProjects(listSettings({ projectRoots: [tmp] }))
+  const plainHit = scanned.find((x) => x.path === added)
+  check('a scan-root folder with no metadata record is listed', plainHit !== undefined, true)
+  check(
+    'a project with no metadata record still carries the three fields',
+    [plainHit?.emoji, plainHit?.label, plainHit?.addedManually],
+    [null, null, false]
+  )
+} finally {
+  rmSync(tmp, { recursive: true, force: true })
+}
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
 process.exitCode = failures ? 1 : 0

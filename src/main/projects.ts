@@ -3,6 +3,8 @@ import { readdir, readFile, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, join, sep } from 'node:path'
 import type { Project, SessionMeta, Settings } from '@shared/types'
+import { pathRulesFor } from '../shared/paths.ts'
+import { applyProjectMeta } from './projectMeta.ts'
 import { contextLimitFor, contextUsed, parseSession, safeParse } from './sessionFile.ts'
 
 const isWin = process.platform === 'win32'
@@ -215,8 +217,20 @@ export async function listProjects(settings: Settings): Promise<Project[]> {
     put(path, byDir.get(encoded) ?? null)
   }
 
-  const hidden = new Set(settings.hiddenProjects.map(dedupeKey))
-  return [...merged.values()]
+  /*
+   * 4. Folders the user added themselves, and everything they have said about
+   *    any folder. Appended BEFORE the hidden filter, so an added folder can
+   *    still be hidden — the two settings mean different things and neither
+   *    overrides the other.
+   */
+  const withMeta = applyProjectMeta([...merged.values()], settings.projectMeta ?? {}, {
+    rules: pathRulesFor(process.platform),
+    pinned: settings.pinnedProjects ?? [],
+    exists: existsSync
+  })
+
+  const hidden = new Set((settings.hiddenProjects ?? []).map(dedupeKey))
+  return withMeta
     .filter((p) => !hidden.has(dedupeKey(p.path)))
     .sort((a, b) => {
       if (a.pinned !== b.pinned) return a.pinned ? -1 : 1
