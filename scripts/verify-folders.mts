@@ -131,6 +131,42 @@ function runFor(platform: 'darwin' | 'win32' | 'linux'): void {
   )
   check(tag('an empty path writes nothing at all'), manualProjectPatch(settings({}), '  ', RULES), {})
 
+  console.log('\ncase folding when adding a folder by hand')
+  // Paths are compared with pathKey, never with normalizePath alone: on darwin
+  // and win32 a different-case path is the SAME folder and must fold onto the
+  // existing record; on linux it is a different folder and must not. Checking
+  // only one direction would also pass an implementation that folds case on
+  // every platform — the inverse bug src/shared/paths.ts:30-34 already shipped
+  // once.
+  check(
+    tag(
+      RULES.caseInsensitive
+        ? 'a differently-cased add reuses the existing record on this OS'
+        : 'a differently-cased add creates a separate record on this OS'
+    ),
+    manualProjectPatch(
+      settings({ projectMeta: { [p('CaseFold')]: { emoji: '🔥' } } }),
+      p('casefold'),
+      RULES
+    ).projectMeta,
+    RULES.caseInsensitive
+      ? { [p('casefold')]: { emoji: '🔥', addedManually: true } }
+      : { [p('CaseFold')]: { emoji: '🔥' }, [p('casefold')]: { addedManually: true } }
+  )
+  check(
+    tag(
+      RULES.caseInsensitive
+        ? 'adding a folder undoes having hidden it even under a different case, on this OS'
+        : 'a differently-cased add does not un-hide the original casing on this OS'
+    ),
+    manualProjectPatch(
+      settings({ hiddenProjects: [p('CaseFold'), p('other')] }),
+      p('casefold'),
+      RULES
+    ).hiddenProjects,
+    RULES.caseInsensitive ? [p('other')] : [p('CaseFold'), p('other')]
+  )
+
   console.log('\nsetting one folder’s metadata')
   check(
     tag('a record replaces what was there, rather than merging into it'),
@@ -168,9 +204,43 @@ function runFor(platform: 'darwin' | 'win32' | 'linux'): void {
     { [p('a')]: { emoji: '🔥' } }
   )
   check(
+    // `false` is falsy, same as unset, so it cannot tell `=== true` apart from
+    // plain truthiness. A truthy-but-not-`true` value can: only the literal
+    // check drops it.
+    tag('addedManually also needs a literal true, not just anything truthy'),
+    projectMetaPatch(
+      settings({}),
+      p('a'),
+      { addedManually: 1 as unknown as boolean, emoji: '🔥' },
+      RULES
+    ).projectMeta,
+    { [p('a')]: { emoji: '🔥' } }
+  )
+  check(
     tag('hiddenProjects is not touched by a metadata write'),
     Object.keys(projectMetaPatch(settings({ hiddenProjects: [p('a')] }), p('a'), null, RULES)),
     ['projectMeta']
+  )
+  check(
+    tag(
+      RULES.caseInsensitive
+        ? 'setting metadata under a different case replaces the existing record on this OS'
+        : 'setting metadata under a different case leaves the existing record alone on this OS'
+    ),
+    projectMetaPatch(
+      settings({ projectMeta: { [p('CaseFold')]: { emoji: '🔥', label: 'Old' } } }),
+      p('casefold'),
+      { emoji: '🌱' },
+      RULES
+    ).projectMeta,
+    RULES.caseInsensitive
+      ? { [p('casefold')]: { emoji: '🌱' } }
+      : { [p('CaseFold')]: { emoji: '🔥', label: 'Old' }, [p('casefold')]: { emoji: '🌱' } }
+  )
+  check(
+    tag('an emoji is capped at MAX_EMOJI_CHARS, mirroring the label cap in verify-settings.mts'),
+    projectMetaPatch(settings({}), p('a'), { emoji: '🔥'.repeat(30) }, RULES).projectMeta,
+    { [p('a')]: { emoji: '🔥'.repeat(30).slice(0, 16) } }
   )
 
   console.log('\nstamping metadata onto the listed projects')
@@ -200,40 +270,102 @@ function runFor(platform: 'darwin' | 'win32' | 'linux'): void {
     [[null, null, false]]
   )
   check(
+    tag('addedManually reaches an already-listed project too, not just an appended one'),
+    // record.addedManually === true (:185) is a separate code path from the
+    // append loop's own check (:156) — a project that was already in `listed`
+    // (from Claude's own history) can still be flagged manually added if its
+    // record says so, and a mutation hard-coding this to `false` must be
+    // distinguishable from the real thing.
+    applyProjectMeta(listed, { [p('known')]: { addedManually: true } }, opts).map(
+      (x) => x.addedManually
+    ),
+    [true]
+  )
+  // Bound to a local list and asserted with .map() rather than `[0].group` etc:
+  // a regression that drops the append entirely must produce a readable FAIL
+  // here, not a TypeError that aborts the whole run before win32 and linux get
+  // to execute.
+  check(
     tag('a synthetic project takes its group from its parent folder'),
-    applyProjectMeta([], { [p('work', 'thing')]: { addedManually: true } }, opts)[0].group,
-    'work'
+    applyProjectMeta([], { [p('work', 'thing')]: { addedManually: true } }, opts).map(
+      (x) => x.group
+    ),
+    ['work']
   )
   check(
     tag('a synthetic project reports whether the folder is really there'),
     applyProjectMeta([], { [p('gone')]: { addedManually: true } }, {
       ...opts,
       exists: () => false
-    })[0].exists,
-    false
+    }).map((x) => x.exists),
+    [false]
   )
   check(
     tag('a synthetic project can be pinned like any other'),
     applyProjectMeta([], { [p('added')]: { addedManually: true } }, {
       ...opts,
       pinned: [p('added')]
-    })[0].pinned,
-    true
+    }).map((x) => x.pinned),
+    [true]
+  )
+  check(
+    // The sidebar row's actual visible text — the feature's own output.
+    tag('a synthetic project gets a display name, not the empty string'),
+    applyProjectMeta([], { [p('work', 'thing')]: { addedManually: true } }, opts).map(
+      (x) => x.name
+    ),
+    ['thing']
+  )
+  check(
+    // Tells the renderer the folder is removable; :185, not the append loop's
+    // own flag at :174.
+    tag('a synthetic project is itself flagged addedManually'),
+    applyProjectMeta([], { [p('work', 'thing')]: { addedManually: true } }, opts).map(
+      (x) => x.addedManually
+    ),
+    [true]
+  )
+  check(
+    tag('the rest of a synthetic project’s shape is the empty one — there is no history yet'),
+    applyProjectMeta([], { [p('added')]: { addedManually: true } }, opts).map((x) => [
+      x.encodedDir,
+      x.sessionCount,
+      x.lastModified,
+      x.lastCost,
+      x.lastPrompt
+    ]),
+    [[null, 0, null, null, null]]
   )
   check(
     tag('a record that is only an emoji conjures no project'),
     applyProjectMeta([], { [p('nope')]: { emoji: '🔥' } }, opts),
     []
   )
-  if (RULES.caseInsensitive) {
-    check(
-      tag('a differently-cased key matches the project it belongs to on this OS'),
-      applyProjectMeta([project(p('Known'))], { [p('known')]: { emoji: '🔥' } }, opts).map(
-        (x) => x.emoji
-      ),
-      ['🔥']
-    )
-  }
+  check(
+    // Same truthy-not-true distinction as tidy() (:63), but this is the
+    // append loop's own guard at :156, reached directly here since this suite
+    // calls applyProjectMeta with a raw record rather than one that has been
+    // through tidy() first.
+    tag('a truthy-but-not-true addedManually does not conjure a project either'),
+    applyProjectMeta([], { [p('sneaky')]: { addedManually: 1 as unknown as boolean } }, opts),
+    []
+  )
+  // Unconditional, not only under `if (RULES.caseInsensitive)`: that guard left
+  // linux with no negative counterpart of its own, so an implementation that
+  // folds case on every platform (applyProjectMeta's own byKey map, :149 and
+  // :179 — a separate code path from the write-path functions above) went
+  // unnoticed there.
+  check(
+    tag(
+      RULES.caseInsensitive
+        ? 'a differently-cased key matches the project it belongs to on this OS'
+        : 'a differently-cased key does not match the project it belongs to on this OS'
+    ),
+    applyProjectMeta([project(p('Known'))], { [p('known')]: { emoji: '🔥' } }, opts).map(
+      (x) => x.emoji
+    ),
+    RULES.caseInsensitive ? ['🔥'] : [null]
+  )
 }
 
 runFor('darwin')
