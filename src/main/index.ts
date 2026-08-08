@@ -307,6 +307,9 @@ function reportScan(report: WorklogScanReport): WorklogScanReport {
  * thing has ever run (spec §2.4.4).
  */
 async function runWorklogScan(sessionId: string, auto: boolean): Promise<WorklogScanReport> {
+  // Nothing above the `try` below may throw — that is the entire reason this
+  // function never does. Keep it to `Date.now()` and the `end` closure; put
+  // anything else inside the `try`.
   const at = Date.now()
   const end = (
     outcome: WorklogScanOutcome,
@@ -517,8 +520,14 @@ function createWindow(): void {
     scan: async (sessionId) => {
       // runWorklogScan no longer throws; the report is the record of what
       // happened and has already been pushed to the renderer by the time this
-      // returns. AutoScanner only needs the count for its own prompt.
+      // returns. AutoScanner only needs the count for its own prompt. The push
+      // alone is not yet a substitute for a log line — nothing reads
+      // `worklog:scanned` until the panel lands, so until then a failed
+      // automatic scan needs to show up here or it shows up nowhere.
       const report = await runWorklogScan(sessionId, true)
+      if (report.outcome === 'budget' || report.outcome === 'error') {
+        console.warn('[stoke] automatic worklog scan:', report.outcome, report.message)
+      }
       return report.added
     }
   })
