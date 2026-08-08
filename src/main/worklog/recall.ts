@@ -378,7 +378,11 @@ export async function readExisting(opts: RecallOptions, now = Date.now()): Promi
         items: {},
         readAt: now,
         budget: true,
-        error: `the recall run stopped at its $${limit.toFixed(2)} budget ceiling before it could read the boards`
+        // Plain English on purpose, not "the recall run stopped…": a scan
+        // that adds nothing carries this straight to the user as the reason
+        // (runWorklogScan's `budget` outcome), and "recall" is vocabulary
+        // from inside this file, not a sentence a person outside it wrote.
+        error: `could not check what is already on your boards before hitting its $${limit.toFixed(2)} budget limit, so nothing was logged this time`
       }
     }
     return {

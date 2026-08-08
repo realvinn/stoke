@@ -559,7 +559,15 @@ console.log('\na recall that ran out of money does not report an empty board')
   })
   const snap = await readExisting({ ...BOARDS, run: refused }, 7)
   check('it is flagged as a budget failure', snap.budget, true)
-  ok('and says so in words', /budget ceiling/.test(snap.error ?? ''), snap.error ?? '')
+  // Plain English, not internal vocabulary: this string reaches the user
+  // verbatim as a `budget` scan's report message (runWorklogScan), so
+  // "recall run" - the name for this file's own concept - must not be in it.
+  ok('and says so in plain words', /budget limit/.test(snap.error ?? ''), snap.error ?? '')
+  ok(
+    'does not use internal vocabulary the user never typed',
+    !/\brecall\b/i.test(snap.error ?? ''),
+    snap.error ?? ''
+  )
   ok(
     // The literal figure comes from RECALL_MAX_BUDGET_USD itself, not restated
     // as a number here - a restated literal goes stale silently the next time

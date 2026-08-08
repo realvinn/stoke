@@ -26,8 +26,6 @@ import {
   applyProposal,
   scanSession,
   APPLY_MAX_BUDGET_USD,
-  CLICKUP_LIST_ID,
-  NOTION_DATA_SOURCE,
   WorklogBudgetError
 } from './worklog/runner.ts'
 import { groupForCwd, shouldWatch } from './worklog/gate.ts'
@@ -342,17 +340,36 @@ async function runWorklogScan(sessionId: string, auto: boolean): Promise<Worklog
      * the place of the project group.
      */
     const cwd = host ? ((await parseSession(file)).cwd ?? '') : cwdForSession(sessionId)
-    const group = host ? host.label || host.alias : (groupForCwd(cwd, projects, settings.projectRoots) ?? '')
 
-    // Cached and single-flighted, so a scan of two sessions a second apart reads
-    // the boards once. A failure here is reported to the scan rather than thrown:
-    // proposing creates with no idea what exists is degraded, not broken.
+    /*
+     * Root-aware, and remote-aware, and those are two different rules.
+     *
+     * A remote session is placed by the machine it runs on: `SessionInfo.cwd`
+     * for one is wherever Stoke happened to be pointed locally (CLAUDE.md
+     * gotcha 18), so the folder rule would name the wrong project or none.
+     * The line above already reads the true cwd out of the fetched transcript
+     * for that reason — verify it, do not re-add it.
+     *
+     * A local session is placed by its folder, and by the scan roots too:
+     * `/…/work` is itself a registered project on this machine, so the
+     * longest-prefix rule answered `dev` for every sibling under it and 7 of
+     * 12 work folders were never watched (spec §2.4.3). That third argument
+     * is contracts Task 1 Step 4a's, not this task's — verify it is there,
+     * do not re-add it.
+     */
+    const group = host
+      ? host.label || host.alias
+      : (groupForCwd(cwd, projects, settings.projectRoots) ?? '')
+
+    const boards = settings.worklogBoards
+    // Cached and single-flighted, so a scan of two sessions a second apart
+    // reads the boards once. A failure here is reported to the scan rather
+    // than thrown: proposing creates with no idea what exists is degraded,
+    // not broken.
     const snapshot = await recall({
-      clickupListId: CLICKUP_LIST_ID,
-      notionDataSource: NOTION_DATA_SOURCE,
-      // Only read the boards the user has switched on — otherwise a ClickUp
-      // read is paid for on every scan even with ClickUp off.
-      targets: settings.worklogBoards.targets,
+      clickupListId: boards.clickupListId,
+      notionDataSource: boards.notionDataSource,
+      targets: boards.targets,
       // The same directory the write would use, so both runs see the same MCP
       // servers. runHeadless falls back to a scratch dir if it has been deleted.
       cwd,
@@ -368,7 +385,7 @@ async function runWorklogScan(sessionId: string, auto: boolean): Promise<Worklog
       recall: snapshot,
       auto,
       claudePath: settings.claudePath,
-      boards: settings.worklogBoards
+      boards
     })
     if (outcome.demoted > 0) {
       // Not silent: a steady count means recall is truncating or the model is
@@ -385,7 +402,17 @@ async function runWorklogScan(sessionId: string, auto: boolean): Promise<Worklog
       // them in the same order the panel shows them.
       send(CH.worklogProposed, { sessionId, ids: added.map((p) => p.id).reverse() })
     }
-    return end(added.length ? 'proposed' : 'nothing', added.length, null)
+    if (added.length) return end('proposed', added.length, null)
+    /*
+     * Nothing added, and recall could not afford to look. Reported as `budget`
+     * rather than `nothing`, because a scan that never saw the boards is not
+     * evidence that there was nothing to log — it is the exact silent failure
+     * spec §2.4.1 names. When proposals *were* added the run is reported as
+     * `proposed` and the recall failure stays in the console: the user has
+     * something to review either way, which is the outcome that matters to them.
+     */
+    if (snapshot.budget) return end('budget', 0, snapshot.error ?? null)
+    return end('nothing', 0, null)
   } catch (err) {
     /*
      * Every ending is a report, including this one. The old code let the throw
@@ -843,7 +870,7 @@ function registerIpc(): void {
       })
     }
     /*
-     * Ahead of its own wiring, kept anyway.
+     * Load-bearing, not merely correct in advance.
      *
      * Recall's cache is keyed on which boards are switched *on* (see cacheKey
      * in recall.ts), not on their ids, so toggling a board already misses the
@@ -852,16 +879,13 @@ function registerIpc(): void {
      * read of the *old* Notion data source or ClickUp list served for up to
      * RECALL_TTL_MS after the user points the setting at a different board.
      *
-     * It cannot happen *yet*, though. runWorklogScan's recall() call still
-     * passes the compiled-in CLICKUP_LIST_ID / NOTION_DATA_SOURCE constants
-     * (re-exported from worklog/runner.ts), not
-     * settings.worklogBoards.notionDataSource / .clickupListId — so an id
-     * typed into this settings panel cannot yet be the thing a cached recall
-     * snapshot goes stale against. This call becomes load-bearing the moment
-     * that read site is rewired to settings (a later task); it stays here now
-     * because it is one comparison, correct in advance of that rewiring, and
-     * cheap regardless — a settings write happens far less often than a scan
-     * runs.
+     * `runWorklogScan`'s recall() call now passes
+     * settings.worklogBoards.notionDataSource / .clickupListId directly, not
+     * the compiled-in CLICKUP_LIST_ID / NOTION_DATA_SOURCE constants — so an
+     * id typed into this settings panel is exactly the thing a cached recall
+     * snapshot can go stale against, and this comparison is what keeps it
+     * from doing so. Cheap regardless of that: a settings write happens far
+     * less often than a scan runs.
      */
     if (
       next.worklogBoards.notionDataSource !== prev.worklogBoards.notionDataSource ||
