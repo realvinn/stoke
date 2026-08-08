@@ -34,6 +34,7 @@ import { groupForCwd } from './worklog/gate.ts'
 import { watchStateFrom } from './worklog/watch.ts'
 import { AutoScanner } from './worklog/autoscan.ts'
 import { autoScanStateFile, readAutoScanState, writeAutoScanState } from './worklog/autoscanStore.ts'
+import { readSessionState, sessionStateFile, writeSessionState } from './worklog/sessionStore.ts'
 import { invalidateRecall, recall, scanOutcomeFor } from './worklog/recall.ts'
 import type { CreateProfileInput } from '@shared/profiles'
 import { getSettings, onSettingsChanged, setSettings } from './store.ts'
@@ -236,6 +237,21 @@ async function launchSession(opts: LaunchOptions): Promise<StartResult> {
   const cwd = ptys.list().find((s) => s.sessionId === result.sessionId)?.cwd
   if (cwd) sessionCwds.set(result.sessionId, cwd)
   if (opts.host) sessionHosts.set(result.sessionId, opts.host)
+  /*
+   * Synchronous, and after both maps are updated — CLAUDE.md gotcha 20's shape.
+   * Nothing awaits between the update and the write, so what lands on disk is
+   * always a state some pass could actually have observed. One write per
+   * session start is a handful a day; this is not a hot path.
+   */
+  writeSessionState(
+    sessionStateFile(app.getPath('userData')),
+    [...sessionCwds.entries()].map(([sessionId, dir]) => ({
+      sessionId,
+      cwd: dir,
+      hostId: sessionHosts.get(sessionId)?.id ?? null,
+      at: Date.now()
+    }))
+  )
   return result
 }
 
@@ -627,6 +643,21 @@ function createWindow(): void {
    * worklog/autoscan.ts for why the transcript is the right signal.
    */
   const autoscanState = autoScanStateFile(app.getPath('userData'))
+  const sessionState = sessionStateFile(app.getPath('userData'))
+  /*
+   * Put the last run's sessions back before anything asks which are watched.
+   *
+   * A host the user has since deleted is dropped rather than carried: a
+   * remembered SshHost would keep gating a machine that is no longer in
+   * Settings, and the per-host worklog switch is an opt-in that has to be
+   * revocable by deleting the host.
+   */
+  for (const s of readSessionState(sessionState)) {
+    sessionCwds.set(s.sessionId, s.cwd)
+    if (!s.hostId) continue
+    const host = getSettings().hosts.find((h) => h.id === s.hostId)
+    if (host) sessionHosts.set(s.sessionId, host)
+  }
   autoscan = new AutoScanner({
     /*
      * A cheap "could anything possibly be watched" check, so a pass with

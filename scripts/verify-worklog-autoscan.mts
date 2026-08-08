@@ -17,7 +17,7 @@
  *
  *   node scripts/verify-worklog-autoscan.mts
  */
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -35,6 +35,14 @@ import {
   readAutoScanState,
   writeAutoScanState
 } from '../src/main/worklog/autoscanStore.ts'
+import {
+  MAX_STORED_SESSIONS,
+  STORED_SESSION_MAX_AGE_MS,
+  readSessionState,
+  sessionStateFile,
+  writeSessionState,
+  type StoredSession
+} from '../src/main/worklog/sessionStore.ts'
 
 let failures = 0
 
@@ -738,6 +746,56 @@ console.log('\ndispose() races the awaits, and a save arriving after it must not
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+}
+
+/* --------------------------------------------------------- session folders */
+
+console.log('\nwhich folder each session was started in, across a restart')
+{
+  const dir = mkdtempSync(join(tmpdir(), 'stoke-sessions-'))
+  const file = sessionStateFile(dir)
+
+  const local: StoredSession = { sessionId: 's1', cwd: '/Users/x/work/api', hostId: null, at: NOW }
+  const remote: StoredSession = { sessionId: 's2', cwd: '/srv/app', hostId: 'h-1', at: NOW }
+  writeSessionState(file, [local, remote])
+  // NOW explicitly, not the defaulted Date.now(): plan-resolutions.md Task 33
+  // — the suite's clock is 1970, and readSessionState()'s age filter would
+  // drop both records against the real clock, failing this check and then
+  // throwing on the [0] below.
+  check('it round-trips', readSessionState(file, NOW), [local, remote])
+  check(
+    'a local session keeps a null host rather than losing the field',
+    readSessionState(file, NOW)[0].hostId,
+    null
+  )
+
+  writeSessionState(file, [
+    { ...local, at: NOW - STORED_SESSION_MAX_AGE_MS - 1 },
+    { ...remote, at: NOW }
+  ])
+  check(
+    'a record older than the age limit is dropped on read',
+    readSessionState(file, NOW).map((s) => s.sessionId),
+    ['s2']
+  )
+
+  const many: StoredSession[] = Array.from({ length: MAX_STORED_SESSIONS + 20 }, (_, i) => ({
+    sessionId: `s${i}`,
+    cwd: '/x',
+    hostId: null,
+    at: NOW - i * 1000
+  }))
+  writeSessionState(file, many)
+  const trimmed = readSessionState(file, NOW)
+  check('the list is capped', trimmed.length, MAX_STORED_SESSIONS)
+  check('and it is the newest that are kept', trimmed[0].sessionId, 's0')
+
+  for (const junk of ['{', '[]', 'null', '[1,2,3]', '[{"cwd":"/x"}]']) {
+    writeFileSync(file, junk, 'utf8')
+    check(`junk (${junk}) reads back as an empty list`, readSessionState(file, NOW), [])
+  }
+
+  rmSync(dir, { recursive: true, force: true })
 }
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
