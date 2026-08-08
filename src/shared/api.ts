@@ -287,4 +287,12 @@ export interface StokeApi {
   }
 
   openExternal(url: string): void
+
+  /**
+   * Plain folder picker: opens the OS dialog and hands back the chosen path,
+   * with no side effect on `projectMeta` or `hiddenProjects`. `null` when the
+   * dialog is cancelled or no window is open to anchor it. Callers that want a
+   * folder to become a project want `projects.open()` instead.
+   */
+  pickFolder(): Promise<string | null>
 }

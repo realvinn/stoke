@@ -18,7 +18,7 @@ import { probeClaude } from './cli.ts'
 import { ContextWatcher } from './context.ts'
 import { findSessionFile, listProjects, listSessions } from './projects.ts'
 import { manualProjectPatch, projectMetaPatch } from './projectMeta.ts'
-import { pathRulesFor } from '../shared/paths.ts'
+import { normalizePath, pathRulesFor } from '../shared/paths.ts'
 import { parseSession, readTranscript } from './sessionFile.ts'
 import { fetchRemoteTranscript } from './sshTranscript.ts'
 import { PtyManager, type StartResult } from './pty.ts'
@@ -893,9 +893,13 @@ function registerIpc(): void {
     })
     const dir = res.canceled ? null : (res.filePaths[0] ?? null)
     if (!dir) return null
-    setSettings(manualProjectPatch(getSettings(), dir, pathRulesFor(process.platform)))
+    const rules = pathRulesFor(process.platform)
+    setSettings(manualProjectPatch(getSettings(), dir, rules))
     sendWatchStates()
-    return dir
+    // Return the same normalised string manualProjectPatch persisted under —
+    // a dialog's "C:\\" would otherwise come back to App.tsx's setSelectedPath
+    // as a key that never matches the row applyProjectMeta just created.
+    return normalizePath(dir.trim(), rules)
   })
 
   ipcMain.handle(CH.projectsMeta, (_e, path: string, meta: ProjectMeta | null) => {

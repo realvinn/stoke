@@ -222,7 +222,7 @@ export function ProfilesSettings({ settings, onPatch }: Props): React.JSX.Elemen
   }, [creating, draft.folder, draft.name])
 
   const chooseFolder = useCallback(async (): Promise<void> => {
-    const dir = await window.stoke.projects.open()
+    const dir = await window.stoke.pickFolder()
     if (dir) setDraft((d) => ({ ...d, folder: dir }))
   }, [])
 

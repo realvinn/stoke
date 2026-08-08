@@ -154,7 +154,9 @@ const api: StokeApi = {
     writeText: (text: string) => ipcRenderer.send(CH.clipboardWrite, text)
   },
 
-  openExternal: (url: string) => ipcRenderer.send(CH.openExternal, url)
+  openExternal: (url: string) => ipcRenderer.send(CH.openExternal, url),
+
+  pickFolder: () => ipcRenderer.invoke(CH.pickFolder)
 }
 
 contextBridge.exposeInMainWorld('stoke', api)

@@ -199,7 +199,7 @@ export function SettingsSheet({
               <button
                 className="btn"
                 onClick={async () => {
-                  const dir = await window.stoke.projects.open()
+                  const dir = await window.stoke.pickFolder()
                   if (dir) onPatch({ defaultCwd: dir })
                 }}
               >
