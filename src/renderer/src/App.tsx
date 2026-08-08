@@ -747,6 +747,12 @@ export function App(): React.JSX.Element {
                     await refreshProjects()
                   })
                 }}
+                onSetMeta={(p, meta) => {
+                  void window.stoke.projects.setMeta(p.path, meta).then(async (s) => {
+                    setSettings(s)
+                    await refreshProjects()
+                  })
+                }}
                 onAddRoot={() => void addRoot()}
                 onOpenFolder={() => void openFolder()}
                 onStartScratch={() => void startScratch()}

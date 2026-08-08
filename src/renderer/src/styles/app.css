@@ -866,6 +866,29 @@ body {
 
 /* --------------------------------------------------- project icon + name */
 
+/* The disclosure control's box, from the one token that names it. It was an
+   inline style, which is exactly how it drifted apart from the metadata indent
+   and the session list's guide rule — the two other rules that have to agree
+   with it. */
+.project-chevron {
+  width: var(--chevron);
+  height: var(--chevron);
+  transition: rotate var(--dur) var(--ease);
+}
+
+.project-chevron[aria-expanded='true'] {
+  rotate: 90deg;
+}
+
+/* The pin stays out of the way until the row is hovered, focused, or pinned —
+   otherwise it repeats down the whole list as pure noise. The opacity pair is
+   already declared further down the file; this rule only carries the box the
+   inline style used to. */
+.project-pin {
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
 /* A fixed slot whether or not there is an emoji, so every project name in the
    list starts at the same x and adding an icon moves nothing. `flex: none` so
    the wrapper never absorbs the row's spare width and shunts the name right. */

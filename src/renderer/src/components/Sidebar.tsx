@@ -1,9 +1,10 @@
-import { useMemo } from 'react'
-import type { Project, SessionMeta } from '@shared/types'
+import { useMemo, useState } from 'react'
+import type { Project, ProjectMeta, SessionMeta } from '@shared/types'
 import { ContextBar } from './ContextMeter'
 import type { ResolvedProfile } from '@shared/profiles'
 import { foldGroup } from '@shared/profiles'
 import { IconChevron, IconFolder, IconPin, IconPlus, IconSearch } from './Icons'
+import { ProjectMetaPicker } from './ProjectMetaPicker'
 import { relativeTime } from '../lib/format'
 
 interface Props {
@@ -20,6 +21,8 @@ interface Props {
   onStartNew: (p: Project) => void
   onResume: (s: SessionMeta) => void
   onPin: (p: Project) => void
+  /** Set or clear one folder's icon and display name. `null` clears the record. */
+  onSetMeta: (project: Project, meta: ProjectMeta | null) => void
   onAddRoot: () => void
   onOpenFolder: () => void
   onStartScratch: () => void
@@ -47,6 +50,7 @@ export function Sidebar({
   onStartNew,
   onResume,
   onPin,
+  onSetMeta,
   onAddRoot,
   onOpenFolder,
   onStartScratch,
@@ -54,6 +58,10 @@ export function Sidebar({
   activeProfile,
   onSelectProfile
 }: Props): React.JSX.Element {
+  /* One picker open at a time, keyed by path — two open popovers in a scrolling
+     list is a way to change the wrong folder without noticing. */
+  const [pickerPath, setPickerPath] = useState<string | null>(null)
+
   /*
    * Only profiles that actually have projects on this machine, so the row never
    * advertises a folder the user does not use. Derived in App and passed in.
@@ -86,8 +94,13 @@ export function Sidebar({
     const scoped =
       q || !activeGroups ? projects : projects.filter((p) => activeGroups.has(foldGroup(p.group)))
     if (!q) return scoped
+    // The label is what the user sees, so it is what they will type. Searching
+    // only the basename made a renamed folder unfindable by its own name.
     return scoped.filter(
-      (p) => p.name.toLowerCase().includes(q) || p.path.toLowerCase().includes(q)
+      (p) =>
+        p.name.toLowerCase().includes(q) ||
+        p.path.toLowerCase().includes(q) ||
+        (p.label ?? '').toLowerCase().includes(q)
     )
   }, [projects, query, activeGroups])
 
@@ -257,13 +270,7 @@ export function Sidebar({
                   >
                     <div className="project-top">
                       <button
-                        className="icon-btn"
-                        style={{
-                          width: '1.125rem',
-                          height: '1.125rem',
-                          rotate: expanded ? '90deg' : '0deg',
-                          transition: 'rotate var(--dur) var(--ease)'
-                        }}
+                        className="icon-btn project-chevron"
                         onClick={(e) => {
                           e.stopPropagation()
                           onToggleExpand(project)
@@ -277,11 +284,19 @@ export function Sidebar({
                         </span>
                       </button>
 
-                      <span className="project-name">{project.name}</span>
+                      <ProjectMetaPicker
+                        project={project}
+                        open={pickerPath === project.path}
+                        onOpenChange={(v) => setPickerPath(v ? project.path : null)}
+                        onCommit={(meta) => onSetMeta(project, meta)}
+                      />
+
+                      {/* The label replaces the basename in this list only; the
+                          row's title attribute still carries the real path. */}
+                      <span className="project-name">{project.label ?? project.name}</span>
 
                       <button
                         className="icon-btn project-pin"
-                        style={{ width: '1.25rem', height: '1.25rem' }}
                         aria-pressed={project.pinned}
                         onClick={(e) => {
                           e.stopPropagation()
