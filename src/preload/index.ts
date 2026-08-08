@@ -2,7 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type { IpcRendererEvent } from 'electron'
 import { CH } from '@shared/ipc'
 import type { ClipboardPeek, StokeApi } from '@shared/api'
-import type { Rect, LaunchOptions, Settings } from '@shared/types'
+import type { Rect, LaunchOptions, ProjectMeta, Settings } from '@shared/types'
 
 /** Subscribe helper that hands back an unsubscribe function. */
 function on<A extends unknown[]>(
@@ -40,6 +40,8 @@ const api: StokeApi = {
     open: () => ipcRenderer.invoke(CH.projectsAdd),
     hide: (path: string, hidden: boolean) => ipcRenderer.invoke(CH.projectsHide, path, hidden),
     pin: (path: string, pinned: boolean) => ipcRenderer.invoke(CH.projectsPin, path, pinned),
+    setMeta: (path: string, meta: ProjectMeta | null) =>
+      ipcRenderer.invoke(CH.projectsMeta, path, meta),
     reveal: (path: string) => ipcRenderer.invoke(CH.projectsReveal, path)
   },
 

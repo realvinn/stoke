@@ -4,6 +4,7 @@ import { CH } from '@shared/ipc'
 import { resolveTheme } from '@shared/themes'
 import type {
   LaunchOptions,
+  ProjectMeta,
   Rect,
   Settings,
   SshHost,
@@ -16,6 +17,8 @@ import { EmbeddedBrowser } from './browser.ts'
 import { probeClaude } from './cli.ts'
 import { ContextWatcher } from './context.ts'
 import { findSessionFile, listProjects, listSessions } from './projects.ts'
+import { manualProjectPatch, projectMetaPatch } from './projectMeta.ts'
+import { pathRulesFor } from '../shared/paths.ts'
 import { parseSession, readTranscript } from './sessionFile.ts'
 import { fetchRemoteTranscript } from './sshTranscript.ts'
 import { PtyManager, type StartResult } from './pty.ts'
@@ -877,14 +880,28 @@ function registerIpc(): void {
     return dir
   })
 
+  /*
+   * Picking a folder used to return the path and write nothing, so the dialog
+   * closed and the sidebar was unchanged (spec 2.5). The record is what makes
+   * `listProjects` able to emit a folder Claude has never seen.
+   */
   ipcMain.handle(CH.projectsAdd, async () => {
     if (!win) return null
     const res = await dialog.showOpenDialog(win, {
       title: 'Open a project folder',
       properties: ['openDirectory', 'createDirectory']
     })
+    const dir = res.canceled ? null : (res.filePaths[0] ?? null)
+    if (!dir) return null
+    setSettings(manualProjectPatch(getSettings(), dir, pathRulesFor(process.platform)))
     sendWatchStates()
-    return res.canceled ? null : (res.filePaths[0] ?? null)
+    return dir
+  })
+
+  ipcMain.handle(CH.projectsMeta, (_e, path: string, meta: ProjectMeta | null) => {
+    const next = setSettings(projectMetaPatch(getSettings(), path, meta, pathRulesFor(process.platform)))
+    sendWatchStates()
+    return next
   })
 
   /* ------------------------------------------------------------- workspaces */

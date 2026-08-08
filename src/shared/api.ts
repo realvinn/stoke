@@ -5,6 +5,7 @@ import type {
   ContextSnapshot,
   LaunchOptions,
   Project,
+  ProjectMeta,
   Rect,
   SessionMeta,
   Settings,
@@ -121,6 +122,9 @@ export interface StokeApi {
     open(): Promise<string | null>
     hide(path: string, hidden: boolean): Promise<Settings>
     pin(path: string, pinned: boolean): Promise<Settings>
+    /** Set or clear one folder's metadata. `null` deletes the record, which is
+     *  also how a folder that exists only because it was added leaves the list. */
+    setMeta(path: string, meta: ProjectMeta | null): Promise<Settings>
     reveal(path: string): Promise<string>
   }
 
