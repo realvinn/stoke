@@ -136,7 +136,9 @@ const api: StokeApi = {
     accept: (id: string) => ipcRenderer.invoke(CH.worklogAccept, id),
     reject: (id: string) => ipcRenderer.invoke(CH.worklogReject, id),
     onChange: (cb) => on<[Parameters<typeof cb>[0]]>(CH.worklogChanged, cb),
-    onProposed: (cb) => on<[Parameters<typeof cb>[0]]>(CH.worklogProposed, cb)
+    onProposed: (cb) => on<[Parameters<typeof cb>[0]]>(CH.worklogProposed, cb),
+    lastScan: () => ipcRenderer.invoke(CH.worklogLastScan),
+    onScanned: (cb) => on<[Parameters<typeof cb>[0]]>(CH.worklogScanned, cb)
   },
 
   audio: {

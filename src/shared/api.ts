@@ -11,7 +11,8 @@ import type {
   StatusLineSnapshot,
   UsageSnapshot,
   WorklogProposal,
-  WorklogProposedEvent
+  WorklogProposedEvent,
+  WorklogScanReport
 } from './types'
 
 export interface AudioDevice {
@@ -248,6 +249,15 @@ export interface StokeApi {
      * accepts — only this one means "there is something new to ask about".
      */
     onProposed(cb: (event: WorklogProposedEvent) => void): () => void
+    /** The last scan of any session, for the panel's empty state. */
+    lastScan(): Promise<WorklogScanReport | null>
+    /**
+     * Every scan reports, including the ones that proposed nothing. Distinct
+     * from `onProposed`, which only fires when there is something to ask about:
+     * this is what lets the panel say "it ran, and there was nothing" instead
+     * of looking identical to "it has never run".
+     */
+    onScanned(cb: (report: WorklogScanReport) => void): () => void
   }
 
   audio: {

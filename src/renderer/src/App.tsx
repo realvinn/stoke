@@ -25,7 +25,7 @@ import { TerminalView } from './components/TerminalView'
 import { TitleBar } from './components/TitleBar'
 import { WorklogPanel } from './components/WorklogPanel'
 import { WorklogPrompt } from './components/WorklogPrompt'
-import { baseName } from './lib/format'
+import { baseName, properNouns } from './lib/format'
 import { attachExit, forgetPty, initPtyBus } from './lib/ptyBus'
 import { matchShortcut } from './lib/shortcuts'
 import { applyAppearance, applyTypography } from './lib/theme'
@@ -353,7 +353,7 @@ export function App(): React.JSX.Element {
     setWorklogBusy(true)
     try {
       const res = await window.stoke.worklog.scan(sessionId)
-      if (res.error) setError(res.error)
+      if (res.error) setError(properNouns(res.error))
     } finally {
       setWorklogBusy(false)
     }

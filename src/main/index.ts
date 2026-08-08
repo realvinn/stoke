@@ -2,7 +2,15 @@ import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron'
 import { join } from 'node:path'
 import { CH } from '@shared/ipc'
 import { resolveTheme } from '@shared/themes'
-import type { LaunchOptions, Rect, Settings, SshHost, StatusLineSnapshot } from '@shared/types'
+import type {
+  LaunchOptions,
+  Rect,
+  Settings,
+  SshHost,
+  StatusLineSnapshot,
+  WorklogScanOutcome,
+  WorklogScanReport
+} from '@shared/types'
 import { EmbeddedBrowser } from './browser.ts'
 import { probeClaude } from './cli.ts'
 import { ContextWatcher } from './context.ts'
@@ -19,7 +27,8 @@ import {
   scanSession,
   APPLY_MAX_BUDGET_USD,
   CLICKUP_LIST_ID,
-  NOTION_DATA_SOURCE
+  NOTION_DATA_SOURCE,
+  WorklogBudgetError
 } from './worklog/runner.ts'
 import { groupForCwd, shouldWatch } from './worklog/gate.ts'
 import { AutoScanner } from './worklog/autoscan.ts'
@@ -272,6 +281,16 @@ function worklogQueue(): ReturnType<typeof getWorklogQueue> {
   return getWorklogQueue(app.getPath('userData'))
 }
 
+/** The last scan of any session, so a freshly-opened panel is not blank. */
+let lastScanReport: WorklogScanReport | null = null
+
+/** Record a report, push it, and hand it back to whoever asked for the scan. */
+function reportScan(report: WorklogScanReport): WorklogScanReport {
+  lastScanReport = report
+  send(CH.worklogScanned, report)
+  return report
+}
+
 /**
  * One worklog scan, however it was asked for.
  *
@@ -280,75 +299,100 @@ function worklogQueue(): ReturnType<typeof getWorklogQueue> {
  * first, resolving the group, folding the result into the queue — has to stay
  * identical or the automatic path becomes a second, less-tested feature.
  *
- * Throws. Both callers want to report the failure differently.
+ * **Never throws.** It used to, and both callers turned the throw into
+ * something the user could not tell from "nothing to report": the automatic
+ * path logged and returned 0, the button showed a bare string. Every ending —
+ * proposals, nothing, out of budget, broken — now comes back as one
+ * WorklogScanReport, which is the only record the panel has of whether this
+ * thing has ever run (spec §2.4.4).
  */
-async function runWorklogScan(sessionId: string, auto: boolean): Promise<number> {
-  const host = hostForSession(sessionId)
-  const file = await transcriptFor(sessionId)
-  if (!file) {
-    throw new Error(
-      host
-        ? `could not read a transcript on ${host.label || host.alias} — the session may not have started Claude yet`
-        : 'no transcript found for that session yet'
-    )
+async function runWorklogScan(sessionId: string, auto: boolean): Promise<WorklogScanReport> {
+  const at = Date.now()
+  const end = (
+    outcome: WorklogScanOutcome,
+    added: number,
+    message: string | null
+  ): WorklogScanReport => reportScan({ sessionId, at, auto, outcome, added, message })
+
+  try {
+    const host = hostForSession(sessionId)
+    const file = await transcriptFor(sessionId)
+    if (!file) {
+      return end(
+        'error',
+        0,
+        host
+          ? `could not read a transcript on ${host.label || host.alias} — the session may not have started Claude yet`
+          : 'no transcript found for that session yet'
+      )
+    }
+
+    const settings = getSettings()
+    const projects = await listProjects(settings)
+
+    /*
+     * A remote session is placed by the machine it runs on, not by a folder.
+     * `SessionInfo.cwd` for one is wherever Stoke happened to be pointed locally,
+     * so resolving a project group from it would name the wrong project. The real
+     * working directory is recorded in the transcript itself, which by this point
+     * has been fetched — so the proposal names the remote path, and the host takes
+     * the place of the project group.
+     */
+    const cwd = host ? ((await parseSession(file)).cwd ?? '') : cwdForSession(sessionId)
+    const group = host ? host.label || host.alias : (groupForCwd(cwd, projects, settings.projectRoots) ?? '')
+
+    // Cached and single-flighted, so a scan of two sessions a second apart reads
+    // the boards once. A failure here is reported to the scan rather than thrown:
+    // proposing creates with no idea what exists is degraded, not broken.
+    const snapshot = await recall({
+      clickupListId: CLICKUP_LIST_ID,
+      notionDataSource: NOTION_DATA_SOURCE,
+      // Only read the boards the user has switched on — otherwise a ClickUp
+      // read is paid for on every scan even with ClickUp off.
+      targets: settings.worklogBoards.targets,
+      // The same directory the write would use, so both runs see the same MCP
+      // servers. runHeadless falls back to a scratch dir if it has been deleted.
+      cwd,
+      claudePath: settings.claudePath
+    })
+    if (snapshot.error) console.warn('[stoke] worklog recall failed:', snapshot.error)
+
+    const outcome = await scanSession({
+      sessionId,
+      transcriptFile: file,
+      cwd,
+      group,
+      recall: snapshot,
+      auto,
+      claudePath: settings.claudePath,
+      boards: settings.worklogBoards
+    })
+    if (outcome.demoted > 0) {
+      // Not silent: a steady count means recall is truncating or the model is
+      // inventing ids, and both look exactly like the feature working.
+      console.warn(
+        `[stoke] worklog: ${outcome.demoted} update(s) named a record that is not on the boards, filed as new instead`
+      )
+    }
+
+    const added = worklogQueue().add(outcome.proposals)
+    send(CH.worklogChanged, worklogQueue().list())
+    if (auto && added.length) {
+      // Reversed to match `list()`, which is newest first — so the prompt walks
+      // them in the same order the panel shows them.
+      send(CH.worklogProposed, { sessionId, ids: added.map((p) => p.id).reverse() })
+    }
+    return end(added.length ? 'proposed' : 'nothing', added.length, null)
+  } catch (err) {
+    /*
+     * Every ending is a report, including this one. The old code let the throw
+     * out and both callers flattened it: the automatic path logged to a console
+     * nobody has open and returned 0, and the button surfaced a bare string with
+     * no record that a scan had happened at all.
+     */
+    if (err instanceof WorklogBudgetError) return end('budget', 0, err.message)
+    return end('error', 0, err instanceof Error ? err.message : String(err))
   }
-
-  const settings = getSettings()
-  const projects = await listProjects(settings)
-
-  /*
-   * A remote session is placed by the machine it runs on, not by a folder.
-   * `SessionInfo.cwd` for one is wherever Stoke happened to be pointed locally,
-   * so resolving a project group from it would name the wrong project. The real
-   * working directory is recorded in the transcript itself, which by this point
-   * has been fetched — so the proposal names the remote path, and the host takes
-   * the place of the project group.
-   */
-  const cwd = host ? ((await parseSession(file)).cwd ?? '') : cwdForSession(sessionId)
-  const group = host ? host.label || host.alias : (groupForCwd(cwd, projects, settings.projectRoots) ?? '')
-
-  // Cached and single-flighted, so a scan of two sessions a second apart reads
-  // the boards once. A failure here is reported to the scan rather than thrown:
-  // proposing creates with no idea what exists is degraded, not broken.
-  const snapshot = await recall({
-    clickupListId: CLICKUP_LIST_ID,
-    notionDataSource: NOTION_DATA_SOURCE,
-    // Only read the boards the user has switched on — otherwise a ClickUp
-    // read is paid for on every scan even with ClickUp off.
-    targets: settings.worklogBoards.targets,
-    // The same directory the write would use, so both runs see the same MCP
-    // servers. runHeadless falls back to a scratch dir if it has been deleted.
-    cwd,
-    claudePath: settings.claudePath
-  })
-  if (snapshot.error) console.warn('[stoke] worklog recall failed:', snapshot.error)
-
-  const outcome = await scanSession({
-    sessionId,
-    transcriptFile: file,
-    cwd,
-    group,
-    recall: snapshot,
-    auto,
-    claudePath: settings.claudePath,
-    boards: settings.worklogBoards
-  })
-  if (outcome.demoted > 0) {
-    // Not silent: a steady count means recall is truncating or the model is
-    // inventing ids, and both look exactly like the feature working.
-    console.warn(
-      `[stoke] worklog: ${outcome.demoted} update(s) named a record that is not on the boards, filed as new instead`
-    )
-  }
-
-  const added = worklogQueue().add(outcome.proposals)
-  send(CH.worklogChanged, worklogQueue().list())
-  if (auto && added.length) {
-    // Reversed to match `list()`, which is newest first — so the prompt walks
-    // them in the same order the panel shows them.
-    send(CH.worklogProposed, { sessionId, ids: added.map((p) => p.id).reverse() })
-  }
-  return added.length
 }
 
 function createWindow(): void {
@@ -471,14 +515,11 @@ function createWindow(): void {
       )
     },
     scan: async (sessionId) => {
-      try {
-        return await runWorklogScan(sessionId, true)
-      } catch (err) {
-        // Swallowed here on purpose: an unattended scan that failed is a log
-        // line, not a dialog over whatever the user is doing.
-        console.warn('[stoke] automatic worklog scan failed', err)
-        return 0
-      }
+      // runWorklogScan no longer throws; the report is the record of what
+      // happened and has already been pushed to the renderer by the time this
+      // returns. AutoScanner only needs the count for its own prompt.
+      const report = await runWorklogScan(sessionId, true)
+      return report.added
     }
   })
   autoscan.start()
@@ -854,12 +895,17 @@ function registerIpc(): void {
   ipcMain.handle(CH.worklogQueue, () => queue().list())
 
   ipcMain.handle(CH.worklogScan, async (_e, sessionId: string) => {
-    try {
-      return { added: await runWorklogScan(sessionId, false), error: null }
-    } catch (err) {
-      return { added: 0, error: err instanceof Error ? err.message : String(err) }
+    const report = await runWorklogScan(sessionId, false)
+    // The panel reads the full report off `worklog:scanned`; this return value
+    // stays the shape it always was so the existing caller is untouched. Only
+    // a genuine failure becomes an `error` — "nothing to log" is not one.
+    return {
+      added: report.added,
+      error: report.outcome === 'budget' || report.outcome === 'error' ? report.message : null
     }
   })
+
+  ipcMain.handle(CH.worklogLastScan, () => lastScanReport)
 
   /*
    * Accepts in flight, by proposal id.
