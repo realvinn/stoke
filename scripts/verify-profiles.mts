@@ -11,7 +11,7 @@
  *
  *   node scripts/verify-profiles.mts
  */
-import type { ProfileConfig } from '../src/shared/types.ts'
+import type { ProfileConfig, Settings } from '../src/shared/types.ts'
 import {
   PROFILES,
   PROFILE_SWATCHES,
@@ -25,10 +25,10 @@ import {
   sameFolderName,
   visibleProfiles
 } from '../src/shared/profiles.ts'
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { planProfile } from '../src/main/profiles.ts'
+import { basename, join } from 'node:path'
+import { createProfile, planProfile } from '../src/main/profiles.ts'
 
 let failures = 0
 
@@ -394,6 +394,260 @@ try {
   )
 } finally {
   rmSync(box, { recursive: true, force: true })
+}
+
+console.log('\nplanProfile name and folder guards')
+/*
+ * These become real directories once accepted — a name that slips through is
+ * a folder that gets created or reused — so the refusals are worth pinning
+ * directly rather than trusting they still fire. `...` and `..foo` are
+ * deliberately *not* refused: only the exact strings `.` and `..` are, and
+ * that stays true below.
+ */
+const guardsBox = mkdtempSync(join(tmpdir(), 'stoke-plan-guards-'))
+try {
+  mkdirSync(join(guardsBox, 'Work'))
+
+  check('an empty name is refused', (await planProfile(guardsBox, '')).error, 'Give the profile a name.')
+  check(
+    'a whitespace-only name is refused the same way',
+    (await planProfile(guardsBox, '   ')).error,
+    'Give the profile a name.'
+  )
+  const trimmed = await planProfile(guardsBox, '  Work  ')
+  check('surrounding whitespace is trimmed, then reused like any other match', [trimmed.action, trimmed.root], [
+    'reuse',
+    join(guardsBox, 'Work')
+  ])
+
+  const forbidden = 'A profile name cannot contain \\ / : * ? " < > or |.'
+  for (const bad of ['a/b', 'a\\b', 'a:b', 'a*b', 'a?b', 'a"b', 'a<b', 'a>b', 'a|b']) {
+    check(`${JSON.stringify(bad)} is refused as a name`, (await planProfile(guardsBox, bad)).error, forbidden)
+  }
+
+  for (const dot of ['.', '..']) {
+    check(
+      `${JSON.stringify(dot)} is refused, not treated as a folder name`,
+      (await planProfile(guardsBox, dot)).error,
+      'That is not a folder name.'
+    )
+  }
+  const dotdotdot = await planProfile(guardsBox, '...')
+  check('but "..." is a legal name, not a special one', [dotdotdot.action, dotdotdot.error], ['create', null])
+  const dotfoo = await planProfile(guardsBox, '..foo')
+  check('and so is "..foo"', [dotfoo.action, dotfoo.error], ['create', null])
+
+  check(
+    'an empty chosen folder is refused',
+    (await planProfile('', 'Work')).error,
+    'Choose a folder to keep this profile in.'
+  )
+  check(
+    'a whitespace-only chosen folder is refused the same way',
+    (await planProfile('   ', 'Work')).error,
+    'Choose a folder to keep this profile in.'
+  )
+} finally {
+  rmSync(guardsBox, { recursive: true, force: true })
+}
+
+console.log('\nimports keep one order regardless of what readdir hands back')
+/*
+ * Deleting `.sort((a, b) => a.localeCompare(b))` from `projectChildren` left
+ * the suite green before: the old fixture's two names (`buyback`, `refinity`)
+ * already come back from `readdir` in sorted order, so the assertion never
+ * exercised the sort. These eight don't — measured on this machine, `readdir`
+ * returns them in a different order than `.sort()` would, so this fixture
+ * actually bites a missing sort rather than merely restating one that never
+ * ran. `planProfile(sortBox, basename(sortBox))` reuses the temp directory
+ * itself as the profile root — the box's own name already matches, so
+ * `imports` is `projectChildren(sortBox)` directly.
+ */
+const sortBox = mkdtempSync(join(tmpdir(), 'stoke-plan-sort-'))
+try {
+  const names = ['000', 'Aaa', 'Banana', 'Zebra', '_under', 'apple', 'mmm', 'zzz-last']
+  for (const n of names) mkdirSync(join(sortBox, n))
+  const rawOrder = readdirSync(sortBox)
+  const sortedOrder = [...names].sort((a, b) => a.localeCompare(b))
+  if (JSON.stringify(rawOrder) === JSON.stringify(sortedOrder)) {
+    console.log(
+      '  NOTE  raw readdir order already matches sorted order on this volume; this fixture is not exercising the sort here'
+    )
+  }
+  const sortPlan = await planProfile(sortBox, basename(sortBox))
+  check('the box itself is reused, so imports come straight from it', sortPlan.root, sortBox)
+  check('and they are alphabetised, not in whatever order readdir returned', sortPlan.imports, sortedOrder)
+} finally {
+  rmSync(sortBox, { recursive: true, force: true })
+}
+
+console.log('\ncase folding and Unicode normalisation come from the filesystem, not toLowerCase()')
+/*
+ * `existingChild` used to compare `n.toLowerCase() === name.toLowerCase()`,
+ * which is weaker than what the filesystem itself does on the default
+ * (case-insensitive, normalising) volume this machine runs: an NFD-typed
+ * name never matched an NFC one on disk under `toLowerCase()`, and casing
+ * never folded past ASCII, so `STRASSE` never matched `Straße`. Whether this
+ * volume actually normalises or folds beyond ASCII is measured, not assumed
+ * — same discipline as CASE_BLIND above — so this passes identically on a
+ * volume that does neither. Driven through `createProfile`, not `planProfile`
+ * directly, because the bug this closes is what gets *persisted*.
+ */
+const unicodeBox = mkdtempSync(join(tmpdir(), 'stoke-plan-unicode-'))
+try {
+  const settings = { profiles: [], projectRoots: [] } as unknown as Settings
+  const swatch = {
+    accent: '#4ecdc4',
+    accentHover: '#77dcd5',
+    accentSoft: 'rgba(78, 205, 196, 0.14)',
+    accentContrast: '#041a18'
+  }
+
+  const nfc = 'Café'.normalize('NFC')
+  const nfd = 'Café'.normalize('NFD')
+  mkdirSync(join(unicodeBox, nfc))
+  const NORMALISES = existsSync(join(unicodeBox, nfd))
+
+  const cafe = await createProfile(settings, { folder: unicodeBox, name: nfd, ...swatch })
+  check(
+    'an NFD-typed name resolves against an NFC entry when this volume normalises',
+    cafe.plan.action,
+    NORMALISES ? 'reuse' : 'create'
+  )
+  check(
+    'the persisted scan root is the real on-disk entry, not the typed spelling',
+    cafe.plan.root,
+    join(unicodeBox, NORMALISES ? nfc : nfd)
+  )
+  check(
+    'and it is byte-identical to a directory really on disk, not merely string-equal after normalising twice',
+    readdirSync(unicodeBox)
+      .map((n) => join(unicodeBox, n))
+      .includes(cafe.plan.root),
+    true
+  )
+  check('the patch persists the same byte-identical root', cafe.patch.projectRoots, [cafe.plan.root])
+
+  mkdirSync(join(unicodeBox, 'Straße'))
+  const FOLDS_NON_ASCII = existsSync(join(unicodeBox, 'STRASSE'))
+  const strasse = await createProfile(settings, { folder: unicodeBox, name: 'STRASSE', ...swatch })
+  check(
+    'STRASSE resolves against Straße when this volume folds beyond ASCII case',
+    strasse.plan.action,
+    FOLDS_NON_ASCII ? 'reuse' : 'create'
+  )
+  check(
+    'and that root is also byte-identical to a directory really on disk',
+    readdirSync(unicodeBox)
+      .map((n) => join(unicodeBox, n))
+      .includes(strasse.plan.root),
+    true
+  )
+} finally {
+  rmSync(unicodeBox, { recursive: true, force: true })
+}
+
+console.log('\nsymlinks: kept where the user pointed, never relocated to the target')
+/*
+ * `realpathSync.native` resolves symlinks, so its raw result can point
+ * somewhere entirely different from where the user aimed. `existingChild`
+ * only ever keeps the *basename* of that result and rejoins it onto the
+ * caller's own directory — this is the fixture that proves a symlinked
+ * chosen folder is not silently relocated to whatever it targets. Whether a
+ * wrong-cased spelling matches at all is still a volume question, so that
+ * part is measured the same way as CASE_BLIND above, not assumed.
+ *
+ * There is a real, accepted gap this does not close, and it has nothing to
+ * do with case: a *child* that is itself a symlink to a target with a
+ * different basename (`Link` -> `.../Target2`) resolves to a basename,
+ * `Target2`, that is not an entry of the parent at all, so `existingChild`
+ * safely returns null (see its doc) rather than a fabricated path — even
+ * typed with its own exact on-disk casing, `Link`. `planProfile` then falls
+ * through to `create`, and its fallback `isDirectory` check *does* find the
+ * symlink (case-insensitively resolved, on a volume that folds), so
+ * `willCreate` comes back false — an inconsistent `create` + `willCreate:
+ * false` plan, the same shape Important 2 closed, reopened here for
+ * symlinked children specifically. That is measured below, not papered over.
+ */
+const linkBox = mkdtempSync(join(tmpdir(), 'stoke-plan-symlink-'))
+try {
+  mkdirSync(join(linkBox, 'RealRoot'))
+  mkdirSync(join(linkBox, 'RealRoot', 'Task'))
+  symlinkSync(join(linkBox, 'RealRoot'), join(linkBox, 'LinkRoot'))
+  const LINK_CASE_BLIND = existsSync(join(linkBox, 'LinkRoot', 'task'))
+
+  const viaSymlinkedChosen = await planProfile(join(linkBox, 'LinkRoot'), 'task')
+  check(
+    'a wrong-cased child of a symlinked chosen folder is found exactly when this volume would fold it',
+    viaSymlinkedChosen.action,
+    LINK_CASE_BLIND ? 'reuse' : 'create'
+  )
+  check(
+    'and when it is, the root stays under the symlink the user picked, not the real directory it targets',
+    viaSymlinkedChosen.root,
+    join(linkBox, 'LinkRoot', LINK_CASE_BLIND ? 'Task' : 'task')
+  )
+
+  mkdirSync(join(linkBox, 'Elsewhere'))
+  mkdirSync(join(linkBox, 'Elsewhere', 'Target2'))
+  symlinkSync(join(linkBox, 'Elsewhere', 'Target2'), join(linkBox, 'Link'))
+
+  // Exact on-disk casing, deliberately — this gap is not a casing problem.
+  const viaSymlinkedChild = await planProfile(linkBox, 'Link')
+  check(
+    'the accepted gap: a symlinked child whose target has a different basename is not matched by existingChild',
+    viaSymlinkedChild.action,
+    'create'
+  )
+  check(
+    'so the plan is internally inconsistent for this one case: create, yet nothing would actually be made',
+    [viaSymlinkedChild.root, viaSymlinkedChild.willCreate],
+    [join(linkBox, 'Link'), false]
+  )
+} finally {
+  rmSync(linkBox, { recursive: true, force: true })
+}
+
+console.log('\nthe scan-root dedupe key actually dedupes, and actually distinguishes')
+/*
+ * `pathKey` is only used for `createProfile`'s scan-root dedupe against
+ * `settings.projectRoots` — a list compared as strings, which is why it
+ * stays platform-folded rather than filesystem-probed like `existingChild`
+ * and `isNamed` above. Replacing its body with `return 'CONSTANT'` leaves
+ * the suite green without this: both checks are needed together, because a
+ * constant key passes the first (everything looks "already known") but fails
+ * the second (an unrelated root would also look "already known" and never
+ * get appended).
+ */
+const dedupeBox = mkdtempSync(join(tmpdir(), 'stoke-plan-dedupe-'))
+try {
+  mkdirSync(join(dedupeBox, 'Work'))
+  const swatch = {
+    accent: '#4ecdc4',
+    accentHover: '#77dcd5',
+    accentSoft: 'rgba(78, 205, 196, 0.14)',
+    accentContrast: '#041a18'
+  }
+
+  const staleRoot = join(dedupeBox, 'work')
+  const staleSettings = { profiles: [], projectRoots: [staleRoot] } as unknown as Settings
+  const staleResult = await createProfile(staleSettings, { folder: dedupeBox, name: 'Work', ...swatch })
+  check(
+    'a stale wrong-cased root already in projectRoots is treated as the same folder',
+    staleResult.patch.projectRoots,
+    [staleRoot]
+  )
+
+  const unrelatedRoot = join(dedupeBox, 'Elsewhere')
+  const unrelatedSettings = { profiles: [], projectRoots: [unrelatedRoot] } as unknown as Settings
+  const unrelatedResult = await createProfile(unrelatedSettings, { folder: dedupeBox, name: 'Work', ...swatch })
+  check(
+    'an unrelated root already in the list does not swallow a genuinely new one',
+    unrelatedResult.patch.projectRoots,
+    [unrelatedRoot, join(dedupeBox, 'Work')]
+  )
+} finally {
+  rmSync(dedupeBox, { recursive: true, force: true })
 }
 
 console.log('\ncolour contrast')

@@ -21,20 +21,24 @@
  * kind of bug gets caught — it fails by choosing the wrong folder, never by
  * throwing.
  */
-import { statSync } from 'node:fs'
+import { realpathSync, statSync } from 'node:fs'
 import { mkdir, readdir } from 'node:fs/promises'
-import { join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import type { ProfileConfig, Settings } from '@shared/types'
 import type { CreateProfileInput, ProfilePlan } from '../shared/profiles.ts'
-import { foldGroup, folderName, nextProfileId, sameFolderName } from '../shared/profiles.ts'
+import { foldGroup, folderName, nextProfileId } from '../shared/profiles.ts'
 import { pathKey as sharedPathKey, pathRulesFor } from '../shared/paths.ts'
 
 /*
- * This machine's own comparison rules.
- *
- * It used to be `process.platform === 'win32'`, and that is wrong on macOS:
- * APFS is case-insensitive by default, so `Work` and `work` are one folder and
- * a rule that says otherwise plans against a folder that is not there.
+ * This machine's own comparison rules — used only for `pathKey` below, which
+ * dedupes `settings.projectRoots` (a list, compared as strings). It used to
+ * also decide whether two folder names are "the same" on disk, and that is
+ * wrong: `process.platform === 'win32'` was wrong on macOS (APFS is
+ * case-insensitive by default), and `pathRulesFor(process.platform)` is
+ * itself only a platform *guess* — a Mac can be running a case-sensitive
+ * APFS volume, and even the case-insensitive default folds less than the
+ * filesystem actually does (see `existingChild` and `isNamed` below, which
+ * ask the filesystem directly instead).
  */
 const RULES = pathRulesFor(process.platform)
 
@@ -92,32 +96,77 @@ function isDirectory(p: string): boolean {
 }
 
 /**
+ * The real path `p` resolves to right now, or null if no spelling of it
+ * exists.
+ *
+ * `realpathSync.native` is the filesystem's own answer, not a platform
+ * guess: measured against a real case-sensitive APFS volume it throws
+ * `ENOENT` for a wrong-cased spelling that a case-insensitive volume
+ * resolves without complaint, and it folds by the volume's own Unicode
+ * normalisation — an NFD-typed `Café` resolves against an NFC `Café` on
+ * disk, and `STRASSE` resolves against `Straße`, neither of which
+ * `String.toLowerCase()` ever matched.
+ *
+ * `ENOENT` is the only "no such spelling" answer. Anything else — `EACCES`,
+ * `ELOOP`, a bad file descriptor — is a real failure and is left to
+ * propagate rather than being read as "create".
+ *
+ * It resolves symlinks, so the path it returns can point somewhere else
+ * entirely. Neither caller below persists it as-is; see each for how it
+ * keeps the result from relocating anything.
+ */
+function resolveOnDisk(p: string): string | null {
+  try {
+    return realpathSync.native(p)
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw err
+  }
+}
+
+/**
+ * Does `chosen` already carry the name `name` — the same real directory a
+ * sibling spelled `name` next to it would resolve to?
+ *
+ * A filesystem identity check, not a string comparison: it asks whether
+ * `join(dirname(chosen), name)` and `chosen` resolve to the same place,
+ * which agrees with `existingChild` about what this volume considers the
+ * same spelling. Nothing here is persisted — only the boolean matters — so
+ * `resolveOnDisk` resolving through a symlink is harmless.
+ */
+function isNamed(chosen: string, name: string): boolean {
+  if (!name) return false
+  const candidate = resolveOnDisk(join(dirname(chosen), name))
+  if (candidate === null) return false
+  return candidate === resolveOnDisk(chosen)
+}
+
+/**
  * The child of `dir` named `name`, as it is really spelled on disk, or null.
  *
  * `statSync` answers yes for a casing that is not the one on disk when the
  * filesystem is case-insensitive, and that wrong spelling was then persisted as
  * the profile's scan root — a path that works until something compares it as a
- * string. Reading the directory's own entries is the only way to get the name
- * the filesystem actually holds. `isDirectory` still does the final say-so, so
- * a symlink to a directory keeps counting as one.
+ * string. `resolveOnDisk` is the fix, but its result cannot be returned
+ * directly: it resolves symlinks, so `dir` (or the child itself) being a
+ * symlink would hand back a path under the *target*, and persisting that as
+ * a scan root silently relocates the profile. Keeping only the basename and
+ * rejoining it onto the caller's own `dir` keeps the profile where the user
+ * pointed it, while still reporting the child's true on-disk spelling.
+ *
+ * `isDirectory` still does the final say-so — a symlink to a directory keeps
+ * counting as one — and it also catches the one case this basename trick
+ * cannot fix: a child that is itself a symlink to somewhere with a
+ * *different* name (`dir/Link` -> `/elsewhere/Target`) resolves to a
+ * basename, `Target`, that is not an entry of `dir` at all, so the
+ * reconstructed path does not exist and this returns null rather than a
+ * path that looks plausible and is not real.
  */
-async function existingChild(dir: string, name: string): Promise<string | null> {
-  if (!RULES.caseInsensitive) {
-    const exact = join(dir, name)
-    return isDirectory(exact) ? exact : null
-  }
-  let names: string[]
-  try {
-    names = (await readdir(dir)).filter((n) => n.toLowerCase() === name.toLowerCase())
-  } catch {
-    const exact = join(dir, name)
-    return isDirectory(exact) ? exact : null
-  }
-  for (const n of names) {
-    const full = join(dir, n)
-    if (isDirectory(full)) return full
-  }
-  return null
+function existingChild(dir: string, name: string): string | null {
+  const resolved = resolveOnDisk(join(dir, name))
+  if (resolved === null) return null
+  const real = join(dir, basename(resolved))
+  return isDirectory(real) ? real : null
 }
 
 function failed(chosen: string, name: string, error: string): ProfilePlan {
@@ -176,8 +225,8 @@ export async function planProfile(rawFolder: string, rawName: string): Promise<P
    */
   let action: ProfilePlan['action']
   let root: string
-  const existing = await existingChild(chosen, name)
-  if (sameFolderName(chosen, name, RULES.caseInsensitive)) {
+  const existing = existingChild(chosen, name)
+  if (isNamed(chosen, name)) {
     action = 'reuse'
     root = chosen
   } else if (existing) {
