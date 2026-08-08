@@ -15,6 +15,7 @@ import { GATE_RULES, groupForCwd, isWatchedGroup, shouldWatch } from '../src/mai
 import { watchStateFrom } from '../src/main/worklog/watch.ts'
 import { groupForCwd as groupForCwdShared, pathRulesFor } from '../src/shared/paths.ts'
 import type { Project } from '../src/shared/types.ts'
+import { scanSentence, watchSentence } from '../src/shared/worklog.ts'
 
 let failures = 0
 
@@ -25,6 +26,11 @@ function check(name: string, got: unknown, want: unknown): void {
     `  ${ok ? 'PASS' : 'FAIL'}  ${name}` +
       (ok ? '' : `\n        got ${JSON.stringify(got)}, want ${JSON.stringify(want)}`)
   )
+}
+
+function ok(name: string, condition: boolean, detail = ''): void {
+  if (!condition) failures++
+  console.log(`  ${condition ? 'PASS' : 'FAIL'}  ${name}${condition || !detail ? '' : `\n        ${detail}`}`)
 }
 
 const isWin = process.platform === 'win32'
@@ -304,6 +310,115 @@ check(
   'and a ticked host works with no project groups ticked at all',
   watchOf({ host, worklogGroups: [] }),
   { sessionId: 's1', watched: true, reason: 'watched-host', group: 'Build box', remote: true, decidedAt: at }
+)
+
+console.log('\nwhat the panel says about itself')
+
+const state = (over: Record<string, unknown> = {}): never =>
+  ({
+    sessionId: 's1',
+    watched: true,
+    reason: 'watched-group',
+    group: 'gitea-company',
+    remote: false,
+    decidedAt: 1,
+    ...over
+  }) as never
+
+ok(
+  'a watched session names its group',
+  watchSentence(state(), ['gitea-company']).includes('gitea-company'),
+  watchSentence(state(), ['gitea-company'])
+)
+ok(
+  'with nothing ticked it says how to turn it on, not merely that it is off',
+  /Settings/.test(watchSentence(state({ watched: false, reason: 'off' }), [])),
+  watchSentence(state({ watched: false, reason: 'off' }), [])
+)
+ok(
+  'an unwatched group says which groups are armed instead',
+  watchSentence(state({ watched: false, reason: 'unwatched-group', group: 'personal' }), [
+    'gitea-company'
+  ]).includes('gitea-company'),
+  watchSentence(state({ watched: false, reason: 'unwatched-group', group: 'personal' }), ['gitea-company'])
+)
+ok(
+  'a folder that cannot be placed says so rather than blaming the profile',
+  /no project/.test(
+    watchSentence(state({ watched: false, reason: 'unknown-folder', group: null }), ['gitea-company'])
+  )
+)
+ok(
+  'a remote session is described by its machine',
+  /machine/.test(
+    watchSentence(state({ watched: false, reason: 'unwatched-host', group: 'Build box', remote: true }), [])
+  )
+)
+ok(
+  'and no session at all is its own sentence',
+  /No session/.test(watchSentence(null, ['gitea-company'])),
+  watchSentence(null, ['gitea-company'])
+)
+
+const report = (over: Record<string, unknown> = {}): never =>
+  ({ sessionId: 's1', at: 1, auto: false, outcome: 'nothing', added: 0, message: null, ...over }) as never
+
+ok('a scan that proposed says how many', /2 entries/.test(scanSentence(report({ outcome: 'proposed', added: 2 }))))
+ok('one entry is not "1 entries"', /1 entry\b/.test(scanSentence(report({ outcome: 'proposed', added: 1 }))))
+ok('an empty scan says it looked', /nothing worth logging/.test(scanSentence(report())))
+ok(
+  'a budget failure says so verbatim, never as an empty result',
+  scanSentence(report({ outcome: 'budget', message: 'the recall run stopped at its $0.60 budget ceiling' })).includes('$0.60'),
+  scanSentence(report({ outcome: 'budget', message: 'the recall run stopped at its $0.60 budget ceiling' }))
+)
+ok(
+  'an error carries its message through',
+  scanSentence(report({ outcome: 'error', message: 'no transcript found' })).includes('no transcript found')
+)
+ok(
+  'an automatic scan is marked as one',
+  /on its own/.test(scanSentence(report({ auto: true }))),
+  scanSentence(report({ auto: true }))
+)
+
+/*
+ * H5 (Task 26 review, carried into Task 29): a scan that drafted proposals
+ * without managing to read the board first still reports `outcome: 'proposed'`
+ * — but `message` is non-null in exactly that case, and it is the only thing
+ * telling the user the drafts might duplicate what is already on the board.
+ * A rendering that drops the message on the floor here is the silent failure
+ * H5 exists to close, so this is asserted directly rather than trusted.
+ */
+ok(
+  'a starved-board warning rides along with the proposals it applies to',
+  scanSentence(
+    report({
+      outcome: 'proposed',
+      added: 2,
+      message: 'the recall run stopped at its $2.00 budget ceiling'
+    })
+  ).includes('$2.00'),
+  scanSentence(
+    report({ outcome: 'proposed', added: 2, message: 'the recall run stopped at its $2.00 budget ceiling' })
+  )
+)
+ok(
+  'and an ordinary clean proposal carries none',
+  !scanSentence(report({ outcome: 'proposed', added: 2 })).includes('boards first')
+)
+
+/*
+ * Task 29 review, routed item 2: `scanSession` (runner.ts) already tells an
+ * empty transcript apart from a model that looked and found nothing — that is
+ * `ScanOutcome.emptyTranscript`. `runWorklogScan` (index.ts) carries the
+ * distinction into `message` rather than discarding it, and this is the
+ * pure-function guarantee that the sentence actually differs when it does.
+ */
+ok(
+  'a session with no turns yet reads differently from one the model read and dismissed',
+  scanSentence(report({ outcome: 'nothing', message: 'this session has not sent anything yet' })) !==
+    scanSentence(report({ outcome: 'nothing' })),
+  scanSentence(report({ outcome: 'nothing', message: 'this session has not sent anything yet' }))
 )
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)

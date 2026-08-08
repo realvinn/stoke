@@ -1263,6 +1263,38 @@ body {
   color: var(--text-muted);
 }
 
+/*
+ * `--sp-1`/`--sp-3`/`--sp-4` here, not the brief's `--space-4`/`--space-8`/
+ * `--space-12` — both scales exist in :root, but the 4px density migration
+ * (Task 64) hasn't swept this file yet, and everything around this rule still
+ * reads `--sp-*`. The values are the same rem figures either way
+ * (0.25rem / 0.5rem / 0.75rem); only the token name differs.
+ */
+.worklog-state {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--border);
+}
+
+.worklog-state-line {
+  margin: 0;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
+  color: var(--text-muted);
+}
+
+/* The one line that answers "is this thing on". Its own colour, so the answer
+   is readable at a glance rather than by reading the sentence. */
+.worklog-state-line[data-tone='on'] {
+  color: var(--text);
+}
+
+.worklog-state-line[data-tone='warning'] {
+  color: var(--warning);
+}
+
 .worklog-bar {
   display: flex;
   align-items: center;

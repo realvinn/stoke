@@ -9,7 +9,9 @@ import type {
   SessionMeta,
   Settings,
   SshHost,
-  WorklogProposal
+  WorklogProposal,
+  WorklogScanReport,
+  WorklogWatchState
 } from '@shared/types'
 import type { UpdateInfo } from '@shared/api'
 import { profileFor, resolveProfiles, visibleProfiles } from '@shared/profiles'
@@ -81,6 +83,18 @@ export function App(): React.JSX.Element {
   const [worklog, setWorklog] = useState<WorklogProposal[]>([])
   const [worklogBusy, setWorklogBusy] = useState(false)
   /*
+   * Which sessions the worklog may look at, keyed by session id. Pushed whole
+   * on every change rather than merged, because a delta and a full list cannot
+   * both be the source of truth.
+   *
+   * ONE copy, App-wide. The tab strip's watched-session dots (A Task 52) read
+   * this array through a useMemo rather than subscribing again: a second
+   * subscription in the same effect is a `const offWatch` redeclaration, and a
+   * second copy of the list is the drift the whole-list rule exists to stop.
+   */
+  const [worklogWatch, setWorklogWatch] = useState<WorklogWatchState[]>([])
+  const [worklogLastScan, setWorklogLastScan] = useState<WorklogScanReport | null>(null)
+  /*
    * What the last automatic scan proposed, and what has been waved past here.
    *
    * Ids rather than proposals: the queue is broadcast in full on every change,
@@ -151,6 +165,10 @@ export function App(): React.JSX.Element {
       setAsked(new Set())
     })
     void window.stoke.worklog.queue().then(setWorklog)
+    const offWatch = window.stoke.worklog.onWatchChanged(setWorklogWatch)
+    const offScanned = window.stoke.worklog.onScanned(setWorklogLastScan)
+    void window.stoke.worklog.watch().then(setWorklogWatch)
+    void window.stoke.worklog.lastScan().then(setWorklogLastScan)
 
     void (async () => {
       const s = await window.stoke.settings.get()
@@ -177,6 +195,8 @@ export function App(): React.JSX.Element {
       offSettings()
       offWorklog()
       offProposed()
+      offWatch()
+      offScanned()
     }
   }, [refreshProjects])
 
@@ -862,6 +882,9 @@ export function App(): React.JSX.Element {
             <WorklogPanel
               proposals={worklog}
               busy={worklogBusy}
+              watch={worklogWatch.find((w) => w.sessionId === activeTab?.sessionId) ?? null}
+              watchedGroups={settings?.worklogGroups ?? []}
+              lastScan={worklogLastScan}
               onScan={() => void scanWorklog()}
               onAccept={(id) => void acceptProposal(id)}
               onReject={(id) => void window.stoke.worklog.reject(id)}

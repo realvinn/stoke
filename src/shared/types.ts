@@ -417,8 +417,11 @@ export interface WorklogScanReport {
    * drafts were written without a look at the boards first — the scan still
    * ran and still produced proposals, so the outcome stays 'proposed' rather
    * than getting recast as a failure, but the user is owed the same warning
-   * either way (H5, .superpowers/sdd/plan-resolutions.md). Shown to the user
-   * verbatim.
+   * either way (H5, .superpowers/sdd/plan-resolutions.md). And non-null for
+   * 'nothing' when the transcript itself held no turns yet — a session that
+   * has not started and a session the model read and dismissed both reach
+   * `outcome: 'nothing'`, and this is the only field that tells them apart
+   * (Task 29 review, routed item 2). Shown to the user verbatim.
    */
   message: string | null
 }

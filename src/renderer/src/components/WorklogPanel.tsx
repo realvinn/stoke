@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import type { WorklogProposal, WorklogTarget } from '@shared/types'
+import type { WorklogProposal, WorklogScanReport, WorklogTarget, WorklogWatchState } from '@shared/types'
+import { scanSentence, watchSentence } from '@shared/worklog'
 import { IconClose, IconRefresh } from './Icons'
 import { baseName, properNouns, relativeTime } from '../lib/format'
 
@@ -7,6 +8,12 @@ interface Props {
   proposals: WorklogProposal[]
   /** A scan or a write is in flight. Everything that mutates the queue goes dead. */
   busy: boolean
+  /** Whether the worklog is watching the session in the active tab. Null when none. */
+  watch: WorklogWatchState | null
+  /** `Settings.worklogGroups`, so the sentence can name what is armed. */
+  watchedGroups: string[]
+  /** The last scan of any session, so an empty panel is not a blank one. */
+  lastScan: WorklogScanReport | null
   onAccept: (id: string) => void
   onReject: (id: string) => void
   onAcceptAll: () => void
@@ -31,6 +38,20 @@ const TARGET_LABEL: Record<WorklogTarget, string> = {
  */
 function isLong(body: string): boolean {
   return body.length > 220 || body.split('\n').length > 4
+}
+
+/**
+ * Warning-coloured whenever the sentence itself carries a warning, not only on
+ * the outcomes that are failures. `outcome: 'proposed'` with a `message` is
+ * H5's starved-board case: the scan worked and drafted entries, but it could
+ * not check the boards first, so the proposals might duplicate something
+ * already there. A calm, muted line here would bury the one thing telling the
+ * user that.
+ */
+function scanTone(report: WorklogScanReport): 'warning' | 'muted' {
+  if (report.outcome === 'error' || report.outcome === 'budget') return 'warning'
+  if (report.outcome === 'proposed' && report.message) return 'warning'
+  return 'muted'
 }
 
 /** "Notion", or "Notion and ClickUp" - never a count, never an abbreviation. */
@@ -77,6 +98,9 @@ function mixSummary(items: WorklogProposal[]): string {
 export function WorklogPanel({
   proposals,
   busy,
+  watch,
+  watchedGroups,
+  lastScan,
   onAccept,
   onReject,
   onAcceptAll,
@@ -128,6 +152,28 @@ export function WorklogPanel({
           <IconClose />
           <span className="sr-only">Close worklog panel</span>
         </button>
+      </div>
+
+      {/*
+        Always rendered, above everything. The one question this panel could
+        never answer was "is this thing even on" — a queue with nothing in it
+        looked identical whether the agent was watching and quiet, switched
+        off, or dying on its budget every time (spec §2.4.4).
+      */}
+      <div className="worklog-state">
+        <p className="worklog-state-line" data-tone={watch?.watched ? 'on' : 'off'}>
+          {watchSentence(watch, watchedGroups)}
+        </p>
+        {lastScan && (
+          <p className="worklog-state-line" data-tone={scanTone(lastScan)}>
+            {relativeTime(lastScan.at)}: {scanSentence(lastScan)}
+          </p>
+        )}
+        {!lastScan && (
+          <p className="worklog-state-line" data-tone="muted">
+            No session has been scanned since Stoke started.
+          </p>
+        )}
       </div>
 
       {proposals.length > 0 && (
@@ -184,15 +230,16 @@ export function WorklogPanel({
         {proposals.length === 0 && (
           <div className="empty">
             <h3>Nothing to review</h3>
-            {/* Present tense, and only what actually happens: watched sessions
-                are scanned on their own once they go quiet, and this button
-                scans the session in the active tab right now. */}
+            {/*
+              The "watched profiles are scanned on their own" claim now lives in
+              the state block above, answered for *this* session rather than
+              asserted in general — see the block above `.worklog-note`.
+            */}
             <p>
               A scan reads a session&apos;s transcript, checks what is already on your boards,
-              and drafts the difference: a summary for Notion, a task for ClickUp, or a status
-              change to something already tracked. Watched profiles are scanned on their own
-              once a session goes quiet; this button scans the current one now. Drafts land here
-              first — nothing reaches either service until you accept it.
+              and drafts the difference: a summary, a task for anything left outstanding, or a
+              status change to something already tracked. Drafts land here first — nothing
+              reaches either service until you accept it.
             </p>
             <button className="btn" data-variant="primary" onClick={onScan} disabled={busy}>
               {busy ? 'Scanning…' : 'Scan now'}

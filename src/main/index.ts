@@ -27,7 +27,8 @@ import {
   applyProposal,
   scanSession,
   APPLY_MAX_BUDGET_USD,
-  WorklogBudgetError
+  WorklogBudgetError,
+  WorklogParseError
 } from './worklog/runner.ts'
 import { groupForCwd } from './worklog/gate.ts'
 import { watchStateFrom } from './worklog/watch.ts'
@@ -478,7 +479,21 @@ async function runWorklogScan(sessionId: string, auto: boolean): Promise<Worklog
      * See scanOutcomeFor for the full decision.
      */
     const verdict = scanOutcomeFor(snapshot, added.length)
-    return end(verdict.outcome, added.length, verdict.message)
+    /*
+     * Task 29 review, routed item 2: `scanOutcomeFor` only sees `added` and
+     * the recall snapshot, so a transcript with no turns yet and a transcript
+     * the model actually read and decided held nothing worth logging both
+     * land on `outcome: 'nothing', message: null` — indistinguishable to the
+     * panel. `outcome.emptyTranscript` (runner.ts) is where that distinction
+     * still exists; it is carried into `message` here rather than discarded,
+     * so `scanSentence` (src/shared/worklog.ts) can say which of the two
+     * actually happened.
+     */
+    const message =
+      verdict.outcome === 'nothing' && outcome.emptyTranscript
+        ? 'this session has not sent anything yet, so there was nothing in its transcript to read'
+        : verdict.message
+    return end(verdict.outcome, added.length, message)
   } catch (err) {
     /*
      * Every ending is a report, including this one. The old code let the throw
@@ -487,6 +502,23 @@ async function runWorklogScan(sessionId: string, auto: boolean): Promise<Worklog
      * no record that a scan had happened at all.
      */
     if (err instanceof WorklogBudgetError) return end('budget', 0, err.message)
+    /*
+     * Task 29 review, routed item 3: `WorklogParseError.message` is
+     * `the model's reply held no readable JSON: <up to 300 raw chars>` — a
+     * debugging string, not a sentence, and this field is documented "shown
+     * to the user verbatim". The raw reply is still worth having, so it goes
+     * to the console (nobody reads that mid-scan, which is fine — this is a
+     * developer trail, not the user-facing report); the report itself gets
+     * plain English with no quoted model output in it.
+     */
+    if (err instanceof WorklogParseError) {
+      console.warn('[stoke] worklog scan: the reply could not be read as an entry —', err.message)
+      return end(
+        'error',
+        0,
+        "Claude's reply could not be read back as an entry. Try scanning again."
+      )
+    }
     return end('error', 0, err instanceof Error ? err.message : String(err))
   }
 }
