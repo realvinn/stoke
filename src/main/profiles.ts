@@ -21,30 +21,69 @@
  * kind of bug gets caught — it fails by choosing the wrong folder, never by
  * throwing.
  */
-import { realpathSync, statSync } from 'node:fs'
+import { lstatSync, readdirSync, realpathSync, statSync } from 'node:fs'
+import type { Stats } from 'node:fs'
 import { mkdir, readdir } from 'node:fs/promises'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, join, sep } from 'node:path'
 import type { ProfileConfig, Settings } from '@shared/types'
 import type { CreateProfileInput, ProfilePlan } from '../shared/profiles.ts'
 import { foldGroup, folderName, nextProfileId } from '../shared/profiles.ts'
-import { pathKey as sharedPathKey, pathRulesFor } from '../shared/paths.ts'
+import { normalizePath } from '../shared/paths.ts'
 
-/*
- * This machine's own comparison rules — used only for `pathKey` below, which
- * dedupes `settings.projectRoots` (a list, compared as strings). It used to
- * also decide whether two folder names are "the same" on disk, and that is
- * wrong: `process.platform === 'win32'` was wrong on macOS (APFS is
- * case-insensitive by default), and `pathRulesFor(process.platform)` is
- * itself only a platform *guess* — a Mac can be running a case-sensitive
- * APFS volume, and even the case-insensitive default folds less than the
- * filesystem actually does (see `existingChild` and `isNamed` below, which
- * ask the filesystem directly instead).
+/**
+ * The string form of a path, for the one comparison the filesystem cannot
+ * answer.
+ *
+ * It normalises separators and drops a trailing one. It deliberately does
+ * **not** case-fold. It used to, by `pathRulesFor(process.platform)`, and that
+ * guess is what made `createProfile` disagree with its own plan: on a
+ * case-sensitive APFS volume `planProfile` answered `reuse <box>/Work` while
+ * this key folded a stale `<box>/work` in `projectRoots` onto it, decided the
+ * root was already registered, and never added it. The profile was stored, its
+ * folder was there, and it rendered empty — the original "pressed Create and
+ * nothing appeared" bug, on the very volume the case-sensitivity work set out
+ * to support.
+ *
+ * `sep` is node's own separator rather than a platform guess: which character
+ * separates path segments is a fact about the running OS, unlike how a volume
+ * folds case, which is a fact about the volume and is asked of it directly.
  */
-const RULES = pathRulesFor(process.platform)
-
-/** Native separators, and case-folded where the filesystem is. */
 function pathKey(p: string): string {
-  return sharedPathKey(p, RULES)
+  return normalizePath(p, { sep: sep === '\\' ? '\\' : '/', caseInsensitive: false })
+}
+
+/**
+ * `realpathSync.native`, or null for *any* failure.
+ *
+ * Deliberately a different contract from `resolveOnDisk` below, which lets
+ * everything but `ENOENT` through. This one only ever answers the question
+ * "are these two entries in `settings.projectRoots` the same folder", where an
+ * unreadable stale root is a normal thing to find and must not become a throw
+ * on the create path.
+ */
+function realOrNull(p: string): string | null {
+  try {
+    return realpathSync.native(p)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Are these two scan roots the same folder on this machine?
+ *
+ * The filesystem answers first, the same way `existingChild` and `isNamed` ask
+ * it; the string key is only the fallback for a path that resolves to nothing
+ * at all — a Windows root in a config opened on a Mac, or a folder since
+ * deleted. That fallback direction is the safe one: a spelling that names
+ * nothing here is not the same folder as one that names something, whatever
+ * the two strings look like, and being wrong that way adds a duplicate root
+ * rather than silently dropping the real one.
+ */
+function sameRoot(a: string, b: string): boolean {
+  if (pathKey(a) === pathKey(b)) return true
+  const real = realOrNull(a)
+  return real !== null && real === realOrNull(b)
 }
 
 /**
@@ -125,6 +164,69 @@ function resolveOnDisk(p: string): string | null {
 }
 
 /**
+ * `lstat` of `p`, or null if no spelling of it exists.
+ *
+ * Same "`ENOENT` is the only no-such-spelling answer" contract as
+ * `resolveOnDisk`, and the same volume-driven matching: the kernel resolves
+ * every component but the last, then looks the last one up by the volume's own
+ * folding rules, so a wrong-cased or NFD-typed spelling is found exactly where
+ * `realpath` would find it.
+ *
+ * `lstat` rather than `stat` on purpose. Whether the entry is *itself* a
+ * symlink is the question `existingChild` has to answer before it can trust a
+ * basename, and `stat` erases it.
+ */
+function lstatOnDisk(p: string): Stats | null {
+  try {
+    return lstatSync(p)
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw err
+  }
+}
+
+/**
+ * Which entry of `dir` is `requested`, found by filesystem identity rather
+ * than by name.
+ *
+ * The listing is the only place the true entry name lives once a symlink is
+ * involved, and `dev` + `ino` is the only reliable way to say which entry the
+ * requested spelling actually reached: string comparison is precisely the
+ * folding question this module refuses to guess at.
+ *
+ * `lstat` on both sides, and `bigint` so a large inode compares exactly. A
+ * symlink has an inode of its own; following either side would compare the
+ * target's identity against the entries' own and match nothing — or, worse,
+ * match the target's directory entry when the target happens to be a sibling.
+ *
+ * This is the rare path: `existingChild` only reaches it for an entry that is
+ * a symlink. Every ordinary folder is answered without a listing at all.
+ */
+function entryByIdentity(dir: string, requested: string): string | null {
+  let want: { dev: bigint; ino: bigint }
+  try {
+    want = lstatSync(requested, { bigint: true })
+  } catch {
+    return null
+  }
+  let entries: string[]
+  try {
+    entries = readdirSync(dir)
+  } catch {
+    return null
+  }
+  for (const entry of entries) {
+    try {
+      const st = lstatSync(join(dir, entry), { bigint: true })
+      if (st.dev === want.dev && st.ino === want.ino) return entry
+    } catch {
+      // Gone between the listing and the stat, so it is not the match.
+    }
+  }
+  return null
+}
+
+/**
  * Does `chosen` already carry the name `name` — the same real directory a
  * sibling spelled `name` next to it would resolve to?
  *
@@ -154,19 +256,67 @@ function isNamed(chosen: string, name: string): boolean {
  * rejoining it onto the caller's own `dir` keeps the profile where the user
  * pointed it, while still reporting the child's true on-disk spelling.
  *
- * `isDirectory` still does the final say-so — a symlink to a directory keeps
- * counting as one — and it also catches the one case this basename trick
- * cannot fix: a child that is itself a symlink to somewhere with a
- * *different* name (`dir/Link` -> `/elsewhere/Target`) resolves to a
- * basename, `Target`, that is not an entry of `dir` at all, so the
- * reconstructed path does not exist and this returns null rather than a
- * path that looks plausible and is not real.
+ * That basename trick is only sound while the entry is *not itself a symlink*,
+ * and getting that wrong adopted a real but unrelated folder. `dir/Link` ->
+ * `dir/Elsewhere/Archive` resolves to a basename of `Archive`; if `dir` also
+ * holds a genuine, unrelated `Archive/`, `join(dir, 'Archive')` exists, is a
+ * directory, and became the profile's scan root and group — the user named
+ * `Link` and got somebody else's projects. Silently adopting the wrong folder
+ * is, in this module's own words below, the worst way for it to be wrong. A
+ * sibling of the *same* directory (`dir/Link` -> `dir/Archive`) breaks it
+ * identically, so "did the path leave `dir`" is not the discriminator either.
+ *
+ * So `lstat` first, which costs nothing extra because it also says whether the
+ * entry is a directory:
+ *
+ *  - not a symlink -> `basename(resolved)` *is* the entry name in `dir`, since
+ *    only components before the last could have been redirected. Two syscalls,
+ *    and this is every ordinary folder.
+ *  - a symlink -> the true entry name is in the directory listing and nowhere
+ *    else, so `entryByIdentity` goes and finds it. `isDirectory` then decides,
+ *    following the link, so a symlink to a directory still counts as one.
  */
 function existingChild(dir: string, name: string): string | null {
-  const resolved = resolveOnDisk(join(dir, name))
-  if (resolved === null) return null
-  const real = join(dir, basename(resolved))
+  const requested = join(dir, name)
+  const link = lstatOnDisk(requested)
+  if (link === null) return null
+
+  if (!link.isSymbolicLink()) {
+    if (!link.isDirectory()) return null
+    const resolved = resolveOnDisk(requested)
+    return resolved === null ? null : join(dir, basename(resolved))
+  }
+
+  const entry = entryByIdentity(dir, requested)
+  if (entry === null) return null
+  const real = join(dir, entry)
   return isDirectory(real) ? real : null
+}
+
+/**
+ * A refusal sentence for a filesystem error that is not "no such spelling".
+ *
+ * `profiles:plan` (index.ts:1136) is a debounced keystroke handler, and before
+ * `resolveOnDisk` narrowed its catch to `ENOENT` it could not throw at all.
+ * Letting one out now crosses IPC as `Error invoking remote method
+ * 'profiles:plan': Error: EACCES: permission denied, realpath '…'`, and the
+ * renderer's catch (ProfilesSettings.tsx:214-216) skips `setPlan` — so the
+ * preview goes on describing the *previous* name while the banner shows the
+ * new failure. A refusal plan keeps the failure visible and replaces the stale
+ * preview, because it is a plan.
+ *
+ * This is reachable with nothing broken: on macOS an unentitled build gets
+ * `EPERM`/`EACCES` out of `realpath` under ~/Documents, ~/Desktop and iCloud
+ * Drive, which are exactly the folders someone would pick. It is deliberately
+ * *not* a widening back to "anything unreadable means create" — that answer
+ * made a wrong folder either way.
+ */
+function unreadable(chosen: string, err: unknown): string {
+  const code = (err as NodeJS.ErrnoException | null)?.code
+  if (code === 'EACCES' || code === 'EPERM') {
+    return `Stoke is not allowed to read ${chosen}. Give it access to that folder, or pick another one.`
+  }
+  return `${chosen} could not be read${code ? ` (${code})` : ''}.`
 }
 
 function failed(chosen: string, name: string, error: string): ProfilePlan {
@@ -225,16 +375,20 @@ export async function planProfile(rawFolder: string, rawName: string): Promise<P
    */
   let action: ProfilePlan['action']
   let root: string
-  const existing = existingChild(chosen, name)
-  if (isNamed(chosen, name)) {
-    action = 'reuse'
-    root = chosen
-  } else if (existing) {
-    action = 'reuse'
-    root = existing
-  } else {
-    action = 'create'
-    root = child
+  try {
+    // `existingChild` is asked only once the first branch has lost: it costs a
+    // real `lstat` and `realpath`, and the reuse-chosen branch never uses the
+    // answer.
+    const existing = isNamed(chosen, name) ? chosen : existingChild(chosen, name)
+    if (existing) {
+      action = 'reuse'
+      root = existing
+    } else {
+      action = 'create'
+      root = child
+    }
+  } catch (err) {
+    return failed(chosen, name, unreadable(chosen, err))
   }
 
   const group = folderName(root)
@@ -248,7 +402,20 @@ export async function planProfile(rawFolder: string, rawName: string): Promise<P
     return failed(chosen, name, 'Pick a folder inside the drive rather than the drive itself.')
   }
 
+  /*
+   * `create` is a promise that a folder gets made, and `describePlan` states it
+   * in those words — "It starts empty; anything you put in it joins this
+   * profile." When the root is already a directory nothing is created, that
+   * sentence is false, and ProfilesSettings.tsx:467-476 prints it directly
+   * above the list of projects already inside. So the two agree by
+   * construction rather than by coincidence: for a plan with no error, `create`
+   * with `willCreate: false` is not producible. (A refused plan keeps
+   * `action: 'create'` with an empty root and no `willCreate`, and never
+   * reaches `describePlan`'s switch — the error is the whole sentence.)
+   */
   const willCreate = !isDirectory(root)
+  if (!willCreate) action = 'reuse'
+
   return {
     action,
     chosen,
@@ -303,9 +470,13 @@ export async function createProfile(
     createdByUser: true
   }
 
+  /*
+   * By here `plan.root` is on disk — either it already was, or the `mkdir`
+   * above just made it — so `sameRoot` always has a real path to compare
+   * against and never has to fall back to string equality for this side.
+   */
   const roots = settings.projectRoots ?? []
-  const known = new Set(roots.map(pathKey))
-  const projectRoots = known.has(pathKey(plan.root)) ? roots : [...roots, plan.root]
+  const projectRoots = roots.some((r) => sameRoot(r, plan.root)) ? roots : [...roots, plan.root]
 
   return { plan, patch: { profiles: [...stored, record], projectRoots }, record }
 }

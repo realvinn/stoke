@@ -22,10 +22,18 @@ import {
   nextProfileId,
   profileFor,
   resolveProfiles,
-  sameFolderName,
   visibleProfiles
 } from '../src/shared/profiles.ts'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  symlinkSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { createProfile, planProfile } from '../src/main/profiles.ts'
@@ -277,8 +285,6 @@ check('and disambiguated when it is not', nextProfileId('Task', ['task']), 'Task
 console.log('\nfolder names')
 check('a trailing separator is ignored', folderName('G:\\Code\\Task\\'), 'Task')
 check('either separator works', folderName('/home/v/Code/Task'), 'Task')
-check('a name already on the folder is spotted', sameFolderName('G:\\Code\\Task\\', 'task', true), true)
-check('and is not, when case matters', sameFolderName('/home/v/Code/Task', 'task', false), false)
 check('groups fold to one spelling', [foldGroup(' Task '), foldGroup('TASK')], ['task', 'task'])
 
 console.log('\nplan previews read as sentences')
@@ -557,17 +563,22 @@ console.log('\nsymlinks: kept where the user pointed, never relocated to the tar
  * wrong-cased spelling matches at all is still a volume question, so that
  * part is measured the same way as CASE_BLIND above, not assumed.
  *
- * There is a real, accepted gap this does not close, and it has nothing to
- * do with case: a *child* that is itself a symlink to a target with a
- * different basename (`Link` -> `.../Target2`) resolves to a basename,
- * `Target2`, that is not an entry of the parent at all, so `existingChild`
- * safely returns null (see its doc) rather than a fabricated path — even
- * typed with its own exact on-disk casing, `Link`. `planProfile` then falls
- * through to `create`, and its fallback `isDirectory` check *does* find the
- * symlink (case-insensitively resolved, on a volume that folds), so
- * `willCreate` comes back false — an inconsistent `create` + `willCreate:
- * false` plan, the same shape Important 2 closed, reopened here for
- * symlinked children specifically. That is measured below, not papered over.
+ * The second half is the regression that basename shortcut caused, and it has
+ * nothing to do with case. A child that is itself a symlink to a target with a
+ * different basename (`Link` -> `Elsewhere/Archive`) resolves to the basename
+ * `Archive`; rejoining that onto the parent names `<box>/Archive`, and when a
+ * real, unrelated `Archive/` happens to sit right there, that folder existed,
+ * was a directory, and became the profile's scan root and group. The user
+ * typed `Link`, with its exact on-disk casing, and got two projects belonging
+ * to somebody else — silently, with a plausible import count, which this
+ * module's own comment calls the worst way for it to be wrong. The sibling
+ * collision is the whole point of the fixture: without a real `Archive/` next
+ * to `Link` the reconstructed path simply did not exist and the bug hid.
+ *
+ * `Ghost` covers the same shape one directory closer: a symlink whose target
+ * is a sibling of the link itself, so the resolved path never leaves the
+ * parent at all. "Did the path leave `dir`" is therefore not a sufficient
+ * discriminator, and this is the case that proves it.
  */
 const linkBox = mkdtempSync(join(tmpdir(), 'stoke-plan-symlink-'))
 try {
@@ -589,35 +600,218 @@ try {
   )
 
   mkdirSync(join(linkBox, 'Elsewhere'))
-  mkdirSync(join(linkBox, 'Elsewhere', 'Target2'))
-  symlinkSync(join(linkBox, 'Elsewhere', 'Target2'), join(linkBox, 'Link'))
+  mkdirSync(join(linkBox, 'Elsewhere', 'Archive'))
+  mkdirSync(join(linkBox, 'Elsewhere', 'Archive', 'inner-project'))
+  symlinkSync(join(linkBox, 'Elsewhere', 'Archive'), join(linkBox, 'Link'))
+  // The collision. A real, unrelated folder carrying the link target's name.
+  mkdirSync(join(linkBox, 'Archive'))
+  mkdirSync(join(linkBox, 'Archive', 'unrelated-project-1'))
+  mkdirSync(join(linkBox, 'Archive', 'unrelated-project-2'))
 
-  // Exact on-disk casing, deliberately — this gap is not a casing problem.
+  // Exact on-disk casing, deliberately — this is not a casing problem.
   const viaSymlinkedChild = await planProfile(linkBox, 'Link')
   check(
-    'the accepted gap: a symlinked child whose target has a different basename is not matched by existingChild',
-    viaSymlinkedChild.action,
-    'create'
+    'a symlinked child is reused as the folder the user named',
+    [viaSymlinkedChild.action, viaSymlinkedChild.root, viaSymlinkedChild.willCreate],
+    ['reuse', join(linkBox, 'Link'), false]
   )
   check(
-    'so the plan is internally inconsistent for this one case: create, yet nothing would actually be made',
-    [viaSymlinkedChild.root, viaSymlinkedChild.willCreate],
-    [join(linkBox, 'Link'), false]
+    'the group is the name that was typed, never the symlink target basename',
+    viaSymlinkedChild.group,
+    'Link'
+  )
+  check(
+    "and the imports are what is inside it, not the unrelated sibling's projects",
+    viaSymlinkedChild.imports,
+    ['inner-project']
+  )
+  check(
+    'the unrelated sibling is still reachable by its own name, so nothing was merely hidden',
+    (await planProfile(linkBox, 'Archive')).imports,
+    ['unrelated-project-1', 'unrelated-project-2']
+  )
+
+  // Same shape, one directory closer: the target never leaves the parent.
+  symlinkSync(join(linkBox, 'Archive'), join(linkBox, 'Ghost'))
+  const siblingLink = await planProfile(linkBox, 'Ghost')
+  check(
+    'a symlink to a sibling of its own parent is still the folder that was named',
+    [siblingLink.action, siblingLink.root, siblingLink.group],
+    ['reuse', join(linkBox, 'Ghost'), 'Ghost']
+  )
+
+  /*
+   * The two spellings that make the listing scan have to compare *identity*
+   * rather than names. Searching the entries for the typed string finds `Link`
+   * and `Ghost` above by accident — they were typed exactly as they are
+   * spelled — so those two alone do not pin the mechanism. Here the typed name
+   * is not the entry name by any string rule the volume does not know about:
+   * NFD against an NFC entry, and a casing the entry does not have.
+   */
+  const nfcLink = 'Café'.normalize('NFC')
+  const nfdLink = 'Café'.normalize('NFD')
+  symlinkSync(join(linkBox, 'Elsewhere', 'Archive'), join(linkBox, nfcLink))
+  const LINK_NORMALISES = existsSync(join(linkBox, nfdLink))
+  const viaNormalised = await planProfile(linkBox, nfdLink)
+  check(
+    'an NFD-typed symlinked child resolves to the NFC entry when this volume normalises',
+    [viaNormalised.action, viaNormalised.root],
+    LINK_NORMALISES ? ['reuse', join(linkBox, nfcLink)] : ['create', join(linkBox, nfdLink)]
+  )
+  check(
+    'and that root is byte-identical to the entry readdir reports, not the typed spelling',
+    readdirSync(linkBox)
+      .map((n) => join(linkBox, n))
+      .includes(viaNormalised.root),
+    true
+  )
+  const viaWrongCase = await planProfile(linkBox, 'lINK')
+  check(
+    'a wrong-cased symlinked child comes back with its own on-disk spelling',
+    [viaWrongCase.action, viaWrongCase.root],
+    LINK_CASE_BLIND ? ['reuse', join(linkBox, 'Link')] : ['create', join(linkBox, 'lINK')]
   )
 } finally {
   rmSync(linkBox, { recursive: true, force: true })
 }
 
-console.log('\nthe scan-root dedupe key actually dedupes, and actually distinguishes')
+console.log('\nan unreadable folder is refused in words, not thrown across IPC')
 /*
- * `pathKey` is only used for `createProfile`'s scan-root dedupe against
- * `settings.projectRoots` — a list compared as strings, which is why it
- * stays platform-folded rather than filesystem-probed like `existingChild`
- * and `isNamed` above. Replacing its body with `return 'CONSTANT'` leaves
- * the suite green without this: both checks are needed together, because a
- * constant key passes the first (everything looks "already known") but fails
- * the second (an unrelated root would also look "already known" and never
- * get appended).
+ * `resolveOnDisk` narrowed its catch to `ENOENT` so an unreadable folder could
+ * never be misread as "create" — right, but `profiles:plan` (index.ts:1136) is
+ * a debounced keystroke handler that previously could not throw at all. The
+ * renderer catches it, so nothing crashes; the costs are that the user reads
+ * `Error invoking remote method 'profiles:plan': Error: EACCES: permission
+ * denied, realpath '…'`, and that `setPlan` is skipped, leaving the preview
+ * describing the *previous* name underneath the new failure.
+ *
+ * macOS makes this reachable with nothing broken at all: an unentitled build
+ * gets EPERM/EACCES from realpath under ~/Documents, ~/Desktop and iCloud
+ * Drive. `chmod 000` is the portable stand-in. Root ignores the mode bits, so
+ * whether the folder is really unreadable is probed rather than assumed.
+ */
+const denyBox = mkdtempSync(join(tmpdir(), 'stoke-plan-deny-'))
+try {
+  mkdirSync(join(denyBox, 'Work'))
+  chmodSync(denyBox, 0o000)
+  let denied = false
+  try {
+    readdirSync(denyBox)
+  } catch {
+    denied = true
+  }
+  if (!denied) {
+    console.log('  NOTE  this process can read a 0o000 directory (root?); refusal case not exercised')
+  } else {
+    const refused = await planProfile(denyBox, 'Work')
+    check(
+      'a folder that cannot be read is refused with a sentence, not an errno',
+      refused.error,
+      `Stoke is not allowed to read ${denyBox}. Give it access to that folder, or pick another one.`
+    )
+    check(
+      'and it is refused, never quietly planned as a create',
+      [refused.root, refused.willCreate],
+      ['', false]
+    )
+    check('the refusal never mentions realpath or a raw code', /realpath|EACCES|EPERM/.test(refused.error ?? ''), false)
+  }
+  chmodSync(denyBox, 0o700)
+  check(
+    'ENOENT alone still means "no such spelling", so a readable folder plans normally again',
+    (await planProfile(denyBox, 'Study')).action,
+    'create'
+  )
+} finally {
+  chmodSync(denyBox, 0o700)
+  rmSync(denyBox, { recursive: true, force: true })
+}
+
+console.log('\ncreate and willCreate cannot disagree')
+/*
+ * `describePlan` states the action in words — a `create` promises "It starts
+ * empty; anything you put in it joins this profile" — and
+ * ProfilesSettings.tsx:467-476 prints that sentence directly above the import
+ * list. A `create` plan whose root already exists therefore printed "It starts
+ * empty" on top of the projects it had just counted inside. Swept over every
+ * shape this module can produce rather than pinned at the one that regressed,
+ * because the inconsistency has reappeared once already by a different route.
+ */
+const shapeBox = mkdtempSync(join(tmpdir(), 'stoke-plan-shapes-'))
+try {
+  mkdirSync(join(shapeBox, 'Work'))
+  mkdirSync(join(shapeBox, 'Work', 'refinity'))
+  mkdirSync(join(shapeBox, 'Elsewhere'))
+  mkdirSync(join(shapeBox, 'Elsewhere', 'Target'))
+  symlinkSync(join(shapeBox, 'Elsewhere', 'Target'), join(shapeBox, 'Link'))
+  symlinkSync(join(shapeBox, 'Work'), join(shapeBox, 'Sibling'))
+  symlinkSync(join(shapeBox, 'nowhere-at-all'), join(shapeBox, 'Dangling'))
+
+  const shapes: [string, string][] = [
+    [shapeBox, 'Work'],
+    [shapeBox, 'work'],
+    [shapeBox, 'WORK'],
+    [shapeBox, 'Link'],
+    [shapeBox, 'link'],
+    [shapeBox, 'Sibling'],
+    [shapeBox, 'Target'],
+    [shapeBox, 'Study'],
+    [shapeBox, '...'],
+    [join(shapeBox, 'Work'), 'Work'],
+    [join(shapeBox, 'Work'), 'work'],
+    [join(shapeBox, 'Link'), 'Target'],
+    [join(shapeBox, 'Elsewhere'), 'Target']
+  ]
+  const disagreed: string[] = []
+  const wrongGroup: string[] = []
+  for (const [folder, name] of shapes) {
+    const p = await planProfile(folder, name)
+    if (p.error) continue
+    if ((p.action === 'create') !== p.willCreate) {
+      disagreed.push(`${name} in ${basename(folder)}: ${p.action}/willCreate=${p.willCreate}`)
+    }
+    // The root always sits under the folder the user picked, so nothing a
+    // symlink points at can relocate the profile.
+    if (p.root !== folder && !p.root.startsWith(folder + '/') && !p.root.startsWith(folder + '\\')) {
+      wrongGroup.push(`${name} -> ${p.root}`)
+    }
+  }
+  check('no plan says create while nothing would be created', disagreed, [])
+  check('and no plan is rooted outside the folder that was picked', wrongGroup, [])
+
+  // A dangling symlink is the one shape that cannot be planned at all: it is
+  // not a directory, so it can only be a create, and mkdir will refuse the
+  // name. Recorded so the limit is known rather than discovered.
+  const dangling = await planProfile(shapeBox, 'Dangling')
+  check(
+    'a dangling symlink plans as a create, which mkdir will then reject',
+    [dangling.action, dangling.willCreate],
+    ['create', true]
+  )
+} finally {
+  rmSync(shapeBox, { recursive: true, force: true })
+}
+
+console.log('\nthe scan-root dedupe asks the same filesystem the plan did')
+/*
+ * The dedupe decides whether `plan.root` is appended to `settings.projectRoots`
+ * — and a root that is wrongly judged "already known" is never registered, so
+ * the profile is stored, its folder is made or reused, and it renders empty.
+ * That is the original "pressed Create and nothing appeared" bug.
+ *
+ * This used to be asserted *unconditionally*, alone among the fixtures here
+ * while CASE_BLIND, NORMALISES, FOLDS_NON_ASCII and LINK_CASE_BLIND all probe
+ * the volume. On a case-sensitive volume `<box>/work` is not on disk at all,
+ * so `reuse <box>/Work` is a genuinely new root and must be appended — but
+ * `pathKey` folded it by `pathRulesFor('darwin')`, called it known, and
+ * dropped it. The unconditional assertion agreed with the bug and reported
+ * "all pass" on the one volume the fix existed for. So it is probed like
+ * everything else: SAME_FOLDER is measured off the box, and the two branches
+ * are different answers to a different disk, not a preference.
+ *
+ * Both checks are still needed together against `pathKey` -> `'CONSTANT'`: a
+ * constant key passes the first (everything looks known) and fails the second
+ * (an unrelated root would look known too, and never get appended).
  */
 const dedupeBox = mkdtempSync(join(tmpdir(), 'stoke-plan-dedupe-'))
 try {
@@ -630,12 +824,36 @@ try {
   }
 
   const staleRoot = join(dedupeBox, 'work')
+  // Not `pathRulesFor`: whether this spelling names the same directory is the
+  // thing under test, and the filesystem is the only thing that knows.
+  const SAME_FOLDER = existsSync(staleRoot)
   const staleSettings = { profiles: [], projectRoots: [staleRoot] } as unknown as Settings
   const staleResult = await createProfile(staleSettings, { folder: dedupeBox, name: 'Work', ...swatch })
   check(
-    'a stale wrong-cased root already in projectRoots is treated as the same folder',
+    SAME_FOLDER
+      ? 'a stale wrong-cased root is the same folder here, so nothing is added'
+      : 'a wrong-cased root names nothing here, so the real root is still registered',
     staleResult.patch.projectRoots,
-    [staleRoot]
+    SAME_FOLDER ? [staleRoot] : [staleRoot, join(dedupeBox, 'Work')]
+  )
+  /*
+   * The assertion that does not care which volume this is, and the one the bug
+   * actually broke: whatever ends up in projectRoots, one of them has to *be*
+   * the folder the plan chose. On the case-sensitive volume the wrong-cased
+   * root resolved to nothing at all and the real one was never appended, so
+   * the profile had no scan root and rendered empty.
+   */
+  const realRoot = realpathSync.native(staleResult.plan.root)
+  check(
+    'either way, some registered root really is the profile folder',
+    staleResult.patch.projectRoots?.some((r) => {
+      try {
+        return realpathSync.native(r) === realRoot
+      } catch {
+        return false
+      }
+    }),
+    true
   )
 
   const unrelatedRoot = join(dedupeBox, 'Elsewhere')
@@ -645,6 +863,17 @@ try {
     'an unrelated root already in the list does not swallow a genuinely new one',
     unrelatedResult.patch.projectRoots,
     [unrelatedRoot, join(dedupeBox, 'Work')]
+  )
+
+  // The same folder written two ways that are not string-equal on any
+  // platform: the filesystem resolves both, so it is added once.
+  const indirect = join(dedupeBox, 'Work', '..', 'Work')
+  const indirectSettings = { profiles: [], projectRoots: [indirect] } as unknown as Settings
+  const indirectResult = await createProfile(indirectSettings, { folder: dedupeBox, name: 'Work', ...swatch })
+  check(
+    'a root spelled through .. is recognised as the folder it really is',
+    indirectResult.patch.projectRoots,
+    [indirect]
   )
 } finally {
   rmSync(dedupeBox, { recursive: true, force: true })

@@ -221,19 +221,16 @@ export function folderName(path: string): string {
   return cut >= 0 ? trimmed.slice(cut + 1) : trimmed
 }
 
-/**
- * Does this folder already carry this name?
- *
- * The whole point of the question is to avoid `G:/Code/Task/Task`: the user
- * picks a folder and types a name, and if the folder is already called that we
- * use it rather than nesting a duplicate inside it.
+/*
+ * `sameFolderName(path, name, caseInsensitive)` used to live here — the
+ * "does this folder already carry this name" test, so `G:/Code/Task` named
+ * `Task` did not become `G:/Code/Task/Task`. It is gone rather than kept: its
+ * `caseInsensitive` flag was a platform guess, and `isNamed` in
+ * src/main/profiles.ts answers the same question by asking the filesystem
+ * whether the two paths are the same directory. Nothing in the app called this
+ * after that change; only the suite did, and a helper kept alive by its own
+ * test is how the guess would creep back in.
  */
-export function sameFolderName(path: string, name: string, caseInsensitive: boolean): boolean {
-  const a = folderName(path)
-  const b = name.trim()
-  if (!a || !b) return false
-  return caseInsensitive ? a.toLowerCase() === b.toLowerCase() : a === b
-}
 
 /** Title-case a folder name for display: `my-projects` -> `My projects`. */
 function titleCase(id: string): string {
@@ -446,6 +443,12 @@ export function nextProfileId(group: string, taken: string[]): string {
  * projects" case. That silently made picking `G:/Code` and naming a profile
  * `Task` produce a profile covering all of `G:/Code`, which looked like it had
  * worked. The name decides the folder; imports are a consequence of the folder.
+ *
+ * For a plan with no error the action and `willCreate` always agree — `create`
+ * means `willCreate: true` and `reuse` means `willCreate: false`, enforced in
+ * `planProfile`. `describePlan` below states the action in words, so the pair
+ * disagreeing printed "It starts empty" above a list of the projects already
+ * inside.
  */
 export type ProfileAction = 'reuse' | 'create'
 
