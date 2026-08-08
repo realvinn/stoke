@@ -80,13 +80,63 @@ export function ProjectMetaPicker({
     const trigger = triggerRef.current
     const pop = popRef.current
     if (!trigger || !pop) return
+    // `.project-meta-pop` is positioned against the *row* (`top: calc(100% +
+    // var(--space-4))` on `.project` in app.css), not against this trigger
+    // button. Measuring from the trigger understated how much room the
+    // popover actually needs by the row's padding below the trigger plus the
+    // gap — a constant that let the popover stay "below" while it was
+    // already clipping the container's bottom edge.
+    const row = (trigger.closest('.project') as HTMLElement | null) ?? trigger
+
+    const measure = (): void => {
+      const scrollEl = trigger.closest('.sidebar-scroll')
+      if (!scrollEl) {
+        // No scroll-clipping ancestor found. This component is only ever
+        // mounted inside `.sidebar-scroll` today, so this is purely
+        // defensive: the viewport is neither the real clipping ancestor nor
+        // a safe stand-in for one, so guessing against it can decide "flip"
+        // against a box the popover was never actually constrained by. Stay
+        // at the pre-flip default instead — the position every popover had
+        // before this effect existed, and never wrong, only occasionally
+        // not flipped when it could have been.
+        setSide('below')
+        return
+      }
+      const bounds = scrollEl.getBoundingClientRect()
+      const rowRect = row.getBoundingClientRect()
+      const popRect = pop.getBoundingClientRect()
+      // The gap is the same length token (`--space-4`) on both the "below"
+      // and "above" CSS rules, so recover its current rendered value from
+      // whichever side the popover is actually on right now instead of
+      // duplicating the token here — a duplicate would drift the moment
+      // `--ui-scale` changes the rem base the token resolves against.
+      // Geometry decides which side is current, not the `side` state: this
+      // function is also called from the scroll listener below, where a
+      // stale closure over `side` would use the wrong side's formula for a
+      // stretch of scroll events after every flip.
+      const gapBelow = popRect.top - rowRect.bottom
+      const gapAbove = rowRect.top - popRect.bottom
+      const gap = gapBelow >= 0 ? gapBelow : gapAbove
+      const needed = popRect.height
+      const spaceBelow = bounds.bottom - (rowRect.bottom + gap)
+      const spaceAbove = rowRect.top - gap - bounds.top
+      setSide(spaceBelow < needed && spaceAbove > spaceBelow ? 'above' : 'below')
+    }
+
+    measure()
+
+    // Wheel-scrolling `.sidebar-scroll` doesn't move focus, so the root
+    // `onBlur` that closes the popover never fires: it can stay open while
+    // the row it's anchored to scrolls anywhere in the list. Re-measure on
+    // scroll so a flip decided at one offset doesn't survive stale into an
+    // offset where it clips the opposite edge instead. Listener lives only
+    // while the popover is open — attached here, removed by this same
+    // effect's cleanup on close and on unmount, never left on the scroll
+    // container past that (this component is instantiated once per project
+    // row, so a leaked listener here is a leak per row, not just one).
     const scrollEl = trigger.closest('.sidebar-scroll')
-    const bounds = (scrollEl ?? document.documentElement).getBoundingClientRect()
-    const triggerRect = trigger.getBoundingClientRect()
-    const spaceBelow = bounds.bottom - triggerRect.bottom
-    const spaceAbove = triggerRect.top - bounds.top
-    const needed = pop.getBoundingClientRect().height
-    setSide(spaceBelow < needed && spaceAbove > spaceBelow ? 'above' : 'below')
+    scrollEl?.addEventListener('scroll', measure, { passive: true })
+    return () => scrollEl?.removeEventListener('scroll', measure)
   }, [open])
 
   const setEmoji = (emoji: string | null): void => {

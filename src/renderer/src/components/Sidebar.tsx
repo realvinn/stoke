@@ -239,7 +239,7 @@ export function Sidebar({
         {!loading && projects.length > 0 && filtered.length === 0 && (
           <div className="empty">
             <h3>Nothing matches</h3>
-            <p>No project name or path contains &ldquo;{query}&rdquo;.</p>
+            <p>No project name, path, or label contains &ldquo;{query}&rdquo;.</p>
           </div>
         )}
 
