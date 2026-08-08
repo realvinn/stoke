@@ -509,5 +509,78 @@ console.log('\nwhat the scanner offers up to be written')
   scanner.dispose()
 }
 
+console.log('\nwhat survives a restart')
+{
+  /*
+   * A resumed session arrives with its whole history in the transcript, so the
+   * first reading sets the baseline rather than counting as work. Held only in
+   * memory, that rule re-fired on every launch: the baseline jumped to the
+   * current count and the work done just before the restart could never be
+   * logged by anything.
+   */
+  /* `lastScanAt` is set one millisecond past the cooldown, so this session is
+     eligible on every rule except the one being tested. A more recent value
+     would make the verdict below 'cooldown' and prove nothing about baselines. */
+  const restored: AutoScanSnapshot = {
+    sessions: [
+      { sessionId: 's1', scannedMessages: 100, lastScanAt: NOW - cfg.cooldownMs - 1, mutedUntil: 0 }
+    ],
+    recentScans: [NOW - 1000]
+  }
+  const scanner = new AutoScanner({
+    enabled: () => true,
+    watched: () => true,
+    scan: async () => 0,
+    now: () => NOW,
+    restore: () => restored
+  })
+  scanner.observe('s1', 140, NOW - cfg.idleMs - 1)
+  check(
+    'a restored baseline is not overwritten by the first reading',
+    scanner.state('s1')?.scannedMessages,
+    100
+  )
+  check(
+    'and the last scan time comes back with it',
+    scanner.state('s1')?.lastScanAt,
+    NOW - cfg.cooldownMs - 1
+  )
+  check(
+    'so the 40 messages written before the restart still count as new work',
+    autoScanVerdict(scanner.state('s1')!, NOW, [], cfg),
+    { scan: true }
+  )
+
+  scanner.observe('s2', 12, NOW - cfg.idleMs - 1)
+  check('a session nobody stored still baselines on first sight', scanner.state('s2')?.scannedMessages, 12)
+  scanner.dispose()
+}
+
+console.log('\nand when it is written down')
+{
+  /* A muted session is a state change worth keeping: without the write, a
+     restart un-mutes every session the gate just turned away. */
+  const writes: AutoScanSnapshot[] = []
+  const scanner = new AutoScanner({
+    enabled: () => true,
+    watched: () => false,
+    scan: async () => 0,
+    now: () => NOW,
+    persist: (s) => writes.push(s)
+  })
+  // Two readings again: the first is the baseline, the second is the work that
+  // makes this session a scan candidate at all.
+  scanner.observe('s1', 40, NOW - cfg.idleMs - 1)
+  scanner.observe('s1', 40 + cfg.minNewMessages, NOW - cfg.idleMs - 1)
+  await scanner.evaluate()
+  check('muting a session writes the state out', writes.length >= 1, true)
+  ok(
+    'and what it wrote has the session muted, not claimed',
+    writes.at(-1)!.sessions.some((s) => s.sessionId === 's1' && s.mutedUntil > NOW),
+    JSON.stringify(writes.at(-1))
+  )
+  scanner.dispose()
+}
+
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
 process.exitCode = failures ? 1 : 0

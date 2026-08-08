@@ -233,14 +233,25 @@ export class AutoScanner {
     if (!sessionId || this.disposed) return
     const found = this.sessions.get(sessionId)
     if (!found) {
+      /*
+       * A baseline from the last run beats a fresh one.
+       *
+       * Without it, restarting Stoke re-baselined every resumed session to its
+       * current message count — so the work done in the minutes before the
+       * restart became invisible to the scanner and was never logged by
+       * anything. The rule "a resumed session's history is not new work" still
+       * holds for a session this install has genuinely never seen.
+       */
+      const prior = this.restored.get(sessionId)
+      this.restored.delete(sessionId)
       this.sessions.set(sessionId, {
         sessionId,
         messageCount,
         updatedAt,
-        scannedMessages: messageCount,
-        lastScanAt: 0,
+        scannedMessages: prior ? Math.min(prior.scannedMessages, messageCount) : messageCount,
+        lastScanAt: prior?.lastScanAt ?? 0,
         scanning: false,
-        mutedUntil: 0
+        mutedUntil: prior?.mutedUntil ?? 0
       })
       this.evict()
       return
@@ -287,14 +298,40 @@ export class AutoScanner {
    */
   snapshot(): AutoScanSnapshot {
     const now = this.now()
+    const live = [...this.sessions.values()].map((s) => ({
+      sessionId: s.sessionId,
+      scannedMessages: s.scannedMessages,
+      lastScanAt: s.lastScanAt,
+      mutedUntil: s.mutedUntil
+    }))
+    /*
+     * `this.sessions` alone is not the whole of "what is worth writing down".
+     * A session restored from disk but never re-observe()'d this run — its tab
+     * stayed closed, say — sits only in `this.restored`. Leaving it out here
+     * would make the very first write of a new run silently forget it, even
+     * though nothing about it went stale: `observe`'s first-sight branch is
+     * the only place that consumes a `restored` entry, and a session whose tab
+     * never reopened never reaches it.
+     *
+     * `this.sessions` and `this.restored` never share a key — the first-sight
+     * branch deletes from one before it sets the other — so this is a plain
+     * concatenation, not a merge that needs to resolve conflicts.
+     */
+    const stillRestored = [...this.restored.values()]
     return {
-      sessions: [...this.sessions.values()].map((s) => ({
-        sessionId: s.sessionId,
-        scannedMessages: s.scannedMessages,
-        lastScanAt: s.lastScanAt,
-        mutedUntil: s.mutedUntil
-      })),
+      sessions: [...live, ...stillRestored],
       recentScans: this.recentScans.filter((t) => now - t < HOUR_MS)
+    }
+  }
+
+  /** Write the state out, if the caller gave us somewhere to write it. */
+  private save(): void {
+    try {
+      this.opts.persist?.(this.snapshot())
+    } catch (err) {
+      // A state file that cannot be written is a slower feature, not a broken
+      // one. Never take the scanner down over a cache.
+      console.error('[stoke] failed to persist the autoscan state', err)
     }
   }
 
@@ -347,6 +384,14 @@ export class AutoScanner {
         if (!watched) {
           session.scanning = false
           session.mutedUntil = this.now() + this.config.cooldownMs
+          /*
+           * Written here, after the await and after the claim is released.
+           * CLAUDE.md gotcha 20: an await inside a polling pass is a window,
+           * and the state written must be the state a second pass would see —
+           * `scanning: false`, muted until a known time. Snapshotting before
+           * the await would persist a claim that no longer exists.
+           */
+          this.save()
           continue
         }
         /*
@@ -395,6 +440,13 @@ export class AutoScanner {
       session.scannedMessages = Math.max(session.scannedMessages, banked)
     } finally {
       session.scanning = false
+      /*
+       * After `scanning` is cleared, never before. The snapshot deliberately
+       * cannot carry a scan in flight — a process that dies mid-scan must come
+       * back able to scan that session again, and a stored `scanning: true`
+       * would make it permanently ineligible.
+       */
+      this.save()
     }
   }
 }

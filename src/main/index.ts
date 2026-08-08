@@ -33,6 +33,7 @@ import {
 import { groupForCwd } from './worklog/gate.ts'
 import { watchStateFrom } from './worklog/watch.ts'
 import { AutoScanner } from './worklog/autoscan.ts'
+import { autoScanStateFile, readAutoScanState, writeAutoScanState } from './worklog/autoscanStore.ts'
 import { invalidateRecall, recall, scanOutcomeFor } from './worklog/recall.ts'
 import type { CreateProfileInput } from '@shared/profiles'
 import { getSettings, onSettingsChanged, setSettings } from './store.ts'
@@ -625,6 +626,7 @@ function createWindow(): void {
    * costs no new polling, no new file handles and no new IPC. See
    * worklog/autoscan.ts for why the transcript is the right signal.
    */
+  const autoscanState = autoScanStateFile(app.getPath('userData'))
   autoscan = new AutoScanner({
     /*
      * A cheap "could anything possibly be watched" check, so a pass with
@@ -675,7 +677,13 @@ function createWindow(): void {
         console.warn('[stoke] automatic worklog scan:', report.outcome, report.message)
       }
       return report.added
-    }
+    },
+    // Baselines and the hourly ceiling survive a restart. Without this, quitting
+    // re-baselined every resumed session — so the work done just before a
+    // restart was invisible to the scanner — and cleared the spending ceiling,
+    // which made it not a ceiling.
+    restore: () => readAutoScanState(autoscanState),
+    persist: (snapshot) => writeAutoScanState(autoscanState, snapshot)
   })
   autoscan.start()
 
