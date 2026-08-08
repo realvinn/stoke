@@ -37,6 +37,13 @@ import {
   statusesFor
 } from '../src/main/worklog/recall.ts'
 import type { HeadlessOptions, HeadlessResult } from '../src/main/agent.ts'
+/*
+ * The assumed shape a budget-exhausted headless run returns, shared with
+ * verify-worklog-runner.mts (plan-resolutions.md, Task 24) rather than
+ * restated here. See scripts/worklog-budget-fixture.ts for what "assumed"
+ * means and the tool that would confirm it.
+ */
+import { BUDGET_REFUSAL } from './worklog-budget-fixture.ts'
 
 let failures = 0
 
@@ -534,6 +541,57 @@ console.log('\nan empty allowlist is not the same as no tools')
   check('no board configured runs nothing at all', stubbed.calls(), 0)
   check('and reports an empty reading rather than an error', snap.error, undefined)
   check('stamped with the time it was decided', snap.readAt, 42)
+}
+
+/* -------------------------------------------------------- budget exhaustion */
+
+console.log('\na recall that ran out of money does not report an empty board')
+
+{
+  const refused: Runner = async () => ({
+    ...BUDGET_REFUSAL,
+    costUsd: 0.15,
+    durationMs: 100,
+    numTurns: 1,
+    sessionId: null,
+    permissionDenials: [],
+    raw: {}
+  })
+  const snap = await readExisting({ ...BOARDS, run: refused }, 7)
+  check('it is flagged as a budget failure', snap.budget, true)
+  ok('and says so in words', /budget ceiling/.test(snap.error ?? ''), snap.error ?? '')
+  ok(
+    // The literal figure comes from RECALL_MAX_BUDGET_USD itself, not restated
+    // as a number here - a restated literal goes stale silently the next time
+    // the ceiling is retuned (it already has been once, by Task 23).
+    'naming the ceiling it hit, not the cost it reached',
+    (snap.error ?? '').includes(`$${RECALL_MAX_BUDGET_USD.toFixed(2)}`),
+    snap.error ?? ''
+  )
+  check('with no items, so nothing is claimed to exist', snap.items, {})
+}
+
+/*
+ * A recall that failed for any other reason is NOT flagged as a budget
+ * failure: `budget` is the flag a future scan report turns into "stopped
+ * early, here is the figure", and applying it to a broken connector would
+ * send the user to change a number that was never the problem.
+ */
+{
+  const broken: Runner = async () => ({
+    text: 'The MCP server returned 502.',
+    isError: true,
+    subtype: 'error_during_execution',
+    costUsd: 0.01,
+    durationMs: 100,
+    numTurns: 1,
+    sessionId: null,
+    permissionDenials: [],
+    raw: {}
+  })
+  const snap = await readExisting({ ...BOARDS, run: broken }, 8)
+  check('an ordinary failure is not flagged as a budget one', snap.budget, undefined)
+  ok('and carries its own reason', /502/.test(snap.error ?? ''), snap.error ?? '')
 }
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)

@@ -6,8 +6,8 @@
  * anything. RECALL_MAX_BUDGET_USD and APPLY_MAX_BUDGET_USD ship as stated
  * figures with a stated derivation, so nothing depends on this tool having
  * been run; what it buys is the right to *tighten* them, and to replace the
- * assumed BUDGET_REFUSAL envelope in the two worklog suites with the observed
- * one.
+ * assumed BUDGET_REFUSAL envelope in scripts/worklog-budget-fixture.ts —
+ * shared by both worklog suites — with the observed one.
  *
  * NOT part of `npm run check`. Both modes spawn a real `claude` and the recall
  * mode reads a live board through the user's own MCP connectors, so this costs
@@ -135,11 +135,12 @@ if (mode === 'recall') {
     report('the refusal', result)
     console.log(`\nraw envelope:\n${JSON.stringify(result.raw, null, 2)}`)
     console.log(
-      '\n>>> Copy the subtype and the first line of the text above into the BUDGET_REFUSAL\n' +
-        '>>> fixture in BOTH scripts/verify-worklog-runner.mts and\n' +
-        '>>> scripts/verify-worklog-recall.mts, keeping the two copies identical. The assertions\n' +
-        '>>> around them do not change: isBudgetExhausted matches /budget/i on either field, so a\n' +
-        '>>> real envelope must still be recognised and a plain failure must still not be.'
+      '\n>>> Copy the subtype and the first line of the text above into BUDGET_REFUSAL in\n' +
+        '>>> scripts/worklog-budget-fixture.ts. Both scripts/verify-worklog-runner.mts and\n' +
+        '>>> scripts/verify-worklog-recall.mts import it from that one file, so there is only one\n' +
+        '>>> place to edit. The assertions around it do not change: isBudgetExhausted matches\n' +
+        '>>> /budget/i on either field, so a real envelope must still be recognised and a plain\n' +
+        '>>> failure must still not be.'
     )
   } catch (err) {
     console.log('\nit threw instead of returning an envelope:')

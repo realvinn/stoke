@@ -131,6 +131,32 @@ export class HeadlessError extends Error {
   }
 }
 
+/**
+ * Did this run stop because it ran out of money, rather than fail?
+ *
+ * A budget-exhausted run exits non-zero but still prints a result envelope, and
+ * both its `subtype` and its result text mention 'budget'. agent.ts already
+ * keeps that envelope on purpose — "a non-zero exit that still printed a result
+ * envelope is a real answer about a real failure (budget exceeded, a tool
+ * denied)".
+ *
+ * Both are matched because neither is a documented interface, and the cost of
+ * guessing wrong is the failure spec §2.4.4 describes: budget exhaustion
+ * arriving as "nothing to report". The subtype is a string somebody else owns
+ * and can rename; the text is the part the user is shown. Matching either is
+ * how this keeps working when one of them changes.
+ *
+ * `isError` is still required. Without it a successful run whose answer merely
+ * mentions a budget — "I stayed within budget." — would be reported as a budget
+ * failure, and that is a worse lie than the one this function exists to stop.
+ */
+export function isBudgetExhausted(
+  result: Pick<HeadlessResult, 'isError' | 'subtype' | 'text'>
+): boolean {
+  if (!result.isError) return false
+  return /budget/i.test(result.subtype ?? '') || /budget/i.test(result.text ?? '')
+}
+
 function isFile(p: string): boolean {
   try {
     return existsSync(p) && statSync(p).isFile()

@@ -1,5 +1,5 @@
 import { readTranscript, type TranscriptTurn } from '../sessionFile.ts'
-import { runHeadless, type HeadlessOptions } from '../agent.ts'
+import { isBudgetExhausted, runHeadless, type HeadlessOptions } from '../agent.ts'
 import { asRecord, candidates, clip, oneLine } from './json.ts'
 import { EMPTY_RECALL, formatRecall, statusesFor, type RecallSnapshot } from './recall.ts'
 import { DEFAULT_WORKLOG_BOARDS, WORKLOG_TARGETS } from '../../shared/worklog.ts'
@@ -135,6 +135,31 @@ export class WorklogParseError extends Error {
     super(message)
     this.name = 'WorklogParseError'
     this.reply = reply
+  }
+}
+
+/**
+ * The run stopped at its budget ceiling rather than because there was nothing
+ * to say.
+ *
+ * Its own type for the same reason WorklogParseError is: spec §2.4 records that
+ * budget exhaustion presented as an empty result, which is indistinguishable
+ * from "this session had nothing worth logging" — and one of those is the
+ * feature dying silently. Every surface that reports a scan reads this type.
+ */
+export class WorklogBudgetError extends Error {
+  readonly limitUsd: number
+  readonly costUsd: number | null
+
+  // Explicit assignment rather than TS parameter properties, matching the other
+  // main-process classes so this stays runnable under node's type stripping.
+  constructor(what: string, limitUsd: number, costUsd: number | null) {
+    super(
+      `The worklog ${what} stopped at its $${limitUsd.toFixed(2)} budget ceiling before it finished, so nothing was written.`
+    )
+    this.name = 'WorklogBudgetError'
+    this.limitUsd = limitUsd
+    this.costUsd = costUsd
   }
 }
 
@@ -808,7 +833,12 @@ export async function scanSession(input: ScanInput): Promise<ScanOutcome> {
   const result = await runHeadless(scanRunOptions(prompt, input))
 
   if (result.isError) {
-    throw new Error(`The worklog scan failed: ${clip(oneLine(result.text), 300) || result.subtype || 'unknown error'}`)
+    if (isBudgetExhausted(result)) {
+      throw new WorklogBudgetError('scan', input.maxBudgetUsd ?? SCAN_MAX_BUDGET_USD, result.costUsd)
+    }
+    throw new Error(
+      `The worklog scan failed: ${clip(oneLine(result.text), 300) || result.subtype || 'unknown error'}`
+    )
   }
 
   const { drafts, demoted } = groundProposals(
@@ -1021,7 +1051,15 @@ export async function applyProposal(
       if (result.costUsd !== null) cost = (cost ?? 0) + result.costUsd
 
       if (result.isError) {
-        throw new Error(clip(oneLine(result.text), 300) || result.subtype || 'the run reported an error')
+        throw isBudgetExhausted(result)
+          ? new WorklogBudgetError(
+              `write to ${target}`,
+              opts.maxBudgetUsd ?? APPLY_MAX_BUDGET_USD,
+              result.costUsd
+            )
+          : new Error(
+              clip(oneLine(result.text), 300) || result.subtype || 'the run reported an error'
+            )
       }
 
       /*

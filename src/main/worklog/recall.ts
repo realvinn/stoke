@@ -1,4 +1,4 @@
-import { runHeadless, type HeadlessOptions, type HeadlessResult } from '../agent.ts'
+import { isBudgetExhausted, runHeadless, type HeadlessOptions, type HeadlessResult } from '../agent.ts'
 import { asRecord, clip, oneLine, parsedCandidates } from './json.ts'
 import { WORKLOG_TARGETS } from '../../shared/worklog.ts'
 import type { WorklogExistingItem, WorklogTarget } from '@shared/types'
@@ -100,6 +100,12 @@ export interface RecallSnapshot {
    * prompt says so, so the model is not told an empty board is a fact.
    */
   error?: string
+  /**
+   * The read stopped at its budget ceiling. A separate flag from `error`
+   * because it is the one failure with a fix the user can act on, and because
+   * it is what the scan report turns into the outcome `budget`.
+   */
+  budget?: true
 }
 
 export const EMPTY_RECALL: RecallSnapshot = { items: {}, readAt: 0 }
@@ -366,6 +372,15 @@ export async function readExisting(opts: RecallOptions, now = Date.now()): Promi
     return { items: {}, readAt: now, error: err instanceof Error ? err.message : String(err) }
   }
   if (result.isError) {
+    if (isBudgetExhausted(result)) {
+      const limit = opts.maxBudgetUsd ?? RECALL_MAX_BUDGET_USD
+      return {
+        items: {},
+        readAt: now,
+        budget: true,
+        error: `the recall run stopped at its $${limit.toFixed(2)} budget ceiling before it could read the boards`
+      }
+    }
     return {
       items: {},
       readAt: now,

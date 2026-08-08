@@ -21,7 +21,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { buildHeadlessArgs, DEFAULT_HEADLESS_MODEL } from '../src/main/agent.ts'
+import { buildHeadlessArgs, DEFAULT_HEADLESS_MODEL, isBudgetExhausted } from '../src/main/agent.ts'
 import {
   APPLY_MAX_BUDGET_USD,
   CLICKUP_LIST_ID,
@@ -31,7 +31,9 @@ import {
   SCAN_DISALLOWED_TOOLS,
   SCAN_MAX_BUDGET_USD,
   WRITE_ORDER,
+  WorklogBudgetError,
   WorklogParseError,
+  applyProposal,
   applyRunOptions,
   buildApplyPrompt,
   buildScanPrompt,
@@ -42,6 +44,13 @@ import {
   summariseTurns,
   tidyTitle
 } from '../src/main/worklog/runner.ts'
+/*
+ * The assumed shape a budget-exhausted headless run returns, shared with
+ * verify-worklog-recall.mts (plan-resolutions.md, Task 24) rather than
+ * restated here. See scripts/worklog-budget-fixture.ts for what "assumed"
+ * means and the tool that would confirm it.
+ */
+import { BUDGET_REFUSAL } from './worklog-budget-fixture.ts'
 import { MAX_RECALL_CHARS, formatRecall, type RecallSnapshot } from '../src/main/worklog/recall.ts'
 import {
   MAX_ENTRIES,
@@ -1328,6 +1337,83 @@ check(
 )
 check('and no existing record is carried onto a create', offBoardMatch.drafts[0].existing, undefined)
 check('it is counted as demoted, same as an id nobody has seen', offBoardMatch.demoted, 1)
+
+/* -------------------------------------------------------- budget exhaustion */
+
+/*
+ * Spec §2.4: a run that ran out of money looked exactly like a session with
+ * nothing worth logging. isBudgetExhausted matches on the word "budget" in
+ * either the subtype or the result text, on purpose - neither is a documented
+ * interface of the CLI, so a test pinned to the exact assumed wording would
+ * pass for the wrong reason the moment the real wording differs.
+ */
+console.log('\na run that ran out of money says so')
+
+ok('a budget refusal is recognised', isBudgetExhausted(BUDGET_REFUSAL))
+ok(
+  'the subtype alone is enough, in case the wording changes',
+  isBudgetExhausted({ isError: true, subtype: 'error_max_budget_exceeded', text: '' })
+)
+ok(
+  'and the text alone is enough, in case the subtype is renamed',
+  isBudgetExhausted({ isError: true, subtype: 'error_during_execution', text: 'over budget' })
+)
+ok(
+  'a plain failure is not mistaken for one',
+  !isBudgetExhausted({ isError: true, subtype: 'error_during_execution', text: 'the tool failed' })
+)
+ok(
+  'and a success never is, whatever it happens to mention',
+  !isBudgetExhausted({ isError: false, subtype: 'success', text: 'I stayed within budget.' })
+)
+ok(
+  'the fixture is a real envelope, not an unfilled marker',
+  !/[<>]/.test(BUDGET_REFUSAL.subtype) && !/[<>]/.test(BUDGET_REFUSAL.text),
+  `${BUDGET_REFUSAL.subtype} / ${BUDGET_REFUSAL.text}`
+)
+
+{
+  // The class's own message-building, independent of anything that catches it.
+  const direct = new WorklogBudgetError('scan', 0.3, 0.29)
+  ok(
+    'WorklogBudgetError states the ceiling in its own message',
+    direct.message.includes('$0.30'),
+    direct.message
+  )
+  check(
+    'and records both figures for any caller that wants them, not only the sentence',
+    [direct.limitUsd, direct.costUsd],
+    [0.3, 0.29]
+  )
+}
+
+{
+  const BUDGET_REFUSAL_RESULT = {
+    ...BUDGET_REFUSAL,
+    costUsd: 0.3,
+    durationMs: 900,
+    numTurns: 1,
+    sessionId: null,
+    permissionDenials: [],
+    raw: {}
+  }
+  const budgeted = (async () => BUDGET_REFUSAL_RESULT) as never
+  const out = await applyProposal(proposal(), { run: budgeted })
+  ok(
+    'a write that hit the ceiling says which ceiling',
+    /budget/i.test(Object.values(out.errors).join(' ')),
+    JSON.stringify(out.errors)
+  )
+  ok(
+    // The literal figure comes from APPLY_MAX_BUDGET_USD itself, not restated
+    // as a number here - a restated literal goes stale silently the next time
+    // the ceiling is retuned (it already has been once, by Task 23).
+    'and names the figure, because that is the part the user can act on',
+    Object.values(out.errors).join(' ').includes(`$${APPLY_MAX_BUDGET_USD.toFixed(2)}`),
+    JSON.stringify(out.errors)
+  )
+  ok('and is not reported ok', !out.ok)
+}
 
 rmSync(dir, { recursive: true, force: true })
 
