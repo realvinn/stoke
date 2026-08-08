@@ -15,7 +15,7 @@ import { GATE_RULES, groupForCwd, isWatchedGroup, shouldWatch } from '../src/mai
 import { watchStateFrom } from '../src/main/worklog/watch.ts'
 import { groupForCwd as groupForCwdShared, pathRulesFor } from '../src/shared/paths.ts'
 import type { Project } from '../src/shared/types.ts'
-import { scanSentence, watchSentence } from '../src/shared/worklog.ts'
+import { scanSentence, watchSentence, worklogButtonState } from '../src/shared/worklog.ts'
 
 let failures = 0
 
@@ -567,6 +567,29 @@ ok(
     }),
     's1'
   )
+)
+
+console.log('\nwhat the title-bar button is showing')
+
+const watching = state()
+const off = state({ watched: false, reason: 'off' })
+
+check('nothing open at all is disarmed', worklogButtonState([], 0), 'disarmed')
+check('every session off is disarmed', worklogButtonState([off, off] as never[], 0), 'disarmed')
+check('a watched session is watching', worklogButtonState([off, watching] as never[], 0), 'watching')
+check('anything pending badges', worklogButtonState([watching] as never[], 3), 'badged')
+/*
+ * A pending proposal outranks the switch. A queue holding work the user has
+ * not decided on must be reachable even after they switch every profile off —
+ * otherwise turning the feature off hides three real proposals with no way
+ * back to them. Contracts §0.3 states this ordering, and the tab strip reads
+ * the same contract.
+ */
+check('and it badges even with everything switched off', worklogButtonState([off] as never[], 1), 'badged')
+check(
+  'an unwatched-but-known session is neither armed nor showing anything',
+  worklogButtonState([state({ watched: false, reason: 'unwatched-group' })] as never[], 0),
+  'disarmed'
 )
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)

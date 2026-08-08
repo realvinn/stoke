@@ -562,6 +562,7 @@ body {
 }
 
 .icon-btn {
+  position: relative;
   display: grid;
   place-items: center;
   width: 1.75rem;
@@ -589,6 +590,30 @@ body {
 .icon-btn[aria-pressed='true'] {
   background: var(--accent-soft);
   color: var(--accent);
+}
+
+/* Watching: something may appear here without being asked for. Full-strength
+   text rather than muted — a state, not an alert. */
+.icon-btn[data-worklog='watching'] {
+  color: var(--text);
+}
+
+/* Badged: something is waiting for a decision. Deliberately NOT red — red in
+   the tab strip means "the worklog is watching this session" and nothing else,
+   so a second red here would put the one meaning back into doubt. */
+.icon-btn[data-worklog='badged'] {
+  color: var(--accent);
+}
+
+.icon-btn[data-worklog='badged']::after {
+  content: '';
+  position: absolute;
+  top: var(--sp-1);
+  right: var(--sp-1);
+  width: 0.375rem;
+  height: 0.375rem;
+  border-radius: var(--r-full);
+  background: var(--accent);
 }
 
 .input {

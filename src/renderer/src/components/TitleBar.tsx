@@ -1,4 +1,5 @@
 import type { ContextSnapshot } from '@shared/types'
+import type { WorklogButtonState } from '@shared/worklog'
 import { ContextRing } from './ContextMeter'
 import { UsageChip } from './UsageMeter'
 import {
@@ -29,8 +30,10 @@ interface Props {
   onNewTab: () => void
   onToggleSidebar: () => void
   onToggleBrowser: () => void
-  /** Proposals awaiting review. Zero hides the control entirely. */
+  /** Proposals awaiting review. Shown in the tooltip; the badge comes from worklogState. */
   worklogCount: number
+  /** disarmed / watching / badged — see worklogButtonState. */
+  worklogState: WorklogButtonState
   worklogOpen: boolean
   onToggleWorklog: () => void
   onOpenPalette: () => void
@@ -51,6 +54,7 @@ export function TitleBar({
   onToggleSidebar,
   onToggleBrowser,
   worklogCount,
+  worklogState,
   worklogOpen,
   onToggleWorklog,
   onOpenPalette,
@@ -154,12 +158,15 @@ export function TitleBar({
         */}
         <button
           className="icon-btn"
+          data-worklog={worklogState}
           onClick={onToggleWorklog}
           aria-pressed={worklogOpen}
           title={
             worklogCount > 0
               ? `Worklog — ${worklogCount} awaiting review`
-              : 'Worklog — scan this session for Notion and ClickUp entries'
+              : worklogState === 'watching'
+                ? 'Worklog — watching this session; nothing to review yet'
+                : 'Worklog — nothing is watched. Scan a session, or tick a profile in Settings'
           }
         >
           <IconPin />

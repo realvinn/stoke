@@ -176,3 +176,27 @@ export function scanSentence(report: WorklogScanReport, activeSessionId: string 
         : `${subject} and found nothing worth logging.`
   }
 }
+
+/** What the title-bar worklog control is currently saying. */
+export type WorklogButtonState = 'disarmed' | 'watching' | 'badged'
+
+/**
+ * Three states, in this order of precedence:
+ *
+ *  1. `badged` — something is waiting for a decision. It outranks everything,
+ *     including the feature being switched off: a queue holding work the user
+ *     has not ruled on has to stay reachable, or turning the agent off would
+ *     hide real proposals with no way back to them.
+ *  2. `watching` — at least one open session is the agent's business, so
+ *     something may appear without being asked for.
+ *  3. `disarmed` — nothing is watched and nothing is waiting. The control stays
+ *     visible: hiding it made the feature unreachable on a clean install,
+ *     because the only way to raise the count was the button inside the panel.
+ */
+export function worklogButtonState(
+  states: WorklogWatchState[],
+  pending: number
+): WorklogButtonState {
+  if (pending > 0) return 'badged'
+  return states.some((s) => s.watched) ? 'watching' : 'disarmed'
+}

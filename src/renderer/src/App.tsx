@@ -16,6 +16,7 @@ import type {
 import type { UpdateInfo } from '@shared/api'
 import { profileFor, resolveProfiles, visibleProfiles } from '@shared/profiles'
 import { resolveTheme } from '@shared/themes'
+import { worklogButtonState } from '@shared/worklog'
 import { BrowserPanel } from './components/BrowserPanel'
 import { CommandPalette } from './components/CommandPalette'
 import { Launcher } from './components/Launcher'
@@ -688,6 +689,12 @@ export function App(): React.JSX.Element {
     [projects, startSession]
   )
 
+  const worklogPending = worklog.filter((p) => p.status === 'pending').length
+  const worklogState = useMemo(
+    () => worklogButtonState(worklogWatch, worklogPending),
+    [worklogWatch, worklogPending]
+  )
+
   return (
     <div className="app">
       <TitleBar
@@ -703,7 +710,8 @@ export function App(): React.JSX.Element {
         onNewTab={() => setActiveTabId(null)}
         onToggleSidebar={() => setSidebarOpen((v) => !v)}
         onToggleBrowser={() => setBrowserOpen((v) => !v)}
-        worklogCount={worklog.filter((p) => p.status === 'pending').length}
+        worklogCount={worklogPending}
+        worklogState={worklogState}
         worklogOpen={worklogOpen}
         onToggleWorklog={() => setWorklogOpen((v) => !v)}
         onOpenPalette={() => setPaletteOpen(true)}
