@@ -428,6 +428,41 @@ try {
   )
 
   /*
+   * The seam listProjects itself owns: it builds the ProjectMetaOptions object
+   * (projects.ts:226-230) rather than applyProjectMeta's own defaults, and
+   * applyProjectMeta's per-option coverage elsewhere in this file (:296-311)
+   * never runs through listProjects, so it cannot see whether the real
+   * pinnedProjects list or the real existsSync actually get wired through
+   * here. Both fixtures below live inside `tmp`, so they are found by
+   * `.find()` on the specific path this fixture created — never asserted over
+   * the whole returned list.
+   */
+  const pinnedFolder = join(tmp, 'pinned-by-hand')
+  mkdirSync(pinnedFolder)
+  const withPinned = await listProjects(
+    listSettings({
+      projectMeta: { [pinnedFolder]: { addedManually: true } },
+      pinnedProjects: [pinnedFolder]
+    })
+  )
+  const pinnedHit = withPinned.find((x) => x.path === pinnedFolder)
+  check(
+    'a manually added folder that is also in pinnedProjects comes back pinned',
+    pinnedHit?.pinned,
+    true
+  )
+
+  const missingFolder = join(tmp, 'never-created')
+  const withMissing = await listProjects(
+    listSettings({
+      projectMeta: { [missingFolder]: { addedManually: true } }
+    })
+  )
+  const missingHit = withMissing.find((x) => x.path === missingFolder)
+  check('a manually added folder is listed even if it was never created', missingHit !== undefined, true)
+  check('and it reports honestly that the folder does not exist', missingHit?.exists, false)
+
+  /*
    * Machine-independent replacement for a whole-list assertion: the tmpdir's
    * own child is discovered as a scan-root project (source 3 in
    * listProjects), with no projectMeta record at all, so the rule — every
