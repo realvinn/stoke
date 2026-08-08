@@ -150,17 +150,54 @@ export class WorklogParseError extends Error {
 export class WorklogBudgetError extends Error {
   readonly limitUsd: number
   readonly costUsd: number | null
+  /**
+   * A short quote of what the CLI itself said, when there was anything to
+   * quote.
+   *
+   * isBudgetExhausted() (agent.ts) matches loosely on purpose: it tests for
+   * the word "budget" in text that is the *model's own reply about the user's
+   * session*, so a session about budget or pricing work that fails for an
+   * unrelated reason can land here by mistake. Tightening the match would
+   * silently reintroduce the bug this class exists to fix (a real budget stop
+   * misread as an ordinary failure), so instead the mismatch is made
+   * survivable: the CLI's real text travels along with the friendlier framing
+   * instead of being thrown away, so a wrong diagnosis still leaves the actual
+   * failure readable. See scripts/verify-worklog-runner.mts, "a mis-detected
+   * failure still shows the real error".
+   */
+  readonly detail: string | null
 
   // Explicit assignment rather than TS parameter properties, matching the other
   // main-process classes so this stays runnable under node's type stripping.
-  constructor(what: string, limitUsd: number, costUsd: number | null) {
+  constructor(what: string, limitUsd: number, costUsd: number | null, detail: string | null = null) {
+    // The scan proposes; it never writes. Only the write path may honestly say
+    // nothing was written — finding 3 caught the scan borrowing that sentence
+    // and implying a write was interrupted.
+    const consequence = what === 'scan' ? 'so no entries were drafted' : 'so nothing was written'
+    const evidence = detail ? ` The run said: "${detail}"` : ''
     super(
-      `The worklog ${what} stopped at its $${limitUsd.toFixed(2)} budget ceiling before it finished, so nothing was written.`
+      `The worklog ${what} stopped at its $${limitUsd.toFixed(2)} budget ceiling before it finished, ${consequence}.${evidence}`
     )
     this.name = 'WorklogBudgetError'
     this.limitUsd = limitUsd
     this.costUsd = costUsd
+    this.detail = detail
   }
+}
+
+/**
+ * A short, single-line quote of what the CLI actually said, for
+ * WorklogBudgetError's `detail`.
+ *
+ * Prefers the result text — it is the part a person can make sense of — and
+ * falls back to the subtype only when the text is empty. Clipped short: this
+ * rides along inside a sentence, not as a report of its own.
+ */
+function budgetEvidence(result: { text: string; subtype: string | null }): string | null {
+  const text = clip(oneLine(result.text ?? ''), 200)
+  if (text) return text
+  const subtype = result.subtype ? clip(oneLine(result.subtype), 200) : ''
+  return subtype || null
 }
 
 /* ------------------------------------------------------------- the digest */
@@ -834,7 +871,12 @@ export async function scanSession(input: ScanInput): Promise<ScanOutcome> {
 
   if (result.isError) {
     if (isBudgetExhausted(result)) {
-      throw new WorklogBudgetError('scan', input.maxBudgetUsd ?? SCAN_MAX_BUDGET_USD, result.costUsd)
+      throw new WorklogBudgetError(
+        'scan',
+        input.maxBudgetUsd ?? SCAN_MAX_BUDGET_USD,
+        result.costUsd,
+        budgetEvidence(result)
+      )
     }
     throw new Error(
       `The worklog scan failed: ${clip(oneLine(result.text), 300) || result.subtype || 'unknown error'}`
@@ -1055,7 +1097,8 @@ export async function applyProposal(
           ? new WorklogBudgetError(
               `write to ${target}`,
               opts.maxBudgetUsd ?? APPLY_MAX_BUDGET_USD,
-              result.costUsd
+              result.costUsd,
+              budgetEvidence(result)
             )
           : new Error(
               clip(oneLine(result.text), 300) || result.subtype || 'the run reported an error'

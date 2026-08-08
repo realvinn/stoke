@@ -1400,8 +1400,13 @@ ok(
   const budgeted = (async () => BUDGET_REFUSAL_RESULT) as never
   const out = await applyProposal(proposal(), { run: budgeted })
   ok(
+    // Specifically "budget ceiling", not just /budget/i: BUDGET_REFUSAL.text
+    // itself contains the word "budget" ("maximum budget of $0.15"), so a
+    // bare /budget/i match here would still pass even with the budget branch
+    // deleted entirely and the fallback message taking over - see the sibling
+    // assertion in verify-worklog-recall.mts, which already discriminates.
     'a write that hit the ceiling says which ceiling',
-    /budget/i.test(Object.values(out.errors).join(' ')),
+    /budget ceiling/i.test(Object.values(out.errors).join(' ')),
     JSON.stringify(out.errors)
   )
   ok(
@@ -1413,6 +1418,65 @@ ok(
     JSON.stringify(out.errors)
   )
   ok('and is not reported ok', !out.ok)
+}
+
+{
+  // Review finding 1: isBudgetExhausted() matches loosely on purpose (see
+  // agent.ts), so it can be wrong - and the demonstrated way it is wrong is a
+  // session ABOUT the worklog's budget whose failure has nothing to do with
+  // money. This is that exact case: isError is true for an ordinary reason,
+  // but the model's own reply text (about the user's session) contains the
+  // word "budget".
+  const MISDETECTED_RESULT = {
+    isError: true,
+    subtype: 'error_during_execution',
+    text: '{"proposals":[{"title":"Raise the worklog budget ceiling","kind":',
+    costUsd: 0.02,
+    durationMs: 400,
+    numTurns: 1,
+    sessionId: null,
+    permissionDenials: [],
+    raw: {}
+  }
+  ok(
+    'the match still fires on this case - that looseness is deliberate, not a bug to close',
+    isBudgetExhausted(MISDETECTED_RESULT)
+  )
+  const misdetected = (async () => MISDETECTED_RESULT) as never
+  const out = await applyProposal(proposal(), { run: misdetected })
+  const message = Object.values(out.errors).join(' ')
+  ok(
+    // Before this fix, WorklogBudgetError's message held only the ceiling and
+    // the limit - none of the actual reply. A wrong diagnosis then destroyed
+    // the one clue a reader had that the diagnosis was wrong.
+    'being wrong is survivable: the model\'s own reply text is not thrown away',
+    message.includes('Raise the worklog budget ceiling'),
+    message
+  )
+}
+
+{
+  // Review finding 3: the scan never writes - it proposes - so its budget
+  // message must not say "nothing was written", which reads as a write that
+  // got interrupted. The write path keeps that sentence because it is true
+  // there.
+  const scanStop = new WorklogBudgetError('scan', SCAN_MAX_BUDGET_USD, 0.29)
+  ok(
+    'a scan stopping at its ceiling does not claim a write was interrupted',
+    !/written/i.test(scanStop.message),
+    scanStop.message
+  )
+  ok(
+    'and says the true thing instead',
+    /no entries were drafted/i.test(scanStop.message),
+    scanStop.message
+  )
+  const writeStop = new WorklogBudgetError('write to notion', APPLY_MAX_BUDGET_USD, 1.2)
+  ok(
+    'a write stopping at its ceiling keeps saying nothing was written - that one is true',
+    /nothing was written/i.test(writeStop.message),
+    writeStop.message
+  )
 }
 
 rmSync(dir, { recursive: true, force: true })

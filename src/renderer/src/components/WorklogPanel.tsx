@@ -43,6 +43,19 @@ function targetNames(items: WorklogProposal[]): string {
   return `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`
 }
 
+/**
+ * Freeform strings that reach this panel - errors thrown deep in the main
+ * process, then joined together - are built out of the same lowercase
+ * `WorklogTarget` values ('notion', 'clickup') the rest of the codebase uses
+ * as keys, not as words to show someone. Every other mention of these two
+ * services in this panel goes through TARGET_LABEL and reads "Notion" /
+ * "ClickUp"; this catches the ones that arrive as plain text instead, at the
+ * one place they are rendered.
+ */
+function properNouns(text: string): string {
+  return text.replace(/\bnotion\b/gi, 'Notion').replace(/\bclickup\b/gi, 'ClickUp')
+}
+
 function entryCount(n: number): string {
   return `${n} ${n === 1 ? 'entry' : 'entries'}`
 }
@@ -314,7 +327,7 @@ export function WorklogPanel({
 
               {p.status === 'failed' && p.error && (
                 <p className="field-hint" data-tone="warning">
-                  {p.error}
+                  {properNouns(p.error)}
                 </p>
               )}
 
