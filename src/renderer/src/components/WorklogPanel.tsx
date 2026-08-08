@@ -160,13 +160,20 @@ export function WorklogPanel({
         looked identical whether the agent was watching and quiet, switched
         off, or dying on its budget every time (spec §2.4.4).
       */}
-      <div className="worklog-state">
+      <div className="worklog-state" aria-live="polite">
         <p className="worklog-state-line" data-tone={watch?.watched ? 'on' : 'off'}>
           {watchSentence(watch, watchedGroups)}
         </p>
         {lastScan && (
           <p className="worklog-state-line" data-tone={scanTone(lastScan)}>
-            {relativeTime(lastScan.at)}: {scanSentence(lastScan)}
+            {/*
+              `watch?.sessionId` is the session in the active tab - the same
+              one the sentence above is already about. `lastScan` is the last
+              scan of *any* session, so without this the sentence below could
+              easily be describing a different one while reading as though it
+              were this one (Task 29 review, finding 2).
+            */}
+            {relativeTime(lastScan.at)}: {scanSentence(lastScan, watch?.sessionId ?? null)}
           </p>
         )}
         {!lastScan && (

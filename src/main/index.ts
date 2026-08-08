@@ -488,10 +488,16 @@ async function runWorklogScan(sessionId: string, auto: boolean): Promise<Worklog
      * still exists; it is carried into `message` here rather than discarded,
      * so `scanSentence` (src/shared/worklog.ts) can say which of the two
      * actually happened.
+     *
+     * Written as "it", not "this session": `scanSentence` prepends its own
+     * subject, which names the session as "this session" or "another
+     * session" depending on what is on screen when the report is read (Task
+     * 29 review, finding 2) — a fragment that hardcoded "this session" would
+     * contradict a subject that had just said "another".
      */
     const message =
       verdict.outcome === 'nothing' && outcome.emptyTranscript
-        ? 'this session has not sent anything yet, so there was nothing in its transcript to read'
+        ? 'it had not sent anything yet, so there was nothing in its transcript to read'
         : verdict.message
     return end(verdict.outcome, added.length, message)
   } catch (err) {
@@ -658,8 +664,14 @@ function createWindow(): void {
       // a 'proposed' outcome can now carry a message too, when the drafts
       // were written blind (H5), and that warning would otherwise go nowhere
       // for an automatic scan just as surely as a budget stop would.
+      //
+      // `outcome === 'nothing'` is excluded even when `message` is set (Task
+      // 29 review, finding 1): since that same task taught `message` to carry
+      // the empty-transcript distinction too, a session with no turns yet
+      // would otherwise warn on every quiet auto-scan pass over it — a
+      // console line for a session that is doing exactly nothing wrong.
       const report = await runWorklogScan(sessionId, true)
-      if (report.message) {
+      if (report.outcome !== 'nothing' && report.message) {
         console.warn('[stoke] automatic worklog scan:', report.outcome, report.message)
       }
       return report.added
@@ -1060,12 +1072,24 @@ function registerIpc(): void {
   ipcMain.handle(CH.worklogScan, async (_e, sessionId: string) => {
     const report = await runWorklogScan(sessionId, false)
     // The panel reads the full report off `worklog:scanned`; this return value
-    // stays the shape it always was so the existing caller is untouched.
-    // `report.message` is already exactly the right condition: non-null for
-    // 'budget' and 'error', and now also for a 'proposed' scan whose drafts
-    // were written without a look at the boards first (H5) — "nothing to
-    // log" and an ordinary successful 'proposed' both leave it null.
-    return { added: report.added, error: report.message }
+    // stays the shape it always was so the existing caller is untouched, and
+    // `error` here is what App.tsx puts in the red `role="alert"` banner.
+    //
+    // `report.message` alone is NOT the right condition any more (Task 29
+    // review, finding 1) — the empty-transcript fix above now puts a message
+    // on a 'nothing' outcome too, and pressing Scan on a session that has not
+    // sent anything yet is not a failure; it is the exact case the calm state
+    // line exists to explain. Surfacing it here would put a red alert on a
+    // scan that worked perfectly.
+    //
+    // So `outcome`, not `message`, decides: null for every 'nothing', whether
+    // or not it carries an explanation; non-null for 'budget', for 'error',
+    // and for a 'proposed' scan whose drafts were written without a look at
+    // the boards first (H5) — those are the only cases actually worth a red
+    // banner. An ordinary successful 'proposed' still leaves it null, because
+    // `message` is null there too.
+    const error = report.outcome === 'nothing' ? null : report.message
+    return { added: report.added, error }
   })
 
   ipcMain.handle(CH.worklogLastScan, () => lastScanReport)

@@ -363,22 +363,43 @@ ok(
 const report = (over: Record<string, unknown> = {}): never =>
   ({ sessionId: 's1', at: 1, auto: false, outcome: 'nothing', added: 0, message: null, ...over }) as never
 
-ok('a scan that proposed says how many', /2 entries/.test(scanSentence(report({ outcome: 'proposed', added: 2 }))))
-ok('one entry is not "1 entries"', /1 entry\b/.test(scanSentence(report({ outcome: 'proposed', added: 1 }))))
-ok('an empty scan says it looked', /nothing worth logging/.test(scanSentence(report())))
+// `report()` always names session 's1'. Most assertions below only care about
+// wording that holds regardless of which session is on screen, so they pass
+// 's1' - "here" - as the active session throughout; the block further down
+// ("who a report is actually about") is the one that varies it on purpose.
 ok(
-  'a budget failure says so verbatim, never as an empty result',
-  scanSentence(report({ outcome: 'budget', message: 'the recall run stopped at its $0.60 budget ceiling' })).includes('$0.60'),
-  scanSentence(report({ outcome: 'budget', message: 'the recall run stopped at its $0.60 budget ceiling' }))
+  'a scan that proposed says how many',
+  /2 entries/.test(scanSentence(report({ outcome: 'proposed', added: 2 }), 's1'))
 )
 ok(
+  'one entry is not "1 entries"',
+  /1 entry\b/.test(scanSentence(report({ outcome: 'proposed', added: 1 }), 's1'))
+)
+ok('an empty scan says it looked', /nothing worth logging/.test(scanSentence(report(), 's1')))
+ok(
+  'a budget failure says so verbatim, never as an empty result',
+  scanSentence(
+    report({ outcome: 'budget', message: 'The recall run stopped at its $0.60 budget ceiling.' }),
+    's1'
+  ).includes('$0.60'),
+  scanSentence(
+    report({ outcome: 'budget', message: 'The recall run stopped at its $0.60 budget ceiling.' }),
+    's1'
+  )
+)
+ok(
+  // 'transcript found', not 'no transcript found': `asSentence` capitalises a
+  // lowercase fragment's first letter (Task 29 review, finding 3), so the
+  // leading "no" arrives in the sentence as "No" - checked for below instead.
   'an error carries its message through',
-  scanSentence(report({ outcome: 'error', message: 'no transcript found' })).includes('no transcript found')
+  scanSentence(report({ outcome: 'error', message: 'no transcript found' }), 's1').includes(
+    'transcript found'
+  )
 )
 ok(
   'an automatic scan is marked as one',
-  /on its own/.test(scanSentence(report({ auto: true }))),
-  scanSentence(report({ auto: true }))
+  /on its own/.test(scanSentence(report({ auto: true }), 's1')),
+  scanSentence(report({ auto: true }), 's1')
 )
 
 /*
@@ -396,15 +417,37 @@ ok(
       outcome: 'proposed',
       added: 2,
       message: 'the recall run stopped at its $2.00 budget ceiling'
-    })
+    }),
+    's1'
   ).includes('$2.00'),
   scanSentence(
-    report({ outcome: 'proposed', added: 2, message: 'the recall run stopped at its $2.00 budget ceiling' })
+    report({ outcome: 'proposed', added: 2, message: 'the recall run stopped at its $2.00 budget ceiling' }),
+    's1'
   )
 )
+/*
+ * Task 29 review, minor 5: the old version of this check only asserted the
+ * *absence of one literal phrase* ("boards first"). That passes just as
+ * happily against a warning appended unconditionally under a different
+ * wording as it does against the warning being dropped outright — it never
+ * actually exercises the decision to include the warning, only one guess at
+ * its vocabulary. Coupled to behaviour instead, two ways:
+ *
+ *  - Exact equality against the literal clean sentence catches an
+ *    unconditionally-appended warning of *any* wording, because anything
+ *    extra breaks the match regardless of what it says.
+ *  - The `.includes('$2.00')` check above already catches the warning being
+ *    dropped: if `scanSentence` stopped reading `message` at all, that
+ *    assertion would fail on its own.
+ *
+ * Both directions are demonstrated live in this task's report rather than
+ * merely asserted here — see "vacuity check" there.
+ */
 ok(
-  'and an ordinary clean proposal carries none',
-  !scanSentence(report({ outcome: 'proposed', added: 2 })).includes('boards first')
+  'and an ordinary clean proposal is worded exactly like one with no warning to carry, nothing appended',
+  scanSentence(report({ outcome: 'proposed', added: 2 }), 's1') ===
+    'A scan ran on this session and proposed 2 entries.',
+  scanSentence(report({ outcome: 'proposed', added: 2 }), 's1')
 )
 
 /*
@@ -416,9 +459,114 @@ ok(
  */
 ok(
   'a session with no turns yet reads differently from one the model read and dismissed',
-  scanSentence(report({ outcome: 'nothing', message: 'this session has not sent anything yet' })) !==
-    scanSentence(report({ outcome: 'nothing' })),
-  scanSentence(report({ outcome: 'nothing', message: 'this session has not sent anything yet' }))
+  scanSentence(report({ outcome: 'nothing', message: 'it had not sent anything yet' }), 's1') !==
+    scanSentence(report(), 's1'),
+  scanSentence(report({ outcome: 'nothing', message: 'it had not sent anything yet' }), 's1')
+)
+
+console.log('\nwho a report is actually about (Task 29 review, finding 2)')
+/*
+ * `lastScan` (App.tsx / WorklogPanel.tsx) is the last scan of *any* session,
+ * and `AutoScanner` fires precisely on sessions that have gone idle — usually
+ * not the one on screen. `report()` always names session 's1'; these compare
+ * that against a *different* active session to prove the sentence says so.
+ */
+ok(
+  'an automatic scan of the session on screen says "this session"',
+  scanSentence(report({ auto: true, outcome: 'proposed', added: 1 }), 's1').startsWith(
+    'Stoke scanned this session on its own'
+  ),
+  scanSentence(report({ auto: true, outcome: 'proposed', added: 1 }), 's1')
+)
+ok(
+  'an automatic scan of a different session says so, not "this"',
+  scanSentence(report({ auto: true, outcome: 'proposed', added: 1 }), 's2').startsWith(
+    'Stoke scanned another session on its own'
+  ),
+  scanSentence(report({ auto: true, outcome: 'proposed', added: 1 }), 's2')
+)
+ok(
+  'a manual scan of the session on screen says "this session"',
+  scanSentence(report({ outcome: 'proposed', added: 1 }), 's1').startsWith('A scan ran on this session'),
+  scanSentence(report({ outcome: 'proposed', added: 1 }), 's1')
+)
+ok(
+  'a manual scan of a different session says so, not "this"',
+  scanSentence(report({ outcome: 'proposed', added: 1 }), 's2').startsWith('A scan ran on another session'),
+  scanSentence(report({ outcome: 'proposed', added: 1 }), 's2')
+)
+ok(
+  'no session on screen at all still names the report a session, not "this"',
+  scanSentence(report({ outcome: 'proposed', added: 1 }), null).startsWith('A scan ran on another session'),
+  scanSentence(report({ outcome: 'proposed', added: 1 }), null)
+)
+
+console.log('\nframes composed against the messages they actually receive (Task 29 review, finding 3)')
+/*
+ * These are not the friendly test fixtures above — they are the real strings
+ * `runWorklogScan` and its collaborators produce, reproduced verbatim from
+ * recall.ts / runner.ts / index.ts. Rendering them is the test: a frame that
+ * merely *contains* the right substring can still read as broken English
+ * around it (a doubled period, a contradiction, a restated verb) — see this
+ * task's report for the full set, printed and read.
+ */
+ok(
+  'the board-read budget message never gets a doubled period',
+  !scanSentence(
+    report({
+      outcome: 'budget',
+      message:
+        'The worklog scan could not check what is already on your boards before hitting its $2.00 budget ceiling.'
+    }),
+    's1'
+  ).includes('..'),
+  scanSentence(
+    report({
+      outcome: 'budget',
+      message:
+        'The worklog scan could not check what is already on your boards before hitting its $2.00 budget ceiling.'
+    }),
+    's1'
+  )
+)
+ok(
+  'the parse-error message never gets a doubled period or a colon splice',
+  (() => {
+    const s = scanSentence(
+      report({
+        outcome: 'error',
+        message: "Claude's reply could not be read back as an entry. Try scanning again."
+      }),
+      's1'
+    )
+    return !s.includes('..') && !s.includes(': ')
+  })(),
+  scanSentence(
+    report({
+      outcome: 'error',
+      message: "Claude's reply could not be read back as an entry. Try scanning again."
+    }),
+    's1'
+  )
+)
+ok(
+  'a quoted CLI budget message never gets a stray period after the closing quote',
+  !scanSentence(
+    report({
+      outcome: 'budget',
+      message:
+        'The worklog scan stopped at its $0.30 budget ceiling before it finished, so no entries were drafted. The run said: "Reached maximum budget ($0.0001)"'
+    }),
+    's1'
+  ).includes('".'),
+  scanSentence(
+    report({
+      outcome: 'budget',
+      message:
+        'The worklog scan stopped at its $0.30 budget ceiling before it finished, so no entries were drafted. The run said: "Reached maximum budget ($0.0001)"'
+    }),
+    's1'
+  )
 )
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
