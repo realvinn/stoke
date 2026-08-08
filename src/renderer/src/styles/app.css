@@ -793,6 +793,7 @@ body {
 }
 
 .project {
+  position: relative;
   width: 100%;
   display: flex;
   flex-direction: column;
@@ -861,6 +862,105 @@ body {
 .project:focus-within .project-pin,
 .project-pin[aria-pressed='true'] {
   opacity: 1;
+}
+
+/* --------------------------------------------------- project icon + name */
+
+/* A fixed slot whether or not there is an emoji, so every project name in the
+   list starts at the same x and adding an icon moves nothing. `flex: none` so
+   the wrapper never absorbs the row's spare width and shunts the name right. */
+.project-meta-picker {
+  display: flex;
+  flex: none;
+}
+
+/* Exactly the chevron's box, from the same token, because the emoji is part of
+   the title: the project's metadata line and its session list both align to
+   this glyph's left edge, not to the text after it. F Task 68 measures that
+   alignment against `.project-meta-picker`, and it is only correct while these
+   two rules and `.project-chevron` all read `var(--chevron)`. */
+.project-emoji {
+  --icon-size: var(--icon-sm);
+  width: var(--chevron);
+  height: var(--chevron);
+  flex: none;
+}
+
+.project-emoji-glyph {
+  font-size: var(--fs-sm);
+  line-height: 1;
+}
+
+/* Anchored to the row rather than to the button: .sidebar-scroll is a scroll
+   container, so anything wider than the sidebar is clipped and drags a
+   horizontal scrollbar in with it. Spanning the row is the only width that is
+   correct at every sidebar width from the 200px minimum up. */
+.project-meta-pop {
+  position: absolute;
+  left: var(--space-8);
+  right: var(--space-8);
+  top: calc(100% + var(--space-4));
+  z-index: var(--z-dropdown);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  padding: var(--space-8);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-panel);
+}
+
+.project-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(1.75rem, 1fr));
+  gap: var(--space-4);
+}
+
+.project-emoji-option {
+  display: grid;
+  place-items: center;
+  height: 1.75rem;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  font-size: var(--fs-sm);
+  line-height: 1;
+  cursor: default;
+  transition:
+    background var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease);
+}
+
+.project-emoji-option:hover {
+  background: var(--surface-hover);
+}
+
+.project-emoji-option[aria-pressed='true'] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.project-meta-note {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-snug);
+}
+
+.project-meta-actions {
+  display: flex;
+  gap: var(--space-8);
+}
+
+/* Scoped rather than adding a global `data-size="sm"`: the only small-button
+   rule in the sheet today is scoped to `.worklog`, and a second convention that
+   works in two places out of three is worse than a local rule. */
+.project-meta-actions .btn {
+  flex: 1;
+  padding: 0.1875rem var(--space-8);
+  font-size: var(--fs-sm);
 }
 
 /* --------------------------------------------------------- session rows */
