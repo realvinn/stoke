@@ -934,6 +934,14 @@ body {
   box-shadow: var(--shadow-panel);
 }
 
+/* Flipped by ProjectMetaPicker's layout effect when there isn't room below
+   inside `.sidebar-scroll` — a scrolled-down row would otherwise clip the
+   label field and both action buttons past the container's own bottom edge. */
+.project-meta-pop--above {
+  top: auto;
+  bottom: calc(100% + var(--space-4));
+}
+
 .project-meta-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(1.75rem, 1fr));

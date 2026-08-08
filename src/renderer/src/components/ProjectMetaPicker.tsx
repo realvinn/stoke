@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { Project, ProjectMeta } from '@shared/types'
 import { IconFolder } from './Icons'
 
@@ -63,6 +63,31 @@ export function ProjectMetaPicker({
   // itself, so the label input's own onBlur doesn't read that programmatic
   // move as the user leaving the field and commit an edit Escape meant to discard.
   const suppressNextCommit = useRef(false)
+
+  const popRef = useRef<HTMLDivElement>(null)
+  // Opens below the row by default. `.sidebar-scroll` clips anything past its
+  // own box, so on a long list a row near the bottom pushed the popover's
+  // label field and both action buttons past the visible area, unreachable.
+  // Measured against the *scroll container's* box, not the window's — the
+  // trigger can be fully visible while the room around it is still tight.
+  // A layout effect so the flip lands before the browser paints — no visible
+  // jump from one side to the other. Unrelated to the focus-return below:
+  // this only ever runs when `open` turns true, never on the close paths
+  // that ordering protects.
+  const [side, setSide] = useState<'below' | 'above'>('below')
+  useLayoutEffect(() => {
+    if (!open) return
+    const trigger = triggerRef.current
+    const pop = popRef.current
+    if (!trigger || !pop) return
+    const scrollEl = trigger.closest('.sidebar-scroll')
+    const bounds = (scrollEl ?? document.documentElement).getBoundingClientRect()
+    const triggerRect = trigger.getBoundingClientRect()
+    const spaceBelow = bounds.bottom - triggerRect.bottom
+    const spaceAbove = triggerRect.top - bounds.top
+    const needed = pop.getBoundingClientRect().height
+    setSide(spaceBelow < needed && spaceAbove > spaceBelow ? 'above' : 'below')
+  }, [open])
 
   const setEmoji = (emoji: string | null): void => {
     const meta = currentMeta(project)
@@ -133,7 +158,8 @@ export function ProjectMetaPicker({
 
       {open && (
         <div
-          className="project-meta-pop"
+          ref={popRef}
+          className={`project-meta-pop${side === 'above' ? ' project-meta-pop--above' : ''}`}
           role="dialog"
           aria-label={`Icon and name for ${project.name}`}
           onClick={(e) => e.stopPropagation()}
