@@ -26,6 +26,7 @@ import {
   projectMetaPatch
 } from '../src/main/projectMeta.ts'
 import { listProjects } from '../src/main/projects.ts'
+import { defaultCwdCandidates, resolveDefaultCwd } from '../src/main/workspaceRoots.ts'
 
 let failures = 0
 
@@ -481,6 +482,59 @@ try {
   )
 } finally {
   rmSync(tmp, { recursive: true, force: true })
+}
+
+console.log('\nwhere a session with no project lands')
+/*
+ * The list shipped with `~/Code`, `~/code`, `~/Developer` and `~/Projects`, and
+ * this machine keeps its work in `~/dev` — so every no-project session started
+ * in the home folder, which is the one place a session should never start
+ * (spec 2.5).
+ */
+const mac = defaultCwdCandidates('darwin', '/Users/v')
+check('the home folder is the last resort, never the first', mac[mac.length - 1], '/Users/v')
+check(
+  'the folders a Mac actually uses are all candidates',
+  ['Developer', 'Code', 'code', 'dev', 'Projects', 'src', 'repos'].every((d) =>
+    mac.includes(`/Users/v/${d}`)
+  ),
+  true
+)
+check('no candidate is offered twice', mac.length, new Set(mac).size)
+check(
+  'Windows keeps the drive this app was built around, first',
+  defaultCwdCandidates('win32', 'C:\\Users\\v')[0],
+  'G:\\Code'
+)
+check(
+  'and a Windows list never offers a posix path',
+  defaultCwdCandidates('win32', 'C:\\Users\\v').some((d) => d.includes('/')),
+  false
+)
+
+const home = mkdtempSync(join(tmpdir(), 'stoke-home-'))
+try {
+  check('with nothing there at all, the home folder wins', resolveDefaultCwd(null, 'darwin', home), home)
+  mkdirSync(join(home, 'dev'))
+  check('a folder that exists beats the home folder', resolveDefaultCwd(null, 'darwin', home), join(home, 'dev'))
+  mkdirSync(join(home, 'Developer'))
+  check(
+    'and the more preferred of two that exist wins',
+    resolveDefaultCwd(null, 'darwin', home),
+    join(home, 'Developer')
+  )
+  check(
+    'an explicit setting beats every candidate',
+    resolveDefaultCwd(join(home, 'dev'), 'darwin', home),
+    join(home, 'dev')
+  )
+  check(
+    'an explicit setting that has been deleted falls back rather than failing',
+    resolveDefaultCwd(join(home, 'gone'), 'darwin', home),
+    join(home, 'Developer')
+  )
+} finally {
+  rmSync(home, { recursive: true, force: true })
 }
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
