@@ -27,14 +27,20 @@ import { join } from 'node:path'
 import type { ProfileConfig, Settings } from '@shared/types'
 import type { CreateProfileInput, ProfilePlan } from '../shared/profiles.ts'
 import { foldGroup, folderName, nextProfileId, sameFolderName } from '../shared/profiles.ts'
+import { pathKey as sharedPathKey, pathRulesFor } from '../shared/paths.ts'
 
-const isWin = process.platform === 'win32'
+/*
+ * This machine's own comparison rules.
+ *
+ * It used to be `process.platform === 'win32'`, and that is wrong on macOS:
+ * APFS is case-insensitive by default, so `Work` and `work` are one folder and
+ * a rule that says otherwise plans against a folder that is not there.
+ */
+const RULES = pathRulesFor(process.platform)
 
-/** Native separators, and case-folded on Windows, for comparing two paths. */
+/** Native separators, and case-folded where the filesystem is. */
 function pathKey(p: string): string {
-  const native = isWin ? p.replace(/\//g, '\\') : p.replace(/\\/g, '/')
-  const trimmed = native.replace(/[\\/]+$/, '') || native
-  return isWin ? trimmed.toLowerCase() : trimmed
+  return sharedPathKey(p, RULES)
 }
 
 /**
@@ -83,6 +89,35 @@ function isDirectory(p: string): boolean {
   } catch {
     return false
   }
+}
+
+/**
+ * The child of `dir` named `name`, as it is really spelled on disk, or null.
+ *
+ * `statSync` answers yes for a casing that is not the one on disk when the
+ * filesystem is case-insensitive, and that wrong spelling was then persisted as
+ * the profile's scan root — a path that works until something compares it as a
+ * string. Reading the directory's own entries is the only way to get the name
+ * the filesystem actually holds. `isDirectory` still does the final say-so, so
+ * a symlink to a directory keeps counting as one.
+ */
+async function existingChild(dir: string, name: string): Promise<string | null> {
+  if (!RULES.caseInsensitive) {
+    const exact = join(dir, name)
+    return isDirectory(exact) ? exact : null
+  }
+  let names: string[]
+  try {
+    names = (await readdir(dir)).filter((n) => n.toLowerCase() === name.toLowerCase())
+  } catch {
+    const exact = join(dir, name)
+    return isDirectory(exact) ? exact : null
+  }
+  for (const n of names) {
+    const full = join(dir, n)
+    if (isDirectory(full)) return full
+  }
+  return null
 }
 
 function failed(chosen: string, name: string, error: string): ProfilePlan {
@@ -141,12 +176,13 @@ export async function planProfile(rawFolder: string, rawName: string): Promise<P
    */
   let action: ProfilePlan['action']
   let root: string
-  if (sameFolderName(chosen, name, isWin)) {
+  const existing = await existingChild(chosen, name)
+  if (sameFolderName(chosen, name, RULES.caseInsensitive)) {
     action = 'reuse'
     root = chosen
-  } else if (isDirectory(child)) {
+  } else if (existing) {
     action = 'reuse'
-    root = child
+    root = existing
   } else {
     action = 'create'
     root = child

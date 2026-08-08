@@ -25,6 +25,10 @@ import {
   sameFolderName,
   visibleProfiles
 } from '../src/shared/profiles.ts'
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { planProfile } from '../src/main/profiles.ts'
 
 let failures = 0
 
@@ -317,6 +321,80 @@ check(
   }),
   'Give the profile a name.'
 )
+
+console.log('\nplanProfile against real folders')
+/*
+ * None of this logic had a test, and the bug it hides is a folder: on APFS,
+ * `isDirectory('/Users/thevinh/dev/Work')` is true because `.../work` exists,
+ * so planProfile answered `reuse` with a casing that is not on disk and the
+ * app persisted it as a scan root (spec 2.5). The case-blindness of the
+ * filesystem is the thing under test, so CASE_BLIND is measured from the box
+ * itself rather than from pathRulesFor — deriving the expectation from the
+ * function under test would make every assertion below vacuous (break
+ * pathRulesFor and the suite still passes), and pathRulesFor('darwin')
+ * .caseInsensitive is true even on a case-sensitive APFS volume, which a real
+ * Mac can be running.
+ */
+const box = mkdtempSync(join(tmpdir(), 'stoke-plan-'))
+try {
+  mkdirSync(join(box, 'Work'))
+  const CASE_BLIND = existsSync(join(box, 'work'))
+  mkdirSync(join(box, 'Work', 'refinity'))
+  mkdirSync(join(box, 'Work', 'buyback'))
+
+  const differentCaseChild = await planProfile(box, 'work')
+  check(
+    'a child that exists in another case is reused, not nested inside itself',
+    differentCaseChild.action,
+    CASE_BLIND ? 'reuse' : 'create'
+  )
+  check(
+    'and it is reported with the casing it has on disk',
+    differentCaseChild.root,
+    join(box, CASE_BLIND ? 'Work' : 'work')
+  )
+  check(
+    'so the group is the real folder name',
+    differentCaseChild.group,
+    CASE_BLIND ? 'Work' : 'work'
+  )
+  const alreadyNamed = await planProfile(join(box, 'Work'), 'work')
+  check(
+    'a folder already carrying the name is used as it is, however it is cased',
+    [alreadyNamed.action, alreadyNamed.root],
+    CASE_BLIND
+      ? ['reuse', join(box, 'Work')]
+      : ['create', join(box, 'Work', 'work')]
+  )
+
+  const exact = await planProfile(box, 'Work')
+  check(
+    'an exact match still reuses, on every platform',
+    [exact.action, exact.root],
+    ['reuse', join(box, 'Work')]
+  )
+  check(
+    'and reports what adopting it would import',
+    exact.imports,
+    ['buyback', 'refinity']
+  )
+
+  const fresh = await planProfile(box, 'Study')
+  check(
+    'a name nothing matches still creates the child',
+    [fresh.action, fresh.root, fresh.willCreate, fresh.imports],
+    ['create', join(box, 'Study'), true, []]
+  )
+
+  const missing = await planProfile(join(box, 'nope'), 'Work')
+  check(
+    'a folder that is not there is refused rather than planned',
+    missing.error,
+    `${join(box, 'nope')} is not a folder that exists.`
+  )
+} finally {
+  rmSync(box, { recursive: true, force: true })
+}
 
 console.log('\ncolour contrast')
 const lin = (c: number): number => {
