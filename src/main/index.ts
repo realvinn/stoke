@@ -9,7 +9,8 @@ import type {
   SshHost,
   StatusLineSnapshot,
   WorklogScanOutcome,
-  WorklogScanReport
+  WorklogScanReport,
+  WorklogWatchState
 } from '@shared/types'
 import { EmbeddedBrowser } from './browser.ts'
 import { probeClaude } from './cli.ts'
@@ -28,11 +29,12 @@ import {
   APPLY_MAX_BUDGET_USD,
   WorklogBudgetError
 } from './worklog/runner.ts'
-import { groupForCwd, shouldWatch } from './worklog/gate.ts'
+import { groupForCwd } from './worklog/gate.ts'
+import { watchStateFrom } from './worklog/watch.ts'
 import { AutoScanner } from './worklog/autoscan.ts'
 import { invalidateRecall, recall, scanOutcomeFor } from './worklog/recall.ts'
 import type { CreateProfileInput } from '@shared/profiles'
-import { getSettings, setSettings } from './store.ts'
+import { getSettings, onSettingsChanged, setSettings } from './store.ts'
 import {
   readStatusLine,
   sweepStaleSessionFiles,
@@ -277,6 +279,66 @@ function send(channel: string, ...args: unknown[]): void {
 /** The process-wide review queue. */
 function worklogQueue(): ReturnType<typeof getWorklogQueue> {
   return getWorklogQueue(app.getPath('userData'))
+}
+
+/**
+ * Whether the worklog may look at one session, and why.
+ *
+ * A thin gatherer around the pure predicate: everything it reads is live, so a
+ * repository cloned during this run, a profile ticked a second ago and a host
+ * switched off mid-session all take effect at once.
+ */
+async function watchStateFor(sessionId: string): Promise<WorklogWatchState> {
+  const settings = getSettings()
+  return watchStateFrom({
+    sessionId,
+    cwd: cwdForSession(sessionId),
+    host: hostForSession(sessionId),
+    projects: await listProjects(settings),
+    roots: settings.projectRoots,
+    worklogGroups: settings.worklogGroups,
+    now: Date.now()
+  })
+}
+
+/**
+ * Every session started this run, live or exited.
+ *
+ * `sessionCwds` rather than `ptys.list()` on purpose: closing a tab is when a
+ * work block usually ends, and a session keeps being the worklog's business
+ * after its PTY has gone (see worklog/autoscan.ts). The project list is read
+ * once for the whole set — `watchStateFor` reads it per call, which is right
+ * for one session and wasteful for twelve.
+ */
+async function watchStates(): Promise<WorklogWatchState[]> {
+  const settings = getSettings()
+  const projects = await listProjects(settings)
+  const now = Date.now()
+  return [...sessionCwds.keys()].map((sessionId) =>
+    watchStateFrom({
+      sessionId,
+      cwd: cwdForSession(sessionId),
+      host: hostForSession(sessionId),
+      projects,
+      roots: settings.projectRoots,
+      worklogGroups: settings.worklogGroups,
+      now
+    })
+  )
+}
+
+/**
+ * Push the whole list.
+ *
+ * Never a delta, and never from the ContextWatcher tick: the tick runs every
+ * 1.5s per session and would push an identical array each time. The triggers
+ * are exactly four — a session starting, any settings write, a change to the
+ * project list, and the renderer finishing its first load.
+ */
+function sendWatchStates(): void {
+  void watchStates()
+    .then((states) => send(CH.worklogWatchChanged, states))
+    .catch((err) => console.warn('[stoke] could not resolve the worklog watch states', err))
 }
 
 /** The last scan of any session, so a freshly-opened panel is not blank. */
@@ -526,27 +588,32 @@ function createWindow(): void {
    * worklog/autoscan.ts for why the transcript is the right signal.
    */
   autoscan = new AutoScanner({
-    enabled: () => getSettings().worklogAuto && getSettings().worklogGroups.length > 0,
-    watched: async (sessionId) => {
+    /*
+     * A cheap "could anything possibly be watched" check, so a pass with
+     * nothing to do skips every tracked session without a disk read.
+     *
+     * Has to agree with watchStateFor's own notion of "nothing is watched",
+     * or this becomes a second decision site by omission. watchStateFrom's
+     * host branch never looks at worklogGroups — a ticked SSH host is
+     * `watched: true` even with zero project groups ticked — so gating on
+     * worklogGroups alone would skip the whole pass for a host the tab strip
+     * is showing a dot for, and the dot would be lying about a run that can
+     * never happen. Checking for a ticked host too is what keeps them tied.
+     */
+    enabled: () => {
       const settings = getSettings()
-      if (!settings.worklogAuto) return false
-      /*
-       * A remote session is gated by the machine it runs on, not by a folder.
-       * Its local cwd is whatever Stoke was pointed at when the connection was
-       * opened, so the folder gate would either match by accident — filing a
-       * remote box's work under a local project — or never match at all. Both
-       * are silent, so SSH gets its own explicit switch.
-       */
-      const host = hostForSession(sessionId)
-      if (host) return host.worklog === true
-      // A current project list, not one cached at boot: a repository cloned
-      // during this run is a project the gate has to be able to see.
-      return shouldWatch(
-        cwdForSession(sessionId),
-        await listProjects(settings),
-        settings.worklogGroups,
-        settings.projectRoots
+      return (
+        settings.worklogAuto &&
+        (settings.worklogGroups.length > 0 || settings.hosts.some((h) => h.worklog === true))
       )
+    },
+    watched: async (sessionId) => {
+      // `worklogAuto` gates the automatic trigger only; whether a session is the
+      // worklog's business at all is watchStateFor's answer, and it is the same
+      // answer the tab strip draws. One predicate, so the dot and the run that
+      // costs money cannot disagree.
+      if (!getSettings().worklogAuto) return false
+      return (await watchStateFor(sessionId)).watched
     },
     scan: async (sessionId) => {
       // runWorklogScan no longer throws; the report is the record of what
@@ -601,6 +668,15 @@ function createWindow(): void {
     }
   )
 
+  /*
+   * Any settings write can change which sessions are watched — a profile
+   * ticked, a host switched on, a scan root added. Settings changes are
+   * user-paced, so recomputing unconditionally is cheaper than working out
+   * whether this particular write mattered.
+   */
+  const offSettings = onSettingsChanged(() => sendWatchStates())
+  win.webContents.on('did-finish-load', () => sendWatchStates())
+
   const devUrl = process.env.ELECTRON_RENDERER_URL
   if (!app.isPackaged && devUrl) {
     void win.loadURL(devUrl)
@@ -620,6 +696,7 @@ function createWindow(): void {
   }
 
   win.on('closed', () => {
+    offSettings()
     ptys?.killAll()
     watcher?.disposeAll()
     autoscan?.dispose()
@@ -683,6 +760,7 @@ function registerIpc(): void {
     if (!s.projectRoots.includes(dir)) {
       setSettings({ projectRoots: [...s.projectRoots, dir] })
     }
+    sendWatchStates()
     return dir
   })
 
@@ -692,6 +770,7 @@ function registerIpc(): void {
       title: 'Open a project folder',
       properties: ['openDirectory', 'createDirectory']
     })
+    sendWatchStates()
     return res.canceled ? null : (res.filePaths[0] ?? null)
   })
 
@@ -704,7 +783,9 @@ function registerIpc(): void {
     const next = hidden
       ? [...new Set([...s.hiddenProjects, path])]
       : s.hiddenProjects.filter((p) => p !== path)
-    return setSettings({ hiddenProjects: next })
+    const saved = setSettings({ hiddenProjects: next })
+    sendWatchStates()
+    return saved
   })
 
   ipcMain.handle(CH.projectsPin, (_e, path: string, pinned: boolean) => {
@@ -718,7 +799,14 @@ function registerIpc(): void {
   ipcMain.handle(CH.projectsReveal, (_e, path: string) => shell.openPath(path))
 
   /* ------------------------------------------------------------------- pty */
-  ipcMain.handle(CH.ptyStart, (_e, opts: LaunchOptions) => launchSession(opts))
+  ipcMain.handle(CH.ptyStart, async (_e, opts: LaunchOptions) => {
+    const result = await launchSession(opts)
+    // After launchSession, so sessionCwds already holds the new id — the state
+    // for a session nobody has recorded a folder for is 'unknown-folder', which
+    // would be wrong and would not correct itself until the next settings write.
+    sendWatchStates()
+    return result
+  })
 
   ipcMain.on(CH.ptyWrite, (_e, ptyId: string, data: string) => ptys?.write(ptyId, data))
   ipcMain.on(CH.ptyResize, (_e, ptyId: string, cols: number, rows: number) =>
@@ -934,6 +1022,8 @@ function registerIpc(): void {
   const queue = worklogQueue
 
   ipcMain.handle(CH.worklogQueue, () => queue().list())
+
+  ipcMain.handle(CH.worklogWatch, () => watchStates())
 
   ipcMain.handle(CH.worklogScan, async (_e, sessionId: string) => {
     const report = await runWorklogScan(sessionId, false)

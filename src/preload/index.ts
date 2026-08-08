@@ -138,7 +138,9 @@ const api: StokeApi = {
     onChange: (cb) => on<[Parameters<typeof cb>[0]]>(CH.worklogChanged, cb),
     onProposed: (cb) => on<[Parameters<typeof cb>[0]]>(CH.worklogProposed, cb),
     lastScan: () => ipcRenderer.invoke(CH.worklogLastScan),
-    onScanned: (cb) => on<[Parameters<typeof cb>[0]]>(CH.worklogScanned, cb)
+    onScanned: (cb) => on<[Parameters<typeof cb>[0]]>(CH.worklogScanned, cb),
+    watch: () => ipcRenderer.invoke(CH.worklogWatch),
+    onWatchChanged: (cb) => on<[Parameters<typeof cb>[0]]>(CH.worklogWatchChanged, cb)
   },
 
   audio: {

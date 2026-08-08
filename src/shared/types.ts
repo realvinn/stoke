@@ -364,7 +364,13 @@ export type WorklogWatchReason =
   | 'watched-group'
   /** It runs over SSH on a host with `worklog: true`. */
   | 'watched-host'
-  /** worklogGroups is empty and no host is ticked — the feature is off entirely. */
+  /**
+   * This session is local (not SSH) and `worklogGroups` is empty, so there is
+   * nothing to match against. Says nothing about SSH hosts — a remote session
+   * is judged by 'watched-host' / 'unwatched-host' instead, so a local 'off'
+   * can coexist with a ticked host elsewhere. If a person reads this reason,
+   * say the folder groups are empty, not that "the feature" is off.
+   */
   | 'off'
   /** A group resolved, but the user does not watch it. */
   | 'unwatched-group'

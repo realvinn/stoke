@@ -12,7 +12,8 @@ import type {
   UsageSnapshot,
   WorklogProposal,
   WorklogProposedEvent,
-  WorklogScanReport
+  WorklogScanReport,
+  WorklogWatchState
 } from './types'
 
 export interface AudioDevice {
@@ -258,6 +259,12 @@ export interface StokeApi {
      * of looking identical to "it has never run".
      */
     onScanned(cb: (report: WorklogScanReport) => void): () => void
+    /**
+     * Which sessions the agent may look at, and why. The whole list every time,
+     * never a delta — two copies of the same records drift.
+     */
+    watch(): Promise<WorklogWatchState[]>
+    onWatchChanged(cb: (states: WorklogWatchState[]) => void): () => void
   }
 
   audio: {
