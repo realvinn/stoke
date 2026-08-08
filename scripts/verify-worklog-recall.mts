@@ -40,10 +40,10 @@ import {
 import type { RecallSnapshot } from '../src/main/worklog/recall.ts'
 import type { HeadlessOptions, HeadlessResult } from '../src/main/agent.ts'
 /*
- * The assumed shape a budget-exhausted headless run returns, shared with
+ * The observed shape a budget-exhausted headless run returns, shared with
  * verify-worklog-runner.mts (plan-resolutions.md, Task 24) rather than
- * restated here. See scripts/worklog-budget-fixture.ts for what "assumed"
- * means and the tool that would confirm it.
+ * restated here. See scripts/worklog-budget-fixture.ts for the measurement
+ * and the tool that produced it.
  */
 import { BUDGET_REFUSAL } from './worklog-budget-fixture.ts'
 

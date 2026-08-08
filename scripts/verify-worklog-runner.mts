@@ -45,10 +45,10 @@ import {
   tidyTitle
 } from '../src/main/worklog/runner.ts'
 /*
- * The assumed shape a budget-exhausted headless run returns, shared with
+ * The observed shape a budget-exhausted headless run returns, shared with
  * verify-worklog-recall.mts (plan-resolutions.md, Task 24) rather than
- * restated here. See scripts/worklog-budget-fixture.ts for what "assumed"
- * means and the tool that would confirm it.
+ * restated here. See scripts/worklog-budget-fixture.ts for the measurement
+ * and the tool that produced it.
  */
 import { BUDGET_REFUSAL } from './worklog-budget-fixture.ts'
 import { MAX_RECALL_CHARS, formatRecall, type RecallSnapshot } from '../src/main/worklog/recall.ts'
@@ -1345,7 +1345,13 @@ check('it is counted as demoted, same as an id nobody has seen', offBoardMatch.d
  * nothing worth logging. isBudgetExhausted matches on the word "budget" in
  * either the subtype or the result text, on purpose - neither is a documented
  * interface of the CLI, so a test pinned to the exact assumed wording would
- * pass for the wrong reason the moment the real wording differs.
+ * pass for the wrong reason the moment the real wording differs. Measured on
+ * a real refusal (see worklog-budget-fixture.ts): `text` came back EMPTY, so
+ * it is `subtype` alone that carries "budget" for this CLI version - which is
+ * exactly why both are checked rather than either alone. `terminal_reason`
+ * ("budget_exhausted" on that same run) is a third, additive signal: unlike
+ * the other two it is a fixed value where present, but it may be absent on a
+ * different CLI version, so it can only add a match, never gate one.
  */
 console.log('\na run that ran out of money says so')
 
@@ -1359,6 +1365,19 @@ ok(
   isBudgetExhausted({ isError: true, subtype: 'error_during_execution', text: 'over budget' })
 )
 ok(
+  // Isolates terminal_reason from the subtype/text match entirely - neither
+  // of the other two fields says "budget" here - so this fails on its own if
+  // the additive check is ever deleted, rather than riding on BUDGET_REFUSAL
+  // matching for an unrelated reason.
+  'and terminal_reason alone is enough, additively - the third signal the CLI actually sends',
+  isBudgetExhausted({
+    isError: true,
+    subtype: 'error_during_execution',
+    text: '',
+    terminalReason: 'budget_exhausted'
+  })
+)
+ok(
   'a plain failure is not mistaken for one',
   !isBudgetExhausted({ isError: true, subtype: 'error_during_execution', text: 'the tool failed' })
 )
@@ -1367,9 +1386,17 @@ ok(
   !isBudgetExhausted({ isError: false, subtype: 'success', text: 'I stayed within budget.' })
 )
 ok(
+  // `text` is legitimately empty on the real fixture (see above), so an
+  // unfilled-marker check against it would trivially pass no matter what -
+  // an empty string can never contain '<' or '>'. Checked against `subtype`
+  // and `errors[0]` instead, which are the two fields the real envelope
+  // actually filled in.
   'the fixture is a real envelope, not an unfilled marker',
-  !/[<>]/.test(BUDGET_REFUSAL.subtype) && !/[<>]/.test(BUDGET_REFUSAL.text),
-  `${BUDGET_REFUSAL.subtype} / ${BUDGET_REFUSAL.text}`
+  BUDGET_REFUSAL.subtype.length > 0 &&
+    !/[<>]/.test(BUDGET_REFUSAL.subtype) &&
+    (BUDGET_REFUSAL.errors?.length ?? 0) > 0 &&
+    !/[<>]/.test(BUDGET_REFUSAL.errors?.[0] ?? ''),
+  `${BUDGET_REFUSAL.subtype} / ${JSON.stringify(BUDGET_REFUSAL.errors)}`
 )
 
 {
@@ -1399,23 +1426,40 @@ ok(
   }
   const budgeted = (async () => BUDGET_REFUSAL_RESULT) as never
   const out = await applyProposal(proposal(), { run: budgeted })
+  const message = Object.values(out.errors).join(' ')
   ok(
-    // Specifically "budget ceiling", not just /budget/i: BUDGET_REFUSAL.text
-    // itself contains the word "budget" ("maximum budget of $0.15"), so a
-    // bare /budget/i match here would still pass even with the budget branch
-    // deleted entirely and the fallback message taking over - see the sibling
-    // assertion in verify-worklog-recall.mts, which already discriminates.
+    // Specifically "budget ceiling", not just /budget/i: the evidence clause
+    // this message carries quotes BUDGET_REFUSAL.errors[0] ("Reached maximum
+    // budget ($0.0001)"), which itself contains the word "budget" - so a bare
+    // /budget/i match here would still pass even with the budget branch
+    // deleted entirely and the fallback message taking over. "budget ceiling"
+    // only ever comes from WorklogBudgetError's own template, never from the
+    // quoted evidence - see the sibling assertion in
+    // verify-worklog-recall.mts, which already discriminates the same way.
     'a write that hit the ceiling says which ceiling',
-    /budget ceiling/i.test(Object.values(out.errors).join(' ')),
-    JSON.stringify(out.errors)
+    /budget ceiling/i.test(message),
+    message
   )
   ok(
     // The literal figure comes from APPLY_MAX_BUDGET_USD itself, not restated
     // as a number here - a restated literal goes stale silently the next time
     // the ceiling is retuned (it already has been once, by Task 23).
     'and names the figure, because that is the part the user can act on',
-    Object.values(out.errors).join(' ').includes(`$${APPLY_MAX_BUDGET_USD.toFixed(2)}`),
-    JSON.stringify(out.errors)
+    message.includes(`$${APPLY_MAX_BUDGET_USD.toFixed(2)}`),
+    message
+  )
+  ok(
+    // Task 24 follow-up (the fixture is now the observed envelope): `text`
+    // came back empty on the real run, so the evidence clause has to come
+    // from `errors[0]` to be readable at all - budgetEvidence() (runner.ts)
+    // deliberately never falls back to the bare `subtype`. This is the
+    // vacuity check for that choice: break the preference order back to
+    // "subtype when text is empty" and this fails, because the message would
+    // quote "error_max_budget_usd" verbatim - an internal identifier the
+    // plain-English rule forbids putting in front of a user.
+    'the evidence clause names the real figure and never the bare subtype',
+    message.includes('Reached maximum budget ($0.0001)') && !message.includes('error_max_budget_usd'),
+    message
   )
   ok('and is not reported ok', !out.ok)
 }

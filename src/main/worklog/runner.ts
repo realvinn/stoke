@@ -189,15 +189,23 @@ export class WorklogBudgetError extends Error {
  * A short, single-line quote of what the CLI actually said, for
  * WorklogBudgetError's `detail`.
  *
- * Prefers the result text — it is the part a person can make sense of — and
- * falls back to the subtype only when the text is empty. Clipped short: this
- * rides along inside a sentence, not as a report of its own.
+ * Prefers `errors[0]` — measured on a real budget-exhausted run (`claude`
+ * 2.1.221, 2026-08-08), that held `"Reached maximum budget ($0.0001)"`, the
+ * one field of the three actually written for a person to read and the only
+ * one that names the real figure. Falls back to the result text, which is
+ * empty on that same run but may carry something readable on a different
+ * failure. Deliberately does NOT fall back to `subtype`: that is an internal
+ * identifier (`"error_max_budget_usd"`), and quoting one to the user breaks
+ * the plain-English rule worse than showing no evidence at all — a sentence
+ * with no "The run said" tail reads better than one quoting a machine name.
+ * Clipped short either way: this rides along inside a sentence, not as a
+ * report of its own.
  */
-function budgetEvidence(result: { text: string; subtype: string | null }): string | null {
+function budgetEvidence(result: { text: string; errors?: string[] }): string | null {
+  const fromErrors = result.errors?.[0] ? clip(oneLine(result.errors[0]), 200) : ''
+  if (fromErrors) return fromErrors
   const text = clip(oneLine(result.text ?? ''), 200)
-  if (text) return text
-  const subtype = result.subtype ? clip(oneLine(result.subtype), 200) : ''
-  return subtype || null
+  return text || null
 }
 
 /* ------------------------------------------------------------- the digest */

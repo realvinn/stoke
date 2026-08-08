@@ -111,6 +111,28 @@ export interface HeadlessResult {
   sessionId: string | null
   /** Non-empty means the run wanted a tool the allowlist did not grant. */
   permissionDenials: unknown[]
+  /**
+   * The envelope's own `errors` array, when the CLI populated one.
+   *
+   * Measured on a real budget-exhausted run (`claude` 2.1.221, 2026-08-08):
+   * `["Reached maximum budget ($0.0001)"]`, while `result` (this type's
+   * `text`) came back empty and `subtype` held only the internal identifier
+   * `error_max_budget_usd`. This is the one field of the three actually
+   * written for a person to read, so worklog/runner.ts's budgetEvidence()
+   * prefers it. Optional because an ordinary successful run never populates
+   * it, and no caller may assume it exists.
+   */
+  errors?: string[]
+  /**
+   * `terminal_reason` from the envelope, when the CLI sent one — e.g.
+   * `"budget_exhausted"` on the same run described above. Unlike `subtype`
+   * and `text`, whose exact wording is not a documented interface, this is a
+   * fixed machine value where present, which is why isBudgetExhausted()
+   * checks it too, additively, alongside the loose text match. Optional
+   * because it may be absent on an older CLI version; a caller must never
+   * require it.
+   */
+  terminalReason?: string | null
   raw: Record<string, unknown>
 }
 
@@ -134,26 +156,31 @@ export class HeadlessError extends Error {
 /**
  * Did this run stop because it ran out of money, rather than fail?
  *
- * A budget-exhausted run exits non-zero but still prints a result envelope, and
- * both its `subtype` and its result text mention 'budget'. agent.ts already
- * keeps that envelope on purpose — "a non-zero exit that still printed a result
- * envelope is a real answer about a real failure (budget exceeded, a tool
- * denied)".
+ * A budget-exhausted run exits non-zero but still prints a result envelope.
+ * Measured on a real one (`claude` 2.1.221, 2026-08-08): `subtype` held
+ * `"error_max_budget_usd"` and the result text was **empty** — the assumption
+ * this replaced had both mentioning "budget"; only one of them did. So the two
+ * are matched with OR, not AND, and neither is a documented interface: the
+ * subtype is a string somebody else owns and can rename, the text is the part
+ * a person actually reads and may say nothing at all. The cost of guessing
+ * wrong is the failure spec §2.4.4 describes: budget exhaustion arriving as
+ * "nothing to report".
  *
- * Both are matched because neither is a documented interface, and the cost of
- * guessing wrong is the failure spec §2.4.4 describes: budget exhaustion
- * arriving as "nothing to report". The subtype is a string somebody else owns
- * and can rename; the text is the part the user is shown. Matching either is
- * how this keeps working when one of them changes.
+ * `terminal_reason` (`terminalReason` here) is checked too, additively: on the
+ * same measured run it held the fixed value `"budget_exhausted"`, unambiguous
+ * where the other two are heuristic. It is not required — an older CLI may not
+ * send it — so this can only add a true, never remove one the text/subtype
+ * match would have found.
  *
  * `isError` is still required. Without it a successful run whose answer merely
  * mentions a budget — "I stayed within budget." — would be reported as a budget
  * failure, and that is a worse lie than the one this function exists to stop.
  */
 export function isBudgetExhausted(
-  result: Pick<HeadlessResult, 'isError' | 'subtype' | 'text'>
+  result: Pick<HeadlessResult, 'isError' | 'subtype' | 'text' | 'terminalReason'>
 ): boolean {
   if (!result.isError) return false
+  if (result.terminalReason === 'budget_exhausted') return true
   return /budget/i.test(result.subtype ?? '') || /budget/i.test(result.text ?? '')
 }
 
@@ -268,6 +295,11 @@ function num(v: unknown): number | null {
   return typeof v === 'number' && Number.isFinite(v) ? v : null
 }
 
+/** The envelope's `errors` array, filtered down to the strings it actually held. */
+function strArr(v: unknown): string[] {
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
+}
+
 /** First 400 characters of whatever the CLI said, for an error message. */
 function snippet(s: string): string {
   const t = s.trim().replace(/\s+/g, ' ')
@@ -378,6 +410,8 @@ export async function runHeadless(opts: HeadlessOptions): Promise<HeadlessResult
     numTurns: num(envelope.num_turns),
     sessionId: str(envelope.session_id),
     permissionDenials: Array.isArray(envelope.permission_denials) ? envelope.permission_denials : [],
+    errors: strArr(envelope.errors),
+    terminalReason: str(envelope.terminal_reason),
     raw: envelope
   }
 }
