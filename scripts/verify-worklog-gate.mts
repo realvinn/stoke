@@ -12,6 +12,7 @@
  */
 import { sep } from 'node:path'
 import { GATE_RULES, groupForCwd, isWatchedGroup, shouldWatch } from '../src/main/worklog/gate.ts'
+import { watchStateFrom } from '../src/main/worklog/watch.ts'
 import { groupForCwd as groupForCwdShared, pathRulesFor } from '../src/shared/paths.ts'
 import type { Project } from '../src/shared/types.ts'
 
@@ -220,6 +221,89 @@ check(
   'a differently-cased path matches on APFS',
   isWatchedGroup(groupForCwdShared(p('GITEA-COMPANY', 'Refinity'), projects, pathRulesFor('darwin')), WATCHED),
   true
+)
+
+console.log('\nwhy a session is, or is not, the worklog agent\'s business')
+
+const at = 1_700_000_000_000
+const watchOf = (over: Partial<Parameters<typeof watchStateFrom>[0]> = {}): unknown =>
+  watchStateFrom({
+    sessionId: 's1',
+    cwd: p('gitea-company', 'refinity'),
+    host: null,
+    projects,
+    roots: [],
+    worklogGroups: WATCHED,
+    now: at,
+    ...over
+  })
+
+check('a watched folder is watched, and says which group', watchOf(), {
+  sessionId: 's1',
+  watched: true,
+  reason: 'watched-group',
+  group: 'gitea-company',
+  remote: false,
+  decidedAt: at
+})
+check(
+  'a folder in a group nobody watches says so',
+  watchOf({ cwd: p('personal', 'Stoke') }),
+  { sessionId: 's1', watched: false, reason: 'unwatched-group', group: 'personal', remote: false, decidedAt: at }
+)
+check(
+  'a folder that belongs to no project and no root cannot be placed at all',
+  watchOf({ cwd: p('scratch', 'notes') }),
+  { sessionId: 's1', watched: false, reason: 'unknown-folder', group: null, remote: false, decidedAt: at }
+)
+check(
+  'with nothing ticked the feature is off, not merely unwatched',
+  watchOf({ worklogGroups: [] }),
+  { sessionId: 's1', watched: false, reason: 'off', group: 'gitea-company', remote: false, decidedAt: at }
+)
+
+/*
+ * The root fallback, reaching through this predicate. `/…/work` is itself a
+ * registered project on the real machine, so the longest-prefix rule answered
+ * `dev` for every sibling under it and 7 of 12 work folders were never watched
+ * (spec §2.4.3).
+ */
+const rootProjects: Project[] = [...projects, project(root, isWin ? 'G:' : 'vinn')]
+check(
+  'a folder under a watched scan root is watched with no history of its own',
+  watchOf({
+    cwd: p('unregistered-repo'),
+    projects: rootProjects,
+    roots: [root],
+    worklogGroups: ['Code']
+  }),
+  { sessionId: 's1', watched: true, reason: 'watched-group', group: 'Code', remote: false, decidedAt: at }
+)
+
+console.log('\na remote session is gated by its machine, never by a folder')
+const host = { label: 'Build box', alias: 'buildbox', worklog: true }
+check('a ticked host is watched', watchOf({ host }), {
+  sessionId: 's1',
+  watched: true,
+  reason: 'watched-host',
+  group: 'Build box',
+  remote: true,
+  decidedAt: at
+})
+check(
+  'an unticked host is not, whatever the local cwd happens to be',
+  watchOf({ host: { ...host, worklog: false } }),
+  { sessionId: 's1', watched: false, reason: 'unwatched-host', group: 'Build box', remote: true, decidedAt: at }
+)
+check(
+  'anything other than a literal true is off',
+  watchOf({ host: { label: '', alias: 'buildbox' } }),
+  { sessionId: 's1', watched: false, reason: 'unwatched-host', group: 'buildbox', remote: true, decidedAt: at }
+)
+check(
+  'and a ticked host works with no project groups ticked at all',
+  watchOf({ host, worklogGroups: [] }),
+  { sessionId: 's1', watched: true, reason: 'watched-host', group: 'Build box', remote: true, decidedAt: at }
 )
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)

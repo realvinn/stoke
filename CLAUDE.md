@@ -65,6 +65,7 @@ src/main/         Electron main process
   audio/            reads the default capture device, to warn about virtual cables
   worklog/          the Notion/ClickUp review queue
     gate.ts           which project groups are watched
+    watch.ts          the one predicate: is this session watched, and why not
     autoscan.ts       when a quiet session is scanned without being asked
     recall.ts         reads the boards (read-only, cached) so updates beat duplicates
     runner.ts         scan (read-only) and apply (writes, on accept only)
