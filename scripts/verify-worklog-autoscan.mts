@@ -754,48 +754,54 @@ console.log('\nwhich folder each session was started in, across a restart')
 {
   const dir = mkdtempSync(join(tmpdir(), 'stoke-sessions-'))
   const file = sessionStateFile(dir)
+  try {
+    const local: StoredSession = { sessionId: 's1', cwd: '/Users/x/work/api', hostId: null, at: NOW }
+    const remote: StoredSession = { sessionId: 's2', cwd: '/srv/app', hostId: 'h-1', at: NOW }
+    writeSessionState(file, [local, remote])
+    // NOW explicitly, not the defaulted Date.now(): plan-resolutions.md Task 33
+    // — the suite's clock is 1970, and readSessionState()'s age filter would
+    // drop both records against the real clock, failing this check and then
+    // throwing on the [0] below.
+    const roundTripped = readSessionState(file, NOW)
+    check('it round-trips', roundTripped, [local, remote])
+    check(
+      // Optional-chained rather than a bare [0]: if a regression ever made
+      // readSessionState drop a live record, this must read back as a clean
+      // FAIL (undefined !== null), not throw and abort the whole suite before
+      // the `finally` below can run — the exact bug shape this task fixed.
+      'a local session keeps a null host rather than losing the field',
+      roundTripped[0]?.hostId,
+      null
+    )
 
-  const local: StoredSession = { sessionId: 's1', cwd: '/Users/x/work/api', hostId: null, at: NOW }
-  const remote: StoredSession = { sessionId: 's2', cwd: '/srv/app', hostId: 'h-1', at: NOW }
-  writeSessionState(file, [local, remote])
-  // NOW explicitly, not the defaulted Date.now(): plan-resolutions.md Task 33
-  // — the suite's clock is 1970, and readSessionState()'s age filter would
-  // drop both records against the real clock, failing this check and then
-  // throwing on the [0] below.
-  check('it round-trips', readSessionState(file, NOW), [local, remote])
-  check(
-    'a local session keeps a null host rather than losing the field',
-    readSessionState(file, NOW)[0].hostId,
-    null
-  )
+    writeSessionState(file, [
+      { ...local, at: NOW - STORED_SESSION_MAX_AGE_MS - 1 },
+      { ...remote, at: NOW }
+    ])
+    check(
+      'a record older than the age limit is dropped on read',
+      readSessionState(file, NOW).map((s) => s.sessionId),
+      ['s2']
+    )
 
-  writeSessionState(file, [
-    { ...local, at: NOW - STORED_SESSION_MAX_AGE_MS - 1 },
-    { ...remote, at: NOW }
-  ])
-  check(
-    'a record older than the age limit is dropped on read',
-    readSessionState(file, NOW).map((s) => s.sessionId),
-    ['s2']
-  )
+    const many: StoredSession[] = Array.from({ length: MAX_STORED_SESSIONS + 20 }, (_, i) => ({
+      sessionId: `s${i}`,
+      cwd: '/x',
+      hostId: null,
+      at: NOW - i * 1000
+    }))
+    writeSessionState(file, many)
+    const trimmed = readSessionState(file, NOW)
+    check('the list is capped', trimmed.length, MAX_STORED_SESSIONS)
+    check('and it is the newest that are kept', trimmed[0]?.sessionId, 's0')
 
-  const many: StoredSession[] = Array.from({ length: MAX_STORED_SESSIONS + 20 }, (_, i) => ({
-    sessionId: `s${i}`,
-    cwd: '/x',
-    hostId: null,
-    at: NOW - i * 1000
-  }))
-  writeSessionState(file, many)
-  const trimmed = readSessionState(file, NOW)
-  check('the list is capped', trimmed.length, MAX_STORED_SESSIONS)
-  check('and it is the newest that are kept', trimmed[0].sessionId, 's0')
-
-  for (const junk of ['{', '[]', 'null', '[1,2,3]', '[{"cwd":"/x"}]']) {
-    writeFileSync(file, junk, 'utf8')
-    check(`junk (${junk}) reads back as an empty list`, readSessionState(file, NOW), [])
+    for (const junk of ['{', '[]', 'null', '[1,2,3]', '[{"cwd":"/x"}]']) {
+      writeFileSync(file, junk, 'utf8')
+      check(`junk (${junk}) reads back as an empty list`, readSessionState(file, NOW), [])
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
   }
-
-  rmSync(dir, { recursive: true, force: true })
 }
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)

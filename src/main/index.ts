@@ -162,6 +162,24 @@ const sessionCwds = new Map<string, string>()
 const sessionHosts = new Map<string, SshHost>()
 
 /**
+ * When each entry in `sessionCwds`/`sessionHosts` was last genuinely written —
+ * either restored off disk at boot or set by `launchSession` for the session
+ * it just started.
+ *
+ * `writeSessionState` used to stamp every entry with `Date.now()` on every
+ * call, because that call rewrites the whole map each time a session starts.
+ * That refreshed the age of sessions the app did nothing to, so
+ * `STORED_SESSION_MAX_AGE_MS`'s 14-day filter could only ever fire on an
+ * install nobody was using — the one case that never needs it. This map is
+ * the source of truth for "when did this entry last actually change", kept
+ * as a sibling of the other two so the same key always exists in all three
+ * once a session is known: `launchSession` sets it for the session it starts
+ * and leaves every other key alone; the boot-restore loop below sets it from
+ * the stamp already on disk, verbatim.
+ */
+const sessionAts = new Map<string, number>()
+
+/**
  * How often a remote session's transcript is pulled back.
  *
  * The local cadence is 1.5s, which is a `stat` on this disk. This is an SSH
@@ -237,11 +255,16 @@ async function launchSession(opts: LaunchOptions): Promise<StartResult> {
   const cwd = ptys.list().find((s) => s.sessionId === result.sessionId)?.cwd
   if (cwd) sessionCwds.set(result.sessionId, cwd)
   if (opts.host) sessionHosts.set(result.sessionId, opts.host)
+  // Only the session that just launched gets a fresh stamp. Every other entry
+  // keeps whatever `sessionAts` already has for it — restored-at-boot or set
+  // by an earlier launch — so the 14-day age-out has something to measure
+  // besides "the app was opened today".
+  sessionAts.set(result.sessionId, Date.now())
   /*
-   * Synchronous, and after both maps are updated — CLAUDE.md gotcha 20's shape.
-   * Nothing awaits between the update and the write, so what lands on disk is
-   * always a state some pass could actually have observed. One write per
-   * session start is a handful a day; this is not a hot path.
+   * Synchronous, and after all three maps are updated — CLAUDE.md gotcha 20's
+   * shape. Nothing awaits between the update and the write, so what lands on
+   * disk is always a state some pass could actually have observed. One write
+   * per session start is a handful a day; this is not a hot path.
    */
   writeSessionState(
     sessionStateFile(app.getPath('userData')),
@@ -249,7 +272,10 @@ async function launchSession(opts: LaunchOptions): Promise<StartResult> {
       sessionId,
       cwd: dir,
       hostId: sessionHosts.get(sessionId)?.id ?? null,
-      at: Date.now()
+      // Falls back to now only for a key that could not have reached
+      // sessionCwds without also reaching sessionAts (both are set together,
+      // here and in the boot-restore loop) — defensive, not expected to fire.
+      at: sessionAts.get(sessionId) ?? Date.now()
     }))
   )
   return result
@@ -654,6 +680,10 @@ function createWindow(): void {
    */
   for (const s of readSessionState(sessionState)) {
     sessionCwds.set(s.sessionId, s.cwd)
+    // Verbatim from disk, not `Date.now()` — this entry was not just used, it
+    // was merely reloaded, and the age-out has to measure from the same clock
+    // reading a fresh launch would have written.
+    sessionAts.set(s.sessionId, s.at)
     if (!s.hostId) continue
     const host = getSettings().hosts.find((h) => h.id === s.hostId)
     if (host) sessionHosts.set(s.sessionId, host)
