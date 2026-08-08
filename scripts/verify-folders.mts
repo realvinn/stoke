@@ -501,6 +501,20 @@ check(
   true
 )
 check('no candidate is offered twice', mac.length, new Set(mac).size)
+/*
+ * That check above cannot fail on darwin, and it is worth saying why rather
+ * than deleting it: the seven folder names are fixed, distinct literals with no
+ * separator in them, so `under(a) === under(b)` implies `a === b` for any home.
+ * A duplicate is structurally impossible there, and dropping the dedup leaves
+ * the whole suite green.
+ *
+ * Windows is where the dedup earns its place, because `G:\Code` is hardcoded
+ * alongside the home-relative candidates. Point home at that same folder and
+ * the two collide.
+ */
+const collide = defaultCwdCandidates('win32', 'G:\\Code')
+check('a home that is already a candidate is still offered once', collide.length, new Set(collide).size)
+check('and the hardcoded drive is the copy that survives', collide[0], 'G:\\Code')
 check(
   'Windows keeps the drive this app was built around, first',
   defaultCwdCandidates('win32', 'C:\\Users\\v')[0],
