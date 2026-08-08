@@ -792,6 +792,54 @@ try {
   rmSync(shapeBox, { recursive: true, force: true })
 }
 
+console.log('\nthe shape none of the 13 above can reach: listable is not the same question as traversable')
+/*
+ * Every shape above sits inside a directory this process can list, so
+ * `entryByIdentity`'s `readdirSync` always succeeds there and the invariant
+ * holds for a reason that has nothing to do with `profiles.ts:417`'s guard.
+ * `chmod 0o111` — execute only, no read — makes a directory traversable
+ * without being listable: `lstat` of a *named* entry inside it still
+ * succeeds, but `readdirSync` gets `EACCES`. That is exactly the gap
+ * `entryByIdentity` straddles, and it is an ordinary shape on a real disk,
+ * not a contrived one — it is the same permission gap that makes an
+ * unentitled macOS build unable to `realpath` under iCloud Drive.
+ *
+ * With `dir` unlistable, `entryByIdentity` returns null, so `existingChild`
+ * returns null for a symlinked child that is genuinely there, and
+ * `planProfile` falls through to `root = join(dir, name)` — the *typed*
+ * spelling, never listed. `isDirectory(root)` then `stat`s that path
+ * directly, which needs no read permission on `dir` at all, follows the
+ * symlink, and answers true: `willCreate: false` under an `action` that has
+ * not yet been told. Only the guard reconciles the two. Root ignores
+ * permission bits, so — same discipline as every probed fixture above —
+ * whether the directory is actually unlistable is measured, not assumed.
+ */
+const guardBox = mkdtempSync(join(tmpdir(), 'stoke-plan-guard-'))
+try {
+  mkdirSync(join(guardBox, 'Target'))
+  symlinkSync(join(guardBox, 'Target'), join(guardBox, 'Link'))
+  chmodSync(guardBox, 0o111)
+  let listDenied = false
+  try {
+    readdirSync(guardBox)
+  } catch {
+    listDenied = true
+  }
+  if (!listDenied) {
+    console.log('  NOTE  this process can list a 0o111 directory (root?); guard fixture not exercised')
+  } else {
+    const guarded = await planProfile(guardBox, 'Link')
+    check(
+      'entryByIdentity cannot list the directory, so the guard is what keeps action and willCreate in agreement',
+      [guarded.action, guarded.willCreate],
+      ['reuse', false]
+    )
+  }
+} finally {
+  chmodSync(guardBox, 0o700)
+  rmSync(guardBox, { recursive: true, force: true })
+}
+
 console.log('\nthe scan-root dedupe asks the same filesystem the plan did')
 /*
  * The dedupe decides whether `plan.root` is appended to `settings.projectRoots`

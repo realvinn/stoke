@@ -213,6 +213,13 @@ function entryByIdentity(dir: string, requested: string): string | null {
   try {
     entries = readdirSync(dir)
   } catch {
+    // Unlistable, not "gone": there is no other way to learn the symlink's
+    // real entry name, so this answers null exactly as it would for a missing
+    // child, and the caller falls back to persisting the *typed* spelling as
+    // the scan root. That is not what is really on disk, but it is the
+    // least-bad answer available when the directory cannot be listed at all —
+    // the alternative is throwing an EACCES out of a debounced keystroke
+    // handler.
     return null
   }
   for (const entry of entries) {
