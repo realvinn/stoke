@@ -390,8 +390,18 @@ export class AutoScanner {
            * and the state written must be the state a second pass would see —
            * `scanning: false`, muted until a known time. Snapshotting before
            * the await would persist a claim that no longer exists.
+           *
+           * Guarded on `disposed`, which the await above can also have made
+           * true: `dispose()` clears `this.sessions` synchronously (from
+           * `win.on('closed', ...)`, reachable mid-scan), so a save arriving
+           * after that point would snapshot an empty live map and overwrite
+           * the file with `[] ++ stillRestored` — dropping the baseline,
+           * `lastScanAt` and `mutedUntil` for every session tracked at
+           * dispose time, not merely this one. A disposed scanner has
+           * nothing worth writing; the file already holds whatever the last
+           * live save left there.
            */
-          this.save()
+          if (!this.disposed) this.save()
           continue
         }
         /*
@@ -445,8 +455,16 @@ export class AutoScanner {
        * cannot carry a scan in flight — a process that dies mid-scan must come
        * back able to scan that session again, and a stored `scanning: true`
        * would make it permanently ineligible.
+       *
+       * Guarded on `disposed` for the same reason as the `!watched` branch
+       * above: `this.opts.scan(...)` was awaited, and `dispose()` — reachable
+       * mid-scan, e.g. the window closing while a `claude -p` call is still
+       * running — clears `this.sessions` synchronously. Saving after that
+       * would snapshot an empty live map and truncate the file's baselines
+       * for every session, not just this one, the moment this dangling scan
+       * finally settles.
        */
-      this.save()
+      if (!this.disposed) this.save()
     }
   }
 }

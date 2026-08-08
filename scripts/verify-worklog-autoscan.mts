@@ -582,5 +582,163 @@ console.log('\nand when it is written down')
   scanner.dispose()
 }
 
+console.log('\na completed scan writes its own state too, not only a muted one')
+{
+  /*
+   * Task 32 review, finding 2: the block above only drove `watched: () =>
+   * false` through `evaluate()`'s own `save()`. `run()` has an independent
+   * `save()` in its `finally`, and nothing here reached it — deleting it would
+   * not have failed this suite despite dropping every baseline `run()` ever
+   * writes.
+   */
+  const writes: AutoScanSnapshot[] = []
+  const scanner = new AutoScanner({
+    enabled: () => true,
+    watched: () => true,
+    scan: async () => 1,
+    now: () => NOW,
+    persist: (s) => writes.push(s)
+  })
+  worked(scanner, 's1', 40, NOW - cfg.idleMs - 1)
+  await scanner.evaluate()
+  // evaluate() fires run() with `void`, so it does not wait for the scan;
+  // give the held promise a turn to settle before reading what was written.
+  await new Promise((r) => setTimeout(r, 0))
+  check('a completed scan writes the state out', writes.length >= 1, true)
+  ok(
+    'and what it wrote has the session banked and unclaimed',
+    writes.at(-1)!.sessions.some(
+      (s) => s.sessionId === 's1' && s.scannedMessages === 40 && s.lastScanAt === NOW
+    ),
+    JSON.stringify(writes.at(-1))
+  )
+  check(
+    'and nothing written by a completed scan carries one in flight',
+    writes.every((snap) => snap.sessions.every((s) => !('scanning' in s))),
+    true
+  )
+  scanner.dispose()
+}
+
+/* ------------------------------------------------------------- the teardown */
+
+console.log('\ndispose() races the awaits, and a save arriving after it must not win')
+
+{
+  /*
+   * Task 32 review, finding 1. `dispose()` is reachable mid-scan — a window
+   * closing on macOS does not quit the process — and it clears `this.sessions`
+   * synchronously. A `save()` that resumes after that point would snapshot an
+   * empty live map and overwrite the file with `[] ++ stillRestored`, dropping
+   * the baseline for every session that was tracked at dispose time, not only
+   * the one that was scanning. Proven against a real file, through the real
+   * `writeAutoScanState`, not a mock: a mock persist would not show a
+   * *truncation*, only that a function was called.
+   */
+  const dir = mkdtempSync(join(tmpdir(), 'stoke-autoscan-dispose-watched-'))
+  const file = autoScanStateFile(dir)
+  try {
+    // A settled session, muted and persisted for real, so there is a
+    // known-good file on disk before the race below ever touches it.
+    const settled = new AutoScanner({
+      enabled: () => true,
+      watched: () => false,
+      scan: async () => 0,
+      now: () => NOW,
+      persist: (s) => writeAutoScanState(file, s)
+    })
+    worked(settled, 'kept', 40, NOW - cfg.idleMs - 1)
+    await settled.evaluate()
+    settled.dispose()
+    const before = readAutoScanState(file)
+    ok(
+      'the baseline session made it to disk before the race',
+      before.sessions.some((s) => s.sessionId === 'kept'),
+      JSON.stringify(before)
+    )
+
+    // A fresh scanner restores that file — standing in for the scanner
+    // `activate()` builds after a window reopens — and tracks a second
+    // session whose gate check is still in flight when the window closes.
+    // `kept` is observe()'d too, moving it out of `restored` and into the
+    // live map: exactly what `dispose()`'s `this.sessions.clear()` wipes,
+    // not a session sitting untouched in `restored`, which the clear never
+    // touches.
+    let releaseWatched: ((v: boolean) => void) | null = null
+    const racing = new AutoScanner({
+      enabled: () => true,
+      watched: () =>
+        new Promise<boolean>((r) => {
+          releaseWatched = r
+        }),
+      scan: async () => 0,
+      now: () => NOW,
+      restore: () => readAutoScanState(file),
+      persist: (s) => writeAutoScanState(file, s)
+    })
+    worked(racing, 'racing', 40, NOW - cfg.idleMs - 1)
+    racing.observe('kept', 40, NOW - cfg.idleMs - 1)
+
+    const pass = racing.evaluate()
+    // The window closes while `watched('racing')` is still unresolved.
+    racing.dispose()
+    releaseWatched?.(false)
+    await pass
+    await new Promise((r) => setTimeout(r, 0))
+
+    const after = readAutoScanState(file)
+    check('the file is untouched by a save a disposed scanner attempted', after, before)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+{
+  /* The same race, through `run()`'s `finally` instead of `evaluate()`'s
+     `!watched` branch: a scan still running when the window closes. */
+  const dir = mkdtempSync(join(tmpdir(), 'stoke-autoscan-dispose-run-'))
+  const file = autoScanStateFile(dir)
+  try {
+    const settled = new AutoScanner({
+      enabled: () => true,
+      watched: () => false,
+      scan: async () => 0,
+      now: () => NOW,
+      persist: (s) => writeAutoScanState(file, s)
+    })
+    worked(settled, 'kept', 40, NOW - cfg.idleMs - 1)
+    await settled.evaluate()
+    settled.dispose()
+    const before = readAutoScanState(file)
+
+    let releaseScan: (() => void) | null = null
+    const racing = new AutoScanner({
+      enabled: () => true,
+      watched: () => true,
+      scan: () =>
+        new Promise<number>((r) => {
+          releaseScan = () => r(0)
+        }),
+      now: () => NOW,
+      restore: () => readAutoScanState(file),
+      persist: (s) => writeAutoScanState(file, s)
+    })
+    worked(racing, 'racing', 40, NOW - cfg.idleMs - 1)
+    racing.observe('kept', 40, NOW - cfg.idleMs - 1)
+
+    // evaluate() starts run() with `void` and returns without waiting for it.
+    await racing.evaluate()
+    // The window closes while the scan itself is still in flight.
+    racing.dispose()
+    releaseScan?.()
+    await new Promise((r) => setTimeout(r, 0))
+
+    const after = readAutoScanState(file)
+    check('the file is untouched by a scan that finished after dispose()', after, before)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
 process.exitCode = failures ? 1 : 0
