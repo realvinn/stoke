@@ -29,6 +29,7 @@ npm run verify:statusline     # the statusLine wrapper: payload, suppression, pa
 npm run verify:unicode        # xterm's cell widths for emoji and box drawing
 npm run verify:profiles       # profile resolution + every accent clears 4.5:1
 npm run verify:settings       # settings hydration: repair, clamps, and what it drops
+npm run verify:folders        # folder metadata: trimming, caps, added folders, hide/pin
 npm run verify:color          # colour maths: contrast, APCA, oklch
 npm run verify:worklog-gate     # which sessions the worklog agent would watch
 npm run verify:worklog-runner   # prompt building, JSON parsing, titles, create-vs-update
@@ -49,6 +50,7 @@ src/main/         Electron main process
   pty.ts            PTY sessions, env sanitising, scrollback, fan-out
   cli.ts            locating claude, building its argv
   projects.ts       project + session discovery from Claude's own files
+  projectMeta.ts    per-folder emoji/label/added-by-hand, and the one pair of caps
   context.ts        live context-window watcher (polls transcripts)
   sessionFile.ts    transcript parsing and the context maths
   statusLine.ts     Stoke's statusLine wrapper: context window + plan limits

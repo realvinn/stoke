@@ -7,6 +7,7 @@
  * outside a window — see `scripts/verify-settings.mts`.
  */
 import type { ProfileConfig, ProjectMeta, Settings, SshHost, Theme, WorklogBoards } from '@shared/types'
+import { tidy } from './projectMeta.ts'
 import { DEFAULT_THEME_ID, validateTheme } from '../shared/themes.ts'
 import { DEFAULT_WORKLOG_BOARDS, WORKLOG_TARGETS } from '../shared/worklog.ts'
 import { clampFontSize, clampUiScale } from '../shared/ui.ts'
@@ -84,25 +85,6 @@ export const DEFAULT_SETTINGS: Settings = {
   // reach the app at all, and the line it suppresses duplicates chrome Stoke
   // already draws.
   hideStatusLine: true
-}
-
-// D Task 34 replaces this with `import { tidy } from './projectMeta.ts'`.
-// It returns null — not an empty object — for a record that says nothing, so
-// the caller's drop test is `if (entry)` and stays correct after the swap.
-function tidy(meta: Partial<ProjectMeta>): ProjectMeta | null {
-  const out: ProjectMeta = {}
-  if (typeof meta.emoji === 'string') {
-    const emoji = meta.emoji.trim().slice(0, 16)
-    if (emoji) out.emoji = emoji
-  }
-  if (typeof meta.label === 'string') {
-    const label = meta.label.trim().slice(0, 64)
-    if (label) out.label = label
-  }
-  // Only a literal true. A truthy leftover must not conjure a project out of a
-  // folder nobody added.
-  if (meta.addedManually === true) out.addedManually = true
-  return Object.keys(out).length ? out : null
 }
 
 function hydrateProjectMeta(raw: unknown): Record<string, ProjectMeta> {
