@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { Project, ProjectMeta } from '@shared/types'
 import { IconFolder } from './Icons'
 
@@ -58,6 +58,12 @@ export function ProjectMetaPicker({
     setLabel(project.label ?? '')
   }, [project.label, open])
 
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  // Set for the one synchronous tick where returnFocusToTrigger() moves focus
+  // itself, so the label input's own onBlur doesn't read that programmatic
+  // move as the user leaving the field and commit an edit Escape meant to discard.
+  const suppressNextCommit = useRef(false)
+
   const setEmoji = (emoji: string | null): void => {
     const meta = currentMeta(project)
     if (emoji) meta.emoji = emoji
@@ -66,6 +72,10 @@ export function ProjectMetaPicker({
   }
 
   const commitLabel = (): void => {
+    if (suppressNextCommit.current) {
+      suppressNextCommit.current = false
+      return
+    }
     const next = label.trim()
     if (next === (project.label ?? '')) return
     const meta = currentMeta(project)
@@ -74,17 +84,32 @@ export function ProjectMetaPicker({
     onCommit(commitOrClear(meta))
   }
 
+  /** Returns focus to the trigger before the popover subtree unmounts, for
+      every close path that isn't the user clicking away to something else.
+      Doing it here — synchronously, before the state update that unmounts
+      the popover — is what makes it reliable: a `useEffect` keyed on `open`
+      runs after that unmount, by which point the focused node is already
+      gone and focus has already dropped to <body>. */
+  const returnFocusToTrigger = (): void => {
+    suppressNextCommit.current = true
+    triggerRef.current?.focus()
+    suppressNextCommit.current = false
+  }
+
   return (
     <div
       className="project-meta-picker"
       /* Closing on focus leaving the whole popover, rather than on a document
          click: a native WebContentsView paints above renderer DOM, so a
-         full-screen click-catching layer is not reliable here (gotcha 14). */
+         full-screen click-catching layer is not reliable here (gotcha 14).
+         Focus isn't returned to the trigger here: relatedTarget is whatever
+         the user clicked instead, and that's where their focus should stay. */
       onBlur={(e) => {
         if (!e.currentTarget.contains(e.relatedTarget as Node | null)) onOpenChange(false)
       }}
     >
       <button
+        ref={triggerRef}
         className="icon-btn project-emoji"
         aria-expanded={open}
         aria-label={`Icon and name for ${project.name}`}
@@ -118,7 +143,10 @@ export function ProjectMetaPicker({
                Space, so a space typed into the name field would select the
                project and never reach the field. */
             e.stopPropagation()
-            if (e.key === 'Escape') onOpenChange(false)
+            if (e.key === 'Escape') {
+              returnFocusToTrigger()
+              onOpenChange(false)
+            }
           }}
         >
           <div className="project-meta-grid">
@@ -151,6 +179,7 @@ export function ProjectMetaPicker({
               if (e.key === 'Enter') {
                 e.preventDefault()
                 commitLabel()
+                returnFocusToTrigger()
                 onOpenChange(false)
               }
             }}
@@ -174,6 +203,7 @@ export function ProjectMetaPicker({
                 data-variant="danger"
                 onClick={() => {
                   onCommit(null)
+                  returnFocusToTrigger()
                   onOpenChange(false)
                 }}
                 title="Stop listing this folder. Nothing on disk is deleted."
