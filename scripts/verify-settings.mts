@@ -226,5 +226,38 @@ check(
   ['notion']
 )
 
+console.log('\nthe active profile chip')
+/*
+ * hydrate validated every other structured field and passed this one straight
+ * through, back when the only thing that ever wrote it was a click on a chip.
+ * The tab strip writes it now, so a value that is not a profile id has to be
+ * repaired rather than handed to profileFor.
+ */
+check('a number is not a profile id', hydrateSettings({ activeProfile: 7 }).activeProfile, null)
+check(
+  'nor is an object that merely contains one',
+  hydrateSettings({ activeProfile: { id: 'Work' } }).activeProfile,
+  null
+)
+check(
+  'an empty string is no selection, not a profile named ""',
+  hydrateSettings({ activeProfile: '   ' }).activeProfile,
+  null
+)
+check('a real id survives, trimmed', hydrateSettings({ activeProfile: ' Work ' }).activeProfile, 'Work')
+/*
+ * Deliberately kept: a profile can legitimately belong to another machine, and
+ * resolveProfiles keeps those records for the same reason. App resolves the id
+ * against the visible list every render and shows no filter when it misses, so
+ * an unknown id costs nothing — while dropping it would silently rewrite the
+ * Windows selection the first time the Mac saved anything.
+ */
+check(
+  'an id with no profile behind it is kept, because the profile may be on another machine',
+  hydrateSettings({ activeProfile: 'gitea-vibe' }).activeProfile,
+  'gitea-vibe'
+)
+check('and an untouched machine has no selection', hydrateSettings({}).activeProfile, null)
+
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
 process.exitCode = failures ? 1 : 0

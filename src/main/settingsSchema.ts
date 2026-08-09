@@ -165,6 +165,17 @@ export function hydrateSettings(raw: unknown): Settings {
       ? r.customThemes.map(validateTheme).filter((t): t is Theme => t !== null)
       : [],
     profiles: Array.isArray(r.profiles) ? r.profiles.filter(isProfileConfig) : [],
+    /*
+     * A view filter, and now one the tab strip writes on every activation — so
+     * it is repaired like every other structured field rather than trusted. An
+     * id that matches no profile is deliberately kept: profileFor resolves it
+     * against the visible list each render and yields no filter when it misses,
+     * and a record can legitimately live on another machine.
+     */
+    activeProfile:
+      typeof r.activeProfile === 'string' && r.activeProfile.trim() !== ''
+        ? r.activeProfile.trim()
+        : null,
     hosts: Array.isArray(r.hosts)
       ? r.hosts
           .filter(
