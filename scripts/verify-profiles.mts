@@ -80,9 +80,9 @@ const rec = (p: Partial<ProfileConfig> & { id: string }): ProfileConfig => ({
 
 console.log('\nthe windows layout this was designed around')
 check(
-  'named folders are recognised, stray ones ignored',
+  'named folders no longer swallow the rest of the machine',
   ids({ personal: 6, school: 3, 'gitea-company': 3, Documents: 2, WINDOWS: 1 }),
-  ['personal', 'school', 'gitea-company']
+  ['personal', 'school', 'gitea-company', 'Documents']
 )
 check(
   'they keep their given order, not the folder count order',
@@ -108,6 +108,55 @@ check('a single project overall yields nothing', ids({ Code: 1 }), [])
 
 console.log('\none profile is still a choice')
 check('a mac with one work folder still gets a profile', ids({ Code: 4 }), ['Code'])
+
+console.log('\nnamed folders no longer suppress the rest of the machine')
+/*
+ * The early return was `if (known.length) return known`. Measured against the
+ * live ~/.claude.json on this Mac: `personal` is the only folder matching a
+ * named profile, so the derived list was exactly ['personal'] — the
+ * five-project `work` folder, which is the entire reason profiles exist here,
+ * could never be seeded, and neither could anything else. A user-made record
+ * was the only way to get a second chip, which is why one exists in settings.
+ */
+check(
+  'a folder holding real work beside the named ones is seeded too',
+  ids({ personal: 8, work: 5, dev: 3, Documents: 1 }),
+  ['personal', 'work', 'dev']
+)
+check(
+  'this machine, measured: work, dev, scratch and Codes were all invisible',
+  ids({ personal: 8, work: 5, dev: 3, scratch: 3, Codes: 2 }),
+  ['personal', 'work', 'dev', 'scratch', 'Codes']
+)
+check(
+  'the named ones still come first, in their own order',
+  labels({ clients: 9, personal: 1, school: 2 }),
+  ['Personal', 'Study', 'Clients']
+)
+check(
+  'extras wear the fallback colours, which no named seed wears',
+  deriveProfiles(counts({ personal: 6, work: 5, side: 2 })).map((p) => p.accent),
+  ['#ff9552', '#6ea8fe', '#f7c948']
+)
+/* `gitea-company` is labelled Work. A folder literally called `work` beside it
+   would put two chips reading Work in one row, and the chip is the only thing
+   the user sees — so the named profile's label claims that name too. */
+check(
+  'a folder a named profile already speaks for is not seeded twice',
+  ids({ 'gitea-company': 3, work: 2 }),
+  ['gitea-company']
+)
+check('nor is one folder in two spellings', ids({ Work: 5, work: 2 }), ['Work'])
+check(
+  'a stray with one project is still not a category of work',
+  ids({ personal: 6, Downloads: 1 }),
+  ['personal']
+)
+check(
+  'at most four extras are seeded, so the chip row cannot run away',
+  ids({ personal: 2, a: 9, b: 8, c: 7, d: 6, e: 5 }),
+  ['personal', 'a', 'b', 'c', 'd']
+)
 
 console.log('\nresolveProfiles with nothing stored is the old derived list')
 /*
@@ -143,7 +192,10 @@ const LEGACY_NAMED = [
     accentContrast: '#08170f'
   }
 ]
-const namedMachine = counts({ personal: 6, school: 3, 'gitea-company': 3, Documents: 2 })
+/* No stray folder in here: this fixture backs the frozen LEGACY_NAMED lock and
+   the deletion cases below, all of which are about the named seeds themselves.
+   The folder-derived half of the list has its own block above. */
+const namedMachine = counts({ personal: 6, school: 3, 'gitea-company': 3 })
 check(
   'every derived field is unchanged',
   resolveProfiles(namedMachine, []).map(({ groups: _groups, ...rest }) => rest),

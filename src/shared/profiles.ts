@@ -258,29 +258,53 @@ function swatchIndex(id: string): number {
  * groups with a single project, since a lone repo parked in Documents is not a
  * category of work.
  *
- * This is only a **seed**. It used to be the whole answer, and that is why a
- * profile the user made could never appear: with any named folder present this
- * returns the named list and stops, and a brand-new profile has one project so
- * the other branch dropped it too. User records are layered on top by
- * `resolveProfiles` instead of fighting for a place in here.
+ * This is only a **seed**, and it used to be less than that: with any named
+ * folder present it returned the named list and stopped, so on a machine whose
+ * only named folder is `personal` the whole of `work` had no chip and there
+ * was no route to one except making a record by hand. The two halves are
+ * merged now — named first in their own order, then whatever else holds more
+ * than one project, capped at the four fallback colours. User records are
+ * still layered on top by `resolveProfiles` rather than fighting for a place
+ * in here.
  */
 export function deriveProfiles(counts: Map<string, number>): Profile[] {
   const folded = new Set([...counts.keys()].map(foldGroup))
   const known = PROFILES.filter((p) => folded.has(foldGroup(p.id)))
-  if (known.length) return known
 
-  return [...counts.entries()]
-    .filter(([id, n]) => id && n > 1)
+  /*
+   * What the named profiles already speak for: their ids, and their labels.
+   * The labels matter — `gitea-company` is labelled Work, so a folder called
+   * `work` sitting beside it would produce two chips reading Work, and the
+   * chip is all the user sees.
+   */
+  const claimed = new Set<string>()
+  for (const p of known) {
+    claimed.add(foldGroup(p.id))
+    claimed.add(foldGroup(p.label))
+  }
+
+  const extras: Profile[] = []
+  const candidates = [...counts.entries()]
+    .filter(([id, n]) => id.trim() !== '' && n > 1)
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-    .slice(0, FALLBACK.length)
-    .map(([id], i) => ({
+
+  for (const [id] of candidates) {
+    if (extras.length >= FALLBACK.length) break
+    const key = foldGroup(id)
+    if (claimed.has(key) || claimed.has(foldGroup(titleCase(id)))) continue
+    claimed.add(key)
+    const c = FALLBACK[extras.length]
+    extras.push({
       id,
       label: titleCase(id),
-      accent: FALLBACK[i].accent,
-      accentHover: FALLBACK[i].accentHover,
-      accentSoft: FALLBACK[i].accentSoft,
-      accentContrast: FALLBACK[i].accentContrast
-    }))
+      accent: c.accent,
+      accentHover: c.accentHover,
+      accentSoft: c.accentSoft,
+      accentContrast: c.accentContrast
+    })
+  }
+
+  return [...known, ...extras]
 }
 
 function seedToResolved(p: Profile): ResolvedProfile {
