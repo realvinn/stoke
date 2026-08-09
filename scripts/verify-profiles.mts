@@ -1064,6 +1064,31 @@ check(
   ),
   'gitea-company'
 )
+/*
+ * The case above proves nothing about Windows, and that is worth saying rather
+ * than leaving for the next person to discover. `pathRulesFor`'s win32 and
+ * darwin rules differ only in `sep`, and `sep` is unobservable here:
+ * `normalizePath` canonicalises both compared strings to whichever separator is
+ * chosen, symmetrically, so `isInside`'s prefix test cannot see the choice, and
+ * the group comes from `Project.group` rather than from any reconstructed path.
+ * Measured: hardcoding pathRulesFor('linux') inside profileIdForCwd — case
+ * SENSITIVE and the wrong separator — still passes the check above.
+ *
+ * Case folding is the one win32 property that does show through, so this is the
+ * assertion that actually holds the Windows branch down. There is no machine to
+ * run Windows on in this project, so this literal is the only coverage it gets.
+ */
+check(
+  'a Windows path still matches its project when only the casing differs',
+  profileIdForCwd(
+    'C:\\Users\\V\\Dev\\Thing',
+    [proj('c:\\users\\v\\dev\\thing', 'dev')],
+    [],
+    [{ id: 'Work', groups: ['dev'] }],
+    'win32'
+  ),
+  'Work'
+)
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
 process.exitCode = failures ? 1 : 0
