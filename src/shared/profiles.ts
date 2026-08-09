@@ -292,7 +292,13 @@ export function deriveProfiles(counts: Map<string, number>): Profile[] {
     if (extras.length >= FALLBACK.length) break
     const key = foldGroup(id)
     if (claimed.has(key) || claimed.has(foldGroup(titleCase(id)))) continue
+    /* Both, exactly as the named loop above claims both — a seeded extra has a
+       label as well as an id, and `my_stuff` and `my-stuff` are different ids
+       that title-case to the same "My stuff". Claiming only the id let both
+       through, and two chips reading the same word is the thing the comment
+       above says the chip cannot survive. */
     claimed.add(key)
+    claimed.add(foldGroup(titleCase(id)))
     const c = FALLBACK[extras.length]
     extras.push({
       id,

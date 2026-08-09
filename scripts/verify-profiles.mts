@@ -147,6 +147,14 @@ check(
   ['gitea-company']
 )
 check('nor is one folder in two spellings', ids({ Work: 5, work: 2 }), ['Work'])
+/* The named loop claims both an id and a label; the extras loop claimed only
+   the id, so two folders that are different ids but title-case to the same
+   words each got a chip. `My stuff` twice, told apart only by hover. */
+check(
+  'nor do two folders that read as the same word',
+  ids({ my_stuff: 5, 'my-stuff': 3 }),
+  ['my_stuff']
+)
 check(
   'a stray with one project is still not a category of work',
   ids({ personal: 6, Downloads: 1 }),
