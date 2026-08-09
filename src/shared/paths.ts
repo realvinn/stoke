@@ -199,3 +199,45 @@ export function groupForCwd(
 
   return null
 }
+
+/**
+ * The two fields of a profile this rule needs.
+ *
+ * Structural rather than an import of `ResolvedProfile`, so paths.ts stays a
+ * leaf: profiles.ts already imports this module, and a type-only import back
+ * would be erased at runtime but would still read as a cycle to anyone
+ * following the file.
+ */
+export interface GroupOwner {
+  id: string
+  groups: string[]
+}
+
+/**
+ * Which profile owns the work in `cwd`, or null.
+ *
+ * Null means **leave the chip where it is**, not "select nothing". A tab whose
+ * folder belongs to no profile must not clear whatever the user is looking at.
+ *
+ * Never call this for an SSH tab. `ssh -t <alias>` runs claude on the far
+ * machine, so the tab's `cwd` holds the host alias rather than a folder — see
+ * CLAUDE.md gotcha 18 — and resolving it would name whichever local project
+ * happened to share that word. `Tab.hostId` is the signal that it is one.
+ *
+ * `roots` is the scan-root list, passed through to `groupForCwd` so a folder
+ * that has no Claude history of its own still resolves through the root that
+ * contains it.
+ */
+export function profileIdForCwd(
+  cwd: string,
+  projects: Project[],
+  roots: string[],
+  profiles: GroupOwner[],
+  platform: string
+): string | null {
+  const group = groupForCwd(cwd, projects, pathRulesFor(platform), roots)
+  if (!group) return null
+  const key = foldGroup(group)
+  const owner = profiles.find((p) => p.groups.some((g) => foldGroup(g) === key))
+  return owner ? owner.id : null
+}

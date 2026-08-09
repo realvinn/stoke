@@ -11,7 +11,8 @@
  *
  *   node scripts/verify-profiles.mts
  */
-import type { ProfileConfig, Settings } from '../src/shared/types.ts'
+import type { ProfileConfig, Project, Settings } from '../src/shared/types.ts'
+import { profileIdForCwd } from '../src/shared/paths.ts'
 import {
   PROFILES,
   PROFILE_SWATCHES,
@@ -958,6 +959,111 @@ for (const p of wearable) {
   if (!ok) failures++
   console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${p.label.padEnd(11)} ${r.toFixed(2)}:1`)
 }
+
+console.log('\na working directory resolves to a profile')
+/*
+ * The renderer needs this to point the chip at whatever tab is in front, and
+ * duplicating the longest-prefix rule there is exactly what the design
+ * forbids. It lives in shared/paths.ts beside groupForCwd, takes the
+ * platform's rules as an argument rather than reading `process`, and is
+ * therefore the same function in both processes — and testable here.
+ *
+ * POSIX paths and an explicit 'darwin' throughout, so these cases mean the
+ * same thing whichever machine runs the suite.
+ */
+const proj = (path: string, group: string): Project => ({
+  path,
+  name: path.split(/[\\/]/).pop() ?? path,
+  group,
+  encodedDir: null,
+  sessionCount: 0,
+  lastModified: null,
+  lastCost: null,
+  lastPrompt: null,
+  exists: true,
+  pinned: false,
+  emoji: null,
+  label: null,
+  addedManually: false
+})
+
+const MAC = 'darwin'
+/* `/Users/v/dev/work` is both a scan root and — because a session was once
+   started in it — a registered project whose own group is `dev`. That is the
+   shape that made 7 of 12 work folders unwatched. */
+const macProjects: Project[] = [
+  proj('/Users/v/dev/personal/stoke', 'personal'),
+  proj('/Users/v/dev/work/buyback', 'work'),
+  proj('/Users/v/dev/work', 'dev')
+]
+const macRoots = ['/Users/v/dev/work']
+const macProfiles = [
+  { id: 'personal', groups: ['personal'] },
+  { id: 'Work', groups: ['work'] }
+]
+
+check(
+  'a tab in a project resolves to the profile covering its group',
+  profileIdForCwd('/Users/v/dev/personal/stoke', macProjects, macRoots, macProfiles, MAC),
+  'personal'
+)
+check(
+  'a cwd a level down inside it resolves the same',
+  profileIdForCwd('/Users/v/dev/personal/stoke/src/main', macProjects, macRoots, macProfiles, MAC),
+  'personal'
+)
+check(
+  'the profile id is returned, not the folder name',
+  profileIdForCwd('/Users/v/dev/work/buyback', macProjects, macRoots, macProfiles, MAC),
+  'Work'
+)
+check(
+  'a folder under a scan root with no history of its own still resolves',
+  profileIdForCwd('/Users/v/dev/work/postable', macProjects, macRoots, macProfiles, MAC),
+  'Work'
+)
+check(
+  'APFS case is folded, so a differently-cased path is the same path',
+  profileIdForCwd('/Users/V/DEV/Work/Buyback', macProjects, macRoots, macProfiles, MAC),
+  'Work'
+)
+check(
+  'a group no profile covers resolves to nothing — the chip is left alone',
+  profileIdForCwd('/Users/v/dev/personal/stoke', macProjects, macRoots, [macProfiles[1]], MAC),
+  null
+)
+check(
+  'an ssh alias is not a path, so it resolves to nothing',
+  profileIdForCwd('vps-syd', macProjects, macRoots, macProfiles, MAC),
+  null
+)
+check(
+  'an empty cwd resolves to nothing rather than the first project',
+  profileIdForCwd('', macProjects, macRoots, macProfiles, MAC),
+  null
+)
+check(
+  'a profile covering several groups matches on any of them',
+  profileIdForCwd(
+    '/Users/v/dev/personal/stoke',
+    macProjects,
+    macRoots,
+    [{ id: 'Everything', groups: ['work', 'personal'] }],
+    MAC
+  ),
+  'Everything'
+)
+check(
+  'and windows paths resolve under the windows rules',
+  profileIdForCwd(
+    'G:\\Code\\gitea-company\\refinity',
+    [proj('G:\\Code\\gitea-company\\refinity', 'gitea-company')],
+    [],
+    [{ id: 'gitea-company', groups: ['gitea-company'] }],
+    'win32'
+  ),
+  'gitea-company'
+)
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
 process.exitCode = failures ? 1 : 0
