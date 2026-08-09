@@ -31,12 +31,14 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  readFileSync,
   realpathSync,
   rmSync,
   symlinkSync
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { createProfile, planProfile } from '../src/main/profiles.ts'
 
 let failures = 0
@@ -1148,6 +1150,51 @@ check(
     'win32'
   ),
   'Work'
+)
+
+console.log('\nthe chip stays out of the main process')
+/*
+ * The worklog gate is keyed on a session's own folder and never on the sidebar
+ * selection — gate.ts's header is three paragraphs on why, and both failures
+ * are silent. Making the chip follow the active tab is only safe because
+ * nothing over there reads it, so that is asserted rather than remembered.
+ *
+ * A source scan, not a type: the coupling this guards against is one `import
+ * { getSettings }` away and would typecheck perfectly.
+ */
+const MAIN = fileURLToPath(new URL('../src/main/', import.meta.url))
+
+function tsFilesUnder(dir: string): string[] {
+  const out: string[] = []
+  for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) =>
+    a.name.localeCompare(b.name)
+  )) {
+    const full = join(dir, entry.name)
+    if (entry.isDirectory()) out.push(...tsFilesUnder(full))
+    else if (entry.name.endsWith('.ts')) out.push(full)
+  }
+  return out
+}
+
+const mentionsChip = tsFilesUnder(MAIN)
+  .filter((f) => readFileSync(f, 'utf8').includes('activeProfile'))
+  .map((f) => f.slice(MAIN.length).split('\\').join('/'))
+
+/*
+ * The two files that may name it: one declares the default and repairs the
+ * stored value, the other persists what it is given. Neither decides anything
+ * with it. Adding a third is a deliberate act — read gate.ts's header first.
+ */
+const SETTINGS_FILES = ['settingsSchema.ts', 'store.ts']
+check(
+  'only the settings files name it, and they only store it',
+  mentionsChip.filter((f) => !SETTINGS_FILES.includes(f)),
+  []
+)
+check(
+  'the worklog in particular never sees it',
+  mentionsChip.filter((f) => f.startsWith('worklog/')),
+  []
 )
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
