@@ -14,7 +14,7 @@ import type {
   WorklogWatchState
 } from '@shared/types'
 import type { UpdateInfo } from '@shared/api'
-import { profileFor, resolveProfiles, visibleProfiles } from '@shared/profiles'
+import { foldGroup, profileFor, resolveProfiles, visibleProfiles } from '@shared/profiles'
 import { resolveTheme } from '@shared/themes'
 import { worklogButtonState } from '@shared/worklog'
 import { BrowserPanel } from './components/BrowserPanel'
@@ -31,6 +31,7 @@ import { WorklogPrompt } from './components/WorklogPrompt'
 import { baseName, properNouns } from './lib/format'
 import { attachExit, forgetPty, initPtyBus } from './lib/ptyBus'
 import { matchShortcut } from './lib/shortcuts'
+import { profileIdForCwd } from './lib/projectProfile'
 import { applyAppearance, applyTypography } from './lib/theme'
 import type { Tab } from './types'
 
@@ -257,6 +258,53 @@ export function App(): React.JSX.Element {
   useEffect(() => {
     applyAppearance(theme, activeProfile)
   }, [theme, activeProfile])
+
+  /*
+   * The active tab decides the profile: colour and filter both follow it.
+   *
+   * Keyed on the tab id through a ref rather than on the resolved value, because
+   * this effect also reruns whenever settings change — and without the ref,
+   * clicking All while a work tab is in front would be undone on the very next
+   * render and the chip could not be moved by hand at all. A manual choice
+   * stands until the next time a tab is activated.
+   *
+   * Three deliberate non-actions:
+   *  - An SSH tab never resolves. `ssh -t <alias>` runs claude on the far
+   *    machine, so `cwd` holds the host alias rather than a folder (CLAUDE.md
+   *    gotcha 18) and mapping it would name whichever local project happened to
+   *    share that word. `hostId` is the only reliable signal that it is one.
+   *  - A folder belonging to no profile leaves the chip exactly where it is,
+   *    rather than clearing it to All.
+   *  - Nothing happens until the project list has loaded, or a startOnLaunch
+   *    session would resolve against an empty list, find nothing, and be marked
+   *    as already handled.
+   */
+  const profiledTabId = useRef<string | null>(null)
+  useEffect(() => {
+    if (!settings || projectsLoading) return
+    if (profiledTabId.current === activeTabId) return
+    profiledTabId.current = activeTabId
+    const tab = tabs.find((t) => t.id === activeTabId)
+    if (!tab || tab.hostId) return
+    const id = profileIdForCwd(
+      tab.cwd,
+      projects,
+      settings.projectRoots,
+      availableProfiles,
+      platform
+    )
+    if (!id || foldGroup(id) === foldGroup(settings.activeProfile ?? '')) return
+    void patchSettings({ activeProfile: id })
+  }, [
+    activeTabId,
+    tabs,
+    projects,
+    projectsLoading,
+    settings,
+    availableProfiles,
+    platform,
+    patchSettings
+  ])
 
   useEffect(() => {
     if (settings) applyTypography(settings.fontFamily, settings.fontSize, settings.uiScale)
