@@ -32,6 +32,7 @@ import { baseName, properNouns } from './lib/format'
 import { attachExit, forgetPty, initPtyBus } from './lib/ptyBus'
 import { matchShortcut } from './lib/shortcuts'
 import { profileIdForCwd } from './lib/projectProfile'
+import { neighbourOf } from './lib/tabs'
 import { applyAppearance, applyTypography } from './lib/theme'
 import type { Tab } from './types'
 
@@ -581,7 +582,9 @@ export function App(): React.JSX.Element {
       forgetPty(tab.ptyId)
       const next = tabs.filter((t) => t.id !== id)
       setTabs(next)
-      if (activeTabId === id) setActiveTabId(next.length ? next[next.length - 1].id : null)
+      if (activeTabId === id) {
+        setActiveTabId(neighbourOf(tabs.map((t) => t.id), id))
+      }
     },
     [tabs, activeTabId]
   )

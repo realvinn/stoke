@@ -30,6 +30,7 @@ npm run verify:unicode        # xterm's cell widths for emoji and box drawing
 npm run verify:profiles       # profile resolution + every accent clears 4.5:1
 npm run verify:settings       # settings hydration: repair, clamps, and what it drops
 npm run verify:folders        # folder metadata: trimming, caps, added folders, hide/pin
+npm run verify:tabs           # which tab is selected after one is closed
 npm run verify:color          # colour maths: contrast, APCA, oklch
 npm run verify:worklog-gate     # which sessions the worklog agent would watch
 npm run verify:worklog-runner   # prompt building, JSON parsing, titles, create-vs-update
