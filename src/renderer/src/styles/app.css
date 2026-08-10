@@ -452,6 +452,9 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* A single-line control has no use for body leading, and the extra height
+     fights the fixed 14px indicator slot beside it. */
+  line-height: var(--lh-tight);
 }
 
 /*
