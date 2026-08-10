@@ -12,6 +12,11 @@ interface Props {
   x: number
   y: number
   items: MenuItem[]
+  /**
+   * Explanatory text below the items. Not a menu item: it is not focusable and
+   * cannot be chosen, so it stays out of `role="menu"`'s children.
+   */
+  footer?: string
   onClose: () => void
 }
 
@@ -21,7 +26,7 @@ interface Props {
  * property. It renders hidden for one frame so it can be measured and nudged
  * back on screen before it is ever seen.
  */
-export function ContextMenu({ x, y, items, onClose }: Props): React.JSX.Element {
+export function ContextMenu({ x, y, items, footer, onClose }: Props): React.JSX.Element {
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -88,6 +93,7 @@ export function ContextMenu({ x, y, items, onClose }: Props): React.JSX.Element 
           {item.label}
         </button>
       ))}
+      {footer && <p className="context-menu-hint">{footer}</p>}
     </div>
   )
 }

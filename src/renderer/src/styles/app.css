@@ -2085,6 +2085,20 @@ body {
   opacity: 0.5;
 }
 
+/* Explains why Copy is disabled: a drag needs a modifier while the CLI has
+   mouse reporting on. Sized down and muted so it reads as a note, not a row. */
+.context-menu-hint {
+  /* The menu sets only a min-width, so an unwrapped hint would set its width.
+     Cap it and let the text wrap instead of stretching the menu. */
+  max-width: 14rem;
+  margin: var(--space-8) 0 0;
+  padding: var(--space-8);
+  border-top: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+}
+
 .context-menu-item[data-separated='true'] {
   margin-top: var(--space-8);
   border-top: 1px solid var(--border);

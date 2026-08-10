@@ -67,6 +67,28 @@ export function TerminalView({
       allowProposedApi: true,
       allowTransparency: true,
       macOptionIsMeta: true,
+      /*
+       * Without this, the terminal cannot be selected with the mouse on macOS
+       * at all. Claude Code turns mouse reporting on, so xterm forwards the
+       * drag to the application unless `shouldForceSelection` says otherwise —
+       * and that method reads
+       *
+       *   isMac ? event.altKey && rawOptions.macOptionClickForcesSelection
+       *         : event.shiftKey
+       *
+       * (SelectionService.ts:437, xterm 6.0.0). The option defaults to false,
+       * so the Mac branch could only ever return false: Option-drag did
+       * nothing, Cmd+C had nothing to copy, and the right-click menu's Copy was
+       * permanently disabled. The non-Mac branch needs no option, which is why
+       * Shift-drag has always worked on Windows and Linux and this was a
+       * macOS-only defect.
+       *
+       * Option is what Terminal.app and iTerm2 use for the same bypass, so it
+       * is the modifier a Mac terminal user already reaches for. It does not
+       * collide with `macOptionIsMeta` above: that governs the keyboard (Option
+       * sends an ESC prefix), this one governs the mouse.
+       */
+      macOptionClickForcesSelection: true,
       minimumContrastRatio: 1,
       theme: terminalTheme(theme)
     })
@@ -306,6 +328,20 @@ export function TerminalView({
           x={menu.x}
           y={menu.y}
           onClose={() => setMenu(null)}
+          /*
+           * Only when there is nothing selected, which is exactly when a user
+           * has just discovered that dragging does not select. Claude Code
+           * keeps mouse reporting on, so the drag goes to the CLI unless it
+           * carries the platform's bypass modifier — Option on macOS, Shift
+           * elsewhere, per xterm's `shouldForceSelection`.
+           */
+          footer={
+            menu.selection
+              ? undefined
+              : window.stoke.platform === 'darwin'
+                ? 'Hold ⌥ Option while dragging to select text.'
+                : 'Hold Shift while dragging to select text.'
+          }
           items={[
             {
               label: 'Copy',
