@@ -31,6 +31,20 @@ textarea {
   color: inherit;
 }
 
+/*
+ * Chromium's UA sheet sets `button { padding: 1px 6px }` and the reset above
+ * never touched it. On an 18px `.tab-close` that leaves a 6px content box for
+ * an 11px glyph: the glyph overflows its grid area, inline centring stops
+ * applying, and the ✕ lands 6px from the left and 1px from the right. It gets
+ * worse as Interface scale drops, because the rem-sized box shrinks while the
+ * UA padding does not. Every button in this app that wants padding declares
+ * it, so zeroing it here costs nothing and fixes `.tab-close` and every
+ * `.icon-btn` in one line. Measured, not reasoned.
+ */
+button {
+  padding: 0;
+}
+
 /* ----------------------------------------------------------------- tokens */
 
 :root {
