@@ -63,8 +63,15 @@ export function App(): React.JSX.Element {
   /** Resolved folder for sessions started without picking a project. */
   const [defaultCwd, setDefaultCwd] = useState('')
   const [query, setQuery] = useState('')
-  const [selectedPath, setSelectedPath] = useState<string | null>(null)
-  const [expandedPath, setExpandedPath] = useState<string | null>(null)
+  /*
+   * What the sidebar highlights. One list, one highlight — but a New Project
+   * tab also keeps its own copy, so two of them aimed at different projects
+   * each come back to their own when selected. The sidebar's copy is written
+   * alongside the tab's so switching from a New tab to a session tab does not
+   * blank the list.
+   */
+  const [browsePath, setBrowsePath] = useState<string | null>(null)
+  const [browseExpanded, setBrowseExpanded] = useState<string | null>(null)
   /*
    * One cache for every project's session list, keyed by path.
    *
@@ -86,10 +93,14 @@ export function App(): React.JSX.Element {
    * is a New tab's own content (`activeTab?.kind === 'new'`), so landing on
    * `null` shows neither pane — five call sites used to set it that way (the
    * `+` button, the newTab shortcut, openFolder, the sidebar's project select,
-   * and the command palette). They now call `goToNewTab` below instead, which
-   * always lands on a real tab. Task 61 is what replaces `goToNewTab` itself
-   * with a fuller `openNewTab`. The type stays `string | null` because the
-   * very first render, before the mount effect below picks tabs[0], is still
+   * and the command palette). The `+` button, the newTab shortcut and
+   * openFolder call `goToNewTab` below instead, which always lands on a real
+   * tab. The sidebar's project select and the command palette no longer switch
+   * tabs at all — selecting a project must not itself hide whatever tab is
+   * showing (spec §2.10) — they only move the selection, via `selectProject`.
+   * Task 61 is what replaces `goToNewTab` itself with a fuller `openNewTab`.
+   * The type stays `string | null` because the very first render, before the
+   * mount effect below picks tabs[0], is still
    * null.
    */
   const [tabs, setTabs] = useState<Tab[]>(() => [newTab()])
@@ -103,6 +114,56 @@ export function App(): React.JSX.Element {
   useEffect(() => {
     setActiveTabId((cur) => cur ?? tabs[0]?.id ?? null)
   }, [tabs])
+
+  /*
+   * The visible selection: the active New tab's own target when there is one,
+   * the sidebar's browse state otherwise. Declared here — right after `tabs`
+   * and `activeTabId` exist — rather than by `activeNewTabId` further down,
+   * because the sessions effect a little below reads `selectedPath` and a
+   * `const` cannot be read before its own declaration runs.
+   */
+  const selectedPath = useMemo(() => {
+    const t = tabs.find((x) => x.id === activeTabId)
+    return t && t.kind === 'new' ? t.selectedPath : browsePath
+  }, [tabs, activeTabId, browsePath])
+
+  const expandedPath = useMemo(() => {
+    const t = tabs.find((x) => x.id === activeTabId)
+    return t && t.kind === 'new' ? t.expandedPath : browseExpanded
+  }, [tabs, activeTabId, browseExpanded])
+
+  /**
+   * Write the sidebar's visible selection and, when `tabId` names a New tab —
+   * the active one by default — that tab's own copy too.
+   *
+   * `tabId` can be pinned explicitly because `openFolder` calls this in the
+   * same tick as `goToNewTab()`, which decides which tab (an existing one, or
+   * a freshly minted one) the selection has to land on; `activeTabId` read
+   * here would still be whichever tab was active *before* that switch, since
+   * React does not re-render between the two calls.
+   */
+  const selectProject = useCallback(
+    (path: string | null, tabId: string | null = activeTabId): void => {
+      setBrowsePath(path)
+      setTabs((list) =>
+        list.map((t) => (t.id === tabId && t.kind === 'new' ? { ...t, selectedPath: path } : t))
+      )
+    },
+    [activeTabId]
+  )
+
+  const toggleExpand = useCallback(
+    (path: string | null): void => {
+      setBrowseExpanded(path)
+      setTabs((list) =>
+        list.map((t) =>
+          t.id === activeTabId && t.kind === 'new' ? { ...t, expandedPath: path } : t
+        )
+      )
+    },
+    [activeTabId]
+  )
+
   const [contexts, setContexts] = useState<Record<string, ContextSnapshot>>({})
 
   const [sidebarOpen, setSidebarOpen] = useState(true)
@@ -741,7 +802,8 @@ export function App(): React.JSX.Element {
   const selectedProject = projects.find((p) => p.path === selectedPath) ?? null
 
   /*
-   * Land on a New Project tab instead of clearing the selection.
+   * Land on a New Project tab instead of clearing the selection, and return
+   * its id.
    *
    * The five callers below used to do `setActiveTabId(null)`, back when null
    * was the launcher's own sentinel. It no longer is (see the comment by
@@ -750,16 +812,22 @@ export function App(): React.JSX.Element {
    * launcher consumes its tab (`replaceOrAppend`), so after the first launch
    * there usually isn't one left to reuse. This is a bridge: Task 61 replaces
    * every call site below with a fuller `openNewTab`.
+   *
+   * The return value exists for `openFolder`: it needs to write the picked
+   * folder onto whichever tab this call just landed on, and `activeTabId`
+   * would still name the *previous* tab if it read it right after calling
+   * this — see `selectProject`.
    */
-  const goToNewTab = useCallback((): void => {
+  const goToNewTab = useCallback((): string => {
     const existing = tabs.find((t) => t.kind === 'new')
     if (existing) {
       setActiveTabId(existing.id)
-      return
+      return existing.id
     }
     const t = newTab()
     setTabs((list) => [...list, t])
     setActiveTabId(t.id)
+    return t.id
   }, [tabs])
 
   useEffect(() => {
@@ -810,9 +878,10 @@ export function App(): React.JSX.Element {
     const dir = await window.stoke.projects.open()
     if (!dir) return
     await refreshProjects()
-    setSelectedPath(dir)
-    goToNewTab()
-  }, [refreshProjects, goToNewTab])
+    // Pin the write to the tab goToNewTab() just landed on — see the comment
+    // on `selectProject`'s `tabId` parameter for why activeTabId can't do it.
+    selectProject(dir, goToNewTab())
+  }, [refreshProjects, goToNewTab, selectProject])
 
   const addRoot = useCallback(async (): Promise<void> => {
     const dir = await window.stoke.projects.addRoot()
@@ -912,13 +981,10 @@ export function App(): React.JSX.Element {
                 sessions={sessions}
                 sessionsLoading={sessionsLoading}
                 onQueryChange={setQuery}
-                onSelectProject={(p) => {
-                  setSelectedPath(p.path)
-                  goToNewTab()
-                }}
+                onSelectProject={(p) => selectProject(p.path)}
                 onToggleExpand={(p) => {
-                  setSelectedPath(p.path)
-                  setExpandedPath((cur) => (cur === p.path ? null : p.path))
+                  selectProject(p.path)
+                  toggleExpand(expandedPath === p.path ? null : p.path)
                 }}
                 onStartNew={(p) => void startSession({ cwd: p.path, name: p.name })}
                 onResume={resumeSession}
@@ -1122,8 +1188,7 @@ export function App(): React.JSX.Element {
           projects={projects}
           onPick={(p) => {
             setPaletteOpen(false)
-            setSelectedPath(p.path)
-            goToNewTab()
+            selectProject(p.path)
           }}
           onClose={() => setPaletteOpen(false)}
         />
