@@ -78,10 +78,16 @@ export function App(): React.JSX.Element {
   const [sessionsLoadingPath, setSessionsLoadingPath] = useState<string | null>(null)
 
   /*
-   * The app always has at least one tab. A New Project tab is a real tab now,
-   * so `activeTabId === null` — which used to mean "showing the launcher" —
-   * is not a state the app can be in, and every reader that special-cased it
-   * is gone.
+   * The app always has at least one tab: a New Project tab is a real tab now,
+   * and the strip is never left empty.
+   *
+   * `activeTabId === null` used to mean "showing the launcher". It is on its way
+   * out, but it is NOT gone yet — five call sites still set it (the `+` button,
+   * the newTab shortcut, openFolder, the sidebar's project select, and the
+   * command palette), and Task 61 is what replaces them with openNewTab. Until
+   * then null still means the launcher, so do not delete a null check on the
+   * strength of this comment. The type stays `string | null` for the same
+   * reason.
    */
   const [tabs, setTabs] = useState<Tab[]>(() => [newTab()])
   const [activeTabId, setActiveTabId] = useState<string | null>(null)
