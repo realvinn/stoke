@@ -50,6 +50,15 @@ mac:
   hardenedRuntime: true
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
+  extendInfo:
+    # Required, not advisory. macOS terminates a process that asks for the
+    # microphone with no usage string — it does not deny the request — so
+    # omitting this turns dictation into an unexplained crash. The text is what
+    # the system permission prompt shows, so it says who is listening and why.
+    NSMicrophoneUsageDescription: >-
+      Stoke uses the microphone for voice dictation, so you can speak a prompt
+      instead of typing it. Audio is sent only to the speech server you
+      configure and never to Stoke's developers.
 linux:
   target: [AppImage]
   category: Development

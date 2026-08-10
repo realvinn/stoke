@@ -1356,6 +1356,72 @@ body {
   background: transparent !important;
 }
 
+/*
+ * Dictation's only persistent affordance. Bottom-left rather than bottom-right,
+ * so it never sits under the "Session ended" card, and floating over the
+ * terminal rather than in the layout so arming it does not reflow the PTY —
+ * a resize mid-session redraws whatever Claude Code is currently painting.
+ */
+.voice-strip {
+  position: absolute;
+  inset: auto auto var(--space-12) var(--space-12);
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  max-width: calc(100% - var(--space-24));
+  padding: var(--space-8) var(--space-12);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-md);
+  font-size: var(--fs-sm);
+  z-index: var(--z-sticky);
+  animation: pop var(--dur) var(--ease);
+}
+
+.voice-strip[data-tone='error'] {
+  border-color: var(--danger);
+}
+
+.voice-text {
+  min-width: 0;
+}
+
+.voice-dot {
+  flex: 0 0 auto;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+/* Recording is the one state worth an animation: it is the one where something
+   is being captured and the user needs to be sure it is still happening. */
+.voice-dot[data-state='recording'] {
+  background: var(--danger);
+  animation: voice-pulse 1.2s var(--ease) infinite;
+}
+
+.voice-dot[data-state='working'] {
+  background: var(--accent);
+}
+
+.voice-dot[data-state='error'] {
+  background: var(--danger);
+}
+
+@keyframes voice-pulse {
+  50% {
+    opacity: 0.25;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .voice-dot[data-state='recording'] {
+    animation: none;
+  }
+}
+
 .term-exit {
   position: absolute;
   inset: auto var(--space-12) var(--space-12) auto;

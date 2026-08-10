@@ -23,6 +23,7 @@ import { parseSession, readTranscript } from './sessionFile.ts'
 import { fetchRemoteTranscript } from './sshTranscript.ts'
 import { PtyManager, type StartResult } from './pty.ts'
 import { checkMicrophone } from './audio/defaultDevice.ts'
+import { transcribe } from './stt.ts'
 import { createProfile, planProfile } from './profiles.ts'
 import { readSshConfigHosts } from './ssh.ts'
 import { getWorklogQueue } from './worklog/queue.ts'
@@ -611,6 +612,28 @@ function createWindow(): void {
       spellcheck: false,
       backgroundThrottling: false
     }
+  })
+
+  /*
+   * Dictation needs getUserMedia, so the microphone has to be granted somewhere.
+   *
+   * Scoped twice over. `media` is the only permission approved, and only for
+   * this window's own renderer — the app UI, whose code is in this repo. The
+   * docked browser cannot reach this handler at all: it runs in a dedicated
+   * persistent partition (browser.ts:36,109), a different session from the one
+   * being configured here, so an arbitrary page cannot inherit the microphone
+   * from the app that embeds it. The identity check is belt and braces against
+   * that ever changing, and everything else is denied outright.
+   *
+   * This is only Chromium's half. On macOS the OS gates the microphone too, and
+   * that half is not code: the hardened runtime needs
+   * `com.apple.security.device.audio-input` and Info.plist needs
+   * NSMicrophoneUsageDescription, both in electron-builder.yml. Without the
+   * usage string macOS terminates the process rather than denying the request,
+   * which surfaces as a crash with no message anywhere.
+   */
+  win.webContents.session.setPermissionRequestHandler((wc, permission, callback) => {
+    callback(permission === 'media' && wc === win?.webContents)
   })
 
   win.once('ready-to-show', () => win?.show())
@@ -1274,6 +1297,20 @@ function registerIpc(): void {
 
   /* ----------------------------------------------------------------- audio */
   ipcMain.handle(CH.micCheck, () => checkMicrophone())
+
+  /*
+   * Desktop dictation. The renderer records and encodes the WAV — it has the
+   * microphone and the audio APIs — but does not reach the speech server, which
+   * has no authentication of its own. Same boundary the phone's
+   * `/api/transcribe` route enforces, and `stt.ts` is the single implementation
+   * behind both.
+   *
+   * The settings read happens per call rather than being captured, so changing
+   * the address takes effect on the next dictation instead of the next launch.
+   */
+  ipcMain.handle(CH.transcribe, async (_e, wav: ArrayBuffer) => {
+    return transcribe(getSettings().remote?.sttUrl, new Uint8Array(wav))
+  })
 
   /* ------------------------------------------------------------- clipboard */
   /*

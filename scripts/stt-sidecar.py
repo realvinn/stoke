@@ -99,7 +99,12 @@ def decode_wav(raw: bytes) -> np.ndarray:
             rate = wav.getframerate()
             frames = wav.readframes(wav.getnframes())
     except (wave.Error, EOFError) as err:
-        raise ValueError(f"not a readable WAV: {err}") from err
+        # EOFError carries no message, so `{err}` alone renders as "not a
+        # readable WAV: " with nothing after the colon - which is what a body
+        # too short to hold a RIFF header produces, i.e. the most likely case.
+        # `str(err) or ...`, not `err or ...`: an exception object has no
+        # __bool__, so it is always truthy and the fallback would never fire.
+        raise ValueError(f"not a readable WAV: {str(err) or type(err).__name__}") from err
 
     if width != 2:
         raise ValueError(f"expected 16-bit samples, got {width * 8}-bit")

@@ -211,9 +211,10 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
           }}
         />
         <span className="field-hint">
-          The transcription sidecar the microphone on the phone dictates through. Stoke proxies to
-          it, so it never has to face the internet. Takes effect the next time the remote server
-          starts.
+          Where speech is transcribed, for dictation on the phone and in the terminal alike. Stoke
+          proxies to it, so it never has to face the internet. Terminal dictation picks up a change
+          immediately; the phone picks it up the next time the remote server starts.{' '}
+          <code>scripts/stt-sidecar.py</code> in this repo runs one locally.
         </span>
       </div>
 

@@ -12,5 +12,10 @@
     <true/>
     <key>com.apple.security.inherit</key>
     <true/>
+    <!-- Dictation records through getUserMedia in the renderer. Under the
+         hardened runtime the microphone is refused without this, and the
+         refusal is silent: the getUserMedia promise simply never resolves. -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
   </dict>
 </plist>

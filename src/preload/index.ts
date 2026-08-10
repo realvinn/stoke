@@ -146,7 +146,11 @@ const api: StokeApi = {
   },
 
   audio: {
-    micCheck: () => ipcRenderer.invoke(CH.micCheck)
+    micCheck: () => ipcRenderer.invoke(CH.micCheck),
+    // The ArrayBuffer crosses as a structured clone, so the audio never becomes
+    // a string on the way — no base64 round trip, and no copy of the clip
+    // sitting in a JS string for the GC to get to eventually.
+    transcribe: (wav: ArrayBuffer) => ipcRenderer.invoke(CH.transcribe, wav)
   },
 
   clipboard: {

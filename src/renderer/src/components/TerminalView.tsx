@@ -6,6 +6,7 @@ import { WebglAddon } from '@xterm/addon-webgl'
 import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes'
 import type { ClipboardPeek } from '@shared/api'
 import type { Theme } from '@shared/types'
+import { createRecorder, voiceSupported, type Recorder } from '@shared/voice'
 import { attachSink } from '../lib/ptyBus'
 import { matchShortcut } from '../lib/shortcuts'
 import { terminalTheme } from '../lib/theme'
@@ -46,6 +47,21 @@ export function TerminalView({
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
   const [menu, setMenu] = useState<MenuState | null>(null)
+  /*
+   * Dictation. Off until asked for, because arming it takes Space away from the
+   * terminal — the most-pressed key there after Enter — so it must never be a
+   * mode you are in without having said so.
+   */
+  const [voiceOn, setVoiceOn] = useState(false)
+  const [voiceStatus, setVoiceStatus] = useState<'idle' | 'recording' | 'working'>('idle')
+  const [voiceError, setVoiceError] = useState<string | null>(null)
+  const recorderRef = useRef<Recorder | null>(null)
+  /*
+   * getUserMedia is async and the first call waits on a permission prompt, so
+   * Space is routinely released before recording has begun. Tracking the key
+   * rather than the recorder's state is what lets that release still count.
+   */
+  const spaceDownRef = useRef(false)
   // Kept in a ref so the resize observer can read it without re-subscribing.
   const openUrlRef = useRef(onOpenUrl)
   openUrlRef.current = onOpenUrl
@@ -283,6 +299,137 @@ export function TerminalView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab.ptyId])
 
+  /*
+   * Dictation's keys, bound on the host in the capture phase so they are taken
+   * before xterm's hidden textarea ever sees them — the same technique the
+   * right-click uses, and for the same reason: while Claude Code is running,
+   * anything that reaches the terminal is forwarded to the CLI.
+   *
+   * Terminal-scoped rather than in `lib/shortcuts.ts` with the app's chords.
+   * Those act on the window; this one acts on *this* terminal and the transcript
+   * goes into *this* PTY, so it belongs to the pane that owns them. It is also
+   * why the listeners hang off `host` rather than `window`: dictation follows
+   * the focused terminal with no routing, and a background tab cannot record.
+   */
+  useEffect(() => {
+    const host = hostRef.current
+    if (!host || !active) return
+
+    const isMac = window.stoke.platform === 'darwin'
+
+    const recorder = (recorderRef.current ??= createRecorder(async (wav) => {
+      // The renderer never reaches the speech server itself; main proxies it,
+      // because the sidecar has no authentication of its own.
+      const res = await window.stoke.audio.transcribe(wav)
+      if (!res.ok) throw new Error(res.error)
+      return res.text
+    }))
+
+    const fail = (err: unknown, fallback: string): void => {
+      setVoiceStatus('idle')
+      setVoiceError(err instanceof Error && err.message ? err.message : fallback)
+    }
+
+    const beginRecording = async (): Promise<void> => {
+      setVoiceError(null)
+      setVoiceStatus('recording')
+      try {
+        await recorder.start()
+        // Released while the permission prompt was up: throw the clip away
+        // rather than leaving a microphone open that nobody asked to keep on.
+        if (!spaceDownRef.current) {
+          recorder.cancel()
+          setVoiceStatus('idle')
+        }
+      } catch (err) {
+        fail(err, 'Could not open the microphone.')
+      }
+    }
+
+    const finishRecording = async (): Promise<void> => {
+      if (!recorder.recording()) return
+      setVoiceStatus('working')
+      try {
+        const text = await recorder.finish()
+        setVoiceStatus('idle')
+        /*
+         * paste() rather than a raw pty write, for the reason the clipboard
+         * path already documents: it wraps the text in bracketed-paste markers
+         * when the CLI has advertised DECSET 2004, so a transcript that came
+         * back with a newline in it does not submit the prompt early.
+         */
+        if (text) termRef.current?.paste(text)
+      } catch (err) {
+        fail(err, 'Transcription failed.')
+      }
+    }
+
+    const onKeyDown = (e: KeyboardEvent): void => {
+      const chord = isMac
+        ? e.metaKey && e.shiftKey && !e.ctrlKey && !e.altKey
+        : e.ctrlKey && e.shiftKey && !e.metaKey && !e.altKey
+      if (chord && e.code === 'KeyD') {
+        e.preventDefault()
+        e.stopPropagation()
+        setVoiceError(null)
+        setVoiceOn((on) => !on)
+        return
+      }
+
+      if (!voiceOn) return
+
+      if (e.code === 'Escape') {
+        e.preventDefault()
+        e.stopPropagation()
+        setVoiceOn(false)
+        return
+      }
+
+      // `repeat` matters: holding Space fires keydown continuously, and without
+      // this each repeat would start a new recording over the live one.
+      if (e.code !== 'Space' || e.repeat) return
+      e.preventDefault()
+      e.stopPropagation()
+      spaceDownRef.current = true
+      void beginRecording()
+    }
+
+    const onKeyUp = (e: KeyboardEvent): void => {
+      if (!voiceOn || e.code !== 'Space') return
+      e.preventDefault()
+      e.stopPropagation()
+      spaceDownRef.current = false
+      void finishRecording()
+    }
+
+    host.addEventListener('keydown', onKeyDown, true)
+    host.addEventListener('keyup', onKeyUp, true)
+    return () => {
+      host.removeEventListener('keydown', onKeyDown, true)
+      host.removeEventListener('keyup', onKeyUp, true)
+    }
+  }, [active, voiceOn])
+
+  /*
+   * Leaving voice mode — by Esc, by switching tabs, or by the pane going away —
+   * must release the microphone. Without this the OS recording indicator stays
+   * lit after the mode is off, which is exactly the kind of thing that makes a
+   * person stop trusting an app with their microphone.
+   */
+  useEffect(() => {
+    if (voiceOn && active) return
+    recorderRef.current?.cancel()
+    spaceDownRef.current = false
+    setVoiceStatus('idle')
+  }, [voiceOn, active])
+
+  useEffect(() => {
+    return () => {
+      recorderRef.current?.cancel()
+      recorderRef.current = null
+    }
+  }, [])
+
   useEffect(() => {
     const term = termRef.current
     if (term) term.options.theme = terminalTheme(theme)
@@ -365,6 +512,24 @@ export function TerminalView({
               separated: true,
               onSelect: () => termRef.current?.selectAll()
             },
+            /*
+             * The only place dictation announces itself. A mode reachable by
+             * one undocumented chord is a mode nobody finds; hidden outright
+             * where the browser has no microphone API at all, so it never
+             * offers something that cannot work.
+             */
+            ...(voiceSupported()
+              ? [
+                  {
+                    label: voiceOn ? 'Stop dictation' : 'Dictate…',
+                    onSelect: () => {
+                      setVoiceError(null)
+                      setVoiceOn((on) => !on)
+                      termRef.current?.focus()
+                    }
+                  }
+                ]
+              : []),
             {
               label: 'Clear',
               onSelect: () => {
@@ -374,6 +539,20 @@ export function TerminalView({
             }
           ]}
         />
+      )}
+      {voiceOn && (
+        <div className="voice-strip" role="status" data-tone={voiceError ? 'error' : undefined}>
+          <span className="voice-dot" data-state={voiceError ? 'error' : voiceStatus} />
+          <span className="voice-text">
+            {voiceError
+              ? voiceError
+              : voiceStatus === 'recording'
+                ? 'Listening — release Space to transcribe'
+                : voiceStatus === 'working'
+                  ? 'Transcribing…'
+                  : 'Hold Space to speak · Esc to exit'}
+          </span>
+        </div>
       )}
       {tab.status === 'exited' && (
         <div className="term-exit" role="status">

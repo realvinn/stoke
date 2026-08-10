@@ -274,6 +274,15 @@ export interface StokeApi {
   audio: {
     /** What voice dictation will record from, and whether it looks like a virtual cable. */
     micCheck(): Promise<MicrophoneCheck>
+    /**
+     * A finished 16 kHz mono 16-bit PCM WAV in, a transcript out.
+     *
+     * Never rejects on a speech-server failure: the result carries the sentence
+     * to show instead, because a wedged or absent sidecar is an ordinary state
+     * the UI has to render, not an exception. `text` may legitimately be `''`
+     * when the clip held no speech.
+     */
+    transcribe(wav: ArrayBuffer): Promise<{ ok: true; text: string } | { ok: false; error: string }>
   }
 
   clipboard: {

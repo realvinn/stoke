@@ -10,6 +10,7 @@ import type { ContextSnapshot, LaunchOptions, Project, SessionMeta } from '@shar
 import type { ContextWatcher } from '../context.ts'
 import type { PtyManager, StartResult } from '../pty.ts'
 import type { Transcript } from '../sessionFile.ts'
+import { MAX_AUDIO_BYTES, transcribe } from '../stt.ts'
 
 /**
  * Serves Stoke's sessions to a phone or another browser.
@@ -513,31 +514,23 @@ export class RemoteServer {
        * it here would mean shipping ffmpeg.
        */
       if (url.pathname === '/api/transcribe' && req.method === 'POST') {
-        const stt = this.config?.sttUrl?.trim()
-        if (!stt) {
-          return this.json(res, { error: 'No speech server configured.' }, setCookie, 503)
-        }
-        const audio = await this.readBody(req, 25 * 1024 * 1024)
+        const audio = await this.readBody(req, MAX_AUDIO_BYTES)
         if (!audio) {
           return this.json(res, { error: 'Recording too large or empty.' }, setCookie, 400)
         }
-        try {
-          const upstream = await fetch(`${stt.replace(/\/$/, '')}/transcribe`, {
-            method: 'POST',
-            headers: { 'content-type': 'audio/wav' },
-            body: new Uint8Array(audio),
-            signal: AbortSignal.timeout(120_000)
-          })
-          if (!upstream.ok) {
-            const detail = (await upstream.text()).slice(0, 200)
-            return this.json(res, { error: `Speech server: ${upstream.status} ${detail}` }, setCookie, 502)
-          }
-          const data = (await upstream.json()) as { text?: unknown }
-          return this.json(res, { text: typeof data.text === 'string' ? data.text : '' }, setCookie)
-        } catch (err) {
-          const why = err instanceof Error ? err.message : String(err)
-          return this.json(res, { error: `Speech server unreachable: ${why}` }, setCookie, 502)
+        /*
+         * The call itself lives in ../stt.ts, which the desktop's dictation
+         * uses too. Only the status code is decided here, because only this
+         * caller speaks HTTP: 503 when no server is configured — the shipped
+         * state, and not this request's fault — 502 for anything that went
+         * wrong reaching one.
+         */
+        const result = await transcribe(this.config?.sttUrl, new Uint8Array(audio))
+        if (!result.ok) {
+          const configured = Boolean(this.config?.sttUrl?.trim())
+          return this.json(res, { error: result.error }, setCookie, configured ? 502 : 503)
         }
+        return this.json(res, { text: result.text }, setCookie)
       }
 
       if (url.pathname === '/api/sessions' && req.method === 'POST') {

@@ -18,11 +18,21 @@ const run = promisify(execFile)
  * own, and Windows Sound settings does it in seconds. Stoke's job is to notice
  * and say so, because nothing else does.
  *
+ * The warning now covers Stoke's own dictation too, not only Claude Code's
+ * /voice: the renderer records through getUserMedia with no device argument, so
+ * it gets the same system default and a virtual cable silences it identically.
+ *
  * Read via PowerShell + Add-Type rather than navigator.mediaDevices, which is
  * the other way to learn the default: enumerateDevices() hides labels until a
- * getUserMedia grant, and prompting for the microphone purely to warn about the
- * microphone is a worse trade than shelling out. Stoke captures no audio on the
- * desktop, so it has no other reason to hold that permission.
+ * getUserMedia grant has been given. Stoke does now hold that permission once
+ * someone has dictated — but this check has to be right in Settings *before*
+ * anyone has tried, which is exactly when the labels would still be blank, so
+ * shelling out remains the only way to answer at the moment the answer matters.
+ *
+ * Windows only, deliberately: the failure it describes is a Windows one. macOS
+ * has no equivalent of a virtual cable silently becoming the default capture
+ * device, and `checkMicrophone` answers with no device elsewhere, which the UI
+ * renders as nothing at all.
  */
 const INTEROP = [
   'using System;',

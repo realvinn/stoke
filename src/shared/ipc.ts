@@ -118,6 +118,12 @@ export const CH = {
 
   // audio
   micCheck: 'audio:micCheck',
+  /**
+   * A dictated clip, in. The renderer records and encodes the WAV but never
+   * reaches the speech server itself — the sidecar has no auth, so only main
+   * may talk to it. Same rule the phone's `/api/transcribe` route follows.
+   */
+  transcribe: 'audio:transcribe',
 
   // misc
   openExternal: 'shell:openExternal',
