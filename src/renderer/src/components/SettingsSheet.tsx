@@ -1,6 +1,14 @@
 import type { CliInfo, EffortLevel, PermissionMode, Settings, Theme } from '@shared/types'
 import type { ResolvedProfile } from '@shared/profiles'
 import { BUILT_IN_THEMES } from '@shared/themes'
+import {
+  clampFontSize,
+  clampUiScale,
+  FONT_SIZE_MAX,
+  FONT_SIZE_MIN,
+  UI_SCALE_MAX,
+  UI_SCALE_MIN
+} from '@shared/ui'
 import { IconClose } from './Icons'
 import { useEffect, useState } from 'react'
 import { HostsSettings } from './HostsSettings'
@@ -109,23 +117,31 @@ export function SettingsSheet({
             <input
               className="input"
               type="number"
-              min={8}
-              max={28}
+              min={FONT_SIZE_MIN}
+              max={FONT_SIZE_MAX}
               value={settings.fontSize}
-              onChange={(e) => onPatch({ fontSize: Number(e.target.value) || 13 })}
+              onChange={(e) => onPatch({ fontSize: clampFontSize(e.target.value) })}
             />
           </div>
 
           <div className="field">
             <span className="field-label">Interface scale</span>
+            {/*
+              min/max are advisory inside React's onChange — the browser will
+              not stop a typed or pasted value reaching the handler — so the
+              same clamp the store enforces is applied here too, and the two
+              bounds come from one place. The field used to offer 8-28 for a
+              store that accepts 9-24, and to fall back with `|| 1`, which
+              turned a typed 0 into 1 rather than into the floor.
+            */}
             <input
               className="input"
               type="number"
-              min={0.8}
-              max={1.6}
+              min={UI_SCALE_MIN}
+              max={UI_SCALE_MAX}
               step={0.05}
               value={settings.uiScale}
-              onChange={(e) => onPatch({ uiScale: Number(e.target.value) || 1 })}
+              onChange={(e) => onPatch({ uiScale: clampUiScale(e.target.value) })}
             />
             <span className="field-hint">Scales everything except the terminal contents.</span>
           </div>
