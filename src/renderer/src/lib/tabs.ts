@@ -17,3 +17,25 @@ export function neighbourOf(ids: string[], closedId: string): string | null {
   if (rest.length === 0) return null
   return rest[Math.min(at, rest.length - 1)]
 }
+
+/**
+ * Insert `tab` at `replaceTabId`'s index in `list`, or append when
+ * `replaceTabId` is absent or names a tab no longer in the list.
+ *
+ * A session started from a New Project tab takes that tab's place rather than
+ * appending beside it — appending would leave the launcher sitting next to
+ * the terminal it just started, which reads as the button having failed.
+ * `startSession` and `startHostSession` both call this one function instead
+ * of each carrying its own copy of the same replace-or-append arithmetic.
+ */
+export function replaceOrAppend<T extends { id: string }>(
+  list: T[],
+  tab: T,
+  replaceTabId?: string | null
+): T[] {
+  const at = replaceTabId ? list.findIndex((t) => t.id === replaceTabId) : -1
+  if (at < 0) return [...list, tab]
+  const next = [...list]
+  next[at] = tab
+  return next
+}

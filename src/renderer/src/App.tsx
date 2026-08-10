@@ -33,7 +33,7 @@ import { attachExit, forgetPty, initPtyBus } from './lib/ptyBus'
 import { matchShortcut } from './lib/shortcuts'
 import { newTab } from './lib/newTab'
 import { profileIdForCwd } from './lib/projectProfile'
-import { neighbourOf } from './lib/tabs'
+import { neighbourOf, replaceOrAppend } from './lib/tabs'
 import { applyAppearance, applyTypography } from './lib/theme'
 import type { Tab } from './types'
 
@@ -426,6 +426,12 @@ export function App(): React.JSX.Element {
     })
   }, [contexts])
 
+  /** The New Project tab a launch should consume, or null to append. */
+  const activeNewTabId = useMemo(() => {
+    const t = tabs.find((x) => x.id === activeTabId)
+    return t && t.kind === 'new' ? t.id : null
+  }, [tabs, activeTabId])
+
   const startSession = useCallback(
     async (opts: {
       cwd: string
@@ -434,6 +440,8 @@ export function App(): React.JSX.Element {
       sessionId?: string
       resume?: boolean
       continueLast?: boolean
+      /** Replace this tab in place instead of appending. Consumes a New tab. */
+      replaceTabId?: string
     }): Promise<void> => {
       setError(null)
       try {
@@ -468,7 +476,13 @@ export function App(): React.JSX.Element {
           selectedPath: null,
           expandedPath: null
         }
-        setTabs((list) => [...list, tab])
+        /*
+         * A session started from a New Project tab takes that tab's place
+         * rather than appending beside it. Appending would leave the launcher
+         * sitting next to the terminal it just started, which reads as the
+         * button having failed.
+         */
+        setTabs((list) => replaceOrAppend(list, tab, opts.replaceTabId))
         setActiveTabId(tab.id)
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e))
@@ -565,51 +579,59 @@ export function App(): React.JSX.Element {
           cols: 120,
           rows: 30
         })
-        setTabs((list) => [
-          ...list,
-          {
-            id: res.ptyId,
-            kind: 'session',
-            ptyId: res.ptyId,
-            sessionId: res.sessionId,
-            cwd: host.alias,
-            projectName: host.label || host.alias,
-            title: host.label || host.alias,
-            permissionMode: mode,
-            model,
-            effort,
-            status: 'running',
-            exitCode: null,
-            hostId: host.id,
-            selectedPath: null,
-            expandedPath: null
-          }
-        ])
-        setActiveTabId(res.ptyId)
+        const tab: Tab = {
+          id: res.ptyId,
+          kind: 'session' as const,
+          ptyId: res.ptyId,
+          sessionId: res.sessionId,
+          cwd: host.alias,
+          projectName: host.label || host.alias,
+          title: host.label || host.alias,
+          permissionMode: mode,
+          model,
+          effort,
+          status: 'running',
+          exitCode: null,
+          hostId: host.id,
+          selectedPath: null,
+          expandedPath: null
+        }
+        /* Same replace-or-append rule as startSession: connecting to a host
+           from the launcher consumes the New tab it was launched from. */
+        setTabs((list) => replaceOrAppend(list, tab, activeNewTabId))
+        setActiveTabId(tab.id)
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e))
       }
     },
-    [defaultCwd, mode, model, effort]
+    [defaultCwd, mode, model, effort, activeNewTabId]
   )
 
   /** Quick start with no project: run in the configured default folder. */
   const startDefault = useCallback((): void => {
     if (!defaultCwd) return
-    void startSession({ cwd: defaultCwd, name: baseName(defaultCwd) })
-  }, [defaultCwd, startSession])
+    void startSession({
+      cwd: defaultCwd,
+      name: baseName(defaultCwd),
+      replaceTabId: activeNewTabId ?? undefined
+    })
+  }, [defaultCwd, startSession, activeNewTabId])
 
   /** Quick start in a fresh throwaway folder. */
   const startScratch = useCallback(async (): Promise<void> => {
     try {
       const dir = await window.stoke.workspace.createScratch()
-      await startSession({ cwd: dir, name: `Scratch ${baseName(dir)}` })
+      await startSession({
+        cwd: dir,
+        name: `Scratch ${baseName(dir)}`,
+        replaceTabId: activeNewTabId ?? undefined
+      })
       // The new folder becomes a real project once Claude writes a transcript.
       await refreshProjects()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
-  }, [startSession, refreshProjects])
+  }, [startSession, refreshProjects, activeNewTabId])
 
   // Optional "open straight into a session" behaviour. The ref keeps it to a
   // single attempt, including under StrictMode's double-invoked effects.
@@ -815,10 +837,11 @@ export function App(): React.JSX.Element {
         name: project?.name ?? s.projectPath,
         title: s.title ?? s.firstPrompt ?? undefined,
         sessionId: s.id,
-        resume: true
+        resume: true,
+        replaceTabId: activeNewTabId ?? undefined
       })
     },
-    [projects, startSession]
+    [projects, startSession, activeNewTabId]
   )
 
   const worklogPending = worklog.filter((p) => p.status === 'pending').length
