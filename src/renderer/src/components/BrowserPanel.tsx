@@ -103,48 +103,52 @@ export function BrowserPanel({ state, bookmarks, onAskClaude, onClose }: Props):
 
   return (
     <section className="browser" style={{ width: '100%' }} aria-label="Browser">
-      <div className="browser-tabs" role="tablist" aria-label="Browser tabs">
-        {state.tabs.map((tab) => (
-          <div
-            key={tab.id}
-            className="btab"
-            role="tab"
-            aria-selected={tab.id === state.activeId}
-            tabIndex={0}
-            title={tab.url || tab.title}
-            onClick={() => window.stoke.browser.selectTab(tab.id)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault()
-                window.stoke.browser.selectTab(tab.id)
-              }
-            }}
-            onAuxClick={(e) => {
-              if (e.button === 1) window.stoke.browser.closeTab(tab.id)
-            }}
-          >
-            <span className="btab-label">{tab.loading ? 'Loading…' : tab.title || 'New tab'}</span>
-            {/*
-              Always offered, including on the last tab. Hiding it there left no
-              way to close a single tab at all, which reads as the button being
-              broken. Closing the last one dismisses the whole panel, since that
-              is what closing the only tab means - the main process already
-              handles an empty tab list, it just left an empty browser on screen.
-            */}
-            <button
-              className="tab-close"
-              title={state.tabs.length > 1 ? 'Close tab' : 'Close tab and hide the browser'}
-              onClick={(e) => {
-                e.stopPropagation()
-                window.stoke.browser.closeTab(tab.id)
-                if (state.tabs.length <= 1) onClose()
+      <div className="browser-tabs">
+        {/* Only the tabs. The new-tab button, the spacer and the four page
+            actions are controls in the same strip, not tabs in the list. */}
+        <div className="btablist" role="tablist" aria-label="Browser tabs">
+          {state.tabs.map((tab) => (
+            <div
+              key={tab.id}
+              className="btab"
+              role="tab"
+              aria-selected={tab.id === state.activeId}
+              tabIndex={0}
+              title={tab.url || tab.title}
+              onClick={() => window.stoke.browser.selectTab(tab.id)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  window.stoke.browser.selectTab(tab.id)
+                }
+              }}
+              onAuxClick={(e) => {
+                if (e.button === 1) window.stoke.browser.closeTab(tab.id)
               }}
             >
-              <IconClose width={10} height={10} />
-              <span className="sr-only">Close tab</span>
-            </button>
-          </div>
-        ))}
+              <span className="btab-label">{tab.loading ? 'Loading…' : tab.title || 'New tab'}</span>
+              {/*
+                Always offered, including on the last tab. Hiding it there left no
+                way to close a single tab at all, which reads as the button being
+                broken. Closing the last one dismisses the whole panel, since that
+                is what closing the only tab means - the main process already
+                handles an empty tab list, it just left an empty browser on screen.
+              */}
+              <button
+                className="tab-close"
+                title={state.tabs.length > 1 ? 'Close tab' : 'Close tab and hide the browser'}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  window.stoke.browser.closeTab(tab.id)
+                  if (state.tabs.length <= 1) onClose()
+                }}
+              >
+                <IconClose width={10} height={10} />
+                <span className="sr-only">Close tab</span>
+              </button>
+            </div>
+          ))}
+        </div>
 
         <button className="icon-btn" onClick={() => window.stoke.browser.newTab()} title="New tab">
           <IconPlus width={13} height={13} />

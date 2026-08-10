@@ -84,50 +84,58 @@ export function TitleBar({
         </div>
       )}
 
-      <div className="tabs" role="tablist" aria-label="Sessions">
-        {tabs.map((tab) => {
-          const ctx = contexts[tab.sessionId]
-          return (
-            <div
-              key={tab.id}
-              className="tab"
-              role="tab"
-              aria-selected={tab.id === activeTabId}
-              tabIndex={0}
-              onClick={() => onSelectTab(tab.id)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault()
-                  onSelectTab(tab.id)
-                }
-              }}
-              onAuxClick={(e) => {
-                if (e.button === 1) onCloseTab(tab.id)
-              }}
-              title={`${tab.title} — ${tab.cwd}`}
-            >
-              <TabIndicator
-                kind={tab.kind}
-                context={ctx}
-                status={tab.status}
-                permissionMode={tab.permissionMode}
-                watched={watchedSessions.has(tab.sessionId)}
-              />
-              <span className="tab-label">{tab.title}</span>
-              <button
-                className="tab-close"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  onCloseTab(tab.id)
+      {/*
+        The strip and the tablist are two different things. The + button lives
+        in the strip and is emphatically not a tab: inside the tablist a screen
+        reader announced it as one, and arrow-key tab semantics applied to a
+        control that does not answer to them.
+      */}
+      <div className="tabs">
+        <div className="tablist" role="tablist" aria-label="Sessions">
+          {tabs.map((tab) => {
+            const ctx = contexts[tab.sessionId]
+            return (
+              <div
+                key={tab.id}
+                className="tab"
+                role="tab"
+                aria-selected={tab.id === activeTabId}
+                tabIndex={0}
+                onClick={() => onSelectTab(tab.id)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    onSelectTab(tab.id)
+                  }
                 }}
-                title="Close session"
+                onAuxClick={(e) => {
+                  if (e.button === 1) onCloseTab(tab.id)
+                }}
+                title={`${tab.title} — ${tab.cwd}`}
               >
-                <IconClose width={11} height={11} />
-                <span className="sr-only">Close {tab.title}</span>
-              </button>
-            </div>
-          )
-        })}
+                <TabIndicator
+                  kind={tab.kind}
+                  context={ctx}
+                  status={tab.status}
+                  permissionMode={tab.permissionMode}
+                  watched={watchedSessions.has(tab.sessionId)}
+                />
+                <span className="tab-label">{tab.title}</span>
+                <button
+                  className="tab-close"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onCloseTab(tab.id)
+                  }}
+                  title="Close session"
+                >
+                  <IconClose width={11} height={11} />
+                  <span className="sr-only">Close {tab.title}</span>
+                </button>
+              </div>
+            )
+          })}
+        </div>
 
         <button className="icon-btn" onClick={onNewTab} title="New session (Ctrl/Cmd+T)">
           <IconPlus />

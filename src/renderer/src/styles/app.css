@@ -334,17 +334,30 @@ body {
 .tabs {
   display: flex;
   align-items: stretch;
-  gap: var(--sp-1);
+  gap: var(--space-4);
   flex: 1;
   min-width: 0;
   height: 100%;
-  padding-top: var(--sp-1);
+  padding-top: var(--space-4);
+}
+
+/*
+ * The list itself. It carries the overflow so the tabs scroll and the + button
+ * beside them stays put, and `min-width: 0` is what lets it shrink instead of
+ * pushing the shell wider than the window — see CLAUDE.md gotcha 14, which is
+ * about exactly this failure one level up.
+ */
+.tablist {
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-4);
+  min-width: 0;
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
 }
 
-.tabs::-webkit-scrollbar {
+.tablist::-webkit-scrollbar {
   display: none;
 }
 
@@ -364,6 +377,7 @@ body {
 .tabs > .icon-btn {
   align-self: center;
   margin-top: calc(var(--sp-1) * -1);
+  flex: none;
 }
 
 .tab {
@@ -447,8 +461,19 @@ body {
     color var(--dur-fast) var(--ease);
 }
 
+/*
+ * Both strips, not just the session one. `.tab-close` is `opacity: 0` by
+ * default and browser tabs are `.btab`, so neither hover selector matched
+ * them: the ✕ on every browser tab was invisible to a mouse for as long as
+ * the panel has existed. It still hit-tested, which is worse than missing —
+ * an unmarked 18x18 target, with a click anywhere around it selecting the tab
+ * instead. `:focus-visible` did match, being unscoped, but that fires only on
+ * keyboard focus, so it rescued nobody who reaches for a mouse.
+ */
 .tab:hover .tab-close,
 .tab[aria-selected='true'] .tab-close,
+.btab:hover .tab-close,
+.btab[aria-selected='true'] .tab-close,
 .tab-close:focus-visible {
   opacity: 1;
 }
@@ -1369,11 +1394,22 @@ body {
   align-items: center;
   gap: var(--sp-1);
   padding: var(--sp-2) var(--sp-2) 0;
+}
+
+.browser-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.btablist {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  min-width: 0;
   overflow-x: auto;
   scrollbar-width: none;
 }
 
-.browser-tabs::-webkit-scrollbar {
+.btablist::-webkit-scrollbar {
   display: none;
 }
 
