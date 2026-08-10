@@ -338,9 +338,19 @@ export function App(): React.JSX.Element {
   }, [selectedPath])
 
   /*
-   * What the sidebar and the launcher read. A cached list is shown immediately
-   * on the way back to a project already visited, and the spinner only appears
-   * for a folder nothing is known about yet.
+   * What the sidebar and the launcher read.
+   *
+   * The cached rows are available the instant a project is reselected — but the
+   * spinner still appears, because the effect above refetches on every change of
+   * `selectedPath` with no cache-hit guard. That is deliberate, not an
+   * oversight: nothing invalidates this cache. `startSession` never writes into
+   * it, so a session started in the currently selected project is missing from
+   * the list until the path changes and comes back. Serving a cache hit without
+   * refetching would make that staleness permanent.
+   *
+   * What the cache buys is what the per-tab launcher needs: it can hold two
+   * projects' lists at once, which the single `sessions` array it replaced
+   * could not.
    */
   const sessions = selectedPath ? (sessionsByPath[selectedPath] ?? []) : []
   const sessionsLoading = selectedPath !== null && sessionsLoadingPath === selectedPath
