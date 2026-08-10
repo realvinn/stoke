@@ -81,13 +81,16 @@ export function App(): React.JSX.Element {
    * The app always has at least one tab: a New Project tab is a real tab now,
    * and the strip is never left empty.
    *
-   * `activeTabId === null` used to mean "showing the launcher". It is on its way
-   * out, but it is NOT gone yet — five call sites still set it (the `+` button,
-   * the newTab shortcut, openFolder, the sidebar's project select, and the
-   * command palette), and Task 61 is what replaces them with openNewTab. Until
-   * then null still means the launcher, so do not delete a null check on the
-   * strength of this comment. The type stays `string | null` for the same
-   * reason.
+   * `activeTabId === null` used to mean "showing the launcher", back when the
+   * launcher rendered outside the tab strip on that sentinel. Now the launcher
+   * is a New tab's own content (`activeTab?.kind === 'new'`), so landing on
+   * `null` shows neither pane — five call sites used to set it that way (the
+   * `+` button, the newTab shortcut, openFolder, the sidebar's project select,
+   * and the command palette). They now call `goToNewTab` below instead, which
+   * always lands on a real tab. Task 61 is what replaces `goToNewTab` itself
+   * with a fuller `openNewTab`. The type stays `string | null` because the
+   * very first render, before the mount effect below picks tabs[0], is still
+   * null.
    */
   const [tabs, setTabs] = useState<Tab[]>(() => [newTab()])
   const [activeTabId, setActiveTabId] = useState<string | null>(null)
@@ -737,6 +740,28 @@ export function App(): React.JSX.Element {
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null
   const selectedProject = projects.find((p) => p.path === selectedPath) ?? null
 
+  /*
+   * Land on a New Project tab instead of clearing the selection.
+   *
+   * The five callers below used to do `setActiveTabId(null)`, back when null
+   * was the launcher's own sentinel. It no longer is (see the comment by
+   * `activeTabId`'s declaration), so this reuses the New tab already in the
+   * strip if one is still there, or opens one — starting a session from the
+   * launcher consumes its tab (`replaceOrAppend`), so after the first launch
+   * there usually isn't one left to reuse. This is a bridge: Task 61 replaces
+   * every call site below with a fuller `openNewTab`.
+   */
+  const goToNewTab = useCallback((): void => {
+    const existing = tabs.find((t) => t.kind === 'new')
+    if (existing) {
+      setActiveTabId(existing.id)
+      return
+    }
+    const t = newTab()
+    setTabs((list) => [...list, t])
+    setActiveTabId(t.id)
+  }, [tabs])
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       const action = matchShortcut(e, isMac)
@@ -747,7 +772,7 @@ export function App(): React.JSX.Element {
           setPaletteOpen((v) => !v)
           break
         case 'newTab':
-          setActiveTabId(null)
+          goToNewTab()
           break
         case 'closeTab':
           if (activeTabId) closeTab(activeTabId)
@@ -767,7 +792,7 @@ export function App(): React.JSX.Element {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [isMac, tabs, activeTabId, closeTab])
+  }, [isMac, tabs, activeTabId, closeTab, goToNewTab])
 
   // Escape closes whichever overlay is on top.
   useEffect(() => {
@@ -786,8 +811,8 @@ export function App(): React.JSX.Element {
     if (!dir) return
     await refreshProjects()
     setSelectedPath(dir)
-    setActiveTabId(null)
-  }, [refreshProjects])
+    goToNewTab()
+  }, [refreshProjects, goToNewTab])
 
   const addRoot = useCallback(async (): Promise<void> => {
     const dir = await window.stoke.projects.addRoot()
@@ -863,7 +888,7 @@ export function App(): React.JSX.Element {
         browserOpen={browserOpen}
         onSelectTab={setActiveTabId}
         onCloseTab={closeTab}
-        onNewTab={() => setActiveTabId(null)}
+        onNewTab={goToNewTab}
         onToggleSidebar={() => setSidebarOpen((v) => !v)}
         onToggleBrowser={() => setBrowserOpen((v) => !v)}
         worklogCount={worklogPending}
@@ -889,7 +914,7 @@ export function App(): React.JSX.Element {
                 onQueryChange={setQuery}
                 onSelectProject={(p) => {
                   setSelectedPath(p.path)
-                  setActiveTabId(null)
+                  goToNewTab()
                 }}
                 onToggleExpand={(p) => {
                   setSelectedPath(p.path)
@@ -964,24 +989,36 @@ export function App(): React.JSX.Element {
             onDismiss={() => setProposedIds([])}
           />
 
-          <div className="term-stack" style={{ display: activeTabId ? 'block' : 'none' }}>
-            {tabs.map((tab) => (
-              <TerminalView
-                key={tab.id}
-                tab={tab}
-                active={tab.id === activeTabId}
-                theme={theme}
-                fontFamily={settings?.fontFamily ?? 'monospace'}
-                fontSize={settings?.fontSize ?? 13}
-                onOpenUrl={openUrl}
-                onRestart={restartTab}
-                onClose={closeTab}
-              />
-            ))}
+          <div
+            className="term-stack"
+            style={{ display: activeTab?.kind === 'session' ? 'block' : 'none' }}
+          >
+            {tabs
+              .filter((tab) => tab.kind === 'session')
+              .map((tab) => (
+                <TerminalView
+                  key={tab.id}
+                  tab={tab}
+                  active={tab.id === activeTabId}
+                  theme={theme}
+                  fontFamily={settings?.fontFamily ?? 'monospace'}
+                  fontSize={settings?.fontSize ?? 13}
+                  onOpenUrl={openUrl}
+                  onRestart={restartTab}
+                  onClose={closeTab}
+                />
+              ))}
           </div>
 
-          {activeTabId === null && (
+          {/*
+            Only the active New Project tab renders. The launcher holds no state
+            of its own — its selection lives on the tab — so keying it on the
+            tab id remounts it when you switch between two New tabs, which is
+            also what re-focuses the primary action.
+          */}
+          {activeTab?.kind === 'new' && (
             <Launcher
+              key={activeTab.id}
               project={selectedProject}
               defaultCwd={defaultCwd}
               permissionMode={mode}
@@ -996,7 +1033,11 @@ export function App(): React.JSX.Element {
               onChangeUltracode={changeUltracode}
               onStart={() => {
                 if (selectedProject) {
-                  void startSession({ cwd: selectedProject.path, name: selectedProject.name })
+                  void startSession({
+                    cwd: selectedProject.path,
+                    name: selectedProject.name,
+                    replaceTabId: activeNewTabId ?? undefined
+                  })
                 }
               }}
               onContinueLast={() => {
@@ -1004,7 +1045,8 @@ export function App(): React.JSX.Element {
                   void startSession({
                     cwd: selectedProject.path,
                     name: selectedProject.name,
-                    continueLast: true
+                    continueLast: true,
+                    replaceTabId: activeNewTabId ?? undefined
                   })
                 }
               }}
@@ -1081,7 +1123,7 @@ export function App(): React.JSX.Element {
           onPick={(p) => {
             setPaletteOpen(false)
             setSelectedPath(p.path)
-            setActiveTabId(null)
+            goToNewTab()
           }}
           onClose={() => setPaletteOpen(false)}
         />
