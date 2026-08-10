@@ -276,6 +276,38 @@ scripts/          the verify-*.mts suites, make-icon.cjs
     close button. Same class of bug as sizing an icon with a px attribute inside a rem-scaled
     button: two units that do not move together, so it looks right at exactly one setting.
 
+24. **A macOS auto-update is installed from a `.zip`, never the `.dmg`.** Squirrel.Mac swaps an
+    `.app` out of an archive, so electron-updater's `MacUpdater` searches the feed for a zip and
+    **rejects `dmg` and `pkg` by name** (`node_modules/electron-updater/out/MacUpdater.js:81-83`,
+    6.8.9), throwing `ERR_UPDATER_ZIP_FILE_NOT_FOUND` before downloading a byte. Every release up
+    to and including v0.4.0-beta.3 built `mac.target: [dmg]` only, so `latest-mac.yml` listed one
+    file and no Mac could ever update itself — while `npm run check` passed, the dmg built, CI was
+    green and the panel cheerfully said an update was available. Nothing fails when that target is
+    removed, which is why `verify:updates` asserts it is present.
+
+    Two things compound it, and both are worth knowing before declaring Mac updates fixed. First,
+    the zip only gets the download working; **Squirrel then verifies the downloaded app against the
+    running one's designated requirement**, and an ad-hoc signature's requirement is
+    `cdhash H"…"` — the hash of that exact binary — which no other build can satisfy by
+    construction. CI builds are ad-hoc (`CSC_IDENTITY_AUTO_DISCOVERY: false` with no Developer ID),
+    so `selfUpdate.ts` probes for it: `codesign -dv` prints `Signature=adhoc` **on stderr**, and an
+    `Authority=` line for anything signed with a real certificate — including a self-signed one,
+    whose requirement pins a certificate rather than a hash and therefore *can* be satisfied by the
+    next build. Second, **Windows needs none of this**: `NsisUpdater` only verifies a signature when
+    `publisherName` is set in the builder config, and it is not, so that check is skipped
+    (`NsisUpdater.js:84-99`). Windows self-update has always worked; only macOS was broken.
+
+25. **`execFile`'s error packs three unrelated things into `code`.** A POSIX errno string when the
+    spawn failed, one of Node's own `ERR_*` identifiers, and a plain **number** when the child ran
+    and exited non-zero. A timeout is none of them: Node kills the child, so the error arrives with
+    `killed: true`, `signal: 'SIGTERM'` and `code: null`. Test `killed` *before* the numeric code or
+    every timeout reports as "exited with code null" — and note the real-process test does not catch
+    that reordering, because a genuine timeout has no numeric code to be confused by; only a process
+    carrying both (`killed: true, code: 143`) distinguishes the two orderings, which is why
+    `verify:updates` asserts that case explicitly. Related: returning `stdout + stderr` from both the
+    success path and the catch, as `updates.ts` used to, makes a failure and a success literally the
+    same value.
+
 ## Verification expectations
 
 `npm run check` must pass. For anything touching the context meter, `npm run verify:context`

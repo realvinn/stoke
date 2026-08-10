@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { RemoteState, SelfUpdateState, UpdateInfo } from '@shared/api'
+import type { CliRunResult, RemoteState, SelfUpdateState, UpdateInfo } from '@shared/api'
+import { updateButton, updateVerdict } from '../lib/updateVerdict'
 import type { Settings } from '@shared/types'
 
 interface Props {
@@ -366,15 +367,25 @@ export function SelfUpdateSettings({
       ) : (
         <span className="field-hint">
           Version {state.currentVersion}.{' '}
+          {/*
+            `error` is tested before `availableVersion`, and that ordering is the
+            whole fix. The other way round — which is how this shipped — an
+            update being available short-circuited the chain, so every failure
+            that happened *after* one was found had nowhere to appear. Pressing
+            Download on a Mac threw ERR_UPDATER_ZIP_FILE_NOT_FOUND instantly and
+            the panel went on calmly saying "An update is available."
+          */}
           {state.downloaded
             ? 'An update is ready to install.'
             : state.downloading
               ? `Downloading… ${state.progress}%`
-              : state.availableVersion
-                ? 'An update is available.'
-                : state.error
-                  ? `No update found: ${state.error}`
-                  : 'Up to date.'}
+              : state.error
+                ? state.error
+                : state.blocked
+                  ? state.blocked
+                  : state.availableVersion
+                    ? 'An update is available.'
+                    : 'Up to date.'}
         </span>
       )}
 
@@ -397,10 +408,25 @@ export function SelfUpdateSettings({
             <button
               className="btn"
               data-variant="primary"
-              disabled={state.downloading}
+              // Greyed out rather than hidden when this build cannot install
+              // what it downloads: the button still says what would happen, and
+              // hovering says why it will not. Offering it would spend ~120 MB
+              // to arrive at a refusal.
+              disabled={state.downloading || state.blocked !== null}
+              title={state.blocked ?? undefined}
               onClick={() => void window.stoke.self.download().then(setState)}
             >
               Download
+            </button>
+          )}
+          {state.blocked !== null && state.availableVersion && (
+            <button
+              className="btn"
+              onClick={() =>
+                window.stoke.openExternal('https://github.com/realvinn/stoke/releases/latest')
+              }
+            >
+              Open releases page
             </button>
           )}
           {state.downloaded && (
@@ -450,22 +476,49 @@ export function SelfUpdateSettings({
 export function UpdatesSettings(): React.JSX.Element {
   const [info, setInfo] = useState<UpdateInfo | null>(null)
   const [output, setOutput] = useState<string | null>(null)
+  const [verdict, setVerdict] = useState<{ tone: 'success' | 'danger' | 'warning'; text: string } | null>(
+    null
+  )
   const [busy, setBusy] = useState<string | null>(null)
 
   useEffect(() => {
     void window.stoke.updates.check().then(setInfo)
   }, [])
 
-  const run = async (label: string, fn: () => Promise<string>): Promise<void> => {
+  const run = async (label: string, fn: () => Promise<CliRunResult>): Promise<void> => {
     setBusy(label)
     setOutput(null)
+    setVerdict(null)
     try {
-      setOutput(await fn())
-      if (label === 'update') setInfo(await window.stoke.updates.check())
+      const result = await fn()
+      setOutput(result.output || null)
+      if (label === 'update') {
+        // Read `updateAvailable` from the check that ran *before* this update,
+        // not from a fresh one: the fresh one is false either way afterwards.
+        setVerdict(updateVerdict(result, info?.updateAvailable ?? false))
+        setInfo(await window.stoke.updates.check())
+      } else if (!result.ok) {
+        setVerdict({ tone: 'danger', text: result.error ?? 'The command failed.' })
+      }
+    } catch (err) {
+      /*
+       * Without this the button was a no-op with no trace. A rejected invoke
+       * skipped every setState above, `busy` cleared in the finally, and the
+       * panel returned to exactly the state it started in — which is what
+       * "I press it and sometimes nothing happens" looks like from outside.
+       */
+      setVerdict({
+        tone: 'danger',
+        text: `Stoke could not run the command: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      })
     } finally {
       setBusy(null)
     }
   }
+
+  const update = updateButton(info)
 
   return (
     <div className="field">
@@ -496,7 +549,8 @@ export function UpdatesSettings(): React.JSX.Element {
         <button
           className="btn"
           data-variant={info?.updateAvailable ? 'primary' : undefined}
-          disabled={busy !== null}
+          disabled={busy !== null || !update.enabled}
+          title={update.hint}
           onClick={() => void run('update', window.stoke.updates.run)}
         >
           {busy === 'update' ? 'Updating…' : 'Update now'}
@@ -509,6 +563,12 @@ export function UpdatesSettings(): React.JSX.Element {
           {busy === 'doctor' ? 'Running…' : 'Run doctor'}
         </button>
       </div>
+
+      {verdict && (
+        <span className="field-hint" data-tone={verdict.tone}>
+          {verdict.text}
+        </span>
+      )}
 
       {output && (
         <pre

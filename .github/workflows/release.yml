@@ -68,6 +68,7 @@ jobs:
       - run: npm run verify:color
       - run: npm run verify:worklog-gate
       - run: npm run verify:tabs
+      - run: npm run verify:updates
       - run: npm run verify:worklog-runner
       - run: npm run verify:worklog-retry
       - run: npm run verify:worklog-recall
@@ -149,6 +150,7 @@ jobs:
           path: |
             release/*.exe
             release/*.dmg
+            release/*.zip
             release/*.blockmap
             release/latest*.yml
 
@@ -182,6 +184,21 @@ jobs:
           for manifest in latest.yml latest-mac.yml; do
             test -f "dist/$manifest" || { echo "::error::dist/$manifest missing — $manifest platform could not auto-update"; exit 1; }
           done
+
+          # A present latest-mac.yml is not sufficient, and believing it was is
+          # how v0.4.0-beta.3 shipped a Mac that could not update itself. The
+          # manifest listed only the dmg; electron-updater's MacUpdater searches
+          # the feed for a .zip and rejects "dmg" and "pkg" by name, so the
+          # download threw before fetching a byte while the release looked
+          # complete from every angle here. Assert the archive is really there.
+          grep -q '\.zip' dist/latest-mac.yml || {
+            echo "::error::dist/latest-mac.yml lists no .zip — macOS cannot auto-update from this release"
+            exit 1
+          }
+          ls dist/*.zip >/dev/null 2>&1 || {
+            echo "::error::no .zip in dist — the macOS update archive was not built"
+            exit 1
+          }
 
           # The tag's annotation is the release notes, so what is written once
           # at `git tag -a` is what people read.

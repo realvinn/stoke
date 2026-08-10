@@ -2399,6 +2399,20 @@ body {
   color: var(--warning);
 }
 
+/*
+ * The other two verdicts an action can report. Used by the Claude Code updater,
+ * where the three outcomes have to look different from each other: it failed,
+ * it worked, or it exited zero and changed nothing — which is the one that used
+ * to be indistinguishable from success.
+ */
+.field-hint[data-tone='danger'] {
+  color: var(--danger);
+}
+
+.field-hint[data-tone='success'] {
+  color: var(--success);
+}
+
 /* -------------------------------------------------------------- keyframes */
 
 @keyframes fade {

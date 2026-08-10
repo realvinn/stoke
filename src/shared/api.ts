@@ -82,6 +82,18 @@ export interface SelfUpdateState {
   progress: number
   error: string | null
   checkedAt: number | null
+  /**
+   * Why this build cannot install an update even though the machinery is
+   * present, or null when nothing stands in the way.
+   *
+   * Distinct from `error`, which is what went wrong on the last attempt. This is
+   * known *before* an attempt, so the UI can say so instead of offering a button
+   * that downloads ~120 MB and then fails at the last step. The one case today
+   * is an ad-hoc signed macOS build: Squirrel.Mac verifies the downloaded app
+   * against the running one's designated requirement, and an ad-hoc requirement
+   * pins the exact binary hash, so no other build can ever satisfy it.
+   */
+  blocked: string | null
 }
 
 export interface UpdateInfo {
@@ -90,6 +102,29 @@ export interface UpdateInfo {
   updateAvailable: boolean
   checkedAt: number
   error: string | null
+}
+
+/**
+ * The outcome of running one `claude` subcommand.
+ *
+ * `ok` is the exit status and nothing more. Whether an *update* happened is a
+ * separate question that exit status cannot answer — `claude update` exits 0
+ * when it is already current, and an npm-global install that cannot write to its
+ * own prefix can also exit 0 having changed nothing. `from` and `to` are read
+ * either side of the run so the caller can state which of those it was rather
+ * than infer it.
+ */
+export interface CliRunResult {
+  /** The command exited zero. Not the same as "something changed". */
+  ok: boolean
+  /** stdout + stderr, ANSI stripped. Present on both paths; may be empty. */
+  output: string
+  /** One sentence naming what went wrong. Null when `ok`. */
+  error: string | null
+  /** CLI version before the command ran. Null if it could not be read. */
+  from: string | null
+  /** CLI version after. Equal to `from` when nothing was installed. */
+  to: string | null
 }
 
 /** The surface exposed to the renderer as `window.stoke`. */
@@ -203,8 +238,13 @@ export interface StokeApi {
 
   updates: {
     check(): Promise<UpdateInfo>
-    run(): Promise<string>
-    doctor(): Promise<string>
+    /**
+     * Run `claude update`. Never rejects on a failed update — the reason is in
+     * the result, because a rejected promise is what made the old version look
+     * like nothing had happened at all.
+     */
+    run(): Promise<CliRunResult>
+    doctor(): Promise<CliRunResult>
   }
 
   /** Stoke updating itself, via electron-updater and GitHub releases. */

@@ -36,8 +36,17 @@ nsis:
   shortcutName: Stoke
 mac:
   icon: build/icon.png
+  # Both targets, and the zip is not optional. A dmg is what a person downloads;
+  # a zip is the only thing electron-updater can install on macOS. Squirrel.Mac
+  # updates by swapping an .app out of an archive, so `MacUpdater` searches the
+  # feed for a .zip and rejects "dmg" and "pkg" by name — with a dmg-only target
+  # it throws ERR_UPDATER_ZIP_FILE_NOT_FOUND before downloading a byte
+  # (electron-updater 6.8.9, out/MacUpdater.js:81-83). Every release up to and
+  # including v0.4.0-beta.3 shipped a dmg-only latest-mac.yml and so could not
+  # update a Mac at all, while reporting an update was available.
   target:
     - target: dmg
+    - target: zip
   category: public.app-category.developer-tools
   artifactName: ${productName}-${version}-${arch}.${ext}
   # A PTY spawns child processes; the JIT/unsigned-memory entitlements keep
