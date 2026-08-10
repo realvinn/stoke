@@ -64,8 +64,17 @@ export function App(): React.JSX.Element {
   const [query, setQuery] = useState('')
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
   const [expandedPath, setExpandedPath] = useState<string | null>(null)
-  const [sessions, setSessions] = useState<SessionMeta[]>([])
-  const [sessionsLoading, setSessionsLoading] = useState(false)
+  /*
+   * One cache for every project's session list, keyed by path.
+   *
+   * Deliberately not per-tab: two New Project tabs pointed at the same project
+   * would hold two copies of the same fetched list, and the moment one of them
+   * refetched they would disagree about the same folder. A cache keyed by the
+   * folder cannot do that.
+   */
+  const [sessionsByPath, setSessionsByPath] = useState<Record<string, SessionMeta[]>>({})
+  /** The path currently being fetched, or null. Drives the loading state. */
+  const [sessionsLoadingPath, setSessionsLoadingPath] = useState<string | null>(null)
 
   const [tabs, setTabs] = useState<Tab[]>([])
   const [activeTabId, setActiveTabId] = useState<string | null>(null)
@@ -314,21 +323,27 @@ export function App(): React.JSX.Element {
   /* -------------------------------------------------------------- sessions */
 
   useEffect(() => {
-    if (!selectedPath) {
-      setSessions([])
-      return
-    }
+    const path = selectedPath
+    if (!path) return
     let cancelled = false
-    setSessionsLoading(true)
-    void window.stoke.projects.sessions(selectedPath).then((list) => {
+    setSessionsLoadingPath(path)
+    void window.stoke.projects.sessions(path).then((list) => {
       if (cancelled) return
-      setSessions(list)
-      setSessionsLoading(false)
+      setSessionsByPath((prev) => ({ ...prev, [path]: list }))
+      setSessionsLoadingPath((cur) => (cur === path ? null : cur))
     })
     return () => {
       cancelled = true
     }
   }, [selectedPath])
+
+  /*
+   * What the sidebar and the launcher read. A cached list is shown immediately
+   * on the way back to a project already visited, and the spinner only appears
+   * for a folder nothing is known about yet.
+   */
+  const sessions = selectedPath ? (sessionsByPath[selectedPath] ?? []) : []
+  const sessionsLoading = selectedPath !== null && sessionsLoadingPath === selectedPath
 
   /* ------------------------------------------------------------------ tabs */
 
