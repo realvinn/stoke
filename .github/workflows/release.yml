@@ -1,0 +1,142 @@
+# Builds and publishes a release for both platforms.
+#
+# This exists because neither installer can be produced on the other's machine.
+# The Windows NSIS installer needs Windows (or wine, which is its own kind of
+# unreliable), and the mac dmg needs a Mac — and every release before this one
+# shipped the Windows exe alone, because that is the machine the tag was cut on.
+# A tag pushed from either desk now produces both.
+#
+# Cutting a release:
+#
+#     npm version 0.4.0-beta.3 --no-git-tag-version
+#     git commit -am "0.4.0-beta.3" && git tag v0.4.0-beta.3
+#     git push && git push --tags
+#
+# The tag is what triggers this; the version in package.json is what
+# electron-builder puts in the filenames and the update manifests, so the two
+# must agree or installed copies compare against the wrong number.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  # Rehearse the whole matrix without cutting a tag. Publishing is keyed off the
+  # trigger below, so a manual run builds and uploads artifacts but releases
+  # nothing — which is the only safe way to find out that a build is broken.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      # `npm run check` is NOT used here, and that is deliberate rather than an
+      # oversight. Two of its suites are machine-dependent by design and cannot
+      # pass on a clean runner:
+      #
+      #   verify:context  reads the real transcripts in ~/.claude/projects to
+      #                   check the context meter against actual sessions. On a
+      #                   runner that directory does not exist and the suite
+      #                   throws ENOENT. Its value is that it runs against real
+      #                   data, so making it synthesise fixtures would delete the
+      #                   reason it exists.
+      #   verify:ssh      fails on every commit including the merge base:
+      #                   OpenSSH >= 9 rejects the suite's own two-word host
+      #                   alias fixture ("hostname contains invalid characters").
+      #                   Pre-existing and unrelated to any release.
+      #
+      # Everything else is pure and runs anywhere, so it runs here. Keep this
+      # list in step with package.json's `check` chain when a suite is added.
+      - run: npm run verify:statusline
+      - run: npm run verify:unicode
+      - run: npm run verify:usage
+      - run: npm run verify:profiles
+      - run: npm run verify:settings
+      - run: npm run verify:folders
+      - run: npm run verify:color
+      - run: npm run verify:worklog-gate
+      - run: npm run verify:tabs
+      - run: npm run verify:worklog-runner
+      - run: npm run verify:worklog-retry
+      - run: npm run verify:worklog-recall
+      - run: npm run verify:worklog-autoscan
+
+      - run: npm run build
+
+  release:
+    name: ${{ matrix.name }}
+    needs: verify
+    # One platform failing must not delete the other's artifacts from the run.
+    # A half-published release is recoverable; losing the built installer that
+    # did work, because its sibling died, is just a wasted 20 minutes.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            os: windows-latest
+            args: --win --x64
+          - name: macOS arm64
+            os: macos-14
+            args: --mac --arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+
+      - run: npm run build
+
+      # electron-builder is invoked directly rather than through `npm run
+      # dist:win -- --publish always`: npm appends extra args to the end of the
+      # whole script string, and these scripts are `npm run build && ...`
+      # chains, so where the flags land depends on shell parsing rather than on
+      # anything stated. The flags here are the same ones package.json uses.
+      - name: Build and publish
+        run: npx electron-builder ${{ matrix.args }} --publish ${{ github.event_name == 'push' && 'always' || 'never' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # No Developer ID is configured, so stop electron-builder hunting the
+          # keychain for one and failing when it finds nothing. The result is an
+          # ad-hoc signature: enough for the dmg to launch after right-click ->
+          # Open, and NOT enough for Squirrel.Mac to apply an auto-update, which
+          # verifies the signature of the downloaded app. Mac auto-update stays
+          # broken until a real certificate exists — see the note below.
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+          #
+          # To turn Mac auto-update on later, add these repository secrets and
+          # delete the line above. Nothing else here has to change:
+          #   CSC_LINK             base64 of a Developer ID .p12
+          #   CSC_KEY_PASSWORD     its password
+          #   APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID  (notarising)
+
+      # Kept even on a publishing run: if the release upload fails halfway, the
+      # installer still exists somewhere retrievable rather than only inside a
+      # container that has already been destroyed.
+      - name: Upload installers
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.os }}-installers
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            release/*.exe
+            release/*.dmg
+            release/*.blockmap
+            release/latest*.yml
