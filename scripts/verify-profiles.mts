@@ -1251,6 +1251,19 @@ console.log(
   `  nearest two swatches ${nearestSwatches.toFixed(3)}; ` +
     `nearest theme accent to a profile accent ${nearestThemeToProfile.toFixed(3)}`
 )
+/*
+ * `nearestThemeToProfile` stays a printed number, not an assertion: it is 0.000
+ * by design — Ember's accent and Personal's are the same literal `#ff9552`, and
+ * Nocturne's is the Azure swatch's — so any threshold would either demand the
+ * collision persists or demand a fix this task does not make.
+ *
+ * `nearestSwatches` is a different number and does carry a guard. It measures
+ * the swatches against EACH OTHER, where a collision is a plain defect: two
+ * chips a user picked deliberately would become indistinguishable. Today it is
+ * 0.083 (Moss vs Teal), so the floor below sits at half that — far enough not
+ * to punish a palette tweak, close enough that a collapse to 0 cannot pass.
+ */
+check('no two swatches a user can pick are the same colour', nearestSwatches >= 0.04, true)
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
 process.exitCode = failures ? 1 : 0
