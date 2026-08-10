@@ -478,7 +478,7 @@ export function App(): React.JSX.Element {
    * from it cannot drift the way two copies of the same records would.
    */
   const watchedSessions = useMemo(
-    () => new Set(worklogWatch.filter((s) => s.watched).map((s) => s.sessionId)),
+    () => new Set(worklogWatch.filter((s) => s.watched === true).map((s) => s.sessionId)),
     [worklogWatch]
   )
 
