@@ -22,5 +22,18 @@
       "@shared/*": ["src/shared/*"]
     }
   },
-  "include": ["src/main/**/*.ts", "src/preload/**/*.ts", "src/shared/**/*.ts", "electron.vite.config.ts"]
+  "include": ["src/main/**/*.ts", "src/preload/**/*.ts", "src/shared/**/*.ts", "electron.vite.config.ts"],
+  // The one shared module that is browser-only. `src/shared` is normally the
+  // code both processes compile, which is why this project has no DOM lib — but
+  // voice.ts is MediaRecorder, AudioContext and OfflineAudioContext from top to
+  // bottom, and it is in `shared` because the *two web surfaces* share it (the
+  // renderer and the phone), not because the main process does. Main reaches the
+  // speech server over plain fetch and imports nothing from here.
+  //
+  // Excluded rather than relocated: there is no "web-shared" directory, and
+  // inventing one for a single file would be a worse trade than this three-line
+  // note. If main ever does import it, TypeScript pulls it back in as a
+  // dependency of an included file and this exclude stops protecting anything —
+  // which is the correct failure, since that import would be the actual mistake.
+  "exclude": ["src/shared/voice.ts"]
 }

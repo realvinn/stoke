@@ -1,17 +1,27 @@
 /**
- * Dictation on the phone.
+ * Dictation, for both surfaces that have it: the phone and the desktop.
  *
  * Push-to-talk rather than continuous: the Web Speech API is the obvious
  * alternative and is wrong here twice over - Chrome sends the audio to Google,
  * and on iOS it breaks outright once the site is added to the home screen.
- * Recording locally and posting to Stoke keeps the audio on hardware the user
- * owns, and Stoke forwards it to the speech sidecar.
+ * Recording locally and handing the bytes to Stoke keeps the audio on hardware
+ * the user owns, and Stoke forwards it to the speech sidecar.
  *
  * The conversion to 16-bit PCM WAV happens here, in the browser, because the
  * sidecar validates the RIFF header and rejects anything else. Doing it on the
- * phone also sidesteps the container split - Safari records mp4/aac, Chrome
+ * client also sidesteps the container split - Safari records mp4/aac, Chrome
  * records webm/opus - since `decodeAudioData` reads both and we re-encode from
  * raw samples either way.
+ *
+ * It lives in `src/shared` rather than beside either caller because the two
+ * differ only in how the finished WAV *travels*: the phone POSTs it to
+ * `/api/transcribe` over the remote server, the desktop hands it to the main
+ * process over IPC. Everything before that - permission, container choice,
+ * decode, downmix, resample, encode - is identical and was worth having in one
+ * place rather than two that drift. So the transport is injected
+ * (`createRecorder`'s `upload`) and nothing here knows which surface it is on;
+ * that is also why this file must stay free of Node and Electron imports, since
+ * `tsconfig.web.json` gives `src/shared` no Node types.
  */
 
 const MIME_CANDIDATES = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/mp4']
@@ -94,7 +104,31 @@ export interface Recorder {
   recording(): boolean
 }
 
-export function createRecorder(): Recorder {
+/**
+ * Hands a finished 16 kHz mono 16-bit PCM WAV to whoever can reach the speech
+ * server, and resolves with the transcript. Rejecting is how a recorder reports
+ * a transcription failure; the caller shows the message.
+ *
+ * The two implementations are `postTranscription` below (phone, over HTTP) and
+ * the desktop's IPC bridge. Neither the sidecar's address nor its auth story is
+ * visible from here, which is the point: the browser never talks to the speech
+ * server directly on either surface.
+ */
+export type UploadWav = (wav: ArrayBuffer) => Promise<string>
+
+/** POSTs to the remote server's proxy route. The phone's transport. */
+export async function postTranscription(wav: ArrayBuffer): Promise<string> {
+  const res = await fetch('/api/transcribe', {
+    method: 'POST',
+    headers: { 'content-type': 'audio/wav' },
+    body: wav
+  })
+  const data = (await res.json()) as { text?: string; error?: string }
+  if (!res.ok) throw new Error(data.error || `Transcription failed (${res.status})`)
+  return (data.text || '').trim()
+}
+
+export function createRecorder(upload: UploadWav): Recorder {
   let recorder: MediaRecorder | null = null
   let chunks: Blob[] = []
 
@@ -137,18 +171,12 @@ export function createRecorder(): Recorder {
       })
       release()
 
-      // Under about a tenth of a second is a mis-tap, not speech.
+      // Under about a tenth of a second is a mis-tap, not speech. Measured on
+      // compressed bytes, so it is a floor rather than an exact duration; the
+      // sidecar re-checks on decoded samples, where it can be exact.
       if (blob.size < 1024) return ''
 
-      const wav = await toWav(blob)
-      const res = await fetch('/api/transcribe', {
-        method: 'POST',
-        headers: { 'content-type': 'audio/wav' },
-        body: wav
-      })
-      const data = (await res.json()) as { text?: string; error?: string }
-      if (!res.ok) throw new Error(data.error || `Transcription failed (${res.status})`)
-      return (data.text || '').trim()
+      return upload(await toWav(blob))
     }
   }
 }
