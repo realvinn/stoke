@@ -637,7 +637,7 @@ body {
 
 .win-btn[data-variant='close']:hover {
   background: var(--danger);
-  color: #fff;
+  color: var(--on-danger);
 }
 
 /* -------------------------------------------------------------- controls */
@@ -710,7 +710,7 @@ body {
 .btn[data-variant='danger']:hover:not(:disabled) {
   background: var(--danger);
   border-color: var(--danger);
-  color: #fff;
+  color: var(--on-danger);
 }
 
 .icon-btn {
@@ -868,7 +868,7 @@ body {
 /* The bypass segment stays legible as a warning even while inactive. */
 .segmented button[data-danger='true'][aria-pressed='true'] {
   background: var(--danger);
-  color: #fff;
+  color: var(--on-danger);
 }
 
 .pill {
@@ -2043,7 +2043,7 @@ body {
   position: fixed;
   inset: 0;
   z-index: var(--z-backdrop);
-  background: rgb(0 0 0 / 0.42);
+  background: var(--scrim);
   animation: fade var(--dur) var(--ease);
 }
 
@@ -2285,7 +2285,7 @@ body {
   width: 1rem;
   height: 1rem;
   border-radius: var(--r-sm);
-  border: 1px solid rgb(0 0 0 / 0.25);
+  border: 1px solid var(--swatch-ring);
 }
 
 .theme-name {
@@ -2493,7 +2493,7 @@ body {
   border: 1px solid var(--border-strong);
   border-radius: var(--r-md, 10px);
   background: var(--surface);
-  box-shadow: 0 12px 32px rgb(0 0 0 / 0.45);
+  box-shadow: var(--shadow-panel);
 }
 
 .usage-note {
@@ -2567,9 +2567,9 @@ body {
 
 /*
  * The pace marker: where usage would sit if it were spread evenly across the
- * window. White so it reads against every fill colour, taller than the track so
- * it stays legible once the fill passes under it, and ringed in the track
- * colour so it separates from the fill rather than dissolving into it.
+ * window, taller than the track so it stays legible once the fill passes
+ * under it, and ringed in the track colour so it separates from the fill
+ * rather than dissolving into it.
  */
 .usage-pace {
   position: absolute;
@@ -2577,7 +2577,10 @@ body {
   bottom: -2px;
   width: 2px;
   border-radius: 1px;
-  background: #fff;
+  /* --text, not white: this bar has to read on a light theme too, and --text
+     is the token that already flips with appearance. The --bg-sunken ring
+     below is what separates it from whatever fill it is standing on. */
+  background: var(--text);
   /* Centred on its position, so 50% reads as exactly half way. */
   translate: -1px 0;
   box-shadow: 0 0 0 1px var(--bg-sunken);

@@ -251,5 +251,61 @@ for (const t of BUILT_IN_THEMES) {
   )
 }
 
+console.log('\n-- ink on a danger fill --')
+/*
+ * Two of the three `--on-danger` sites are button text, so this is a 4.5:1
+ * bar, not a 3:1 one. The token has to clear it against every theme's danger
+ * fill — a fill that is itself chosen for visibility, which is exactly why a
+ * light ink on it does not work: white measures 2.89 / 2.84 / 2.70 on the
+ * three dark themes, under half of AA.
+ */
+/** `--on-danger: var(--bg)` in app.css. If you change one, change the other. */
+const ON_DANGER = (t: Theme): string => t.colors.bg
+
+for (const t of BUILT_IN_THEMES) {
+  const ratio = contrastRatio(parseColor(ON_DANGER(t))!, parseColor(t.colors.danger)!)
+  const ok = ratio >= 4.5
+  if (!ok) failures++
+  console.log(
+    `${ok ? 'ok  ' : 'FAIL'} ${`--on-danger on ${t.id}'s danger`.padEnd(46)} ${ratio
+      .toFixed(2)
+      .padStart(10)}  (expected >= 4.5)`
+  )
+}
+
+console.log('\n-- why --on-danger stays right for a theme none of the four are --')
+/*
+ * The loop above only ever proves four numbers. A user can write their own
+ * theme - `validateTheme` in shared/themes.ts fills gaps and checks shape,
+ * never contrast - so "by construction" has to rest on something that holds
+ * for a `--danger` no one has picked yet, not on a sample of four.
+ *
+ * That something is `contrastRatio`'s own symmetry: it ranks two colours by
+ * luminance and divides the lighter by the darker, so which one is called
+ * "ink" and which "fill" cannot change the number. `--danger` already has to
+ * read as text on a `--bg`-rooted surface for three existing rules with no
+ * ratio of its own - color: var(--danger) in .btn[data-variant='danger'],
+ * .pill[data-tone='danger'] and .project-missing (app.css:707,895,1034) - and
+ * none of that is checked for a custom theme either. `--on-danger: var(--bg)`
+ * does not add a check; it makes the danger-fill case inherit that exact,
+ * already-unchecked ratio instead of adding a second, different one. A theme
+ * whose `--danger` is too close to `--bg` still breaks both sites - this
+ * assertion proves they break by the same number, not that either passes.
+ */
+{
+  const pairs: ReadonlyArray<readonly [Rgb, Rgb]> = [
+    [BLACK, WHITE],
+    [parseColor('#7b2d43')!, parseColor('#d2d205')!],
+    ...BUILT_IN_THEMES.map(
+      (t) => [parseColor(t.colors.bg)!, parseColor(t.colors.danger)!] as const
+    )
+  ]
+  const ok = pairs.every(([a, b]) => contrastRatio(a, b) === contrastRatio(b, a))
+  if (!ok) failures++
+  console.log(
+    `${ok ? 'ok  ' : 'FAIL'} ${'contrastRatio(a, b) === contrastRatio(b, a)'.padEnd(46)} ${`${pairs.length} pairs`.padStart(10)}  (holds for any colour, not just these four)`
+  )
+}
+
 console.log(failures ? `\n${failures} failure(s)` : '\nall colour checks pass')
 process.exit(failures ? 1 : 0)
