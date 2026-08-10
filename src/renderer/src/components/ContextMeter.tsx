@@ -40,26 +40,45 @@ export function ContextBar({ used, limit, showLabel = true }: MeterProps): React
   )
 }
 
-const R = 5.6
-const CIRC = 2 * Math.PI * R
+/** Radius of the tab ring, shared so anything drawn in the same slot lines up. */
+export const RING_R = 5.6
+const CIRC = 2 * Math.PI * RING_R
 
-/** Compact ring for tab strips, where there is no room for a bar and caption. */
-export function ContextRing({ used, limit }: { used: number; limit: number }): React.JSX.Element {
-  const ratio = limit > 0 ? Math.min(1, used / limit) : 0
+/**
+ * Compact ring for tab strips, where there is no room for a bar and caption.
+ *
+ * `ready` false draws the track and nothing else. That case exists because the
+ * strip used to render a 7px dot until the watcher reported and then swap in a
+ * 14px ring, which shoved the label and the close button 7px sideways with no
+ * transition. An empty circle says the same thing — no reading yet — without
+ * moving anything.
+ */
+export function ContextRing({
+  used,
+  limit,
+  ready = true
+}: {
+  used: number
+  limit: number
+  ready?: boolean
+}): React.JSX.Element {
+  const ratio = ready && limit > 0 ? Math.min(1, used / limit) : 0
   const pct = Math.round(ratio * 100)
   return (
-    <svg className="ring" viewBox="0 0 16 16" data-level={level(ratio)}>
-      <title>{`Context ${pct}% used`}</title>
-      <circle className="ring-track" cx="8" cy="8" r={R} />
-      <circle
-        className="ring-fill"
-        cx="8"
-        cy="8"
-        r={R}
-        strokeDasharray={CIRC}
-        strokeDashoffset={CIRC * (1 - ratio)}
-        strokeLinecap="round"
-      />
+    <svg className="ring" viewBox="0 0 16 16" data-level={ready ? level(ratio) : 'empty'}>
+      <title>{ready ? `Context ${pct}% used` : 'Context not read yet'}</title>
+      <circle className="ring-track" cx="8" cy="8" r={RING_R} />
+      {ready && (
+        <circle
+          className="ring-fill"
+          cx="8"
+          cy="8"
+          r={RING_R}
+          strokeDasharray={CIRC}
+          strokeDashoffset={CIRC * (1 - ratio)}
+          strokeLinecap="round"
+        />
+      )}
     </svg>
   )
 }

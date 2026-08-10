@@ -1,7 +1,7 @@
 import type { ContextSnapshot } from '@shared/types'
 import type { WorklogButtonState } from '@shared/worklog'
-import { ContextRing } from './ContextMeter'
 import { UsageChip } from './UsageMeter'
+import { TabIndicator } from './TabIndicator'
 import {
   BrandMark,
   IconClose,
@@ -84,7 +84,6 @@ export function TitleBar({
       <div className="tabs" role="tablist" aria-label="Sessions">
         {tabs.map((tab) => {
           const ctx = contexts[tab.sessionId]
-          const bypass = tab.permissionMode === 'bypassPermissions'
           return (
             <div
               key={tab.id}
@@ -104,16 +103,13 @@ export function TitleBar({
               }}
               title={`${tab.title} — ${tab.cwd}`}
             >
-              {ctx?.ready ? (
-                <ContextRing used={ctx.contextTokens} limit={ctx.contextLimit} />
-              ) : (
-                <span
-                  className="tab-dot"
-                  data-state={
-                    tab.status === 'exited' ? 'exited' : bypass ? 'bypass' : 'running'
-                  }
-                />
-              )}
+              <TabIndicator
+                kind={tab.kind}
+                context={ctx}
+                status={tab.status}
+                permissionMode={tab.permissionMode}
+                watched={false}
+              />
               <span className="tab-label">{tab.title}</span>
               <button
                 className="tab-close"

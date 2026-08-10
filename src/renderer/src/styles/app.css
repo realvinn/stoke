@@ -458,24 +458,53 @@ body {
   color: var(--accent-contrast);
 }
 
-.tab-dot {
-  width: 0.4375rem;
-  height: 0.4375rem;
-  flex-shrink: 0;
+/*
+ * One fixed slot for whatever a tab has to say about its session.
+ *
+ * Fixed, because a 7px dot used to be swapped for a 14px ring the instant the
+ * context watcher reported, and the label and the close button jumped 7px
+ * sideways with it. Both children sit in the same grid cell, so the ring, the
+ * empty circle and the ring-plus-dot are all exactly --tab-indicator wide.
+ */
+.tab-indicator {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: var(--tab-indicator);
+  height: var(--tab-indicator);
+  flex: none;
+}
+
+.tab-indicator > .ring,
+.tab-indicator > .tab-watch {
+  grid-area: 1 / 1;
+}
+
+/* The only red in the tab strip, and it means one thing: the worklog agent is
+   watching this session. */
+.tab-watch {
+  width: 0.3125rem;
+  height: 0.3125rem;
   border-radius: var(--r-full);
-  background: var(--text-faint);
+  background: var(--tab-dot-worklog);
 }
 
-.tab-dot[data-state='running'] {
-  background: var(--success);
+/* No reading yet — a plain circle, so the slot is never blank. */
+.ring[data-level='empty'] .ring-track {
+  stroke: var(--border-strong);
 }
 
-.tab-dot[data-state='bypass'] {
-  background: var(--danger);
+/* A New Project tab has no session to measure. */
+.ring-plus {
+  fill: none;
+  stroke: var(--text-muted);
+  stroke-width: 1.5;
+  stroke-linecap: round;
 }
 
-.tab-dot[data-state='exited'] {
-  background: var(--text-faint);
+/* A finished process reads as absent rather than as an alert. */
+.tab-indicator[data-status='exited'] {
+  opacity: 0.45;
 }
 
 /* ------------------------------------------------------- titlebar actions */
