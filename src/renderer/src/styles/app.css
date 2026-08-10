@@ -630,7 +630,9 @@ body {
   align-items: center;
   justify-content: center;
   gap: var(--space-8);
-  padding: 0.375rem var(--space-12);
+  height: var(--control-h);
+  padding: 0 var(--space-12);
+  line-height: var(--lh-tight);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   background: var(--surface);
@@ -698,8 +700,8 @@ body {
   position: relative;
   display: grid;
   place-items: center;
-  width: 1.75rem;
-  height: 1.75rem;
+  width: var(--control-h);
+  height: var(--control-h);
   border: 1px solid transparent;
   border-radius: var(--r-md);
   background: transparent;
@@ -751,7 +753,9 @@ body {
 
 .input {
   width: 100%;
-  padding: 0.375rem var(--space-8);
+  height: var(--control-h);
+  padding: 0 var(--space-8);
+  line-height: var(--lh-tight);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   background: var(--bg-sunken);
@@ -779,7 +783,9 @@ body {
 
 .select {
   appearance: none;
-  padding: 0.375rem 1.75rem 0.375rem var(--space-8);
+  height: var(--control-h);
+  padding: 0 1.75rem 0 var(--space-8);
+  line-height: var(--lh-tight);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   background-color: var(--surface);
@@ -811,19 +817,21 @@ body {
 .segmented {
   display: inline-flex;
   padding: 2px;
+  height: var(--control-h);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   background: var(--bg-sunken);
 }
 
 .segmented button {
-  padding: 0.25rem var(--space-8);
+  padding: 0 var(--space-8);
   border: none;
   border-radius: calc(var(--r-md) - 1px);
   background: transparent;
   color: var(--text-muted);
   font-size: var(--fs-sm);
   font-weight: 500;
+  line-height: var(--lh-tight);
   cursor: default;
   transition:
     background var(--dur-fast) var(--ease),
@@ -856,6 +864,7 @@ body {
   color: var(--text-muted);
   font-size: var(--fs-xs);
   font-weight: 500;
+  line-height: var(--lh-tight);
   white-space: nowrap;
 }
 
