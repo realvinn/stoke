@@ -213,6 +213,18 @@ body {
   white-space: nowrap;
 }
 
+/*
+ * One rule sizes every icon. A container states its size by setting
+ * --icon-size; nothing passes a pixel count through a React prop.
+ * `flex: none` because an icon beside a truncating label must not be the
+ * thing that shrinks.
+ */
+.icon {
+  width: var(--icon-size, var(--icon-lg));
+  height: var(--icon-size, var(--icon-lg));
+  flex: none;
+}
+
 .sr-only {
   position: absolute;
   width: 1px;
@@ -468,12 +480,19 @@ body {
   border-radius: var(--r-sm);
   background: transparent;
   color: var(--text-faint);
+  /* was width={11}; the nearest token is 12px and the difference is invisible */
+  --icon-size: var(--icon-sm);
   cursor: default;
   opacity: 0;
   transition:
     opacity var(--dur-fast) var(--ease),
     background var(--dur-fast) var(--ease),
     color var(--dur-fast) var(--ease);
+}
+
+/* The browser's own tab close is a size smaller — its tabs are shorter. */
+.btab .tab-close {
+  --icon-size: var(--icon-xs);
 }
 
 /*
@@ -1012,6 +1031,7 @@ body {
   width: var(--chevron);
   height: var(--chevron);
   transition: rotate var(--dur) var(--ease);
+  --icon-size: var(--icon-sm);
 }
 
 .project-chevron[aria-expanded='true'] {
@@ -1025,6 +1045,7 @@ body {
 .project-pin {
   width: 1.25rem;
   height: 1.25rem;
+  --icon-size: var(--icon-sm);
 }
 
 /* A fixed slot whether or not there is an emoji, so every project name in the
@@ -1535,6 +1556,16 @@ body {
   font-family: var(--mono);
   font-size: var(--fs-xs);
   color: var(--text-muted);
+}
+
+.browser-tabs .icon-btn,
+.browser-find .icon-btn {
+  --icon-size: var(--icon-md);
+}
+
+/* Remove-this-row buttons in the settings sheet, profiles and hosts lists. */
+.icon-btn[data-size='sm'] {
+  --icon-size: var(--icon-sm);
 }
 
 .browser-url {

@@ -161,7 +161,7 @@ export function TitleBar({
                   }}
                   title="Close session"
                 >
-                  <IconClose width={11} height={11} />
+                  <IconClose />
                   <span className="sr-only">Close {tab.title}</span>
                 </button>
               </div>

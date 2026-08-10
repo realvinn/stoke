@@ -214,10 +214,11 @@ export function HostsSettings({ hosts, suggestions, onChange }: Props): React.JS
               ) : (
                 <button
                   className="icon-btn"
+                  data-size="sm"
                   title={`Remove ${host.label || host.alias || 'this host'}`}
                   onClick={() => setConfirming(host.id)}
                 >
-                  <IconClose width={12} height={12} />
+                  <IconClose />
                   <span className="sr-only">Remove {host.label || host.alias || 'this host'}</span>
                 </button>
               )}

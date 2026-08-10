@@ -266,12 +266,13 @@ export function SettingsSheet({
                 </span>
                 <button
                   className="icon-btn"
+                  data-size="sm"
                   title={`Stop scanning ${root}`}
                   onClick={() =>
                     onPatch({ projectRoots: settings.projectRoots.filter((r) => r !== root) })
                   }
                 >
-                  <IconClose width={12} height={12} />
+                  <IconClose />
                   <span className="sr-only">Remove {root}</span>
                 </button>
               </div>

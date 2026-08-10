@@ -143,7 +143,7 @@ export function BrowserPanel({ state, bookmarks, onAskClaude, onClose }: Props):
                   if (state.tabs.length <= 1) onClose()
                 }}
               >
-                <IconClose width={10} height={10} />
+                <IconClose />
                 <span className="sr-only">Close tab</span>
               </button>
             </div>
@@ -151,7 +151,7 @@ export function BrowserPanel({ state, bookmarks, onAskClaude, onClose }: Props):
         </div>
 
         <button className="icon-btn" onClick={() => window.stoke.browser.newTab()} title="New tab">
-          <IconPlus width={13} height={13} />
+          <IconPlus />
           <span className="sr-only">New tab</span>
         </button>
 
@@ -163,7 +163,7 @@ export function BrowserPanel({ state, bookmarks, onAskClaude, onClose }: Props):
           disabled={!state.url || state.url === 'about:blank'}
           title="Ask Claude about this page"
         >
-          <IconAsk width={13} height={13} />
+          <IconAsk />
           <span className="sr-only">Ask Claude about this page</span>
         </button>
         <button
@@ -171,7 +171,7 @@ export function BrowserPanel({ state, bookmarks, onAskClaude, onClose }: Props):
           onClick={() => window.stoke.browser.zoom(state.zoom - ZOOM_STEP)}
           title="Zoom out"
         >
-          <IconMinus width={13} height={13} />
+          <IconMinus />
           <span className="sr-only">Zoom out</span>
         </button>
         <button
@@ -179,7 +179,7 @@ export function BrowserPanel({ state, bookmarks, onAskClaude, onClose }: Props):
           onClick={() => window.stoke.browser.zoom(state.zoom + ZOOM_STEP)}
           title="Zoom in"
         >
-          <IconPlus width={13} height={13} />
+          <IconPlus />
           <span className="sr-only">Zoom in</span>
         </button>
         <button
@@ -187,7 +187,7 @@ export function BrowserPanel({ state, bookmarks, onAskClaude, onClose }: Props):
           onClick={() => window.stoke.browser.devtools()}
           title="Toggle devtools"
         >
-          <IconCode width={13} height={13} />
+          <IconCode />
           <span className="sr-only">Toggle devtools</span>
         </button>
       </div>
@@ -319,7 +319,7 @@ export function BrowserPanel({ state, bookmarks, onAskClaude, onClose }: Props):
             disabled={!findText}
             title="Previous match"
           >
-            <IconArrowLeft width={13} height={13} />
+            <IconArrowLeft />
             <span className="sr-only">Previous match</span>
           </button>
           <button
@@ -328,11 +328,11 @@ export function BrowserPanel({ state, bookmarks, onAskClaude, onClose }: Props):
             disabled={!findText}
             title="Next match"
           >
-            <IconArrowRight width={13} height={13} />
+            <IconArrowRight />
             <span className="sr-only">Next match</span>
           </button>
           <button className="icon-btn" onClick={closeFind} title="Close find">
-            <IconClose width={13} height={13} />
+            <IconClose />
             <span className="sr-only">Close find</span>
           </button>
         </div>

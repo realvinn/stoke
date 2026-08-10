@@ -337,10 +337,11 @@ export function ProfilesSettings({ settings, onPatch }: Props): React.JSX.Elemen
               ) : (
                 <button
                   className="icon-btn"
+                  data-size="sm"
                   title={`Delete the ${p.label} profile`}
                   onClick={() => setConfirming(p.id)}
                 >
-                  <IconClose width={12} height={12} />
+                  <IconClose />
                   <span className="sr-only">Delete {p.label}</span>
                 </button>
               )}

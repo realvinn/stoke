@@ -303,7 +303,7 @@ export function Sidebar({
                         aria-expanded={expanded}
                         title={expanded ? 'Hide sessions' : 'Show sessions'}
                       >
-                        <IconChevron width={12} height={12} />
+                        <IconChevron />
                         <span className="sr-only">
                           {expanded ? 'Hide sessions' : 'Show sessions'}
                         </span>
@@ -329,7 +329,7 @@ export function Sidebar({
                         }}
                         title={project.pinned ? 'Unpin' : 'Pin to top'}
                       >
-                        <IconPin width={12} height={12} />
+                        <IconPin />
                         <span className="sr-only">{project.pinned ? 'Unpin' : 'Pin'}</span>
                       </button>
                     </div>
