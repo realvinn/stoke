@@ -1932,8 +1932,16 @@ body {
   flex-shrink: 0;
 }
 
-/* Scoped rather than added to the shared control, which nothing else needs. */
+/* Scoped rather than added to the shared control, which nothing else needs.
+ *
+ * `height: auto` is load-bearing, not tidying. This rule used to get its
+ * smaller size purely from reduced padding, back when `.btn` declared no
+ * height at all. `.btn` now sets `height: var(--control-h)` unconditionally so
+ * every control draws at one height, which silently stretched these three back
+ * to full size — the queue's Accept, Reject and Try again. Letting the height
+ * go back to content keeps the padding above meaningful. */
 .worklog .btn[data-size='sm'] {
+  height: auto;
   padding: 0.1875rem var(--space-8);
   font-size: var(--fs-sm);
 }
