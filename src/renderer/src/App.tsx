@@ -31,6 +31,7 @@ import { WorklogPrompt } from './components/WorklogPrompt'
 import { baseName, properNouns } from './lib/format'
 import { attachExit, forgetPty, initPtyBus } from './lib/ptyBus'
 import { matchShortcut } from './lib/shortcuts'
+import { newTab } from './lib/newTab'
 import { profileIdForCwd } from './lib/projectProfile'
 import { neighbourOf } from './lib/tabs'
 import { applyAppearance, applyTypography } from './lib/theme'
@@ -76,8 +77,23 @@ export function App(): React.JSX.Element {
   /** The path currently being fetched, or null. Drives the loading state. */
   const [sessionsLoadingPath, setSessionsLoadingPath] = useState<string | null>(null)
 
-  const [tabs, setTabs] = useState<Tab[]>([])
+  /*
+   * The app always has at least one tab. A New Project tab is a real tab now,
+   * so `activeTabId === null` — which used to mean "showing the launcher" —
+   * is not a state the app can be in, and every reader that special-cased it
+   * is gone.
+   */
+  const [tabs, setTabs] = useState<Tab[]>(() => [newTab()])
   const [activeTabId, setActiveTabId] = useState<string | null>(null)
+
+  /*
+   * Select the first tab as soon as it exists. `cur ?? …` makes this inert
+   * after the first pass: it can never replace a real selection, so it is safe
+   * to depend on the whole tab list.
+   */
+  useEffect(() => {
+    setActiveTabId((cur) => cur ?? tabs[0]?.id ?? null)
+  }, [tabs])
   const [contexts, setContexts] = useState<Record<string, ContextSnapshot>>({})
 
   const [sidebarOpen, setSidebarOpen] = useState(true)
@@ -360,7 +376,7 @@ export function App(): React.JSX.Element {
   // Mark tabs whose process has ended so the pane can offer a restart.
   useEffect(() => {
     const offs = tabs
-      .filter((t) => t.status === 'running')
+      .filter((t) => t.kind === 'session' && t.status === 'running')
       .map((t) =>
         attachExit(t.ptyId, (code) =>
           setTabs((list) =>
@@ -603,12 +619,19 @@ export function App(): React.JSX.Element {
     (id: string): void => {
       const tab = tabs.find((t) => t.id === id)
       if (!tab) return
-      window.stoke.pty.kill(tab.ptyId)
-      forgetPty(tab.ptyId)
+      if (tab.kind === 'session') {
+        window.stoke.pty.kill(tab.ptyId)
+        forgetPty(tab.ptyId)
+      }
+      // Never leave the strip empty: closing the last tab lands on a fresh New
+      // Project tab, which is where the app starts anyway.
       const next = tabs.filter((t) => t.id !== id)
-      setTabs(next)
+      const replacement = next.length ? next : [newTab()]
+      setTabs(replacement)
       if (activeTabId === id) {
-        setActiveTabId(neighbourOf(tabs.map((t) => t.id), id))
+        setActiveTabId(
+          next.length ? neighbourOf(tabs.map((t) => t.id), id) : replacement[0].id
+        )
       }
     },
     [tabs, activeTabId]
@@ -665,7 +688,8 @@ export function App(): React.JSX.Element {
    */
   const askClaude = useCallback(
     (url: string, title: string): void => {
-      const target = tabs.find((t) => t.id === activeTabId) ?? tabs[tabs.length - 1]
+      const live = tabs.filter((t) => t.kind === 'session')
+      const target = live.find((t) => t.id === activeTabId) ?? live[live.length - 1]
       if (!target) {
         setError('Start a session first — then Ask Claude types the page into its prompt.')
         return
