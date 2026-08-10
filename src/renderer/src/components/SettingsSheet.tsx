@@ -188,7 +188,7 @@ export function SettingsSheet({
 
           <div className="field">
             <span className="field-label">Default folder</span>
-            <div style={{ display: 'flex', gap: 'var(--sp-2)' }}>
+            <div style={{ display: 'flex', gap: 'var(--space-8)' }}>
               <input
                 className="input mono"
                 placeholder={defaultCwd}
@@ -259,7 +259,7 @@ export function SettingsSheet({
             {settings.projectRoots.map((root) => (
               <div
                 key={root}
-                style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-2)' }}
+                style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-8)' }}
               >
                 <span className="mono truncate" style={{ flex: 1, fontSize: 'var(--fs-xs)' }}>
                   {root}

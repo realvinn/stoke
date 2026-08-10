@@ -77,7 +77,7 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
           only reachable through a tunnel you point at it.
         </span>
 
-        <div style={{ display: 'flex', gap: 'var(--sp-2)' }}>
+        <div style={{ display: 'flex', gap: 'var(--space-8)' }}>
           <button
             className="btn"
             data-variant={running ? undefined : 'primary'}
@@ -231,7 +231,7 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
           </span>
         ) : (
           <>
-            <div style={{ display: 'flex', gap: 'var(--sp-2)', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: 'var(--space-8)', flexWrap: 'wrap' }}>
               <button
                 className="btn"
                 disabled={busy || !remote.hostname}
@@ -378,7 +378,7 @@ export function SelfUpdateSettings({
       )}
 
       {state.supported && (
-        <div style={{ display: 'flex', gap: 'var(--sp-2)', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: 'var(--space-8)', flexWrap: 'wrap' }}>
           <button
             className="btn"
             disabled={busy || state.downloading}
@@ -484,7 +484,7 @@ export function UpdatesSettings(): React.JSX.Element {
           : 'Checking…'}
       </span>
 
-      <div style={{ display: 'flex', gap: 'var(--sp-2)', flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', gap: 'var(--space-8)', flexWrap: 'wrap' }}>
         <button
           className="btn"
           disabled={busy !== null}
@@ -521,7 +521,7 @@ export function UpdatesSettings(): React.JSX.Element {
             color: 'var(--text-muted)',
             border: '1px solid var(--border)',
             borderRadius: 'var(--r-md)',
-            padding: 'var(--sp-3)'
+            padding: 'var(--space-8)'
           }}
         >
           {output}

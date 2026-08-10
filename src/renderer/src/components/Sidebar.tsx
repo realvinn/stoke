@@ -196,7 +196,7 @@ export function Sidebar({
           />
         </div>
         {/* Both routes into a session that is not a saved project. */}
-        <div style={{ display: 'flex', gap: 'var(--sp-2)' }}>
+        <div style={{ display: 'flex', gap: 'var(--space-8)' }}>
           <button className="btn" style={{ flex: 1 }} onClick={onOpenFolder}>
             <IconFolder />
             Open
@@ -375,7 +375,7 @@ export function Sidebar({
           <button
             className="btn"
             data-variant="ghost"
-            style={{ width: '100%', marginTop: 'var(--sp-4)' }}
+            style={{ width: '100%', marginTop: 'var(--space-12)' }}
             onClick={onAddRoot}
           >
             Add a scan folder

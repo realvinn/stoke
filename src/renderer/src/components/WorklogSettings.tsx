@@ -244,7 +244,7 @@ export function WorklogSettings({
               <span>
                 <span
                   className="field-label"
-                  style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--sp-2)' }}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--space-8)' }}
                 >
                   {/* The profile's own accent, so the row reads as the same
                       thing as its sidebar chip. The colour is data from

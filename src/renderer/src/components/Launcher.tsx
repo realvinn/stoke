@@ -186,7 +186,7 @@ export function Launcher({
                   <span
                     className="pill"
                     data-tone="accent"
-                    style={{ marginLeft: 'var(--sp-2)', verticalAlign: 'middle' }}
+                    style={{ marginLeft: 'var(--space-8)', verticalAlign: 'middle' }}
                   >
                     {effortLabel(ULTRACODE_EFFORT)}
                   </span>
@@ -244,7 +244,7 @@ export function Launcher({
                 not apply — both read transcripts that live on the far machine.
               </span>
             </span>
-            <div style={{ display: 'flex', gap: 'var(--sp-2)', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: 'var(--space-8)', flexWrap: 'wrap' }}>
               {hosts.map((h) => (
                 <button
                   key={h.id}
@@ -312,7 +312,7 @@ export function Launcher({
 
         {project && recent.length > 0 && (
           <div>
-            <div className="sidebar-group" style={{ padding: '0 0 var(--sp-2)' }}>
+            <div className="sidebar-group" style={{ padding: '0 0 var(--space-8)' }}>
               Resume a session
             </div>
             <div className="sessions" style={{ margin: 0, paddingLeft: 0, borderLeft: 'none' }}>

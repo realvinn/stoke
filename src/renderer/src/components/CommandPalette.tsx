@@ -88,7 +88,7 @@ export function CommandPalette({ projects, onPick, onClose }: Props): React.JSX.
         />
         <div className="palette-list" ref={listRef}>
           {results.length === 0 && (
-            <div className="empty" style={{ padding: 'var(--sp-6)' }}>
+            <div className="empty" style={{ padding: 'var(--space-24)' }}>
               <p>No project matches that.</p>
             </div>
           )}

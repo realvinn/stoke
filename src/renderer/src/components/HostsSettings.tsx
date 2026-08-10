@@ -174,13 +174,13 @@ export function HostsSettings({ hosts, suggestions, onChange }: Props): React.JS
             key={host.id}
             className="field"
             style={{
-              gap: 'var(--sp-2)',
-              padding: 'var(--sp-3)',
+              gap: 'var(--space-8)',
+              padding: 'var(--space-8)',
               border: '1px solid var(--border)',
               borderRadius: 'var(--r-md)'
             }}
           >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-2)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-8)' }}>
               <input
                 className="input"
                 placeholder="Name, e.g. VPS"

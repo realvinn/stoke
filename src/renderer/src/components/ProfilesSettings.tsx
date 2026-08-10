@@ -275,13 +275,13 @@ export function ProfilesSettings({ settings, onPatch }: Props): React.JSX.Elemen
             key={p.id}
             className="field"
             style={{
-              gap: 'var(--sp-2)',
-              padding: 'var(--sp-3)',
+              gap: 'var(--space-8)',
+              padding: 'var(--space-8)',
               border: '1px solid var(--border)',
               borderRadius: 'var(--r-md)'
             }}
           >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-2)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-8)' }}>
               {/* The colour, shown the way the tab strip and the theme picker
                   already show one: a dot, not a stripe down the card. */}
               <span
@@ -370,7 +370,7 @@ export function ProfilesSettings({ settings, onPatch }: Props): React.JSX.Elemen
       })}
 
       {dormant.length > 0 && (
-        <div className="field" style={{ gap: 'var(--sp-2)' }}>
+        <div className="field" style={{ gap: 'var(--space-8)' }}>
           <span className="field-hint">
             Not showing here. A deleted profile is remembered so the folder layout does not
             re-derive it, and a profile whose folders live on another computer is kept for that
@@ -379,7 +379,7 @@ export function ProfilesSettings({ settings, onPatch }: Props): React.JSX.Elemen
           {dormant.map((p) => {
             const deleted = p.groups.length === 0
             return (
-              <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-2)' }}>
+              <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-8)' }}>
                 <span className="mono truncate" style={{ flex: 1, fontSize: 'var(--fs-xs)' }}>
                   {p.label} — {deleted ? 'deleted' : p.groups.join(', ')}
                 </span>
@@ -415,8 +415,8 @@ export function ProfilesSettings({ settings, onPatch }: Props): React.JSX.Elemen
         <div
           className="field"
           style={{
-            gap: 'var(--sp-3)',
-            padding: 'var(--sp-3)',
+            gap: 'var(--space-8)',
+            padding: 'var(--space-8)',
             border: '1px solid var(--border)',
             borderRadius: 'var(--r-md)'
           }}
@@ -430,7 +430,7 @@ export function ProfilesSettings({ settings, onPatch }: Props): React.JSX.Elemen
             autoFocus
             onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
           />
-          <div style={{ display: 'flex', gap: 'var(--sp-2)' }}>
+          <div style={{ display: 'flex', gap: 'var(--space-8)' }}>
             <input
               className="input mono"
               placeholder="Folder to keep it in"
@@ -489,7 +489,7 @@ export function ProfilesSettings({ settings, onPatch }: Props): React.JSX.Elemen
             </span>
           )}
 
-          <div style={{ display: 'flex', gap: 'var(--sp-2)' }}>
+          <div style={{ display: 'flex', gap: 'var(--space-8)' }}>
             <button
               className="btn"
               data-variant="primary"

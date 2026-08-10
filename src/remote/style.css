@@ -523,7 +523,7 @@ button {
  * while it is on — a mode you can forget you are in is a trap.
  */
 .voice-banner {
-  padding: var(--sp-2, 8px) 12px;
+  padding: 8px 12px;
   border-top: 1px solid var(--accent);
   background: var(--accent);
   color: var(--accent-contrast);
