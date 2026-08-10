@@ -31,6 +31,8 @@ interface Props {
   cli: CliInfo | null
   onPatch: (patch: Partial<Settings>) => void
   onAddRoot: () => void
+  /** Forwarded to ProfilesSettings; see the comment on its `onCreated` prop. */
+  onProfileCreated: () => void | Promise<void>
   onClose: () => void
 }
 
@@ -41,6 +43,7 @@ export function SettingsSheet({
   cli,
   onPatch,
   onAddRoot,
+  onProfileCreated,
   onClose
 }: Props): React.JSX.Element {
   const themes: Theme[] = [...BUILT_IN_THEMES, ...settings.customThemes]
@@ -305,7 +308,7 @@ export function SettingsSheet({
 
           <UpdatesSettings />
 
-          <ProfilesSettings settings={settings} onPatch={onPatch} />
+          <ProfilesSettings settings={settings} onPatch={onPatch} onCreated={onProfileCreated} />
 
           <WorklogSettings
             profiles={profiles}

@@ -34,6 +34,16 @@ const bridge: ProfilesBridge | null =
 interface Props {
   settings: Settings
   onPatch: (patch: Partial<Settings>) => void
+  /**
+   * Called once a profile has actually been created on disk. `profiles.create`
+   * writes a new scan root whose projects have not been scanned yet, so
+   * something has to ask for a fresh project list afterwards — the main
+   * process has no listener-less broadcast to do it for us (see the comment
+   * on `CH.profilesCreate` in `src/main/index.ts`). The caller passes its own
+   * `refreshProjects`, the same one `openFolder` and `addRoot` already call in
+   * `App.tsx`.
+   */
+  onCreated: () => void | Promise<void>
 }
 
 interface Draft {
@@ -78,7 +88,7 @@ function Swatches({
   )
 }
 
-export function ProfilesSettings({ settings, onPatch }: Props): React.JSX.Element {
+export function ProfilesSettings({ settings, onPatch, onCreated }: Props): React.JSX.Element {
   /*
    * Counts come from the same project list the sidebar uses, fetched here rather
    * than passed in: this component is dropped into the settings sheet, which
@@ -243,12 +253,15 @@ export function ProfilesSettings({ settings, onPatch }: Props): React.JSX.Elemen
       setCreating(false)
       setDraft(EMPTY_DRAFT)
       setPlan(null)
+      // The new root's projects do not exist in the sidebar's list until this
+      // resolves - see the comment on the `onCreated` prop above.
+      await onCreated()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setBusy(false)
     }
-  }, [plan, draft])
+  }, [plan, draft, onCreated])
 
   const preview = plan ? describePlan(plan) : null
 

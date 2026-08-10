@@ -1138,8 +1138,18 @@ function registerIpc(): void {
     const { patch } = await createProfile(getSettings(), input)
     const next = setSettings(patch)
     send(CH.settingsChanged, next)
-    // The new root only becomes visible once its children have been scanned.
-    send(CH.sessionsChanged)
+    /*
+     * The new root only becomes visible once its children have been scanned,
+     * and nothing here does that scan. CH.sessionsChanged is declared for
+     * exactly this shape of problem but has no preload bridge and no
+     * renderer listener anywhere in the app - a send here would reach
+     * nobody. Follow the pattern every other project-list mutation already
+     * uses (openFolder, addRoot in App.tsx): the renderer calls
+     * refreshProjects() itself once profiles.create() resolves - see
+     * ProfilesSettings.tsx's create(). Do not re-add a send() here without
+     * also wiring a preload bridge and a renderer subscriber, or this is
+     * the exact "did nothing" bug again.
+     */
     return next
   })
 

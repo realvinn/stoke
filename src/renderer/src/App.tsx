@@ -1219,6 +1219,7 @@ export function App(): React.JSX.Element {
           cli={cli}
           onPatch={(patch) => void patchSettings(patch)}
           onAddRoot={() => void addRoot()}
+          onProfileCreated={refreshProjects}
           onClose={() => setSettingsOpen(false)}
         />
       )}
