@@ -1,4 +1,5 @@
 import { open, readFile, stat } from 'node:fs/promises'
+import type { PermissionMode } from '@shared/types'
 
 /**
  * Helpers for reading Claude Code's session transcripts
@@ -25,6 +26,8 @@ export interface ParsedSession {
   gitBranch: string | null
   cwd: string | null
   model: string | null
+  /** Newest `permission-mode` record in the transcript, or null when none. */
+  permissionMode: PermissionMode | null
   messageCount: number
   /** -1 when the file was sampled rather than read in full. */
   exactCount: boolean
@@ -100,6 +103,18 @@ function isUsefulPrompt(s: string): boolean {
   return true
 }
 
+/*
+ * Only these five. A transcript is somebody else's file and a mode this app
+ * does not understand must not reach the UI as a state nobody can style.
+ */
+const PERMISSION_MODES = new Set<string>([
+  'default',
+  'plan',
+  'acceptEdits',
+  'auto',
+  'bypassPermissions'
+])
+
 export async function parseSession(file: string): Promise<ParsedSession> {
   const out: ParsedSession = {
     title: null,
@@ -107,6 +122,7 @@ export async function parseSession(file: string): Promise<ParsedSession> {
     gitBranch: null,
     cwd: null,
     model: null,
+    permissionMode: null,
     messageCount: 0,
     exactCount: true,
     inputTokens: 0,
@@ -127,6 +143,16 @@ export async function parseSession(file: string): Promise<ParsedSession> {
       // Later records win — Claude retitles a session as it evolves.
       const t = rec.aiTitle
       if (typeof t === 'string' && t.trim()) out.title = t.trim()
+      continue
+    }
+
+    if (type === 'permission-mode') {
+      // Later records win: the mode is toggled with Shift+Tab mid-session and
+      // every toggle appends another record.
+      const m = rec.permissionMode
+      if (typeof m === 'string' && PERMISSION_MODES.has(m)) {
+        out.permissionMode = m as PermissionMode
+      }
       continue
     }
 

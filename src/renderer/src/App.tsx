@@ -347,17 +347,32 @@ export function App(): React.JSX.Element {
     return () => offs.forEach((off) => off())
   }, [tabs])
 
-  // Adopt Claude's own generated session title once it appears.
+  /*
+   * Adopt Claude's own generated title, and keep the permission mode live.
+   *
+   * Both are read out of the transcript because it is the only thing that
+   * knows. `tab.permissionMode` was captured at launch and no writer ever
+   * updated it, so a tab kept claiming `bypass` for a session that had been
+   * put back into `default` with Shift+Tab — the indicator could simply lie.
+   */
   useEffect(() => {
     setTabs((list) => {
       let changed = false
       const next = list.map((t) => {
-        const title = contexts[t.sessionId]?.title
-        if (title && title !== t.title) {
-          changed = true
-          return { ...t, title }
+        const snap = contexts[t.sessionId]
+        if (!snap) return t
+        const title = snap.title && snap.title !== t.title ? snap.title : null
+        const mode =
+          snap.permissionMode && snap.permissionMode !== t.permissionMode
+            ? snap.permissionMode
+            : null
+        if (!title && !mode) return t
+        changed = true
+        return {
+          ...t,
+          ...(title ? { title } : {}),
+          ...(mode ? { permissionMode: mode } : {})
         }
-        return t
       })
       return changed ? next : list
     })

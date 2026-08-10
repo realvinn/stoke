@@ -5,8 +5,8 @@
  * (Node strips the type annotations natively; there is no build step.)
  */
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
-import { readdir, stat } from 'node:fs/promises'
-import { homedir } from 'node:os'
+import { mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { ContextWatcher } from '../src/main/context.ts'
 import { findSessionFile } from '../src/main/projects.ts'
@@ -264,6 +264,54 @@ check(
   viaPayload?.contextLimit === 2_000_000,
   String(viaPayload?.contextLimit ?? 'timed out')
 )
+
+/* ------------------------------------------------------------------------
+   The permission mode a session is actually in.
+   It is captured in the tab at launch and Shift+Tab inside the session never
+   reached it, so a tab could claim `bypass` for a session that had been put
+   back into `default` half an hour earlier. The transcript is the only place
+   that knows, and the watcher already reads it.
+   ------------------------------------------------------------------------ */
+
+const fixtureDir = await mkdtemp(join(tmpdir(), 'stoke-permission-'))
+const withModes = join(fixtureDir, 'with-modes.jsonl')
+const withoutModes = join(fixtureDir, 'without-modes.jsonl')
+
+await writeFile(
+  withModes,
+  [
+    JSON.stringify({ type: 'permission-mode', permissionMode: 'default', sessionId: 'x' }),
+    JSON.stringify({ type: 'user', message: { content: 'hello' }, cwd: '/tmp' }),
+    JSON.stringify({ type: 'permission-mode', permissionMode: 'bypassPermissions', sessionId: 'x' }),
+    JSON.stringify({ type: 'permission-mode', permissionMode: 'nonsense', sessionId: 'x' }),
+    ''
+  ].join('\n')
+)
+await writeFile(
+  withoutModes,
+  [JSON.stringify({ type: 'user', message: { content: 'hello' }, cwd: '/tmp' }), ''].join('\n')
+)
+
+const modes = await parseSession(withModes)
+const noModes = await parseSession(withoutModes)
+
+check(
+  'the newest permission-mode record wins',
+  modes.permissionMode === 'bypassPermissions',
+  String(modes.permissionMode)
+)
+check(
+  'a value that is not a permission mode is ignored rather than adopted',
+  modes.permissionMode !== 'nonsense',
+  String(modes.permissionMode)
+)
+check(
+  'a transcript with no permission-mode record reports null, not a guess',
+  noModes.permissionMode === null,
+  String(noModes.permissionMode)
+)
+
+await rm(fixtureDir, { recursive: true, force: true })
 
 console.log(`\n${failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} FAILED: ${failures.join(', ')}`}`)
 process.exit(failures.length === 0 ? 0 : 1)

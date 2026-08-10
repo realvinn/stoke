@@ -177,7 +177,7 @@ export class ContextWatcher {
           title: parsed.title,
           updatedAt: st.mtimeMs,
           ready: true,
-          permissionMode: null
+          permissionMode: parsed.permissionMode
         })
       }
     } catch {
