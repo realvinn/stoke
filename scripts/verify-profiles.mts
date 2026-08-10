@@ -728,7 +728,16 @@ try {
     readdirSync(linkBox)
       .map((n) => join(linkBox, n))
       .includes(viaNormalised.root),
-    true
+    /*
+     * The same probe the check above branches on, and for the same reason.
+     * Where the volume does not normalise, that check already established this
+     * is a `create`: the NFD name is a folder that does not exist yet, so it is
+     * correctly absent from a listing of what does. Asserting membership
+     * unconditionally asserts that create plans name existing directories —
+     * true on APFS only because the NFC entry is what comes back, which is the
+     * accident this pair of checks exists to rule out.
+     */
+    LINK_NORMALISES
   )
   const viaWrongCase = await planProfile(linkBox, 'lINK')
   check(
