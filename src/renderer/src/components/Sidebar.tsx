@@ -15,6 +15,12 @@ interface Props {
   expandedPath: string | null
   sessions: SessionMeta[]
   sessionsLoading: boolean
+  /**
+   * Session ids that currently have a tab open. The row backing the terminal
+   * you are looking at is the one row in this list worth finding again, and it
+   * had no state of its own at all.
+   */
+  openSessionIds: string[]
   onQueryChange: (q: string) => void
   onSelectProject: (p: Project) => void
   onToggleExpand: (p: Project) => void
@@ -44,6 +50,7 @@ export function Sidebar({
   expandedPath,
   sessions,
   sessionsLoading,
+  openSessionIds,
   onQueryChange,
   onSelectProject,
   onToggleExpand,
@@ -67,6 +74,9 @@ export function Sidebar({
    * advertises a folder the user does not use. Derived in App and passed in.
    */
   const available = profiles
+
+  /* A Set so a project with a long history is one lookup per row, not a scan. */
+  const openSessions = useMemo(() => new Set(openSessionIds), [openSessionIds])
 
   /*
    * The folders the selected chip covers, case-folded.
@@ -357,6 +367,7 @@ export function Sidebar({
                           <button
                             key={s.id}
                             className="session"
+                            aria-current={openSessions.has(s.id) ? 'true' : undefined}
                             onClick={() => onResume(s)}
                             title={s.firstPrompt ?? s.id}
                           >

@@ -1157,6 +1157,20 @@ body {
   background: var(--surface-hover);
 }
 
+/*
+ * The session behind the open terminal. There was no such state at all, so
+ * the one row you were actually looking at and the twelve you were not were
+ * drawn identically. Same wash as a selected project, because it means the
+ * same thing one level down.
+ */
+.session[aria-current='true'] {
+  background: var(--surface-selected);
+}
+
+.session[aria-current='true'] .session-title {
+  font-weight: 600;
+}
+
 .session-title {
   font-size: var(--fs-sm);
   color: var(--text);

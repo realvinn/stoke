@@ -823,6 +823,8 @@ export function App(): React.JSX.Element {
   /* ------------------------------------------------------------- shortcuts */
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null
+  /* Memoised: a fresh array each render would rebuild the Sidebar's Set on every tick. */
+  const openSessionIds = useMemo(() => tabs.map((t) => t.sessionId), [tabs])
   const selectedProject = projects.find((p) => p.path === selectedPath) ?? null
 
   useEffect(() => {
@@ -994,6 +996,7 @@ export function App(): React.JSX.Element {
                 expandedPath={expandedPath}
                 sessions={sessions}
                 sessionsLoading={sessionsLoading}
+                openSessionIds={openSessionIds}
                 onQueryChange={setQuery}
                 onSelectProject={(p) => selectProject(p.path)}
                 onToggleExpand={(p) => {
