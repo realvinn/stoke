@@ -23,6 +23,8 @@ interface Props {
   tabs: Tab[]
   activeTabId: string | null
   contexts: Record<string, ContextSnapshot>
+  /** Session ids the worklog agent is watching. Drives the red dot in the ring. */
+  watchedSessions: Set<string>
   sidebarOpen: boolean
   browserOpen: boolean
   onSelectTab: (id: string) => void
@@ -46,6 +48,7 @@ export function TitleBar({
   tabs,
   activeTabId,
   contexts,
+  watchedSessions,
   sidebarOpen,
   browserOpen,
   onSelectTab,
@@ -108,7 +111,7 @@ export function TitleBar({
                 context={ctx}
                 status={tab.status}
                 permissionMode={tab.permissionMode}
-                watched={false}
+                watched={watchedSessions.has(tab.sessionId)}
               />
               <span className="tab-label">{tab.title}</span>
               <button

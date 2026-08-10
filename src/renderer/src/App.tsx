@@ -471,6 +471,17 @@ export function App(): React.JSX.Element {
       .filter((p): p is WorklogProposal => !!p && p.status === 'pending')
   }, [proposedIds, asked, worklog])
 
+  /*
+   * The sole input to the red dot in the tab strip, derived from the one
+   * App-level copy of the watch list rather than from a second subscription.
+   * The list arrives whole on every change (contracts §0.3), so a Set built
+   * from it cannot drift the way two copies of the same records would.
+   */
+  const watchedSessions = useMemo(
+    () => new Set(worklogWatch.filter((s) => s.watched).map((s) => s.sessionId)),
+    [worklogWatch]
+  )
+
   /**
    * Open a session on a remote machine.
    *
@@ -751,6 +762,7 @@ export function App(): React.JSX.Element {
         tabs={tabs}
         activeTabId={activeTabId}
         contexts={contexts}
+        watchedSessions={watchedSessions}
         sidebarOpen={sidebarOpen}
         browserOpen={browserOpen}
         onSelectTab={setActiveTabId}
