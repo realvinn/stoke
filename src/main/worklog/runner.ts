@@ -1,7 +1,7 @@
 import { readTranscript, type TranscriptTurn } from '../sessionFile.ts'
 import { isBudgetExhausted, runHeadless, type HeadlessOptions } from '../agent.ts'
 import { asRecord, candidates, clip, oneLine } from './json.ts'
-import { EMPTY_RECALL, formatRecall, statusesFor, type RecallSnapshot } from './recall.ts'
+import { EMPTY_RECALL, findExisting, formatRecall, statusesFor, type RecallSnapshot } from './recall.ts'
 import { DEFAULT_WORKLOG_BOARDS, WORKLOG_TARGETS } from '../../shared/worklog.ts'
 import type { ProposalDraft } from './queue.ts'
 import type { WorklogBoards, WorklogKind, WorklogProposal, WorklogTarget } from '@shared/types'
@@ -963,11 +963,19 @@ export function groundProposals(
      * match against an off-board record is treated exactly like no match at
      * all — it is demoted to a create addressed to a board that is actually
      * switched on, never kept as an update to the one that is not.
+     *
+     * The lookup itself is `findExisting` from recall.ts, not a second copy of
+     * it — this is the update-vs-duplicate path, and two implementations of
+     * "match a proposal against an existing item" could drift against each
+     * other silently while both suites still pass. Semantics are unchanged:
+     * `findExisting` trims its `id` argument before comparing, but
+     * `p.existingId` already arrived trimmed out of `toProposals` (and is
+     * only set when non-empty), so the trim here is a no-op on every real
+     * proposal.
      */
     const found =
       p.kind === 'update' && target && allowed.includes(target) && p.existingId
-        ? (snapshot.items[target]?.find((i) => i.id.toLowerCase() === p.existingId!.toLowerCase()) ??
-          null)
+        ? findExisting(snapshot, target, p.existingId)
         : null
 
     if (p.kind === 'update' && !found) {
