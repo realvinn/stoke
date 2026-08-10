@@ -285,9 +285,17 @@ body {
   position: relative;
 }
 
-/* Clear the macOS traffic lights. */
+/*
+ * Clear the macOS traffic lights.
+ *
+ * Device pixels, never rem. The lights are drawn by macOS at a fixed size
+ * that Stoke's Interface scale does not touch, so a rem clearance is only
+ * correct at scale exactly 1.0 — which is the whole of why Stoke was only
+ * laid out correctly on a Mac at that one setting. 78px is 4.875rem x 16, so
+ * scale 1.0 is unchanged and every other scale is fixed.
+ */
 .titlebar[data-platform='darwin'] {
-  padding-left: 4.875rem;
+  padding-left: var(--traffic-lights-w);
 }
 
 /*
