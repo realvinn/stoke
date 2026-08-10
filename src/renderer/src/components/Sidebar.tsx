@@ -258,15 +258,30 @@ export function Sidebar({
                     onClick={() => onSelectProject(project)}
                     onDoubleClick={() => onStartNew(project)}
                     onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
+                      /*
+                       * Enter and Space both do exactly what a click does.
+                       *
+                       * This row announces itself as `role="button"`, and the
+                       * one promise that role makes is that both keys fire the
+                       * element's own click. It used to start a session on
+                       * Enter and select on Space, so assistive tech said
+                       * "button", the user pressed the obvious key, and got a
+                       * spawned process instead of a selection.
+                       *
+                       * Starting a session is the double-click escalation, so
+                       * it keeps a modifier of its own rather than losing its
+                       * keyboard route. metaKey OR ctrlKey, so the component
+                       * needs no platform prop to be right on both.
+                       */
+                      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
                         e.preventDefault()
                         onStartNew(project)
-                      } else if (e.key === ' ') {
+                      } else if (e.key === 'Enter' || e.key === ' ') {
                         e.preventDefault()
                         onSelectProject(project)
                       }
                     }}
-                    title={project.path}
+                    title={`${project.path}\nEnter selects · Cmd/Ctrl+Enter starts a session`}
                   >
                     <div className="project-top">
                       <button
