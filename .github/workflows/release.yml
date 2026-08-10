@@ -162,13 +162,6 @@ jobs:
     permissions:
       contents: write
     steps:
-      # The tag's own annotation becomes the release notes, so what is written
-      # once at `git tag -a` is what people read. Needs the tag object, which a
-      # shallow checkout does not fetch.
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
       - uses: actions/download-artifact@v4
         with:
           pattern: installers-*
@@ -190,15 +183,37 @@ jobs:
             test -f "dist/$manifest" || { echo "::error::dist/$manifest missing — $manifest platform could not auto-update"; exit 1; }
           done
 
-          TITLE="$(git for-each-ref "refs/tags/$TAG" --format='%(contents:subject)')"
-          git for-each-ref "refs/tags/$TAG" --format='%(contents:body)' > notes.md
+          # The tag's annotation is the release notes, so what is written once
+          # at `git tag -a` is what people read.
+          #
+          # Read over the API rather than out of a checkout. actions/checkout
+          # materialises the pushed tag as a *lightweight* ref pointing at the
+          # commit, so `git for-each-ref --format='%(contents:subject)'` returns
+          # the commit's subject instead of the tag's — which is how beta.3
+          # first shipped titled "Publish from one job, because two racing jobs
+          # made two drafts". Wrong, and wrong in a way that reads as plausible.
+          # The API returns the real tag object, and needs no checkout at all.
+          OBJ="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" -q '.object.sha + " " + .object.type')"
+          if [ "${OBJ#* }" = "tag" ]; then
+            gh api "repos/$GITHUB_REPOSITORY/git/tags/${OBJ% *}" -q '.message' > tagmsg.txt
+          else
+            # A lightweight tag has no message of its own. Say so rather than
+            # inventing notes from whatever commit it happens to point at.
+            echo "::warning::$TAG is a lightweight tag, so it carries no notes. Use 'git tag -a' next time."
+            printf '%s\n' "$TAG" > tagmsg.txt
+          fi
+          TITLE="$(head -1 tagmsg.txt)"
+          tail -n +2 tagmsg.txt | sed '/./,$!d' > notes.md
 
           # A version with a hyphen in it is a prerelease by semver, which is
           # also how electron-updater decides whether to offer it to a stable
           # channel. Deriving it from the tag keeps the two from disagreeing.
           case "$TAG" in *-*) PRERELEASE=--prerelease ;; *) PRERELEASE= ;; esac
 
+          # --repo explicitly: with no checkout there is no git remote for gh
+          # to infer it from.
           gh release create "$TAG" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
             --title "${TITLE:-$TAG}" \
             --notes-file notes.md \
             ${PRERELEASE}
