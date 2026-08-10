@@ -95,8 +95,17 @@ button {
   /* A nearly-full context ring. No longer --danger: red means one thing now. */
   --ring-full: var(--warning);
   /* macOS traffic lights are fixed device px, so their clearance must be too.
-     A rem here is why Stoke only laid out correctly at Interface scale 1.0. */
-  --traffic-lights-w: 78px;
+     A rem here is why Stoke only laid out correctly at Interface scale 1.0.
+
+     88, not 78. The lights start at trafficLightPosition.x = 16 and the cluster
+     is 40 + the button diameter wide, so their right edge lands near 70-72px.
+     78 left about 8px of air — the same as this bar's own `gap` between its own
+     buttons, so the sidebar toggle sat no further from the OS chrome than from
+     its siblings, and read as crowding the window controls. 88 gives it double
+     that, and still clears the wider 16px buttons newer macOS versions draw.
+     Reported from screen; no automated check here can see the lights, because
+     CDP screenshots paint page content and not native window chrome. */
+  --traffic-lights-w: 88px;
   /* A selected row must out-rank a hovered one in every theme. The mix is
      mirrored as SELECTED_ACCENT_MIX in scripts/verify-color.mts; change one and
      you must change the other, which is what that assertion is for. */
