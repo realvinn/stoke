@@ -75,7 +75,7 @@ jobs:
 
       - run: npm run build
 
-  release:
+  build:
     name: ${{ matrix.name }}
     needs: verify
     # One platform failing must not delete the other's artifacts from the run.
@@ -102,21 +102,32 @@ jobs:
 
       - run: npm run build
 
+      # `--publish never`, always, even on a tag. Letting each matrix job
+      # publish for itself is what the first attempt did, and both jobs raced to
+      # create the release: GitHub does not treat a *draft* as unique per tag, so
+      # two drafts appeared under v0.4.0-beta.3 with the assets split between
+      # them — the Windows job reported success while its exe sat on a release
+      # nobody would ever see. The publish job below is the only writer.
+      #
       # electron-builder is invoked directly rather than through `npm run
-      # dist:win -- --publish always`: npm appends extra args to the end of the
-      # whole script string, and these scripts are `npm run build && ...`
-      # chains, so where the flags land depends on shell parsing rather than on
-      # anything stated. The flags here are the same ones package.json uses.
-      - name: Build and publish
-        run: npx electron-builder ${{ matrix.args }} --publish ${{ github.event_name == 'push' && 'always' || 'never' }}
+      # dist:win -- …`: npm appends extra args to the end of the whole script
+      # string, and these scripts are `npm run build && …` chains, so where a
+      # flag lands depends on shell parsing rather than on anything stated. The
+      # flags here are the same ones package.json uses.
+      #
+      # latest.yml / latest-mac.yml — the manifests electron-updater actually
+      # reads — are still written into release/ under `never`, because a publish
+      # provider is configured. Verified against a local build before relying on
+      # it; without them an installed copy would never notice the release.
+      - name: Build installers
+        run: npx electron-builder ${{ matrix.args }} --publish never
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # No Developer ID is configured, so stop electron-builder hunting the
           # keychain for one and failing when it finds nothing. The result is an
           # ad-hoc signature: enough for the dmg to launch after right-click ->
           # Open, and NOT enough for Squirrel.Mac to apply an auto-update, which
           # verifies the signature of the downloaded app. Mac auto-update stays
-          # broken until a real certificate exists — see the note below.
+          # broken until a real certificate exists.
           CSC_IDENTITY_AUTO_DISCOVERY: false
           #
           # To turn Mac auto-update on later, add these repository secrets and
@@ -125,14 +136,14 @@ jobs:
           #   CSC_KEY_PASSWORD     its password
           #   APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID  (notarising)
 
-      # Kept even on a publishing run: if the release upload fails halfway, the
-      # installer still exists somewhere retrievable rather than only inside a
+      # Uploaded even on failure: if a later step dies, the installer that did
+      # build still exists somewhere retrievable rather than only inside a
       # container that has already been destroyed.
       - name: Upload installers
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.os }}-installers
+          name: installers-${{ matrix.os }}
           if-no-files-found: warn
           retention-days: 14
           path: |
@@ -140,3 +151,54 @@ jobs:
             release/*.dmg
             release/*.blockmap
             release/latest*.yml
+
+  publish:
+    name: Publish release
+    needs: build
+    # Only a tag publishes. A workflow_dispatch run builds the whole matrix and
+    # stops here, which is what makes it safe to rehearse.
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # The tag's own annotation becomes the release notes, so what is written
+      # once at `git tag -a` is what people read. Needs the tag object, which a
+      # shallow checkout does not fetch.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: installers-*
+          merge-multiple: true
+          path: dist
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          ls -la dist
+
+          # Both manifests must survive to the release or that platform's
+          # installed copies never learn the version exists. Checked explicitly
+          # because their absence is silent: the release looks complete.
+          for manifest in latest.yml latest-mac.yml; do
+            test -f "dist/$manifest" || { echo "::error::dist/$manifest missing — $manifest platform could not auto-update"; exit 1; }
+          done
+
+          TITLE="$(git for-each-ref "refs/tags/$TAG" --format='%(contents:subject)')"
+          git for-each-ref "refs/tags/$TAG" --format='%(contents:body)' > notes.md
+
+          # A version with a hyphen in it is a prerelease by semver, which is
+          # also how electron-updater decides whether to offer it to a stable
+          # channel. Deriving it from the tag keeps the two from disagreeing.
+          case "$TAG" in *-*) PRERELEASE=--prerelease ;; *) PRERELEASE= ;; esac
+
+          gh release create "$TAG" dist/* \
+            --title "${TITLE:-$TAG}" \
+            --notes-file notes.md \
+            ${PRERELEASE}
