@@ -373,7 +373,23 @@ body {
   gap: var(--sp-2);
   min-width: 0;
   max-width: 15rem;
-  padding: 0 var(--sp-2) 0 var(--sp-3);
+  /*
+   * Three values: no top padding, 8px inline, and a bottom padding that is the
+   * strip's own top padding plus the tab's top border.
+   *
+   * The strip is padded at the top and stretches its children, so a tab's
+   * painted box runs from y=4 to the title bar's content edge and meets the
+   * pane below - which is what makes it read as a tab. But the box has a 1px
+   * top border and no bottom border, so its content box is 5px shorter at the
+   * top than at the bottom and everything inside it centred at 24.0, while
+   * every icon outside the strip centres at 21.5.
+   *
+   * Shortening the content box at the bottom by exactly that 5px moves the
+   * centreline up 2.5px and leaves the painted box where it was. This is the
+   * same trap as the `+` button below (see CLAUDE.md gotcha 11): the whole
+   * offset has to be cancelled, not half of it. Measured, not reasoned.
+   */
+  padding: 0 var(--space-8) calc(var(--space-4) + 1px);
   border: 1px solid transparent;
   border-bottom: none;
   border-radius: var(--r-md) var(--r-md) 0 0;
