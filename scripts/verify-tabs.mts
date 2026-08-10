@@ -5,7 +5,7 @@
  *
  *   node scripts/verify-tabs.mts
  */
-import { neighbourOf, replaceOrAppend } from '../src/renderer/src/lib/tabs.ts'
+import { moveTab, neighbourOf, replaceOrAppend } from '../src/renderer/src/lib/tabs.ts'
 
 let failures = 0
 
@@ -54,6 +54,41 @@ check(
   'replacing the only tab in a single-tab list',
   replaceOrAppend([{ id: 'only' }], { id: 'x' }, 'only'),
   [{ id: 'x' }]
+)
+
+console.log('\ndragging a tab onto another')
+const ids = (list: { id: string }[]): string[] => list.map((t) => t.id)
+const five5 = five.map((id) => ({ id }))
+
+check('dragging right lands on the target index', ids(moveTab(five5, 'a', 'c')), [
+  'b',
+  'c',
+  'a',
+  'd',
+  'e'
+])
+check('dragging left lands on the target index', ids(moveTab(five5, 'e', 'b')), [
+  'a',
+  'e',
+  'b',
+  'c',
+  'd'
+])
+check('dropping a tab on itself changes nothing', ids(moveTab(five5, 'c', 'c')), five)
+check(
+  'same-index move returns the identical array, not just an equal one (no churn)',
+  moveTab(five5, 'c', 'c') === five5,
+  true
+)
+check('an unknown drag id changes nothing', ids(moveTab(five5, 'zz', 'c')), five)
+check('an unknown target changes nothing', ids(moveTab(five5, 'a', 'zz')), five)
+check('the input list is not mutated', ids(five5), five)
+check('moving the last to first', ids(moveTab(five5, 'e', 'a')), ['e', 'a', 'b', 'c', 'd'])
+check('moving the first to last', ids(moveTab(five5, 'a', 'e')), ['b', 'c', 'd', 'e', 'a'])
+check(
+  'a single-item list: the only move possible is a no-op onto itself',
+  ids(moveTab([{ id: 'only' }], 'only', 'only')),
+  ['only']
 )
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)

@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import type { ContextSnapshot } from '@shared/types'
 import type { WorklogButtonState } from '@shared/worklog'
 import { UsageChip } from './UsageMeter'
@@ -30,6 +31,8 @@ interface Props {
   onSelectTab: (id: string) => void
   onCloseTab: (id: string) => void
   onNewTab: () => void
+  /** Reorder: the dragged tab takes the target's index. */
+  onReorderTab: (dragId: string, overId: string) => void
   onToggleSidebar: () => void
   onToggleBrowser: () => void
   /** Proposals awaiting review. Shown in the tooltip; the badge comes from worklogState. */
@@ -54,6 +57,7 @@ export function TitleBar({
   onSelectTab,
   onCloseTab,
   onNewTab,
+  onReorderTab,
   onToggleSidebar,
   onToggleBrowser,
   worklogCount,
@@ -64,6 +68,8 @@ export function TitleBar({
   onOpenSettings
 }: Props): React.JSX.Element {
   const isMac = platform === 'darwin'
+  const [dragId, setDragId] = useState<string | null>(null)
+  const [overId, setOverId] = useState<string | null>(null)
 
   return (
     <header className="titlebar" data-platform={platform}>
@@ -112,6 +118,32 @@ export function TitleBar({
                   if (e.button === 1) onCloseTab(tab.id)
                 }}
                 title={`${tab.title} — ${tab.cwd}`}
+                draggable
+                data-dragging={tab.id === dragId ? 'true' : undefined}
+                data-drop={tab.id === overId ? 'true' : undefined}
+                onDragStart={(e) => {
+                  setDragId(tab.id)
+                  e.dataTransfer.effectAllowed = 'move'
+                  // Chromium refuses to begin a drag with an empty payload.
+                  e.dataTransfer.setData('text/plain', tab.id)
+                }}
+                onDragOver={(e) => {
+                  if (!dragId || dragId === tab.id) return
+                  e.preventDefault()
+                  e.dataTransfer.dropEffect = 'move'
+                  setOverId(tab.id)
+                }}
+                onDragLeave={() => setOverId((cur) => (cur === tab.id ? null : cur))}
+                onDrop={(e) => {
+                  e.preventDefault()
+                  if (dragId && dragId !== tab.id) onReorderTab(dragId, tab.id)
+                  setDragId(null)
+                  setOverId(null)
+                }}
+                onDragEnd={() => {
+                  setDragId(null)
+                  setOverId(null)
+                }}
               >
                 <TabIndicator
                   kind={tab.kind}

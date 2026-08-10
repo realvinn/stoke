@@ -39,3 +39,25 @@ export function replaceOrAppend<T extends { id: string }>(
   next[at] = tab
   return next
 }
+
+/**
+ * `dragId` moved to `overId`'s index, as a new array.
+ *
+ * Splice-out-then-splice-in, so dragging right lands *after* the target and
+ * dragging left lands *before* it — which is what the pointer is over in each
+ * case. An unknown id on either side returns the same list rather than
+ * throwing: a drop can land after the tab it was aimed at has closed.
+ */
+export function moveTab<T extends { id: string }>(
+  list: T[],
+  dragId: string,
+  overId: string
+): T[] {
+  const from = list.findIndex((t) => t.id === dragId)
+  const to = list.findIndex((t) => t.id === overId)
+  if (from < 0 || to < 0 || from === to) return list
+  const next = [...list]
+  const [moved] = next.splice(from, 1)
+  next.splice(to, 0, moved)
+  return next
+}

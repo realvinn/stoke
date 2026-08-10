@@ -436,6 +436,17 @@ body {
   border-radius: var(--r-full);
 }
 
+.tab[data-dragging='true'] {
+  opacity: 0.4;
+}
+
+/* Where it will land. An inset outline rather than a background, so it does
+   not read as hover on the tab the pointer happens to be over. */
+.tab[data-drop='true'] {
+  outline: 1px dashed var(--accent);
+  outline-offset: -1px;
+}
+
 .tab-label {
   font-size: var(--fs-md);
   overflow: hidden;

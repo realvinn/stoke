@@ -33,7 +33,7 @@ import { attachExit, forgetPty, initPtyBus } from './lib/ptyBus'
 import { matchShortcut } from './lib/shortcuts'
 import { newTab } from './lib/newTab'
 import { profileIdForCwd } from './lib/projectProfile'
-import { neighbourOf, replaceOrAppend } from './lib/tabs'
+import { moveTab, neighbourOf, replaceOrAppend } from './lib/tabs'
 import { applyAppearance, applyTypography } from './lib/theme'
 import type { Tab } from './types'
 
@@ -724,6 +724,13 @@ export function App(): React.JSX.Element {
     setActiveTabId(tab.id)
   }, [browsePath, browseExpanded])
 
+  const reorderTab = useCallback((dragId: string, overId: string): void => {
+    // Keyed by tab id in the render, so React moves the DOM nodes rather than
+    // rebuilding them — and ptyBus replays the retained scrollback anyway, so
+    // even a rebuild would not blank a terminal.
+    setTabs((list) => moveTab(list, dragId, overId))
+  }, [])
+
   const closeTab = useCallback(
     (id: string): void => {
       const tab = tabs.find((t) => t.id === id)
@@ -964,6 +971,7 @@ export function App(): React.JSX.Element {
         onSelectTab={setActiveTabId}
         onCloseTab={closeTab}
         onNewTab={openNewTab}
+        onReorderTab={reorderTab}
         onToggleSidebar={() => setSidebarOpen((v) => !v)}
         onToggleBrowser={() => setBrowserOpen((v) => !v)}
         worklogCount={worklogPending}
