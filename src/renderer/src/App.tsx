@@ -962,6 +962,7 @@ export function App(): React.JSX.Element {
         context={activeTab ? (contexts[activeTab.sessionId] ?? null) : null}
         cli={cli}
         updateAvailable={update?.updateAvailable ? update.latest : null}
+        profileLabel={activeProfile?.label ?? null}
         onRevealProject={(p) => void window.stoke.projects.reveal(p)}
         onOpenSettings={() => setSettingsOpen(true)}
       />

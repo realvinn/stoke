@@ -13,6 +13,8 @@
  */
 import type { ProfileConfig, Project, Settings } from '../src/shared/types.ts'
 import { profileIdForCwd } from '../src/shared/paths.ts'
+import { parseColor, perceptualDistance, type Rgb } from '../src/shared/color.ts'
+import { BUILT_IN_THEMES } from '../src/shared/themes.ts'
 import {
   PROFILES,
   PROFILE_SWATCHES,
@@ -1195,6 +1197,59 @@ check(
   'the worklog in particular never sees it',
   mentionsChip.filter((f) => f.startsWith('worklog/')),
   []
+)
+
+console.log('\ncolour alone cannot say which profile is active')
+/*
+ * A profile overrides the theme's accent, so "the accent changed" looks like a
+ * sufficient signal. It is not: PROFILES[0].accent is the app's own accent by
+ * design, so selecting Personal on Ember changes nothing at all — and that is
+ * not the only collision.
+ *
+ * Printed, not asserted. Both numbers move as the palette changes, so a check
+ * comparing them (nearestThemeToProfile < nearestSwatches, or its opposite)
+ * would fail — for the wrong reason — the day someone improves the palette
+ * enough to close the gap: it would turn `npm run check` red for fixing the
+ * exact problem this readout exists to surface. There is no fixed threshold on
+ * nearestThemeToProfile that is honest either: today it is 0 (Ember and
+ * Personal are the same string) by design, not by accident, and this task
+ * deliberately does not change that — so asserting "stays near 0" would be
+ * asserting a defect must persist, and asserting "clears some bound" would be
+ * asserting a fix this task explicitly declines to make. The number is for a
+ * human to read.
+ */
+const rgb = (hex: string): Rgb => {
+  const c = parseColor(hex)
+  if (!c) throw new Error(`unparseable colour ${hex}`)
+  return c
+}
+const gap = (a: string, b: string): number => perceptualDistance(rgb(a), rgb(b))
+
+/** The smallest gap the palette itself treats as two different colours. */
+let nearestSwatches = Infinity
+for (let i = 0; i < PROFILE_SWATCHES.length; i++) {
+  for (let j = i + 1; j < PROFILE_SWATCHES.length; j++) {
+    nearestSwatches = Math.min(
+      nearestSwatches,
+      gap(PROFILE_SWATCHES[i].accent, PROFILE_SWATCHES[j].accent)
+    )
+  }
+}
+
+const wearableAccents = [
+  ...PROFILES.map((p) => p.accent),
+  ...PROFILE_SWATCHES.map((s) => s.accent)
+]
+let nearestThemeToProfile = Infinity
+for (const theme of BUILT_IN_THEMES) {
+  for (const accent of wearableAccents) {
+    nearestThemeToProfile = Math.min(nearestThemeToProfile, gap(theme.colors.accent, accent))
+  }
+}
+
+console.log(
+  `  nearest two swatches ${nearestSwatches.toFixed(3)}; ` +
+    `nearest theme accent to a profile accent ${nearestThemeToProfile.toFixed(3)}`
 )
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
