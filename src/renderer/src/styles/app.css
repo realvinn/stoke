@@ -443,6 +443,15 @@ body {
   white-space: nowrap;
 }
 
+/*
+ * A New Project tab has no session behind it, so its label is a placeholder
+ * rather than a name. Muting it keeps the strip readable when three of them
+ * are open beside two live sessions.
+ */
+.tab:has(.tab-indicator[data-kind='new']) .tab-label {
+  color: var(--text-muted);
+}
+
 .tab-close {
   display: grid;
   place-items: center;

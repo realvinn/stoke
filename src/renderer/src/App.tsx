@@ -93,12 +93,15 @@ export function App(): React.JSX.Element {
    * is a New tab's own content (`activeTab?.kind === 'new'`), so landing on
    * `null` shows neither pane — five call sites used to set it that way (the
    * `+` button, the newTab shortcut, openFolder, the sidebar's project select,
-   * and the command palette). The `+` button, the newTab shortcut and
-   * openFolder call `goToNewTab` below instead, which always lands on a real
-   * tab. The sidebar's project select and the command palette no longer switch
-   * tabs at all — selecting a project must not itself hide whatever tab is
-   * showing (spec §2.10) — they only move the selection, via `selectProject`.
-   * Task 61 is what replaces `goToNewTab` itself with a fuller `openNewTab`.
+   * and the command palette). The `+` button and the newTab shortcut call
+   * `openNewTab` below instead, which always appends a fresh tab and selects
+   * it — several may be open at once, on purpose (see `openNewTab`'s own
+   * comment). `openFolder` fills the New tab already in view when there is
+   * one, the same rule its other two launcher actions (Start here, Scratch
+   * session) already follow, and only appends when there is not. The sidebar's
+   * project select and the command palette no longer switch tabs at all —
+   * selecting a project must not itself hide whatever tab is showing (spec
+   * §2.10) — they only move the selection, via `selectProject`.
    * The type stays `string | null` because the very first render, before the
    * mount effect below picks tabs[0], is still
    * null.
@@ -136,11 +139,11 @@ export function App(): React.JSX.Element {
    * Write the sidebar's visible selection and, when `tabId` names a New tab —
    * the active one by default — that tab's own copy too.
    *
-   * `tabId` can be pinned explicitly because `openFolder` calls this in the
-   * same tick as `goToNewTab()`, which decides which tab (an existing one, or
-   * a freshly minted one) the selection has to land on; `activeTabId` read
-   * here would still be whichever tab was active *before* that switch, since
-   * React does not re-render between the two calls.
+   * `tabId` can be pinned explicitly because `openFolder` decides, in the same
+   * tick, which tab (the New one already in view, or a freshly minted one)
+   * the selection has to land on; `activeTabId` read here would still be
+   * whichever tab was active *before* that switch, since React does not
+   * re-render between the mint and this call.
    */
   const selectProject = useCallback(
     (path: string | null, tabId: string | null = activeTabId): void => {
@@ -707,6 +710,20 @@ export function App(): React.JSX.Element {
     startDefault()
   }, [settings?.startOnLaunch, defaultCwd, cli, startDefault])
 
+  /**
+   * Append a New Project tab and select it.
+   *
+   * Several may be open at once, which is the point: each one carries its own
+   * project selection, so two launchers can be aimed at two different folders
+   * while a third terminal keeps running. It inherits the sidebar's current
+   * selection so pressing + does not throw away what is on screen.
+   */
+  const openNewTab = useCallback((): void => {
+    const tab = newTab(browsePath, browseExpanded)
+    setTabs((list) => [...list, tab])
+    setActiveTabId(tab.id)
+  }, [browsePath, browseExpanded])
+
   const closeTab = useCallback(
     (id: string): void => {
       const tab = tabs.find((t) => t.id === id)
@@ -801,35 +818,6 @@ export function App(): React.JSX.Element {
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null
   const selectedProject = projects.find((p) => p.path === selectedPath) ?? null
 
-  /*
-   * Land on a New Project tab instead of clearing the selection, and return
-   * its id.
-   *
-   * The five callers below used to do `setActiveTabId(null)`, back when null
-   * was the launcher's own sentinel. It no longer is (see the comment by
-   * `activeTabId`'s declaration), so this reuses the New tab already in the
-   * strip if one is still there, or opens one — starting a session from the
-   * launcher consumes its tab (`replaceOrAppend`), so after the first launch
-   * there usually isn't one left to reuse. This is a bridge: Task 61 replaces
-   * every call site below with a fuller `openNewTab`.
-   *
-   * The return value exists for `openFolder`: it needs to write the picked
-   * folder onto whichever tab this call just landed on, and `activeTabId`
-   * would still name the *previous* tab if it read it right after calling
-   * this — see `selectProject`.
-   */
-  const goToNewTab = useCallback((): string => {
-    const existing = tabs.find((t) => t.kind === 'new')
-    if (existing) {
-      setActiveTabId(existing.id)
-      return existing.id
-    }
-    const t = newTab()
-    setTabs((list) => [...list, t])
-    setActiveTabId(t.id)
-    return t.id
-  }, [tabs])
-
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       const action = matchShortcut(e, isMac)
@@ -840,7 +828,7 @@ export function App(): React.JSX.Element {
           setPaletteOpen((v) => !v)
           break
         case 'newTab':
-          goToNewTab()
+          openNewTab()
           break
         case 'closeTab':
           if (activeTabId) closeTab(activeTabId)
@@ -860,7 +848,7 @@ export function App(): React.JSX.Element {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [isMac, tabs, activeTabId, closeTab, goToNewTab])
+  }, [isMac, tabs, activeTabId, closeTab, openNewTab])
 
   // Escape closes whichever overlay is on top.
   useEffect(() => {
@@ -878,10 +866,28 @@ export function App(): React.JSX.Element {
     const dir = await window.stoke.projects.open()
     if (!dir) return
     await refreshProjects()
-    // Pin the write to the tab goToNewTab() just landed on — see the comment
-    // on `selectProject`'s `tabId` parameter for why activeTabId can't do it.
-    selectProject(dir, goToNewTab())
-  }, [refreshProjects, goToNewTab, selectProject])
+    /*
+     * "Open a folder" is one of a New tab's own launcher actions, alongside
+     * Start here and Scratch session — like them, it fills the tab it was
+     * invoked from (`activeNewTabId`) instead of always spawning another
+     * beside it. Only when there is no New tab in view (the sidebar's own
+     * Open Folder button while a session tab is active) is a fresh one
+     * appended.
+     *
+     * The id is captured in a local before `selectProject` runs — reading
+     * `activeTabId` there instead would still see the tab that was active a
+     * moment ago, since React has not re-rendered between the mint and the
+     * write. See `selectProject`'s `tabId` parameter.
+     */
+    let tabId = activeNewTabId
+    if (!tabId) {
+      const t = newTab()
+      setTabs((list) => [...list, t])
+      setActiveTabId(t.id)
+      tabId = t.id
+    }
+    selectProject(dir, tabId)
+  }, [activeNewTabId, refreshProjects, selectProject])
 
   const addRoot = useCallback(async (): Promise<void> => {
     const dir = await window.stoke.projects.addRoot()
@@ -957,7 +963,7 @@ export function App(): React.JSX.Element {
         browserOpen={browserOpen}
         onSelectTab={setActiveTabId}
         onCloseTab={closeTab}
-        onNewTab={goToNewTab}
+        onNewTab={openNewTab}
         onToggleSidebar={() => setSidebarOpen((v) => !v)}
         onToggleBrowser={() => setBrowserOpen((v) => !v)}
         worklogCount={worklogPending}
