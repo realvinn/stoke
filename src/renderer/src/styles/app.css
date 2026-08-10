@@ -977,6 +977,10 @@ body {
   display: flex;
   align-items: center;
   gap: var(--space-8);
+  /* Indented to start under the project's own icon-and-name rather than under
+     the chevron's left edge. Unindented, the row read as two fragments 26px
+     apart: a title over here, its own session count over there. */
+  padding-left: calc(var(--chevron) + var(--space-8));
   font-size: var(--fs-xs);
   color: var(--text-faint);
 }
@@ -1134,7 +1138,17 @@ body {
   display: flex;
   flex-direction: column;
   gap: 1px;
-  margin: var(--space-4) 0 var(--space-8) var(--space-12);
+  /*
+   * The guide rule falls on the centre of the disclosure chevron, and the two
+   * paddings past it add up to the chevron's other half plus the gap after
+   * it — so a session title starts on exactly the same pixel as the project
+   * name above it. 8 + 9 = 17 to the rule, + 1 border + 8 + 8 = 34, which is
+   * .project's padding (8) + the chevron (18) + .project-top's gap (8).
+   * Measured, not reasoned: it used to sit 5px to the left of the title it
+   * belongs to, which is enough to read as a mistake and not enough to read
+   * as a decision.
+   */
+  margin: var(--space-4) 0 var(--space-8) calc(var(--space-8) + var(--chevron) / 2);
   padding-left: var(--space-8);
   border-left: 1px solid var(--border);
 }
