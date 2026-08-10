@@ -201,6 +201,65 @@ check(
   null
 )
 
+console.log('\na shallow ancestor project does not defeat a deeper scan root')
+/*
+ * The case the skip above does NOT cover, and the one that was live on the real
+ * machine: a registered project that is an *ancestor* of the root rather than
+ * the root itself. `/Users/thevinh` is one — the user ran `claude` in their home
+ * directory once, so Claude recorded it. It is a prefix of everything, it is not
+ * a root, so the root-skip leaves it in the running, and under the old
+ * "any project beats every root" ordering its longest-prefix match claimed every
+ * folder with no project record of its own and answered with its own group,
+ * `Users`. That made step 2 unreachable for precisely the case it exists to
+ * handle. Measured against the real projects on that machine: the six work
+ * folders with their own Claude history resolved correctly and hid the bug,
+ * while every *new* folder under the watched root resolved to `Users` and went
+ * unwatched.
+ *
+ * Written against the shared rule with the platform passed in, per H2, so both
+ * shapes are asserted on every machine rather than only the host's own.
+ */
+const posix = pathRulesFor('darwin')
+const homeIsAProject: Project[] = [
+  project('/Users/vinn', 'Users'),
+  project('/Users/vinn/Code/gitea-company/refinity', 'gitea-company')
+]
+check(
+  'a new folder under the root resolves to the root, not to the $HOME project',
+  groupForCwdShared('/Users/vinn/Code/brand-new', homeIsAProject, posix, ['/Users/vinn/Code']),
+  'Code'
+)
+check(
+  'a project deeper than the root still beats the root',
+  groupForCwdShared(
+    '/Users/vinn/Code/gitea-company/refinity',
+    homeIsAProject,
+    posix,
+    ['/Users/vinn/Code']
+  ),
+  'gitea-company'
+)
+/*
+ * The ancestor is not disqualified, only outranked where a root is deeper.
+ * Without this, "roots always win" would look identical to the fix above while
+ * silently discarding every project match outside a root.
+ */
+check(
+  'and outside every root the ancestor project still answers',
+  groupForCwdShared('/Users/vinn/Documents/notes', homeIsAProject, posix, ['/Users/vinn/Code']),
+  'Users'
+)
+check(
+  'the same rule on Windows, with a home-directory project as the ancestor',
+  groupForCwdShared(
+    'C:\\Users\\vinn\\Code\\brand-new',
+    [project('C:\\Users\\vinn', 'Users')],
+    pathRulesFor('win32'),
+    ['C:\\Users\\vinn\\Code']
+  ),
+  'Code'
+)
+
 console.log('\na watched root watches the folders under it')
 check(
   'a folder under a watched root is watched even with no history of its own',

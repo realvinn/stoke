@@ -130,20 +130,27 @@ export function foldGroup(value: string): string {
 /**
  * Resolve a working directory to the `Project.group` that owns it, or null.
  *
- * Three steps, in this order:
+ * Two containers compete and the **deeper** one wins:
  *
- *  1. Longest-prefix match over `projects`, **skipping any project whose own
- *     path is one of `roots`**. A scan root is a container of projects, not a
- *     project; Claude registered it only because a session was once started
- *     there. Without that skip, `/Users/thevinh/dev/work` — itself a registered
- *     project — swallows every sibling under it and answers with group `dev`,
- *     which is spec §2.4.3 exactly: 7 of 12 work folders were never watched.
- *  2. The longest `root` that contains the cwd. The group is `basenameOf(root)`,
+ *  1. The longest-prefix `project` containing the cwd, **skipping any project
+ *     whose own path is one of `roots`**. A scan root is a container of
+ *     projects, not a project; Claude registered it only because a session was
+ *     once started there. Without that skip, `/Users/thevinh/dev/work` — itself
+ *     a registered project — swallows every sibling under it and answers with
+ *     group `dev`, which is spec §2.4.3 exactly: 7 of 12 work folders were
+ *     never watched. Its group is `Project.group`.
+ *  2. The longest `root` containing the cwd. Its group is `basenameOf(root)`,
  *     because a project directly inside that root would have had
  *     `parentName(path)` — the root's own name.
- *  3. Null. The group is never invented from the shape of the path: any folder
- *     under a directory called `personal` would otherwise be treated as that
- *     profile's work, including places that are not projects at all.
+ *
+ * Whichever of the two matched a longer prefix of the cwd answers; see the
+ * comment at the comparison for why ordering these instead of comparing them
+ * made the root unreachable on a machine where `$HOME` is a registered project.
+ *
+ * Null when neither matched. The group is never invented from the shape of the
+ * path: any folder under a directory called `personal` would otherwise be
+ * treated as that profile's work, including places that are not projects at
+ * all.
  *
  * A cwd *inside* a project counts as that project: sessions are often started a
  * level or two down, and the transcript records the real cwd.
@@ -175,15 +182,6 @@ export function groupForCwd(
     }
   }
 
-  if (best) {
-    // `group` is normally already `parentName(path)` (projects.ts:163).
-    // Recompute when it is absent rather than reporting "no group": a Project
-    // can be rebuilt by hand — a test fixture, or a record that crossed the
-    // remote bridge — and losing the group there would silently switch the
-    // agent off.
-    return best.group || parentName(normalizePath(best.path, rules)) || null
-  }
-
   let bestRoot = ''
   let bestRootLength = -1
   for (const root of roots) {
@@ -195,7 +193,44 @@ export function groupForCwd(
       bestRootLength = rootKey.length
     }
   }
-  if (bestRoot) return basenameOf(normalizePath(bestRoot, rules)) || null
+
+  /*
+   * The more specific container wins, whichever kind it is.
+   *
+   * This used to be strictly ordered — any project match at all beat every
+   * root — and that made step 2 unreachable on a machine where some ancestor
+   * of everything is a registered project. `/Users/thevinh` is one here: the
+   * user ran `claude` in their home directory once, so Claude recorded it, and
+   * its longest-prefix match then claimed every folder that had no project
+   * record of its own, answering with its own group (`Users`). The scan-root
+   * fallback exists precisely to catch folders with no Claude history, so
+   * ordering it second meant it never fired for the case it was written for:
+   * measured against this machine's real projects, every *new* folder under a
+   * watched scan root resolved to `Users` and went unwatched, while the six
+   * that already had their own records resolved correctly and hid the bug.
+   *
+   * Comparing depth instead is also the more honest rule. A root is the user
+   * saying "the things under here are groups"; a project is Claude saying "a
+   * session ran here". When the root is the deeper statement about this cwd it
+   * is also the more specific one, and specificity is what step 1 already used
+   * to choose between projects.
+   *
+   * Ties cannot happen. Two different paths that both contain `cwd` cannot be
+   * the same length — one must be a prefix of the other — so equal lengths
+   * mean equal paths, and a project equal to a root was already skipped above.
+   */
+  if (bestRootLength > bestLength) {
+    return basenameOf(normalizePath(bestRoot, rules)) || null
+  }
+
+  if (best) {
+    // `group` is normally already `parentName(path)` (projects.ts:163).
+    // Recompute when it is absent rather than reporting "no group": a Project
+    // can be rebuilt by hand — a test fixture, or a record that crossed the
+    // remote bridge — and losing the group there would silently switch the
+    // agent off.
+    return best.group || parentName(normalizePath(best.path, rules)) || null
+  }
 
   return null
 }
