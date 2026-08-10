@@ -489,10 +489,13 @@ body {
   background: var(--tab-dot-worklog);
 }
 
-/* No reading yet — a plain circle, so the slot is never blank. */
-.ring[data-level='empty'] .ring-track {
-  stroke: var(--border-strong);
-}
+/*
+ * `data-level='empty'` used to be scoped here too, but `.ring .ring-track`
+ * below already sets every ring's track to --border-strong unconditionally,
+ * for every level including empty, and nothing else ever varied it by level.
+ * A `[data-level='empty']` variant of the same declaration was proven inert
+ * (Task 51) and deleted rather than kept as a comment fighting the cascade.
+ */
 
 /* A New Project tab has no session to measure. */
 .ring-plus {
@@ -505,6 +508,18 @@ body {
 /* A finished process reads as absent rather than as an alert. */
 .tab-indicator[data-status='exited'] {
   opacity: 0.45;
+}
+
+/*
+ * Bypass mode used to own --danger, which put a red dot on every tab on a
+ * machine whose default permission mode is bypassPermissions — an alert that
+ * was only ever a setting. A dashed warning-coloured track says "the guard
+ * rails are off" and cannot be mistaken for the context fill, which is always
+ * a solid arc starting at the top.
+ */
+.tab-indicator[data-mode='bypass'] .ring-track {
+  stroke: var(--warning);
+  stroke-dasharray: 1.6 1.6;
 }
 
 /* ------------------------------------------------------- titlebar actions */
@@ -1167,8 +1182,14 @@ body {
   stroke: var(--warning);
 }
 
+/*
+ * Not --danger. Red in the tab strip now means one thing only — the worklog is
+ * watching this session — and a ring cannot be allowed to say it by accident.
+ * At 90% the arc is nearly a closed circle, so the shape already carries the
+ * urgency the colour used to.
+ */
 .ring[data-level='critical'] .ring-fill {
-  stroke: var(--danger);
+  stroke: var(--ring-full);
 }
 
 /* -------------------------------------------------------------- terminal */

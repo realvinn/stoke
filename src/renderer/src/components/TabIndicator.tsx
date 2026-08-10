@@ -43,11 +43,13 @@ export function TabIndicator({
      * plus is drawn inline rather than pulled from Icons.tsx so it inherits
      * the ring's exact geometry and cannot drift out of the slot.
      *
-     * `data-level="empty"` is what makes the .ring[data-level='empty']
-     * .ring-track rule below apply here too. Without it the plus-in-a-circle
-     * inherits the default track stroke rather than --border-strong, and the
-     * one tab in the strip that has nothing to report is the one drawn as
-     * though it did.
+     * `data-level="empty"` just mirrors what ContextRing sets for its own
+     * not-ready state (see ContextMeter.tsx), so the two ways a ring can
+     * appear in the strip describe themselves the same way in the DOM. It has
+     * no effect on the track's stroke — `.ring .ring-track` in app.css sets
+     * --border-strong unconditionally, for every level — a `[data-level=
+     * 'empty']` variant of that same rule was proven inert and removed
+     * (Task 51), rather than left standing as if it did something.
      */
     return (
       <span className="tab-indicator" data-kind="new">
