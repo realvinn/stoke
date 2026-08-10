@@ -18,7 +18,9 @@ import {
   toHex,
   toOklch
 } from '../src/shared/color.ts'
+import type { Rgb } from '../src/shared/color.ts'
 import { BUILT_IN_THEMES } from '../src/shared/themes.ts'
+import type { Theme } from '../src/shared/types.ts'
 
 let failures = 0
 
@@ -196,6 +198,56 @@ for (const theme of BUILT_IN_THEMES) {
     `${okPair ? 'ok  ' : 'FAIL'} ${`${theme.id}: unfocused is visible and weaker`.padEnd(
       46
     )} ${`${seen.toFixed(4)}/${apart.toFixed(4)}`.padStart(10)}  (expected both > 0.02)`
+  )
+}
+
+console.log('\n-- the sidebar: selection must out-rank hover --')
+/*
+ * The selected project has to read as more chosen than the row the mouse
+ * happens to be over. That is a distance, not a taste: how far each state
+ * sits from the panel it is drawn on. Hover is `--surface-hover`; selection
+ * is whatever `selectedBg` returns, which must stay in step with
+ * `--surface-selected` in app.css. If you change one, change the other —
+ * this is the assertion that catches it.
+ */
+/** `--surface-selected` in app.css: color-mix(in srgb, accent 18%, surface-hover). */
+const SELECTED_ACCENT_MIX = 0.18
+
+function selectedBg(t: Theme): Rgb {
+  const a = parseColor(t.colors.accent)!
+  const b = over(parseColor(t.colors.surfaceHover)!, parseColor(t.colors.bgSunken)!)
+  const p = SELECTED_ACCENT_MIX
+  return {
+    r: a.r * p + b.r * (1 - p),
+    g: a.g * p + b.g * (1 - p),
+    b: a.b * p + b.b * (1 - p),
+    a: 1
+  }
+}
+
+for (const t of BUILT_IN_THEMES) {
+  const panel = parseColor(t.colors.bgSunken)!
+  const hoverD = perceptualDistance(panel, over(parseColor(t.colors.surfaceHover)!, panel))
+  const selD = perceptualDistance(panel, over(selectedBg(t), panel))
+  const ok = selD > hoverD
+  if (!ok) failures++
+  console.log(
+    `${ok ? 'ok  ' : 'FAIL'} ${`${t.id}: selection vs hover`.padEnd(46)} ${selD
+      .toFixed(4)
+      .padStart(10)}  (expected > ${hoverD.toFixed(4)})`
+  )
+}
+
+for (const t of BUILT_IN_THEMES) {
+  // The row's own label still has to be readable on whatever selection is.
+  const bg = over(selectedBg(t), parseColor(t.colors.bgSunken)!)
+  const ratio = contrastRatio(parseColor(t.colors.text)!, bg)
+  const ok = ratio >= 4.5
+  if (!ok) failures++
+  console.log(
+    `${ok ? 'ok  ' : 'FAIL'} ${`${t.id}: label on a selected row`.padEnd(46)} ${ratio
+      .toFixed(2)
+      .padStart(10)}  (expected >= 4.5)`
   )
 }
 

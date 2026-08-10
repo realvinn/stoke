@@ -927,9 +927,23 @@ body {
   background: var(--surface-hover);
 }
 
-.project[aria-current='true'] {
-  background: var(--surface);
-  border-color: var(--border);
+/*
+ * Selection out-ranks hover.
+ *
+ * `--surface` measured *closer* to the panel than `--surface-hover` on all
+ * three dark themes, so the row the mouse was over read as more chosen than
+ * the row that actually was, and the sidebar read as broken rather than
+ * merely subtle. The command palette already had the right idea
+ * (`.palette-item[data-active='true']`, an accent wash); this is the same
+ * move with enough accent in it to win on every theme.
+ *
+ * The hover pair is restated so a selected row does not drop back to the
+ * hover grey under the pointer.
+ */
+.project[aria-current='true'],
+.project[aria-current='true']:hover {
+  background: var(--surface-selected);
+  border-color: transparent;
 }
 
 .project-top {
@@ -949,8 +963,14 @@ body {
   white-space: nowrap;
 }
 
+/*
+ * `--text`, not `--accent`. The background now carries the selection, and
+ * accent-on-selected measures 4.27:1 on Nocturne and 3.59:1 on Daylight —
+ * under AA. Weight carries the emphasis instead, which costs no contrast.
+ */
 .project[aria-current='true'] .project-name {
-  color: var(--accent);
+  color: var(--text);
+  font-weight: 600;
 }
 
 .project-meta {
