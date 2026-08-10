@@ -263,6 +263,19 @@ scripts/          the verify-*.mts suites, make-icon.cjs
     (`statusLine.ts:296,568-569`). `modelId`'s only two readers today are the type declaration
     and a test assertion (`src/shared/types.ts:236`, `scripts/verify-statusline.mts:93`).
 
+22. **A CSS token rename only fails loudly if the old name is gone.** The spacing migration renamed
+    `--sp-*` to `--space-*` on purpose: a missed `var(--sp-2)` names nothing, the declaration is
+    invalid at computed-value time, and the padding visibly collapses to 0. Renumbering in place
+    would have made `--sp-4` silently mean 4px where it used to mean 12px. Two consequences: the
+    migration is verified by `grep -rn -- '--sp-' src/` returning **zero**, and a sweep over the
+    stylesheet is not the whole job — 26 uses were inside `style={{ }}` objects in eight `.tsx`
+    files and rendered at 0 until they were found.
+
+23. **macOS traffic lights are device pixels; anything clearing them must be too.** `padding-left`
+    in rem was only correct at Interface scale exactly 1.0 — at 0.8 the first tab sat under the
+    close button. Same class of bug as sizing an icon with a px attribute inside a rem-scaled
+    button: two units that do not move together, so it looks right at exactly one setting.
+
 ## Verification expectations
 
 `npm run check` must pass. For anything touching the context meter, `npm run verify:context`
