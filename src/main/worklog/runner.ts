@@ -29,19 +29,22 @@ import type { WorklogBoards, WorklogKind, WorklogProposal, WorklogTarget } from 
 
 /* ------------------------------------------------------------- destinations */
 
-/**
- * The shipped defaults, kept as named exports because other modules import
- * them. The live values come from `Settings.worklogBoards`: an id is one
- * person's board, and compiling it in meant nobody else could use the feature
- * and this machine could not narrow to one destination.
+/*
+ * There are no compiled-in board ids any more, and so no `NOTION_DATA_SOURCE` /
+ * `CLICKUP_LIST_ID` exports either.
  *
- * The default Notion data source's schema already matches what is written
- * here, and the default ClickUp list is the engineering list — deliberately not
- * the Team Space's `IT Support Tasks`, which is a helpdesk queue whose statuses
- * would make engineering work unreadable.
+ * They used to hold the author's own Notion collection and ClickUp list. Every
+ * live path already read `Settings.worklogBoards` instead, so the constants had
+ * no production reader left — only a test that asserted they still existed, and
+ * one that checked a configured id displaced them. Now that the defaults are
+ * blank, both of those assertions are vacuous: `prompt.includes('')` is true of
+ * every string. An assertion that cannot fail is worse than no assertion, so
+ * the exports went and the tests were re-pointed at injected fixture ids.
+ *
+ * `DEFAULT_WORKLOG_BOARDS` is still the default *shape* — Notion listed as the
+ * lone target, with no id behind it — and `hydrateSettings` drops any target
+ * whose id is empty, so the feature stays off until someone configures it.
  */
-export const NOTION_DATA_SOURCE = DEFAULT_WORKLOG_BOARDS.notionDataSource
-export const CLICKUP_LIST_ID = DEFAULT_WORKLOG_BOARDS.clickupListId
 
 /**
  * The write tools, by what the proposal does and where it does it.

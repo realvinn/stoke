@@ -5,16 +5,24 @@ import type { WorklogBoards, WorklogScanReport, WorklogTarget, WorklogWatchState
 export const WORKLOG_TARGETS: readonly WorklogTarget[] = ['notion', 'clickup']
 
 /**
- * Notion only, by default.
+ * Notion only, and no board id at all until someone supplies one.
  *
- * The ClickUp id is kept rather than blanked even though it is unused: it is a
- * real, working list, so ticking ClickUp later is one checkbox instead of a hunt
- * through a URL bar. A default that is present-but-unused costs nothing.
+ * Both ids used to ship with real values — the author's own Notion collection
+ * and ClickUp list. That was two bugs wearing one coat. It published two live
+ * board ids from a public repo, and, worse, it meant a fresh install that had
+ * never opened the worklog settings would draft entries aimed at somebody
+ * else's boards. A third party still needs auth to that workspace for a write
+ * to land, so nothing leaked; the default was simply pointed at the wrong
+ * place, and confidently.
+ *
+ * Blank degrades correctly rather than silently: `hydrateSettings` drops a
+ * target whose id is empty, so the worklog stays off until it is configured,
+ * and the settings panel already shows placeholders for both fields.
  */
 export const DEFAULT_WORKLOG_BOARDS: WorklogBoards = {
   targets: ['notion'],
-  notionDataSource: 'collection://368d3f2d-1f02-817c-b193-000b208e36bd',
-  clickupListId: '901615258684'
+  notionDataSource: '',
+  clickupListId: ''
 }
 
 /**

@@ -8,9 +8,16 @@
 #
 # Cutting a release:
 #
-#     npm version 0.4.0-beta.3 --no-git-tag-version
-#     git commit -am "0.4.0-beta.3" && git tag v0.4.0-beta.3
+#     npm version <version> --no-git-tag-version
+#     git commit -am "<version>"
+#     git tag -a v<version>          # -a, NOT a bare `git tag`
 #     git push && git push --tags
+#
+# `-a` is load-bearing and this recipe used to omit it. The publish job below
+# reads the *tag object's* message as the release notes; a lightweight tag has
+# no message of its own, so it falls back to warning and publishing a release
+# whose only note is the tag name. Write the notes in the tag annotation —
+# first line becomes the release title, the rest becomes its body.
 #
 # The tag is what triggers this; the version in package.json is what
 # electron-builder puts in the filenames and the update manifests, so the two
@@ -43,7 +50,7 @@ jobs:
       - run: npm run typecheck
 
       # `npm run check` is NOT used here, and that is deliberate rather than an
-      # oversight. Two of its suites are machine-dependent by design and cannot
+      # oversight. One of its suites is machine-dependent by design and cannot
       # pass on a clean runner:
       #
       #   verify:context  reads the real transcripts in ~/.claude/projects to
@@ -52,10 +59,13 @@ jobs:
       #                   throws ENOENT. Its value is that it runs against real
       #                   data, so making it synthesise fixtures would delete the
       #                   reason it exists.
-      #   verify:ssh      fails on every commit including the merge base:
-      #                   OpenSSH >= 9 rejects the suite's own two-word host
-      #                   alias fixture ("hostname contains invalid characters").
-      #                   Pre-existing and unrelated to any release.
+      #
+      # verify:ssh used to be excluded here too, for a reason that no longer
+      # holds: it asserted six host aliases out of one particular desk's real
+      # ~/.ssh/config, and it threw on OpenSSH >= 9, which rejects its own
+      # two-word alias fixture. Both were fixed, so it runs here now — and it is
+      # worth running, because it is the only suite that checks the argv Stoke
+      # hands a remote `claude` against what ssh itself resolves.
       #
       # Everything else is pure and runs anywhere, so it runs here. Keep this
       # list in step with package.json's `check` chain when a suite is added.
@@ -73,6 +83,7 @@ jobs:
       - run: npm run verify:worklog-retry
       - run: npm run verify:worklog-recall
       - run: npm run verify:worklog-autoscan
+      - run: npm run verify:ssh
 
       - run: npm run build
 

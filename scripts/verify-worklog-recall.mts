@@ -41,7 +41,7 @@ import type { RecallSnapshot } from '../src/main/worklog/recall.ts'
 import type { HeadlessOptions, HeadlessResult } from '../src/main/agent.ts'
 /*
  * The observed shape a budget-exhausted headless run returns, shared with
- * verify-worklog-runner.mts (plan-resolutions.md, Task 24) rather than
+ * verify-worklog-runner.mts (Task 24) rather than
  * restated here. See scripts/worklog-budget-fixture.ts for the measurement
  * and the tool that produced it.
  */
@@ -88,7 +88,7 @@ function stub(reply: string, isError = false): { run: Runner; calls: () => numbe
   return { run, calls: () => calls }
 }
 
-const BOARDS = { clickupListId: '901615258684', notionDataSource: 'collection://abc' }
+const BOARDS = { clickupListId: '900000000001', notionDataSource: 'collection://abc' }
 
 /*
  * Literal, by hand — deliberately NOT derived from `recallToolsFor` or
@@ -168,7 +168,7 @@ ok(
  * above has to be exact rather than a prefix.
  */
 ok('MCP is left on, because it is the whole point', !opts.strictMcp && !opts.safeMode)
-ok('the prompt names both destinations', opts.prompt.includes('901615258684') && opts.prompt.includes('collection://abc'))
+ok('the prompt names both destinations', opts.prompt.includes('900000000001') && opts.prompt.includes('collection://abc'))
 ok('and asks for the status vocabulary, not only the statuses in use', /every status it offers/.test(opts.prompt), opts.prompt)
 
 /* ------------------------------------------------------------ the parsing */
@@ -468,7 +468,7 @@ ok(
 )
 ok(
   'and never mentions the ClickUp list, which nothing will read',
-  !notionOnly.prompt.includes('901615258684'),
+  !notionOnly.prompt.includes('900000000001'),
   notionOnly.prompt
 )
 ok(

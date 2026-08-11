@@ -23,11 +23,6 @@ export function relativeTime(ms: number | null): string {
   return `${Math.floor(day / 365)}y ago`
 }
 
-export function formatCost(usd: number | null): string | null {
-  if (usd === null || !Number.isFinite(usd) || usd <= 0) return null
-  return usd < 0.01 ? '<$0.01' : `$${usd.toFixed(2)}`
-}
-
 /** Last path segment, tolerant of either separator. */
 export function baseName(p: string): string {
   const parts = p.split(/[\\/]/).filter(Boolean)

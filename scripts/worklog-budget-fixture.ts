@@ -3,7 +3,7 @@
  *
  * Shared by scripts/verify-worklog-runner.mts and scripts/verify-worklog-recall.mts
  * so the two suites cannot quietly disagree about what a refusal looks like
- * (plan-resolutions.md, "Task 24 — the BUDGET_REFUSAL fixture is shared, not
+ * ("Task 24 — the BUDGET_REFUSAL fixture is shared, not
  * copied byte-for-byte into two suites. Put it in one module both suites
  * import.").
  *

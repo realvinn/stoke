@@ -59,21 +59,6 @@ export interface LaunchOptions {
   rows: number
 }
 
-export interface TabDescriptor {
-  /** Stoke's own tab id. Not the Claude session id. */
-  id: string
-  ptyId: string
-  sessionId: string
-  cwd: string
-  title: string
-  permissionMode: PermissionMode
-  model: string
-  effort: EffortLevel
-  createdAt: number
-  /** SshHost.id when this session runs on another machine. */
-  hostId?: string
-}
-
 /* ---------------------------------------------------------------- projects */
 
 /**
@@ -417,7 +402,7 @@ export interface WorklogScanReport {
    * drafts were written without a look at the boards first — the scan still
    * ran and still produced proposals, so the outcome stays 'proposed' rather
    * than getting recast as a failure, but the user is owed the same warning
-   * either way (H5, .superpowers/sdd/plan-resolutions.md). And non-null for
+   * either way. And non-null for
    * 'nothing' when the transcript itself held no turns yet — a session that
    * has not started and a session the model read and dismissed both reach
    * `outcome: 'nothing'`, and this is the only field that tells them apart
@@ -575,7 +560,7 @@ export interface Settings {
     port: number
     /** Bearer key; generated on first use. Also carried in the QR link. */
     token: string
-    /** Public hostname the tunnel points at, e.g. code.vinn.dev. */
+    /** Public hostname the tunnel points at, e.g. stoke.example.com. */
     hostname: string
     /** Listen on the LAN as well as loopback. Off by default. */
     bindLan: boolean

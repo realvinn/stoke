@@ -24,10 +24,8 @@ import { join } from 'node:path'
 import { buildHeadlessArgs, DEFAULT_HEADLESS_MODEL, isBudgetExhausted } from '../src/main/agent.ts'
 import {
   APPLY_MAX_BUDGET_USD,
-  CLICKUP_LIST_ID,
   MAX_DIGEST_CHARS,
   MAX_TITLE_CHARS,
-  NOTION_DATA_SOURCE,
   SCAN_DISALLOWED_TOOLS,
   SCAN_MAX_BUDGET_USD,
   WRITE_ORDER,
@@ -46,7 +44,7 @@ import {
 } from '../src/main/worklog/runner.ts'
 /*
  * The observed shape a budget-exhausted headless run returns, shared with
- * verify-worklog-recall.mts (plan-resolutions.md, Task 24) rather than
+ * verify-worklog-recall.mts (Task 24) rather than
  * restated here. See scripts/worklog-budget-fixture.ts for the measurement
  * and the tool that produced it.
  */
@@ -62,7 +60,7 @@ import {
   type ProposalDraft
 } from '../src/main/worklog/queue.ts'
 import type { TranscriptTurn } from '../src/main/sessionFile.ts'
-import type { WorklogProposal } from '../src/shared/types.ts'
+import type { WorklogBoards, WorklogProposal } from '../src/shared/types.ts'
 
 let failures = 0
 
@@ -292,8 +290,8 @@ check('a short session is not elided', /elided/.test(shortDigest), false)
 
 const prompt = buildScanPrompt({
   sessionId: 'abc-123',
-  cwd: 'G:\\Code\\gitea-company\\refinity',
-  group: 'gitea-company',
+  cwd: 'G:\\Code\\work\\refinity',
+  group: 'work',
   title: 'Worklog runner',
   digest
 })
@@ -351,8 +349,8 @@ ok('effort is pinned rather than inherited', scanArgs.includes('--effort'), scan
 const proposal = (over: Partial<WorklogProposal> = {}): WorklogProposal => ({
   id: 'id-1',
   sessionId: 's-1',
-  cwd: 'G:\\Code\\gitea-company\\refinity',
-  group: 'gitea-company',
+  cwd: 'G:\\Code\\work\\refinity',
+  group: 'work',
   title: 'Fixed the meter',
   body: 'The context meter read zero on resumed sessions.',
   targets: ['notion', 'clickup'],
@@ -361,13 +359,24 @@ const proposal = (over: Partial<WorklogProposal> = {}): WorklogProposal => ({
   ...over
 })
 
-const clickupPrompt = buildApplyPrompt(proposal(), 'clickup')
-const notionPrompt = buildApplyPrompt(proposal(), 'notion')
-ok('the ClickUp prompt names the settled list', clickupPrompt.includes('901615258684'))
+/*
+ * Board ids are injected, never taken from a default. The shipped default is
+ * blank — a prompt built without boards names no destination at all — so a
+ * fixture is the only thing these assertions can honestly be written against.
+ */
+const FIXTURE_BOARDS: WorklogBoards = {
+  targets: ['notion', 'clickup'],
+  notionDataSource: 'collection://fixture-notion-source',
+  clickupListId: '900000000001'
+}
+
+const clickupPrompt = buildApplyPrompt(proposal(), 'clickup', FIXTURE_BOARDS)
+const notionPrompt = buildApplyPrompt(proposal(), 'notion', FIXTURE_BOARDS)
+ok('the ClickUp prompt names the settled list', clickupPrompt.includes('900000000001'))
 ok('the ClickUp prompt does not mention Notion', !/notion/i.test(clickupPrompt), clickupPrompt)
 ok(
   'the Notion prompt names the settled data source',
-  notionPrompt.includes('collection://368d3f2d-1f02-817c-b193-000b208e36bd')
+  notionPrompt.includes('collection://fixture-notion-source')
 )
 ok('the Notion prompt does not mention ClickUp', !/clickup/i.test(notionPrompt), notionPrompt)
 ok('both prompts ask for the URL back', /\{"url"/.test(clickupPrompt) && /\{"url"/.test(notionPrompt))
@@ -463,8 +472,8 @@ console.log('\nthe queue')
 
 const draft = (over: Partial<ProposalDraft> = {}): ProposalDraft => ({
   sessionId: 's-1',
-  cwd: 'G:\\Code\\gitea-company\\refinity',
-  group: 'gitea-company',
+  cwd: 'G:\\Code\\work\\refinity',
+  group: 'work',
   title: 'Fixed the meter',
   body: 'body',
   targets: ['notion'],
@@ -1032,16 +1041,15 @@ ok(
     .includes('collection://other-source')
 )
 ok(
-  'and the shipped default is nowhere in it',
+  'and the id of a board it was not pointed at is nowhere in it',
   !buildApplyPrompt(proposal(), 'notion', { ...otherBoards, targets: ['notion', 'clickup'] })
-    .includes(NOTION_DATA_SOURCE)
+    .includes(FIXTURE_BOARDS.notionDataSource)
 )
 ok(
   'a configured ClickUp list reaches the prompt',
   buildApplyPrompt(proposal(), 'clickup', { ...otherBoards, targets: ['notion', 'clickup'] })
     .includes('111222333')
 )
-check('the defaults are still exported for anything that imports them', typeof CLICKUP_LIST_ID, 'string')
 
 /*
  * CLAUDE.md gotcha 17. Proposal ids are the sha1 of the dedupe key and every
@@ -1231,8 +1239,8 @@ console.log('\nwith one board switched on, nothing unwritable is proposed')
 
 const onePrompt = buildScanPrompt({
   sessionId: 'abc-123',
-  cwd: 'G:\\Code\\gitea-company\\refinity',
-  group: 'gitea-company',
+  cwd: 'G:\\Code\\work\\refinity',
+  group: 'work',
   digest,
   targets: ['notion']
 })

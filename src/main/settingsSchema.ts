@@ -87,6 +87,36 @@ export const DEFAULT_SETTINGS: Settings = {
   hideStatusLine: true
 }
 
+/**
+ * Two built-in profiles were renamed for 0.4.0: `gitea-company` -> `work` and
+ * `gitea-vibe` -> `side`. They were one person's forge namespaces shipping as
+ * two of the four built-ins, inert for everybody else — and `gitea-company`
+ * held the label "Work", so a folder actually called `work` was denied the
+ * chip that named it.
+ *
+ * A profile id doubles as the project *group* it matches (`seedToResolved`
+ * sets `groups: [p.id]`), so renaming the seed alone would quietly stop
+ * matching the folders it used to. Anyone who had customised one of these
+ * profiles has a stored record whose `groups` still names the old folder, and
+ * that record must keep working: the rename is applied to its **id** while its
+ * `groups` are left exactly as found. The chip keeps its colours, keeps its
+ * folders, and only its identity moves.
+ *
+ * A stored record already using the new id wins — this never overwrites one.
+ */
+const RENAMED_PROFILE_IDS: Record<string, string> = {
+  'gitea-company': 'work',
+  'gitea-vibe': 'side'
+}
+
+function renameProfileIds(profiles: ProfileConfig[]): ProfileConfig[] {
+  const taken = new Set(profiles.map((p) => p.id))
+  return profiles.map((p) => {
+    const renamed = RENAMED_PROFILE_IDS[p.id]
+    return renamed && !taken.has(renamed) ? { ...p, id: renamed } : p
+  })
+}
+
 function hydrateProjectMeta(raw: unknown): Record<string, ProjectMeta> {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
   const out: Record<string, ProjectMeta> = {}
@@ -164,7 +194,9 @@ export function hydrateSettings(raw: unknown): Settings {
     customThemes: Array.isArray(r.customThemes)
       ? r.customThemes.map(validateTheme).filter((t): t is Theme => t !== null)
       : [],
-    profiles: Array.isArray(r.profiles) ? r.profiles.filter(isProfileConfig) : [],
+    profiles: Array.isArray(r.profiles)
+      ? renameProfileIds(r.profiles.filter(isProfileConfig))
+      : [],
     /*
      * A view filter, and now one the tab strip writes on every activation — so
      * it is repaired like every other structured field rather than trusted. An
@@ -174,7 +206,10 @@ export function hydrateSettings(raw: unknown): Settings {
      */
     activeProfile:
       typeof r.activeProfile === 'string' && r.activeProfile.trim() !== ''
-        ? r.activeProfile.trim()
+        ? // Renamed alongside the stored records above, or a machine sitting on
+          // one of the two old ids would come back with its filter pointing at
+          // a profile that no longer exists.
+          (RENAMED_PROFILE_IDS[r.activeProfile.trim()] ?? r.activeProfile.trim())
         : null,
     hosts: Array.isArray(r.hosts)
       ? r.hosts

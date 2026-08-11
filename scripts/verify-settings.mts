@@ -254,8 +254,49 @@ check('a real id survives, trimmed', hydrateSettings({ activeProfile: ' Work ' }
  */
 check(
   'an id with no profile behind it is kept, because the profile may be on another machine',
+  hydrateSettings({ activeProfile: 'a-folder-on-the-other-desk' }).activeProfile,
+  'a-folder-on-the-other-desk'
+)
+
+/*
+ * The one exception to "an unknown id is kept verbatim": the two ids renamed in
+ * 0.4.0. A profile id doubles as the project group it matches, so leaving these
+ * alone would strand a machine's selection on a profile that no longer exists,
+ * and stranding it is indistinguishable from the case above — which is exactly
+ * why this is asserted rather than assumed.
+ */
+check(
+  'a renamed profile id is carried forward, not stranded',
+  hydrateSettings({ activeProfile: 'gitea-company' }).activeProfile,
+  'work'
+)
+check(
+  'and so is the other one',
   hydrateSettings({ activeProfile: 'gitea-vibe' }).activeProfile,
-  'gitea-vibe'
+  'side'
+)
+check(
+  'a stored record is renamed by id',
+  hydrateSettings({ profiles: [{ id: 'gitea-company', groups: ['gitea-company'] }] }).profiles[0].id,
+  'work'
+)
+check(
+  'but keeps the groups it already matched, so its folders do not move',
+  JSON.stringify(
+    hydrateSettings({ profiles: [{ id: 'gitea-company', groups: ['gitea-company'] }] }).profiles[0]
+      .groups
+  ),
+  '["gitea-company"]'
+)
+check(
+  'and a record already on the new id is left alone rather than collided with',
+  hydrateSettings({
+    profiles: [
+      { id: 'work', groups: ['work'] },
+      { id: 'gitea-company', groups: ['gitea-company'] }
+    ]
+  }).profiles.map((p) => p.id).join(','),
+  'work,gitea-company'
 )
 check('and an untouched machine has no selection', hydrateSettings({}).activeProfile, null)
 

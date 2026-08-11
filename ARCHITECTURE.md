@@ -117,6 +117,20 @@ settings file, the wrapper and the payloads all live under the system temp direc
 append semantics differ across macOS and Windows, and only the handful of sessions with an
 open tab are ever tracked.
 
+**One launch path gets no context ring at all: `--continue`.** The watcher depends on knowing
+the session id before the process starts, which is why a new session is handed a `--session-id`
+Stoke minted itself. `--continue` takes no id — the CLI picks one after launch — so `pty.ts`
+resolves the id to the empty string, `ContextWatcher.watch('')` returns immediately rather than
+starting a watch, and no `ctx:update` is ever emitted for that tab. Nor is there a
+way to repair it later: `ctx:watch`, `ctx:unwatch` and `ctx:update` are the entire context
+surface in `src/shared/ipc.ts`, and all three are keyed on an id the caller must already hold,
+so a session id discovered after the fact has no channel to arrive on. `--resume` is unaffected,
+because it is handed the id it is resuming. The session is not silent otherwise: it still gets a
+statusLine wrapper, named after a random launch key instead of a session id, and still writes
+payloads — which is why the plan-limit chip keeps working for it, since `refreshLastStatusLine`
+reads those files by launch key and the rate limits in them are account-wide anyway. It is the
+per-session reading, and only that, which is wired to nothing.
+
 ## The docked browser
 
 `src/main/browser.ts` runs tabbed `WebContentsView`s on a persistent partition
@@ -126,9 +140,30 @@ Two structural points:
 
 - **Views stay mounted and are merely hidden.** A detached view gets a 0×0 viewport and never
   lays out (gotcha 3).
-- **Console and network capture uses Electron events and the `webRequest` API, not CDP.** Only
-  one debugger client may attach at a time and that slot must stay free for DevTools. Network
-  entries are routed back to their tab via `webContentsId`.
+- **Console and network capture uses Electron events and the `webRequest` API, not CDP.** The
+  reason is coverage, not availability: `webRequest` listens for the life of the session with
+  no attach, no reload and no observer effect, so a page's very first request is captured — a
+  debugger session opened on demand would already have missed it. Network entries are routed
+  back to their tab via `webContentsId`.
+
+CDP *is* used, just not for capture. `src/main/mcp/cdp.ts` opens a **short-lived session per
+operation** rather than holding one open, because an attached debugger is not free — some
+domains carry a stated cost for as long as they are enabled — and nothing here needs to observe
+events between calls. Sessions are **serialised through one promise queue per `WebContents`**:
+two tools running at once would otherwise race on attach and detach, and the loser either sees
+"Debugger is already attached" or has the session pulled out from under it mid-command.
+Three tools are built on it — `browser_design` (computed styles and geometry for
+every laid-out node from a single `DOMSnapshot.captureSnapshot`), `browser_security` (the
+`scriptParsed` replay that finds exposed source maps without issuing one extra request, plus
+`Network.getAllCookies`) and `browser_perf` (`Profiler` and `CSS` coverage across a
+cache-disabled reload). `browser_stack` is the exception: it runs its detection script through
+`executeJavaScript` and touches CDP not at all.
+
+This file and `browser.ts` both used to assert that only one debugger client may attach at a
+time and that the slot had to stay free for DevTools, and every one of those capabilities was
+written off on that basis. It is not true of Chromium, which supports several protocol clients
+per target; probed directly on Electron 43, commands succeed while DevTools is open and a fresh
+attach succeeds while it is open.
 
 ## Giving Claude the browser
 
@@ -176,11 +211,30 @@ setter — React and Vue track input values internally and ignore a plain assign
 `src/main/remote/server.ts` serves the mobile bundle plus a small API and a WebSocket that
 attaches to a PTY, replaying its scrollback first.
 
-- Binds to loopback. The intended deployment is a Cloudflare Tunnel pointing a hostname at
-  it, so the machine **never opens an inbound port**.
-- A bearer token is required regardless of Cloudflare Access. If the tunnel is up and the
-  Access policy is misconfigured or removed, that token is the only thing between the
-  internet and a shell. An opt-in mode additionally rejects anything lacking Access headers.
+- **Loopback by default**, and that is the intended deployment: a Cloudflare Tunnel pointing a
+  hostname at it, with cloudflared running on this machine and dialling `127.0.0.1`, so nothing
+  inbound is opened at all. Two shipped toggles do open a port, and both are off unless asked
+  for. `bindLan` moves the listener to `0.0.0.0`, which is all-or-nothing — binding the LAN
+  address alongside `127.0.0.1` would collide on the port — so it exposes Stoke to whatever
+  network the machine is on. `bindTailscale` instead adds a *second* listener on the machine's
+  own `100.64.0.0/10` address, so a phone on the tailnet reaches Stoke without the tunnel and
+  nothing on the surrounding network can; it only applies when `bindLan` is off, since the
+  `0.0.0.0` listener already covers the tailnet, and it is best effort, because Tailscale being
+  absent or down must not take the whole remote server with it.
+- **A bearer token is required on every path**, on every listener, regardless of Cloudflare
+  Access. If the tunnel is up and the Access policy is misconfigured or removed, that token is
+  the only thing between the internet and a shell.
+- `requireAccessHeader` is the opt-in that additionally rejects anything arriving without
+  Cloudflare Access headers. It is enforced on the loopback listener **and on the LAN one**, and
+  deliberately not on the dedicated tailnet listener: a request that reached the machine over
+  the tailnet did not come through the tunnel and so can never carry those headers, and
+  enforcing it there would 401 every device on the VPN, WebSocket upgrade included. The
+  exemption is decided by asking which listener accepted the connection — read off the socket's
+  local address, so a header cannot forge it — rather than by inference. Two earlier attempts
+  inferred it and were wrong in opposite directions, both silently: keying on "came in on
+  loopback" also exempted the LAN, since `bindLan` collapses everything onto one `0.0.0.0`
+  listener; adding a `!bindLan` guard then made the condition always true in the Tailscale
+  configuration, so every tailnet request 401'd and the terminal simply never opened.
 - **PTY resize from a phone is opt-in.** A phone resizing would reflow the desktop terminal
   under whoever is sitting at it, so by default the phone renders at the desktop's width and
   scrolls sideways.
@@ -291,14 +345,38 @@ rasterises it through Electron itself, avoiding an image toolchain.
 Self-update uses `electron-updater` against GitHub releases, configured in the `publish` block
 of `electron-builder.yml`. It only activates for a packaged app with a published release.
 
-**macOS packages can only be built on macOS.** Windows can produce Windows and Linux
-packages; a Mac can produce all three.
+**macOS packages can only be built on macOS**, and the Windows NSIS installer needs Windows,
+so neither installer can be produced on the other's machine. That is what
+`.github/workflows/release.yml` exists for: a pushed tag fans out to a `windows-latest` and a
+`macos-14` runner, and one later job creates the release from both sets of artifacts.
+
+There is **no Linux build**. `electron-builder.yml` declares an `AppImage` target, but nothing
+invokes it — there is no `dist:linux` script and no CI job passes `--linux` — so no Linux
+package has ever been produced or shipped. Treat that target as a starting point for whoever
+wants one, not as a supported output.
 
 ## Testing
 
-`scripts/verify-context.mts` runs the real parser against the largest transcripts on the
-machine and asserts the context maths, the window inference and the live watcher path. It is
-wired into `npm run check`.
+Verification lives in `scripts/`, one `verify-*` suite per subject — eighteen of them now.
+Sixteen are `.mts`, run straight through node's type-stripping with no build step, and those
+sixteen are exactly what `npm run check` runs between the typecheck and the full build; `check`
+is the gate, and it is what "done" means here. Between them they cover the context maths, the
+statusLine payload and the plan limits read out of it, settings hydration, folder metadata,
+profile resolution, colour and contrast, terminal cell widths, tab selection after a close, the
+ssh argv and remote transcript fetch, the updater's error handling, and five separate suites for
+the worklog. Each runs alone; `CLAUDE.md` is where the per-suite descriptions live.
+
+The other two are `.mjs` and want a live instance rather than a fixture, which is why `check`
+cannot run them: `verify:extract` drives the page extractor through Stoke's own MCP endpoint,
+and `verify:security` is pointed at a running remote server with a URL and a token. CI leaves
+out two more of its own — fourteen suites run there — for reasons written into
+`.github/workflows/release.yml`. `verify:ssh` fails on a modern OpenSSH, which rejects the
+suite's two-word host-alias fixture; pre-existing, and unrelated to any release. And
+**`verify:context` deliberately reads the real transcripts under `~/.claude/projects`**: that is
+the reason it exists, not an oversight. It asserts the context maths, the window inference and
+the live watcher path against actual sessions on the machine, so on a clean runner the directory
+is simply not there and the suite throws. Teaching it to synthesise its own fixtures would
+delete the only thing it is for, so it runs on a developer's machine and is skipped in CI.
 
 Beyond that, verification has been done by driving the running app over CDP — launching with
 `--remote-debugging-port`, clicking through real flows and capturing screenshots. That is how

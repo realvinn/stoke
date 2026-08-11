@@ -363,11 +363,6 @@ export function buildSshArgs(host: SshHost): string[] {
   return args
 }
 
-/** Everything pty.ts needs to start a remote session: what to run, and with what. */
-export function sshSpawnSpec(host: SshHost): { file: string; args: string[] } {
-  return { file: sshExecutable(), args: buildSshArgs(host) }
-}
-
 /* ------------------------------------------------------ the remote transcript */
 
 /**

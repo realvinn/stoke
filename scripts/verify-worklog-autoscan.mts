@@ -758,7 +758,7 @@ console.log('\nwhich folder each session was started in, across a restart')
     const local: StoredSession = { sessionId: 's1', cwd: '/Users/x/work/api', hostId: null, at: NOW }
     const remote: StoredSession = { sessionId: 's2', cwd: '/srv/app', hostId: 'h-1', at: NOW }
     writeSessionState(file, [local, remote])
-    // NOW explicitly, not the defaulted Date.now(): plan-resolutions.md Task 33
+    // NOW explicitly, not the defaulted Date.now(): Task 33
     // — the suite's clock is 1970, and readSessionState()'s age filter would
     // drop both records against the real clock, failing this check and then
     // throwing on the [0] below.

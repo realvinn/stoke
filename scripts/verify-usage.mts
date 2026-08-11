@@ -144,7 +144,7 @@ console.log('\nwhat the chip actually draws when both sources answer at once')
  * verify-statusline.mts already proves statusLineWindows() and
  * mergeUsageWindows() in detail, against the same captured 2.1.221 payload —
  * repeating those checks here would be the exact duplication
- * plan-resolutions.md's H3 ruling rules out. What that suite never does is
+ * the H3 ruling rules out. What that suite never does is
  * call parseUsage(), the account-route parser this file alone owns, and
  * merge ITS real output with a real payload the way UsageMeter.tsx actually
  * does it. That composition — not either parser in isolation — is this

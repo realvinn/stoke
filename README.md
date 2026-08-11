@@ -23,7 +23,7 @@ windows and mac.
 you need [node](https://nodejs.org) and [claude code](https://claude.com/product/claude-code) first.
 
 ```bash
-git clone git@github-personal:realvinn/stoke.git
+git clone https://github.com/realvinn/stoke.git
 cd stoke
 npm install
 npm run dev
@@ -38,8 +38,11 @@ npm run dist:mac     # mac (m1) -> release/Stoke-<version>-arm64.dmg
 
 a mac app can only be built on a mac. windows can't make one.
 
-or just download the windows one from
-[releases](https://github.com/realvinn/stoke/releases).
+or build nothing at all: every tag builds both on ci, so the windows installer
+and the mac dmg are sitting on
+[releases](https://github.com/realvinn/stoke/releases). there's a `.zip` up there
+too — that one is only how a mac installs its own updates, not something you
+need to download.
 
 ## phone access
 
@@ -51,7 +54,10 @@ don't paste it anywhere. **new key** in settings kills the old one.
 your desktop has to be awake and running stoke — nothing is hosted anywhere.
 
 to reach it from outside your house, put a cloudflare tunnel in front of it and
-turn on cloudflare access. `BUILDING.md` has the steps.
+turn on cloudflare access. the same panel runs the tunnel for you: install
+`cloudflared`, give it the hostname yours routes to, and it'll start a named one
+— or a throwaway quick one, which has no access policy in front of it and is
+only worth using for a few minutes.
 
 ## the worklog
 
@@ -83,19 +89,45 @@ can't tell them apart and will take the newest.
 it costs tokens — it's a real claude run on top of the work you just did. it's
 capped at six scans an hour, one per session every twenty minutes, and it reads
 your boards at most once every ten minutes however many sessions get scanned.
-those counters live in memory, so restarting stoke starts them over. leave
-profiles you don't report on switched off.
+those counters are kept on disk, so restarting stoke doesn't hand you a fresh
+six an hour. only the ten-minute board read is held in memory, and that one does
+start over. leave profiles you don't report on switched off.
 
 ## heads up
 
-mac has never actually been run. it builds from the same code, but nothing on
-that side has been tested.
+mac is real now — it gets built, launched and used, and ci builds it on every
+tag. these bits of it still haven't been proven:
+
+- the window chrome. every screenshot so far was taken from inside the page, so
+  the title bar and the gap the traffic lights sit in have never actually been
+  looked at
+- finding `claude` when stoke is opened from the finder or the dock. that case
+  asks your login shell where its PATH is, and every launch so far already had
+  one handed to it by the terminal that started it
+- the ⌘ shortcuts. the buttons behind them have been clicked plenty of times;
+  the keystrokes themselves have never been pressed
+- reading your plan limits off your account. on mac that token lives in the
+  login keychain and stoke only looks in `~/.claude/.credentials.json`, so the
+  call fails — the meter still fills in, because it reads the same numbers out
+  of the running session instead
+- updating itself. the ci build is ad-hoc signed and macos won't swap an ad-hoc
+  build for a downloaded one, so the download button stays greyed out and sends
+  you to the releases page until there's a developer id to sign with
 
 ## checks
 
 ```bash
-npm run typecheck
+npm run check             # typecheck, every suite, then the build. this is the gate
 npm run verify:usage      # the limit numbers
-npm run verify:security   # the phone server
-npm run verify:context    # the context meter
+npm run verify:context    # the context meter, run against the real transcripts
+                          # in ~/.claude on whatever machine you run it on
 ```
+
+the phone server has its own suite, and it wants a stoke that's already running
+— give it the link and key from settings -> remote:
+
+```bash
+npm run verify:security <url> <token>
+```
+
+add `--access` on the end if you've put cloudflare access in front of it.

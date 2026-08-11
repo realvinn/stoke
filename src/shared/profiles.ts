@@ -7,7 +7,7 @@
  * in a lecture you are not looking at work from somewhere else.
  *
  * They key off `Project.group`, which is already the parent folder's name, and
- * those folders already carry separate git identities (see G:/Code/CLAUDE.md).
+ * those folders already carry separate git identities.
  * So the grouping is not invented here — it is the one the machine already has.
  *
  * Two lists meet in this file:
@@ -83,7 +83,7 @@ export const PROFILES: Profile[] = [
     secondary: '#6ea8fe'
   },
   {
-    id: 'gitea-company',
+    id: 'work',
     label: 'Work',
     accent: '#5fd08a',
     accentHover: '#83deA5',
@@ -91,8 +91,8 @@ export const PROFILES: Profile[] = [
     accentContrast: '#08170f'
   },
   {
-    id: 'gitea-vibe',
-    label: 'Vibe',
+    id: 'side',
+    label: 'Side',
     accent: '#b48ef7',
     accentHover: '#c8aaf9',
     accentSoft: 'rgba(180, 142, 247, 0.14)',
@@ -273,7 +273,7 @@ export function deriveProfiles(counts: Map<string, number>): Profile[] {
 
   /*
    * What the named profiles already speak for: their ids, and their labels.
-   * The labels matter — `gitea-company` is labelled Work, so a folder called
+   * The labels matter — `work` is labelled Work, so a folder called
    * `work` sitting beside it would produce two chips reading Work, and the
    * chip is all the user sees.
    */

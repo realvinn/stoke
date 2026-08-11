@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs'
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { basename, dirname, join, sep } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import type { Project, SessionMeta, Settings } from '@shared/types'
 import { pathRulesFor } from '../shared/paths.ts'
 import { applyProjectMeta } from './projectMeta.ts'
@@ -316,8 +316,4 @@ export async function findSessionFile(sessionId: string): Promise<string | null>
     if (existsSync(candidate)) return candidate
   }
   return null
-}
-
-export function projectDisplayGroup(p: Project): string {
-  return p.group || p.path.split(sep)[0] || ''
 }

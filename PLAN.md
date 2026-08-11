@@ -25,10 +25,20 @@ verified working.** Two were reported broken; both turned out not to be, and the
 worth keeping because either would waste an afternoon again.
 
 - **"Ctrl+C does not copy."** It does. Claude Code enables mouse reporting, so xterm forwards
-  a plain drag to the application instead of selecting — **Shift**-drag is the bypass. The
-  agent's drag selected nothing, so `getSelection()` was empty and the handler correctly fell
-  through to SIGINT. Reproduced both ways: plain drag leaves the context menu's Copy disabled,
-  Shift-drag enables it, and Shift-select then Ctrl+C put the line on the clipboard.
+  a plain drag to the application instead of selecting — on Windows and Linux, where this sweep
+  ran, **Shift**-drag is the bypass. The agent's drag selected nothing, so `getSelection()` was
+  empty and the handler correctly fell through to SIGINT. Reproduced both ways: plain drag
+  leaves the context menu's Copy disabled, Shift-drag enables it, and Shift-select then Ctrl+C
+  put the line on the clipboard.
+
+  **The unqualified "Shift" in that sentence hid a real macOS defect for a release.** xterm's
+  `shouldForceSelection` reads `event.altKey && rawOptions.macOptionClickForcesSelection` on
+  macOS and bare `event.shiftKey` everywhere else, and that option defaults to `false` and was
+  never set — so on macOS *no* modifier could bypass, selection was impossible rather than
+  awkward, and the right-click menu's Copy sat permanently disabled. 0.4.0 sets
+  `macOptionClickForcesSelection: true` (`TerminalView.tsx:107`), which makes the macOS bypass
+  **Option**-drag, the same modifier Terminal.app and iTerm2 use. Quote the platform with the
+  modifier from now on; the asymmetry is exactly what made this read as "copy is broken".
 - **"Right-click kills the app."** It does not. Another agent had run a blanket
   `taskkill /F /IM electron.exe /T`, which took down five process trees including the ones
   under test. Re-run alone on an idle machine, the app survived every right-click.
@@ -46,33 +56,34 @@ or their cleanup becomes another agent's crash report.
 - `cloudflared` itself — only the Access header was simulated against a local listener
 - a profile *write* — create, rename, recolour and delete were planned or rendered, never committed
 - the phone UI end to end — remote auth was proven at the HTTP layer only
-- an installed build of any of it, and therefore the 0.3.2 → next self-update path
+- an installed build of any of it, and therefore the self-update path. Still open at 0.4.0, and
+  worse than it looked: CI now builds and publishes both installers, but every release up to and
+  including v0.4.0-beta.3 shipped a dmg-only `latest-mac.yml`, so no Mac could ever have updated
+  itself — `MacUpdater` rejects `dmg` and `pkg` by name and wants a zip. That was found by
+  reading electron-updater's source, not by running an update, which is exactly the point: the
+  build was green, the dmg existed and the panel cheerfully offered the update
 - the virtual-cable microphone warning, which cannot fire while a real mic is default
-
-## Where things stand — 2026-08-03
-
-**0.3.2**, tagged `10b4ad5`, installer built at `release/Stoke-0.3.2-x64-setup.exe` and
-**verified against a real install on 2026-08-03** — typecheck, usage and all 16 security
-checks pass, first run is clean, and the new window frame is correct packaged. See item 1.
-
-The app ships: PTY-wrapped real `claude` CLI, project and session discovery, the live
-context meter, usage bars, profiles, a docked Chromium exposed to Claude over MCP as 17
-tools, themes, remote phone access over a Cloudflare tunnel with voice input, and
-self-update.
 
 ## What shipped, and what did not — as of 2026-08-04
 
-Ten commits sit unreleased on `main`. Against the four things originally asked for:
+Everything below now sits inside **0.4.0**. Against the four things originally asked for:
 
 | Asked for | State |
 | --- | --- |
-| A proper way to copy and paste | **Done.** Bracketed paste, a themed right-click menu, right-click no longer pastes, smart Ctrl+C. |
+| A proper way to copy and paste | **Done.** Bracketed paste, a themed right-click menu, right-click no longer pastes, smart Ctrl+C — and, later in 0.4.0, mouse selection on macOS at all, which had been impossible rather than merely awkward. |
 | Windows mic passthrough | **Resolved differently.** The fault was VB-Cable claiming the default recording device, so `/voice` recorded silence. Stoke now *warns* about that. Passthrough itself was deliberately not built — see below. |
 | Theme and profile editors | **Half.** Profiles can be created, renamed, recoloured and deleted. **There is no theme editor**; Settings still says to hand-edit `customThemes`. |
 | Per-profile Notion/ClickUp agent | **Done, 0.4.0.** Watched sessions are scanned on their own once they go quiet, the agent reads the boards first so it can update rather than duplicate, and a prompt asks add-or-update. `shouldWatch` now has its caller. |
 
-Also landed, unasked: Tailscale binding, an ultracode launch toggle, SSH sessions, context-tier
-detection from the CLI banner, dev-profile isolation, and a run of real bug fixes.
+Also landed, unasked: Tailscale binding, an ultracode launch toggle, SSH sessions, dev-profile
+isolation, and a run of real bug fixes. Context-tier detection began as banner parsing and was
+then superseded — the CLI stopped printing the tier in 2.1.221, so Stoke installs its own
+`statusLine` command and reads the window (and the plan limits) out of the payload the CLI pipes
+it; the banner survives only as the fallback for older CLIs and for SSH sessions, which get no
+wrapper. Later in the cycle, unasked again: dictation in the desktop terminal, a tabbed launcher
+whose tabs can be dragged into order, per-folder icons and display names, the strict 4px spacing
+scale, and a CI release workflow that builds the Windows and macOS installers from one matrix and
+publishes them from one job.
 
 **Not done and not started:** the theme editor, wiring `sttUrl` to the tailnet speech box, and
 any OCR.
@@ -127,7 +138,9 @@ Derived from a 7-agent recon pass. Wave 0 is shared plumbing and blocks the rest
   renderer cannot import from `src/main`); lift the WAV helpers out of `src/remote/voice.ts`
   into `src/shared/audio.ts` rather than forking them; own the application `Menu` explicitly;
   add `verify:profiles` to `npm run check`, which today is only typecheck + verify:context +
-  build.
+  build. (What actually landed: the whole recorder moved, not just the WAV helpers, and it went
+  to `src/shared/voice.ts` — `src/remote/voice.ts` no longer exists. The transport is injected,
+  which is what let the desktop's dictation reuse it in 0.4.0 without a second copy.)
 - **Wave 1** — (A) clipboard, (B) the profile store, (C) audio capture core.
 - **Wave 2** — (D) theme editor, (E) profile editor, (F) the voice passthrough itself,
   (G) a headless `claude -p` runner in `src/main/agent.ts`.
@@ -135,11 +148,13 @@ Derived from a 7-agent recon pass. Wave 0 is shared plumbing and blocks the rest
 
 ### Live bugs the recon found, worth fixing regardless
 
-- **Paste is not bracketed.** `TerminalView.tsx:109-114` does a raw `pty.write`, so every
-  newline in a multi-line paste acts as Enter and fires a separate prompt; Windows CRLF can
-  double-submit. `term.paste()` normalises newlines and brackets only when the CLI actually
-  advertises DECSET 2004. **Fixed in wave 1-A.** The same bug exists independently in the
-  phone UI's `submit()`.
+- ~~**Paste is not bracketed.**~~ **Fixed in wave 1-A.** The paste path did a raw `pty.write`,
+  so every newline in a multi-line paste acted as Enter and fired a separate prompt; Windows
+  CRLF could double-submit. `term.paste()` normalises newlines and brackets only when the CLI
+  actually advertises DECSET 2004, and both keyboard paths now go through it
+  (`TerminalView.tsx:211-241`), as does the context menu's Paste. The same bug still exists
+  independently in the phone UI's `submit()`, which writes `${value}\r` unaltered
+  (`src/remote/main.ts:742`).
 - ~~**A derived profile never repaints the accent.**~~ **Fixed.** `App.tsx` resolved against the
   static `PROFILES` list while the sidebar derived its own, so a folder-derived profile coloured
   its chip and nothing else. The list is now derived once in `App` and passed down, which
@@ -147,11 +162,24 @@ Derived from a 7-agent recon pass. Wave 0 is shared plumbing and blocks the rest
   test — `profileFor('Code')` returns null without the derived list — and the named path
   re-verified in the running app: All clears the accent, Personal `#ff9552`, Study `#ff6b6b`,
   Work `#5fd08a`. **`verify:profiles` is now part of `npm run check`**, which it was not.
-- **A malformed persisted custom theme takes the renderer down at boot** — `applyTheme` throws
-  and `store.ts` validates only `Array.isArray`.
-- **`pty.ts:167` deletes the session before `onExit` fires**, so a session id is unavailable in
-  the exit handler. Capture ids first — this blocks any exit-triggered work.
-- Four hardcoded `#fff` remain in `app.css`, against the no-hardcoded-colour rule.
+- ~~**A malformed persisted custom theme takes the renderer down at boot**~~ **Fixed.**
+  `applyTheme` threw and `store.ts` validated only `Array.isArray`. Hydration now repairs every
+  persisted theme instead of trusting it: `settingsSchema.ts:164-165` maps each entry through
+  `validateTheme`, which fills missing tokens from the matching built-in, and drops outright
+  what cannot be repaired. A theme missing one token used to take the whole renderer down at
+  boot with no way back in, which is why repair beat rejection here.
+- ~~**`pty.ts:167` deletes the session before `onExit` fires**~~ **Fixed**, and the exit-triggered
+  work it blocked was then built on top of it. The exit callback now carries the session id as a
+  fourth argument, read off the session record before the delete (`pty.ts:300`), and `index.ts`
+  consumes it (`index.ts:677-687`) to drop the statusLine bookkeeping for a session that ended on
+  its own. Without it `sessionIdFor` already returns null by the time a user closes the tab, so
+  the entry would sit in `statusLineSeen` forever.
+- ~~Four hardcoded `#fff` remain in `app.css`~~ **Fixed. Zero remain.** The one `#ffffff` the
+  file still contains is inside a comment explaining why white is *not* the ink on `--danger`:
+  recomputed against `src/shared/themes.ts` it measures 2.89 (Ember), 2.84 (Nocturne), 2.70
+  (Moss) and 6.01 (Daylight), so three of four fail 4.5:1 and two of those three are button
+  text. `--on-danger` is `var(--bg)`, which measures 6.50 / 6.66 / 6.85 / 5.46 and clears the
+  threshold on all four. `scripts/verify-color.mts` asserts it.
 
 ### Worklog execution — settled by probe, 2026-08-04
 
@@ -181,12 +209,16 @@ Left unchecked this is the kind of feature that quietly costs more than it saves
 
 ### Worklog destinations — settled
 
-- **Notion:** the `✅ Tasks` data source, `collection://368d3f2d-1f02-817c-b193-000b208e36bd`.
-  Its schema already matches what the worklog skill writes, with no drift.
-- **ClickUp:** *Vinh Tasks → Tasks*, list `901615258684`. The Team Space is deliberately not
-  used: its only list is `IT Support Tasks`, a helpdesk queue whose statuses are
-  pending/in progress/waiting/resolved, and filing engineering work there would pollute a
-  support board.
+The concrete ids are deliberately not written down here — this repo is public, and a data
+source id or list id is a live address on somebody's workspace. They live in settings
+(`worklogBoards.notionDataSource`, `worklogBoards.clickupListId`), editable in the worklog's
+own settings panel, with the shipped defaults in `src/shared/worklog.ts`.
+
+- **Notion:** a `✅ Tasks` data source, addressed as `collection://<id>`. Its schema already
+  matches what the worklog skill writes, with no drift.
+- **ClickUp:** a personal *Tasks* list. The Team Space is deliberately not used: its only list
+  is a helpdesk queue whose statuses are pending/in progress/waiting/resolved, and filing
+  engineering work there would pollute a support board.
 
 ### Voice: Stoke owns the Windows default recording device — settled
 
@@ -425,7 +457,32 @@ fail. The panel and the prompt strip were rendered in the real app over CDP and 
 board, a real update, and the real status vocabularies. Everything is proven against injected
 runners. The first real accept is still the first real accept.
 
-## The worklog over SSH — 2026-08-04
+## SSH sessions, and the worklog over SSH — 2026-08-04
+
+SSH shipped in 0.4.0. It is a session *kind*, not a subsystem: `ssh.ts` parses `~/.ssh/config`
+and builds the argv, `pty.ts` spawns it exactly as it spawns `claude`, `HostsSettings` edits the
+host list, and `verify:ssh` covers the argv, the config parsing and the transcript fetch. `-t` is
+required whenever a connect command is given, or the remote gets no TTY and Claude Code's TUI
+will not render. The payoff was always the phone rather than the desktop: PTY output already
+reaches the remote UI, so a VPS or a NUC becomes phone-accessible through the tunnel that already
+exists, without putting anything on it.
+
+**This does not contradict "servers are a different problem" below.** That decision is about
+running *Stoke* on a headless box, which stays rejected. This is the opposite: don't put Stoke on
+the server, SSH out of the Stoke you already have.
+
+Two of the three limits that were predicted for it are real and permanent, and both are worth
+stating in the UI rather than leaving to be discovered:
+
+- **No session resume** in Stoke's sense. The transcript and the real working directory live on
+  the far machine. `tmux new -A -s stoke` as the connect command is the answer, which is why that
+  field exists.
+- **Credentials stay out of Stoke.** A PTY is a real terminal, so passphrase and host-key prompts
+  work as they do in any shell. Stoke should never store or prompt for a secret itself.
+
+The third predicted limit — **no context meter** — was wrong, and the work below is what
+overturned it. Reading the remote transcript back gives an SSH session the same meter as a local
+one, so the "render nothing, never a zero" instruction it came with no longer applies.
 
 > is there a way we can live record/copy all the in put and output prompts so sonnet can get an
 > idea of what is happening in that ssh session? like what agents got spawned and essentially
@@ -502,8 +559,9 @@ nothing is set up eagerly:
   answer.
 - **The profile row is not empty.** It rendered All / Personal / Study / Work. Profiles come
   from projects discovered through `~/.claude.json`, which lives outside `%APPDATA%\Stoke`
-  and so survived the reset. Vibe is absent only because no `gitea-vibe` project has ever
-  been opened by the CLI — correct behaviour for folder-derived profiles, not a defect.
+  and so survived the reset. The fourth profile was absent only because no project under
+  its folder had ever been opened by the CLI — correct behaviour for folder-derived
+  profiles, not a defect.
 - The CLI auto-detected at `~/.local/bin/claude.exe`, 2.1.220. Version read "0.3.2. Up to
   date." The renderer console stayed clean throughout.
 
@@ -564,9 +622,10 @@ did — do not regress to that.
 
 ### 6. Multi-terminal — design settled, unbuilt
 
-`App.tsx:564` is the only place a `TerminalView` is rendered. This is a structural change
-to how terminals are owned and rendered, which is why it has been deferred through three
-releases.
+`App.tsx:1082` is still the only place a `TerminalView` is rendered. 0.4.0's tabbed launcher
+did not change that — a tab selects which session that one view is attached to, it does not
+give a tab a terminal of its own. This is a structural change to how terminals are owned and
+rendered, which is why it has been deferred through four releases.
 
 The design is settled and should not be re-litigated:
 
@@ -576,20 +635,21 @@ The design is settled and should not be re-litigated:
 - **Each terminal gets its own browser view**, not one shared browser.
 - Two monitors is the motivating case.
 
-### 7a. Tailscale — DONE 2026-08-03, and it retires the Worker router
+### 7. Tailscale — DONE 2026-08-03, and it retires the Worker router
 
 Stoke can now bind the tailnet address **alongside** loopback, so a phone on the tailnet
 reaches the machine directly from anywhere while the Cloudflare tunnel keeps working.
 
 Why alongside and not instead: **cloudflared runs on this machine and dials `127.0.0.1`**
-(`tunnel.ts:92`), so binding only the tailnet address would leave the tunnel with nothing to
-reach. `bindLan` stays all-or-nothing via `0.0.0.0`, which already covers loopback and the
-tailnet — binding it next to `127.0.0.1` would collide on the port.
+(`src/main/remote/tunnel.ts:92`), so binding only the tailnet address would leave the tunnel
+with nothing to reach. `bindLan` stays all-or-nothing via `0.0.0.0`, which already covers
+loopback and the tailnet — binding it next to `127.0.0.1` would collide on the port.
 
 Detection matches the address range, not the interface name: Tailscale hands every node an
 address in `100.64.0.0/10`, and the interface is variously `Tailscale`, `tailscale0` and a
-`utun` device. On this machine that correctly picks `100.83.239.24` while ignoring the
-ZeroTier (`10.144.99.183`) and NordLynx (`10.5.0.2`) interfaces.
+`utun` device. On the machine this was built against that correctly picks the one address in
+`100.64.0.0/10` while ignoring the other VPN interfaces present — a ZeroTier and a NordLynx
+address, both in private ranges that the `100.64.0.0/10` test excludes by construction.
 
 **Access policy is now per-listener, which resolves a conflict the single flag could not.**
 Cloudflare requests carry `Cf-Access-*`; tailnet requests can never carry them. So
@@ -605,8 +665,8 @@ the cookie, and every request after the first would have 401'd with nothing to e
 Verified against a running build, 7 assertions: loopback without Access headers 401s, loopback
 with them 200s, the tailnet path 200s on the token alone, a wrong token and a missing token
 both 401 on the tailnet, and `Secure` is present on loopback and absent on the tailnet.
-`Get-NetTCPConnection` confirmed exactly two listeners, `127.0.0.1` and `100.83.239.24`, with
-no `0.0.0.0`.
+`Get-NetTCPConnection` confirmed exactly two listeners, `127.0.0.1` and the machine's
+`100.64.0.0/10` tailnet address, with no `0.0.0.0`.
 
 **Consequence for the plan: phases 3 and 4 below are dropped.** Tailscale MagicDNS gives every
 machine a stable name for free, so the Cloudflare Worker routing `/u/0` and `/u/1`, the sticky
@@ -614,60 +674,21 @@ cookie, the picker page and the prefix-awareness work are all unnecessary. It al
 trap that design was built around — one named tunnel and one hostname per machine — for any
 machine reached over the tailnet rather than a tunnel.
 
-`code.vinn.dev` is still worth keeping for devices that cannot join the tailnet, and for
-networks that block WireGuard where Tailscale's DERP fallback does not get through.
+The tunnel hostname (`stoke.example.com` here; the real one lives in settings and is never
+committed) is still worth keeping for devices that cannot join the tailnet, and for networks
+that block WireGuard where Tailscale's DERP fallback does not get through.
 
-### 7b. SSH sessions — designed, not built
-
-Asked for on 2026-08-04: reach the VPS and the NUC from Stoke the way the MacBook already does
-over SSH.
-
-This does **not** contradict the settled "servers are a different problem" decision below. That
-one is about running *Stoke* on a headless box, which stays rejected. This is the opposite and
-cleaner: don't put Stoke on the server, SSH out of the Stoke you already have.
-
-**Why it is small.** Stoke already spawns an arbitrary process in a PTY and fans its output to
-the phone. An SSH session is the same machinery with a different argv, so the work is a session
-*type*, not a new subsystem. Everything else is present on this machine already: `ssh.exe`
-(OpenSSH 9.5p2, ships with Windows), six hosts in `~/.ssh/config`, and five keys.
-
-**The real payoff is the phone, not the desktop.** PTY output already reaches the remote UI, so
-an SSH session in Stoke is reachable from the phone through the tunnel that already exists — the
-NUC and the VPS become phone-accessible without putting anything on them.
-
-Design:
-
-- A `hosts` list in settings: label, `user@host`, optional port, optional identity file, and an
-  optional **command on connect**. Empty means a login shell. That one field covers every case
-  without guessing: `claude` to land straight in a session, or `tmux new -A -s stoke` to get
-  resume and survive a dropped link.
-- `LaunchOptions` grows a session kind. `buildArgs` returns `ssh` argv instead of `claude` argv;
-  `pty.ts` spawns it the same way. `-t` is required when a command is given, or the remote gets
-  no TTY and Claude Code's TUI will not render.
-- The launcher lists hosts beside projects. A host session is a tab like any other.
-
-Three limits to state in the UI rather than discover:
-
-- **No context meter.** It reads local transcript files and a remote session's live on the far
-  machine. It must render nothing, not a zero — reporting 0% would be the plausible-wrong-output
-  failure this project keeps hitting.
-- **No session resume** in Stoke's sense, for the same reason. `tmux` on the remote is the answer,
-  which is why the connect-command field exists.
-- **Credentials stay out of Stoke.** A PTY is a real terminal, so passphrase and host-key prompts
-  work as they do in any shell. Stoke should never store or prompt for a secret itself.
-
-Blocked only by file contention: it needs `cli.ts` and `pty.ts`, which the ultracode work owns.
-
-### 7. More than one machine
+### 8. More than one machine
 
 Phase 2 is done — `ae212dc` puts `os.hostname()` in the remote header, the connect link and
 the QR caption, so two bookmarks are no longer indistinguishable.
 
 Remaining:
 
-1. **A second machine on its own hostname.** `mac.stoke.vinn.dev`, its own tunnel, its own
-   token. Prove two Stokes coexist before adding any router. This alone is usable, and it
-   needs a Mac.
+1. **A second machine on its own hostname** — say `mac.stoke.example.com` — with its own
+   tunnel and its own token. Prove two Stokes coexist before adding any router. This alone is
+   usable. It needed a Mac; 0.4.0 got one, and the app has been built and driven there, but two
+   Stokes have still never been reachable at once.
 2. **A Cloudflare Worker routing `/u/0`, `/u/1`** by sticky cookie, plus a picker page at
    `/`. Design is written up below. The standing recommendation is to build it when the
    bookmark sprawl actually irritates, not before.
@@ -691,7 +712,7 @@ instead of one, so give the Worker a `/health` route that says which slots it ca
 **Servers are a different problem.** Stoke is Electron and needs a display. For a headless
 box, plain `claude` over SSH in tmux is the right tool. Do not bend the app into a daemon.
 
-### 8. Threads raised and never decided
+### 9. Threads raised and never decided
 
 From the harness round-2 voice message. Each needs a decision from the user before it is
 worth building:
@@ -709,18 +730,22 @@ worth building:
   never reads a board change back into Stoke, and it never touches a record no session mentioned.
 - **A git tree showing features.** Recorded as a wish twice; still a wish.
 
-### 9. Known defects, deliberately not fixed
+### 10. Known defects, deliberately not fixed
 
-- **`RemoteSettings.tsx:50` polls remote status every 4 seconds** and re-renders the whole
+- **`RemoteSettings.tsx:51` polls remote status every 4 seconds** and re-renders the whole
   component. A poll landing inside the async `patchSettings` round trip rewrites a
   controlled input with a stale value and parks the caret. Still live. It is pre-existing
   and shared by the `hostname` field, not specific to the speech-server box. It is a real
   typing hazard and wants a local-draft pattern, but fixing it properly touches every field
   in the sheet.
-- **There is no in-app way to disable voice.** `voiceSupported()`
-  (`src/remote/voice.ts:22-29`) gates the microphone button on browser capability alone, so
-  an empty `sttUrl` fails at press time with a 503 from `/api/transcribe` rather than hiding
-  the button. Making empty genuinely mean "voice off" is a small follow-up.
+- **There is no in-app way to disable voice.** `voiceSupported()` — since 0.4.0 at
+  `src/shared/voice.ts:32-39`, lifted out of the old `src/remote/voice.ts` so the desktop's
+  dictation and the phone's mic button share one recorder rather than two that drift — gates the
+  microphone button on browser capability alone, so an empty `sttUrl` fails at press time with a
+  503 from `/api/transcribe` rather than hiding the button. The 503 is at least deliberate now:
+  `remote/server.ts:528-532` distinguishes "no server configured" (503, the shipped state) from
+  "could not reach one" (502), and `stt.ts:50-52` answers with a sentence naming Settings.
+  Making empty genuinely mean "voice off" is still a small follow-up.
 - **`sttUrl` is inert until the remote server restarts.** `CH.settingsSet` never calls
   `remote.start`; only token regeneration does. Every neighbouring remote field behaves the
   same way, so this matches its neighbours rather than inventing a restart. The field hint
@@ -729,12 +754,41 @@ worth building:
   admitting links as heading candidates floods the outline on every site. Accepted: a
   product grid is not a heading hierarchy, and `browser_read` returns the products.
 
-### 10. macOS
+### 11. macOS — mostly exercised now, three paths still are not
 
-**No Mac code path has ever run.** The mac-specific paths are the `hiddenInset` title bar
-and traffic-light padding, the login-shell PATH probe in `cli.ts`, and the Cmd-based
-shortcuts. They are written but unexercised. See `.claude/commands/mac-release.md`. This
-needs a Mac, not a plan.
+**"No Mac code path has ever run" is no longer true, and had stopped being true well before it
+was corrected here.** 0.4.0 was built, launched and driven through its real UI on a Mac several
+times: sessions started, prompts sent, the context ring and the usage chip read out of the
+running DOM, screenshots taken over CDP. The statusLine channel is proven end to end on
+darwin-arm64 against `claude` 2.1.221 through a real pty, and it is the POSIX shim branch that
+actually ran — every live session left `run.sh` behind, never `run.cmd`. Running there also
+turned up a genuine Mac-only defect nobody had predicted: `usage.ts` reads the OAuth token from
+`~/.claude/.credentials.json`, but on macOS it lives in the login Keychain, so
+`window.stoke.usage.read()` fails on that platform and the statusLine payload's own `rate_limits`
+is the one plan-limit source that still works there.
+
+Three paths remain genuinely unexercised, and it is worth being precise about *why* rather than
+carrying the blanket claim:
+
+- **The `hiddenInset` title bar and the traffic-light padding.** Every screenshot taken there
+  came from CDP's `Page.captureScreenshot`, which paints page content and not Electron's native
+  window chrome, and that machine has neither Accessibility nor Screen Recording permission for
+  an OS-level capture to fall back on. The padding bug this hides is real and was found by
+  reasoning rather than by looking: traffic lights are device pixels, so `padding-left` in rem is
+  correct at Interface scale exactly 1.0 and puts the first tab under the close button at 0.8.
+- **The login-shell PATH probe in `cli.ts`.** Every launch there inherited a working PATH from
+  the shell that started Electron — never the Finder/Dock case with no inherited PATH, which is
+  the only case the probe exists for.
+- **The Cmd-based shortcuts.** Buttons were driven by dispatching `.click()` on the DOM, never a
+  real `metaKey`-modified keystroke, so `shortcuts.ts`'s Mac branch has not actually fired.
+
+**Windows now carries the opposite risk:** none of the 0.4.0 statusLine work ran there.
+`statusLineCommand()` emits `"<path>" "<id>"` — two quoted arguments on one command line — and
+`cmd.exe`'s quote-stripping only behaves like a POSIX shell for a single quoted pair. Treat that
+shim as unverified, not merely untested, until a statusLine-driven session has run through
+`cmd.exe` and the payload has been seen to arrive.
+
+See `.claude/commands/mac-release.md` for the checklist.
 
 ## Settled decisions — do not re-ask
 
@@ -752,7 +806,11 @@ needs a Mac, not a plan.
   history or a directory and add a previous chat, or start a new one anywhere. Profiles
   filter on `group`, the parent folder basename that already exists on every project
   (`src/shared/types.ts`): `personal` → Personal (orange), `school` → Study (red + blue),
-  `gitea-company` → Work (green), `gitea-vibe` → Vibe (violet).
+  `work` → Work (green), `side` → Side (violet). The last two were named `gitea-company`
+  and `gitea-vibe` until 0.4.0 — one person's forge namespaces shipping as built-ins, with
+  `gitea-company` holding the label Work so a folder actually called `work` was denied the
+  chip that named it. `hydrateSettings` renames a stored record's id and leaves its
+  `groups` alone, so folders that already matched still do.
 - **One named tunnel and one hostname per machine. Never share either, never copy
   `settings.json` between machines.** It carries the token, the hostname and the tunnel
   name — every field that must differ. Copying it, or just accepting the defaults twice,
@@ -847,8 +905,26 @@ Repeated because they keep costing time.
 - **Inherited Claude env vars silently break transcripts.** `pty.ts` strips
   `CLAUDE_CODE_CHILD_SESSION`, `CLAUDECODE`, `CLAUDE_CODE_SESSION_ID`,
   `CLAUDE_CODE_ENTRYPOINT` and `CLAUDE_PID`; auth vars are deliberately preserved.
-- **The context window cannot be derived from the model id.** Observed usage is the
-  authority — over 200k proves the extended tier.
+- **The context window cannot be derived from the model id**, and that has not changed: a
+  1M-tier session records its model as plain `claude-opus-5`, the `[1m]` suffix does not survive
+  into the transcript, and there is no `context_window` field anywhere in it. What *has* changed
+  is where the number comes from. Since 0.4.0 the window is **stated, not inferred**, and
+  `contextLimitFor` (`sessionFile.ts:336-344`) reads three sources in a fixed order:
+  1. **The statusLine payload.** Stoke installs its own `statusLine` command into the single
+     `--settings` file it hands the CLI; the CLI pipes it a JSON payload whose
+     `context_window.context_window_size` is the window, per model and correct from token zero.
+     `statusLine.ts`'s `windowFor` (`statusLine.ts:568`) takes the number straight from that
+     field. This is the primary source for every local session.
+  2. **The startup banner**, for a CLI old enough to still print one — and for a remote SSH
+     session, whose `claude` runs on the far machine and so gets no wrapper and no payload at
+     all. Both arrive at `contextLimitFor` as `bannerLimit` and win over everything below.
+  3. **Observed usage, last.** With no statement from either channel, exceeding the standard
+     window is still proof of the extended tier — over 200k proves it. The id is checked before
+     this for the cases where a suffix is present.
+
+  The known imprecision belongs to that third case *only*: an extended-tier session below 200k
+  reads against the 200k window until it crosses over. That errs conservatively — it can
+  over-state pressure, never under-state it, and can never exceed 100%.
 - PowerShell 5.1 `Set-Content -Encoding utf8` writes a BOM that silently breaks
   `settings.json`. Write JSON with Node, or use `[System.IO.File]::WriteAllText` with
   `UTF8Encoding($false)`.
@@ -884,5 +960,6 @@ Repeated because they keep costing time.
 | 0.3.0 | Remote phone access, voice input, usage bars, profiles, self-update |
 | 0.3.1 | Folder-derived profiles, `/voice` answered on the phone, usage-endpoint backoff |
 | 0.3.2 | Draggable window with native Windows buttons, limits in the title bar, `sttUrl` in Settings, the phone shortcut row |
+| 0.4.0 | The worklog review queue (Notion/ClickUp: read the boards, propose creates and updates, scan unasked, write only on accept); SSH sessions, with the remote transcript fetched back so they get a context meter and the worklog too; the statusLine channel, which states the context window and the plan limits instead of inferring them; dictation in the desktop terminal; a tabbed launcher with drag-to-reorder; per-folder icons and names; the strict 4px spacing scale; mouse selection on macOS; and CI that builds both installers |
 
 Full detail is in git history; each commit message explains why and names the bug it fixed.

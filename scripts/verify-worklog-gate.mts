@@ -61,19 +61,19 @@ function project(path: string, group: string): Project {
 const projects: Project[] = [
   project(p('personal', 'Stoke'), 'personal'),
   project(p('personal', 'Stoke-old'), 'personal'),
-  project(p('gitea-company', 'refinity'), 'gitea-company'),
+  project(p('work', 'refinity'), 'work'),
   project(p('school', 'assignment-2'), 'school')
 ]
 
 /** The user watches work only. */
-const WATCHED = ['gitea-company']
+const WATCHED = ['work']
 
 console.log('\nresolving a working directory to its group')
-check('a project root resolves', groupForCwd(p('gitea-company', 'refinity'), projects), 'gitea-company')
+check('a project root resolves', groupForCwd(p('work', 'refinity'), projects), 'work')
 check(
   'a cwd a level down inside a project resolves to the same group',
-  groupForCwd(p('gitea-company', 'refinity', 'src', 'server'), projects),
-  'gitea-company'
+  groupForCwd(p('work', 'refinity', 'src', 'server'), projects),
+  'work'
 )
 check('a folder that is no project at all resolves to nothing', groupForCwd(p('scratch', 'notes'), projects), null)
 check('somewhere else on the disk entirely resolves to nothing', groupForCwd(isWin ? 'C:\\Windows\\System32' : '/etc', projects), null)
@@ -85,31 +85,31 @@ check(
 )
 check(
   'a group missing off the record is recomputed from the path',
-  groupForCwd(p('gitea-company', 'refinity'), [project(p('gitea-company', 'refinity'), '')]),
-  'gitea-company'
+  groupForCwd(p('work', 'refinity'), [project(p('work', 'refinity'), '')]),
+  'work'
 )
 
 console.log('\nthe gate')
-check('a session inside a watched group is watched', shouldWatch(p('gitea-company', 'refinity'), projects, WATCHED), true)
+check('a session inside a watched group is watched', shouldWatch(p('work', 'refinity'), projects, WATCHED), true)
 check(
   'a session deep inside a watched project is watched',
-  shouldWatch(p('gitea-company', 'refinity', 'apps', 'web'), projects, WATCHED),
+  shouldWatch(p('work', 'refinity', 'apps', 'web'), projects, WATCHED),
   true
 )
 check('a session inside an unwatched group is not', shouldWatch(p('personal', 'Stoke'), projects, WATCHED), false)
 check('a session in an unknown folder is not', shouldWatch(p('scratch', 'notes'), projects, WATCHED), false)
-check('no groups watched means nothing is watched', shouldWatch(p('gitea-company', 'refinity'), projects, []), false)
+check('no groups watched means nothing is watched', shouldWatch(p('work', 'refinity'), projects, []), false)
 check(
   'a blank entry does not switch everything on',
-  shouldWatch(p('gitea-company', 'refinity'), projects, ['  ']),
+  shouldWatch(p('work', 'refinity'), projects, ['  ']),
   false
 )
 check(
   'watching several groups covers each of them',
-  ['personal', 'gitea-company', 'school'].map((g) =>
+  ['personal', 'work', 'school'].map((g) =>
     shouldWatch(p(g, g === 'personal' ? 'Stoke' : g === 'school' ? 'assignment-2' : 'refinity'), projects, [
       'personal',
-      'gitea-company'
+      'work'
     ])
   ),
   [true, true, false]
@@ -118,7 +118,7 @@ check(
 console.log('\ncwd shapes a real shell produces')
 check(
   'a trailing separator does not change the answer',
-  shouldWatch(p('gitea-company', 'refinity') + sep, projects, WATCHED),
+  shouldWatch(p('work', 'refinity') + sep, projects, WATCHED),
   true
 )
 check(
@@ -128,13 +128,13 @@ check(
 )
 check(
   'surrounding whitespace is tolerated',
-  shouldWatch(`  ${p('gitea-company', 'refinity')}  `, projects, WATCHED),
+  shouldWatch(`  ${p('work', 'refinity')}  `, projects, WATCHED),
   true
 )
 if (isWin) {
   check(
     'forward slashes resolve the same as backslashes',
-    shouldWatch(p('gitea-company', 'refinity').replace(/\\/g, '/'), projects, WATCHED),
+    shouldWatch(p('work', 'refinity').replace(/\\/g, '/'), projects, WATCHED),
     true
   )
 }
@@ -142,13 +142,13 @@ if (isWin) {
 console.log('\ncase')
 check(
   'the watched group name is compared case-blind',
-  shouldWatch(p('gitea-company', 'refinity'), projects, ['GITEA-Company']),
+  shouldWatch(p('work', 'refinity'), projects, ['WORK']),
   true
 )
-check('so is a group looked up on its own', isWatchedGroup('Gitea-Company', ['gitea-company']), true)
-check('and a group nobody watches stays off', isWatchedGroup('personal', ['gitea-company']), false)
+check('so is a group looked up on its own', isWatchedGroup('Work', ['work']), true)
+check('and a group nobody watches stays off', isWatchedGroup('personal', ['work']), false)
 
-const shouted = p('GITEA-COMPANY', 'Refinity')
+const shouted = p('WORK', 'Refinity')
 check(
   'this machine folds path case exactly as its own rules say',
   shouldWatch(shouted, projects, WATCHED),
@@ -171,8 +171,8 @@ console.log('\nthe rule that matters: the sidebar chip is not consulted')
 check('shouldWatch takes exactly cwd, projects and the group list', shouldWatch.length, 3)
 check(
   'a work session is watched no matter what the user is browsing',
-  [null, 'personal', 'school', 'gitea-company'].map(() =>
-    shouldWatch(p('gitea-company', 'refinity'), projects, WATCHED)
+  [null, 'personal', 'school', 'work'].map(() =>
+    shouldWatch(p('work', 'refinity'), projects, WATCHED)
   ),
   [true, true, true, true]
 )
@@ -192,8 +192,8 @@ check(
 )
 check(
   'and a real project inside the root still wins over the root fallback',
-  groupForCwd(p('gitea-company', 'refinity'), withRoot, [root]),
-  'gitea-company'
+  groupForCwd(p('work', 'refinity'), withRoot, [root]),
+  'work'
 )
 check(
   'with no roots passed, an unregistered folder still resolves to nothing',
@@ -222,7 +222,7 @@ console.log('\na shallow ancestor project does not defeat a deeper scan root')
 const posix = pathRulesFor('darwin')
 const homeIsAProject: Project[] = [
   project('/Users/vinn', 'Users'),
-  project('/Users/vinn/Code/gitea-company/refinity', 'gitea-company')
+  project('/Users/vinn/Code/work/refinity', 'work')
 ]
 check(
   'a new folder under the root resolves to the root, not to the $HOME project',
@@ -232,12 +232,12 @@ check(
 check(
   'a project deeper than the root still beats the root',
   groupForCwdShared(
-    '/Users/vinn/Code/gitea-company/refinity',
+    '/Users/vinn/Code/work/refinity',
     homeIsAProject,
     posix,
     ['/Users/vinn/Code']
   ),
-  'gitea-company'
+  'work'
 )
 /*
  * The ancestor is not disqualified, only outranked where a root is deeper.
@@ -284,7 +284,7 @@ check(
 check('linux does not fold path case', pathRulesFor('linux').caseInsensitive, false)
 check(
   'a differently-cased path matches on APFS',
-  isWatchedGroup(groupForCwdShared(p('GITEA-COMPANY', 'Refinity'), projects, pathRulesFor('darwin')), WATCHED),
+  isWatchedGroup(groupForCwdShared(p('WORK', 'Refinity'), projects, pathRulesFor('darwin')), WATCHED),
   true
 )
 
@@ -294,7 +294,7 @@ const at = 1_700_000_000_000
 const watchOf = (over: Partial<Parameters<typeof watchStateFrom>[0]> = {}): unknown =>
   watchStateFrom({
     sessionId: 's1',
-    cwd: p('gitea-company', 'refinity'),
+    cwd: p('work', 'refinity'),
     host: null,
     projects,
     roots: [],
@@ -307,7 +307,7 @@ check('a watched folder is watched, and says which group', watchOf(), {
   sessionId: 's1',
   watched: true,
   reason: 'watched-group',
-  group: 'gitea-company',
+  group: 'work',
   remote: false,
   decidedAt: at
 })
@@ -324,7 +324,7 @@ check(
 check(
   'with nothing ticked the feature is off, not merely unwatched',
   watchOf({ worklogGroups: [] }),
-  { sessionId: 's1', watched: false, reason: 'off', group: 'gitea-company', remote: false, decidedAt: at }
+  { sessionId: 's1', watched: false, reason: 'off', group: 'work', remote: false, decidedAt: at }
 )
 
 /*
@@ -378,7 +378,7 @@ const state = (over: Record<string, unknown> = {}): never =>
     sessionId: 's1',
     watched: true,
     reason: 'watched-group',
-    group: 'gitea-company',
+    group: 'work',
     remote: false,
     decidedAt: 1,
     ...over
@@ -386,8 +386,8 @@ const state = (over: Record<string, unknown> = {}): never =>
 
 ok(
   'a watched session names its group',
-  watchSentence(state(), ['gitea-company']).includes('gitea-company'),
-  watchSentence(state(), ['gitea-company'])
+  watchSentence(state(), ['work']).includes('work'),
+  watchSentence(state(), ['work'])
 )
 ok(
   'with nothing ticked it says how to turn it on, not merely that it is off',
@@ -397,14 +397,14 @@ ok(
 ok(
   'an unwatched group says which groups are armed instead',
   watchSentence(state({ watched: false, reason: 'unwatched-group', group: 'personal' }), [
-    'gitea-company'
-  ]).includes('gitea-company'),
-  watchSentence(state({ watched: false, reason: 'unwatched-group', group: 'personal' }), ['gitea-company'])
+    'work'
+  ]).includes('work'),
+  watchSentence(state({ watched: false, reason: 'unwatched-group', group: 'personal' }), ['work'])
 )
 ok(
   'a folder that cannot be placed says so rather than blaming the profile',
   /no project/.test(
-    watchSentence(state({ watched: false, reason: 'unknown-folder', group: null }), ['gitea-company'])
+    watchSentence(state({ watched: false, reason: 'unknown-folder', group: null }), ['work'])
   )
 )
 ok(
@@ -415,8 +415,8 @@ ok(
 )
 ok(
   'and no session at all is its own sentence',
-  /No session/.test(watchSentence(null, ['gitea-company'])),
-  watchSentence(null, ['gitea-company'])
+  /No session/.test(watchSentence(null, ['work'])),
+  watchSentence(null, ['work'])
 )
 
 const report = (over: Record<string, unknown> = {}): never =>

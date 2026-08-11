@@ -31,7 +31,8 @@ function stamp(): string {
  *
  * Deliberately not the OS temp directory: temp gets swept without warning, and
  * anything Claude writes during a scratch session would vanish with it. These
- * persist until deleted, and Settings offers a way to open the folder.
+ * persist until deleted by hand — nothing in the UI opens or prunes the scratch
+ * root today.
  */
 export function createScratchDir(): string {
   const root = join(app.getPath('userData'), 'scratch')
@@ -46,8 +47,4 @@ export function createScratchDir(): string {
 
   mkdirSync(dir, { recursive: true })
   return dir
-}
-
-export function scratchRoot(): string {
-  return join(app.getPath('userData'), 'scratch')
 }

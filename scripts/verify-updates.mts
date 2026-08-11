@@ -318,8 +318,11 @@ check(
 
 /* ------------------------------------------- the one build-config invariant
  *
- * Not a unit test, and it is here on purpose. macOS auto-update is decided
- * entirely by whether a .zip reaches the feed: Squirrel.Mac installs by swapping
+ * Not a unit test, and it is here on purpose. A .zip in the feed is *necessary*
+ * for a macOS auto-update, and on its own not sufficient — the ad-hoc signature
+ * CI produces is a second, independent blocker, which `selfUpdate.ts` probes for
+ * separately (see its `detectBlocker`, and CLAUDE.md gotcha 24). This assertion
+ * covers the first half only: Squirrel.Mac installs by swapping
  * an .app out of an archive, so electron-updater searches the published files
  * for a zip and rejects "dmg" and "pkg" by name (MacUpdater.js:81-83 in 6.8.9).
  * Every release up to v0.4.0-beta.3 built a dmg only, so latest-mac.yml listed

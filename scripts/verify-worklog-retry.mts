@@ -23,8 +23,8 @@ const check = (name: string, ok: boolean, detail = ''): void => {
 const base: WorklogProposal = {
   id: 'p1',
   sessionId: 's1',
-  cwd: 'G:/Code/gitea-company/refinity',
-  group: 'gitea-company',
+  cwd: 'G:/Code/work/refinity',
+  group: 'work',
   title: 'Fix the thing',
   body: 'Did the thing.',
   targets: ['clickup', 'notion'],

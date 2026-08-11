@@ -516,7 +516,7 @@ async function runWorklogScan(sessionId: string, auto: boolean): Promise<Worklog
     }
     /*
      * A starved board read is not silent just because the scan still drafted
-     * something (H5, .superpowers/sdd/plan-resolutions.md, overriding the
+     * something, overriding the
      * brief's pinned `if (added.length) return end('proposed', …, null)`
      * ahead of the budget test below). Proposals win — the outcome stays
      * `proposed` so the drafts are not hidden behind an error-styled banner —

@@ -2,7 +2,7 @@
  * The cwd → project group rule, in the one place both processes can run it.
  *
  * The switch this answers is per project *group* — the parent folder name that
- * already separates `personal` from `gitea-company` on this machine — and it is
+ * already separates `personal` from `work` on this machine — and it is
  * read off the session's own working directory, **never** off the profile chip
  * in the sidebar. That distinction is the whole point of this module. The chip
  * is a view filter: a Work session can be running in a background tab while the

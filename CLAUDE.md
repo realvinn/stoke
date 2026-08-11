@@ -32,6 +32,8 @@ npm run verify:settings       # settings hydration: repair, clamps, and what it 
 npm run verify:folders        # folder metadata: trimming, caps, added folders, hide/pin
 npm run verify:tabs           # which tab is selected after one is closed
 npm run verify:color          # colour maths: contrast, APCA, oklch
+npm run verify:updates        # the updater: a failure and a success must not read the same,
+                              # and macOS must still build the zip it updates from (gotchas 24, 25)
 npm run verify:worklog-gate     # which sessions the worklog agent would watch
 npm run verify:worklog-runner   # prompt building, JSON parsing, titles, create-vs-update
 npm run verify:worklog-retry    # writes happen once, and a retry never duplicates a record
@@ -55,8 +57,11 @@ src/main/         Electron main process
   context.ts        live context-window watcher (polls transcripts)
   sessionFile.ts    transcript parsing and the context maths
   statusLine.ts     Stoke's statusLine wrapper: context window + plan limits
+  usage.ts          plan limits from the undocumented OAuth endpoint the CLI itself calls
   browser.ts        docked Chromium: tabs, find, console/network capture
   workspace.ts      default folder + scratch folders
+  workspaceRoots.ts where a session with no project starts, per platform. Takes the
+                    platform and home as arguments so a suite can ask for another machine's
   store.ts          settings persistence
   settingsSchema.ts defaults + hydrate, with no electron import so a suite can run it
   updates.ts        claude CLI version/health
@@ -65,12 +70,16 @@ src/main/         Electron main process
   ssh.ts            ~/.ssh/config parsing, the ssh argv, the transcript command
   sshTranscript.ts  pulls a remote session's JSONL back, so SSH sessions can be read
   agent.ts          headless `claude -p` runner (prompt on stdin, json out)
+  stt.ts            the one place Stoke talks to the speech sidecar. Both the desktop and
+                    the phone route through it, because "only main may reach it" is the
+                    sidecar's whole authentication story
   audio/            reads the default capture device, to warn about virtual cables
   worklog/          the Notion/ClickUp review queue
     gate.ts           which project groups are watched
     watch.ts          the one predicate: is this session watched, and why not
     sessionStore.ts   session -> folder/host, on disk, so a restart keeps placing them
     autoscan.ts       when a quiet session is scanned without being asked
+    autoscanStore.ts  its baselines on disk, split out so autoscan.ts imports nothing
     recall.ts         reads the boards (read-only, cached) so updates beat duplicates
     runner.ts         scan (read-only) and apply (writes, on accept only)
     queue.ts          the persisted proposal list
@@ -78,6 +87,18 @@ src/main/         Electron main process
   mcp/              MCP server exposing the browser to Claude
     server.ts         HTTP transport + the 17 tool definitions
     page.ts           drives the page through the injected extractor
+    cdp.ts            short-lived CDP sessions over the docked page. browser.ts long
+                      claimed the debugger slot had to stay free because only one client
+                      may attach; probing Electron 43 disproved that, which is what makes
+                      audit.ts, design.ts and perf.ts possible at all
+    audit.ts          passive security/hygiene audit: reads only what Chromium already
+                      received or rendered. Nothing probes, so "not observed" is reported
+                      as exactly that
+    design.ts         what a page looks like, as text: a DOMSnapshot compressed hard
+    perf.ts           why a page is slow, as a checklist. Reloads by default, because
+                      unused bytes only mean anything if tracking started first
+    stack.ts          what a page is built with, from live evidence rather than a
+                      signature database that would already be stale
     inject/extract.js runs IN the page; markdown + refs + find. No deps.
   remote/           phone access
     server.ts         loopback HTTP + WebSocket, token auth, tailnet listener
@@ -152,9 +173,17 @@ scripts/          the verify-*.mts suites, make-icon.cjs
    out.** `getBoundingClientRect`, `innerText` and every visibility check return empty, so
    the agent silently reads a blank page. Views are mounted immediately and merely hidden.
 
-4. **Reset per-page logs on `did-start-loading`, not `did-navigate`.** `did-navigate` fires
-   *after* the main document response, so resetting there wipes the very request you need
-   when a page fails to load.
+4. **Reset per-page logs on a main-frame, cross-document `did-start-navigation`.** Both of the
+   obvious events are wrong, in opposite directions. `did-navigate` fires *after* the main
+   document response, so resetting there wipes the very request you need when a page fails to
+   load. `did-start-loading` was the second attempt and is wrong in a subtler, more damaging
+   way: it fires again every time a client-side router starts fetching, so on any framework
+   that prefetches — which is to say most of them — the whole log is cleared moments after the
+   page finished loading. Measured on tailwindcss.com: the second `did-start-loading` arrived
+   with 53 completed requests already recorded and took all of them, which is why the security
+   audit found no headers to read. A real main-frame, cross-document navigation is the only
+   event that should discard anything, and it fires before the document request goes out
+   rather than after it comes back (`browser.ts:126-153`).
 
 5. **xterm's WebGL renderer draws into a canvas**, so `.xterm-rows` is empty in the DOM.
    Verify terminal output from a screenshot, never `textContent`.
@@ -175,13 +204,25 @@ scripts/          the verify-*.mts suites, make-icon.cjs
 
 10. **Claude Code turns mouse reporting on, so a plain drag does not select.** xterm forwards
     the drag to the application instead, and the bypass modifier is per-platform in xterm's own
-    `shouldForceSelection`: **Shift**-drag on Windows and Linux. On macOS it checks **Alt**, but
-    gates that check on xterm's own `macOptionClickForcesSelection` option, which defaults to
-    `false` in the bundled build and is never set anywhere in `src/` (confirmed by grep) — so on
-    macOS `shouldForceSelection` can only ever return `false`: Alt-drag **cannot** bypass today,
-    not merely "unconfirmed" (see the platform-verification note at the end of this file). A
-    right-click is also forwarded, which is why the CLI used to paste on right-click —
-    `TerminalView` now takes that event in the capture phase before xterm sees it.
+    `shouldForceSelection` (`SelectionService.ts:437`, xterm 6.0.0):
+
+        isMac ? event.altKey && rawOptions.macOptionClickForcesSelection
+              : event.shiftKey
+
+    **Shift**-drag has therefore always worked on Windows and Linux, because that branch
+    consults no option at all. The Mac branch does, and `macOptionClickForcesSelection` defaults
+    to `false` and was set nowhere — so it could only ever return `false`, and selection on
+    macOS was not awkward but impossible: Option-drag did nothing, Cmd+C had no selection to
+    take, and the right-click menu's Copy sat permanently disabled. The asymmetry is why it read
+    as "copy is broken" rather than "one option is missing". `TerminalView` now sets
+    `macOptionClickForcesSelection: true` (d34cf8e), so the bypass is **Option**-drag on macOS —
+    the same modifier Terminal.app and iTerm2 use, and no collision with `macOptionIsMeta` two
+    lines above it, which governs the keyboard while this governs the mouse. The context menu
+    names the right modifier per platform, but only when nothing is selected, which is exactly
+    the moment someone has discovered that dragging does nothing. Nothing about this is
+    SSH-specific: a remote tab is the same xterm with `ssh` as its argv, so it got the fix for
+    free. A right-click is also forwarded, which is why the CLI used to paste on right-click —
+    `TerminalView` takes that event in the capture phase before xterm sees it.
 
 11. **`align-self: center` centres the *margin* box.** Cancelling a container's padding for
     one child needs the full padding negated, not half — half lands it a pixel off. Measured,
@@ -308,10 +349,64 @@ scripts/          the verify-*.mts suites, make-icon.cjs
     success path and the catch, as `updates.ts` used to, makes a failure and a success literally the
     same value.
 
+26. **A `--continue` session has no context ring, and it is the missing *id* that causes it.** This
+    is a real limitation of 0.4.0, not a bug waiting somewhere. `pty.ts:165-166` reads
+    `opts.resume || opts.continueLast ? (opts.sessionId ?? '') : (opts.sessionId ?? randomUUID())`,
+    and a `--continue` has nothing to pass, because the CLI picks the id itself after launch — so
+    the id is `''`. `index.ts` hands that straight to `watcher?.watch(result.sessionId)`, and
+    `ContextWatcher.watch` early-returns on a falsy id (`context.ts:102-103`), so no transcript is
+    ever polled and the tab's ring stays blank for the whole life of the session. Closing the gap is
+    not a one-liner: the real id does exist, but only inside the payload the wrapper writes under
+    the *launch* key (gotcha 2), and `src/shared/ipc.ts` has no channel for a session id that
+    arrives late — `pty:start`'s return value is the only place the renderer is ever told one, and
+    it has already returned. The plan-limit chip is unaffected, because `refreshLastStatusLine()`
+    reads every live `statusKey` directly and a payload's rate limits are account-wide anyway.
+
+27. **`src/shared/**` is compiled by both tsconfigs, and only one of them has Node's types.** Both
+    `tsconfig.node.json` and `tsconfig.web.json` include `src/shared/**/*.ts`, but the web project
+    sets `"types": ["vite/client"]` with no `node` — so a `node:` import added to a shared module
+    fails the *web* half of `npm run typecheck` while the main half stays green, and the error names
+    a file you were not editing. (`voice.ts` is the mirror image of the same split: browser-only,
+    and excluded from the node project by name rather than moved.) Related, and easy to trust
+    wrongly: **`scripts/` is in neither include**, so the verify suites are never typechecked. They
+    are run, which is most of the point — but node's strip-only mode checks nothing, so a suite can
+    be type-wrong and still exit 0 with every assertion passing, and `typecheck` will never say so.
+
+## Standing traps when driving the app
+
+Not about any one module, and each cost real time at least once. Carried over from the 0.3.0
+handoff notes, which no longer have a file of their own.
+
+- **Never force-kill Stoke.** It orphans the CLI children — the PTYs die, the `claude` processes
+  do not — and the restarted app cannot reattach to them. A tunnel outage and a long "nothing is
+  active" confusion both came from exactly that. Quit it properly and `before-quit` runs
+  `ptys.killAll()` for you (`index.ts:1397-1398`).
+- **Electron under ESM starts from `app.whenReady().then(main)`, never a top-level `await`.**
+  `scripts/make-icon.cjs` is the shape to copy.
+- **A script that destroys windows in a loop quits the app out from under itself.** Electron's
+  default `window-all-closed` behaviour is to quit, so the run ends the moment the last window
+  goes — and because that is an ordinary quit, the process exits 0 and the script looks like it
+  finished its work. Register `app.on('window-all-closed', () => {})` in any script that means to
+  keep going.
+- **`app.exit()` does not flush a piped stdout**, so a result printed just before it can simply
+  not arrive. Write it to a file and read the file back.
+- **Nested backticks inside a template literal terminate it early.** It is a SyntaxError, which
+  means it fails before a single line runs and points at the wrong place while doing it. Build
+  anything you inject into a page from an array of lines rather than one long template.
+- **The usage endpoint is undocumented** (`usage.ts`): there is no supported programmatic source
+  for plan limits, so its shape can change without warning. Tolerate missing fields and report
+  unavailable — a wrong number in a status bar is worse than a blank one.
+
 ## Verification expectations
 
-`npm run check` must pass. For anything touching the context meter, `npm run verify:context`
-runs against the real transcripts on this machine — it has caught two genuine bugs.
+`npm run check` must pass, and it does here, build included. Until 849485d it could not:
+`verify:ssh` asserted six of one desk's own `~/.ssh` aliases by name, so it passed on exactly that
+machine and failed on every other, and `ssh -G` on OpenSSH 9+ rejects the suite's own two-word host
+fixture before it resolves anything. It sits second-to-last in the chain, so it took `npm run build`
+down with it and the build step never ran at all. `verify:context` is the one suite that is
+machine-dependent on purpose — it runs against the real transcripts on this machine, which is why
+CI skips it and why it has caught two genuine bugs. Anything else that only passes on one machine
+is a defect in the suite, not a fact about the machine.
 
 For UI work, launch with `--remote-debugging-port` and drive it over CDP; screenshots are the
 only reliable way to confirm the terminal and the panels actually render.

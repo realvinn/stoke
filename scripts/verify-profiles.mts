@@ -85,12 +85,12 @@ const rec = (p: Partial<ProfileConfig> & { id: string }): ProfileConfig => ({
 console.log('\nthe windows layout this was designed around')
 check(
   'named folders no longer swallow the rest of the machine',
-  ids({ personal: 6, school: 3, 'gitea-company': 3, Documents: 2, WINDOWS: 1 }),
-  ['personal', 'school', 'gitea-company', 'Documents']
+  ids({ personal: 6, school: 3, work: 3, Documents: 2, WINDOWS: 1 }),
+  ['personal', 'school', 'work', 'Documents']
 )
 check(
   'they keep their given order, not the folder count order',
-  labels({ 'gitea-company': 9, personal: 1 }),
+  labels({ work: 9, personal: 1 }),
   ['Personal', 'Work']
 )
 check('a named folder is matched however it is cased', ids({ PERSONAL: 4 }), ['personal'])
@@ -98,14 +98,14 @@ check('a named folder is matched however it is cased', ids({ PERSONAL: 4 }), ['p
 console.log('\na machine organised some other way')
 check(
   'unknown folders become profiles when nothing named matches',
-  ids({ work: 5, side: 3, uni: 2 }),
-  ['work', 'side', 'uni']
+  ids({ clients: 5, lab: 3, uni: 2 }),
+  ['clients', 'lab', 'uni']
 )
-check('and are named readably', labels({ 'my-projects': 4, work: 2 }), ['My projects', 'Work'])
+check('and are named readably', labels({ 'my-projects': 4, clients: 2 }), ['My projects', 'Clients'])
 check(
   'a lone repo parked somewhere is not a category of work',
-  ids({ work: 4, Downloads: 1, Desktop: 1 }),
-  ['work']
+  ids({ clients: 4, Downloads: 1, Desktop: 1 }),
+  ['clients']
 )
 check('no folders at all yields nothing rather than throwing', ids({}), [])
 check('a single project overall yields nothing', ids({ Code: 1 }), [])
@@ -124,13 +124,13 @@ console.log('\nnamed folders no longer suppress the rest of the machine')
  */
 check(
   'a folder holding real work beside the named ones is seeded too',
-  ids({ personal: 8, work: 5, dev: 3, Documents: 1 }),
-  ['personal', 'work', 'dev']
+  ids({ personal: 8, clients: 5, dev: 3, Documents: 1 }),
+  ['personal', 'clients', 'dev']
 )
 check(
-  'this machine, measured: work, dev, scratch and Codes were all invisible',
-  ids({ personal: 8, work: 5, dev: 3, scratch: 3, Codes: 2 }),
-  ['personal', 'work', 'dev', 'scratch', 'Codes']
+  'this machine, measured: clients, dev, scratch and Codes were all invisible',
+  ids({ personal: 8, clients: 5, dev: 3, scratch: 3, Codes: 2 }),
+  ['personal', 'clients', 'dev', 'scratch', 'Codes']
 )
 check(
   'the named ones still come first, in their own order',
@@ -139,18 +139,21 @@ check(
 )
 check(
   'extras wear the fallback colours, which no named seed wears',
-  deriveProfiles(counts({ personal: 6, work: 5, side: 2 })).map((p) => p.accent),
+  deriveProfiles(counts({ personal: 6, clients: 5, lab: 2 })).map((p) => p.accent),
   ['#ff9552', '#6ea8fe', '#f7c948']
 )
-/* `gitea-company` is labelled Work. A folder literally called `work` beside it
-   would put two chips reading Work in one row, and the chip is the only thing
-   the user sees — so the named profile's label claims that name too. */
+/* `school` is labelled Study. A folder literally called `study` beside it would
+   put two chips reading Study in one row, and the chip is the only thing the
+   user sees — so the named profile's label claims that name too. This is why
+   the seed claims both an id and a label, and it is the case the 0.4.0 rename
+   of `work` -> `work` could no longer exercise: `work` is labelled
+   Work, so its id and its label are the same word. */
 check(
   'a folder a named profile already speaks for is not seeded twice',
-  ids({ 'gitea-company': 3, work: 2 }),
-  ['gitea-company']
+  ids({ school: 3, study: 2 }),
+  ['school']
 )
-check('nor is one folder in two spellings', ids({ Work: 5, work: 2 }), ['Work'])
+check('nor is one folder in two spellings', ids({ Clients: 5, clients: 2 }), ['Clients'])
 /* The named loop claims both an id and a label; the extras loop claimed only
    the id, so two folders that are different ids but title-case to the same
    words each got a chip. `My stuff` twice, told apart only by hover. */
@@ -196,7 +199,7 @@ const LEGACY_NAMED = [
     secondary: '#6ea8fe'
   },
   {
-    id: 'gitea-company',
+    id: 'work',
     label: 'Work',
     accent: '#5fd08a',
     accentHover: '#83deA5',
@@ -207,7 +210,7 @@ const LEGACY_NAMED = [
 /* No stray folder in here: this fixture backs the frozen LEGACY_NAMED lock and
    the deletion cases below, all of which are about the named seeds themselves.
    The folder-derived half of the list has its own block above. */
-const namedMachine = counts({ personal: 6, school: 3, 'gitea-company': 3 })
+const namedMachine = counts({ personal: 6, school: 3, 'work': 3 })
 check(
   'every derived field is unchanged',
   resolveProfiles(namedMachine, []).map(({ groups: _groups, ...rest }) => rest),
@@ -216,30 +219,30 @@ check(
 check(
   'and each seed covers its own folder',
   resolveProfiles(namedMachine, []).map((p) => p.groups),
-  [['personal'], ['school'], ['gitea-company']]
+  [['personal'], ['school'], ['work']]
 )
 check(
   'the fallback layout is unchanged too',
-  resolveProfiles(counts({ work: 5, side: 3 }), []).map((p) => [p.id, p.accent]),
+  resolveProfiles(counts({ clients: 5, lab: 3 }), []).map((p) => [p.id, p.accent]),
   [
-    ['work', '#6ea8fe'],
-    ['side', '#f7c948']
+    ['clients', '#6ea8fe'],
+    ['lab', '#f7c948']
   ]
 )
 
 console.log('\na profile the user made')
 /*
- * The bug, in one case. On this machine personal/school/gitea-company all exist,
+ * The bug, in one case. On this machine personal/school/work all exist,
  * so the derived list early-returned them and stopped; and Task holds one
  * project, which the other branch dropped. Either way the user pressed Create
  * and nothing appeared.
  */
-const withTask = counts({ personal: 6, school: 3, 'gitea-company': 3, Task: 1 })
+const withTask = counts({ personal: 6, school: 3, 'work': 3, Task: 1 })
 const taskRecord = rec({ id: 'Task', label: 'Task', createdByUser: true })
 check(
   'appears next to the named ones, which it never could before',
   resolveProfiles(withTask, [taskRecord]).map((p) => p.id),
-  ['personal', 'school', 'gitea-company', 'Task']
+  ['personal', 'school', 'work', 'Task']
 )
 check(
   'and renders with only one project in it',
@@ -289,11 +292,11 @@ check(
   undefined
 )
 const macCounts = counts({ Code: 4 })
-const windowsConfig = [rec({ id: 'gitea-company', label: 'Work' }), rec({ id: 'personal' })]
+const windowsConfig = [rec({ id: 'work', label: 'Work' }), rec({ id: 'personal' })]
 check(
   'a mac keeps the windows records rather than eating them',
   resolveProfiles(macCounts, windowsConfig).map((p) => p.id),
-  ['Code', 'gitea-company', 'personal']
+  ['Code', 'work', 'personal']
 )
 check(
   'but renders only what is here',
@@ -312,13 +315,13 @@ check(
   [
     ['personal', 1],
     ['school', 0],
-    ['gitea-company', 1]
+    ['work', 1]
   ]
 )
 check(
   'the chip is gone even though the folder is still full of projects',
   visibleProfiles(resolveProfiles(namedMachine, tombstone), namedMachine).map((p) => p.id),
-  ['personal', 'gitea-company']
+  ['personal', 'work']
 )
 check(
   'and nothing resolves it back into the accent',
@@ -328,7 +331,7 @@ check(
 check(
   'deleting a user-made profile just drops the record',
   visibleProfiles(resolveProfiles(withTask, []), withTask).map((p) => p.id),
-  ['personal', 'school', 'gitea-company']
+  ['personal', 'school', 'work']
 )
 
 console.log('\nlookup')
@@ -1129,13 +1132,13 @@ check(
 check(
   'and windows paths resolve under the windows rules',
   profileIdForCwd(
-    'G:\\Code\\gitea-company\\refinity',
-    [proj('G:\\Code\\gitea-company\\refinity', 'gitea-company')],
+    'G:\\Code\\work\\refinity',
+    [proj('G:\\Code\\work\\refinity', 'work')],
     [],
-    [{ id: 'gitea-company', groups: ['gitea-company'] }],
+    [{ id: 'work', groups: ['work'] }],
     'win32'
   ),
-  'gitea-company'
+  'work'
 )
 /*
  * The case above proves nothing about Windows, and that is worth saying rather

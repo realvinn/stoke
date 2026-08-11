@@ -2,7 +2,7 @@
  * The worklog gate: whether the agent is allowed to look at a session at all.
  *
  * The switch is per project *group* — the parent folder name that already
- * separates `personal` from `gitea-company` on this machine — and it is read off
+ * separates `personal` from `work` on this machine — and it is read off
  * the session's own working directory, **never** off the profile chip in the
  * sidebar. That distinction is the whole point of this file. The chip is a view
  * filter: a Work session can be running in a background tab while the user

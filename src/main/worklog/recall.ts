@@ -387,7 +387,7 @@ export async function readExisting(opts: RecallOptions, now = Date.now()): Promi
         // with no consequence clause: this string reaches the user from two
         // different reports — a 'budget' outcome when the scan drafted
         // nothing, and a 'proposed' one when it drafted proposals anyway
-        // (H5, .superpowers/sdd/plan-resolutions.md) — and "so nothing was
+        // — and "so nothing was
         // logged" is only true in the first of those. It is also what
         // `console.warn` below prints on every failed read, including the
         // 'proposed' case, so it cannot assume either consequence.
@@ -579,8 +579,8 @@ export function findExisting(
  * empty view of the board, so one of them may already be sitting there under
  * another name. `outcome` stays 'proposed' so the drafts still show up for
  * review; `message` is where the warning travels so the banner can say the
- * board could not be checked first instead of staying clean (H5,
- * .superpowers/sdd/plan-resolutions.md, overriding the brief's pinned
+ * board could not be checked first instead of staying clean, overriding
+ * the brief's pinned
  * conjunction that checked `added.length` before `snapshot.budget`).
  *
  * An ordinary successful scan — board read fine, proposals drafted or not —
