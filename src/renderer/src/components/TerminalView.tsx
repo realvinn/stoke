@@ -105,6 +105,32 @@ export function TerminalView({
        * sends an ESC prefix), this one governs the mouse.
        */
       macOptionClickForcesSelection: true,
+      /*
+       * Off, because the option above turned Option into the selection
+       * modifier and these two then fight over the same key.
+       *
+       * `altClickMovesCursor` is on by default. On mouseup it checks
+       * `event.altKey` — which is still held, because holding Option is how you
+       * selected at all — and if the selection is one character or less and the
+       * drag took under half a second, it sends a cursor-move sequence with
+       * `wasUserInput: true`. SelectionService listens to its own
+       * `onUserInput` and clears the selection on any of it
+       * (SelectionService.ts:139-143, :708). So the selection is painted while
+       * the button is down and gone the instant it comes up.
+       *
+       * Measured, not reasoned: `npm run verify:selection` drives this exact
+       * gesture through a real xterm in a real Chromium, under the mouse modes
+       * the shipped `claude` binary actually asks for (1000/1004/1006/1007 —
+       * it never requests motion reports). With the default the one-character
+       * drag comes back "", with this line it comes back intact, and every
+       * other case is identical either way. That suite is the reason this is a
+       * one-line change rather than a guess.
+       *
+       * Nothing is lost by turning it off: Option-click-to-move-cursor is a
+       * readline convenience that never worked here anyway, since Option is
+       * spoken for.
+       */
+      altClickMovesCursor: false,
       minimumContrastRatio: 1,
       theme: terminalTheme(theme)
     })

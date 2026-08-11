@@ -40,6 +40,9 @@ npm run verify:worklog-retry    # writes happen once, and a retry never duplicat
 npm run verify:worklog-recall   # the read-only board read, its parse and its cache
 npm run verify:worklog-autoscan # when a session is scanned without being asked
 npm run verify:ssh            # ssh argv, ~/.ssh/config parsing, the remote transcript fetch
+npm run verify:selection      # Option-drag selection survives letting go of the mouse.
+                              # Opens a real Electron window, so it needs a display
+                              # and is the one `check` suite CI does not run
 npm run verify:extract        # page extractor regression set
 npm run verify:usage          # plan limits from the statusLine payload; STOKE_LIVE_USAGE=1 adds the account call
 npm run verify:security <url> <token> --access   # remote server, against a running instance

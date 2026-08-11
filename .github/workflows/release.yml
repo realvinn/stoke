@@ -67,6 +67,13 @@ jobs:
       # worth running, because it is the only suite that checks the argv Stoke
       # hands a remote `claude` against what ssh itself resolves.
       #
+      # verify:selection is excluded for a different reason: it is not impure,
+      # it just needs a browser. It opens a real Electron BrowserWindow to drive
+      # xterm's own DOM event handling, which is the only place the bug it
+      # guards is visible at all — and a Linux runner has no display, so it would
+      # need xvfb rather than merely being added to the list below. Left out
+      # deliberately until someone wires that up; it runs in `npm run check`.
+      #
       # Everything else is pure and runs anywhere, so it runs here. Keep this
       # list in step with package.json's `check` chain when a suite is added.
       - run: npm run verify:statusline
