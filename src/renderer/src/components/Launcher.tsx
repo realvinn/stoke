@@ -1,9 +1,24 @@
 import { useEffect, useRef } from 'react'
-import type { CliInfo, EffortLevel, PermissionMode, Project, SessionMeta } from '@shared/types'
+import type {
+  CliInfo,
+  EffortLevel,
+  PermissionMode,
+  Project,
+  SessionMeta,
+  SshHost
+} from '@shared/types'
 import { ContextBar } from './ContextMeter'
 import { IconFolder, IconPlus } from './Icons'
 import { relativeTime } from '../lib/format'
-import { EFFORT_LEVELS, MODEL_OPTIONS, PERMISSION_MODES } from '../lib/permissions'
+import {
+  EFFORT_LEVELS,
+  MODEL_OPTIONS,
+  PERMISSION_MODES,
+  ULTRACODE_EFFORT,
+  ULTRACODE_HINT,
+  effectiveEffort,
+  effortLabel
+} from '../lib/permissions'
 
 interface Props {
   /** null when nothing is selected — the quick-start state. */
@@ -13,11 +28,20 @@ interface Props {
   permissionMode: PermissionMode
   model: string
   effort: EffortLevel
+  /**
+   * Optional so the launcher keeps working for a caller that has not wired the
+   * toggle up yet; an unwired toggle simply reads as off.
+   */
+  ultracode?: boolean
+  /** Remote machines from settings. Empty hides the row entirely. */
+  hosts?: SshHost[]
+  onConnectHost?: (host: SshHost) => void
   sessions: SessionMeta[]
   cli: CliInfo | null
   onChangeMode: (m: PermissionMode) => void
   onChangeModel: (m: string) => void
   onChangeEffort: (e: EffortLevel) => void
+  onChangeUltracode?: (v: boolean) => void
   onStart: () => void
   onContinueLast: () => void
   onResume: (s: SessionMeta) => void
@@ -32,11 +56,15 @@ export function Launcher({
   permissionMode,
   model,
   effort,
+  ultracode = false,
+  hosts = [],
+  onConnectHost,
   sessions,
   cli,
   onChangeMode,
   onChangeModel,
   onChangeEffort,
+  onChangeUltracode,
   onStart,
   onContinueLast,
   onResume,
@@ -119,16 +147,26 @@ export function Launcher({
             </select>
           </div>
 
+          {/* When ultracode is on the CLI resolves effort to xhigh regardless of
+              what is picked here, so the control says so and shows the value the
+              session will actually run at, rather than sitting there disagreeing
+              with it. The stored pick is left alone and comes back on untick. */}
           <div className="launcher-row">
             <span className="launcher-row-label">
               <b>Effort</b>
-              <span>How much reasoning Claude spends per turn.</span>
+              <span>
+                {ultracode
+                  ? `Ultracode is running this session at ${effortLabel(ULTRACODE_EFFORT)}. Effort goes back to ${effortLabel(effort)} when you turn it off.`
+                  : 'How much reasoning Claude spends per turn.'}
+              </span>
             </span>
             <select
               className="select"
-              value={effort}
+              value={effectiveEffort(effort, ultracode)}
+              disabled={ultracode}
               onChange={(e) => onChangeEffort(e.target.value as EffortLevel)}
               aria-label="Effort level"
+              title={ultracode ? 'Set to Extra high by Ultracode.' : undefined}
             >
               {EFFORT_LEVELS.map((e) => (
                 <option key={e.id} value={e.id}>
@@ -137,6 +175,39 @@ export function Launcher({
               ))}
             </select>
           </div>
+
+          {/* A label wrapper rather than a bare checkbox, so the whole row is a
+              hit target like the segmented controls above it. */}
+          <label className="launcher-row" style={{ cursor: 'pointer' }}>
+            <span className="launcher-row-label">
+              <b>
+                Ultracode
+                {ultracode && (
+                  <span
+                    className="pill"
+                    data-tone="accent"
+                    style={{ marginLeft: 'var(--space-8)', verticalAlign: 'middle' }}
+                  >
+                    {effortLabel(ULTRACODE_EFFORT)}
+                  </span>
+                )}
+              </b>
+              <span>{ULTRACODE_HINT}</span>
+            </span>
+            <input
+              type="checkbox"
+              checked={ultracode}
+              onChange={(e) => onChangeUltracode?.(e.target.checked)}
+              aria-label="Ultracode"
+              style={{
+                width: '1rem',
+                height: '1rem',
+                margin: 0,
+                accentColor: 'var(--accent)',
+                flexShrink: 0
+              }}
+            />
+          </label>
         </div>
 
         {/* Inline rather than a confirmation dialog: the warning stays visible
@@ -156,6 +227,35 @@ export function Launcher({
         {cliBroken && (
           <div className="banner">
             <span>{cli?.error}</span>
+          </div>
+        )}
+
+        {/*
+          Remote machines, when any are configured. Not gated on cliBroken: an
+          ssh session runs the CLI on the far machine, so a missing local claude
+          is irrelevant to it.
+        */}
+        {hosts.length > 0 && (
+          <div className="launcher-row">
+            <span className="launcher-row-label">
+              <b>Remote</b>
+              <span>
+                Opens an SSH session on that machine. The context meter and session resume do
+                not apply — both read transcripts that live on the far machine.
+              </span>
+            </span>
+            <div style={{ display: 'flex', gap: 'var(--space-8)', flexWrap: 'wrap' }}>
+              {hosts.map((h) => (
+                <button
+                  key={h.id}
+                  className="btn"
+                  onClick={() => onConnectHost?.(h)}
+                  title={h.command ? `ssh ${h.alias} → ${h.command}` : `ssh ${h.alias}`}
+                >
+                  {h.label || h.alias}
+                </button>
+              ))}
+            </div>
           </div>
         )}
 
@@ -212,7 +312,7 @@ export function Launcher({
 
         {project && recent.length > 0 && (
           <div>
-            <div className="sidebar-group" style={{ padding: '0 0 var(--sp-2)' }}>
+            <div className="sidebar-group" style={{ padding: '0 0 var(--space-8)' }}>
               Resume a session
             </div>
             <div className="sessions" style={{ margin: 0, paddingLeft: 0, borderLeft: 'none' }}>

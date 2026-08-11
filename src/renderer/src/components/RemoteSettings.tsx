@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { RemoteState, SelfUpdateState, UpdateInfo } from '@shared/api'
+import type { CliRunResult, RemoteState, SelfUpdateState, UpdateInfo } from '@shared/api'
+import { updateButton, updateVerdict } from '../lib/updateVerdict'
 import type { Settings } from '@shared/types'
 
 interface Props {
@@ -77,7 +78,7 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
           only reachable through a tunnel you point at it.
         </span>
 
-        <div style={{ display: 'flex', gap: 'var(--sp-2)' }}>
+        <div style={{ display: 'flex', gap: 'var(--space-8)' }}>
           <button
             className="btn"
             data-variant={running ? undefined : 'primary'}
@@ -177,6 +178,23 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
         </span>
       </label>
 
+      <label className="check-row">
+        <input
+          type="checkbox"
+          checked={remote.bindTailscale}
+          disabled={remote.bindLan}
+          onChange={(e) => onPatch({ remote: { ...remote, bindTailscale: e.target.checked } })}
+        />
+        <span>
+          <span className="field-label">Also listen on Tailscale</span>
+          <span className="field-hint">
+            {remote.bindLan
+              ? 'Already covered: listening on the local network includes the tailnet.'
+              : 'Reaches this machine from anywhere your phone can see the tailnet, with no tunnel. Unlike the local network option it opens the port to the tailnet only. Loopback stays bound, so the Cloudflare tunnel keeps working alongside it.'}
+          </span>
+        </span>
+      </label>
+
       <div className="field">
         <span className="field-label">Speech server</span>
         <input
@@ -194,9 +212,10 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
           }}
         />
         <span className="field-hint">
-          The transcription sidecar the microphone on the phone dictates through. Stoke proxies to
-          it, so it never has to face the internet. Takes effect the next time the remote server
-          starts.
+          Where speech is transcribed, for dictation on the phone and in the terminal alike. Stoke
+          proxies to it, so it never has to face the internet. Terminal dictation picks up a change
+          immediately; the phone picks it up the next time the remote server starts.{' '}
+          <code>scripts/stt-sidecar.py</code> in this repo runs one locally.
         </span>
       </div>
 
@@ -214,7 +233,7 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
           </span>
         ) : (
           <>
-            <div style={{ display: 'flex', gap: 'var(--sp-2)', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: 'var(--space-8)', flexWrap: 'wrap' }}>
               <button
                 className="btn"
                 disabled={busy || !remote.hostname}
@@ -243,6 +262,18 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
             {tunnel.error && (
               <span className="field-hint" style={{ color: 'var(--danger)' }}>
                 {tunnel.error}
+              </span>
+            )}
+
+            {/*
+              Say why the button is dead. It was disabled with the reason only in
+              a title attribute, so it read as broken unless you happened to hover
+              it - and a fresh profile always starts with no hostname.
+            */}
+            {!remote.hostname && (
+              <span className="field-hint" data-tone="warning">
+                Run named tunnel needs a Public hostname above — that is the name your tunnel
+                already routes to this port. Quick tunnel works without one.
               </span>
             )}
 
@@ -300,7 +331,13 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
 }
 
 /** Stoke updating itself from GitHub releases. */
-export function SelfUpdateSettings(): React.JSX.Element {
+export function SelfUpdateSettings({
+  betaUpdates,
+  onChangeBeta
+}: {
+  betaUpdates: boolean
+  onChangeBeta: (v: boolean) => void
+}): React.JSX.Element {
   const [state, setState] = useState<SelfUpdateState | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -330,20 +367,30 @@ export function SelfUpdateSettings(): React.JSX.Element {
       ) : (
         <span className="field-hint">
           Version {state.currentVersion}.{' '}
+          {/*
+            `error` is tested before `availableVersion`, and that ordering is the
+            whole fix. The other way round — which is how this shipped — an
+            update being available short-circuited the chain, so every failure
+            that happened *after* one was found had nowhere to appear. Pressing
+            Download on a Mac threw ERR_UPDATER_ZIP_FILE_NOT_FOUND instantly and
+            the panel went on calmly saying "An update is available."
+          */}
           {state.downloaded
             ? 'An update is ready to install.'
             : state.downloading
               ? `Downloading… ${state.progress}%`
-              : state.availableVersion
-                ? 'An update is available.'
-                : state.error
-                  ? `No update found: ${state.error}`
-                  : 'Up to date.'}
+              : state.error
+                ? state.error
+                : state.blocked
+                  ? state.blocked
+                  : state.availableVersion
+                    ? 'An update is available.'
+                    : 'Up to date.'}
         </span>
       )}
 
       {state.supported && (
-        <div style={{ display: 'flex', gap: 'var(--sp-2)', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: 'var(--space-8)', flexWrap: 'wrap' }}>
           <button
             className="btn"
             disabled={busy || state.downloading}
@@ -361,10 +408,25 @@ export function SelfUpdateSettings(): React.JSX.Element {
             <button
               className="btn"
               data-variant="primary"
-              disabled={state.downloading}
+              // Greyed out rather than hidden when this build cannot install
+              // what it downloads: the button still says what would happen, and
+              // hovering says why it will not. Offering it would spend ~120 MB
+              // to arrive at a refusal.
+              disabled={state.downloading || state.blocked !== null}
+              title={state.blocked ?? undefined}
               onClick={() => void window.stoke.self.download().then(setState)}
             >
               Download
+            </button>
+          )}
+          {state.blocked !== null && state.availableVersion && (
+            <button
+              className="btn"
+              onClick={() =>
+                window.stoke.openExternal('https://github.com/realvinn/stoke/releases/latest')
+              }
+            >
+              Open releases page
             </button>
           )}
           {state.downloaded && (
@@ -379,6 +441,33 @@ export function SelfUpdateSettings(): React.JSX.Element {
           )}
         </div>
       )}
+
+      {state.supported && (
+        <label className="check-row">
+          <input
+            type="checkbox"
+            checked={betaUpdates}
+            onChange={(e) => onChangeBeta(e.target.checked)}
+          />
+          <span>
+            <span className="field-label">Offer beta releases</span>
+            {/*
+              Says what it cannot do as well as what it can. GitHub's "latest
+              release" excludes prereleases, so with this off a beta is invisible
+              rather than declined — and since the updater ships inside the app,
+              this only ever governs what THIS build is offered next. It can
+              never reach back and make an older install see a beta.
+            */}
+            <span className="field-hint">
+              Betas are builds whose riskiest paths have not been exercised yet, so they are not
+              offered unless you ask. Off, Check for updates only ever finds stable releases.
+              This governs what this copy of Stoke is offered from now on — an older install
+              cannot be made to see a beta it has already passed over, so the first beta after
+              turning this on is still a manual download.
+            </span>
+          </span>
+        </label>
+      )}
     </div>
   )
 }
@@ -387,22 +476,49 @@ export function SelfUpdateSettings(): React.JSX.Element {
 export function UpdatesSettings(): React.JSX.Element {
   const [info, setInfo] = useState<UpdateInfo | null>(null)
   const [output, setOutput] = useState<string | null>(null)
+  const [verdict, setVerdict] = useState<{ tone: 'success' | 'danger' | 'warning'; text: string } | null>(
+    null
+  )
   const [busy, setBusy] = useState<string | null>(null)
 
   useEffect(() => {
     void window.stoke.updates.check().then(setInfo)
   }, [])
 
-  const run = async (label: string, fn: () => Promise<string>): Promise<void> => {
+  const run = async (label: string, fn: () => Promise<CliRunResult>): Promise<void> => {
     setBusy(label)
     setOutput(null)
+    setVerdict(null)
     try {
-      setOutput(await fn())
-      if (label === 'update') setInfo(await window.stoke.updates.check())
+      const result = await fn()
+      setOutput(result.output || null)
+      if (label === 'update') {
+        // Read `updateAvailable` from the check that ran *before* this update,
+        // not from a fresh one: the fresh one is false either way afterwards.
+        setVerdict(updateVerdict(result, info?.updateAvailable ?? false))
+        setInfo(await window.stoke.updates.check())
+      } else if (!result.ok) {
+        setVerdict({ tone: 'danger', text: result.error ?? 'The command failed.' })
+      }
+    } catch (err) {
+      /*
+       * Without this the button was a no-op with no trace. A rejected invoke
+       * skipped every setState above, `busy` cleared in the finally, and the
+       * panel returned to exactly the state it started in — which is what
+       * "I press it and sometimes nothing happens" looks like from outside.
+       */
+      setVerdict({
+        tone: 'danger',
+        text: `Stoke could not run the command: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      })
     } finally {
       setBusy(null)
     }
   }
+
+  const update = updateButton(info)
 
   return (
     <div className="field">
@@ -422,7 +538,7 @@ export function UpdatesSettings(): React.JSX.Element {
           : 'Checking…'}
       </span>
 
-      <div style={{ display: 'flex', gap: 'var(--sp-2)', flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', gap: 'var(--space-8)', flexWrap: 'wrap' }}>
         <button
           className="btn"
           disabled={busy !== null}
@@ -433,7 +549,8 @@ export function UpdatesSettings(): React.JSX.Element {
         <button
           className="btn"
           data-variant={info?.updateAvailable ? 'primary' : undefined}
-          disabled={busy !== null}
+          disabled={busy !== null || !update.enabled}
+          title={update.hint}
           onClick={() => void run('update', window.stoke.updates.run)}
         >
           {busy === 'update' ? 'Updating…' : 'Update now'}
@@ -447,6 +564,12 @@ export function UpdatesSettings(): React.JSX.Element {
         </button>
       </div>
 
+      {verdict && (
+        <span className="field-hint" data-tone={verdict.tone}>
+          {verdict.text}
+        </span>
+      )}
+
       {output && (
         <pre
           className="mono"
@@ -459,7 +582,7 @@ export function UpdatesSettings(): React.JSX.Element {
             color: 'var(--text-muted)',
             border: '1px solid var(--border)',
             borderRadius: 'var(--r-md)',
-            padding: 'var(--sp-3)'
+            padding: 'var(--space-8)'
           }}
         >
           {output}

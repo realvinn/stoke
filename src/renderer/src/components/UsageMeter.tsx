@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import type { UsageSnapshot, UsageWindow } from '@shared/types'
+import type { StatusLineSnapshot, UsageSnapshot, UsageWindow } from '@shared/types'
+import { mergeUsageWindows, statusLineWindows } from '@shared/statusLine'
 
 /**
  * Plan limits, and whether you are ahead of the clock.
@@ -12,8 +13,17 @@ import type { UsageSnapshot, UsageWindow } from '@shared/types'
  * of it means the limit arrives before the reset does.
  */
 
-function countdown(resetsAt: number | null, now: number): string {
-  if (resetsAt === null) return 'unused'
+/**
+ * `resetsAt === null` used to mean only one thing: an account window that had
+ * never been touched. From the statusLine payload it means something else
+ * too — a window `reading()` (statusLine.ts) parsed a `used_percentage` for
+ * but no `resets_at` for, independently. So a null reset no longer implies
+ * zero usage: with `percent > 0` this says the reset time is unknown, rather
+ * than the false "unused", which would contradict the percentage sitting
+ * right next to it.
+ */
+function countdown(resetsAt: number | null, percent: number, now: number): string {
+  if (resetsAt === null) return percent > 0 ? 'unknown' : 'unused'
   const ms = resetsAt - now
   if (ms <= 0) return 'resetting'
   const mins = Math.floor(ms / 60_000)
@@ -21,6 +31,12 @@ function countdown(resetsAt: number | null, now: number): string {
   const hours = Math.floor(mins / 60)
   if (hours < 24) return `${hours}h ${mins % 60}m`
   return `${Math.floor(hours / 24)}d ${hours % 24}h`
+}
+
+/** Local wall-clock HH:MM, for the "as of" on a reading that may be stale. */
+function clock(at: number): string {
+  const d = new Date(at)
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
 /**
@@ -56,7 +72,7 @@ function Bar({ window: w, now }: { window: UsageWindow; now: number }): React.JS
         )}
       </span>
       <span className="usage-pct">{w.percent}%</span>
-      <span className="usage-reset">{countdown(w.resetsAt, now)}</span>
+      <span className="usage-reset">{countdown(w.resetsAt, w.percent, now)}</span>
     </div>
   )
 }
@@ -71,6 +87,7 @@ function Bar({ window: w, now }: { window: UsageWindow; now: number }): React.JS
  */
 export function UsageChip(): React.JSX.Element | null {
   const [snap, setSnap] = useState<UsageSnapshot | null>(null)
+  const [line, setLine] = useState<StatusLineSnapshot | null>(null)
   const [now, setNow] = useState(() => Date.now())
   const [open, setOpen] = useState(false)
 
@@ -93,6 +110,20 @@ export function UsageChip(): React.JSX.Element | null {
   }, [])
 
   useEffect(() => {
+    let live = true
+    // The last reading of the run, so closing every tab does not blank the
+    // chip — it goes quiet and says when it last heard anything.
+    void window.stoke.statusLine.last().then((s) => {
+      if (live && s) setLine(s)
+    })
+    const off = window.stoke.statusLine.onUpdate((s) => setLine(s))
+    return () => {
+      live = false
+      off()
+    }
+  }, [])
+
+  useEffect(() => {
     if (!open) return
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') setOpen(false)
@@ -101,15 +132,38 @@ export function UsageChip(): React.JSX.Element | null {
     return () => document.removeEventListener('keydown', onKey)
   }, [open])
 
-  // Nothing at all rather than a row of zeroes: an unreachable endpoint is not
-  // the same as no usage, and a wrong number here would be believed.
-  if (!snap || snap.error || !snap.windows.length) return null
+  /*
+   * The statusLine payload's figures win over the account's when both exist —
+   * it is the live account state as the CLI itself was just told it, and on
+   * macOS it is the only source there is at all — the OAuth token lives in
+   * the Keychain, not in ~/.claude/.credentials.json, which is why this chip
+   * rendered nothing there. But the payload states no severity, so it does
+   * not simply replace the account's windows: mergeUsageWindows keeps the
+   * payload's fresher percent/resetsAt per window while pulling severity from
+   * the account's matching window, and keeps any window (weekly_scoped) only
+   * the account carries at all.
+   */
+  const fromLine = line ? statusLineWindows(line, now) : []
+  const fromAccount = snap && !snap.error ? snap.windows : []
+  const windows: UsageWindow[] = mergeUsageWindows(fromLine, fromAccount)
+
+  // Nothing at all rather than a row of zeroes: no reading is not the same as
+  // no usage, and a wrong number here would be believed.
+  if (!windows.length) return null
+
+  const asOf = fromLine.length > 0 && line ? `as of ${clock(line.receivedAt)}` : null
 
   // The two windows that actually run out. A model-scoped one is shown in the
   // panel but would make the chip a wall of digits.
-  const session = snap.windows.find((w) => w.kind === 'session')
-  const weekly = snap.windows.find((w) => w.kind === 'weekly')
-  const ahead = snap.windows.some((w) => w.elapsed !== null && w.percent > w.elapsed * 100)
+  const session = windows.find((w) => w.kind === 'session')
+  const weekly = windows.find((w) => w.kind === 'weekly')
+  const ahead = windows.some((w) => w.elapsed !== null && w.percent > w.elapsed * 100)
+
+  // With both windows the pair of numbers is self-explanatory (5-hour, then
+  // weekly, always in that order). Alone, a bare "29%" names nothing — so a
+  // solo window gets a short prefix, and the tooltip names it too.
+  const soleWindow = session && !weekly ? session : weekly && !session ? weekly : null
+  const chipTitle = soleWindow ? soleWindow.label : 'Plan limits'
 
   return (
     <div className="usage-chip-wrap">
@@ -118,11 +172,21 @@ export function UsageChip(): React.JSX.Element | null {
         data-ahead={ahead || undefined}
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
-        title="Plan limits — click for detail"
+        title={asOf ? `${chipTitle}, ${asOf} — click for detail` : `${chipTitle} — click for detail`}
       >
-        {session && <span>{session.percent}%</span>}
+        {session && (
+          <span>
+            {!weekly && '5h '}
+            {session.percent}%
+          </span>
+        )}
         {session && weekly && <span className="usage-chip-sep">·</span>}
-        {weekly && <span>{weekly.percent}%</span>}
+        {weekly && (
+          <span>
+            {!session && 'wk '}
+            {weekly.percent}%
+          </span>
+        )}
       </button>
 
       {open && (
@@ -130,13 +194,19 @@ export function UsageChip(): React.JSX.Element | null {
           {/* Click-away, behind the panel and above everything else. */}
           <div className="usage-backdrop" onClick={() => setOpen(false)} />
           <div className="usage-panel" role="dialog" aria-label="Plan limits">
-            {snap.windows.map((w) => (
+            {windows.map((w) => (
               <Bar key={`${w.kind}-${w.label}`} window={w} now={now} />
             ))}
             <p className="usage-note">
               the white mark is where you would be using it evenly. fill past it means
               you are going faster than it refills.
             </p>
+            {asOf && (
+              <p className="usage-note">
+                read from an open session&rsquo;s status line, {asOf}. it only updates while a
+                session is running.
+              </p>
+            )}
           </div>
         </>
       )}

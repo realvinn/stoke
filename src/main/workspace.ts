@@ -2,6 +2,7 @@ import { app } from 'electron'
 import { existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { resolveDefaultCwd as resolveCwd } from './workspaceRoots.ts'
 
 /**
  * Working directories for sessions that are not tied to a saved project.
@@ -11,33 +12,9 @@ import { join } from 'node:path'
  *  - a scratch folder, for throwaway work that should not litter a real project
  */
 
-/**
- * Candidate default directories, most preferred first. The first one that
- * exists wins, so a machine without any of them still lands on the home folder
- * rather than failing.
- */
-function candidates(): string[] {
-  const home = homedir()
-  const out: string[] = []
-
-  if (process.platform === 'win32') {
-    // This machine keeps everything under G:\Code. Harmless when absent.
-    out.push('G:\\Code', join(home, 'Code'), join(home, 'source', 'repos'))
-  } else {
-    out.push(join(home, 'Code'), join(home, 'code'), join(home, 'Developer'), join(home, 'Projects'))
-  }
-
-  out.push(home)
-  return out
-}
-
 /** Where a no-project session should run. An explicit setting always wins. */
 export function resolveDefaultCwd(configured: string | null): string {
-  if (configured && existsSync(configured)) return configured
-  for (const dir of candidates()) {
-    if (existsSync(dir)) return dir
-  }
-  return homedir()
+  return resolveCwd(configured, process.platform, homedir())
 }
 
 function stamp(): string {
@@ -54,7 +31,8 @@ function stamp(): string {
  *
  * Deliberately not the OS temp directory: temp gets swept without warning, and
  * anything Claude writes during a scratch session would vanish with it. These
- * persist until deleted, and Settings offers a way to open the folder.
+ * persist until deleted by hand — nothing in the UI opens or prunes the scratch
+ * root today.
  */
 export function createScratchDir(): string {
   const root = join(app.getPath('userData'), 'scratch')
@@ -69,8 +47,4 @@ export function createScratchDir(): string {
 
   mkdirSync(dir, { recursive: true })
   return dir
-}
-
-export function scratchRoot(): string {
-  return join(app.getPath('userData'), 'scratch')
 }

@@ -1,6 +1,8 @@
+import { useState } from 'react'
 import type { ContextSnapshot } from '@shared/types'
-import { ContextRing } from './ContextMeter'
+import type { WorklogButtonState } from '@shared/worklog'
 import { UsageChip } from './UsageMeter'
+import { TabIndicator } from './TabIndicator'
 import {
   BrandMark,
   IconClose,
@@ -8,6 +10,7 @@ import {
   IconGlobe,
   IconMaximize,
   IconMinimize,
+  IconPin,
   IconPlus,
   IconRestore,
   IconSearch,
@@ -21,13 +24,23 @@ interface Props {
   tabs: Tab[]
   activeTabId: string | null
   contexts: Record<string, ContextSnapshot>
+  /** Session ids the worklog agent is watching. Drives the red dot in the ring. */
+  watchedSessions: Set<string>
   sidebarOpen: boolean
   browserOpen: boolean
   onSelectTab: (id: string) => void
   onCloseTab: (id: string) => void
   onNewTab: () => void
+  /** Reorder: the dragged tab takes the target's index. */
+  onReorderTab: (dragId: string, overId: string) => void
   onToggleSidebar: () => void
   onToggleBrowser: () => void
+  /** Proposals awaiting review. Shown in the tooltip; the badge comes from worklogState. */
+  worklogCount: number
+  /** disarmed / watching / badged — see worklogButtonState. */
+  worklogState: WorklogButtonState
+  worklogOpen: boolean
+  onToggleWorklog: () => void
   onOpenPalette: () => void
   onOpenSettings: () => void
 }
@@ -38,17 +51,25 @@ export function TitleBar({
   tabs,
   activeTabId,
   contexts,
+  watchedSessions,
   sidebarOpen,
   browserOpen,
   onSelectTab,
   onCloseTab,
   onNewTab,
+  onReorderTab,
   onToggleSidebar,
   onToggleBrowser,
+  worklogCount,
+  worklogState,
+  worklogOpen,
+  onToggleWorklog,
   onOpenPalette,
   onOpenSettings
 }: Props): React.JSX.Element {
   const isMac = platform === 'darwin'
+  const [dragId, setDragId] = useState<string | null>(null)
+  const [overId, setOverId] = useState<string | null>(null)
 
   return (
     <header className="titlebar" data-platform={platform}>
@@ -69,54 +90,84 @@ export function TitleBar({
         </div>
       )}
 
-      <div className="tabs" role="tablist" aria-label="Sessions">
-        {tabs.map((tab) => {
-          const ctx = contexts[tab.sessionId]
-          const bypass = tab.permissionMode === 'bypassPermissions'
-          return (
-            <div
-              key={tab.id}
-              className="tab"
-              role="tab"
-              aria-selected={tab.id === activeTabId}
-              tabIndex={0}
-              onClick={() => onSelectTab(tab.id)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault()
-                  onSelectTab(tab.id)
-                }
-              }}
-              onAuxClick={(e) => {
-                if (e.button === 1) onCloseTab(tab.id)
-              }}
-              title={`${tab.title} — ${tab.cwd}`}
-            >
-              {ctx?.ready ? (
-                <ContextRing used={ctx.contextTokens} limit={ctx.contextLimit} />
-              ) : (
-                <span
-                  className="tab-dot"
-                  data-state={
-                    tab.status === 'exited' ? 'exited' : bypass ? 'bypass' : 'running'
+      {/*
+        The strip and the tablist are two different things. The + button lives
+        in the strip and is emphatically not a tab: inside the tablist a screen
+        reader announced it as one, and arrow-key tab semantics applied to a
+        control that does not answer to them.
+      */}
+      <div className="tabs">
+        <div className="tablist" role="tablist" aria-label="Sessions">
+          {tabs.map((tab) => {
+            const ctx = contexts[tab.sessionId]
+            return (
+              <div
+                key={tab.id}
+                className="tab"
+                role="tab"
+                aria-selected={tab.id === activeTabId}
+                tabIndex={0}
+                onClick={() => onSelectTab(tab.id)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    onSelectTab(tab.id)
                   }
-                />
-              )}
-              <span className="tab-label">{tab.title}</span>
-              <button
-                className="tab-close"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  onCloseTab(tab.id)
                 }}
-                title="Close session"
+                onAuxClick={(e) => {
+                  if (e.button === 1) onCloseTab(tab.id)
+                }}
+                title={`${tab.title} — ${tab.cwd}`}
+                draggable
+                data-dragging={tab.id === dragId ? 'true' : undefined}
+                data-drop={tab.id === overId ? 'true' : undefined}
+                onDragStart={(e) => {
+                  setDragId(tab.id)
+                  e.dataTransfer.effectAllowed = 'move'
+                  // Chromium refuses to begin a drag with an empty payload.
+                  e.dataTransfer.setData('text/plain', tab.id)
+                }}
+                onDragOver={(e) => {
+                  if (!dragId || dragId === tab.id) return
+                  e.preventDefault()
+                  e.dataTransfer.dropEffect = 'move'
+                  setOverId(tab.id)
+                }}
+                onDragLeave={() => setOverId((cur) => (cur === tab.id ? null : cur))}
+                onDrop={(e) => {
+                  e.preventDefault()
+                  if (dragId && dragId !== tab.id) onReorderTab(dragId, tab.id)
+                  setDragId(null)
+                  setOverId(null)
+                }}
+                onDragEnd={() => {
+                  setDragId(null)
+                  setOverId(null)
+                }}
               >
-                <IconClose width={11} height={11} />
-                <span className="sr-only">Close {tab.title}</span>
-              </button>
-            </div>
-          )
-        })}
+                <TabIndicator
+                  kind={tab.kind}
+                  context={ctx}
+                  status={tab.status}
+                  permissionMode={tab.permissionMode}
+                  watched={watchedSessions.has(tab.sessionId)}
+                />
+                <span className="tab-label">{tab.title}</span>
+                <button
+                  className="tab-close"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onCloseTab(tab.id)
+                  }}
+                  title="Close session"
+                >
+                  <IconClose />
+                  <span className="sr-only">Close {tab.title}</span>
+                </button>
+              </div>
+            )
+          })}
+        </div>
 
         <button className="icon-btn" onClick={onNewTab} title="New session (Ctrl/Cmd+T)">
           <IconPlus />
@@ -137,6 +188,28 @@ export function TitleBar({
         >
           <IconGlobe />
           <span className="sr-only">Toggle browser</span>
+        </button>
+        {/*
+          Always rendered. Hiding it until something is pending made the feature
+          unreachable on a clean install: proposals only arrive from the Scan
+          button inside the panel, so nothing could ever raise the count that
+          was gating the only way in.
+        */}
+        <button
+          className="icon-btn"
+          data-worklog={worklogState}
+          onClick={onToggleWorklog}
+          aria-pressed={worklogOpen}
+          title={
+            worklogCount > 0
+              ? `Worklog — ${worklogCount} awaiting review`
+              : worklogState === 'watching'
+                ? 'Worklog — watching this session; nothing to review yet'
+                : 'Worklog — nothing is watched. Scan a session, or tick a profile in Settings'
+          }
+        >
+          <IconPin />
+          <span className="sr-only">Toggle worklog review</span>
         </button>
         <UsageChip />
 

@@ -1,12 +1,22 @@
 import type { SVGProps } from 'react'
 
-/** One consistent icon vocabulary: 16px grid, 1.5 stroke, round caps. */
+/**
+ * One consistent icon vocabulary: 16px grid, 1.5 stroke, round caps.
+ *
+ * No `width`/`height` attributes. Size comes from the `.icon` rule in
+ * app.css, in rem, so a glyph grows with Interface scale — every icon used to
+ * be a fixed px attribute, which is why scale 1.0 → 1.6 moved every button
+ * 37.5% linear and left every glyph exactly where it was. A container states
+ * its size by setting `--icon-size`.
+ *
+ * `{...rest}` stays last so a caller can still override viewBox and stroke
+ * width, which IconGear does.
+ */
 function Base(props: SVGProps<SVGSVGElement>): React.JSX.Element {
-  const { children, ...rest } = props
+  const { children, className, ...rest } = props
   return (
     <svg
-      width="16"
-      height="16"
+      className={className ? `icon ${className}` : 'icon'}
       viewBox="0 0 16 16"
       fill="none"
       stroke="currentColor"

@@ -31,6 +31,20 @@ textarea {
   color: inherit;
 }
 
+/*
+ * Chromium's UA sheet sets `button { padding: 1px 6px }` and the reset above
+ * never touched it. On an 18px `.tab-close` that leaves a 6px content box for
+ * an 11px glyph: the glyph overflows its grid area, inline centring stops
+ * applying, and the ✕ lands 6px from the left and 1px from the right. It gets
+ * worse as Interface scale drops, because the rem-sized box shrinks while the
+ * UA padding does not. Every button in this app that wants padding declares
+ * it, so zeroing it here costs nothing and fixes `.tab-close` and every
+ * `.icon-btn` in one line. Measured, not reasoned.
+ */
+button {
+  padding: 0;
+}
+
 /* ----------------------------------------------------------------- tokens */
 
 :root {
@@ -51,14 +65,58 @@ textarea {
   --fs-xl: 1.25rem;
   --fs-2xl: 1.5rem;
 
-  --sp-1: 0.25rem;
-  --sp-2: 0.375rem;
-  --sp-3: 0.5rem;
-  --sp-4: 0.75rem;
-  --sp-5: 1rem;
-  --sp-6: 1.25rem;
-  --sp-7: 1.75rem;
-  --sp-8: 2.5rem;
+  /* Strict 4px scale. Named for the pixel value at scale 1, so a rule states
+     its own geometry and a wrong one is obvious on sight. */
+  --space-4: 0.25rem;
+  --space-8: 0.5rem;
+  --space-12: 0.75rem;
+  --space-16: 1rem;
+  --space-24: 1.5rem;
+  --space-32: 2rem;
+  --space-48: 3rem;
+
+  --lh-tight: 1.25;   /* single-line controls: tab labels, chips, buttons */
+  --lh-snug: 1.4;     /* headings, and two-line list rows */
+  --lh-normal: 1.55;  /* body copy: prompts, proposal text, settings help */
+
+  /* rem, so an icon grows with Interface scale. Today every icon is a px
+     attribute, which is why scale 1.0 -> 1.6 moved every button 37.5% and left
+     every glyph exactly where it was. */
+  --icon-xs: 0.625rem;  /* 10px at scale 1 */
+  --icon-sm: 0.75rem;   /* 12px */
+  --icon-md: 0.875rem;  /* 14px */
+  --icon-lg: 1rem;      /* 16px */
+
+  /* A fixed slot for the tab indicator, so the empty circle, the filled ring
+     and the ring-plus-dot are all the same width and the label never moves. */
+  --tab-indicator: 0.875rem;   /* 14px */
+  /* The only red in the tab strip: "the worklog is watching this session". */
+  --tab-dot-worklog: var(--danger);
+  /* A nearly-full context ring. No longer --danger: red means one thing now. */
+  --ring-full: var(--warning);
+  /* macOS traffic lights are fixed device px, so their clearance must be too.
+     A rem here is why Stoke only laid out correctly at Interface scale 1.0.
+
+     88, not 78. The lights start at trafficLightPosition.x = 16 and the cluster
+     is 40 + the button diameter wide, so their right edge lands near 70-72px.
+     78 left about 8px of air — the same as this bar's own `gap` between its own
+     buttons, so the sidebar toggle sat no further from the OS chrome than from
+     its siblings, and read as crowding the window controls. 88 gives it double
+     that, and still clears the wider 16px buttons newer macOS versions draw.
+     Reported from screen; no automated check here can see the lights, because
+     CDP screenshots paint page content and not native window chrome. */
+  --traffic-lights-w: 88px;
+  /* A selected row must out-rank a hovered one in every theme. The mix is
+     mirrored as SELECTED_ACCENT_MIX in scripts/verify-color.mts; change one and
+     you must change the other, which is what that assertion is for. */
+  --surface-selected: color-mix(in srgb, var(--accent) 18%, var(--surface-hover));
+  /* The disclosure chevron's box, and the metadata picker's. Four rules have to
+     agree with it - the two buttons, the project metadata's indent and where the
+     session list's guide rule falls. It was an inline style in Sidebar.tsx,
+     which is exactly how they drifted apart. */
+  --chevron: 1.125rem;
+  /* One height for every single-line control: .btn, .input, .select, .segmented. */
+  --control-h: 1.75rem;
 
   --r-sm: 0.25rem;
   --r-md: 0.375rem;
@@ -86,17 +144,30 @@ textarea {
   --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.18);
   --shadow-md: 0 4px 14px rgb(0 0 0 / 0.22);
   --shadow-lg: 0 18px 48px rgb(0 0 0 / 0.34);
+  --scrim: rgb(0 0 0 / 0.42);
+  --swatch-ring: rgb(0 0 0 / 0.25);
+  --shadow-panel: 0 12px 32px rgb(0 0 0 / 0.45);
+  /* Text on a --danger fill. NOT white: recomputed from src/shared/themes.ts,
+     #ffffff on --danger measures 2.89 (Ember), 2.84 (Nocturne), 2.70 (Moss) and
+     6.01 (Daylight) - three of four fail 4.5:1, and two of those three sites are
+     button text. var(--bg) measures 6.50, 6.66, 6.85 and 5.46: all four clear it.
+     Mirrored by an assertion in scripts/verify-color.mts. */
+  --on-danger: var(--bg);
 }
 
 :root[data-appearance='light'] {
   --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.06);
   --shadow-md: 0 4px 14px rgb(0 0 0 / 0.09);
   --shadow-lg: 0 18px 48px rgb(0 0 0 / 0.14);
+  --scrim: rgb(0 0 0 / 0.28);
+  --swatch-ring: rgb(0 0 0 / 0.16);
+  --shadow-panel: 0 12px 32px rgb(0 0 0 / 0.16);
 }
 
 body {
   font-family: var(--sans);
   font-size: var(--fs-base);
+  line-height: var(--lh-normal);
   color: var(--text);
   background: var(--bg);
   -webkit-font-smoothing: antialiased;
@@ -151,6 +222,18 @@ body {
   white-space: nowrap;
 }
 
+/*
+ * One rule sizes every icon. A container states its size by setting
+ * --icon-size; nothing passes a pixel count through a React prop.
+ * `flex: none` because an icon beside a truncating label must not be the
+ * thing that shrinks.
+ */
+.icon {
+  width: var(--icon-size, var(--icon-lg));
+  height: var(--icon-size, var(--icon-lg));
+  flex: none;
+}
+
 .sr-only {
   position: absolute;
   width: 1px;
@@ -167,6 +250,18 @@ body {
 .app {
   display: grid;
   grid-template-rows: var(--titlebar-h) minmax(0, 1fr) var(--status-h);
+  /*
+   * The column is declared, and `minmax(0, ...)` is the whole reason.
+   *
+   * Left implicit it is an `auto` track, whose minimum is its content's
+   * min-content width — so any row wide enough to resist shrinking makes the
+   * track, and therefore the window's whole contents, wider than the window.
+   * That was already true with the sidebar and the worklog panel both open at
+   * the 940px minimum size, and a one-line prompt strip above the terminal made
+   * it dramatic: the app grew by 600px and clipped the launcher. `minmax(0, 1fr)`
+   * lets the row clip its own content instead of pushing the shell.
+   */
+  grid-template-columns: minmax(0, 1fr);
   height: 100%;
   background: var(--bg);
 }
@@ -191,17 +286,25 @@ body {
 .titlebar {
   display: flex;
   align-items: center;
-  gap: var(--sp-2);
-  padding-inline: var(--sp-3);
+  gap: var(--space-8);
+  padding-inline: var(--space-8);
   background: var(--bg-sunken);
   border-bottom: 1px solid var(--border);
   -webkit-app-region: drag;
   position: relative;
 }
 
-/* Clear the macOS traffic lights. */
+/*
+ * Clear the macOS traffic lights.
+ *
+ * Device pixels, never rem. The lights are drawn by macOS at a fixed size
+ * that Stoke's Interface scale does not touch, so a rem clearance is only
+ * correct at scale exactly 1.0 — which is the whole of why Stoke was only
+ * laid out correctly on a Mac at that one setting. 78px is 4.875rem x 16, so
+ * scale 1.0 is unchanged and every other scale is fixed.
+ */
 .titlebar[data-platform='darwin'] {
-  padding-left: 4.875rem;
+  padding-left: var(--traffic-lights-w);
 }
 
 /*
@@ -210,7 +313,7 @@ body {
  * hardcoding three button widths and being wrong at 125%.
  */
 .titlebar[data-platform='win32'] {
-  padding-right: calc(100% - env(titlebar-area-width, 100%) + var(--sp-2));
+  padding-right: calc(100% - env(titlebar-area-width, 100%) + var(--space-8));
 }
 
 /*
@@ -228,8 +331,8 @@ body {
 .brand {
   display: flex;
   align-items: center;
-  gap: var(--sp-2);
-  padding-right: var(--sp-3);
+  gap: var(--space-8);
+  padding-right: var(--space-8);
   flex-shrink: 0;
   user-select: none;
 }
@@ -252,28 +355,76 @@ body {
 .tabs {
   display: flex;
   align-items: stretch;
-  gap: var(--sp-1);
+  gap: var(--space-4);
   flex: 1;
   min-width: 0;
   height: 100%;
-  padding-top: var(--sp-1);
+  padding-top: var(--space-4);
+}
+
+/*
+ * The list itself. It carries the overflow so the tabs scroll and the + button
+ * beside them stays put, and `min-width: 0` is what lets it shrink instead of
+ * pushing the shell wider than the window — see CLAUDE.md gotcha 14, which is
+ * about exactly this failure one level up.
+ */
+.tablist {
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-4);
+  min-width: 0;
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
 }
 
-.tabs::-webkit-scrollbar {
+.tablist::-webkit-scrollbar {
   display: none;
+}
+
+/*
+ * The new-session button is not a tab.
+ *
+ * The strip is padded at the top and stretches its children so tabs meet the
+ * pane below like real tabs. This button has its own fixed height, so stretch
+ * degrades to flex-start and it sat at the top of the padded box - 4px above
+ * every other icon in the title bar, which read as it floating.
+ *
+ * Cancel the strip's top padding for this one child and centre it, so it lines
+ * up with the icons outside the strip rather than with the tab tops. The margin
+ * is the full padding, not half: align-self centres the MARGIN box, so half
+ * lands it a pixel low. Measured, not reasoned - both icons now centre at 22.
+ */
+.tabs > .icon-btn {
+  align-self: center;
+  margin-top: calc(var(--space-4) * -1);
+  flex: none;
 }
 
 .tab {
   position: relative;
   display: flex;
   align-items: center;
-  gap: var(--sp-2);
+  gap: var(--space-8);
   min-width: 0;
   max-width: 15rem;
-  padding: 0 var(--sp-2) 0 var(--sp-3);
+  /*
+   * Three values: no top padding, 8px inline, and a bottom padding that is the
+   * strip's own top padding plus the tab's top border.
+   *
+   * The strip is padded at the top and stretches its children, so a tab's
+   * painted box runs from y=4 to the title bar's content edge and meets the
+   * pane below - which is what makes it read as a tab. But the box has a 1px
+   * top border and no bottom border, so its content box is 5px shorter at the
+   * top than at the bottom and everything inside it centred at 24.0, while
+   * every icon outside the strip centres at 21.5.
+   *
+   * Shortening the content box at the bottom by exactly that 5px moves the
+   * centreline up 2.5px and leaves the painted box where it was. This is the
+   * same trap as the `+` button below (see CLAUDE.md gotcha 11): the whole
+   * offset has to be cancelled, not half of it. Measured, not reasoned.
+   */
+  padding: 0 var(--space-8) calc(var(--space-4) + 1px);
   border: 1px solid transparent;
   border-bottom: none;
   border-radius: var(--r-md) var(--r-md) 0 0;
@@ -306,11 +457,34 @@ body {
   border-radius: var(--r-full);
 }
 
+.tab[data-dragging='true'] {
+  opacity: 0.4;
+}
+
+/* Where it will land. An inset outline rather than a background, so it does
+   not read as hover on the tab the pointer happens to be over. */
+.tab[data-drop='true'] {
+  outline: 1px dashed var(--accent);
+  outline-offset: -1px;
+}
+
 .tab-label {
   font-size: var(--fs-md);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* A single-line control has no use for body leading, and the extra height
+     fights the fixed 14px indicator slot beside it. */
+  line-height: var(--lh-tight);
+}
+
+/*
+ * A New Project tab has no session behind it, so its label is a placeholder
+ * rather than a name. Muting it keeps the strip readable when three of them
+ * are open beside two live sessions.
+ */
+.tab:has(.tab-indicator[data-kind='new']) .tab-label {
+  color: var(--text-muted);
 }
 
 .tab-close {
@@ -323,6 +497,8 @@ body {
   border-radius: var(--r-sm);
   background: transparent;
   color: var(--text-faint);
+  /* was width={11}; the nearest token is 12px and the difference is invisible */
+  --icon-size: var(--icon-sm);
   cursor: default;
   opacity: 0;
   transition:
@@ -331,8 +507,24 @@ body {
     color var(--dur-fast) var(--ease);
 }
 
+/* The browser's own tab close is a size smaller — its tabs are shorter. */
+.btab .tab-close {
+  --icon-size: var(--icon-xs);
+}
+
+/*
+ * Both strips, not just the session one. `.tab-close` is `opacity: 0` by
+ * default and browser tabs are `.btab`, so neither hover selector matched
+ * them: the ✕ on every browser tab was invisible to a mouse for as long as
+ * the panel has existed. It still hit-tested, which is worse than missing —
+ * an unmarked 18x18 target, with a click anywhere around it selecting the tab
+ * instead. `:focus-visible` did match, being unscoped, but that fires only on
+ * keyboard focus, so it rescued nobody who reaches for a mouse.
+ */
 .tab:hover .tab-close,
 .tab[aria-selected='true'] .tab-close,
+.btab:hover .tab-close,
+.btab[aria-selected='true'] .tab-close,
 .tab-close:focus-visible {
   opacity: 1;
 }
@@ -342,24 +534,68 @@ body {
   color: var(--accent-contrast);
 }
 
-.tab-dot {
-  width: 0.4375rem;
-  height: 0.4375rem;
-  flex-shrink: 0;
+/*
+ * One fixed slot for whatever a tab has to say about its session.
+ *
+ * Fixed, because a 7px dot used to be swapped for a 14px ring the instant the
+ * context watcher reported, and the label and the close button jumped 7px
+ * sideways with it. Both children sit in the same grid cell, so the ring, the
+ * empty circle and the ring-plus-dot are all exactly --tab-indicator wide.
+ */
+.tab-indicator {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: var(--tab-indicator);
+  height: var(--tab-indicator);
+  flex: none;
+}
+
+.tab-indicator > .ring,
+.tab-indicator > .tab-watch {
+  grid-area: 1 / 1;
+}
+
+/* The only red in the tab strip, and it means one thing: the worklog agent is
+   watching this session. */
+.tab-watch {
+  width: 0.3125rem;
+  height: 0.3125rem;
   border-radius: var(--r-full);
-  background: var(--text-faint);
+  background: var(--tab-dot-worklog);
 }
 
-.tab-dot[data-state='running'] {
-  background: var(--success);
+/*
+ * `data-level='empty'` used to be scoped here too, but `.ring .ring-track`
+ * below already sets every ring's track to --border-strong unconditionally,
+ * for every level including empty, and nothing else ever varied it by level.
+ * A `[data-level='empty']` variant of the same declaration was proven inert
+ * (Task 51) and deleted rather than kept as a comment fighting the cascade.
+ */
+
+/* A New Project tab has no session to measure. */
+.ring-plus {
+  fill: none;
+  stroke: var(--text-muted);
+  stroke-width: 1.5;
+  stroke-linecap: round;
 }
 
-.tab-dot[data-state='bypass'] {
-  background: var(--danger);
+/* A finished process reads as absent rather than as an alert. */
+.tab-indicator[data-status='exited'] {
+  opacity: 0.45;
 }
 
-.tab-dot[data-state='exited'] {
-  background: var(--text-faint);
+/*
+ * Bypass mode used to own --danger, which put a red dot on every tab on a
+ * machine whose default permission mode is bypassPermissions — an alert that
+ * was only ever a setting. A dashed warning-coloured track says "the guard
+ * rails are off" and cannot be mistaken for the context fill, which is always
+ * a solid arc starting at the top.
+ */
+.tab-indicator[data-mode='bypass'] .ring-track {
+  stroke: var(--warning);
+  stroke-dasharray: 1.6 1.6;
 }
 
 /* ------------------------------------------------------- titlebar actions */
@@ -367,16 +603,16 @@ body {
 .titlebar-actions {
   display: flex;
   align-items: center;
-  gap: var(--sp-1);
+  gap: var(--space-4);
   flex-shrink: 0;
-  padding-left: var(--sp-2);
+  padding-left: var(--space-8);
 }
 
 .win-controls {
   display: flex;
   align-items: stretch;
-  margin-left: var(--sp-2);
-  margin-right: calc(var(--sp-3) * -1);
+  margin-left: var(--space-8);
+  margin-right: calc(var(--space-8) * -1);
   height: 100%;
 }
 
@@ -401,7 +637,7 @@ body {
 
 .win-btn[data-variant='close']:hover {
   background: var(--danger);
-  color: #fff;
+  color: var(--on-danger);
 }
 
 /* -------------------------------------------------------------- controls */
@@ -410,8 +646,10 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: var(--sp-2);
-  padding: 0.375rem var(--sp-4);
+  gap: var(--space-8);
+  height: var(--control-h);
+  padding: 0 var(--space-12);
+  line-height: var(--lh-tight);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   background: var(--surface);
@@ -472,14 +710,15 @@ body {
 .btn[data-variant='danger']:hover:not(:disabled) {
   background: var(--danger);
   border-color: var(--danger);
-  color: #fff;
+  color: var(--on-danger);
 }
 
 .icon-btn {
+  position: relative;
   display: grid;
   place-items: center;
-  width: 1.75rem;
-  height: 1.75rem;
+  width: var(--control-h);
+  height: var(--control-h);
   border: 1px solid transparent;
   border-radius: var(--r-md);
   background: transparent;
@@ -505,9 +744,35 @@ body {
   color: var(--accent);
 }
 
+/* Watching: something may appear here without being asked for. Full-strength
+   text rather than muted — a state, not an alert. */
+.icon-btn[data-worklog='watching'] {
+  color: var(--text);
+}
+
+/* Badged: something is waiting for a decision. Deliberately NOT red — red in
+   the tab strip means "the worklog is watching this session" and nothing else,
+   so a second red here would put the one meaning back into doubt. */
+.icon-btn[data-worklog='badged'] {
+  color: var(--accent);
+}
+
+.icon-btn[data-worklog='badged']::after {
+  content: '';
+  position: absolute;
+  top: var(--space-4);
+  right: var(--space-4);
+  width: 0.375rem;
+  height: 0.375rem;
+  border-radius: var(--r-full);
+  background: var(--accent);
+}
+
 .input {
   width: 100%;
-  padding: 0.375rem var(--sp-3);
+  height: var(--control-h);
+  padding: 0 var(--space-8);
+  line-height: var(--lh-tight);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   background: var(--bg-sunken);
@@ -535,7 +800,9 @@ body {
 
 .select {
   appearance: none;
-  padding: 0.375rem 1.75rem 0.375rem var(--sp-3);
+  height: var(--control-h);
+  padding: 0 1.75rem 0 var(--space-8);
+  line-height: var(--lh-tight);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   background-color: var(--surface);
@@ -567,19 +834,21 @@ body {
 .segmented {
   display: inline-flex;
   padding: 2px;
+  height: var(--control-h);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   background: var(--bg-sunken);
 }
 
 .segmented button {
-  padding: 0.25rem var(--sp-3);
+  padding: 0 var(--space-8);
   border: none;
   border-radius: calc(var(--r-md) - 1px);
   background: transparent;
   color: var(--text-muted);
   font-size: var(--fs-sm);
   font-weight: 500;
+  line-height: var(--lh-tight);
   cursor: default;
   transition:
     background var(--dur-fast) var(--ease),
@@ -599,19 +868,20 @@ body {
 /* The bypass segment stays legible as a warning even while inactive. */
 .segmented button[data-danger='true'][aria-pressed='true'] {
   background: var(--danger);
-  color: #fff;
+  color: var(--on-danger);
 }
 
 .pill {
   display: inline-flex;
   align-items: center;
-  gap: var(--sp-1);
-  padding: 0.0625rem var(--sp-2);
+  gap: var(--space-4);
+  padding: 0.0625rem var(--space-8);
   border-radius: var(--r-full);
   background: var(--surface);
   color: var(--text-muted);
   font-size: var(--fs-xs);
   font-weight: 500;
+  line-height: var(--lh-tight);
   white-space: nowrap;
 }
 
@@ -659,8 +929,8 @@ body {
 .sidebar-head {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-3);
-  padding: var(--sp-4) var(--sp-4) var(--sp-3);
+  gap: var(--space-8);
+  padding: var(--space-12) var(--space-12) var(--space-8);
   position: relative;
 }
 
@@ -668,12 +938,12 @@ body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 0 var(--sp-3) var(--sp-5);
+  padding: 0 var(--space-8) var(--space-16);
   position: relative;
 }
 
 .sidebar-group {
-  padding: var(--sp-4) var(--sp-2) var(--sp-1);
+  padding: var(--space-12) var(--space-8) var(--space-4);
   font-size: var(--fs-xs);
   font-weight: 600;
   letter-spacing: 0.04em;
@@ -682,11 +952,12 @@ body {
 }
 
 .project {
+  position: relative;
   width: 100%;
   display: flex;
   flex-direction: column;
   gap: 0.125rem;
-  padding: var(--sp-2) var(--sp-3);
+  padding: var(--space-8) var(--space-8);
   border: 1px solid transparent;
   border-radius: var(--r-md);
   background: transparent;
@@ -701,15 +972,29 @@ body {
   background: var(--surface-hover);
 }
 
-.project[aria-current='true'] {
-  background: var(--surface);
-  border-color: var(--border);
+/*
+ * Selection out-ranks hover.
+ *
+ * `--surface` measured *closer* to the panel than `--surface-hover` on all
+ * three dark themes, so the row the mouse was over read as more chosen than
+ * the row that actually was, and the sidebar read as broken rather than
+ * merely subtle. The command palette already had the right idea
+ * (`.palette-item[data-active='true']`, an accent wash); this is the same
+ * move with enough accent in it to win on every theme.
+ *
+ * The hover pair is restated so a selected row does not drop back to the
+ * hover grey under the pointer.
+ */
+.project[aria-current='true'],
+.project[aria-current='true']:hover {
+  background: var(--surface-selected);
+  border-color: transparent;
 }
 
 .project-top {
   display: flex;
   align-items: center;
-  gap: var(--sp-2);
+  gap: var(--space-8);
 }
 
 .project-name {
@@ -723,14 +1008,24 @@ body {
   white-space: nowrap;
 }
 
+/*
+ * `--text`, not `--accent`. The background now carries the selection, and
+ * accent-on-selected measures 4.27:1 on Nocturne and 3.59:1 on Daylight —
+ * under AA. Weight carries the emphasis instead, which costs no contrast.
+ */
 .project[aria-current='true'] .project-name {
-  color: var(--accent);
+  color: var(--text);
+  font-weight: 600;
 }
 
 .project-meta {
   display: flex;
   align-items: center;
-  gap: var(--sp-2);
+  gap: var(--space-8);
+  /* Indented to start under the project's own icon-and-name rather than under
+     the chevron's left edge. Unindented, the row read as two fragments 26px
+     apart: a title over here, its own session count over there. */
+  padding-left: calc(var(--chevron) + var(--space-8));
   font-size: var(--fs-xs);
   color: var(--text-faint);
 }
@@ -752,14 +1047,156 @@ body {
   opacity: 1;
 }
 
+/* --------------------------------------------------- project icon + name */
+
+/* The disclosure control's box, from the one token that names it. It was an
+   inline style, which is exactly how it drifted apart from the metadata indent
+   and the session list's guide rule — the two other rules that have to agree
+   with it. */
+.project-chevron {
+  width: var(--chevron);
+  height: var(--chevron);
+  transition: rotate var(--dur) var(--ease);
+  --icon-size: var(--icon-sm);
+}
+
+.project-chevron[aria-expanded='true'] {
+  rotate: 90deg;
+}
+
+/* The pin stays out of the way until the row is hovered, focused, or pinned —
+   otherwise it repeats down the whole list as pure noise. The opacity pair is
+   already declared further down the file; this rule only carries the box the
+   inline style used to. */
+.project-pin {
+  width: 1.25rem;
+  height: 1.25rem;
+  --icon-size: var(--icon-sm);
+}
+
+/* A fixed slot whether or not there is an emoji, so every project name in the
+   list starts at the same x and adding an icon moves nothing. `flex: none` so
+   the wrapper never absorbs the row's spare width and shunts the name right. */
+.project-meta-picker {
+  display: flex;
+  flex: none;
+}
+
+/* Exactly the chevron's box, from the same token, because the emoji is part of
+   the title: the project's metadata line and its session list both align to
+   this glyph's left edge, not to the text after it. F Task 68 measures that
+   alignment against `.project-meta-picker`, and it is only correct while these
+   two rules and `.project-chevron` all read `var(--chevron)`. */
+.project-emoji {
+  --icon-size: var(--icon-sm);
+  width: var(--chevron);
+  height: var(--chevron);
+  flex: none;
+}
+
+.project-emoji-glyph {
+  font-size: var(--fs-sm);
+  line-height: 1;
+}
+
+/* Anchored to the row rather than to the button: .sidebar-scroll is a scroll
+   container, so anything wider than the sidebar is clipped and drags a
+   horizontal scrollbar in with it. Spanning the row is the only width that is
+   correct at every sidebar width from the 200px minimum up. */
+.project-meta-pop {
+  position: absolute;
+  left: var(--space-8);
+  right: var(--space-8);
+  top: calc(100% + var(--space-4));
+  z-index: var(--z-dropdown);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  padding: var(--space-8);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-panel);
+}
+
+/* Flipped by ProjectMetaPicker's layout effect when there isn't room below
+   inside `.sidebar-scroll` — a scrolled-down row would otherwise clip the
+   label field and both action buttons past the container's own bottom edge. */
+.project-meta-pop--above {
+  top: auto;
+  bottom: calc(100% + var(--space-4));
+}
+
+.project-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(1.75rem, 1fr));
+  gap: var(--space-4);
+}
+
+.project-emoji-option {
+  display: grid;
+  place-items: center;
+  height: 1.75rem;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  font-size: var(--fs-sm);
+  line-height: 1;
+  cursor: default;
+  transition:
+    background var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease);
+}
+
+.project-emoji-option:hover {
+  background: var(--surface-hover);
+}
+
+.project-emoji-option[aria-pressed='true'] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.project-meta-note {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-snug);
+}
+
+.project-meta-actions {
+  display: flex;
+  gap: var(--space-8);
+}
+
+/* Scoped rather than adding a global `data-size="sm"`: the only small-button
+   rule in the sheet today is scoped to `.worklog`, and a second convention that
+   works in two places out of three is worse than a local rule. */
+.project-meta-actions .btn {
+  flex: 1;
+  padding: 0.1875rem var(--space-8);
+  font-size: var(--fs-sm);
+}
+
 /* --------------------------------------------------------- session rows */
 
 .sessions {
   display: flex;
   flex-direction: column;
   gap: 1px;
-  margin: var(--sp-1) 0 var(--sp-2) var(--sp-4);
-  padding-left: var(--sp-3);
+  /*
+   * The guide rule falls on the centre of the disclosure chevron, and the two
+   * paddings past it add up to the chevron's other half plus the gap after
+   * it — so a session title starts on exactly the same pixel as the project
+   * name above it. 8 + 9 = 17 to the rule, + 1 border + 8 + 8 = 34, which is
+   * .project's padding (8) + the chevron (18) + .project-top's gap (8).
+   * Measured, not reasoned: it used to sit 5px to the left of the title it
+   * belongs to, which is enough to read as a mistake and not enough to read
+   * as a decision.
+   */
+  margin: var(--space-4) 0 var(--space-8) calc(var(--space-8) + var(--chevron) / 2);
+  padding-left: var(--space-8);
   border-left: 1px solid var(--border);
 }
 
@@ -768,7 +1205,7 @@ body {
   flex-direction: column;
   gap: 0.1875rem;
   width: 100%;
-  padding: var(--sp-2) var(--sp-3);
+  padding: var(--space-8) var(--space-8);
   border: none;
   border-radius: var(--r-md);
   background: transparent;
@@ -779,6 +1216,20 @@ body {
 
 .session:hover {
   background: var(--surface-hover);
+}
+
+/*
+ * The session behind the open terminal. There was no such state at all, so
+ * the one row you were actually looking at and the twelve you were not were
+ * drawn identically. Same wash as a selected project, because it means the
+ * same thing one level down.
+ */
+.session[aria-current='true'] {
+  background: var(--surface-selected);
+}
+
+.session[aria-current='true'] .session-title {
+  font-weight: 600;
 }
 
 .session-title {
@@ -792,7 +1243,7 @@ body {
 .session-meta {
   display: flex;
   align-items: center;
-  gap: var(--sp-2);
+  gap: var(--space-8);
   font-size: var(--fs-xs);
   color: var(--text-faint);
 }
@@ -831,7 +1282,7 @@ body {
 .meter-inline {
   display: flex;
   align-items: center;
-  gap: var(--sp-2);
+  gap: var(--space-8);
   min-width: 0;
 }
 
@@ -866,8 +1317,14 @@ body {
   stroke: var(--warning);
 }
 
+/*
+ * Not --danger. Red in the tab strip now means one thing only — the worklog is
+ * watching this session — and a ring cannot be allowed to say it by accident.
+ * At 90% the arc is nearly a closed circle, so the shape already carries the
+ * urgency the colour used to.
+ */
 .ring[data-level='critical'] .ring-fill {
-  stroke: var(--danger);
+  stroke: var(--ring-full);
 }
 
 /* -------------------------------------------------------------- terminal */
@@ -881,7 +1338,7 @@ body {
 .term-pane {
   position: absolute;
   inset: 0;
-  padding: var(--sp-3) var(--sp-2) var(--sp-2) var(--sp-4);
+  padding: var(--space-8) var(--space-8) var(--space-8) var(--space-12);
   background: var(--bg);
 }
 
@@ -899,13 +1356,79 @@ body {
   background: transparent !important;
 }
 
-.term-exit {
+/*
+ * Dictation's only persistent affordance. Bottom-left rather than bottom-right,
+ * so it never sits under the "Session ended" card, and floating over the
+ * terminal rather than in the layout so arming it does not reflow the PTY —
+ * a resize mid-session redraws whatever Claude Code is currently painting.
+ */
+.voice-strip {
   position: absolute;
-  inset: auto var(--sp-4) var(--sp-4) auto;
+  inset: auto auto var(--space-12) var(--space-12);
   display: flex;
   align-items: center;
-  gap: var(--sp-3);
-  padding: var(--sp-3) var(--sp-4);
+  gap: var(--space-8);
+  max-width: calc(100% - var(--space-24));
+  padding: var(--space-8) var(--space-12);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-md);
+  font-size: var(--fs-sm);
+  z-index: var(--z-sticky);
+  animation: pop var(--dur) var(--ease);
+}
+
+.voice-strip[data-tone='error'] {
+  border-color: var(--danger);
+}
+
+.voice-text {
+  min-width: 0;
+}
+
+.voice-dot {
+  flex: 0 0 auto;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+/* Recording is the one state worth an animation: it is the one where something
+   is being captured and the user needs to be sure it is still happening. */
+.voice-dot[data-state='recording'] {
+  background: var(--danger);
+  animation: voice-pulse 1.2s var(--ease) infinite;
+}
+
+.voice-dot[data-state='working'] {
+  background: var(--accent);
+}
+
+.voice-dot[data-state='error'] {
+  background: var(--danger);
+}
+
+@keyframes voice-pulse {
+  50% {
+    opacity: 0.25;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .voice-dot[data-state='recording'] {
+    animation: none;
+  }
+}
+
+.term-exit {
+  position: absolute;
+  inset: auto var(--space-12) var(--space-12) auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  padding: var(--space-8) var(--space-12);
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
   background: var(--bg-elevated);
@@ -924,20 +1447,20 @@ body {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: var(--sp-7);
+  padding: var(--space-24);
 }
 
 .launcher-card {
   width: min(38rem, 100%);
   display: flex;
   flex-direction: column;
-  gap: var(--sp-5);
+  gap: var(--space-16);
 }
 
 .launcher-head {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-2);
+  gap: var(--space-8);
 }
 
 .launcher-title {
@@ -959,8 +1482,8 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--sp-4);
-  padding: var(--sp-3) 0;
+  gap: var(--space-12);
+  padding: var(--space-8) 0;
   border-top: 1px solid var(--border);
 }
 
@@ -983,8 +1506,8 @@ body {
 .launcher-actions {
   display: flex;
   align-items: center;
-  gap: var(--sp-3);
-  padding-top: var(--sp-2);
+  gap: var(--space-8);
+  padding-top: var(--space-8);
 }
 
 .launcher-hint {
@@ -1010,8 +1533,8 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: var(--sp-3);
-  padding: var(--sp-7) var(--sp-5);
+  gap: var(--space-8);
+  padding: var(--space-24) var(--space-16);
   text-align: center;
   color: var(--text-muted);
 }
@@ -1027,7 +1550,7 @@ body {
   margin: 0;
   max-width: 34ch;
   font-size: var(--fs-md);
-  line-height: 1.55;
+  line-height: var(--lh-normal);
   text-wrap: pretty;
 }
 
@@ -1045,23 +1568,34 @@ body {
 .browser-tabs {
   display: flex;
   align-items: center;
-  gap: var(--sp-1);
-  padding: var(--sp-2) var(--sp-2) 0;
-  overflow-x: auto;
-  scrollbar-width: none;
+  gap: var(--space-4);
+  padding: var(--space-8) var(--space-8) 0;
 }
 
 .browser-tabs::-webkit-scrollbar {
   display: none;
 }
 
+.btablist {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.btablist::-webkit-scrollbar {
+  display: none;
+}
+
 .btab {
   display: flex;
   align-items: center;
-  gap: var(--sp-1);
+  gap: var(--space-4);
   min-width: 0;
   max-width: 11rem;
-  padding: 0.1875rem var(--sp-2);
+  padding: 0.1875rem var(--space-8);
   border: 1px solid transparent;
   border-radius: var(--r-md);
   color: var(--text-muted);
@@ -1093,16 +1627,16 @@ body {
 .browser-bar {
   display: flex;
   align-items: center;
-  gap: var(--sp-1);
-  padding: var(--sp-2) var(--sp-3);
+  gap: var(--space-4);
+  padding: var(--space-8) var(--space-8);
   border-bottom: 1px solid var(--border);
 }
 
 .browser-find {
   display: flex;
   align-items: center;
-  gap: var(--sp-1);
-  padding: var(--sp-2) var(--sp-3);
+  gap: var(--space-4);
+  padding: var(--space-8) var(--space-8);
   border-bottom: 1px solid var(--border);
   background: var(--bg-elevated);
 }
@@ -1114,6 +1648,16 @@ body {
   font-family: var(--mono);
   font-size: var(--fs-xs);
   color: var(--text-muted);
+}
+
+.browser-tabs .icon-btn,
+.browser-find .icon-btn {
+  --icon-size: var(--icon-md);
+}
+
+/* Remove-this-row buttons in the settings sheet, profiles and hosts lists. */
+.icon-btn[data-size='sm'] {
+  --icon-size: var(--icon-sm);
 }
 
 .browser-url {
@@ -1128,6 +1672,377 @@ body {
   flex: 1;
   min-height: 0;
   background: var(--bg-elevated);
+}
+
+/* --------------------------------------------------------------- worklog */
+
+/*
+ * The review queue for the worklog agent.
+ *
+ * Shaped like `.browser` on purpose: it is a sibling column inside `.body-row`,
+ * never an overlay. The docked browser is a native WebContentsView that paints
+ * above every pixel of renderer DOM, so a panel floating over the terminal
+ * would be invisible the moment the browser opened.
+ */
+.worklog {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  min-width: 0;
+  border-left: 1px solid var(--border);
+  background: var(--bg-sunken);
+}
+
+.worklog-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  padding: var(--space-8) var(--space-8);
+  border-bottom: 1px solid var(--border);
+}
+
+.worklog-title {
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+
+/*
+ * The standing promise of the whole panel, so it is read before any button is
+ * pressed rather than inferred from one afterwards.
+ *
+ * Muted rather than faint, unlike the neighbouring hints: faint measured 3.58:1
+ * on the light theme, and the one sentence that has to be believed before the
+ * user presses a write button is not the place to sit under 4.5.
+ */
+.worklog-note {
+  margin: 0;
+  padding: var(--space-8) var(--space-12);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.worklog-state {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-8) var(--space-12);
+  border-bottom: 1px solid var(--border);
+}
+
+.worklog-state-line {
+  margin: 0;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
+  color: var(--text-muted);
+}
+
+/* The one line that answers "is this thing on". Its own colour, so the answer
+   is readable at a glance rather than by reading the sentence. */
+.worklog-state-line[data-tone='on'] {
+  color: var(--text);
+}
+
+.worklog-state-line[data-tone='warning'] {
+  color: var(--warning);
+}
+
+.worklog-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  padding: var(--space-8) var(--space-12);
+  border-block: 1px solid var(--border);
+  background: var(--bg-elevated);
+}
+
+.worklog-confirm {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  text-wrap: pretty;
+}
+
+.worklog-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  padding: var(--space-8);
+}
+
+.worklog-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-8);
+  padding: var(--space-8) var(--space-12);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+}
+
+/*
+ * Status is carried by a wash over the whole card plus its pill, matching how
+ * `.banner` and `.pill` already tint. A resolved item should settle into the
+ * list, not flag itself down - the items still asking for a decision are the
+ * ones with buttons on them, and that is the louder signal.
+ */
+.worklog-item[data-status='accepted'] {
+  border-color: color-mix(in srgb, var(--success) 32%, var(--border));
+  background: color-mix(in srgb, var(--success) 6%, var(--surface));
+}
+
+.worklog-item[data-status='failed'] {
+  border-color: color-mix(in srgb, var(--danger) 32%, var(--border));
+  background: color-mix(in srgb, var(--danger) 6%, var(--surface));
+}
+
+/* Rejected stays on screen, deliberately quiet — gone would look like a bug. */
+.worklog-item[data-status='rejected'] {
+  opacity: 0.55;
+  background: transparent;
+}
+
+.worklog-item-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-8);
+  width: 100%;
+  min-width: 0;
+}
+
+.worklog-item-title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: 600;
+  line-height: var(--lh-snug);
+  text-wrap: pretty;
+}
+
+.worklog-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  width: 100%;
+  min-width: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+}
+
+.worklog-body {
+  width: 100%;
+  margin: 0;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
+  color: var(--text-muted);
+  /* Bodies are agent prose with real line breaks; keep them. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.worklog-body[data-clamped='true'] {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  overflow: hidden;
+}
+
+.worklog-targets {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+  width: 100%;
+}
+
+.worklog-targets-label {
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+}
+
+/*
+ * Opens in the system browser: the window's own `setWindowOpenHandler` denies
+ * the navigation and hands the URL to the shell, so this can never take the app
+ * window away from the user.
+ */
+.worklog-link {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.0625rem var(--space-8);
+  border-radius: var(--r-full);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background var(--dur-fast) var(--ease);
+}
+
+.worklog-link:hover {
+  background: var(--surface-hover);
+  text-decoration: underline;
+}
+
+.worklog-actions {
+  display: flex;
+  gap: var(--space-8);
+  padding-top: var(--space-4);
+}
+
+/*
+ * What an update would change: which record, on which board, and the status
+ * move. Set apart from the body because the body describes the work while this
+ * describes an edit to somebody else's workspace — the part that cannot be
+ * undone from in here.
+ */
+.worklog-change {
+  width: 100%;
+  margin: 0;
+  padding: var(--space-8) var(--space-8);
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-sunken);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-normal);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.worklog-change-title {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.worklog-status {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.0625rem var(--space-8);
+  border-radius: var(--r-full);
+  background: var(--surface-hover);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+
+.worklog-status[data-tone='next'] {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 500;
+}
+
+/* ------------------------------------------------- the auto-scan prompt */
+
+/*
+ * Sits in the flow above the terminal, the same as the error banner, and for
+ * the same reason: the docked browser is a native WebContentsView painting
+ * above all renderer DOM, and only a sibling of that column survives it.
+ *
+ * Accent-tinted rather than danger-tinted — this is an offer, not a fault.
+ */
+.worklog-prompt {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  padding: var(--space-8) var(--space-8);
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg));
+  color: var(--text);
+  font-size: var(--fs-sm);
+  /* One line. A prompt that reflows the terminal underneath it as proposals
+     come and go is worse than no prompt. */
+  min-height: 2.5rem;
+  overflow: hidden;
+}
+
+.worklog-prompt-kind {
+  flex-shrink: 0;
+  padding: 0.0625rem var(--space-8);
+  border-radius: var(--r-full);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+/*
+ * One truncating line, and deliberately NOT a flex row of its own.
+ *
+ * Nesting a flex container here to truncate just the title does not work and
+ * fails in an expensive way: a nowrap flex item's min-content width is its whole
+ * text, that width propagates up through `.main-col` into `.body-row`, and the
+ * grid track grows to fit it — so a long title pushed the *entire app* wider
+ * than its window and clipped the launcher, not merely itself. Measured, not
+ * reasoned about.
+ *
+ * `flex: 1 1 0%` with `min-width: 0` gives it no min-content contribution at
+ * all, so the sentence clips instead of the layout moving.
+ */
+.worklog-prompt-text {
+  flex: 1 1 0%;
+  min-width: 0;
+  margin: 0;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.worklog-prompt-text strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.worklog-prompt-meta {
+  flex-shrink: 0;
+  max-width: 12rem;
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+}
+
+/* Never shrink the answers. A half-width "Update it" is worse than a clipped
+   question, because the question can be read in the panel and the button cannot
+   be pressed anywhere else. */
+.worklog-prompt .btn,
+.worklog-prompt .icon-btn {
+  flex-shrink: 0;
+}
+
+/* Scoped rather than added to the shared control, which nothing else needs.
+ *
+ * `height: auto` is load-bearing, not tidying. This rule used to get its
+ * smaller size purely from reduced padding, back when `.btn` declared no
+ * height at all. `.btn` now sets `height: var(--control-h)` unconditionally so
+ * every control draws at one height, which silently stretched these three back
+ * to full size — the queue's Accept, Reject and Try again. Letting the height
+ * go back to content keeps the padding above meaningful. */
+.worklog .btn[data-size='sm'] {
+  height: auto;
+  padding: 0.1875rem var(--space-8);
+  font-size: var(--fs-sm);
+}
+
+/*
+ * The body expander is a text control, not a button beside other buttons, so
+ * its label sits flush with the prose it expands. With the shared padding the
+ * box lined up but the words did not, which read as a stray indent.
+ */
+.worklog-item .btn[data-variant='ghost'][data-size='sm'] {
+  padding-inline: 0;
+  color: var(--accent);
+}
+
+.worklog-item .btn[data-variant='ghost'][data-size='sm']:hover:not(:disabled) {
+  background: transparent;
+  color: var(--accent);
+  text-decoration: underline;
 }
 
 /* --------------------------------------------------------------- resizer */
@@ -1153,8 +2068,8 @@ body {
 .statusbar {
   display: flex;
   align-items: center;
-  gap: var(--sp-4);
-  padding-inline: var(--sp-4);
+  gap: var(--space-12);
+  padding-inline: var(--space-12);
   border-top: 1px solid var(--border);
   background: var(--bg-sunken);
   font-size: var(--fs-xs);
@@ -1165,7 +2080,7 @@ body {
 .status-item {
   display: flex;
   align-items: center;
-  gap: var(--sp-2);
+  gap: var(--space-8);
   white-space: nowrap;
 }
 
@@ -1178,7 +2093,7 @@ body {
   background: transparent;
   color: inherit;
   font-size: inherit;
-  padding: 0 var(--sp-1);
+  padding: 0 var(--space-4);
   border-radius: var(--r-sm);
   cursor: default;
   transition: color var(--dur-fast) var(--ease);
@@ -1194,8 +2109,67 @@ body {
   position: fixed;
   inset: 0;
   z-index: var(--z-backdrop);
-  background: rgb(0 0 0 / 0.42);
+  background: var(--scrim);
   animation: fade var(--dur) var(--ease);
+}
+
+/*
+ * Right-click menu for the terminal. Drawn here rather than with Electron's
+ * native Menu so it picks up the theme like everything else.
+ */
+.context-menu {
+  position: fixed;
+  z-index: var(--z-modal);
+  min-width: 11rem;
+  padding: var(--space-8);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-lg);
+  animation: pop var(--dur) var(--ease);
+}
+
+.context-menu-item {
+  display: block;
+  width: 100%;
+  padding: var(--space-8) var(--space-8);
+  border: none;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font-size: var(--fs-sm);
+  cursor: default;
+}
+
+.context-menu-item:hover:not(:disabled) {
+  background: var(--accent-soft);
+}
+
+.context-menu-item:disabled {
+  color: var(--text-muted);
+  opacity: 0.5;
+}
+
+/* Explains why Copy is disabled: a drag needs a modifier while the CLI has
+   mouse reporting on. Sized down and muted so it reads as a note, not a row. */
+.context-menu-hint {
+  /* The menu sets only a min-width, so an unwrapped hint would set its width.
+     Cap it and let the text wrap instead of stretching the menu. */
+  max-width: 14rem;
+  margin: var(--space-8) 0 0;
+  padding: var(--space-8);
+  border-top: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+}
+
+.context-menu-item[data-separated='true'] {
+  margin-top: var(--space-8);
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 var(--r-md) var(--r-md);
+  padding-top: calc(var(--space-8) + 1px);
 }
 
 .palette {
@@ -1217,7 +2191,7 @@ body {
 }
 
 .palette-input {
-  padding: var(--sp-4) var(--sp-5);
+  padding: var(--space-12) var(--space-16);
   border: none;
   border-bottom: 1px solid var(--border);
   background: transparent;
@@ -1230,15 +2204,15 @@ body {
 
 .palette-list {
   overflow-y: auto;
-  padding: var(--sp-2);
+  padding: var(--space-8);
 }
 
 .palette-item {
   display: flex;
   align-items: center;
-  gap: var(--sp-3);
+  gap: var(--space-8);
   width: 100%;
-  padding: var(--sp-3);
+  padding: var(--space-8);
   border: none;
   border-radius: var(--r-md);
   background: transparent;
@@ -1280,8 +2254,8 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--sp-3);
-  padding: var(--sp-5);
+  gap: var(--space-8);
+  padding: var(--space-16);
   border-bottom: 1px solid var(--border);
 }
 
@@ -1295,16 +2269,16 @@ body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: var(--sp-5);
+  padding: var(--space-16);
   display: flex;
   flex-direction: column;
-  gap: var(--sp-6);
+  gap: var(--space-24);
 }
 
 .field {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-2);
+  gap: var(--space-8);
 }
 
 .field-label {
@@ -1315,14 +2289,14 @@ body {
 .field-hint {
   font-size: var(--fs-xs);
   color: var(--text-faint);
-  line-height: 1.5;
+  line-height: var(--lh-normal);
 }
 
 /* Native checkbox, themed rather than reinvented. */
 .check-row {
   display: flex;
   align-items: flex-start;
-  gap: var(--sp-3);
+  gap: var(--space-8);
   cursor: default;
 }
 
@@ -1340,19 +2314,30 @@ body {
   gap: 0.125rem;
 }
 
+/* A disabled checkbox is only greyed by the browser's own default rendering;
+   the label beside it stayed full-strength with nothing to show the row is
+   off-limits. Dim the whole row so the two read as one state. */
+.check-row:has(input:disabled) {
+  cursor: not-allowed;
+}
+
+.check-row:has(input:disabled) > span {
+  opacity: 0.55;
+}
+
 /* ---------------------------------------------------------- theme picker */
 
 .theme-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr));
-  gap: var(--sp-3);
+  gap: var(--space-8);
 }
 
 .theme-swatch {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-2);
-  padding: var(--sp-3);
+  gap: var(--space-8);
+  padding: var(--space-8);
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
   background: var(--surface);
@@ -1380,7 +2365,7 @@ body {
   width: 1rem;
   height: 1rem;
   border-radius: var(--r-sm);
-  border: 1px solid rgb(0 0 0 / 0.25);
+  border: 1px solid var(--swatch-ring);
 }
 
 .theme-name {
@@ -1393,8 +2378,8 @@ body {
 .banner {
   display: flex;
   align-items: center;
-  gap: var(--sp-3);
-  padding: var(--sp-3) var(--sp-4);
+  gap: var(--space-8);
+  padding: var(--space-8) var(--space-12);
   border-bottom: 1px solid var(--border);
   background: color-mix(in srgb, var(--danger) 12%, var(--bg));
   color: var(--text);
@@ -1403,6 +2388,29 @@ body {
 
 .banner[data-tone='warning'] {
   background: color-mix(in srgb, var(--warning) 14%, var(--bg));
+}
+
+/*
+ * A hint that is reporting a fault rather than explaining a field. Used when the
+ * default recording device is a virtual cable, which makes voice dictation
+ * record silence with no error anywhere.
+ */
+.field-hint[data-tone='warning'] {
+  color: var(--warning);
+}
+
+/*
+ * The other two verdicts an action can report. Used by the Claude Code updater,
+ * where the three outcomes have to look different from each other: it failed,
+ * it worked, or it exited zero and changed nothing — which is the one that used
+ * to be indistinguishable from success.
+ */
+.field-hint[data-tone='danger'] {
+  color: var(--danger);
+}
+
+.field-hint[data-tone='success'] {
+  color: var(--success);
 }
 
 /* -------------------------------------------------------------- keyframes */
@@ -1468,7 +2476,7 @@ body {
 .profiles {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--sp-1);
+  gap: var(--space-4);
 }
 
 /*
@@ -1476,13 +2484,13 @@ body {
  * reads as one decision rather than four competing ones.
  */
 .profile-chip {
-  padding: 0.1875rem var(--sp-3);
+  padding: 0.1875rem var(--space-8);
   border: 1px solid var(--border);
   border-radius: var(--r-full);
   background: transparent;
   color: var(--text-muted);
   font-size: 0.6875rem;
-  line-height: 1.6;
+  line-height: var(--lh-normal);
   cursor: pointer;
   transition:
     background var(--dur) var(--ease),
@@ -1532,7 +2540,7 @@ body {
   display: flex;
   align-items: center;
   gap: 0.25rem;
-  padding: 0.125rem var(--sp-2);
+  padding: 0.125rem var(--space-8);
   border: 1px solid var(--border);
   border-radius: var(--r-full);
   background: transparent;
@@ -1568,25 +2576,25 @@ body {
 
 .usage-panel {
   position: absolute;
-  top: calc(100% + var(--sp-2));
+  top: calc(100% + var(--space-8));
   right: 0;
   z-index: calc(var(--z-dropdown, 40) + 1);
   display: flex;
   flex-direction: column;
-  gap: var(--sp-2);
+  gap: var(--space-8);
   width: 19rem;
-  padding: var(--sp-3);
+  padding: var(--space-8);
   border: 1px solid var(--border-strong);
   border-radius: var(--r-md, 10px);
   background: var(--surface);
-  box-shadow: 0 12px 32px rgb(0 0 0 / 0.45);
+  box-shadow: var(--shadow-panel);
 }
 
 .usage-note {
-  margin: var(--sp-1) 0 0;
+  margin: var(--space-4) 0 0;
   color: var(--text-faint);
   font-size: 0.625rem;
-  line-height: 1.45;
+  line-height: var(--lh-normal);
 }
 
 .usage-row {
@@ -1595,7 +2603,7 @@ body {
   display: grid;
   grid-template-columns: 3.25rem 1fr 2.25rem 2.75rem;
   align-items: center;
-  gap: var(--sp-2);
+  gap: var(--space-8);
   font-size: 0.6875rem;
   color: var(--text-muted);
 }
@@ -1653,9 +2661,9 @@ body {
 
 /*
  * The pace marker: where usage would sit if it were spread evenly across the
- * window. White so it reads against every fill colour, taller than the track so
- * it stays legible once the fill passes under it, and ringed in the track
- * colour so it separates from the fill rather than dissolving into it.
+ * window, taller than the track so it stays legible once the fill passes
+ * under it, and ringed in the track colour so it separates from the fill
+ * rather than dissolving into it.
  */
 .usage-pace {
   position: absolute;
@@ -1663,7 +2671,10 @@ body {
   bottom: -2px;
   width: 2px;
   border-radius: 1px;
-  background: #fff;
+  /* --text, not white: this bar has to read on a light theme too, and --text
+     is the token that already flips with appearance. The --bg-sunken ring
+     below is what separates it from whatever fill it is standing on. */
+  background: var(--text);
   /* Centred on its position, so 50% reads as exactly half way. */
   translate: -1px 0;
   box-shadow: 0 0 0 1px var(--bg-sunken);

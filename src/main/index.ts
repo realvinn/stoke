@@ -1,15 +1,54 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron'
 import { join } from 'node:path'
 import { CH } from '@shared/ipc'
 import { resolveTheme } from '@shared/themes'
-import type { LaunchOptions, Rect, Settings } from '@shared/types'
+import type {
+  LaunchOptions,
+  ProjectMeta,
+  Rect,
+  Settings,
+  SshHost,
+  StatusLineSnapshot,
+  WorklogScanOutcome,
+  WorklogScanReport,
+  WorklogWatchState
+} from '@shared/types'
 import { EmbeddedBrowser } from './browser.ts'
 import { probeClaude } from './cli.ts'
 import { ContextWatcher } from './context.ts'
 import { findSessionFile, listProjects, listSessions } from './projects.ts'
-import { readTranscript } from './sessionFile.ts'
+import { manualProjectPatch, projectMetaPatch } from './projectMeta.ts'
+import { normalizePath, pathRulesFor } from '../shared/paths.ts'
+import { parseSession, readTranscript } from './sessionFile.ts'
+import { fetchRemoteTranscript } from './sshTranscript.ts'
 import { PtyManager, type StartResult } from './pty.ts'
-import { getSettings, setSettings } from './store.ts'
+import { checkMicrophone } from './audio/defaultDevice.ts'
+import { transcribe } from './stt.ts'
+import { createProfile, planProfile } from './profiles.ts'
+import { readSshConfigHosts } from './ssh.ts'
+import { getWorklogQueue } from './worklog/queue.ts'
+import {
+  applyProposal,
+  scanSession,
+  APPLY_MAX_BUDGET_USD,
+  WorklogBudgetError,
+  WorklogParseError
+} from './worklog/runner.ts'
+import { groupForCwd } from './worklog/gate.ts'
+import { watchStateFrom } from './worklog/watch.ts'
+import { AutoScanner } from './worklog/autoscan.ts'
+import { autoScanStateFile, readAutoScanState, writeAutoScanState } from './worklog/autoscanStore.ts'
+import { readSessionState, sessionStateFile, writeSessionState } from './worklog/sessionStore.ts'
+import { invalidateRecall, recall, scanOutcomeFor } from './worklog/recall.ts'
+import type { CreateProfileInput } from '@shared/profiles'
+import { getSettings, onSettingsChanged, setSettings } from './store.ts'
+import {
+  readStatusLine,
+  sweepStaleSessionFiles,
+  userStatusLineCommand,
+  windowFor,
+  writeSessionSettingsFile
+} from './statusLine.ts'
 import { createScratchDir, resolveDefaultCwd } from './workspace.ts'
 import { BrowserMcpServer } from './mcp/server.ts'
 import { connectUrl, generateToken, RemoteServer, type RemoteDeps } from './remote/server.ts'
@@ -34,18 +73,215 @@ let win: BrowserWindow | null = null
 let browser: EmbeddedBrowser | null = null
 let ptys: PtyManager | null = null
 let watcher: ContextWatcher | null = null
+let autoscan: AutoScanner | null = null
 let mcp: BrowserMcpServer | null = null
 /** Path of the generated --mcp-config file; null until the server is up. */
 let mcpConfigPath: string | null = null
 let remote: RemoteServer | null = null
 let usageCache: UsageSnapshot | null = null
+/**
+ * The newest statusLine reading seen this run, whichever session produced it.
+ *
+ * The rate limits in it are account-wide, so any open session's payload
+ * answers for all of them — and keeping one means the usage chip still has
+ * figures once every tab is closed, which is the whole "as of HH:MM" case.
+ */
+let lastStatusLine: StatusLineSnapshot | null = null
+/** receivedAt of the last payload pushed per session, so nothing is sent twice. */
+const statusLineSeen = new Map<string, number>()
+
+/**
+ * Push a session's payload at the renderer, if it has actually changed.
+ *
+ * This only ever runs from the context watcher's emit callback below, which
+ * caps how often it can fire: at most once per POLL_MS (1.5s) per session,
+ * and only when the *transcript's* mtime has moved. The payload file itself
+ * is rewritten roughly three times a second by the CLI, but that cadence
+ * never reaches this function — by the time a call gets here, at least 1.5s
+ * has usually passed since the last one, which is long enough that the
+ * payload has almost always been rewritten too. So the `receivedAt` guard
+ * below suppresses close to nothing in practice; it stays because "almost
+ * always" is not "always" — a watcher publish can still land between two
+ * identical renders — and it is what keeps a caller from ever seeing the
+ * same `receivedAt` sent twice.
+ */
+function pushStatusLine(sessionId: string): void {
+  const snap = readStatusLine(sessionId)
+  if (!snap) return
+  if (statusLineSeen.get(sessionId) === snap.receivedAt) return
+  statusLineSeen.set(sessionId, snap.receivedAt)
+  // Same "only move forward" rule as refreshLastStatusLine: two sessions can
+  // both push in close succession, and without this the second to arrive
+  // would win even when its own reading is the older of the two, ticking the
+  // "as of HH:MM" chip and the rate-limit percentages backwards.
+  if (!lastStatusLine || snap.receivedAt > lastStatusLine.receivedAt) lastStatusLine = snap
+  send(CH.statusLineUpdate, snap)
+}
+
+/**
+ * Bring `lastStatusLine` up to date from every live session's payload file.
+ *
+ * `pushStatusLine` above only runs for sessions the context watcher watches,
+ * which is every session Stoke minted an id for — but not a `--continue`,
+ * whose id the CLI chooses after launch and which is therefore watched by
+ * nothing. Its payload exists all the same, under its launch key.
+ *
+ * That matters because the rate limits in a payload are ACCOUNT-wide: any open
+ * session answers for all of them. Without this, the one launch path we cannot
+ * predict is also the one that contributes no usage figures at all.
+ *
+ * Called from the `statusline:last` invoke, not on a timer: the chip asks when
+ * it opens, and a handful of small reads on demand is cheaper than polling
+ * files that are rewritten three times a second anyway.
+ */
+function refreshLastStatusLine(): void {
+  for (const key of ptys?.statusKeys() ?? []) {
+    const snap = readStatusLine(key)
+    if (!snap) continue
+    if (!lastStatusLine || snap.receivedAt > lastStatusLine.receivedAt) lastStatusLine = snap
+  }
+}
 const tunnel = new TunnelManager()
+
+/**
+ * Where each session was started, kept past the life of its PTY.
+ *
+ * `ptys.list()` is the live answer and is gone the moment a tab closes — but
+ * closing a tab is when a work block usually ends, and the worklog gate needs a
+ * folder to resolve the group from. Without this, finishing and closing means
+ * the session can never be placed and so is never logged. Bounded by the
+ * sessions started in one run, which is a handful of strings.
+ */
+const sessionCwds = new Map<string, string>()
+
+/**
+ * Which sessions are running on another machine, and on which host.
+ *
+ * An SSH session spawns `ssh -t <alias> <command>`, so `claude` runs over there
+ * and its transcript is written over there. Nothing in `SessionInfo` records
+ * that, and every transcript reader needs to know — a remote session looked up
+ * locally simply never resolves, which is why the context meter has always been
+ * blank for one.
+ */
+const sessionHosts = new Map<string, SshHost>()
+
+/**
+ * When each entry in `sessionCwds`/`sessionHosts` was last genuinely written —
+ * either restored off disk at boot or set by `launchSession` for the session
+ * it just started.
+ *
+ * `writeSessionState` used to stamp every entry with `Date.now()` on every
+ * call, because that call rewrites the whole map each time a session starts.
+ * That refreshed the age of sessions the app did nothing to, so
+ * `STORED_SESSION_MAX_AGE_MS`'s 14-day filter could only ever fire on an
+ * install nobody was using — the one case that never needs it. This map is
+ * the source of truth for "when did this entry last actually change", kept
+ * as a sibling of the other two so the same key always exists in all three
+ * once a session is known: `launchSession` sets it for the session it starts
+ * and leaves every other key alone; the boot-restore loop below sets it from
+ * the stamp already on disk, verbatim.
+ */
+const sessionAts = new Map<string, number>()
+
+/**
+ * How often a remote session's transcript is pulled back.
+ *
+ * The local cadence is 1.5s, which is a `stat` on this disk. This is an SSH
+ * round trip and a file transfer, so it gets a cadence that suits a network:
+ * slow enough to be unnoticeable on the link, fast enough that the meter is not
+ * telling the user something untrue.
+ */
+const REMOTE_POLL_MS = 30_000
+
+
+/** The folder a session ran in, live or remembered. */
+function cwdForSession(sessionId: string): string {
+  return (
+    ptys?.list().find((s) => s.sessionId === sessionId)?.cwd || sessionCwds.get(sessionId) || ''
+  )
+}
+
+/** The host a session is running on, or null when it is local. */
+function hostForSession(sessionId: string): SshHost | null {
+  const remembered = sessionHosts.get(sessionId)
+  if (!remembered) return null
+  // Re-read from settings rather than trusting the copy taken at launch: the
+  // worklog switch can be turned off while the session is still open, and that
+  // has to take effect at once.
+  return getSettings().hosts.find((h) => h.id === remembered.id) ?? remembered
+}
+
+/**
+ * The transcript for a session, wherever it lives.
+ *
+ * For a local session this is the file Claude wrote. For a remote one it is a
+ * local cache of the file Claude wrote on the far machine, pulled back over the
+ * same connection the session is already using. Both are plain JSONL, so every
+ * caller downstream is unchanged.
+ */
+async function transcriptFor(sessionId: string): Promise<string | null> {
+  const host = hostForSession(sessionId)
+  if (!host) return findSessionFile(sessionId)
+  /*
+   * The per-host switch gates the *copy*, not just the write-up.
+   *
+   * Fetching pulls a conversation off somebody's machine and puts it on this
+   * one. Doing that for the context meter alone — a nicety — while the user has
+   * said no to the worklog would be taking the opt-in for one thing as consent
+   * for another. So an unticked host is never read at all, and its meter stays
+   * blank exactly as it always has.
+   */
+  if (host.worklog !== true) return null
+  const fetched = await fetchRemoteTranscript(host, sessionId, app.getPath('userData'))
+  return fetched?.file ?? null
+}
 
 /** Starting a session, shared by the renderer's IPC and the remote server. */
 async function launchSession(opts: LaunchOptions): Promise<StartResult> {
   if (!ptys) throw new Error('Window is not ready')
-  const result = await ptys.start(opts, getSettings().claudePath, mcpConfigPath)
+  const settings = getSettings()
+  // `statusKey` is what the files are named after, not necessarily a session
+  // id: a --continue session has no id until the CLI picks one. See pty.ts.
+  const result = await ptys.start(opts, settings.claudePath, mcpConfigPath, (statusKey) =>
+    writeSessionSettingsFile({
+      sessionId: statusKey,
+      ultracode: opts.ultracode === true,
+      hideStatusLine: settings.hideStatusLine,
+      // Read now rather than cached: it is the user's own settings.json and
+      // they can edit it between one session and the next.
+      passthroughCommand: settings.hideStatusLine ? '' : userStatusLineCommand()
+    })
+  )
+  // Empty for a --continue, and `watch('')` is a no-op by design (context.ts:99).
+  // Such a session has never had a context meter; see this task's header for
+  // why closing that gap belongs to a later change and not to this one.
   watcher?.watch(result.sessionId)
+  const cwd = ptys.list().find((s) => s.sessionId === result.sessionId)?.cwd
+  if (cwd) sessionCwds.set(result.sessionId, cwd)
+  if (opts.host) sessionHosts.set(result.sessionId, opts.host)
+  // Only the session that just launched gets a fresh stamp. Every other entry
+  // keeps whatever `sessionAts` already has for it — restored-at-boot or set
+  // by an earlier launch — so the 14-day age-out has something to measure
+  // besides "the app was opened today".
+  sessionAts.set(result.sessionId, Date.now())
+  /*
+   * Synchronous, and after all three maps are updated — CLAUDE.md gotcha 20's
+   * shape. Nothing awaits between the update and the write, so what lands on
+   * disk is always a state some pass could actually have observed. One write
+   * per session start is a handful a day; this is not a hot path.
+   */
+  writeSessionState(
+    sessionStateFile(app.getPath('userData')),
+    [...sessionCwds.entries()].map(([sessionId, dir]) => ({
+      sessionId,
+      cwd: dir,
+      hostId: sessionHosts.get(sessionId)?.id ?? null,
+      // Falls back to now only for a key that could not have reached
+      // sessionCwds without also reaching sessionAts (both are set together,
+      // here and in the boot-restore loop) — defensive, not expected to fire.
+      at: sessionAts.get(sessionId) ?? Date.now()
+    }))
+  )
   return result
 }
 
@@ -83,6 +319,260 @@ function remoteDeps(): RemoteDeps {
 function send(channel: string, ...args: unknown[]): void {
   if (win && !win.isDestroyed() && !win.webContents.isDestroyed()) {
     win.webContents.send(channel, ...args)
+  }
+}
+
+/* --------------------------------------------------------------- worklog */
+
+/** The process-wide review queue. */
+function worklogQueue(): ReturnType<typeof getWorklogQueue> {
+  return getWorklogQueue(app.getPath('userData'))
+}
+
+/**
+ * Whether the worklog may look at one session, and why.
+ *
+ * A thin gatherer around the pure predicate: everything it reads is live, so a
+ * repository cloned during this run, a profile ticked a second ago and a host
+ * switched off mid-session all take effect at once.
+ */
+async function watchStateFor(sessionId: string): Promise<WorklogWatchState> {
+  const settings = getSettings()
+  return watchStateFrom({
+    sessionId,
+    cwd: cwdForSession(sessionId),
+    host: hostForSession(sessionId),
+    projects: await listProjects(settings),
+    roots: settings.projectRoots,
+    worklogGroups: settings.worklogGroups,
+    now: Date.now()
+  })
+}
+
+/**
+ * Every session started this run, live or exited.
+ *
+ * `sessionCwds` rather than `ptys.list()` on purpose: closing a tab is when a
+ * work block usually ends, and a session keeps being the worklog's business
+ * after its PTY has gone (see worklog/autoscan.ts). The project list is read
+ * once for the whole set — `watchStateFor` reads it per call, which is right
+ * for one session and wasteful for twelve.
+ */
+async function watchStates(): Promise<WorklogWatchState[]> {
+  const settings = getSettings()
+  const projects = await listProjects(settings)
+  const now = Date.now()
+  return [...sessionCwds.keys()].map((sessionId) =>
+    watchStateFrom({
+      sessionId,
+      cwd: cwdForSession(sessionId),
+      host: hostForSession(sessionId),
+      projects,
+      roots: settings.projectRoots,
+      worklogGroups: settings.worklogGroups,
+      now
+    })
+  )
+}
+
+/**
+ * Push the whole list.
+ *
+ * Never a delta, and never from the ContextWatcher tick: the tick runs every
+ * 1.5s per session and would push an identical array each time. The triggers
+ * are exactly four — a session starting, any settings write, a change to the
+ * project list, and the renderer finishing its first load.
+ */
+function sendWatchStates(): void {
+  void watchStates()
+    .then((states) => send(CH.worklogWatchChanged, states))
+    .catch((err) => console.warn('[stoke] could not resolve the worklog watch states', err))
+}
+
+/** The last scan of any session, so a freshly-opened panel is not blank. */
+let lastScanReport: WorklogScanReport | null = null
+
+/** Record a report, push it, and hand it back to whoever asked for the scan. */
+function reportScan(report: WorklogScanReport): WorklogScanReport {
+  lastScanReport = report
+  send(CH.worklogScanned, report)
+  return report
+}
+
+/**
+ * One worklog scan, however it was asked for.
+ *
+ * Shared by the Scan button and the automatic trigger deliberately: the two
+ * differ only in who asked, and every other behaviour — reading the boards
+ * first, resolving the group, folding the result into the queue — has to stay
+ * identical or the automatic path becomes a second, less-tested feature.
+ *
+ * **Never throws.** It used to, and both callers turned the throw into
+ * something the user could not tell from "nothing to report": the automatic
+ * path logged and returned 0, the button showed a bare string. Every ending —
+ * proposals, nothing, out of budget, broken — now comes back as one
+ * WorklogScanReport, which is the only record the panel has of whether this
+ * thing has ever run (spec §2.4.4).
+ */
+async function runWorklogScan(sessionId: string, auto: boolean): Promise<WorklogScanReport> {
+  // Nothing above the `try` below may throw — that is the entire reason this
+  // function never does. Keep it to `Date.now()` and the `end` closure; put
+  // anything else inside the `try`.
+  const at = Date.now()
+  const end = (
+    outcome: WorklogScanOutcome,
+    added: number,
+    message: string | null
+  ): WorklogScanReport => reportScan({ sessionId, at, auto, outcome, added, message })
+
+  try {
+    const host = hostForSession(sessionId)
+    const file = await transcriptFor(sessionId)
+    if (!file) {
+      return end(
+        'error',
+        0,
+        host
+          ? `could not read a transcript on ${host.label || host.alias} — the session may not have started Claude yet`
+          : 'no transcript found for that session yet'
+      )
+    }
+
+    const settings = getSettings()
+    const projects = await listProjects(settings)
+
+    /*
+     * A remote session is placed by the machine it runs on, not by a folder.
+     * `SessionInfo.cwd` for one is wherever Stoke happened to be pointed locally,
+     * so resolving a project group from it would name the wrong project. The real
+     * working directory is recorded in the transcript itself, which by this point
+     * has been fetched — so the proposal names the remote path, and the host takes
+     * the place of the project group.
+     */
+    const cwd = host ? ((await parseSession(file)).cwd ?? '') : cwdForSession(sessionId)
+
+    /*
+     * Root-aware, and remote-aware, and those are two different rules.
+     *
+     * A remote session is placed by the machine it runs on: `SessionInfo.cwd`
+     * for one is wherever Stoke happened to be pointed locally (CLAUDE.md
+     * gotcha 18), so the folder rule would name the wrong project or none.
+     * The line above already reads the true cwd out of the fetched transcript
+     * for that reason — verify it, do not re-add it.
+     *
+     * A local session is placed by its folder, and by the scan roots too:
+     * `/…/work` is itself a registered project on this machine, so the
+     * longest-prefix rule answered `dev` for every sibling under it and 7 of
+     * 12 work folders were never watched (spec §2.4.3). That third argument
+     * is contracts Task 1 Step 4a's, not this task's — verify it is there,
+     * do not re-add it.
+     */
+    const group = host
+      ? host.label || host.alias
+      : (groupForCwd(cwd, projects, settings.projectRoots) ?? '')
+
+    const boards = settings.worklogBoards
+    // Cached and single-flighted, so a scan of two sessions a second apart
+    // reads the boards once. A failure here is reported to the scan rather
+    // than thrown: proposing creates with no idea what exists is degraded,
+    // not broken.
+    const snapshot = await recall({
+      clickupListId: boards.clickupListId,
+      notionDataSource: boards.notionDataSource,
+      // Only the boards the user has switched on — otherwise a ClickUp read
+      // is paid for on every scan even with ClickUp off.
+      targets: boards.targets,
+      // The same directory the write would use, so both runs see the same MCP
+      // servers. runHeadless falls back to a scratch dir if it has been deleted.
+      cwd,
+      claudePath: settings.claudePath
+    })
+    if (snapshot.error) console.warn('[stoke] worklog recall failed:', snapshot.error)
+
+    const outcome = await scanSession({
+      sessionId,
+      transcriptFile: file,
+      cwd,
+      group,
+      recall: snapshot,
+      auto,
+      claudePath: settings.claudePath,
+      boards
+    })
+    if (outcome.demoted > 0) {
+      // Not silent: a steady count means recall is truncating or the model is
+      // inventing ids, and both look exactly like the feature working.
+      console.warn(
+        `[stoke] worklog: ${outcome.demoted} update(s) named a record that is not on the boards, filed as new instead`
+      )
+    }
+
+    const added = worklogQueue().add(outcome.proposals)
+    send(CH.worklogChanged, worklogQueue().list())
+    if (auto && added.length) {
+      // Reversed to match `list()`, which is newest first — so the prompt walks
+      // them in the same order the panel shows them.
+      send(CH.worklogProposed, { sessionId, ids: added.map((p) => p.id).reverse() })
+    }
+    /*
+     * A starved board read is not silent just because the scan still drafted
+     * something, overriding the
+     * brief's pinned `if (added.length) return end('proposed', …, null)`
+     * ahead of the budget test below). Proposals win — the outcome stays
+     * `proposed` so the drafts are not hidden behind an error-styled banner —
+     * but they were written against an empty view of the board, so the
+     * warning rides along in `message` instead of being dropped. An ordinary
+     * scan, where the board read succeeded, still reports no message at all.
+     * See scanOutcomeFor for the full decision.
+     */
+    const verdict = scanOutcomeFor(snapshot, added.length)
+    /*
+     * Task 29 review, routed item 2: `scanOutcomeFor` only sees `added` and
+     * the recall snapshot, so a transcript with no turns yet and a transcript
+     * the model actually read and decided held nothing worth logging both
+     * land on `outcome: 'nothing', message: null` — indistinguishable to the
+     * panel. `outcome.emptyTranscript` (runner.ts) is where that distinction
+     * still exists; it is carried into `message` here rather than discarded,
+     * so `scanSentence` (src/shared/worklog.ts) can say which of the two
+     * actually happened.
+     *
+     * Written as "it", not "this session": `scanSentence` prepends its own
+     * subject, which names the session as "this session" or "another
+     * session" depending on what is on screen when the report is read (Task
+     * 29 review, finding 2) — a fragment that hardcoded "this session" would
+     * contradict a subject that had just said "another".
+     */
+    const message =
+      verdict.outcome === 'nothing' && outcome.emptyTranscript
+        ? 'it had not sent anything yet, so there was nothing in its transcript to read'
+        : verdict.message
+    return end(verdict.outcome, added.length, message)
+  } catch (err) {
+    /*
+     * Every ending is a report, including this one. The old code let the throw
+     * out and both callers flattened it: the automatic path logged to a console
+     * nobody has open and returned 0, and the button surfaced a bare string with
+     * no record that a scan had happened at all.
+     */
+    if (err instanceof WorklogBudgetError) return end('budget', 0, err.message)
+    /*
+     * Task 29 review, routed item 3: `WorklogParseError.message` is
+     * `the model's reply held no readable JSON: <up to 300 raw chars>` — a
+     * debugging string, not a sentence, and this field is documented "shown
+     * to the user verbatim". The raw reply is still worth having, so it goes
+     * to the console (nobody reads that mid-scan, which is fine — this is a
+     * developer trail, not the user-facing report); the report itself gets
+     * plain English with no quoted model output in it.
+     */
+    if (err instanceof WorklogParseError) {
+      console.warn('[stoke] worklog scan: the reply could not be read as an entry —', err.message)
+      return end(
+        'error',
+        0,
+        "Claude's reply could not be read back as an entry. Try scanning again."
+      )
+    }
+    return end('error', 0, err instanceof Error ? err.message : String(err))
   }
 }
 
@@ -124,6 +614,28 @@ function createWindow(): void {
     }
   })
 
+  /*
+   * Dictation needs getUserMedia, so the microphone has to be granted somewhere.
+   *
+   * Scoped twice over. `media` is the only permission approved, and only for
+   * this window's own renderer — the app UI, whose code is in this repo. The
+   * docked browser cannot reach this handler at all: it runs in a dedicated
+   * persistent partition (browser.ts:36,109), a different session from the one
+   * being configured here, so an arbitrary page cannot inherit the microphone
+   * from the app that embeds it. The identity check is belt and braces against
+   * that ever changing, and everything else is denied outright.
+   *
+   * This is only Chromium's half. On macOS the OS gates the microphone too, and
+   * that half is not code: the hardened runtime needs
+   * `com.apple.security.device.audio-input` and Info.plist needs
+   * NSMicrophoneUsageDescription, both in electron-builder.yml. Without the
+   * usage string macOS terminates the process rather than denying the request,
+   * which surfaces as a crash with no message anywhere.
+   */
+  win.webContents.session.setPermissionRequestHandler((wc, permission, callback) => {
+    callback(permission === 'media' && wc === win?.webContents)
+  })
+
   win.once('ready-to-show', () => win?.show())
 
   const pushMaximized = (): void => send(CH.winMaximizedChanged, win?.isMaximized() ?? false)
@@ -162,9 +674,147 @@ function createWindow(): void {
 
   ptys = new PtyManager(
     (ptyId, data) => send(CH.ptyData, ptyId, data),
-    (ptyId, code, signal) => send(CH.ptyExit, ptyId, code, signal)
+    (ptyId, code, signal, sessionId) => {
+      send(CH.ptyExit, ptyId, code, signal)
+      // A session that ends on its own (`/exit`, a crash) never reaches the
+      // `CH.ptyKill` handler's cleanup below — by the time a user later
+      // closes that tab, `sessionIdFor` already returns null, because
+      // `proc.onExit` removed the session from PtyManager's own map before
+      // this callback ever ran. `sessionId` here comes straight from that
+      // same exit event, while it is still known, so this entry does not
+      // sit in `statusLineSeen` forever.
+      if (sessionId) statusLineSeen.delete(sessionId)
+    }
   )
-  watcher = new ContextWatcher((snap) => send(CH.ctxUpdate, snap))
+  /*
+   * The worklog's automatic trigger.
+   *
+   * Built before the watcher because the watcher feeds it: every context
+   * reading is also an activity reading, so noticing that a work block finished
+   * costs no new polling, no new file handles and no new IPC. See
+   * worklog/autoscan.ts for why the transcript is the right signal.
+   */
+  const autoscanState = autoScanStateFile(app.getPath('userData'))
+  const sessionState = sessionStateFile(app.getPath('userData'))
+  /*
+   * Put the last run's sessions back before anything asks which are watched.
+   *
+   * A host the user has since deleted is dropped rather than carried: a
+   * remembered SshHost would keep gating a machine that is no longer in
+   * Settings, and the per-host worklog switch is an opt-in that has to be
+   * revocable by deleting the host.
+   */
+  for (const s of readSessionState(sessionState)) {
+    sessionCwds.set(s.sessionId, s.cwd)
+    // Verbatim from disk, not `Date.now()` — this entry was not just used, it
+    // was merely reloaded, and the age-out has to measure from the same clock
+    // reading a fresh launch would have written.
+    sessionAts.set(s.sessionId, s.at)
+    if (!s.hostId) continue
+    const host = getSettings().hosts.find((h) => h.id === s.hostId)
+    if (host) sessionHosts.set(s.sessionId, host)
+  }
+  autoscan = new AutoScanner({
+    /*
+     * A cheap "could anything possibly be watched" check, so a pass with
+     * nothing to do skips every tracked session without a disk read.
+     *
+     * Has to agree with watchStateFor's own notion of "nothing is watched",
+     * or this becomes a second decision site by omission. watchStateFrom's
+     * host branch never looks at worklogGroups — a ticked SSH host is
+     * `watched: true` even with zero project groups ticked — so gating on
+     * worklogGroups alone would skip the whole pass for a host the tab strip
+     * is showing a dot for, and the dot would be lying about a run that can
+     * never happen. Checking for a ticked host too is what keeps them tied.
+     */
+    enabled: () => {
+      const settings = getSettings()
+      return (
+        settings.worklogAuto &&
+        (settings.worklogGroups.length > 0 || settings.hosts.some((h) => h.worklog === true))
+      )
+    },
+    watched: async (sessionId) => {
+      // `worklogAuto` gates the automatic trigger only; whether a session is the
+      // worklog's business at all is watchStateFor's answer, and it is the same
+      // answer the tab strip draws. One predicate, so the dot and the run that
+      // costs money cannot disagree.
+      if (!getSettings().worklogAuto) return false
+      return (await watchStateFor(sessionId)).watched
+    },
+    scan: async (sessionId) => {
+      // runWorklogScan no longer throws; the report is the record of what
+      // happened and has already been pushed to the renderer by the time this
+      // returns. AutoScanner only needs the count for its own prompt. The push
+      // alone is not yet a substitute for a log line — nothing reads
+      // `worklog:scanned` until the panel lands, so until then a failed
+      // automatic scan needs to show up here or it shows up nowhere. Keyed on
+      // `message` rather than `outcome === 'budget' || outcome === 'error'`:
+      // a 'proposed' outcome can now carry a message too, when the drafts
+      // were written blind (H5), and that warning would otherwise go nowhere
+      // for an automatic scan just as surely as a budget stop would.
+      //
+      // `outcome === 'nothing'` is excluded even when `message` is set (Task
+      // 29 review, finding 1): since that same task taught `message` to carry
+      // the empty-transcript distinction too, a session with no turns yet
+      // would otherwise warn on every quiet auto-scan pass over it — a
+      // console line for a session that is doing exactly nothing wrong.
+      const report = await runWorklogScan(sessionId, true)
+      if (report.outcome !== 'nothing' && report.message) {
+        console.warn('[stoke] automatic worklog scan:', report.outcome, report.message)
+      }
+      return report.added
+    },
+    // Baselines and the hourly ceiling survive a restart. Without this, quitting
+    // re-baselined every resumed session — so the work done just before a
+    // restart was invisible to the scanner — and cleared the spending ceiling,
+    // which made it not a ceiling.
+    restore: () => readAutoScanState(autoscanState),
+    persist: (snapshot) => writeAutoScanState(autoscanState, snapshot)
+  })
+  autoscan.start()
+
+  // The window size comes from the statusLine payload first and the CLI's own
+  // startup banner second; see windowFor. The banner used to be the only
+  // source and 2.1.221 stopped printing it.
+  watcher = new ContextWatcher(
+    (snap) => {
+      send(CH.ctxUpdate, snap)
+      pushStatusLine(snap.sessionId)
+      // `ready` is false for the placeholder emitted while a brand-new session
+      // has no transcript yet; its counts are zeroes and would set a baseline
+      // the real first reading then blows straight past.
+      if (snap.ready) autoscan?.observe(snap.sessionId, snap.messageCount, snap.updatedAt)
+    },
+    (sessionId) => windowFor(sessionId, ptys?.bannerWindowFor(sessionId) ?? null),
+    {
+      /*
+       * One poller, both kinds of session.
+       *
+       * A remote transcript is fetched back over the same connection rather
+       * than read off this disk, and routing it through the watcher rather
+       * than beside it is what makes everything downstream work unchanged:
+       * the context meter starts reading for SSH sessions, and the auto-scan
+       * trigger — which is fed from these very snapshots — starts firing for
+       * them too. Without it the worklog over SSH would only ever run from the
+       * Scan button.
+       */
+      resolve: (sessionId) => transcriptFor(sessionId),
+      volatile: (sessionId) => hostForSession(sessionId) !== null,
+      // A network round trip cannot run at the local 1.5s. Slow enough to be
+      // unnoticeable on the link, fast enough that the meter is not a lie.
+      pollMs: (sessionId) => (hostForSession(sessionId) ? REMOTE_POLL_MS : null)
+    }
+  )
+
+  /*
+   * Any settings write can change which sessions are watched — a profile
+   * ticked, a host switched on, a scan root added. Settings changes are
+   * user-paced, so recomputing unconditionally is cheaper than working out
+   * whether this particular write mattered.
+   */
+  const offSettings = onSettingsChanged(() => sendWatchStates())
+  win.webContents.on('did-finish-load', () => sendWatchStates())
 
   const devUrl = process.env.ELECTRON_RENDERER_URL
   if (!app.isPackaged && devUrl) {
@@ -185,8 +835,11 @@ function createWindow(): void {
   }
 
   win.on('closed', () => {
+    offSettings()
     ptys?.killAll()
     watcher?.disposeAll()
+    autoscan?.dispose()
+    autoscan = null
     mcp?.stop()
     void remote?.stop()
     tunnel.stop()
@@ -246,16 +899,36 @@ function registerIpc(): void {
     if (!s.projectRoots.includes(dir)) {
       setSettings({ projectRoots: [...s.projectRoots, dir] })
     }
+    sendWatchStates()
     return dir
   })
 
+  /*
+   * Picking a folder used to return the path and write nothing, so the dialog
+   * closed and the sidebar was unchanged (spec 2.5). The record is what makes
+   * `listProjects` able to emit a folder Claude has never seen.
+   */
   ipcMain.handle(CH.projectsAdd, async () => {
     if (!win) return null
     const res = await dialog.showOpenDialog(win, {
       title: 'Open a project folder',
       properties: ['openDirectory', 'createDirectory']
     })
-    return res.canceled ? null : (res.filePaths[0] ?? null)
+    const dir = res.canceled ? null : (res.filePaths[0] ?? null)
+    if (!dir) return null
+    const rules = pathRulesFor(process.platform)
+    setSettings(manualProjectPatch(getSettings(), dir, rules))
+    sendWatchStates()
+    // Return the same normalised string manualProjectPatch persisted under —
+    // a dialog's "C:\\" would otherwise come back to App.tsx's setSelectedPath
+    // as a key that never matches the row applyProjectMeta just created.
+    return normalizePath(dir.trim(), rules)
+  })
+
+  ipcMain.handle(CH.projectsMeta, (_e, path: string, meta: ProjectMeta | null) => {
+    const next = setSettings(projectMetaPatch(getSettings(), path, meta, pathRulesFor(process.platform)))
+    sendWatchStates()
+    return next
   })
 
   /* ------------------------------------------------------------- workspaces */
@@ -267,7 +940,9 @@ function registerIpc(): void {
     const next = hidden
       ? [...new Set([...s.hiddenProjects, path])]
       : s.hiddenProjects.filter((p) => p !== path)
-    return setSettings({ hiddenProjects: next })
+    const saved = setSettings({ hiddenProjects: next })
+    sendWatchStates()
+    return saved
   })
 
   ipcMain.handle(CH.projectsPin, (_e, path: string, pinned: boolean) => {
@@ -281,7 +956,14 @@ function registerIpc(): void {
   ipcMain.handle(CH.projectsReveal, (_e, path: string) => shell.openPath(path))
 
   /* ------------------------------------------------------------------- pty */
-  ipcMain.handle(CH.ptyStart, (_e, opts: LaunchOptions) => launchSession(opts))
+  ipcMain.handle(CH.ptyStart, async (_e, opts: LaunchOptions) => {
+    const result = await launchSession(opts)
+    // After launchSession, so sessionCwds already holds the new id — the state
+    // for a session nobody has recorded a folder for is 'unknown-folder', which
+    // would be wrong and would not correct itself until the next settings write.
+    sendWatchStates()
+    return result
+  })
 
   ipcMain.on(CH.ptyWrite, (_e, ptyId: string, data: string) => ptys?.write(ptyId, data))
   ipcMain.on(CH.ptyResize, (_e, ptyId: string, cols: number, rows: number) =>
@@ -290,12 +972,21 @@ function registerIpc(): void {
   ipcMain.on(CH.ptyKill, (_e, ptyId: string) => {
     const sessionId = ptys?.sessionIdFor(ptyId)
     ptys?.kill(ptyId)
-    if (sessionId) watcher?.unwatch(sessionId)
+    if (sessionId) {
+      watcher?.unwatch(sessionId)
+      statusLineSeen.delete(sessionId)
+    }
   })
 
   /* --------------------------------------------------------------- context */
   ipcMain.on(CH.ctxWatch, (_e, sessionId: string) => watcher?.watch(sessionId))
   ipcMain.on(CH.ctxUnwatch, (_e, sessionId: string) => watcher?.unwatch(sessionId))
+  ipcMain.handle(CH.statusLineLast, () => {
+    // Sweep first, so a session nothing watches — a --continue — still
+    // contributes its account-wide rate limits. See refreshLastStatusLine.
+    refreshLastStatusLine()
+    return lastStatusLine
+  })
 
   /* --------------------------------------------------------------- browser */
   ipcMain.on(CH.browserSetBounds, (_e, rect: Rect) => browser?.setBounds(rect))
@@ -341,7 +1032,13 @@ function registerIpc(): void {
       qr = null
     }
     return {
-      server: remote?.status() ?? { running: false, port: cfg.port, error: null, clients: 0 },
+      server: remote?.status() ?? {
+        running: false,
+        port: cfg.port,
+        error: null,
+        clients: 0,
+        addresses: []
+      },
       tunnel: tunnel.status(),
       url,
       qr,
@@ -409,6 +1106,7 @@ function registerIpc(): void {
   /* -------------------------------------------------------------- settings */
   ipcMain.handle(CH.settingsGet, () => getSettings())
   ipcMain.handle(CH.settingsSet, (_e, patch: Partial<Settings>) => {
+    const prev = getSettings()
     const next = setSettings(patch)
     /*
      * The Windows overlay is painted by the OS, not the page, so a theme change
@@ -424,8 +1122,215 @@ function registerIpc(): void {
         height: TITLEBAR_H
       })
     }
+    /*
+     * Load-bearing, not merely correct in advance.
+     *
+     * Recall's cache is keyed on which boards are switched *on* (see cacheKey
+     * in recall.ts), not on their ids, so toggling a board already misses the
+     * cache key on its own — editing an id in place would not, since the key
+     * is unchanged. That is the bug this call is written to prevent: a stale
+     * read of the *old* Notion data source or ClickUp list served for up to
+     * RECALL_TTL_MS after the user points the setting at a different board.
+     *
+     * `runWorklogScan`'s recall() call now passes
+     * settings.worklogBoards.notionDataSource / .clickupListId directly, not
+     * the compiled-in CLICKUP_LIST_ID / NOTION_DATA_SOURCE constants — so an
+     * id typed into this settings panel is exactly the thing a cached recall
+     * snapshot can go stale against, and this comparison is what keeps it
+     * from doing so. Cheap regardless of that: a settings write happens far
+     * less often than a scan runs.
+     */
+    if (
+      next.worklogBoards.notionDataSource !== prev.worklogBoards.notionDataSource ||
+      next.worklogBoards.clickupListId !== prev.worklogBoards.clickupListId
+    ) {
+      invalidateRecall()
+    }
     send(CH.settingsChanged, next)
     return next
+  })
+
+  /* -------------------------------------------------------------- profiles */
+  /*
+   * Creating a profile writes a folder and a scan root, so it happens here and
+   * the renderer only ever sees the plan and the resulting settings. `plan` is
+   * a dry run: the UI shows what will happen before anything is written.
+   */
+  ipcMain.handle(CH.profilesPlan, (_e, folder: string, name: string) => planProfile(folder, name))
+  ipcMain.handle(CH.profilesCreate, async (_e, input: CreateProfileInput) => {
+    const { patch } = await createProfile(getSettings(), input)
+    const next = setSettings(patch)
+    send(CH.settingsChanged, next)
+    /*
+     * The new root only becomes visible once its children have been scanned,
+     * and nothing here does that scan. CH.sessionsChanged is declared for
+     * exactly this shape of problem but has no preload bridge and no
+     * renderer listener anywhere in the app - a send here would reach
+     * nobody. Follow the pattern every other project-list mutation already
+     * uses (openFolder, addRoot in App.tsx): the renderer calls
+     * refreshProjects() itself once profiles.create() resolves - see
+     * ProfilesSettings.tsx's create(). Do not re-add a send() here without
+     * also wiring a preload bridge and a renderer subscriber, or this is
+     * the exact "did nothing" bug again.
+     */
+    return next
+  })
+
+  /* ------------------------------------------------------------------- ssh */
+  ipcMain.handle(CH.sshHosts, () => readSshConfigHosts())
+
+  /* --------------------------------------------------------------- worklog */
+  /*
+   * Both runs cost money and can fail, so every handler returns a result object
+   * rather than throwing across the bridge - a rejected invoke in the renderer
+   * arrives as an opaque Error string and the panel could not tell "nothing to
+   * propose" from "the run broke".
+   */
+  const queue = worklogQueue
+
+  ipcMain.handle(CH.worklogQueue, () => queue().list())
+
+  ipcMain.handle(CH.worklogWatch, () => watchStates())
+
+  ipcMain.handle(CH.worklogScan, async (_e, sessionId: string) => {
+    const report = await runWorklogScan(sessionId, false)
+    // The panel reads the full report off `worklog:scanned`; this return value
+    // stays the shape it always was so the existing caller is untouched, and
+    // `error` here is what App.tsx puts in the red `role="alert"` banner.
+    //
+    // `report.message` alone is NOT the right condition any more (Task 29
+    // review, finding 1) — the empty-transcript fix above now puts a message
+    // on a 'nothing' outcome too, and pressing Scan on a session that has not
+    // sent anything yet is not a failure; it is the exact case the calm state
+    // line exists to explain. Surfacing it here would put a red alert on a
+    // scan that worked perfectly.
+    //
+    // So `outcome`, not `message`, decides: null for every 'nothing', whether
+    // or not it carries an explanation; non-null for 'budget', for 'error',
+    // and for a 'proposed' scan whose drafts were written without a look at
+    // the boards first (H5) — those are the only cases actually worth a red
+    // banner. An ordinary successful 'proposed' still leaves it null, because
+    // `message` is null there too.
+    const error = report.outcome === 'nothing' ? null : report.message
+    return { added: report.added, error }
+  })
+
+  ipcMain.handle(CH.worklogLastScan, () => lastScanReport)
+
+  /*
+   * Accepts in flight, by proposal id.
+   *
+   * The renderer disables its buttons while one runs, but there are now two
+   * independent controls that can accept the same proposal — the panel and the
+   * auto-scan prompt — and a renderer flag is not a lock anyway. Two invokes
+   * arriving together would each read a proposal with no urls yet and each run
+   * the write, creating the record twice in a live workspace. Nothing else in
+   * this file can undo that, so the guard belongs here.
+   */
+  const accepting = new Set<string>()
+
+  ipcMain.handle(CH.worklogAccept, async (_e, id: string) => {
+    const q = queue()
+    const item = q.list().find((p) => p.id === id)
+    if (!item) return { ok: false, error: 'that proposal is no longer in the queue' }
+    if (item.status === 'accepted') return { ok: true, error: null }
+    if (item.status === 'rejected') return { ok: false, error: 'that proposal was rejected' }
+    if (accepting.has(id)) return { ok: false, error: 'that proposal is already being written' }
+    accepting.add(id)
+    try {
+      const settings = getSettings()
+      const outcome = await applyProposal(item, {
+        // All three were missing before this task. Without claudePath a user
+        // with an explicit path in Settings got auto-detection instead;
+        // without a budget the write sat on the CLI's default; without boards
+        // it wrote to a destination the user may have switched off.
+        claudePath: settings.claudePath,
+        maxBudgetUsd: APPLY_MAX_BUDGET_USD,
+        // The user's own switches and ids, not the shipped default — a board
+        // switched off in Settings must not still receive the write, and an
+        // edited id must be the one actually written to. hydrateSettings has
+        // already dropped any target whose id is empty, so this is trusted
+        // rather than re-validated (see settingsSchema.ts).
+        boards: settings.worklogBoards,
+        // Persist each URL the moment its write returns, so a failure on the
+        // second destination cannot lose the first - and so a retry can tell
+        // what has already been written and skip it.
+        onWritten: async (target, url) => {
+          if (!url) return
+          const current = q.list().find((p) => p.id === id)
+          q.update(id, { urls: { ...(current?.urls ?? {}), [target]: url } })
+          send(CH.worklogChanged, q.list())
+        }
+      })
+      const errors = Object.values(outcome.errors)
+      q.update(id, {
+        status: outcome.ok ? 'accepted' : 'failed',
+        urls: { ...(q.list().find((p) => p.id === id)?.urls ?? {}), ...outcome.urls },
+        error: errors.join('; ')
+      })
+      /*
+       * The boards have moved, so the cached reading of them is stale.
+       *
+       * This matters more than it looks: the record just written is the one the
+       * next scan most needs to know about. Left cached, that record stays
+       * invisible for the rest of the TTL and the next scan of the same session
+       * proposes creating it all over again - which is the exact duplication
+       * recall was added to prevent.
+       */
+      if (Object.keys(outcome.urls).length) invalidateRecall()
+      send(CH.worklogChanged, q.list())
+      return { ok: outcome.ok, error: errors.join('; ') || null }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      q.update(id, { status: 'failed', error: message })
+      send(CH.worklogChanged, q.list())
+      return { ok: false, error: message }
+    } finally {
+      accepting.delete(id)
+    }
+  })
+
+  ipcMain.handle(CH.worklogReject, (_e, id: string) => {
+    queue().reject(id)
+    send(CH.worklogChanged, queue().list())
+  })
+
+  /* ----------------------------------------------------------------- audio */
+  ipcMain.handle(CH.micCheck, () => checkMicrophone())
+
+  /*
+   * Desktop dictation. The renderer records and encodes the WAV — it has the
+   * microphone and the audio APIs — but does not reach the speech server, which
+   * has no authentication of its own. Same boundary the phone's
+   * `/api/transcribe` route enforces, and `stt.ts` is the single implementation
+   * behind both.
+   *
+   * The settings read happens per call rather than being captured, so changing
+   * the address takes effect on the next dictation instead of the next launch.
+   */
+  ipcMain.handle(CH.transcribe, async (_e, wav: ArrayBuffer) => {
+    return transcribe(getSettings().remote?.sttUrl, new Uint8Array(wav))
+  })
+
+  /* ------------------------------------------------------------- clipboard */
+  /*
+   * Read synchronously. xterm's key handler must decide whether to swallow a
+   * paste before it returns, so an async round trip would always land a
+   * keystroke too late. Reading the clipboard is microseconds, so blocking the
+   * renderer for it is cheaper than the alternative of caching and going stale.
+   *
+   * hasImage is what lets plain Ctrl+V fall through to Claude Code's own image
+   * handler: the CLI reads the image off the OS clipboard itself, so no image
+   * bytes ever have to cross the PTY.
+   */
+  ipcMain.on(CH.clipboardRead, (e) => {
+    e.returnValue = {
+      text: clipboard.readText(),
+      hasImage: !clipboard.readImage().isEmpty()
+    }
+  })
+  ipcMain.on(CH.clipboardWrite, (_e, text: string) => {
+    if (typeof text === 'string' && text) clipboard.writeText(text)
   })
 
   /* ------------------------------------------------------------------ misc */
@@ -437,6 +1342,28 @@ function registerIpc(): void {
     const res = await dialog.showOpenDialog(win, { properties: ['openDirectory'] })
     return res.canceled ? null : (res.filePaths[0] ?? null)
   })
+}
+
+/*
+ * An unpackaged run gets its own data directory.
+ *
+ * The single-instance lock and the settings file are both keyed on userData, so
+ * a dev build previously fought the installed app for both: launching one while
+ * the other ran made the new process quit on the spot, and any dev run that did
+ * start wrote through the same settings.json. The workaround was to remember a
+ * --user-data-dir flag on every launch, which electron-vite gives no way to pass
+ * anyway.
+ *
+ * Must happen before requestSingleInstanceLock, which reads the path.
+ * STOKE_USER_DATA overrides, for running two dev copies side by side.
+ *
+ * An explicit --user-data-dir always wins. Without that guard this silently
+ * ignored the flag and booted a different profile than the one asked for, which
+ * is a confusing way to lose an afternoon: the app starts, looks fine, and none
+ * of the settings under test are loaded.
+ */
+if (!app.isPackaged && !app.commandLine.hasSwitch('user-data-dir')) {
+  app.setPath('userData', process.env.STOKE_USER_DATA || `${app.getPath('userData')} (dev)`)
 }
 
 // A second launch should focus the existing window rather than open a rival one
@@ -451,6 +1378,11 @@ if (!app.requestSingleInstanceLock()) {
   })
 
   app.whenReady().then(() => {
+    // The only sweep for statusLine files that a crash, a SIGKILL or a failed
+    // launch left behind on a previous run — see statusLine.ts for why it is
+    // age-based rather than a blanket wipe. Once per boot, before any session
+    // (and so before any fresh file this run could mistake for stale) exists.
+    sweepStaleSessionFiles()
     registerIpc()
     createWindow()
     app.on('activate', () => {

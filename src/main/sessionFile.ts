@@ -1,4 +1,5 @@
 import { open, readFile, stat } from 'node:fs/promises'
+import type { PermissionMode } from '@shared/types'
 
 /**
  * Helpers for reading Claude Code's session transcripts
@@ -25,6 +26,8 @@ export interface ParsedSession {
   gitBranch: string | null
   cwd: string | null
   model: string | null
+  /** Newest `permission-mode` record in the transcript, or null when none. */
+  permissionMode: PermissionMode | null
   messageCount: number
   /** -1 when the file was sampled rather than read in full. */
   exactCount: boolean
@@ -100,6 +103,18 @@ function isUsefulPrompt(s: string): boolean {
   return true
 }
 
+/*
+ * Only these five. A transcript is somebody else's file and a mode this app
+ * does not understand must not reach the UI as a state nobody can style.
+ */
+const PERMISSION_MODES = new Set<string>([
+  'default',
+  'plan',
+  'acceptEdits',
+  'auto',
+  'bypassPermissions'
+])
+
 export async function parseSession(file: string): Promise<ParsedSession> {
   const out: ParsedSession = {
     title: null,
@@ -107,6 +122,7 @@ export async function parseSession(file: string): Promise<ParsedSession> {
     gitBranch: null,
     cwd: null,
     model: null,
+    permissionMode: null,
     messageCount: 0,
     exactCount: true,
     inputTokens: 0,
@@ -127,6 +143,16 @@ export async function parseSession(file: string): Promise<ParsedSession> {
       // Later records win — Claude retitles a session as it evolves.
       const t = rec.aiTitle
       if (typeof t === 'string' && t.trim()) out.title = t.trim()
+      continue
+    }
+
+    if (type === 'permission-mode') {
+      // Later records win: the mode is toggled with Shift+Tab mid-session and
+      // every toggle appends another record.
+      const m = rec.permissionMode
+      if (typeof m === 'string' && PERMISSION_MODES.has(m)) {
+        out.permissionMode = m as PermissionMode
+      }
       continue
     }
 
@@ -176,18 +202,23 @@ export const WINDOW_EXTENDED = 1_000_000
  * Context window size for a session.
  *
  * The model id alone is NOT sufficient. A session running the 1M-context tier
- * records its model as plain `claude-opus-5` — the `[1m]` suffix that appears in
- * CLI flags does not survive into the transcript, and no `context_window` field
- * is written either. Verified against a live 1M session sitting at 269k tokens
- * whose every assistant record said `claude-opus-5`.
+ * records its model as plain `claude-opus-5` — the `[1m]` suffix that appears
+ * in CLI flags does not survive into the transcript, and no `context_window`
+ * field is written either. Verified against a live 1M session sitting at 269k
+ * tokens whose every assistant record said `claude-opus-5`.
  *
- * So the observed usage is the authority: exceeding the standard window is
- * proof the session is on the extended tier. The id is still checked first for
- * the cases where a suffix is present.
+ * The window is therefore *stated* rather than derived, by the caller: the
+ * statusLine payload first (`statusLine.ts`), then the startup banner for a
+ * CLI old enough to print one. Both arrive here as `bannerLimit`.
  *
- * Known imprecision: an extended-tier session below 200k is reported against
- * the 200k window until it crosses over. That reads conservatively (it can
- * over-state pressure, never under-state it) and it can never exceed 100%.
+ * With no statement at all, observed usage is the authority: exceeding the
+ * standard window is proof the session is on the extended tier. The id is
+ * still checked first for the cases where a suffix is present.
+ *
+ * Known imprecision in that last case only: an extended-tier session below
+ * 200k is reported against the 200k window until it crosses over. That reads
+ * conservatively (it can over-state pressure, never under-state it) and it can
+ * never exceed 100%.
  */
 export interface TranscriptTurn {
   role: 'user' | 'assistant'
@@ -265,7 +296,49 @@ export async function readTranscript(file: string, limit = 400): Promise<Transcr
   }
 }
 
-export function contextLimitFor(model: string | null, observedTokens = 0): number {
+/**
+ * Pull the context window out of the CLI's own startup banner.
+ *
+ * The banner reads like `Opus 5 (1M context) with xhigh effort · Claude Max`,
+ * and it is the only place the tier is stated before any tokens are spent. The
+ * transcript never carries it: a session verified at 713,617 tokens still
+ * recorded its model as plain `claude-opus-5`, and the only tier-ish field
+ * anywhere in the file is `usage.service_tier`, which is billing, not context.
+ *
+ * Without this the meter reads a 1M session against 200k until it crosses over,
+ * so a session at 182k showed "92% full" when 82% of the window was still free
+ * — alarming, and precisely backwards.
+ *
+ * Returns null when the banner has not been seen, which is not the same as
+ * "standard tier": the caller keeps its observed-usage fallback for that.
+ */
+export function windowFromBanner(text: string): number | null {
+  // Strip escape sequences first: the banner is styled, so the digits and the
+  // word "context" are routinely separated by colour codes in the raw stream.
+  const plain = text.replace(/\[[0-9;?]*[A-Za-z]/g, '')
+  const m = /\(\s*(\d+)\s*(M|K)\s*context\s*\)/i.exec(plain)
+  if (!m) return null
+  const n = Number(m[1])
+  if (!Number.isFinite(n) || n <= 0) return null
+  const tokens = m[2].toUpperCase() === 'M' ? n * 1_000_000 : n * 1_000
+  // Sanity-bound it: a malformed match must never produce a window so large
+  // that the meter reads 0% forever, which would hide a real overflow.
+  return tokens >= WINDOW_STANDARD && tokens <= 10_000_000 ? tokens : null
+}
+
+/**
+ * @param bannerLimit the stated window, when one has been seen — the
+ *   statusLine payload first (`statusLine.ts`'s `windowFor`), the CLI's
+ *   startup banner second for a CLI old enough to still print one. Despite
+ *   the parameter's name, a caller may hand either source in here; both are a
+ *   direct statement and win over both the id and observed usage.
+ */
+export function contextLimitFor(
+  model: string | null,
+  observedTokens = 0,
+  bannerLimit: number | null = null
+): number {
+  if (bannerLimit && observedTokens <= bannerLimit) return bannerLimit
   if (model && /\[1m\]|-1m\b|_1m\b/i.test(model)) return WINDOW_EXTENDED
   return observedTokens > WINDOW_STANDARD ? WINDOW_EXTENDED : WINDOW_STANDARD
 }

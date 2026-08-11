@@ -10,6 +10,7 @@ import type { ContextSnapshot, LaunchOptions, Project, SessionMeta } from '@shar
 import type { ContextWatcher } from '../context.ts'
 import type { PtyManager, StartResult } from '../pty.ts'
 import type { Transcript } from '../sessionFile.ts'
+import { MAX_AUDIO_BYTES, transcribe } from '../stt.ts'
 
 /**
  * Serves Stoke's sessions to a phone or another browser.
@@ -46,7 +47,17 @@ export interface RemoteConfig {
   hostname: string
   /** Bind on the LAN too, not just loopback. Off by default. */
   bindLan: boolean
-  /** Reject anything without Cloudflare Access headers, so only the tunnel works. */
+  /**
+   * Bind the Tailscale address as well as loopback, so a phone on the tailnet
+   * reaches this directly without the tunnel. Unlike `bindLan` this exposes the
+   * port to the tailnet only, never to whatever network the machine is on.
+   */
+  bindTailscale: boolean
+  /**
+   * Reject anything without Cloudflare Access headers, so only the tunnel works.
+   *
+   * Enforced on the loopback listener only — see `viaLoopback`.
+   */
   requireAccessHeader: boolean
   /**
    * Speech-to-text sidecar, e.g. `http://127.0.0.1:17890`.
@@ -66,6 +77,33 @@ export interface RemoteStatus {
   port: number
   error: string | null
   clients: number
+  /** Addresses actually bound, so the UI can offer a tailnet link as well as the tunnel. */
+  addresses: string[]
+}
+
+/*
+ * Tailscale gives every node an address in 100.64.0.0/10, the CGNAT range it
+ * borrows for the tailnet. Matching the range rather than the interface name
+ * keeps this working everywhere, since the interface is variously "Tailscale",
+ * "tailscale0" and a "utun" device depending on the platform.
+ */
+/** True for an address in 100.64.0.0/10, the CGNAT range Tailscale uses. */
+export function isTailnetAddress(address: string): boolean {
+  // Node reports an IPv4 socket as ::ffff:100.x on a dual-stack listener.
+  const plain = address.replace(/^::ffff:/i, '')
+  const [first, second] = plain.split('.').map(Number)
+  return first === 100 && second >= 64 && second <= 127
+}
+
+export function tailnetAddress(): string | null {
+  for (const addrs of Object.values(networkInterfaces())) {
+    for (const a of addrs ?? []) {
+      if (a.family !== 'IPv4' || a.internal) continue
+      const [first, second] = a.address.split('.').map(Number)
+      if (first === 100 && second >= 64 && second <= 127) return a.address
+    }
+  }
+  return null
 }
 
 const MIME: Record<string, string> = {
@@ -92,9 +130,20 @@ export function connectUrl(opts: {
   port: number
   token: string
   bindLan: boolean
+  bindTailscale?: boolean
 }): string {
   const key = `?k=${encodeURIComponent(opts.token)}`
   if (opts.hostname.trim()) return `https://${opts.hostname.trim()}/${key}`
+  /*
+   * The tailnet address before the LAN sweep and before loopback. Without this
+   * the link and the QR code fall through to 127.0.0.1, which is useless on the
+   * phone that is meant to scan it - the feature would look broken while the
+   * server was in fact listening correctly.
+   */
+  if (opts.bindTailscale && !opts.bindLan) {
+    const tailnet = tailnetAddress()
+    if (tailnet) return `http://${tailnet}:${opts.port}/${key}`
+  }
   if (opts.bindLan) {
     const nets = networkInterfaces()
     for (const list of Object.values(nets)) {
@@ -116,7 +165,8 @@ function safeEqual(a: string, b: string): boolean {
 }
 
 export class RemoteServer {
-  private http: Server | null = null
+  private servers: Server[] = []
+  private bound: string[] = []
   private wss: WebSocketServer | null = null
   private config: RemoteConfig | null = null
   private error: string | null = null
@@ -134,10 +184,11 @@ export class RemoteServer {
 
   status(): RemoteStatus {
     return {
-      running: this.http !== null,
+      running: this.servers.length > 0,
       port: this.config?.port ?? 0,
       error: this.error,
-      clients: this.clients.size
+      clients: this.clients.size,
+      addresses: [...this.bound]
     }
   }
 
@@ -147,18 +198,49 @@ export class RemoteServer {
     this.config = config
 
     try {
-      const server = createServer((req, res) => void this.handleHttp(req, res))
       const wss = new WebSocketServer({ noServer: true })
-
-      server.on('upgrade', (req, socket, head) => this.handleUpgrade(req, socket, head, wss))
       wss.on('connection', (ws, req) => this.handleSocket(ws, req))
 
-      await new Promise<void>((resolve, reject) => {
-        server.once('error', reject)
-        server.listen(config.port, config.bindLan ? '0.0.0.0' : '127.0.0.1', () => resolve())
-      })
+      const listen = async (host: string): Promise<void> => {
+        const server = createServer((req, res) => void this.handleHttp(req, res))
+        server.on('upgrade', (req, socket, head) => this.handleUpgrade(req, socket, head, wss))
+        await new Promise<void>((resolve, reject) => {
+          server.once('error', reject)
+          server.listen(config.port, host, () => resolve())
+        })
+        this.servers.push(server)
+        this.bound.push(host)
+      }
 
-      this.http = server
+      /*
+       * cloudflared runs on this machine and dials 127.0.0.1, so loopback must
+       * always be bound or the tunnel has nothing to reach. Opening the LAN is
+       * still all-or-nothing via 0.0.0.0, which already covers loopback and the
+       * tailnet - binding it alongside 127.0.0.1 would collide on the port.
+       */
+      await listen(config.bindLan ? '0.0.0.0' : '127.0.0.1')
+
+      /*
+       * The tailnet address is bound as a second listener rather than instead of
+       * loopback, so the tunnel and a direct tailnet connection both work. It is
+       * best effort: Tailscale may be down or not installed, and that must not
+       * take the whole remote server with it.
+       */
+      if (config.bindTailscale && !config.bindLan) {
+        const tailnet = tailnetAddress()
+        if (tailnet) {
+          try {
+            await listen(tailnet)
+          } catch (err) {
+            this.error = `bound loopback but not the tailnet address ${tailnet}: ${
+              err instanceof Error ? err.message : String(err)
+            }`
+          }
+        } else {
+          this.error = 'Tailscale is enabled but no tailnet address was found on this machine'
+        }
+      }
+
       this.wss = wss
 
       // Fan PTY output out to every attached remote client.
@@ -191,11 +273,12 @@ export class RemoteServer {
     this.wss?.close()
     this.wss = null
 
-    if (this.http) {
-      const server = this.http
-      this.http = null
-      await new Promise<void>((resolve) => server.close(() => resolve()))
-    }
+    const servers = this.servers
+    this.servers = []
+    this.bound = []
+    await Promise.all(
+      servers.map((server) => new Promise<void>((resolve) => server.close(() => resolve())))
+    )
   }
 
   private broadcast(ptyId: string, message: unknown): void {
@@ -264,10 +347,54 @@ export class RemoteServer {
     )
   }
 
+  /**
+   * True when the request came in on the loopback listener, which is where
+   * cloudflared delivers tunnel traffic. Read from the local end of the socket,
+   * so it reflects which listener accepted the connection and cannot be forged
+   * by a header.
+   */
+  private viaLoopback(req: IncomingMessage): boolean {
+    const local = req.socket.localAddress ?? ''
+    return local === '127.0.0.1' || local === '::1' || local === '::ffff:127.0.0.1'
+  }
+
+  /**
+   * True when this request came in on the dedicated tailnet listener.
+   *
+   * Requires `bindTailscale` and NOT `bindLan`: with the LAN open there is a
+   * single 0.0.0.0 listener and no separate tailnet socket to be sure about, so
+   * the exemption is withheld and Access is enforced as it was in 0.3.2. Read
+   * from the local end of the socket, so a header cannot forge it.
+   */
+  private viaTailnet(req: IncomingMessage): boolean {
+    if (!this.config?.bindTailscale || this.config.bindLan) return false
+    return isTailnetAddress(req.socket.localAddress ?? '')
+  }
+
   private authorized(req: IncomingMessage): boolean {
     if (!this.config) return false
 
-    if (this.config.requireAccessHeader) {
+    /*
+     * Access headers are only meaningful on loopback, because that is the only
+     * listener the tunnel arrives on. A request that came in on the tailnet
+     * address reached the machine directly and can never carry them, so
+     * enforcing the check there would 401 every device on the VPN. Those
+     * requests are gated by tailnet membership plus the token instead, which is
+     * why binding the tailnet is opt-in and off by default.
+     */
+    /*
+     * Exempt exactly one thing: a request that arrived on the dedicated tailnet
+     * listener. Ask that directly rather than inferring it.
+     *
+     * Two earlier attempts got this wrong in opposite directions, both silently.
+     * Keying on `viaLoopback` alone also exempted the LAN, because bindLan
+     * collapses everything onto one 0.0.0.0 listener where localAddress is the
+     * interface IP. Adding a `!bindLan` guard then inverted the common case: with
+     * bindLan off - which is the whole Tailscale configuration - the condition
+     * was always true, so every tailnet request 401'd, including the WebSocket
+     * upgrade, and the terminal simply never opened.
+     */
+    if (this.config.requireAccessHeader && !this.viaTailnet(req)) {
       // Cloudflare Access injects these; their absence means the request did not
       // come through the tunnel.
       const hasAccess =
@@ -298,9 +425,15 @@ export class RemoteServer {
       ? {
           /*
            * The cookie is a shell credential, so it carries Secure and must
-           * never ride a plaintext request - except in bindLan mode, which is
-           * plain HTTP by definition and where Secure would simply stop the
-           * cookie being stored at all.
+           * never ride a plaintext request - except when this request did not
+           * come through the tunnel, which is plain HTTP by definition and
+           * where Secure would simply stop the cookie being stored at all.
+           *
+           * Keyed off how this request arrived rather than off bindLan, because
+           * a tailnet connection is http://100.x.y.z:port too. Keying it off
+           * the config would send Secure to a phone on the tailnet, the browser
+           * would silently drop the cookie, and every request after the first
+           * would 401 with nothing to explain why.
            *
            * SameSite stays Lax, not Strict: Cloudflare Access bounces the user
            * to its own hostname and back, and Strict withholds the cookie on
@@ -312,7 +445,8 @@ export class RemoteServer {
            */
           'set-cookie':
             `stoke_key=${encodeURIComponent(queryKey)}; Path=/; HttpOnly;` +
-            `${this.config?.bindLan ? '' : ' Secure;'} SameSite=Lax; Max-Age=7776000`
+            `${this.viaLoopback(req) && !this.config?.bindLan ? ' Secure;' : ''}` +
+            ` SameSite=Lax; Max-Age=7776000`
         }
       : {}
 
@@ -380,31 +514,23 @@ export class RemoteServer {
        * it here would mean shipping ffmpeg.
        */
       if (url.pathname === '/api/transcribe' && req.method === 'POST') {
-        const stt = this.config?.sttUrl?.trim()
-        if (!stt) {
-          return this.json(res, { error: 'No speech server configured.' }, setCookie, 503)
-        }
-        const audio = await this.readBody(req, 25 * 1024 * 1024)
+        const audio = await this.readBody(req, MAX_AUDIO_BYTES)
         if (!audio) {
           return this.json(res, { error: 'Recording too large or empty.' }, setCookie, 400)
         }
-        try {
-          const upstream = await fetch(`${stt.replace(/\/$/, '')}/transcribe`, {
-            method: 'POST',
-            headers: { 'content-type': 'audio/wav' },
-            body: new Uint8Array(audio),
-            signal: AbortSignal.timeout(120_000)
-          })
-          if (!upstream.ok) {
-            const detail = (await upstream.text()).slice(0, 200)
-            return this.json(res, { error: `Speech server: ${upstream.status} ${detail}` }, setCookie, 502)
-          }
-          const data = (await upstream.json()) as { text?: unknown }
-          return this.json(res, { text: typeof data.text === 'string' ? data.text : '' }, setCookie)
-        } catch (err) {
-          const why = err instanceof Error ? err.message : String(err)
-          return this.json(res, { error: `Speech server unreachable: ${why}` }, setCookie, 502)
+        /*
+         * The call itself lives in ../stt.ts, which the desktop's dictation
+         * uses too. Only the status code is decided here, because only this
+         * caller speaks HTTP: 503 when no server is configured — the shipped
+         * state, and not this request's fault — 502 for anything that went
+         * wrong reaching one.
+         */
+        const result = await transcribe(this.config?.sttUrl, new Uint8Array(audio))
+        if (!result.ok) {
+          const configured = Boolean(this.config?.sttUrl?.trim())
+          return this.json(res, { error: result.error }, setCookie, configured ? 502 : 503)
         }
+        return this.json(res, { text: result.text }, setCookie)
       }
 
       if (url.pathname === '/api/sessions' && req.method === 'POST') {

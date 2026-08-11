@@ -1,8 +1,10 @@
-import { useMemo } from 'react'
-import type { Project, SessionMeta } from '@shared/types'
+import { useMemo, useState } from 'react'
+import type { Project, ProjectMeta, SessionMeta } from '@shared/types'
 import { ContextBar } from './ContextMeter'
-import { profilesFor } from '@shared/profiles'
+import type { ResolvedProfile } from '@shared/profiles'
+import { foldGroup } from '@shared/profiles'
 import { IconChevron, IconFolder, IconPin, IconPlus, IconSearch } from './Icons'
+import { ProjectMetaPicker } from './ProjectMetaPicker'
 import { relativeTime } from '../lib/format'
 
 interface Props {
@@ -13,16 +15,29 @@ interface Props {
   expandedPath: string | null
   sessions: SessionMeta[]
   sessionsLoading: boolean
+  /**
+   * Session ids that currently have a tab open. The row backing the terminal
+   * you are looking at is the one row in this list worth finding again, and it
+   * had no state of its own at all.
+   */
+  openSessionIds: string[]
   onQueryChange: (q: string) => void
   onSelectProject: (p: Project) => void
   onToggleExpand: (p: Project) => void
   onStartNew: (p: Project) => void
   onResume: (s: SessionMeta) => void
   onPin: (p: Project) => void
+  /** Set or clear one folder's icon and display name. `null` clears the record. */
+  onSetMeta: (project: Project, meta: ProjectMeta | null) => void
   onAddRoot: () => void
   onOpenFolder: () => void
   onStartScratch: () => void
-  /** Profile whose projects are shown; null shows everything. */
+  /**
+   * Profiles this machine actually has. Resolved once in App and passed down, so
+   * the chip row and the accent can never resolve against different lists.
+   */
+  profiles: ResolvedProfile[]
+  /** Id of the profile whose projects are shown; null shows everything. */
   activeProfile: string | null
   onSelectProfile: (id: string | null) => void
 }
@@ -35,27 +50,49 @@ export function Sidebar({
   expandedPath,
   sessions,
   sessionsLoading,
+  openSessionIds,
   onQueryChange,
   onSelectProject,
   onToggleExpand,
   onStartNew,
   onResume,
   onPin,
+  onSetMeta,
   onAddRoot,
   onOpenFolder,
   onStartScratch,
+  profiles,
   activeProfile,
   onSelectProfile
 }: Props): React.JSX.Element {
+  /* One picker open at a time, keyed by path — two open popovers in a scrolling
+     list is a way to change the wrong folder without noticing. */
+  const [pickerPath, setPickerPath] = useState<string | null>(null)
+
   /*
-   * Only show profiles that actually have projects on this machine, so the row
-   * never advertises a folder the user does not use.
+   * Only profiles that actually have projects on this machine, so the row never
+   * advertises a folder the user does not use. Derived in App and passed in.
    */
-  const available = useMemo(() => {
-    const counts = new Map<string, number>()
-    for (const p of projects) counts.set(p.group, (counts.get(p.group) ?? 0) + 1)
-    return profilesFor(counts)
-  }, [projects])
+  const available = profiles
+
+  /* A Set so a project with a long history is one lookup per row, not a scan. */
+  const openSessions = useMemo(() => new Set(openSessionIds), [openSessionIds])
+
+  /*
+   * The folders the selected chip covers, case-folded.
+   *
+   * A profile can cover more than one folder, and `Project.group` carries
+   * whatever casing the path had, so comparing the selection to the group
+   * directly matched nothing on a folder the user had typed differently.
+   *
+   * An id with no profile behind it is treated as a group name. App only passes
+   * a selection that resolves, so this is defence rather than a live path.
+   */
+  const activeGroups = useMemo(() => {
+    if (!activeProfile) return null
+    const hit = profiles.find((p) => foldGroup(p.id) === foldGroup(activeProfile))
+    return new Set((hit ? hit.groups : [activeProfile]).map(foldGroup))
+  }, [profiles, activeProfile])
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -64,12 +101,18 @@ export function Sidebar({
      * what you browse; it must never hide something you went looking for by
      * name — it is a view, not a permission.
      */
-    const scoped = q || !activeProfile ? projects : projects.filter((p) => p.group === activeProfile)
+    const scoped =
+      q || !activeGroups ? projects : projects.filter((p) => activeGroups.has(foldGroup(p.group)))
     if (!q) return scoped
+    // The label is what the user sees, so it is what they will type. Searching
+    // only the basename made a renamed folder unfindable by its own name.
     return scoped.filter(
-      (p) => p.name.toLowerCase().includes(q) || p.path.toLowerCase().includes(q)
+      (p) =>
+        p.name.toLowerCase().includes(q) ||
+        p.path.toLowerCase().includes(q) ||
+        (p.label ?? '').toLowerCase().includes(q)
     )
-  }, [projects, query, activeProfile])
+  }, [projects, query, activeGroups])
 
   /*
    * Three stable buckets, ordered the way you actually reach for a project.
@@ -115,25 +158,28 @@ export function Sidebar({
             >
               All
             </button>
-            {available.map((p) => (
-              <button
-                key={p.id}
-                className="profile-chip"
-                aria-pressed={activeProfile === p.id}
-                onClick={() => onSelectProfile(activeProfile === p.id ? null : p.id)}
-                title={`${p.label} — ${p.id}`}
-                style={
-                  {
-                    '--chip': p.accent,
-                    '--chip-ink': p.accentContrast,
-                    '--chip-soft': p.accentSoft,
-                    '--chip-second': p.secondary ?? p.accent
-                  } as React.CSSProperties
-                }
-              >
-                {p.label}
-              </button>
-            ))}
+            {available.map((p) => {
+              const on = activeProfile !== null && foldGroup(activeProfile) === foldGroup(p.id)
+              return (
+                <button
+                  key={p.id}
+                  className="profile-chip"
+                  aria-pressed={on}
+                  onClick={() => onSelectProfile(on ? null : p.id)}
+                  title={`${p.label} — ${p.groups.join(', ')}`}
+                  style={
+                    {
+                      '--chip': p.accent,
+                      '--chip-ink': p.accentContrast,
+                      '--chip-soft': p.accentSoft,
+                      '--chip-second': p.secondary ?? p.accent
+                    } as React.CSSProperties
+                  }
+                >
+                  {p.label}
+                </button>
+              )
+            })}
           </div>
         )}
 
@@ -160,7 +206,7 @@ export function Sidebar({
           />
         </div>
         {/* Both routes into a session that is not a saved project. */}
-        <div style={{ display: 'flex', gap: 'var(--sp-2)' }}>
+        <div style={{ display: 'flex', gap: 'var(--space-8)' }}>
           <button className="btn" style={{ flex: 1 }} onClick={onOpenFolder}>
             <IconFolder />
             Open
@@ -203,7 +249,7 @@ export function Sidebar({
         {!loading && projects.length > 0 && filtered.length === 0 && (
           <div className="empty">
             <h3>Nothing matches</h3>
-            <p>No project name or path contains &ldquo;{query}&rdquo;.</p>
+            <p>No project name, path, or label contains &ldquo;{query}&rdquo;.</p>
           </div>
         )}
 
@@ -222,25 +268,34 @@ export function Sidebar({
                     onClick={() => onSelectProject(project)}
                     onDoubleClick={() => onStartNew(project)}
                     onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
+                      /*
+                       * Enter and Space both do exactly what a click does.
+                       *
+                       * This row announces itself as `role="button"`, and the
+                       * one promise that role makes is that both keys fire the
+                       * element's own click. It used to start a session on
+                       * Enter and select on Space, so assistive tech said
+                       * "button", the user pressed the obvious key, and got a
+                       * spawned process instead of a selection.
+                       *
+                       * Starting a session is the double-click escalation, so
+                       * it keeps a modifier of its own rather than losing its
+                       * keyboard route. metaKey OR ctrlKey, so the component
+                       * needs no platform prop to be right on both.
+                       */
+                      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
                         e.preventDefault()
                         onStartNew(project)
-                      } else if (e.key === ' ') {
+                      } else if (e.key === 'Enter' || e.key === ' ') {
                         e.preventDefault()
                         onSelectProject(project)
                       }
                     }}
-                    title={project.path}
+                    title={`${project.path}\nEnter selects · Cmd/Ctrl+Enter starts a session`}
                   >
                     <div className="project-top">
                       <button
-                        className="icon-btn"
-                        style={{
-                          width: '1.125rem',
-                          height: '1.125rem',
-                          rotate: expanded ? '90deg' : '0deg',
-                          transition: 'rotate var(--dur) var(--ease)'
-                        }}
+                        className="icon-btn project-chevron"
                         onClick={(e) => {
                           e.stopPropagation()
                           onToggleExpand(project)
@@ -248,17 +303,25 @@ export function Sidebar({
                         aria-expanded={expanded}
                         title={expanded ? 'Hide sessions' : 'Show sessions'}
                       >
-                        <IconChevron width={12} height={12} />
+                        <IconChevron />
                         <span className="sr-only">
                           {expanded ? 'Hide sessions' : 'Show sessions'}
                         </span>
                       </button>
 
-                      <span className="project-name">{project.name}</span>
+                      <ProjectMetaPicker
+                        project={project}
+                        open={pickerPath === project.path}
+                        onOpenChange={(v) => setPickerPath(v ? project.path : null)}
+                        onCommit={(meta) => onSetMeta(project, meta)}
+                      />
+
+                      {/* The label replaces the basename in this list only; the
+                          row's title attribute still carries the real path. */}
+                      <span className="project-name">{project.label ?? project.name}</span>
 
                       <button
                         className="icon-btn project-pin"
-                        style={{ width: '1.25rem', height: '1.25rem' }}
                         aria-pressed={project.pinned}
                         onClick={(e) => {
                           e.stopPropagation()
@@ -266,7 +329,7 @@ export function Sidebar({
                         }}
                         title={project.pinned ? 'Unpin' : 'Pin to top'}
                       >
-                        <IconPin width={12} height={12} />
+                        <IconPin />
                         <span className="sr-only">{project.pinned ? 'Unpin' : 'Pin'}</span>
                       </button>
                     </div>
@@ -304,6 +367,7 @@ export function Sidebar({
                           <button
                             key={s.id}
                             className="session"
+                            aria-current={openSessions.has(s.id) ? 'true' : undefined}
                             onClick={() => onResume(s)}
                             title={s.firstPrompt ?? s.id}
                           >
@@ -337,7 +401,7 @@ export function Sidebar({
           <button
             className="btn"
             data-variant="ghost"
-            style={{ width: '100%', marginTop: 'var(--sp-4)' }}
+            style={{ width: '100%', marginTop: 'var(--space-12)' }}
             onClick={onAddRoot}
           >
             Add a scan folder

@@ -58,6 +58,32 @@ export const EFFORT_LEVELS: { id: EffortLevel; label: string }[] = [
   { id: 'max', label: 'Max' }
 ]
 
+export function effortLabel(id: EffortLevel): string {
+  return EFFORT_LEVELS.find((e) => e.id === id)?.label ?? id
+}
+
+/**
+ * Ultracode is not a sixth effort level, however much it looks like one sitting
+ * next to them. `--effort` accepts only low/medium/high/xhigh/max; ultracode is a
+ * boolean the CLI reads out of its settings, which is why Stoke passes it through
+ * `--settings` at launch (see main/cli.ts) rather than as a flag.
+ */
+export const ULTRACODE_EFFORT: EffortLevel = 'xhigh'
+
+export const ULTRACODE_HINT =
+  'Extra-high effort plus standing dynamic-workflow orchestration. Needs workflows enabled and a model that can run at extra-high effort.'
+
+/**
+ * What the session will really run at. Ultracode wins, but not because it beats
+ * the effort flag — it loses to it, and loses by silently switching itself off
+ * (see main/cli.ts). Stoke therefore launches an ultracode session pinned to
+ * xhigh, and the picker reports that rather than showing a value the session is
+ * not using.
+ */
+export function effectiveEffort(effort: EffortLevel, ultracode: boolean): EffortLevel {
+  return ultracode ? ULTRACODE_EFFORT : effort
+}
+
 /** Model aliases the CLI accepts. An empty id means "whatever is configured". */
 export const MODEL_OPTIONS: { id: string; label: string }[] = [
   { id: '', label: 'Default' },

@@ -23,11 +23,6 @@ export function relativeTime(ms: number | null): string {
   return `${Math.floor(day / 365)}y ago`
 }
 
-export function formatCost(usd: number | null): string | null {
-  if (usd === null || !Number.isFinite(usd) || usd <= 0) return null
-  return usd < 0.01 ? '<$0.01' : `$${usd.toFixed(2)}`
-}
-
 /** Last path segment, tolerant of either separator. */
 export function baseName(p: string): string {
   const parts = p.split(/[\\/]/).filter(Boolean)
@@ -55,4 +50,17 @@ export function modelLabel(model: string | null): string {
 
 export function clamp(n: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, n))
+}
+
+/**
+ * Freeform strings that reach the UI — errors thrown deep in the main
+ * process, then joined together — are built out of the same lowercase
+ * `WorklogTarget` values ('notion', 'clickup') the rest of the codebase uses
+ * as keys, not as words to show someone. Every other mention of these two
+ * services goes through a fixed label map and reads "Notion" / "ClickUp";
+ * this catches the ones that arrive as plain text instead, at the point they
+ * are rendered.
+ */
+export function properNouns(text: string): string {
+  return text.replace(/\bnotion\b/gi, 'Notion').replace(/\bclickup\b/gi, 'ClickUp')
 }

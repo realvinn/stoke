@@ -16,6 +16,12 @@ export type ShortcutAction =
  *
  * Matching is on `event.code` rather than `event.key` so that holding Shift
  * (which turns "," into "<") does not break the match.
+ *
+ * The digit shortcuts are the exception to the Shift rule: Ctrl+1..9 are not
+ * readline bindings, so they need no Shift on any platform and are rejected
+ * when it is held. Anything that renders these as text has to special-case
+ * them — a hint helper that printed "Ctrl+Shift+" for every binding shipped
+ * here once, unused and wrong for exactly the digits, and was deleted.
  */
 export function matchShortcut(
   e: Pick<KeyboardEvent, 'code' | 'ctrlKey' | 'metaKey' | 'shiftKey' | 'altKey'>,
@@ -44,8 +50,4 @@ export function matchShortcut(
     default:
       return null
   }
-}
-
-export function shortcutHint(isMac: boolean, key: string): string {
-  return isMac ? `⌘${key.toUpperCase()}` : `Ctrl+Shift+${key.toUpperCase()}`
 }

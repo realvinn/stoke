@@ -2,54 +2,7 @@ import { app } from 'electron'
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { Settings } from '@shared/types'
-import { DEFAULT_THEME_ID } from '@shared/themes'
-
-const DEFAULTS: Settings = {
-  themeId: DEFAULT_THEME_ID,
-  customThemes: [],
-  fontFamily:
-    "'JetBrains Mono', 'Cascadia Code', 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace",
-  fontSize: 13,
-  uiScale: 1,
-  defaults: {
-    permissionMode: 'default',
-    model: '',
-    effort: 'default'
-  },
-  projectRoots: [],
-  // null = auto-detect. workspace.ts prefers G:\Code on Windows, then ~/Code.
-  defaultCwd: null,
-  startOnLaunch: false,
-  pinnedProjects: [],
-  hiddenProjects: [],
-  browser: {
-    // Canonical URL — the older docs.claude.com path 301s here.
-    homepage: 'https://code.claude.com/docs',
-    lastUrl: '',
-    width: 460,
-    bookmarks: []
-  },
-  remote: {
-    enabled: false,
-    port: 7878,
-    token: '',
-    hostname: '',
-    bindLan: false,
-    requireAccessHeader: false,
-    autoStartTunnel: false,
-    tunnelName: 'stoke',
-    /*
-     * The speech sidecar's documented local port. Nothing is contacted unless
-     * the microphone is actually used, and if no sidecar is listening the phone
-     * gets a plain "unreachable" message rather than a silent failure.
-     */
-    sttUrl: 'http://127.0.0.1:17890'
-  },
-  activeProfile: null,
-  sidebarWidth: 260,
-  claudePath: null,
-  confirmBypass: true
-}
+import { hydrateSettings } from './settingsSchema.ts'
 
 let cache: Settings | null = null
 const listeners = new Set<(s: Settings) => void>()
@@ -58,33 +11,18 @@ function file(): string {
   return join(app.getPath('userData'), 'settings.json')
 }
 
-/** Shallow-merge persisted values over defaults so new keys appear on upgrade. */
-function hydrate(raw: unknown): Settings {
-  if (!raw || typeof raw !== 'object') return { ...DEFAULTS }
-  const r = raw as Partial<Settings>
-  return {
-    ...DEFAULTS,
-    ...r,
-    defaults: { ...DEFAULTS.defaults, ...(r.defaults ?? {}) },
-    browser: {
-      ...DEFAULTS.browser,
-      ...(r.browser ?? {}),
-      bookmarks: Array.isArray(r.browser?.bookmarks) ? r.browser.bookmarks : []
-    },
-    remote: { ...DEFAULTS.remote, ...(r.remote ?? {}) },
-    customThemes: Array.isArray(r.customThemes) ? r.customThemes : [],
-    projectRoots: Array.isArray(r.projectRoots) ? r.projectRoots : [],
-    pinnedProjects: Array.isArray(r.pinnedProjects) ? r.pinnedProjects : [],
-    hiddenProjects: Array.isArray(r.hiddenProjects) ? r.hiddenProjects : []
-  }
-}
-
 export function getSettings(): Settings {
   if (cache) return cache
   try {
-    cache = hydrate(JSON.parse(readFileSync(file(), 'utf8')))
+    cache = hydrateSettings(JSON.parse(readFileSync(file(), 'utf8')))
   } catch {
-    cache = { ...DEFAULTS }
+    // A fresh install (readFileSync throws ENOENT) or an unreadable file both
+    // land here. Route through the same repair as a real settings.json rather
+    // than a bare `{ ...DEFAULT_SETTINGS }` spread — that spread is shallow
+    // and would hand out DEFAULT_WORKLOG_BOARDS and DEFAULT_SETTINGS.projectMeta
+    // by reference, letting a later in-place mutation corrupt the shared
+    // module constants for the rest of the process.
+    cache = hydrateSettings(null)
   }
   return cache
 }
@@ -99,7 +37,7 @@ function persist(s: Settings): void {
 }
 
 export function setSettings(patch: Partial<Settings>): Settings {
-  const next = hydrate({ ...getSettings(), ...patch })
+  const next = hydrateSettings({ ...getSettings(), ...patch })
   cache = next
   try {
     persist(next)

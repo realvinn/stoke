@@ -1,8 +1,8 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { IpcRendererEvent } from 'electron'
 import { CH } from '@shared/ipc'
-import type { StokeApi } from '@shared/api'
-import type { Rect, LaunchOptions, Settings } from '@shared/types'
+import type { ClipboardPeek, StokeApi } from '@shared/api'
+import type { Rect, LaunchOptions, ProjectMeta, Settings } from '@shared/types'
 
 /** Subscribe helper that hands back an unsubscribe function. */
 function on<A extends unknown[]>(
@@ -40,6 +40,8 @@ const api: StokeApi = {
     open: () => ipcRenderer.invoke(CH.projectsAdd),
     hide: (path: string, hidden: boolean) => ipcRenderer.invoke(CH.projectsHide, path, hidden),
     pin: (path: string, pinned: boolean) => ipcRenderer.invoke(CH.projectsPin, path, pinned),
+    setMeta: (path: string, meta: ProjectMeta | null) =>
+      ipcRenderer.invoke(CH.projectsMeta, path, meta),
     reveal: (path: string) => ipcRenderer.invoke(CH.projectsReveal, path)
   },
 
@@ -62,6 +64,11 @@ const api: StokeApi = {
     watch: (sessionId: string) => ipcRenderer.send(CH.ctxWatch, sessionId),
     unwatch: (sessionId: string) => ipcRenderer.send(CH.ctxUnwatch, sessionId),
     onUpdate: (cb) => on<[Parameters<typeof cb>[0]]>(CH.ctxUpdate, cb)
+  },
+
+  statusLine: {
+    last: () => ipcRenderer.invoke(CH.statusLineLast),
+    onUpdate: (cb) => on<[Parameters<typeof cb>[0]]>(CH.statusLineUpdate, cb)
   },
 
   browser: {
@@ -116,7 +123,44 @@ const api: StokeApi = {
     onChange: (cb) => on<[Settings]>(CH.settingsChanged, cb)
   },
 
-  openExternal: (url: string) => ipcRenderer.send(CH.openExternal, url)
+  profiles: {
+    plan: (folder: string, name: string) => ipcRenderer.invoke(CH.profilesPlan, folder, name),
+    create: (input) => ipcRenderer.invoke(CH.profilesCreate, input)
+  },
+
+  ssh: {
+    configHosts: () => ipcRenderer.invoke(CH.sshHosts)
+  },
+
+  worklog: {
+    queue: () => ipcRenderer.invoke(CH.worklogQueue),
+    scan: (sessionId: string) => ipcRenderer.invoke(CH.worklogScan, sessionId),
+    accept: (id: string) => ipcRenderer.invoke(CH.worklogAccept, id),
+    reject: (id: string) => ipcRenderer.invoke(CH.worklogReject, id),
+    onChange: (cb) => on<[Parameters<typeof cb>[0]]>(CH.worklogChanged, cb),
+    onProposed: (cb) => on<[Parameters<typeof cb>[0]]>(CH.worklogProposed, cb),
+    lastScan: () => ipcRenderer.invoke(CH.worklogLastScan),
+    onScanned: (cb) => on<[Parameters<typeof cb>[0]]>(CH.worklogScanned, cb),
+    watch: () => ipcRenderer.invoke(CH.worklogWatch),
+    onWatchChanged: (cb) => on<[Parameters<typeof cb>[0]]>(CH.worklogWatchChanged, cb)
+  },
+
+  audio: {
+    micCheck: () => ipcRenderer.invoke(CH.micCheck),
+    // The ArrayBuffer crosses as a structured clone, so the audio never becomes
+    // a string on the way — no base64 round trip, and no copy of the clip
+    // sitting in a JS string for the GC to get to eventually.
+    transcribe: (wav: ArrayBuffer) => ipcRenderer.invoke(CH.transcribe, wav)
+  },
+
+  clipboard: {
+    readSync: () => ipcRenderer.sendSync(CH.clipboardRead) as ClipboardPeek,
+    writeText: (text: string) => ipcRenderer.send(CH.clipboardWrite, text)
+  },
+
+  openExternal: (url: string) => ipcRenderer.send(CH.openExternal, url),
+
+  pickFolder: () => ipcRenderer.invoke(CH.pickFolder)
 }
 
 contextBridge.exposeInMainWorld('stoke', api)

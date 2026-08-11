@@ -8,3 +8,10 @@ release/
 
 # Local tool caches
 .impeccable/
+.playwright-mcp/
+.superpowers/
+
+# Per-machine Claude Code settings. `.claude/` is otherwise tracked — the
+# commands and agent definitions in it are shared — but this one file holds
+# whatever permissions and paths a particular desk happened to approve.
+.claude/settings.local.json

@@ -36,8 +36,17 @@ nsis:
   shortcutName: Stoke
 mac:
   icon: build/icon.png
+  # Both targets, and the zip is not optional. A dmg is what a person downloads;
+  # a zip is the only thing electron-updater can install on macOS. Squirrel.Mac
+  # updates by swapping an .app out of an archive, so `MacUpdater` searches the
+  # feed for a .zip and rejects "dmg" and "pkg" by name — with a dmg-only target
+  # it throws ERR_UPDATER_ZIP_FILE_NOT_FOUND before downloading a byte
+  # (electron-updater 6.8.9, out/MacUpdater.js:81-83). Every release up to and
+  # including v0.4.0-beta.3 shipped a dmg-only latest-mac.yml and so could not
+  # update a Mac at all, while reporting an update was available.
   target:
     - target: dmg
+    - target: zip
   category: public.app-category.developer-tools
   artifactName: ${productName}-${version}-${arch}.${ext}
   # A PTY spawns child processes; the JIT/unsigned-memory entitlements keep
@@ -50,6 +59,15 @@ mac:
   hardenedRuntime: true
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
+  extendInfo:
+    # Required, not advisory. macOS terminates a process that asks for the
+    # microphone with no usage string — it does not deny the request — so
+    # omitting this turns dictation into an unexplained crash. The text is what
+    # the system permission prompt shows, so it says who is listening and why.
+    NSMicrophoneUsageDescription: >-
+      Stoke uses the microphone for voice dictation, so you can speak a prompt
+      instead of typing it. Audio is sent only to the speech server you
+      configure and never to Stoke's developers.
 linux:
   target: [AppImage]
   category: Development

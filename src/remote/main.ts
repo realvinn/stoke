@@ -2,7 +2,7 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import './style.css'
-import { createRecorder, voiceSupported } from './voice'
+import { createRecorder, postTranscription, voiceSupported } from '@shared/voice'
 
 /**
  * Stoke on a phone.
@@ -517,7 +517,7 @@ async function showTerminal(session: SessionRow): Promise<void> {
   let cleanupVoice: (() => void) | null = null
   if (voiceSupported()) {
     const mic = el('button', { class: 'mic', title: 'Hold to dictate' }, '🎙')
-    const recorder = createRecorder()
+    const recorder = createRecorder(postTranscription)
 
     const setState = (state: 'idle' | 'recording' | 'working', label?: string): void => {
       mic.dataset.state = state

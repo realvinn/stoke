@@ -1,28 +1,68 @@
 import type { CliInfo, EffortLevel, PermissionMode, Settings, Theme } from '@shared/types'
+import type { ResolvedProfile } from '@shared/profiles'
 import { BUILT_IN_THEMES } from '@shared/themes'
+import {
+  clampFontSize,
+  clampUiScale,
+  FONT_SIZE_MAX,
+  FONT_SIZE_MIN,
+  UI_SCALE_MAX,
+  UI_SCALE_MIN
+} from '@shared/ui'
 import { IconClose } from './Icons'
+import { useEffect, useState } from 'react'
+import { HostsSettings } from './HostsSettings'
+import { MicrophoneNotice } from './MicrophoneNotice'
+import { ProfilesSettings } from './ProfilesSettings'
 import { RemoteSettings, SelfUpdateSettings, UpdatesSettings } from './RemoteSettings'
+import { WorklogSettings } from './WorklogSettings'
 import { EFFORT_LEVELS, MODEL_OPTIONS, PERMISSION_MODES } from '../lib/permissions'
 
 interface Props {
   settings: Settings
+  /**
+   * The resolved profile list, passed in rather than derived here so the worklog
+   * checkboxes and the sidebar chips can never disagree about which profiles
+   * exist.
+   */
+  profiles: ResolvedProfile[]
   /** Resolved default working directory, shown when none is configured. */
   defaultCwd: string
   cli: CliInfo | null
   onPatch: (patch: Partial<Settings>) => void
   onAddRoot: () => void
+  /** Forwarded to ProfilesSettings; see the comment on its `onCreated` prop. */
+  onProfileCreated: () => void | Promise<void>
   onClose: () => void
 }
 
 export function SettingsSheet({
   settings,
+  profiles,
   defaultCwd,
   cli,
   onPatch,
   onAddRoot,
+  onProfileCreated,
   onClose
 }: Props): React.JSX.Element {
   const themes: Theme[] = [...BUILT_IN_THEMES, ...settings.customThemes]
+
+  /*
+   * Offer the Host aliases the user already has rather than making them retype
+   * connection details. Read once when the sheet opens; ~/.ssh/config is not
+   * something that changes while it is on screen.
+   */
+  const [sshAliases, setSshAliases] = useState<string[]>([])
+  useEffect(() => {
+    let live = true
+    void window.stoke.ssh.configHosts().then((a) => {
+      if (live) setSshAliases(a)
+    })
+    return () => {
+      live = false
+    }
+  }, [])
 
   return (
     <>
@@ -80,23 +120,31 @@ export function SettingsSheet({
             <input
               className="input"
               type="number"
-              min={8}
-              max={28}
+              min={FONT_SIZE_MIN}
+              max={FONT_SIZE_MAX}
               value={settings.fontSize}
-              onChange={(e) => onPatch({ fontSize: Number(e.target.value) || 13 })}
+              onChange={(e) => onPatch({ fontSize: clampFontSize(e.target.value) })}
             />
           </div>
 
           <div className="field">
             <span className="field-label">Interface scale</span>
+            {/*
+              min/max are advisory inside React's onChange — the browser will
+              not stop a typed or pasted value reaching the handler — so the
+              same clamp the store enforces is applied here too, and the two
+              bounds come from one place. The field used to offer 8-28 for a
+              store that accepts 9-24, and to fall back with `|| 1`, which
+              turned a typed 0 into 1 rather than into the floor.
+            */}
             <input
               className="input"
               type="number"
-              min={0.8}
-              max={1.6}
+              min={UI_SCALE_MIN}
+              max={UI_SCALE_MAX}
               step={0.05}
               value={settings.uiScale}
-              onChange={(e) => onPatch({ uiScale: Number(e.target.value) || 1 })}
+              onChange={(e) => onPatch({ uiScale: clampUiScale(e.target.value) })}
             />
             <span className="field-hint">Scales everything except the terminal contents.</span>
           </div>
@@ -159,7 +207,7 @@ export function SettingsSheet({
 
           <div className="field">
             <span className="field-label">Default folder</span>
-            <div style={{ display: 'flex', gap: 'var(--sp-2)' }}>
+            <div style={{ display: 'flex', gap: 'var(--space-8)' }}>
               <input
                 className="input mono"
                 placeholder={defaultCwd}
@@ -170,7 +218,7 @@ export function SettingsSheet({
               <button
                 className="btn"
                 onClick={async () => {
-                  const dir = await window.stoke.projects.open()
+                  const dir = await window.stoke.pickFolder()
                   if (dir) onPatch({ defaultCwd: dir })
                 }}
               >
@@ -198,6 +246,27 @@ export function SettingsSheet({
             </span>
           </label>
 
+          <label className="check-row">
+            <input
+              type="checkbox"
+              checked={settings.hideStatusLine}
+              onChange={(e) => onPatch({ hideStatusLine: e.target.checked })}
+            />
+            <span>
+              <span className="field-label">Hide Claude&rsquo;s status line in Stoke</span>
+              <span className="field-hint">
+                Stoke reads the context window and your plan limits from the status line the CLI
+                pipes to it, and by default prints nothing back — the line duplicates chrome the
+                app already draws. Turn this off to keep your own status line, which still runs and
+                still shows exactly what it did before. Your{' '}
+                <span className="mono">~/.claude/settings.json</span> is never modified, and either
+                way this applies to sessions started after the change. Plan limits also depend on
+                being signed in through a Claude.ai plan rather than an API key — with an API key
+                there is nothing for them to draw on, and they stay blank no matter how this is set.
+              </span>
+            </span>
+          </label>
+
           <div className="field">
             <span className="field-label">Scanned folders</span>
             {settings.projectRoots.length === 0 && (
@@ -209,19 +278,20 @@ export function SettingsSheet({
             {settings.projectRoots.map((root) => (
               <div
                 key={root}
-                style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-2)' }}
+                style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-8)' }}
               >
                 <span className="mono truncate" style={{ flex: 1, fontSize: 'var(--fs-xs)' }}>
                   {root}
                 </span>
                 <button
                   className="icon-btn"
+                  data-size="sm"
                   title={`Stop scanning ${root}`}
                   onClick={() =>
                     onPatch({ projectRoots: settings.projectRoots.filter((r) => r !== root) })
                   }
                 >
-                  <IconClose width={12} height={12} />
+                  <IconClose />
                   <span className="sr-only">Remove {root}</span>
                 </button>
               </div>
@@ -231,9 +301,32 @@ export function SettingsSheet({
             </button>
           </div>
 
-          <SelfUpdateSettings />
+          <SelfUpdateSettings
+            betaUpdates={settings.betaUpdates}
+            onChangeBeta={(betaUpdates) => onPatch({ betaUpdates })}
+          />
 
           <UpdatesSettings />
+
+          <ProfilesSettings settings={settings} onPatch={onPatch} onCreated={onProfileCreated} />
+
+          <WorklogSettings
+            profiles={profiles}
+            worklogGroups={settings.worklogGroups}
+            auto={settings.worklogAuto}
+            boards={settings.worklogBoards}
+            onChangeBoards={(worklogBoards) => onPatch({ worklogBoards })}
+            onChange={(worklogGroups) => onPatch({ worklogGroups })}
+            onChangeAuto={(worklogAuto) => onPatch({ worklogAuto })}
+          />
+
+          <HostsSettings
+            hosts={settings.hosts}
+            suggestions={sshAliases}
+            onChange={(hosts) => onPatch({ hosts })}
+          />
+
+          <MicrophoneNotice />
 
           <RemoteSettings settings={settings} onPatch={onPatch} />
 

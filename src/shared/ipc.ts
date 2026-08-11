@@ -20,6 +20,7 @@ export const CH = {
   projectsHide: 'projects:hide',
   projectsPin: 'projects:pin',
   projectsReveal: 'projects:reveal',
+  projectsMeta: 'projects:meta',
   sessionsList: 'sessions:list',
   sessionsChanged: 'sessions:changed',
 
@@ -39,6 +40,10 @@ export const CH = {
   ctxWatch: 'ctx:watch',
   ctxUnwatch: 'ctx:unwatch',
   ctxUpdate: 'ctx:update',
+
+  // statusline channel (see the design spec, §3)
+  statusLineUpdate: 'statusline:update',
+  statusLineLast: 'statusline:last',
 
   // embedded browser
   browserSetBounds: 'browser:setBounds',
@@ -86,6 +91,39 @@ export const CH = {
   settingsGet: 'settings:get',
   settingsSet: 'settings:set',
   settingsChanged: 'settings:changed',
+
+  // profiles
+  profilesPlan: 'profiles:plan',
+  profilesCreate: 'profiles:create',
+
+  // ssh
+  sshHosts: 'ssh:hosts',
+
+  // worklog
+  worklogQueue: 'worklog:queue',
+  worklogScan: 'worklog:scan',
+  worklogAccept: 'worklog:accept',
+  worklogReject: 'worklog:reject',
+  worklogChanged: 'worklog:changed',
+  /** An auto-scan added proposals. The renderer asks about them; see WorklogPrompt. */
+  worklogProposed: 'worklog:proposed',
+  worklogWatch: 'worklog:watch',
+  worklogWatchChanged: 'worklog:watchChanged',
+  worklogScanned: 'worklog:scanned',
+  worklogLastScan: 'worklog:lastScan',
+
+  // clipboard
+  clipboardRead: 'clipboard:read',
+  clipboardWrite: 'clipboard:write',
+
+  // audio
+  micCheck: 'audio:micCheck',
+  /**
+   * A dictated clip, in. The renderer records and encodes the WAV but never
+   * reaches the speech server itself — the sidecar has no auth, so only main
+   * may talk to it. Same rule the phone's `/api/transcribe` route follows.
+   */
+  transcribe: 'audio:transcribe',
 
   // misc
   openExternal: 'shell:openExternal',

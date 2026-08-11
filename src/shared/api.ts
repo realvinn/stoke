@@ -1,14 +1,43 @@
+import type { CreateProfileInput, ProfilePlan } from './profiles'
 import type {
   BrowserState,
   CliInfo,
   ContextSnapshot,
   LaunchOptions,
   Project,
+  ProjectMeta,
   Rect,
   SessionMeta,
   Settings,
-  UsageSnapshot
+  StatusLineSnapshot,
+  UsageSnapshot,
+  WorklogProposal,
+  WorklogProposedEvent,
+  WorklogScanReport,
+  WorklogWatchState
 } from './types'
+
+export interface AudioDevice {
+  /** Endpoint id in the form {0.0.1.00000000}.{guid}. */
+  id: string
+  name: string
+}
+
+/** Whether voice dictation is pointed at something that can actually hear you. */
+export interface MicrophoneCheck {
+  /** Null when the platform is not Windows, or nothing could be read. */
+  device: AudioDevice | null
+  /** True when the default looks like a virtual cable, so dictation records silence. */
+  suspect: boolean
+  /** Real microphones that could be selected instead. */
+  alternatives: AudioDevice[]
+}
+
+/** What is on the OS clipboard right now, read in one synchronous hop. */
+export interface ClipboardPeek {
+  text: string
+  hasImage: boolean
+}
 
 export interface StartResult {
   ptyId: string
@@ -19,7 +48,14 @@ export interface StartResult {
 
 /** Combined remote-access state: local server, tunnel, and the phone link. */
 export interface RemoteState {
-  server: { running: boolean; port: number; error: string | null; clients: number }
+  server: {
+    running: boolean
+    port: number
+    error: string | null
+    clients: number
+    /** Addresses actually bound, e.g. 127.0.0.1 and the tailnet address. */
+    addresses: string[]
+  }
   tunnel: {
     installed: boolean
     path: string | null
@@ -46,6 +82,18 @@ export interface SelfUpdateState {
   progress: number
   error: string | null
   checkedAt: number | null
+  /**
+   * Why this build cannot install an update even though the machinery is
+   * present, or null when nothing stands in the way.
+   *
+   * Distinct from `error`, which is what went wrong on the last attempt. This is
+   * known *before* an attempt, so the UI can say so instead of offering a button
+   * that downloads ~120 MB and then fails at the last step. The one case today
+   * is an ad-hoc signed macOS build: Squirrel.Mac verifies the downloaded app
+   * against the running one's designated requirement, and an ad-hoc requirement
+   * pins the exact binary hash, so no other build can ever satisfy it.
+   */
+  blocked: string | null
 }
 
 export interface UpdateInfo {
@@ -54,6 +102,29 @@ export interface UpdateInfo {
   updateAvailable: boolean
   checkedAt: number
   error: string | null
+}
+
+/**
+ * The outcome of running one `claude` subcommand.
+ *
+ * `ok` is the exit status and nothing more. Whether an *update* happened is a
+ * separate question that exit status cannot answer — `claude update` exits 0
+ * when it is already current, and an npm-global install that cannot write to its
+ * own prefix can also exit 0 having changed nothing. `from` and `to` are read
+ * either side of the run so the caller can state which of those it was rather
+ * than infer it.
+ */
+export interface CliRunResult {
+  /** The command exited zero. Not the same as "something changed". */
+  ok: boolean
+  /** stdout + stderr, ANSI stripped. Present on both paths; may be empty. */
+  output: string
+  /** One sentence naming what went wrong. Null when `ok`. */
+  error: string | null
+  /** CLI version before the command ran. Null if it could not be read. */
+  from: string | null
+  /** CLI version after. Equal to `from` when nothing was installed. */
+  to: string | null
 }
 
 /** The surface exposed to the renderer as `window.stoke`. */
@@ -86,6 +157,9 @@ export interface StokeApi {
     open(): Promise<string | null>
     hide(path: string, hidden: boolean): Promise<Settings>
     pin(path: string, pinned: boolean): Promise<Settings>
+    /** Set or clear one folder's metadata. `null` deletes the record, which is
+     *  also how a folder that exists only because it was added leaves the list. */
+    setMeta(path: string, meta: ProjectMeta | null): Promise<Settings>
     reveal(path: string): Promise<string>
   }
 
@@ -109,6 +183,23 @@ export interface StokeApi {
     watch(sessionId: string): void
     unwatch(sessionId: string): void
     onUpdate(cb: (snapshot: ContextSnapshot) => void): () => void
+  }
+
+  /**
+   * The CLI's own statusLine payload: the context window and the plan limits.
+   *
+   * Only arrives while a session is open and rendering, which is the accepted
+   * trade-off for not bundling a Keychain binding — see `last()`.
+   */
+  statusLine: {
+    /**
+     * The newest reading seen this run, from whichever session produced it.
+     * Rate limits are account-wide, so any session answers for all of them,
+     * and this is what lets the usage chip show figures with an "as of HH:MM"
+     * when no session is open. Null before the first payload of the run.
+     */
+    last(): Promise<StatusLineSnapshot | null>
+    onUpdate(cb: (snapshot: StatusLineSnapshot) => void): () => void
   }
 
   browser: {
@@ -147,8 +238,13 @@ export interface StokeApi {
 
   updates: {
     check(): Promise<UpdateInfo>
-    run(): Promise<string>
-    doctor(): Promise<string>
+    /**
+     * Run `claude update`. Never rejects on a failed update — the reason is in
+     * the result, because a rejected promise is what made the old version look
+     * like nothing had happened at all.
+     */
+    run(): Promise<CliRunResult>
+    doctor(): Promise<CliRunResult>
   }
 
   /** Stoke updating itself, via electron-updater and GitHub releases. */
@@ -166,5 +262,86 @@ export interface StokeApi {
     onChange(cb: (settings: Settings) => void): () => void
   }
 
+  /**
+   * Profile creation. Both calls touch the disk, so they live in main: working
+   * out what a folder and a name would do, and then doing it.
+   */
+  profiles: {
+    plan(folder: string, name: string): Promise<ProfilePlan>
+    create(input: CreateProfileInput): Promise<Settings>
+  }
+
+  ssh: {
+    /** Host aliases read from the user's own ~/.ssh/config, for the picker. */
+    configHosts(): Promise<string[]>
+  }
+
+  /**
+   * The worklog review queue. A scan only ever proposes; nothing reaches Notion
+   * or ClickUp until `accept` is called on an item.
+   */
+  worklog: {
+    queue(): Promise<WorklogProposal[]>
+    /** Scan a session's transcript for proposals. Read-only. */
+    scan(sessionId: string): Promise<{ added: number; error: string | null }>
+    /** The only call that writes to an external service. */
+    accept(id: string): Promise<{ ok: boolean; error: string | null }>
+    reject(id: string): Promise<void>
+    onChange(cb: (items: WorklogProposal[]) => void): () => void
+    /**
+     * A scan the user did not ask for produced something. Distinct from
+     * `onChange`, which fires for every queue mutation including their own
+     * accepts — only this one means "there is something new to ask about".
+     */
+    onProposed(cb: (event: WorklogProposedEvent) => void): () => void
+    /** The last scan of any session, for the panel's empty state. */
+    lastScan(): Promise<WorklogScanReport | null>
+    /**
+     * Every scan reports, including the ones that proposed nothing. Distinct
+     * from `onProposed`, which only fires when there is something to ask about:
+     * this is what lets the panel say "it ran, and there was nothing" instead
+     * of looking identical to "it has never run".
+     */
+    onScanned(cb: (report: WorklogScanReport) => void): () => void
+    /**
+     * Which sessions the agent may look at, and why. The whole list every time,
+     * never a delta — two copies of the same records drift.
+     */
+    watch(): Promise<WorklogWatchState[]>
+    onWatchChanged(cb: (states: WorklogWatchState[]) => void): () => void
+  }
+
+  audio: {
+    /** What voice dictation will record from, and whether it looks like a virtual cable. */
+    micCheck(): Promise<MicrophoneCheck>
+    /**
+     * A finished 16 kHz mono 16-bit PCM WAV in, a transcript out.
+     *
+     * Never rejects on a speech-server failure: the result carries the sentence
+     * to show instead, because a wedged or absent sidecar is an ordinary state
+     * the UI has to render, not an exception. `text` may legitimately be `''`
+     * when the clip held no speech.
+     */
+    transcribe(wav: ArrayBuffer): Promise<{ ok: true; text: string } | { ok: false; error: string }>
+  }
+
+  clipboard: {
+    /*
+     * Synchronous by design. xterm's key handler has to decide whether to
+     * swallow the event before it returns, so an async read would always be
+     * one keystroke too late.
+     */
+    readSync(): ClipboardPeek
+    writeText(text: string): void
+  }
+
   openExternal(url: string): void
+
+  /**
+   * Plain folder picker: opens the OS dialog and hands back the chosen path,
+   * with no side effect on `projectMeta` or `hiddenProjects`. `null` when the
+   * dialog is cancelled or no window is open to anchor it. Callers that want a
+   * folder to become a project want `projects.open()` instead.
+   */
+  pickFolder(): Promise<string | null>
 }
