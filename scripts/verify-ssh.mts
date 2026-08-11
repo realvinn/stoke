@@ -94,22 +94,27 @@ const host = (p: Partial<SshHost>): SshHost => ({
 
 /* ------------------------------------------------- this machine's real config */
 
+/*
+ * The real file is read, but nothing is asserted about *which* aliases it
+ * holds. An earlier version of this block listed six by name — the author's own
+ * hosts, from one particular desk — which made the suite pass on exactly that
+ * machine, fail on every other, and publish six private hostnames to a public
+ * repo. `npm run check` could therefore never go green anywhere else, and
+ * CLAUDE.md calls that chain the gate for "done".
+ *
+ * What this half genuinely promises is machine-independent: reading the real
+ * config must not throw, whatever it happens to contain, and every alias it
+ * offers must be connectable. That is what is checked.
+ *
+ * The connectable check is vacuously true on a machine with no ssh config at
+ * all, and deliberately so — the fixture below is where that rule is put under
+ * real load, with aliases chosen to break it.
+ */
 console.log('\nthe real ~/.ssh/config on this machine')
 
 const real = await readSshConfigHosts()
 console.log(`  found: ${real.join(', ') || '(none)'}`)
 
-const EXPECTED = [
-  'code.vinn.dev',
-  'hermes.vinn.dev',
-  'github-personal',
-  'github-school',
-  'gitea-vibe',
-  'gitea-company'
-]
-for (const alias of EXPECTED) {
-  check(`${alias} is offered`, real.includes(alias), '')
-}
 check('nothing unusable slipped in', real.every(isConnectableAlias), `${real.length} aliases`)
 
 /* ------------------------------------------------------------ missing file */
@@ -359,6 +364,48 @@ try {
     return (/^user (.*)$/m.exec(stdout)?.[1] ?? '').trim()
   }
 
+  /*
+   * OpenSSH 9 and later reject a hostname containing a space *before* resolving
+   * anything: `ssh -G -- "two words"` exits non-zero with "hostname contains
+   * invalid characters", which threw straight out of this suite on OpenSSH 10.2
+   * and took `npm run build` — the step after it in the check chain — with it.
+   *
+   * That is a change in ssh, not a fault in the parser. `Host "two words"` is
+   * still valid config syntax that a user can write, the parser must still
+   * offer the alias, and the parse assertion above pins exactly that. Only the
+   * live cross-check of it became impossible.
+   *
+   * So recognise the refusal from ssh's own message rather than testing a
+   * version number — the boundary moved once and may move again — and print the
+   * skip rather than quietly dropping a case. Any *other* failure still throws,
+   * because it means something real broke.
+   */
+  const refusesAlias = (err: unknown): boolean =>
+    /invalid characters/i.test(String((err as { stderr?: string })?.stderr ?? ''))
+
+  /** Everything ssh said, on either stream, whether it exited zero or not. */
+  const combinedOutput = async (argv: string[]): Promise<string> => {
+    try {
+      const { stdout, stderr } = await execFileAsync(exe, argv, {
+        encoding: 'utf8',
+        timeout: 15000
+      })
+      return `${stdout}${stderr}`
+    } catch (err) {
+      const e = err as { stdout?: string; stderr?: string }
+      return `${e.stdout ?? ''}${e.stderr ?? ''}`
+    }
+  }
+
+  const resolvedUser = async (alias: string): Promise<string | null> => {
+    try {
+      return await effective(alias)
+    } catch (err) {
+      if (refusesAlias(err)) return null
+      throw err
+    }
+  }
+
   const WANT: Record<string, string> = {
     plain: 'plainuser',
     web: 'webuser',
@@ -373,7 +420,14 @@ try {
   }
 
   for (const [alias, want] of Object.entries(WANT)) {
-    const got = await effective(alias)
+    const got = await resolvedUser(alias)
+    if (got === null) {
+      console.log(
+        `  SKIP  this ssh will not resolve ${JSON.stringify(alias)} at all; ` +
+          'the parse assertion above is what still covers it'
+      )
+      continue
+    }
     check(`ssh resolves ${JSON.stringify(alias)} to its own block`, got === want, `user=${got}`)
   }
 
@@ -417,14 +471,29 @@ try {
     shape.join(' ')
   )
 
+  /*
+   * `buildSshArgs` inserts `--` so an alias starting with a dash reaches ssh as
+   * a hostname rather than as options. Proving that needs care on a modern ssh.
+   *
+   * OpenSSH 9+ rejects `-weird` as a hostname outright, so the old assertion —
+   * that `-G` prints `host -weird` — can no longer hold, and the non-zero exit
+   * threw out of this suite. The two outcomes stay cleanly distinguishable
+   * though, which is the entire point of the flag. Measured on OpenSSH 10.2:
+   *
+   *     with `--`     hostname contains invalid characters   (taken as a host)
+   *     without `--`  Bad tun device 'eird'                  (parsed as -w eird)
+   *
+   * So assert the discrimination rather than one version's stdout: ssh must
+   * treat it as a host — an older ssh by resolving it, a newer one by rejecting
+   * the hostname — and must never have read it as the `-w` option. Both halves
+   * are required, so a `buildSshArgs` that dropped the `--` still fails here.
+   */
   const dashed = buildSshArgs(host({ alias: '-weird' }))
-  const { stdout: dashOut } = await execFileAsync(exe, ['-F', fixture, '-G', ...dashed], {
-    encoding: 'utf8',
-    timeout: 15000
-  })
+  const dashOut = await combinedOutput(['-F', fixture, '-G', ...dashed])
   check(
     '-- stops ssh reading a leading-dash alias as options',
-    /^host -weird$/m.test(dashOut),
+    (/^host -weird$/m.test(dashOut) || /hostname contains invalid characters/i.test(dashOut)) &&
+      !/tun device/i.test(dashOut),
     dashed.join(' ')
   )
 } finally {
