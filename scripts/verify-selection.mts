@@ -162,6 +162,30 @@ function page(altClickMovesCursor: boolean, modes: string): string {
     '  await drag("then output scrolls", { to: 240, thenWrite: "\\r\\n".repeat(30) + "more output" })',
     '  await drag("then a key is pressed", { to: 240, thenKey: "a" })',
     '  await drag("then the mouse moves", { to: 240, thenMove: true })',
+    '',
+    /*
+     * The macOS Shift shim, and specifically the thing worth fearing about it.
+     * TerminalView retells a Shift-drag as the same event with `altKey` set,
+     * because that is the only modifier xterm's `shouldForceSelection` accepts
+     * on a Mac. Alt is also xterm's block-select modifier — but
+     * `shouldColumnSelect` is `altKey && !(isMac && macOptionClickForcesSelection)`,
+     * so with that option on it can never fire. This drags row 1 to row 2 and
+     * checks the shape of what came back: a NORMAL selection runs to the end of
+     * the first line and wraps, a COLUMN selection would take the same narrow
+     * x-range out of both rows and never include the first line's tail.
+     */
+    '  term.clearSelection()',
+    '  term.write("\\u001b[2J\\u001b[3J\\u001b[H")',
+    '  term.write("the quick brown fox jumps over the lazy dog\\r\\n")',
+    '  term.write("second line of text to drag across\\r\\n")',
+    '  await new Promise(r => setTimeout(r, 80))',
+    '  mouse(screen, "mousedown", 200, 8, { shiftKey: true, altKey: true })',
+    '  await new Promise(r => setTimeout(r, 16))',
+    '  mouse(document, "mousemove", 60, 26, { shiftKey: true, altKey: true })',
+    '  await new Promise(r => setTimeout(r, 16))',
+    '  mouse(document, "mouseup", 60, 26, { shiftKey: true, altKey: true })',
+    '  await new Promise(r => setTimeout(r, 60))',
+    '  record(term, "shift+alt across two rows")',
     '  return results',
     '}',
     '',
@@ -336,6 +360,21 @@ async function main(): Promise<void> {
         check(`${run.label}: ${name} survives letting go`, survived, detail)
       }
     }
+  }
+
+  /*
+   * The shim's safety property, asserted once against the config Stoke ships.
+   * Only the runs with `macOptionClickForcesSelection` on are meaningful here,
+   * and every run in this suite sets it.
+   */
+  for (const run of out) {
+    const shim = run.steps.find((s) => s.name === 'shift+alt across two rows')
+    if (!shim) continue
+    check(
+      `${run.label}: a shift+alt drag wraps the line rather than cutting a column`,
+      shim.selection.includes('lazy dog'),
+      JSON.stringify(shim.selection)
+    )
   }
 
   console.log(failures ? `\n${failures} failed` : '\nall pass')

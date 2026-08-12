@@ -218,9 +218,30 @@ scripts/          the verify-*.mts suites, make-icon.cjs
     macOS was not awkward but impossible: Option-drag did nothing, Cmd+C had no selection to
     take, and the right-click menu's Copy sat permanently disabled. The asymmetry is why it read
     as "copy is broken" rather than "one option is missing". `TerminalView` now sets
-    `macOptionClickForcesSelection: true` (d34cf8e), so the bypass is **Option**-drag on macOS —
-    the same modifier Terminal.app and iTerm2 use, and no collision with `macOptionIsMeta` two
-    lines above it, which governs the keyboard while this governs the mouse. The context menu
+    `macOptionClickForcesSelection: true` (d34cf8e), which makes Option-drag work — the same
+    modifier Terminal.app and iTerm2 use, and no collision with `macOptionIsMeta` two lines
+    above it, which governs the keyboard while this governs the mouse.
+
+    **The documented gesture is now Shift-drag on every platform**, because one gesture beats
+    three. xterm offers no option for that — the Mac branch above reads `altKey` and nothing
+    else — so `TerminalView` retells the event: a Shift-drag is caught in the capture phase and
+    re-dispatched with `altKey` set. Two things make that safe rather than clever. Synthetic
+    MouseEvents drive xterm's selection exactly as real ones do, which `verify:selection`
+    relies on for every case it runs; and the synthetic Alt cannot become a *block* selection,
+    because `shouldColumnSelect` is `altKey && !(isMac && macOptionClickForcesSelection)`
+    (`:591-593`) — xterm gates the two meanings of Alt against each other precisely so they
+    cannot both fire. Asserted directly: a shift+alt drag from one row to the next comes back
+    wrapping the first line's tail, which a column selection never would. Option-drag still
+    works, since the option it needs is still on.
+
+    Two features fighting over one key is also how the selection used to vanish the moment you
+    let go: `altClickMovesCursor` defaults **on**, reads the same still-held Option on mouseup,
+    and for a selection of one character or less sends a cursor-move with `wasUserInput: true`
+    — which `SelectionService`'s own `onUserInput` handler clears the selection on
+    (`:139-143`, `:708`). It is set `false` now. Anything that turns a modifier into a
+    selection gesture has to check what else in xterm already reads that modifier.
+
+    The context menu
     names the right modifier per platform, but only when nothing is selected, which is exactly
     the moment someone has discovered that dragging does nothing. Nothing about this is
     SSH-specific: a remote tab is the same xterm with `ssh` as its argv, so it got the fix for

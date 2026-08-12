@@ -72,6 +72,8 @@ export function TerminalView({
     const host = hostRef.current
     if (!host) return
 
+    const isMacPlatform = window.stoke.platform === 'darwin'
+
     const term = new Terminal({
       fontFamily,
       fontSize,
@@ -280,6 +282,65 @@ export function TerminalView({
     const onMouseDown = (e: MouseEvent): void => {
       if (e.button === 2) e.stopPropagation()
     }
+
+    /*
+     * Shift-drag selects on macOS too, so the gesture is the same everywhere.
+     *
+     * xterm decides this internally and offers no hook for it —
+     * `shouldForceSelection` is
+     *
+     *   isMac ? event.altKey && rawOptions.macOptionClickForcesSelection
+     *         : event.shiftKey
+     *
+     * (SelectionService.ts:437) — so there is no option meaning "use Shift on a
+     * Mac". Rather than patch the library, the event is retold: a Shift-drag is
+     * caught in the capture phase and re-dispatched as the same event with
+     * `altKey` set, which is the only thing xterm will accept here.
+     * `verify:selection` drives xterm entirely with synthetic MouseEvents, so
+     * that they work is measured rather than hoped for.
+     *
+     * This does NOT turn into a block selection, which is the obvious thing to
+     * fear from a synthetic Alt. `shouldColumnSelect` is
+     * `altKey && !(isMac && macOptionClickForcesSelection)` (:591-593), so with
+     * that option on — and it is, just above — Alt can never mean column-select
+     * on a Mac. xterm gates it exactly so the two meanings cannot collide.
+     *
+     * Option-drag keeps working, because the option it needs is still on. Two
+     * modifiers, one gesture, and nobody's habit is wrong.
+     *
+     * Only mousedown is retold. It is what starts a selection and the only
+     * event whose modifiers are read; xterm tracks the rest of the drag through
+     * its own document-level move and up listeners, which take no modifiers.
+     */
+    const retold = new WeakSet<MouseEvent>()
+    const onShiftDrag = (e: MouseEvent): void => {
+      if (!isMacPlatform || e.button !== 0 || !e.shiftKey || e.altKey) return
+      // Our own clone, coming back around: let it through or this recurses.
+      if (retold.has(e)) return
+
+      e.preventDefault()
+      e.stopPropagation()
+
+      const clone = new MouseEvent(e.type, {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        clientX: e.clientX,
+        clientY: e.clientY,
+        screenX: e.screenX,
+        screenY: e.screenY,
+        button: e.button,
+        buttons: e.buttons,
+        // Carried through: a double-click still selects a word, a triple a line.
+        detail: e.detail,
+        altKey: true,
+        shiftKey: true,
+        ctrlKey: e.ctrlKey,
+        metaKey: e.metaKey
+      })
+      retold.add(clone)
+      e.target?.dispatchEvent(clone)
+    }
     const onContextMenu = (e: MouseEvent): void => {
       e.preventDefault()
       e.stopPropagation()
@@ -290,6 +351,7 @@ export function TerminalView({
         clip: window.stoke.clipboard.readSync()
       })
     }
+    host.addEventListener('mousedown', onShiftDrag, true)
     host.addEventListener('mousedown', onMouseDown, true)
     host.addEventListener('mouseup', onMouseDown, true)
     host.addEventListener('contextmenu', onContextMenu, true)
@@ -311,6 +373,7 @@ export function TerminalView({
 
     return () => {
       ro.disconnect()
+      host.removeEventListener('mousedown', onShiftDrag, true)
       host.removeEventListener('mousedown', onMouseDown, true)
       host.removeEventListener('mouseup', onMouseDown, true)
       host.removeEventListener('contextmenu', onContextMenu, true)
@@ -505,16 +568,16 @@ export function TerminalView({
            * Only when there is nothing selected, which is exactly when a user
            * has just discovered that dragging does not select. Claude Code
            * keeps mouse reporting on, so the drag goes to the CLI unless it
-           * carries the platform's bypass modifier — Option on macOS, Shift
-           * elsewhere, per xterm's `shouldForceSelection`.
+           * carries the bypass modifier.
+           *
+           * One sentence on every platform now, because Shift is the gesture
+           * everywhere — the capture-phase shim above retells a Mac Shift-drag
+           * as the Alt-drag xterm insists on. Option still works on macOS and
+           * is deliberately not mentioned: naming two ways to do one thing is
+           * how a hint stops being read, and this hint is shown to someone who
+           * has just found that dragging did nothing.
            */
-          footer={
-            menu.selection
-              ? undefined
-              : window.stoke.platform === 'darwin'
-                ? 'Hold ⌥ Option while dragging to select text.'
-                : 'Hold Shift while dragging to select text.'
-          }
+          footer={menu.selection ? undefined : 'Hold Shift while dragging to select text.'}
           items={[
             {
               label: 'Copy',
