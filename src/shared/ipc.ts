@@ -6,6 +6,18 @@ export const CH = {
   winClose: 'win:close',
   winIsMaximized: 'win:isMaximized',
   winMaximizedChanged: 'win:maximizedChanged',
+  /*
+   * Full screen is its own signal, not a flavour of maximized, because on macOS
+   * they are genuinely different states: `isMaximized()` returns **false** while
+   * the window is full screen. The existing channel fired on
+   * enter/leave-full-screen and then reported `false` both times, so the
+   * renderer could not tell full screen from an ordinary restore — which is why
+   * the title bar kept reserving 88px for traffic lights macOS had already
+   * hidden. They also mean different things downstream: maximized picks the
+   * restore icon, full screen decides whether that clearance exists at all.
+   */
+  winIsFullScreen: 'win:isFullScreen',
+  winFullScreenChanged: 'win:fullScreenChanged',
 
   // cli
   cliInfo: 'cli:info',

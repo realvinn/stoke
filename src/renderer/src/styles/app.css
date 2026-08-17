@@ -308,6 +308,25 @@ body {
 }
 
 /*
+ * And in full screen there are no lights to clear, so the clearance goes.
+ *
+ * macOS hides the traffic lights entirely in full screen — they live in the
+ * menu bar that slides down — and 88px of reserved space then holds the sidebar
+ * button and the first tab away from an edge with nothing behind it.
+ *
+ * Keyed on a real full-screen signal rather than on `maximized`, which cannot
+ * answer this: on macOS `isMaximized()` is false throughout full screen, so the
+ * one existing channel reported the same `false` entering it as leaving it.
+ * Windows needs no equivalent rule — its clearance is
+ * `calc(100% - env(titlebar-area-width, 100%) …)`, and Chromium reports the
+ * overlay's width as the full width once it is hidden, so that one collapses on
+ * its own.
+ */
+.titlebar[data-platform='darwin'][data-fullscreen] {
+  padding-left: var(--space-8);
+}
+
+/*
  * Keep clear of the native window controls on Windows. The overlay reports its
  * own width, which varies with display scaling, so ask for it rather than
  * hardcoding three button widths and being wrong at 125%.

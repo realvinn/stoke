@@ -137,6 +137,13 @@ export interface StokeApi {
     close(): void
     isMaximized(): Promise<boolean>
     onMaximizedChanged(cb: (maximized: boolean) => void): () => void
+    /**
+     * Distinct from `isMaximized`, which is false on macOS while full screen.
+     * Full screen hides the traffic lights, so the title bar's clearance for
+     * them has to collapse with it.
+     */
+    isFullScreen(): Promise<boolean>
+    onFullScreenChanged(cb: (fullScreen: boolean) => void): () => void
   }
 
   cli: {

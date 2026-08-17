@@ -654,6 +654,15 @@ function createWindow(): void {
   win.on('enter-full-screen', pushMaximized)
   win.on('leave-full-screen', pushMaximized)
 
+  /*
+   * Separately, because on macOS full screen is not maximized — `isMaximized()`
+   * is false throughout it. Reporting the two down one channel is what left the
+   * title bar holding 88px open for traffic lights that were no longer drawn.
+   */
+  const pushFullScreen = (): void => send(CH.winFullScreenChanged, win?.isFullScreen() ?? false)
+  win.on('enter-full-screen', pushFullScreen)
+  win.on('leave-full-screen', pushFullScreen)
+
   // Anything the app UI itself tries to open goes to the system browser.
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:/i.test(url)) void shell.openExternal(url)
@@ -873,6 +882,9 @@ function registerIpc(): void {
   })
   ipcMain.on(CH.winClose, () => win?.close())
   ipcMain.handle(CH.winIsMaximized, () => win?.isMaximized() ?? false)
+  // Asked once on mount, because a window can be launched already full screen
+  // and no enter-full-screen event fires for a state it started in.
+  ipcMain.handle(CH.winIsFullScreen, () => win?.isFullScreen() ?? false)
 
   /* ------------------------------------------------------------------- cli */
   ipcMain.handle(CH.cliInfo, () => probeClaude(getSettings().claudePath))
