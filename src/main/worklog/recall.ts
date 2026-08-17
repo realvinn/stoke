@@ -21,7 +21,7 @@ import type { WorklogExistingItem, WorklogScanOutcome, WorklogTarget } from '@sh
  *  - **Recall is shared.** Both destinations are a single fixed list and a
  *    single fixed data source, so one read serves every session on the machine.
  *    It is cached with a TTL and the marginal cost per scan tends to zero.
- *  - **It is read-only by allowlist.** Three tools, all of them queries. The
+ *  - **It is read-only by allowlist.** Five tools, all of them queries. The
  *    write tools of the very same servers are one name away, which is exactly
  *    why the list is exact rather than a prefix.
  *
@@ -34,11 +34,22 @@ import type { WorklogExistingItem, WorklogScanOutcome, WorklogTarget } from '@sh
 /**
  * The exact queries recall may run, per destination.
  *
- * Two for Notion because the data source id is a `collection://` URI:
+ * Three for Notion because the data source id is a `collection://` URI:
  * `query-data-sources` is the direct route and `search` is the fallback when
  * that id will not resolve, and a recall that silently returns nothing is
  * indistinguishable from a board with nothing on it — which would quietly turn
  * every update back into a duplicate.
+ *
+ * `notion-fetch` is the third, and it is the Notion half of gotcha 16. Its own
+ * contract is explicit that it comes first — *"use the 'fetch' tool first to get
+ * database schema and data source URLs"* — because it is the only one of the
+ * three that returns the schema, and therefore the only one that can say what
+ * values a Status property allows. Without it the ask below ("report every value
+ * its status property allows") was unanswerable, and the vocabulary silently
+ * degraded to whatever statuses happened to appear on the pages recalled. A
+ * board whose Done pages have aged out of that window then has no closing word
+ * available at all, which is ClickUp's `clickup_get_list` problem exactly, on
+ * the destination that ships as the default.
  *
  * Two for ClickUp because a list's own status vocabulary is NOT derivable from
  * the tasks it holds: recall reads open tasks, so "complete" appears on none of
@@ -47,6 +58,7 @@ import type { WorklogExistingItem, WorklogScanOutcome, WorklogTarget } from '@sh
  */
 const TOOLS_FOR: Record<WorklogTarget, string[]> = {
   notion: [
+    'mcp__claude_ai_Notion__notion-fetch',
     'mcp__claude_ai_Notion__notion-query-data-sources',
     'mcp__claude_ai_Notion__notion-search'
   ],
@@ -73,8 +85,30 @@ export const RECALL_TOOLS = recallToolsFor(WORKLOG_TARGETS)
 /** Records kept per destination. Beyond this the prompt stops being small. */
 export const MAX_RECALL_ITEMS = 30
 
-/** Whole-recall ceiling once rendered into the scan prompt. */
-export const MAX_RECALL_CHARS = 2400
+/**
+ * Ceiling on one board's rendered listing, in characters.
+ *
+ * Per board, not per recall, and sized so `MAX_RECALL_ITEMS` records actually
+ * fit: a line is `- [notion:<36-char id>] <title> (status: …)`, so ~130
+ * characters at the title length below. The two caps have to be reconciled or
+ * the smaller one silently decides how many records the scan can see.
+ *
+ * This is the only channel by which a board id reaches a scan. The scan runs
+ * `--safe-mode` (CLAUDE.md gotcha 15) with no MCP server to look one up, and is
+ * told that an id not listed does not exist — so a finished task trimmed out of
+ * this string cannot be closed, and comes back as a *create* instead. That is
+ * why the trim below drops whole lines rather than slicing the text: a blind
+ * slice severed the boundary line mid-id, and 30 records against the old 2400
+ * left only about half of them standing.
+ */
+export const MAX_RECALL_CHARS_PER_BOARD = 4200
+
+/**
+ * Longest title rendered per record. Titles are stored at up to 200 characters
+ * because a proposal matches against them; the listing only has to be
+ * recognisable, and every character saved here buys back another whole record.
+ */
+export const MAX_RECALL_TITLE = 90
 
 /** How long a reading stays good. Boards do not move fast; scans do. */
 export const RECALL_TTL_MS = 10 * 60_000
@@ -117,8 +151,11 @@ const RECALL_ASK: Record<WorklogTarget, (opts: RecallOptions) => string[]> = {
   notion: (o) => [
     `Notion: the pages in data source ${o.notionDataSource}, using`,
     'notion-query-data-sources. If that id will not resolve, fall back to',
-    'notion-search over the same workspace. Report every value its status',
-    'property allows, not only the ones in use.'
+    'notion-search over the same workspace. Then call notion-fetch on the same',
+    'data source to read its schema, and report every value its status property',
+    'allows — including the ones that mean finished, which no open page carries.',
+    'Report them exactly as the schema spells them, and report none if the',
+    'schema could not be read.'
   ],
   clickup: (o) => [
     `ClickUp: the tasks in list ${o.clickupListId}, using clickup_filter_tasks.`,
@@ -130,8 +167,12 @@ const RECALL_ASK: Record<WorklogTarget, (opts: RecallOptions) => string[]> = {
 /** The reply shape for one destination. Only configured boards are shown one. */
 const RECALL_EXAMPLE: Record<WorklogTarget, string> = {
   notion:
+    // Deliberately not spelled out. Naming plausible states here primed a model
+    // that could not read the schema to invent them, and an invented status is
+    // rejected by the Notion API at write time with an error the user can do
+    // nothing about — so an empty list is strictly better than a guessed one.
     '"notion":[{"id":"...","title":"...","status":"...","url":"https://www.notion.so/..."}],' +
-    '"notionStatuses":["Not started","In progress","Done"]',
+    '"notionStatuses":["...","..."]',
   clickup:
     '"clickup":[{"id":"abc123","title":"Fix the context meter","status":"in progress",' +
     '"url":"https://app.clickup.com/t/abc123"}],"clickupStatuses":["open","in progress","complete"]'
@@ -517,19 +558,37 @@ export function formatRecall(snapshot: RecallSnapshot): string {
   for (const target of WORKLOG_TARGETS) {
     const items = snapshot.items[target]
     if (!items?.length) continue
-    const lines = items.map(
-      (i) => `- [${target}:${i.id}] ${i.title}${i.status ? ` (status: ${i.status})` : ''}`
-    )
     // The vocabulary goes with the board it belongs to. Listing it apart from
     // the records invites a status from one board being offered to the other.
     const vocabulary = snapshot.statuses?.[target]
     const header = vocabulary?.length
       ? `${LABEL[target]} (statuses: ${vocabulary.join(', ')}):`
       : `${LABEL[target]}:`
+
+    /*
+     * The header is never trimmed. It carries the closed statuses, and it is the
+     * only place a word like "Done" is ever shown to the scan — trimming it
+     * leaves a board that can be read and never closed, which is the exact
+     * asymmetry gotcha 16 exists to describe.
+     */
+    let room = MAX_RECALL_CHARS_PER_BOARD
+    const lines: string[] = []
+    for (const i of items) {
+      const status = i.status ? ` (status: ${i.status})` : ''
+      const line = `- [${target}:${i.id}] ${clip(oneLine(i.title), MAX_RECALL_TITLE)}${status}`
+      // Whole lines only. Half a line is a severed id, and an id the scan
+      // cannot read is a task it will re-file as new work.
+      if (line.length + 1 > room) break
+      room -= line.length + 1
+      lines.push(line)
+    }
+    if (lines.length < items.length) {
+      lines.push(`- (${items.length - lines.length} older records not shown)`)
+    }
     blocks.push(`${header}\n${lines.join('\n')}`)
   }
   if (!blocks.length) return ''
-  return clip(blocks.join('\n'), MAX_RECALL_CHARS)
+  return blocks.join('\n')
 }
 
 /**
@@ -552,6 +611,36 @@ export function statusesFor(snapshot: RecallSnapshot, target: WorklogTarget): Se
     if (i.status) out.add(i.status.toLowerCase())
   }
   return out
+}
+
+/**
+ * The board's own spelling of a status the model asked for, or null if that
+ * board offers nothing matching.
+ *
+ * The gate is case-blind, because a model will offer "done" to a board that
+ * writes "Done" and refusing that is pedantry. What gets *written* must be the
+ * board's spelling: Notion matches a select option exactly, so writing the
+ * model's casing back is a write that fails at somebody else's API with an error
+ * the user can do nothing about. The live queue on this machine holds
+ * `{"notion":"COMPLETE"}` — that bug, sitting in the data.
+ *
+ * Same precedence as `statusesFor`, and for the same reason: the declared
+ * vocabulary first, because it is the one that contains the closed states.
+ */
+export function canonicalStatus(
+  snapshot: RecallSnapshot,
+  target: WorklogTarget,
+  wanted: string
+): string | null {
+  const key = wanted.trim().toLowerCase()
+  if (!key) return null
+  for (const s of snapshot.statuses?.[target] ?? []) {
+    if (s.toLowerCase() === key) return s
+  }
+  for (const i of snapshot.items[target] ?? []) {
+    if (i.status && i.status.toLowerCase() === key) return i.status
+  }
+  return null
 }
 
 /** The record with this id, if recall saw it. */

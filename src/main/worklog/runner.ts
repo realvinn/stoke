@@ -1,7 +1,14 @@
 import { readTranscript, type TranscriptTurn } from '../sessionFile.ts'
 import { isBudgetExhausted, runHeadless, type HeadlessOptions } from '../agent.ts'
 import { asRecord, candidates, clip, oneLine } from './json.ts'
-import { EMPTY_RECALL, findExisting, formatRecall, statusesFor, type RecallSnapshot } from './recall.ts'
+import {
+  EMPTY_RECALL,
+  canonicalStatus,
+  findExisting,
+  formatRecall,
+  statusesFor,
+  type RecallSnapshot
+} from './recall.ts'
 import { DEFAULT_WORKLOG_BOARDS, WORKLOG_TARGETS } from '../../shared/worklog.ts'
 import type { ProposalDraft } from './queue.ts'
 import type { WorklogBoards, WorklogKind, WorklogProposal, WorklogTarget } from '@shared/types'
@@ -52,8 +59,16 @@ import type { WorklogBoards, WorklogKind, WorklogProposal, WorklogTarget } from 
  * An update to ClickUp gets two, and that pairing is deliberate:
  * `clickup_update_task` *replaces* a description, so writing the note through it
  * would delete whatever the task already said. The note goes on as a comment and
- * only the status moves. Notion's update-page appends, so one tool is enough
- * there.
+ * only the status moves.
+ *
+ * A Notion update gets two for a different reason. `notion-update-page` appends,
+ * so one tool is enough to write — but its own contract says *"ALWAYS use the
+ * 'fetch' tool first to get the data source schema and the exact property
+ * names"*, because a page's Status property can be called anything and the write
+ * has to name it. `buildHeadlessArgs` passes no permission-mode flag, so a tool
+ * outside this list is denied rather than prompted: without `notion-fetch` the
+ * run could only guess the property name, and a guess that misses moves nothing
+ * while still reporting success.
  */
 const WRITE_TOOLS: Record<WorklogKind, Record<WorklogTarget, string[]>> = {
   create: {
@@ -65,7 +80,10 @@ const WRITE_TOOLS: Record<WorklogKind, Record<WorklogTarget, string[]>> = {
       'mcp__claude_ai_ClickUp__clickup_update_task',
       'mcp__claude_ai_ClickUp__clickup_create_comment'
     ],
-    notion: ['mcp__claude_ai_Notion__notion-update-page']
+    notion: [
+      'mcp__claude_ai_Notion__notion-fetch',
+      'mcp__claude_ai_Notion__notion-update-page'
+    ]
   }
 }
 
@@ -411,6 +429,12 @@ export function buildScanPrompt(ctx: ScanContext): string {
     '2. For every item above this session moved on - finished, started or blocked - one',
     '   {"kind":"update"} naming its board and its id. Never a second record for work',
     '   that already has one.',
+    // The criterion was never stated: instruction 2 named the trigger and asked
+    // only for an update, and the one word that closes a task appeared nowhere
+    // but inside the example JSON. So a finished job got a note saying it was
+    // finished, on a record that stayed open.
+    '   If it is DONE - landed, verified, or called finished - set its "status" to',
+    '   whichever state above means finished. A note saying so does not close it.',
     `3. One {"kind":"create","targets":["${taskTarget}"]} per outstanding item NOT listed above:`,
     '   unfinished, deferred, broken, or named as next. Body says what to do and why.',
     '',
@@ -436,7 +460,10 @@ export function buildScanPrompt(ctx: ScanContext): string {
     '',
     'Reply with a JSON array and nothing else - no prose, no code fence. Example:',
     '[{"kind":"create","title":"Added SSH sessions to the launcher","body":"...","targets":["notion"]},',
-    ` {"kind":"update","target":"${taskTarget}","id":"abc123","status":"complete","title":"Finished the SSH work","body":"..."}]`
+    // The status is deliberately an ellipsis. Spelling one here hardcoded
+    // ClickUp's word "complete" into the example shown to a Notion-only board,
+    // which primes exactly the invented status the grounding then has to refuse.
+    ` {"kind":"update","target":"${taskTarget}","id":"abc123","status":"...","title":"Finished the SSH work","body":"..."}]`
   ]
     .filter((l) => l !== '')
     .join('\n')
@@ -492,7 +519,18 @@ export function buildApplyPrompt(
           ]
         : [
             `Update ONE existing Notion page, id ${existing.id} ("${oneLine(existing.title)}").`,
-            status ? `Set its status property to exactly "${status}".` : 'Do not change its status.',
+            ...(status
+              ? [
+                  // The property can be called anything, and update-page has to
+                  // name it. Guessing "Status" moves nothing on a board that
+                  // calls it "State" — and reports success while doing so.
+                  'First call notion-fetch on that page to read its schema and find the',
+                  'name of its status property. Then set that property to exactly',
+                  `"${status}". If the page has no such property, change no property and`,
+                  'say so in the JSON below.',
+                  'Setting the property and appending the body are two separate calls.'
+                ]
+              : ['Do not change its status.']),
             'Append the body below to the end of the page with notion-update-page.',
             'Do not change the title and do not replace any existing content.'
           ]
@@ -739,6 +777,20 @@ export interface ScanInput {
   boards?: WorklogBoards
 }
 
+/**
+ * A status the scan asked for and the board does not offer.
+ *
+ * Carries what was refused and what was on offer, because the two together are
+ * the whole diagnosis: "Done" against `["open","in progress"]` means the board's
+ * closed states were never read, while "Done" against `["To Do","Done"]` means
+ * something else is wrong. One without the other says almost nothing.
+ */
+export interface StatusDrop {
+  target: WorklogTarget
+  wanted: string
+  allowed: string[]
+}
+
 export interface ScanOutcome {
   proposals: ProposalDraft[]
   costUsd: number | null
@@ -753,6 +805,12 @@ export interface ScanOutcome {
    * and both look like "the feature works" from outside.
    */
   demoted: number
+  /**
+   * Statuses the scan wanted to set and the board would not take. Same reason
+   * as `demoted`: this is the difference between "nothing needed closing" and
+   * "the closing word was refused", and from outside they are identical.
+   */
+  statusDropped: StatusDrop[]
 }
 
 /**
@@ -860,7 +918,14 @@ export function applyRunOptions(
 export async function scanSession(input: ScanInput): Promise<ScanOutcome> {
   const transcript = await readTranscript(input.transcriptFile, TRANSCRIPT_TURNS)
   if (!transcript.turns.length) {
-    return { proposals: [], costUsd: null, promptChars: 0, emptyTranscript: true, demoted: 0 }
+    return {
+      proposals: [],
+      costUsd: null,
+      promptChars: 0,
+      emptyTranscript: true,
+      demoted: 0,
+      statusDropped: []
+    }
   }
 
   const snapshot = input.recall ?? EMPTY_RECALL
@@ -894,7 +959,7 @@ export async function scanSession(input: ScanInput): Promise<ScanOutcome> {
     )
   }
 
-  const { drafts, demoted } = groundProposals(
+  const { drafts, demoted, statusDropped } = groundProposals(
     parseProposals(result.text, targets),
     input,
     snapshot,
@@ -906,7 +971,8 @@ export async function scanSession(input: ScanInput): Promise<ScanOutcome> {
     costUsd: result.costUsd,
     promptChars: prompt.length,
     emptyTranscript: false,
-    demoted
+    demoted,
+    statusDropped
   }
 }
 
@@ -936,8 +1002,9 @@ export function groundProposals(
   input: Pick<ScanInput, 'sessionId' | 'cwd' | 'group' | 'auto'>,
   snapshot: RecallSnapshot,
   allowed: readonly WorklogTarget[] = WORKLOG_TARGETS
-): { drafts: ProposalDraft[]; demoted: number } {
+): { drafts: ProposalDraft[]; demoted: number; statusDropped: StatusDrop[] } {
   const drafts: ProposalDraft[] = []
+  const statusDropped: StatusDrop[] = []
   let demoted = 0
 
   for (const p of proposals) {
@@ -997,15 +1064,31 @@ export function groundProposals(
       draft.targets = [target]
       draft.existing = { [target]: found }
       const wanted = p.newStatus?.trim()
-      if (wanted && statusesFor(snapshot, target).has(wanted.toLowerCase())) {
-        draft.newStatus = { [target]: wanted }
+      if (wanted) {
+        /*
+         * The board's spelling, not the model's. The gate is case-blind so
+         * "done" is accepted for a board that writes "Done", but what gets
+         * written has to match the board's own option exactly or the write
+         * fails at the far API.
+         */
+        const canonical = canonicalStatus(snapshot, target, wanted)
+        if (canonical) draft.newStatus = { [target]: canonical }
+        /*
+         * Rejected, and counted rather than dropped in silence. Before this the
+         * assignment simply did not happen: the proposal went on to be written
+         * as a note-only update, `applyProposal` returned ok, and the panel drew
+         * "Written" over a task that was still open. Counting it is what turns
+         * "the worklog never marks anything done" from a mystery into a line
+         * naming the word that was refused and the board that refused it.
+         */
+        else statusDropped.push({ target, wanted, allowed: [...statusesFor(snapshot, target)] })
       }
     }
 
     drafts.push(draft)
   }
 
-  return { drafts, demoted }
+  return { drafts, demoted, statusDropped }
 }
 
 export interface ApplyOptions {

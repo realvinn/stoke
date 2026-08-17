@@ -22,7 +22,7 @@
  */
 import {
   EMPTY_RECALL,
-  MAX_RECALL_CHARS,
+  MAX_RECALL_CHARS_PER_BOARD,
   MAX_RECALL_ITEMS,
   RECALL_MAX_BUDGET_USD,
   RECALL_TOOLS,
@@ -100,6 +100,13 @@ const BOARDS = { clickupListId: '900000000001', notionDataSource: 'collection://
  * lines that must fail when it is.
  */
 const NOTION_TOOLS_EXPECTED = [
+  // notion-fetch is the Notion half of gotcha 16: the only one of the three that
+  // returns the data source SCHEMA, and so the only one that can say which
+  // statuses mean finished. Without it the ask "report every value its status
+  // property allows" is unanswerable and the vocabulary degrades to whatever
+  // happens to be on the pages recalled — which on an open board is every state
+  // except the one a finished job needs.
+  'mcp__claude_ai_Notion__notion-fetch',
   'mcp__claude_ai_Notion__notion-query-data-sources',
   'mcp__claude_ai_Notion__notion-search'
 ]
@@ -115,7 +122,7 @@ console.log('\nrecall reads, and can only read')
 
 const opts = recallRunOptions(BOARDS)
 check('the allowlist is exactly the read tools', opts.allowedTools, RECALL_TOOLS_EXPECTED)
-check('RECALL_TOOLS is the same four tools', RECALL_TOOLS, RECALL_TOOLS_EXPECTED)
+check('RECALL_TOOLS is the same five tools', RECALL_TOOLS, RECALL_TOOLS_EXPECTED)
 ok(
   'not one of them can create anything',
   !RECALL_TOOLS.some((t) => /create|update|delete|move|merge|comment/i.test(t)),
@@ -260,6 +267,13 @@ ok('so are the statuses in use', rendered.includes('in progress'), rendered)
 ok('and the vocabulary, beside the board it belongs to', rendered.includes('statuses: open, in progress, complete'), rendered)
 check('an empty snapshot renders to nothing at all', formatRecall(EMPTY_RECALL), '')
 
+/*
+ * The listing is the only channel by which a board id reaches a scan — the scan
+ * runs --safe-mode with no MCP server to look one up, and is told that an id it
+ * cannot see does not exist. So a record trimmed out of this string is a record
+ * that cannot be closed, and comes back as a duplicate create instead. That is
+ * why these assert whole lines and a full complement, not just a ceiling.
+ */
 const huge = parseRecall(
   JSON.stringify({
     clickup: Array.from({ length: MAX_RECALL_ITEMS }, (_, i) => ({
@@ -269,12 +283,63 @@ const huge = parseRecall(
   }),
   1
 )
+const hugeRendered = formatRecall(huge)
+const hugeLines = hugeRendered.split('\n').filter((l) => l.startsWith('- ['))
 ok(
-  // +1 for the ellipsis: clip cuts to the cap and then marks the cut, which is
-  // how every other bound in this feature behaves.
-  'the rendering is bounded however much comes back',
-  formatRecall(huge).length <= MAX_RECALL_CHARS + 1,
-  `${formatRecall(huge).length} characters`
+  'every record recall kept is shown to the scan',
+  hugeLines.length === MAX_RECALL_ITEMS,
+  `${hugeLines.length} of ${MAX_RECALL_ITEMS} lines, ${hugeRendered.length} characters`
+)
+ok(
+  'and no line is severed mid-id, which would name a record that does not exist',
+  hugeLines.every((l) => /^- \[(notion|clickup):[^\]]+\] /.test(l)),
+  hugeLines.find((l) => !/^- \[(notion|clickup):[^\]]+\] /.test(l)) ?? ''
+)
+ok(
+  'the rendering is still bounded per board',
+  hugeRendered.length <= MAX_RECALL_CHARS_PER_BOARD * 2,
+  `${hugeRendered.length} characters`
+)
+
+/*
+ * More records than the per-board budget can hold, built as a snapshot directly
+ * rather than through parseRecall — which caps at MAX_RECALL_ITEMS, and that cap
+ * is now deliberately reconciled with the character budget so a full 30 records
+ * always fit. Reaching the trim path at all therefore takes a snapshot that has
+ * bypassed the item cap, which is exactly the shape a raised MAX_RECALL_ITEMS
+ * would produce; this is the assertion that keeps the two caps honest against
+ * each other.
+ */
+const overflowing: RecallSnapshot = {
+  readAt: 1,
+  items: {
+    clickup: Array.from({ length: MAX_RECALL_ITEMS * 4 }, (_, i) => ({
+      id: `task-${i}`,
+      title: `A task with a fairly long title, number ${i}, to push the rendering past its ceiling`
+    }))
+  }
+}
+const over = formatRecall(overflowing)
+ok(
+  'an overflowing board drops whole records and says how many',
+  /- \(\d+ older records not shown\)/.test(over),
+  over.slice(-120)
+)
+ok(
+  'and every line it did keep is complete',
+  over
+    .split('\n')
+    .filter((l) => l.startsWith('- ['))
+    .every((l) => /^- \[clickup:task-\d+\] /.test(l)),
+  ''
+)
+ok(
+  'the header survives the trim, since it carries the closed statuses',
+  formatRecall({
+    ...overflowing,
+    statuses: { clickup: ['open', 'complete'] }
+  }).includes('statuses: open, complete'),
+  ''
 )
 
 /* --------------------------------------------------------- the vocabulary */

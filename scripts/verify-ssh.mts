@@ -164,61 +164,84 @@ same('a Match block names no host', aliasesIn('Match user root\n  User root\n'),
 /* ------------------------------------------------------------------- argv */
 
 console.log('\nargv')
-same('no command means a plain login shell', buildSshArgs(host({})), ['vps'])
+same('no command means a plain login shell', buildSshArgs(host({})), ['-e', 'none', 'vps'])
 same(
   '-t is sent whenever a command is',
   buildSshArgs(host({ command: 'byobu' })),
-  ['-t', 'vps', 'byobu']
+  ['-e', 'none', '-t', 'vps', 'byobu']
 )
 check(
   '-t comes before the destination, or ssh reads it as part of the command',
-  buildSshArgs(host({ command: 'byobu' }))[0] === '-t',
+  buildSshArgs(host({ command: 'byobu' })).indexOf('-t') <
+    buildSshArgs(host({ command: 'byobu' })).indexOf('vps'),
   ''
 )
+/*
+ * ssh's escape character is live on any session with a tty, and it is `~`. A
+ * multi-line paste arrives as bare `\r`s (xterm rewrites newlines that way), so
+ * every line after the first sits exactly where ssh looks for an escape: `~~`
+ * silently collapses, `~?` prints ssh's help into the session, and `~.` hangs up
+ * mid-paste. Both host shapes need it, since a tty comes from the pty rather
+ * than from `-t`.
+ */
+for (const shape of [host({}), host({ command: 'byobu' })]) {
+  const args = buildSshArgs(shape)
+  const at = args.indexOf('-e')
+  check(
+    `the ~ escape is disabled${shape.command ? ' with a command' : ' with none'}`,
+    at !== -1 && args[at + 1] === 'none',
+    args.join(' ')
+  )
+  check(
+    'and -e none precedes the destination, or ssh stops parsing options first',
+    at !== -1 && at + 1 < args.indexOf(shape.alias),
+    args.join(' ')
+  )
+}
 same(
   'a command with spaces stays exactly one argument',
   buildSshArgs(host({ command: 'tmux new -A -s stoke' })),
-  ['-t', 'vps', 'tmux new -A -s stoke']
+  ['-e', 'none', '-t', 'vps', 'tmux new -A -s stoke']
 )
 check(
   'and that argument is not split however long it gets',
-  buildSshArgs(host({ command: 'cd /srv/app && tmux new -A -s stoke' })).length === 3,
+  buildSshArgs(host({ command: 'cd /srv/app && tmux new -A -s stoke' })).length === 5,
   ''
 )
 same(
   'shell metacharacters in the command add no argv elements',
   buildSshArgs(host({ command: 'echo "a b"; ls | wc -l' })),
-  ['-t', 'vps', 'echo "a b"; ls | wc -l']
+  ['-e', 'none', '-t', 'vps', 'echo "a b"; ls | wc -l']
 )
 same(
   'an alias with a space stays one argument',
   buildSshArgs(host({ alias: 'two words' })),
-  ['two words']
+  ['-e', 'none', 'two words']
 )
 same(
   'an alias with shell metacharacters is not split either',
   buildSshArgs(host({ alias: 'user@host;rm -rf /' })),
-  ['user@host;rm -rf /']
+  ['-e', 'none', 'user@host;rm -rf /']
 )
 same(
   'a leading dash is fenced off with --',
   buildSshArgs(host({ alias: '-oProxyCommand=calc' })),
-  ['--', '-oProxyCommand=calc']
+  ['-e', 'none', '--', '-oProxyCommand=calc']
 )
 same(
   'and -- sits after -t, since -- ends option parsing',
   buildSshArgs(host({ alias: '-weird', command: 'byobu' })),
-  ['-t', '--', '-weird', 'byobu']
+  ['-e', 'none', '-t', '--', '-weird', 'byobu']
 )
 same(
   'surrounding whitespace is not passed to ssh',
   buildSshArgs(host({ alias: '  vps  ', command: '  byobu  ' })),
-  ['-t', 'vps', 'byobu']
+  ['-e', 'none', '-t', 'vps', 'byobu']
 )
 same(
   'a whitespace-only command is no command',
   buildSshArgs(host({ command: '   ' })),
-  ['vps']
+  ['-e', 'none', 'vps']
 )
 
 /* ------------------------------------------------------------- the binary */

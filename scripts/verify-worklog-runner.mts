@@ -49,7 +49,11 @@ import {
  * and the tool that produced it.
  */
 import { BUDGET_REFUSAL } from './worklog-budget-fixture.ts'
-import { MAX_RECALL_CHARS, formatRecall, type RecallSnapshot } from '../src/main/worklog/recall.ts'
+import {
+  MAX_RECALL_CHARS_PER_BOARD,
+  formatRecall,
+  type RecallSnapshot
+} from '../src/main/worklog/recall.ts'
 import {
   MAX_ENTRIES,
   WorklogQueue,
@@ -296,8 +300,14 @@ const prompt = buildScanPrompt({
   digest
 })
 ok(
+  // 2200, not 2000. The scaffolding now carries the criterion for closing a
+  // task — which it never did: instruction 2 named the trigger ("finished") and
+  // asked only for an update, and the word that actually closes anything
+  // appeared nowhere but inside the example JSON. So a finished job reliably got
+  // a note saying it was finished, attached to a record that stayed open. Two
+  // lines is what that costs, and it is the smallest headroom that fits them.
   'the scan prompt stays small',
-  prompt.length <= MAX_DIGEST_CHARS + 2000,
+  prompt.length <= MAX_DIGEST_CHARS + 2200,
   `prompt was ${prompt.length} characters`
 )
 ok('the scan prompt names the project', prompt.includes('refinity'), prompt.slice(0, 200))
@@ -731,6 +741,35 @@ check('an id nobody has seen is filed as a create instead', grounded.drafts[1].k
 check('and it is counted, not swallowed', grounded.demoted, 1)
 check('an invented status is dropped', grounded.drafts[2].newStatus, undefined)
 check('but the update itself survives as a note', grounded.drafts[2].kind, 'update')
+/*
+ * And it is REPORTED. Dropping the status is right — an invented one is refused
+ * at the far API with an error the user can do nothing about — but before this
+ * the drop had no counter, no log and no field: the note was written, the write
+ * returned ok, and the panel drew "Written" over a task nobody had closed. From
+ * outside, "nothing needed closing" and "the closing word was refused" were the
+ * same event. That is the whole of "when we finish stuff it doesn't mark as
+ * done" as a user experiences it.
+ */
+check('and the drop is reported rather than silent', grounded.statusDropped.length, 1)
+check('naming what was refused', grounded.statusDropped[0]?.wanted, 'Done')
+check('and where', grounded.statusDropped[0]?.target, 'clickup')
+ok(
+  'and what the board would have taken, since one without the other diagnoses nothing',
+  grounded.statusDropped[0]?.allowed.includes('complete'),
+  (grounded.statusDropped[0]?.allowed ?? []).join(', ')
+)
+check(
+  'a status that only differs in casing is kept, not refused',
+  groundProposals(
+    [{ kind: 'update', target: 'notion', existingId: 'n-1', newStatus: 'published', title: 'E', body: '', targets: ['notion'] }],
+    where,
+    snapshot
+  ).drafts[0].newStatus?.notion,
+  // The board's spelling, not the model's: Notion matches a select option
+  // exactly, so writing "published" back to a board that says "Published" is a
+  // write that fails at somebody else's API.
+  'Published'
+)
 check('a create is left alone', grounded.drafts[3].kind, 'create')
 check('a manual scan does not mark anything auto', grounded.drafts[0].auto, undefined)
 check(
@@ -836,7 +875,7 @@ ok('the ids reach the model', withRecall.includes('clickup:abc123'), withRecall.
 ok('so do the statuses', withRecall.includes('in progress'), withRecall.slice(0, 400))
 ok(
   'and the whole thing stays bounded',
-  withRecall.length <= MAX_DIGEST_CHARS + MAX_RECALL_CHARS + 2000,
+  withRecall.length <= MAX_DIGEST_CHARS + MAX_RECALL_CHARS_PER_BOARD * 2 + 2000,
   `prompt was ${withRecall.length} characters`
 )
 
@@ -883,7 +922,7 @@ const updateIdentity = {
 check(
   'an update is keyed on the record it changes, not its wording',
   dedupeKey(updateIdentity),
-  's1|update|clickup:abc123'
+  's1|update|clickup:abc123|'
 )
 check(
   'so rewording it does not queue a second one',
@@ -893,6 +932,41 @@ check(
 ok(
   'but an update and a create never collide',
   dedupeKey(updateIdentity) !== dedupeKey({ sessionId: 's1', title: 'Finished the SSH work' })
+)
+
+/*
+ * The status is part of the key, and leaving it out is why finished work stayed
+ * open.
+ *
+ * A long session is scanned repeatedly, and the prompt asks for an update
+ * whenever an item was finished, started *or blocked*. So the first scan queues
+ * "started work on X", which takes the record's key; the later "X is done"
+ * computes the same key and `add` drops it with a bare `continue` — nothing
+ * counted, nothing logged, nothing shown. Accepting the first does not release
+ * the key either, since `accept` only patches `status`, and `ProposalPatch`
+ * excludes `newStatus` so the queued entry cannot be upgraded in place. The
+ * record was unclosable from that session for as long as it stayed in the queue.
+ */
+const closing = { ...updateIdentity, newStatus: { clickup: 'complete' } }
+check(
+  'a status is part of an update key, so closing a record is not the same ask as noting it',
+  dedupeKey(closing),
+  's1|update|clickup:abc123|complete'
+)
+ok(
+  'so a "mark it done" is not swallowed by an earlier note on the same record',
+  dedupeKey(closing) !== dedupeKey(updateIdentity),
+  `${dedupeKey(closing)} vs ${dedupeKey(updateIdentity)}`
+)
+check(
+  'but the same close proposed twice still collapses to one',
+  dedupeKey({ ...closing, title: 'Wrapped the SSH work up' }),
+  dedupeKey(closing)
+)
+check(
+  'and casing is not a second proposal',
+  dedupeKey({ ...closing, newStatus: { clickup: 'COMPLETE' } }),
+  dedupeKey(closing)
 )
 
 const qU = new WorklogQueue(queueFile('updates'))
@@ -1081,7 +1155,7 @@ check(
     kind: 'update',
     existing: { clickup: { id: 'ABC123', title: 't' } }
   }),
-  'abc-123|update|clickup:abc123'
+  'abc-123|update|clickup:abc123|'
 )
 /*
  * And the id itself, which is the thing the tombstone is actually keyed on.
@@ -1094,6 +1168,15 @@ check(
   proposalId({ sessionId: 'abc-123', title: 'Fixed the context meter!' }),
   '3409a9f77267'
 )
+/*
+ * The update id moved when the status entered the key, and that is the half of
+ * gotcha 17 that is allowed to move. The create key above is the one rejections
+ * are truly keyed on and it is byte-for-byte unchanged — and a rejected update
+ * contributes its *title-based* key to `refused` as well as its own
+ * (queue.ts:368-372), so a rejection still blocks by title regardless of what
+ * this hash is. Pinned all the same: it must move deliberately, never by
+ * accident.
+ */
 check(
   'and so does an update that names a record',
   proposalId({
@@ -1102,7 +1185,7 @@ check(
     kind: 'update',
     existing: { clickup: { id: 'ABC123', title: 't' } }
   }),
-  '59d970da5ff4'
+  '297306e75267'
 )
 
 /*
@@ -1141,7 +1224,7 @@ const notionOnly: Identity = {
 check(
   'the composite key is untouched, so no id and no tombstone moves',
   dedupeKey(twoBoards),
-  's1|update|notion:page-1,clickup:abc123'
+  's1|update|notion:page-1,clickup:abc123|,'
 )
 check(
   'and it is still the first key the proposal answers to',
@@ -1149,12 +1232,12 @@ check(
   dedupeKey(twoBoards)
 )
 check('a two-board update also answers to one key per record', dedupeKeys(twoBoards), [
-  's1|update|notion:page-1,clickup:abc123',
-  's1|update|notion:page-1',
-  's1|update|clickup:abc123'
+  's1|update|notion:page-1,clickup:abc123|,',
+  's1|update|notion:page-1|',
+  's1|update|clickup:abc123|'
 ])
 check('a one-board update answers to exactly one key, with no duplicate', dedupeKeys(notionOnly), [
-  's1|update|notion:page-1'
+  's1|update|notion:page-1|'
 ])
 ok(
   'so the Notion-only re-proposal shares a key with the two-board one',

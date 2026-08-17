@@ -67,25 +67,50 @@ export interface Identity {
   title: string
   kind?: WorklogKind
   existing?: Partial<Record<WorklogTarget, WorklogExistingItem>>
+  /**
+   * The status this update moves the record to, if any. Part of the key — see
+   * `dedupeKey`.
+   */
+  newStatus?: Partial<Record<WorklogTarget, string>>
+}
+
+/**
+ * The state an update is moving its records to, normalised for keying.
+ *
+ * Case-blind and trimmed, so the same move worded "Done" and "done" across two
+ * scans stays one proposal. Empty for a note-only update, which is a state of
+ * its own rather than a missing value: "add a note" and "close it" are two
+ * different asks about one record and both deserve to reach the user.
+ */
+function statusRef(p: Identity, targets: readonly WorklogTarget[]): string {
+  return targets.map((t) => (p.newStatus?.[t] ?? '').trim().toLowerCase()).join(',')
 }
 
 export function dedupeKey(p: Identity): string {
   /*
-   * An update is identified by the record it changes, not by its wording.
+   * An update is identified by the record it changes and the state it moves it
+   * to — not by its wording.
    *
    * Two scans of one session should never queue two "mark this task complete"
    * entries for the same task just because the model phrased the second one
    * differently — unlike a create, where two differently-worded entries really
    * might be two different pieces of work.
+   *
+   * The status has to be in the key, and leaving it out is why finished work
+   * stayed open. A long session is scanned repeatedly, and the prompt asks for
+   * an update whenever an item was finished, started *or blocked* — so the
+   * first scan queues "started work on X", which takes the record's key, and the
+   * later "X is done" collapses onto it and is dropped. Silently: `add` merely
+   * `continue`s, nothing is counted and nothing is logged. Accepting the first
+   * does not release the key either, since `accept` only patches `status`.
+   *
+   * Keying on the pair is safe against gotcha 17 because the create key below is
+   * untouched byte for byte, and update keys already had a shape of their own.
    */
   if (p.kind === 'update') {
-    const ref = TARGETS.map((t) => {
-      const id = p.existing?.[t]?.id
-      return id ? `${t}:${id.toLowerCase()}` : ''
-    })
-      .filter(Boolean)
-      .join(',')
-    if (ref) return `${p.sessionId}|update|${ref}`
+    const named = TARGETS.filter((t) => !!p.existing?.[t]?.id)
+    const ref = named.map((t) => `${t}:${(p.existing?.[t]?.id ?? '').toLowerCase()}`).join(',')
+    if (ref) return `${p.sessionId}|update|${ref}|${statusRef(p, named)}`
     // No record named, so there is nothing to key on but the words. Falls
     // through to the create key deliberately: such a proposal is written as a
     // create anyway (see groundProposals).
@@ -141,7 +166,7 @@ export function dedupeKeys(p: Identity): string[] {
   const keys = new Set<string>([composite])
   for (const t of TARGETS) {
     const id = p.existing?.[t]?.id
-    if (id) keys.add(`${p.sessionId}|update|${t}:${id.toLowerCase()}`)
+    if (id) keys.add(`${p.sessionId}|update|${t}:${id.toLowerCase()}|${statusRef(p, [t])}`)
   }
   return [...keys]
 }
@@ -379,7 +404,8 @@ export class WorklogQueue {
         sessionId: draft.sessionId,
         title,
         kind: draft.kind,
-        existing: draft.existing
+        existing: draft.existing,
+        newStatus: draft.newStatus
       }
       const keys = dedupeKeys(identity)
       // Both ways round, and against `refused` rather than `seen`: a *rejected*
