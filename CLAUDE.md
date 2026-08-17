@@ -31,6 +31,7 @@ npm run verify:profiles       # profile resolution + every accent clears 4.5:1
 npm run verify:settings       # settings hydration: repair, clamps, and what it drops
 npm run verify:folders        # folder metadata: trimming, caps, added folders, hide/pin
 npm run verify:tabs           # which tab is selected after one is closed
+npm run verify:shortcuts      # app chords vs the keys the terminal owns, and the zoom maths
 npm run verify:color          # colour maths: contrast, APCA, oklch
 npm run verify:updates        # the updater: a failure and a success must not read the same,
                               # and macOS must still build the zip it updates from (gotchas 24, 25)
@@ -506,6 +507,37 @@ scripts/          the verify-*.mts suites, make-icon.cjs
     the model's spelling, so the live queue holds `{"notion":"COMPLETE"}` against a board that
     spells it otherwise; `canonicalStatus` returns the board's own spelling now.
 
+31. **A window-level listener registered in an effect keeps whatever its deps captured, and a
+    suite cannot see it.** `App.tsx`'s keydown effect had deps
+    `[isMac, tabs, activeTabId, closeTab, openNewTab]` — no `settings`. Settings load
+    asynchronously, so the handler was first built while `settings` was still `null`, and the
+    zoom case's `if (!settings) break` therefore bailed **forever**. `verify:shortcuts` passed
+    every assertion, typecheck passed, the build passed, and pressing the key did nothing at
+    all. Only driving it over CDP found it, which is the entire argument for doing that.
+
+    Adding `settings` to the deps is the obvious fix and is wrong here in a second way: zooming
+    *is* a settings write, so the listener would be torn down and rebuilt on every keypress. A
+    ref updated on render (`settingsRef.current = settings`) is neither — the same idiom
+    `TerminalView` already uses for `openUrlRef`, and for the same reason.
+
+    The general form: **anything whose only observable effect is a side effect inside a
+    closure is invisible to a pure suite.** `matchShortcut` is pure and fully covered; the wire
+    from it to `patchSettings` is not, and that is where this lived.
+
+32. **Zoom is the second exception to the Shift rule, and the only one where Shift is actively
+    harmful.** Off macOS every letter chord demands Shift because bare Ctrl+K/W/T are readline
+    bindings Claude Code's prompt uses. Zoom inverts it: xterm turns Ctrl+`_` — which *is*
+    Ctrl+Shift+`-` on a US layout — into `C0.US` (`Keyboard.ts:361-364`,
+    `if (ev.key === '_') result.key = C0.US`), and that is readline's undo. Binding the Shift
+    variant would have eaten it silently. Bare Ctrl+`-` and Ctrl+`=` match neither of xterm's
+    two Ctrl branches, so the terminal does nothing with them at all — which is what makes them
+    free to take, and why every other app already uses exactly those.
+
+    Zoom-in accepts Shift and zoom-out refuses it. That asymmetry is not sloppiness: `+` IS
+    Shift+`=` on most layouts, so someone pressing "Cmd and plus" is holding Shift whether they
+    think so or not, while `-` needs no Shift to type. `verify:shortcuts` pins the refusal
+    first, because it is the assertion that protects something rather than adding something.
+
 ## Standing traps when driving the app
 
 Not about any one module, and each cost real time at least once. Carried over from the 0.3.0
@@ -563,9 +595,25 @@ bar and traffic-light padding (every screenshot taken here came from CDP's
 this sandbox has neither Accessibility nor Screen Recording permission for an OS-level capture
 to fall back on); the login-shell PATH probe in `cli.ts` (every launch here already inherited a
 working PATH from the shell that started Electron — never the Finder/Dock case with no inherited
-PATH the probe exists for); and the Cmd-based shortcuts (buttons were driven by dispatching
-`.click()` on the DOM, never a real `metaKey`-modified keystroke, so `shortcuts.ts`'s Mac branch
-has not actually fired). See `.claude/commands/mac-release.md` for the checklist.
+PATH the probe exists for). See `.claude/commands/mac-release.md` for the checklist.
+
+**`shortcuts.ts`'s Mac branch has now fired.** Cmd+`=`, Cmd+`-` and Cmd+`0` were dispatched as
+real `metaKey`-modified `KeyboardEvent`s at the running app over CDP and measured through to the
+persisted settings — `--ui-scale` walked 1 → 1.1 → 1.2 → 1.1 → 1, and one press moved
+`uiScale` to 1.1 and `fontSize` to 14 together. Cmd+Shift+`-` was driven in the same pass and
+correctly changed nothing, so `^_` still reaches the terminal (gotcha 32). These are synthetic
+events on a window listener, which for this path is not a weaker test — there is no trusted-event
+gate on `window.addEventListener('keydown')` — but they are still not OS-delivered keystrokes,
+so a real Mac keyboard remains the thing nobody has tried.
+
+**The traffic-light padding is half verified, and the halves are worth separating.** The CSS
+rule was measured in the running app: `.titlebar` computed `padding-left` is `88px` windowed and
+`8px` with `data-fullscreen` set, and back to `88px` when it is removed. What was NOT exercised
+is the main→renderer half — `win.on('enter-full-screen')` → `winFullScreenChanged` → the
+attribute — because macOS full screen cannot be entered from CDP (it is AppKit, not the page)
+and an OS-level keystroke needs the Accessibility permission this sandbox lacks. So: the
+stylesheet is proven, the signal that sets the attribute is only read. Enter full screen by hand
+once before believing it.
 
 **Windows carries the opposite risk now: nothing in this round of work ran there.** One change
 in it is actively suspect on that platform: `statusLineCommand()` emits `"<path>" "<id>"` — two
