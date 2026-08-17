@@ -22,7 +22,9 @@ const api: StokeApi = {
     maximize: () => ipcRenderer.send(CH.winMaximize),
     close: () => ipcRenderer.send(CH.winClose),
     isMaximized: () => ipcRenderer.invoke(CH.winIsMaximized),
-    onMaximizedChanged: (cb) => on<[boolean]>(CH.winMaximizedChanged, cb)
+    onMaximizedChanged: (cb) => on<[boolean]>(CH.winMaximizedChanged, cb),
+    isFullScreen: () => ipcRenderer.invoke(CH.winIsFullScreen),
+    onFullScreenChanged: (cb) => on<[boolean]>(CH.winFullScreenChanged, cb)
   },
 
   cli: {

@@ -21,6 +21,8 @@ import type { Tab } from '../types'
 interface Props {
   platform: string
   maximized: boolean
+  /** Full screen hides the macOS traffic lights, so their clearance must go too. */
+  fullScreen: boolean
   tabs: Tab[]
   activeTabId: string | null
   contexts: Record<string, ContextSnapshot>
@@ -48,6 +50,7 @@ interface Props {
 export function TitleBar({
   platform,
   maximized,
+  fullScreen,
   tabs,
   activeTabId,
   contexts,
@@ -72,7 +75,7 @@ export function TitleBar({
   const [overId, setOverId] = useState<string | null>(null)
 
   return (
-    <header className="titlebar" data-platform={platform}>
+    <header className="titlebar" data-platform={platform} data-fullscreen={fullScreen || undefined}>
       <button
         className="icon-btn"
         onClick={onToggleSidebar}

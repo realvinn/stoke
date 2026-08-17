@@ -85,6 +85,7 @@ jobs:
       - run: npm run verify:color
       - run: npm run verify:worklog-gate
       - run: npm run verify:tabs
+      - run: npm run verify:shortcuts
       - run: npm run verify:updates
       - run: npm run verify:worklog-runner
       - run: npm run verify:worklog-retry

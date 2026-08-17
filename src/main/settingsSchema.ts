@@ -10,7 +10,7 @@ import type { ProfileConfig, ProjectMeta, Settings, SshHost, Theme, WorklogBoard
 import { tidy } from './projectMeta.ts'
 import { DEFAULT_THEME_ID, validateTheme } from '../shared/themes.ts'
 import { DEFAULT_WORKLOG_BOARDS, WORKLOG_TARGETS } from '../shared/worklog.ts'
-import { clampFontSize, clampUiScale } from '../shared/ui.ts'
+import { clampFontSize, clampUiScale, clampZoomTarget } from '../shared/ui.ts'
 
 /**
  * Structural check only. A stored profile that is missing colours is still
@@ -30,6 +30,7 @@ export const DEFAULT_SETTINGS: Settings = {
     "'JetBrains Mono', 'Cascadia Code', 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace",
   fontSize: 13,
   uiScale: 1,
+  zoomTarget: 'both',
   defaults: {
     permissionMode: 'default',
     model: '',
@@ -238,6 +239,7 @@ export function hydrateSettings(raw: unknown): Settings {
     // must read as on, which is what an untouched machine gets.
     hideStatusLine: r.hideStatusLine !== false,
     uiScale: clampUiScale(r.uiScale),
-    fontSize: clampFontSize(r.fontSize)
+    fontSize: clampFontSize(r.fontSize),
+    zoomTarget: clampZoomTarget(r.zoomTarget)
   }
 }

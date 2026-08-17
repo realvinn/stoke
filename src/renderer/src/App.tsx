@@ -30,6 +30,7 @@ import { WorklogPanel } from './components/WorklogPanel'
 import { WorklogPrompt } from './components/WorklogPrompt'
 import { baseName, properNouns } from './lib/format'
 import { attachExit, forgetPty, initPtyBus } from './lib/ptyBus'
+import { zoomStep } from '@shared/ui'
 import { matchShortcut } from './lib/shortcuts'
 import { newTab } from './lib/newTab'
 import { profileIdForCwd } from './lib/projectProfile'
@@ -209,6 +210,13 @@ export function App(): React.JSX.Element {
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [maximized, setMaximized] = useState(false)
+  /*
+   * Tracked apart from `maximized`, because on macOS they are different states
+   * and full screen is the one that hides the traffic lights. The title bar
+   * reserves fixed device pixels for those lights, so it has to stop when they
+   * are gone or the first tab sits behind empty space.
+   */
+  const [fullScreen, setFullScreen] = useState(false)
   const [error, setError] = useState<string | null>(null)
   /** Result of the launch-time CLI version check. */
   const [update, setUpdate] = useState<UpdateInfo | null>(null)
@@ -240,6 +248,21 @@ export function App(): React.JSX.Element {
     setSettings(next)
   }, [])
 
+  /*
+   * The live settings, readable from the window keydown handler without putting
+   * `settings` in that effect's dependency array.
+   *
+   * Both halves of that matter. Settings load asynchronously, so the handler is
+   * first built while this is still null — leave it out of the deps and the
+   * closure keeps that null forever, which is exactly how the zoom shortcut
+   * shipped doing nothing at all until it was driven in the running app. Put it
+   * IN the deps and the listener is torn down and rebuilt on every settings
+   * write, which for zoom is every keypress, since zooming *is* a settings
+   * write. A ref is the one option that is neither.
+   */
+  const settingsRef = useRef<Settings | null>(settings)
+  settingsRef.current = settings
+
   /* ------------------------------------------------------------- bootstrap */
 
   useEffect(() => {
@@ -250,6 +273,7 @@ export function App(): React.JSX.Element {
     )
     const offBrowser = window.stoke.browser.onState(setBrowserState)
     const offMax = window.stoke.window.onMaximizedChanged(setMaximized)
+    const offFull = window.stoke.window.onFullScreenChanged(setFullScreen)
     const offSettings = window.stoke.settings.onChange(setSettings)
     const offWorklog = window.stoke.worklog.onChange(setWorklog)
     /*
@@ -288,10 +312,14 @@ export function App(): React.JSX.Element {
     })()
 
     void window.stoke.window.isMaximized().then(setMaximized)
+    // Asked as well as subscribed: a window can start full screen, and no
+    // enter-full-screen event fires for a state it was already in.
+    void window.stoke.window.isFullScreen().then(setFullScreen)
 
     return () => {
       offCtx()
       offBrowser()
+      offFull()
       offMax()
       offSettings()
       offWorklog()
@@ -853,6 +881,24 @@ export function App(): React.JSX.Element {
           if (target) setActiveTabId(target.id)
           break
         }
+        case 'zoom': {
+          /*
+           * Read through the ref, and off settings rather than local state: the
+           * sizes live in settings, the Settings sheet writes the same two
+           * values, and two writers on one number is how a slider and a
+           * shortcut end up disagreeing about the current size.
+           */
+          const now = settingsRef.current
+          if (!now) break
+          void patchSettings(
+            zoomStep(
+              { uiScale: now.uiScale, fontSize: now.fontSize },
+              action.direction,
+              now.zoomTarget
+            )
+          )
+          break
+        }
       }
     }
     window.addEventListener('keydown', onKey)
@@ -964,6 +1010,7 @@ export function App(): React.JSX.Element {
       <TitleBar
         platform={platform}
         maximized={maximized}
+        fullScreen={fullScreen}
         tabs={tabs}
         activeTabId={activeTabId}
         contexts={contexts}
