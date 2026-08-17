@@ -355,6 +355,26 @@ export function buildSshArgs(host: SshHost): string[] {
   const command = host.command.trim()
   const args: string[] = []
 
+  /*
+   * 4. **`-e none`, or pasting into a remote session corrupts itself.**
+   *
+   * ssh runs on a pty here, so its client-side escape character is live, and it
+   * is `~`. The rule is that `~` is read as an escape only directly after a
+   * newline — which is exactly where a multi-line paste puts it, because
+   * xterm's paste rewrites every newline to a bare `\r` and brackets the blob
+   * as a whole rather than line by line (`Clipboard.ts:14,21-26`). So the first
+   * line of a paste is safe and lines 2..n are not: a leading `~~` collapses to
+   * `~`, `~?` and `~#` print ssh's own help over the session, and `~.` kills
+   * the connection outright while the user watches their paste do it.
+   *
+   * It looks intermittent because it is content-dependent, and `~/some/path`
+   * survives — `/` is not an escape — which is what makes it easy to misread as
+   * "paste is flaky" rather than as ssh doing precisely what it documents.
+   * Nothing is lost by turning it off: the escapes are an interactive
+   * convenience for a session Stoke closes by closing the tab.
+   */
+  args.push('-e', 'none')
+
   if (command) args.push('-t')
   if (alias.startsWith('-')) args.push('--')
   args.push(alias)
