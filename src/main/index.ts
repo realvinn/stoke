@@ -506,6 +506,16 @@ async function runWorklogScan(sessionId: string, auto: boolean): Promise<Worklog
         `[stoke] worklog: ${outcome.demoted} update(s) named a record that is not on the boards, filed as new instead`
       )
     }
+    for (const drop of outcome.statusDropped) {
+      // The one line that says why a finished job stayed open. Without it the
+      // status was discarded here and the proposal went on to be written as a
+      // note, ok, with a "Written" pill over a task nobody had closed.
+      console.warn(
+        `[stoke] worklog: ${drop.target} would not take the status "${drop.wanted}" — ` +
+          `it offers ${drop.allowed.length ? drop.allowed.join(', ') : 'nothing that was read'}. ` +
+          'The note was written; the status was left alone.'
+      )
+    }
 
     const added = worklogQueue().add(outcome.proposals)
     send(CH.worklogChanged, worklogQueue().list())
