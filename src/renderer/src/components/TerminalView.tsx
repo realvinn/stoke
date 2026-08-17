@@ -13,6 +13,21 @@ import { terminalTheme } from '../lib/theme'
 import type { Tab } from '../types'
 import { ContextMenu } from './ContextMenu'
 
+/**
+ * How far the pointer may travel between press and release and still count as a
+ * click rather than a drag. Only a click follows a link; a drag is someone
+ * selecting the URL to copy it.
+ */
+const DRAG_SLOP_PX = 3
+
+/**
+ * The largest OSC 52 payload Stoke will put on the clipboard, in base64
+ * characters. A terminal write is untrusted input — anything the far machine
+ * renders can ask for the clipboard — so the sequence is bounded rather than
+ * trusted to be a sane size.
+ */
+const MAX_OSC52_BASE64 = 200_000
+
 /** Where the menu was opened, plus the state it should describe. */
 interface MenuState {
   x: number
@@ -27,7 +42,11 @@ interface Props {
   theme: Theme
   fontFamily: string
   fontSize: number
-  /** Clicking a link in the terminal opens it in the docked browser. */
+  /**
+   * Clicking a link in the terminal opens it in the docked browser. Holding
+   * Shift, or Cmd/Ctrl, sends it to the real browser instead — that path does
+   * not come through here, since it needs no tab of Stoke's own.
+   */
   onOpenUrl: (url: string) => void
   onRestart: (tab: Tab) => void
   onClose: (tabId: string) => void
@@ -73,6 +92,34 @@ export function TerminalView({
     if (!host) return
 
     const isMacPlatform = window.stoke.platform === 'darwin'
+
+    /*
+     * Where the last press landed, so an activated link can tell a click from a
+     * drag. xterm does not: it activates on mouseup and checks only that the
+     * release is still inside the link's range (`Linkifier.ts:220-233`), with no
+     * modifier test and no distance test. So dragging from a URL's first
+     * character to its last — which is how anyone copies a URL — both selected
+     * the text and yanked the browser panel open.
+     */
+    const downAt = { x: 0, y: 0 }
+
+    /*
+     * One rule for every link the terminal can produce, whether WebLinksAddon
+     * matched it with a regex or the program announced it as an OSC 8 hyperlink.
+     *
+     * A plain click opens it in the docked browser, which is the whole point of
+     * having one. Shift, or the platform's own "open this elsewhere" modifier,
+     * sends it to the real browser instead — Cmd on macOS, Ctrl everywhere else,
+     * because a macOS Ctrl+click is the secondary click and is spoken for below.
+     */
+    const openLink = (event: MouseEvent, uri: string): void => {
+      event.preventDefault()
+      const moved = Math.abs(event.clientX - downAt.x) + Math.abs(event.clientY - downAt.y)
+      if (moved > DRAG_SLOP_PX) return
+      const away = event.shiftKey || (isMacPlatform ? event.metaKey : event.ctrlKey)
+      if (away) window.stoke.openExternal(uri)
+      else openUrlRef.current(uri)
+    }
 
     const term = new Terminal({
       fontFamily,
@@ -133,6 +180,19 @@ export function TerminalView({
        * spoken for.
        */
       altClickMovesCursor: false,
+      /*
+       * OSC 8 hyperlinks — the ones npm, vite, gh, cargo and docker emit — are
+       * handled by xterm's own `OscLinkProvider`, which is registered in the
+       * constructor and so wins over any addon on a cell carrying a urlId.
+       * Without a handler here it falls back to `defaultActivate`
+       * (`OscLinkProvider.ts:114-129`): a blocking `confirm()` calling the link
+       * "potentially dangerous", and then `window.open()` with *no argument* —
+       * which arrives at the main window's handler as `about:blank`, fails its
+       * `/^https?:/i` test (`index.ts:648-651`) and is denied. So the dialog was
+       * followed by nothing at all. Routing it through the same rule as every
+       * other link is both safer and the only way these links ever open.
+       */
+      linkHandler: { activate: openLink },
       minimumContrastRatio: 1,
       theme: terminalTheme(theme)
     })
@@ -148,12 +208,36 @@ export function TerminalView({
     term.loadAddon(new UnicodeGraphemesAddon())
     term.unicode.activeVersion = '15-graphemes'
 
-    term.loadAddon(
-      new WebLinksAddon((event, uri) => {
-        event.preventDefault()
-        openUrlRef.current(uri)
-      })
-    )
+    term.loadAddon(new WebLinksAddon(openLink))
+
+    /*
+     * OSC 52, the only way text copied on the far side of an SSH connection can
+     * reach this machine's clipboard. `pbcopy` writes to the *remote* clipboard;
+     * tmux copy-mode and `vim "+y` have no other channel. xterm ships no handler
+     * — 52 is listed as unimplemented in `InputHandler.ts` — so before this,
+     * copying inside a VPS session simply had nowhere to go.
+     *
+     * The read direction is refused, not answered. `OSC 52 ; c ; ?` asks the
+     * terminal to *report* the clipboard, and everything a terminal renders is
+     * untrusted: a hostile file printed with `cat` could otherwise read whatever
+     * the user last copied, passwords included. Writing is the safe half, and
+     * the half anyone actually wants.
+     */
+    term.parser.registerOscHandler(52, (data) => {
+      const semi = data.indexOf(';')
+      // `<Pc>;<Pd>` — Pc selects the clipboard and is ignored; Stoke has one.
+      if (semi < 0) return true
+      const payload = data.slice(semi + 1)
+      if (!payload || payload === '?' || payload.length > MAX_OSC52_BASE64) return true
+      try {
+        const bytes = Uint8Array.from(atob(payload), (c) => c.charCodeAt(0))
+        const text = new TextDecoder().decode(bytes)
+        if (text) window.stoke.clipboard.writeText(text)
+      } catch {
+        /* not valid base64: the sequence is malformed, so drop it */
+      }
+      return true
+    })
 
     term.open(host)
 
@@ -280,11 +364,27 @@ export function TerminalView({
      * the event ever reaching xterm's listeners further down the tree.
      */
     const onMouseDown = (e: MouseEvent): void => {
-      if (e.button === 2) e.stopPropagation()
+      /*
+       * A macOS Ctrl+click is the secondary click, but Chromium does not renumber
+       * the button for it: Blink dispatches the context menu off the *left*
+       * button carrying Control, so `e.button` is 0 and `e.ctrlKey` is true.
+       * (Firefox is the engine that remaps to button 2, which is why xterm binds
+       * its own right-click through `contextmenu` instead —
+       * `CoreBrowserTerminal.ts:346-358`.) Keyed on the button number alone, this
+       * guard let a Ctrl+click through to do three things at once: report a click
+       * to the CLI, open Stoke's menu, and activate whatever link was under it.
+       * Now it means one thing, the same thing a right-click means everywhere.
+       */
+      if (e.button === 2 || (isMacPlatform && e.button === 0 && e.ctrlKey)) e.stopPropagation()
+    }
+
+    const onDownPoint = (e: MouseEvent): void => {
+      downAt.x = e.clientX
+      downAt.y = e.clientY
     }
 
     /*
-     * Shift-drag selects on macOS too, so the gesture is the same everywhere.
+     * Shift-drag selects on every platform, in either mouse mode.
      *
      * xterm decides this internally and offers no hook for it —
      * `shouldForceSelection` is
@@ -311,12 +411,48 @@ export function TerminalView({
      * Only mousedown is retold. It is what starts a selection and the only
      * event whose modifiers are read; xterm tracks the rest of the drag through
      * its own document-level move and up listeners, which take no modifiers.
+     *
+     * The clone must drop Shift rather than merely add Alt, and that is the
+     * whole reason a VPS session could not be copied out of. xterm branches on
+     * whether selection is *enabled* before it ever consults the force-selection
+     * modifier:
+     *
+     *   if (this._enabled && event.shiftKey) { this._handleIncrementalClick(e) }
+     *   else                                 { … _handleSingleClick(e) … }
+     *
+     * (SelectionService.ts:478). `_enabled` is true exactly when mouse reporting
+     * is *off* (`CoreBrowserTerminal.ts:547-552`, `:731-739`), and
+     * `_handleIncrementalClick` (`:523-527`) is a no-op when nothing is selected
+     * yet — it only ever moves the end of an existing selection. So a Shift-drag
+     * with Shift still set selected nothing at any plain shell prompt, while
+     * working fine under `claude`. A local tab always runs `claude` and reports
+     * the mouse for its whole life, so it never showed; an SSH tab is the only
+     * tab that sits at a shell, which is why this read as "copying is broken on
+     * the VPS" and nowhere else. Dropping Shift lands both modes on
+     * `_handleSingleClick`, which is what starts a selection.
+     *
+     * Which is also why this is no longer macOS-only. Off macOS xterm reads
+     * Shift directly (`:442`) and needs no help *while the mouse is reported* —
+     * but at a shell prompt it walks into the same dead branch, natively. So the
+     * retelling is keyed on the mode rather than the platform, and Alt is added
+     * only where it is the thing xterm demands: macOS with reporting on.
      */
     const retold = new WeakSet<MouseEvent>()
     const onShiftDrag = (e: MouseEvent): void => {
-      if (!isMacPlatform || e.button !== 0 || !e.shiftKey || e.altKey) return
+      if (e.button !== 0 || !e.shiftKey || e.altKey) return
       // Our own clone, coming back around: let it through or this recurses.
       if (retold.has(e)) return
+
+      const reporting = term.modes.mouseTrackingMode !== 'none'
+      // Reporting on, off macOS: xterm's own branch reads Shift and already
+      // forces the selection. Nothing to retell.
+      if (reporting && !isMacPlatform) return
+      /*
+       * Reporting off, with something already selected: here the branch above is
+       * not a dead end but a feature — Shift-click extends a selection, which is
+       * what every other terminal does too. Left alone deliberately.
+       */
+      if (!reporting && term.hasSelection()) return
 
       e.preventDefault()
       e.stopPropagation()
@@ -333,8 +469,15 @@ export function TerminalView({
         buttons: e.buttons,
         // Carried through: a double-click still selects a word, a triple a line.
         detail: e.detail,
-        altKey: true,
-        shiftKey: true,
+        // Only macOS-with-reporting needs Alt, and only that case may have it:
+        // it is what `shouldForceSelection` demands there and means nothing
+        // otherwise. `shouldColumnSelect` cannot fire either way, since it is
+        // `altKey && !(isMac && macOptionClickForcesSelection)` (`:591-593`) and
+        // that option is on.
+        altKey: reporting,
+        // Dropped, not kept — see above. With Shift set, the reporting-off case
+        // takes the extend branch and selects nothing.
+        shiftKey: false,
         ctrlKey: e.ctrlKey,
         metaKey: e.metaKey
       })
@@ -351,6 +494,9 @@ export function TerminalView({
         clip: window.stoke.clipboard.readSync()
       })
     }
+    // The press point is recorded first, so it is already right when the shim
+    // below re-dispatches and when a link activates on the matching mouseup.
+    host.addEventListener('mousedown', onDownPoint, true)
     host.addEventListener('mousedown', onShiftDrag, true)
     host.addEventListener('mousedown', onMouseDown, true)
     host.addEventListener('mouseup', onMouseDown, true)
@@ -373,6 +519,7 @@ export function TerminalView({
 
     return () => {
       ro.disconnect()
+      host.removeEventListener('mousedown', onDownPoint, true)
       host.removeEventListener('mousedown', onShiftDrag, true)
       host.removeEventListener('mousedown', onMouseDown, true)
       host.removeEventListener('mouseup', onMouseDown, true)

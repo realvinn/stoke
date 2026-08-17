@@ -179,13 +179,51 @@ function page(altClickMovesCursor: boolean, modes: string): string {
     '  term.write("the quick brown fox jumps over the lazy dog\\r\\n")',
     '  term.write("second line of text to drag across\\r\\n")',
     '  await new Promise(r => setTimeout(r, 80))',
-    '  mouse(screen, "mousedown", 200, 8, { shiftKey: true, altKey: true })',
+    '  mouse(screen, "mousedown", 200, 8, { shiftKey: false, altKey: true })',
     '  await new Promise(r => setTimeout(r, 16))',
-    '  mouse(document, "mousemove", 60, 26, { shiftKey: true, altKey: true })',
+    '  mouse(document, "mousemove", 60, 26, { shiftKey: false, altKey: true })',
     '  await new Promise(r => setTimeout(r, 16))',
-    '  mouse(document, "mouseup", 60, 26, { shiftKey: true, altKey: true })',
+    '  mouse(document, "mouseup", 60, 26, { shiftKey: false, altKey: true })',
     '  await new Promise(r => setTimeout(r, 60))',
-    '  record(term, "shift+alt across two rows")',
+    '  record(term, "alt across two rows")',
+    '',
+    /*
+     * The two clones side by side: the one the shim used to dispatch and the one
+     * it dispatches now. This is the assertion the suite was missing, and it is
+     * missing in a way that mattered — every case here turns mouse reporting ON,
+     * and with it on both clones behave identically, because xterm's Mac branch
+     * reads `altKey` and ignores Shift entirely. The divergence only appears
+     * with reporting OFF, which is the state a VPS tab sits in at a byobu or
+     * login prompt and the state no case here ever ran.
+     *
+     * With reporting off, `handleMouseDown` takes `if (this._enabled &&
+     * event.shiftKey) _handleIncrementalClick(e)` (SelectionService.ts:478) —
+     * and incremental click only moves the END of an existing selection, so with
+     * nothing selected yet it is a no-op and the drag selects nothing at all.
+     * Stripping Shift lands on `_handleSingleClick` instead, which is what
+     * actually starts one.
+     *
+     * Both readings are asserted for every run, because "Shift alone does not
+     * force a selection" and "the retold event does" are true in both modes and
+     * for different reasons — so a single pair of assertions pins the whole
+     * matrix.
+     */
+    '  async function bare(name, opts) {',
+    '    term.clearSelection()',
+    '    term.write("\\u001b[2J\\u001b[3J\\u001b[H")',
+    '    term.write("the quick brown fox jumps over the lazy dog\\r\\n")',
+    '    await new Promise(r => setTimeout(r, 80))',
+    '    mouse(screen, "mousedown", 10, 8, opts)',
+    '    await new Promise(r => setTimeout(r, 16))',
+    '    mouse(document, "mousemove", 240, 8, opts)',
+    '    await new Promise(r => setTimeout(r, 16))',
+    '    mouse(document, "mouseup", 240, 8, opts)',
+    '    await new Promise(r => setTimeout(r, 60))',
+    '    record(term, name)',
+    '  }',
+    '  await bare("shift kept (the old clone)", { shiftKey: true, altKey: false })',
+    '  await bare("shift stripped (the clone now)", { shiftKey: false, altKey: true })',
+    '  await bare("no modifier at all", { shiftKey: false, altKey: false })',
     '  return results',
     '}',
     '',
@@ -261,6 +299,16 @@ async function main(): Promise<void> {
         '\\u001b[?1000h\\u001b[?1003h\\u001b[?1006h'
       )
     )
+    /*
+     * No mouse reporting at all — the state every case above skipped, and the
+     * one a VPS tab is actually in whenever it sits at a shell rather than
+     * inside `claude`. `hosts[0].command` is `byobu` here, and byobu enables no
+     * reporting, so this is not a hypothetical: it is the tab the user copies
+     * out of. xterm's selection is ENABLED in this mode, which flips which
+     * branch of `handleMouseDown` a Shift-drag takes, and the branch it lands on
+     * with Shift still set does nothing.
+     */
+    out.push(await runCase(dir, 'no mouse reporting (a plain shell)', false, ''))
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
@@ -288,15 +336,51 @@ async function main(): Promise<void> {
      * nothing at all.
      */
     const control = run.steps.find((s) => s.name.startsWith('control'))
+    const reporting = !run.label.startsWith('no mouse reporting')
     check(
-      `${run.label}: mouse reporting really is on`,
-      run.mouseEventsActive === true,
+      `${run.label}: mouse reporting is ${reporting ? 'on' : 'off'}, as this case intends`,
+      run.mouseEventsActive === reporting,
       `enable-mouse-events=${run.mouseEventsActive}`
     )
+    if (reporting) {
+      check(
+        `${run.label}: so a plain drag selects nothing (the control)`,
+        !!control && control.selection.length === 0,
+        control ? `got ${JSON.stringify(control.selection)}` : 'no reading'
+      )
+    } else {
+      /*
+       * Inverted, and it is the whole reason this case exists: with nothing
+       * taking the mouse, a plain unmodified drag selects normally. So a VPS tab
+       * at a shell prompt was never short of a way to select — it was short of
+       * the one Stoke's own hint told the user to use.
+       */
+      check(
+        `${run.label}: a plain drag selects, with nothing holding the mouse`,
+        !!control && control.selection.length > 0,
+        control ? `got ${JSON.stringify(control.selection)}` : 'no reading'
+      )
+    }
+
+    const kept = run.steps.find((s) => s.name === 'shift kept (the old clone)')
+    const stripped = run.steps.find((s) => s.name === 'shift stripped (the clone now)')
+    /*
+     * True in both modes, for two different reasons — which is why it is one
+     * assertion rather than two. With reporting ON, xterm's Mac branch of
+     * `shouldForceSelection` reads `altKey` and nothing else, so Shift alone
+     * never forces a selection. With reporting OFF, Shift steers into
+     * `_handleIncrementalClick`, which is a no-op with nothing yet selected.
+     * Either way, a clone that keeps Shift selects nothing.
+     */
     check(
-      `${run.label}: so a plain drag selects nothing (the control)`,
-      !!control && control.selection.length === 0,
-      control ? `got ${JSON.stringify(control.selection)}` : 'no reading'
+      `${run.label}: a clone that keeps Shift selects nothing`,
+      !!kept && kept.selection.length === 0,
+      kept ? `got ${JSON.stringify(kept.selection)}` : 'no reading'
+    )
+    check(
+      `${run.label}: and the clone with Shift stripped does select`,
+      !!stripped && stripped.selection.length > 0,
+      stripped ? `got ${JSON.stringify(stripped.selection)}` : 'no reading'
     )
 
     for (const mid of run.steps.filter((s) => s.name.endsWith('[mid-drag]'))) {
@@ -368,10 +452,10 @@ async function main(): Promise<void> {
    * and every run in this suite sets it.
    */
   for (const run of out) {
-    const shim = run.steps.find((s) => s.name === 'shift+alt across two rows')
+    const shim = run.steps.find((s) => s.name === 'alt across two rows')
     if (!shim) continue
     check(
-      `${run.label}: a shift+alt drag wraps the line rather than cutting a column`,
+      `${run.label}: the retold drag wraps the line rather than cutting a column`,
       shim.selection.includes('lazy dog'),
       JSON.stringify(shim.selection)
     )
