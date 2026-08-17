@@ -4,6 +4,7 @@ import { BUILT_IN_THEMES } from '@shared/themes'
 import {
   clampFontSize,
   clampUiScale,
+  type ZoomTarget,
   FONT_SIZE_MAX,
   FONT_SIZE_MIN,
   UI_SCALE_MAX,
@@ -17,6 +18,21 @@ import { ProfilesSettings } from './ProfilesSettings'
 import { RemoteSettings, SelfUpdateSettings, UpdatesSettings } from './RemoteSettings'
 import { WorklogSettings } from './WorklogSettings'
 import { EFFORT_LEVELS, MODEL_OPTIONS, PERMISSION_MODES } from '../lib/permissions'
+
+/**
+ * The zoom targets, worded as what they move rather than as their ids.
+ *
+ * "Both" first because it is the default and the one most people mean; the
+ * hints say what the other two deliberately leave alone, since a zoom key that
+ * visibly changes nothing is the failure mode here — pick "Interface" and the
+ * terminal text genuinely will not move, because xterm takes its size in px
+ * from the font setting and never from the interface scale.
+ */
+const ZOOM_TARGET_LABELS: { id: ZoomTarget; label: string; hint: string }[] = [
+  { id: 'both', label: 'Both', hint: 'Interface scale and terminal font together' },
+  { id: 'terminal', label: 'Terminal', hint: 'Terminal font only — the interface stays put' },
+  { id: 'interface', label: 'Interface', hint: 'Interface only — the terminal text stays put' }
+]
 
 interface Props {
   settings: Settings
@@ -147,6 +163,31 @@ export function SettingsSheet({
               onChange={(e) => onPatch({ uiScale: clampUiScale(e.target.value) })}
             />
             <span className="field-hint">Scales everything except the terminal contents.</span>
+          </div>
+
+          {/*
+            Which of the two sizes above the zoom keys move. Offered rather than
+            decided, because both answers are the convention somewhere: a
+            terminal scales only its font, an editor scales everything, and
+            Stoke is an editor-shaped app full of terminal-shaped content.
+          */}
+          <div className="field">
+            <span className="field-label">Zoom keys change</span>
+            <div className="segmented" role="group" aria-label="What the zoom shortcut changes">
+              {ZOOM_TARGET_LABELS.map((z) => (
+                <button
+                  key={z.id}
+                  aria-pressed={settings.zoomTarget === z.id}
+                  title={z.hint}
+                  onClick={() => onPatch({ zoomTarget: z.id })}
+                >
+                  {z.label}
+                </button>
+              ))}
+            </div>
+            <span className="field-hint">
+              {window.stoke.platform === 'darwin' ? 'Cmd' : 'Ctrl'} with <kbd>+</kbd>, <kbd>−</kbd> or <kbd>0</kbd> to reset.
+            </span>
           </div>
 
           <div className="field">

@@ -2,6 +2,7 @@
  * Types shared by the main process, the preload bridge and the renderer.
  * This file must stay free of any Node or DOM imports.
  */
+import type { ZoomTarget } from './ui.ts'
 
 /* ------------------------------------------------------------------ launch */
 
@@ -530,6 +531,12 @@ export interface Settings {
   fontFamily: string
   fontSize: number
   uiScale: number
+  /**
+   * What the zoom keys move: the interface, the terminal font, or both.
+   * A setting because Stoke has two independent size settings and which one
+   * "zoom" means depends on whether you came from a terminal or an editor.
+   */
+  zoomTarget: ZoomTarget
   defaults: {
     permissionMode: PermissionMode
     model: string

@@ -101,6 +101,15 @@ check('so is 0', hydrateSettings({ uiScale: 0 }).uiScale, 0.8)
 check('and junk falls back to 1', hydrateSettings({ uiScale: 'big' }).uiScale, 1)
 check('a legitimate value is untouched', hydrateSettings({ uiScale: 1.25 }).uiScale, 1.25)
 
+/*
+ * zoomTarget decides which of the two sizes above the zoom keys move. Junk
+ * must fall back rather than disable zoom: an unrecognised value that survived
+ * hydration would leave the shortcut firing and visibly doing nothing.
+ */
+check('zoomTarget defaults to both', hydrateSettings({}).zoomTarget, 'both')
+check('a real target is kept', hydrateSettings({ zoomTarget: 'terminal' }).zoomTarget, 'terminal')
+check('junk falls back to both', hydrateSettings({ zoomTarget: 'sideways' }).zoomTarget, 'both')
+
 console.log('\nterminal font size, which rounds as well as clamps')
 check('a hand-typed 3 is clamped up to the floor', hydrateSettings({ fontSize: 3 }).fontSize, 9)
 check('and 30 is clamped down to the ceiling', hydrateSettings({ fontSize: 30 }).fontSize, 24)
