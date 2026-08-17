@@ -230,9 +230,41 @@ scripts/          the verify-*.mts suites, make-icon.cjs
     relies on for every case it runs; and the synthetic Alt cannot become a *block* selection,
     because `shouldColumnSelect` is `altKey && !(isMac && macOptionClickForcesSelection)`
     (`:591-593`) — xterm gates the two meanings of Alt against each other precisely so they
-    cannot both fire. Asserted directly: a shift+alt drag from one row to the next comes back
+    cannot both fire. Asserted directly: an alt drag from one row to the next comes back
     wrapping the first line's tail, which a column selection never would. Option-drag still
     works, since the option it needs is still on.
+
+    **The clone must DROP Shift, not merely add Alt, and getting that wrong is what made a VPS
+    session impossible to copy out of.** xterm branches on whether selection is *enabled*
+    before it ever consults the force-selection modifier:
+
+        if (this._enabled && event.shiftKey) { this._handleIncrementalClick(event) }
+        else                                 { … _handleSingleClick(event) … }
+
+    (`SelectionService.ts:478`). `_enabled` is true exactly when mouse reporting is **off**
+    (`CoreBrowserTerminal.ts:547-552`, `:731-739`), and `_handleIncrementalClick` (`:523-527`)
+    only moves the *end* of an existing selection — so with nothing selected yet it is a no-op
+    and the drag selects nothing at all. A clone carrying both modifiers therefore worked under
+    `claude` and dead-ended at every plain shell prompt. A local tab always spawns `claude` and
+    reports the mouse for its whole life, so it never showed; **an SSH tab is the only tab that
+    can sit at a shell** — `hosts[].command` of `byobu` here, and byobu enables no reporting —
+    which is why this read as "copying is broken on the VPS" and nowhere else, and why it came
+    and went *within* one tab as `claude` started and exited.
+
+    That is also why the shim is no longer macOS-only. Off macOS `shouldForceSelection` is
+    `event.shiftKey` (`:442`) and needs no help *while the mouse is reported*, but it walks into
+    the same dead branch at a shell prompt, natively. So the retelling is keyed on
+    `term.modes.mouseTrackingMode` rather than on the platform, and Alt is added only where
+    xterm demands it: macOS with reporting on. A real Shift-drag is left alone when reporting is
+    off **and** something is already selected, because there the extend branch is the feature
+    rather than the dead end.
+
+    Two more things about that mode nobody had measured: with reporting off a **plain
+    unmodified drag selects normally on every platform**, so the VPS tab was never short of a
+    way to select — it was short of the one the context-menu hint named. And `verify:selection`
+    could not have caught any of this, because all five of its cases enabled reporting and
+    `:293` asserted that as a hard control. It now runs a `modes: ''` case, and asserts both
+    clone shapes side by side in every case.
 
     Two features fighting over one key is also how the selection used to vanish the moment you
     let go: `altClickMovesCursor` defaults **on**, reads the same still-held Option on mouseup,
@@ -395,6 +427,84 @@ scripts/          the verify-*.mts suites, make-icon.cjs
     wrongly: **`scripts/` is in neither include**, so the verify suites are never typechecked. They
     are run, which is most of the point — but node's strip-only mode checks nothing, so a suite can
     be type-wrong and still exit 0 with every assertion passing, and `typecheck` will never say so.
+
+28. **A terminal link has no modifier gate and fires on mouseup.** `Linkifier._handleMouseDown`
+    takes no event argument at all (`Linkifier.ts:216-218`), and `_handleMouseUp` (`:220-233`)
+    checks only that the link is still current, that the press was on the same link, and that
+    the release is inside its range — no modifier, no button, no distance. So a plain click, a
+    Cmd-click, a middle-click and a *drag from a URL's first character to its last* all did the
+    same thing: open it. Dragging across a URL to copy it therefore yanked the browser panel
+    open, which compounds the selection trouble above rather than being separate from it.
+    `TerminalView` now records the press point and treats anything past `DRAG_SLOP_PX` as a
+    drag, and reads the modifiers the callback was always handed: Shift or Cmd/Ctrl sends the
+    URL to the real browser through the `openExternal` channel that already existed, plain click
+    keeps the docked one.
+
+    Two related things in the same area. **OSC 8 hyperlinks bypassed all of it and went
+    nowhere**: `OscLinkProvider` is registered in xterm's constructor, before any addon, and
+    wins on any cell carrying a urlId — with no `linkHandler` option set it fell to
+    `defaultActivate` (`OscLinkProvider.ts:114-129`), which is a blocking `confirm()` calling the
+    link "potentially dangerous" followed by `window.open()` with **no argument**, arriving at
+    the main window handler as `about:blank`, failing its `/^https?:/i` test and being denied.
+    A scary dialog and then nothing, on every link npm, vite, gh, cargo and docker emit. And
+    **a macOS Ctrl+click is `button 0` with `ctrlKey`**, not button 2 — Blink dispatches the
+    context menu off the left button carrying Control (Firefox is the engine that remaps), so a
+    guard keyed on the button number let one gesture report a click to the CLI, open Stoke's
+    menu *and* activate a link, all three at once. xterm knows this and binds its own right-click
+    through `contextmenu` instead (`CoreBrowserTerminal.ts:346-358`).
+
+29. **ssh's `~` escape is live on every SSH tab, and it corrupts pastes.** `buildSshArgs` sent no
+    `-e none`, and ssh runs on a pty here, so client-side escape processing is on regardless of
+    `-t`. `~` is read as an escape only directly after a newline — which is exactly where a
+    multi-line paste puts it, because xterm rewrites every newline to a bare `\r` and brackets
+    the blob as a whole rather than line by line (`Clipboard.ts:14,21-26`). Line 1 is safe and
+    lines 2..n are not: `~~` collapses to `~`, `~?` and `~#` print ssh's own help over the
+    session, and `~.` kills the connection while the user watches their paste do it. It reads as
+    "paste is flaky" because it is content-dependent, and `~/some/path` survives untouched.
+
+    Related and still open: **Stoke registers no OSC 52 handler** by default in xterm — 52 is
+    listed unimplemented in `InputHandler.ts` — so nothing on the far side of an ssh connection
+    could put text on the local clipboard. `pbcopy` writes to the *remote* clipboard; tmux
+    copy-mode and `vim "+y` had no channel at all. `TerminalView` now handles the write
+    direction and **refuses the read direction**, because `OSC 52 ; c ; ?` asks the terminal to
+    report the clipboard and everything a terminal renders is untrusted — a hostile file printed
+    with `cat` would otherwise read whatever was last copied. Note this still needs the far side
+    to emit it: tmux wants `set -g set-clipboard on`.
+
+30. **Three separate things stopped the worklog ever marking anything done, and only one of them
+    was in the write path.** In likelihood order:
+
+    - **`formatRecall` blind-sliced the listing.** `clip(blocks.join('\n'), 2400)` against
+      `MAX_RECALL_ITEMS = 30` at ~130 characters a line left roughly half the records standing,
+      with the boundary line severed mid-id. That string is the *only* channel by which a board
+      id reaches a scan — the scan is `--safe-mode` (gotcha 15) with no MCP server to look one
+      up, and is told an id it cannot see does not exist — so a finished task below the cut came
+      back as a duplicate **create** and the original stayed open. Nothing counted it: `demoted`
+      only counts ids the model *did* name. The two caps must be reconciled or the smaller one
+      silently decides how many records the scan can see; the budget is now per board, trims
+      whole lines, and never trims the header, which carries the closed statuses.
+    - **The queue's update key ignored the status.** `sessionId|update|<record>` meant a
+      session's first update took the record's key and every later one collapsed onto it — and
+      the prompt asks for an update whenever an item was finished, started *or blocked*, so
+      "started X" reliably consumed the key that "X is done" needed. Silently: `add` just
+      `continue`s. Accepting the first does not release it either, since `accept` only patches
+      `status` and `ProposalPatch` excludes `newStatus`. The status is in the key now; gotcha 17
+      still holds, because the *create* key is untouched and rejections also contribute a
+      title-based key (`queue.ts:368-372`).
+    - **Notion had no way to learn its own closed statuses.** `TOOLS_FOR.notion` held only
+      `query-data-sources` and `search`, neither of which returns a schema, so "report every
+      value its status property allows" was unanswerable and the vocabulary degraded to whatever
+      appeared on the pages recalled. That is gotcha 16's ClickUp problem exactly, unfixed on
+      the destination that ships as the default. `notion-fetch` is in both the recall allowlist
+      and the update write list now — the write needs it too, because a page's status property
+      can be called anything and `notion-update-page` has to name it.
+
+    Two smaller ones worth carrying: an out-of-vocabulary status was dropped with **no counter,
+    no log and no field**, so the note was written, the write returned ok, and the panel drew
+    "Written" over a task nobody had closed — from outside, "nothing needed closing" and "the
+    closing word was refused" were the same event. And the gate compared lowercased but stored
+    the model's spelling, so the live queue holds `{"notion":"COMPLETE"}` against a board that
+    spells it otherwise; `canonicalStatus` returns the board's own spelling now.
 
 ## Standing traps when driving the app
 
