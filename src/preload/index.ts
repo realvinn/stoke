@@ -2,7 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type { IpcRendererEvent } from 'electron'
 import { CH } from '@shared/ipc'
 import type { ClipboardPeek, StokeApi } from '@shared/api'
-import type { Rect, LaunchOptions, ProjectMeta, Settings } from '@shared/types'
+import type { Rect, LaunchOptions, ProjectMeta, Settings, StoredTabs } from '@shared/types'
 
 /** Subscribe helper that hands back an unsubscribe function. */
 function on<A extends unknown[]>(
@@ -145,6 +145,11 @@ const api: StokeApi = {
     onScanned: (cb) => on<[Parameters<typeof cb>[0]]>(CH.worklogScanned, cb),
     watch: () => ipcRenderer.invoke(CH.worklogWatch),
     onWatchChanged: (cb) => on<[Parameters<typeof cb>[0]]>(CH.worklogWatchChanged, cb)
+  },
+
+  tabs: {
+    save: (state: StoredTabs) => ipcRenderer.send(CH.tabsSave, state),
+    restore: () => ipcRenderer.invoke(CH.tabsRestore)
   },
 
   audio: {

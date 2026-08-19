@@ -9,6 +9,7 @@ import type {
   Settings,
   SshHost,
   StatusLineSnapshot,
+  StoredTabs,
   WorklogScanOutcome,
   WorklogScanReport,
   WorklogWatchState
@@ -26,6 +27,7 @@ import { checkMicrophone } from './audio/defaultDevice.ts'
 import { transcribe } from './stt.ts'
 import { createProfile, planProfile } from './profiles.ts'
 import { readSshConfigHosts } from './ssh.ts'
+import { readTabState, tabStateFile, writeTabState } from './tabStore.ts'
 import { getWorklogQueue } from './worklog/queue.ts'
 import {
   applyProposal,
@@ -872,6 +874,16 @@ function createWindow(): void {
   })
 }
 
+/*
+ * The newest snapshot the renderer has sent.
+ *
+ * Held in memory and written on every push AND again on before-quit. Writing on
+ * push is what makes this survive a crash or a force-kill, which are exactly the
+ * cases where nothing gets a chance to ask the renderer for anything; the quit
+ * flush is belt and braces for the last few hundred ms of edits.
+ */
+let lastTabState: StoredTabs | null = null
+
 function registerIpc(): void {
   /* ---------------------------------------------------------- window chrome */
   ipcMain.on(CH.winMinimize, () => win?.minimize())
@@ -1201,6 +1213,14 @@ function registerIpc(): void {
   /* ------------------------------------------------------------------- ssh */
   ipcMain.handle(CH.sshHosts, () => readSshConfigHosts())
 
+  /* ------------------------------------------------------------------ tabs */
+  ipcMain.on(CH.tabsSave, (_e, state: StoredTabs) => {
+    lastTabState = state
+    writeTabState(tabStateFile(app.getPath('userData')), state)
+  })
+
+  ipcMain.handle(CH.tabsRestore, () => readTabState(tabStateFile(app.getPath('userData'))))
+
   /* --------------------------------------------------------------- worklog */
   /*
    * Both runs cost money and can fail, so every handler returns a result object
@@ -1417,6 +1437,7 @@ if (!app.requestSingleInstanceLock()) {
   })
 
   app.on('before-quit', () => {
+    if (lastTabState) writeTabState(tabStateFile(app.getPath('userData')), lastTabState)
     ptys?.killAll()
     watcher?.disposeAll()
     mcp?.stop()

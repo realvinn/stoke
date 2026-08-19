@@ -111,6 +111,10 @@ export const CH = {
   // ssh
   sshHosts: 'ssh:hosts',
 
+  // tab restore
+  tabsSave: 'tabs:save',
+  tabsRestore: 'tabs:restore',
+
   // worklog
   worklogQueue: 'worklog:queue',
   worklogScan: 'worklog:scan',

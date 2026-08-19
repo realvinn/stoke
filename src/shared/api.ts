@@ -10,6 +10,7 @@ import type {
   SessionMeta,
   Settings,
   StatusLineSnapshot,
+  StoredTabs,
   UsageSnapshot,
   WorklogProposal,
   WorklogProposedEvent,
@@ -316,6 +317,18 @@ export interface StokeApi {
      */
     watch(): Promise<WorklogWatchState[]>
     onWatchChanged(cb: (states: WorklogWatchState[]) => void): () => void
+  }
+
+  /**
+   * The tabs that were open when Stoke last quit.
+   *
+   * `save` is fire-and-forget on purpose: it runs on a debounce while the user
+   * works, and a snapshot that is one write behind is worth far more than one
+   * that blocks the UI thread to be exact.
+   */
+  tabs: {
+    save(state: StoredTabs): void
+    restore(): Promise<StoredTabs>
   }
 
   audio: {
