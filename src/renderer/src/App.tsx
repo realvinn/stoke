@@ -20,6 +20,7 @@ import { worklogButtonState } from '@shared/worklog'
 import { BrowserPanel } from './components/BrowserPanel'
 import { CommandPalette } from './components/CommandPalette'
 import { Launcher } from './components/Launcher'
+import { PausedSession } from './components/PausedSession'
 import { Resizer } from './components/Resizer'
 import { SettingsSheet } from './components/SettingsSheet'
 import { Sidebar } from './components/Sidebar'
@@ -34,7 +35,7 @@ import { zoomStep } from '@shared/ui'
 import { matchShortcut } from './lib/shortcuts'
 import { newTab } from './lib/newTab'
 import { profileIdForCwd } from './lib/projectProfile'
-import { toStored } from './lib/restore'
+import { fromStored, screensFrom, toStored } from './lib/restore'
 import { screenOf } from './lib/termRegistry'
 import { moveTab, neighbourOf, replaceOrAppend } from './lib/tabs'
 import { applyAppearance, applyTypography } from './lib/theme'
@@ -120,6 +121,11 @@ export function App(): React.JSX.Element {
   useEffect(() => {
     setActiveTabId((cur) => cur ?? tabs[0]?.id ?? null)
   }, [tabs])
+
+  /** Screens for tabs restored from the last run, keyed by tab id. */
+  const [restoredScreens, setRestoredScreens] = useState<Record<string, string>>({})
+  /** True until the boot restore has been attempted, so nothing saves over it. */
+  const restored = useRef(false)
 
   /*
    * The visible selection: the active New tab's own target when there is one,
@@ -531,17 +537,26 @@ export function App(): React.JSX.Element {
    * a snapshot taken only at quit is worthless in exactly the cases that hurt
    * most — a crash, an OOM kill, or the force-kill CLAUDE.md warns against.
    *
-   * A paused tab keeps the screen it was restored with: it has no process, so
-   * `screenOf` finds no terminal and returns '' for it.
+   * A paused tab has no process, so `screenOf` finds no terminal for its empty
+   * `ptyId` and would return ''. The resolver checks status instead of calling
+   * `screenOf` unconditionally, so a paused tab keeps the screen it was
+   * restored with rather than having the very first debounce after launch
+   * silently overwrite it with an empty string.
    */
   useEffect(() => {
     const id = window.setTimeout(() => {
       window.stoke.tabs.save(
-        toStored(tabs, activeTabId, contexts, (t) => screenOf(t.ptyId), Date.now())
+        toStored(
+          tabs,
+          activeTabId,
+          contexts,
+          (t) => (t.status === 'paused' ? (restoredScreens[t.id] ?? '') : screenOf(t.ptyId)),
+          Date.now()
+        )
       )
     }, 500)
     return () => window.clearTimeout(id)
-  }, [tabs, activeTabId, contexts])
+  }, [tabs, activeTabId, contexts, restoredScreens])
 
   /** The New Project tab a launch should consume, or null to append. */
   const activeNewTabId = useMemo(() => {
@@ -684,7 +699,7 @@ export function App(): React.JSX.Element {
    * and a meter would have to invent a number.
    */
   const startHostSession = useCallback(
-    async (host: SshHost): Promise<void> => {
+    async (host: SshHost, replaceTabId?: string): Promise<void> => {
       setError(null)
       try {
         const res = await window.stoke.pty.start({
@@ -713,15 +728,51 @@ export function App(): React.JSX.Element {
           selectedPath: null,
           expandedPath: null
         }
-        /* Same replace-or-append rule as startSession: connecting to a host
-           from the launcher consumes the New tab it was launched from. */
-        setTabs((list) => replaceOrAppend(list, tab, activeNewTabId))
+        /*
+         * Same replace-or-append rule as startSession: connecting to a host
+         * from the launcher consumes the New tab it was launched from. A
+         * caller resuming a paused remote tab passes its own id instead, so
+         * `replaceTabId` wins when given — `activeNewTabId` is only the
+         * fallback for the launcher's own call site.
+         */
+        setTabs((list) => replaceOrAppend(list, tab, replaceTabId ?? activeNewTabId))
         setActiveTabId(tab.id)
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e))
       }
     },
     [defaultCwd, mode, model, effort, activeNewTabId]
+  )
+
+  /*
+   * Resuming a paused tab replaces it at its own index — `replaceOrAppend`
+   * does that already (lib/tabs.ts:31-41) — so the tab does not jump to the
+   * end of the strip the moment you start it.
+   *
+   * Returns null when there is nothing to resume, which the card turns into a
+   * Close-only state rather than a button that fails.
+   */
+  const resumeTabFor = useCallback(
+    (tab: Tab): (() => void) | null => {
+      if (tab.hostId) {
+        const host = settings?.hosts.find((h) => h.id === tab.hostId)
+        if (!host) return null
+        return () => void startHostSession(host, tab.id)
+      }
+      return () =>
+        void startSession({
+          cwd: tab.cwd,
+          name: tab.projectName,
+          title: tab.title,
+          sessionId: tab.sessionId || undefined,
+          // No id means a --continue session, which never learned its own
+          // (gotcha 26). Continue in the same folder instead.
+          resume: Boolean(tab.sessionId),
+          continueLast: !tab.sessionId,
+          replaceTabId: tab.id
+        })
+    },
+    [settings, startSession, startHostSession]
   )
 
   /** Quick start with no project: run in the configured default folder. */
@@ -749,6 +800,26 @@ export function App(): React.JSX.Element {
       setError(e instanceof Error ? e.message : String(e))
     }
   }, [startSession, refreshProjects, activeNewTabId])
+
+  /*
+   * Bring back the tabs from the last run, paused.
+   *
+   * Runs once. The guard is a ref rather than a dep list because a second pass
+   * would overwrite whatever the user has already done in this run — including
+   * under StrictMode's double-invoked effects, the same reason `autoStarted`
+   * next door is a ref.
+   */
+  useEffect(() => {
+    if (restored.current) return
+    restored.current = true
+    void window.stoke.tabs.restore().then((state) => {
+      if (!state.tabs.length) return
+      const { tabs: back, activeId } = fromStored(state)
+      setRestoredScreens(screensFrom(state, back))
+      setTabs(back)
+      setActiveTabId(activeId)
+    })
+  }, [])
 
   // Optional "open straight into a session" behaviour. The ref keeps it to a
   // single attempt, including under StrictMode's double-invoked effects.
@@ -1147,19 +1218,30 @@ export function App(): React.JSX.Element {
           >
             {tabs
               .filter((tab) => tab.kind === 'session')
-              .map((tab) => (
-                <TerminalView
-                  key={tab.id}
-                  tab={tab}
-                  active={tab.id === activeTabId}
-                  theme={theme}
-                  fontFamily={settings?.fontFamily ?? 'monospace'}
-                  fontSize={settings?.fontSize ?? 13}
-                  onOpenUrl={openUrl}
-                  onRestart={restartTab}
-                  onClose={closeTab}
-                />
-              ))}
+              .map((tab) =>
+                tab.status === 'paused' ? (
+                  <PausedSession
+                    key={tab.id}
+                    tab={tab}
+                    active={tab.id === activeTabId}
+                    screen={restoredScreens[tab.id] ?? ''}
+                    onResume={resumeTabFor(tab)}
+                    onClose={closeTab}
+                  />
+                ) : (
+                  <TerminalView
+                    key={tab.id}
+                    tab={tab}
+                    active={tab.id === activeTabId}
+                    theme={theme}
+                    fontFamily={settings?.fontFamily ?? 'monospace'}
+                    fontSize={settings?.fontSize ?? 13}
+                    onOpenUrl={openUrl}
+                    onRestart={restartTab}
+                    onClose={closeTab}
+                  />
+                )
+              )}
           </div>
 
           {/*

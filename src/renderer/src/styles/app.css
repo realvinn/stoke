@@ -1486,6 +1486,54 @@ body {
   z-index: var(--z-sticky);
 }
 
+/*
+ * A tab restored from the last run. The stored screen sits behind the card,
+ * dimmed enough to read as context rather than as live output — three paused
+ * tabs are otherwise the same empty pane with different titles.
+ */
+.paused-screen {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: var(--space-8) var(--space-8) var(--space-8) var(--space-12);
+  overflow: hidden;
+  opacity: 0.28;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-tight);
+  white-space: pre;
+  pointer-events: none;
+  user-select: none;
+}
+
+.paused-card {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-8);
+  text-align: center;
+}
+
+.paused-title {
+  font-size: var(--fs-lg);
+}
+
+.paused-note {
+  max-width: 22rem;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+
+.paused-actions {
+  display: flex;
+  gap: var(--space-8);
+  margin-top: var(--space-8);
+}
+
 /* -------------------------------------------------------------- launcher */
 
 .launcher {
