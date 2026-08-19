@@ -877,10 +877,15 @@ function createWindow(): void {
 /*
  * The newest snapshot the renderer has sent.
  *
- * Held in memory and written on every push AND again on before-quit. Writing on
- * push is what makes this survive a crash or a force-kill, which are exactly the
- * cases where nothing gets a chance to ask the renderer for anything; the quit
- * flush is belt and braces for the last few hundred ms of edits.
+ * Held in memory so the before-quit flush below has something to retry. It is
+ * NOT what makes quit safe against recent edits: `tabs:save` already calls
+ * `writeTabState` synchronously on every push, before returning to the event
+ * loop, so by the time before-quit fires this can never hold anything newer
+ * than what is already on disk. It cannot buy back a very recent edit either -
+ * anything the renderer has not sent yet is still sitting in its debounce,
+ * unreachable from main. What the flush does cover is a push whose write
+ * failed: `writeTabState` swallows its own errors (catches and logs), so a
+ * disk hiccup gets one more attempt on the way out.
  */
 let lastTabState: StoredTabs | null = null
 
