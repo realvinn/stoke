@@ -18,7 +18,7 @@ import {
   writeTabState
 } from '../src/main/tabStore.ts'
 import type { ContextSnapshot, StoredTab, StoredTabs } from '../src/shared/types.ts'
-import { fromStored, toStored } from '../src/renderer/src/lib/restore.ts'
+import { fromStored, screensFrom, toStored } from '../src/renderer/src/lib/restore.ts'
 import type { Tab } from '../src/renderer/src/types.ts'
 
 let failures = 0
@@ -224,11 +224,16 @@ console.log('\nconverting between the tab list and the snapshot')
     ready: true,
     permissionMode: 'default'
   }
-  const snap = toStored(live, 'new-1', { 'sess-a': snapA }, () => 'SCREEN', NOW)
+  // screenOf returns the tab's own id rather than a constant, so a call wired
+  // to the wrong element (an index shift, or the same tab every time) shows up
+  // as a wrong-tab screen instead of passing by coincidence.
+  const snap = toStored(live, 'new-1', { 'sess-a': snapA }, (t) => t.id, NOW)
   check('the active tab is recorded by index', snap.activeIndex, 1)
-  check('a live tab keeps its screen', snap.tabs.find((t) => t.sessionId === 'sess-a')?.screen, 'SCREEN')
+  check('a live tab is resolved through its own id, not another tab\'s', snap.tabs.find((t) => t.sessionId === 'sess-a')?.screen, 'p1')
   check('and its context reading', snap.tabs.find((t) => t.sessionId === 'sess-a')?.context, { tokens: 10, limit: 200 })
+  check('a New tab is resolved through its own id, not another tab\'s', snap.tabs.find((t) => t.kind === 'new')?.screen, 'new-1')
   check('a New tab keeps its selection', snap.tabs.find((t) => t.kind === 'new')?.selectedPath, '/w/other')
+  check('a New tab with no session has no context snapshot', snap.tabs.find((t) => t.kind === 'new')?.context, null)
 
   const back = fromStored(snap)
   check('every restored session tab is paused', back.tabs.filter((t) => t.kind === 'session').every((t) => t.status === 'paused'), true)
@@ -240,6 +245,44 @@ console.log('\nconverting between the tab list and the snapshot')
 {
   const back = fromStored({ version: 1, savedAt: NOW, activeIndex: 0, tabs: [] })
   check('an empty snapshot restores nothing and selects nothing', [back.tabs.length, back.activeId], [0, null])
+}
+{
+  // normaliseTabs clamps activeIndex before fromStored ever sees it, but
+  // fromStored is exported on its own and Task 5 calls it directly.
+  const back = fromStored(state({ activeIndex: 99, tabs: [tab({ sessionId: 'x' }), tab({ sessionId: 'y' })] }))
+  check('an out-of-range activeIndex with tabs present falls back to the first tab', back.activeId, back.tabs[0]?.id)
+}
+
+console.log('\nscreensFrom keys the screen map by position, not by content')
+{
+  const stored = state({
+    tabs: [tab({ sessionId: 'a', screen: 'screen-a' }), tab({ sessionId: 'b', screen: 'screen-b' })]
+  })
+  const { tabs } = fromStored(stored)
+  const screens = screensFrom(stored, tabs)
+  check('each restored tab is keyed to the screen at its own position', screens, {
+    [tabs[0]!.id]: 'screen-a',
+    [tabs[1]!.id]: 'screen-b'
+  })
+}
+{
+  // Fewer live tabs than stored entries, as if some were dropped after the
+  // snapshot was captured. Positions past the shorter array have no live tab
+  // id to key by, so those entries are dropped rather than misaligned onto
+  // the wrong tab or throwing.
+  const stored = state({
+    tabs: [
+      tab({ sessionId: 'a', screen: 'screen-a' }),
+      tab({ sessionId: 'b', screen: 'screen-b' }),
+      tab({ sessionId: 'c', screen: 'screen-c' })
+    ]
+  })
+  const shortTabs = fromStored(stored).tabs.slice(0, 2)
+  const screens = screensFrom(stored, shortTabs)
+  check('entries past the end of a shorter tabs array are dropped, not misaligned', screens, {
+    [shortTabs[0]!.id]: 'screen-a',
+    [shortTabs[1]!.id]: 'screen-b'
+  })
 }
 
 console.log(failures ? `\n${failures} failed` : '\nall pass')
