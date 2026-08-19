@@ -29,7 +29,12 @@ export interface Tab {
   permissionMode: PermissionMode
   model: string
   effort: EffortLevel
-  status: 'running' | 'exited'
+  /**
+   * `paused` is a tab restored from the last run: it has a session to resume but
+   * no process yet, so `ptyId` is ''. It is not `exited` — that means the
+   * process ended, this means it has not started.
+   */
+  status: 'running' | 'exited' | 'paused'
   exitCode: number | null
   /**
    * `SshHost.id` when this session runs on another machine, else null.

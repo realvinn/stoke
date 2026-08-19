@@ -91,5 +91,17 @@ check(
   ['only']
 )
 
+console.log('\na paused tab is an ordinary member of the list')
+check(
+  'closing a paused tab selects its neighbour like any other',
+  neighbourOf(['live', 'paused', 'other'], 'paused'),
+  'other'
+)
+check(
+  'resuming replaces the paused tab at its own index, so nothing reorders',
+  replaceOrAppend([{ id: 'a' }, { id: 'paused' }, { id: 'c' }], { id: 'live' }, 'paused'),
+  [{ id: 'a' }, { id: 'live' }, { id: 'c' }]
+)
+
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
 process.exitCode = failures ? 1 : 0

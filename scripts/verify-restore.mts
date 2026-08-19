@@ -17,7 +17,9 @@ import {
   trimScreen,
   writeTabState
 } from '../src/main/tabStore.ts'
-import type { StoredTab, StoredTabs } from '../src/shared/types.ts'
+import type { ContextSnapshot, StoredTab, StoredTabs } from '../src/shared/types.ts'
+import { fromStored, toStored } from '../src/renderer/src/lib/restore.ts'
+import type { Tab } from '../src/renderer/src/types.ts'
 
 let failures = 0
 
@@ -189,6 +191,55 @@ console.log('\nwhat it drops')
 {
   const out = normaliseTabs(state({ tabs: [tab({ kind: 'session', cwd: '' })] }), NOW)
   check('a session tab with no folder is dropped, it can never be resumed', out.tabs, [])
+}
+
+console.log('\nconverting between the tab list and the snapshot')
+{
+  const live: Tab[] = [
+    {
+      id: 'p1', kind: 'session', ptyId: 'p1', sessionId: 'sess-a', cwd: '/w/stoke',
+      projectName: 'stoke', title: 'live one', permissionMode: 'default', model: '',
+      effort: 'default', status: 'running', exitCode: null, hostId: null,
+      selectedPath: null, expandedPath: null
+    },
+    {
+      id: 'new-1', kind: 'new', ptyId: '', sessionId: '', cwd: '', projectName: '',
+      title: 'New session', permissionMode: 'default', model: '', effort: 'default',
+      status: 'running', exitCode: null, hostId: null,
+      selectedPath: '/w/other', expandedPath: null
+    }
+  ]
+  const snapA: ContextSnapshot = {
+    sessionId: 'sess-a',
+    contextTokens: 10,
+    contextLimit: 200,
+    inputTokens: 10,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    outputTokens: 0,
+    model: null,
+    messageCount: 1,
+    title: null,
+    updatedAt: NOW,
+    ready: true,
+    permissionMode: 'default'
+  }
+  const snap = toStored(live, 'new-1', { 'sess-a': snapA }, () => 'SCREEN', NOW)
+  check('the active tab is recorded by index', snap.activeIndex, 1)
+  check('a live tab keeps its screen', snap.tabs.find((t) => t.sessionId === 'sess-a')?.screen, 'SCREEN')
+  check('and its context reading', snap.tabs.find((t) => t.sessionId === 'sess-a')?.context, { tokens: 10, limit: 200 })
+  check('a New tab keeps its selection', snap.tabs.find((t) => t.kind === 'new')?.selectedPath, '/w/other')
+
+  const back = fromStored(snap)
+  check('every restored session tab is paused', back.tabs.filter((t) => t.kind === 'session').every((t) => t.status === 'paused'), true)
+  check('and carries no pty', back.tabs.every((t) => t.ptyId === ''), true)
+  check('a restored New tab is not paused, it has nothing to resume', back.tabs.find((t) => t.kind === 'new')?.status, 'running')
+  check('the active id points at a tab that exists', back.tabs.some((t) => t.id === back.activeId), true)
+  check('restored ids are unique', new Set(back.tabs.map((t) => t.id)).size, back.tabs.length)
+}
+{
+  const back = fromStored({ version: 1, savedAt: NOW, activeIndex: 0, tabs: [] })
+  check('an empty snapshot restores nothing and selects nothing', [back.tabs.length, back.activeId], [0, null])
 }
 
 console.log(failures ? `\n${failures} failed` : '\nall pass')

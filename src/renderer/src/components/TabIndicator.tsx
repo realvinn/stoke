@@ -6,7 +6,7 @@ interface Props {
   kind: TabKind
   /** Undefined until the context watcher has reported for this session. */
   context: ContextSnapshot | undefined
-  status: 'running' | 'exited'
+  status: 'running' | 'exited' | 'paused'
   /**
    * The mode the transcript last recorded, not the one the tab launched with.
    * See the ContextSnapshot.permissionMode work in this workstream.
