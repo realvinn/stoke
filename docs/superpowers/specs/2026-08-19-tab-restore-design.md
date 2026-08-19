@@ -124,7 +124,15 @@ repaint. Text always renders, is small, and needs no terminal to display.
 
 **Written continuously, debounced, not only on quit.** A ~500 ms debounce on any
 change to the tab list, plus a flush when a tab's title or context changes. Main
-persists whatever it last received when `before-quit` fires.
+writes synchronously on every push, which is what makes the snapshot survive a
+crash.
+
+The `before-quit` write is a **retry, not a catch-up**, and calling it a flush
+oversells it: because every push has already written synchronously, it can never
+persist anything newer, and anything the renderer has not sent yet is still in
+its debounce and unreachable from main. What it does cover is a push whose write
+failed — `writeTabState` swallows its errors — which gets one more attempt on the
+way out.
 
 This is the load-bearing choice for reliability: `before-quit` cannot ask the
 renderer for state and wait for the answer, and a snapshot taken only at quit is
