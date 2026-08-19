@@ -161,12 +161,18 @@ Every consumer of `status` and `ptyId` must be audited, because both now have a
 value they have never seen:
 
 - `ptyBus` — no subscription for a paused tab; nothing to attach to.
-- `ContextWatcher` — **must not be started for a paused tab.** The early-return
-  on a falsy session id (`context.ts:102-103`) is not the guard here: a paused
-  tab usually *does* carry a real session id, so `watch()` would happily poll a
-  transcript for a session that is not running. The renderer calls `watch()` only
-  when a tab goes to `running`. The paused ring is drawn from the persisted
-  `context` reading instead, which is why that field is stored.
+- `ContextWatcher` — **already safe by construction, and the reason is not the one
+  this spec first gave.** The renderer never calls `watch()` at all: it only
+  subscribes via `context.onUpdate` (`App.tsx:271`). Watching is started in main,
+  at `pty:start` (`index.ts:260`), with `ctxWatch`/`ctxUnwatch` channels that no
+  renderer code calls. A paused tab never starts a PTY, so no watcher is ever
+  created for it — and one *is* created the moment it resumes, because resuming
+  goes through `pty:start` like any other launch.
+
+  So there is no renderer-side filter to add here, and adding one would be the
+  "did nothing" shape this repo has been bitten by before. What remains true: the
+  paused ring is drawn from the persisted `context` reading, which is why that
+  field is stored.
 - `TabIndicator` — `[data-status='exited']` currently dims to 0.45. Paused gets
   its own treatment, distinct from exited: exited means the process ended, paused
   means it is waiting to start. Paused keeps full opacity, draws the ring from
