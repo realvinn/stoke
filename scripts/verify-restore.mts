@@ -89,6 +89,58 @@ console.log('\ncaps')
   check('and it keeps the tail, not the head', long.endsWith(trimmed), true)
 }
 
+console.log('\norder and active-tab identity')
+{
+  // File order [A, B, C], but C is the most recent — the common case, since the
+  // focused tab is usually the most recently used. Recency must decide only
+  // which tabs get dropped over the cap, never the order tabs come back in.
+  const out = normaliseTabs(
+    state({
+      activeIndex: 2,
+      tabs: [
+        tab({ sessionId: 'A', lastActiveAt: NOW - 3000 }),
+        tab({ sessionId: 'B', lastActiveAt: NOW - 2000 }),
+        tab({ sessionId: 'C', lastActiveAt: NOW - 1000 })
+      ]
+    }),
+    NOW
+  )
+  check('tabs come back in file order, not recency order', out.tabs.map((t) => t.sessionId), ['A', 'B', 'C'])
+  check(
+    'activeIndex still names the same tab by identity, not the same number for the wrong reason',
+    out.tabs[out.activeIndex]?.sessionId,
+    'C'
+  )
+}
+{
+  const out = normaliseTabs(
+    state({
+      activeIndex: 0,
+      tabs: [
+        tab({ sessionId: 'stale', lastActiveAt: NOW - STORED_TAB_MAX_AGE_MS - 1 }),
+        tab({ sessionId: 'fresh', lastActiveAt: NOW })
+      ]
+    }),
+    NOW
+  )
+  check('an active tab dropped by the age filter falls back to index 0', out.activeIndex, 0)
+  check('and the survivor there is the tab that was not expired', out.tabs[out.activeIndex]?.sessionId, 'fresh')
+}
+{
+  const many = Array.from({ length: MAX_STORED_TABS + 5 }, (_, i) =>
+    tab({ sessionId: `s${i}`, lastActiveAt: NOW - i * 1000 })
+  )
+  const out = normaliseTabs(state({ tabs: many, activeIndex: many.length - 1 }), NOW)
+  check('an active tab dropped by the MAX_STORED_TABS cap falls back to index 0', out.activeIndex, 0)
+}
+
+console.log('\nunion fields are validated, not cast')
+{
+  const out = normaliseTabs(state({ tabs: [{ ...tab(), permissionMode: 'sudo', effort: 'ultra' }] }), NOW)
+  check('an unrecognised permissionMode falls back to default', out.tabs[0]?.permissionMode, 'default')
+  check('an unrecognised effort falls back to default', out.tabs[0]?.effort, 'default')
+}
+
 console.log('\nexpiry')
 {
   const out = normaliseTabs(

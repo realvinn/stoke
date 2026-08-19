@@ -48,6 +48,20 @@ function nullableStr(v: unknown): string | null {
   return typeof v === 'string' && v ? v : null
 }
 
+const PERMISSION_MODES: readonly PermissionMode[] = ['default', 'plan', 'acceptEdits', 'auto', 'bypassPermissions']
+const EFFORT_LEVELS: readonly EffortLevel[] = ['default', 'low', 'medium', 'high', 'xhigh', 'max']
+
+/** A stored value wearing the right type is not the same as a validated one. */
+function permissionModeOf(v: unknown): PermissionMode {
+  return typeof v === 'string' && (PERMISSION_MODES as readonly string[]).includes(v)
+    ? (v as PermissionMode)
+    : 'default'
+}
+
+function effortOf(v: unknown): EffortLevel {
+  return typeof v === 'string' && (EFFORT_LEVELS as readonly string[]).includes(v) ? (v as EffortLevel) : 'default'
+}
+
 /**
  * Keep the END of the text, not the start.
  *
@@ -79,9 +93,9 @@ function tabOf(v: unknown): StoredTab | null {
     cwd,
     projectName: str(v.projectName),
     title: str(v.title),
-    permissionMode: str(v.permissionMode, 'default') as PermissionMode,
+    permissionMode: permissionModeOf(v.permissionMode),
     model: str(v.model),
-    effort: str(v.effort, 'default') as EffortLevel,
+    effort: effortOf(v.effort),
     hostId: nullableStr(v.hostId),
     selectedPath: nullableStr(v.selectedPath),
     expandedPath: nullableStr(v.expandedPath),
@@ -106,18 +120,35 @@ export function normaliseTabs(raw: unknown, now = Date.now()): StoredTabs {
   if (raw.version !== 1) return EMPTY
   if (!Array.isArray(raw.tabs)) return EMPTY
 
-  const tabs = raw.tabs
-    .map(tabOf)
-    .filter((t): t is StoredTab => t !== null && now - t.lastActiveAt < STORED_TAB_MAX_AGE_MS)
-    .sort((a, b) => b.lastActiveAt - a.lastActiveAt)
-    .slice(0, MAX_STORED_TABS)
+  // Identity is the tab's position in the raw, unsorted file — carried through
+  // so activeIndex can be remapped to wherever that same tab lands, and so the
+  // survivors below can be re-assembled in file order rather than recency order.
+  const valid = raw.tabs
+    .map((v, i) => ({ i, t: tabOf(v) }))
+    .filter((x): x is { i: number; t: StoredTab } => x.t !== null && now - x.t.lastActiveAt < STORED_TAB_MAX_AGE_MS)
+
+  // Recency decides ONLY which tabs get dropped when over the cap — never the
+  // order tabs come back in. The spec persists tab order: the restored strip
+  // must look like the strip the user left.
+  const keep = new Set(
+    [...valid]
+      .sort((a, b) => b.t.lastActiveAt - a.t.lastActiveAt)
+      .slice(0, MAX_STORED_TABS)
+      .map((x) => x.i)
+  )
+  const survivors = valid.filter((x) => keep.has(x.i))
 
   const wanted = typeof raw.activeIndex === 'number' ? raw.activeIndex : 0
+  // Find the same tab the raw index pointed at, at whatever position it now
+  // occupies. Not found — dropped by expiry or the cap, or the index was
+  // garbage to begin with — falls back to 0.
+  const activeIndex = survivors.findIndex((x) => x.i === wanted)
+
   return {
     version: 1,
     savedAt: typeof raw.savedAt === 'number' && Number.isFinite(raw.savedAt) ? raw.savedAt : 0,
-    activeIndex: Number.isInteger(wanted) && wanted >= 0 && wanted < tabs.length ? wanted : 0,
-    tabs
+    activeIndex: activeIndex >= 0 ? activeIndex : 0,
+    tabs: survivors.map((x) => x.t)
   }
 }
 
