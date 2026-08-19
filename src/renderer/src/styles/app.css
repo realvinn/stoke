@@ -558,8 +558,8 @@ body {
  *
  * Fixed, because a 7px dot used to be swapped for a 14px ring the instant the
  * context watcher reported, and the label and the close button jumped 7px
- * sideways with it. Both children sit in the same grid cell, so the ring, the
- * empty circle and the ring-plus-dot are all exactly --tab-indicator wide.
+ * sideways with it. The ring, the empty circle and the ring-plus-dot are all
+ * exactly --tab-indicator wide, so the label never moves whatever is drawn.
  */
 .tab-indicator {
   position: relative;
@@ -570,18 +570,27 @@ body {
   flex: none;
 }
 
-.tab-indicator > .ring,
-.tab-indicator > .tab-watch {
+.tab-indicator > .ring {
   grid-area: 1 / 1;
 }
 
-/* The only red in the tab strip, and it means one thing: the worklog agent is
-   watching this session. */
-.tab-watch {
-  width: 0.3125rem;
-  height: 0.3125rem;
-  border-radius: var(--r-full);
-  background: var(--tab-dot-worklog);
+/*
+ * The only red in the tab strip, and it means one thing: the worklog agent is
+ * watching this session.
+ *
+ * A <circle> inside the ring's own <svg>, not a box laid over it. As a 5px
+ * span centred in the 14px slot it was offset by 4.5px, and Chromium snaps a
+ * painted box to whole device pixels while leaving SVG geometry alone — so the
+ * two agreed in `getBoundingClientRect` and disagreed by 0.707px on screen,
+ * in a direction that flipped with the tab strip's own sub-pixel position.
+ *
+ * `.ring .tab-watch` rather than `.tab-watch`: `.ring circle` sets `fill: none`
+ * for the track and the arc, and (0,1,1) would otherwise beat (0,1,0) and paint
+ * this circle invisible.
+ */
+.ring .tab-watch {
+  fill: var(--tab-dot-worklog);
+  stroke: none;
 }
 
 /*
@@ -1381,7 +1390,12 @@ body {
  * terminal rather than in the layout so arming it does not reflow the PTY —
  * a resize mid-session redraws whatever Claude Code is currently painting.
  */
-.voice-strip {
+/*
+ * Copy mode shares the dictation strip's chrome and takes the opposite corner,
+ * so both modes can be on at once without one sitting on the other.
+ */
+.voice-strip,
+.copy-strip {
   position: absolute;
   inset: auto auto var(--space-12) var(--space-12);
   display: flex;
@@ -1396,6 +1410,22 @@ body {
   font-size: var(--fs-sm);
   z-index: var(--z-sticky);
   animation: pop var(--dur) var(--ease);
+}
+
+.copy-strip {
+  inset: auto var(--space-12) var(--space-12) auto;
+  border-color: var(--accent);
+}
+
+/* The chord, drawn as a key rather than described in the sentence: it is the
+   way out of the mode, and the way back into it next time. */
+.copy-strip-key {
+  flex: 0 0 auto;
+  padding: 0 var(--space-4);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
 }
 
 .voice-strip[data-tone='error'] {
@@ -2149,7 +2179,11 @@ body {
 }
 
 .context-menu-item {
-  display: block;
+  /* Flex rather than block, so an optional chord can sit at the right edge.
+     `gap` keeps the two apart when a long label meets a long chord. */
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-16);
   width: 100%;
   padding: var(--space-8) var(--space-8);
   border: none;
@@ -2159,6 +2193,15 @@ body {
   text-align: left;
   font-size: var(--fs-sm);
   cursor: default;
+}
+
+/* The chord, pushed right and muted: an answer for someone hunting one, never
+   competing with the label for the eye. */
+.context-menu-key {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
 }
 
 .context-menu-item:hover:not(:disabled) {

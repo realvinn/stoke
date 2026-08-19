@@ -248,9 +248,19 @@ scripts/          the verify-*.mts suites, make-icon.cjs
     and the drag selects nothing at all. A clone carrying both modifiers therefore worked under
     `claude` and dead-ended at every plain shell prompt. A local tab always spawns `claude` and
     reports the mouse for its whole life, so it never showed; **an SSH tab is the only tab that
-    can sit at a shell** — `hosts[].command` of `byobu` here, and byobu enables no reporting —
-    which is why this read as "copying is broken on the VPS" and nowhere else, and why it came
-    and went *within* one tab as `claude` started and exited.
+    can sit at a shell** — `hosts[].command` of `byobu` here, and byobu enables no reporting
+    *of its own* — which is why this read as "copying is broken on the VPS" and nowhere else,
+    and why it came and went *within* one tab as `claude` started and exited.
+
+    Do not read that as "a byobu tab never reports the mouse", which is the tempting and wrong
+    conclusion. **tmux forwards the focused pane's own mouse mode to the outer terminal even
+    with its own `mouse` option off** — measured against the real VPS (tmux 3.4, `mouse off`)
+    by capturing what tmux wrote to an ssh pty: an inner app asking for 1000/1002/1006 produced
+    exactly those at the outer end. So a byobu pane running `claude` puts Stoke's xterm in
+    `mouseTrackingMode: 'drag'`, and it drops back to `'none'` at the shell prompt — per pane,
+    so it also changes as you move around byobu. `1002` is what actually arrives, which is why
+    `verify:selection`'s default `modes` string is `1000h 1002h 1006h` rather than the set
+    `claude` asks for locally.
 
     That is also why the shim is no longer macOS-only. Off macOS `shouldForceSelection` is
     `event.shiftKey` (`:442`) and needs no help *while the mouse is reported*, but it walks into
@@ -259,6 +269,15 @@ scripts/          the verify-*.mts suites, make-icon.cjs
     xterm demands it: macOS with reporting on. A real Shift-drag is left alone when reporting is
     off **and** something is already selected, because there the extend branch is the feature
     rather than the dead end.
+
+    There is no longer one clone shape, so do not look for one. The shim now emits
+    `{ altKey: reporting && isMac, shiftKey: reporting && !isMac }` — three shapes, one per
+    cell of the matrix — because Copy mode retells drags that carry no modifier at all, and
+    off macOS the modifier xterm wants is the Shift the user is not holding. `verify:selection`
+    asserts the *rule* (`reporting ? (isMac ? altKey : shiftKey) : !shiftKey`) against all three
+    shapes rather than memorising outcomes. Its old pair of assertions could only ever have
+    passed on a Mac: "a clone that keeps Shift selects nothing" is false off macOS with
+    reporting on, which is exactly the clone that now ships there.
 
     Two more things about that mode nobody had measured: with reporting off a **plain
     unmodified drag selects normally on every platform**, so the VPS tab was never short of a
@@ -469,8 +488,34 @@ scripts/          the verify-*.mts suites, make-icon.cjs
     copy-mode and `vim "+y` had no channel at all. `TerminalView` now handles the write
     direction and **refuses the read direction**, because `OSC 52 ; c ; ?` asks the terminal to
     report the clipboard and everything a terminal renders is untrusted — a hostile file printed
-    with `cat` would otherwise read whatever was last copied. Note this still needs the far side
-    to emit it: tmux wants `set -g set-clipboard on`.
+    with `cat` would otherwise read whatever was last copied.
+
+    "tmux wants `set -g set-clipboard on`" is too blunt, and the difference decides what to tell
+    a user. `set-clipboard` is a **server** option with three values, tmux 3.4 defaults to
+    `external`, and `external` is **asymmetric** — measured on the real VPS with an isolated
+    `tmux -L … -f /dev/null` server while watching the ssh pty:
+
+    | value      | tmux's own copy-mode → outer terminal | an app inside a pane emitting OSC 52 |
+    |------------|---------------------------------------|--------------------------------------|
+    | `off`      | no                                    | no                                   |
+    | `external` | **yes**                               | **no** — parsed and dropped          |
+    | `on`       | yes                                   | yes                                  |
+
+    So **byobu's own F7 copy-mode already reaches the local clipboard with no remote
+    configuration at all**, which is the honest answer to "how do I copy off the VPS": it is
+    keyboard-only and it covers the pane's scrollback. `on` buys exactly one more thing —
+    `vim "+y`, nvim's osc52 module, anything *inside* a pane. Two further traps: tmux emits at
+    all only if the outer `TERM` carries the `clipboard` feature, which `xterm*` has by tmux's
+    own built-in default and `pty.ts:231` sets, so the widely copy-pasted `Ms` override is
+    redundant here; and byobu already occupies `terminal-overrides` with `xterm*:smcup@:rmcup@`,
+    so "adding" an `Ms` entry with `set -g` **replaces** byobu's line rather than extending it.
+    `set -ga` is the only safe form.
+
+    One ceiling worth knowing before promising anything: **a pane running `claude` has no
+    scrollback anywhere.** It is on the alternate screen, so tmux keeps no history for it, and
+    byobu's `smcup@:rmcup@` stops tmux scrolling into Stoke's own scrollback either. Only the
+    visible screen is ever copyable out of such a pane, by any route — which is why the context
+    menu's `Copy screen` takes the viewport rather than the buffer.
 
 30. **Three separate things stopped the worklog ever marking anything done, and only one of them
     was in the write path.** In likelihood order:
@@ -537,6 +582,68 @@ scripts/          the verify-*.mts suites, make-icon.cjs
     Shift+`=` on most layouts, so someone pressing "Cmd and plus" is holding Shift whether they
     think so or not, while `-` needs no Shift to type. `verify:shortcuts` pins the refusal
     first, because it is the assertion that protects something rather than adding something.
+
+33. **A DOM box and an SVG do not paint on the same grid, so two things that `getBoundingClientRect`
+    agrees are concentric can be visibly apart.** The worklog watch dot was a 5px `<span>` centred
+    over the 14px context ring in one grid cell. Both centres read *identical* off
+    `getBoundingClientRect` — and the dot painted **0.707px up and to the right**, which on a 14px
+    indicator whose inner clear diameter is 7.6px is the whole tolerance.
+
+    `place-items: center` puts a 5px child in a 14px box at 4.5px — a half-pixel — and Blink
+    **snaps a painted background box to whole CSS pixels while leaving SVG geometry exactly where
+    the arithmetic put it**. So the dot rounds and the ring does not. Measured, not reasoned: the
+    painted centroids of both shapes were extracted from `Page.captureScreenshot` at scales 1, 2,
+    8 and 16 with the two shapes forced to pure green and pure magenta so the masks could not
+    bleed. The offset is **scale-invariant** — it is not antialiasing and Retina does not hide it,
+    it doubles it in device pixels — and its **direction flips with the container's own fractional
+    position**, which is why it read as "the dot is off centre" rather than as anything
+    reproducible.
+
+    Ruled out by the same measurement, so nobody re-derives them: grid auto-placement (`.sr-only`
+    is `position: absolute`, so no implicit second row exists), the ring's `rotate(-90deg)`
+    (rotating a circle about its own centre is identity — the offset is identical with the
+    transform removed), the stroke geometry, and the cascade.
+
+    An even-sized dot fixes it at Interface scale 1.0 and **only** there: at 1.1 the rem sizes stop
+    landing on integers and the two boxes round apart again. The durable fix is to stop having two
+    boxes — the dot is a `<circle cx="8" cy="8">` inside the ring's own `<svg>` (`ContextMeter.tsx`,
+    `WATCH_R`), which is concentric *by construction* at every scale, dpr and sub-pixel offset.
+    Verified: 0.0000px at every offset tried, against 0.707px for the span at all of them.
+
+    The general rule: **anything that must line up with SVG must be drawn in that SVG.** Overlaying
+    a DOM box on vector art in a shared grid cell is correct in layout and wrong on screen.
+
+34. **Two capture-phase listeners on the same node can cancel each other, and a synthetic event must
+    never be judged by the guard that created it.** `TerminalView` binds `onShiftDrag` and
+    `onMouseDown` to `host` in the capture phase, in that order. `onShiftDrag` re-dispatches the
+    press as a clone; the clone travels the whole capture path and therefore arrives back at
+    `onMouseDown`, which classified `button === 0 && ctrlKey` on macOS as a secondary click and
+    `stopPropagation()`d it. So **a Shift+Ctrl-drag selected nothing at all** — no selection and no
+    mouse report either. A/B'd against the real app over CDP on a live SSH session with reporting
+    on: `""` before, the full line after. The fix is a `retold` WeakSet check in `onMouseDown`, and
+    the rule it encodes is general — our own clone is not user input and must skip our own guards.
+
+    The same handler was bound to `mouseup`, and **swallowing a release that nobody swallowed the
+    press of is a listener leak, not a smaller version of the same idea.** `SelectionService` adds
+    its drag `mousemove`/`mouseup` listeners to the **document**; `host` is an ancestor and this
+    runs in capture, so a stopped mouseup never reaches document, `_removeMouseDownListeners`
+    never runs, and both the document mousemove handler and a 50ms drag-scroll interval outlive
+    the drag. The terminal is then left extending the selection at whatever the pointer passes
+    over **with no button held**, and each later drag orphans another interval. Reachable by
+    pressing the right button — or Control on a Mac — part-way through an ordinary left drag.
+    Also A/B'd: before, a bare pointer move after release grew the selection from `"STOKE_SELE"`
+    to `"STOKE_SELECT_ME_ABCDEFGHI"`; after, it does not move. A release is now swallowed only
+    when its own press was.
+
+    A probe for this must dispatch on `.xterm-screen`, not on `document`. Dispatching straight at
+    `document` skips the capture listener on `host` entirely and the leak silently does not
+    reproduce — the first version of this test reported a clean bill for code that was broken.
+
+    **None of the three is visible to `npm run check`.** `verify:selection` builds its own page and
+    hand-writes clone shapes; it never registers `TerminalView`'s listeners, so nothing in this
+    entry lives anywhere the suite can reach. Gotcha 31's lesson again, and the reason all three
+    were established by driving the built app over CDP against a real SSH session, stashing the
+    change, rebuilding, and measuring both ways.
 
 ## Standing traps when driving the app
 

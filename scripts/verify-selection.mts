@@ -221,9 +221,9 @@ function page(altClickMovesCursor: boolean, modes: string): string {
     '    await new Promise(r => setTimeout(r, 60))',
     '    record(term, name)',
     '  }',
-    '  await bare("shift kept (the old clone)", { shiftKey: true, altKey: false })',
-    '  await bare("shift stripped (the clone now)", { shiftKey: false, altKey: true })',
-    '  await bare("no modifier at all", { shiftKey: false, altKey: false })',
+    '  await bare("shift only", { shiftKey: true, altKey: false })',
+    '  await bare("alt only", { shiftKey: false, altKey: true })',
+    '  await bare("neither modifier", { shiftKey: false, altKey: false })',
     '  return results',
     '}',
     '',
@@ -362,25 +362,60 @@ async function main(): Promise<void> {
       )
     }
 
-    const kept = run.steps.find((s) => s.name === 'shift kept (the old clone)')
-    const stripped = run.steps.find((s) => s.name === 'shift stripped (the clone now)')
     /*
-     * True in both modes, for two different reasons — which is why it is one
-     * assertion rather than two. With reporting ON, xterm's Mac branch of
-     * `shouldForceSelection` reads `altKey` and nothing else, so Shift alone
-     * never forces a selection. With reporting OFF, Shift steers into
-     * `_handleIncrementalClick`, which is a no-op with nothing yet selected.
-     * Either way, a clone that keeps Shift selects nothing.
+     * Every clone shape, against the one rule that decides them all.
+     *
+     * Named by shape rather than by vintage, because there is no longer a single
+     * "the clone now": `TerminalView`'s shim picks the shape from the mouse mode
+     * AND the platform, and the shape that is right on macOS is wrong off it.
+     *
+     *   reporting ON  -> xterm forces a selection iff `shouldForceSelection`,
+     *                    which is `isMac ? altKey : shiftKey` (:437-443)
+     *   reporting OFF  -> selection is enabled, so `_enabled && shiftKey` takes
+     *                    the incremental-click branch (:478), a no-op with
+     *                    nothing selected. Anything WITHOUT Shift selects.
+     *
+     * Asserting the rule rather than three memorised outcomes is what makes this
+     * portable. The old pair asserted "a clone that keeps Shift selects nothing",
+     * which is true on macOS in both modes and FALSE off macOS with reporting on
+     * — where `shouldForceSelection` is `event.shiftKey` and that clone is
+     * exactly what the shim dispatches. It could only ever have passed on a Mac,
+     * which by this repo's own standard is a defect in the suite rather than a
+     * fact about the machine.
      */
-    check(
-      `${run.label}: a clone that keeps Shift selects nothing`,
-      !!kept && kept.selection.length === 0,
-      kept ? `got ${JSON.stringify(kept.selection)}` : 'no reading'
+    const isMac = process.platform === 'darwin'
+    const forces = (shiftKey: boolean, altKey: boolean): boolean =>
+      reporting ? (isMac ? altKey : shiftKey) : !shiftKey
+
+    for (const [name, shiftKey, altKey] of [
+      ['shift only', true, false],
+      ['alt only', false, true],
+      ['neither modifier', false, false]
+    ] as const) {
+      const step = run.steps.find((s) => s.name === name)
+      const want = forces(shiftKey, altKey)
+      check(
+        `${run.label}: a drag with ${name} ${want ? 'selects' : 'selects nothing'}`,
+        !!step && step.selection.length > 0 === want,
+        step ? `got ${JSON.stringify(step.selection)}` : 'no reading'
+      )
+    }
+
+    /*
+     * And the shape the shim actually dispatches, spelled the same way it is
+     * spelled in `TerminalView.tsx`. This is the assertion that fails if that
+     * expression is ever changed to something xterm will not act on — the one
+     * the suite could not make while it hard-coded a single clone.
+     */
+    const shimAlt = reporting && isMac
+    const shimShift = reporting && !isMac
+    const shimStep = run.steps.find(
+      (s) => s.name === (shimAlt ? 'alt only' : shimShift ? 'shift only' : 'neither modifier')
     )
     check(
-      `${run.label}: and the clone with Shift stripped does select`,
-      !!stripped && stripped.selection.length > 0,
-      stripped ? `got ${JSON.stringify(stripped.selection)}` : 'no reading'
+      `${run.label}: the clone the shim dispatches here does select`,
+      !!shimStep && shimStep.selection.length > 0,
+      shimStep ? `got ${JSON.stringify(shimStep.selection)}` : 'no reading'
     )
 
     for (const mid of run.steps.filter((s) => s.name.endsWith('[mid-drag]'))) {

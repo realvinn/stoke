@@ -44,6 +44,26 @@ export function ContextBar({ used, limit, showLabel = true }: MeterProps): React
 export const RING_R = 5.6
 const CIRC = 2 * Math.PI * RING_R
 
+/*
+ * The worklog dot, in the ring's own viewBox units rather than CSS pixels.
+ *
+ * It lives inside this <svg> for one reason: concentricity. It used to be a
+ * sibling <span> laid over the ring in the same grid cell, which centres
+ * correctly and *paints* half a pixel out. The slot is 14px and the dot was
+ * 5px, so `place-items: center` offsets it by (14 - 5) / 2 = 4.5px — and
+ * Chromium pixel-snaps a painted background box while leaving SVG geometry
+ * exactly where the maths put it. The two therefore disagreed by 0.5px
+ * diagonally, and the direction flipped with the tab strip's own sub-pixel
+ * position, which is why it read as "the dot is off centre" rather than as
+ * anything reproducible. Measured at scales 1, 2, 8 and 16: the span is out by
+ * 0.707px at every offset, a <circle> at cx/cy 8 is exact at every offset.
+ *
+ * 2.86 keeps the drawn size: 2.86 * 2 * (14 / 16) = 5.005px, the 5px it always
+ * was. Being in viewBox units it now also scales with Interface scale, which
+ * a rem-sized box only did at whole-pixel scales.
+ */
+const WATCH_R = 2.86
+
 /**
  * Compact ring for tab strips, where there is no room for a bar and caption.
  *
@@ -56,11 +76,14 @@ const CIRC = 2 * Math.PI * RING_R
 export function ContextRing({
   used,
   limit,
-  ready = true
+  ready = true,
+  watched = false
 }: {
   used: number
   limit: number
   ready?: boolean
+  /** Draw the worklog dot in the middle. See WATCH_R for why it lives here. */
+  watched?: boolean
 }): React.JSX.Element {
   const ratio = ready && limit > 0 ? Math.min(1, used / limit) : 0
   const pct = Math.round(ratio * 100)
@@ -79,6 +102,7 @@ export function ContextRing({
           strokeLinecap="round"
         />
       )}
+      {watched && <circle className="tab-watch" cx="8" cy="8" r={WATCH_R} />}
     </svg>
   )
 }

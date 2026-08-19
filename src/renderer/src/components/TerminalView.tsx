@@ -33,6 +33,17 @@ interface MenuState {
   x: number
   y: number
   selection: string
+  /**
+   * Cells really are selected, but every one of them is blank.
+   *
+   * Not the same as having no selection, and the difference is the whole point:
+   * `hasSelection` compares coordinates while `selectionText` trims blank cells
+   * (`SelectionService.ts:191-198`, `:205-250`), so a drag across the padding
+   * inside Claude Code's prompt box paints a highlight the user can see and
+   * hands back "". Told apart here so the menu can say which one happened
+   * rather than telling someone whose gesture worked that it did not.
+   */
+  blank: boolean
   clip: ClipboardPeek
 }
 
@@ -62,6 +73,9 @@ export function TerminalView({
   onRestart,
   onClose
 }: Props): React.JSX.Element {
+  // Component scope, because the render tree needs it too: the context menu
+  // spells its chords out per platform.
+  const isMac = window.stoke.platform === 'darwin'
   const hostRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
@@ -72,6 +86,23 @@ export function TerminalView({
    * mode you are in without having said so.
    */
   const [voiceOn, setVoiceOn] = useState(false)
+  /*
+   * Copy mode. While it is on, an ordinary drag selects even though the program
+   * in the pane has asked for the mouse.
+   *
+   * It exists because the bypass modifier is a secret: the only place Stoke
+   * names Shift-drag is a footer in the right-click menu, which you reach after
+   * discovering that dragging did nothing. A mode you can turn on, see, and
+   * leave asks nothing to be remembered — and it covers every TUI that grabs
+   * the mouse, not just the one that prompted it.
+   *
+   * Mirrored into a ref because the terminal's mousedown listeners are bound
+   * once per PTY and would otherwise close over `false` for the tab's whole
+   * life — CLAUDE.md gotcha 31, the same trap the zoom shortcut fell into.
+   */
+  const [copyOn, setCopyOn] = useState(false)
+  const copyOnRef = useRef(false)
+  copyOnRef.current = copyOn
   const [voiceStatus, setVoiceStatus] = useState<'idle' | 'recording' | 'working'>('idle')
   const [voiceError, setVoiceError] = useState<string | null>(null)
   const recorderRef = useRef<Recorder | null>(null)
@@ -300,7 +331,22 @@ export function TerminalView({
           window.stoke.clipboard.writeText(sel)
           return false
         }
-        // No selection: let Ctrl+C through as SIGINT.
+        /*
+         * A selection can be visible and still be the empty string: xterm's
+         * `hasSelection` compares coordinates while `selectionText` trims blank
+         * cells (`SelectionService.ts:191-198`, `:205-250`), so a drag across
+         * the padding inside Claude Code's prompt box highlights real cells and
+         * yields "". Returning here without preventDefault let Chromium's own
+         * copy event run, and xterm's copy listener gates on `hasSelection` —
+         * so the clipboard was overwritten with an empty string, destroying
+         * whatever was on it. Swallow the key instead: copying nothing is a
+         * no-op, not a reason to lose what you had.
+         */
+        if (term.hasSelection()) {
+          e.preventDefault()
+          return false
+        }
+        // No selection at all: let Ctrl+C through as SIGINT.
         return !isMac || !cmd
       }
 
@@ -363,6 +409,20 @@ export function TerminalView({
      * became six lines on right-click alone. Capture phase on the host stops
      * the event ever reaching xterm's listeners further down the tree.
      */
+    /*
+     * Clones this shim dispatched, so nothing downstream — including this file's
+     * own listeners — judges a synthetic event as if the user had made it.
+     * Declared here rather than beside `onShiftDrag` because `onMouseDown` below
+     * has to consult it too.
+     */
+    const retold = new WeakSet<MouseEvent>()
+
+    /*
+     * The button whose press was swallowed, so its release can be swallowed too
+     * and nothing else's can. Null when the last press went through.
+     */
+    let swallowed: number | null = null
+
     const onMouseDown = (e: MouseEvent): void => {
       /*
        * A macOS Ctrl+click is the secondary click, but Chromium does not renumber
@@ -375,7 +435,41 @@ export function TerminalView({
        * to the CLI, open Stoke's menu, and activate whatever link was under it.
        * Now it means one thing, the same thing a right-click means everywhere.
        */
-      if (e.button === 2 || (isMacPlatform && e.button === 0 && e.ctrlKey)) e.stopPropagation()
+      const secondary = e.button === 2 || (isMacPlatform && e.button === 0 && e.ctrlKey)
+
+      if (e.type === 'mousedown') {
+        /*
+         * Never re-judge our own clone. `onShiftDrag` runs before this listener
+         * and re-dispatches the press, and that clone travels the full capture
+         * path — so it arrives back here, and on macOS a Shift+Ctrl-drag matched
+         * `secondary` above and was stopped dead. Two of this file's own
+         * listeners cancelled each other and the gesture did nothing at all:
+         * no selection, and no mouse report either.
+         */
+        if (retold.has(e)) return
+        swallowed = secondary ? e.button : null
+        if (secondary) e.stopPropagation()
+        return
+      }
+
+      /*
+       * A release is swallowed only when its own press was.
+       *
+       * Stopping any other release is not a smaller version of the same idea, it
+       * is a leak. `SelectionService` adds its drag listeners to the *document*
+       * (`SelectionService.ts:_addMouseDownListeners`), and this listener is on
+       * an ancestor in the CAPTURE phase — so a stopped mouseup never reaches
+       * document, `_removeMouseDownListeners` never runs, and both the document
+       * mousemove handler and the 50ms drag-scroll interval outlive the drag.
+       * The terminal is then left extending the selection at whatever the
+       * pointer passes over with no button held, and every later drag orphans
+       * another interval. Reachable by pressing the right button, or Control on
+       * a Mac, part-way through an ordinary left drag.
+       */
+      if (swallowed !== null && e.button === swallowed) {
+        swallowed = null
+        e.stopPropagation()
+      }
     }
 
     const onDownPoint = (e: MouseEvent): void => {
@@ -412,9 +506,11 @@ export function TerminalView({
      * event whose modifiers are read; xterm tracks the rest of the drag through
      * its own document-level move and up listeners, which take no modifiers.
      *
-     * The clone must drop Shift rather than merely add Alt, and that is the
-     * whole reason a VPS session could not be copied out of. xterm branches on
-     * whether selection is *enabled* before it ever consults the force-selection
+     * With reporting OFF the clone must drop Shift rather than merely add Alt,
+     * and that is the whole reason a VPS session could not be copied out of.
+     * (With reporting ON the opposite holds off macOS, where Shift is exactly
+     * what xterm wants — see the clone below.) xterm branches on whether
+     * selection is *enabled* before it ever consults the force-selection
      * modifier:
      *
      *   if (this._enabled && event.shiftKey) { this._handleIncrementalClick(e) }
@@ -437,22 +533,42 @@ export function TerminalView({
      * retelling is keyed on the mode rather than the platform, and Alt is added
      * only where it is the thing xterm demands: macOS with reporting on.
      */
-    const retold = new WeakSet<MouseEvent>()
     const onShiftDrag = (e: MouseEvent): void => {
-      if (e.button !== 0 || !e.shiftKey || e.altKey) return
+      if (e.button !== 0 || e.altKey) return
       // Our own clone, coming back around: let it through or this recurses.
       if (retold.has(e)) return
 
       const reporting = term.modes.mouseTrackingMode !== 'none'
-      // Reporting on, off macOS: xterm's own branch reads Shift and already
-      // forces the selection. Nothing to retell.
-      if (reporting && !isMacPlatform) return
+
       /*
-       * Reporting off, with something already selected: here the branch above is
-       * not a dead end but a feature — Shift-click extends a selection, which is
-       * what every other terminal does too. Left alone deliberately.
+       * Two mouse modes, and the retelling each needs is different — so the
+       * cases are split rather than papered over with one clone shape.
        */
-      if (!reporting && term.hasSelection()) return
+      if (reporting) {
+        /*
+         * The program owns the mouse. A drag only becomes a selection if it
+         * carries the bypass modifier, or if copy mode is on and says every
+         * drag should. Copy mode is read from a ref: these listeners are bound
+         * once per PTY (gotcha 31).
+         */
+        if (!e.shiftKey && !copyOnRef.current) return
+        // Off macOS a real Shift-drag needs no help — `shouldForceSelection` is
+        // `event.shiftKey` there (`:442`) and xterm has already decided.
+        if (!isMacPlatform && e.shiftKey) return
+      } else {
+        /*
+         * No reporting: a plain drag already selects on every platform, so copy
+         * mode has nothing to add and Shift is the only gesture that needs
+         * rescuing here.
+         */
+        if (!e.shiftKey) return
+        /*
+         * Reporting off, with something already selected: here the branch below
+         * is not a dead end but a feature — Shift-click extends a selection,
+         * which is what every other terminal does too. Left alone deliberately.
+         */
+        if (term.hasSelection()) return
+      }
 
       e.preventDefault()
       e.stopPropagation()
@@ -469,15 +585,25 @@ export function TerminalView({
         buttons: e.buttons,
         // Carried through: a double-click still selects a word, a triple a line.
         detail: e.detail,
-        // Only macOS-with-reporting needs Alt, and only that case may have it:
-        // it is what `shouldForceSelection` demands there and means nothing
-        // otherwise. `shouldColumnSelect` cannot fire either way, since it is
-        // `altKey && !(isMac && macOptionClickForcesSelection)` (`:591-593`) and
-        // that option is on.
-        altKey: reporting,
-        // Dropped, not kept — see above. With Shift set, the reporting-off case
-        // takes the extend branch and selects nothing.
-        shiftKey: false,
+        /*
+         * Whichever modifier xterm reads on this platform, and only while the
+         * program owns the mouse. `shouldForceSelection` is
+         * `isMac ? altKey && macOptionClickForcesSelection : shiftKey`
+         * (`:437-443`), so macOS is told Alt and everywhere else is told Shift —
+         * which also lets copy mode work off macOS, where the user is holding
+         * nothing at all. `shouldColumnSelect` cannot fire either way: it is
+         * `altKey && !(isMac && macOptionClickForcesSelection)` (`:591-593`) and
+         * that option is on, so on macOS Alt cannot also mean column-select and
+         * off macOS the clone carries no Alt to begin with.
+         */
+        altKey: reporting && isMacPlatform,
+        /*
+         * With reporting OFF this must be dropped, not kept: xterm branches on
+         * `_enabled && shiftKey` first (`:478`) and lands on the extend branch,
+         * which is a no-op with nothing selected. That is what made a plain
+         * shell prompt impossible to select in.
+         */
+        shiftKey: reporting && !isMacPlatform,
         ctrlKey: e.ctrlKey,
         metaKey: e.metaKey
       })
@@ -487,10 +613,12 @@ export function TerminalView({
     const onContextMenu = (e: MouseEvent): void => {
       e.preventDefault()
       e.stopPropagation()
+      const selection = term.getSelection()
       setMenu({
         x: e.clientX,
         y: e.clientY,
-        selection: term.getSelection(),
+        selection,
+        blank: selection === '' && term.hasSelection(),
         clip: window.stoke.clipboard.readSync()
       })
     }
@@ -534,6 +662,78 @@ export function TerminalView({
     // Rebuild only when the process changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab.ptyId])
+
+  /*
+   * Everything on the visible screen, with no selection involved.
+   *
+   * The viewport rather than the whole buffer, because the viewport is what the
+   * user is looking at when they decide they want it — and on the tab that
+   * prompted this it is also all there is. A pane running Claude Code is on the
+   * alternate screen, so tmux keeps no history for it, and byobu deletes
+   * smcup/rmcup from the outer terminal's capabilities, so nothing scrolls into
+   * Stoke's scrollback either. `Select all` remains the way to take the buffer
+   * on a tab that has one.
+   *
+   * `translateToString(true)` trims each line's trailing blanks, which is the
+   * difference between a paste and a paste padded to 200 columns.
+   */
+  const copyScreen = (): void => {
+    const term = termRef.current
+    if (!term) return
+    const buf = term.buffer.active
+    const lines: string[] = []
+    for (let row = 0; row < term.rows; row++) {
+      lines.push(buf.getLine(buf.viewportY + row)?.translateToString(true) ?? '')
+    }
+    while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop()
+    const text = lines.join('\n')
+    if (text) window.stoke.clipboard.writeText(text)
+    term.focus()
+  }
+
+  /*
+   * Copy mode's chord, bound on the host in the capture phase for the same
+   * reason dictation's is: while Claude Code runs, anything the terminal sees
+   * is forwarded to the CLI.
+   *
+   * Cmd+Shift+X / Ctrl+Shift+X is free on both platforms rather than merely
+   * unused: `matchShortcut` rejects Shift on macOS outright (`shortcuts.ts:72`)
+   * and has no `KeyX` case off it, so the app never wants this chord, and xterm
+   * does nothing with it either.
+   *
+   * Depends on `active` alone. The handler reads the mode through `copyOnRef`
+   * so that toggling it does not tear down and rebind the listener on every
+   * press — the ref-on-render idiom gotcha 31 exists for.
+   */
+  useEffect(() => {
+    const host = hostRef.current
+    if (!host || !active) return
+
+    const isMac = window.stoke.platform === 'darwin'
+
+    const onKeyDown = (e: KeyboardEvent): void => {
+      const chord = isMac
+        ? e.metaKey && e.shiftKey && !e.ctrlKey && !e.altKey
+        : e.ctrlKey && e.shiftKey && !e.metaKey && !e.altKey
+      if (chord && e.code === 'KeyX') {
+        e.preventDefault()
+        e.stopPropagation()
+        setCopyOn((on) => !on)
+        return
+      }
+      // Escape leaves the mode, and only then — otherwise Escape belongs to
+      // whatever is running in the pane, which is usually the thing you most
+      // need it for.
+      if (e.code === 'Escape' && copyOnRef.current) {
+        e.preventDefault()
+        e.stopPropagation()
+        setCopyOn(false)
+      }
+    }
+
+    host.addEventListener('keydown', onKeyDown, true)
+    return () => host.removeEventListener('keydown', onKeyDown, true)
+  }, [active])
 
   /*
    * Dictation's keys, bound on the host in the capture phase so they are taken
@@ -712,22 +912,41 @@ export function TerminalView({
           y={menu.y}
           onClose={() => setMenu(null)}
           /*
-           * Only when there is nothing selected, which is exactly when a user
-           * has just discovered that dragging does not select. Claude Code
-           * keeps mouse reporting on, so the drag goes to the CLI unless it
-           * carries the bypass modifier.
+           * Shown only when there is something to explain, which is exactly
+           * when a user has just discovered that dragging did not select.
+           * Claude Code keeps mouse reporting on, so the drag goes to the CLI
+           * unless it carries the bypass modifier.
            *
-           * One sentence on every platform now, because Shift is the gesture
-           * everywhere — the capture-phase shim above retells a Mac Shift-drag
-           * as the Alt-drag xterm insists on. Option still works on macOS and
-           * is deliberately not mentioned: naming two ways to do one thing is
-           * how a hint stops being read, and this hint is shown to someone who
-           * has just found that dragging did nothing.
+           * Four cases, because telling someone the wrong one is worse than
+           * saying nothing. An SSH tab gets the extra sentence because the far
+           * side has its own copy path and Stoke already accepts what it emits
+           * (the OSC 52 handler above) — but it names no host's software as a
+           * certainty, since `hostId` says only that this is a remote tab. A blank selection is NOT "you did not select" —
+           * their gesture worked and the cells they took are empty, and the old
+           * single sentence told them to do the thing they had just done. Copy
+           * mode gets its own line so the way out is where the confusion is.
+           *
+           * One sentence per case on every platform, because Shift is the
+           * gesture everywhere — the capture-phase shim above retells a Mac
+           * Shift-drag as the Alt-drag xterm insists on. Option still works on
+           * macOS and is deliberately not mentioned: naming two ways to do one
+           * thing is how a hint stops being read.
            */
-          footer={menu.selection ? undefined : 'Hold Shift while dragging to select text.'}
+          footer={
+            copyOn
+              ? 'Copy mode is on — drag to select. Esc to leave.'
+              : menu.blank
+                ? 'That selection is only blank space, so there is nothing to copy.'
+                : menu.selection
+                  ? undefined
+                  : tab.hostId
+                    ? 'Hold Shift while dragging to select, or turn on Copy mode and drag without it. A copy made on the far side — tmux or byobu copy-mode — lands here too.'
+                    : 'Hold Shift while dragging to select text, or turn on Copy mode and drag without it.'
+          }
           items={[
             {
               label: 'Copy',
+              hint: isMac ? '⌘C' : 'Ctrl+Shift+C',
               disabled: !menu.selection,
               onSelect: () => {
                 window.stoke.clipboard.writeText(menu.selection)
@@ -737,6 +956,7 @@ export function TerminalView({
             },
             {
               label: 'Paste',
+              hint: isMac ? '⌘V' : 'Ctrl+V',
               disabled: !menu.clip.text,
               onSelect: () => {
                 termRef.current?.paste(menu.clip.text)
@@ -747,6 +967,14 @@ export function TerminalView({
               label: 'Select all',
               separated: true,
               onSelect: () => termRef.current?.selectAll()
+            },
+            /*
+             * The one item that needs no gesture at all, for when someone wants
+             * the error message on screen and does not care about precision.
+             */
+            {
+              label: 'Copy screen',
+              onSelect: copyScreen
             },
             /*
              * The only place dictation announces itself. A mode reachable by
@@ -772,9 +1000,29 @@ export function TerminalView({
                 termRef.current?.clear()
                 termRef.current?.focus()
               }
+            },
+            /*
+             * Last, and separated, because it is a mode rather than an action —
+             * and named here for the same reason dictation is: a mode reachable
+             * only by an undocumented chord is a mode nobody finds.
+             */
+            {
+              label: copyOn ? 'Leave copy mode' : 'Copy mode',
+              separated: true,
+              hint: isMac ? '⇧⌘X' : 'Ctrl+Shift+X',
+              onSelect: () => {
+                setCopyOn((on) => !on)
+                termRef.current?.focus()
+              }
             }
           ]}
         />
+      )}
+      {copyOn && (
+        <div className="copy-strip" role="status">
+          <span className="copy-strip-key">{isMac ? '⇧⌘X' : 'Ctrl+Shift+X'}</span>
+          <span className="voice-text">Copy mode — drag to select · Esc to leave</span>
+        </div>
       )}
       {voiceOn && (
         <div className="voice-strip" role="status" data-tone={voiceError ? 'error' : undefined}>

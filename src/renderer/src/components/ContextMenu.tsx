@@ -6,6 +6,12 @@ export interface MenuItem {
   disabled?: boolean
   /** Draw a divider above this item. */
   separated?: boolean
+  /**
+   * The chord that does the same thing, drawn muted at the right edge. A menu
+   * is where someone looks when they cannot find a gesture, so it is the one
+   * place a keyboard shortcut is worth spelling out.
+   */
+  hint?: string
 }
 
 interface Props {
@@ -90,7 +96,8 @@ export function ContextMenu({ x, y, items, footer, onClose }: Props): React.JSX.
             item.onSelect()
           }}
         >
-          {item.label}
+          <span>{item.label}</span>
+          {item.hint && <span className="context-menu-key">{item.hint}</span>}
         </button>
       ))}
       {footer && <p className="context-menu-hint">{footer}</p>}

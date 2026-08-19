@@ -29,6 +29,11 @@ interface Props {
  * watching this session. Bypass mode and a nearly-full ring both used to be
  * red as well, so red meant three unrelated things at once and therefore
  * nothing; both now have their own treatment.
+ *
+ * The dot is drawn by ContextRing, inside the ring's own <svg>, rather than
+ * laid over it as a second child of this slot. Two boxes centred in one grid
+ * cell agree in layout and disagree by half a pixel once painted; one circle
+ * sharing the ring's coordinate system cannot. See WATCH_R in ContextMeter.tsx.
  */
 export function TabIndicator({
   kind,
@@ -75,8 +80,8 @@ export function TabIndicator({
         used={context?.contextTokens ?? 0}
         limit={context?.contextLimit ?? 0}
         ready={ready}
+        watched={watched}
       />
-      {watched && <span className="tab-watch" aria-hidden="true" />}
       <span className="sr-only">
         {watched ? 'Worklog is watching this session. ' : ''}
         {status === 'exited' ? 'Session ended. ' : ''}
