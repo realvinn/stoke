@@ -735,3 +735,45 @@ export interface UsageSnapshot {
    */
   retryAfter?: number
 }
+
+/* ------------------------------------------------------------ tab restore */
+
+/** The last context reading a paused tab had, so its ring is not blank. */
+export interface StoredTabContext {
+  tokens: number
+  limit: number
+}
+
+/**
+ * One tab as it survives a quit.
+ *
+ * `id`, `ptyId`, `status` and `exitCode` are deliberately absent: the first two
+ * are regenerated on restore and the last two are always "paused" by definition.
+ */
+export interface StoredTab {
+  kind: 'session' | 'new'
+  /** '' for a --continue session, which never learns its own id (gotcha 26). */
+  sessionId: string
+  cwd: string
+  projectName: string
+  title: string
+  permissionMode: PermissionMode
+  model: string
+  effort: EffortLevel
+  /** `SshHost.id` when the session ran on another machine. */
+  hostId: string | null
+  selectedPath: string | null
+  expandedPath: string | null
+  lastActiveAt: number
+  context: StoredTabContext | null
+  /** The visible viewport as plain text. See MAX_SCREEN_BYTES. */
+  screen: string
+}
+
+export interface StoredTabs {
+  version: 1
+  savedAt: number
+  /** Index into `tabs` of the tab that was selected. Clamped on read. */
+  activeIndex: number
+  tabs: StoredTab[]
+}
