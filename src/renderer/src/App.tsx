@@ -34,6 +34,8 @@ import { zoomStep } from '@shared/ui'
 import { matchShortcut } from './lib/shortcuts'
 import { newTab } from './lib/newTab'
 import { profileIdForCwd } from './lib/projectProfile'
+import { toStored } from './lib/restore'
+import { screenOf } from './lib/termRegistry'
 import { moveTab, neighbourOf, replaceOrAppend } from './lib/tabs'
 import { applyAppearance, applyTypography } from './lib/theme'
 import type { Tab } from './types'
@@ -520,6 +522,26 @@ export function App(): React.JSX.Element {
       return changed ? next : list
     })
   }, [contexts])
+
+  /*
+   * Persist the open tabs, debounced.
+   *
+   * Debounced rather than written on quit, and that is the load-bearing choice:
+   * `before-quit` cannot ask the renderer for state and wait for the answer, and
+   * a snapshot taken only at quit is worthless in exactly the cases that hurt
+   * most — a crash, an OOM kill, or the force-kill CLAUDE.md warns against.
+   *
+   * A paused tab keeps the screen it was restored with: it has no process, so
+   * `screenOf` finds no terminal and returns '' for it.
+   */
+  useEffect(() => {
+    const id = window.setTimeout(() => {
+      window.stoke.tabs.save(
+        toStored(tabs, activeTabId, contexts, (t) => screenOf(t.ptyId), Date.now())
+      )
+    }, 500)
+    return () => window.clearTimeout(id)
+  }, [tabs, activeTabId, contexts])
 
   /** The New Project tab a launch should consume, or null to append. */
   const activeNewTabId = useMemo(() => {

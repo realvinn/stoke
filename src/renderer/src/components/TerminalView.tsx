@@ -9,6 +9,7 @@ import type { Theme } from '@shared/types'
 import { createRecorder, voiceSupported, type Recorder } from '@shared/voice'
 import { attachSink } from '../lib/ptyBus'
 import { matchShortcut } from '../lib/shortcuts'
+import { registerTerm, screenOf, unregisterTerm } from '../lib/termRegistry'
 import { terminalTheme } from '../lib/theme'
 import type { Tab } from '../types'
 import { ContextMenu } from './ContextMenu'
@@ -284,6 +285,7 @@ export function TerminalView({
     const live = window as unknown as { stokeTerminals?: Map<string, Terminal> }
     live.stokeTerminals ??= new Map()
     live.stokeTerminals.set(tab.ptyId, term)
+    registerTerm(tab.ptyId, term)
 
     // WebGL is a large win on a busy terminal but is unavailable on some GPUs
     // and inside remote sessions; the DOM renderer is the fallback.
@@ -656,6 +658,7 @@ export function TerminalView({
       onInput.dispose()
       term.dispose()
       live.stokeTerminals?.delete(tab.ptyId)
+      unregisterTerm(tab.ptyId)
       termRef.current = null
       fitRef.current = null
     }
@@ -674,21 +677,14 @@ export function TerminalView({
    * Stoke's scrollback either. `Select all` remains the way to take the buffer
    * on a tab that has one.
    *
-   * `translateToString(true)` trims each line's trailing blanks, which is the
-   * difference between a paste and a paste padded to 200 columns.
+   * The walk itself lives in `termRegistry`'s `screenOf` now — the tab snapshot
+   * needs the identical text for every tab at once, so this calls the same
+   * helper rather than repeating it.
    */
   const copyScreen = (): void => {
-    const term = termRef.current
-    if (!term) return
-    const buf = term.buffer.active
-    const lines: string[] = []
-    for (let row = 0; row < term.rows; row++) {
-      lines.push(buf.getLine(buf.viewportY + row)?.translateToString(true) ?? '')
-    }
-    while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop()
-    const text = lines.join('\n')
+    const text = screenOf(tab.ptyId)
     if (text) window.stoke.clipboard.writeText(text)
-    term.focus()
+    termRef.current?.focus()
   }
 
   /*
