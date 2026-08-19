@@ -19,6 +19,7 @@ import { resolveTheme } from '@shared/themes'
 import { worklogButtonState } from '@shared/worklog'
 import { BrowserPanel } from './components/BrowserPanel'
 import { CommandPalette } from './components/CommandPalette'
+import { IconClose } from './components/Icons'
 import { Launcher } from './components/Launcher'
 import { PausedSession } from './components/PausedSession'
 import { Resizer } from './components/Resizer'
@@ -124,6 +125,13 @@ export function App(): React.JSX.Element {
 
   /** Screens for tabs restored from the last run, keyed by tab id. */
   const [restoredScreens, setRestoredScreens] = useState<Record<string, string>>({})
+  /**
+   * How many paused tabs the boot restore brought back, so the restore bar
+   * knows what to say. 0 both before the restore has run and after the user
+   * has dismissed it or started fresh — the bar has no other way to tell
+   * "nothing to restore" from "already handled it", and it does not need one.
+   */
+  const [restoreCount, setRestoreCount] = useState(0)
   /** True until the boot restore has been attempted, so nothing saves over it. */
   const restored = useRef(false)
 
@@ -744,6 +752,21 @@ export function App(): React.JSX.Element {
     [defaultCwd, mode, model, effort, activeNewTabId]
   )
 
+  /**
+   * A paused tab's restored screen is only useful until the tab it belongs to
+   * stops being paused — resumed (it gets a live terminal instead) or closed
+   * (it stops existing). Both call sites prune it so the map does not keep an
+   * entry for the life of the run for every tab that ever got restored.
+   */
+  const dropRestoredScreen = useCallback((id: string): void => {
+    setRestoredScreens((cur) => {
+      if (!(id in cur)) return cur
+      const next = { ...cur }
+      delete next[id]
+      return next
+    })
+  }, [])
+
   /*
    * Resuming a paused tab replaces it at its own index — `replaceOrAppend`
    * does that already (lib/tabs.ts:31-41) — so the tab does not jump to the
@@ -757,9 +780,13 @@ export function App(): React.JSX.Element {
       if (tab.hostId) {
         const host = settings?.hosts.find((h) => h.id === tab.hostId)
         if (!host) return null
-        return () => void startHostSession(host, tab.id)
+        return () => {
+          dropRestoredScreen(tab.id)
+          void startHostSession(host, tab.id)
+        }
       }
-      return () =>
+      return () => {
+        dropRestoredScreen(tab.id)
         void startSession({
           cwd: tab.cwd,
           name: tab.projectName,
@@ -771,8 +798,9 @@ export function App(): React.JSX.Element {
           continueLast: !tab.sessionId,
           replaceTabId: tab.id
         })
+      }
     },
-    [settings, startSession, startHostSession]
+    [settings, startSession, startHostSession, dropRestoredScreen]
   )
 
   /** Quick start with no project: run in the configured default folder. */
@@ -818,6 +846,7 @@ export function App(): React.JSX.Element {
       setRestoredScreens(screensFrom(state, back))
       setTabs(back)
       setActiveTabId(activeId)
+      setRestoreCount(back.length)
     })
   }, [])
 
@@ -827,9 +856,14 @@ export function App(): React.JSX.Element {
   useEffect(() => {
     if (autoStarted.current) return
     if (!settings?.startOnLaunch || !defaultCwd || !cli?.ok) return
+    // Restored tabs are what the user had; opening a session on top of them is
+    // an extra nobody asked for. `restoreCount` is a dependency below so a
+    // restore that resolves after this effect's other conditions are already
+    // met still gets to veto it, rather than losing a race silently.
+    if (restoreCount > 0) return
     autoStarted.current = true
     startDefault()
-  }, [settings?.startOnLaunch, defaultCwd, cli, startDefault])
+  }, [settings?.startOnLaunch, defaultCwd, cli, startDefault, restoreCount])
 
   /**
    * Append a New Project tab and select it.
@@ -856,10 +890,15 @@ export function App(): React.JSX.Element {
     (id: string): void => {
       const tab = tabs.find((t) => t.id === id)
       if (!tab) return
-      if (tab.kind === 'session') {
+      // A paused tab has no process — `ptyId` is '' — so there is nothing for
+      // `pty.kill` to do. `PtySessions.kill('')` is already a harmless no-op
+      // today (pty.ts:331-333); this guard is defensive, not a fix for a
+      // crash, and just keeps a nonsense call from being made at all.
+      if (tab.kind === 'session' && tab.status !== 'paused') {
         window.stoke.pty.kill(tab.ptyId)
         forgetPty(tab.ptyId)
       }
+      dropRestoredScreen(id)
       // Never leave the strip empty: closing the last tab lands on a fresh New
       // Project tab, which is where the app starts anyway.
       const next = tabs.filter((t) => t.id !== id)
@@ -871,7 +910,7 @@ export function App(): React.JSX.Element {
         )
       }
     },
-    [tabs, activeTabId]
+    [tabs, activeTabId, dropRestoredScreen]
   )
 
   const restartTab = useCallback(
@@ -1182,6 +1221,30 @@ export function App(): React.JSX.Element {
               <span style={{ flex: 1 }}>{error}</span>
               <button className="btn" data-variant="ghost" onClick={() => setError(null)}>
                 Dismiss
+              </button>
+            </div>
+          )}
+
+          {restoreCount > 0 && (
+            <div className="restore-bar" role="status">
+              <span className="restore-text">
+                Restored {restoreCount} paused {restoreCount === 1 ? 'tab' : 'tabs'} from last
+                time.
+              </span>
+              <button
+                className="btn"
+                data-variant="ghost"
+                onClick={() => {
+                  setTabs([newTab()])
+                  setActiveTabId(null)
+                  setRestoredScreens({})
+                  setRestoreCount(0)
+                }}
+              >
+                Start fresh
+              </button>
+              <button className="icon-btn" onClick={() => setRestoreCount(0)} title="Dismiss">
+                <IconClose />
               </button>
             </div>
           )}
