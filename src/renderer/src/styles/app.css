@@ -1307,6 +1307,17 @@ body {
   background: var(--danger);
 }
 
+/*
+ * A reading restored from the last run, shown in the status bar for a paused
+ * tab. Never warn/critical: those colours mean a live session is under
+ * pressure right now, and a paused tab has no live session — only a saved
+ * number that happened to be high when Stoke last quit. Same --text-muted
+ * `.ring-pause` already uses for "no live data" on the tab strip's ring.
+ */
+.meter[data-level='paused'] .meter-fill {
+  background: var(--text-muted);
+}
+
 .meter-inline {
   display: flex;
   align-items: center;

@@ -1381,7 +1381,7 @@ and inside the `<svg>`, in place of the fill arc when paused:
 
 ```tsx
       {paused ? (
-        <path className="ring-pause" d="M6.6 5.6v4.8M9.4 5.6v4.8" />
+        <path className="ring-pause" d="M5.6 6.6h4.8M5.6 9.4h4.8" />
       ) : (
         ready && (
           <circle
@@ -1397,7 +1397,7 @@ and inside the `<svg>`, in place of the fill arc when paused:
       )}
 ```
 
-The `d` is in the same 16-unit viewBox as everything else in this SVG, so it scales with Interface scale for free.
+The `d` is in the same 16-unit viewBox as everything else in this SVG, so it scales with Interface scale for free. (Corrected here after implementation: an earlier draft of this step gave `d="M6.6 5.6v4.8M9.4 5.6v4.8"`, two *vertical* bars pre-rotation. `.ring` carries `transform: rotate(-90deg)` unconditionally, and that transform applies to every child including this path, so vertical bars pre-rotation come out *horizontal* on screen — an equals sign, not a pause icon. `ring-plus`'s cross is exempt from this because a plus is unchanged by a 90° turn; two parallel bars are not. The horizontal-bars-pre-rotation form above is what actually shipped, confirmed against a real screenshot.)
 
 - [ ] **Step 2: Style the glyph**
 
@@ -1411,6 +1411,28 @@ The `d` is in the same 16-unit viewBox as everything else in this SVG, so it sca
   stroke-linecap: round;
 }
 ```
+
+Also fix `.paused-screen`, carried into this task from Task 5's review as: "re-applies padding
+that `.term-pane` already applies to its padding box, so the dimmed text is double-indented
+relative to where live terminal text actually sits." **That diagnosis is wrong, and was measured
+to be wrong rather than assumed** — do not re-apply it as written. `.paused-screen` is
+`position: absolute; inset: 0` inside `.term-pane`; `inset: 0` fills the nearest positioned
+ancestor's own padding box, and padding lives *inside* that box rather than around it (border-width
+is 0, so `.term-pane`'s padding box and border box share one top-left corner). So an `inset: 0`
+child does not land inside `.term-pane`'s padding and get it applied twice — it coincides with
+`.term-pane`'s own edges and needs padding of its own just to sit anywhere else. The two padding
+values (`.paused-screen`'s own and `.term-pane`'s) are not compounding; they are doing the same
+job twice, by coincidence landing on the identical value. Measured directly: with
+`.paused-screen`'s padding forced to `0`, the text jumped 12px left and 8px up, flush with
+`.term-pane`'s outer edge — a single indent's worth of movement, not the extra step "double"
+would predict. The real defect is that nothing ties the two declarations together: change either
+one alone and the paused `<pre>` drifts from the live terminal's text, silently. Fix it by dropping
+`position: absolute; inset: 0` and the duplicate padding from `.paused-screen`, replacing them with
+`width: 100%; height: 100%;` (keep `margin: 0`), which makes `.paused-screen` a normal-flow child of
+`.term-pane` — exactly like `.term-host` is for the live pane — so it inherits `.term-pane`'s padding
+structurally instead of re-declaring a copy of it. `.paused-card` stays `position: absolute; inset:
+0` and keeps painting on top regardless: a positioned sibling paints after a static one in the same
+stacking context whatever their DOM order.
 
 - [ ] **Step 3: Pass it through `TabIndicator`**
 

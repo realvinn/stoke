@@ -75,6 +75,15 @@ export function StatusBar({
 
   const bypass = tab.permissionMode === 'bypassPermissions'
   const model = context?.model ?? (tab.model || null)
+  /*
+   * A paused tab's `context` is seeded at restore with a real saved reading
+   * but a zeroed message-count breakdown (`toStored` never persisted one) —
+   * see the boot-restore effect in App.tsx. `tab.status` is the single field
+   * that carries "paused" (TabIndicator reads the same field the same way);
+   * this derives a local boolean from it once rather than repeating the
+   * `=== 'paused'` comparison at each render site below.
+   */
+  const paused = tab.status === 'paused'
 
   return (
     <footer className="statusbar">
@@ -102,9 +111,18 @@ export function StatusBar({
 
       {context?.ready ? (
         <>
-          <span className="status-item">{context.messageCount} msgs</span>
-          <span className="status-item" title="Context window in use">
-            <ContextBar used={context.contextTokens} limit={context.contextLimit} />
+          {/*
+           * A restored snapshot's messageCount is always 0 — genuinely
+           * unrestorable, not a real count of zero — so stating it here
+           * would read as "this session had no turns," which is false for
+           * every paused tab that ever ran. Suppressed rather than guessed.
+           */}
+          {!paused && <span className="status-item">{context.messageCount} msgs</span>}
+          <span
+            className="status-item"
+            title={paused ? 'Context window used when last active' : 'Context window in use'}
+          >
+            <ContextBar used={context.contextTokens} limit={context.contextLimit} paused={paused} />
           </span>
         </>
       ) : (

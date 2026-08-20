@@ -12,22 +12,36 @@ interface MeterProps {
   limit: number
   /** Render the "84.2k / 200k" caption beside the bar. */
   showLabel?: boolean
+  /**
+   * Restored from the last run: draw the reading, but it must not be able to
+   * paint warn/critical. Mirrors `ContextRing`'s `paused` prop and the same
+   * reasoning — a session that is not running cannot be in a live alarm
+   * state, however high the number it was saved with. `--text-muted` is the
+   * same "no live data" colour `.ring-plus`/`.ring-pause` already use.
+   */
+  paused?: boolean
 }
 
-export function ContextBar({ used, limit, showLabel = true }: MeterProps): React.JSX.Element {
+export function ContextBar({
+  used,
+  limit,
+  showLabel = true,
+  paused = false
+}: MeterProps): React.JSX.Element {
   const ratio = limit > 0 ? Math.min(1, used / limit) : 0
   const pct = Math.round(ratio * 100)
+  const dataLevel = paused ? 'paused' : level(ratio)
   return (
     <div className="meter-inline">
       <div
         className="meter"
-        data-level={level(ratio)}
+        data-level={dataLevel}
         style={{ ['--meter-scale' as string]: String(ratio) }}
         role="meter"
         aria-valuenow={used}
         aria-valuemin={0}
         aria-valuemax={limit}
-        aria-label="Context window used"
+        aria-label={paused ? 'Context window used when last active' : 'Context window used'}
       >
         <div className="meter-fill" />
       </div>
@@ -113,33 +127,56 @@ export function ContextRing({
       </title>
       <circle className="ring-track" cx="8" cy="8" r={RING_R} />
       {paused ? (
-        /*
-         * Two vertical bars, drawn as if the ring had no rotation. `.ring`
-         * carries `transform: rotate(-90deg)` unconditionally (it is what
-         * turns the fill arc's 3-o'clock start into 12 o'clock), and that
-         * transform applies to every child, this path included — a plain
-         * `v4.8` pair would come out as two *horizontal* bars on screen,
-         * an equals sign rather than a pause icon. `ring-plus`'s cross is
-         * exempt because a plus is unchanged by a 90° turn; two parallel
-         * bars are not. Drawing the bars horizontal here, pre-rotation, is
-         * what lands them vertical once the parent's transform is applied —
-         * confirmed against the rendered screenshot, not just the maths.
-         */
-        <path className="ring-pause" d="M5.6 6.6h4.8M5.6 9.4h4.8" />
+        <>
+          {/*
+           * Drawn BEFORE the pause bars — the opposite order from the live
+           * branch below, where the dot goes last. The dot's r=2.86 fill
+           * geometrically covers the middle of both bars no matter which is
+           * on top, so one of them wins; only the losing shape's round-cap
+           * *tips* survive outside the dot's circle. Dot-on-top (the live
+           * ordering) left a solid red circle with two grey stubs poking out
+           * top and bottom of each bar — not a pause icon, and not obviously
+           * a dot either. Bars-on-top keeps the pause glyph exactly as drawn
+           * everywhere else, unbroken and still legible as "II", with the
+           * red dot showing through the gap between the bars and in slivers
+           * past their outer edges — a watched accent behind a clean pause
+           * icon, rather than the pause icon reduced to debris behind a dot.
+           * Paused is the state a tab in this branch is actually in; watched
+           * is the annotation. Confirmed against a real screenshot with both
+           * true — no verify suite renders this component, so a screenshot
+           * is the only way this combination gets checked at all.
+           */}
+          {watched && <circle className="tab-watch" cx="8" cy="8" r={WATCH_R} />}
+          {/*
+           * Two vertical bars, drawn as if the ring had no rotation. `.ring`
+           * carries `transform: rotate(-90deg)` unconditionally (it is what
+           * turns the fill arc's 3-o'clock start into 12 o'clock), and that
+           * transform applies to every child, this path included — a plain
+           * `v4.8` pair would come out as two *horizontal* bars on screen,
+           * an equals sign rather than a pause icon. `ring-plus`'s cross is
+           * exempt because a plus is unchanged by a 90° turn; two parallel
+           * bars are not. Drawing the bars horizontal here, pre-rotation, is
+           * what lands them vertical once the parent's transform is applied —
+           * confirmed against the rendered screenshot, not just the maths.
+           */}
+          <path className="ring-pause" d="M5.6 6.6h4.8M5.6 9.4h4.8" />
+        </>
       ) : (
-        ready && (
-          <circle
-            className="ring-fill"
-            cx="8"
-            cy="8"
-            r={RING_R}
-            strokeDasharray={CIRC}
-            strokeDashoffset={CIRC * (1 - ratio)}
-            strokeLinecap="round"
-          />
-        )
+        <>
+          {ready && (
+            <circle
+              className="ring-fill"
+              cx="8"
+              cy="8"
+              r={RING_R}
+              strokeDasharray={CIRC}
+              strokeDashoffset={CIRC * (1 - ratio)}
+              strokeLinecap="round"
+            />
+          )}
+          {watched && <circle className="tab-watch" cx="8" cy="8" r={WATCH_R} />}
+        </>
       )}
-      {watched && <circle className="tab-watch" cx="8" cy="8" r={WATCH_R} />}
     </svg>
   )
 }
