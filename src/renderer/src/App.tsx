@@ -884,6 +884,64 @@ export function App(): React.JSX.Element {
         setTabs(back)
         setActiveTabId(activeId)
         setRestoreCount(back.filter((t) => t.status === 'paused').length)
+        /*
+         * A paused tab has no live watcher, so `contexts[sessionId]` stays
+         * undefined and its ring would draw the empty "not read yet" track —
+         * indistinguishable from a brand-new tab that has never had a turn.
+         * Seed one from what was actually saved (`toStored` only persists
+         * `{ tokens, limit }`, gotcha-33-adjacent: it is deliberately not the
+         * whole ContextSnapshot).
+         *
+         * Every required field gets a real value, not a placeholder cast:
+         *  - sessionId/contextTokens/contextLimit/model/title come straight
+         *    from the stored tab.
+         *  - permissionMode is the tab's own restored mode, not a hardcoded
+         *    'default' — the "keep the permission mode live" effect above
+         *    copies `contexts[t.sessionId].permissionMode` back onto the tab
+         *    whenever it differs from `t.permissionMode`, so seeding the
+         *    wrong constant here would silently overwrite a restored
+         *    bypass-mode tab back to default the instant this runs.
+         *  - updatedAt uses `lastActiveAt`, the real moment this snapshot was
+         *    taken before quitting, rather than `Date.now()` here, which
+         *    would claim the reading is as fresh as the current boot.
+         *  - ready is true: the field's contract is "the session file exists
+         *    on disk" (context.ts), which is true for a completed prior
+         *    session — that is a separate question from *liveness*, which is
+         *    what the new `paused` flag on ContextRing now carries instead.
+         *  - inputTokens/cacheReadTokens/cacheCreationTokens/outputTokens/
+         *    messageCount have no restorable value — `toStored` never saved
+         *    a breakdown, only the total. Zero mirrors context.ts's own
+         *    `emptySnapshot()` convention for "not currently known" and,
+         *    like that function's callers, is never read by the ring or the
+         *    tab strip (Task 7's actual scope). The one place these zeros
+         *    are visible is the status bar's message count, if a paused tab
+         *    happens to be the active one — a pre-existing gap, since
+         *    StatusBar has no paused-awareness at all yet and is outside
+         *    this task's files.
+         */
+        setContexts((prev) => {
+          const next = { ...prev }
+          state.tabs.forEach((s) => {
+            if (s.sessionId && s.context) {
+              next[s.sessionId] = {
+                sessionId: s.sessionId,
+                contextTokens: s.context.tokens,
+                contextLimit: s.context.limit,
+                inputTokens: 0,
+                cacheReadTokens: 0,
+                cacheCreationTokens: 0,
+                outputTokens: 0,
+                model: s.model || null,
+                messageCount: 0,
+                title: s.title || null,
+                updatedAt: s.lastActiveAt,
+                ready: true,
+                permissionMode: s.permissionMode
+              }
+            }
+          })
+          return next
+        })
       })
       .catch(() => {})
       // Runs whether the round trip resolved or rejected. A rejection with no

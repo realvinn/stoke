@@ -77,30 +77,67 @@ export function ContextRing({
   used,
   limit,
   ready = true,
-  watched = false
+  watched = false,
+  paused = false
 }: {
   used: number
   limit: number
   ready?: boolean
   /** Draw the worklog dot in the middle. See WATCH_R for why it lives here. */
   watched?: boolean
+  /** Restored from the last run: draw the reading, but say it is not live. */
+  paused?: boolean
 }): React.JSX.Element {
   const ratio = ready && limit > 0 ? Math.min(1, used / limit) : 0
   const pct = Math.round(ratio * 100)
+  /*
+   * `paused` gets its own data-level rather than falling through to
+   * `level(ratio)`. That ratio is a reading from the last run, not a live
+   * one — if it happened to be >= 70%, `.ring[data-level='warn']` /
+   * `['critical']` would paint an arc in an alert colour for a session
+   * nobody is watching right now. Those rules only target `.ring-fill`,
+   * which a paused ring never renders (see below), so today this is a
+   * belt-and-suspenders fix rather than a visible one — but "cannot ever
+   * match a warn/critical selector" is the actual guarantee gotcha 33's
+   * rule is asking for, not "happens not to match this cascade today."
+   */
+  const dataLevel = paused ? 'paused' : ready ? level(ratio) : 'empty'
   return (
-    <svg className="ring" viewBox="0 0 16 16" data-level={ready ? level(ratio) : 'empty'}>
-      <title>{ready ? `Context ${pct}% used` : 'Context not read yet'}</title>
+    <svg className="ring" viewBox="0 0 16 16" data-level={dataLevel}>
+      <title>
+        {paused
+          ? `Paused — ${pct}% used when last active`
+          : ready
+            ? `Context ${pct}% used`
+            : 'Context not read yet'}
+      </title>
       <circle className="ring-track" cx="8" cy="8" r={RING_R} />
-      {ready && (
-        <circle
-          className="ring-fill"
-          cx="8"
-          cy="8"
-          r={RING_R}
-          strokeDasharray={CIRC}
-          strokeDashoffset={CIRC * (1 - ratio)}
-          strokeLinecap="round"
-        />
+      {paused ? (
+        /*
+         * Two vertical bars, drawn as if the ring had no rotation. `.ring`
+         * carries `transform: rotate(-90deg)` unconditionally (it is what
+         * turns the fill arc's 3-o'clock start into 12 o'clock), and that
+         * transform applies to every child, this path included — a plain
+         * `v4.8` pair would come out as two *horizontal* bars on screen,
+         * an equals sign rather than a pause icon. `ring-plus`'s cross is
+         * exempt because a plus is unchanged by a 90° turn; two parallel
+         * bars are not. Drawing the bars horizontal here, pre-rotation, is
+         * what lands them vertical once the parent's transform is applied —
+         * confirmed against the rendered screenshot, not just the maths.
+         */
+        <path className="ring-pause" d="M5.6 6.6h4.8M5.6 9.4h4.8" />
+      ) : (
+        ready && (
+          <circle
+            className="ring-fill"
+            cx="8"
+            cy="8"
+            r={RING_R}
+            strokeDasharray={CIRC}
+            strokeDashoffset={CIRC * (1 - ratio)}
+            strokeLinecap="round"
+          />
+        )
       )}
       {watched && <circle className="tab-watch" cx="8" cy="8" r={WATCH_R} />}
     </svg>

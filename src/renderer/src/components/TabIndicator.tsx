@@ -81,10 +81,12 @@ export function TabIndicator({
         limit={context?.contextLimit ?? 0}
         ready={ready}
         watched={watched}
+        paused={status === 'paused'}
       />
       <span className="sr-only">
         {watched ? 'Worklog is watching this session. ' : ''}
         {status === 'exited' ? 'Session ended. ' : ''}
+        {status === 'paused' ? 'Paused, restored from the last run. ' : ''}
         {bypass ? 'Permissions bypassed.' : ''}
       </span>
     </span>

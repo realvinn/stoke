@@ -1355,6 +1355,20 @@ body {
   stroke: var(--ring-full);
 }
 
+/*
+ * Paused: the ring keeps the reading it was saved with, and the arc is
+ * replaced by a pause glyph so a stale number cannot be mistaken for a live
+ * one. Drawn inside the ring's own <svg>, in the same 16-unit viewBox as
+ * everything else — see ContextMeter.tsx's WATCH_R comment and gotcha 33 for
+ * why a DOM box laid over this ring is not an option.
+ */
+.ring .ring-pause {
+  fill: none;
+  stroke: var(--text-muted);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+}
+
 /* -------------------------------------------------------------- terminal */
 
 .term-stack {
@@ -1490,12 +1504,35 @@ body {
  * A tab restored from the last run. The stored screen sits behind the card,
  * dimmed enough to read as context rather than as live output — three paused
  * tabs are otherwise the same empty pane with different titles.
+ *
+ * Deliberately NOT `position: absolute; inset: 0`, which is what this rule
+ * used to be. A positioned element's `inset: 0` fills the nearest positioned
+ * ancestor's own box — `.term-pane`'s, here — and padding lives *inside*
+ * that box rather than around it, so it never moves where the box itself
+ * starts (border-width is 0, so `.term-pane`'s padding box and border box
+ * share one top-left corner). An `inset: 0` child therefore does not land
+ * inside `.term-pane`'s padding; it coincides with `.term-pane`'s own edges
+ * and needs padding of its own to sit anywhere else — confirmed by turning
+ * this rule's padding off in the running app and watching the text jump
+ * 12px left and 8px up, flush with `.term-pane`'s outer edge, `.term-host`
+ * untouched.
+ *
+ * The version that shipped re-declared the same padding value a second time
+ * to compensate, and only looked right because that second value happened to
+ * be copied from `.term-pane`'s. Nothing tied the two together: change either
+ * one alone and they part ways with no error, just a `<pre>` that no longer
+ * starts where the live terminal's text does. Dropping the position instead
+ * makes this a normal-flow child of `.term-pane`, exactly like `.term-host`
+ * is for the live pane — so it inherits `.term-pane`'s own padding rather
+ * than re-stating it, and the two can no longer drift apart. `.paused-card`
+ * stays `position: absolute; inset: 0` and keeps painting on top of it
+ * regardless: a positioned sibling paints after a static one in the same
+ * stacking context whatever their DOM order, so nothing about the card moved.
  */
 .paused-screen {
-  position: absolute;
-  inset: 0;
   margin: 0;
-  padding: var(--space-8) var(--space-8) var(--space-8) var(--space-12);
+  width: 100%;
+  height: 100%;
   overflow: hidden;
   opacity: 0.28;
   color: var(--text);
