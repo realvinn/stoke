@@ -645,6 +645,35 @@ scripts/          the verify-*.mts suites, make-icon.cjs
     were established by driving the built app over CDP against a real SSH session, stashing the
     change, rebuilding, and measuring both ways.
 
+35. **Tab restore is carried by the debounced write, not by `before-quit` — and that is
+    measured, not argued.** `tabs.json` is written synchronously on every `tabs:save` push, and
+    the `before-quit` write is only a retry for a push whose write failed (`writeTabState`
+    swallows its errors). Proven by the harshest available test: with two tabs open and a third
+    just closed, `kill -9` on the app — no clean quit, no `before-quit` at all — still restored
+    both tabs with their screens intact and kept the closed tab closed.
+
+    That test also settles the update case, which could not be exercised directly (the installed
+    app and the repo are both 0.5.2, so no update was pending, and an unpackaged probe run never
+    takes the `selfUpdate` path at all). A `kill -9` is strictly harsher than any quit
+    `quitAndInstall` can perform, so if the snapshot survives that, it survives an update
+    regardless of whether `before-quit` fires. **On macOS, closing the last window does not fire
+    `before-quit`** — `window-all-closed` skips `app.quit()` on the Mac branch — which is another
+    reason the per-push write has to be the load-bearing half.
+
+    What resume actually restores was verified against a real transcript, not a fabricated one:
+    the restored tab's title changed from its stored placeholder to the conversation's own
+    ai-title the moment `--resume` connected, the tab stayed at its own strip index, and the
+    other paused tabs were untouched.
+
+    **A restored tab can hold a session id that resumes to nothing**, and the failure surfaces
+    inside the terminal rather than in Stoke. `startSession`'s catch only covers `pty.start`
+    throwing; when the PTY starts and `claude` cannot find the conversation, the paused card is
+    replaced by a live session printing `No conversation found with session ID: …`. Reachable
+    without deleting a thing: start a session in a folder Claude Code has not seen, leave it at
+    the trust prompt, quit. No transcript is ever written, so the id Stoke persisted addresses
+    nothing. The design spec claimed the tab would stay paused; it does not, and that claim is
+    corrected in place.
+
 ## Standing traps when driving the app
 
 Not about any one module, and each cost real time at least once. Carried over from the 0.3.0

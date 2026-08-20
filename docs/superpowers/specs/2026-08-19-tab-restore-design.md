@@ -1,6 +1,6 @@
 # Restoring open tabs across a quit or an update
 
-**Status:** approved, not yet implemented
+**Status:** implemented and verified (2026-08-19)
 **Date:** 2026-08-19
 
 ## The problem
@@ -247,10 +247,18 @@ replaced is a paused remote tab rather than a launcher.
   `continueLast: true` in the same cwd, and the card says "the most recent
   session in this folder" rather than implying it is the same one — which it may
   not be, if another session ran there since.
-- **Transcript gone.** `--resume` against a deleted session fails; `startSession`
-  already catches and surfaces it through `setError` (`App.tsx:582-584`). The tab
-  stays paused rather than vanishing, so the user can read the error and then
-  close it deliberately.
+- **Transcript gone — and this section was wrong.** Measured: the tab does **not**
+  stay paused, and no Stoke error banner appears. `startSession`'s catch only fires
+  if `pty.start` itself throws; here the PTY starts fine and it is `claude` that
+  fails, printing `No conversation found with session ID: …` into a live terminal.
+  So the paused card is replaced by a running session in the right folder showing
+  the CLI's own error. That is a defensible outcome, but it is not what this spec
+  claimed, and the claim is corrected rather than deleted so nobody re-derives it.
+
+  Reachable without deleting anything: start a session in a folder Claude Code has
+  not seen, leave it at the "do you trust this folder?" prompt, and quit. No
+  transcript is ever written, so the restored tab has an id that resumes to
+  nothing.
 - **A `new` tab** restores its `selectedPath` and `expandedPath` and is otherwise
   free — it has no session and nothing to resume.
 - **An exited tab** restores as paused like any other. In the paused model the
