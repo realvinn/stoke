@@ -126,12 +126,27 @@ export function App(): React.JSX.Element {
   /** Screens for tabs restored from the last run, keyed by tab id. */
   const [restoredScreens, setRestoredScreens] = useState<Record<string, string>>({})
   /**
-   * How many paused tabs the boot restore brought back, so the restore bar
-   * knows what to say. 0 both before the restore has run and after the user
-   * has dismissed it or started fresh — the bar has no other way to tell
-   * "nothing to restore" from "already handled it", and it does not need one.
+   * How many *paused* tabs the boot restore brought back, so the restore bar
+   * knows what to say. Not `back.length`: a restored `kind: 'new'` tab comes
+   * back with `status: 'running'` (`fromStored` — only a session tab can be
+   * paused), so counting every restored tab overstates it whenever a New tab
+   * was open at quit, and can name a positive count when nothing at all was
+   * paused (quit with only a New tab open). 0 both before the restore has run
+   * and after the user has dismissed it or started fresh — the bar has no
+   * other way to tell "nothing to restore" from "already handled it", and it
+   * does not need one.
    */
   const [restoreCount, setRestoreCount] = useState(0)
+  /**
+   * Whether the boot restore has settled — resolved or rejected — as opposed
+   * to not having come back yet. `restoreCount` alone cannot carry this: it is
+   * `0` in both "still in flight" and "resolved with nothing to restore", and
+   * the `startOnLaunch` effect below needs to tell those apart or it can fire
+   * before the restore's own veto has had a chance to land. Plain state, not a
+   * ref — flipping a ref would not cause that effect to re-run and reconsider
+   * once the restore actually settles.
+   */
+  const [restoreSettled, setRestoreSettled] = useState(false)
   /** True until the boot restore has been attempted, so nothing saves over it. */
   const restored = useRef(false)
 
@@ -572,6 +587,13 @@ export function App(): React.JSX.Element {
     return t && t.kind === 'new' ? t.id : null
   }, [tabs, activeTabId])
 
+  /*
+   * Resolves `true` once the session tab is actually up, `false` on a caught
+   * failure — `error` is already set either way. `resumeTabFor` needs this to
+   * know whether it may drop a paused tab's restored screen: dropping it
+   * unconditionally, before the result is known, would erase the preview out
+   * from under a tab that stayed paused because the resume failed.
+   */
   const startSession = useCallback(
     async (opts: {
       cwd: string
@@ -582,7 +604,7 @@ export function App(): React.JSX.Element {
       continueLast?: boolean
       /** Replace this tab in place instead of appending. Consumes a New tab. */
       replaceTabId?: string
-    }): Promise<void> => {
+    }): Promise<boolean> => {
       setError(null)
       try {
         const res = await window.stoke.pty.start({
@@ -624,8 +646,10 @@ export function App(): React.JSX.Element {
          */
         setTabs((list) => replaceOrAppend(list, tab, opts.replaceTabId))
         setActiveTabId(tab.id)
+        return true
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e))
+        return false
       }
     },
     [mode, model, effort, ultracode]
@@ -707,7 +731,10 @@ export function App(): React.JSX.Element {
    * and a meter would have to invent a number.
    */
   const startHostSession = useCallback(
-    async (host: SshHost, replaceTabId?: string): Promise<void> => {
+    // Same true/false contract as startSession, and for the same reason:
+    // resumeTabFor must be able to tell a successful reconnect from a failed
+    // one before it decides whether the paused tab's screen may be dropped.
+    async (host: SshHost, replaceTabId?: string): Promise<boolean> => {
       setError(null)
       try {
         const res = await window.stoke.pty.start({
@@ -745,8 +772,10 @@ export function App(): React.JSX.Element {
          */
         setTabs((list) => replaceOrAppend(list, tab, replaceTabId ?? activeNewTabId))
         setActiveTabId(tab.id)
+        return true
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e))
+        return false
       }
     },
     [defaultCwd, mode, model, effort, activeNewTabId]
@@ -781,12 +810,16 @@ export function App(): React.JSX.Element {
         const host = settings?.hosts.find((h) => h.id === tab.hostId)
         if (!host) return null
         return () => {
-          dropRestoredScreen(tab.id)
-          void startHostSession(host, tab.id)
+          // Dropped only on success. `startHostSession`'s catch leaves this
+          // tab paused and just sets `error` — pruning the screen unconditionally,
+          // before the outcome is known, would discard the preview out from
+          // under a tab that is still paused and has nothing else to show.
+          void startHostSession(host, tab.id).then((ok) => {
+            if (ok) dropRestoredScreen(tab.id)
+          })
         }
       }
       return () => {
-        dropRestoredScreen(tab.id)
         void startSession({
           cwd: tab.cwd,
           name: tab.projectName,
@@ -797,6 +830,8 @@ export function App(): React.JSX.Element {
           resume: Boolean(tab.sessionId),
           continueLast: !tab.sessionId,
           replaceTabId: tab.id
+        }).then((ok) => {
+          if (ok) dropRestoredScreen(tab.id)
         })
       }
     },
@@ -840,14 +875,21 @@ export function App(): React.JSX.Element {
   useEffect(() => {
     if (restored.current) return
     restored.current = true
-    void window.stoke.tabs.restore().then((state) => {
-      if (!state.tabs.length) return
-      const { tabs: back, activeId } = fromStored(state)
-      setRestoredScreens(screensFrom(state, back))
-      setTabs(back)
-      setActiveTabId(activeId)
-      setRestoreCount(back.length)
-    })
+    void window.stoke.tabs
+      .restore()
+      .then((state) => {
+        if (!state.tabs.length) return
+        const { tabs: back, activeId } = fromStored(state)
+        setRestoredScreens(screensFrom(state, back))
+        setTabs(back)
+        setActiveTabId(activeId)
+        setRestoreCount(back.filter((t) => t.status === 'paused').length)
+      })
+      .catch(() => {})
+      // Runs whether the round trip resolved or rejected. A rejection with no
+      // `.finally` would leave `restoreSettled` false forever and the
+      // `startOnLaunch` effect below would never be allowed to fire.
+      .finally(() => setRestoreSettled(true))
   }, [])
 
   // Optional "open straight into a session" behaviour. The ref keeps it to a
@@ -855,15 +897,28 @@ export function App(): React.JSX.Element {
   const autoStarted = useRef(false)
   useEffect(() => {
     if (autoStarted.current) return
+    // The boot restore has to have actually settled before this may fire at
+    // all. `restoreCount` is 0 both while the restore is still in flight and
+    // once it has resolved with nothing to restore, so gating on it alone —
+    // even as a dependency — does not stop this effect from running during
+    // the window before the IPC round trip comes back: if `startOnLaunch`,
+    // `defaultCwd` and `cli?.ok` all become true first, `restoreCount > 0`
+    // reads false (not yet populated), the guard below passes, and
+    // `autoStarted.current` latches — so when the restore *does* land moments
+    // later this effect re-runs but exits immediately on the ref, unable to
+    // undo the session it already started. `restoreSettled` closes that
+    // window structurally: it is set only from the restore promise's
+    // `.finally` (see above), so this effect cannot pass this line until the
+    // restore has resolved (with or without tabs) or rejected, by which point
+    // `restoreCount` already carries its final value.
+    if (!restoreSettled) return
     if (!settings?.startOnLaunch || !defaultCwd || !cli?.ok) return
     // Restored tabs are what the user had; opening a session on top of them is
-    // an extra nobody asked for. `restoreCount` is a dependency below so a
-    // restore that resolves after this effect's other conditions are already
-    // met still gets to veto it, rather than losing a race silently.
+    // an extra nobody asked for.
     if (restoreCount > 0) return
     autoStarted.current = true
     startDefault()
-  }, [settings?.startOnLaunch, defaultCwd, cli, startDefault, restoreCount])
+  }, [restoreSettled, settings?.startOnLaunch, defaultCwd, cli, startDefault, restoreCount])
 
   /**
    * Append a New Project tab and select it.
