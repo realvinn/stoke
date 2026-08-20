@@ -126,17 +126,32 @@ export function App(): React.JSX.Element {
   /** Screens for tabs restored from the last run, keyed by tab id. */
   const [restoredScreens, setRestoredScreens] = useState<Record<string, string>>({})
   /**
-   * How many *paused* tabs the boot restore brought back, so the restore bar
-   * knows what to say. Not `back.length`: a restored `kind: 'new'` tab comes
-   * back with `status: 'running'` (`fromStored` — only a session tab can be
-   * paused), so counting every restored tab overstates it whenever a New tab
-   * was open at quit, and can name a positive count when nothing at all was
-   * paused (quit with only a New tab open). 0 both before the restore has run
-   * and after the user has dismissed it or started fresh — the bar has no
-   * other way to tell "nothing to restore" from "already handled it", and it
-   * does not need one.
+   * How many *paused* tabs are still in the strip, recomputed on every render
+   * rather than snapshotted once when the boot restore lands. A one-time
+   * snapshot never decrements, so the bar kept claiming "Restored 3 paused
+   * tabs" after two of them had been resumed or closed — Resume in
+   * particular gives a tab a live process, and the count needs to notice.
+   * Not `tabs.length`: a restored `kind: 'new'` tab comes back with
+   * `status: 'running'` (`fromStored` — only a session tab can be paused), so
+   * counting every restored tab overstates it whenever a New tab was open at
+   * quit, and can name a positive count when nothing at all was paused (quit
+   * with only a New tab open).
    */
-  const [restoreCount, setRestoreCount] = useState(0)
+  const pausedTabCount = useMemo(() => tabs.filter((t) => t.status === 'paused').length, [tabs])
+  /**
+   * Whether the bar has been told to go away by hand — Dismiss, or Start
+   * fresh — as distinct from `pausedTabCount` having reached zero on its own
+   * because the user resumed or closed every restored tab, which hides the
+   * bar exactly the same way with no flag needed.
+   */
+  const [restoreDismissed, setRestoreDismissed] = useState(false)
+  /**
+   * The bar's actual input: 0 both before the restore has run and once the
+   * user has dismissed it, started fresh, or worked through every paused tab
+   * by hand — the bar has no other way to tell "nothing to restore" from
+   * "already handled it", and it does not need one.
+   */
+  const restoreCount = restoreDismissed ? 0 : pausedTabCount
   /**
    * Whether the boot restore has settled — resolved or rejected — as opposed
    * to not having come back yet. `restoreCount` alone cannot carry this: it is
@@ -147,7 +162,17 @@ export function App(): React.JSX.Element {
    * once the restore actually settles.
    */
   const [restoreSettled, setRestoreSettled] = useState(false)
-  /** True until the boot restore has been attempted, so nothing saves over it. */
+  /**
+   * Guards the boot restore effect below against running twice — a plain
+   * StrictMode double-invoke guard for that one effect, nothing more. It
+   * flips true synchronously as soon as the effect body runs, before the
+   * restore's IPC round trip has even started, so it does *not* stop the
+   * debounced save effect from writing over the restore in flight; that
+   * effect never reads this ref at all and fires purely off its own
+   * dependencies (`tabs`, `activeTabId`, `contexts`, `restoredScreens`).
+   * `restoreSettled` is the flag that actually tracks whether the restore
+   * has resolved.
+   */
   const restored = useRef(false)
 
   /*
@@ -604,18 +629,33 @@ export function App(): React.JSX.Element {
       continueLast?: boolean
       /** Replace this tab in place instead of appending. Consumes a New tab. */
       replaceTabId?: string
+      /**
+       * Override the App-level launch defaults below. `resumeTabFor` passes the
+       * paused tab's own stored values here — the tab a card displays must be
+       * the tab Resume actually launches, not whatever `mode`/`model`/`effort`
+       * happen to be selected in the toolbar right now. Every other caller
+       * omits these and gets today's globals, unchanged.
+       */
+      permissionMode?: PermissionMode
+      model?: string
+      effort?: EffortLevel
+      ultracode?: boolean
     }): Promise<boolean> => {
       setError(null)
+      const permissionMode = opts.permissionMode ?? mode
+      const sessionModel = opts.model ?? model
+      const sessionEffort = opts.effort ?? effort
+      const sessionUltracode = opts.ultracode ?? ultracode
       try {
         const res = await window.stoke.pty.start({
           cwd: opts.cwd,
           sessionId: opts.sessionId,
           resume: opts.resume,
           continueLast: opts.continueLast,
-          permissionMode: mode,
-          model,
-          effort,
-          ultracode,
+          permissionMode,
+          model: sessionModel,
+          effort: sessionEffort,
+          ultracode: sessionUltracode,
           // A real size arrives from the terminal's own resize observer as soon
           // as it mounts; this is only what the child sees for its first paint.
           cols: 120,
@@ -629,9 +669,9 @@ export function App(): React.JSX.Element {
           cwd: opts.cwd,
           projectName: opts.name,
           title: opts.title ?? opts.name,
-          permissionMode: mode,
-          model,
-          effort,
+          permissionMode,
+          model: sessionModel,
+          effort: sessionEffort,
           status: 'running',
           exitCode: null,
           hostId: null,
@@ -734,15 +774,28 @@ export function App(): React.JSX.Element {
     // Same true/false contract as startSession, and for the same reason:
     // resumeTabFor must be able to tell a successful reconnect from a failed
     // one before it decides whether the paused tab's screen may be dropped.
-    async (host: SshHost, replaceTabId?: string): Promise<boolean> => {
+    //
+    // `overrides` mirrors startSession's own optional permissionMode/model/
+    // effort: `resumeTabFor` passes the paused tab's own stored values so a
+    // restored remote card resumes in the mode it displays rather than
+    // whatever the toolbar's globals currently are. Omitted by every other
+    // caller, which gets today's globals unchanged.
+    async (
+      host: SshHost,
+      replaceTabId?: string,
+      overrides?: { permissionMode?: PermissionMode; model?: string; effort?: EffortLevel }
+    ): Promise<boolean> => {
       setError(null)
+      const permissionMode = overrides?.permissionMode ?? mode
+      const sessionModel = overrides?.model ?? model
+      const sessionEffort = overrides?.effort ?? effort
       try {
         const res = await window.stoke.pty.start({
           cwd: defaultCwd || '.',
           host,
-          permissionMode: mode,
-          model,
-          effort,
+          permissionMode,
+          model: sessionModel,
+          effort: sessionEffort,
           cols: 120,
           rows: 30
         })
@@ -754,9 +807,9 @@ export function App(): React.JSX.Element {
           cwd: host.alias,
           projectName: host.label || host.alias,
           title: host.label || host.alias,
-          permissionMode: mode,
-          model,
-          effort,
+          permissionMode,
+          model: sessionModel,
+          effort: sessionEffort,
           status: 'running',
           exitCode: null,
           hostId: host.id,
@@ -814,7 +867,17 @@ export function App(): React.JSX.Element {
           // tab paused and just sets `error` — pruning the screen unconditionally,
           // before the outcome is known, would discard the preview out from
           // under a tab that is still paused and has nothing else to show.
-          void startHostSession(host, tab.id).then((ok) => {
+          //
+          // The tab's own stored mode/model/effort, not the toolbar's current
+          // globals — a paused card displaying "Bypass permissions" must
+          // actually resume in bypass, and a card displaying `default` must
+          // not silently inherit a global that has since been switched to
+          // bypass. See CLAUDE.md's tab-restore finding on this exact bug.
+          void startHostSession(host, tab.id, {
+            permissionMode: tab.permissionMode,
+            model: tab.model,
+            effort: tab.effort
+          }).then((ok) => {
             if (ok) dropRestoredScreen(tab.id)
           })
         }
@@ -829,7 +892,12 @@ export function App(): React.JSX.Element {
           // (gotcha 26). Continue in the same folder instead.
           resume: Boolean(tab.sessionId),
           continueLast: !tab.sessionId,
-          replaceTabId: tab.id
+          replaceTabId: tab.id,
+          // Same reasoning as the host branch above: the tab's own stored
+          // values, so the tab the user sees paused is the tab they get back.
+          permissionMode: tab.permissionMode,
+          model: tab.model,
+          effort: tab.effort
         }).then((ok) => {
           if (ok) dropRestoredScreen(tab.id)
         })
@@ -883,7 +951,9 @@ export function App(): React.JSX.Element {
         setRestoredScreens(screensFrom(state, back))
         setTabs(back)
         setActiveTabId(activeId)
-        setRestoreCount(back.filter((t) => t.status === 'paused').length)
+        // No setRestoreCount here: `pausedTabCount` derives from `tabs` above,
+        // so the `setTabs(back)` on the line above already gives it its
+        // opening value once this render commits.
         /*
          * A paused tab has no live watcher, so `contexts[sessionId]` stays
          * undefined and its ring would draw the empty "not read yet" track —
@@ -913,11 +983,10 @@ export function App(): React.JSX.Element {
          *    a breakdown, only the total. Zero mirrors context.ts's own
          *    `emptySnapshot()` convention for "not currently known" and,
          *    like that function's callers, is never read by the ring or the
-         *    tab strip (Task 7's actual scope). The one place these zeros
-         *    are visible is the status bar's message count, if a paused tab
-         *    happens to be the active one — a pre-existing gap, since
-         *    StatusBar has no paused-awareness at all yet and is outside
-         *    this task's files.
+         *    tab strip (Task 7's actual scope). The status bar's message
+         *    count would have shown these zeros for a paused active tab, but
+         *    d2d1337 gave StatusBar its own paused-awareness and suppresses
+         *    the message count there instead of stating a false zero.
          */
         setContexts((prev) => {
           const next = { ...prev }
@@ -1348,15 +1417,36 @@ export function App(): React.JSX.Element {
                 className="btn"
                 data-variant="ghost"
                 onClick={() => {
+                  /*
+                   * Same guard `closeTab` uses: a resumed tab has a real
+                   * `claude` process behind it — `ptyId` is non-empty and
+                   * `status` is 'running' — and nothing else here kills it.
+                   * Without this, replacing `tabs` below just drops the tab
+                   * from the strip: the process keeps running with no UI, no
+                   * owner, and no way back to it short of quitting Stoke,
+                   * burning tokens and filling main's replay buffer for as
+                   * long as the app stays open. A paused tab needs nothing —
+                   * `ptyId` is '' and there is no process to kill.
+                   */
+                  tabs.forEach((t) => {
+                    if (t.kind === 'session' && t.status !== 'paused') {
+                      window.stoke.pty.kill(t.ptyId)
+                      forgetPty(t.ptyId)
+                    }
+                  })
                   setTabs([newTab()])
                   setActiveTabId(null)
                   setRestoredScreens({})
-                  setRestoreCount(0)
+                  setRestoreDismissed(true)
                 }}
               >
                 Start fresh
               </button>
-              <button className="icon-btn" onClick={() => setRestoreCount(0)} title="Dismiss">
+              <button
+                className="icon-btn"
+                onClick={() => setRestoreDismissed(true)}
+                title="Dismiss"
+              >
                 <IconClose />
               </button>
             </div>

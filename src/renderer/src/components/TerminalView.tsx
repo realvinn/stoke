@@ -449,7 +449,30 @@ export function TerminalView({
          * no selection, and no mouse report either.
          */
         if (retold.has(e)) return
-        swallowed = secondary ? e.button : null
+        /*
+         * `retold` alone is not enough: it only protects the *clone* from being
+         * re-judged, not the original press that `onShiftDrag` already claimed.
+         * `stopPropagation()` does not stop a sibling listener on the same node
+         * — the two are registered on `host`, same phase, same event type — so
+         * after `onShiftDrag` calls `preventDefault()` and re-dispatches a
+         * Shift+Ctrl-drag as a synthetic selection drag, this handler still runs
+         * on the *original* event next, sees `secondary` (Ctrl+click) true, and
+         * sets `swallowed`. The matching mouseup is then stopped at capture and
+         * never reaches document, so `SelectionService` never runs
+         * `_removeMouseDownListeners` for the drag the clone started — the exact
+         * leak this function exists to prevent, just reached through the
+         * original event instead of the clone.
+         *
+         * `e.defaultPrevented` is the fix: `onMouseDown` and `onShiftDrag` are
+         * bound to the same node, same phase, in that registration order, so
+         * the DOM guarantees they run synchronously on the *same* event object
+         * — `onShiftDrag`'s `preventDefault()` is visible here before this line
+         * runs. Nothing else in this effect calls `preventDefault()` on a
+         * mousedown before this point, so the flag means exactly one thing:
+         * this press has already been claimed and re-dispatched as a clone, and
+         * must not also be treated as a swallowed secondary click.
+         */
+        swallowed = secondary && !e.defaultPrevented ? e.button : null
         if (secondary) e.stopPropagation()
         return
       }
