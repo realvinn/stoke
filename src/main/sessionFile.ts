@@ -17,7 +17,15 @@ import type { PermissionMode } from '@shared/types'
  * only, and it costs an accurate message count when it kicks in.
  */
 const FULL_READ_LIMIT = 32 * 1024 * 1024
-const CHUNK = 256 * 1024
+/**
+ * How much of a transcript either end of `readLines` takes.
+ *
+ * Exported because `projects.ts` needs exactly this read — the first record of
+ * a transcript, to recover a project's real cwd — and used to do it with
+ * `readFile`, which reads all of a file that can be hundreds of megabytes. One
+ * bounded reader, used by both callers, rather than two notions of "the head".
+ */
+export const CHUNK = 256 * 1024
 
 export interface ParsedSession {
   /** Claude Code's own generated title, if it has produced one yet. */
@@ -47,7 +55,7 @@ export function safeParse(line: string): Record<string, unknown> | null {
   }
 }
 
-async function readRange(file: string, start: number, length: number): Promise<string> {
+export async function readRange(file: string, start: number, length: number): Promise<string> {
   const fh = await open(file, 'r')
   try {
     const buf = Buffer.alloc(length)

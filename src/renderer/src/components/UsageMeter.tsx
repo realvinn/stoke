@@ -133,15 +133,21 @@ export function UsageChip(): React.JSX.Element | null {
   }, [open])
 
   /*
-   * The statusLine payload's figures win over the account's when both exist —
-   * it is the live account state as the CLI itself was just told it, and on
-   * macOS it is the only source there is at all — the OAuth token lives in
-   * the Keychain, not in ~/.claude/.credentials.json, which is why this chip
-   * rendered nothing there. But the payload states no severity, so it does
-   * not simply replace the account's windows: mergeUsageWindows keeps the
-   * payload's fresher percent/resetsAt per window while pulling severity from
-   * the account's matching window, and keeps any window (weekly_scoped) only
-   * the account carries at all.
+   * The statusLine payload's figures win over the account's when both exist:
+   * it is the live account state as the CLI itself was just told it, seconds
+   * old rather than up to a minute. But the payload states no severity, so it
+   * does not simply replace the account's windows — mergeUsageWindows keeps
+   * the payload's fresher percent/resetsAt per window while pulling severity
+   * from the account's matching window, and keeps any window (weekly_scoped)
+   * only the account carries at all.
+   *
+   * The two sources fail independently, and that is the point of merging them
+   * rather than picking one. The payload exists only while a session is up;
+   * the account route needs the network and a token. macOS used to have
+   * neither — `readCredentials` looked only at ~/.claude/.credentials.json,
+   * which does not exist there — so the chip really did go blank the moment
+   * the last tab closed. It reads the login Keychain too now, so an idle app
+   * still has figures.
    */
   const fromLine = line ? statusLineWindows(line, now) : []
   const fromAccount = snap && !snap.error ? snap.windows : []
@@ -201,10 +207,20 @@ export function UsageChip(): React.JSX.Element | null {
               the white mark is where you would be using it evenly. fill past it means
               you are going faster than it refills.
             </p>
+            {/*
+             * Only shown when the payload contributed, and it says two
+             * different things depending on whether the account answered
+             * as well — because that decides what happens when the last
+             * session closes. Claiming "only updates while a session is
+             * running" when the account is also answering would be false,
+             * and it is the sentence someone reads before deciding whether
+             * to trust a number they are looking at hours later.
+             */}
             {asOf && (
               <p className="usage-note">
-                read from an open session&rsquo;s status line, {asOf}. it only updates while a
-                session is running.
+                {fromAccount.length > 0
+                  ? `these are an open session's own figures, ${asOf} — the account is read directly too, so they stay up once every session is closed.`
+                  : `read from an open session's status line, ${asOf}. the account could not be reached, so this stops updating when the last session closes.`}
               </p>
             )}
           </div>

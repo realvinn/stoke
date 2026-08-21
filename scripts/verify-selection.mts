@@ -27,6 +27,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { isButtonlessMotionReport } from '../src/renderer/src/lib/mouseReport.ts'
 
 const XTERM_DIR = fileURLToPath(new URL('../node_modules/@xterm/xterm/', import.meta.url))
 
@@ -95,6 +96,23 @@ function page(altClickMovesCursor: boolean, modes: string): string {
     '    minimumContrastRatio: 1',
     '  })',
     '  term.open(document.getElementById("host"))',
+    /*
+     * The same guard TerminalView installs, built from the SHIPPED function
+     * rather than a copy of it — `isButtonlessMotionReport` is imported above
+     * and stringified here, so if its rule changes this page changes with it.
+     * That is the whole reason it is written without imports or module-scope
+     * helpers.
+     *
+     * Without this, a selection cannot survive any-event tracking: every motion
+     * report reaches SelectionService as user input and clears it.
+     */
+    `  const isButtonlessMotionReport = ${isButtonlessMotionReport.toString()}`,
+    '  const __cs = term._core && term._core.coreService',
+    '  if (__cs) {',
+    '    const __send = __cs.triggerDataEvent.bind(__cs)',
+    '    __cs.triggerDataEvent = (d, u) => __send(d, !!u && !isButtonlessMotionReport(d))',
+    '  }',
+    '  window.__guardInstalled = !!__cs',
     '  await new Promise(r => setTimeout(r, 300))',
     '',
     // Exactly what a TUI like Claude Code sends to take the mouse: normal
@@ -286,10 +304,11 @@ async function main(): Promise<void> {
       )
     )
     /*
-     * Any-event tracking (1003), kept as the contrast case. It reports motion
-     * with no button held and every report is a user-input data event, which
-     * SelectionService clears the selection on. Claude Code does not ask for
-     * it — but a TUI Stoke hosts might, and this pins what that would cost.
+     * Any-event tracking (1003). No longer a hypothetical contrast case: this
+     * is what Claude Code 2.1.237 actually asks for, read out of the shipped
+     * binary and confirmed live (`mouseTrackingMode === "any"`). It reports
+     * motion with no button held, which is why the guard above exists — with
+     * it, a selection has to survive here exactly as it does anywhere else.
      */
     out.push(
       await runCase(
@@ -435,26 +454,27 @@ async function main(): Promise<void> {
        * "more than one" could never have caught it.
        */
       /*
-       * Under any-event tracking the terminal reports plain mouse MOTION to the
-       * application, and every such report is a user-input data event, which
-       * SelectionService clears the selection on. Stoke cannot fix that from
-       * outside xterm: suppressing the reports would break the hover handling
-       * of whatever TUI asked for them.
+       * Under any-event tracking the terminal reports plain mouse MOTION, and
+       * xterm hands every such report to `triggerDataEvent(report, true)` —
+       * user input, which SelectionService clears the selection on.
        *
-       * It does not bite today — the shipped `claude` binary asks for
-       * 1000/1004/1006/1007 and never for 1002 or 1003, which is exactly why
-       * the long-drag cases above survive. Pinned rather than ignored so that a
-       * future TUI Stoke hosts, or a Claude Code that starts asking for motion,
-       * is a failing assertion here instead of a bug report.
+       * This block used to assert the OPPOSITE of what it now does, under the
+       * name "known limit", on two premises that were both false by the time
+       * anyone checked: that Stoke could not fix it from outside xterm, and
+       * that Claude Code never asks for motion reports. 2.1.237 asks for 1003,
+       * so the "contrast case" below had quietly become the ordinary case —
+       * and a selection died on any local tab the moment the mouse moved, while
+       * this suite passed an assertion saying so. A test that pins a bug as
+       * expected behaviour is worse than no test, because it converts a
+       * regression into a green run.
+       *
+       * The fix is `isButtonlessMotionReport` plus the wrap installed at the
+       * top of this page, which withdraws only the "was user input" claim and
+       * only for movement with nothing pressed. The report still reaches the
+       * application, so hover handling and click-to-focus are untouched. There
+       * is nothing special left about this case: it must survive exactly like
+       * every other.
        */
-      if (run.label.startsWith('any-event') && name === 'then the mouse moves') {
-        check(
-          `${run.label}: known limit — motion reports still eat the selection`,
-          !survived,
-          detail
-        )
-        continue
-      }
 
       if (!run.altClickMovesCursor) {
         check(`${run.label}: ${name} survives letting go`, survived, detail)
@@ -495,6 +515,31 @@ async function main(): Promise<void> {
       JSON.stringify(shim.selection)
     )
   }
+
+  /*
+   * The rule itself, directly. The page above proves it works inside real
+   * xterm; these prove it says the right thing about each report shape, which
+   * is cheaper to read when one of them starts failing.
+   *
+   * The last two matter most: a keystroke and a button press MUST still count
+   * as user input, or this "fix" would stop the selection clearing when it
+   * genuinely should.
+   */
+  console.log('\nwhich payloads count as bare pointer movement')
+  const motion = (name: string, data: string, want: boolean): void => {
+    const got = isButtonlessMotionReport(data)
+    check(name, got === want, `got ${got}, want ${want}`)
+  }
+  motion('SGR motion, no button held (1003 idle move)', '\x1b[<35;10;5M', true)
+  motion('SGR motion while dragging button 0 is NOT buttonless', '\x1b[<32;10;5M', false)
+  motion('SGR plain press is an action, not movement', '\x1b[<0;10;5M', false)
+  motion('SGR release is an action', '\x1b[<0;10;5m', false)
+  motion('SGR wheel is an action even though it sets the motion bit', '\x1b[<64;10;5M', false)
+  motion('X10 motion with no button held', '\x1b[M' + String.fromCharCode(35 + 32, 42, 42), true)
+  motion('a plain keystroke is not a mouse report', 'a', false)
+  motion('a pasted line is not a mouse report', 'hello world\r', false)
+  motion('an empty payload is not a mouse report', '', false)
+  motion('a truncated SGR sequence is not matched', '\x1b[<35;10;', false)
 
   console.log(failures ? `\n${failures} failed` : '\nall pass')
   // `app.exit()` does not flush a piped stdout, so the exit is deferred a tick

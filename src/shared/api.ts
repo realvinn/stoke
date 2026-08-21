@@ -47,6 +47,58 @@ export interface StartResult {
   args: string[]
 }
 
+/**
+ * Claude Code's own configuration, as Stoke found it.
+ *
+ * Deliberately not merged into one map: the two files behave differently and a
+ * reader has to be able to tell which one a value came from. `values` is
+ * ~/.claude/settings.json; `workflowSize` is the one key Stoke touches in
+ * ~/.claude.json.
+ */
+export interface ClaudeConfigState {
+  settingsPath: string
+  globalConfigPath: string
+  /** Allowlisted keys and their current values. A key that is unset is absent. */
+  values: Record<string, boolean | string | number>
+  /** Keys the file carries that Stoke draws no control for, named not hidden. */
+  untouched: string[]
+  /** The dynamic-workflow size guideline, or undefined when unset (= medium). */
+  workflowSize: string | undefined
+  /**
+   * True when settings.json also defines workflowSizeGuideline. That value wins
+   * over the global config AND hides the /config row, so Stoke's own control
+   * would be writing to a file nothing reads — the panel says so rather than
+   * drawing a switch that does nothing.
+   */
+  workflowSizeShadowed: boolean
+  /** Why the settings file could not be read, if it could not. */
+  error: string | null
+}
+
+/** The outcome of one write, including whether it had to be retried. */
+export interface ClaudeConfigWriteResult {
+  ok: boolean
+  error: string | null
+  state: ClaudeConfigState
+  /**
+   * True when the write to ~/.claude.json went ahead without holding the CLI's
+   * lock, because the lock could not be taken.
+   *
+   * Worth surfacing rather than swallowing. The lock is what keeps a live
+   * `claude` from reading the file, being rewritten underneath, and putting
+   * back what it read — and gotcha 38 is the record of what that file losing
+   * keys costs: the CLI backs it up and resets to defaults, taking
+   * `oauthAccount`, `userID` and every project entry with it. The write still
+   * verifies and retries, so an unlocked write is a warning and not a failure,
+   * but the user should be able to see that it happened. `writeGlobalConfigKey`
+   * has always computed this; the IPC handler used to drop it on the floor, so
+   * nothing could ever report it.
+   */
+  wroteUnlocked?: boolean
+  /** How many verify-and-retry passes the write needed. 1 is the quiet case. */
+  attempts?: number
+}
+
 /** Combined remote-access state: local server, tunnel, and the phone link. */
 export interface RemoteState {
   server: {
@@ -268,6 +320,22 @@ export interface StokeApi {
     get(): Promise<Settings>
     set(patch: Partial<Settings>): Promise<Settings>
     onChange(cb: (settings: Settings) => void): () => void
+  }
+
+  /**
+   * Claude Code's settings, which are not Stoke's. Every write is one key, and
+   * `undefined` clears it — absent is a distinct state in that schema, not a
+   * synonym for false.
+   */
+  claudeConfig: {
+    read(): Promise<ClaudeConfigState>
+    set(key: string, value: boolean | string | number | undefined): Promise<ClaudeConfigWriteResult>
+    /**
+     * The dynamic-workflow size guideline, written to ~/.claude.json under the
+     * CLI's own lock. Slower than the others by design: it verifies the write
+     * survived before reporting success.
+     */
+    setWorkflowSize(value: string | undefined): Promise<ClaudeConfigWriteResult>
   }
 
   /**

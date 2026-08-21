@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { BrowserState } from '@shared/types'
 import {
   IconArrowLeft,
@@ -75,16 +75,46 @@ export function BrowserPanel({ state, bookmarks, onAskClaude, onClose }: Props):
     }
   }, [])
 
+  /*
+   * The last rect actually sent to the main process, so a report that would
+   * change nothing costs no IPC. The effect below runs on every render.
+   */
+  const sentRef = useRef<string>('')
+
+  const report = useCallback((): void => {
+    const hole = holeRef.current
+    if (!hole) return
+    const r = hole.getBoundingClientRect()
+    const key = `${r.left},${r.top},${r.width},${r.height}`
+    if (key === sentRef.current) return
+    sentRef.current = key
+    window.stoke.browser.setBounds({ x: r.left, y: r.top, width: r.width, height: r.height })
+  }, [])
+
+  /*
+   * Every render, deliberately, and NOT only when the hole is resized.
+   *
+   * A native WebContentsView is positioned by the rect this sends; nothing else
+   * tells it where to be. The old code reported on mount, on ResizeObserver and
+   * on window resize — and a *position-only* move fires none of the three.
+   * Opening the worklog panel is exactly that move: it is a sibling column to
+   * the right of the browser, so the hole slides from x=1021 to x=681 with its
+   * size unchanged (459x789 both before and after, measured). ResizeObserver
+   * watches size only, the window does not resize, and the component does not
+   * remount — so `setBounds` was never re-sent and the page stayed painted over
+   * the whole 340px worklog column, which is the very thing gotcha 14's
+   * sibling-column layout exists to prevent. It only healed on a window resize
+   * or on closing and reopening the panel.
+   *
+   * A no-dep layout effect is the cheap general answer: this component is not
+   * memoised, so it re-renders whenever anything moves it, and the guard above
+   * means the common case is a `getBoundingClientRect` and a string compare.
+   */
+  useLayoutEffect(report)
+
   useLayoutEffect(() => {
     const hole = holeRef.current
     if (!hole) return
-
-    const report = (): void => {
-      const r = hole.getBoundingClientRect()
-      window.stoke.browser.setBounds({ x: r.left, y: r.top, width: r.width, height: r.height })
-    }
-
-    report()
     const ro = new ResizeObserver(report)
     ro.observe(hole)
     // A window resize moves the panel without changing its size.
@@ -93,7 +123,7 @@ export function BrowserPanel({ state, bookmarks, onAskClaude, onClose }: Props):
       ro.disconnect()
       window.removeEventListener('resize', report)
     }
-  }, [])
+  }, [report])
 
   const closeFind = (): void => {
     setFindOpen(false)

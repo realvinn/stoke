@@ -2483,6 +2483,86 @@ body {
   opacity: 0.55;
 }
 
+/* ------------------------------------------------- claude code settings */
+
+/* A disclosure rather than a fourteenth screenful. `.sheet-body` is one flat
+   flex column with no tabs, so anything long has to fold itself away. */
+.cc-summary {
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+  cursor: default;
+  width: fit-content;
+  list-style: none;
+}
+
+.cc-summary::-webkit-details-marker {
+  display: none;
+}
+
+.cc-summary::before {
+  content: '\25B8';
+  display: inline-block;
+  margin-right: var(--space-8);
+  transition: transform var(--dur-fast) var(--ease);
+}
+
+.cc-details[open] > .cc-summary::before {
+  transform: rotate(90deg);
+}
+
+.cc-details[open] > .cc-summary {
+  margin-bottom: var(--space-16);
+}
+
+.cc-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-16);
+}
+
+/* `flex: 1 1 0%` AND `min-width: 0` on the text, both required: without the
+   min-width the hint's longest word sets a min-content floor that the row
+   cannot go below, and the whole sheet grows rather than the text wrapping.
+   See CLAUDE.md gotcha 14 — this is the same trap, one level down. */
+.cc-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-16);
+}
+
+.cc-text {
+  flex: 1 1 0%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+/* One fixed width, not content width. Left to size themselves the selects came
+   out ragged - "low" beside "default — normal" - and a right-aligned column of
+   different widths reads as misalignment rather than as variety. */
+.cc-row > .select,
+.cc-row > .input {
+  flex: 0 0 auto;
+  width: 9rem;
+}
+
+.cc-row > .input.cc-number {
+  width: 9rem;
+}
+
+/* What an unset key means. Dimmer than the hint it trails, because it is the
+   answer to a question most rows never raise.
+
+   Explicitly NOT `white-space: nowrap`: it was, and the longest of these
+   ("let Claude Code decide — which currently means on, from a server-side
+   rollout") then ran straight off the right edge of the sheet, because the
+   column it sits in has `min-width: 0` and nothing left to give. Same trap as
+   CLAUDE.md gotcha 14, and again only visible in a screenshot. */
+.cc-default {
+  opacity: 0.75;
+}
+
 /* ---------------------------------------------------------- theme picker */
 
 .theme-grid {

@@ -1041,3 +1041,39 @@ check(
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
 process.exitCode = failures ? 1 : 0
+
+/*
+ * The Windows shape of the command, asserted from a Mac.
+ *
+ * Claude Code prefers Git Bash for a statusLine command and falls back to
+ * PowerShell when Git for Windows is absent. PowerShell parses a line that
+ * *starts* with a quoted string as a string expression rather than an
+ * invocation, so the bare `"C:\...\run.cmd" "key"` is a ParserError — measured
+ * against real pwsh 7.6.5 — and the shim silently never runs, taking the
+ * context ring and the payload's plan limits with it. `&` is the call operator
+ * that fixes it, and is inert in the Git Bash branch.
+ *
+ * `statusLineCommand` takes the platform as an argument precisely so this can
+ * be checked on a machine that is not Windows.
+ */
+console.log('\nthe command PowerShell would be handed is an invocation, not a string')
+check(
+  'on Windows the line begins with the call operator',
+  /^& "/.test(statusLineCommand('stoke-win-shape', 'win32')),
+  true
+)
+check(
+  'and the two quoted arguments are still intact behind it',
+  /^& "[^"]+" "stoke-win-shape"$/.test(statusLineCommand('stoke-win-shape', 'win32')),
+  true
+)
+check(
+  'POSIX is left exactly as it was — no operator, nothing to parse',
+  /^"[^"]+" "stoke-posix-shape"$/.test(statusLineCommand('stoke-posix-shape', 'darwin')),
+  true
+)
+check(
+  'and linux agrees with darwin',
+  statusLineCommand('same', 'linux'),
+  statusLineCommand('same', 'darwin')
+)

@@ -28,6 +28,8 @@ export interface ProjectMetaPickerProps {
   onOpenChange: (open: boolean) => void
   /** `null` clears the record entirely. */
   onCommit: (meta: ProjectMeta | null) => void
+  /** Hide a folder that has no record to clear — see the dismiss button. */
+  onHide: () => void
 }
 
 /** The record as it stands, so a change to one field cannot drop the others. */
@@ -48,7 +50,8 @@ export function ProjectMetaPicker({
   project,
   open,
   onOpenChange,
-  onCommit
+  onCommit,
+  onHide
 }: ProjectMetaPickerProps): React.JSX.Element {
   const [label, setLabel] = useState(project.label ?? '')
 
@@ -273,20 +276,38 @@ export function ProjectMetaPicker({
             >
               No icon
             </button>
-            {project.addedManually && (
-              <button
-                className="btn"
-                data-variant="danger"
-                onClick={() => {
-                  onCommit(null)
-                  returnFocusToTrigger()
-                  onOpenChange(false)
-                }}
-                title="Stop listing this folder. Nothing on disk is deleted."
-              >
-                Remove
-              </button>
-            )}
+            {/*
+              Every folder can be dismissed, by one of two routes.
+
+              A folder the user added by hand is removed by dropping its record,
+              which is what put it in the list at all. Everything else was
+              discovered from Claude Code's own history, so there is no record to
+              drop — it is hidden instead, which is what `hiddenProjects` is for
+              and is reversible from Settings.
+
+              Only the first of those existed, gated on `addedManually`. On the
+              machine this was found on that left fifteen `missing` rows —
+              folders since deleted, renamed, or on a drive that is not plugged
+              in — with no way to dismiss them by any gesture the UI offered,
+              and `projects.hide` sitting fully built with no caller.
+            */}
+            <button
+              className="btn"
+              data-variant="danger"
+              onClick={() => {
+                if (project.addedManually) onCommit(null)
+                else onHide()
+                returnFocusToTrigger()
+                onOpenChange(false)
+              }}
+              title={
+                project.addedManually
+                  ? 'Stop listing this folder. Nothing on disk is deleted.'
+                  : 'Hide this folder from the sidebar. Nothing on disk is deleted, and Settings can bring it back.'
+              }
+            >
+              {project.addedManually ? 'Remove' : 'Hide'}
+            </button>
           </div>
         </div>
       )}

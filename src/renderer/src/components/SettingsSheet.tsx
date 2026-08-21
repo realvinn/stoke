@@ -15,6 +15,7 @@ import { useEffect, useState } from 'react'
 import { HostsSettings } from './HostsSettings'
 import { MicrophoneNotice } from './MicrophoneNotice'
 import { ProfilesSettings } from './ProfilesSettings'
+import { ClaudeCodeSettings } from './ClaudeCodeSettings'
 import { RemoteSettings, SelfUpdateSettings, UpdatesSettings } from './RemoteSettings'
 import { WorklogSettings } from './WorklogSettings'
 import { EFFORT_LEVELS, MODEL_OPTIONS, PERMISSION_MODES } from '../lib/permissions'
@@ -348,6 +349,10 @@ export function SettingsSheet({
           />
 
           <UpdatesSettings />
+
+          {/* Directly under the CLI's version, because the two are about the
+              same program: what it is, then how it is configured. */}
+          <ClaudeCodeSettings cliVersion={cli?.version ?? null} />
 
           <ProfilesSettings settings={settings} onPatch={onPatch} onCreated={onProfileCreated} />
 

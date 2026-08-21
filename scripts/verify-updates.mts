@@ -21,6 +21,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import type { UpdateInfo } from '../src/shared/api.ts'
+import { leafAuthority, signatureBlocker } from '../src/main/codesign.ts'
 import { describeExecError } from '../src/main/updates.ts'
 import { updateButton, updateVerdict } from '../src/renderer/src/lib/updateVerdict.ts'
 
@@ -349,6 +350,83 @@ check(
   'the dmg is still built too — it is what a person downloads by hand',
   /^\s*-\s*target:\s*dmg\s*$/m.test(macBlock),
   true
+)
+
+/* --------------------------------- which signatures can install an update
+ *
+ * The real reports below are verbatim `codesign -dv` stderr, because that is
+ * the shape the rule has to survive: multi-line, chain leaf-first, and with the
+ * interesting field on a line of its own rather than at a fixed offset.
+ *
+ * The self-signed case is the one this suite exists for. It shipped returning
+ * null — not ad-hoc, so not blocked — which meant the panel offered an update a
+ * locally-built copy could never install, and said so only after the whole
+ * archive had been downloaded. A test that only pinned the ad-hoc case would
+ * have gone on passing through all of it.
+ */
+console.log('\nwhich code signatures can install a downloaded update')
+
+const ADHOC_REPORT = `Executable=/Applications/Stoke.app/Contents/MacOS/Stoke
+Identifier=Electron
+CodeDirectory v=20400 size=392 flags=0x20002(adhoc,linker-signed) hashes=9+0 location=embedded
+Signature=adhoc
+Info.plist entries=32
+TeamIdentifier=not set
+`
+
+const SELF_SIGNED_REPORT = `Executable=/Applications/Stoke.app/Contents/MacOS/Stoke
+Identifier=dev.vinn.stoke
+Format=app bundle with Mach-O thin (arm64)
+CodeDirectory v=20500 size=431 flags=0x10000(runtime) hashes=3+7 location=embedded
+Signature size=5942
+Authority=MyTouchBar Local
+Timestamp=20 Aug 2026 at 6:36:40 pm
+TeamIdentifier=not set
+`
+
+const DEVELOPER_ID_REPORT = `Executable=/Applications/Stoke.app/Contents/MacOS/Stoke
+Identifier=dev.vinn.stoke
+Signature size=9051
+Authority=Developer ID Application: The Vinh Nguyen (AB12CD34EF)
+Authority=Developer ID Certification Authority
+Authority=Apple Root CA
+TeamIdentifier=AB12CD34EF
+`
+
+check(
+  'an ad-hoc signature is blocked — its requirement is this binary’s own hash',
+  signatureBlocker(ADHOC_REPORT)?.includes('ad-hoc'),
+  true
+)
+check(
+  'a self-signed certificate is blocked too, which is the case that used to slip through',
+  signatureBlocker(SELF_SIGNED_REPORT) !== null,
+  true
+)
+check(
+  'and it names the certificate, because it is usually not the one you expect',
+  signatureBlocker(SELF_SIGNED_REPORT)?.includes('MyTouchBar Local'),
+  true
+)
+check(
+  'a Developer ID signature is NOT blocked — this is the case that must keep working',
+  signatureBlocker(DEVELOPER_ID_REPORT),
+  null
+)
+check(
+  'the leaf authority is read, not an intermediate further down the chain',
+  leafAuthority(DEVELOPER_ID_REPORT),
+  'Developer ID Application: The Vinh Nguyen (AB12CD34EF)'
+)
+check(
+  'a probe that produced nothing blocks nothing — it cannot answer, so it must not stand in the way',
+  signatureBlocker(''),
+  null
+)
+check(
+  'nor does a report that states no authority and no ad-hoc flag',
+  signatureBlocker('Executable=/Applications/Stoke.app/Contents/MacOS/Stoke\n'),
+  null
 )
 
 console.log(`\n${failures === 0 ? 'All checks passed.' : `${failures} check(s) FAILED.`}`)

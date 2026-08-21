@@ -522,8 +522,12 @@ export function UpdatesSettings(): React.JSX.Element {
 
   return (
     <div className="field">
+      {/* "Claude Code CLI", not "Claude Code": the sheet is one flat column and
+          the Claude Code *settings* panel below would otherwise repeat this
+          exact heading a few hundred pixels down. This one is about the
+          binary's version; that one is about its configuration. */}
       <span className="field-label">
-        Claude Code{' '}
+        Claude Code CLI{' '}
         {info?.updateAvailable && (
           <span className="pill" data-tone="accent">
             {info.latest} available

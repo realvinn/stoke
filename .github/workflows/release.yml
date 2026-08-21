@@ -110,7 +110,11 @@ jobs:
             args: --win --x64
           - name: macOS arm64
             os: macos-14
-            args: --mac --arm64
+            # `-c.mac.identity=-` asks for a real ad-hoc signing pass. Without
+            # it electron-builder finds no identity and skips signing the bundle
+            # altogether, which is not the same thing and was shipping broken
+            # artifacts — see the env block below.
+            args: --mac --arm64 -c.mac.identity=-
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -143,11 +147,38 @@ jobs:
         run: npx electron-builder ${{ matrix.args }} --publish never
         env:
           # No Developer ID is configured, so stop electron-builder hunting the
-          # keychain for one and failing when it finds nothing. The result is an
-          # ad-hoc signature: enough for the dmg to launch after right-click ->
-          # Open, and NOT enough for Squirrel.Mac to apply an auto-update, which
-          # verifies the signature of the downloaded app. Mac auto-update stays
-          # broken until a real certificate exists.
+          # keychain for one and failing when it finds nothing.
+          #
+          # On its own this does NOT produce an ad-hoc signature, which is what
+          # this comment used to claim and what everyone downstream believed.
+          # With no identity to find, electron-builder skips the signing step
+          # entirely, and what ships is whatever signature the prebuilt Electron
+          # binary already carried. Measured by unzipping the published
+          # Stoke-0.5.2-arm64.zip:
+          #
+          #   Identifier   = Electron            <- not dev.vinn.stoke
+          #   Signature    = adhoc,linker-signed <- Electron's own, not ours
+          #   codesign --verify --strict -> exit 1, "code has no resources but
+          #                                  signature indicates they must be
+          #                                  present"  <- the bundle is invalid
+          #   entitlements = (none)              <- no mic, no JIT, no
+          #                                         disable-library-validation
+          #
+          # So the published app was unsigned-in-effect, failed verification,
+          # and carried none of the entitlements electron-builder.yml specifies.
+          # `-c.mac.identity=-` in the matrix args above forces a genuine ad-hoc
+          # signing pass instead: correct bundle identifier, sealed resources,
+          # and the entitlements applied. Hardened runtime plus ad-hoc enforces
+          # library validation, which would reject the prebuilt Electron
+          # framework — build/entitlements.mac.plist already carries
+          # com.apple.security.cs.disable-library-validation, which is exactly
+          # the escape electron-builder's own warning names.
+          #
+          # This still does not make auto-update work. An ad-hoc requirement is
+          # `cdhash H"…"`, the hash of that one binary, so no later build can
+          # ever satisfy it; `selfUpdate.ts` blocks the attempt up front rather
+          # than after the download. Auto-update needs a certificate both the
+          # release and the installed copy share — see BUILDING.md.
           CSC_IDENTITY_AUTO_DISCOVERY: false
           #
           # To turn Mac auto-update on later, add these repository secrets and

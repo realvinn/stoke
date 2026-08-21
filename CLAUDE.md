@@ -29,6 +29,9 @@ npm run verify:statusline     # the statusLine wrapper: payload, suppression, pa
 npm run verify:unicode        # xterm's cell widths for emoji and box drawing
 npm run verify:profiles       # profile resolution + every accent clears 4.5:1
 npm run verify:settings       # settings hydration: repair, clamps, and what it drops
+npm run verify:claude-config  # writing Claude Code's OWN config: the allowlist, the refusals,
+                              # and the ~/.claude.json lock. Runs against real files in a temp
+                              # CLAUDE_CONFIG_DIR, never the user's (gotchas 38, 39)
 npm run verify:folders        # folder metadata: trimming, caps, added folders, hide/pin
 npm run verify:tabs           # which tab is selected after one is closed
 npm run verify:shortcuts      # app chords vs the keys the terminal owns, and the zoom maths
@@ -61,7 +64,15 @@ src/main/         Electron main process
   context.ts        live context-window watcher (polls transcripts)
   sessionFile.ts    transcript parsing and the context maths
   statusLine.ts     Stoke's statusLine wrapper: context window + plan limits
-  usage.ts          plan limits from the undocumented OAuth endpoint the CLI itself calls
+  usage.ts          plan limits from the undocumented OAuth endpoint the CLI itself calls.
+                    Reads the token from ~/.claude/.credentials.json OR, on macOS, the login
+                    Keychain - which is why the chip works with no session running (gotcha 36)
+  claudePaths.ts    where Claude Code's own two config files are. Pure; env and home are
+                    arguments, so a suite can ask about another machine's layout
+  claudeSettings.ts ~/.claude/settings.json: read, and patch one allowlisted key, preserving
+                    every key Stoke does not draw
+  claudeGlobalConfig.ts  ~/.claude.json: the lock protocol, the refusals, and the
+                    verify-after-write. See gotcha 38 before touching it
   browser.ts        docked Chromium: tabs, find, console/network capture
   workspace.ts      default folder + scratch folders
   workspaceRoots.ts where a session with no project starts, per platform. Takes the
@@ -114,6 +125,8 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
   paths.ts          cwd -> project group. Pure, platform passed in, no node imports,
                     so the renderer runs the identical rule for the profile chip
   worklog.ts        the board targets the worklog can write to, and their defaults
+  claudeConfig.ts   which of Claude Code's settings Stoke will draw, their vocabularies, and
+                    the never-offer list. Hand-transcribed from the CLI binary's zod schema
   ui.ts             the uiScale / fontSize bounds, and the clamps both processes use
   statusLine.ts     the two plan-limit windows the usage chip draws, from the payload
 scripts/          the verify-*.mts suites, make-icon.cjs
@@ -286,6 +299,32 @@ scripts/          the verify-*.mts suites, make-icon.cjs
     `:293` asserted that as a hard control. It now runs a `modes: ''` case, and asserts both
     clone shapes side by side in every case.
 
+    **Claude Code 2.1.237 turned motion reporting on, and that broke selection a second, entirely
+    separate way.** The CLI now asks for mode **1003** — any-event tracking — where it previously
+    asked for 1000/1004/1006/1007. xterm hands every mouse report to
+    `CoreService.triggerDataEvent(report, true)` (`CoreMouseService.ts:331`), and that `true` means
+    "user input", which `SelectionService` clears the selection on (`SelectionService.ts:139`).
+    Under 1003 the pointer *moving* is a report. So a selection died the instant the mouse moved,
+    by one pixel, on **every local tab** — which made right-click → Copy unreachable in practice,
+    because right-clicking means moving to the menu. Shift-drag, Option-drag and Copy mode were all
+    affected identically; none of them is the cause and none of them is the fix.
+
+    It is fixable without forking xterm, which the suite's own comment claimed it was not:
+    `src/renderer/src/lib/mouseReport.ts` decides whether a payload is bare pointer motion, and
+    `TerminalView` wraps `term._core.coreService.triggerDataEvent` to withdraw only the
+    *wasUserInput* claim, only for movement with nothing pressed. The report still reaches the
+    application byte-for-byte, so hover handling and click-to-focus are untouched.
+
+    **`verify:selection` was asserting the bug as correct behaviour**, under an assertion literally
+    named "known limit — motion reports still eat the selection", on two premises that were both
+    false: that Stoke could not fix it, and that Claude Code never asks for motion. A test that
+    pins a bug as expected turns a regression into a green run. That case now has to survive like
+    every other, and the counterfactual was measured both ways: with the guard the selection comes
+    back intact, without it the reading is `""`. The page also builds the guard from the *shipped*
+    function via `Function.prototype.toString()` rather than hand-copying it — which is why
+    `isButtonlessMotionReport` is written with no imports and no module-scope helpers, and is a
+    partial answer to the standing complaint that this suite never loads any Stoke source at all.
+
     Two features fighting over one key is also how the selection used to vanish the moment you
     let go: `altClickMovesCursor` defaults **on**, reads the same still-held Option on mouseup,
     and for a selection of one character or less sends a cursor-move with `wasUserInput: true`
@@ -406,13 +445,40 @@ scripts/          the verify-*.mts suites, make-icon.cjs
     the zip only gets the download working; **Squirrel then verifies the downloaded app against the
     running one's designated requirement**, and an ad-hoc signature's requirement is
     `cdhash H"…"` — the hash of that exact binary — which no other build can satisfy by
-    construction. CI builds are ad-hoc (`CSC_IDENTITY_AUTO_DISCOVERY: false` with no Developer ID),
-    so `selfUpdate.ts` probes for it: `codesign -dv` prints `Signature=adhoc` **on stderr**, and an
-    `Authority=` line for anything signed with a real certificate — including a self-signed one,
-    whose requirement pins a certificate rather than a hash and therefore *can* be satisfied by the
-    next build. Second, **Windows needs none of this**: `NsisUpdater` only verifies a signature when
+    construction. Second, **Windows needs none of this**: `NsisUpdater` only verifies a signature when
     `publisherName` is set in the builder config, and it is not, so that check is skipped
     (`NsisUpdater.js:84-99`). Windows self-update has always worked; only macOS was broken.
+
+    **Two claims this entry used to make were wrong, and both were load-bearing.** Corrected in
+    place, because each was believed for several releases.
+
+    *"A self-signed certificate can be satisfied by the next build, so it is left alone."* True in
+    theory and false in practice, and it is the case that actually ships. A locally built copy is
+    signed with whatever code-signing identity is in the login keychain — here `MyTouchBar Local`,
+    a certificate from an unrelated project — and the published release is not signed with it, so
+    the requirement `identifier "dev.vinn.stoke" and certificate leaf = H"9af1c10c…"` cannot be
+    met. `detectBlocker` returned null for exactly this case, so the panel offered the update, and
+    Squirrel refused the swap only after 123 MB had been downloaded. The rule now lives in
+    `src/main/codesign.ts` (no electron import, so `verify:updates` can test it) and blocks
+    anything that is not Apple-issued, naming the certificate.
+
+    *"`codesign -dv` prints an `Authority=` line for anything signed with a real certificate."*
+    It does not. **At one `v` there is no `Authority=` line at all** — measured against this very
+    binary, which `-dv` describes without naming its signer and `-dvv` reports as
+    `Authority=MyTouchBar Local`. So the old probe could only ever detect the ad-hoc case, not
+    because that was the intended rule but because it was the only fact in the output.
+
+    Third, and separate: **`CSC_IDENTITY_AUTO_DISCOVERY: false` does not produce an ad-hoc
+    signature, it produces no signing pass at all.** With no identity to find, electron-builder
+    skips the step and ships whatever the prebuilt Electron binary carried. Measured on the
+    published `Stoke-0.5.2-arm64.zip`: `Identifier=Electron` rather than `dev.vinn.stoke`,
+    `codesign --verify --strict` exiting 1 with "code has no resources but signature indicates they
+    must be present", and **none** of the six entitlements `electron-builder.yml` specifies — no
+    microphone, no JIT, no `disable-library-validation`. The release job passes
+    `-c.mac.identity=-` now, which takes the real ad-hoc path (`MacTargetHelper.findSigningIdentity`
+    has an explicit `qualifier === "-"` branch); verified locally to give the right identifier, a
+    `--verify --strict --deep` exit 0, and all six entitlements. It still cannot auto-update, for
+    the `cdhash` reason above, but it is a valid app rather than a broken one.
 
 25. **`execFile`'s error packs three unrelated things into `code`.** A POSIX errno string when the
     spawn failed, one of Node's own `ERR_*` identifiers, and a plain **number** when the child ran
@@ -674,6 +740,165 @@ scripts/          the verify-*.mts suites, make-icon.cjs
     nothing. The design spec claimed the tab would stay paused; it does not, and that claim is
     corrected in place.
 
+36. **The plan-limit chip needed a running session only because of where macOS keeps the token,
+    and the Keychain blob has a trap in it.** `readOauthToken` read `~/.claude/.credentials.json`
+    and nothing else. That file does not exist on macOS — the credential is a login-Keychain
+    generic password under the service name `Claude Code-credentials` — so `fetchUsage` reported
+    "Not signed in to Claude Code" on every call, the account route contributed nothing, and the
+    statusLine payload was the chip's only source. The payload exists only while `claude` is
+    running, so closing the last tab took the numbers with it, exactly as the panel's own note
+    admitted. `readCredentials` (`usage.ts`) now falls back to
+    `security find-generic-password -s "Claude Code-credentials" -w` on darwin, and
+    `STOKE_LIVE_USAGE=1 npm run verify:usage` passes here against the real account with nothing
+    else running.
+
+    **The blob is not just the account, and first-match-wins picks the wrong token.** It is
+    `{ mcpOAuth, claudeAiOauth }`, where `mcpOAuth` holds one record per connected MCP server —
+    around fifty here — each with its own `accessToken`, several non-empty (a Figma `figu_…`).
+    `mcpOAuth` is enumerated **before** `claudeAiOauth`, and the old scan returned the first key
+    matching `/access.?token/i`, so it handed back a *connector's* token. `api.anthropic.com`
+    answers that with 401, which renders identically to being signed out — on the one platform
+    where signed-out was already the expected outcome, so it would never have looked like a bug.
+    The search is two passes now: an `sk-ant-oat`-prefixed value anywhere wins, and only if
+    nothing carries the prefix does the lenient key-name match run, with `mcpOAuth` skipped.
+    Pinned by `verify:usage` against the real blob's shape.
+
+    Two smaller things. `security` **blocks on a GUI Keychain prompt** when the item's ACL does
+    not already trust it — it did not prompt here, but a fresh machine will — so the call carries
+    a 5s timeout rather than being allowed to hang a main-process handler. And the account token
+    **expires** (`claudeAiOauth.expiresAt`, epoch ms, refreshed whenever Claude Code runs); Stoke
+    reads it and never refreshes it, because rotating the token would invalidate the copy the CLI
+    is holding. An expired one is reported as expired before the request rather than discovered
+    as a 401.
+
+37. **Claude Code's Remote Control turns itself on from a server-side flag, and `/remote-control`
+    cannot turn it off for good.** The resolver runs once at REPL bootstrap and, with no local
+    setting, falls through to the GrowthBook feature `tengu_cobalt_harbor` — `true` for this
+    account. `/remote-control` -> "Disconnect this session" is a **pure in-memory state reducer
+    with no settings write**, so it resets every launch. The one-time disclosure banner has a
+    three-impression cap (`cSr="remote-control-auto-on", qWh=3`), so once you have seen it three
+    times the feature starts silently. And the `d` key in the RC dialog, which *does* persist an
+    off, is gated on `replBridgeExplicit` — `false` for exactly the auto-on sessions that need it.
+
+    The flag's value cannot be overridden locally: the env-override path is dead code
+    (`getEnvironmentOverrides()` returns before it reads `CLAUDE_INTERNAL_FC_OVERRIDES`), the
+    config-override reader/writer are empty stubs, and there is no
+    `CLAUDE_CODE_DISABLE_REMOTE_CONTROL`. But the flag is never *consulted* when a local setting
+    exists. **`"remoteControlAtStartup": false` in `~/.claude/settings.json`** is the fix;
+    `disableRemoteControl: true` is the bigger hammer. Only policy/flag/user scope may *enable*
+    it — a repo-scoped `true` is ignored — but a repo-scoped `false` works, and so does a
+    checked-in `disableRemoteControl: true`, which silently kills RC for anyone who opens
+    that repo.
+
+38. **Writing Claude Code's own config: two files, two completely different risk profiles.**
+    `~/.claude/settings.json` is small and hand-owned — temp+rename is enough.
+    `~/.claude.json` is the global config, 155 KB here, rewritten constantly by every live
+    session, and **a parse failure makes the CLI back it up and reset to defaults** — measured at
+    16 keys down to 5, destroying `oauthAccount`, `userID` and every project entry, with no
+    automatic restore. `src/main/claudeGlobalConfig.ts` therefore refuses to write over a file it
+    could not parse, refuses one with no sign-in recorded (dropping the auth keys freezes the
+    CLI's own persistence via `GDe()`), and never creates the file.
+
+    **The lock is a directory, and taking it is necessary but not sufficient.** The CLI bundles
+    proper-lockfile v4: `mkdir <config>.lock`, stale at 10s by the directory's own mtime,
+    refreshed every 5s. A live session does *not* clobber an external edit with a cached object —
+    every writer re-reads from disk inside its critical section, verified by a sentinel surviving
+    a session's full exit payload. The loss window is narrower: `[the CLI's read completes -> its
+    rename completes]`, which sits inside its lock hold. But the CLI acquires with **`retries: 0`**
+    and falls straight through to an unlocked, un-backed-up write — so Stoke holding the lock is
+    what *forces* it onto the unguarded path — and its exit handlers take no lock at all. Hence
+    lock, hold briefly, **and verify the write survived, then retry**. All three.
+
+    Three smaller traps, each measured. A stale lock **file** is worse than a stale directory:
+    the CLI breaks stale locks with `rmdir`, which can never remove a file, so one left there
+    degrades every CLI config write permanently — Stoke unlinks it, which repairs the CLI rather
+    than just itself. The CLI's own rename retry predicate is **stubbed to `false`**, so it never
+    retries; on Windows an `EPERM`/`EBUSY` there sends it down a non-atomic in-place write.
+    And `<CLAUDE_CONFIG_DIR||~/.claude>/.config.json` **wins outright** over `~/.claude.json` when
+    it exists, so a writer that hardcodes the latter edits a file nothing reads.
+
+39. **`workflowSizeGuideline` is dual-homed and the two homes are not equivalent.** It is a valid
+    `settings.json` key *and* a `~/.claude.json` key. `/config`'s "Dynamic workflow size" row
+    writes the global config — and `aur()` hides that row entirely whenever settings.json defines
+    the key (`iz()?.settings.workflowSizeGuideline !== void 0`). So putting it in the settings
+    file takes the control away from the CLI. Stoke writes the global config for that reason, and
+    pays for it with gotcha 38's whole protocol. Absent means `medium` (`LRf`), so unset and an
+    explicit medium behave identically.
+
+    While you are in that schema: **`effortLevel` accepts only `low|medium|high|xhigh`, not
+    `max`** — and it carries `.catch(void 0)`, like most of these enums, so writing `"max"` is
+    *silently dropped* and the session ends up with no effort level at all. `claude config` no
+    longer exists in 2.1.237 either; `claude config list` is parsed as a prompt and starts a
+    session. Editing the JSON is the only route.
+
+    One Stoke-specific rule that is easy to get backwards: **Stoke's own `--settings` file is
+    `flagSettings`**, and precedence is `userSettings < projectSettings < localSettings <
+    flagSettings < policySettings`. Anything Stoke folds into that file *outranks* what the
+    settings panel writes to `~/.claude/settings.json` — which is why `statusLine` and `ultracode`
+    are on `NEVER_OFFERED` in `src/shared/claudeConfig.ts`. Adding a key to
+    `writeSessionSettingsFile` means adding it there in the same change, or drawing a control
+    that visibly moves and changes nothing.
+
+40. **A synchronous `fs` call in the main process is a bet that every path in the list is on the
+    internal disk — and the project list is exactly where that bet loses.** This was the cause of
+    "Stoke sometimes takes ages to start", and the "sometimes" is the whole tell: a constant cost
+    would have been found years ago.
+
+    `listProjects` ran `existsSync` once per project (`projects.ts:174`) plus once per manually
+    added folder (`:229`), and `findSessionFile` ran one per history directory in a `for` loop.
+    Instrumenting the built main process — a prologue that wraps every sync `fs` method, spliced
+    into a copy of `out/main/index.js`, run under a copy of the real settings — counted **392
+    synchronous `existsSync` calls in the first six seconds of one boot, 40 of them against paths
+    on an external USB SSD**. That machine had eight projects under `/Volumes/NVME (1TB)`, and
+    `pmset -g` reports `disksleep 10`: after ten idle minutes the disk is asleep and its first
+    access has to wake it.
+
+    The cost is not the wait, it is *where* the wait happens. A sync call blocks the Node event
+    loop, so it stops every IPC reply and every frame with it. Measured by injecting a delay into
+    `/Volumes` stats only: at 200ms per stat, `ready-to-show` moved **733ms → 2012ms** and the main
+    thread was blocked **6.4s of the first 6s** — the window appears and then sits frozen. It is a
+    race, too, which is the other half of "sometimes": with a fast disk `listProjects` has not
+    started by the time the window paints, and with a slow one it gets there first and holds the
+    paint. After the fix (async `access` + a shared deadline + one parallel resolve for the whole
+    set): **52 sync calls, none on `/Volumes`**, and the same 200ms injection changes nothing at
+    all — 414ms to `ready-to-show`.
+
+    Two things worth carrying beyond this one bug. **`existsSync` is never the cheap option it
+    looks like** in a process that also draws a UI; the deadline in `folderExists` matters as much
+    as the `await`, because it decides that a list may be briefly *wrong* rather than late. And
+    **`String.prototype.split`'s limit caps the array, not the read that produced it** —
+    `cwdFromTranscript` did `readFile(file, 'utf8')` then `split('\n', 200)` and read 14.76 MB per
+    `listProjects()` on this machine, unbounded in principle, while `sessionFile.ts`'s `readLines`
+    had had the bounded head+tail reader all along. `listProjects()` went from ~30ms to ~6ms warm
+    on that change alone.
+
+    None of this is visible to `npm run check`, and that is gotcha 31's lesson again: every one of
+    these calls is a side effect inside a function whose return value is correct. It took wrapping
+    `fs` in a real launch to see any of it.
+
+    **The other half of the boot cost was a static import list, and `externalizeDepsPlugin` is why
+    it is invisible.** electron-vite does not bundle dependencies, it re-emits them as bare
+    `require()` calls at the top of `out/main/index.js` — so a static import in any main-process
+    module is resolved and *evaluated* before `app.whenReady()` fires, whether or not the feature
+    is ever used. Seven externals were required at module scope. `@modelcontextprotocol/sdk`
+    dominated: 230 module files across 11 packages (hono, ajv, zod-to-json-schema and friends) for
+    53-91ms, all so that `handle()` could answer an HTTP request that most launches never receive
+    — `BrowserMcpServer.start()` itself needs only `node:http` and one 221-byte `writeFileSync`.
+    `electron-updater` cost 23-51ms for a check deliberately deferred to +8s, and `qrcode` 5-16ms
+    for one panel.
+
+    Deferring those three (memoised `loadSdk()` in `mcp/server.ts`, a memoised `updater()` in
+    `selfUpdate.ts`, one `await import('qrcode')`) took **`whenReady` from 336ms to ~50ms and
+    `ready-to-show` from 733ms to ~260ms**, and dropped module resolution from 649 `realpathSync`
+    and 470 `readFileSync` calls to 27 and 23. Check it stayed fixed by grepping the built bundle,
+    not the source — `grep -nE '^const [A-Za-z_$]+ = require\("' out/main/index.js` should list
+    node builtins, `electron`, `@lydell/node-pty` and `ws`, and nothing else. A dynamic `import()`
+    of an externalised dependency survives the build as a lazy require; a static one does not.
+
+    Unlike the `/Volumes` stalls this is a *constant* cost with no variance, so it was never the
+    "sometimes" — it is simply floor. Both were worth fixing and only the first one explains the
+    complaint.
+
 ## Standing traps when driving the app
 
 Not about any one module, and each cost real time at least once. Carried over from the 0.3.0
@@ -719,11 +944,11 @@ running DOM, screenshots taken over CDP. The statusLine channel is proven end to
 payloads were captured from `claude` 2.1.221 on darwin-arm64 through a real pty, and the POSIX
 shim branch (`statusLine.ts`'s `shimName`/`writeStatusLineWrapper`, `:159-161,220-226`) is the
 one that actually ran — every live session left `run.sh` behind, never `run.cmd`. That work also
-turned up a genuine macOS bug: `usage.ts` reads the OAuth token only from
-`~/.claude/.credentials.json`, but on macOS the token lives in the login Keychain instead
-(`statusLine.ts:27-29`), so `window.stoke.usage.read()` fails here with "Not signed in to Claude
-Code" — the statusLine payload's own `rate_limits` is the one plan-limit source that still works
-on this platform, which is why the usage chip prefers it.
+turned up a genuine macOS bug, **since fixed**: `usage.ts` read the OAuth token only from
+`~/.claude/.credentials.json`, which does not exist on macOS — the token is in the login
+Keychain — so `window.stoke.usage.read()` failed here with "Not signed in to Claude Code" and
+the statusLine payload's `rate_limits` was the only plan-limit source on the platform. See
+gotcha 36.
 
 What that work did **not** exercise, and is still genuinely unverified: the `hiddenInset` title
 bar and traffic-light padding (every screenshot taken here came from CDP's

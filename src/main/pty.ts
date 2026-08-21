@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { access } from 'node:fs/promises'
 import * as nodePty from '@lydell/node-pty'
 import type { IPty } from '@lydell/node-pty'
 import type { LaunchOptions } from '@shared/types'
@@ -157,6 +158,30 @@ export class PtyManager {
       throw new Error(
         'Could not find the `claude` executable. Install Claude Code, or set an explicit path in Settings.'
       )
+    }
+
+    /*
+     * The folder has to exist, and node-pty will not tell us if it does not.
+     *
+     * `spawn` resolves happily for a nonexistent `cwd`: the failure happens in
+     * the forked child, at `chdir`, after this function has already returned a
+     * ptyId. So `startSession`'s try/catch never fires, a tab opens on a blank
+     * pane, the process exits, and the user gets "Session ended (exit 1)" with
+     * nothing anywhere naming the folder — and "Start again" repeats it forever.
+     * That is what every one of the sidebar's `missing` rows does when started.
+     *
+     * Checked only for a local session: a remote one runs `ssh` here and its
+     * real working directory is on the far machine (gotcha 18), so `opts.cwd`
+     * is a local path that has nothing to do with where the session will land.
+     */
+    if (!opts.host) {
+      try {
+        await access(opts.cwd)
+      } catch {
+        throw new Error(
+          `That folder is not there any more: ${opts.cwd}. It may have been moved or deleted, or it may live on a drive that is not connected.`
+        )
+      }
     }
 
     // For brand-new sessions we mint the id ourselves and pass --session-id, so

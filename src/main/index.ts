@@ -1,4 +1,5 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { CH } from '@shared/ipc'
 import { resolveTheme } from '@shared/themes'
@@ -57,6 +58,19 @@ import { connectUrl, generateToken, RemoteServer, type RemoteDeps } from './remo
 import { TunnelManager } from './remote/tunnel.ts'
 import { checkForUpdate, runDoctor, runUpdate } from './updates.ts'
 import { fetchUsage, type UsageSnapshot } from './usage.ts'
+import { patchClaudeSetting, readClaudeSettings, untouchedKeys } from './claudeSettings.ts'
+import {
+  readGlobalConfigKey,
+  releaseHeldLocks,
+  writeGlobalConfigKey
+} from './claudeGlobalConfig.ts'
+import { claudeGlobalConfigPath } from './claudePaths.ts'
+import {
+  CLAUDE_SETTINGS,
+  WORKFLOW_SIZE_KEY,
+  validateWorkflowSize,
+  type ClaudeSettingValue
+} from '../shared/claudeConfig.ts'
 import {
   checkSelfUpdate,
   downloadSelfUpdate,
@@ -64,7 +78,6 @@ import {
   installSelfUpdate,
   selfUpdateState
 } from './selfUpdate.ts'
-import QRCode from 'qrcode'
 
 const isMac = process.platform === 'darwin'
 const isWindows = process.platform === 'win32'
@@ -1059,6 +1072,73 @@ function registerIpc(): void {
     send(CH.settingsChanged, next)
   })
 
+  /* ------------------------------------------------------ claude code config */
+  /*
+   * Claude Code's own settings, which are not Stoke's and live in Claude's own
+   * files. Nothing here touches Stoke's `Settings`, so none of it broadcasts
+   * `settingsChanged`; each handler returns the new state to its caller, the
+   * convention the profiles and workspace handlers already use.
+   */
+  const claudeConfigState = async (): Promise<unknown> => {
+    const read = await readClaudeSettings()
+    const drawn = CLAUDE_SETTINGS.map((spec) => spec.key)
+    const values: Record<string, boolean | string | number> = {}
+    for (const key of drawn) {
+      const found = read.values?.[key]
+      // Only the three kinds the panel can draw. Anything else in this key —
+      // a hand-written object, say — is left alone and reported as unset rather
+      // than rendered as something a control could overwrite.
+      if (typeof found === 'boolean' || typeof found === 'string' || typeof found === 'number') {
+        values[key] = found
+      }
+    }
+    const global = readGlobalConfigKey(WORKFLOW_SIZE_KEY)
+    const shadow = read.values?.[WORKFLOW_SIZE_KEY]
+    return {
+      settingsPath: read.path,
+      globalConfigPath: claudeGlobalConfigPath(process.env, homedir()),
+      values,
+      /*
+       * `WORKFLOW_SIZE_KEY` counts as drawn even though it is not in `drawn`.
+       *
+       * The panel does render a control for it — `WorkflowSizeRow` — it just
+       * writes to ~/.claude.json rather than to settings.json (gotcha 39). But
+       * the key is *also* valid in settings.json, and when it appears there it
+       * shadows the global one, which the panel says so in as many words. So
+       * listing it under "left exactly as they are" told the user Stoke would
+       * not touch the one key it had just drawn a control for and warned them
+       * about.
+       */
+      untouched: untouchedKeys(read.values, [...drawn, WORKFLOW_SIZE_KEY]),
+      workflowSize: typeof global.value === 'string' ? global.value : undefined,
+      workflowSizeShadowed: typeof shadow === 'string',
+      error: read.error ?? global.error
+    }
+  }
+
+  ipcMain.handle(CH.claudeConfigRead, () => claudeConfigState())
+
+  ipcMain.handle(CH.claudeConfigSet, async (_e, key: string, value: ClaudeSettingValue) => {
+    const result = await patchClaudeSetting(key, value)
+    return { ok: result.ok, error: result.error, state: await claudeConfigState() }
+  })
+
+  ipcMain.handle(CH.claudeWorkflowSize, async (_e, value: string | undefined) => {
+    const invalid = validateWorkflowSize(value)
+    if (invalid) return { ok: false, error: invalid, state: await claudeConfigState() }
+    const result = await writeGlobalConfigKey(WORKFLOW_SIZE_KEY, value)
+    // `wroteUnlocked` and `attempts` are carried through rather than dropped:
+    // they are the only evidence the renderer can have that the write took the
+    // unguarded path or had to be retried, and gotcha 38 is why that matters.
+    return {
+      ok: result.ok,
+      error: result.error,
+      wroteUnlocked: result.wroteUnlocked,
+      attempts: result.attempts,
+      state: await claudeConfigState()
+    }
+  })
+
   /* ---------------------------------------------------------------- remote */
 
   const remoteState = async (): Promise<unknown> => {
@@ -1066,6 +1146,16 @@ function registerIpc(): void {
     const url = connectUrl(cfg)
     let qr: string | null = null
     try {
+      /*
+       * Imported here rather than at the top of the file. `qrcode` is needed by
+       * exactly one thing — the connect code in the remote panel — and a static
+       * import is a synchronous `require` before `app.whenReady` even fires,
+       * because electron-vite externalises dependencies rather than bundling
+       * them (`externalizeDepsPlugin`). Measured at 5-16ms of every launch for
+       * a module most launches never reach. Node caches it, so opening the
+       * panel twice pays once.
+       */
+      const { default: QRCode } = await import('qrcode')
       qr = await QRCode.toDataURL(url, { margin: 1, width: 320, color: { dark: '#14110f', light: '#f2e9e1' } })
     } catch {
       qr = null
@@ -1443,6 +1533,12 @@ if (!app.requestSingleInstanceLock()) {
 
   app.on('before-quit', () => {
     if (lastTabState) writeTabState(tabStateFile(app.getPath('userData')), lastTabState)
+    /*
+     * A lock left behind on ~/.claude.json stalls every CLI config write for
+     * the ten seconds it takes to go stale. The writer already releases in a
+     * `finally`; this covers a quit landing mid-write.
+     */
+    releaseHeldLocks()
     ptys?.killAll()
     watcher?.disposeAll()
     mcp?.stop()

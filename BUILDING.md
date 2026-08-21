@@ -137,20 +137,144 @@ codesign --force --deep --sign - /Applications/Stoke.app
 ```
 
 That ad-hoc signature is also exactly what stops Stoke updating itself, and Stoke knows it.
-`src/main/selfUpdate.ts` runs `codesign -dv` against its own executable at startup and reads
+`src/main/selfUpdate.ts` runs `codesign -dvv` against its own executable at startup and reads
 the report off **stderr**, which is where `codesign` writes it — the command also exits
 non-zero for an unsigned target, so the failure path is read as carefully as the success one.
-A `Signature=adhoc` line in that report is the answer: Squirrel.Mac verifies a downloaded app
-against the *running* app's designated requirement, and for an ad-hoc signature that
-requirement is `cdhash H"…"` — the hash of this exact binary — which no other build can satisfy
-by construction. So the Download button is disabled and the panel says "This build is ad-hoc
-signed, so macOS will refuse to swap it for a downloaded one", rather than letting you pay for
-a ~100MB download that would be rejected at the very end. Anything signed with a real
-certificate prints an `Authority=` line instead and is left alone — including a self-signed
-one, whose requirement pins a certificate rather than a hash and therefore *can* be satisfied
-by the next build. CI builds set `CSC_IDENTITY_AUTO_DISCOVERY: false` with no Developer ID
-available, so ad-hoc is the shipped state on macOS today: updates there arrive by downloading
-the next `.dmg` by hand.
+The rule itself is in `src/main/codesign.ts`, which imports no electron so `verify:updates` can
+test it.
+
+**Both `v`s matter.** At one level of verbosity `codesign` prints `Signature=adhoc` but no
+`Authority=` line at all, so a probe using `-dv` can only ever detect the ad-hoc case. That was
+this project's bug for several releases, and the case it hid is the common one.
+
+### Why "Restart and install" does not work on macOS today
+
+Squirrel.Mac installs an update by swapping one `.app` for another, and first checks the
+downloaded bundle against the **running** bundle's designated requirement. What that
+requirement says depends entirely on how the running copy was signed:
+
+| How this copy was signed | Its designated requirement | Can a later build satisfy it? |
+| --- | --- | --- |
+| ad-hoc | `cdhash H"…"` — this exact binary's hash | Never, by construction |
+| self-signed | `identifier "…" and certificate leaf = H"…"` | Only if signed with that same certificate |
+| Developer ID | same shape, pinned to an Apple-issued cert | Yes — this is the case it is designed for |
+
+The middle row is the one that bites, because it looks like it should work. A locally built
+copy is signed with whatever code-signing identity happened to be in your login keychain — on
+the machine this was written on that was **`MyTouchBar Local`**, a certificate belonging to an
+entirely different project — while the published release is not signed with it, so the swap is
+refused. Stoke now blocks that up front and names the certificate, rather than letting you pay
+for a ~123MB download that is rejected at the very end.
+
+To see which case you are in:
+
+```bash
+codesign -dvv /Applications/Stoke.app 2>&1 | grep -E 'Authority|Signature'
+```
+
+**What the published builds actually are.** Until 0.5.3 CI set `CSC_IDENTITY_AUTO_DISCOVERY:
+false` and nothing else, and the comment beside it claimed the result was an ad-hoc signature.
+It was not. With no identity to find, electron-builder skips signing altogether and ships
+whatever the prebuilt Electron binary already carried — measured on the published
+`Stoke-0.5.2-arm64.zip`: `Identifier=Electron`, `codesign --verify --strict` exiting 1 with
+"code has no resources but signature indicates they must be present", and **none** of the
+entitlements this repo specifies (microphone, JIT, library validation). The release job now
+passes `-c.mac.identity=-`, which asks for a genuine ad-hoc signing pass: right bundle
+identifier, sealed resources, entitlements applied. It still cannot auto-update — row one of
+the table above — but it is a valid, correctly built app.
+
+### Making "Restart and install" actually work
+
+Both halves have to hold at once: **the installed copy and the published build must be signed
+by the same certificate.** Cheapest route without an Apple Developer account:
+
+1. Create one self-signed code-signing certificate, named for this project rather than
+   whatever else is in your keychain. Keychain Access → **Certificate Assistant** → **Create a
+   Certificate…** → Name `Stoke`, Identity Type **Self Signed Root**, Certificate Type **Code
+   Signing** → Create. (This is a GUI step on purpose: `security add-trusted-cert` needs an
+   authorisation prompt anyway, and `codesign` refuses an identity that is not trusted for code
+   signing — verified.) Confirm it took:
+
+   ```bash
+   security find-identity -v -p codesigning     # should list "Stoke"
+   ```
+
+2. Point electron-builder at it, so local builds stop picking up a stray identity:
+
+   ```yaml
+   # electron-builder.yml
+   mac:
+     identity: Stoke
+   ```
+
+3. Give CI the same certificate. Export it from Keychain Access as a `.p12` with a password and
+   add two repository secrets — `CSC_LINK` (`base64 -i Stoke.p12 | pbcopy`) and
+   `CSC_KEY_PASSWORD`.
+
+   **Setting those two secrets is not enough, and the way it fails is silent.** electron-builder
+   imports a `.p12` into a temporary keychain and sets its partition list, and that is all —
+   `grep -rn add-trusted-cert node_modules/app-builder-lib/` returns **zero** hits
+   (`macCodeSign.js:165-168`). It then searches with `security find-identity -v`, i.e. *valid
+   identities only* (`macCodeSign.js:195,206`), and an untrusted self-signed certificate is not
+   valid: `codesign --sign` on one reports `no identity found` and signs nothing — measured. So
+   the build would fall through to a warning and ship an **unsigned** bundle, which is the exact
+   failure you started with, now with secrets configured and looking fixed.
+
+   The runner has to trust the certificate explicitly. Add this step to the mac matrix branch
+   before the build, and then drop both `CSC_IDENTITY_AUTO_DISCOVERY` and the
+   `-c.mac.identity=-` flag (step 2's `identity:` key supplies the name). Do **not** also leave
+   `CSC_LINK` set on the build step, or electron-builder builds its own untrusted keychain and
+   searches that one instead (`macCodeSign.js:184-189`).
+
+   ```yaml
+   - name: Import and trust the signing certificate
+     if: runner.os == 'macOS'
+     env:
+       CSC_P12_BASE64: ${{ secrets.CSC_LINK }}
+       CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+     run: |
+       set -euo pipefail
+       KC="$RUNNER_TEMP/stoke-signing.keychain-db"
+       KCPW="$(openssl rand -base64 24)"
+       echo "$CSC_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/stoke.p12"
+       security create-keychain -p "$KCPW" "$KC"
+       security set-keychain-settings -lut 21600 "$KC"
+       security unlock-keychain -p "$KCPW" "$KC"
+       security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+       security import "$RUNNER_TEMP/stoke.p12" -k "$KC" -P "$CSC_KEY_PASSWORD" \
+         -T /usr/bin/codesign -T /usr/bin/productbuild
+       security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KCPW" "$KC" >/dev/null
+       openssl pkcs12 -in "$RUNNER_TEMP/stoke.p12" -passin "pass:$CSC_KEY_PASSWORD" \
+         -nokeys -legacy -out "$RUNNER_TEMP/stoke.cer"
+       sudo security add-trusted-cert -d -r trustRoot -p codeSign \
+         -k /Library/Keychains/System.keychain "$RUNNER_TEMP/stoke.cer"
+       rm -f "$RUNNER_TEMP/stoke.p12"
+       # Fail here rather than shipping an unsigned app.
+       security find-identity -v -p codesigning | grep -q "Stoke"
+   ```
+
+   The `-legacy` flag on that `openssl pkcs12` is the same one the certificate script needs:
+   macOS's Security framework cannot read an OpenSSL 3 default PKCS#12 and fails with "MAC
+   verification failed during PKCS12 import (wrong password?)". The `sudo add-trusted-cert -d`
+   line relies on GitHub runners having passwordless sudo; that is standard, but it is the one
+   line here that has not been executed — the rest is verified against app-builder-lib's source
+   and against `codesign`'s actual behaviour.
+
+   Be deliberate about this route regardless: it puts an exportable private key in a GitHub
+   secret, decrypted into a runner VM you do not own, on every build. It is a key nobody else
+   trusts, so the blast radius is small — but it is still a private key in someone else's
+   infrastructure, and "build the mac artifacts locally and upload them to the release" avoids
+   the question entirely.
+
+Two consequences worth knowing before you start. **Changing the signing certificate breaks the
+update chain exactly once** — the currently installed copy pins the old certificate, so the
+first build under the new one must be installed by hand from the `.dmg`; every release after
+that can update itself. And **macOS ties privacy permissions to the signature**, so the
+microphone grant for dictation is reset and will be asked for again the first time you dictate.
+
+The alternative is a paid Apple Developer ID (`CSC_LINK` plus the `APPLE_ID`,
+`APPLE_APP_SPECIFIC_PASSWORD` and `APPLE_TEAM_ID` secrets for notarising), which additionally
+removes every Gatekeeper complaint in this section for everybody, not just for you.
 
 **"Cannot be opened because the developer cannot be verified."** Strip the quarantine flag
 that gets attached to downloaded files:

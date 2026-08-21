@@ -15,22 +15,46 @@ const isWin = process.platform === 'win32'
  * a version manager's shim dir, so without this the app would only work when
  * launched from a terminal. Ask the login shell for its PATH once and cache it.
  */
-let cachedLoginPath: string | null = null
+/*
+ * The *promise* is memoised, not the resolved string, and both halves of that
+ * mattered.
+ *
+ * `cachedLoginPath` was assigned only after the await, so two callers entering
+ * in the same tick both saw null and both spawned a full interactive login
+ * shell. Boot does exactly that: `App.tsx:363` calls `cli.info()` and
+ * `App.tsx:366` calls `updates.check()`, and both reach `buildEnvPath` through
+ * `findClaude`. Measured with `SHELL` pointed at a logging wrapper — two
+ * `-ilc` spawns in the same millisecond, every launch. Same shape as gotcha 20.
+ *
+ * Worse, a *failure* was cached as `null`, which is the value the guard reads
+ * as "nothing cached yet" — so a probe that failed was retried by every later
+ * caller, each paying the full 5s timeout again. That is not hypothetical on
+ * this machine: `~/.zshrc` stats a path on an external USB disk, so when that
+ * disk is asleep the probe is exactly the thing that gets slow (gotcha 40), and
+ * it got slow once per PTY spawn rather than once per launch. Holding the
+ * promise caches both outcomes.
+ *
+ * `-i` is load-bearing and must not be dropped to make this cheaper: measured
+ * from a bare Finder-like environment, `-lc` alone returns a PATH with no mise
+ * directory in it, and mise is where `claude` actually lives here.
+ */
+let loginPathProbe: Promise<string | null> | null = null
 
-async function loginShellPath(): Promise<string | null> {
-  if (isWin) return null
-  if (cachedLoginPath !== null) return cachedLoginPath
-  const shell = process.env.SHELL || '/bin/zsh'
-  try {
-    const { stdout } = await execFileAsync(shell, ['-ilc', 'printf %s "$PATH"'], {
-      timeout: 5000,
-      encoding: 'utf8'
-    })
-    cachedLoginPath = stdout.trim() || null
-  } catch {
-    cachedLoginPath = null
-  }
-  return cachedLoginPath
+function loginShellPath(): Promise<string | null> {
+  if (isWin) return Promise.resolve(null)
+  loginPathProbe ??= (async () => {
+    const shell = process.env.SHELL || '/bin/zsh'
+    try {
+      const { stdout } = await execFileAsync(shell, ['-ilc', 'printf %s "$PATH"'], {
+        timeout: 5000,
+        encoding: 'utf8'
+      })
+      return stdout.trim() || null
+    } catch {
+      return null
+    }
+  })()
+  return loginPathProbe
 }
 
 /** PATH to hand to spawned processes: login-shell PATH unioned with our own. */

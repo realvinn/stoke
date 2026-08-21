@@ -3,15 +3,59 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { app } from 'electron'
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
-import { z } from 'zod'
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import type { EmbeddedBrowser } from '../browser.ts'
 import { PageAgent } from './page.ts'
 import { analyseDesign } from './design.ts'
 import { detectStack } from './stack.ts'
 import { auditSecurity } from './audit.ts'
 import { analysePerformance } from './perf.ts'
+
+/**
+ * The MCP SDK, loaded on the first request rather than at startup.
+ *
+ * This was three static imports, and electron-vite externalises dependencies
+ * instead of bundling them, so they became synchronous `require`s at the top of
+ * the built main bundle — evaluated before `app.whenReady` fires, on every
+ * launch, whether or not anything ever asks the browser a question. Measured
+ * inside a real Electron main process: 230 module files across 11 packages
+ * (hono, ajv, zod-to-json-schema and friends) for 53-91ms, the single largest
+ * item in main's module load, and an A/B against `ready-to-show` put the cost
+ * at 65-83ms of every boot.
+ *
+ * Nothing before the first request needs any of it. `start()` opens a socket
+ * with `node:http` and writes a 221-byte config file; the SDK is first touched
+ * in `handle()`. So the whole cost moves to the first browser tool call, which
+ * is already doing far more work than 60ms, and Node caches the modules so only
+ * that first call pays.
+ *
+ * Held as one memoised promise rather than three, and assigned *before* the
+ * await, so two requests arriving together cannot both start the load — the
+ * same shape as gotcha 20.
+ */
+type McpSdk = {
+  McpServer: typeof import('@modelcontextprotocol/sdk/server/mcp.js').McpServer
+  StreamableHTTPServerTransport: typeof import('@modelcontextprotocol/sdk/server/streamableHttp.js').StreamableHTTPServerTransport
+  z: typeof import('zod').z
+}
+
+let sdkLoad: Promise<McpSdk> | null = null
+
+function loadSdk(): Promise<McpSdk> {
+  sdkLoad ??= (async () => {
+    const [mcpMod, httpMod, zodMod] = await Promise.all([
+      import('@modelcontextprotocol/sdk/server/mcp.js'),
+      import('@modelcontextprotocol/sdk/server/streamableHttp.js'),
+      import('zod')
+    ])
+    return {
+      McpServer: mcpMod.McpServer,
+      StreamableHTTPServerTransport: httpMod.StreamableHTTPServerTransport,
+      z: zodMod.z
+    }
+  })()
+  return sdkLoad
+}
 
 /**
  * An MCP server exposing the docked browser to Claude Code.
@@ -135,10 +179,12 @@ export class BrowserMcpServer {
       }
     }
 
+    const sdk = await loadSdk()
+
     // Stateless: a fresh server and transport per request. The tools close over
     // the browser, so there is no per-session state worth keeping alive.
-    const mcp = this.buildServer()
-    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined })
+    const mcp = this.buildServer(sdk)
+    const transport = new sdk.StreamableHTTPServerTransport({ sessionIdGenerator: undefined })
 
     res.on('close', () => {
       void transport.close()
@@ -149,8 +195,11 @@ export class BrowserMcpServer {
     await transport.handleRequest(req, res, body)
   }
 
-  private buildServer(): McpServer {
-    const mcp = new McpServer({ name: 'stoke-browser', version: '1.0.0' })
+  // `sdk` is passed in rather than reached for, so the 21 `z.` uses below read
+  // exactly as they did when zod was a module-scope import.
+  private buildServer(sdk: McpSdk): McpServer {
+    const { z } = sdk
+    const mcp = new sdk.McpServer({ name: 'stoke-browser', version: '1.0.0' })
     const agent = this.agent
 
     /* ------------------------------------------------------------ reading */

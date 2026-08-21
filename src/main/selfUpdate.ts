@@ -1,7 +1,8 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { app } from 'electron'
-import electronUpdater from 'electron-updater'
+import type { AppUpdater } from 'electron-updater'
+import { signatureBlocker } from './codesign.ts'
 import { getSettings } from './store.ts'
 
 const execFileAsync = promisify(execFile)
@@ -18,7 +19,29 @@ const execFileAsync = promisify(execFile)
  * electron-updater throws rather than no-oping.
  */
 
-const { autoUpdater } = electronUpdater
+/**
+ * electron-updater, loaded the first time something actually updates.
+ *
+ * It was a static import, and electron-vite externalises dependencies rather
+ * than bundling them, so it became a synchronous `require` at the top of the
+ * built main bundle — 23-51ms of every single launch, measured inside a real
+ * Electron main process, before `app.whenReady` fires. Nothing on the boot path
+ * needs it: the first check is deliberately deferred to +8s (`index.ts`), and
+ * `initSelfUpdate` only records state and starts the signature probe.
+ *
+ * `wire()` is the only caller that has to run before any listener fires, and it
+ * is already called from `checkSelfUpdate`/`downloadSelfUpdate` rather than at
+ * module scope, so nothing changes about ordering — only about when the cost is
+ * paid. Node caches the module, so the second call is free.
+ */
+let cached: AppUpdater | null = null
+function updater(): AppUpdater {
+  // `require` rather than `await import`, so the call sites stay synchronous —
+  // `wire()` and `installSelfUpdate()` are not async and should not become so
+  // just to move an import.
+  cached ??= (require('electron-updater') as { autoUpdater: AppUpdater }).autoUpdater
+  return cached
+}
 
 export interface SelfUpdateState {
   supported: boolean
@@ -82,16 +105,20 @@ export function friendlyError(err: unknown): string {
 /**
  * Why this build could never install an update, decided before one is offered.
  *
- * Only macOS has such a case today. Squirrel.Mac verifies the downloaded bundle
- * against the *running* bundle's designated requirement; for an ad-hoc signature
- * that requirement is `cdhash H"…"` — the hash of this exact binary — which no
- * other build can satisfy by construction. CI builds are ad-hoc because
- * `CSC_IDENTITY_AUTO_DISCOVERY: false` is set with no Developer ID available, so
- * this is the shipped state, not a corner case. Measured: `codesign -dv` prints
- * `Signature=adhoc` on **stderr** for such a binary, and an `Authority=` line
- * instead for anything signed with a real certificate — including a self-signed
- * one, whose requirement pins a certificate rather than a hash and so *can* be
- * satisfied by the next build.
+ * Only macOS has such a case today. The rule itself lives in `codesign.ts`,
+ * which imports no electron and so can be tested; all this does is get the
+ * report to it. `codesign -dvv` writes that report to **stderr** and exits
+ * non-zero for a binary carrying no signature at all, so the failure path
+ * carries the answer as often as the success path and both are read.
+ *
+ * "Ad-hoc means blocked" was the whole rule until 0.5.3, and it let the more
+ * common failure through. A *self-signed* build is not ad-hoc — at two levels of
+ * verbosity `codesign` prints an `Authority=` line for it — so the probe returned null, the panel
+ * offered the update, and Squirrel refused the swap only after the archive had
+ * been downloaded in full. That is what a locally-built copy of Stoke is: the
+ * one this was found on reported `Authority=MyTouchBar Local`, a certificate
+ * from an unrelated project that happened to be the only code-signing identity
+ * in the keychain. See CLAUDE.md gotcha 24.
  *
  * Returns null whenever the answer is not a confident yes, the probe included: a
  * check that cannot answer must not stand in the way of a path that might work.
@@ -108,13 +135,23 @@ let blockerProbe: Promise<string | null> | null = null
 function detectBlocker(): Promise<string | null> {
   blockerProbe ??= (async () => {
     if (process.platform !== 'darwin' || !app.isPackaged) return null
-    // `codesign -dv` writes its report to stderr, not stdout, and exits non-zero
+    // `codesign -dvv` writes its report to stderr, not stdout, and exits non-zero
     // when the target carries no signature at all — so the failure path carries
     // the answer just as often as the success path, and both are read.
     let report = ''
     try {
       report = (
-        await execFileAsync('codesign', ['-dv', process.execPath], {
+        /*
+         * `-dvv`, not `-dv`, and the second v is load-bearing.
+         *
+         * At one level of verbosity `codesign` prints `Signature=adhoc` but no
+         * `Authority=` line at all — measured against this very binary, which
+         * `-dv` describes without ever naming the certificate that signed it
+         * and `-dvv` reports as `Authority=MyTouchBar Local`. So the old probe
+         * could only ever have detected the ad-hoc case: not because that was
+         * the intended rule, but because it was the only fact in the output.
+         */
+        await execFileAsync('codesign', ['-dvv', process.execPath], {
           timeout: 10_000,
           encoding: 'utf8'
         })
@@ -122,10 +159,7 @@ function detectBlocker(): Promise<string | null> {
     } catch (err) {
       report = (err as { stderr?: string }).stderr ?? ''
     }
-    if (/Signature=adhoc/.test(report)) {
-      return 'This build is ad-hoc signed, so macOS will refuse to swap it for a downloaded one. Updates have to be installed by hand from the .dmg.'
-    }
-    return null
+    return signatureBlocker(report)
   })()
   return blockerProbe
 }
@@ -138,31 +172,31 @@ function wire(): void {
   if (wired) return
   wired = true
 
-  autoUpdater.autoDownload = false
-  autoUpdater.autoInstallOnAppQuit = true
-  autoUpdater.logger = null
+  updater().autoDownload = false
+  updater().autoInstallOnAppQuit = true
+  updater().logger = null
 
-  autoUpdater.on('update-available', (info) => {
+  updater().on('update-available', (info) => {
     state.availableVersion = info.version
     state.error = null
     push()
   })
-  autoUpdater.on('update-not-available', () => {
+  updater().on('update-not-available', () => {
     state.availableVersion = null
     push()
   })
-  autoUpdater.on('download-progress', (p) => {
+  updater().on('download-progress', (p) => {
     state.downloading = true
     state.progress = Math.round(p.percent)
     push()
   })
-  autoUpdater.on('update-downloaded', () => {
+  updater().on('update-downloaded', () => {
     state.downloading = false
     state.downloaded = true
     state.progress = 100
     push()
   })
-  autoUpdater.on('error', (err) => {
+  updater().on('error', (err) => {
     state.downloading = false
     state.error = friendlyError(err)
     push()
@@ -207,9 +241,9 @@ export async function checkSelfUpdate(): Promise<SelfUpdateState> {
    * here means flipping the switch in Settings takes effect on the next press of
    * Check, with no restart.
    */
-  autoUpdater.allowPrerelease = getSettings().betaUpdates
+  updater().allowPrerelease = getSettings().betaUpdates
   try {
-    await autoUpdater.checkForUpdates()
+    await updater().checkForUpdates()
     state.error = null
   } catch (err) {
     // No published release yet is the common case; report it without alarm.
@@ -225,7 +259,7 @@ export async function downloadSelfUpdate(): Promise<SelfUpdateState> {
   state.error = null
   push()
   try {
-    await autoUpdater.downloadUpdate()
+    await updater().downloadUpdate()
   } catch (err) {
     state.downloading = false
     // Through friendlyError like every other failure. Raw, this is where the
@@ -246,5 +280,5 @@ export function installSelfUpdate(): void {
   if (!state.downloaded) return
   // isSilent = false so the installer's progress is visible; isForceRunAfter so
   // Stoke comes back up afterwards.
-  autoUpdater.quitAndInstall(false, true)
+  updater().quitAndInstall(false, true)
 }

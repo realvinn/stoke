@@ -64,3 +64,21 @@ export function clamp(n: number, min: number, max: number): number {
 export function properNouns(text: string): string {
   return text.replace(/\bnotion\b/gi, 'Notion').replace(/\bclickup\b/gi, 'ClickUp')
 }
+
+/**
+ * A main-process error as the user should read it.
+ *
+ * Electron wraps anything thrown inside an `ipcMain.handle` before the renderer
+ * sees it: `Error invoking remote method 'pty:start': Error: <the real
+ * message>`. That prefix is a fact about the transport, not about what went
+ * wrong, and it is the first thing on the line — so a message written to be
+ * read by a person ("That folder is not there any more: …") arrives buried
+ * behind a channel name and two occurrences of the word Error.
+ *
+ * Both wrappers are stripped, and only from the front, so a message that
+ * happens to contain the word later keeps it.
+ */
+export function ipcErrorMessage(e: unknown): string {
+  const raw = e instanceof Error ? e.message : String(e)
+  return raw.replace(/^Error invoking remote method '[^']*':\s*/, '').replace(/^Error:\s*/, '')
+}

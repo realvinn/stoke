@@ -239,7 +239,24 @@ export class EmbeddedBrowser {
     for (const tab of this.tabs) {
       const isActive = tab.id === this.activeId
       const shown = isActive && this.userVisible
-      tab.view.setVisible(shown)
+      /*
+       * Bounds first, then visibility, and the order is the whole bug.
+       *
+       * This called `setVisible(false)` before `setBounds(DEFAULT_VIEWPORT)`,
+       * and Electron does not propagate a resize to a view that is already
+       * hidden — so the size never took. The effect was that once the panel had
+       * been opened and closed even once, every page kept the panel's own
+       * narrow viewport for the rest of the run: 459x789 rather than the
+       * 1280x900 the constant promises. Every `browser_read`, `browser_snapshot`
+       * and `browser_design` then saw the site's *mobile* layout, reported the
+       * desktop navigation as not existing, and could not click it.
+       *
+       * It hides from a main-process check, too: `view.getBounds()` goes on
+       * reporting 1280x900 while the page inside measures 459 — only
+       * `innerWidth` evaluated in the page finds it. Verified by an isolated
+       * Electron probe running both orderings: hide-then-setBounds gives
+       * 460x800, setBounds-then-hide gives 1280x900.
+       */
       tab.view.setBounds(
         shown && this.bounds.width > 0
           ? {
@@ -250,6 +267,7 @@ export class EmbeddedBrowser {
             }
           : DEFAULT_VIEWPORT
       )
+      tab.view.setVisible(shown)
     }
   }
 

@@ -30,7 +30,7 @@ import { TerminalView } from './components/TerminalView'
 import { TitleBar } from './components/TitleBar'
 import { WorklogPanel } from './components/WorklogPanel'
 import { WorklogPrompt } from './components/WorklogPrompt'
-import { baseName, properNouns } from './lib/format'
+import { baseName, ipcErrorMessage, properNouns } from './lib/format'
 import { attachExit, forgetPty, initPtyBus } from './lib/ptyBus'
 import { zoomStep } from '@shared/ui'
 import { matchShortcut } from './lib/shortcuts'
@@ -38,7 +38,7 @@ import { newTab } from './lib/newTab'
 import { profileIdForCwd } from './lib/projectProfile'
 import { fromStored, screensFrom, toStored } from './lib/restore'
 import { screenOf } from './lib/termRegistry'
-import { moveTab, neighbourOf, replaceOrAppend } from './lib/tabs'
+import { moveTab, neighbourOf, replaceOrAppend, restartPlan } from './lib/tabs'
 import { applyAppearance, applyTypography } from './lib/theme'
 import type { Tab } from './types'
 
@@ -688,7 +688,7 @@ export function App(): React.JSX.Element {
         setActiveTabId(tab.id)
         return true
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e))
+        setError(ipcErrorMessage(e))
         return false
       }
     },
@@ -827,7 +827,7 @@ export function App(): React.JSX.Element {
         setActiveTabId(tab.id)
         return true
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e))
+        setError(ipcErrorMessage(e))
         return false
       }
     },
@@ -928,7 +928,7 @@ export function App(): React.JSX.Element {
       // The new folder becomes a real project once Claude writes a transcript.
       await refreshProjects()
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(ipcErrorMessage(e))
     }
   }, [startSession, refreshProjects, activeNewTabId])
 
@@ -1095,12 +1095,66 @@ export function App(): React.JSX.Element {
     [tabs, activeTabId, dropRestoredScreen]
   )
 
+  /**
+   * "Start again", on the bar a session leaves behind when it exits.
+   *
+   * Three things were wrong with this, and the first one made the button
+   * actively misleading on a remote tab.
+   *
+   * **A host tab has to restart over SSH, not locally.** This read
+   * `startSession({ cwd: tab.cwd })` unconditionally, and `startHostSession`
+   * records `cwd: host.alias` — the alias, not a path, because an SSH session's
+   * real working directory is on the far machine (gotcha 18). So pressing Start
+   * again on a dropped VPS session launched a *local* `claude` in a folder
+   * named `vps`, which does not exist. Measured against a host alias that
+   * cannot resolve: ssh exited 255, Start again produced a second tab that
+   * exited 1 with an empty terminal, and the status bar still named the alias
+   * as the working directory. `resumeTabFor` already branches on `hostId`
+   * correctly — this is the same branch, which it simply never had.
+   *
+   * **The tab's own mode/model/effort, not the toolbar's current globals.**
+   * Exactly the bug `resumeTabFor` was fixed for: a tab showing `default` must
+   * not come back in bypass because a global was switched since it started.
+   *
+   * **Replace in place rather than close-then-append.** `closeTab` dropped the
+   * tab before the new session was known to have started, so a failure lost the
+   * tab entirely and a success moved it to the end of the strip. The dead PTY
+   * still has to be released, which `forgetPty` does — that is the only part of
+   * `closeTab` a restart actually wanted.
+   */
   const restartTab = useCallback(
     (tab: Tab): void => {
-      closeTab(tab.id)
-      void startSession({ cwd: tab.cwd, name: tab.projectName })
+      if (tab.kind === 'session' && tab.ptyId) forgetPty(tab.ptyId)
+
+      const hosts = settings?.hosts ?? []
+      const plan = restartPlan(tab, hosts.map((h) => h.id))
+
+      if (plan.kind === 'impossible') {
+        setError(plan.reason)
+        return
+      }
+
+      if (plan.kind === 'host') {
+        const host = hosts.find((h) => h.id === plan.hostId)
+        if (!host) return
+        void startHostSession(host, tab.id, {
+          permissionMode: tab.permissionMode,
+          model: tab.model,
+          effort: tab.effort
+        })
+        return
+      }
+
+      void startSession({
+        cwd: plan.cwd,
+        name: tab.projectName,
+        replaceTabId: tab.id,
+        permissionMode: tab.permissionMode,
+        model: tab.model,
+        effort: tab.effort
+      })
     },
-    [closeTab, startSession]
+    [settings, startSession, startHostSession]
   )
 
   /* --------------------------------------------------------------- browser */
@@ -1374,6 +1428,20 @@ export function App(): React.JSX.Element {
                 }}
                 onSetMeta={(p, meta) => {
                   void window.stoke.projects.setMeta(p.path, meta).then(async (s) => {
+                    setSettings(s)
+                    await refreshProjects()
+                  })
+                }}
+                /*
+                 * `projects.hide` was built end to end — IPC channel, main
+                 * handler, preload method — and then never called from
+                 * anywhere. So `hiddenProjects` could not be populated by any
+                 * gesture, and the Settings block that offers to show hidden
+                 * projects again renders only when the list is non-empty, which
+                 * made it unreachable dead UI. This is the missing call site.
+                 */
+                onHide={(p) => {
+                  void window.stoke.projects.hide(p.path, true).then(async (s) => {
                     setSettings(s)
                     await refreshProjects()
                   })

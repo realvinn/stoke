@@ -24,9 +24,12 @@ import type {
  * and prints whatever that command writes to stdout. That is the only channel
  * that states the context window before a single token is spent — the
  * transcript never records the tier, and the startup banner stopped saying it
- * in 2.1.221 (see CLAUDE.md gotcha 2). It is also the only source of the
- * plan's rate limits that works on macOS, where the OAuth token is in the
- * Keychain rather than in ~/.claude/.credentials.json.
+ * in 2.1.221 (see CLAUDE.md gotcha 2). It is also the fresher of the two
+ * plan-limit sources, being the account state as the CLI was just told it.
+ * It was once the only one that worked on macOS, because `usage.ts` read the
+ * token only from ~/.claude/.credentials.json and macOS keeps it in the login
+ * Keychain; `readCredentials` reads both now, so the account route answers
+ * here too — and it is the one that keeps answering with nothing running.
  *
  * Transport is one file per session under the system temp directory, written
  * temp+rename so a reader never sees half a payload. Not a unix socket: there
@@ -238,8 +241,36 @@ export function writeStatusLineWrapper(): string {
  * metacharacter, which is what keeps CLAUDE.md gotcha 13 out of this: the
  * string lives inside a --settings FILE and never on an argv.
  */
-export function statusLineCommand(sessionId: string): string {
-  return `"${join(statusLineDir(), shimName())}" "${key(sessionId)}"`
+export function statusLineCommand(
+  sessionId: string,
+  // Passed in rather than read, so a suite on any machine can ask what the
+  // other platform gets — the Windows branch below is the one thing here that
+  // cannot be exercised where this is developed.
+  platform: NodeJS.Platform = process.platform
+): string {
+  const line = `"${join(statusLineDir(), shimName())}" "${key(sessionId)}"`
+  /*
+   * `&` in front, on Windows only, because the CLI may run this through
+   * PowerShell.
+   *
+   * Claude Code prefers Git Bash for a statusLine command and falls back to
+   * PowerShell when Git for Windows is not installed. PowerShell parses a
+   * command line beginning with a quoted string as a *string expression*, not
+   * as an invocation, so `"C:\...\run.cmd" "key"` is a ParserError — measured
+   * against real pwsh 7.6.5, exit 1, and the shim never runs. The failure is
+   * silent from Stoke's side: no payload file appears, so the context ring and
+   * the payload's plan limits are simply absent on a Windows machine with no
+   * Git Bash, with nothing anywhere saying why.
+   *
+   * The call operator fixes exactly that and is harmless in the Git Bash
+   * branch, where `&` is only meaningful when it *ends* a command.
+   *
+   * CLAUDE.md's recorded worry about cmd.exe was misdirected, and is corrected
+   * in gotcha 2: cmd.exe is not on this path at all, and its quote-stripping
+   * rule applies at exactly two quote characters — so more quotes is the safe
+   * direction, not the dangerous one.
+   */
+  return platform === 'win32' ? `& ${line}` : line
 }
 
 function windowSize(v: unknown): number | null {

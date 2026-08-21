@@ -125,6 +125,14 @@ const api: StokeApi = {
     onChange: (cb) => on<[Settings]>(CH.settingsChanged, cb)
   },
 
+  claudeConfig: {
+    read: () => ipcRenderer.invoke(CH.claudeConfigRead),
+    set: (key: string, value: boolean | string | number | undefined) =>
+      ipcRenderer.invoke(CH.claudeConfigSet, key, value),
+    setWorkflowSize: (value: string | undefined) =>
+      ipcRenderer.invoke(CH.claudeWorkflowSize, value)
+  },
+
   profiles: {
     plan: (folder: string, name: string) => ipcRenderer.invoke(CH.profilesPlan, folder, name),
     create: (input) => ipcRenderer.invoke(CH.profilesCreate, input)

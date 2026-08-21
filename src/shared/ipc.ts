@@ -104,6 +104,15 @@ export const CH = {
   settingsSet: 'settings:set',
   settingsChanged: 'settings:changed',
 
+  /*
+   * Claude Code's own configuration, which is not Stoke's Settings. These read
+   * and write ~/.claude/settings.json and one key in ~/.claude.json; see
+   * src/main/claudeSettings.ts and src/main/claudeGlobalConfig.ts.
+   */
+  claudeConfigRead: 'claudeConfig:read',
+  claudeConfigSet: 'claudeConfig:set',
+  claudeWorkflowSize: 'claudeConfig:workflowSize',
+
   // profiles
   profilesPlan: 'profiles:plan',
   profilesCreate: 'profiles:create',

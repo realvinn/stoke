@@ -5,7 +5,7 @@
  *
  *   node scripts/verify-tabs.mts
  */
-import { moveTab, neighbourOf, replaceOrAppend } from '../src/renderer/src/lib/tabs.ts'
+import { moveTab, neighbourOf, replaceOrAppend, restartPlan } from '../src/renderer/src/lib/tabs.ts'
 
 let failures = 0
 
@@ -105,3 +105,45 @@ check(
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
 process.exitCode = failures ? 1 : 0
+
+/*
+ * "Start again", after a session exits.
+ *
+ * The remote case is the reason this is a pure function at all. `restartTab`
+ * used to start every tab locally with `cwd: tab.cwd`, and a remote tab's `cwd`
+ * is the host alias rather than a path — so Start again on a dropped VPS
+ * session ran a local `claude` in a folder named `vps`. Nothing in this repo
+ * could catch that: it was a closure in App.tsx calling an IPC method, which is
+ * gotcha 31's shape exactly.
+ */
+console.log('\n"Start again" restarts a tab the way it was started')
+check(
+  'a local tab restarts locally, in its own folder',
+  restartPlan({ cwd: '/Users/x/dev/stoke', hostId: null }, ['host-1']),
+  { kind: 'local', cwd: '/Users/x/dev/stoke' }
+)
+check(
+  'a remote tab reconnects to its host, NOT to a local folder named after the alias',
+  restartPlan({ cwd: 'vps', hostId: 'host-1' }, ['host-1', 'host-2']),
+  { kind: 'host', hostId: 'host-1' }
+)
+check(
+  'a remote tab whose host was deleted is impossible, not silently local',
+  restartPlan({ cwd: 'vps', hostId: 'host-9' }, ['host-1']).kind,
+  'impossible'
+)
+check(
+  'and it says why, because the alias is not a folder and never was',
+  restartPlan({ cwd: 'vps', hostId: 'host-9' }, []).kind === 'impossible',
+  true
+)
+check(
+  'no hosts configured at all does not turn a remote tab into a local one',
+  restartPlan({ cwd: 'vps', hostId: 'host-1' }, []).kind,
+  'impossible'
+)
+check(
+  'an empty hostId is a local tab, not a broken remote one',
+  restartPlan({ cwd: '/tmp/scratch', hostId: '' }, ['host-1']),
+  { kind: 'local', cwd: '/tmp/scratch' }
+)

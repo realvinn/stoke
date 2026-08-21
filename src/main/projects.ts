@@ -1,13 +1,76 @@
-import { existsSync } from 'node:fs'
-import { readdir, readFile, stat } from 'node:fs/promises'
+import { access, readdir, readFile, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import type { Project, SessionMeta, Settings } from '@shared/types'
-import { pathRulesFor } from '../shared/paths.ts'
+import { normalizePath, pathRulesFor } from '../shared/paths.ts'
 import { applyProjectMeta } from './projectMeta.ts'
-import { contextLimitFor, contextUsed, parseSession, safeParse } from './sessionFile.ts'
+import {
+  CHUNK,
+  contextLimitFor,
+  contextUsed,
+  parseSession,
+  readRange,
+  safeParse
+} from './sessionFile.ts'
 
 const isWin = process.platform === 'win32'
+
+/**
+ * How long a path gets to say whether it exists before it is called absent.
+ *
+ * Not a guess at disk latency — a cap on how wrong the list may be. A folder on
+ * a volume that cannot answer is reported the same way a deleted one is, and
+ * the next refresh corrects it once the volume is awake.
+ */
+const EXISTS_DEADLINE_MS = 1500
+
+/**
+ * Does this path exist? Asynchronously, and with a deadline.
+ *
+ * This was `existsSync`, and that is the single most expensive thing Stoke did
+ * at boot. `listProjects` runs in the main process, so a synchronous stat stops
+ * the whole app — every IPC reply, every frame, every keystroke — for however
+ * long the filesystem takes to answer. On an internal SSD that is microseconds
+ * and invisible. It is neither on anything else: an external USB disk that
+ * macOS has spun down (`pmset disksleep`, ten minutes by default) answers its
+ * first stat in seconds, and a disconnected network share may not answer at all.
+ *
+ * Measured on the machine this was found on: one boot made 392 synchronous
+ * `existsSync` calls, 40 of them against paths on an external USB SSD. Injecting
+ * 200ms into each of those moved `ready-to-show` from 733ms to 2012ms and held
+ * the main thread for 6.4s of the first six seconds — the window appears and
+ * then sits frozen, which is exactly what "sometimes it takes ages to start"
+ * looks like from outside. Off the main thread the same delay costs nothing
+ * visible, because nothing is waiting on it.
+ *
+ * The deadline is the other half, and it is what stops one asleep disk from
+ * delaying the list for everyone else in it.
+ */
+async function pathExists(path: string): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([
+      access(path),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error('timed out')), EXISTS_DEADLINE_MS)
+        // Never hold the process open for this; it is a deadline, not work.
+        timer.unref?.()
+      })
+    ])
+    return true
+  } catch {
+    return false
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+/** Resolve a whole set of paths at once, deduplicated, in parallel. */
+async function existsMap(paths: Iterable<string>): Promise<Map<string, boolean>> {
+  const unique = [...new Set(paths)]
+  const answers = await Promise.all(unique.map(pathExists))
+  return new Map(unique.map((p, i) => [p, answers[i]]))
+}
 
 export function projectsRoot(): string {
   return join(homedir(), '.claude', 'projects')
@@ -109,9 +172,21 @@ async function scanHistoryDirs(): Promise<DirInfo[]> {
  */
 async function cwdFromTranscript(file: string): Promise<string | null> {
   try {
-    const raw = await readFile(file, 'utf8')
-    const lines = raw.split('\n', 200)
-    for (const line of lines) {
+    /*
+     * The head of the file, never the whole of it.
+     *
+     * This read `readFile(file, 'utf8')` and then `raw.split('\n', 200)`, which
+     * reads as bounded and is not: split's limit caps the array it returns, not
+     * the read that produced it. So the entire transcript was pulled into memory
+     * to look at its first record — 14.76 MB on every single `listProjects()`
+     * on the machine this was found on, and unbounded in principle, since one
+     * unclaimed directory holding a 300 MB transcript would have read all of it.
+     * `sessionFile.ts` already had the bounded reader `readLines` uses; this
+     * simply was not using it. The cwd is on the first record that carries one,
+     * so 256 KB is many hundreds of records more than enough.
+     */
+    const head = await readRange(file, 0, CHUNK)
+    for (const line of head.split('\n')) {
       const rec = safeParse(line)
       if (rec && typeof rec.cwd === 'string' && rec.cwd) return rec.cwd
     }
@@ -171,7 +246,10 @@ export async function listProjects(settings: Settings): Promise<Project[]> {
         typeof cfg?.lastSessionFirstPrompt === 'string'
           ? (cfg.lastSessionFirstPrompt as string)
           : null,
-      exists: existsSync(path),
+      // Filled in below, once every folder has been asked at once and off the
+      // main thread. `put` is synchronous and must stay that way — it is called
+      // from three places and merges duplicates — so it cannot do the asking.
+      exists: false,
       pinned: settings.pinnedProjects.some((p) => dedupeKey(p) === key),
       emoji: null,
       label: null,
@@ -223,10 +301,28 @@ export async function listProjects(settings: Settings): Promise<Project[]> {
    *    still be hidden — the two settings mean different things and neither
    *    overrides the other.
    */
+  /*
+   * Every folder whose existence anyone is about to ask about, asked once, in
+   * parallel, off the main thread.
+   *
+   * `applyProjectMeta` is pure and takes a synchronous predicate — that is what
+   * makes it testable without a filesystem, and `verify:folders` depends on it —
+   * so the answers are gathered here and handed to it as a lookup rather than
+   * the contract being made async. The manually-added paths are normalised the
+   * same way `applyProjectMeta` normalises them before it asks, or the lookup
+   * would miss and every added folder would be reported as gone.
+   */
+  const rules = pathRulesFor(process.platform)
+  const addedPaths = Object.entries(settings.projectMeta ?? {})
+    .filter(([, value]) => value?.addedManually === true)
+    .map(([raw]) => normalizePath(raw, rules))
+  const found = await existsMap([...[...merged.values()].map((p) => p.path), ...addedPaths])
+  for (const project of merged.values()) project.exists = found.get(project.path) ?? false
+
   const withMeta = applyProjectMeta([...merged.values()], settings.projectMeta ?? {}, {
-    rules: pathRulesFor(process.platform),
+    rules,
     pinned: settings.pinnedProjects ?? [],
-    exists: existsSync
+    exists: (path) => found.get(path) ?? false
   })
 
   const hidden = new Set((settings.hiddenProjects ?? []).map(dedupeKey))
@@ -242,7 +338,7 @@ export async function listProjects(settings: Settings): Promise<Project[]> {
 export async function historyDirFor(projectPath: string): Promise<string | null> {
   const encoded = encodePath(normalize(projectPath))
   const direct = join(projectsRoot(), encoded)
-  if (existsSync(direct)) return direct
+  if (await pathExists(direct)) return direct
   // Windows history dirs may differ in case from the encoded path.
   try {
     const entries = await readdir(projectsRoot(), { withFileTypes: true })
@@ -311,9 +407,17 @@ export async function findSessionFile(sessionId: string): Promise<string | null>
   } catch {
     return null
   }
-  for (const d of dirs) {
-    const candidate = join(root, d, `${sessionId}.jsonl`)
-    if (existsSync(candidate)) return candidate
-  }
-  return null
+  /*
+   * All of them at once, not one after another.
+   *
+   * This was a `for` loop around `existsSync`, so a miss cost one synchronous
+   * stat per history directory — 44 of them here — on the main thread, and the
+   * context watcher calls this every time it picks up a session it has not
+   * placed yet. Asked in parallel it is one round trip, and asked
+   * asynchronously it does not stop the app while the answer comes back.
+   */
+  const candidates = dirs.map((d) => join(root, d, `${sessionId}.jsonl`))
+  const present = await Promise.all(candidates.map(pathExists))
+  const hit = present.indexOf(true)
+  return hit === -1 ? null : candidates[hit]
 }

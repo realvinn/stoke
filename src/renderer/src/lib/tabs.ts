@@ -61,3 +61,40 @@ export function moveTab<T extends { id: string }>(
   next.splice(to, 0, moved)
   return next
 }
+
+/**
+ * How a tab should be started again after its session exits.
+ *
+ * Pure, and separate from the callback that acts on it, because the bug this
+ * exists to prevent was invisible to every suite in the repo. `restartTab` read
+ * `startSession({ cwd: tab.cwd })` for every tab, and a remote tab's `cwd` is
+ * the host *alias* rather than a path — `startHostSession` stores it that way
+ * because an SSH session's real working directory is on the far machine
+ * (CLAUDE.md gotcha 18). So "Start again" on a dropped VPS session launched a
+ * local `claude` in a folder named `vps`, which does not exist. Measured: ssh
+ * exited 255, Start again produced a second tab that exited 1 with an empty
+ * terminal, and the status bar still named the alias as the working directory.
+ *
+ * The decision is three-way, not two, because a host can be deleted from
+ * Settings while a tab that used it is still open — and "restart it locally in
+ * a folder named after the alias" is the one answer that must never be given.
+ */
+export type RestartPlan =
+  | { kind: 'host'; hostId: string }
+  | { kind: 'local'; cwd: string }
+  | { kind: 'impossible'; reason: string }
+
+export function restartPlan(
+  tab: { cwd: string; hostId?: string | null },
+  hostIds: string[]
+): RestartPlan {
+  if (tab.hostId) {
+    return hostIds.includes(tab.hostId)
+      ? { kind: 'host', hostId: tab.hostId }
+      : {
+          kind: 'impossible',
+          reason: 'That host is no longer in Settings, so there is nothing to reconnect to.'
+        }
+  }
+  return { kind: 'local', cwd: tab.cwd }
+}

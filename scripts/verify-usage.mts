@@ -7,17 +7,19 @@
  * have arithmetic answers, so a regression shows up as a wrong number.
  *
  * The last section calls the live account. It is opt-in behind
- * STOKE_LIVE_USAGE=1 and does not run as part of `npm run check` — on macOS
- * it fails every time, because the OAuth token lives in the login Keychain,
- * not in ~/.claude/.credentials.json (CLAUDE.md, Task 14's finding). The
- * section above it proves the path that works everywhere instead: the
- * statusLine payload, merged with whatever the account route did or didn't
- * answer, the same way UsageMeter.tsx merges them for real.
+ * STOKE_LIVE_USAGE=1 and does not run as part of `npm run check`, because it
+ * needs the network and a signed-in account — not because of the platform. It
+ * used to fail on macOS every time: the OAuth token lives in the login
+ * Keychain, not in ~/.claude/.credentials.json, and `readCredentials` only
+ * looked at the file. It reads both now, so this section passes here, and the
+ * plan-limit chip no longer needs a running session to say anything at all.
+ * The merge section below still matters — the payload remains the fresher of
+ * the two sources whenever a session is up.
  *
  *   node scripts/verify-usage.mts
  *   STOKE_LIVE_USAGE=1 node scripts/verify-usage.mts
  */
-import { fetchUsage, parseUsage } from '../src/main/usage.ts'
+import { fetchUsage, findToken, parseUsage } from '../src/main/usage.ts'
 import { toSnapshot } from '../src/main/statusLine.ts'
 import { mergeUsageWindows, statusLineWindows } from '../src/shared/statusLine.ts'
 
@@ -99,12 +101,10 @@ check(
 )
 
 /*
- * The account route needs the network and a token, and on macOS it has
- * neither: the OAuth token is in the login Keychain, not in
- * ~/.claude/.credentials.json, so this section reports "Not signed in to
- * Claude Code." and fails. That is exactly why the merge section above
- * exists — and why this half is opt-in, so the rest of the suite can be
- * part of `npm run check`.
+ * The account route needs the network and a signed-in token, which is why it
+ * is opt-in rather than part of `npm run check`. It is the one source that
+ * answers with no session running, so a failure here is the difference between
+ * a chip that works when the app is idle and one that does not.
  */
 if (process.env.STOKE_LIVE_USAGE === '1') {
   console.log('\nthe live account')
@@ -216,13 +216,53 @@ check(
   ['Fable', 61, 'normal', false]
 )
 
-console.log('\nand on this machine, where the account route never answers at all')
+console.log('\nand when the account route cannot answer — offline, or signed out')
 check(
   'with nothing from the account, the payload alone still draws both its windows — ' +
     'the meter does not go blank just because auth failed',
   mergeUsageWindows(fromLine, []).map((w) => w.kind),
   ['session', 'weekly']
 )
+
+console.log('\nwhich token is picked out of a credential blob')
+/*
+ * The macOS Keychain blob is not just the account. `mcpOAuth` holds one record
+ * per connected MCP server, several with a non-empty `accessToken` of their
+ * own, and it is enumerated BEFORE `claudeAiOauth`. A first-match-wins scan
+ * therefore returned a connector's token, and the endpoint answered 401 —
+ * which reads exactly like being signed out, on the one platform where being
+ * signed out was already the expected outcome. This is the shape of the real
+ * blob read from this machine's login Keychain, with the values replaced.
+ */
+const blob = {
+  mcpOAuth: {
+    'plugin:productivity:notion|eac663db': { serverName: 'notion', accessToken: '' },
+    'plugin:figma:figma|d39d3b62': { serverName: 'figma', accessToken: 'figu_NOTTHEONE' }
+  },
+  claudeAiOauth: {
+    accessToken: 'sk-ant-oat-REAL',
+    refreshToken: 'sk-ant-ort-REAL',
+    expiresAt: 1787221714592
+  }
+}
+
+check('a connector token sitting first does not win', findToken(blob), 'sk-ant-oat-REAL')
+check(
+  'the prefixed value wins from anywhere, whatever the key is called',
+  findToken({ mcpOAuth: { a: { accessToken: 'figu_X' } }, someNewShape: { blob: 'sk-ant-oat-2' } }),
+  'sk-ant-oat-2'
+)
+check(
+  'with no prefixed value anywhere, an access-token-shaped key still answers',
+  findToken({ claudeAiOauth: { accessToken: 'legacy-shape' } }),
+  'legacy-shape'
+)
+check(
+  'but never one belonging to a connector',
+  findToken({ mcpOAuth: { a: { accessToken: 'figu_X' } } }),
+  null
+)
+check('nothing at all is null, not a throw', findToken(null), null)
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
 // Setting the code rather than calling process.exit: the socket from the live

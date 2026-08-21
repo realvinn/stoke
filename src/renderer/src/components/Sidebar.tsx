@@ -29,6 +29,8 @@ interface Props {
   onPin: (p: Project) => void
   /** Set or clear one folder's icon and display name. `null` clears the record. */
   onSetMeta: (project: Project, meta: ProjectMeta | null) => void
+  /** Stop listing this folder. Nothing on disk is touched. */
+  onHide: (project: Project) => void
   onAddRoot: () => void
   onOpenFolder: () => void
   onStartScratch: () => void
@@ -58,6 +60,7 @@ export function Sidebar({
   onResume,
   onPin,
   onSetMeta,
+  onHide,
   onAddRoot,
   onOpenFolder,
   onStartScratch,
@@ -314,6 +317,7 @@ export function Sidebar({
                         open={pickerPath === project.path}
                         onOpenChange={(v) => setPickerPath(v ? project.path : null)}
                         onCommit={(meta) => onSetMeta(project, meta)}
+                        onHide={() => onHide(project)}
                       />
 
                       {/* The label replaces the basename in this list only; the

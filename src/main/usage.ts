@@ -1,6 +1,8 @@
+import { execFile } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
-import { homedir } from 'node:os'
+import { homedir, platform } from 'node:os'
 import { join } from 'node:path'
+import { promisify } from 'node:util'
 import type { UsageSnapshot, UsageWindow } from '../shared/types'
 
 export type { UsageSnapshot, UsageWindow }
@@ -41,29 +43,135 @@ function stamp(v: unknown): number | null {
   return Number.isNaN(t) ? null : t
 }
 
+const execFileAsync = promisify(execFile)
+
 /**
- * The token has moved between shapes across Claude Code versions, so search for
- * it rather than assuming a path. `sk-ant-oat` is the OAuth prefix.
+ * The connected MCP servers' own OAuth records, which sit beside the account's.
+ *
+ * This is the trap that makes a first-match-wins scan wrong. The credential
+ * blob is not just the account: `mcpOAuth` holds one record per connected MCP
+ * server, each with an `accessToken` field of its own, and several of them are
+ * non-empty (a Figma `figu_…` on this machine). Those keys satisfy the lenient
+ * search below and are enumerated *before* `claudeAiOauth`, so a scan that took
+ * the first access-token-shaped key handed back a connector's token — which the
+ * usage endpoint answers 401 to, a failure indistinguishable from being signed
+ * out. Hence two passes, prefix first, and this subtree skipped in the second.
  */
-function findToken(node: unknown, depth = 0): string | null {
+const CONNECTOR_KEY = 'mcpOAuth'
+
+/** `sk-ant-oat` is the OAuth prefix, so a value carrying it is unambiguous. */
+function findPrefixedToken(node: unknown, depth = 0): string | null {
   if (!node || depth > 5) return null
   if (typeof node === 'string') return node.startsWith('sk-ant-oat') ? node : null
   if (typeof node !== 'object') return null
-  for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
-    if (typeof value === 'string' && /access.?token/i.test(key) && value) return value
-    const found = findToken(value, depth + 1)
+  for (const value of Object.values(node as Record<string, unknown>)) {
+    const found = findPrefixedToken(value, depth + 1)
     if (found) return found
   }
   return null
 }
 
-export async function readOauthToken(): Promise<string | null> {
+/**
+ * The lenient pass: the token has moved between shapes across Claude Code
+ * versions, so a key that merely looks like an access token still counts. Only
+ * reached when nothing carried the prefix at all.
+ */
+function findAccessToken(node: unknown, depth = 0): string | null {
+  if (!node || depth > 5 || typeof node !== 'object') return null
+  for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+    if (key === CONNECTOR_KEY) continue
+    if (typeof value === 'string' && /access.?token/i.test(key) && value) return value
+    const found = findAccessToken(value, depth + 1)
+    if (found) return found
+  }
+  return null
+}
+
+/** Exported for `verify:usage`, which pins the connector-token trap above. */
+export function findToken(node: unknown): string | null {
+  return findPrefixedToken(node) ?? findAccessToken(node)
+}
+
+export interface StoredCredentials {
+  token: string
+  /**
+   * Epoch ms at which the token stops being accepted, or null when the store
+   * does not say. Only Claude Code can refresh it — Stoke reads, never writes,
+   * because rotating the token would invalidate the copy the CLI is holding.
+   */
+  expiresAt: number | null
+  source: 'file' | 'keychain'
+}
+
+function credentialsFrom(raw: string, source: StoredCredentials['source']): StoredCredentials | null {
+  let parsed: unknown
   try {
-    const raw = await readFile(join(homedir(), '.claude', '.credentials.json'), 'utf8')
-    return findToken(JSON.parse(raw))
+    parsed = JSON.parse(raw)
   } catch {
     return null
   }
+  const token = findToken(parsed)
+  if (!token) return null
+  const account = (parsed as { claudeAiOauth?: { expiresAt?: unknown } } | null)?.claudeAiOauth
+  const at = account?.expiresAt
+  return {
+    token,
+    expiresAt: typeof at === 'number' && Number.isFinite(at) && at > 0 ? at : null,
+    source
+  }
+}
+
+const KEYCHAIN_SERVICE = 'Claude Code-credentials'
+
+/**
+ * macOS keeps the token in the login Keychain, not in a file.
+ *
+ * This is why the chip used to need a live session here: `fetchUsage` found no
+ * `.credentials.json`, reported "Not signed in", and the statusLine payload —
+ * which only exists while `claude` is running — was the only plan-limit source
+ * left (CLAUDE.md gotcha 21). Reading the Keychain instead makes the account
+ * route work with nothing running at all.
+ *
+ * Bounded by a timeout because `security` blocks on a GUI Keychain prompt when
+ * the item's ACL does not already trust it. A prompt is the normal first-run
+ * experience on a machine where nothing has read this item, and a status chip
+ * is not worth hanging a main-process handler for; an unanswered prompt simply
+ * reports unavailable, exactly like every other failure here.
+ */
+async function readKeychain(): Promise<StoredCredentials | null> {
+  try {
+    const { stdout } = await execFileAsync(
+      '/usr/bin/security',
+      ['find-generic-password', '-s', KEYCHAIN_SERVICE, '-w'],
+      // The blob carries every connected MCP server's record too - 22 KB on
+      // this machine - so the 1 MB default is raised well clear of it.
+      { timeout: 5_000, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' }
+    )
+    return credentialsFrom(stdout, 'keychain')
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The token and what is known about it, from whichever store holds it.
+ *
+ * File first: it is the Linux and Windows location, it costs one read, and a
+ * Mac that does have the file is answered without ever touching the Keychain.
+ */
+export async function readCredentials(): Promise<StoredCredentials | null> {
+  try {
+    const raw = await readFile(join(homedir(), '.claude', '.credentials.json'), 'utf8')
+    const found = credentialsFrom(raw, 'file')
+    if (found) return found
+  } catch {
+    // No file is the ordinary case on macOS, not an error worth reporting.
+  }
+  return platform() === 'darwin' ? readKeychain() : null
+}
+
+export async function readOauthToken(): Promise<string | null> {
+  return (await readCredentials())?.token ?? null
 }
 
 function elapsedFraction(resetsAt: number | null, windowMs: number, now: number): number | null {
@@ -166,8 +274,17 @@ export async function fetchUsage(now = Date.now()): Promise<UsageSnapshot> {
     error
   })
 
-  const token = await readOauthToken()
-  if (!token) return empty('Not signed in to Claude Code.')
+  const creds = await readCredentials()
+  if (!creds) return empty('Not signed in to Claude Code.')
+  /*
+   * Stated before the call rather than discovered as a 401, because the two
+   * are different problems: an expired token is not "signed out", and only a
+   * Claude Code session can refresh it.
+   */
+  if (creds.expiresAt !== null && creds.expiresAt <= now) {
+    return empty('Claude Code sign-in has expired \u2014 start a session to refresh it.')
+  }
+  const token = creds.token
 
   try {
     const res = await fetch(USAGE_URL, {
@@ -186,6 +303,11 @@ export async function fetchUsage(now = Date.now()): Promise<UsageSnapshot> {
        * normal poll, because continuing to knock on an undocumented endpoint
        * that has just said no is how access gets worse rather than better.
        */
+      // A bare "Usage unavailable (401)" names the one failure a reader could
+      // actually act on, and names it as a number.
+      if (res.status === 401 || res.status === 403) {
+        return empty('Claude Code sign-in was refused \u2014 start a session to refresh it.')
+      }
       const snapshot = empty(`Usage unavailable (${res.status}).`)
       if (res.status === 429 || res.status >= 500) {
         const header = Number(res.headers.get('retry-after'))

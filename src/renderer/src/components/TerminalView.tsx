@@ -8,6 +8,7 @@ import type { ClipboardPeek } from '@shared/api'
 import type { Theme } from '@shared/types'
 import { createRecorder, voiceSupported, type Recorder } from '@shared/voice'
 import { attachSink } from '../lib/ptyBus'
+import { isButtonlessMotionReport } from '../lib/mouseReport'
 import { matchShortcut } from '../lib/shortcuts'
 import { registerTerm, screenOf, unregisterTerm } from '../lib/termRegistry'
 import { terminalTheme } from '../lib/theme'
@@ -656,6 +657,25 @@ export function TerminalView({
     host.addEventListener('contextmenu', onContextMenu, true)
 
     const applyFit = (): void => {
+      /*
+       * A hidden pane has no size, and measuring one is how a backgrounded
+       * session gets permanently mangled.
+       *
+       * An inactive tab's pane is `display: none`, so `host.clientWidth` is 0.
+       * FitAddon divides that by the cell width and arrives at roughly twelve
+       * columns; `pty.resize` clamps it to 20x5 and sends that to the CLI,
+       * which reflows its whole TUI into a 20-column box. Nothing un-reflows
+       * it when the tab comes back — the text has already been rewritten with
+       * hard wraps — so every tab switch degrades the session you switched
+       * away from, cumulatively. Measured: a single session tab plus the New
+       * session tab is enough to trigger it, because the ResizeObserver fires
+       * for the hidden pane as the layout settles.
+       *
+       * Returning early is the whole fix. The observer fires again with real
+       * numbers the moment the pane is shown, which is when a fit is wanted
+       * anyway.
+       */
+      if (host.clientWidth === 0 || host.clientHeight === 0) return
       try {
         fit.fit()
         window.stoke.pty.resize(tab.ptyId, term.cols, term.rows)
@@ -666,6 +686,40 @@ export function TerminalView({
 
     // Observe the host rather than the window: the sidebar and browser panel
     // resize the pane without the window changing size at all.
+    /*
+     * Stop a bare mouse *move* from destroying the selection.
+     *
+     * xterm routes every mouse report through
+     * `CoreService.triggerDataEvent(report, true)`, and that `true` means "user
+     * input", which `SelectionService` clears the selection on. Claude Code
+     * 2.1.237 turns on mode 1003 (any-event tracking), so the terminal now
+     * receives a motion report for every pointer move with no button held — and
+     * each one wiped whatever was selected. One pixel was enough, which made
+     * right-click -> Copy unreachable: right-clicking means moving the pointer.
+     *
+     * The report itself is untouched, so the CLI still gets every byte and
+     * click-to-focus inside its TUI still works. Only the "this was user input"
+     * claim is withdrawn, and only for movement with nothing pressed —
+     * `isButtonlessMotionReport` is the whole rule and `verify:selection` owns
+     * it.
+     *
+     * Reached through `_core` because `coreService` is not on the public
+     * Terminal surface. Guarded rather than assumed: if a future xterm moves it,
+     * this silently does nothing instead of throwing on mount, which is the
+     * right failure for a fix to a copy-and-paste annoyance.
+     */
+    const coreService = (
+      term as unknown as {
+        _core?: { coreService?: { triggerDataEvent(data: string, wasUserInput?: boolean): void } }
+      }
+    )._core?.coreService
+    if (coreService) {
+      const sendData = coreService.triggerDataEvent.bind(coreService)
+      coreService.triggerDataEvent = (data: string, wasUserInput = false): void => {
+        sendData(data, wasUserInput && !isButtonlessMotionReport(data))
+      }
+    }
+
     const ro = new ResizeObserver(() => applyFit())
     ro.observe(host)
     applyFit()
