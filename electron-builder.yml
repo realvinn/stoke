@@ -36,6 +36,16 @@ nsis:
   shortcutName: Stoke
 mac:
   icon: build/icon.png
+  # Pinned, not auto-discovered. There is more than one code-signing identity in
+  # this keychain — "Stoke" and a leftover "MyTouchBar Local" from an unrelated
+  # project — and auto-discovery picks one without saying which. Every release up
+  # to 0.5.4 was signed by the leftover, which is how a Stoke app came to be
+  # signed by a certificate named after a touch bar.
+  #
+  # CI overrides this on the command line with `-c.mac.identity=-` (ad-hoc),
+  # because the runner has no keychain. A CLI `-c.` value beats the file, which
+  # was verified rather than assumed — see the release workflow.
+  identity: Stoke
   # Both targets, and the zip is not optional. A dmg is what a person downloads;
   # a zip is the only thing electron-updater can install on macOS. Squirrel.Mac
   # updates by swapping an .app out of an archive, so `MacUpdater` searches the
