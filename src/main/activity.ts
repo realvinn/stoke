@@ -1,4 +1,5 @@
 import { createReadStream } from 'node:fs'
+import { stat } from 'node:fs/promises'
 import { createInterface } from 'node:readline'
 
 /**
@@ -133,6 +134,15 @@ export interface ActivitySessionInput {
   project: string
   /** What the caller already knows, which wins over the transcript's own. */
   title: string | null
+  /**
+   * The transcript's own mtime, when the caller has it to hand.
+   *
+   * Purely an optimisation, and only ever able to skip work: a file last
+   * written before the period began cannot hold an entry inside it. Without it
+   * a "today" query opens every transcript on the disk to discover that all but
+   * one are irrelevant.
+   */
+  modified?: number
 }
 
 const TIMESTAMP_RE = /"timestamp":"([^"]+)"/
@@ -248,4 +258,96 @@ export async function readSessionActivity(
     linesWritten: linesByDay.get(day) ?? 0,
     files: [...(filesByDay.get(day) ?? [])]
   }))
+}
+
+/**
+ * Parsed sessions, keyed on the transcript path.
+ *
+ * The value carries the file's mtime and size, so a finished session is parsed
+ * once for the life of the process and only the live one is ever re-read.
+ * Reopening the panel is then free rather than costing another pass over every
+ * transcript on the disk.
+ */
+interface CacheEntry {
+  key: string
+  slices: ActivitySlice[]
+}
+const cache = new Map<string, CacheEntry>()
+
+/** Exported so the suite can prove the cache is keyed rather than permanent. */
+export function clearActivityCache(): void {
+  cache.clear()
+}
+
+export interface ActivityRead {
+  slices: ActivitySlice[]
+  /**
+   * Transcripts that could not be read at all.
+   *
+   * Counted rather than swallowed. A week that is quietly short reads exactly
+   * like a quiet week, and of the two only one is worth telling somebody about.
+   */
+  skipped: number
+}
+
+/**
+ * Every session's activity for a period.
+ *
+ * Reads run concurrently: they are IO-bound and independent, and a serial pass
+ * over the ~19 transcripts on this machine would spend most of its time
+ * waiting. A read that throws contributes to `skipped` rather than failing the
+ * whole report — one unreadable transcript should cost its own session's
+ * numbers and nothing else.
+ *
+ * `from` and `to` are epoch milliseconds and are compared against local
+ * midnight of each slice's day, so both ends are inclusive whole days: asking
+ * for today means `from === to === this morning's midnight`.
+ */
+export async function readActivity(
+  inputs: ActivitySessionInput[],
+  opts: { from?: number; to?: number; idleGapMs?: number } = {}
+): Promise<ActivityRead> {
+  const from = opts.from ?? Number.NEGATIVE_INFINITY
+  const to = opts.to ?? Number.POSITIVE_INFINITY
+  const out: ActivitySlice[] = []
+  let skipped = 0
+
+  const results = await Promise.all(
+    inputs.map(async (input): Promise<ActivitySlice[] | null> => {
+      // Cannot hold an entry inside the period, so never open it. Not a
+      // failure, and deliberately not counted as one.
+      if (typeof input.modified === 'number' && input.modified < from) return []
+      try {
+        const info = await stat(input.file)
+        const key = `${info.mtimeMs}:${info.size}:${opts.idleGapMs ?? IDLE_GAP_MS}`
+        const hit = cache.get(input.file)
+        if (hit && hit.key === key) return hit.slices
+        const slices = await readSessionActivity(input, opts.idleGapMs)
+        cache.set(input.file, { key, slices })
+        return slices
+      } catch {
+        // Deleted since it was listed, or unreadable. Either way this session
+        // contributes nothing and the panel is told the total is partial.
+        return null
+      }
+    })
+  )
+
+  for (const slices of results) {
+    if (slices === null) {
+      skipped++
+      continue
+    }
+    for (const slice of slices) {
+      // Local midnight of the slice's own day. Parsing 'YYYY-MM-DDT00:00:00'
+      // with no zone is local by specification, which is what makes this line
+      // agree with dayKey rather than drifting from it by a timezone.
+      const dayStart = new Date(`${slice.day}T00:00:00`).getTime()
+      if (dayStart < from || dayStart > to) continue
+      out.push(slice)
+    }
+  }
+
+  out.sort((a, b) => (a.day === b.day ? b.activeMs - a.activeMs : b.day.localeCompare(a.day)))
+  return { slices: out, skipped }
 }

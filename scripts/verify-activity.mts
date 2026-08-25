@@ -20,6 +20,8 @@ import {
   editFilePath,
   editLineCount,
   IDLE_GAP_MS,
+  clearActivityCache,
+  readActivity,
   readSessionActivity
 } from '../src/main/activity.ts'
 
@@ -196,6 +198,42 @@ const titled = await readSessionActivity({
   title: 'A title the caller already had'
 })
 check("the caller's title is not overwritten", titled[0]?.title === 'A title the caller already had')
+
+console.log('\nmany sessions at once')
+
+const many = await readActivity([
+  { sessionId: 's1', file: oneDay, project: 'Laro', title: null },
+  { sessionId: 's3', file: empty, project: 'oseo', title: null },
+  { sessionId: 'gone', file: join(dir, 'does-not-exist.jsonl'), project: 'ghost', title: null }
+])
+check('a missing transcript is counted, not thrown', many.skipped === 1, String(many.skipped))
+check('and the readable ones still come back', many.slices.length === 1, String(many.slices.length))
+
+const windowed = await readActivity([{ sessionId: 's1', file: oneDay, project: 'Laro', title: null }], {
+  from: new Date(2026, 7, 26).getTime(),
+  to: new Date(2026, 7, 27).getTime()
+})
+check('a period that excludes the work returns nothing', windowed.slices.length === 0)
+
+const inWindow = await readActivity([{ sessionId: 's1', file: oneDay, project: 'Laro', title: null }], {
+  from: new Date(2026, 7, 25).getTime(),
+  to: new Date(2026, 7, 25).getTime()
+})
+check('a single-day period includes that day', inWindow.slices.length === 1, String(inWindow.slices.length))
+
+/*
+ * The pre-filter. A transcript last written before the period began cannot
+ * hold an entry inside it, so it is never opened - which is what keeps "today"
+ * from parsing every transcript on the disk.
+ */
+const stale = await readActivity(
+  [{ sessionId: 's1', file: oneDay, project: 'Laro', title: null, modified: new Date(2026, 6, 1).getTime() }],
+  { from: new Date(2026, 7, 25).getTime(), to: new Date(2026, 7, 25).getTime() }
+)
+check('a transcript older than the period is skipped without being read', stale.slices.length === 0)
+check('and skipping it is not counted as a failure', stale.skipped === 0, String(stale.skipped))
+
+clearActivityCache()
 
 rmSync(dir, { recursive: true, force: true })
 
