@@ -242,12 +242,29 @@ export interface StatusLineSnapshot {
 
 /* ------------------------------------------------------------------ themes */
 
+/**
+ * The palette a theme writes onto `:root`, one custom property per key.
+ *
+ * Every value is generated from the twelve-step ladder in `./ladder.ts`, and
+ * the comments there say which rung each of these sits on and why. Hand-editing
+ * one is possible but reintroduces the class of defect the ladder exists to
+ * prevent -- uneven steps, borders below the discernibility floor, a light
+ * ramp that inverts its own direction.
+ *
+ * `accentHover`, `accentSoft` and `accentContrast` are the exception: they are
+ * derived at apply time from `accent` by `./accent.ts`, so the values stored
+ * here are only what a theme-preview swatch draws.
+ */
 export interface ThemeColors {
   bg: string
   bgSunken: string
   bgElevated: string
   surface: string
   surfaceHover: string
+  /** Ladder step 5: a selected or pressed control. */
+  surfaceActive: string
+  /** Ladder step 6: a separator, as opposed to a control's own boundary. */
+  borderSubtle: string
   border: string
   borderStrong: string
   text: string

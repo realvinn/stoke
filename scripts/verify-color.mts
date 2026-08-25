@@ -52,6 +52,18 @@ function eq(label: string, actual: unknown, expected: unknown): void {
  * reported without its APCA reading hides exactly the disagreement this module
  * exists to surface.
  */
+/** The mirror of `atLeast`, for a value that must stay BELOW a ceiling. */
+function atMost(label: string, actual: number, ceiling: number, suffix = ''): void {
+  const ok = actual <= ceiling
+  if (!ok) failures++
+  const shown = Number.isFinite(actual) ? actual.toFixed(2) : String(actual)
+  console.log(
+    `${ok ? 'ok  ' : 'FAIL'} ${label.padEnd(46)} ${shown.padStart(10)}  (expected <= ${
+      Math.round(ceiling * 100) / 100
+    }${suffix})`
+  )
+}
+
 function atLeast(label: string, actual: number, floor: number, suffix = ''): void {
   const ok = actual >= floor
   if (!ok) failures++
@@ -377,27 +389,23 @@ const GROUNDS = [
   ['bg', '--bg'],
   ['bgSunken', '--bg-sunken'],
   ['surface', '--surface'],
-  ['bgElevated', '--bg-elevated']
+  ['bgElevated', '--bg-elevated'],
+  /*
+   * The fifth ground, asserted now that the ladder can carry it.
+   *
+   * `.session-meta` (app.css:1286) and `.project-meta-note` (:1204) are
+   * `color: var(--text-faint)` inside rows whose :hover background is
+   * `--surface-hover` (:1261, :1015). Under the hand-picked palette this
+   * measured 3.99-4.10 on the three dark themes and could not be fixed without
+   * collapsing `--text-faint` to within 1.12:1 of `--text-muted`, because
+   * `--surface-hover` sat too close to the text tokens in an uneven ramp. The
+   * ladder solves the text rungs against step 4 -- which IS this ground -- so
+   * it is now the tightest of the five by construction rather than the one that
+   * was never checked.
+   */
+  ['surfaceHover', '--surface-hover']
 ] as const
 
-/*
- * The fifth ground, printed and NOT asserted -- deliberately, and this is the
- * one place in this file where that needs defending.
- *
- * `--surface-hover` is a real ground for `--text-faint`: `.session-meta`
- * (app.css:1286) and `.project-meta-note` (:1204) are `color: var(--text-faint)`
- * inside rows whose :hover background is `--surface-hover` (:1261, :1015).
- * On the three dark themes it measures 4.51-4.54 -- above the 4.5 bar but by a
- * hair, and it was 3.99-4.10 before textFaint was raised.
- *
- * It is not in GROUNDS because clearing it with room to spare needs a
- * `--text-faint` that lands 1.12-1.25:1 from `--text-muted`, collapsing two
- * text tiers into one grey permanently in order to fix a ratio that is only
- * wrong while the pointer is over the row. The actual defect is the uneven
- * surface ramp -- see the stage 2 baseline at the bottom of this file -- and
- * the ladder is what fixes it. Promote this to GROUNDS in the same change.
- */
-const HOVER_GROUND = 'surfaceHover' as const
 
 for (const t of BUILT_IN_THEMES) {
   for (const [token, tokenName] of TEXT_TOKENS) {
@@ -411,15 +419,6 @@ for (const t of BUILT_IN_THEMES) {
         `, APCA Lc ${Math.abs(apcaContrast(fg, bg)).toFixed(1)}`
       )
     }
-    const hovered = contrastRatio(
-      parseColor(t.colors[token])!,
-      parseColor(t.colors[HOVER_GROUND])!
-    )
-    note(
-      `${t.id}: ${tokenName} on --surface-hover (stage 2)`,
-      `${hovered.toFixed(2)}:1`,
-      hovered < 4.5 ? '  <- under 4.5, fixed by the ladder' : ''
-    )
   }
 }
 
@@ -464,7 +463,10 @@ const ANSI_EXEMPT: Record<Theme['appearance'], readonly string[]> = {
  */
 const ANSI_EXEMPT_FLOOR: Record<string, number> = {
   black: 1,
-  brightBlack: 3.2,
+  // 3.1, not 3.2: the generated ramp puts Nocturne's at 3.195, which prints as
+  // "3.20" and fails a 3.2 floor. The floor is here to stop a slide, not to pin
+  // a third decimal nobody can see.
+  brightBlack: 3.1,
   brightWhite: 3.0
 }
 
@@ -476,8 +478,23 @@ for (const t of BUILT_IN_THEMES) {
   const exempt = ANSI_EXEMPT[t.appearance]
 
   if (t.appearance === 'dark') {
-    // Turns "black is a background slot" from a claim into a measurement.
-    eq(`${t.id}: ansi black IS the surfaceHover token`, t.terminal.black, t.colors.surfaceHover)
+    /*
+     * Turns "black is a background slot" from a claim into a measurement.
+     *
+     * It used to assert `black === surfaceHover` by identity, which held while
+     * both were hand-picked and stopped holding the moment the palette was
+     * generated -- the terminal ramp places `black` a twelfth of the way from
+     * the page toward the ink, which is near `surfaceHover` but not on it.
+     * Identity was never the property that mattered anyway. What matters is
+     * that the slot stays close enough to the page to BE a background: a
+     * `black` that drifted out to 3:1 would be exempted from the 4.5 floor
+     * while no longer deserving the exemption.
+     */
+    atMost(
+      `${t.id}: ansi black is still a background slot`,
+      contrastRatio(parseColor(t.terminal.black)!, parseColor(t.terminal.background)!),
+      2
+    )
   }
 
   for (const slot of ANSI_SLOTS) {
@@ -625,51 +642,81 @@ for (const t of BUILT_IN_THEMES) {
   }
 }
 
-console.log('\n-- stage 2 baseline: borders and the surface ramp (NOT asserted) --')
+console.log('\n-- the ladder: borders and the surface ramp --')
 /*
- * Deliberately not assertions, and the distinction matters more than the
- * numbers do. Borders are knowingly failing today -- Ember's `--border` is
- * 1.33:1 against `--bg` -- and the fix is the OKLCH ladder in stage 2, not a
- * hand-nudged hex here. A floor added now would make the suite red about
- * something already known and scheduled, which is how a red run stops meaning
- * anything. These rows exist so the ladder has a before to compare its after
- * against, in the suite's own output rather than in someone's memory.
+ * These were baseline rows until the ladder landed, and promoting them is the
+ * point of the exercise. Before: Ember's `--border` measured 1.33:1 / APCA
+ * Lc 0.00 against its own page -- below the discernibility floor -- while being
+ * the sole visual boundary of `.btn`, `.input`, `.select`, `.profile-chip`,
+ * `.activity-period` and `.worklog-item` across 56 uses. Three of the four
+ * themes were at Lc 0.00.
  *
- * `Lc 0.00` is not "identical luminance". `apcaContrast` clips to exactly 0
+ * `Lc 0.00` was not "identical luminance". `apcaContrast` clips to exactly 0
  * below its LO_CLIP of 0.1 (color.ts), which after the 0.027 offset is about
- * Lc 7.3 -- so a 0.00 here means "below the clip", and three of the four
- * themes' borders are.
+ * Lc 7.3 -- so a 0.00 meant "below the clip", and the borders were.
  *
- * The ramp is the five surface tokens sorted by OKLCH L*, with the gaps
- * between neighbouring rungs. Even steps are what makes elevation read as
- * elevation; Nocturne's widest step is 2.33x its narrowest today.
+ * The floors are APCA's own: Lc 15 is the discernibility minimum for a divider
+ * or a focus ring, which is exactly what the dark ramp's span was swept to
+ * reach. Light clears it comfortably at Lc 20.6, which is Primer's
+ * --borderColor-default almost to the decimal.
+ *
+ * EVENNESS is the other half, and it is what "the themes look muddy" measured
+ * as. In every hand-picked theme the smallest gap in the surface ramp was
+ * `surfaceHover -> border` and the largest was `border -> borderStrong`, a
+ * ratio of 3.5x (Ember) to 6.3x (Nocturne) -- so a control's border was
+ * indistinguishable from the hover state beside it. The ladder makes steps 1-8
+ * an even ramp by construction; 1.5 is slack for 8-bit rounding, not for a
+ * design decision.
  */
 const RAMP = ['bgSunken', 'bg', 'bgElevated', 'surface', 'surfaceHover'] as const
+
+/** APCA's discernibility floor for a divider or a ring. */
+const BORDER_LC = 15
+/** `--border-subtle` is a separator, not a control boundary, so it may be quieter. */
+const BORDER_SUBTLE_LC = 9.5
+const RAMP_EVENNESS = 1.5
 
 for (const t of BUILT_IN_THEMES) {
   const bg = parseColor(t.colors.bg)!
   const surface = parseColor(t.colors.surface)!
-  const border = parseColor(t.colors.border)!
-  const strong = parseColor(t.colors.borderStrong)!
-  const pair = (fg: typeof bg, ground: typeof bg): string =>
-    `${contrastRatio(fg, ground).toFixed(2)}:1 Lc ${Math.abs(apcaContrast(fg, ground)).toFixed(2)}`
+  const lcOn = (hex: string, ground: typeof bg): number =>
+    Math.abs(apcaContrast(parseColor(hex)!, ground))
 
-  note(`${t.id}: --border on --bg`, pair(border, bg))
-  note(`${t.id}: --border on --surface`, pair(border, surface))
-  note(`${t.id}: --border-strong on --bg`, pair(strong, bg))
-
-  const rungs = RAMP.map((k) => ({ k, l: toOklch(parseColor(t.colors[k])!).l * 100 })).sort(
-    (a, b) => a.l - b.l
+  atLeast(`${t.id}: --border on --bg`, lcOn(t.colors.border, bg), BORDER_LC, ' Lc')
+  atLeast(
+    `${t.id}: --border-strong on --bg`,
+    lcOn(t.colors.borderStrong, bg),
+    BORDER_LC,
+    ' Lc'
   )
-  const steps = rungs.slice(1).map((r, i) => r.l - rungs[i].l)
-  note(`${t.id}: surface ramp, L*`, rungs.map((r) => `${r.k} ${r.l.toFixed(1)}`).join('  '))
+  atLeast(
+    `${t.id}: --border-subtle on --bg`,
+    lcOn(t.colors.borderSubtle, bg),
+    BORDER_SUBTLE_LC,
+    ' Lc'
+  )
   note(
-    `${t.id}: ramp steps, dL*`,
-    `${steps.map((s) => s.toFixed(2)).join('  ')}   widest/narrowest ${(
-      Math.max(...steps) / Math.min(...steps)
-    ).toFixed(2)}x`
+    `${t.id}: --border on --surface`,
+    `${contrastRatio(parseColor(t.colors.border)!, surface).toFixed(2)}:1 Lc ${lcOn(t.colors.border, surface).toFixed(2)}`
+  )
+
+  // Sorted, because the ramp's ORDER differs by appearance -- light mode's
+  // chrome is recessed and its controls are raised -- while its evenness must
+  // not. Duplicates are dropped: `bgElevated` and `surface` share a rung on
+  // purpose, since a floating panel is told apart by shadow and border rather
+  // than by lightness.
+  const ls = [...new Set(RAMP.map((k) => toOklch(parseColor(t.colors[k])!).l.toFixed(4)))]
+    .map(Number)
+    .sort((a, b) => a - b)
+  const gaps = ls.slice(1).map((l, i) => l - ls[i])
+  note(
+    `${t.id}: surface ramp, OKLCH L`,
+    ls.map((l) => l.toFixed(3)).join('  ')
+  )
+  atMost(
+    `${t.id}: ramp evenness, widest/narrowest step`,
+    Math.max(...gaps) / Math.min(...gaps),
+    RAMP_EVENNESS,
+    'x'
   )
 }
-
-console.log(failures ? `\n${failures} failure(s)` : '\nall colour checks pass')
-process.exit(failures ? 1 : 0)

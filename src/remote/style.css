@@ -3,23 +3,31 @@
  * but laid out for a phone: everything reachable with a thumb, and a real text
  * input instead of typing into the terminal, which is miserable on a soft
  * keyboard.
+ *
+ * The palette below is a HAND COPY of EMBER from src/shared/themes.ts, and it
+ * has to be, because this bundle is built separately (`vite.remote.config.ts`)
+ * and shares no module with the desktop renderer. That means it silently drifts
+ * every time the desktop palette moves -- it had been carrying the pre-ladder
+ * values, so the phone and the window were two different shades of the same
+ * theme. If you regenerate the themes, regenerate these fourteen lines with
+ * them. `verify:color` cannot see this file.
  */
 
 :root {
-  --bg: #14110f;
-  --bg-sunken: #0e0c0b;
-  --surface: #221d1a;
-  --surface-hover: #2b2521;
-  --border: #302a25;
-  --border-strong: #443b34;
-  --text: #f2e9e1;
-  --text-muted: #a89c92;
-  --text-faint: #8a7e75;
+  --bg: #181716;
+  --bg-sunken: #0d0c0c;
+  --surface: #242221;
+  --surface-hover: #312e2d;
+  --border: #595552;
+  --border-strong: #67635f;
+  --text: #e3ddd9;
+  --text-muted: #b1adaa;
+  --text-faint: #989592;
   --accent: #ff9552;
-  --accent-contrast: #1a1108;
-  --danger: #f2705f;
-  --warning: #e8b552;
-  --success: #7fc98a;
+  --accent-contrast: #12100e;
+  --danger: #ffa092;
+  --warning: #e4b24d;
+  --success: #77cc85;
   --mono: 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
   --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   color-scheme: dark;

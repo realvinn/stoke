@@ -170,13 +170,47 @@ button {
   --on-danger: var(--bg);
 }
 
+/*
+ * Light mode's shadows and scrim, which are a different job from dark's.
+ *
+ * In dark mode a raised surface is lighter than the page and the shadow is
+ * almost decorative. In light mode there is no headroom above white, so
+ * ELEVATION IS CARRIED BY BORDER AND SHADOW rather than by lightness -- the
+ * surface step alone measures APCA Lc 0.00 here and cannot do the job at all.
+ * Three consequences, each measured rather than guessed:
+ *
+ * 1. EVERY FLOATING SHADOW STARTS WITH A `0 0 0 1px` RING. That ring is where
+ *    the visible edge actually comes from; the blur underneath only suggests
+ *    depth. Primer does the same on every one of its --shadow-floating tokens.
+ *
+ * 2. THE SHADOWS ARE TINTED WITH THE THEME'S OWN INK, never pure black. On a
+ *    warm page a warm-tinted shadow and a pure-black one darken by within
+ *    0.19 L* of each other -- the difference a reader sees is hue, not depth,
+ *    and a neutral-black shadow over a warm ground reads as dirt. `--text` is
+ *    the theme's ink and moves with it, which is why the mixes below name it
+ *    rather than a hex.
+ *
+ * 3. THE SCRIM IS A LIGHT TINTED GREY, NOT TRANSLUCENT BLACK. Measured: a 40%
+ *    black scrim takes a white page to L* 68.3, which does not read as "this
+ *    is dimmed" but as "this is a different, darker application". Primer's
+ *    light backdrop composites to L* 94.3. Dimming a light UI means desaturating
+ *    it slightly, not turning the lights off.
+ */
 :root[data-appearance='light'] {
-  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.06);
-  --shadow-md: 0 4px 14px rgb(0 0 0 / 0.09);
-  --shadow-lg: 0 18px 48px rgb(0 0 0 / 0.14);
-  --scrim: rgb(0 0 0 / 0.28);
-  --swatch-ring: rgb(0 0 0 / 0.16);
-  --shadow-panel: 0 12px 32px rgb(0 0 0 / 0.16);
+  --shadow-sm: 0 1px 2px color-mix(in srgb, var(--text) 8%, transparent);
+  --shadow-md:
+    0 0 0 1px color-mix(in srgb, var(--text) 6%, transparent),
+    0 2px 4px color-mix(in srgb, var(--text) 6%, transparent),
+    0 8px 16px color-mix(in srgb, var(--text) 8%, transparent);
+  --shadow-lg:
+    0 0 0 1px color-mix(in srgb, var(--text) 8%, transparent),
+    0 8px 16px color-mix(in srgb, var(--text) 10%, transparent),
+    0 24px 48px color-mix(in srgb, var(--text) 14%, transparent);
+  --scrim: color-mix(in srgb, var(--border-strong) 55%, transparent);
+  --swatch-ring: color-mix(in srgb, var(--text) 18%, transparent);
+  --shadow-panel:
+    0 0 0 1px color-mix(in srgb, var(--text) 8%, transparent),
+    0 12px 32px color-mix(in srgb, var(--text) 14%, transparent);
 }
 
 body {
@@ -304,7 +338,7 @@ body {
   gap: var(--space-8);
   padding-inline: var(--space-8);
   background: var(--bg-sunken);
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--border-subtle);
   -webkit-app-region: drag;
   position: relative;
 }
@@ -712,8 +746,13 @@ body {
   border-color: var(--border-strong);
 }
 
+/* Ladder step 5, not `--bg-sunken`. Hover is step 4 and press is step 5, so
+   both move the same direction away from the control's rest state. Reaching for
+   the sunken chrome instead sent press the OPPOSITE way from hover in dark
+   mode -- darker on press, lighter on hover -- which reads as the button
+   flinching. */
 .btn:active:not(:disabled) {
-  background: var(--bg-sunken);
+  background: var(--surface-active);
 }
 
 .btn:disabled {
@@ -1644,7 +1683,7 @@ body {
   justify-content: space-between;
   gap: var(--space-12);
   padding: var(--space-8) 0;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--border-subtle);
 }
 
 .launcher-row-label {
@@ -1789,7 +1828,7 @@ body {
   align-items: center;
   gap: var(--space-4);
   padding: var(--space-8) var(--space-8);
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .browser-find {
@@ -1797,7 +1836,7 @@ body {
   align-items: center;
   gap: var(--space-4);
   padding: var(--space-8) var(--space-8);
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--border-subtle);
   background: var(--bg-elevated);
 }
 
@@ -1858,7 +1897,7 @@ body {
   align-items: center;
   gap: var(--space-8);
   padding: var(--space-8) var(--space-8);
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .worklog-title {
@@ -1886,7 +1925,7 @@ body {
   flex-direction: column;
   gap: var(--space-4);
   padding: var(--space-8) var(--space-12);
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .worklog-state-line {
@@ -2110,7 +2149,7 @@ body {
   align-items: center;
   gap: var(--space-8);
   padding: var(--space-8) var(--space-8);
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--border-subtle);
   background: color-mix(in srgb, var(--accent) 10%, var(--bg));
   color: var(--text);
   font-size: var(--fs-sm);
@@ -2230,7 +2269,7 @@ body {
   align-items: center;
   gap: var(--space-12);
   padding-inline: var(--space-12);
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--border-subtle);
   background: var(--bg-sunken);
   font-size: var(--fs-xs);
   color: var(--text-muted);
@@ -2332,7 +2371,7 @@ body {
   max-width: 14rem;
   margin: var(--space-8) 0 0;
   padding: var(--space-8);
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--border-subtle);
   color: var(--text-muted);
   font-size: var(--fs-xs);
   line-height: 1.4;
@@ -2340,7 +2379,7 @@ body {
 
 .context-menu-item[data-separated='true'] {
   margin-top: var(--space-8);
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--border-subtle);
   border-radius: 0 0 var(--r-md) var(--r-md);
   padding-top: calc(var(--space-8) + 1px);
 }
@@ -2366,7 +2405,7 @@ body {
 .palette-input {
   padding: var(--space-12) var(--space-16);
   border: none;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--border-subtle);
   background: transparent;
   font-size: var(--fs-lg);
 }
@@ -2429,7 +2468,7 @@ body {
   justify-content: space-between;
   gap: var(--space-8);
   padding: var(--space-16);
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .sheet-head h2 {
@@ -2786,7 +2825,7 @@ body {
   align-items: center;
   gap: var(--space-8);
   padding: var(--space-8) var(--space-12);
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--border-subtle);
   background: color-mix(in srgb, var(--danger) 12%, var(--bg));
   color: var(--text);
   font-size: var(--fs-md);
@@ -2807,7 +2846,7 @@ body {
   align-items: center;
   gap: var(--space-8);
   padding: var(--space-8) var(--space-12);
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--border-subtle);
   background: var(--bg-elevated);
   font-size: var(--fs-sm);
 }
@@ -3207,7 +3246,7 @@ body {
 .activity-row {
   min-width: 0;
   padding: var(--space-8) 0;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--border-subtle);
 }
 
 .activity-row-head {
