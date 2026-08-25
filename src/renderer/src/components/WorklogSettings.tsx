@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { ProfileConfig, WorklogBoards, WorklogTarget } from '@shared/types'
 import { WORKLOG_TARGETS } from '@shared/worklog'
 import { idFor, nextBoards } from '../lib/worklogBoards'
+import { FieldHint } from './FieldHint'
 
 interface Props {
   /** The resolved profile list — the same one the sidebar chips are drawn from. */
@@ -192,12 +193,34 @@ export function WorklogSettings({
           </span>
         )}
       </span>
-      <span className="field-hint">
-        A Sonnet agent reads a session&apos;s transcript, checks what is already on your Notion
-        and ClickUp boards, and <strong>proposes</strong> the difference — a new page, a new
-        task, or a status change to something already tracked. Nothing is written to either
-        until you accept it; Accept all is still you accepting.
-      </span>
+      {/* Folded, like every other long explanation in the sheet. This section
+          measured 775px with no profiles configured and 927px with three -- the
+          tallest in the panel -- of which 341px was always-open prose. */}
+      <FieldHint
+        more={
+          <>
+            <p>
+              Nothing is written to either board until you accept it; Accept all is still you
+              accepting.
+            </p>
+            <p>
+              Each review costs tokens: it is a real Claude run on top of the work you just did.
+              It uses Sonnet, reads the transcript rather than your repo, and reads your boards at
+              most once every ten minutes however many sessions are scanned. Automatic scans are
+              capped at six an hour and one per session every twenty minutes — but it is not free,
+              so leave profiles you do not report on switched off.
+            </p>
+            <p>
+              Typing a board id does not switch that board on by itself — tick its box once the id
+              is in place. Clear the id, though, and the checkbox switches off on its own, so a
+              board can never stay ticked with nothing behind it to write to.
+            </p>
+          </>
+        }
+      >
+        A Sonnet agent reads a session&apos;s transcript, checks your boards, and{' '}
+        <strong>proposes</strong> the difference for you to accept.
+      </FieldHint>
 
       {/*
         The switch, not a claim. Auto-scan is on by default but does nothing at
@@ -208,11 +231,17 @@ export function WorklogSettings({
         <input type="checkbox" checked={auto} onChange={(e) => onChangeAuto(e.target.checked)} />
         <span>
           <span className="field-label">Scan while I work</span>
-          <span className="field-hint">
-            A watched session is reviewed on its own once it has been quiet for a couple of
-            minutes, and Stoke asks whether to file it. Off, and scanning only happens when you
-            press Scan in the worklog panel.
-          </span>
+          <FieldHint
+            more={
+              <>
+                A watched session is reviewed on its own once it has been quiet for a couple of
+                minutes, and Stoke asks whether to file it. Off, and scanning only happens when
+                you press Scan in the worklog panel.
+              </>
+            }
+          >
+            Review a watched session once it goes quiet.
+          </FieldHint>
         </span>
       </label>
 
@@ -367,19 +396,6 @@ export function WorklogSettings({
       />
       <span className="field-hint">{TARGET_UI.clickup.findIt}</span>
 
-      <span className="field-hint">
-        Typing an id does not switch the board on by itself — tick its box once the id is in
-        place. Clear the id, though, and the checkbox switches off on its own, so a board can
-        never stay ticked with nothing behind it to write to.
-      </span>
-
-      <span className="field-hint">
-        Each review costs tokens: it is a real Claude run on top of the work you just did. It
-        uses Sonnet, reads the transcript rather than your repo, and reads your boards at most
-        once every ten minutes however many sessions are scanned. Automatic scans are capped at
-        six an hour and one per session every twenty minutes — but it is not free, so leave
-        profiles you do not report on switched off.
-      </span>
     </div>
   )
 }

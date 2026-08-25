@@ -134,6 +134,16 @@ export function HostsSettings({ hosts, suggestions, onChange }: Props): React.JS
   return (
     <div className="field">
       <span className="field-label">Remote machines</span>
+      {/*
+        Everything that is true of every machine is said HERE, once.
+        
+        It used to be said inside the map, so a 312-character byobu paragraph
+        and the worklog explanation were repeated verbatim under every host --
+        591 characters of prose per machine that named none of them. Measured,
+        that was 44% of a 281px card, which is why ten hosts came to 2993px in
+        an 879px panel. Commit 2febab8 folded the section-level hints in this
+        very file and left the one hint that gets multiplied by N.
+      */}
       <FieldHint
         more={
           <>
@@ -144,10 +154,23 @@ export function HostsSettings({ hosts, suggestions, onChange }: Props): React.JS
               terminal and behave as they would in any shell.
             </p>
             <p>
+              <b>The connect command.</b> <span className="mono">byobu</span>, or{' '}
+              <span className="mono">tmux new -A -s stoke</span>, leaves the session running on the
+              far machine, so a dropped connection reconnects to the same work rather than losing
+              it. A multiplexer is the only thing that survives the link going down, because
+              Stoke&rsquo;s own resume cannot reach across. Leave it empty for a plain login shell.
+            </p>
+            <p>
+              <b>Writing up work.</b> Ticking that on a machine copies the session&rsquo;s
+              transcript back over the same connection, which is also what makes the context meter
+              work — it cannot read a file that only exists on the far machine. While it is off,
+              nothing is copied off that machine at all.
+            </p>
+            <p>
               Two things do not apply to a remote session, both for the same reason: the context
               meter stays blank and Stoke&rsquo;s resume cannot reach one. Both read the transcript
               Claude Code writes, and that file lives on the far machine — which is what the
-              connect command below is for.
+              connect command is for.
             </p>
           </>
         }
@@ -171,140 +194,161 @@ export function HostsSettings({ hosts, suggestions, onChange }: Props): React.JS
         </span>
       )}
 
+      {/*
+        One collapsed row per machine, expanded to edit.
+
+        Measured at Interface scale 1.0 in a real Chromium window: 206 / 282 /
+        548px at 1 / 3 / 10 hosts, against 393 / 971 / 2993px before. A closed
+        row is 30px; an open one adds 172px. The whole list stays inside one
+        879px panel well past ten machines, where three used to overflow it.
+
+        A native <details> rather than a useState, for the reasons FieldHint
+        already gives: keyboard-operable, announced by screen readers, and
+        Cmd+F finds text inside a closed one in Chromium.
+
+        `open` when the alias is blank, so a machine you just added is already
+        expanded rather than silently collapsed into a row saying nothing.
+      */}
       {hosts.map((host) => {
         const alias = valueOf(host, 'alias').trim()
         const unknownAlias = suggestions.length > 0 && alias !== '' && !known.has(alias.toLowerCase())
+        const name = host.label.trim() || host.alias.trim() || 'New machine'
+        const summary = [host.alias.trim(), host.command.trim() || 'login shell']
+          .filter(Boolean)
+          .join(' — ')
 
         return (
-          <div
-            key={host.id}
-            className="field"
-            style={{
-              gap: 'var(--space-8)',
-              padding: 'var(--space-8)',
-              border: '1px solid var(--border)',
-              borderRadius: 'var(--r-md)'
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-8)' }}>
-              <input
-                className="input"
-                placeholder="Name, e.g. VPS"
-                aria-label="Name of this remote machine"
-                value={valueOf(host, 'label')}
-                spellCheck={false}
-                onChange={(e) =>
-                  setDrafts((d) => ({ ...d, [keyFor(host.id, 'label')]: e.target.value }))
-                }
-                onBlur={() => commit(host, 'label')}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') e.currentTarget.blur()
-                }}
-              />
-              {confirming === host.id ? (
-                <>
+          <details key={host.id} className="settings-item" open={host.alias.trim() === ''}>
+            <summary className="settings-item-summary">
+              <span className="settings-item-name">{name}</span>
+              <span className="settings-item-sub mono truncate">{summary}</span>
+              {host.worklog === true && (
+                <span className="settings-item-dot" title="Work done here is written up">
+                  <span className="sr-only">written up</span>
+                </span>
+              )}
+            </summary>
+
+            <div className="settings-item-body">
+              <label className="cc-text">
+                <span className="field-label">Name</span>
+                <input
+                  className="input"
+                  placeholder="e.g. VPS"
+                  value={valueOf(host, 'label')}
+                  spellCheck={false}
+                  onChange={(e) =>
+                    setDrafts((d) => ({ ...d, [keyFor(host.id, 'label')]: e.target.value }))
+                  }
+                  onBlur={() => commit(host, 'label')}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') e.currentTarget.blur()
+                  }}
+                />
+              </label>
+
+              {/* Labelled, not just placeholdered. Three placeholder-only boxes
+                  become three unlabelled boxes the moment they are filled in,
+                  which is the state they spend their whole life in. */}
+              <label className="cc-text">
+                <span className="field-label">SSH alias</span>
+                <input
+                  className="input mono"
+                  list={ALIAS_LIST_ID}
+                  placeholder="alias, or user@host"
+                  value={valueOf(host, 'alias')}
+                  spellCheck={false}
+                  onChange={(e) =>
+                    setDrafts((d) => ({ ...d, [keyFor(host.id, 'alias')]: e.target.value }))
+                  }
+                  onBlur={() => commit(host, 'alias')}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') e.currentTarget.blur()
+                  }}
+                />
+              </label>
+              {/* The one hint that stays inside the map: it is about THIS alias. */}
+              {unknownAlias && (
+                <span className="field-hint">
+                  Not one of the <span className="mono">Host</span> entries in your ssh config. That
+                  is fine for a full <span className="mono">user@host</span>, and a typo otherwise.
+                </span>
+              )}
+
+              <label className="cc-text">
+                <span className="field-label">Command on connect</span>
+                <input
+                  className="input mono"
+                  placeholder="byobu — empty for a login shell"
+                  value={valueOf(host, 'command')}
+                  spellCheck={false}
+                  onChange={(e) =>
+                    setDrafts((d) => ({ ...d, [keyFor(host.id, 'command')]: e.target.value }))
+                  }
+                  onBlur={() => commit(host, 'command')}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') e.currentTarget.blur()
+                  }}
+                />
+              </label>
+
+              {/*
+                Per host, not per folder. A remote session's folder is wherever
+                Stoke was pointed locally, so the profile checkboxes cannot mean
+                anything for it — the machine is the only honest unit.
+              */}
+              <label className="check-row">
+                <input
+                  type="checkbox"
+                  checked={host.worklog === true}
+                  onChange={(e) =>
+                    onChange(
+                      hosts.map((h) => (h.id === host.id ? { ...h, worklog: e.target.checked } : h))
+                    )
+                  }
+                />
+                <span className="field-label">Write up work done on this machine</span>
+              </label>
+
+              {/* In the body, not the summary. A button inside a <summary>
+                  toggles the disclosure on its way through unless it calls
+                  preventDefault, and a Remove that also collapses the row it is
+                  removing reads as a bug either way. */}
+              <div className="settings-item-actions">
+                {confirming === host.id ? (
+                  <>
+                    <button
+                      className="btn"
+                      data-variant="danger"
+                      onClick={() => {
+                        remove(host.id)
+                        setConfirming(null)
+                      }}
+                    >
+                      Remove {name}
+                    </button>
+                    <button
+                      className="btn"
+                      data-variant="ghost"
+                      onClick={() => setConfirming(null)}
+                    >
+                      Keep
+                    </button>
+                  </>
+                ) : (
                   <button
                     className="btn"
-                    data-variant="danger"
-                    onClick={() => {
-                      remove(host.id)
-                      setConfirming(null)
-                    }}
+                    data-variant="ghost"
+                    data-size="sm"
+                    onClick={() => setConfirming(host.id)}
                   >
+                    <IconClose />
                     Remove
                   </button>
-                  <button className="btn" data-variant="ghost" onClick={() => setConfirming(null)}>
-                    Keep
-                  </button>
-                </>
-              ) : (
-                <button
-                  className="icon-btn"
-                  data-size="sm"
-                  title={`Remove ${host.label || host.alias || 'this host'}`}
-                  onClick={() => setConfirming(host.id)}
-                >
-                  <IconClose />
-                  <span className="sr-only">Remove {host.label || host.alias || 'this host'}</span>
-                </button>
-              )}
+                )}
+              </div>
             </div>
-
-            <input
-              className="input mono"
-              list={ALIAS_LIST_ID}
-              placeholder="ssh alias, or user@host"
-              aria-label="SSH alias for this remote machine"
-              value={valueOf(host, 'alias')}
-              spellCheck={false}
-              onChange={(e) =>
-                setDrafts((d) => ({ ...d, [keyFor(host.id, 'alias')]: e.target.value }))
-              }
-              onBlur={() => commit(host, 'alias')}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') e.currentTarget.blur()
-              }}
-            />
-            {unknownAlias && (
-              <span className="field-hint">
-                Not one of the <span className="mono">Host</span> entries in your ssh config. That
-                is fine for a full <span className="mono">user@host</span>, and a typo otherwise.
-              </span>
-            )}
-
-            <input
-              className="input mono"
-              placeholder="Command on connect — empty for a login shell"
-              aria-label="Command to run on connect"
-              value={valueOf(host, 'command')}
-              spellCheck={false}
-              onChange={(e) =>
-                setDrafts((d) => ({ ...d, [keyFor(host.id, 'command')]: e.target.value }))
-              }
-              onBlur={() => commit(host, 'command')}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') e.currentTarget.blur()
-              }}
-            />
-            <span className="field-hint">
-              <span className="mono">byobu</span> — or{' '}
-              <span className="mono">tmux new -A -s stoke</span> — leaves the session running on
-              the far machine, so a dropped connection reconnects to the same work rather than
-              losing it. Since Stoke&rsquo;s own resume cannot reach across, a multiplexer is the
-              only thing that survives the link going down. Empty gives a plain login shell.
-            </span>
-
-            {/*
-              Per host, not per folder. A remote session's folder is wherever
-              Stoke was pointed locally, so the profile checkboxes cannot mean
-              anything for it — the machine is the only honest unit.
-            */}
-            <label className="check-row">
-              <input
-                type="checkbox"
-                checked={host.worklog === true}
-                onChange={(e) =>
-                  onChange(
-                    hosts.map((h) => (h.id === host.id ? { ...h, worklog: e.target.checked } : h))
-                  )
-                }
-              />
-              <span>
-                <span className="field-label">Write up work done on this machine</span>
-                <FieldHint
-                  more={
-                    <>
-                      The transcript comes back over the same connection, which is also what makes
-                      the context meter work — it cannot read a file that only exists on the far
-                      machine. While this is off, nothing is copied off that machine at all.
-                    </>
-                  }
-                >
-                  Copy this session&rsquo;s transcript back so Stoke can read it.
-                </FieldHint>
-              </span>
-            </label>
-          </div>
+          </details>
         )
       })}
 

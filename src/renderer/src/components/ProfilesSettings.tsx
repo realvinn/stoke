@@ -284,16 +284,14 @@ export function ProfilesSettings({ settings, onPatch, onCreated }: Props): React
       {visible.map((p) => {
         const n = projectsIn(p)
         return (
-          <div
-            key={p.id}
-            className="field"
-            style={{
-              gap: 'var(--space-8)',
-              padding: 'var(--space-8)',
-              border: '1px solid var(--border)',
-              borderRadius: 'var(--r-md)'
-            }}
-          >
+          /* `.settings-item-card` rather than a fourth copy of this inline
+             style object. It was byte-identical to the one HostsSettings
+             carried, which is exactly how a stylesheet sweep misses a rule
+             (gotcha 22). Profiles keep the always-open card for now -- they
+             measure 105px each against a host's 281px, so the disclosure the
+             hosts needed does not pay for itself here yet. When they grow past
+             about six, swap this for <details className="settings-item">. */
+          <div key={p.id} className="field settings-item-card">
             <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-8)' }}>
               {/* The colour, shown the way the tab strip and the theme picker
                   already show one: a dot, not a stripe down the card. */}
@@ -426,15 +424,7 @@ export function ProfilesSettings({ settings, onPatch, onCreated }: Props): React
       )}
 
       {creating && (
-        <div
-          className="field"
-          style={{
-            gap: 'var(--space-8)',
-            padding: 'var(--space-8)',
-            border: '1px solid var(--border)',
-            borderRadius: 'var(--r-md)'
-          }}
-        >
+        <div className="field settings-item-card">
           <input
             className="input"
             placeholder="Name, e.g. Task"

@@ -2551,6 +2551,106 @@ body {
   opacity: 0.55;
 }
 
+/* ------------------------------------------- a list of things in settings */
+
+/*
+ * One collapsed row per item, for any settings section that renders N of
+ * something. Hosts use it; profiles carry a byte-identical copy of the old
+ * inline style object and should follow.
+ *
+ * The problem it solves is not "stacked cards look odd", it is height. An
+ * expanded SSH host card measured 281px, of which 124px was prose repeated
+ * verbatim under every machine, so ten hosts came to 2993px inside an 879px
+ * panel — one section taller than the whole settings sheet at three machines.
+ * Widening the sheet does not help: 416px -> 768px buys 12%, because 193px of
+ * the card is fixed-height controls and gaps that do not reflow.
+ *
+ * Collapsed: 206 / 282 / 548px at 1 / 3 / 10 items.
+ */
+.settings-item {
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+
+/* The always-open form of the same card, for a section whose items are short
+   enough not to need folding. Profiles use it; it exists so the geometry lives
+   in one place rather than in an inline style object copied per component. */
+.settings-item-card {
+  gap: var(--space-8);
+  padding: var(--space-8);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+}
+
+.settings-item-summary {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-8);
+  padding: var(--space-8);
+  cursor: default;
+  list-style: none;
+  /* The row is the hit target for the disclosure, so it must not also be a
+     text selection target — a drag to select the alias would toggle it. */
+  user-select: none;
+}
+
+.settings-item-summary::-webkit-details-marker {
+  display: none;
+}
+
+.settings-item-summary::before {
+  content: '\25B8';
+  color: var(--text-faint);
+  flex: none;
+  transition: transform var(--dur-fast) var(--ease);
+}
+
+.settings-item[open] > .settings-item-summary::before {
+  transform: rotate(90deg);
+}
+
+.settings-item[open] > .settings-item-summary {
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-item-name {
+  font-weight: 600;
+  flex: none;
+}
+
+/* `flex: 1 1 0%` AND `min-width: 0`, both required — the same pair `.cc-text`
+   documents. Without the min-width the alias's longest word sets a min-content
+   floor the row cannot go below, and the sheet grows instead of the text
+   ellipsising. Gotcha 14. */
+.settings-item-sub {
+  flex: 1 1 0%;
+  min-width: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+}
+
+.settings-item-dot {
+  flex: none;
+  width: 0.375rem;
+  height: 0.375rem;
+  border-radius: var(--r-full);
+  background: var(--tab-dot-worklog);
+}
+
+.settings-item-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+  padding: var(--space-12) var(--space-8) var(--space-8);
+}
+
+.settings-item-actions {
+  display: flex;
+  gap: var(--space-8);
+  justify-content: flex-end;
+}
+
 /* ------------------------------------------------- claude code settings */
 
 /* A disclosure rather than a fourteenth screenful. `.sheet-body` is one flat
