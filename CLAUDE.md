@@ -124,6 +124,11 @@ src/remote/       mobile web UI, built separately to out/remote
 src/shared/       types, IPC channel names, themes, profiles, colour maths
   paths.ts          cwd -> project group. Pure, platform passed in, no node imports,
                     so the renderer runs the identical rule for the profile chip
+  ladder.ts         the 12-step ladder every built-in theme is generated from. Fixed
+                    rungs in OKLCH L, solved onto rather than picked. Gotcha 43
+  accent.ts         one accent in, five tokens out, per appearance. The reason
+                    --accent (a fill) and --accent-ink (a foreground) are two
+                    things and not one. Gotcha 44
   worklog.ts        the board targets the worklog can write to, and their defaults
   claudeConfig.ts   which of Claude Code's settings Stoke will draw, their vocabularies, and
                     the never-offer list. Hand-transcribed from the CLI binary's zod schema
@@ -934,6 +939,101 @@ scripts/          the verify-*.mts suites, make-icon.cjs
     (~$0.13 total) but not by much. Second, `--allowedTools` prunes the tool schemas actually
     sent, so the apply and recall runs do **not** pay for all 427 tools of 30 MCP servers —
     measured at 15,610 cache-creation tokens with the allowlist down to one name.
+
+42. **Claude Code's own theme lives in `settings.json`, and the way to follow it is OSC 11,
+    not a flag.** `theme` is a real zod key in `~/.claude/settings.json` — NOT `~/.claude.json`,
+    which still has a read path for it (`legacyGlobalConfig`) but is dead-ended by its own
+    default of `"dark"` and is written by nothing any more. The vocabulary is
+    `auto | dark | light | {dark,light}-daltonized | {dark,light}-ansi`, plus `custom:<slug>`
+    naming a file in `<config-dir>/themes/`. It carries `.catch(void 0)`, so an
+    out-of-vocabulary value is **silently dropped**, exactly like `effortLevel` in gotcha 39.
+
+    Stoke could pin it through its own `--settings` file — measured working, both directions —
+    and deliberately does not. That file is `flagSettings`, which outranks the user's own
+    `/theme` **forever**; several CLI render helpers call `resolveSetting("theme")` directly in
+    their render body rather than reading the React theme context, so a mid-session `/theme`
+    would leave those painting the pinned value; and it does nothing at all for an SSH tab,
+    whose argv comes from `buildSshArgs` and never reaches the `--settings` push in
+    `cli.ts:273`.
+
+    **The free route is OSC 11.** On `auto` the CLI sends `ESC]11;?BEL` with `ESC[c` as a flush
+    sentinel and classifies the reply by `0.2126r + 0.7152g + 0.0722b > 0.5` — and xterm.js
+    6.0.0 already answers that truthfully from the `theme.background` Stoke gives it. So the CLI
+    follows this window with no plumbing, on local **and** SSH tabs, because OSC 11 is terminal
+    I/O rather than a launch flag. All four of Stoke's backgrounds classify correctly under that
+    rule (Y = 0.065–0.077 dark, 0.957 light).
+
+    Two things it needs. The CLI re-queries on `CSI ?997;{1,2}n` — the colour-scheme-change
+    report — and **xterm.js knows nothing about DEC mode 2031 or that report**; neither string
+    appears in its bundle. So `TerminalView` synthesises it on a theme change, gated on having
+    seen `ESC[?2031h` and not since `ESC[?2031l`, or a byobu tab sitting at a shell prompt gets
+    the bytes typed at it. Order matters: set `term.options.theme` FIRST, because the CLI's
+    handler ignores the report's own dark/light bit and simply re-runs the OSC 11 query, so what
+    decides the outcome is xterm's answer.
+
+    One honest limit, and it is the answer to "the terminal colours clash with the app chrome":
+    **only `dark-ansi` and `light-ansi` consume Stoke's sixteen ANSI slots.** The other four CLI
+    themes hardcode truecolor for all 72 palette keys and cannot be influenced by anything Stoke
+    does — including background fills like `composerSidebarBackground rgb(38,38,38)` drawn as a
+    neutral grey over Stoke's tinted page. Ember and Daylight are close enough not to show it;
+    Moss and Nocturne will.
+
+43. **The palette is generated now, so do not hand-edit a hex in `themes.ts`.** Every value comes
+    from `src/shared/ladder.ts` — Radix's twelve steps, steps 1-8 an even ramp in OKLCH L and
+    steps 10-12 bisected against a contrast target. Editing a hex reintroduces exactly the class
+    of defect the ladder exists to prevent, and it will not be visible: the hand-picked palette
+    passed every suite in the repo while its borders measured **APCA Lc 0.00** against their own
+    page and its ramps were uneven by 3.5x to 6.3x.
+
+    Three things about it that are counter-intuitive enough to be worth stating.
+
+    **The light and dark step maps disagree on purpose.** In dark mode raised means lighter. In
+    light mode there is no headroom above white, so **interaction darkens** and elevation is
+    carried by border and shadow — the surface step alone measures Lc 0.00 there and cannot do
+    the job. That is Material 3's own conclusion (light containers run 98 -> 90, dark ones
+    6 -> 22) and it is what removes the inversion where Daylight's `surfaceHover` sat below `bg`
+    while `surface` sat above it.
+
+    **The text rungs are solved against step 4, not against the page.** Step 4 is the hardest
+    ground text lands on in either appearance — `surfaceHover` in dark, `bgSunken` in light.
+    Solving against the page is exactly how `--text-faint` came to promise 4.5:1 "on bg",
+    deliver 5.10 there, and measure 3.99 on a hovered row. And the targets are WCAG ratios, not
+    APCA: solving for Lc 60 alone lands light-mode muted text at 3.59:1, because APCA is content
+    and WCAG is not.
+
+    **A light terminal's bright slots must be DARKER.** `bright` is what SGR bold selects, so it
+    has to gain contrast, which on a light ground means moving away from white. Daylight had all
+    eight brights lighter than their normals, so bold text was the least legible text on screen.
+    The four greys are one monotonic ramp with `black` always darkest; inverting the pair as
+    Catppuccin Latte does was measured and rejected, because it moves the problem to `black` at
+    1.52:1 rather than fixing it.
+
+    `src/remote/style.css` carries a HAND COPY of Ember's fourteen tokens and no suite can see
+    it — the mobile bundle is built separately and shares no module with the renderer. It had
+    drifted to the pre-ladder values. Regenerate it whenever the themes move.
+
+44. **`--accent` is a fill and `--accent-ink` is a foreground, and they cannot be one token.**
+    A profile auto-activates from the active tab's cwd and `applyAppearance` used to write its
+    four hand-authored hexes onto `:root` with no appearance check. Every profile accent is
+    tuned for a dark ground, so on the light theme they measured **1.43:1 to 2.52:1** against
+    the page — while driving `:focus-visible`'s outline, the context ring's stroke, the tab
+    indicator and `.input:focus`. The keyboard focus indicator was effectively invisible in
+    light mode, on the default path, and `verify:profiles` asserted only `accentContrast`
+    against `accent` so `npm run check` passed throughout. Gotcha 31 again.
+
+    Deriving the FILL instead would have been the obvious fix and is wrong: it silently
+    restyles three of the eight shipped swatches in dark mode, which is a product decision
+    rather than a repair. So `--accent` keeps the brand colour and `--accent-ink` is solved for
+    both 4.5:1 and APCA Lc 60 against the page. `src/shared/accent.ts` does it; the 23
+    foreground, stroke, outline and 1px-border sites in `app.css` use the ink.
+
+    Two traps inside that derivation. **Thresholds must be tested on the ROUNDED colour** —
+    `fitToSrgb` returns fractional components but an 8-bit hex is what ships, and testing the
+    unrounded value converged every light-theme ink to 4.49:1 against a 4.5 requirement. And
+    there is a **~7 L\* dead band** (roughly L\* 66-78 by hue) where neither near-white nor
+    near-ink reaches Lc 60 on a fill, so a filled button has no legible label at any ink; three
+    shipped swatches sit in it. The fill is nudged out rather than the label accepted, by less
+    than the 0.04 perceptual distance this repo already calls "the same colour".
 
 ## Standing traps when driving the app
 
