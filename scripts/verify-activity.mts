@@ -11,7 +11,13 @@
  *
  *   node scripts/verify-activity.mts
  */
-import { bucketActiveMs, dayKey, IDLE_GAP_MS } from '../src/main/activity.ts'
+import {
+  bucketActiveMs,
+  dayKey,
+  editFilePath,
+  editLineCount,
+  IDLE_GAP_MS
+} from '../src/main/activity.ts'
 
 let failed = 0
 const check = (name: string, ok: boolean, detail = ''): void => {
@@ -50,6 +56,33 @@ check(
   unsorted.get(dayKey(at(9))) === 9 * MIN,
   String(unsorted.get(dayKey(at(9))))
 )
+
+console.log('\nlines written')
+
+check(
+  'Write counts every line of its content',
+  editLineCount('Write', { file_path: '/a.ts', content: 'one\ntwo\nthree' }) === 3
+)
+check(
+  'Edit counts the lines it puts in, not the ones it took out',
+  editLineCount('Edit', { file_path: '/a.ts', old_string: 'a\nb\nc\nd', new_string: 'x\ny' }) === 2
+)
+check(
+  'a tool with no file_path counts nothing, however much text it carries',
+  editLineCount('Bash', { command: 'echo one\necho two' }) === 0
+)
+check(
+  'an empty write is one line, not zero - the file still changed',
+  editLineCount('Write', { file_path: '/a.ts', content: '' }) === 1
+)
+check('a read is not an edit', editLineCount('Read', { file_path: '/a.ts' }) === 0)
+check(
+  'an edit tool with no path counts nothing, so a malformed call cannot inflate a day',
+  editLineCount('Write', { content: 'a\nb' }) === 0
+)
+check('the file path comes back for an edit', editFilePath({ file_path: '/a.ts' }) === '/a.ts')
+check('and is null when absent', editFilePath({ command: 'ls' }) === null)
+check('an empty path is null, not an empty-string file', editFilePath({ file_path: '' }) === null)
 
 console.log(failed === 0 ? '\nall pass' : `\n${failed} failure(s)`)
 process.exitCode = failed === 0 ? 0 : 1

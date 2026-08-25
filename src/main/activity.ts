@@ -61,3 +61,50 @@ export function bucketActiveMs(stampsMs: number[], idleGapMs = IDLE_GAP_MS): Map
   }
   return out
 }
+
+/**
+ * The tools that put text into a file. Anything else contributes no lines.
+ *
+ * A set rather than a regex or a prefix test, because the cost of being loose
+ * here is a number nobody can explain: counting `Bash` would fold every
+ * heredoc and every `cat` into "lines written", and the total would drift
+ * upwards for reasons invisible from the panel.
+ */
+const EDIT_TOOLS = new Set(['Write', 'Edit', 'NotebookEdit'])
+
+/** The file an edit touched, or null when the call names none. */
+export function editFilePath(input: Record<string, unknown>): string | null {
+  const p = input.file_path
+  return typeof p === 'string' && p ? p : null
+}
+
+/**
+ * Lines this tool call put into a file.
+ *
+ * **Churn, not net**, and the distinction is the whole reason this is not
+ * called `linesAdded`. A `Write` re-counts the entire file every time it
+ * rewrites it, and an `Edit` counts what it inserted while ignoring what it
+ * removed. Measured against one real session: this reports +5,642 where the
+ * repository grew by far less.
+ *
+ * That is a fair measure of work done and a wrong measure of repository
+ * growth, so every label that renders it says "written/edited", and git's own
+ * net figure is shown beside it wherever a repository exists. Presenting this
+ * as "lines added" to someone who can run `git diff` is the one way this
+ * feature loses its credibility.
+ *
+ * A call with no `file_path` counts nothing even when its tool is an edit
+ * tool: a malformed call should not be able to inflate a day.
+ */
+export function editLineCount(toolName: string, input: Record<string, unknown>): number {
+  if (!EDIT_TOOLS.has(toolName)) return 0
+  if (!editFilePath(input)) return 0
+  const text =
+    toolName === 'Write'
+      ? input.content
+      : toolName === 'NotebookEdit'
+        ? input.new_source
+        : input.new_string
+  if (typeof text !== 'string') return 0
+  return text.split('\n').length
+}
