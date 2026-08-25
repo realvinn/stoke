@@ -21,7 +21,12 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { buildHeadlessArgs, DEFAULT_HEADLESS_MODEL, isBudgetExhausted } from '../src/main/agent.ts'
+import {
+  buildHeadlessArgs,
+  DEFAULT_HEADLESS_MODEL,
+  isBudgetExhausted,
+  parseEnvelope
+} from '../src/main/agent.ts'
 import {
   APPLY_MAX_BUDGET_USD,
   MAX_DIGEST_CHARS,
@@ -427,10 +432,12 @@ check(
 /*
  * The check above passes even with scanRunOptions's own
  * `input.maxBudgetUsd ?? SCAN_MAX_BUDGET_USD` wiring deleted outright:
- * SCAN_MAX_BUDGET_USD (0.3) and agent.ts's own DEFAULT_MAX_BUDGET_USD (0.3)
- * are numerically identical today, so with the wiring gone `maxBudgetUsd` is
+ * SCAN_MAX_BUDGET_USD (10) and agent.ts's own DEFAULT_MAX_BUDGET_USD (10)
+ * are numerically identical today — they were both 0.3 before 2026-08-25 and
+ * were raised together, so the coincidence survived the change rather than
+ * being introduced by it — and with the wiring gone `maxBudgetUsd` is
  * `undefined` all the way to buildHeadlessArgs, which has its *own*
- * `?? DEFAULT_MAX_BUDGET_USD` fallback — and the argv string comes out "0.3"
+ * `?? DEFAULT_MAX_BUDGET_USD` fallback — and the argv string comes out "10"
  * either way. This checks scanRunOptions's return value directly, one layer
  * before that second fallback gets a chance to paper over the first one being
  * gone, so it fails on the removal regardless of the coincidence.
@@ -453,10 +460,19 @@ check(
  * purpose: a scan is a bounded digest with no MCP and no project context, so
  * a ceiling anywhere near what recall or apply legitimately need could only
  * be a copy of the wrong constant.
+ *
+ * The cap was 1.0 until 2026-08-25 and is now 25, and the reasoning in the
+ * paragraph above no longer applies to it: the three ceilings were deliberately
+ * flattened to $10 as runaway guards rather than cost estimates (see the note
+ * above the constant in runner.ts), so "near what recall needs" stopped being
+ * evidence of a copied constant. The floor is the half of this band that still
+ * protects something — it is what fails if a ceiling is ever set low enough to
+ * abort every scan before its first turn — and it is deliberately unchanged.
+ * The cap is now only a stray-digit guard: 100 fails, 10 passes.
  */
 ok(
   'the scan ceiling is above what would abort every scan before its first turn, not merely above zero',
-  SCAN_MAX_BUDGET_USD >= 0.15 && SCAN_MAX_BUDGET_USD <= 1.0,
+  SCAN_MAX_BUDGET_USD >= 0.15 && SCAN_MAX_BUDGET_USD <= 25,
   String(SCAN_MAX_BUDGET_USD)
 )
 /* The write path states its own figure rather than aliasing the recall one, so
@@ -467,12 +483,12 @@ ok(
    all passing the old band while sitting below the measured cost — a ceiling
    that would exhaust before a write finishes, which is the half-written-accept
    outcome APPLY_MAX_BUDGET_USD's own comment calls the worst outcome in the
-   feature. 0.6 clears the measurement with headroom; the cap stays 3.0,
-   unchanged, wide enough to survive ClickUp being switched on too or the
-   board growing. */
+   feature. 0.6 clears the measurement with headroom and is unchanged; the cap
+   moved from 3.0 to 25 on 2026-08-25 when the ceiling itself was raised to $10,
+   and is now a stray-digit guard rather than a statement about board size. */
 ok(
   'and the write path has its own, equally real, above what would reproduce the bug',
-  APPLY_MAX_BUDGET_USD >= 0.6 && APPLY_MAX_BUDGET_USD <= 3.0,
+  APPLY_MAX_BUDGET_USD >= 0.6 && APPLY_MAX_BUDGET_USD <= 25,
   String(APPLY_MAX_BUDGET_USD)
 )
 
@@ -1613,6 +1629,93 @@ ok(
     writeStop.message
   )
 }
+
+/* ------------------------------------------------- the CLI's output envelope */
+
+/*
+ * `--output-format json` changed shape under us, and every headless run failed.
+ *
+ * The help text still says "json (single result)", and up to `claude` 2.1.221
+ * it was one object. 2.1.237 prints the WHOLE message array instead. Measured
+ * on this machine, 2026-08-25: a successful run came back as an 8-element array
+ * and exited 0, a budget-exhausted one as a 4-element array and exited 1, with
+ * the `result` message last in both.
+ *
+ * parseEnvelope rejected that twice over - the `!Array.isArray` guard threw the
+ * parsed value away, and the brace-scan fallback then sliced from the first `{`
+ * to the last `}` and produced `{...},{...},{...}`, which is not JSON. So a
+ * clean run raised "returned no JSON result" and a non-zero exit reported 400
+ * characters of raw stdout in place of the reason the CLI had just stated in
+ * the envelope it printed.
+ *
+ * Nothing in this suite could see it. Every budget assertion above is handed a
+ * HeadlessResult that has ALREADY been parsed, so all of them stayed green
+ * while no headless run on this machine could complete at all - gotcha 31's
+ * lesson, one layer down: the wire from stdout to that object was the only
+ * untested part, and it was the part that broke.
+ *
+ * Both shapes are asserted, because the documented one may come back.
+ */
+console.log('\nthe result envelope is read in either shape the CLI prints it')
+
+const ARRAY_STDOUT = JSON.stringify([
+  { type: 'system', subtype: 'init', session_id: 'abc', tools: ['Bash'] },
+  { type: 'rate_limit_event', uuid: 'r1' },
+  { type: 'assistant', message: { content: [] } },
+  {
+    type: 'result',
+    subtype: 'error_max_budget_usd',
+    is_error: true,
+    total_cost_usd: 0.1224,
+    terminal_reason: 'budget_exhausted',
+    errors: ['Reached maximum budget ($0.05)']
+  }
+])
+
+const arrayEnvelope = parseEnvelope(ARRAY_STDOUT)
+check('the array shape yields its result message', arrayEnvelope?.subtype, 'error_max_budget_usd')
+ok(
+  'and the refusal reaches isBudgetExhausted intact, rather than reading as silence',
+  isBudgetExhausted({
+    isError: arrayEnvelope?.is_error === true,
+    subtype: (arrayEnvelope?.subtype as string) ?? null,
+    text: (arrayEnvelope?.result as string) ?? '',
+    terminalReason: (arrayEnvelope?.terminal_reason as string) ?? null
+  })
+)
+check(
+  'the documented single-object shape still reads, in case it returns',
+  parseEnvelope('{"type":"result","subtype":"success","is_error":false,"result":"ok"}')?.result,
+  'ok'
+)
+check(
+  'a banner printed either side of the array does not hide it',
+  parseEnvelope(`warning: something\n${ARRAY_STDOUT}\nShell cwd was reset`)?.subtype,
+  'error_max_budget_usd'
+)
+// The array scan runs first, so this is the case that proves it falls through
+// rather than winning outright: the object's own `permission_denials` is the
+// first `[` in the text, and slicing to it must not be mistaken for a payload.
+check(
+  'an object whose own fields hold arrays is not mistaken for one',
+  parseEnvelope('{"type":"result","result":"ok","permission_denials":[{"tool":"Bash"}]}')?.result,
+  'ok'
+)
+// Taken by type, not by position: a version that appends anything after the
+// result would otherwise hand back a message with no `result`, no `is_error`
+// and no `subtype` - which runHeadless reports as a run that succeeded and had
+// nothing to say, the exact lie the budget work above exists to stop.
+check(
+  'the result is found by its type, not by being last',
+  parseEnvelope('[{"type":"result","result":"ok"},{"type":"telemetry"}]')?.result,
+  'ok'
+)
+ok(
+  'an array carrying no result message is not a result',
+  parseEnvelope('[{"type":"system"},{"type":"assistant"}]') === null
+)
+ok('junk is still junk', parseEnvelope('command not found: claude') === null)
+ok('and nothing at all is still nothing', parseEnvelope('   ') === null)
 
 rmSync(dir, { recursive: true, force: true })
 

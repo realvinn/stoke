@@ -160,13 +160,15 @@ ok(
  * everything already tracked. That is spec §2.4.1 verbatim, the exact bug
  * this constant exists to fix. 0.6 is the smallest round number clear of the
  * measurement, with headroom for a real run to vary without landing back
- * under the floor by accident. The cap stays 3.0: roughly 6x the single-board
- * figure, comfortably above both boards at once, and still low enough to
- * catch a stray extra digit on the high end.
+ * under the floor by accident. The cap moved from 3.0 to 25 on 2026-08-25,
+ * when the ceiling itself was raised to $10: recall is the run whose cost
+ * scales with somebody else's data, so a cap derived from one past reading of
+ * one board was the wrong shape of guard. It is now only a stray-extra-digit
+ * guard. The floor is the half of this band that still protects something.
  */
 ok(
   'the recall ceiling is above what would reproduce the budget-exhaustion bug, not merely above zero',
-  RECALL_MAX_BUDGET_USD >= 0.6 && RECALL_MAX_BUDGET_USD <= 3.0,
+  RECALL_MAX_BUDGET_USD >= 0.6 && RECALL_MAX_BUDGET_USD <= 25,
   String(RECALL_MAX_BUDGET_USD)
 )
 /*

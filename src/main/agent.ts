@@ -54,8 +54,19 @@ export const DEFAULT_HEADLESS_MODEL = 'sonnet'
  * Hard ceiling per run, enforced by the CLI itself (`--max-budget-usd`), not by
  * us watching afterwards. A prompt-building bug that accidentally pastes a whole
  * transcript fails loudly against this instead of quietly billing for it.
+ *
+ * $0.30 until 2026-08-25, which was a trap for any future caller: a trivial
+ * sonnet run under `--safe-mode --strict-mcp-config` bills **$0.1224** before
+ * its prompt is considered — 20,239 cache-creation tokens for the system prompt
+ * and tool definitions, at the 1-hour cache-write tier — so the old default was
+ * barely 2x the floor of doing nothing at all. Note also that the cap cannot
+ * prevent that first turn: it is checked *after* the turn completes, so a $0.05
+ * ceiling still billed $0.12 on the run that measured this.
+ *
+ * Every worklog path sets its own ceiling explicitly and never falls through to
+ * this one; see the note above SCAN_MAX_BUDGET_USD in worklog/runner.ts.
  */
-export const DEFAULT_MAX_BUDGET_USD = 0.3
+export const DEFAULT_MAX_BUDGET_USD = 10
 
 /**
  * execFile buffers all of stdout in memory and defaults to 1 MB. `--output-format
@@ -265,24 +276,78 @@ export function buildHeadlessArgs(opts: HeadlessOptions): string[] {
   return args
 }
 
-/** Pull the result envelope out of stdout, tolerating anything printed around it. */
-function parseEnvelope(stdout: string): Record<string, unknown> | null {
+/**
+ * The result message out of a parsed payload, whichever shape it arrived in.
+ *
+ * `--output-format json` is documented as "json (single result)" and, up to
+ * `claude` 2.1.221, was exactly that: one object. **2.1.237 prints the whole
+ * message array instead** — `system/init`, `rate_limit_event`, the assistant
+ * turns, then the `type: "result"` object last. Measured on this machine
+ * against 2.1.237: a successful run returned an 8-element array and exited 0,
+ * a budget-exhausted one returned a 4-element array and exited 1.
+ *
+ * Both shapes are accepted, because the documented one is still what the help
+ * text promises and may come back.
+ *
+ * The result is last by construction, but this scans backwards for the type
+ * rather than taking the tail on faith. A version that appends anything after
+ * it would otherwise hand back a message with no `result`, no `is_error` and
+ * no `subtype`, which runHeadless would report as a successful run that had
+ * nothing to say — the exact failure mode isBudgetExhausted() exists to stop.
+ */
+function resultMessage(v: unknown): Record<string, unknown> | null {
+  if (!v || typeof v !== 'object') return null
+  if (!Array.isArray(v)) return v as Record<string, unknown>
+  for (let i = v.length - 1; i >= 0; i--) {
+    const m: unknown = v[i]
+    if (m && typeof m === 'object' && !Array.isArray(m) && (m as Record<string, unknown>).type === 'result') {
+      return m as Record<string, unknown>
+    }
+  }
+  return null
+}
+
+/**
+ * Pull the result envelope out of stdout, tolerating anything printed around it.
+ *
+ * Exported so the shapes above can be asserted without spawning a CLI. The
+ * version this replaced rejected an array twice over, and the second rejection
+ * is why the failure was unreadable rather than merely wrong: `JSON.parse`
+ * succeeded and the `!Array.isArray` guard threw the value away, then the
+ * brace-scan fallback sliced from the first `{` to the last `}` and produced
+ * `{…},{…},{…}`, which is not JSON. So every headless run failed on 2.1.237 —
+ * a clean run became "returned no JSON result", and a non-zero exit reported
+ * 400 characters of raw stdout instead of the reason the CLI had just stated
+ * in the envelope it printed.
+ */
+export function parseEnvelope(stdout: string): Record<string, unknown> | null {
   const text = stdout.trim()
   if (!text) return null
   try {
-    const v: unknown = JSON.parse(text)
-    if (v && typeof v === 'object' && !Array.isArray(v)) return v as Record<string, unknown>
+    const found = resultMessage(JSON.parse(text) as unknown)
+    if (found) return found
   } catch {
     /* fall through to the scan below */
   }
-  const start = text.indexOf('{')
-  const end = text.lastIndexOf('}')
-  if (start < 0 || end <= start) return null
-  try {
-    const v: unknown = JSON.parse(text.slice(start, end + 1))
-    if (v && typeof v === 'object' && !Array.isArray(v)) return v as Record<string, unknown>
-  } catch {
-    /* not JSON at all */
+  // Anything printed around the JSON — a warning line, a stray banner. The
+  // array is tried FIRST: an array's own first `{` and last `}` are inner
+  // braces, so the object scan would slice the elements out of their brackets
+  // and fail on the commas between them. The reverse is harmless, because an
+  // object containing an array slices to that inner array, which carries no
+  // `type: "result"` element and falls through to the object scan below.
+  for (const [open, close] of [
+    ['[', ']'],
+    ['{', '}']
+  ] as const) {
+    const start = text.indexOf(open)
+    const end = text.lastIndexOf(close)
+    if (start < 0 || end <= start) continue
+    try {
+      const found = resultMessage(JSON.parse(text.slice(start, end + 1)) as unknown)
+      if (found) return found
+    } catch {
+      /* not this shape; try the next */
+    }
   }
   return null
 }

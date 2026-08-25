@@ -899,6 +899,42 @@ scripts/          the verify-*.mts suites, make-icon.cjs
     "sometimes" — it is simply floor. Both were worth fixing and only the first one explains the
     complaint.
 
+41. **`--output-format json` stopped being one object, and it took every headless run with it.**
+    The help text still reads `"json" (single result)`, and up to `claude` 2.1.221 it was one.
+    **2.1.237 prints the whole message array** — `system/init`, `rate_limit_event`, the assistant
+    turns, then the `type: "result"` object last. Measured here on 2026-08-25: a successful run
+    returned an 8-element array and exited 0, a budget-exhausted one a 4-element array and
+    exited 1.
+
+    `agent.ts`'s `parseEnvelope` rejected that **twice**, and the second rejection is why the
+    failure was unreadable rather than merely wrong. `JSON.parse` succeeded and the
+    `!Array.isArray(v)` guard threw the value away; the brace-scan fallback then sliced from the
+    first `{` to the last `}` and produced `{…},{…},{…}`, which is not JSON. So every worklog
+    scan, recall and apply failed: a clean run raised `The headless run returned no JSON result`,
+    and a non-zero exit raised `The headless run failed (exit 1): [{"type":"system"…` — 400
+    characters of raw stdout in place of the reason the CLI had just stated in the envelope it
+    printed. The reported error is therefore never the real one; fix the parse before diagnosing
+    anything else.
+
+    **`npm run check` could not see it, and the reason generalises.** Every budget assertion in
+    `verify-worklog-runner.mts` is handed a `HeadlessResult` that has *already* been parsed, so
+    all of them stayed green while no headless run on this machine could complete. Gotcha 31 one
+    layer down: the wire from stdout to that object was the only untested part of the path, and
+    it was the part that broke. `parseEnvelope` is exported now and both shapes are asserted,
+    array first — an object's own `permission_denials: [...]` is the first `[` in its text, so
+    the array scan has to fall through rather than win, and the result is found by `type` rather
+    than by being last.
+
+    While measuring this, two costs worth carrying. A **trivial** sonnet run under `--safe-mode
+    --strict-mcp-config` cost **$0.1224**, of which $0.1215 was 20,239 cache-*creation* tokens
+    for the system prompt and 26 tool definitions — $6.00/Mtok, the **1-hour** cache-write tier.
+    That is the fixed floor of any sonnet headless run before the prompt is considered, and
+    `--max-budget-usd` cannot prevent it: the cap is checked *after* the turn, so a $0.05 ceiling
+    still billed $0.12. `SCAN_MAX_BUDGET_USD` ($0.30) clears it with a 6000-char digest
+    (~$0.13 total) but not by much. Second, `--allowedTools` prunes the tool schemas actually
+    sent, so the apply and recall runs do **not** pay for all 427 tools of 30 MCP servers —
+    measured at 15,610 cache-creation tokens with the allowlist down to one name.
+
 ## Standing traps when driving the app
 
 Not about any one module, and each cost real time at least once. Carried over from the 0.3.0

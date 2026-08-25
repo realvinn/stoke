@@ -813,20 +813,44 @@ export interface ScanOutcome {
   statusDropped: StatusDrop[]
 }
 
+/*
+ * A note that governs all three worklog ceilings below.
+ *
+ * `--max-budget-usd` is a **runaway guard, not a bill**. On a Claude.ai
+ * subscription the CLI's `total_cost_usd` is notional — it is what the tokens
+ * would have cost at API rates, while what is actually being spent is plan
+ * allowance — so a ceiling tuned to within a few cents of a measured run buys
+ * no saving and costs the whole feature when a run is merely larger than the
+ * one that was measured. Every figure here was raised to $10 on 2026-08-25 at
+ * the user's direction for that reason: high enough that no legitimate run can
+ * reach it, low enough that a prompt-building bug which pasted a whole
+ * transcript still fails loudly instead of looping.
+ *
+ * The cap cannot prevent the *first* turn either way, which is the other half
+ * of why tight ceilings were a false economy. Measured on `claude` 2.1.237: a
+ * trivial sonnet run under `--safe-mode --strict-mcp-config` billed $0.1224
+ * against a $0.05 ceiling, because 20,239 cache-creation tokens for the system
+ * prompt and tool definitions are spent before the budget is ever consulted.
+ * That $0.12 is the floor of any sonnet headless run, so the old $0.30 scan
+ * ceiling was only ~2.3x the floor, not 3x a measured scan as its comment
+ * claimed.
+ */
+
 /**
  * Ceiling on one scan.
  *
- * The scan is hermetic and fixed-size — a bounded digest, no MCP, no CLAUDE.md
- * — and the worst measured run of a real 146-turn session cost $0.107 at
- * default effort (see scanRunOptions). Three times that, so a long session
- * cannot silently truncate, and no more, because a prompt-building bug that
- * pasted a whole transcript must fail loudly rather than bill for it.
+ * The scan is hermetic and fixed-size — a bounded digest (MAX_DIGEST_CHARS),
+ * no MCP, no CLAUDE.md — so it cannot legitimately approach this figure: the
+ * worst measured run of a real 146-turn session cost $0.107 at default effort,
+ * and the fixed floor plus a full 6000-character digest comes to about $0.13.
+ * $10 is therefore pure runaway guard, roughly 75x the largest scan anyone has
+ * measured. It is not an estimate of what a scan costs and must not be read as
+ * one.
  *
- * Unchanged by the recall/apply re-measurement below: the scan never talks to
- * a board, so nothing about a Notion or ClickUp read touches what this run
- * costs, and there is no reason for that measurement to move this figure.
+ * The scan never talks to a board, so nothing about a Notion or ClickUp read
+ * touches what this run costs.
  */
-export const SCAN_MAX_BUDGET_USD = 0.3
+export const SCAN_MAX_BUDGET_USD = 10
 
 /**
  * Ceiling on one destination's write.
@@ -837,22 +861,23 @@ export const SCAN_MAX_BUDGET_USD = 0.3
  * already exist. Deliberately generous for that reason.
  *
  * Measured, not provisional: a Notion-only recall against the real board on
- * 2026-08-07 cost `costUsd 0.5144943` for 30 records returned. $1.50 is
- * roughly 3x that figure — a narrower margin than `RECALL_MAX_BUDGET_USD`'s
- * ~4x, and deliberately so: a write touches one record through one tool,
- * where the measured read pulled 30 across two tools. The margin is over a
- * *Notion-only* read of ~30 records specifically; turning ClickUp on as well,
- * or either board growing well past that count, is what would invalidate it.
+ * 2026-08-07 cost `costUsd 0.5144943` for 30 records returned, and a write
+ * touches one record through one tool where that read pulled 30 across two.
+ * The old $1.50 was ~3x that read; $10 is ~20x it, which is the point — the
+ * margin no longer has to be re-derived every time a board grows, ClickUp is
+ * switched on, or a record turns out to be larger than the ones measured.
+ * Of the three ceilings this is the one where being wrong is worst, so it is
+ * the one that should be furthest from the measurement.
  *
  * Stated independently of the recall ceiling, so tightening one cannot
- * silently move the other. They are close but not equal today; that is a
- * coincidence of two derivations, not a dependency.
+ * silently move the other. They are equal today; that is two derivations
+ * landing on the same round number, not a dependency.
  *
  * This was previously absent entirely: `worklogAccept` called `applyProposal`
  * with no budget and no claudePath (spec §2.4.2), so the write sat on the CLI's
  * own default and auto-detected an executable the user may have set explicitly.
  */
-export const APPLY_MAX_BUDGET_USD = 1.5
+export const APPLY_MAX_BUDGET_USD = 10
 
 /**
  * The exact run a scan performs.

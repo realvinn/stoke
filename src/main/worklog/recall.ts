@@ -346,13 +346,15 @@ export interface RecallOptions {
  * that single figure, so every recall aborted before its first turn (spec
  * §2.4.1) and the feature could never work regardless of configuration.
  *
- * $2.00 is roughly 4x that measured Notion-only read, and roughly 2x an
- * estimated both-boards read — headroom over a *Notion-only* read of ~30
- * records specifically. Turning ClickUp on as well, or letting either board
- * grow well past that count, is what would eat into this margin and is the
- * reason to re-measure rather than assume it still holds.
+ * $10 is roughly 20x that measured Notion-only read. The old $2.00 was ~4x it
+ * and ~2x an estimated both-boards read, which meant the figure had to be
+ * re-measured every time the board grew or ClickUp was switched on. It no
+ * longer does: recall is the run whose cost scales with somebody else's data,
+ * so it is the one that should have the least to do with a single past
+ * measurement. See the note above SCAN_MAX_BUDGET_USD in runner.ts for why a
+ * tight ceiling here was a false economy under a subscription.
  */
-export const RECALL_MAX_BUDGET_USD = 2.0
+export const RECALL_MAX_BUDGET_USD = 10
 
 /**
  * The exact run recall performs.
