@@ -2953,3 +2953,129 @@ body {
     transition: none;
   }
 }
+
+/* --------------------------------------------------------------- activity */
+
+/*
+ * Shaped like `.worklog`: a sibling column inside `.body-row`, never an
+ * overlay, because the docked browser is a native WebContentsView that paints
+ * above every pixel of renderer DOM.
+ */
+.activity {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  min-width: 0;
+  border-left: 1px solid var(--border);
+  background: var(--bg-sunken);
+}
+
+.activity-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  min-width: 0;
+  padding: var(--space-12) var(--space-8);
+  overflow-y: auto;
+}
+
+.activity-periods {
+  display: flex;
+  gap: var(--space-4);
+}
+
+.activity-period {
+  flex: 1 1 0%;
+  min-width: 0;
+  padding: var(--space-4) var(--space-8);
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+
+.activity-period[data-active='true'] {
+  color: var(--text);
+  background: var(--surface-selected);
+  border-color: var(--accent);
+}
+
+.activity-total {
+  margin: 0;
+  font-size: var(--fs-lg);
+  color: var(--text);
+}
+
+.activity-note,
+.activity-empty {
+  margin: 0;
+  font-size: var(--fs-xs);
+  line-height: var(--lh-normal);
+  color: var(--text-faint);
+}
+
+.activity-error {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--danger);
+}
+
+.activity-day {
+  margin-top: var(--space-8);
+  min-width: 0;
+}
+
+.activity-day-head {
+  display: flex;
+  justify-content: space-between;
+  margin: 0 0 var(--space-4);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.activity-row {
+  min-width: 0;
+  padding: var(--space-8) 0;
+  border-top: 1px solid var(--border);
+}
+
+.activity-row-head {
+  display: flex;
+  gap: var(--space-8);
+  align-items: baseline;
+  min-width: 0;
+}
+
+/*
+ * `flex: 1 1 0%` plus `min-width: 0` is what makes a long project name ellipsis
+ * instead of pushing the row wider than the panel. Neither helps on its own,
+ * and neither helps at all unless `.app` keeps its `minmax(0, 1fr)` column —
+ * see the comment there.
+ */
+.activity-project {
+  flex: 1 1 0%;
+  min-width: 0;
+  color: var(--text);
+}
+
+.activity-metric {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+.activity-row-title,
+.activity-commit {
+  margin: var(--space-4) 0 0;
+  min-width: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.activity-commit {
+  color: var(--text-faint);
+}

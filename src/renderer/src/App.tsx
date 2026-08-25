@@ -10,7 +10,6 @@ import type {
   Settings,
   SshHost,
   WorklogProposal,
-  WorklogScanReport,
   WorklogWatchState
 } from '@shared/types'
 import type { UpdateInfo } from '@shared/api'
@@ -28,9 +27,9 @@ import { Sidebar } from './components/Sidebar'
 import { StatusBar } from './components/StatusBar'
 import { TerminalView } from './components/TerminalView'
 import { TitleBar } from './components/TitleBar'
-import { WorklogPanel } from './components/WorklogPanel'
+import { ActivityPanel } from './components/ActivityPanel'
 import { WorklogPrompt } from './components/WorklogPrompt'
-import { baseName, ipcErrorMessage, properNouns } from './lib/format'
+import { baseName, ipcErrorMessage } from './lib/format'
 import { attachExit, forgetPty, initPtyBus } from './lib/ptyBus'
 import { zoomStep } from '@shared/ui'
 import { matchShortcut } from './lib/shortcuts'
@@ -251,7 +250,6 @@ export function App(): React.JSX.Element {
    * second copy of the list is the drift the whole-list rule exists to stop.
    */
   const [worklogWatch, setWorklogWatch] = useState<WorklogWatchState[]>([])
-  const [worklogLastScan, setWorklogLastScan] = useState<WorklogScanReport | null>(null)
   /*
    * What the last automatic scan proposed, and what has been waved past here.
    *
@@ -347,9 +345,7 @@ export function App(): React.JSX.Element {
     })
     void window.stoke.worklog.queue().then(setWorklog)
     const offWatch = window.stoke.worklog.onWatchChanged(setWorklogWatch)
-    const offScanned = window.stoke.worklog.onScanned(setWorklogLastScan)
     void window.stoke.worklog.watch().then(setWorklogWatch)
-    void window.stoke.worklog.lastScan().then(setWorklogLastScan)
 
     void (async () => {
       const s = await window.stoke.settings.get()
@@ -381,7 +377,6 @@ export function App(): React.JSX.Element {
       offWorklog()
       offProposed()
       offWatch()
-      offScanned()
     }
   }, [refreshProjects])
 
@@ -697,18 +692,6 @@ export function App(): React.JSX.Element {
 
   /* --------------------------------------------------------------- worklog */
 
-  const scanWorklog = useCallback(async (): Promise<void> => {
-    const sessionId = tabs.find((t) => t.id === activeTabId)?.sessionId
-    if (!sessionId) return
-    setWorklogBusy(true)
-    try {
-      const res = await window.stoke.worklog.scan(sessionId)
-      if (res.error) setError(properNouns(res.error))
-    } finally {
-      setWorklogBusy(false)
-    }
-  }, [tabs, activeTabId])
-
   const acceptProposal = useCallback(async (id: string): Promise<void> => {
     setWorklogBusy(true)
     try {
@@ -724,18 +707,6 @@ export function App(): React.JSX.Element {
    * writes to two external services; firing them together would race the queue
    * file and multiply the cost spike with no way to stop partway.
    */
-  const acceptAllProposals = useCallback(async (): Promise<void> => {
-    setWorklogBusy(true)
-    try {
-      for (const p of worklog.filter((x) => x.status === 'pending')) {
-        const res = await window.stoke.worklog.accept(p.id)
-        if (res.error) setError(res.error)
-      }
-    } finally {
-      setWorklogBusy(false)
-    }
-  }, [worklog])
-
   /*
    * What the prompt still has to ask about.
    *
@@ -1668,18 +1639,7 @@ export function App(): React.JSX.Element {
         */}
         {worklogOpen && (
           <div style={{ width: 340, display: 'flex', flexShrink: 0 }}>
-            <WorklogPanel
-              proposals={worklog}
-              busy={worklogBusy}
-              watch={worklogWatch.find((w) => w.sessionId === activeTab?.sessionId) ?? null}
-              watchedGroups={settings?.worklogGroups ?? []}
-              lastScan={worklogLastScan}
-              onScan={() => void scanWorklog()}
-              onAccept={(id) => void acceptProposal(id)}
-              onReject={(id) => void window.stoke.worklog.reject(id)}
-              onAcceptAll={() => void acceptAllProposals()}
-              onClose={() => setWorklogOpen(false)}
-            />
+            <ActivityPanel onClose={() => setWorklogOpen(false)} />
           </div>
         )}
       </div>
