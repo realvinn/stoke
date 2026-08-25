@@ -24,6 +24,7 @@ import {
   readActivity,
   readSessionActivity
 } from '../src/main/activity.ts'
+import { commitSubjects } from '../src/main/activityGit.ts'
 
 let failed = 0
 const check = (name: string, ok: boolean, detail = ''): void => {
@@ -234,6 +235,18 @@ check('a transcript older than the period is skipped without being read', stale.
 check('and skipping it is not counted as a failure', stale.skipped === 0, String(stale.skipped))
 
 clearActivityCache()
+
+console.log('\ngit corroboration')
+
+check(
+  'a folder with no repository yields no subjects and does not throw',
+  (await commitSubjects(dir, '2026-08-25')).length === 0
+)
+check(
+  'a path that does not exist at all is handled the same way',
+  (await commitSubjects(join(dir, 'nope'), '2026-08-25')).length === 0
+)
+check('an empty path is not shelled out for', (await commitSubjects('', '2026-08-25')).length === 0)
 
 rmSync(dir, { recursive: true, force: true })
 
