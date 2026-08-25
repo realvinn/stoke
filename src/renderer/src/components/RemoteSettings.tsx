@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { CliRunResult, RemoteState, SelfUpdateState, UpdateInfo } from '@shared/api'
 import { updateButton, updateVerdict } from '../lib/updateVerdict'
+import { FieldHint } from './FieldHint'
 import type { Settings } from '@shared/types'
 
 interface Props {
@@ -187,11 +188,21 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
         />
         <span>
           <span className="field-label">Also listen on Tailscale</span>
-          <span className="field-hint">
+          <FieldHint
+            more={
+              remote.bindLan ? undefined : (
+                <>
+                  Unlike the local network option this opens the port to the tailnet only, which is
+                  a much smaller room. Loopback stays bound either way, so a Cloudflare tunnel keeps
+                  working alongside it.
+                </>
+              )
+            }
+          >
             {remote.bindLan
               ? 'Already covered: listening on the local network includes the tailnet.'
-              : 'Reaches this machine from anywhere your phone can see the tailnet, with no tunnel. Unlike the local network option it opens the port to the tailnet only. Loopback stays bound, so the Cloudflare tunnel keeps working alongside it.'}
-          </span>
+              : 'Reaches this machine from anywhere on your tailnet, with no tunnel.'}
+          </FieldHint>
         </span>
       </label>
 
@@ -211,12 +222,17 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
             if (!e.target.value.trim()) onPatch({ remote: { ...remote, sttUrl: DEFAULT_STT_URL } })
           }}
         />
-        <span className="field-hint">
-          Where speech is transcribed, for dictation on the phone and in the terminal alike. Stoke
-          proxies to it, so it never has to face the internet. Terminal dictation picks up a change
-          immediately; the phone picks it up the next time the remote server starts.{' '}
-          <code>scripts/stt-sidecar.py</code> in this repo runs one locally.
-        </span>
+        <FieldHint
+          more={
+            <>
+              Stoke proxies to it, so it never has to face the internet. Terminal dictation picks up
+              a change immediately; the phone picks it up the next time the remote server starts.{' '}
+              <code>scripts/stt-sidecar.py</code> in this repo runs one locally.
+            </>
+          }
+        >
+          Where speech is transcribed, for the phone and the terminal alike.
+        </FieldHint>
       </div>
 
       <div className="field">
@@ -271,16 +287,24 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
               it - and a fresh profile always starts with no hostname.
             */}
             {!remote.hostname && (
-              <span className="field-hint" data-tone="warning">
-                Run named tunnel needs a Public hostname above — that is the name your tunnel
-                already routes to this port. Quick tunnel works without one.
-              </span>
+              <FieldHint
+                tone="warning"
+                more="That is the name your tunnel already routes to this port. Quick tunnel works without one."
+              >
+                Run named tunnel needs a Public hostname above.
+              </FieldHint>
             )}
 
-            <span className="field-hint">
-              A quick tunnel gets a throwaway trycloudflare.com address with no Access policy in
-              front of it — only the key protects it. Use the named tunnel for anything lasting.
-            </span>
+            <FieldHint
+              more={
+                <>
+                  A quick tunnel gets a throwaway trycloudflare.com address with no Access policy
+                  in front of it, so only the key protects it.
+                </>
+              }
+            >
+              Use the named tunnel for anything lasting.
+            </FieldHint>
 
             <details>
               <summary className="field-hint" style={{ cursor: 'default' }}>
@@ -458,13 +482,19 @@ export function SelfUpdateSettings({
               this only ever governs what THIS build is offered next. It can
               never reach back and make an older install see a beta.
             */}
-            <span className="field-hint">
-              Betas are builds whose riskiest paths have not been exercised yet, so they are not
-              offered unless you ask. Off, Check for updates only ever finds stable releases.
-              This governs what this copy of Stoke is offered from now on — an older install
-              cannot be made to see a beta it has already passed over, so the first beta after
-              turning this on is still a manual download.
-            </span>
+            <FieldHint
+              more={
+                <>
+                  GitHub&rsquo;s &ldquo;latest release&rdquo; excludes prereleases, so with this off
+                  a beta is invisible rather than declined. And because the updater ships inside the
+                  app, this only governs what <em>this</em> build is offered from now on — it cannot
+                  reach back and make an older install see a beta it has already passed over, so the
+                  first beta after turning this on is still a manual download.
+                </>
+              }
+            >
+              Betas have not had their riskiest paths exercised yet.
+            </FieldHint>
           </span>
         </label>
       )}

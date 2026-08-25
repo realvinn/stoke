@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState } from 'react'
 import type { SshHost } from '@shared/types'
+import { FieldHint } from './FieldHint'
 import { IconClose, IconPlus } from './Icons'
 
 interface Props {
@@ -133,22 +134,27 @@ export function HostsSettings({ hosts, suggestions, onChange }: Props): React.JS
   return (
     <div className="field">
       <span className="field-label">Remote machines</span>
-      <span className="field-hint">
-        A remote profile is an alias from your <span className="mono">~/.ssh/config</span> plus
-        what to run once you land. Stoke stores no keys, ports, usernames or jump hosts — ssh
-        reads those from the config every other tool on this machine already uses, so there is
-        nothing here that can quietly drift out of step with it.
-      </span>
-      <span className="field-hint">
-        Two things do not apply to a remote session, both for the same reason. The context meter
-        stays blank, because it reads the transcript Claude Code writes and that file lives on
-        the far machine. Stoke&rsquo;s resume cannot reach one either — which is exactly what the
-        connect command below is for.
-      </span>
-      <span className="field-hint">
-        Passphrase and host-key prompts appear in the terminal and work as they would in any
-        shell. Stoke never stores or asks for a secret itself.
-      </span>
+      <FieldHint
+        more={
+          <>
+            <p>
+              Stoke stores no keys, ports, usernames or jump hosts — ssh reads those from the
+              config every other tool on this machine already uses, so there is nothing here that
+              can quietly drift out of step with it. Passphrase and host-key prompts appear in the
+              terminal and behave as they would in any shell.
+            </p>
+            <p>
+              Two things do not apply to a remote session, both for the same reason: the context
+              meter stays blank and Stoke&rsquo;s resume cannot reach one. Both read the transcript
+              Claude Code writes, and that file lives on the far machine — which is what the
+              connect command below is for.
+            </p>
+          </>
+        }
+      >
+        An alias from your <span className="mono">~/.ssh/config</span>, plus what to run once you
+        land.
+      </FieldHint>
 
       {/* Native datalist: the box stays free-form, so a host that is not in the
           config can still be typed out in full as user@host. */}
@@ -285,14 +291,17 @@ export function HostsSettings({ hosts, suggestions, onChange }: Props): React.JS
               />
               <span>
                 <span className="field-label">Write up work done on this machine</span>
-                <span className="field-hint">
-                  Stoke copies this session&rsquo;s transcript back over the same connection so
-                  the worklog agent can read it, then proposes Notion and ClickUp entries the
-                  same way it does for a local session — and the context meter starts working,
-                  which it cannot without a transcript to read. Nothing is written to Notion or
-                  ClickUp until you accept it, and while this is off nothing is copied off the
-                  machine at all.
-                </span>
+                <FieldHint
+                  more={
+                    <>
+                      The transcript comes back over the same connection, which is also what makes
+                      the context meter work — it cannot read a file that only exists on the far
+                      machine. While this is off, nothing is copied off that machine at all.
+                    </>
+                  }
+                >
+                  Copy this session&rsquo;s transcript back so Stoke can read it.
+                </FieldHint>
               </span>
             </label>
           </div>

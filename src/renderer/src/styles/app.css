@@ -2450,6 +2450,59 @@ body {
   line-height: var(--lh-normal);
 }
 
+/*
+ * The reasoning behind a setting, folded away until asked for.
+ *
+ * A native <details>, styled down to look like a quiet inline link rather than
+ * a disclosure widget — the marker is removed and replaced with a caret that
+ * rotates, because the default triangle reads as a tree control and invites
+ * clicking every one of them.
+ */
+.field-detail {
+  margin-top: var(--space-4);
+}
+
+.field-detail > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+  width: fit-content;
+  color: var(--text-muted);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+/* Safari still paints the disclosure triangle without this. */
+.field-detail > summary::-webkit-details-marker {
+  display: none;
+}
+
+.field-detail > summary::before {
+  content: '';
+  width: 0;
+  height: 0;
+  border-top: 3px solid transparent;
+  border-bottom: 3px solid transparent;
+  border-left: 4px solid currentColor;
+  transition: transform var(--dur-fast) var(--ease);
+}
+
+.field-detail[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.field-detail > summary:hover {
+  color: var(--text);
+}
+
+.field-detail-body {
+  margin-top: var(--space-4);
+  padding-left: var(--space-8);
+  border-left: 1px solid var(--border);
+  color: var(--text-faint);
+}
+
 /* Native checkbox, themed rather than reinvented. */
 .check-row {
   display: flex;
