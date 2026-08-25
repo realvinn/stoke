@@ -1528,23 +1528,32 @@ export function App(): React.JSX.Element {
             `.main-col` stays visible with the browser open. An overlay would
             not.
           */}
-          <WorklogPrompt
-            proposals={promptQueue}
-            busy={worklogBusy}
-            onAccept={(id) => {
-              // Dropped from the strip at once. The write takes tens of seconds
-              // and the answer has already been given; leaving the question up
-              // while it runs invites a second press.
-              setAsked((prev) => new Set(prev).add(id))
-              void acceptProposal(id)
-            }}
-            onSkip={(id) => setAsked((prev) => new Set(prev).add(id))}
-            onReviewAll={() => {
-              setWorklogOpen(true)
-              setProposedIds([])
-            }}
-            onDismiss={() => setProposedIds([])}
-          />
+          {/*
+            Suppressed while the review panel is open. The strip and the panel
+            draw the same proposals from the same queue, and the strip's own
+            "Review all" button just opens that panel — so with it open the strip
+            is a duplicate of what is already on screen, and one that costs a row
+            of height in `.main-col` (see gotcha 14) every time a scan lands.
+          */}
+          {!worklogOpen && (
+            <WorklogPrompt
+              proposals={promptQueue}
+              busy={worklogBusy}
+              onAccept={(id) => {
+                // Dropped from the strip at once. The write takes tens of seconds
+                // and the answer has already been given; leaving the question up
+                // while it runs invites a second press.
+                setAsked((prev) => new Set(prev).add(id))
+                void acceptProposal(id)
+              }}
+              onSkip={(id) => setAsked((prev) => new Set(prev).add(id))}
+              onReviewAll={() => {
+                setWorklogOpen(true)
+                setProposedIds([])
+              }}
+              onDismiss={() => setProposedIds([])}
+            />
+          )}
 
           <div
             className="term-stack"
