@@ -15,3 +15,7 @@ release/
 # commands and agent definitions in it are shared — but this one file holds
 # whatever permissions and paths a particular desk happened to approve.
 .claude/settings.local.json
+
+# Stray build output. electron-vite emits the real bundle to out/main/index.js;
+# this root copy is regenerated and must never be committed.
+index.js
