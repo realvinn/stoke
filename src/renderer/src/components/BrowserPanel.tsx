@@ -133,9 +133,18 @@ export function BrowserPanel({ state, bookmarks, onAskClaude, onClose }: Props):
 
   return (
     <section className="browser" style={{ width: '100%' }} aria-label="Browser">
+      {/*
+        The tab strip is a whole row, so it only exists when there is more than
+        one tab to put in it.
+        
+        Measured before: two stacked chrome rows came to about 190 CSS px above
+        the page, in a panel that is often half the window wide -- and the
+        common case is one tab, where the strip was a row of chrome showing a
+        single item whose title the address bar underneath already implies.
+        Opening a second tab brings it back.
+      */}
+      {state.tabs.length > 1 && (
       <div className="browser-tabs">
-        {/* Only the tabs. The new-tab button, the spacer and the four page
-            actions are controls in the same strip, not tabs in the list. */}
         <div className="btablist" role="tablist" aria-label="Browser tabs">
           {state.tabs.map((tab) => (
             <div
@@ -180,47 +189,8 @@ export function BrowserPanel({ state, bookmarks, onAskClaude, onClose }: Props):
           ))}
         </div>
 
-        <button className="icon-btn" onClick={() => window.stoke.browser.newTab()} title="New tab">
-          <IconPlus />
-          <span className="sr-only">New tab</span>
-        </button>
-
-        <span style={{ flex: 1 }} />
-
-        <button
-          className="icon-btn"
-          onClick={() => onAskClaude(state.url, state.title)}
-          disabled={!state.url || state.url === 'about:blank'}
-          title="Ask Claude about this page"
-        >
-          <IconAsk />
-          <span className="sr-only">Ask Claude about this page</span>
-        </button>
-        <button
-          className="icon-btn"
-          onClick={() => window.stoke.browser.zoom(state.zoom - ZOOM_STEP)}
-          title="Zoom out"
-        >
-          <IconMinus />
-          <span className="sr-only">Zoom out</span>
-        </button>
-        <button
-          className="icon-btn"
-          onClick={() => window.stoke.browser.zoom(state.zoom + ZOOM_STEP)}
-          title="Zoom in"
-        >
-          <IconPlus />
-          <span className="sr-only">Zoom in</span>
-        </button>
-        <button
-          className="icon-btn"
-          onClick={() => window.stoke.browser.devtools()}
-          title="Toggle devtools"
-        >
-          <IconCode />
-          <span className="sr-only">Toggle devtools</span>
-        </button>
       </div>
+      )}
 
       <div className="browser-bar">
         <button
@@ -285,6 +255,15 @@ export function BrowserPanel({ state, bookmarks, onAskClaude, onClose }: Props):
           ))}
         </datalist>
 
+        {/*
+          Grouped by what they act on, which is the ordering the old layout did
+          not have: zoom sat on the TAB row while find and close sat here, so
+          two controls that do the same kind of thing were a row apart.
+
+          Page actions first, then the two that act on the panel itself. `.bar-group`
+          shrinks before the address bar does.
+        */}
+        <div className="browser-actions">
         <button
           className="icon-btn"
           aria-pressed={state.bookmarked}
@@ -294,6 +273,39 @@ export function BrowserPanel({ state, bookmarks, onAskClaude, onClose }: Props):
         >
           <IconStar />
           <span className="sr-only">{state.bookmarked ? 'Remove bookmark' : 'Bookmark'}</span>
+        </button>
+        <button
+          className="icon-btn"
+          onClick={() => onAskClaude(state.url, state.title)}
+          disabled={!state.url || state.url === 'about:blank'}
+          title="Ask Claude about this page"
+        >
+          <IconAsk />
+          <span className="sr-only">Ask Claude about this page</span>
+        </button>
+        <button
+          className="icon-btn"
+          onClick={() => window.stoke.browser.zoom(state.zoom - ZOOM_STEP)}
+          title="Zoom out"
+        >
+          <IconMinus />
+          <span className="sr-only">Zoom out</span>
+        </button>
+        <button
+          className="icon-btn"
+          onClick={() => window.stoke.browser.zoom(state.zoom + ZOOM_STEP)}
+          title="Zoom in"
+        >
+          <IconPlus />
+          <span className="sr-only">Zoom in</span>
+        </button>
+        <button
+          className="icon-btn"
+          onClick={() => window.stoke.browser.devtools()}
+          title="Toggle devtools"
+        >
+          <IconCode />
+          <span className="sr-only">Toggle devtools</span>
         </button>
         <button
           className="icon-btn"
@@ -312,10 +324,19 @@ export function BrowserPanel({ state, bookmarks, onAskClaude, onClose }: Props):
           <IconExternal />
           <span className="sr-only">Open externally</span>
         </button>
+        <button
+          className="icon-btn"
+          onClick={() => window.stoke.browser.newTab()}
+          title="New tab"
+        >
+          <IconPlus />
+          <span className="sr-only">New tab</span>
+        </button>
         <button className="icon-btn" onClick={onClose} title="Close browser panel">
           <IconClose />
           <span className="sr-only">Close browser panel</span>
         </button>
+        </div>
       </div>
 
       {findOpen && (

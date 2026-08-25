@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, shell } from 'electron'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { CH } from '@shared/ipc'
@@ -11,6 +11,7 @@ import type {
   SshHost,
   StatusLineSnapshot,
   StoredTabs,
+  Theme,
   WorklogScanOutcome,
   WorklogScanReport,
   WorklogWatchState
@@ -603,9 +604,29 @@ async function runWorklogScan(sessionId: string, auto: boolean): Promise<Worklog
   }
 }
 
+/**
+ * Tell Chromium which way round the app is.
+ *
+ * This is not about Stoke's own chrome, which is CSS custom properties and
+ * needs nothing from the OS. It is about the docked browser: a page's
+ * `prefers-color-scheme` resolves against `nativeTheme`, which defaults to
+ * 'system' and was never set -- so a site that honours the query rendered to
+ * whatever macOS was set to and could disagree with the window around it. A
+ * white page inside a dark shell, or the reverse, with nothing in the app to
+ * explain it.
+ *
+ * It also decides the default form-control and scrollbar rendering inside that
+ * view, which the renderer already handles for itself via `colorScheme` on
+ * :root (lib/theme.ts) but the WebContentsView does not inherit.
+ */
+function applyNativeTheme(theme: Theme): void {
+  nativeTheme.themeSource = theme.appearance
+}
+
 function createWindow(): void {
   const settings = getSettings()
   const theme = resolveTheme(settings.themeId, settings.customThemes)
+  applyNativeTheme(theme)
 
   win = new BrowserWindow({
     width: 1480,
@@ -1158,7 +1179,15 @@ function registerIpc(): void {
        * panel twice pays once.
        */
       const { default: QRCode } = await import('qrcode')
-      qr = await QRCode.toDataURL(url, { margin: 1, width: 320, color: { dark: '#14110f', light: '#f2e9e1' } })
+      const s = getSettings()
+      const qrTheme = resolveTheme(s.themeId, s.customThemes)
+      qr = await QRCode.toDataURL(url, {
+        margin: 1,
+        width: 320,
+        // Was Ember's bg and text, hardcoded -- so the code stayed dark-on-warm
+        // inside a light window. A QR reader does not care, but the panel does.
+        color: { dark: qrTheme.colors.text, light: qrTheme.colors.bg }
+      })
     } catch {
       qr = null
     }
@@ -1245,11 +1274,12 @@ function registerIpc(): void {
      * the accent only, which the overlay does not use, so the theme is the
      * trigger that matters.
      */
+    const nextTheme = resolveTheme(next.themeId, next.customThemes)
+    applyNativeTheme(nextTheme)
     if (isWindows && win && !win.isDestroyed()) {
-      const theme = resolveTheme(next.themeId, next.customThemes)
       win.setTitleBarOverlay({
-        color: theme.colors.bgSunken,
-        symbolColor: theme.colors.textMuted,
+        color: nextTheme.colors.bgSunken,
+        symbolColor: nextTheme.colors.textMuted,
         height: TITLEBAR_H
       })
     }
