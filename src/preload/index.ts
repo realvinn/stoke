@@ -142,6 +142,9 @@ const api: StokeApi = {
     configHosts: () => ipcRenderer.invoke(CH.sshHosts)
   },
 
+  activity: {
+    read: (from: number, to: number) => ipcRenderer.invoke(CH.activityRead, from, to)
+  },
   worklog: {
     queue: () => ipcRenderer.invoke(CH.worklogQueue),
     scan: (sessionId: string) => ipcRenderer.invoke(CH.worklogScan, sessionId),

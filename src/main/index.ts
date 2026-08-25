@@ -1,6 +1,6 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { CH } from '@shared/ipc'
 import { resolveTheme } from '@shared/themes'
 import type {
@@ -19,6 +19,8 @@ import { EmbeddedBrowser } from './browser.ts'
 import { probeClaude } from './cli.ts'
 import { ContextWatcher } from './context.ts'
 import { findSessionFile, listProjects, listSessions } from './projects.ts'
+import { IDLE_GAP_MS, readActivity, type ActivitySessionInput } from './activity.ts'
+import { commitSubjects } from './activityGit.ts'
 import { manualProjectPatch, projectMetaPatch } from './projectMeta.ts'
 import { normalizePath, pathRulesFor } from '../shared/paths.ts'
 import { parseSession, readTranscript } from './sessionFile.ts'
@@ -37,7 +39,7 @@ import {
   WorklogBudgetError,
   WorklogParseError
 } from './worklog/runner.ts'
-import { groupForCwd } from './worklog/gate.ts'
+import { groupForCwd, isWatchedGroup } from './worklog/gate.ts'
 import { watchStateFrom } from './worklog/watch.ts'
 import { AutoScanner } from './worklog/autoscan.ts'
 import { autoScanStateFile, readAutoScanState, writeAutoScanState } from './worklog/autoscanStore.ts'
@@ -1350,6 +1352,79 @@ function registerIpc(): void {
     // `message` is null there too.
     const error = report.outcome === 'nothing' ? null : report.message
     return { added: report.added, error }
+  })
+
+  /*
+   * The work report: what was worked on, per day and per project.
+   *
+   * Reads only what is already on this machine — Claude Code's own transcripts,
+   * plus git where a repository happens to exist. No model runs and nothing
+   * leaves the laptop, which is why it answers in milliseconds where the
+   * worklog's scan-and-write path took tens of seconds and real money.
+   */
+  ipcMain.handle(CH.activityRead, async (_e, from: number, to: number) => {
+    const settings = getSettings()
+    const projects = await listProjects(settings)
+
+    /*
+     * Display names are derived here rather than in the renderer because they
+     * have to be unique: `commits` is keyed `project|day`, so two watched
+     * folders sharing a leaf name would collide and one project's commits would
+     * appear under the other. `projectRoots` holds both `/dev/work` and
+     * `/dev/work/Work` on this machine, which is exactly the shape that
+     * produces a duplicate leaf.
+     */
+    const nameFor = new Map<string, string>()
+    const taken = new Set<string>()
+    const watched: string[] = []
+    for (const project of projects) {
+      const group = groupForCwd(project.path, projects, settings.projectRoots)
+      // The same gate the worklog uses, so the existing setting keeps meaning
+      // what it meant — and so personal work cannot reach a screen whose whole
+      // purpose is being shown to somebody else.
+      if (!isWatchedGroup(group, settings.worklogGroups)) continue
+      watched.push(project.path)
+      let name = basename(project.path) || project.path
+      if (taken.has(name)) name = `${basename(dirname(project.path))}/${name}`
+      taken.add(name)
+      nameFor.set(project.path, name)
+    }
+
+    const inputs: ActivitySessionInput[] = []
+    for (const path of watched) {
+      for (const session of await listSessions(path)) {
+        inputs.push({
+          sessionId: session.id,
+          file: session.file,
+          project: nameFor.get(path) ?? path,
+          title: session.title,
+          // Lets readActivity skip a transcript last written before the period
+          // without opening it at all.
+          modified: session.modified
+        })
+      }
+    }
+
+    const { slices, skipped } = await readActivity(inputs, { from, to })
+
+    /*
+     * Git is additive and must never hold the report up: every lookup runs in
+     * parallel and each carries its own timeout inside commitSubjects. A slow
+     * or missing repository costs its own subjects and nothing else.
+     */
+    const pathFor = new Map([...nameFor].map(([path, name]) => [name, path]))
+    const wanted = [...new Set(slices.map((s) => `${s.project}|${s.day}`))]
+    const resolved = await Promise.all(
+      wanted.map(async (key): Promise<[string, string[]]> => {
+        const cut = key.lastIndexOf('|')
+        const dir = pathFor.get(key.slice(0, cut))
+        return [key, dir ? await commitSubjects(dir, key.slice(cut + 1)) : []]
+      })
+    )
+    const commits: Record<string, string[]> = {}
+    for (const [key, list] of resolved) if (list.length) commits[key] = list
+
+    return { slices, commits, skipped, idleGapMs: IDLE_GAP_MS }
   })
 
   ipcMain.handle(CH.worklogLastScan, () => lastScanReport)

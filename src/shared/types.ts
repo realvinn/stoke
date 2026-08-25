@@ -777,3 +777,37 @@ export interface StoredTabs {
   activeIndex: number
   tabs: StoredTab[]
 }
+
+/**
+ * One project's work on one local day.
+ *
+ * No `node:` import reaches this file, and must not: both tsconfigs compile
+ * `src/shared/**` and the web one carries no node types, so a node import here
+ * fails the *web* half of typecheck while the main half stays green — and the
+ * error names a file nobody was editing.
+ */
+export interface ActivitySlice {
+  /** Local YYYY-MM-DD. */
+  day: string
+  project: string
+  sessionId: string
+  /** Claude Code's own `aiTitle`, when it has written one. */
+  title: string | null
+  activeMs: number
+  /**
+   * Lines written or edited — churn, not net repository growth. A rewrite
+   * counts the whole file again. Every label that renders this must say so.
+   */
+  linesWritten: number
+  files: string[]
+}
+
+export interface ActivityReport {
+  slices: ActivitySlice[]
+  /** Commit subjects keyed `project|day`. Absent for a folder with no repo. */
+  commits: Record<string, string[]>
+  /** Transcripts that could not be read; a partial total must say it is partial. */
+  skipped: number
+  /** Stated in the UI, so the number can be defended rather than merely quoted. */
+  idleGapMs: number
+}

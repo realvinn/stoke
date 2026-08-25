@@ -1,5 +1,6 @@
 import type { CreateProfileInput, ProfilePlan } from './profiles'
 import type {
+  ActivityReport,
   BrowserState,
   CliInfo,
   ContextSnapshot,
@@ -350,6 +351,15 @@ export interface StokeApi {
   ssh: {
     /** Host aliases read from the user's own ~/.ssh/config, for the picker. */
     configHosts(): Promise<string[]>
+  }
+
+  /**
+   * What was worked on, per day and per project. Reads transcripts and git on
+   * this machine — no model call, no network, nothing leaves the laptop.
+   */
+  activity: {
+    /** `from`/`to` are epoch ms; both ends are inclusive whole local days. */
+    read(from: number, to: number): Promise<ActivityReport>
   }
 
   /**

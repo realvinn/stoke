@@ -137,6 +137,10 @@ export const CH = {
   worklogScanned: 'worklog:scanned',
   worklogLastScan: 'worklog:lastScan',
 
+  // activity
+  /** The work report: hours, lines and titles per day. Read-only, no model. */
+  activityRead: 'activity:read',
+
   // clipboard
   clipboardRead: 'clipboard:read',
   clipboardWrite: 'clipboard:write',
