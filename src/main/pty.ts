@@ -257,6 +257,25 @@ export class PtyManager {
       env.COLORTERM = 'truecolor'
       // Tell Claude Code it is inside a wrapper, in case that ever matters to it.
       env.TERM_PROGRAM = 'Stoke'
+      /*
+       * Which way round the colours are, in the one form a TUI already reads.
+       *
+       * `fg;bg` as colour indices. Claude Code parses the LAST field and calls
+       * anything <= 6 or === 8 dark, so 15 means a light background and 0 a
+       * dark one. It consults this only when its own OSC 11 query goes
+       * unanswered, which is why this is a backstop rather than the mechanism:
+       * xterm.js answers that query truthfully from the theme background, so
+       * the query almost always wins. Setting it costs nothing and covers a
+       * terminal-side failure that would otherwise leave the CLI guessing dark
+       * inside a light window.
+       *
+       * Not set for an SSH session, where it would be a lie: the variable does
+       * not cross ssh without SendEnv/AcceptEnv, so the far end would either
+       * not see it or see it describing the wrong machine's terminal.
+       */
+      if (!opts.host && opts.appearance) {
+        env.COLORFGBG = opts.appearance === 'light' ? '0;15' : '15;0'
+      }
 
       proc = nodePty.spawn(spec.file, spec.args, {
         name: 'xterm-256color',

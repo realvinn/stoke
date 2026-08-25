@@ -1,5 +1,6 @@
 import type { Theme } from '@shared/types'
 import type { Profile } from '@shared/profiles'
+import { deriveAccent } from '@shared/accent'
 
 /** camelCase token -> `--kebab-case` custom property. */
 function cssVar(key: string): string {
@@ -40,12 +41,30 @@ export function applyTheme(theme: Theme): void {
  */
 export function applyAppearance(theme: Theme, profile: Profile | null): void {
   applyTheme(theme)
-  if (!profile) return
   const root = document.documentElement
-  root.style.setProperty('--accent', profile.accent)
-  root.style.setProperty('--accent-hover', profile.accentHover)
-  root.style.setProperty('--accent-soft', profile.accentSoft)
-  root.style.setProperty('--accent-contrast', profile.accentContrast)
+
+  /*
+   * Every accent token is DERIVED, and it is derived whether or not a profile
+   * is active. Two reasons, both of which used to be bugs.
+   *
+   * First, a profile's stored accent is tuned for a dark ground -- all eight
+   * measured 1.43-2.66:1 against the light theme's page -- and this function
+   * used to write it straight through with no appearance check. `--accent` is
+   * the app-wide focus ring, the context ring's stroke and the tab indicator,
+   * so the keyboard focus indicator was effectively invisible in light mode.
+   *
+   * Second, `--accent-ink` has to exist on every path. `app.css` declares no
+   * fallback for any colour token, so a `var(--accent-ink)` that resolves to
+   * nothing is invalid at computed-value time and the rule vanishes silently --
+   * the same failure mode the `removeProperty` bug above had. Deriving inside
+   * the `if (!profile)` branch would have left it unset on the default path.
+   */
+  const tokens = deriveAccent(profile?.accent ?? theme.colors.accent, theme.appearance, theme.colors.bg)
+  root.style.setProperty('--accent', tokens.accent)
+  root.style.setProperty('--accent-hover', tokens.accentHover)
+  root.style.setProperty('--accent-soft', tokens.accentSoft)
+  root.style.setProperty('--accent-contrast', tokens.accentContrast)
+  root.style.setProperty('--accent-ink', tokens.accentInk)
 }
 
 export function applyTypography(fontFamily: string, fontSize: number, uiScale: number): void {

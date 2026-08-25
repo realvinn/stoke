@@ -110,6 +110,21 @@ button {
      mirrored as SELECTED_ACCENT_MIX in scripts/verify-color.mts; change one and
      you must change the other, which is what that assertion is for. */
   --surface-selected: color-mix(in srgb, var(--accent) 18%, var(--surface-hover));
+  /* --accent vs --accent-ink. Neither is declared here: both are written onto
+     :root by lib/theme.ts's applyAppearance, which is the single owner of every
+     colour (see its comment before adding a fallback here).
+
+     --accent is a FILL and is the brand colour verbatim -- the primary button,
+     a profile chip, the accent tints mixed above. --accent-ink is the same
+     accent as a FOREGROUND, moved in lightness until it clears both 4.5:1 and
+     APCA Lc 60 against --bg, and it is what every `color:`, focus ring, thin
+     bar, stroke and 1px border uses.
+
+     They are separate because the two roles want opposite things and one value
+     cannot serve both across appearances. A vivid accent on a light page is a
+     fine button and an illegible label: all eight profile accents measured
+     1.43-2.66:1 against Daylight's page while driving :focus-visible below.
+     Deriving the fill instead would have restyled three shipped swatches. */
   /* The disclosure chevron's box, and the metadata picker's. Four rules have to
      agree with it - the two buttons, the project metadata's indent and where the
      session list's guide rule falls. It was an inline style in Sidebar.tsx,
@@ -206,7 +221,7 @@ body {
 /* --------------------------------------------------------- focus & shared */
 
 :focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--accent-ink);
   outline-offset: 2px;
   border-radius: var(--r-sm);
 }
@@ -472,7 +487,7 @@ body {
   position: absolute;
   inset: -1px -1px auto -1px;
   height: 2px;
-  background: var(--accent);
+  background: var(--accent-ink);
   border-radius: var(--r-full);
 }
 
@@ -483,7 +498,7 @@ body {
 /* Where it will land. An inset outline rather than a background, so it does
    not read as hover on the tab the pointer happens to be over. */
 .tab[data-drop='true'] {
-  outline: 1px dashed var(--accent);
+  outline: 1px dashed var(--accent-ink);
   outline-offset: -1px;
 }
 
@@ -769,7 +784,7 @@ body {
 
 .icon-btn[aria-pressed='true'] {
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 
 /* Watching: something may appear here without being asked for. Full-strength
@@ -782,7 +797,7 @@ body {
    the tab strip means "the worklog is watching this session" and nothing else,
    so a second red here would put the one meaning back into doubt. */
 .icon-btn[data-worklog='badged'] {
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 
 .icon-btn[data-worklog='badged']::after {
@@ -793,7 +808,7 @@ body {
   width: 0.375rem;
   height: 0.375rem;
   border-radius: var(--r-full);
-  background: var(--accent);
+  background: var(--accent-ink);
 }
 
 .input {
@@ -822,7 +837,7 @@ body {
 
 .input:focus {
   outline: none;
-  border-color: var(--accent);
+  border-color: var(--accent-ink);
   background: var(--bg);
 }
 
@@ -855,7 +870,7 @@ body {
 
 .select:focus {
   outline: none;
-  border-color: var(--accent);
+  border-color: var(--accent-ink);
 }
 
 /* Segmented control — used for permission mode. */
@@ -915,7 +930,7 @@ body {
 
 .pill[data-tone='accent'] {
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 
 .pill[data-tone='danger'] {
@@ -1182,7 +1197,7 @@ body {
 }
 
 .project-emoji-option[aria-pressed='true'] {
-  border-color: var(--accent);
+  border-color: var(--accent-ink);
   background: var(--accent-soft);
 }
 
@@ -1295,7 +1310,7 @@ body {
   inset: 0;
   transform-origin: left center;
   transform: scaleX(var(--meter-scale));
-  background: var(--accent);
+  background: var(--accent-ink);
   transition: transform var(--dur-slow) var(--ease);
 }
 
@@ -1348,7 +1363,7 @@ body {
 }
 
 .ring .ring-fill {
-  stroke: var(--accent);
+  stroke: var(--accent-ink);
   transition: stroke-dashoffset var(--dur-slow) var(--ease);
 }
 
@@ -1439,7 +1454,7 @@ body {
 
 .copy-strip {
   inset: auto var(--space-12) var(--space-12) auto;
-  border-color: var(--accent);
+  border-color: var(--accent-ink);
 }
 
 /* The chord, drawn as a key rather than described in the sentence: it is the
@@ -1477,7 +1492,7 @@ body {
 }
 
 .voice-dot[data-state='working'] {
-  background: var(--accent);
+  background: var(--accent-ink);
 }
 
 .voice-dot[data-state='error'] {
@@ -2021,7 +2036,7 @@ body {
   padding: 0.0625rem var(--space-8);
   border-radius: var(--r-full);
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--accent-ink);
   font-size: var(--fs-xs);
   font-weight: 500;
   text-decoration: none;
@@ -2077,7 +2092,7 @@ body {
 
 .worklog-status[data-tone='next'] {
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--accent-ink);
   font-weight: 500;
 }
 
@@ -2110,7 +2125,7 @@ body {
   padding: 0.0625rem var(--space-8);
   border-radius: var(--r-full);
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--accent-ink);
   font-size: var(--fs-xs);
   font-weight: 600;
   letter-spacing: 0.02em;
@@ -2181,12 +2196,12 @@ body {
  */
 .worklog-item .btn[data-variant='ghost'][data-size='sm'] {
   padding-inline: 0;
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 
 .worklog-item .btn[data-variant='ghost'][data-size='sm']:hover:not(:disabled) {
   background: transparent;
-  color: var(--accent);
+  color: var(--accent-ink);
   text-decoration: underline;
 }
 
@@ -2643,7 +2658,7 @@ body {
 }
 
 .theme-swatch[aria-pressed='true'] {
-  border-color: var(--accent);
+  border-color: var(--accent-ink);
   background: var(--accent-soft);
 }
 
@@ -2762,7 +2777,7 @@ body {
   width: 0.875rem;
   height: 0.875rem;
   border: 2px solid var(--border-strong);
-  border-top-color: var(--accent);
+  border-top-color: var(--accent-ink);
   border-radius: var(--r-full);
   animation: spin 700ms linear infinite;
 }
@@ -2964,7 +2979,7 @@ body {
   border-radius: var(--r-full);
   transform-origin: left center;
   transform: scaleX(var(--usage-fill, 0));
-  background: var(--accent);
+  background: var(--accent-ink);
   transition: transform var(--dur-slow) var(--ease);
 }
 
@@ -3052,7 +3067,7 @@ body {
 .activity-period[data-active='true'] {
   color: var(--text);
   background: var(--surface-selected);
-  border-color: var(--accent);
+  border-color: var(--accent-ink);
 }
 
 .activity-total {

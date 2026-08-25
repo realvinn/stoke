@@ -9,11 +9,20 @@
  * existed, and dropped every group holding a single project — so on this machine
  * a profile the user had just made could not appear at all, by either route.
  *
+ * The colour blocks at the end are the third bug, and the one this suite was
+ * complicit in. It measured `accentContrast` against `accent` — the ink on the
+ * fill, a pair that never touches the page — and imported BUILT_IN_THEMES only
+ * to print a number it did not assert. So nothing compared a profile colour to
+ * the ground it is drawn on, and all eight swatches measured 1.43-2.52:1
+ * against the light theme's page — the range the raw-swatch block below still
+ * prints — while `npm run check` stayed green. CLAUDE.md gotcha 31.
+ *
  *   node scripts/verify-profiles.mts
  */
 import type { ProfileConfig, Project, Settings } from '../src/shared/types.ts'
 import { profileIdForCwd } from '../src/shared/paths.ts'
-import { parseColor, perceptualDistance, type Rgb } from '../src/shared/color.ts'
+import { apcaContrast, parseColor, perceptualDistance, type Rgb } from '../src/shared/color.ts'
+import { deriveAccent } from '../src/shared/accent.ts'
 import { BUILT_IN_THEMES } from '../src/shared/themes.ts'
 import {
   PROFILES,
@@ -1276,6 +1285,187 @@ console.log(
  * to punish a palette tweak, close enough that a collapse to 0 cannot pass.
  */
 check('no two swatches a user can pick are the same colour', nearestSwatches >= 0.04, true)
+
+console.log('\nevery swatch against every theme, in both appearances')
+/*
+ * The assertion the invisible focus ring walked straight through, and the
+ * reason src/shared/accent.ts exists at all. `--accent-ink` is the
+ * `:focus-visible` outline, the context ring's stroke, the tab indicator and
+ * eight `color:` rules in app.css, so it is judged against the page rather
+ * than against the fill it used to be judged against.
+ *
+ * The four named seeds wear the first four swatches byte for byte, so
+ * PROFILE_SWATCHES is the entire set of colours a profile can end up in — not
+ * a sample of it. The UI has no free-form colour input precisely so that stays
+ * true, which is the same argument the block above makes for `wearable`.
+ */
+/*
+ * Mirrored from src/shared/accent.ts, which exports none of them. If you
+ * change one, change the other — this is the assertion that catches it.
+ */
+const ACCENT_LC = 60
+const ACCENT_WCAG = 4.5
+const AT_FLOOR_TOLERANCE = 2
+const INK_LIGHT = '#ffffff'
+const INK_DARK = '#12100e'
+/*
+ * An outline is a non-text UI component, so WCAG 1.4.11's bar is 3:1 rather
+ * than 4.5:1. `--bg-sunken` is the ground under the sidebar and the tab strip,
+ * where most focusable chrome actually sits, and `deriveAccent` deliberately
+ * solves against `--bg` instead (accent.ts:176-183, about 4 Lc apart) — so the
+ * sunken ground is the one nothing solves for and the one worth pinning.
+ */
+const RING_WCAG = 3
+
+const lcOf = (fg: string, bg: string): number => Math.abs(apcaContrast(rgb(fg), rgb(bg)))
+
+for (const theme of BUILT_IN_THEMES) {
+  for (const s of PROFILE_SWATCHES) {
+    const d = deriveAccent(s.accent, theme.appearance, theme.colors.bg)
+    const inkWcag = ratio(d.accentInk, theme.colors.bg)
+    const inkLc = lcOf(d.accentInk, theme.colors.bg)
+    const ringWcag = ratio(d.accentInk, theme.colors.bgSunken)
+    const labelLc = lcOf(d.accentContrast, d.accent)
+    /*
+     * Two Lc floors, and the split is the promise rather than a fudge.
+     * `AT_FLOOR_TOLERANCE` exists so a swatch already sitting a hair under Lc
+     * 60 on a dark page stays exactly as authored — measured here, Ember lands
+     * at 59.18-59.41 and Blossom at 58.70-58.93 across the three dark themes,
+     * and moving them would change every dark theme's accent by one 8-bit step
+     * for no legibility gain. So the tolerance is spendable only on KEEPING the
+     * brand colour: an ink `deriveAccent` actually moved must clear the full Lc
+     * 60, and the ones it moves measure 60.02 at worst. A flat 58 everywhere
+     * would let a derived ink land in that band too, which the tolerance was
+     * never for.
+     */
+    const kept = d.accentInk.toLowerCase() === s.accent.toLowerCase()
+    const lcFloor = kept ? ACCENT_LC - AT_FLOOR_TOLERANCE : ACCENT_LC
+    const why = [
+      inkWcag >= ACCENT_WCAG ? '' : `ink ${inkWcag.toFixed(2)}:1 on the page`,
+      inkLc >= lcFloor ? '' : `ink Lc ${inkLc.toFixed(1)} on the page, floor ${lcFloor}`,
+      ringWcag >= RING_WCAG ? '' : `ring ${ringWcag.toFixed(2)}:1 on the sunken ground`,
+      labelLc >= ACCENT_LC ? '' : `label Lc ${labelLc.toFixed(1)} on the fill`
+    ].filter((m) => m !== '')
+    if (why.length) failures++
+    console.log(
+      `  ${why.length ? 'FAIL' : 'PASS'}  ${theme.name.padEnd(9)}${s.name.padEnd(9)}` +
+        `ink ${d.accentInk}  page ${inkWcag.toFixed(2).padStart(5)}:1 Lc ${inkLc.toFixed(1).padStart(4)}` +
+        `  ring ${ringWcag.toFixed(2).padStart(5)}:1` +
+        `  label Lc ${labelLc.toFixed(1).padStart(4)}` +
+        (why.length ? `\n        ${why.join('; ')}` : '')
+    )
+  }
+}
+
+console.log('\nthe raw stored swatches, which are why deriveAccent has to exist')
+/*
+ * This one is pinning a defect on purpose, so it is worth being explicit about
+ * what it means. `PROFILE_SWATCHES[].accent` is hand-authored for a dark
+ * ground; the block above proves what `deriveAccent` makes of it, and this
+ * proves there was something to make. Without it, `deriveAccent` could be
+ * reduced to `accentInk = accent` and every assertion above would still pass on
+ * the dark themes while the light one went back to a 1.98:1 focus ring.
+ *
+ * If a future palette change makes the stored values light-safe by themselves,
+ * DELETE this assertion rather than working around it: it will be stating
+ * something that is no longer true, and the honest response is that the
+ * derivation has less to do, not that the palette has regressed.
+ */
+const lightThemes = BUILT_IN_THEMES.filter((t) => t.appearance === 'light')
+const darkThemes = BUILT_IN_THEMES.filter((t) => t.appearance === 'dark')
+
+/*
+ * Coverage, asserted rather than assumed -- and this is not defensive padding.
+ *
+ * An adversarial pass on the first version of this file removed DAYLIGHT from
+ * BUILT_IN_THEMES and the suite printed "all pass". Every light-mode row
+ * vanished, the "unaided" check below was skipped by its own `else`, and the
+ * entire reason src/shared/accent.ts exists went untested -- silently, because
+ * a filter that yields nothing makes every loop over it succeed.
+ *
+ * The same shape guards the dark side below. A suite whose value is coverage
+ * has to assert its coverage.
+ */
+check('a light built-in theme exists to test against', lightThemes.length > 0, true)
+check('a dark built-in theme exists to test against', darkThemes.length > 0, true)
+check('every swatch is a colour', PROFILE_SWATCHES.length > 0, true)
+
+{
+  for (const t of lightThemes) {
+    const raw = PROFILE_SWATCHES.map((s) => ({ name: s.name, r: ratio(s.accent, t.colors.bg) })).sort(
+      (a, b) => a.r - b.r
+    )
+    const under = raw.filter((x) => x.r < RING_WCAG)
+    console.log(
+      `  ${t.name}: ${under.length} of ${raw.length} raw accents under ${RING_WCAG}:1 on --bg, ` +
+        `${raw[0].r.toFixed(2)} (${raw[0].name}) to ${raw[raw.length - 1].r.toFixed(2)} (${raw[raw.length - 1].name})`
+    )
+  }
+  /*
+   * `every`, not `some`, on both axes.
+   *
+   * `some`-of-`some` is satisfied by one bad swatch on one theme, so seven of
+   * the eight could become light-safe while this still printed a pass over the
+   * line "1 of 8 raw accents under 3:1". The claim being pinned is that the
+   * WHOLE palette needs the derivation, so that is what is asserted.
+   */
+  check(
+    'a stored accent is still unusable as ink on a light page, unaided',
+    lightThemes.every((t) => PROFILE_SWATCHES.every((s) => ratio(s.accent, t.colors.bg) < RING_WCAG)),
+    true
+  )
+}
+
+console.log('\nderiving never restyles the colour someone picked')
+/*
+ * The other half of the promise, and the one that would be easy to break while
+ * fixing the ring: deriving the FILL as well as the ink would have quietly
+ * repainted three of the eight shipped swatches in dark mode, which is a
+ * product decision rather than an accessibility fix (accent.ts:44-59).
+ *
+ * So the fill moves for exactly one reason — the ~7 L* dead band where neither
+ * near-white nor near-ink reaches Lc 60 on it, leaving a filled button with no
+ * legible label at any ink. `deadBand` recomputes that from the two candidate
+ * inks rather than asking `deriveAccent` which swatches it moved, so the two
+ * are independent answers to the same question. Measured today: Coral, Iris and
+ * Azure are in the band and move by 0.0144, 0.0289 and 0.0334 — all inside the
+ * 0.04 the check above calls one colour rather than two.
+ */
+/** The same 0.04 the swatch-distinctness floor above uses, read the other way
+    round: a fill that moved less than this is still the colour that was picked. */
+const SAME_COLOUR = 0.04
+const deadBand = (fill: string): boolean =>
+  Math.max(lcOf(INK_LIGHT, fill), lcOf(INK_DARK, fill)) < ACCENT_LC
+
+const restyled: string[] = []
+const strayed: string[] = []
+const nudged = new Map<string, string>()
+for (const theme of BUILT_IN_THEMES.filter((t) => t.appearance === 'dark')) {
+  for (const s of PROFILE_SWATCHES) {
+    const fill = deriveAccent(s.accent, theme.appearance, theme.colors.bg).accent
+    if (fill === s.accent) continue
+    const moved = gap(fill, s.accent)
+    nudged.set(s.name, `${s.name} ${s.accent} -> ${fill} by ${moved.toFixed(4)}`)
+    if (!deadBand(s.accent)) restyled.push(`${theme.name}/${s.name}`)
+    if (moved >= SAME_COLOUR) strayed.push(`${theme.name}/${s.name} ${moved.toFixed(4)}`)
+  }
+}
+for (const line of nudged.values()) console.log(`  nudged out of the dead band: ${line}`)
+/*
+ * What this pins, stated honestly: `deadBand` here recomputes the SAME
+ * expression `deriveAccent` uses to decide whether to move a fill, so it cannot
+ * fail because of a palette change -- brute-forcing 141,840 sRGB colours
+ * through both leaves `restyled` empty every time. It is a code-drift mirror:
+ * it goes red when accent.ts's ACCENT_LC or its ink candidates move without
+ * this file following, and when the round trip through toOklch/fitToSrgb/toHex
+ * stops being byte-exact. Both were confirmed red by perturbation.
+ *
+ * The check after it -- that a moved fill stayed inside 0.04 -- is the one a
+ * new swatch colour can actually break: 243 of those 141,840 colours nudge
+ * further than that, and Azure already uses 0.0334 of the 0.04.
+ */
+check('a dark theme keeps every fill that has a legible label, byte for byte', restyled, [])
+check('and the ones it does move are still the colour that was picked', strayed, [])
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
 process.exitCode = failures ? 1 : 0

@@ -87,6 +87,46 @@ export const NEVER_OFFERED: readonly string[] = [
 /** The curated set, in the order the panel draws them. */
 export const CLAUDE_SETTINGS: readonly ClaudeSettingSpec[] = [
   {
+    key: 'theme',
+    label: 'Claude Code colour theme',
+    hint: 'match Stoke follows this window automatically, including over SSH. The two -ansi themes are the only ones that use Stoke’s own 16 terminal colours.',
+    kind: 'enum',
+    /*
+     * The CLI's own vocabulary, in its own order, read out of the 2.1.237
+     * bundle: `N4s = ["dark","light","light-daltonized","dark-daltonized",
+     * "light-ansi","dark-ansi"]` and `S0n = ["auto", ...N4s]`. A
+     * `custom:<slug>` value naming a file in <config-dir>/themes/ is also
+     * accepted and is deliberately not offered here — Stoke has no way to
+     * enumerate what a user has put in that folder.
+     *
+     * `auto` is drawn as "Match Stoke" because that is what it does HERE, and
+     * it is not a figure of speech. On `auto` the CLI queries the terminal's
+     * background with OSC 11 and classifies the answer by relative luminance;
+     * xterm.js 6.0.0 answers that query truthfully from the `theme.background`
+     * Stoke already gives it. So the CLI follows this window with no plumbing
+     * at all, and unlike anything Stoke could write per-session it works on an
+     * SSH tab too, because OSC 11 is terminal I/O rather than a launch flag.
+     *
+     * The key lives in ~/.claude/settings.json, which the CLI's own /theme
+     * picker also writes, so this control and that one cannot disagree.
+     * `~/.claude.json` still has a legacy read path for it but nothing writes
+     * there any more, and it is dead-ended by its own default of "dark".
+     */
+    options: [
+      'auto',
+      'dark',
+      'light',
+      'dark-daltonized',
+      'light-daltonized',
+      'dark-ansi',
+      'light-ansi'
+    ],
+    unsetMeans: 'dark',
+    // `theme: Fs([Hr(S0n), ...]).optional().catch(void 0)` — same shape as
+    // effortLevel, so a value outside the list is dropped without a word.
+    silentlyDropsBadValues: true
+  },
+  {
     key: 'remoteControlAtStartup',
     label: 'Start Remote Control automatically',
     hint: 'off keeps sessions in this window. /remote-control and --rc still work when you ask for them.',

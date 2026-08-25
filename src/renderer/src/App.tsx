@@ -9,6 +9,7 @@ import type {
   SessionMeta,
   Settings,
   SshHost,
+  Theme,
   WorklogProposal,
   WorklogWatchState
 } from '@shared/types'
@@ -316,6 +317,22 @@ export function App(): React.JSX.Element {
    */
   const settingsRef = useRef<Settings | null>(settings)
   settingsRef.current = settings
+
+  /*
+   * The appearance a session should be launched with, read at call time.
+   *
+   * `startSession` and `connectHost` are useCallbacks whose dependency arrays
+   * do not list `theme`, and adding it there would rebuild both on every theme
+   * change for a value only read inside the call. Closing over the memo instead
+   * would freeze whatever `theme` was on the first render -- and since settings
+   * load asynchronously that is always the default dark theme, so every session
+   * started under the light theme would have been told the window was dark.
+   * Same shape as the zoom-shortcut bug the ref above exists for.
+   */
+  const launchAppearance = useCallback((): Theme['appearance'] => {
+    const s = settingsRef.current
+    return resolveTheme(s?.themeId ?? '', s?.customThemes ?? []).appearance
+  }, [])
 
   /* ------------------------------------------------------------- bootstrap */
 
@@ -651,6 +668,7 @@ export function App(): React.JSX.Element {
           model: sessionModel,
           effort: sessionEffort,
           ultracode: sessionUltracode,
+          appearance: launchAppearance(),
           // A real size arrives from the terminal's own resize observer as soon
           // as it mounts; this is only what the child sees for its first paint.
           cols: 120,
@@ -687,7 +705,7 @@ export function App(): React.JSX.Element {
         return false
       }
     },
-    [mode, model, effort, ultracode]
+    [mode, model, effort, ultracode, launchAppearance]
   )
 
   /* --------------------------------------------------------------- worklog */
@@ -767,6 +785,7 @@ export function App(): React.JSX.Element {
           permissionMode,
           model: sessionModel,
           effort: sessionEffort,
+          appearance: launchAppearance(),
           cols: 120,
           rows: 30
         })
@@ -802,7 +821,7 @@ export function App(): React.JSX.Element {
         return false
       }
     },
-    [defaultCwd, mode, model, effort, activeNewTabId]
+    [defaultCwd, mode, model, effort, activeNewTabId, launchAppearance]
   )
 
   /**

@@ -7,6 +7,18 @@ import type { Theme } from './types'
  * few degrees of hue so the orange accent reads as part of the surface instead
  * of sitting on top of it. Every theme must define the full token set — the
  * renderer writes them straight out as CSS custom properties.
+ *
+ * ONE EXCEPTION, and it is worth knowing before editing an accent here.
+ * `accent` is an input; `accentHover`, `accentSoft` and `accentContrast` are
+ * not. `applyAppearance` runs `deriveAccent` (src/shared/accent.ts) after
+ * writing these and overwrites all three, plus a fifth token `--accent-ink`
+ * that no theme declares. So editing `accentHover` in this file changes
+ * nothing that renders, and editing `accent` changes all four.
+ *
+ * They are kept rather than deleted because `Theme` is a public shape: it is
+ * what a user's `customThemes` entry in settings.json looks like, and
+ * `validateTheme` fills missing keys from these built-ins. Removing them would
+ * silently invalidate every theme anyone has already written by hand.
  */
 
 export const EMBER: Theme = {
@@ -24,9 +36,34 @@ export const EMBER: Theme = {
     borderStrong: '#443b34',
     text: '#f2e9e1',
     textMuted: '#a89c92',
-    // Kept at >=4.5:1 on `bg` so timestamps and counts stay legible rather than
-    // decorative-grey. Anything fainter fails WCAG AA at these sizes.
-    textFaint: '#8a7e75',
+    /*
+     * >=4.5:1 on four of the FIVE grounds it is drawn on. The fifth is still
+     * short, and is named here rather than left to be rediscovered.
+     *
+     * This comment used to promise 4.5:1 "on bg", and the value delivered
+     * exactly that: 5.10 there and 4.23 on `surface`, which is the ground
+     * `.field-hint`, `.worklog-meta`, `.usage-note` and `.palette-item-path`
+     * actually render against. Raising it fixed `bg`, `bgSunken`, `surface`
+     * and `bgElevated` -- and an adversarial check then found the same mistake
+     * one ground later: `.session-meta` (app.css:1286) and
+     * `.project-meta-note` (:1204) are `color: var(--text-faint)` inside rows
+     * whose :hover background is `--surface-hover` (:1015, :1261). There it
+     * still measures 4.10 (Ember), 4.01 (Nocturne) and 3.99 (Moss) -- under the
+     * bar. Daylight clears it at 4.77.
+     *
+     * It is not raised further on purpose. Clearing `--surface-hover` too
+     * needs #978a81, which lands 1.25:1 from `--text-muted` (1.12 on Nocturne)
+     * -- the two text tiers become the same grey, always, to fix a ratio that
+     * is wrong only while the pointer is over the row. The real defect is that
+     * `--surface-hover` sits too close to the text tokens at all, because the
+     * surface ramp is uneven: `surfaceHover -> border` is the smallest step in
+     * every dark theme (0.012-0.020 OKLCH L) while `border -> borderStrong` is
+     * the largest (0.070-0.076). The 12-step ladder fixes the ramp, and this
+     * value gets revisited then. verify:color prints the shortfall as a
+     * baseline row so it cannot be forgotten, and promotes it to an assertion
+     * in the same change as the ladder.
+     */
+    textFaint: '#8f837a',
     accent: '#ff9552',
     accentHover: '#ffab74',
     accentSoft: 'rgba(255, 149, 82, 0.14)',
@@ -78,7 +115,7 @@ export const NOCTURNE: Theme = {
     borderStrong: '#35424f',
     text: '#e4ebf3',
     textMuted: '#8d9bab',
-    textFaint: '#76838f',
+    textFaint: '#7c8995',
     accent: '#6ea8fe',
     accentHover: '#8fbdff',
     accentSoft: 'rgba(110, 168, 254, 0.14)',
@@ -130,7 +167,7 @@ export const MOSS: Theme = {
     borderStrong: '#374536',
     text: '#e7f0e6',
     textMuted: '#93a291',
-    textFaint: '#7c8a7a',
+    textFaint: '#7e8c7c',
     accent: '#8fd67f',
     accentHover: '#aae59c',
     accentSoft: 'rgba(143, 214, 127, 0.14)',
@@ -187,7 +224,7 @@ export const DAYLIGHT: Theme = {
     borderStrong: '#c3c3c8',
     text: '#1c1c1f',
     textMuted: '#5c5c63',
-    textFaint: '#78787f',
+    textFaint: '#68686f',
     accent: '#b7480a',
     accentHover: '#963a06',
     accentSoft: 'rgba(183, 72, 10, 0.10)',
@@ -205,22 +242,52 @@ export const DAYLIGHT: Theme = {
     selectionBackground: 'rgba(183, 72, 10, 0.18)',
     selectionForeground: '#1c1c1f',
     selectionInactiveBackground: 'rgba(183, 72, 10, 0.10)',
-    black: '#1c1c1f',
-    red: '#b3372a',
-    green: '#2f7d45',
-    yellow: '#8a6212',
-    blue: '#2a5f96',
-    magenta: '#7d4491',
-    cyan: '#1c6f6a',
-    white: '#dedee1',
-    brightBlack: '#5c5c63',
-    brightRed: '#cf4c39',
-    brightGreen: '#3f9558',
-    brightYellow: '#a5771c',
-    brightBlue: '#3a76ad',
-    brightMagenta: '#9558a8',
-    brightCyan: '#2a8a84',
-    brightWhite: '#ffffff'
+    /*
+     * A light ANSI palette is not a dark one with the background swapped, and
+     * three things about it are counter-intuitive enough to state.
+     *
+     * 1. BRIGHT IS DARKER. `bright` is the terminal's emphasis channel -- it is
+     *    what SGR bold selects -- so it has to gain contrast, and on a light
+     *    ground that means moving away from white. This palette used to do the
+     *    opposite: all eight brights were LIGHTER than their normals, so
+     *    contrast fell in all eight (green 4.61 -> 3.38, cyan 5.41 -> 3.77) and
+     *    five of them landed under 4.5:1. Emphasised text was the least legible
+     *    text on screen. Every bright is now 8-9 L* darker than its normal.
+     *
+     * 2. THE GREYS ARE A RAMP, NOT A POLARITY. `white` was #dedee1 at 1.22:1
+     *    and `brightWhite` #ffffff at 1.10:1 -- anything emitting ESC[37m or
+     *    ESC[97m was invisible. Slots 0/8/7/15 are now one monotonic ramp from
+     *    darkest to lightest, which is what GitHub Light does, so no slot is
+     *    unreadable and the relative ordering a program expects survives.
+     *
+     *    The alternative -- Catppuccin Latte and Rosé Pine Dawn invert the pair
+     *    outright, making `black` a light grey -- was measured and rejected: it
+     *    does not fix the problem, it moves it, leaving `black` at 1.52:1 and
+     *    `brightBlack` at 2.37:1 instead. `brightWhite` at 3.04:1 is the one
+     *    deliberate exception here, because the lightest slot on a light ground
+     *    cannot also be the most legible. That is inherent, and 3.04 beats 1.10.
+     *
+     * 3. CHROMA IS PER HUE, NOT GLOBAL. At L* ~47 sRGB allows far more chroma
+     *    for red and magenta than for yellow or cyan, so each slot takes the
+     *    largest chroma its own hue can hold at the lightness that clears both
+     *    4.5:1 and APCA Lc 60. All twelve chromatic slots clear both.
+     */
+    black: '#26262a',
+    red: '#cc2418',
+    green: '#04813a',
+    yellow: '#936700',
+    blue: '#2b72ba',
+    magenta: '#954aaf',
+    cyan: '#007d78',
+    white: '#6f6f76',
+    brightBlack: '#55555c',
+    brightRed: '#ad0500',
+    brightGreen: '#00692d',
+    brightYellow: '#785300',
+    brightBlue: '#0e5ca1',
+    brightMagenta: '#7e3397',
+    brightCyan: '#006560',
+    brightWhite: '#8c8c94'
   }
 }
 

@@ -7,8 +7,14 @@
  * implementations, so a regression here shows up as a wrong number rather than
  * as a crash.
  *
+ * The maths is the first half. The second half points it at what actually
+ * ships: every token in every built-in theme, on every ground app.css draws it
+ * on, plus the accent matrix — any profile swatch can be active under any
+ * theme, which is the pairing that shipped a 1.43:1 focus ring.
+ *
  *   node scripts/verify-color.mts
  */
+import { deriveAccent } from '../src/shared/accent.ts'
 import {
   apcaContrast,
   contrastRatio,
@@ -19,6 +25,7 @@ import {
   toOklch
 } from '../src/shared/color.ts'
 import type { Rgb } from '../src/shared/color.ts'
+import { PROFILE_SWATCHES } from '../src/shared/profiles.ts'
 import { BUILT_IN_THEMES } from '../src/shared/themes.ts'
 import type { Theme } from '../src/shared/types.ts'
 
@@ -37,6 +44,33 @@ function eq(label: string, actual: unknown, expected: unknown): void {
   const ok = JSON.stringify(actual) === JSON.stringify(expected)
   if (!ok) failures++
   console.log(`${ok ? 'ok  ' : 'FAIL'} ${label.padEnd(46)} ${JSON.stringify(actual)}`)
+}
+
+/**
+ * A floor, which is what almost every contrast assertion is. `suffix` carries
+ * the second metric into the trailing parenthetical, because a WCAG ratio
+ * reported without its APCA reading hides exactly the disagreement this module
+ * exists to surface.
+ */
+function atLeast(label: string, actual: number, floor: number, suffix = ''): void {
+  const ok = actual >= floor
+  if (!ok) failures++
+  const shown = Number.isFinite(actual) ? actual.toFixed(2) : String(actual)
+  console.log(
+    `${ok ? 'ok  ' : 'FAIL'} ${label.padEnd(46)} ${shown.padStart(10)}  (expected >= ${
+      Math.round(floor * 100) / 100
+    }${suffix})`
+  )
+}
+
+/**
+ * A measurement that is printed and NOT asserted, with no ok/FAIL of its own so
+ * it can never be mistaken for one. Used where a number is knowingly wrong and
+ * scheduled to be fixed: a baseline is worth having, a red run about something
+ * already known is not.
+ */
+function note(label: string, value: string, suffix = ''): void {
+  console.log(`     ${label.padEnd(46)} ${value.padStart(10)}${suffix}`)
 }
 
 const rgb = (r: number, g: number, b: number, a = 1): { r: number; g: number; b: number; a: number } => ({ r, g, b, a })
@@ -124,7 +158,8 @@ console.log('\n-- the terminal: text on a translucent selection --')
  * The same `selectionForeground` is used whether the terminal has focus or not,
  * so it has to clear 4.5:1 against both grounds.
  */
-const SELECTION_ANSI = [
+/** The 16 palette slots, in ANSI order. Read again by the terminal.background section below. */
+const ANSI_SLOTS = [
   'black',
   'red',
   'green',
@@ -179,7 +214,7 @@ for (const theme of BUILT_IN_THEMES) {
 
   // Why the override is not decorative: these are the palette entries that keep
   // their own colour, and fail, when selectionForeground is absent.
-  const below = SELECTION_ANSI.filter((n) => contrastRatio(parseColor(term[n])!, focused) < 4.5)
+  const below = ANSI_SLOTS.filter((n) => contrastRatio(parseColor(term[n])!, focused) < 4.5)
   const okBelow = below.length >= 1
   if (!okBelow) failures++
   console.log(
@@ -304,6 +339,335 @@ console.log('\n-- why --on-danger stays right for a theme none of the four are -
   if (!ok) failures++
   console.log(
     `${ok ? 'ok  ' : 'FAIL'} ${'contrastRatio(a, b) === contrastRatio(b, a)'.padEnd(46)} ${`${pairs.length} pairs`.padStart(10)}  (holds for any colour, not just these four)`
+  )
+}
+
+console.log('\n-- text tokens on the grounds they actually render on --')
+/*
+ * Four grounds, not one. The three text tokens are drawn on every panel the
+ * app has, and the panels are not all `--bg`:
+ *
+ *   --bg            .main-col                                  (app.css:296)
+ *   --bg-sunken     .titlebar :306, .sidebar :953, .worklog :1853,
+ *                   .statusbar :2234, .activity :3038
+ *   --surface       .worklog-item :1944, .usage-panel :2922
+ *   --bg-elevated   .context-menu :2287, .palette :2360, .sheet :2421
+ *
+ * The list is the assertion. `--text-faint`'s own note in themes.ts records
+ * what one ground buys you: the old value measured 5.10 against `--bg` and
+ * 4.23 against `--surface`, and `--surface` is the ground `.field-hint`,
+ * `.worklog-meta`, `.usage-note` and `.palette-item-path` actually land on. A
+ * promise checked against one of four grounds is not a promise.
+ *
+ * APCA is printed beside every ratio even though only WCAG is asserted,
+ * because the two disagree by polarity and the disagreement is systematic, not
+ * noise. Daylight's `--text-faint` reads 5.03:1 / Lc 71.1 on its page; Ember's
+ * reads 5.10:1 / Lc 36.7 on its own -- the same ratio, and only one of them is
+ * a body-text pass under APCA. Every dark theme's faint text sits near Lc 37
+ * at a comfortable 5:1. That gap is what the stage 2 ladder has to close, and
+ * it is invisible if only the ratio is reported.
+ */
+const TEXT_TOKENS = [
+  ['text', '--text'],
+  ['textMuted', '--text-muted'],
+  ['textFaint', '--text-faint']
+] as const
+
+const GROUNDS = [
+  ['bg', '--bg'],
+  ['bgSunken', '--bg-sunken'],
+  ['surface', '--surface'],
+  ['bgElevated', '--bg-elevated']
+] as const
+
+/*
+ * The fifth ground, printed and NOT asserted -- deliberately, and this is the
+ * one place in this file where that needs defending.
+ *
+ * `--surface-hover` is a real ground for `--text-faint`: `.session-meta`
+ * (app.css:1286) and `.project-meta-note` (:1204) are `color: var(--text-faint)`
+ * inside rows whose :hover background is `--surface-hover` (:1261, :1015).
+ * On the three dark themes it measures 4.51-4.54 -- above the 4.5 bar but by a
+ * hair, and it was 3.99-4.10 before textFaint was raised.
+ *
+ * It is not in GROUNDS because clearing it with room to spare needs a
+ * `--text-faint` that lands 1.12-1.25:1 from `--text-muted`, collapsing two
+ * text tiers into one grey permanently in order to fix a ratio that is only
+ * wrong while the pointer is over the row. The actual defect is the uneven
+ * surface ramp -- see the stage 2 baseline at the bottom of this file -- and
+ * the ladder is what fixes it. Promote this to GROUNDS in the same change.
+ */
+const HOVER_GROUND = 'surfaceHover' as const
+
+for (const t of BUILT_IN_THEMES) {
+  for (const [token, tokenName] of TEXT_TOKENS) {
+    for (const [ground, groundName] of GROUNDS) {
+      const fg = parseColor(t.colors[token])!
+      const bg = parseColor(t.colors[ground])!
+      atLeast(
+        `${t.id}: ${tokenName} on ${groundName}`,
+        contrastRatio(fg, bg),
+        4.5,
+        `, APCA Lc ${Math.abs(apcaContrast(fg, bg)).toFixed(1)}`
+      )
+    }
+    const hovered = contrastRatio(
+      parseColor(t.colors[token])!,
+      parseColor(t.colors[HOVER_GROUND])!
+    )
+    note(
+      `${t.id}: ${tokenName} on --surface-hover (stage 2)`,
+      `${hovered.toFixed(2)}:1`,
+      hovered < 4.5 ? '  <- under 4.5, fixed by the ladder' : ''
+    )
+  }
+}
+
+console.log('\n-- every ansi colour on its own terminal background --')
+/*
+ * The selection section above measures the palette against the composited
+ * selection, which is the rarer ground: almost every character a terminal ever
+ * draws sits on `terminal.background` with nothing over it. Nothing checked
+ * that, which is how Daylight shipped a palette whose eight bright slots were
+ * all LIGHTER than their normals -- see the long note in themes.ts.
+ *
+ * Three slots are not body foregrounds — two on a dark theme, one on the light
+ * one — and they are named here rather than skipped, because a silent
+ * `continue` is indistinguishable from a bug:
+ *
+ *  - dark `black` is a BACKGROUND. Not an opinion: in all three dark themes it
+ *    is the `surfaceHover` token verbatim, asserted below, so measuring text
+ *    contrast on it is measuring the wrong thing. It reads 1.24-1.32.
+ *  - dark `brightBlack` is the dim slot -- comments, dimmed output -- and
+ *    measures 3.27 / 3.32 / 3.38. That is a real shortfall rather than a
+ *    category error, and it is stage 2's to fix with the ladder; asserting 4.5
+ *    on it today would only make the suite red about something already known.
+ *  - light `brightWhite` is themes.ts's one stated deliberate exception, at
+ *    3.04: the lightest slot on a light ground cannot also be the most
+ *    legible, and 3.04 is what replaced the 1.10 it used to be.
+ *
+ * An exemption that stops being needed is reported, so the list cannot quietly
+ * outlive the problem it was written for.
+ */
+const ANSI_EXEMPT: Record<Theme['appearance'], readonly string[]> = {
+  dark: ['black', 'brightBlack'],
+  light: ['brightWhite']
+}
+
+/*
+ * What an exempt slot may not fall below. Measured today, rounded down to the
+ * nearest tenth so an 8-bit re-derivation does not trip them.
+ *
+ * `black` on a dark theme is asserted by identity against --surface-hover just
+ * above, so its floor here is nominal; the other two are real. Raise these if
+ * the values improve -- they exist to stop a slot sliding back.
+ */
+const ANSI_EXEMPT_FLOOR: Record<string, number> = {
+  black: 1,
+  brightBlack: 3.2,
+  brightWhite: 3.0
+}
+
+/** The six slots that carry hue. The four greys are a ramp and are judged as one. */
+const ANSI_CHROMATIC = ['red', 'green', 'yellow', 'blue', 'magenta', 'cyan'] as const
+
+for (const t of BUILT_IN_THEMES) {
+  const bg = parseColor(t.terminal.background)!
+  const exempt = ANSI_EXEMPT[t.appearance]
+
+  if (t.appearance === 'dark') {
+    // Turns "black is a background slot" from a claim into a measurement.
+    eq(`${t.id}: ansi black IS the surfaceHover token`, t.terminal.black, t.colors.surfaceHover)
+  }
+
+  for (const slot of ANSI_SLOTS) {
+    const ratio = contrastRatio(parseColor(t.terminal[slot])!, bg)
+    if (exempt.includes(slot)) {
+      /*
+       * Exempt from 4.5, NOT from having a floor.
+       *
+       * An adversarial check on the first version of this section put
+       * daylight's `brightWhite` back to #f4f4f5 -- a 1.00:1 slot, i.e. exactly
+       * the "anything emitting ESC[97m was invisible" bug themes.ts records as
+       * fixed -- and the suite stayed green, because an exempt slot only ever
+       * emitted an unasserted note. An exemption that cannot fail in the
+       * regression direction is not an exemption, it is a hole.
+       *
+       * So each exempt slot is held at the value it was deliberately parked
+       * at. `black` on a dark theme is a background and is allowed to be
+       * invisible; the rest have to stay at least where they are.
+       */
+      const floor = ANSI_EXEMPT_FLOOR[slot] ?? 1
+      atLeast(`${t.id}: ansi ${slot} (exempt from 4.5, floor only)`, ratio, floor)
+      if (ratio >= 4.5) {
+        note(`${t.id}: ansi ${slot}`, ratio.toFixed(2), '  <- clears 4.5 now; drop it from ANSI_EXEMPT')
+      }
+      continue
+    }
+    atLeast(`${t.id}: ansi ${slot} on terminal.background`, ratio, 4.5)
+  }
+}
+
+/*
+ * Bright must not be weaker than normal, on the light theme.
+ *
+ * `bright` is the terminal's emphasis channel -- it is what SGR bold selects --
+ * so on a light ground it has to move AWAY from white. Daylight used to move
+ * every bright towards it, which put emphasised text below its own unemphasised
+ * text in all eight slots and under 4.5:1 in five. This is the invariant that
+ * was violated, so it is asserted directly rather than inferred from the floor.
+ *
+ * Chromatic slots only, and only the light theme. On a dark ground "brighter"
+ * already means further from the background, so the invariant holds there by
+ * construction and asserting it proves nothing. And the four grey slots are
+ * deliberately one monotonic ramp (0 < 8 < 7 < 15), which on a light ground
+ * means contrast FALLS along it: `brightWhite` out-contrasting `white` would
+ * mean the ramp had broken, not that emphasis was working.
+ */
+for (const t of BUILT_IN_THEMES.filter((x) => x.appearance === 'light')) {
+  const bg = parseColor(t.terminal.background)!
+  for (const slot of ANSI_CHROMATIC) {
+    const bright = `bright${slot[0].toUpperCase()}${slot.slice(1)}` as keyof Theme['terminal']
+    const normalRatio = contrastRatio(parseColor(t.terminal[slot])!, bg)
+    const brightRatio = contrastRatio(parseColor(t.terminal[bright])!, bg)
+    atLeast(`${t.id}: ansi ${bright} >= ${slot}`, brightRatio, normalRatio)
+  }
+}
+
+console.log('\n-- the accent as a foreground: every theme x every swatch --')
+/*
+ * The assertion that would have caught the shipped bug.
+ *
+ * `applyAppearance` derives all five accent tokens from ONE brand colour and
+ * the active theme's page, on every path -- with a profile and without. So the
+ * matrix is real: any swatch can be active under any theme, and before
+ * `deriveAccent` existed all eight of them measured 1.43-2.66:1 against
+ * Daylight's page while driving `:focus-visible` (app.css:224), `.ring
+ * .ring-fill`'s stroke (:1366) and the selected tab's indicator. The suite next
+ * door, verify-profiles.mts, asserted only `accentContrast` against `accent` --
+ * the ink on the fill, which is a different pair entirely -- so `npm run check`
+ * passed throughout. CLAUDE.md gotcha 31.
+ *
+ * The theme's own accent is included as a ninth source because "no profile
+ * selected" is the default state and takes the identical code path.
+ *
+ * Three bars, three reasons:
+ *  - 4.5:1 on `--bg`, because `--accent-ink` is `color:` in eight rules.
+ *  - APCA Lc on `--bg`, because WCAG 2 and APCA disagree and neither implies
+ *    the other: solving for Lc 60 alone lands at 3.6:1 on Daylight.
+ *  - 3:1 on `--bg-sunken`, WCAG 1.4.11: the focus ring and the context ring's
+ *    stroke are non-text graphics, and the chrome they are drawn over is
+ *    sunken, not `--bg`. `deriveAccent` judges against `--bg` deliberately
+ *    (the harder ground would darken every light accent past what the page
+ *    needs), so the sunken case has to be checked rather than assumed -- it
+ *    costs about 0.5:1 on Daylight, 4.84 -> 4.35.
+ */
+/** `ACCENT_LC` in shared/accent.ts. Mirrored: the module exports no constants. */
+const ACCENT_LC = 60
+/** `ACCENT_WCAG` there. */
+const ACCENT_WCAG = 4.5
+/** WCAG 1.4.11, non-text contrast. Not from accent.ts -- it never checks this ground. */
+const RING_WCAG = 3
+
+/*
+ * `AT_FLOOR_TOLERANCE` in shared/accent.ts, mirrored, and it has to be honoured
+ * here or this section asserts a bar the module was written not to meet. A
+ * brand colour within 2 Lc of the floor is kept EXACTLY as authored, because
+ * five of the eight shipped swatches sit a fraction under Lc 60 on a dark page
+ * and nudging them would rewrite every dark theme's accent by one 8-bit step
+ * for no legibility gain (#ff9552 -> #ff9756).
+ *
+ * So the bar depends on which branch ran, and that is observable from outside:
+ * an ink identical to the brand hex was kept, anything else was solved for. A
+ * kept ink gets the tolerance -- the six that use it measure 58.7-59.4 -- and a
+ * SOLVED ink gets a strict Lc 60, with no tolerance at all, because there the
+ * module chose the number and 59 would mean the solver missed.
+ */
+const AT_FLOOR_TOLERANCE = 2
+
+for (const t of BUILT_IN_THEMES) {
+  const sources = [
+    { id: 'theme', accent: t.colors.accent },
+    ...PROFILE_SWATCHES.map((s) => ({ id: s.id, accent: s.accent }))
+  ]
+  for (const src of sources) {
+    const tokens = deriveAccent(src.accent, t.appearance, t.colors.bg)
+    const ink = parseColor(tokens.accentInk)!
+    const page = parseColor(t.colors.bg)!
+    const sunken = parseColor(t.colors.bgSunken)!
+
+    const kept = tokens.accentInk.toLowerCase() === src.accent.toLowerCase()
+    const lcFloor = kept ? ACCENT_LC - AT_FLOOR_TOLERANCE : ACCENT_LC
+
+    const onBg = contrastRatio(ink, page)
+    const lcBg = Math.abs(apcaContrast(ink, page))
+    const onSunken = contrastRatio(ink, sunken)
+
+    const ok = onBg >= ACCENT_WCAG && lcBg >= lcFloor && onSunken >= RING_WCAG
+    if (!ok) failures++
+    console.log(
+      `${ok ? 'ok  ' : 'FAIL'} ${`${t.id}/${src.id}: --accent-ink ${tokens.accentInk}`.padEnd(46)} ${`${onBg.toFixed(
+        2
+      )}/${lcBg.toFixed(1)}/${onSunken.toFixed(2)}`.padStart(10)}  (expected >= ${ACCENT_WCAG} / ${lcFloor}${
+        kept ? ' kept' : ' solved'
+      } / ${RING_WCAG})`
+    )
+
+    // The dead-band guarantee: a fill has a legible label at SOME ink, and the
+    // fill is nudged out of the ~7 L* window where neither near-white nor
+    // near-black reaches Lc 60 on it. No tolerance here -- where the nudge runs
+    // it is chosen to clear the floor, so anything under it is the nudge failing.
+    atLeast(
+      `${t.id}/${src.id}: --accent-contrast on the fill`,
+      Math.abs(apcaContrast(parseColor(tokens.accentContrast)!, parseColor(tokens.accent)!)),
+      ACCENT_LC
+    )
+  }
+}
+
+console.log('\n-- stage 2 baseline: borders and the surface ramp (NOT asserted) --')
+/*
+ * Deliberately not assertions, and the distinction matters more than the
+ * numbers do. Borders are knowingly failing today -- Ember's `--border` is
+ * 1.33:1 against `--bg` -- and the fix is the OKLCH ladder in stage 2, not a
+ * hand-nudged hex here. A floor added now would make the suite red about
+ * something already known and scheduled, which is how a red run stops meaning
+ * anything. These rows exist so the ladder has a before to compare its after
+ * against, in the suite's own output rather than in someone's memory.
+ *
+ * `Lc 0.00` is not "identical luminance". `apcaContrast` clips to exactly 0
+ * below its LO_CLIP of 0.1 (color.ts), which after the 0.027 offset is about
+ * Lc 7.3 -- so a 0.00 here means "below the clip", and three of the four
+ * themes' borders are.
+ *
+ * The ramp is the five surface tokens sorted by OKLCH L*, with the gaps
+ * between neighbouring rungs. Even steps are what makes elevation read as
+ * elevation; Nocturne's widest step is 2.33x its narrowest today.
+ */
+const RAMP = ['bgSunken', 'bg', 'bgElevated', 'surface', 'surfaceHover'] as const
+
+for (const t of BUILT_IN_THEMES) {
+  const bg = parseColor(t.colors.bg)!
+  const surface = parseColor(t.colors.surface)!
+  const border = parseColor(t.colors.border)!
+  const strong = parseColor(t.colors.borderStrong)!
+  const pair = (fg: typeof bg, ground: typeof bg): string =>
+    `${contrastRatio(fg, ground).toFixed(2)}:1 Lc ${Math.abs(apcaContrast(fg, ground)).toFixed(2)}`
+
+  note(`${t.id}: --border on --bg`, pair(border, bg))
+  note(`${t.id}: --border on --surface`, pair(border, surface))
+  note(`${t.id}: --border-strong on --bg`, pair(strong, bg))
+
+  const rungs = RAMP.map((k) => ({ k, l: toOklch(parseColor(t.colors[k])!).l * 100 })).sort(
+    (a, b) => a.l - b.l
+  )
+  const steps = rungs.slice(1).map((r, i) => r.l - rungs[i].l)
+  note(`${t.id}: surface ramp, L*`, rungs.map((r) => `${r.k} ${r.l.toFixed(1)}`).join('  '))
+  note(
+    `${t.id}: ramp steps, dL*`,
+    `${steps.map((s) => s.toFixed(2)).join('  ')}   widest/narrowest ${(
+      Math.max(...steps) / Math.min(...steps)
+    ).toFixed(2)}x`
   )
 }
 

@@ -102,7 +102,158 @@ export function parseColor(input: string | undefined | null): Rgb | null {
     }
   }
 
+  /*
+   * Display-P3, converted rather than read as if it were sRGB.
+   *
+   * Treating the three components as sRGB is the tempting one-liner and it is
+   * wrong by a visible amount: color(display-p3 1 0 0) is a red no sRGB display
+   * can show, and calling it #ff0000 understates its chroma. The primaries are
+   * converted properly and the result is left UNCLAMPED, so a caller can still
+   * see that it fell outside the gamut; toHex clamps at the end.
+   */
+  const p3 = /^color\(display-p3\s+([^)]+)\)$/.exec(s)
+  if (p3) {
+    const parts = p3[1].split(/[\s/]+/).filter(Boolean)
+    if (parts.length < 3) return null
+    const lin = (v: number): number =>
+      Math.abs(v) <= 0.04045 ? v / 12.92 : Math.sign(v) * Math.pow((Math.abs(v) + 0.055) / 1.055, 2.4)
+    const r = lin(parseFloat(parts[0]))
+    const g = lin(parseFloat(parts[1]))
+    const b = lin(parseFloat(parts[2]))
+    // P3 -> XYZ(D65) -> sRGB, folded into one matrix.
+    const R = 1.2249401762 * r - 0.2249401762 * g + 0.0 * b
+    const G = -0.0420569547 * r + 1.0420569547 * g + 0.0 * b
+    const B = -0.0196375546 * r - 0.0786360454 * g + 1.0982736 * b
+    return {
+      r: gammaEncode(R) * 255,
+      g: gammaEncode(G) * 255,
+      b: gammaEncode(B) * 255,
+      a: parts[3] === undefined ? 1 : parseFloat(parts[3])
+    }
+  }
+
+  /*
+   * oklch() and oklab().
+   *
+   * Not an optional nicety: Chromium 150 — the engine Electron 43 ships —
+   * keeps computed colour values in `oklch()` serialisation, so getComputedStyle
+   * returns "oklch(0.7 0.15 51)" rather than an rgb() equivalent. Without these
+   * two branches every contrast and APCA reading taken off a live page returns
+   * null while the code still appears to work, which is the failure mode this
+   * whole module exists to avoid.
+   *
+   * `none` is a valid component meaning "missing", and it behaves as 0 in every
+   * conversion, so it is read as 0 rather than rejected.
+   */
+  const okl = /^okl(ch|ab)\(([^)]+)\)$/.exec(s)
+  if (okl) {
+    const parts = okl[2].split(/[\s/]+/).filter(Boolean)
+    if (parts.length < 3) return null
+    const n = (t: string, pct: number): number =>
+      t === 'none' ? 0 : t.endsWith('%') ? (parseFloat(t) / 100) * pct : parseFloat(t)
+    const alpha = parts[3] === undefined ? 1 : n(parts[3], 1)
+    const l = n(parts[0], 1)
+    if (okl[1] === 'ch') {
+      const c = n(parts[1], 0.4)
+      // A bare hue is degrees; the other <angle> units are legal in CSS.
+      const raw = parts[2]
+      const deg = raw === 'none'
+        ? 0
+        : raw.endsWith('turn')
+          ? parseFloat(raw) * 360
+          : raw.endsWith('rad')
+            ? (parseFloat(raw) * 180) / Math.PI
+            : raw.endsWith('grad')
+              ? parseFloat(raw) * 0.9
+              : parseFloat(raw)
+      return { ...oklchToRgb({ l, c, h: deg }), a: alpha }
+    }
+    const a = n(parts[1], 0.4)
+    const b = n(parts[2], 0.4)
+    return { ...oklabToRgb(l, a, b), a: alpha }
+  }
+
   return null
+}
+
+/** sRGB transfer function, the inverse of `srgbChannel` below. */
+function gammaEncode(x: number): number {
+  return x >= 0.0031308 ? 1.055 * Math.pow(x, 1 / 2.4) - 0.055 : 12.92 * x
+}
+
+/**
+ * OKLab to linear-light sRGB, deliberately unclamped.
+ *
+ * Callers that need to know whether a colour is representable check the raw
+ * components; `oklchToRgb` clamps only at the encode step. That distinction is
+ * what makes `maxChroma` possible.
+ */
+function oklabToLinear(l: number, a: number, b: number): [number, number, number] {
+  const l_ = l + 0.3963377774 * a + 0.2158037573 * b
+  const m_ = l - 0.1055613458 * a - 0.0638541728 * b
+  const s_ = l - 0.0894841775 * a - 1.291485548 * b
+
+  const L = l_ * l_ * l_
+  const M = m_ * m_ * m_
+  const S = s_ * s_ * s_
+
+  return [
+    4.0767416621 * L - 3.3077115913 * M + 0.2309699292 * S,
+    -1.2684380046 * L + 2.6097574011 * M - 0.3413193965 * S,
+    -0.0041960863 * L - 0.7034186147 * M + 1.707614701 * S
+  ]
+}
+
+function oklabToRgb(l: number, a: number, b: number): Rgb {
+  const [r, g, bl] = oklabToLinear(l, a, b)
+  const enc = (v: number): number => Math.min(255, Math.max(0, gammaEncode(v) * 255))
+  return { r: enc(r), g: enc(g), b: enc(bl), a: 1 }
+}
+
+/** The inverse of `toOklch`. Out-of-gamut components are clamped on encode. */
+export function oklchToRgb(o: Oklch): Rgb {
+  const hr = (o.h * Math.PI) / 180
+  return oklabToRgb(o.l, o.c * Math.cos(hr), o.c * Math.sin(hr))
+}
+
+/** Whether an OKLCH triple is representable in sRGB without clamping. */
+export function inSrgbGamut(o: Oklch): boolean {
+  const hr = (o.h * Math.PI) / 180
+  const [r, g, b] = oklabToLinear(o.l, o.c * Math.cos(hr), o.c * Math.sin(hr))
+  // A tolerance, because the round trip is not bit-exact and a colour one part
+  // in ten thousand outside the cube is not a colour anyone can see the edge of.
+  const e = 1e-4
+  return r >= -e && r <= 1 + e && g >= -e && g <= 1 + e && b >= -e && b <= 1 + e
+}
+
+/**
+ * The largest chroma representable at this lightness and hue, by bisection.
+ *
+ * 40 iterations over [0, 0.4] resolves to about 4e-13, far finer than the 8-bit
+ * output can express, so the loop is bounded rather than convergence-tested.
+ */
+export function maxChroma(l: number, h: number): number {
+  let lo = 0
+  let hi = 0.4
+  for (let i = 0; i < 40; i++) {
+    const mid = (lo + hi) / 2
+    if (inSrgbGamut({ l, c: mid, h })) lo = mid
+    else hi = mid
+  }
+  return lo
+}
+
+/**
+ * Clamp into sRGB by reducing chroma only, preserving lightness and hue.
+ *
+ * Component clamping is the obvious alternative and it silently changes the
+ * hue: authored oklch(0.62 0.30 55) clamps to rgb(255,3,0), which measures back
+ * as hue 29.3 — a 26 degree error that no contrast calculation would predict.
+ * Chroma reduction is the only clamp that keeps the colour recognisable.
+ */
+export function fitToSrgb(o: Oklch): Rgb {
+  const c = Math.min(o.c, maxChroma(o.l, o.h))
+  return oklchToRgb({ ...o, c })
 }
 
 export function toHex(c: Rgb): string {

@@ -52,6 +52,18 @@ export interface LaunchOptions {
    * that live on the far machine.
    */
   host?: SshHost
+  /**
+   * Which way round this window's colours are, for `COLORFGBG`.
+   *
+   * A backstop, not the mechanism. Claude Code follows the terminal on its own
+   * when its `theme` is `auto`: it asks with OSC 11 and xterm.js answers from
+   * the background Stoke gives it. `COLORFGBG` is only what the CLI falls back
+   * to when that query goes unanswered, and it costs one env var to set.
+   *
+   * It does not reach an SSH session — env does not cross ssh without SendEnv
+   * and AcceptEnv on both ends — which is fine, because OSC 11 does.
+   */
+  appearance?: 'light' | 'dark'
   /** `--name`, shown in Claude Code's own prompt box and /resume picker. */
   name?: string
   addDirs?: string[]

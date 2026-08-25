@@ -80,6 +80,12 @@ export function TerminalView({
   const isMac = window.stoke.platform === 'darwin'
   const hostRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
+  /**
+   * Whether the child has DEC mode 2031 on, i.e. has asked to be told when the
+   * terminal's colour scheme changes. Set from the output stream, so it tracks
+   * the process actually holding the terminal rather than the tab.
+   */
+  const themeNotifyRef = useRef(false)
   const fitRef = useRef<FitAddon | null>(null)
   const [menu, setMenu] = useState<MenuState | null>(null)
   /*
@@ -301,7 +307,27 @@ export function TerminalView({
     termRef.current = term
     fitRef.current = fit
 
-    const detach = attachSink(tab.ptyId, (data) => term.write(data))
+    const detach = attachSink(tab.ptyId, (data) => {
+      /*
+       * Track whether the child has asked to be told about colour-scheme
+       * changes, so the nudge below is only ever sent to something expecting it.
+       *
+       * DEC private mode 2031. Claude Code turns it on for the whole time it
+       * holds the terminal in raw mode and off again on exit, so this flag
+       * tracks the child rather than the session: on an SSH tab running byobu
+       * it goes true when `claude` starts inside a pane and false at the shell
+       * prompt, which is exactly the distinction that matters. Writing the
+       * report to a bare shell would type it at the prompt.
+       *
+       * A substring test, not a parse, because the sequence can arrive split
+       * across reads in principle -- but it is emitted alone at raw-mode entry
+       * in practice, and a missed one costs a repaint that the next OSC 11
+       * query fixes anyway. Cheap and wrong-in-the-safe-direction.
+       */
+      if (data.includes('\x1b[?2031h')) themeNotifyRef.current = true
+      if (data.includes('\x1b[?2031l')) themeNotifyRef.current = false
+      term.write(data)
+    })
     const onInput = term.onData((data) => window.stoke.pty.write(tab.ptyId, data))
 
     // Keep the OS clipboard shortcuts working; everything else goes to the PTY.
@@ -939,10 +965,34 @@ export function TerminalView({
     }
   }, [])
 
+  /*
+   * Repaint the terminal's own palette, then tell the child the scheme moved.
+   *
+   * The first line is all xterm needs. The second is what makes Claude Code
+   * follow: with its `theme` set to `auto` the CLI picks light or dark by
+   * asking the terminal for its background with OSC 11, and xterm.js 6.0.0
+   * answers that from `theme.background` -- but it asks once, at startup, so a
+   * theme switch mid-session leaves it painting the old scheme.
+   *
+   * `CSI ?997;1n` (dark) / `CSI ?997;2n` (light) is the report a terminal sends
+   * when its colour scheme changes, and the CLI's handler for it ignores the
+   * dark/light bit entirely and simply re-runs the OSC 11 query -- so what
+   * actually decides the outcome is xterm's answer, which the line above has
+   * already updated. That ordering is load-bearing: send the report first and
+   * the CLI re-reads the palette it is replacing.
+   *
+   * xterm.js knows nothing about mode 2031 or this report -- neither string
+   * appears in its bundle -- so Stoke has to synthesise it. It goes to the PTY
+   * rather than through `term.write`, because it is input to the child, not
+   * output to the screen.
+   */
   useEffect(() => {
     const term = termRef.current
-    if (term) term.options.theme = terminalTheme(theme)
-  }, [theme])
+    if (!term) return
+    term.options.theme = terminalTheme(theme)
+    if (!themeNotifyRef.current) return
+    window.stoke.pty.write(tab.ptyId, theme.appearance === 'light' ? '\x1b[?997;2n' : '\x1b[?997;1n')
+  }, [theme, tab.ptyId])
 
   useEffect(() => {
     const term = termRef.current
