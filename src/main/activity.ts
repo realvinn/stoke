@@ -1,3 +1,6 @@
+import { createReadStream } from 'node:fs'
+import { createInterface } from 'node:readline'
+
 /**
  * What was worked on, from Claude Code's own transcripts.
  *
@@ -107,4 +110,142 @@ export function editLineCount(toolName: string, input: Record<string, unknown>):
         : input.new_string
   if (typeof text !== 'string') return 0
   return text.split('\n').length
+}
+
+export interface ActivitySlice {
+  /** Local YYYY-MM-DD. */
+  day: string
+  /** Display name for the folder this session ran in. */
+  project: string
+  sessionId: string
+  /** Claude Code's own `aiTitle`, when it has written one. */
+  title: string | null
+  activeMs: number
+  /** Churn. See editLineCount — this is not net repository growth. */
+  linesWritten: number
+  files: string[]
+}
+
+export interface ActivitySessionInput {
+  sessionId: string
+  /** Path to the session's own JSONL transcript. */
+  file: string
+  project: string
+  /** What the caller already knows, which wins over the transcript's own. */
+  title: string | null
+}
+
+const TIMESTAMP_RE = /"timestamp":"([^"]+)"/
+const AI_TITLE_RE = /"aiTitle":"((?:[^"\\]|\\.)*)"/
+
+/**
+ * One session's activity, per local day.
+ *
+ * **The parse strategy here is load-bearing and looks like premature
+ * optimisation.** A transcript on this machine reaches 23 MB and is mostly
+ * large tool *results*, which this module never reads. Parsing every line as
+ * JSON was measured and did not finish inside two minutes on a single file;
+ * pulling timestamps with a regex and calling `JSON.parse` only on the lines
+ * that actually contain `"tool_use"` does the same file in well under a second.
+ * Anyone "simplifying" this into a parse-per-line reintroduces a panel that
+ * takes minutes to open.
+ *
+ * The file is streamed rather than read head-and-tail like `sessionFile.ts`'s
+ * `readLines`, because every timestamp matters here and not just the ends.
+ * Memory stays bounded regardless of file size: only timestamps and edit sizes
+ * are retained, never the text they came from.
+ *
+ * A line that will not parse is skipped rather than failing the read. A
+ * transcript is an append-only log that a crash can truncate mid-line, and one
+ * torn last line must not cost the whole session's numbers.
+ */
+export async function readSessionActivity(
+  input: ActivitySessionInput,
+  idleGapMs = IDLE_GAP_MS
+): Promise<ActivitySlice[]> {
+  const stamps: number[] = []
+  const linesByDay = new Map<string, number>()
+  const filesByDay = new Map<string, Set<string>>()
+  let title = input.title
+
+  const reader = createInterface({
+    input: createReadStream(input.file, { encoding: 'utf8' }),
+    crlfDelay: Infinity
+  })
+
+  try {
+    for await (const line of reader) {
+      if (!line) continue
+
+      let stamp = Number.NaN
+      const t = TIMESTAMP_RE.exec(line)
+      if (t) {
+        const parsed = Date.parse(t[1])
+        if (Number.isFinite(parsed)) {
+          stamp = parsed
+          stamps.push(parsed)
+        }
+      }
+
+      // Only when the caller had none: listSessions already knows the title for
+      // any session Stoke has indexed, and this scan is the fallback for one it
+      // has not.
+      if (title === null) {
+        const a = AI_TITLE_RE.exec(line)
+        if (a) {
+          try {
+            const decoded: unknown = JSON.parse(`"${a[1]}"`)
+            if (typeof decoded === 'string' && decoded) title = decoded
+          } catch {
+            /* a line that merely looked like a title */
+          }
+        }
+      }
+
+      if (!line.includes('"tool_use"')) continue
+      if (!Number.isFinite(stamp)) continue
+
+      let doc: Record<string, unknown>
+      try {
+        doc = JSON.parse(line) as Record<string, unknown>
+      } catch {
+        continue
+      }
+      const message = doc.message
+      const content =
+        message && typeof message === 'object' ? (message as Record<string, unknown>).content : null
+      if (!Array.isArray(content)) continue
+
+      const day = dayKey(stamp)
+      for (const block of content) {
+        if (!block || typeof block !== 'object') continue
+        const b = block as Record<string, unknown>
+        if (b.type !== 'tool_use' || typeof b.name !== 'string') continue
+        const toolInput = (b.input ?? {}) as Record<string, unknown>
+        const count = editLineCount(b.name, toolInput)
+        if (!count) continue
+        linesByDay.set(day, (linesByDay.get(day) ?? 0) + count)
+        const path = editFilePath(toolInput)
+        if (path) {
+          const set = filesByDay.get(day) ?? new Set<string>()
+          set.add(path)
+          filesByDay.set(day, set)
+        }
+      }
+    }
+  } finally {
+    reader.close()
+  }
+
+  const active = bucketActiveMs(stamps, idleGapMs)
+  const days = new Set<string>([...active.keys(), ...linesByDay.keys()])
+  return [...days].sort().map((day) => ({
+    day,
+    project: input.project,
+    sessionId: input.sessionId,
+    title,
+    activeMs: active.get(day) ?? 0,
+    linesWritten: linesByDay.get(day) ?? 0,
+    files: [...(filesByDay.get(day) ?? [])]
+  }))
 }
