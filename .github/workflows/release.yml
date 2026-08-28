@@ -203,10 +203,23 @@ jobs:
           security import "$RUNNER_TEMP/stoke.p12" -k "$KC" -P "$CSC_KEY_PASSWORD" \
             -T /usr/bin/codesign -T /usr/bin/productbuild
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KCPW" "$KC" >/dev/null
-          # -legacy because macOS's Security framework cannot read an OpenSSL 3
-          # default PKCS#12 and reports it as a wrong password.
-          openssl pkcs12 -in "$RUNNER_TEMP/stoke.p12" -passin "pass:$CSC_KEY_PASSWORD" \
-            -nokeys -legacy -out "$RUNNER_TEMP/stoke.cer"
+          # The certificate is pulled back out of the keychain that just imported
+          # it, rather than out of the .p12 with openssl. Two reasons, and the
+          # second is why the first version of this step failed.
+          #
+          # `security import` has already parsed the bundle by this point ("1
+          # identity imported."), so the keychain is the authoritative copy and
+          # `-p` prints it as PEM — no second parser, no passphrase handling, and
+          # only the public half ever hits disk.
+          #
+          # And openssl here is a trap: this needs `-legacy` to read the
+          # RC2-encrypted PKCS#12 that macOS writes, but **the GitHub macOS
+          # runner ships LibreSSL 3.3.6**, which has no such flag —
+          # `pkcs12: Unrecognized flag legacy`, exit 1, measured on run
+          # 33144359100. A local machine with Homebrew's OpenSSL 3 first on PATH
+          # does not reproduce it, which is exactly the kind of divergence not to
+          # leave in a release pipeline.
+          security find-certificate -c "Stoke" -p -k "$KC" > "$RUNNER_TEMP/stoke.cer"
           sudo security add-trusted-cert -d -r trustRoot -p codeSign \
             -k /Library/Keychains/System.keychain "$RUNNER_TEMP/stoke.cer"
           rm -f "$RUNNER_TEMP/stoke.p12"

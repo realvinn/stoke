@@ -296,8 +296,7 @@ ad-hoc release cannot update anybody. Cheapest route without an Apple Developer 
        security import "$RUNNER_TEMP/stoke.p12" -k "$KC" -P "$CSC_KEY_PASSWORD" \
          -T /usr/bin/codesign -T /usr/bin/productbuild
        security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KCPW" "$KC" >/dev/null
-       openssl pkcs12 -in "$RUNNER_TEMP/stoke.p12" -passin "pass:$CSC_KEY_PASSWORD" \
-         -nokeys -legacy -out "$RUNNER_TEMP/stoke.cer"
+       security find-certificate -c "Stoke" -p -k "$KC" > "$RUNNER_TEMP/stoke.cer"
        sudo security add-trusted-cert -d -r trustRoot -p codeSign \
          -k /Library/Keychains/System.keychain "$RUNNER_TEMP/stoke.cer"
        rm -f "$RUNNER_TEMP/stoke.p12"
@@ -305,12 +304,20 @@ ad-hoc release cannot update anybody. Cheapest route without an Apple Developer 
        security find-identity -v -p codesigning | grep -q "Stoke"
    ```
 
-   The `-legacy` flag on that `openssl pkcs12` is the same one the certificate script needs:
-   macOS's Security framework cannot read an OpenSSL 3 default PKCS#12 and fails with "MAC
-   verification failed during PKCS12 import (wrong password?)". The `sudo add-trusted-cert -d`
-   line relies on GitHub runners having passwordless sudo; that is standard, but it is the one
-   line here that has not been executed — the rest is verified against app-builder-lib's source
-   and against `codesign`'s actual behaviour.
+   **Do not reach for `openssl` in that step**, which the first version of it did. Reading the
+   RC2-encrypted PKCS#12 macOS writes needs OpenSSL 3's `-legacy` flag, and **the GitHub macOS
+   runner ships LibreSSL 3.3.6**, which has no such flag: `pkcs12: Unrecognized flag legacy`,
+   exit 1, measured on run 33144359100. A local machine with Homebrew's OpenSSL 3 first on PATH
+   does not reproduce it. `security find-certificate -p` sidesteps the question — the keychain
+   has already parsed the bundle by then, so it is the authoritative copy, and only the public
+   half is written to disk.
+
+   (`-legacy` is still required by `scripts/mac-signing-secrets.sh`, which runs on your Mac
+   rather than a runner and checks for OpenSSL 3 explicitly. macOS's Security framework cannot
+   read an OpenSSL 3 *default* PKCS#12 and reports it as a wrong password, so the flag is needed
+   in both directions there.)
+
+   This whole step has now been executed on a real runner, `sudo add-trusted-cert` included.
 
    Be deliberate about this route regardless: it puts an exportable private key in a GitHub
    secret, decrypted into a runner VM you do not own, on every build. It is a key nobody else
