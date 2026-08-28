@@ -4,6 +4,7 @@ import { basename, dirname, join } from 'node:path'
 import { CH } from '@shared/ipc'
 import { resolveTheme } from '@shared/themes'
 import type {
+  CliUpdateState,
   LaunchOptions,
   ProjectMeta,
   Rect,
@@ -12,6 +13,7 @@ import type {
   StatusLineSnapshot,
   StoredTabs,
   Theme,
+  UsageReadReason,
   WorklogScanOutcome,
   WorklogScanReport,
   WorklogWatchState
@@ -59,7 +61,16 @@ import { createScratchDir, resolveDefaultCwd } from './workspace.ts'
 import { BrowserMcpServer } from './mcp/server.ts'
 import { connectUrl, generateToken, RemoteServer, type RemoteDeps } from './remote/server.ts'
 import { TunnelManager } from './remote/tunnel.ts'
-import { checkForUpdate, runDoctor, runUpdate } from './updates.ts'
+import {
+  AUTO_CHECK_MS,
+  checkForUpdate,
+  runDoctor,
+  runUpdate,
+  shouldAutoUpdate,
+  updateApplied,
+  type AutoUpdateAttempt,
+  type UpdateInfo
+} from './updates.ts'
 import { fetchUsage, type UsageSnapshot } from './usage.ts'
 import { patchClaudeSetting, readClaudeSettings, untouchedKeys } from './claudeSettings.ts'
 import {
@@ -97,6 +108,126 @@ let mcp: BrowserMcpServer | null = null
 let mcpConfigPath: string | null = null
 let remote: RemoteServer | null = null
 let usageCache: UsageSnapshot | null = null
+/**
+ * The idle refresh interval for the account reading, and the floor a
+ * message-triggered one may not go below. The renderer polls on the first and
+ * pre-empts with the second; see the `usageRead` handler for why both exist.
+ * `POLL_MS` in UsageMeter.tsx is the same 30s from the other side — a shorter
+ * interval there would only ever be handed this cache back.
+ */
+const USAGE_POLL_MS = 30_000
+const USAGE_MESSAGE_FLOOR_MS = 5_000
+
+/* ------------------------------------------------- keeping the CLI current */
+
+/** The newest CLI check, shared by the panel and the auto-updater. */
+let cliUpdate: UpdateInfo | null = null
+/**
+ * The last automatic `claude update` attempt and what came of it.
+ *
+ * Not just a timestamp: `shouldAutoUpdate` needs to know *what* was attempted,
+ * because `claude update` follows its own stable channel while the check reads
+ * the npm registry, and the two genuinely disagree. See AutoUpdateAttempt.
+ */
+let cliLastAttempt: AutoUpdateAttempt | null = null
+/** What the last automatic attempt did, for the panel to report. */
+let cliAutoNote: string | null = null
+
+/**
+ * Check the CLI, and install the update if the user has left that on.
+ *
+ * Deliberately not a wrapper around the Settings panel's own buttons: those are
+ * a person deciding, and this is a timer. The difference that matters is the
+ * gate — `shouldAutoUpdate` refuses on a *failed* check as well as on a check
+ * that found nothing, because `updateAvailable: false` means both "already
+ * current" and "the registry could not be reached", and only `error` separates
+ * them. Running an installer off a failed check is running it off nothing.
+ *
+ * Never throws: it is called from a timer with nobody to catch it, and a
+ * network blip must not take the main process down.
+ */
+let cliRefreshing = false
+
+async function refreshCliUpdate(): Promise<void> {
+  /*
+   * One at a time. The two callers are 12s and six hours apart so an overlap is
+   * hard to arrange today, but the body awaits a subprocess with a three-minute
+   * timeout and the thing it would run twice is an installer — gotcha 20's
+   * shape, with a worse payload than a duplicated scan. Claimed before the
+   * first await, which is the half of that gotcha that is easy to get wrong.
+   */
+  if (cliRefreshing) return
+  cliRefreshing = true
+  try {
+    const settings = getSettings()
+    cliUpdate = await checkForUpdate(settings.claudePath)
+    send(CH.updateState, cliState())
+
+    const now = Date.now()
+    const decision = shouldAutoUpdate(cliUpdate, settings.cliAutoUpdate, cliLastAttempt, now)
+    if (!decision.run) return
+
+    const from = cliUpdate.current
+    const target = cliUpdate.latest
+    const result = await runUpdate(settings.claudePath)
+    const applied = updateApplied(result)
+
+    /*
+     * Reported as three distinct outcomes, not two. `claude update` exits 0
+     * having changed nothing both when it is already current and when it cannot
+     * write to the install — so "ok" alone would print "Updated" over a CLI that
+     * did not move. `updateApplied` compares the versions read either side of
+     * the run, which is what `runUpdate` reads them for.
+     *
+     * The middle case quotes the CLI rather than paraphrasing it, because the
+     * CLI already gives the actual reason and Stoke cannot infer it. Measured
+     * here: "You're running 2.1.237, which is newer than the stable channel's
+     * 2.1.236. Skipping update." — a complete answer that the previous wording
+     * ("Run doctor to see why") threw away in favour of sending the reader
+     * somewhere else.
+     */
+    cliAutoNote = applied
+      ? `Updated ${from ?? 'the CLI'} to ${result.to} automatically.`
+      : result.ok
+        ? `${result.to ?? 'The CLI'} is still what is installed${verdictLine(result.output) ? ` — ${verdictLine(result.output)}` : '.'}`
+        : `Automatic update failed: ${result.error ?? 'the command failed.'}`
+
+    // Recorded whatever happened, and only cleared on success: an attempt that
+    // achieved nothing is exactly the one that must not be repeated on the next
+    // tick, and the record is what tells shouldAutoUpdate that.
+    cliLastAttempt = applied ? null : { at: now, target, from, failed: !result.ok }
+
+    // Re-check so the panel's version line reflects what is on disk now rather
+    // than what was there before the run.
+    cliUpdate = await checkForUpdate(settings.claudePath)
+    send(CH.updateState, cliState())
+  } catch (err) {
+    cliAutoNote = `Automatic update failed: ${err instanceof Error ? err.message : String(err)}`
+    send(CH.updateState, cliState())
+  } finally {
+    cliRefreshing = false
+  }
+}
+
+/**
+ * The CLI's own verdict, which is the LAST line it printed, not the first.
+ *
+ * `claude update` narrates before it concludes ("Current version: …",
+ * "Checking for updates to stable version…"), so the interesting sentence is
+ * always at the end. Named for what it means rather than for where it is,
+ * because "first line" is what someone would reach for and would be wrong.
+ * Kept to one sentence because this lands inside a settings hint, not a log
+ * pane; the full output is still available behind the panel's own Update button.
+ */
+function verdictLine(output: string): string {
+  const lines = output.split('\n').map((l) => l.trim()).filter(Boolean)
+  const last = lines[lines.length - 1] ?? ''
+  return last.length > 200 ? `${last.slice(0, 197)}…` : last
+}
+
+function cliState(): CliUpdateState {
+  return { info: cliUpdate, auto: getSettings().cliAutoUpdate, note: cliAutoNote }
+}
 /**
  * The newest statusLine reading seen this run, whichever session produced it.
  *
@@ -719,6 +850,12 @@ function createWindow(): void {
   initSelfUpdate((s) => send(CH.selfState, s))
   setTimeout(() => void checkSelfUpdate(), 8000)
 
+  // The CLI's own version, on the same "not during startup" principle. Offset
+  // from the self-update check so the two are not spawning subprocesses and
+  // making network calls in the same tick.
+  setTimeout(() => void refreshCliUpdate(), 12_000)
+  setInterval(() => void refreshCliUpdate(), AUTO_CHECK_MS)
+
   // Expose the docked browser to Claude Code. Started eagerly so the config
   // file exists before the first session is launched.
   mcp = new BrowserMcpServer(browser)
@@ -944,15 +1081,31 @@ function registerIpc(): void {
 
   /* ---------------------------------------------------------- plan limits */
   /*
-   * Cached for a minute. The renderer polls so the countdown stays honest, but
-   * the endpoint is undocumented and the numbers move in whole percentage
-   * points, so there is nothing to gain from hammering it.
+   * Two refresh rules, and the reason there are two is that a timer alone
+   * cannot be both prompt and cheap.
+   *
+   * `poll` is the idle cadence: 30s, which is often enough that the countdown
+   * never visibly stalls and rare enough not to hammer an endpoint that is
+   * undocumented and moves in whole percentage points.
+   *
+   * `message` is the renderer saying a new turn just started (a changed
+   * `prompt_id`, see UsageMeter). That is the moment the numbers are most
+   * likely to have actually moved and the moment someone is most likely to be
+   * looking, so it is allowed to pre-empt the 30s — that is the whole "or
+   * every message, whichever is first" rule. It still has a floor, because
+   * "a message" is not rate-limited by anything: several sessions can each
+   * start a turn within the same second, and a floor of a few seconds turns
+   * that into one call instead of five while staying imperceptible.
+   *
+   * `retryAfter` outranks both. A 429 or a 5xx asks for a longer wait than
+   * either cadence, and a message boundary is not a reason to ignore it —
+   * continuing to knock on an undocumented endpoint that has just said no is
+   * how access gets worse rather than better.
    */
-  ipcMain.handle(CH.usageRead, async () => {
+  ipcMain.handle(CH.usageRead, async (_e, reason?: UsageReadReason) => {
     const now = Date.now()
-    // A rate-limited or failing endpoint asks for a longer wait than the
-    // ordinary poll; honour it rather than knocking every minute regardless.
-    const wait = usageCache?.retryAfter ?? 60_000
+    const floor = reason === 'message' ? USAGE_MESSAGE_FLOOR_MS : USAGE_POLL_MS
+    const wait = Math.max(usageCache?.retryAfter ?? 0, floor)
     if (usageCache && now - usageCache.fetchedAt < wait) return usageCache
     usageCache = await fetchUsage(now)
     return usageCache
@@ -1259,9 +1412,26 @@ function registerIpc(): void {
   })
 
   /* --------------------------------------------------------------- updates */
-  ipcMain.handle(CH.updateCheck, () => checkForUpdate(getSettings().claudePath))
-  ipcMain.handle(CH.updateRun, () => runUpdate(getSettings().claudePath))
+  ipcMain.handle(CH.updateCheck, async () => {
+    // Through the shared cache, so a manual Check and the automatic one cannot
+    // disagree about what version is installed.
+    cliUpdate = await checkForUpdate(getSettings().claudePath)
+    send(CH.updateState, cliState())
+    return cliUpdate
+  })
+  ipcMain.handle(CH.updateRun, async () => {
+    const result = await runUpdate(getSettings().claudePath)
+    // A manual run is the user deciding, so it clears whatever the automatic
+    // one last said — leaving a stale "Automatic update failed" above a
+    // successful manual run would be the panel contradicting itself.
+    cliAutoNote = null
+    cliLastAttempt = null
+    cliUpdate = await checkForUpdate(getSettings().claudePath)
+    send(CH.updateState, cliState())
+    return result
+  })
   ipcMain.handle(CH.updateDoctor, () => runDoctor(getSettings().claudePath))
+  ipcMain.handle(CH.updateState, () => cliState())
 
   /* -------------------------------------------------------------- settings */
   ipcMain.handle(CH.settingsGet, () => getSettings())

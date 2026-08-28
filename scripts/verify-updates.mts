@@ -22,6 +22,7 @@ import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import type { UpdateInfo } from '../src/shared/api.ts'
 import { leafAuthority, signatureBlocker } from '../src/main/codesign.ts'
+import { AUTO_RETRY_MS, shouldAutoUpdate, updateApplied } from '../src/main/updates.ts'
 import { describeExecError } from '../src/main/updates.ts'
 import { updateButton, updateVerdict } from '../src/renderer/src/lib/updateVerdict.ts'
 
@@ -384,6 +385,31 @@ Timestamp=20 Aug 2026 at 6:36:40 pm
 TeamIdentifier=not set
 `
 
+/**
+ * The certificate the releases themselves are signed with, verbatim from
+ * `codesign -dvv /Applications/Stoke.app` on the machine this was written on.
+ *
+ * This is the case the whole macOS update path now rests on: not Apple-issued,
+ * so the APPLE_AUTHORITIES branch cannot save it, and not ad-hoc either. Its
+ * designated requirement pins the leaf certificate —
+ *
+ *   identifier "dev.vinn.stoke" and certificate leaf = H"2bef4d37…"
+ *
+ * — which a release signed with the same certificate satisfies. Blocking it,
+ * which is what shipped, is why no Mac could update: a local build and a
+ * release build carry the same certificate by construction, and the panel
+ * refused the one pairing that actually works.
+ */
+const RELEASE_SIGNED_REPORT = `Executable=/Applications/Stoke.app/Contents/MacOS/Stoke
+Identifier=dev.vinn.stoke
+Format=app bundle with Mach-O thin (arm64)
+CodeDirectory v=20500 size=431 flags=0x10000(runtime) hashes=3+7 location=embedded
+Signature size=5961
+Authority=Stoke
+Timestamp=26 Aug 2026 at 9:49:41 am
+TeamIdentifier=not set
+`
+
 const DEVELOPER_ID_REPORT = `Executable=/Applications/Stoke.app/Contents/MacOS/Stoke
 Identifier=dev.vinn.stoke
 Signature size=9051
@@ -414,6 +440,21 @@ check(
   null
 )
 check(
+  'nor is the certificate the releases are signed with — blocking it is why no Mac could update',
+  signatureBlocker(RELEASE_SIGNED_REPORT),
+  null
+)
+check(
+  'and the match is exact, not a prefix: a different certificate whose name merely starts the same is still blocked',
+  signatureBlocker(RELEASE_SIGNED_REPORT.replace('Authority=Stoke', 'Authority=Stoke Local')) !== null,
+  true
+)
+check(
+  'an ad-hoc report still loses even if it somehow also names the release certificate — cdhash cannot be satisfied by anything',
+  signatureBlocker(`${RELEASE_SIGNED_REPORT}Signature=adhoc\n`)?.includes('ad-hoc'),
+  true
+)
+check(
   'the leaf authority is read, not an intermediate further down the chain',
   leafAuthority(DEVELOPER_ID_REPORT),
   'Developer ID Application: The Vinh Nguyen (AB12CD34EF)'
@@ -427,6 +468,169 @@ check(
   'nor does a report that states no authority and no ad-hoc flag',
   signatureBlocker('Executable=/Applications/Stoke.app/Contents/MacOS/Stoke\n'),
   null
+)
+
+/* ------------------------------- when the CLI is updated without being asked
+ *
+ * The gate, not the scheduler. Every one of these is a case where "there is a
+ * newer version, so install it" is the wrong answer, and every one of them is
+ * invisible to anything but a direct call: the real function's only effect is a
+ * subprocess spawned inside a six-hour timer, which is gotcha 31's shape
+ * exactly.
+ */
+console.log('\nwhen the CLI is updated without being asked')
+
+const NOW = 1_786_078_200_000
+/** A check that succeeded and found something newer. */
+const AVAILABLE = {
+  current: '2.1.230',
+  latest: '2.1.237',
+  updateAvailable: true,
+  checkedAt: NOW,
+  error: null
+}
+
+/** Shorthand for "the last attempt", so the cases below read as situations. */
+const attempt = (over: Partial<{ at: number; target: string | null; from: string | null; failed: boolean }> = {}) => ({
+  at: NOW,
+  target: '2.1.237',
+  from: '2.1.230',
+  failed: false,
+  ...over
+})
+
+check(
+  'an available update with the setting on runs',
+  shouldAutoUpdate(AVAILABLE, true, null, NOW).run,
+  true
+)
+check(
+  'and with the setting off it does not — replacing a program on someone’s PATH stays refusable',
+  shouldAutoUpdate(AVAILABLE, false, null, NOW).run,
+  false
+)
+check(
+  'nothing newer means nothing to run, and no reason worth reporting either',
+  shouldAutoUpdate({ ...AVAILABLE, updateAvailable: false }, true, null, NOW),
+  { run: false, reason: null }
+)
+/*
+ * The one that matters most. `updateAvailable` is false for BOTH "already
+ * current" and "the registry could not be reached" — only `error` separates
+ * them — so a gate that looked at `updateAvailable` alone would be deciding off
+ * a check that never happened. Here it is true and the check still failed,
+ * which is the shape a stale cached info would have.
+ */
+check(
+  'a failed check never triggers an install, however available the update looks',
+  shouldAutoUpdate({ ...AVAILABLE, error: 'registry responded 503' }, true, null, NOW).run,
+  false
+)
+check(
+  'and it says the check was what failed, rather than blaming the update',
+  shouldAutoUpdate({ ...AVAILABLE, error: 'registry responded 503' }, true, null, NOW).reason?.includes('503'),
+  true
+)
+check(
+  'no claude on the machine is not an update opportunity',
+  shouldAutoUpdate({ ...AVAILABLE, current: null }, true, null, NOW).run,
+  false
+)
+/*
+ * A failing update leaves `updateAvailable` true, so with no floor the timer
+ * would retry it on every tick forever — three minutes of subprocess each time,
+ * for an npm-global install that is never going to become writable.
+ */
+check(
+  'a failed attempt a minute ago is not retried',
+  shouldAutoUpdate(AVAILABLE, true, attempt({ at: NOW - 60_000, failed: true }), NOW).run,
+  false
+)
+check(
+  'but a failed one from before the retry window is — a failure can be transient',
+  shouldAutoUpdate(AVAILABLE, true, attempt({ at: NOW - AUTO_RETRY_MS - 1, failed: true }), NOW).run,
+  true
+)
+
+/*
+ * The case measured on this machine on 2026-08-28, and the reason the record
+ * carries versions rather than only a timestamp.
+ *
+ * `checkForUpdate` reads the npm registry's `latest` tag; `claude update`
+ * follows its own stable channel. They disagreed — registry 2.1.250, installed
+ * 2.1.237, stable channel 2.1.236 — so `claude update` exited 0 having
+ * deliberately changed nothing, and `updateAvailable` was still true
+ * afterwards. Under a time-only rule that is a subprocess every six hours,
+ * forever, to be told the same thing.
+ */
+const STUCK = { ...AVAILABLE, current: '2.1.237', latest: '2.1.250' }
+check(
+  'a clean run that changed nothing is NOT retried on a timer, however long ago it was',
+  shouldAutoUpdate(
+    STUCK,
+    true,
+    attempt({ at: NOW - 30 * AUTO_RETRY_MS, target: '2.1.250', from: '2.1.237' }),
+    NOW
+  ).run,
+  false
+)
+check(
+  'and it says so in terms of the two versions, rather than blaming a cooldown it is not waiting on',
+  shouldAutoUpdate(
+    STUCK,
+    true,
+    attempt({ target: '2.1.250', from: '2.1.237' }),
+    NOW
+  ).reason?.includes('2.1.250'),
+  true
+)
+check(
+  'a newer target unsticks it — the situation has genuinely changed',
+  shouldAutoUpdate(
+    { ...STUCK, latest: '2.1.251' },
+    true,
+    attempt({ target: '2.1.250', from: '2.1.237' }),
+    NOW
+  ).run,
+  true
+)
+check(
+  'and so does the installed version moving underneath it, e.g. after a manual install',
+  shouldAutoUpdate(
+    { ...STUCK, current: '2.1.240' },
+    true,
+    attempt({ target: '2.1.250', from: '2.1.237' }),
+    NOW
+  ).run,
+  true
+)
+
+console.log('\nand whether the run that just finished actually changed anything')
+/*
+ * `claude update` exits 0 having changed nothing in two completely different
+ * situations — already current, and an npm-global install it cannot write to.
+ * Exit status alone therefore cannot answer this, which is why `runUpdate`
+ * reads the version either side.
+ */
+check(
+  'a version that moved is an update',
+  updateApplied({ ok: true, output: '', error: null, from: '2.1.230', to: '2.1.237' }),
+  true
+)
+check(
+  'a version that did not move is NOT, however cleanly the command exited',
+  updateApplied({ ok: true, output: 'Claude Code is up to date', error: null, from: '2.1.237', to: '2.1.237' }),
+  false
+)
+check(
+  'nor is a run that left nothing readable on disk, even though the version "changed" from a string to null',
+  updateApplied({ ok: true, output: '', error: null, from: '2.1.230', to: null }),
+  false
+)
+check(
+  'and a failed run is never an update',
+  updateApplied({ ok: false, output: '', error: 'exited with code 1', from: '2.1.230', to: '2.1.237' }),
+  false
 )
 
 console.log(`\n${failures === 0 ? 'All checks passed.' : `${failures} check(s) FAILED.`}`)

@@ -2,7 +2,14 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type { IpcRendererEvent } from 'electron'
 import { CH } from '@shared/ipc'
 import type { ClipboardPeek, StokeApi } from '@shared/api'
-import type { Rect, LaunchOptions, ProjectMeta, Settings, StoredTabs } from '@shared/types'
+import type {
+  Rect,
+  LaunchOptions,
+  ProjectMeta,
+  Settings,
+  StoredTabs,
+  UsageReadReason
+} from '@shared/types'
 
 /** Subscribe helper that hands back an unsubscribe function. */
 function on<A extends unknown[]>(
@@ -32,7 +39,7 @@ const api: StokeApi = {
   },
 
   usage: {
-    read: () => ipcRenderer.invoke(CH.usageRead)
+    read: (reason?: UsageReadReason) => ipcRenderer.invoke(CH.usageRead, reason)
   },
 
   projects: {
@@ -108,7 +115,9 @@ const api: StokeApi = {
   updates: {
     check: () => ipcRenderer.invoke(CH.updateCheck),
     run: () => ipcRenderer.invoke(CH.updateRun),
-    doctor: () => ipcRenderer.invoke(CH.updateDoctor)
+    doctor: () => ipcRenderer.invoke(CH.updateDoctor),
+    state: () => ipcRenderer.invoke(CH.updateState),
+    onState: (cb) => on<[Parameters<typeof cb>[0]]>(CH.updateState, cb)
   },
 
   self: {

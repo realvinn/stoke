@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { CliRunResult, RemoteState, SelfUpdateState, UpdateInfo } from '@shared/api'
 import { updateButton, updateVerdict } from '../lib/updateVerdict'
 import { FieldHint } from './FieldHint'
-import type { Settings } from '@shared/types'
+import type { CliUpdateState, Settings } from '@shared/types'
 
 interface Props {
   settings: Settings
@@ -502,17 +502,48 @@ export function SelfUpdateSettings({
   )
 }
 
-/** Version, update availability and `claude doctor` health. */
-export function UpdatesSettings(): React.JSX.Element {
+/** Version, update availability, automatic updates, and `claude doctor` health. */
+export function UpdatesSettings({
+  autoUpdate,
+  onChangeAuto
+}: {
+  autoUpdate: boolean
+  onChangeAuto: (v: boolean) => void
+}): React.JSX.Element {
   const [info, setInfo] = useState<UpdateInfo | null>(null)
+  const [note, setNote] = useState<string | null>(null)
   const [output, setOutput] = useState<string | null>(null)
   const [verdict, setVerdict] = useState<{ tone: 'success' | 'danger' | 'warning'; text: string } | null>(
     null
   )
   const [busy, setBusy] = useState<string | null>(null)
 
+  /*
+   * Read the state main already holds rather than starting a fresh check, and
+   * subscribe for the rest of the panel's life.
+   *
+   * The subscription is the part that matters. The automatic checker runs on a
+   * six-hour timer with no UI attached, so without a push the panel would only
+   * ever show what was true when it was opened — and an update installed while
+   * it sat open would change the version on disk with nothing on screen moving.
+   */
   useEffect(() => {
-    void window.stoke.updates.check().then(setInfo)
+    let live = true
+    const take = (s: CliUpdateState): void => {
+      setInfo(s.info)
+      setNote(s.note)
+    }
+    void window.stoke.updates.state().then((s) => {
+      if (live) take(s)
+      // Nothing has checked yet this run — the deferred startup check has not
+      // landed — so ask, rather than sitting on "Checking…" until it does.
+      if (live && !s.info) void window.stoke.updates.check().then(setInfo)
+    })
+    const off = window.stoke.updates.onState(take)
+    return () => {
+      live = false
+      off()
+    }
   }, [])
 
   const run = async (label: string, fn: () => Promise<CliRunResult>): Promise<void> => {
@@ -572,6 +603,23 @@ export function UpdatesSettings(): React.JSX.Element {
           : 'Checking…'}
       </span>
 
+      {/*
+        What the automatic checker did while nobody was watching. Shown above
+        the buttons because it explains the version line directly above it —
+        "Running 2.1.237" is a different sentence when the line under it says
+        Stoke installed that itself twenty minutes ago.
+
+        Toned by outcome rather than always neutral: an automatic update that
+        FAILED is the case worth noticing, and it is also the case that has no
+        other way of ever being seen — there was no dialog and no button press
+        to attach it to.
+      */}
+      {note && (
+        <span className="field-hint" data-tone={/failed/i.test(note) ? 'danger' : 'success'}>
+          {note}
+        </span>
+      )}
+
       <div style={{ display: 'flex', gap: 'var(--space-8)', flexWrap: 'wrap' }}>
         <button
           className="btn"
@@ -603,6 +651,39 @@ export function UpdatesSettings(): React.JSX.Element {
           {verdict.text}
         </span>
       )}
+
+      <label className="check-row">
+        <input
+          type="checkbox"
+          checked={autoUpdate}
+          onChange={(e) => onChangeAuto(e.target.checked)}
+        />
+        <span>
+          <span className="field-label">Keep the CLI up to date automatically</span>
+          {/*
+            Says what it does NOT change as well as what it does, because the
+            section above this one is Stoke's own updates and the two are
+            independent. Someone who has just read "Betas have not had their
+            riskiest paths exercised yet" a few rows up will reasonably wonder
+            whether this is the same switch.
+          */}
+          <FieldHint
+            more={
+              <>
+                Checked a few seconds after launch and every six hours after that. Only an update
+                that a <em>successful</em> check found is installed — a check that could not reach
+                the registry reports nothing rather than triggering a blind{' '}
+                <span className="mono">claude update</span>. A failed attempt is not retried for an
+                hour, because the usual causes (an npm-global install Stoke cannot write to, a{' '}
+                <span className="mono">claude</span> that has moved) do not fix themselves in a
+                minute. This never touches Stoke&rsquo;s own version, which is the section above.
+              </>
+            }
+          >
+            Runs <span className="mono">claude update</span> for you, and says what happened.
+          </FieldHint>
+        </span>
+      </label>
 
       {output && (
         <pre

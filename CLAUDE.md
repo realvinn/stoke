@@ -79,8 +79,12 @@ src/main/         Electron main process
                     platform and home as arguments so a suite can ask for another machine's
   store.ts          settings persistence
   settingsSchema.ts defaults + hydrate, with no electron import so a suite can run it
-  updates.ts        claude CLI version/health
+  updates.ts        claude CLI version/health, and the gate that decides whether to
+                    install an update unasked. The gate is pure and separate from the
+                    six-hour timer that calls it, for gotcha 31's reason
   selfUpdate.ts     Stoke's own updates (electron-updater)
+  codesign.ts       whether this copy's signature could ever accept a downloaded update.
+                    No electron import, so verify:updates can run the rule. Gotcha 24
   profiles.ts       plans and creates a profile's folder + scan root
   ssh.ts            ~/.ssh/config parsing, the ssh argv, the transcript command
   sshTranscript.ts  pulls a remote session's JSONL back, so SSH sessions can be read
@@ -135,6 +139,9 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
   ui.ts             the uiScale / fontSize bounds, and the clamps both processes use
   statusLine.ts     the two plan-limit windows the usage chip draws, from the payload
 scripts/          the verify-*.mts suites, make-icon.cjs
+  mac-signing-secrets.sh  puts the release signing certificate into GitHub secrets.
+                    Exists because macOS 26 removed Keychain Access, so every
+                    "export it from the GUI" recipe is now dead. Gotcha 24
   cdp-eval.mjs      evaluates one expression in the renderer, or screenshots it.
                     Picks the target by its window.stoke object, never by URL
 ```
@@ -472,6 +479,45 @@ scripts/          the verify-*.mts suites, make-icon.cjs
     binary, which `-dv` describes without naming its signer and `-dvv` reports as
     `Authority=MyTouchBar Local`. So the old probe could only ever detect the ad-hoc case, not
     because that was the intended rule but because it was the only fact in the output.
+
+    **Both of those are now fixed rather than merely documented, and the fix is that CI signs
+    with the same certificate.** `RELEASE_IDENTITY` in `src/main/codesign.ts` names it (`Stoke`),
+    `signatureBlocker` stops blocking a copy that carries it, and the release workflow imports and
+    *trusts* the `.p12` behind `MAC_CSC_LINK` before building. The installed copy on this machine
+    reports `designated => identifier "dev.vinn.stoke" and certificate leaf =
+    H"2bef4d37864a07cdffa024549f346178d9bf265c"` — the `Stoke` certificate — so a release signed
+    with it satisfies that requirement and the swap goes through.
+
+    Three things about that arrangement that will cost time if forgotten. **Setting
+    `CSC_LINK`/`CSC_KEY_PASSWORD` and stopping there does not work, and fails silently**:
+    electron-builder imports a `.p12` and sets its partition list but never trusts it
+    (`grep -rn add-trusted-cert node_modules/app-builder-lib/` finds nothing), then searches with
+    `security find-identity -v` — *valid* identities only — and an untrusted self-signed
+    certificate is not valid, so the build falls through to a warning and ships an unsigned
+    bundle. Hence the explicit `security add-trusted-cert` step, and hence `CSC_LINK` is
+    deliberately NOT left set on the build step (with it set, electron-builder builds its own
+    untrusted keychain and searches that one instead). **The identity name is a shared constant
+    across three files** — `electron-builder.yml`, `codesign.ts`, and the `.p12` itself — and
+    naming one the pipeline does not use converts a cheap up-front refusal into a 120 MB download
+    that fails at the end. And **changing the certificate breaks the update chain exactly once**:
+    the installed copy pins the old leaf, so the first build under a new one must be installed by
+    hand, and macOS re-asks for the microphone grant because privacy permissions are tied to the
+    signature.
+
+    **macOS 26 removed Keychain Access, which kills every "export it from the GUI" recipe.**
+    Verified on 26.5.2: no `/System/Applications/Utilities/Keychain Access.app`, and `mdfind`
+    finds no copy anywhere. Searching for "keychain" opens the Passwords app, which has no
+    certificates section at all — so the honest report from following the old instructions is
+    "there is nothing in my certificates". `npm run mac:signing-secrets` does the whole job from
+    the CLI instead, and two things it guards against are worth knowing on their own.
+    **`security export` cannot select an identity by name** — it exports the entire keychain's
+    worth, four identities here, so the naive one-liner would ship three unrelated private keys
+    to GitHub; the bundle is split with openssl and the result is asserted to hold exactly one
+    identity and one key, matching the fingerprint `security find-identity` reported. And
+    **`gh secret set NAME < <(base64 -i missing.p12)` sets an empty secret and prints a tick**:
+    the process substitution opens an fd whether or not the command inside it succeeded, so `gh`
+    reads zero bytes and reports success. The workflow's gate is `[ -n "$MAC_CSC_LINK" ]` for
+    exactly that reason, and says "unset or empty" rather than "not set".
 
     Third, and separate: **`CSC_IDENTITY_AUTO_DISCOVERY: false` does not produce an ad-hoc
     signature, it produces no signing pass at all.** With no identity to find, electron-builder
@@ -1034,6 +1080,66 @@ scripts/          the verify-*.mts suites, make-icon.cjs
     near-ink reaches Lc 60 on a fill, so a filled button has no legible label at any ink; three
     shipped swatches sit in it. The fill is nudged out rather than the label accepted, by less
     than the 0.04 perceptual distance this repo already calls "the same colour".
+
+45. **"The payload is fresher than the account" is true during a session and false after it, and
+    believing it unconditionally is what froze the usage chip.** `mergeUsageWindows` took the
+    statusLine payload's `percent`/`resetsAt` over the account endpoint's whenever both existed,
+    on the reasoning that a payload is seconds old where the account is a poll. That reasoning
+    has an unstated precondition: something has to still be *writing* the payload. Nothing
+    rewrites it once its session ends, and `lastStatusLine` in `index.ts` is deliberately kept
+    for the whole run so the chip does not blank when the last tab closes — so an hours-old
+    reading went on outranking a thirty-second-old account poll for as long as the app stayed
+    open. From outside, that is a chip whose numbers never move again however much of the plan
+    gets spent, with an "as of HH:MM" beside them that was also quoting the payload.
+
+    The merge compares the two timestamps now, ties going to the payload, and the panel's "read
+    from…" sentence follows the same comparison rather than assuming an answer. Neither half was
+    visible to a suite: `verify:statusline` and `verify:usage` both called the merge with two
+    arguments and asserted the payload won, which is exactly half the rule. Both suites now run
+    the same fixtures in both directions.
+
+    **The message boundary is `prompt_id`, not the file's mtime.** The chip refreshes the account
+    reading every 30s *or* whenever a new message starts, whichever is first, and the second half
+    needs a way to tell "a new message" from "the CLI redrew". The payload file is rewritten about
+    three times a second for the whole of a turn, so `receivedAt` moving means nothing;
+    `prompt_id` changes exactly once per user message. It is keyed per session in the renderer,
+    because two open sessions have unrelated prompt ids and alternating pushes would otherwise
+    read as a message every time. Main applies a 5s floor to a message-triggered read and 30s to
+    a polled one, and `retryAfter` outranks both — a 429 is not something a message boundary gets
+    to ignore. Verified against the running app: three reads inside the floor returned one
+    `fetchedAt`, and the 15-minute 429 backoff held for `message` reads too.
+
+46. **`claude update` follows its own stable channel; `checkForUpdate` reads the npm `latest`
+    tag; they disagree, and the disagreement is stable.** Measured 2026-08-28: the registry said
+    2.1.250, the installed CLI was 2.1.237, and `claude update` answered *"You're running 2.1.237,
+    which is newer than the stable channel's 2.1.236. Skipping update."* — exit 0, nothing
+    changed, `updateAvailable` still true afterwards.
+
+    That makes a purely time-based retry floor wrong rather than merely inefficient: it is a
+    three-minute subprocess every six hours, forever, to be told the same thing. So
+    `shouldAutoUpdate` records *what* was attempted (`AutoUpdateAttempt`: target, from, failed)
+    and treats the two outcomes differently — a **failure** can be transient and is retried on a
+    timer, a **clean run that changed nothing** is not retried until one of the two versions
+    actually moves. Related, and the reason `runUpdate` reads the version either side at all:
+    exit status cannot answer "did it update", because 0-with-no-change is what both "already
+    current" and "cannot write to this install" look like. The panel quotes the CLI's own last
+    output line for that case rather than paraphrasing it — the CLI already gives the real reason
+    and Stoke cannot infer it.
+
+47. **A button with no declared box keeps Chromium's `buttonface` fill.** The global reset in
+    `app.css` sets only `font` and `color` on `button`, so the settings menu's ten nav rows
+    rendered as chunky grey UA buttons until they declared `border: none; background: transparent`
+    — the same three properties `.segmented button` declares a thousand lines above, for the same
+    reason. Only a screenshot showed it; every measurement of the modal was already correct.
+
+    Two more from the same session, both found by driving the built app rather than reading the
+    CSS. **`@keyframes pop` carries `translate: -50%`**, which is right for the context menu it
+    was written for and wrong for anything centred by `margin: auto`: measured two frames after
+    the click, the dialog was at `x: -220` for a box that settles at `x: 260`, so it flew in from
+    480px off the left. Centred dialogs use `modal-in`. And **a fixed-position dialog with a
+    specified width needs `min-height: 0` on its scrolling grid track**, or a tall section makes
+    the dialog taller than the viewport and the pane never scrolls — gotcha 14's `.app` column
+    problem, one axis over.
 
 ## Standing traps when driving the app
 

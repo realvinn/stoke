@@ -147,7 +147,7 @@ test it.
 `Authority=` line at all, so a probe using `-dv` can only ever detect the ad-hoc case. That was
 this project's bug for several releases, and the case it hid is the common one.
 
-### Why "Restart and install" does not work on macOS today
+### How "Restart and install" works on macOS, and when it does not
 
 Squirrel.Mac installs an update by swapping one `.app` for another, and first checks the
 downloaded bundle against the **running** bundle's designated requirement. What that
@@ -159,12 +159,24 @@ requirement says depends entirely on how the running copy was signed:
 | self-signed | `identifier "…" and certificate leaf = H"…"` | Only if signed with that same certificate |
 | Developer ID | same shape, pinned to an Apple-issued cert | Yes — this is the case it is designed for |
 
-The middle row is the one that bites, because it looks like it should work. A locally built
-copy is signed with whatever code-signing identity happened to be in your login keychain — on
-the machine this was written on that was **`MyTouchBar Local`**, a certificate belonging to an
-entirely different project — while the published release is not signed with it, so the swap is
-refused. Stoke now blocks that up front and names the certificate, rather than letting you pay
+The middle row is the one that decides everything here, and it cuts both ways. A locally built
+copy is signed with whatever code-signing identity `electron-builder.yml` names — `Stoke`, a
+self-signed certificate in the login keychain. If the **published release is signed with that
+same certificate**, the swap is allowed and auto-update works; if it is not, the swap is
+refused. Both halves therefore have to be arranged together, which is what the next section is
+for.
+
+`src/main/codesign.ts` encodes exactly that rule. `RELEASE_IDENTITY` names the certificate the
+releases are signed with, and a copy carrying it is *not* blocked. Anything else self-signed is,
+by name — on the machine this was written on that was **`MyTouchBar Local`**, a certificate
+belonging to an entirely different project that happened to be the only identity in the keychain
+when electron-builder went looking. Blocking up front matters because the alternative is paying
 for a ~123MB download that is rejected at the very end.
+
+**If you change the certificate, change `RELEASE_IDENTITY` with it.** It is a shared constant
+between three places — `mac.identity` in `electron-builder.yml`, the `.p12` behind the
+`MAC_CSC_LINK` secret, and that line — and naming one the pipeline does not actually use turns a
+cheap up-front refusal back into the expensive late one.
 
 To see which case you are in:
 
@@ -180,26 +192,39 @@ whatever the prebuilt Electron binary already carried — measured on the publis
 "code has no resources but signature indicates they must be present", and **none** of the
 entitlements this repo specifies (microphone, JIT, library validation). The release job now
 passes `-c.mac.identity=-`, which asks for a genuine ad-hoc signing pass: right bundle
-identifier, sealed resources, entitlements applied. It still cannot auto-update — row one of
-the table above — but it is a valid, correctly built app.
+identifier, sealed resources, entitlements applied. That is now the **fallback** rather than the
+only path — it is taken when `MAC_CSC_LINK` is not set, and such a build still cannot auto-update
+(row one of the table above), but it is a valid, correctly built app.
 
 ### Making "Restart and install" actually work
 
 Both halves have to hold at once: **the installed copy and the published build must be signed
-by the same certificate.** Cheapest route without an Apple Developer account:
+by the same certificate.** Step 2 is done and step 1 has been done on the machine this was
+written on; **step 3 is the only one left, and it needs two repository secrets that only you can
+create** — the release workflow warns and falls back to an ad-hoc build until they exist, and an
+ad-hoc release cannot update anybody. Cheapest route without an Apple Developer account:
 
 1. Create one self-signed code-signing certificate, named for this project rather than
    whatever else is in your keychain. Keychain Access → **Certificate Assistant** → **Create a
    Certificate…** → Name `Stoke`, Identity Type **Self Signed Root**, Certificate Type **Code
-   Signing** → Create. (This is a GUI step on purpose: `security add-trusted-cert` needs an
-   authorisation prompt anyway, and `codesign` refuses an identity that is not trusted for code
-   signing — verified.) Confirm it took:
+   Signing** → Create. Confirm it took:
 
    ```bash
    security find-identity -v -p codesigning     # should list "Stoke"
    ```
 
-2. Point electron-builder at it, so local builds stop picking up a stray identity:
+   > **macOS 26 removed Keychain Access.** Verified on 26.5.2: there is no
+   > `/System/Applications/Utilities/Keychain Access.app`, and `mdfind` finds no copy anywhere.
+   > Searching for "keychain" opens the Passwords app, which has no certificates section — so
+   > following the paragraph above reports "there is nothing in my certificates", which is true.
+   > If the identity already exists (as it does on the machine this was written on) nothing here
+   > needs the GUI: step 3 is fully scripted. Creating a *new* one without Keychain Access needs
+   > `openssl req -x509` plus `security import` and `security add-trusted-cert`, which is not
+   > written up here because it has not been done.
+
+2. Point electron-builder at it, so local builds stop picking up a stray identity. **Done** —
+   `electron-builder.yml` already says this, and `RELEASE_IDENTITY` in `src/main/codesign.ts`
+   names the same certificate:
 
    ```yaml
    # electron-builder.yml
@@ -207,9 +232,35 @@ by the same certificate.** Cheapest route without an Apple Developer account:
      identity: Stoke
    ```
 
-3. Give CI the same certificate. Export it from Keychain Access as a `.p12` with a password and
-   add two repository secrets — `CSC_LINK` (`base64 -i Stoke.p12 | pbcopy`) and
-   `CSC_KEY_PASSWORD`.
+3. Give CI the same certificate:
+
+   ```bash
+   npm run mac:signing-secrets
+   ```
+
+   That is the whole step. `scripts/mac-signing-secrets.sh` exports the identity, repackages it
+   as a single-identity `.p12`, checks the result against the fingerprint the keychain reports,
+   and pipes both values to `gh`. The password is generated inside the script and never printed,
+   so it cannot end up in a shell history or a scrollback.
+
+   Two traps it exists to avoid, both hit for real:
+
+   - **`security export` cannot select an identity by name.** It exports the whole keychain's
+     worth — four identities on the machine this was written for (`MyTouchBar Local`,
+     `Tinker Local`, `localhost`, `Stoke`) — so the obvious one-liner would put three unrelated
+     private keys into a GitHub secret. The script splits the bundle with `openssl` and asserts
+     that exactly one identity and one key survive.
+   - **`gh secret set NAME < <(base64 -i missing.p12)` sets an EMPTY secret and prints a tick.**
+     The process substitution opens a file descriptor whether or not the command inside it
+     succeeded, so `gh` reads zero bytes and reports success; the secret then exists, looks
+     configured in the GitHub UI, and contains nothing. The workflow's `[ -n "$MAC_CSC_LINK" ]`
+     gate treats that as absent and says "unset or empty" rather than trying to import it.
+
+   The workflow already reads exactly those two names, imports and trusts the certificate, and
+   fails the build rather than shipping an unsigned app if the identity does not come back from
+   `security find-identity`. With them absent it emits a `::warning::` saying the build cannot
+   auto-update and carries on ad-hoc, so a release is never blocked on this — it is just not
+   updatable.
 
    **Setting those two secrets is not enough, and the way it fails is silent.** electron-builder
    imports a `.p12` into a temporary keychain and sets its partition list, and that is all —
@@ -220,18 +271,19 @@ by the same certificate.** Cheapest route without an Apple Developer account:
    the build would fall through to a warning and ship an **unsigned** bundle, which is the exact
    failure you started with, now with secrets configured and looking fixed.
 
-   The runner has to trust the certificate explicitly. Add this step to the mac matrix branch
-   before the build, and then drop both `CSC_IDENTITY_AUTO_DISCOVERY` and the
-   `-c.mac.identity=-` flag (step 2's `identity:` key supplies the name). Do **not** also leave
-   `CSC_LINK` set on the build step, or electron-builder builds its own untrusted keychain and
-   searches that one instead (`macCodeSign.js:184-189`).
+   The runner has to trust the certificate explicitly. **That step now ships** — see "Import and
+   trust the signing certificate" in `.github/workflows/release.yml`, reproduced here because
+   the reasoning belongs with the rest of this section. Note that `CSC_LINK` is deliberately NOT
+   left set on the build step: with it set, electron-builder builds its own *untrusted* keychain
+   and searches that one instead (`macCodeSign.js:184-189`), and the identity comes from step 2's
+   `identity:` key rather than from the environment.
 
    ```yaml
    - name: Import and trust the signing certificate
      if: runner.os == 'macOS'
      env:
-       CSC_P12_BASE64: ${{ secrets.CSC_LINK }}
-       CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+       CSC_P12_BASE64: ${{ secrets.MAC_CSC_LINK }}
+       CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
      run: |
        set -euo pipefail
        KC="$RUNNER_TEMP/stoke-signing.keychain-db"

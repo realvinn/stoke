@@ -11,7 +11,7 @@ import {
   UI_SCALE_MIN
 } from '@shared/ui'
 import { IconClose } from './Icons'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { HostsSettings } from './HostsSettings'
 import { MicrophoneNotice } from './MicrophoneNotice'
 import { ProfilesSettings } from './ProfilesSettings'
@@ -33,6 +33,47 @@ const ZOOM_TARGET_LABELS: { id: ZoomTarget; label: string; hint: string }[] = [
   { id: 'both', label: 'Both', hint: 'Interface scale and terminal font together' },
   { id: 'terminal', label: 'Terminal', hint: 'Terminal font only — the interface stays put' },
   { id: 'interface', label: 'Interface', hint: 'Interface only — the terminal text stays put' }
+]
+
+/**
+ * The settings menu.
+ *
+ * This used to be one 26rem drawer holding every section end to end, and the
+ * problem was not that it was long — it was that length was the only structure
+ * it had. Nineteen unrelated controls in one scroll means the way to find the
+ * SSH host list is to recognise it going past, and the way to know whether you
+ * have seen everything is to have reached the bottom. Splitting it into named
+ * sections costs a click and buys an answer to "where is X" that does not
+ * involve scrolling.
+ *
+ * Order is roughly by how often a section is opened, not by how important it
+ * is: Appearance and Sessions are the ones people come back to, and Advanced
+ * holds the two things you set once. `hint` is the nav item's tooltip and does
+ * the job a subtitle would without making every row two lines tall.
+ */
+type SectionId =
+  | 'appearance'
+  | 'sessions'
+  | 'projects'
+  | 'updates'
+  | 'claude'
+  | 'profiles'
+  | 'worklog'
+  | 'hosts'
+  | 'remote'
+  | 'advanced'
+
+const SECTIONS: { id: SectionId; label: string; hint: string }[] = [
+  { id: 'appearance', label: 'Appearance', hint: 'Theme, fonts, and how big everything is' },
+  { id: 'sessions', label: 'Sessions', hint: 'What a new session starts with' },
+  { id: 'projects', label: 'Projects', hint: 'Which folders the sidebar scans' },
+  { id: 'updates', label: 'Updates', hint: 'Stoke and the Claude Code CLI' },
+  { id: 'claude', label: 'Claude Code', hint: "Claude Code's own configuration" },
+  { id: 'profiles', label: 'Profiles', hint: 'Per-folder colours and scan roots' },
+  { id: 'worklog', label: 'Worklog', hint: 'The Notion / ClickUp review queue' },
+  { id: 'hosts', label: 'SSH hosts', hint: 'Remote machines to open sessions on' },
+  { id: 'remote', label: 'Phone access', hint: 'Reaching this window from a phone' },
+  { id: 'advanced', label: 'Advanced', hint: 'Executable path, and things you hid' }
 ]
 
 interface Props {
@@ -64,6 +105,19 @@ export function SettingsSheet({
   onClose
 }: Props): React.JSX.Element {
   const themes: Theme[] = [...BUILT_IN_THEMES, ...settings.customThemes]
+  const [section, setSection] = useState<SectionId>('appearance')
+
+  /*
+   * The scrolling pane, reset to the top on every section change.
+   *
+   * Without this a tall section scrolled halfway down leaves the next one
+   * opening mid-content, which reads as a section with its heading missing
+   * rather than as retained scroll position.
+   */
+  const paneRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    paneRef.current?.scrollTo({ top: 0 })
+  }, [section])
 
   /*
    * Offer the Host aliases the user already has rather than making them retype
@@ -81,330 +135,456 @@ export function SettingsSheet({
     }
   }, [])
 
+  /*
+   * Escape is NOT bound here. App.tsx already owns it for every overlay
+   * ("closes whichever overlay is on top", App.tsx:1266) and unmounts this
+   * component outright — which several sections below depend on: WorklogSettings
+   * and RemoteSettings each flush a draft field on unmount precisely because
+   * React delivers no blur to a node that is disappearing. A second listener
+   * here would close by the same route and change nothing, but it would put the
+   * ordering of two handlers in the way of a rule that currently has one owner.
+   */
+
+  /**
+   * Arrow keys move between sections, which is what a tablist is expected to
+   * do and is the difference between a menu and ten buttons that happen to be
+   * stacked. Home/End jump to the ends; the roving `tabIndex` below is what
+   * keeps Tab itself moving out of the nav and into the pane rather than
+   * through all ten.
+   */
+  const onNavKey = (e: React.KeyboardEvent): void => {
+    const i = SECTIONS.findIndex((s) => s.id === section)
+    const to =
+      e.key === 'ArrowDown' || e.key === 'ArrowRight'
+        ? (i + 1) % SECTIONS.length
+        : e.key === 'ArrowUp' || e.key === 'ArrowLeft'
+          ? (i - 1 + SECTIONS.length) % SECTIONS.length
+          : e.key === 'Home'
+            ? 0
+            : e.key === 'End'
+              ? SECTIONS.length - 1
+              : -1
+    if (to < 0) return
+    e.preventDefault()
+    setSection(SECTIONS[to].id)
+    // Focus follows selection, so the reader of a screen reader hears the
+    // section they just moved to rather than being told nothing happened.
+    const nav = e.currentTarget as HTMLElement
+    nav.querySelectorAll<HTMLElement>('[role="tab"]')[to]?.focus()
+  }
+
   return (
     <>
       <div className="backdrop" onClick={onClose} />
-      <aside className="sheet" role="dialog" aria-modal="true" aria-label="Settings">
-        <div className="sheet-head">
+      <div className="settings-modal" role="dialog" aria-modal="true" aria-label="Settings">
+        <div className="settings-head">
           <h2>Settings</h2>
-          <button className="icon-btn" onClick={onClose} title="Close settings">
+          <button className="icon-btn" onClick={onClose} title="Close settings (Esc)">
             <IconClose />
             <span className="sr-only">Close settings</span>
           </button>
         </div>
 
-        <div className="sheet-body">
-          <div className="field">
-            <span className="field-label">Theme</span>
-            <div className="theme-grid">
-              {themes.map((t) => (
-                <button
-                  key={t.id}
-                  className="theme-swatch"
-                  aria-pressed={settings.themeId === t.id}
-                  onClick={() => onPatch({ themeId: t.id })}
-                >
-                  <span className="theme-chips">
-                    <span className="theme-chip" style={{ background: t.colors.bg }} />
-                    <span className="theme-chip" style={{ background: t.colors.surface }} />
-                    <span className="theme-chip" style={{ background: t.colors.accent }} />
-                    <span className="theme-chip" style={{ background: t.colors.text }} />
-                  </span>
-                  <span className="theme-name">{t.name}</span>
-                </button>
-              ))}
-            </div>
-            <span className="field-hint">
-              Themes are plain CSS custom properties. Add your own by editing
-              <span className="mono"> settings.json</span> in the app data folder — anything you
-              put in <span className="mono">customThemes</span> shows up here.
-            </span>
-          </div>
-
-          <div className="field">
-            <span className="field-label">Terminal font</span>
-            <input
-              className="input mono"
-              value={settings.fontFamily}
-              spellCheck={false}
-              onChange={(e) => onPatch({ fontFamily: e.target.value })}
-            />
-            <span className="field-hint">A CSS font stack. The first installed family wins.</span>
-          </div>
-
-          <div className="field">
-            <span className="field-label">Terminal size</span>
-            <input
-              className="input"
-              type="number"
-              min={FONT_SIZE_MIN}
-              max={FONT_SIZE_MAX}
-              value={settings.fontSize}
-              onChange={(e) => onPatch({ fontSize: clampFontSize(e.target.value) })}
-            />
-          </div>
-
-          <div className="field">
-            <span className="field-label">Interface scale</span>
-            {/*
-              min/max are advisory inside React's onChange — the browser will
-              not stop a typed or pasted value reaching the handler — so the
-              same clamp the store enforces is applied here too, and the two
-              bounds come from one place. The field used to offer 8-28 for a
-              store that accepts 9-24, and to fall back with `|| 1`, which
-              turned a typed 0 into 1 rather than into the floor.
-            */}
-            <input
-              className="input"
-              type="number"
-              min={UI_SCALE_MIN}
-              max={UI_SCALE_MAX}
-              step={0.05}
-              value={settings.uiScale}
-              onChange={(e) => onPatch({ uiScale: clampUiScale(e.target.value) })}
-            />
-            <span className="field-hint">Scales everything except the terminal contents.</span>
-          </div>
-
-          {/*
-            Which of the two sizes above the zoom keys move. Offered rather than
-            decided, because both answers are the convention somewhere: a
-            terminal scales only its font, an editor scales everything, and
-            Stoke is an editor-shaped app full of terminal-shaped content.
-          */}
-          <div className="field">
-            <span className="field-label">Zoom keys change</span>
-            <div className="segmented" role="group" aria-label="What the zoom shortcut changes">
-              {ZOOM_TARGET_LABELS.map((z) => (
-                <button
-                  key={z.id}
-                  aria-pressed={settings.zoomTarget === z.id}
-                  title={z.hint}
-                  onClick={() => onPatch({ zoomTarget: z.id })}
-                >
-                  {z.label}
-                </button>
-              ))}
-            </div>
-            <span className="field-hint">
-              {window.stoke.platform === 'darwin' ? 'Cmd' : 'Ctrl'} with <kbd>+</kbd>, <kbd>−</kbd> or <kbd>0</kbd> to reset.
-            </span>
-          </div>
-
-          <div className="field">
-            <span className="field-label">Default permissions</span>
-            <div className="segmented" role="group" aria-label="Default permission mode">
-              {PERMISSION_MODES.map((m) => (
-                <button
-                  key={m.id}
-                  aria-pressed={settings.defaults.permissionMode === m.id}
-                  data-danger={m.danger ? 'true' : undefined}
-                  title={m.hint}
-                  onClick={() =>
-                    onPatch({
-                      defaults: { ...settings.defaults, permissionMode: m.id as PermissionMode }
-                    })
-                  }
-                >
-                  {m.label}
-                </button>
-              ))}
-            </div>
-            <span className="field-hint">Applied to every new session unless changed at launch.</span>
-          </div>
-
-          <div className="field">
-            <span className="field-label">Default model</span>
-            <select
-              className="select"
-              value={settings.defaults.model}
-              onChange={(e) => onPatch({ defaults: { ...settings.defaults, model: e.target.value } })}
-            >
-              {MODEL_OPTIONS.map((m) => (
-                <option key={m.id || 'default'} value={m.id}>
-                  {m.label}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="field">
-            <span className="field-label">Default effort</span>
-            <select
-              className="select"
-              value={settings.defaults.effort}
-              onChange={(e) =>
-                onPatch({
-                  defaults: { ...settings.defaults, effort: e.target.value as EffortLevel }
-                })
-              }
-            >
-              {EFFORT_LEVELS.map((e) => (
-                <option key={e.id} value={e.id}>
-                  {e.label}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="field">
-            <span className="field-label">Default folder</span>
-            <div style={{ display: 'flex', gap: 'var(--space-8)' }}>
-              <input
-                className="input mono"
-                placeholder={defaultCwd}
-                value={settings.defaultCwd ?? ''}
-                spellCheck={false}
-                onChange={(e) => onPatch({ defaultCwd: e.target.value.trim() || null })}
-              />
+        <div className="settings-cols">
+          <nav
+            className="settings-nav"
+            role="tablist"
+            aria-orientation="vertical"
+            aria-label="Settings sections"
+            onKeyDown={onNavKey}
+          >
+            {SECTIONS.map((s) => (
               <button
-                className="btn"
-                onClick={async () => {
-                  const dir = await window.stoke.pickFolder()
-                  if (dir) onPatch({ defaultCwd: dir })
-                }}
+                key={s.id}
+                role="tab"
+                id={`settings-tab-${s.id}`}
+                aria-controls={`settings-pane-${s.id}`}
+                aria-selected={section === s.id}
+                // Roving tabIndex: exactly one nav item is in the tab order, so
+                // Tab from the close button lands on the current section and the
+                // next Tab leaves the nav entirely.
+                tabIndex={section === s.id ? 0 : -1}
+                title={s.hint}
+                onClick={() => setSection(s.id)}
               >
-                Choose
+                {s.label}
               </button>
-            </div>
-            <span className="field-hint">
-              Where <b>Start here</b> opens a session when no project is selected. Leave it
-              empty to auto-detect — currently <span className="mono">{defaultCwd}</span>.
-            </span>
-          </div>
-
-          <label className="check-row">
-            <input
-              type="checkbox"
-              checked={settings.startOnLaunch}
-              onChange={(e) => onPatch({ startOnLaunch: e.target.checked })}
-            />
-            <span>
-              <span className="field-label">Start a session on launch</span>
-              <span className="field-hint">
-                Opens a session in the default folder the moment Stoke starts, so the app is
-                never sitting on an empty screen.
-              </span>
-            </span>
-          </label>
-
-          <label className="check-row">
-            <input
-              type="checkbox"
-              checked={settings.hideStatusLine}
-              onChange={(e) => onPatch({ hideStatusLine: e.target.checked })}
-            />
-            <span>
-              <span className="field-label">Hide Claude&rsquo;s status line in Stoke</span>
-              <span className="field-hint">
-                Stoke reads the context window and your plan limits from the status line the CLI
-                pipes to it, and by default prints nothing back — the line duplicates chrome the
-                app already draws. Turn this off to keep your own status line, which still runs and
-                still shows exactly what it did before. Your{' '}
-                <span className="mono">~/.claude/settings.json</span> is never modified, and either
-                way this applies to sessions started after the change. Plan limits also depend on
-                being signed in through a Claude.ai plan rather than an API key — with an API key
-                there is nothing for them to draw on, and they stay blank no matter how this is set.
-              </span>
-            </span>
-          </label>
-
-          <div className="field">
-            <span className="field-label">Scanned folders</span>
-            {settings.projectRoots.length === 0 && (
-              <span className="field-hint">
-                None yet. Add a folder such as your code directory and every project inside it
-                appears in the sidebar, even ones Claude has never opened.
-              </span>
-            )}
-            {settings.projectRoots.map((root) => (
-              <div
-                key={root}
-                style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-8)' }}
-              >
-                <span className="mono truncate" style={{ flex: 1, fontSize: 'var(--fs-xs)' }}>
-                  {root}
-                </span>
-                <button
-                  className="icon-btn"
-                  data-size="sm"
-                  title={`Stop scanning ${root}`}
-                  onClick={() =>
-                    onPatch({ projectRoots: settings.projectRoots.filter((r) => r !== root) })
-                  }
-                >
-                  <IconClose />
-                  <span className="sr-only">Remove {root}</span>
-                </button>
-              </div>
             ))}
-            <button className="btn" onClick={onAddRoot}>
-              Add a folder
-            </button>
+          </nav>
+
+          <div
+            className="settings-pane"
+            ref={paneRef}
+            role="tabpanel"
+            id={`settings-pane-${section}`}
+            aria-labelledby={`settings-tab-${section}`}
+            // Focusable so the pane itself can be scrolled from the keyboard
+            // when the section it holds is all read-only text.
+            tabIndex={0}
+          >
+            {section === 'appearance' && (
+              <>
+                <div className="field">
+                  <span className="field-label">Theme</span>
+                  <div className="theme-grid">
+                    {themes.map((t) => (
+                      <button
+                        key={t.id}
+                        className="theme-swatch"
+                        aria-pressed={settings.themeId === t.id}
+                        onClick={() => onPatch({ themeId: t.id })}
+                      >
+                        <span className="theme-chips">
+                          <span className="theme-chip" style={{ background: t.colors.bg }} />
+                          <span className="theme-chip" style={{ background: t.colors.surface }} />
+                          <span className="theme-chip" style={{ background: t.colors.accent }} />
+                          <span className="theme-chip" style={{ background: t.colors.text }} />
+                        </span>
+                        <span className="theme-name">{t.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                  <span className="field-hint">
+                    Themes are plain CSS custom properties. Add your own by editing
+                    <span className="mono"> settings.json</span> in the app data folder — anything
+                    you put in <span className="mono">customThemes</span> shows up here.
+                  </span>
+                </div>
+
+                <div className="field">
+                  <span className="field-label">Terminal font</span>
+                  <input
+                    className="input mono"
+                    value={settings.fontFamily}
+                    spellCheck={false}
+                    onChange={(e) => onPatch({ fontFamily: e.target.value })}
+                  />
+                  <span className="field-hint">
+                    A CSS font stack. The first installed family wins.
+                  </span>
+                </div>
+
+                <div className="field">
+                  <span className="field-label">Terminal size</span>
+                  <input
+                    className="input"
+                    type="number"
+                    min={FONT_SIZE_MIN}
+                    max={FONT_SIZE_MAX}
+                    value={settings.fontSize}
+                    onChange={(e) => onPatch({ fontSize: clampFontSize(e.target.value) })}
+                  />
+                </div>
+
+                <div className="field">
+                  <span className="field-label">Interface scale</span>
+                  {/*
+                    min/max are advisory inside React's onChange — the browser will
+                    not stop a typed or pasted value reaching the handler — so the
+                    same clamp the store enforces is applied here too, and the two
+                    bounds come from one place. The field used to offer 8-28 for a
+                    store that accepts 9-24, and to fall back with `|| 1`, which
+                    turned a typed 0 into 1 rather than into the floor.
+                  */}
+                  <input
+                    className="input"
+                    type="number"
+                    min={UI_SCALE_MIN}
+                    max={UI_SCALE_MAX}
+                    step={0.05}
+                    value={settings.uiScale}
+                    onChange={(e) => onPatch({ uiScale: clampUiScale(e.target.value) })}
+                  />
+                  <span className="field-hint">Scales everything except the terminal contents.</span>
+                </div>
+
+                {/*
+                  Which of the two sizes above the zoom keys move. Offered rather than
+                  decided, because both answers are the convention somewhere: a
+                  terminal scales only its font, an editor scales everything, and
+                  Stoke is an editor-shaped app full of terminal-shaped content.
+                */}
+                <div className="field">
+                  <span className="field-label">Zoom keys change</span>
+                  <div
+                    className="segmented"
+                    role="group"
+                    aria-label="What the zoom shortcut changes"
+                  >
+                    {ZOOM_TARGET_LABELS.map((z) => (
+                      <button
+                        key={z.id}
+                        aria-pressed={settings.zoomTarget === z.id}
+                        title={z.hint}
+                        onClick={() => onPatch({ zoomTarget: z.id })}
+                      >
+                        {z.label}
+                      </button>
+                    ))}
+                  </div>
+                  <span className="field-hint">
+                    {window.stoke.platform === 'darwin' ? 'Cmd' : 'Ctrl'} with <kbd>+</kbd>,{' '}
+                    <kbd>−</kbd> or <kbd>0</kbd> to reset.
+                  </span>
+                </div>
+              </>
+            )}
+
+            {section === 'sessions' && (
+              <>
+                <div className="field">
+                  <span className="field-label">Default permissions</span>
+                  <div className="segmented" role="group" aria-label="Default permission mode">
+                    {PERMISSION_MODES.map((m) => (
+                      <button
+                        key={m.id}
+                        aria-pressed={settings.defaults.permissionMode === m.id}
+                        data-danger={m.danger ? 'true' : undefined}
+                        title={m.hint}
+                        onClick={() =>
+                          onPatch({
+                            defaults: {
+                              ...settings.defaults,
+                              permissionMode: m.id as PermissionMode
+                            }
+                          })
+                        }
+                      >
+                        {m.label}
+                      </button>
+                    ))}
+                  </div>
+                  <span className="field-hint">
+                    Applied to every new session unless changed at launch.
+                  </span>
+                </div>
+
+                <div className="field">
+                  <span className="field-label">Default model</span>
+                  <select
+                    className="select"
+                    value={settings.defaults.model}
+                    onChange={(e) =>
+                      onPatch({ defaults: { ...settings.defaults, model: e.target.value } })
+                    }
+                  >
+                    {MODEL_OPTIONS.map((m) => (
+                      <option key={m.id || 'default'} value={m.id}>
+                        {m.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="field">
+                  <span className="field-label">Default effort</span>
+                  <select
+                    className="select"
+                    value={settings.defaults.effort}
+                    onChange={(e) =>
+                      onPatch({
+                        defaults: { ...settings.defaults, effort: e.target.value as EffortLevel }
+                      })
+                    }
+                  >
+                    {EFFORT_LEVELS.map((e) => (
+                      <option key={e.id} value={e.id}>
+                        {e.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="field">
+                  <span className="field-label">Default folder</span>
+                  <div style={{ display: 'flex', gap: 'var(--space-8)' }}>
+                    <input
+                      className="input mono"
+                      placeholder={defaultCwd}
+                      value={settings.defaultCwd ?? ''}
+                      spellCheck={false}
+                      onChange={(e) => onPatch({ defaultCwd: e.target.value.trim() || null })}
+                    />
+                    <button
+                      className="btn"
+                      onClick={async () => {
+                        const dir = await window.stoke.pickFolder()
+                        if (dir) onPatch({ defaultCwd: dir })
+                      }}
+                    >
+                      Choose
+                    </button>
+                  </div>
+                  <span className="field-hint">
+                    Where <b>Start here</b> opens a session when no project is selected. Leave it
+                    empty to auto-detect — currently <span className="mono">{defaultCwd}</span>.
+                  </span>
+                </div>
+
+                <label className="check-row">
+                  <input
+                    type="checkbox"
+                    checked={settings.startOnLaunch}
+                    onChange={(e) => onPatch({ startOnLaunch: e.target.checked })}
+                  />
+                  <span>
+                    <span className="field-label">Start a session on launch</span>
+                    <span className="field-hint">
+                      Opens a session in the default folder the moment Stoke starts, so the app is
+                      never sitting on an empty screen.
+                    </span>
+                  </span>
+                </label>
+
+                <label className="check-row">
+                  <input
+                    type="checkbox"
+                    checked={settings.hideStatusLine}
+                    onChange={(e) => onPatch({ hideStatusLine: e.target.checked })}
+                  />
+                  <span>
+                    <span className="field-label">Hide Claude&rsquo;s status line in Stoke</span>
+                    <span className="field-hint">
+                      Stoke reads the context window and your plan limits from the status line the
+                      CLI pipes to it, and by default prints nothing back — the line duplicates
+                      chrome the app already draws. Turn this off to keep your own status line,
+                      which still runs and still shows exactly what it did before. Your{' '}
+                      <span className="mono">~/.claude/settings.json</span> is never modified, and
+                      either way this applies to sessions started after the change. Plan limits
+                      also depend on being signed in through a Claude.ai plan rather than an API
+                      key — with an API key there is nothing for them to draw on, and they stay
+                      blank no matter how this is set.
+                    </span>
+                  </span>
+                </label>
+              </>
+            )}
+
+            {section === 'projects' && (
+              <>
+                <div className="field">
+                  <span className="field-label">Scanned folders</span>
+                  {settings.projectRoots.length === 0 && (
+                    <span className="field-hint">
+                      None yet. Add a folder such as your code directory and every project inside it
+                      appears in the sidebar, even ones Claude has never opened.
+                    </span>
+                  )}
+                  {settings.projectRoots.map((root) => (
+                    <div
+                      key={root}
+                      style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-8)' }}
+                    >
+                      <span className="mono truncate" style={{ flex: 1, fontSize: 'var(--fs-xs)' }}>
+                        {root}
+                      </span>
+                      <button
+                        className="icon-btn"
+                        data-size="sm"
+                        title={`Stop scanning ${root}`}
+                        onClick={() =>
+                          onPatch({ projectRoots: settings.projectRoots.filter((r) => r !== root) })
+                        }
+                      >
+                        <IconClose />
+                        <span className="sr-only">Remove {root}</span>
+                      </button>
+                    </div>
+                  ))}
+                  <button className="btn" onClick={onAddRoot}>
+                    Add a folder
+                  </button>
+                </div>
+
+                <div className="field">
+                  <span className="field-label">Hidden projects</span>
+                  {settings.hiddenProjects.length > 0 ? (
+                    <>
+                      <span className="field-hint">
+                        {settings.hiddenProjects.length} hidden from the sidebar.
+                      </span>
+                      <button className="btn" onClick={() => onPatch({ hiddenProjects: [] })}>
+                        Show them all again
+                      </button>
+                    </>
+                  ) : (
+                    // Shown empty rather than hidden entirely: in a flat scroll a
+                    // missing section was invisible, but in a named section the
+                    // question "where did Hidden projects go" has to have an answer.
+                    <span className="field-hint">
+                      None. Hide one from its right-click menu in the sidebar.
+                    </span>
+                  )}
+                </div>
+              </>
+            )}
+
+            {section === 'updates' && (
+              <>
+                <SelfUpdateSettings
+                  betaUpdates={settings.betaUpdates}
+                  onChangeBeta={(betaUpdates) => onPatch({ betaUpdates })}
+                />
+                <UpdatesSettings
+                  autoUpdate={settings.cliAutoUpdate}
+                  onChangeAuto={(cliAutoUpdate) => onPatch({ cliAutoUpdate })}
+                />
+              </>
+            )}
+
+            {section === 'claude' && <ClaudeCodeSettings cliVersion={cli?.version ?? null} />}
+
+            {section === 'profiles' && (
+              <ProfilesSettings settings={settings} onPatch={onPatch} onCreated={onProfileCreated} />
+            )}
+
+            {section === 'worklog' && (
+              <WorklogSettings
+                profiles={profiles}
+                worklogGroups={settings.worklogGroups}
+                auto={settings.worklogAuto}
+                boards={settings.worklogBoards}
+                onChangeBoards={(worklogBoards) => onPatch({ worklogBoards })}
+                onChange={(worklogGroups) => onPatch({ worklogGroups })}
+                onChangeAuto={(worklogAuto) => onPatch({ worklogAuto })}
+              />
+            )}
+
+            {section === 'hosts' && (
+              <HostsSettings
+                hosts={settings.hosts}
+                suggestions={sshAliases}
+                onChange={(hosts) => onPatch({ hosts })}
+              />
+            )}
+
+            {section === 'remote' && (
+              <>
+                <MicrophoneNotice />
+                <RemoteSettings settings={settings} onPatch={onPatch} />
+              </>
+            )}
+
+            {section === 'advanced' && (
+              <div className="field">
+                <span className="field-label">Claude CLI path</span>
+                <input
+                  className="input mono"
+                  placeholder="Auto-detected"
+                  value={settings.claudePath ?? ''}
+                  spellCheck={false}
+                  onChange={(e) => onPatch({ claudePath: e.target.value.trim() || null })}
+                />
+                <span className="field-hint">
+                  {cli?.ok
+                    ? `Using ${cli.path}${cli.version ? ` — ${cli.version}` : ''}`
+                    : (cli?.error ?? 'Looking for the claude executable…')}
+                </span>
+              </div>
+            )}
           </div>
-
-          <SelfUpdateSettings
-            betaUpdates={settings.betaUpdates}
-            onChangeBeta={(betaUpdates) => onPatch({ betaUpdates })}
-          />
-
-          <UpdatesSettings />
-
-          {/* Directly under the CLI's version, because the two are about the
-              same program: what it is, then how it is configured. */}
-          <ClaudeCodeSettings cliVersion={cli?.version ?? null} />
-
-          <ProfilesSettings settings={settings} onPatch={onPatch} onCreated={onProfileCreated} />
-
-          <WorklogSettings
-            profiles={profiles}
-            worklogGroups={settings.worklogGroups}
-            auto={settings.worklogAuto}
-            boards={settings.worklogBoards}
-            onChangeBoards={(worklogBoards) => onPatch({ worklogBoards })}
-            onChange={(worklogGroups) => onPatch({ worklogGroups })}
-            onChangeAuto={(worklogAuto) => onPatch({ worklogAuto })}
-          />
-
-          <HostsSettings
-            hosts={settings.hosts}
-            suggestions={sshAliases}
-            onChange={(hosts) => onPatch({ hosts })}
-          />
-
-          <MicrophoneNotice />
-
-          <RemoteSettings settings={settings} onPatch={onPatch} />
-
-          <div className="field">
-            <span className="field-label">Claude CLI path</span>
-            <input
-              className="input mono"
-              placeholder="Auto-detected"
-              value={settings.claudePath ?? ''}
-              spellCheck={false}
-              onChange={(e) => onPatch({ claudePath: e.target.value.trim() || null })}
-            />
-            <span className="field-hint">
-              {cli?.ok
-                ? `Using ${cli.path}${cli.version ? ` — ${cli.version}` : ''}`
-                : (cli?.error ?? 'Looking for the claude executable…')}
-            </span>
-          </div>
-
-          {settings.hiddenProjects.length > 0 && (
-            <div className="field">
-              <span className="field-label">Hidden projects</span>
-              <span className="field-hint">
-                {settings.hiddenProjects.length} hidden from the sidebar.
-              </span>
-              <button className="btn" onClick={() => onPatch({ hiddenProjects: [] })}>
-                Show them all again
-              </button>
-            </div>
-          )}
         </div>
-      </aside>
+      </div>
     </>
   )
 }

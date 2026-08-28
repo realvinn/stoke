@@ -2480,21 +2480,42 @@ body {
   color: var(--text-faint);
 }
 
-/* Settings uses a slide-over panel, not a modal dialog. */
-.sheet {
+/*
+ * Settings: a centred modal with a section menu, not the 26rem slide-over it
+ * used to be.
+ *
+ * The width is the interesting number. The drawer was 26rem and every section
+ * inside was written to that — the worklog board rows, the profile editor and
+ * the SSH host list all wrap at around 400px and were measured there. A modal
+ * that merely got wider would have left them stranded in a half-empty column,
+ * so the pane is capped at 44rem rather than filling the dialog: the nav takes
+ * a fixed 13rem and the rest is margin. That also keeps line length reasonable
+ * for the sections that are mostly explanatory prose, which several are.
+ *
+ * `min-height: 0` on the row and on the pane is load-bearing, not defensive. A
+ * grid track's automatic minimum is its content's min-content height, so
+ * without it a tall section makes the dialog taller than the viewport and the
+ * pane never scrolls — it is the same failure as the `.app` column in gotcha
+ * 14, one axis over.
+ */
+.settings-modal {
   position: fixed;
-  inset: 0 0 0 auto;
+  inset: 0;
+  margin: auto;
   z-index: var(--z-modal);
-  width: min(26rem, 92vw);
-  display: flex;
-  flex-direction: column;
-  border-left: 1px solid var(--border-strong);
+  width: min(60rem, 92vw);
+  height: min(46rem, 86vh);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
   background: var(--bg-elevated);
   box-shadow: var(--shadow-lg);
-  animation: slide-in var(--dur-slow) var(--ease);
+  animation: modal-in var(--dur) var(--ease);
+  overflow: hidden;
 }
 
-.sheet-head {
+.settings-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -2503,20 +2524,106 @@ body {
   border-bottom: 1px solid var(--border-subtle);
 }
 
-.sheet-head h2 {
+.settings-head h2 {
   margin: 0;
   font-size: var(--fs-lg);
   font-weight: 600;
 }
 
-.sheet-body {
-  flex: 1;
+.settings-cols {
+  display: grid;
+  grid-template-columns: 13rem minmax(0, 1fr);
+  min-height: 0;
+}
+
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-8);
+  overflow-y: auto;
+  border-right: 1px solid var(--border-subtle);
+  background: var(--bg-sunken);
+}
+
+/*
+ * `border: none; background: transparent` are not tidying, they are the whole
+ * appearance. The global reset at the top of this file sets only `font` and
+ * `color` on buttons, so anything that does not declare its own box keeps
+ * Chromium's UA `buttonface` fill and outset border — which is what these
+ * rows rendered as first time round: ten chunky grey buttons where a menu
+ * was intended. `.segmented button` above declares exactly the same three
+ * properties for exactly the same reason.
+ */
+.settings-nav button {
+  text-align: left;
+  padding: var(--space-8) var(--space-12);
+  border: none;
+  border-radius: var(--r-md);
+  background: transparent;
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  line-height: var(--lh-tight);
+  color: var(--text-muted);
+  cursor: default;
+  /* The row is the hit target, so it has to fill the column rather than
+     shrink-wrap the word in it. */
+  width: 100%;
+  transition:
+    background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+
+.settings-nav button:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.settings-nav button[aria-selected='true'] {
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 550;
+  box-shadow: var(--shadow-sm);
+}
+
+.settings-pane {
   min-height: 0;
   overflow-y: auto;
   padding: var(--space-16);
   display: flex;
   flex-direction: column;
   gap: var(--space-24);
+}
+
+/* The prose and the form rows both stop here; see the width note above. */
+.settings-pane > * {
+  max-width: 44rem;
+  width: 100%;
+}
+
+/*
+ * Below roughly the app's own minimum width the two columns stop fitting, so
+ * the menu becomes a scrolling row above the pane rather than a 13rem track
+ * squeezing the content that is the point of the dialog.
+ */
+@media (max-width: 52rem) {
+  .settings-cols {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .settings-nav {
+    flex-direction: row;
+    overflow-x: auto;
+    overflow-y: hidden;
+    border-right: none;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .settings-nav button {
+    width: auto;
+    white-space: nowrap;
+  }
 }
 
 .field {
@@ -2932,9 +3039,22 @@ body {
   }
 }
 
-@keyframes slide-in {
+/*
+ * The centred-dialog entrance, and the reason it is not `pop`.
+ *
+ * `pop` carries `translate: -50%`, which is right for the context menu it was
+ * written for and wrong for anything centred by `margin: auto`: the dialog's
+ * settled left edge is already half its own width from centre, so a -50%
+ * starting offset makes it fly in from 480px off the left of the window.
+ * Caught by measuring the running app two frames after the click and getting
+ * `x: -220` for a box that settles at `x: 260` — reading the CSS would only
+ * ever have shown a name that sounded right.
+ */
+@keyframes modal-in {
   from {
-    translate: 100% 0;
+    opacity: 0;
+    translate: 0 -0.5rem;
+    scale: 0.99;
   }
 }
 
@@ -2965,7 +3085,7 @@ body {
   }
 
   .palette,
-  .sheet,
+  .settings-modal,
   .backdrop {
     animation: fade 1ms;
   }

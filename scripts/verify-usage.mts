@@ -194,7 +194,15 @@ const fromAccount = parseUsage(
   at
 ).windows
 
-const merged = mergeUsageWindows(fromLine, fromAccount)
+/*
+ * The payload is the fresher of the two here, which is the ordinary
+ * during-a-session case: `at` is when it was written and the account's poll
+ * landed a minute earlier. Stating both instants is the point — the merge
+ * compares them rather than assuming the payload always wins, and the
+ * reversed case is asserted below.
+ */
+const accountAt = at - 60_000
+const merged = mergeUsageWindows(fromLine, fromAccount, at, accountAt)
 check(
   'all three windows reach the chip: the two the payload states, plus the one only the account can',
   merged.map((w) => w.kind),
@@ -216,11 +224,30 @@ check(
   ['Fable', 61, 'normal', false]
 )
 
+/*
+ * The same two real parsers, with the freshness the other way round: an app
+ * that has been idle long enough for the account poll to overtake the last
+ * session's payload. This is the composition the chip is in whenever no
+ * session is running, and until the merge compared timestamps the payload's
+ * hour-old figures won it — which is what "the numbers never move" was.
+ */
+const overtaken = mergeUsageWindows(fromLine, fromAccount, at - 3_600_000, at)
+check(
+  'once the account poll is the fresher read, its figures are what the chip draws',
+  [overtaken[0].kind, overtaken[0].percent],
+  ['session', 9]
+)
+check(
+  'and the payload-only weekly window is still there beside it, rather than being dropped with its source',
+  overtaken.map((w) => w.kind).sort(),
+  ['session', 'weekly', 'weekly_scoped']
+)
+
 console.log('\nand when the account route cannot answer — offline, or signed out')
 check(
   'with nothing from the account, the payload alone still draws both its windows — ' +
     'the meter does not go blank just because auth failed',
-  mergeUsageWindows(fromLine, []).map((w) => w.kind),
+  mergeUsageWindows(fromLine, [], at, -Infinity).map((w) => w.kind),
   ['session', 'weekly']
 )
 

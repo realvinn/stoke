@@ -73,6 +73,7 @@ function cleanup(...paths: string[]): void {
 /** The payload captured from claude 2.1.221 after one real request. */
 const REAL: StatusLinePayload = {
   session_id: 'a0e0ee79-0000-4000-8000-000000000000',
+  prompt_id: 'e9a423bc-cbd9-4e9e-b7f5-5731ca5e3fcb',
   model: { id: 'claude-opus-5', display_name: 'Opus 5' },
   context_window: {
     context_window_size: 1_000_000,
@@ -99,6 +100,25 @@ check(
   [15, 3]
 )
 check('the file mtime is carried as receivedAt', snap.receivedAt, 1_700_000_000_000)
+/*
+ * The message boundary, and the reason it is a separate field rather than
+ * something derived from receivedAt. The CLI rewrites this file about three
+ * times a second for the whole of a turn, so the mtime moves constantly within
+ * one message; prompt_id moves exactly once per message. The usage chip
+ * refreshes the account reading on a change here, which is the "or every
+ * message" half of its refresh rule.
+ */
+check('the prompt id carries through, since it is the only message boundary there is', snap.promptId, 'e9a423bc-cbd9-4e9e-b7f5-5731ca5e3fcb')
+check(
+  'a CLI that states none reports null rather than a made-up id — a falsy promptId must never look like a new message',
+  toSnapshot('sess-9', { session_id: 'x' }, 1).promptId,
+  null
+)
+check(
+  'and a blank one is not an id either, for the same reason a blank session_id is not',
+  toSnapshot('sess-9', { prompt_id: '  ' }, 1).promptId,
+  null
+)
 
 console.log('\nthe payload names its own session, and that wins')
 /*
@@ -968,12 +988,27 @@ check(
 
 console.log("\nmerging the payload's windows with the account's")
 /*
- * mergeUsageWindows is what stops any payload existing at all from
- * overwriting a severity the account itself flagged warning/critical — see
- * UsageMeter.tsx. Matched on `kind`, so these fixtures use plain UsageWindow
- * objects rather than routing through statusLineWindows/parseUsage; both of
- * those already have their own coverage above and in verify-usage.mts.
+ * mergeUsageWindows decides two separate things, and both are pinned below.
+ *
+ * Which source states the figures is a comparison of when each was read —
+ * NOT a standing preference for the payload, which is what it used to be and
+ * is the bug these fixtures exist to keep out. A payload stops being rewritten
+ * when its session ends while `lastStatusLine` keeps it for the whole run, so
+ * "the payload is the live one" is true during a session and false after it,
+ * and believing it unconditionally froze the chip's numbers for the rest of
+ * the run. Every case here therefore states both timestamps, and the two-sided
+ * pair below runs the same fixtures with the freshness reversed.
+ *
+ * Severity is the other thing, and it is not a comparison: the payload has no
+ * field for it at all, so the account states it whichever source won.
+ *
+ * Matched on `kind`, so these fixtures use plain UsageWindow objects rather
+ * than routing through statusLineWindows/parseUsage; both of those already
+ * have their own coverage above and in verify-usage.mts.
  */
+/** Two readable instants, so a case says which source is fresher by name. */
+const EARLIER = 1_786_078_000_000
+const LATER = 1_786_078_900_000
 const scopedOnly: UsageWindow = {
   kind: 'weekly_scoped',
   label: 'Fable',
@@ -985,7 +1020,7 @@ const scopedOnly: UsageWindow = {
 }
 check(
   'account-only: a window the payload never produces rides along untouched',
-  mergeUsageWindows([], [scopedOnly]),
+  mergeUsageWindows([], [scopedOnly], -Infinity, LATER),
   [scopedOnly]
 )
 
@@ -1000,7 +1035,7 @@ const payloadOnly: UsageWindow = {
 }
 check(
   'payload-only: nothing in the account to merge in, so the window is untouched, severity included',
-  mergeUsageWindows([payloadOnly], []),
+  mergeUsageWindows([payloadOnly], [], LATER, -Infinity),
   [payloadOnly]
 )
 
@@ -1022,21 +1057,51 @@ const bothAccount: UsageWindow = {
   elapsed: 0.5,
   active: true
 }
-const bothMerged = mergeUsageWindows([bothPayload], [bothAccount])
+const bothMerged = mergeUsageWindows([bothPayload], [bothAccount], LATER, EARLIER)
 check(
-  'both present: the figures are the payload’s — percent and resetsAt, not the account’s',
+  'a fresher payload states the figures — percent and resetsAt, not the account’s older poll',
   [bothMerged[0].percent, bothMerged[0].resetsAt],
   [bothPayload.percent, bothPayload.resetsAt]
 )
 check(
-  'both present: a critical account severity survives a payload that carries the very same window',
+  'and a critical account severity survives it, because the payload has no way to state one',
   bothMerged[0].severity,
   'critical'
 )
+
+/*
+ * The other direction, which is the case that used to be impossible to reach
+ * and is what "the chip stopped updating" actually was. Same two fixtures,
+ * only the timestamps swapped: an idle app whose last session ended an hour
+ * ago, still holding that session's payload, against an account reading taken
+ * thirty seconds ago.
+ */
+const staleMerged = mergeUsageWindows([bothPayload], [bothAccount], EARLIER, LATER)
+check(
+  'a stale payload does NOT outrank a fresher account reading — the figures are the account’s',
+  [staleMerged[0].percent, staleMerged[0].resetsAt],
+  [bothAccount.percent, bothAccount.resetsAt]
+)
+check(
+  'and there is still exactly one session window, not one from each source',
+  staleMerged.filter((w) => w.kind === 'session').length,
+  1
+)
+check(
+  'a tie goes to the payload: within a live session both are stamped now, and it is the one being rewritten',
+  mergeUsageWindows([bothPayload], [bothAccount], LATER, LATER)[0].percent,
+  bothPayload.percent
+)
+
 check(
   'both present, plus an account-only window: the scoped window still rides along beside the merged one',
-  mergeUsageWindows([bothPayload], [bothAccount, scopedOnly]),
+  mergeUsageWindows([bothPayload], [bothAccount, scopedOnly], LATER, EARLIER),
   [{ ...bothPayload, severity: 'critical' }, scopedOnly]
+)
+check(
+  'and it still does when the account is the fresher source, rather than the merge collapsing to one window',
+  mergeUsageWindows([bothPayload], [bothAccount, scopedOnly], EARLIER, LATER).map((w) => w.kind),
+  ['session', 'weekly_scoped']
 )
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)

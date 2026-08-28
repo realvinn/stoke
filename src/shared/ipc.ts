@@ -89,6 +89,9 @@ export const CH = {
   updateCheck: 'update:check',
   updateRun: 'update:run',
   updateDoctor: 'update:doctor',
+  // Both an invoke (read the current state) and a push (the automatic checker
+  // has just changed it). One name, because they carry the same payload.
+  updateState: 'update:state',
 
   // stoke's own updates
   selfCheck: 'self:check',

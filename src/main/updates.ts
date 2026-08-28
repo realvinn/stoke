@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import type { CliRunResult } from '@shared/api'
+import type { CliUpdateInfo } from '@shared/types'
 import { buildEnvPath, findClaude, spawnSpec } from './cli.ts'
 
 const execFileAsync = promisify(execFile)
@@ -14,13 +15,13 @@ const execFileAsync = promisify(execFile)
  * native one is easy to miss and hard to diagnose).
  */
 
-export interface UpdateInfo {
-  current: string | null
-  latest: string | null
-  updateAvailable: boolean
-  checkedAt: number
-  error: string | null
-}
+/**
+ * Aliased rather than declared, so the shape the renderer draws and the shape
+ * this file builds cannot drift apart. A type-only import, which
+ * `node --experimental-strip-types` removes outright — which is what lets
+ * `verify:updates` load this module with no build step and no alias resolver.
+ */
+export type UpdateInfo = CliUpdateInfo
 
 const REGISTRY = 'https://registry.npmjs.org/@anthropic-ai/claude-code/latest'
 
@@ -231,4 +232,128 @@ export async function runUpdate(claudePath: string | null): Promise<CliRunResult
 export async function runDoctor(claudePath: string | null): Promise<CliRunResult> {
   const ran = await runCli(claudePath, ['doctor'], 60_000)
   return { ...ran, from: null, to: null }
+}
+
+/* ------------------------------------------------------- keeping it current */
+
+/**
+ * How often the CLI is checked when Stoke is left running, and how long a
+ * failed attempt is left alone for.
+ *
+ * Six hours because the CLI ships several times a week, not several times an
+ * hour, and every check costs a `claude --version` spawn plus a registry
+ * request. The retry interval is shorter but not much: the common failures
+ * here — an npm-global install that needs a permission Stoke does not have, a
+ * `claude` that has been moved — do not fix themselves in a minute, and
+ * hammering `claude update` against one of them helps nobody.
+ */
+export const AUTO_CHECK_MS = 6 * 60 * 60 * 1000
+export const AUTO_RETRY_MS = 60 * 60 * 1000
+
+export interface AutoUpdateDecision {
+  /** Run `claude update` now. */
+  run: boolean
+  /** Why not, for the log and the panel. Null when `run` is true. */
+  reason: string | null
+}
+
+/**
+ * What the last automatic attempt was and what came of it.
+ *
+ * `target` and `from` are here rather than just a timestamp because of a real
+ * and permanent disagreement between the two things this module talks to.
+ * `checkForUpdate` reads the npm registry's `latest` dist-tag; `claude update`
+ * follows its own **stable channel**, and the two are not the same number.
+ * Measured on this machine on 2026-08-28: the registry said 2.1.250, the
+ * installed CLI was 2.1.237, and `claude update` answered
+ *
+ *   "You're running 2.1.237, which is newer than the stable channel's 2.1.236.
+ *    Skipping update."
+ *
+ * — exit 0, nothing changed, and `updateAvailable` still true afterwards. With
+ * only a time-based floor that is a subprocess spawned every six hours, forever,
+ * to be told the same thing. Recording *what* was attempted turns it into one
+ * attempt per genuinely new situation.
+ */
+export interface AutoUpdateAttempt {
+  at: number
+  /** `info.latest` when this ran. */
+  target: string | null
+  /** `info.current` when this ran. */
+  from: string | null
+  /**
+   * The run itself failed, as opposed to succeeding without moving the version.
+   *
+   * The two deserve different retry rules and this is the flag that separates
+   * them. A failure can be transient — a network blip, a lock, a permission
+   * that gets fixed — so it is retried on a timer. A clean run that changed
+   * nothing is a stable disagreement between two sources, and retrying it
+   * before either of them moves cannot produce a different answer.
+   */
+  failed: boolean
+}
+
+/**
+ * Whether to install a CLI update without being asked.
+ *
+ * Pure, and separate from the scheduler that calls it, for the reason gotcha 31
+ * gives: this is a rule whose only observable effect is a side effect inside a
+ * timer, which is exactly the shape no suite can see. `verify:updates` calls it
+ * directly.
+ *
+ * The gates, each of which has been a real failure:
+ *
+ *  - The setting is on. Replacing a program on someone's PATH is a real action
+ *    and stays refusable.
+ *  - A check actually succeeded. `checkForUpdate` reports `updateAvailable:
+ *    false` both when the CLI is current AND when the registry could not be
+ *    reached or `claude --version` could not be run — `info.error` is the only
+ *    thing that separates them, and running an update off a failed check means
+ *    running it off no information.
+ *  - There is something to install. `claude update` exits 0 having changed
+ *    nothing when it is already current, so "just run it periodically" costs a
+ *    three-minute subprocess to achieve nothing and cannot be told apart from
+ *    a blocked install.
+ *  - The last attempt has not already answered this exact question. See
+ *    `AutoUpdateAttempt`: a failure waits out a timer, and a clean no-op waits
+ *    for one of the two versions to actually change.
+ */
+export function shouldAutoUpdate(
+  info: UpdateInfo,
+  enabled: boolean,
+  last: AutoUpdateAttempt | null,
+  now: number
+): AutoUpdateDecision {
+  if (!enabled) return { run: false, reason: 'Automatic updates are off.' }
+  if (info.error) return { run: false, reason: `The check itself failed: ${info.error}` }
+  if (!info.current) return { run: false, reason: 'No claude executable was found.' }
+  if (!info.updateAvailable) return { run: false, reason: null }
+
+  if (last) {
+    if (last.failed) {
+      if (now - last.at < AUTO_RETRY_MS) {
+        return { run: false, reason: 'An attempt failed recently; waiting before trying again.' }
+      }
+    } else if (info.latest === last.target && info.current === last.from) {
+      // Same target, same installed version, and the last run already declined
+      // to bridge them. Nothing about running it again could differ.
+      return {
+        run: false,
+        reason: `\`claude update\` has already declined to move ${last.from} to ${last.target}; not asking it again until one of them changes.`
+      }
+    }
+  }
+  return { run: true, reason: null }
+}
+
+/**
+ * Did the run that just finished actually move the version on disk?
+ *
+ * `claude update` exits 0 having changed nothing in two very different
+ * situations — already current, and an npm-global install it cannot write to —
+ * so exit status alone cannot answer this. `runUpdate` reads the version either
+ * side precisely so the comparison is possible, and this is that comparison.
+ */
+export function updateApplied(result: CliRunResult): boolean {
+  return result.ok && result.from !== result.to && result.to !== null
 }

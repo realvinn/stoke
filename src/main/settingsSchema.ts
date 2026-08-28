@@ -77,6 +77,9 @@ export const DEFAULT_SETTINGS: Settings = {
   // Off. A beta is a build whose risky paths have not been run; it has to be
   // asked for rather than arrive.
   betaUpdates: false,
+  // On: the CLI already updates itself, so this makes an existing behaviour
+  // visible and switchable rather than introducing a new one. See the type.
+  cliAutoUpdate: true,
   sidebarWidth: 260,
   claudePath: null,
   confirmBypass: true,
@@ -230,6 +233,9 @@ export function hydrateSettings(raw: unknown): Settings {
     // on rather than off — the default is what an untouched machine gets.
     worklogAuto: typeof r.worklogAuto === 'boolean' ? r.worklogAuto : DEFAULT_SETTINGS.worklogAuto,
     betaUpdates: r.betaUpdates === true,
+    // `!== false`, not `=== true`: a settings file written before this key
+    // existed must read as the default, which is on.
+    cliAutoUpdate: r.cliAutoUpdate !== false,
     projectRoots: Array.isArray(r.projectRoots) ? r.projectRoots : [],
     pinnedProjects: Array.isArray(r.pinnedProjects) ? r.pinnedProjects : [],
     hiddenProjects: Array.isArray(r.hiddenProjects) ? r.hiddenProjects : [],

@@ -3,6 +3,8 @@ import type {
   ActivityReport,
   BrowserState,
   CliInfo,
+  CliUpdateInfo,
+  CliUpdateState,
   ContextSnapshot,
   LaunchOptions,
   Project,
@@ -12,6 +14,7 @@ import type {
   Settings,
   StatusLineSnapshot,
   StoredTabs,
+  UsageReadReason,
   UsageSnapshot,
   WorklogProposal,
   WorklogProposedEvent,
@@ -150,13 +153,14 @@ export interface SelfUpdateState {
   blocked: string | null
 }
 
-export interface UpdateInfo {
-  current: string | null
-  latest: string | null
-  updateAvailable: boolean
-  checkedAt: number
-  error: string | null
-}
+/**
+ * Aliased, not redeclared. This shape existed independently here, in
+ * `src/main/updates.ts` and (once the automatic checker needed to push it) in
+ * `types.ts` — three copies of five fields that nothing would have caught
+ * drifting apart, because each half of the IPC boundary would still typecheck
+ * against its own. `CliUpdateInfo` in types.ts is the one declaration.
+ */
+export type UpdateInfo = CliUpdateInfo
 
 /**
  * The outcome of running one `claude` subcommand.
@@ -205,8 +209,14 @@ export interface StokeApi {
   }
 
   usage: {
-    /** Plan limits: the 5-hour window, the weekly window, and any model-scoped one. */
-    read(): Promise<UsageSnapshot>
+    /**
+     * Plan limits: the 5-hour window, the weekly window, and any model-scoped one.
+     *
+     * `reason` is not advisory — it picks which cache floor the main process
+     * applies. 'poll' is the 30s idle cadence; 'message' says a new turn just
+     * started and may pre-empt it. See the `usageRead` handler.
+     */
+    read(reason?: UsageReadReason): Promise<UsageSnapshot>
   }
 
   projects: {
@@ -306,6 +316,16 @@ export interface StokeApi {
      */
     run(): Promise<CliRunResult>
     doctor(): Promise<CliRunResult>
+    /**
+     * The version state plus whatever the automatic checker last did.
+     *
+     * Separate from `check()` because it is also pushed: an automatic run
+     * happens with no UI attached, and its outcome would otherwise be lost —
+     * the panel would show a version that had silently changed with no
+     * explanation for why.
+     */
+    state(): Promise<CliUpdateState>
+    onState(cb: (state: CliUpdateState) => void): () => void
   }
 
   /** Stoke updating itself, via electron-updater and GitHub releases. */

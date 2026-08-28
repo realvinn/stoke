@@ -324,6 +324,7 @@ export function toSnapshot(
   const cw = payload.context_window
   return {
     sessionId: text(payload.session_id) ?? key,
+    promptId: text(payload.prompt_id),
     contextWindowSize: windowSize(cw?.context_window_size),
     usedPercentage: percent(cw?.used_percentage),
     modelId: text(payload.model?.id),

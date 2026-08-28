@@ -169,6 +169,14 @@ export interface ContextSnapshot {
  */
 export interface StatusLinePayload {
   session_id?: string
+  /**
+   * The turn this render belongs to. It changes exactly once per user message,
+   * which makes it the only message boundary anything outside the CLI can see:
+   * the payload file itself is rewritten roughly three times a second *within*
+   * a turn, so its mtime says "the CLI drew something" and never "a message
+   * happened". The usage chip refreshes the account reading on a change here.
+   */
+  prompt_id?: string
   transcript_path?: string
   cwd?: string
   version?: string
@@ -227,6 +235,12 @@ export interface StatusLineWindowReading {
  */
 export interface StatusLineSnapshot {
   sessionId: string
+  /**
+   * The turn this reading was taken during, or null from a CLI that states
+   * none. See `StatusLinePayload.prompt_id`: this is the message boundary, and
+   * `receivedAt` deliberately is not one.
+   */
+  promptId: string | null
   /** context_window_size, or null when this CLI did not state one. */
   contextWindowSize: number | null
   /** 0-100, as the CLI computed it. Null when absent. */
@@ -671,6 +685,21 @@ export interface Settings {
    * older build see a beta it already declined.
    */
   betaUpdates: boolean
+  /**
+   * Install Claude Code CLI updates without asking.
+   *
+   * Default on, and the reason is that this is not new behaviour so much as a
+   * more visible version of it: the CLI already updates itself, and what Stoke
+   * adds is doing it on a schedule the user can see, report, and switch off.
+   * The switch matters anyway — a `claude` on a shared or pinned install is
+   * somebody else's to change, and replacing a program on someone's PATH stays
+   * refusable.
+   *
+   * Independent of `betaUpdates`, which is Stoke's own releases. Nothing here
+   * ever installs a Stoke build; the two update paths share a settings section
+   * and nothing else.
+   */
+  cliAutoUpdate: boolean
   sidebarWidth: number
   /** Explicit path to the claude executable; null means auto-detect. */
   claudePath: string | null
@@ -731,7 +760,47 @@ export interface CliInfo {
   error: string | null
 }
 
+/* ------------------------------------------------------- claude cli updates */
+
+/**
+ * What the Settings panel needs to describe the CLI's update situation,
+ * including anything the automatic checker did while nobody was looking.
+ *
+ * `note` is the part that could not be derived in the renderer: an automatic
+ * run happens with no UI attached, so unless its outcome is carried here it is
+ * simply lost, and the panel would show a version that changed with no
+ * explanation for why.
+ */
+export interface CliUpdateState {
+  /** Null before the first check has completed. */
+  info: CliUpdateInfo | null
+  /** Mirrors `Settings.cliAutoUpdate`, so one message answers both questions. */
+  auto: boolean
+  /** What the last automatic attempt did, or null if none has run. */
+  note: string | null
+}
+
+/** Mirrors `UpdateInfo` in src/main/updates.ts, which the renderer cannot import. */
+export interface CliUpdateInfo {
+  current: string | null
+  latest: string | null
+  updateAvailable: boolean
+  checkedAt: number
+  error: string | null
+}
+
 /* ----------------------------------------------------------- plan limits */
+
+/**
+ * Why the renderer is asking for the account reading, which decides how stale
+ * a cached one may be before it is refetched.
+ *
+ * 'poll' is the idle 30s cadence. 'message' says a new turn has just started —
+ * the moment the figures are most likely to have moved and someone is most
+ * likely to be looking — and is allowed to pre-empt that interval, subject to
+ * a small floor so several sessions starting at once still cost one call.
+ */
+export type UsageReadReason = 'poll' | 'message'
 
 export interface UsageWindow {
   kind: 'session' | 'weekly' | 'weekly_scoped'

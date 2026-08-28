@@ -1,6 +1,17 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { StatusLineSnapshot, UsageSnapshot, UsageWindow } from '@shared/types'
 import { mergeUsageWindows, statusLineWindows } from '@shared/statusLine'
+
+/**
+ * How often the account reading is refreshed with nothing else happening, and
+ * how often the countdown text is recomputed.
+ *
+ * 30s for both. The account endpoint is polled on this interval *or* whenever a
+ * new message starts, whichever comes first — see the `promptId` branch below.
+ * The main process holds a cache of the same length, so an interval shorter
+ * than this one would return the same object rather than a fresher reading.
+ */
+const POLL_MS = 30_000
 
 /**
  * Plan limits, and whether you are ahead of the clock.
@@ -91,17 +102,28 @@ export function UsageChip(): React.JSX.Element | null {
   const [now, setNow] = useState(() => Date.now())
   const [open, setOpen] = useState(false)
 
+  /*
+   * The account pull, reachable from the statusLine effect below without
+   * making that effect depend on this one — the same ref idiom `TerminalView`
+   * uses for `openUrlRef`, and for the reason CLAUDE.md gotcha 31 gives:
+   * re-running an effect to pick up a new closure tears down the subscription
+   * it owns, and here that subscription is the thing being listened to.
+   */
+  const pullRef = useRef<(reason: 'poll' | 'message') => void>(() => {})
+
   useEffect(() => {
     let live = true
-    const pull = async (): Promise<void> => {
-      const next = await window.stoke.usage.read()
-      if (live) setSnap(next)
+    const pull = (reason: 'poll' | 'message'): void => {
+      void window.stoke.usage.read(reason).then((next) => {
+        if (live) setSnap(next)
+      })
     }
-    void pull()
+    pullRef.current = pull
+    pull('poll')
     // The main process caches, and backs off further when rate-limited; this
     // only has to be often enough that the countdown does not visibly stall.
-    const poll = setInterval(() => void pull(), 60_000)
-    const tick = setInterval(() => setNow(Date.now()), 30_000)
+    const poll = setInterval(() => pull('poll'), POLL_MS)
+    const tick = setInterval(() => setNow(Date.now()), POLL_MS)
     return () => {
       live = false
       clearInterval(poll)
@@ -111,12 +133,39 @@ export function UsageChip(): React.JSX.Element | null {
 
   useEffect(() => {
     let live = true
+
+    /*
+     * The last prompt id seen per session, which is what makes "or every
+     * message" implementable at all.
+     *
+     * A payload arriving is not a message: the CLI rewrites the file about
+     * three times a second for the whole of a turn, so `receivedAt` moving
+     * says only that something was redrawn. `prompt_id` changes exactly once
+     * per user message. Keyed by session because two open sessions have
+     * unrelated prompt ids, and alternating pushes between them would
+     * otherwise read as a message every time.
+     */
+    const lastPrompt = new Map<string, string>()
+
+    const take = (s: StatusLineSnapshot): void => {
+      // Keep the newest reading rather than the newest arrival. `pushStatusLine`
+      // sends each session's own payload, so with two sessions open an idle
+      // one's older reading can arrive after a live one's and would otherwise
+      // tick the chip backwards.
+      setLine((prev) => (prev && prev.receivedAt > s.receivedAt ? prev : s))
+
+      if (s.promptId && lastPrompt.get(s.sessionId) !== s.promptId) {
+        lastPrompt.set(s.sessionId, s.promptId)
+        pullRef.current('message')
+      }
+    }
+
     // The last reading of the run, so closing every tab does not blank the
     // chip — it goes quiet and says when it last heard anything.
     void window.stoke.statusLine.last().then((s) => {
-      if (live && s) setLine(s)
+      if (live && s) take(s)
     })
-    const off = window.stoke.statusLine.onUpdate((s) => setLine(s))
+    const off = window.stoke.statusLine.onUpdate(take)
     return () => {
       live = false
       off()
@@ -133,13 +182,12 @@ export function UsageChip(): React.JSX.Element | null {
   }, [open])
 
   /*
-   * The statusLine payload's figures win over the account's when both exist:
-   * it is the live account state as the CLI itself was just told it, seconds
-   * old rather than up to a minute. But the payload states no severity, so it
-   * does not simply replace the account's windows — mergeUsageWindows keeps
-   * the payload's fresher percent/resetsAt per window while pulling severity
-   * from the account's matching window, and keeps any window (weekly_scoped)
-   * only the account carries at all.
+   * Whichever of the two sources was read more recently states the figures,
+   * and the account states severity either way. mergeUsageWindows explains
+   * why that comparison exists and what it fixed; the short version is that
+   * the payload stops being rewritten when its session ends, and outranking
+   * the account on the strength of being "the live one" is exactly how the
+   * chip came to freeze for the rest of the run.
    *
    * The two sources fail independently, and that is the point of merging them
    * rather than picking one. The payload exists only while a session is up;
@@ -148,16 +196,28 @@ export function UsageChip(): React.JSX.Element | null {
    * which does not exist there — so the chip really did go blank the moment
    * the last tab closed. It reads the login Keychain too now, so an idle app
    * still has figures.
+   *
+   * -Infinity, not 0, for a source that has not answered: it has to lose every
+   * comparison, and a real timestamp is never below it.
    */
   const fromLine = line ? statusLineWindows(line, now) : []
   const fromAccount = snap && !snap.error ? snap.windows : []
-  const windows: UsageWindow[] = mergeUsageWindows(fromLine, fromAccount)
+  const payloadAt = fromLine.length > 0 && line ? line.receivedAt : -Infinity
+  const accountAt = fromAccount.length > 0 && snap ? snap.fetchedAt : -Infinity
+  const windows: UsageWindow[] = mergeUsageWindows(fromLine, fromAccount, payloadAt, accountAt)
 
   // Nothing at all rather than a row of zeroes: no reading is not the same as
   // no usage, and a wrong number here would be believed.
   if (!windows.length) return null
 
-  const asOf = fromLine.length > 0 && line ? `as of ${clock(line.receivedAt)}` : null
+  /*
+   * "as of" names when the figures on screen were read, so it has to follow
+   * the same comparison the merge just made rather than always quoting the
+   * payload. Quoting the payload while showing the account's numbers would
+   * put a stale time next to a fresh reading, which is worse than no time.
+   */
+  const readAt = Math.max(payloadAt, accountAt)
+  const asOf = Number.isFinite(readAt) ? `as of ${clock(readAt)}` : null
 
   // The two windows that actually run out. A model-scoped one is shown in the
   // panel but would make the chip a wall of digits.
@@ -208,19 +268,22 @@ export function UsageChip(): React.JSX.Element | null {
               you are going faster than it refills.
             </p>
             {/*
-             * Only shown when the payload contributed, and it says two
-             * different things depending on whether the account answered
-             * as well — because that decides what happens when the last
-             * session closes. Claiming "only updates while a session is
-             * running" when the account is also answering would be false,
-             * and it is the sentence someone reads before deciding whether
-             * to trust a number they are looking at hours later.
+             * Names the source the figures actually came from, which is now a
+             * question with two answers rather than one. This used to say "an
+             * open session's own figures" unconditionally whenever a payload
+             * existed — and it stayed on screen, next to numbers that had
+             * stopped moving, for the rest of the run. It is the sentence
+             * someone reads before deciding whether to trust a reading they
+             * are looking at hours later, so it has to follow the same
+             * comparison the merge made.
              */}
             {asOf && (
               <p className="usage-note">
-                {fromAccount.length > 0
-                  ? `these are an open session's own figures, ${asOf} — the account is read directly too, so they stay up once every session is closed.`
-                  : `read from an open session's status line, ${asOf}. the account could not be reached, so this stops updating when the last session closes.`}
+                {accountAt > payloadAt
+                  ? `read from your account, ${asOf}. refreshed every ${POLL_MS / 1000}s, and again whenever a message starts.`
+                  : fromAccount.length > 0
+                    ? `an open session's own figures, ${asOf} — the account is read directly too, so these stay up once every session is closed.`
+                    : `read from an open session's status line, ${asOf}. the account could not be reached, so this stops updating when the last session closes.`}
               </p>
             )}
           </div>
