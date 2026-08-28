@@ -296,7 +296,7 @@ ad-hoc release cannot update anybody. Cheapest route without an Apple Developer 
        security import "$RUNNER_TEMP/stoke.p12" -k "$KC" -P "$CSC_KEY_PASSWORD" \
          -T /usr/bin/codesign -T /usr/bin/productbuild
        security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KCPW" "$KC" >/dev/null
-       security find-certificate -c "Stoke" -p -k "$KC" > "$RUNNER_TEMP/stoke.cer"
+       security find-certificate -c "Stoke" -p "$KC" > "$RUNNER_TEMP/stoke.cer"
        sudo security add-trusted-cert -d -r trustRoot -p codeSign \
          -k /Library/Keychains/System.keychain "$RUNNER_TEMP/stoke.cer"
        rm -f "$RUNNER_TEMP/stoke.p12"
