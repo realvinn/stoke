@@ -61,7 +61,8 @@ src/main/         Electron main process
   cli.ts            locating claude, building its argv
   projects.ts       project + session discovery from Claude's own files
   projectMeta.ts    per-folder emoji/label/added-by-hand, and the one pair of caps
-  context.ts        live context-window watcher (polls transcripts)
+  context.ts        live context-window watcher (polls transcripts). Publishes on a
+                    changed transcript OR a newly-stated window, for gotcha 49's reason
   sessionFile.ts    transcript parsing and the context maths
   statusLine.ts     Stoke's statusLine wrapper: context window + plan limits
   usage.ts          plan limits from the undocumented OAuth endpoint the CLI itself calls.
@@ -80,8 +81,10 @@ src/main/         Electron main process
   store.ts          settings persistence
   settingsSchema.ts defaults + hydrate, with no electron import so a suite can run it
   updates.ts        claude CLI version/health, and the gate that decides whether to
-                    install an update unasked. The gate is pure and separate from the
-                    six-hour timer that calls it, for gotcha 31's reason
+                    install an update unasked. Reads the CLI's own `autoUpdatesChannel`
+                    rather than assuming `latest`, because those are different numbers
+                    (gotcha 46). The gate is pure and separate from the six-hour timer
+                    that calls it, for gotcha 31's reason
   selfUpdate.ts     Stoke's own updates (electron-updater)
   codesign.ts       whether this copy's signature could ever accept a downloaded update.
                     No electron import, so verify:updates can run the rule. Gotcha 24
@@ -157,6 +160,12 @@ scripts/          the verify-*.mts suites, make-icon.cjs
   themes are swapped by writing variables onto `:root` (`src/renderer/src/lib/theme.ts`).
   No Tailwind, no component library — that is a standing preference, not an accident.
 - IPC channel names live in `src/shared/ipc.ts`. Add there first.
+- **Commit finished work; do not leave it in the working tree.** Once a piece of work is done
+  and `npm run check` passes, commit it without being asked. Prefer several focused commits over
+  one omnibus. Uncommitted work is invisible, losable, and makes "is this in the build I am
+  running?" unanswerable — which has already happened here, with a released dmg and the fix for
+  the bug under discussion sitting unstaged at the same time. Pushing and cutting a release stay
+  separate, deliberate acts.
 - Commit messages: explain *why*, and record any bug the change fixes.
 
 ## Gotchas that cost real time
@@ -1109,22 +1118,69 @@ scripts/          the verify-*.mts suites, make-icon.cjs
     to ignore. Verified against the running app: three reads inside the floor returned one
     `fetchedAt`, and the 15-minute 429 backoff held for `message` reads too.
 
-46. **`claude update` follows its own stable channel; `checkForUpdate` reads the npm `latest`
-    tag; they disagree, and the disagreement is stable.** Measured 2026-08-28: the registry said
-    2.1.250, the installed CLI was 2.1.237, and `claude update` answered *"You're running 2.1.237,
-    which is newer than the stable channel's 2.1.236. Skipping update."* — exit 0, nothing
-    changed, `updateAvailable` still true afterwards.
+46. **The CLI has a release *channel*, it is a setting, and Stoke spent several releases asking
+    one channel a question and acting on another's answer.** Measured 2026-08-28: the registry
+    said 2.1.250, the installed CLI was 2.1.237, and `claude update` answered *"You're running
+    2.1.237, which is newer than the stable channel's 2.1.236. Skipping update."* — exit 0,
+    nothing changed, `updateAvailable` still true afterwards.
 
-    That makes a purely time-based retry floor wrong rather than merely inefficient: it is a
-    three-minute subprocess every six hours, forever, to be told the same thing. So
-    `shouldAutoUpdate` records *what* was attempted (`AutoUpdateAttempt`: target, from, failed)
-    and treats the two outcomes differently — a **failure** can be transient and is retried on a
-    timer, a **clean run that changed nothing** is not retried until one of the two versions
-    actually moves. Related, and the reason `runUpdate` reads the version either side at all:
-    exit status cannot answer "did it update", because 0-with-no-change is what both "already
-    current" and "cannot write to this install" look like. The panel quotes the CLI's own last
-    output line for that case rather than paraphrasing it — the CLI already gives the real reason
-    and Stoke cannot infer it.
+    **This entry used to call that "a stable disagreement" between two sources and leave it
+    there. That was wrong, and the correction is the useful half.** It is one source read two
+    ways. `~/.claude/settings.json` carries **`autoUpdatesChannel`**, the CLI defaults it to
+    `latest` (`settings?.autoUpdatesChannel ?? "latest"`, read out of the 2.1.237 bundle), and
+    `claude doctor` prints it as `Auto-update channel:`. This machine had it set to `stable`.
+    `checkForUpdate` hardcoded the npm `latest` dist-tag, so the panel advertised 2.1.251 against
+    an install following a channel that sat at 2.1.236 — fifteen releases apart, permanently.
+    It reads `channelFrom(readClaudeSettings())` now and fetches that dist-tag, which on this
+    machine turns `latest: 2.1.251, updateAvailable: true` into `latest: 2.1.236,
+    updateAvailable: false, channel: "stable"` — the same answer `claude update` gives.
+
+    **The sharpest part is that Stoke already drew the control it was ignoring.**
+    `shared/claudeConfig.ts:200` offers `autoUpdatesChannel` as "CLI update channel". So one half
+    of the app wrote the key and the other half did not read it. Anything that both draws a CLI
+    setting and acts on the same subject has to read it back; there is no third source of truth.
+
+    **The two channels agree across their two publishers, which is what makes one npm request
+    enough.** Measured 2026-08-31 in both directions — npm `dist-tags` and the GCS objects under
+    `claude-code-releases/<channel>` both give `stable` 2.1.236 and `latest` 2.1.251. `next` is
+    an npm tag with no GCS object; **`rc` and `slow` appear in the CLI's own config-row
+    vocabulary and publish neither**, so `distTagFor` lets them 404 and `checkForUpdate` reports
+    *"the CLI follows the "rc" channel, which npm does not publish"* rather than silently
+    substituting a number from a channel the CLI is not on. Stoke's own option list still offers
+    `rc`; selecting it pins the CLI to a stream with no releases. `disabled` is the fourth value
+    and is not a channel at all — it maps to `latest` for *display* so "switched off" and
+    "already current" are not the same screen, and `shouldAutoUpdate` refuses to act on it,
+    before the error gate so a disabled channel whose check also failed still names the real
+    cause.
+
+    **A stable channel can move backwards, so "newer than stable" is not a paradox.** Doctor
+    reported `Last update attempt: success → 2.1.237 (2026-08-20)` on a machine where stable was
+    2.1.236 four days later. The tag was rolled back under an install that had already taken it.
+    An install being *ahead* of its channel is a normal state, and the only thing to do about it
+    is switch channel or `claude install <version>` — `claude update` is right to decline.
+
+    `AutoUpdateAttempt` (target, from, failed) stays even though its first cause is fixed,
+    because the shape outlives it: an install `claude update` cannot write to, and a channel that
+    moves between the check and the run, both look like a clean run that bridged nothing. A
+    **failure** can be transient and is retried on a timer; a **clean run that changed nothing**
+    is not retried until one of the two versions moves. Related, and the reason `runUpdate` reads
+    the version either side at all: exit status cannot answer "did it update", because
+    0-with-no-change is what both "already current" and "cannot write to this install" look like.
+    The panel quotes the CLI's own last output line for that case rather than paraphrasing it.
+
+    **And do not print a diagnosis the tool can disprove.** `updateVerdict` used to end that case
+    with *"an npm-global or Homebrew install usually has to be updated by its own package
+    manager"* — confident, printed exactly when someone is looking for a cause, and wrong for the
+    case that produced it: `claude doctor` answered `Running: npm-global (2.1.237) …
+    Auto-updates: enabled … **No installation issues found**`. The install was fine; the channel
+    was the whole story. Following that advice means reinstalling a working install. It names
+    `claude doctor` now, which prints both candidate causes, and asserts neither.
+
+    None of this was reachable from `npm run check`: every assertion in `verify-updates.mts` was
+    handed an `UpdateInfo` that had already been built, so the wire from settings to that object
+    was the one untested part of the path — gotcha 31 again, and the same shape as gotcha 41's
+    pre-parsed `HeadlessResult`. `channelFrom` and `distTagFor` are exported and pure so the rule
+    is assertable at all.
 
 47. **A button with no declared box keeps Chromium's `buttonface` fill.** The global reset in
     `app.css` sets only `font` and `color` on `button`, so the settings menu's ten nav rows
@@ -1140,6 +1196,94 @@ scripts/          the verify-*.mts suites, make-icon.cjs
     specified width needs `min-height: 0` on its scrolling grid track**, or a tall section makes
     the dialog taller than the viewport and the pane never scrolls — gotcha 14's `.app` column
     problem, one axis over.
+
+48. **A session is stuck on the `claude` it spawned with, and nothing on screen used to say
+    so.** Updating the CLI — by hand or by the six-hour auto-checker — changes the binary on
+    disk and changes nothing about any open session. The chat keeps working, on the old version,
+    indefinitely. There is no in-place swap: the only route is to stop the process and start
+    another, which is what the status-bar `relaunch on <version>` pill does, via the same
+    `startSession({ resume: true, sessionId })` a paused tab's Resume already used. The
+    conversation is not in the process — it is in the transcript, and `--resume` replays it.
+
+    **The version a session is running comes from its own statusLine payload, not from a stamp.**
+    `payload.version` was already typed in `StatusLinePayload` and simply never read; it is
+    `StatusLineSnapshot.cliVersion` now. Stamping the tab at launch instead would record what
+    Stoke *believed* was installed, which is a cache that goes stale in precisely the situation
+    the feature exists for.
+
+    **The two version sources do not agree on format, and this shipped broken until the built app
+    was driven.** `CliInfo.version` is `stdout.trim()` of `claude --version` — the whole line,
+    `"2.1.237 (Claude Code)"` — while the payload states a bare `"2.1.237"`. Compared raw they are
+    never equal, so the pill lit on every session on every machine, permanently, offering a
+    relaunch onto the binary already running. Every unit test written before it passed, because
+    both sides of those fixtures were bare numbers. It was found by launching against a shim that
+    reports `9.9.9 (Claude Code)` for `--version` and execs the real binary for everything else —
+    which is also the only way to produce the mismatch on demand — and reading the value back out
+    of `window.stoke.cli.info()`. `relaunchPlan` normalises both sides now, and
+    `verify:tabs` pins that raw-vs-bare pair first. Gotcha 31, one more time.
+
+    A `--continue` tab is refused rather than relaunched: its id is chosen by the CLI after launch
+    so `--resume` has nothing to name (gotcha 26), and resuming *the most recent session in the
+    folder* is usually this one and occasionally is not. Silently continuing the wrong conversation
+    is a far worse failure than no button. An SSH tab is refused too — its `claude` is on the far
+    machine, so the local version is not its version.
+
+49. **`ContextWatcher` published only when the *transcript* mtime moved, so a window that became
+    known afterwards never reached the meter.** On a **resumed** session the payload naming it was
+    deleted with the old process (`kill` → `clearSessionFiles`), and the new one writes its first
+    a second or two later, when it renders a status line. The first tick therefore lands with no
+    stated window, `contextLimitFor` falls back to `WINDOW_STANDARD`, and — the transcript not
+    moving, nobody having typed anything yet — nothing ever recomputed it.
+
+    Measured end to end: a 1M session resumed at 125k read **`125k/200k · 63%`** indefinitely while
+    its own payload sat on disk saying `context_window_size: 1000000`. After the fix the same
+    resume reads `125k/1.00M · 13%` and holds it across a relaunch, checked at 8s, 16s and 26s.
+
+    The fix is to make the stated window a second trigger rather than only an argument: `Watch`
+    carries `lastWindow`, and a tick publishes when *either* it or the mtime changed. `undefined`
+    is distinct from `null` there on purpose — "never published" versus "published, no window
+    stated" — or the very first tick of a session with no payload would compare equal to itself
+    and be skipped.
+
+    **This predates the relaunch button and is not caused by it.** The paused-tab Resume walks the
+    identical path, so any restored 1M tab has been reading 200k since restore existed. The button
+    only made it easy to hit on demand, which is how it was finally seen.
+
+51. **A slow action with no feedback gets clicked again, and `replaceOrAppend` turns the second
+    click into a second tab.** The relaunch pill kills its session and starts a replacement, which
+    takes a couple of seconds during which nothing on screen moves. A second click lands before
+    React has re-rendered, so `activeTab` still names the OLD tab — `replaceOrAppend` finds nothing
+    with that id the second time and **appends** instead of replacing.
+
+    Measured both ways against the built app, five clicks dispatched in one tick on a real resumed
+    conversation: without the guard, **5 tabs and five `claude` processes all resuming the same
+    transcript**; with it, 1. Not hypothetical, and not rare — two seconds of dead time on a
+    status-bar pill is exactly what invites the second press.
+
+    The fix is two mechanisms, and folding them into one does not work. A **ref** claimed before
+    the kill is the correctness half (gotcha 20's shape: the claim has to precede the irreversible
+    act, not the await after it), because state has not re-rendered the disabled button yet. A
+    **state** flag is the honest half, so the pill says `relaunching…` rather than sitting there
+    looking ignored. Released in `.finally`, because `startSession` catches its own errors and
+    resolves `false` — releasing only on success would strand the pill on a session already killed.
+
+    One placement detail that is easy to get backwards: the busy check has to come **before** the
+    plan, not be folded into it as a `disabled` prop. Mid-relaunch the old process is dead and the
+    replacement has not landed, so `relaunchPlan` legitimately reads `none` for a frame or two —
+    gating on the plan alone made the pill vanish at the exact moment it was doing something, which
+    reads as the click having dismissed it.
+
+50. **`verify-tabs.mts` printed its own tally two thirds of the way up, so a third of the file
+    could not fail.** `process.exitCode` is assigned once; every assertion after that line printed
+    `PASS`/`FAIL` into a total nobody read again. Proven by forcing one: the run printed `all
+    pass`, then `FAIL`, then exited **0**, and `npm run check` went green. Six `restartPlan`
+    assertions — the ones protecting gotcha 18's "a remote tab's cwd is an alias, not a folder" —
+    were unfalsifiable for as long as that ordering stood.
+
+    The tally is the last statement in the file now, and the fix was verified in both directions:
+    an injected failure exits 1, and removing it exits 0. Worth checking in any suite that grew a
+    new section: a summary is only a summary if nothing runs after it, and a suite that cannot
+    fail is worse than no suite, because it is also a claim that the thing was checked.
 
 ## Standing traps when driving the app
 
