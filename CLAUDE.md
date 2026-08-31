@@ -160,12 +160,13 @@ scripts/          the verify-*.mts suites, make-icon.cjs
   themes are swapped by writing variables onto `:root` (`src/renderer/src/lib/theme.ts`).
   No Tailwind, no component library — that is a standing preference, not an accident.
 - IPC channel names live in `src/shared/ipc.ts`. Add there first.
-- **Commit finished work; do not leave it in the working tree.** Once a piece of work is done
-  and `npm run check` passes, commit it without being asked. Prefer several focused commits over
-  one omnibus. Uncommitted work is invisible, losable, and makes "is this in the build I am
-  running?" unanswerable — which has already happened here, with a released dmg and the fix for
-  the bug under discussion sitting unstaged at the same time. Pushing and cutting a release stay
-  separate, deliberate acts.
+- **Commit and push every finished feature; do not leave it in the working tree or on one
+  machine.** Once a piece of work is done and `npm run check` passes, commit it and push, without
+  being asked. Prefer several focused commits over one omnibus. Uncommitted work is invisible and
+  losable; unpushed work is neither backed up nor reviewable, and both make "is this in the build
+  I am running?" unanswerable — which has already happened here, with a released dmg and the fix
+  for the bug under discussion sitting unstaged at the same time. Cutting a release (version bump,
+  tag, `gh release`) stays a separate, deliberate act.
 - Commit messages: explain *why*, and record any bug the change fixes.
 
 ## Gotchas that cost real time
