@@ -58,9 +58,22 @@ export function updateButton(info: UpdateInfo | null): { enabled: boolean; hint:
  * therefore cannot answer "did it update?", which is why `from` and `to` are
  * measured either side of the run and compared here instead of inferred.
  *
+ * **The warning names no cause, and that is a correction rather than a
+ * hedge.** It used to end "an npm-global or Homebrew install usually has to be
+ * updated by its own package manager" — a confident diagnosis, printed at the
+ * one moment someone is looking for one, and wrong for the case that actually
+ * produced it. On this machine `claude doctor` answered `Running: npm-global
+ * (2.1.237) … Auto-updates: enabled … No installation issues found`: the
+ * install was fine and the CLI was simply pinned to the `stable` channel, which
+ * sat at 2.1.236 — *behind* what was installed. The suggested fix would have
+ * had someone reinstalling a working install. Two causes are common and this
+ * function can distinguish neither, so it names the one command that can.
+ *
  * @param wanted whether the check *before* the update found a newer version. It
  *   is the only thing separating case two from case three — identical results,
  *   opposite meanings. Reading it from a fresh check would always give false.
+ *   Since `checkForUpdate` began following the configured channel this is also
+ *   far rarer: the channel disagreement used to make it true permanently.
  */
 export function updateVerdict(
   result: CliRunResult,
@@ -77,7 +90,7 @@ export function updateVerdict(
       tone: 'warning',
       text: `The updater finished without error, but the version is still ${
         result.to ?? 'unchanged'
-      }. Run doctor — an npm-global or Homebrew install usually has to be updated by its own package manager.`
+      }. Run \`claude doctor\`: it prints the install method and the update channel, and the reason is normally one of those two.`
     }
   }
   return { tone: 'success', text: `Already on ${result.to ?? 'the latest version'}.` }

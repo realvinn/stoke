@@ -595,11 +595,30 @@ export function UpdatesSettings({
           </span>
         )}
       </span>
+      {/*
+        The channel is named whenever it is not the CLI's own default, and that
+        sentence is the whole point of the row.
+
+        "Running 2.1.237, latest is 2.1.236" reads as a typo until you know the
+        channel; with `on the stable channel` in front of it, it reads as the
+        fact it is — this install is ahead of the stream it follows, so there is
+        genuinely nothing to install and `claude update` will keep saying so.
+        Naming `latest` too would be noise on every machine that never touched
+        the setting, which is most of them.
+      */}
       <span className="field-hint">
         {info
           ? info.error
             ? `Running ${info.current ?? 'unknown'}. Could not check for updates: ${info.error}`
-            : `Running ${info.current ?? 'unknown'}${info.latest ? `, latest is ${info.latest}` : ''}.`
+            : info.channel === 'disabled'
+              ? `Running ${info.current ?? 'unknown'}${
+                  info.latest ? `, newest is ${info.latest}` : ''
+                }. The CLI's own auto-updates are switched off, so Stoke will not install this for you.`
+              : info.channel && info.channel !== 'latest'
+                ? `Running ${info.current ?? 'unknown'} on the ${info.channel} channel${
+                    info.latest ? `, which has ${info.latest}` : ''
+                  }.`
+                : `Running ${info.current ?? 'unknown'}${info.latest ? `, latest is ${info.latest}` : ''}.`
           : 'Checking…'}
       </span>
 

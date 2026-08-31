@@ -3,6 +3,7 @@ import { promisify } from 'node:util'
 import type { CliRunResult } from '@shared/api'
 import type { CliUpdateInfo } from '@shared/types'
 import { buildEnvPath, findClaude, spawnSpec } from './cli.ts'
+import { readClaudeSettings } from './claudeSettings.ts'
 
 const execFileAsync = promisify(execFile)
 
@@ -23,7 +24,57 @@ const execFileAsync = promisify(execFile)
  */
 export type UpdateInfo = CliUpdateInfo
 
-const REGISTRY = 'https://registry.npmjs.org/@anthropic-ai/claude-code/latest'
+const REGISTRY = 'https://registry.npmjs.org/@anthropic-ai/claude-code'
+
+/**
+ * The channel the CLI follows when `autoUpdatesChannel` is unset.
+ *
+ * Taken from the CLI's own fallback, `settings?.autoUpdatesChannel ?? "latest"`,
+ * read out of the 2.1.237 bundle — not guessed from the npm dist-tag of the
+ * same name. Absent and an explicit `"latest"` therefore behave identically,
+ * which is what lets Stoke's own control (`autoUpdatesChannel` in
+ * shared/claudeConfig.ts, `unsetMeans: 'latest'`) clear the key rather than
+ * write a default.
+ */
+export const DEFAULT_CHANNEL = 'latest'
+
+/**
+ * Which release channel `claude update` will actually follow.
+ *
+ * Pure, with the settings object passed in, so `verify:updates` can ask the
+ * question without a `~/.claude/settings.json` to read.
+ */
+export function channelFrom(values: Record<string, unknown> | null): string {
+  const raw = values?.['autoUpdatesChannel']
+  if (typeof raw !== 'string') return DEFAULT_CHANNEL
+  const trimmed = raw.trim()
+  return trimmed === '' ? DEFAULT_CHANNEL : trimmed
+}
+
+/**
+ * The npm dist-tag that answers "what would this channel install".
+ *
+ * The two sources agree, which is the only reason one npm request can stand in
+ * for the channel the CLI actually reads. Measured 2026-08-31, both directions:
+ *
+ *   npm dist-tags                        GCS claude-code-releases/<channel>
+ *   stable → 2.1.236                     stable → 2.1.236
+ *   latest → 2.1.251                     latest → 2.1.251
+ *
+ * `disabled` is not a channel but a way of switching the whole mechanism off,
+ * so there is no tag for it. It maps to `latest` deliberately: with updates off
+ * the useful thing is still to be *told* a newer version exists, and
+ * `shouldAutoUpdate` is the place that refuses to act on it. Reporting nothing
+ * at all would make "switched off" and "already current" the same screen.
+ *
+ * A channel with no tag (`rc` is offered by Stoke's own control and publishes
+ * neither an npm dist-tag nor a GCS object) 404s, and `checkForUpdate` reports
+ * that as itself rather than silently falling back to a number from a channel
+ * the CLI is not following.
+ */
+export function distTagFor(channel: string): string {
+  return channel === 'disabled' ? DEFAULT_CHANNEL : channel
+}
 
 /**
  * `claude` writes colour even when nothing is attached to stdout. Measured
@@ -83,22 +134,41 @@ async function currentVersion(claudePath: string | null): Promise<string | null>
 /**
  * Read-only check. The npm registry is used rather than running `claude update`,
  * which would install as a side effect of merely looking.
+ *
+ * **The channel is read first, and asking the wrong one is not a rounding
+ * error.** This used to fetch the `latest` dist-tag unconditionally while
+ * `claude update` followed whatever `autoUpdatesChannel` said — so on this
+ * machine, pinned to `stable`, the panel reported "2.1.251 available" for an
+ * update the CLI would decline forever, and `updateVerdict` then blamed the
+ * package manager for a refusal that was configuration. Worse, Stoke *draws*
+ * that setting (shared/claudeConfig.ts:200) — two halves of one app disagreeing
+ * about a key one of them writes.
  */
 export async function checkForUpdate(claudePath: string | null): Promise<UpdateInfo> {
   const current = await currentVersion(claudePath)
+  // A settings file that cannot be read is not an error here: `channelFrom`
+  // falls back to the CLI's own default, which is what the CLI would do too.
+  const channel = channelFrom((await readClaudeSettings()).values)
   const info: UpdateInfo = {
     current,
     latest: null,
     updateAvailable: false,
     checkedAt: Date.now(),
-    error: null
+    error: null,
+    channel
   }
 
+  const tag = distTagFor(channel)
   try {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), 10_000)
-    const res = await fetch(REGISTRY, { signal: controller.signal })
+    const res = await fetch(`${REGISTRY}/${encodeURIComponent(tag)}`, { signal: controller.signal })
     clearTimeout(timer)
+    // Named rather than reported as a bare 404, which would send the reader to
+    // the network when the answer is a channel that publishes nothing.
+    if (res.status === 404) {
+      throw new Error(`the CLI follows the "${channel}" channel, which npm does not publish`)
+    }
     if (!res.ok) throw new Error(`registry responded ${res.status}`)
     const body = (await res.json()) as { version?: string }
     info.latest = body.version ?? null
@@ -260,20 +330,28 @@ export interface AutoUpdateDecision {
 /**
  * What the last automatic attempt was and what came of it.
  *
- * `target` and `from` are here rather than just a timestamp because of a real
- * and permanent disagreement between the two things this module talks to.
- * `checkForUpdate` reads the npm registry's `latest` dist-tag; `claude update`
- * follows its own **stable channel**, and the two are not the same number.
- * Measured on this machine on 2026-08-28: the registry said 2.1.250, the
- * installed CLI was 2.1.237, and `claude update` answered
+ * `target` and `from` are here rather than just a timestamp because the two
+ * things this module talks to can disagree indefinitely, and a time-based floor
+ * cannot tell an indefinite disagreement from a transient one.
+ *
+ * The disagreement that produced this design was a bug, since fixed:
+ * `checkForUpdate` read the npm `latest` dist-tag while `claude update`
+ * followed the channel in `autoUpdatesChannel`. Measured 2026-08-28 — registry
+ * 2.1.250, installed 2.1.237, and `claude update` answering
  *
  *   "You're running 2.1.237, which is newer than the stable channel's 2.1.236.
  *    Skipping update."
  *
- * — exit 0, nothing changed, and `updateAvailable` still true afterwards. With
- * only a time-based floor that is a subprocess spawned every six hours, forever,
- * to be told the same thing. Recording *what* was attempted turns it into one
- * attempt per genuinely new situation.
+ * — exit 0, nothing changed, `updateAvailable` still true afterwards, forever.
+ * `checkForUpdate` reads the configured channel now, so that exact loop cannot
+ * recur.
+ *
+ * This stays, because the *shape* outlives its first cause. An install `claude
+ * update` cannot write to also exits 0 having changed nothing, and so does a
+ * channel that moves between the check and the run. Both are a clean run that
+ * bridged nothing, and neither can produce a different answer until one of the
+ * two versions moves. Recording *what* was attempted turns "retry every six
+ * hours forever" into one attempt per genuinely new situation.
  */
 export interface AutoUpdateAttempt {
   at: number
@@ -325,6 +403,19 @@ export function shouldAutoUpdate(
   now: number
 ): AutoUpdateDecision {
   if (!enabled) return { run: false, reason: 'Automatic updates are off.' }
+  /*
+   * The CLI's own switch, which is a different switch from Stoke's and outranks
+   * it. `distTagFor` still resolves `disabled` to a real tag so the panel can
+   * say a newer version exists; this is the line that stops Stoke acting on it.
+   * Turning the mechanism off in `~/.claude/settings.json` and then having
+   * Stoke run the updater anyway would be Stoke overruling a setting it draws.
+   */
+  if (info.channel === 'disabled') {
+    return {
+      run: false,
+      reason: "The CLI's own auto-updates are switched off (autoUpdatesChannel: disabled)."
+    }
+  }
   if (info.error) return { run: false, reason: `The check itself failed: ${info.error}` }
   if (!info.current) return { run: false, reason: 'No claude executable was found.' }
   if (!info.updateAvailable) return { run: false, reason: null }

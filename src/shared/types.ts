@@ -248,6 +248,19 @@ export interface StatusLineSnapshot {
   modelId: string | null
   modelName: string | null
   exceeds200k: boolean
+  /**
+   * The CLI version this session is actually running, as the running process
+   * states it.
+   *
+   * The only trustworthy answer to "what binary is this chat on", and the
+   * reason the relaunch offer needs no bookkeeping. A session holds whichever
+   * `claude` it spawned with for its whole life, so updating the CLI on disk
+   * leaves every open session behind — and stamping the version onto a tab at
+   * launch would record what Stoke *believed* was installed, which is a cache
+   * that can be stale in exactly the situation that matters. This is the
+   * process's own statement, rewritten about three times a second.
+   */
+  cliVersion: string | null
   fiveHour: StatusLineWindowReading | null
   sevenDay: StatusLineWindowReading | null
   /** Epoch ms the payload file was written. Drives the "as of HH:MM" tooltip. */
@@ -787,6 +800,17 @@ export interface CliUpdateInfo {
   updateAvailable: boolean
   checkedAt: number
   error: string | null
+  /**
+   * The release channel `claude update` will actually follow, from the CLI's
+   * own `autoUpdatesChannel` setting. `'latest'` when the key is unset, which
+   * is the CLI's own default.
+   *
+   * Here rather than left implicit because `latest` is not the only channel and
+   * the difference is not cosmetic: `stable` sat at 2.1.236 while `latest` sat
+   * at 2.1.251. Reporting the wrong one's version is how the panel came to
+   * advertise an update the updater would always decline. See gotcha 46.
+   */
+  channel: string
 }
 
 /* ----------------------------------------------------------- plan limits */

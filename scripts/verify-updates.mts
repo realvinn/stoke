@@ -22,7 +22,14 @@ import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import type { UpdateInfo } from '../src/shared/api.ts'
 import { leafAuthority, signatureBlocker } from '../src/main/codesign.ts'
-import { AUTO_RETRY_MS, shouldAutoUpdate, updateApplied } from '../src/main/updates.ts'
+import {
+  AUTO_RETRY_MS,
+  DEFAULT_CHANNEL,
+  channelFrom,
+  distTagFor,
+  shouldAutoUpdate,
+  updateApplied
+} from '../src/main/updates.ts'
 import { describeExecError } from '../src/main/updates.ts'
 import { updateButton, updateVerdict } from '../src/renderer/src/lib/updateVerdict.ts'
 
@@ -264,6 +271,7 @@ const check1 = (over: Partial<UpdateInfo>): UpdateInfo => ({
   updateAvailable: true,
   checkedAt: 0,
   error: null,
+  channel: 'latest',
   ...over
 })
 
@@ -482,12 +490,13 @@ console.log('\nwhen the CLI is updated without being asked')
 
 const NOW = 1_786_078_200_000
 /** A check that succeeded and found something newer. */
-const AVAILABLE = {
+const AVAILABLE: UpdateInfo = {
   current: '2.1.230',
   latest: '2.1.237',
   updateAvailable: true,
   checkedAt: NOW,
-  error: null
+  error: null,
+  channel: 'latest'
 }
 
 /** Shorthand for "the last attempt", so the cases below read as situations. */
@@ -498,6 +507,87 @@ const attempt = (over: Partial<{ at: number; target: string | null; from: string
   failed: false,
   ...over
 })
+
+/*
+ * Which release stream the CLI is actually on.
+ *
+ * This block exists because Stoke shipped for several releases asking one
+ * channel a question and acting on another's answer. `checkForUpdate` fetched
+ * the npm `latest` dist-tag unconditionally; `claude update` reads
+ * `autoUpdatesChannel` from ~/.claude/settings.json. On the machine this was
+ * found on the two were 2.1.251 and 2.1.236 — fifteen releases apart — so the
+ * panel advertised an update that could never install, `updateVerdict` blamed
+ * the package manager for it, and `claude doctor` answered "No installation
+ * issues found" to a user who had been sent to reinstall a working install.
+ *
+ * Nothing in `npm run check` could see it: every assertion in this file was
+ * handed an `UpdateInfo` that had already been built, which is gotcha 31 one
+ * layer down and exactly the shape that let gotcha 41 through too. Splitting
+ * the resolution out as two pure functions is what makes it assertable at all.
+ */
+console.log('\nwhich release channel the CLI follows')
+
+check('an unset key means the CLI default, not "no channel"', channelFrom({}), 'latest')
+check('and so does a settings file that could not be read', channelFrom(null), DEFAULT_CHANNEL)
+check('an explicit channel wins', channelFrom({ autoUpdatesChannel: 'stable' }), 'stable')
+/*
+ * Absent and an explicit 'latest' must be the same answer. Stoke's own control
+ * clears the key to mean default (shared/claudeConfig.ts, `unsetMeans:
+ * 'latest'`), so a rule that distinguished them would make the control's own
+ * "unset" position behave unlike the value it claims to equal.
+ */
+check(
+  'unset and an explicit latest are indistinguishable, as the control assumes',
+  channelFrom({ autoUpdatesChannel: 'latest' }),
+  channelFrom({})
+)
+/*
+ * The CLI stores whatever it was given. A non-string is not a channel, and
+ * neither is whitespace — both have to fall back rather than be pasted into a
+ * registry URL, where they would 404 and be reported as a network problem.
+ */
+check('a non-string value falls back', channelFrom({ autoUpdatesChannel: 3 }), DEFAULT_CHANNEL)
+check('so does an empty one', channelFrom({ autoUpdatesChannel: '   ' }), DEFAULT_CHANNEL)
+check('and surrounding space is not part of the name', channelFrom({ autoUpdatesChannel: ' stable ' }), 'stable')
+
+check('a channel is its own dist-tag', distTagFor('stable'), 'stable')
+/*
+ * `disabled` is the one that is not a tag. It maps to `latest` so the panel can
+ * still SAY a newer version exists; refusing to act on it is a separate rule,
+ * asserted immediately below. Mapping it to nothing instead would make
+ * "switched off" and "already current" the same screen.
+ */
+check('disabled is not a channel, and reads latest for information only', distTagFor('disabled'), 'latest')
+
+check(
+  'a disabled channel never triggers an install, however available the update is',
+  shouldAutoUpdate({ ...AVAILABLE, channel: 'disabled' }, true, null, NOW).run,
+  false
+)
+check(
+  'and it says whose switch that was — the CLI has one, and it outranks Stoke’s',
+  shouldAutoUpdate({ ...AVAILABLE, channel: 'disabled' }, true, null, NOW).reason?.includes(
+    'autoUpdatesChannel'
+  ),
+  true
+)
+/*
+ * The refusal has to come before the error gate, or a disabled channel whose
+ * check ALSO failed would be reported as a network problem — sending someone to
+ * debug a request that was never the reason.
+ */
+check(
+  'the disabled reason outranks a failed check, so the message names the real cause',
+  shouldAutoUpdate(
+    { ...AVAILABLE, channel: 'disabled', error: 'registry responded 503' },
+    true,
+    null,
+    NOW
+  ).reason?.includes('autoUpdatesChannel'),
+  true
+)
+
+console.log('\nwhen the CLI is updated without being asked (continued)')
 
 check(
   'an available update with the setting on runs',
@@ -556,12 +646,16 @@ check(
  * The case measured on this machine on 2026-08-28, and the reason the record
  * carries versions rather than only a timestamp.
  *
- * `checkForUpdate` reads the npm registry's `latest` tag; `claude update`
- * follows its own stable channel. They disagreed — registry 2.1.250, installed
- * 2.1.237, stable channel 2.1.236 — so `claude update` exited 0 having
- * deliberately changed nothing, and `updateAvailable` was still true
- * afterwards. Under a time-only rule that is a subprocess every six hours,
- * forever, to be told the same thing.
+ * Its original cause was a Stoke bug, fixed on 2026-08-31: `checkForUpdate`
+ * read the npm `latest` tag while `claude update` followed the channel in
+ * `autoUpdatesChannel`. They disagreed — registry 2.1.250, installed 2.1.237,
+ * stable channel 2.1.236 — so `claude update` exited 0 having deliberately
+ * changed nothing and `updateAvailable` stayed true. Under a time-only rule
+ * that is a subprocess every six hours, forever, to be told the same thing.
+ *
+ * The gate is still asserted because the shape survives its first cause: an
+ * install the updater cannot write to, and a channel that moves between the
+ * check and the run, both land here identically.
  */
 const STUCK = { ...AVAILABLE, current: '2.1.237', latest: '2.1.250' }
 check(
