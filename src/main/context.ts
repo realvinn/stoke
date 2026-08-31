@@ -20,6 +20,16 @@ interface Watch {
   sessionId: string
   file: string | null
   lastMtime: number
+  /**
+   * The stated context window as of the last publish, so a window that becomes
+   * known *after* the transcript stopped changing still reaches the meter.
+   *
+   * Undefined means "never published", which is deliberately distinct from
+   * `null` ("published, and no window was stated") — otherwise the first tick
+   * of a session with no payload yet would compare equal to itself and the
+   * initial publish would be skipped.
+   */
+  lastWindow?: number | null
   timer: NodeJS.Timeout | null
   disposed: boolean
 }
@@ -101,7 +111,14 @@ export class ContextWatcher {
 
   watch(sessionId: string): void {
     if (!sessionId || this.watches.has(sessionId)) return
-    const w: Watch = { sessionId, file: null, lastMtime: 0, timer: null, disposed: false }
+    const w: Watch = {
+      sessionId,
+      file: null,
+      lastMtime: 0,
+      lastWindow: undefined,
+      timer: null,
+      disposed: false
+    }
     this.watches.set(sessionId, w)
     void this.tick(w)
   }
@@ -160,14 +177,33 @@ export class ContextWatcher {
 
     try {
       const st = await stat(w.file)
-      if (st.mtimeMs !== w.lastMtime) {
+      /*
+       * The stated window is a second trigger, not just an argument.
+       *
+       * Publishing only on a transcript change assumes the window is knowable
+       * by the time the transcript first is, and on a **resumed** session it is
+       * not: the payload naming this session was deleted when the old process
+       * was killed (`clearSessionFiles`), and the new one does not write its
+       * first until it renders a status line a second or two later. The first
+       * tick therefore lands with no window and falls back to the 200k default,
+       * and — because the transcript is not moving, nobody having typed
+       * anything yet — nothing ever recomputed it. Measured end to end: a 1M
+       * session resumed at 125k read `125k/200k · 63%` indefinitely while its
+       * own payload sat on disk saying `context_window_size: 1000000`.
+       *
+       * Both the paused-tab Resume and the relaunch-on-a-new-CLI button walk
+       * this path, so it is not specific to either.
+       */
+      const window = this.bannerWindow(w.sessionId)
+      if (st.mtimeMs !== w.lastMtime || window !== w.lastWindow) {
         w.lastMtime = st.mtimeMs
+        w.lastWindow = window
         const parsed = await parseSession(w.file)
         const used = contextUsed(parsed)
         this.publish({
           sessionId: w.sessionId,
           contextTokens: used,
-          contextLimit: contextLimitFor(parsed.model, used, this.bannerWindow(w.sessionId)),
+          contextLimit: contextLimitFor(parsed.model, used, window),
           inputTokens: parsed.inputTokens,
           cacheReadTokens: parsed.cacheReadTokens,
           cacheCreationTokens: parsed.cacheCreationTokens,
