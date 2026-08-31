@@ -2,6 +2,7 @@ import type { CliInfo, ContextSnapshot } from '@shared/types'
 import { ContextBar } from './ContextMeter'
 import { modelLabel, shortPath } from '../lib/format'
 import { PERMISSION_LABELS } from '../lib/permissions'
+import type { RelaunchPlan } from '../lib/tabs'
 import type { Tab } from '../types'
 
 interface Props {
@@ -10,6 +11,19 @@ interface Props {
   cli: CliInfo | null
   /** Newer CLI version found at launch, or null when up to date. */
   updateAvailable: string | null
+  /**
+   * Whether the session in front is running a `claude` that is no longer the
+   * one installed — and if not, why not.
+   *
+   * A plan rather than a boolean because the refusals are worth saying. Once
+   * the CLI updates under an open session there is nothing on screen that says
+   * so: the chat keeps working, on the old binary, indefinitely. This is the
+   * only place that gap is visible.
+   */
+  relaunch: RelaunchPlan
+  /** A relaunch is in flight: the pill says so and refuses a second press. */
+  relaunchBusy: boolean
+  onRelaunch: () => void
   /**
    * The profile the sidebar is filtered to, or null for All.
    *
@@ -30,10 +44,59 @@ export function StatusBar({
   context,
   cli,
   updateAvailable,
+  relaunch,
+  relaunchBusy,
+  onRelaunch,
   profileLabel,
   onRevealProject,
   onOpenSettings
 }: Props): React.JSX.Element {
+  /*
+   * Named for what it does to the conversation, not to the process. "Restart"
+   * is the word for the thing people are afraid of here — losing the chat —
+   * and the whole point is that the chat survives, so the tooltip says so
+   * before anyone has to find out by pressing it.
+   *
+   * It also says what is NOT kept. Completed messages are on disk in the
+   * transcript and `--resume` replays them; a turn that is mid-flight when the
+   * process dies is gone, and so is anything typed but not sent. Both are
+   * cheap to state and expensive to discover.
+   */
+  /*
+   * Busy is checked BEFORE the plan, not folded into it as a disabled state.
+   *
+   * Mid-relaunch the old process is dead and the replacement tab has not landed
+   * yet, so `relaunchPlan` can legitimately read `none` for a frame or two —
+   * "no session in front", or a session that has not reported its version yet.
+   * Gating on the plan alone therefore made the pill vanish at exactly the
+   * moment it was doing something, which reads as the click having dismissed it
+   * rather than started anything.
+   */
+  const relaunchPill = relaunchBusy ? (
+    <button
+      className="status-btn"
+      disabled
+      title="Stopping this session and resuming it on the installed version…"
+    >
+      <span className="pill" data-tone="accent">
+        relaunching…
+      </span>
+    </button>
+  ) : relaunch.kind === 'offer' ? (
+    <button
+      className="status-btn"
+      onClick={onRelaunch}
+      title={
+        `This session is running ${relaunch.running}; ${relaunch.installed} is installed. ` +
+        'Relaunching resumes the same conversation on the new version. ' +
+        'Anything mid-reply, or typed and not sent, is lost.'
+      }
+    >
+      <span className="pill" data-tone="accent">
+        relaunch on {relaunch.installed}
+      </span>
+    </button>
+  ) : null
   const updatePill = updateAvailable ? (
     <button
       className="status-btn"
@@ -67,6 +130,11 @@ export function StatusBar({
         <span className="status-item">No active session</span>
         {profilePill}
         <span className="status-spacer" />
+        {/* Carried here too: a relaunch kills its session before the
+            replacement lands, and for those frames there is no active tab at
+            all. Without this the "relaunching…" pill would blink out on the
+            one path that reaches this branch. */}
+        {relaunchPill}
         {updatePill}
         {cli?.version && <span className="status-item mono">{cli.version}</span>}
       </footer>
@@ -106,6 +174,16 @@ export function StatusBar({
       {tab.effort !== 'default' && <span className="status-item">effort: {tab.effort}</span>}
 
       <span className="status-spacer" />
+
+      {/*
+        Before the update pill, and they are not the same thing. "2.1.251
+        available" means something newer exists that is not installed;
+        "relaunch on 2.1.251" means it IS installed and this session is still
+        on the old one. They are consecutive states rather than alternatives —
+        an automatic update turns the first into the second — which is why
+        both live here and neither is drawn as the other.
+      */}
+      {relaunchPill}
 
       {updatePill}
 

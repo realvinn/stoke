@@ -330,6 +330,11 @@ export function toSnapshot(
     modelId: text(payload.model?.id),
     modelName: text(payload.model?.display_name),
     exceeds200k: payload.exceeds_200k_tokens === true,
+    // Read rather than derived. `probeClaude` answers "what is on disk now",
+    // which is a different question from "what is this session running" the
+    // moment the CLI updates underneath a session that is still open — and
+    // that gap is the entire subject of the relaunch offer.
+    cliVersion: text(payload.version),
     fiveHour: reading(payload.rate_limits?.five_hour),
     sevenDay: reading(payload.rate_limits?.seven_day),
     receivedAt

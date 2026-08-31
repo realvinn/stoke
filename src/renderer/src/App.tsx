@@ -38,7 +38,7 @@ import { newTab } from './lib/newTab'
 import { profileIdForCwd } from './lib/projectProfile'
 import { fromStored, screensFrom, toStored } from './lib/restore'
 import { screenOf } from './lib/termRegistry'
-import { moveTab, neighbourOf, replaceOrAppend, restartPlan } from './lib/tabs'
+import { moveTab, neighbourOf, relaunchPlan, replaceOrAppend, restartPlan } from './lib/tabs'
 import { applyAppearance, applyTypography } from './lib/theme'
 import type { Tab } from './types'
 
@@ -275,6 +275,32 @@ export function App(): React.JSX.Element {
   const [error, setError] = useState<string | null>(null)
   /** Result of the launch-time CLI version check. */
   const [update, setUpdate] = useState<UpdateInfo | null>(null)
+  /*
+   * Which CLI version each live session is actually running, keyed by session
+   * id, straight from its own statusLine payload.
+   *
+   * A session keeps whichever binary it spawned with for its whole life, so
+   * this diverges from `cli.version` the moment the CLI updates under an open
+   * tab — which is precisely the state the relaunch offer exists to name. It
+   * is not derivable from anything Stoke already holds: `cli` describes the
+   * disk, and a version stamped on the tab at launch would be a cache that
+   * goes stale in exactly this case.
+   */
+  const [sessionCli, setSessionCli] = useState<Record<string, string | null>>({})
+  /*
+   * A relaunch in flight, so the pill can say so and cannot be fired twice.
+   *
+   * Both halves are load-bearing and they are not the same mechanism. The ref
+   * is the correctness half: a second click lands before React has re-rendered
+   * with the disabled button, and the damage is worse than a wasted spawn —
+   * `activeTab` still names the OLD tab, so `replaceOrAppend` finds nothing to
+   * replace the second time and **appends**, leaving two tabs and two live
+   * `claude` processes resuming one transcript. The state is the honest half:
+   * the relaunch takes a couple of seconds during which nothing visibly
+   * happens, which is exactly what invites the second click.
+   */
+  const relaunchingRef = useRef(false)
+  const [relaunching, setRelaunching] = useState(false)
 
   // Launch options for the next session, seeded from the saved defaults.
   const [mode, setMode] = useState<PermissionMode>('default')
@@ -342,6 +368,31 @@ export function App(): React.JSX.Element {
     const offCtx = window.stoke.context.onUpdate((snap) =>
       setContexts((prev) => ({ ...prev, [snap.sessionId]: snap }))
     )
+    /*
+     * Per-session CLI versions. Cheap: these pushes already happen for the
+     * usage chip, and this reads one more field off the same payload.
+     */
+    const offLine = window.stoke.statusLine.onUpdate((snap) => {
+      setSessionCli((prev) =>
+        prev[snap.sessionId] === snap.cliVersion
+          ? prev
+          : { ...prev, [snap.sessionId]: snap.cliVersion }
+      )
+    })
+    /*
+     * Re-read the disk whenever the updater reports anything.
+     *
+     * `cli` was fetched once at boot and never again, which is fine until
+     * something changes the binary — and the automatic checker does exactly
+     * that, twelve seconds in and every six hours after, with no UI attached.
+     * Without this the installed version on screen stays at whatever was true
+     * at launch, so the one comparison that drives the relaunch offer would be
+     * old-vs-old and never fire.
+     */
+    const offUpdates = window.stoke.updates.onState((st) => {
+      setUpdate(st.info)
+      void window.stoke.cli.info().then(setCli)
+    })
     const offBrowser = window.stoke.browser.onState(setBrowserState)
     const offMax = window.stoke.window.onMaximizedChanged(setMaximized)
     const offFull = window.stoke.window.onFullScreenChanged(setFullScreen)
@@ -387,6 +438,8 @@ export function App(): React.JSX.Element {
 
     return () => {
       offCtx()
+      offLine()
+      offUpdates()
       offBrowser()
       offFull()
       offMax()
@@ -1147,6 +1200,59 @@ export function App(): React.JSX.Element {
     [settings, startSession, startHostSession]
   )
 
+  /**
+   * Move this session onto the installed `claude`, keeping the conversation.
+   *
+   * The same two steps `resumeTabFor` performs for a tab restored from the last
+   * run — stop, then start again with `--resume <id>` in the same tab slot —
+   * with the kill added, because here the process is still alive. Nothing about
+   * the conversation lives in the process: it is on disk in the transcript, and
+   * `--resume` replays it, which is why this reads as a refresh rather than a
+   * restart from the user's side.
+   *
+   * `forgetPty` before the kill, not after, and never `closeTab`: the exit that
+   * follows must not reach the tab, or the strip would show "Session ended"
+   * for the instant between the two calls. That is the same reason
+   * `restartTab` above releases the pty by hand rather than closing the tab.
+   *
+   * The tab's own stored mode/model/effort, not the toolbar's current globals,
+   * for the reason the paused-resume path gives: what comes back has to be the
+   * session that was there, not one wearing whatever is selected right now.
+   */
+  const relaunchTab = useCallback(
+    (tab: Tab, sessionId: string): void => {
+      // Claimed before anything irreversible, which is the half of gotcha 20
+      // that is easy to get wrong: the kill below cannot be taken back, so the
+      // guard has to be in place before it, not after the await that follows.
+      if (relaunchingRef.current) return
+      relaunchingRef.current = true
+      setRelaunching(true)
+
+      forgetPty(tab.ptyId)
+      window.stoke.pty.kill(tab.ptyId)
+      void startSession({
+        cwd: tab.cwd,
+        name: tab.projectName,
+        title: tab.title,
+        sessionId,
+        resume: true,
+        replaceTabId: tab.id,
+        permissionMode: tab.permissionMode,
+        model: tab.model,
+        effort: tab.effort
+      })
+        // Released on failure as well as success. `startSession` catches its
+        // own errors and resolves false, so a refused launch would otherwise
+        // leave the pill saying "relaunching…" for the rest of the run with no
+        // way back — and the session it killed is already gone.
+        .finally(() => {
+          relaunchingRef.current = false
+          setRelaunching(false)
+        })
+    },
+    [startSession]
+  )
+
   /* --------------------------------------------------------------- browser */
 
   const overlayOpen = paletteOpen || settingsOpen
@@ -1209,6 +1315,23 @@ export function App(): React.JSX.Element {
   /* ------------------------------------------------------------- shortcuts */
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null
+
+  /*
+   * Whether the tab in front is running a `claude` that is no longer the one
+   * installed. Every refusal is a stated reason rather than a silent false, so
+   * the status bar can explain itself on hover instead of simply not being
+   * there — which is what "why is there no button" looks like from outside.
+   */
+  const relaunch = useMemo(
+    () =>
+      relaunchPlan({
+        tab: activeTab && activeTab.kind === 'session' ? activeTab : null,
+        running: activeTab ? (sessionCli[activeTab.sessionId] ?? null) : null,
+        installed: cli?.version ?? null
+      }),
+    [activeTab, sessionCli, cli]
+  )
+
   /* Memoised: a fresh array each render would rebuild the Sidebar's Set on every tick. */
   const openSessionIds = useMemo(() => tabs.map((t) => t.sessionId), [tabs])
   const selectedProject = projects.find((p) => p.path === selectedPath) ?? null
@@ -1668,6 +1791,11 @@ export function App(): React.JSX.Element {
         context={activeTab ? (contexts[activeTab.sessionId] ?? null) : null}
         cli={cli}
         updateAvailable={update?.updateAvailable ? update.latest : null}
+        relaunch={relaunch}
+        relaunchBusy={relaunching}
+        onRelaunch={() => {
+          if (relaunch.kind === 'offer' && activeTab) relaunchTab(activeTab, relaunch.sessionId)
+        }}
         profileLabel={activeProfile?.label ?? null}
         onRevealProject={(p) => void window.stoke.projects.reveal(p)}
         onOpenSettings={() => setSettingsOpen(true)}

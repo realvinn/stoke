@@ -74,6 +74,9 @@ function cleanup(...paths: string[]): void {
 const REAL: StatusLinePayload = {
   session_id: 'a0e0ee79-0000-4000-8000-000000000000',
   prompt_id: 'e9a423bc-cbd9-4e9e-b7f5-5731ca5e3fcb',
+  // Present in every payload captured on this machine, and the only honest
+  // answer to "what binary is this chat on" — see the relaunch offer.
+  version: '2.1.237',
   model: { id: 'claude-opus-5', display_name: 'Opus 5' },
   context_window: {
     context_window_size: 1_000_000,
@@ -92,6 +95,22 @@ const snap = toSnapshot('sess-1', REAL, 1_700_000_000_000)
 check('the window comes straight out of the payload', snap.contextWindowSize, 1_000_000)
 check('so does the percentage', snap.usedPercentage, 28)
 check('and the model', [snap.modelId, snap.modelName], ['claude-opus-5', 'Opus 5'])
+/*
+ * The running process's own version, which nothing else in Stoke can supply.
+ * `probeClaude` answers for the disk; a session keeps whatever it spawned
+ * with, and the two diverge the moment the CLI updates under an open tab.
+ */
+check('and the version the session is actually running', snap.cliVersion, '2.1.237')
+check(
+  'a CLI that states none reports null rather than a guess',
+  toSnapshot('sess-nov', { session_id: 'x' }, 1).cliVersion,
+  null
+)
+check(
+  'and an empty one is not a version either',
+  toSnapshot('sess-nov2', { version: '  ' }, 1).cliVersion,
+  null
+)
 check('resets_at is seconds in, milliseconds out', snap.fiveHour?.resetsAt, 1_786_078_200_000)
 check('the seven-day window converts the same way', snap.sevenDay?.resetsAt, 1_786_647_600_000)
 check(

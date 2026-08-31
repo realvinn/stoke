@@ -98,3 +98,127 @@ export function restartPlan(
   }
   return { kind: 'local', cwd: tab.cwd }
 }
+
+/**
+ * Whether this session can be moved onto the `claude` that is installed now,
+ * without losing the conversation.
+ *
+ * A session holds whichever binary it spawned with for its entire life, so
+ * updating the CLI — by hand, or by the automatic checker six hours in — leaves
+ * every open chat on the old one, silently and indefinitely. There is no way to
+ * swap it in place: the only route is to stop the process and start another,
+ * which is exactly what `--resume <id>` already does for a tab restored from
+ * the last run. This decides when that is worth offering, and refuses out loud
+ * the rest of the time rather than showing a button that cannot work.
+ *
+ * Pure and separate from the callback that acts on it, for the reason
+ * `restartPlan` above gives and CLAUDE.md gotcha 31 states: everything here is
+ * a condition on a side effect inside a click handler, which is the shape no
+ * suite can otherwise reach.
+ *
+ * `running` comes from the session's own statusLine payload (`version`), never
+ * from a version stamped on the tab at launch. The two differ precisely when it
+ * matters — a stamp records what Stoke *believed* was installed at spawn time,
+ * and the whole premise here is that that belief goes stale.
+ */
+export type RelaunchPlan =
+  | { kind: 'offer'; running: string; installed: string; sessionId: string }
+  | { kind: 'none'; reason: string }
+
+/**
+ * The version number inside whatever the source happened to say.
+ *
+ * **The two sources do not agree on format, and comparing them raw is a bug
+ * that shows nothing in a unit test and everything in the running app.**
+ * `probeClaude` returns `stdout.trim()` from `claude --version`, which is
+ * `"2.1.237 (Claude Code)"`; the statusLine payload's `version` is the bare
+ * `"2.1.237"`. So `running === installed` was false *always* — measured by
+ * driving the built app, where the offer appeared on a session that was
+ * already on the installed binary and would have done so on every machine, on
+ * every session, permanently. A pill that is always lit is worse than no pill:
+ * it trains the user to ignore the one moment it means something.
+ *
+ * Null for anything with no version number in it at all, which then reads as
+ * "not known" rather than being compared as a string.
+ */
+function versionNumber(raw: string | null): string | null {
+  if (!raw) return null
+  // The prerelease tail is captured rather than discarded: two builds that
+  // differ only in it ARE different binaries, and treating them as equal would
+  // suppress a legitimate offer.
+  const m = /\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?/.exec(raw)
+  return m ? m[0] : null
+}
+
+export function relaunchPlan(input: {
+  tab: {
+    kind: 'session' | 'new'
+    status: 'running' | 'exited' | 'paused'
+    sessionId: string
+    hostId: string | null
+  } | null
+  /**
+   * This session's own reading, or null if none has arrived. A bare
+   * `"2.1.237"` from the payload — but not assumed to be, see `versionNumber`.
+   */
+  running: string | null
+  /**
+   * What `claude --version` says on disk now, or null if unknown. This is
+   * `CliInfo.version`, which is the WHOLE line — `"2.1.237 (Claude Code)"` —
+   * not a parsed number.
+   */
+  installed: string | null
+}): RelaunchPlan {
+  const { tab } = input
+  // Normalised at the door, so nothing below can accidentally compare or
+  // display a raw `--version` line.
+  const running = versionNumber(input.running)
+  const installed = versionNumber(input.installed)
+  if (!tab || tab.kind !== 'session') return { kind: 'none', reason: 'No session in front.' }
+
+  /*
+   * `exited` and `paused` are somebody else's job — "Start again" and "Resume
+   * session" respectively, both of which already spawn a fresh process and so
+   * already pick up whatever is installed. Offering a third button for the same
+   * act would be three ways to do one thing.
+   */
+  if (tab.status !== 'running') {
+    return { kind: 'none', reason: 'Starting this tab again already uses the installed version.' }
+  }
+
+  /*
+   * An SSH tab runs `claude` on the far machine (gotcha 18), so the local
+   * version is not its version and updating locally changes nothing about it.
+   * It also gets no statusLine wrapper and therefore no payload at all
+   * (gotcha 2), so `running` is null here anyway — this refusal is the reason
+   * rather than the mechanism, and states it rather than falling through to
+   * "no reading yet", which would read as a wait that will never end.
+   */
+  if (tab.hostId) {
+    return { kind: 'none', reason: 'This session runs on another machine, which updates itself.' }
+  }
+
+  /*
+   * No id, no resume. A `--continue` session's id is chosen by the CLI after
+   * launch, so Stoke never learns it (gotcha 26) and `--resume` has nothing to
+   * name. The payload does state the real id, so this is closable — but it
+   * needs the launch key plumbed back to the renderer to match a payload to a
+   * tab, and quietly relaunching into the WRONG conversation is a far worse
+   * failure than not offering.
+   */
+  if (!tab.sessionId) {
+    return {
+      kind: 'none',
+      reason: 'This session was continued rather than started, so Stoke does not know its id.'
+    }
+  }
+
+  // Not "no update": not knowing and being current are different, and only the
+  // second one is a reason to be quiet about it forever.
+  if (!running) return { kind: 'none', reason: 'This session has not reported its version yet.' }
+  if (!installed) return { kind: 'none', reason: 'Stoke could not read the installed version.' }
+  // Both are normalised, so this compares numbers rather than sentences.
+  if (running === installed) return { kind: 'none', reason: 'Already running the installed version.' }
+
+  return { kind: 'offer', running, installed, sessionId: tab.sessionId }
+}
