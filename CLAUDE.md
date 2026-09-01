@@ -33,6 +33,9 @@ npm run verify:claude-config  # writing Claude Code's OWN config: the allowlist,
                               # and the ~/.claude.json lock. Runs against real files in a temp
                               # CLAUDE_CONFIG_DIR, never the user's (gotchas 38, 39)
 npm run verify:folders        # folder metadata: trimming, caps, added folders, hide/pin
+npm run verify:cli            # finding the `claude` binary: the version-manager shim dirs,
+                              # the probe's retry rule, and the two not-found messages.
+                              # Hermetic - HOME is redirected into a temp tree (gotcha 52)
 npm run verify:tabs           # which tab is selected after one is closed
 npm run verify:shortcuts      # app chords vs the keys the terminal owns, and the zoom maths
 npm run verify:color          # colour maths: contrast, APCA, oklch
@@ -1285,6 +1288,52 @@ scripts/          the verify-*.mts suites, make-icon.cjs
     an injected failure exits 1, and removing it exits 0. Worth checking in any suite that grew a
     new section: a summary is only a summary if nothing runs after it, and a suite that cannot
     fail is worse than no suite, because it is also a claim that the thing was checked.
+
+52. **"Stoke cannot access claude" was one probe away from being permanent, and the binary was
+    fine the whole time.** `claude --version` answered `2.1.237` from a shell while the app
+    insisted *"Could not find the `claude` executable. Install Claude Code."* Following that
+    message means reinstalling a working install.
+
+    Three facts compose into it, and only the third is a bug on its own.
+
+    **`claude` can live in exactly one directory.** Installed through a version manager it sits
+    at `~/.local/share/mise/installs/node/lts/bin/claude` and **nowhere else** — measured here
+    as absent from all ten directories `extraSearchDirs()` fell back to, `~/.local/bin` and
+    `~/.claude/local` included. **`mise activate zsh` is in `.zshrc`**, so that directory reaches
+    PATH only in an *interactive* shell, which is why the probe is `-ilc` and why the `-i` is
+    load-bearing. And a Finder-launched app inherits `PATH=/usr/bin:/bin:/usr/sbin:/sbin` —
+    read straight out of the running process with `ps -E`, which is the quickest way to settle
+    what a GUI launch actually got.
+
+    So the login-shell probe was not an optimisation, it was **the only channel**, with a 5s
+    timeout, in front of a `.zshrc` that runs `pyenv init`, `starship init`, `fzf`, `zoxide`,
+    zsh-syntax-highlighting and a stat against an external USB volume. Warm it measures
+    366-934ms. It does not have to fail often to be a problem, because —
+
+    **a failure was cached for the life of the process.** `loginPathProbe ??=` treats `null` as
+    "nothing cached yet", so the previous fix held the *promise* to stop two boot callers
+    stampeding (`App.tsx:363,366`). That overshot: one slow boot and the app could never find
+    `claude` again until it was quit and reopened. Both extremes are wrong, which is what makes
+    "sometimes, and a restart fixes it" the signature. The failure now stands for
+    `PROBE_RETRY_MS` (30s) and no longer, and `shouldReprobe` is a pure exported gate separate
+    from the spawn, for gotcha 31's reason.
+
+    **The durable half is that the probe is no longer load-bearing.** Every version manager
+    publishes a shim directory that needs no shell hook at all:
+    `~/.local/share/mise/shims/claude` answers `--version` correctly with PATH set to nothing
+    but the four system directories — verified. `shimDirs()` names mise, asdf and fnm, honours
+    `MISE_DATA_DIR`/`ASDF_DATA_DIR`/`FNM_DIR`/`XDG_DATA_HOME`, and sits **before** the system
+    directories so a stale `/usr/local/bin/claude` cannot outrank the managed one. nvm is
+    deliberately absent: it has no stable shim dir, only `versions/node/<version>/bin`.
+
+    Counterfactual, both directions: with the probe forced past its timeout, `findClaude`
+    returned `null` before the change and `~/.local/share/mise/shims/claude` after it, with
+    `probeClaude` going from the not-found message to `ok: true, version 2.1.237`.
+
+    Two smaller things. An **empty** stdout from the probe used to be cached as a success
+    (`stdout.trim() || null` returns null, which the guard then re-reads as "not cached") — it
+    is a failure now. And the not-found message is two messages: gotcha 46's rule again, do not
+    print a diagnosis the tool can disprove.
 
 ## Standing traps when driving the app
 

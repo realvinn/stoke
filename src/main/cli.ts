@@ -31,30 +31,89 @@ const isWin = process.platform === 'win32'
  * caller, each paying the full 5s timeout again. That is not hypothetical on
  * this machine: `~/.zshrc` stats a path on an external USB disk, so when that
  * disk is asleep the probe is exactly the thing that gets slow (gotcha 40), and
- * it got slow once per PTY spawn rather than once per launch. Holding the
- * promise caches both outcomes.
+ * it got slow once per PTY spawn rather than once per launch.
+ *
+ * Holding the promise fixed that and overshot: it cached the failure for the
+ * whole life of the process, so one slow boot left the app unable to find
+ * `claude` until it was quit and reopened. Neither extreme is right, which is
+ * why the failure now stands for PROBE_RETRY_MS and no longer.
  *
  * `-i` is load-bearing and must not be dropped to make this cheaper: measured
  * from a bare Finder-like environment, `-lc` alone returns a PATH with no mise
  * directory in it, and mise is where `claude` actually lives here.
  */
 let loginPathProbe: Promise<string | null> | null = null
+let probeFailedAt = 0
+
+/**
+ * How long a *failed* probe stands before the next caller retries it, and the
+ * timeout that decides a failure in the first place.
+ *
+ * A failure has to be remembered for a while, for the reason above — otherwise
+ * every PTY spawn pays the timeout again. What it must NOT be is remembered for
+ * the life of the process, which is exactly what `loginPathProbe ??=` did,
+ * because `null` is both "failed" and "nothing cached yet".
+ *
+ * One slow boot therefore poisoned the app until it was restarted. `findClaude`
+ * falls back to `extraSearchDirs()`, and on a machine whose `claude` lives in a
+ * version manager that list used to hold nothing at all — so every later
+ * session start reported "Could not find the `claude` executable" while the
+ * binary sat happily on disk. Measured here: with the probe forced past its
+ * timeout, `findClaude` returns null on a machine where `claude --version`
+ * answers `2.1.237` from the same shell a second later. It reads as
+ * "Stoke cannot access claude, for some reason", and the tell is that quitting
+ * and reopening fixes it.
+ */
+export const PROBE_RETRY_MS = 30_000
+const PROBE_TIMEOUT_MS = 5000
+
+/**
+ * Whether a probe may run, given when the last one failed. Pure, and separate
+ * from the caller that spawns the shell, for gotcha 31's reason: the rule is
+ * the part worth asserting and the spawn is the part a suite cannot reach.
+ *
+ * `failedAt === 0` means "no failure on record" — either nothing has been
+ * probed yet or the last probe succeeded — and both may proceed.
+ */
+export function shouldReprobe(failedAt: number, now: number): boolean {
+  return failedAt === 0 || now - failedAt >= PROBE_RETRY_MS
+}
 
 function loginShellPath(): Promise<string | null> {
   if (isWin) return Promise.resolve(null)
-  loginPathProbe ??= (async () => {
+  if (loginPathProbe) return loginPathProbe
+  // Inside the cooldown from a failure: answer instantly rather than pay the
+  // timeout again. Outside it, fall through and probe once more.
+  if (!shouldReprobe(probeFailedAt, Date.now())) return Promise.resolve(null)
+  loginPathProbe = (async () => {
     const shell = process.env.SHELL || '/bin/zsh'
     try {
       const { stdout } = await execFileAsync(shell, ['-ilc', 'printf %s "$PATH"'], {
-        timeout: 5000,
+        timeout: PROBE_TIMEOUT_MS,
         encoding: 'utf8'
       })
-      return stdout.trim() || null
+      // An empty PATH is a failed probe wearing a success's clothes: it would
+      // be cached forever by the branch above and contribute nothing.
+      const path = stdout.trim()
+      if (!path) throw new Error('the login shell printed no PATH')
+      probeFailedAt = 0
+      return path
     } catch {
+      probeFailedAt = Date.now()
+      // Drop the memo so the next caller past the cooldown probes again.
+      loginPathProbe = null
       return null
     }
   })()
   return loginPathProbe
+}
+
+/**
+ * Whether the most recent login-shell probe failed. Read only to explain a
+ * miss, never to decide one.
+ */
+export function loginPathProbeFailed(): boolean {
+  return probeFailedAt !== 0
 }
 
 /** PATH to hand to spawned processes: login-shell PATH unioned with our own. */
@@ -67,12 +126,44 @@ export async function buildEnvPath(): Promise<string> {
   return [...parts].join(delimiter)
 }
 
-function extraSearchDirs(): string[] {
+/**
+ * A version manager keeps its tools behind a *shim* directory that only reaches
+ * PATH once the shell hook has run — `mise activate zsh` and its equivalents
+ * live in `.zshrc`, so an interactive shell has them and a Finder launch does
+ * not. That is what the login-shell probe exists for, and for a long time it
+ * was the ONLY channel: a `claude` installed under mise appears in none of the
+ * fixed directories below, so a single failed probe meant the CLI could not be
+ * found at all. Measured on this machine, `claude` was present in exactly one
+ * directory and absent from all ten that `findClaude` falls back to.
+ *
+ * The shim directories need no hook of their own, which is the whole point:
+ * `~/.local/share/mise/shims/claude` answers `--version` correctly with PATH
+ * set to nothing but `/usr/bin:/bin:/usr/sbin:/sbin`, verified here. Naming
+ * them directly demotes the probe from a single point of failure back to the
+ * optimisation it was meant to be.
+ *
+ * Each manager's data directory is overridable, so the env var is honoured
+ * ahead of the default. nvm is deliberately absent: it publishes no stable
+ * shim directory, only `versions/node/<version>/bin`, which would need a glob
+ * and a policy about which version to prefer.
+ */
+function shimDirs(): string[] {
+  const home = homedir()
+  const xdgData = process.env.XDG_DATA_HOME || join(home, '.local', 'share')
+  return [
+    join(process.env.MISE_DATA_DIR || join(xdgData, 'mise'), 'shims'),
+    join(process.env.ASDF_DATA_DIR || join(home, '.asdf'), 'shims'),
+    join(process.env.FNM_DIR || join(xdgData, 'fnm'), 'aliases', 'default', 'bin')
+  ]
+}
+
+export function extraSearchDirs(): string[] {
   const home = homedir()
   if (isWin) {
     return [
       join(home, '.local', 'bin'),
       join(home, '.claude', 'local'),
+      ...shimDirs(),
       join(process.env.LOCALAPPDATA ?? join(home, 'AppData', 'Local'), 'Programs', 'claude'),
       join(process.env.APPDATA ?? join(home, 'AppData', 'Roaming'), 'npm')
     ]
@@ -82,6 +173,7 @@ function extraSearchDirs(): string[] {
     join(home, '.claude', 'local'),
     join(home, '.bun', 'bin'),
     join(home, '.volta', 'bin'),
+    ...shimDirs(),
     '/opt/homebrew/bin',
     '/usr/local/bin',
     '/usr/bin'
@@ -116,16 +208,26 @@ export async function findClaude(override: string | null): Promise<string | null
   return null
 }
 
+/**
+ * What to say when no `claude` turned up, which is not one message but two.
+ *
+ * Do not print a diagnosis the tool can disprove. "Install Claude Code" is
+ * wrong — and wrong exactly when someone is looking for a cause — if the CLI is
+ * installed and it was the login-shell probe that failed. Following that advice
+ * means reinstalling a working install. Pure and exported so both branches are
+ * assertable without depending on what happens to sit in /usr/bin on the
+ * machine running the suite.
+ */
+export function notFoundError(probeFailed: boolean): string {
+  return probeFailed
+    ? 'Could not find the `claude` executable: asking the login shell for its PATH failed, so an install that needs a shell hook (mise, asdf, fnm, nvm) may be invisible. This retries by itself shortly; if it persists, set an explicit path in Settings.'
+    : 'Could not find the `claude` executable. Install Claude Code, or set an explicit path in Settings.'
+}
+
 export async function probeClaude(override: string | null): Promise<CliInfo> {
   const found = await findClaude(override)
   if (!found) {
-    return {
-      path: '',
-      version: null,
-      ok: false,
-      error:
-        'Could not find the `claude` executable. Install Claude Code, or set an explicit path in Settings.'
-    }
+    return { path: '', version: null, ok: false, error: notFoundError(loginPathProbeFailed()) }
   }
   try {
     const spec = spawnSpec(found, ['--version'])
