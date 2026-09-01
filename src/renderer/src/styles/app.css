@@ -1200,7 +1200,12 @@ body {
   gap: var(--space-8);
   padding: var(--space-8);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-md);
+  /* `--r-lg`, matching `.context-menu` and `.copy-strip`. It was `--r-md` — the
+     control radius — which made this the one floating surface in the app whose
+     corners were tighter than every other, and a popover that does not agree
+     with the other popovers about its own corner reads as a mistake before it
+     reads as anything else. */
+  border-radius: var(--r-lg);
   background: var(--surface);
   box-shadow: var(--shadow-panel);
 }
@@ -2431,7 +2436,7 @@ body {
   background: var(--bg-elevated);
   box-shadow: var(--shadow-lg);
   overflow: hidden;
-  animation: pop var(--dur) var(--ease);
+  animation: palette-in var(--dur) var(--ease);
 }
 
 .palette-input {
@@ -2880,6 +2885,145 @@ body {
   justify-content: flex-end;
 }
 
+/* ----------------------------------------------------------- theme editor */
+
+/*
+ * The editor lives inside `.settings-pane`, which caps its children at 44rem
+ * and stacks them with a 24rem gap, so nothing here sets a width or an outer
+ * margin -- the pane already decided both. What these rules do is give the
+ * seed controls one shared label column so the sliders line up, which is the
+ * only thing that makes a stack of ranges read as a form rather than as a pile.
+ */
+.theme-editor-row {
+  display: grid;
+  grid-template-columns: 7rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-12);
+  font-size: var(--fs-md);
+}
+
+.theme-editor-row > span:first-child {
+  color: var(--text-muted);
+}
+
+.theme-editor-row output {
+  min-width: 3.5rem;
+  text-align: right;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+.theme-editor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+}
+
+.theme-editor-chip {
+  display: flex;
+  gap: var(--space-4);
+}
+
+.theme-editor-findings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+/* The generated palette, one row per token. A grid rather than a flex column
+   so the swatch, the name and the value line up down the list -- scanning for
+   the one colour that looks wrong is the entire purpose of showing all
+   seventeen at once. */
+.theme-token-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.theme-token-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-8);
+  width: 100%;
+  padding: var(--space-4) var(--space-8);
+  border: none;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font-size: var(--fs-sm);
+  cursor: default;
+}
+
+.theme-token-head:hover {
+  background: var(--surface-hover);
+}
+
+/*
+ * A RECTANGLE, and that is not a stylistic preference.
+ *
+ * These were 1rem squares with a `--border-strong` edge, and measured in the
+ * running app that is indistinguishable from an unchecked checkbox: the first
+ * four tokens in the list are the page and its panels, so their fill is within
+ * a few units of the surface behind them, and all the eye has left is a small
+ * light-bordered square. The list read as seventeen checkboxes with hex codes
+ * beside them.
+ *
+ * Wider than tall fixes it without inventing anything -- nothing in the app
+ * uses a 3:2 box as a control -- and the edge drops to `--border-subtle` so it
+ * separates the swatch from the panel without competing with the fill it is
+ * supposed to be showing. The edge cannot be dropped entirely: a swatch whose
+ * colour nearly matches the panel is exactly the case someone opens this list
+ * to inspect.
+ */
+.theme-token-swatch,
+.color-field-swatch {
+  width: 1.5rem;
+  height: 1rem;
+  flex: none;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+}
+
+.theme-token-value {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+/* An overridden token is marked on the row, not only in the open editor: the
+   whole point of the list is to be scannable, and "which of these did I set by
+   hand" is the question it has to answer without opening seventeen rows. */
+.theme-token[data-overridden] .theme-token-name::after {
+  content: ' \00b7 set by hand';
+  color: var(--accent-ink);
+  font-size: var(--fs-xs);
+}
+
+.theme-token-edit {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  padding: var(--space-8) var(--space-8) var(--space-12);
+}
+
+.color-field {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  flex: 1;
+  min-width: 0;
+}
+
+.color-field .input {
+  flex: 1;
+  min-width: 0;
+}
+
+.color-field .input[aria-invalid] {
+  border-color: var(--danger);
+}
+
 /* ------------------------------------------------- claude code settings */
 
 /* The `.cc-details` / `.cc-summary` disclosure that used to wrap these rows was
@@ -3059,7 +3203,43 @@ body {
   }
 }
 
+/*
+ * The generic pop-out entrance: fade in and settle half a rem downward.
+ *
+ * It used to carry `translate: -50% -0.5rem`, and a keyframe that sets
+ * `translate` decides where the element STARTS relative to wherever its own
+ * rule leaves it — so that `-50%` was only ever correct for a user whose
+ * resting translate is also `-50%`. Exactly one of the four is: `.palette`,
+ * which centres itself with `left: 50%; translate: -50% 0` and therefore just
+ * slid down. The other three — `.context-menu`, `.voice-strip`, `.copy-strip` —
+ * rest at `translate: none`, so every appearance swooped in sideways across
+ * half the element's own width. On an 11rem context menu that is 88px of
+ * travel, which is why the menu's outline read as smeared rather than as
+ * mispositioned: the border is genuinely somewhere else for the whole
+ * animation.
+ *
+ * Measured in the running app rather than reasoned about, in both states: with
+ * the animation still running all four report `-50% -8px`, and once it has
+ * settled `.palette` reports `-50%` while the other three report `none`.
+ * CLAUDE.md gotcha 47 asserts the opposite — that the `-50%` is "right for the
+ * context menu it was written for" — and that is corrected there too.
+ */
 @keyframes pop {
+  from {
+    opacity: 0;
+    translate: 0 -0.5rem;
+  }
+}
+
+/*
+ * The palette's entrance, and the reason it is not `pop`. Same split, and the
+ * same cause, as `modal-in` below: an element that centres itself with a
+ * resting `translate` cannot share a keyframe with elements that do not,
+ * because the keyframe overrides the resting value rather than composing with
+ * it. Kept as a separate three-line rule rather than solved with a wrapper,
+ * because the alternative is a second element in the tree to carry a transform.
+ */
+@keyframes palette-in {
   from {
     opacity: 0;
     translate: -50% -0.5rem;

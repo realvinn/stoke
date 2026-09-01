@@ -39,6 +39,9 @@ npm run verify:cli            # finding the `claude` binary: the version-manager
 npm run verify:tabs           # which tab is selected after one is closed
 npm run verify:shortcuts      # app chords vs the keys the terminal owns, and the zoom maths
 npm run verify:color          # colour maths: contrast, APCA, oklch
+npm run verify:theme-gen      # the theme generator: that a five-field seed reproduces every
+                              # built-in byte-for-byte, that no slider position can breach a
+                              # contrast floor, and that a saved seed survives hydration
 npm run verify:updates        # the updater: a failure and a success must not read the same,
                               # and macOS must still build the zip it updates from (gotchas 24, 25)
 npm run verify:worklog-gate     # which sessions the worklog agent would watch
@@ -136,6 +139,10 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     so the renderer runs the identical rule for the profile chip
   ladder.ts         the 12-step ladder every built-in theme is generated from. Fixed
                     rungs in OKLCH L, solved onto rather than picked. Gotcha 43
+  themeGen.ts       seed -> whole theme. The generator themes.ts always claimed existed and
+                    the repo did not contain; what the theme editor drives. Gotcha 43
+  notation.ts       reading and writing one colour as OKLCH/HSL/RGB/hex. Split out of the
+                    component so a suite can reach it
   accent.ts         one accent in, five tokens out, per appearance. The reason
                     --accent (a fill) and --accent-ink (a foreground) are two
                     things and not one. Gotcha 44
@@ -1071,6 +1078,46 @@ scripts/          the verify-*.mts suites, make-icon.cjs
     it — the mobile bundle is built separately and shares no module with the renderer. It had
     drifted to the pre-ladder values. Regenerate it whenever the themes move.
 
+    **The generator this entry and `themes.ts` both told you to use did not exist, and that is
+    now fixed rather than merely noted.** `themes.ts` opened by saying every hex was generated
+    from one hue plus one accent and directed the reader to "change its hue or its accent in
+    `scripts/`-adjacent generation and regenerate" — but `neutralTokens` and `terminalPalette`
+    were exported from `ladder.ts` with **zero callers** anywhere in `src/` or `scripts/`. The
+    values were produced once by something never committed, so the documented way to change a
+    theme could not be followed and the only available way was the hand-edit this entry forbids.
+    `src/shared/themeGen.ts` is that generator; `verify:theme-gen` asserts it reproduces all
+    twelve neutral tokens of all six built-ins **byte-identically**, which both proves the
+    original claim was true and pins the ladder so a future change cannot quietly move six
+    shipped themes. The hues it needs were recovered by sweep, not guessed: Ember 55, Nocturne
+    253.5, Moss 146, Daylight 55, Clay 50.5, Paper 74.5, all exact.
+
+    **"The themes all look the same" was a measurable fact, not taste, and the cause is one
+    constant.** `NEUTRAL_CHROMA`'s page step is C 0.0022 — its own comment calls C 0.002
+    "imperceptible" — so the neutral hue had almost nothing to act on: every dark built-in's page
+    measures C 0.003-0.005 across a 200-degree hue spread, and **Ember and Clay ship a
+    byte-identical `bg` and `text`** (`#181716` / `#e3ddd9`) while nominally being a warm grey and
+    a terracotta. Picking different hues could never have separated them. `ladder.ts` now takes a
+    `tint` multiplier over both chroma profiles, defaulting to 1 so every pre-existing theme
+    regenerates unchanged, and the ceiling is 2.5 because that is measured: sweeping every hue in
+    both appearances, the worst `border` sits at Lc 15.0-15.1 throughout and falls under the floor
+    at **tint 2.85**. There is almost no headroom to spend because `RAMP`'s span was chosen as the
+    smallest that clears Lc 15 in the first place.
+
+    Two smaller things found while building it. The semantic colours are solved to **|Lc| 64 on
+    dark and 72 on light**, not `semantic()`'s own default of 60 — measured off all twenty-four
+    shipped values, and using the default reproduces none of them. And **`borderSubtle` is not
+    held to the Lc 15 border floor**: it ships at Lc 10.2-10.5 on every dark theme, `RAMP`'s
+    comment only ever claims the floor for steps 7 and 8, and a contrast check that included it
+    failed all four dark built-ins — a wrong floor rather than four wrong themes.
+
+    **`Theme` gained a `seed`, and `validateTheme` is a whitelist, which is a trap worth naming.**
+    It rebuilds a fresh object from named keys rather than spreading its input — right for
+    something parsing a hand-editable file, and exactly why the editor's saved seed was silently
+    dropped on the next read, putting the sliders back in the wrong place with no error anywhere.
+    Adding a field to `Theme` means adding it there in the same change. Found by driving the built
+    app and reading the value back out of `window.stoke.settings.get()`; no suite saw it until one
+    was written for it.
+
 44. **`--accent` is a fill and `--accent-ink` is a foreground, and they cannot be one token.**
     A profile auto-activates from the active tab's cwd and `applyAppearance` used to write its
     four hand-authored hexes onto `:root` with no appearance check. Every profile accent is
@@ -1193,13 +1240,25 @@ scripts/          the verify-*.mts suites, make-icon.cjs
     reason. Only a screenshot showed it; every measurement of the modal was already correct.
 
     Two more from the same session, both found by driving the built app rather than reading the
-    CSS. **`@keyframes pop` carries `translate: -50%`**, which is right for the context menu it
-    was written for and wrong for anything centred by `margin: auto`: measured two frames after
-    the click, the dialog was at `x: -220` for a box that settles at `x: 260`, so it flew in from
-    480px off the left. Centred dialogs use `modal-in`. And **a fixed-position dialog with a
-    specified width needs `min-height: 0` on its scrolling grid track**, or a tall section makes
-    the dialog taller than the viewport and the pane never scrolls — gotcha 14's `.app` column
-    problem, one axis over.
+    CSS. **`@keyframes pop` carries `translate: -50%`**, and a keyframe that sets `translate`
+    decides where the element STARTS relative to wherever its own rule leaves it — so that `-50%`
+    is only correct for a user whose resting translate is also `-50%`. Measured two frames after
+    the click, a `margin: auto` dialog was at `x: -220` for a box that settles at `x: 260`, so it
+    flew in from 480px off the left. Centred dialogs use `modal-in`. And **a fixed-position dialog
+    with a specified width needs `min-height: 0` on its scrolling grid track**, or a tall section
+    makes the dialog taller than the viewport and the pane never scrolls — gotcha 14's `.app`
+    column problem, one axis over.
+
+    **This entry used to say the `-50%` was "right for the context menu it was written for". That
+    was backwards, and it hid a bug in three of the keyframe's four users.** `pop` had four:
+    `.palette`, `.context-menu`, `.voice-strip` and `.copy-strip`. Only `.palette` centres itself
+    (`left: 50%; translate: -50% 0`), so only `.palette` was sliding straight down; the other
+    three rest at `translate: none` and were therefore swooping in sideways across half their own
+    width on every appearance — 88px for the 11rem context menu, which is why its outline read as
+    smeared rather than as mispositioned. Measured in both states rather than reasoned about:
+    while the animation runs all four report `-50% -8px`, and once settled `.palette` reports
+    `-50%` and the other three report `none`. `pop` is now `translate: 0 -0.5rem` and the palette
+    has its own `palette-in`, which is the same split — and the same cause — as `modal-in` above.
 
 48. **A session is stuck on the `claude` it spawned with, and nothing on screen used to say
     so.** Updating the CLI — by hand or by the six-hour auto-checker — changes the binary on
