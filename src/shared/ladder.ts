@@ -98,6 +98,48 @@ const NEUTRAL_CHROMA = [0.0022, 0.003, 0.0038, 0.0046, 0.0054, 0.0062, 0.007, 0.
 const INK_CHROMA = { low: 0.006, high: 0.008 } as const
 
 /**
+ * How hard the neutral is tinted, as a multiplier on the two profiles above.
+ *
+ * `1` is the calibration those constants were chosen at and is the default
+ * everywhere, so every theme that existed before this parameter regenerates
+ * byte-for-byte. It exists because the profile above is deliberately pinned at
+ * the imperceptible end -- its own comment records the calibration, "C 0.002 is
+ * imperceptible, C 0.010 is perceptibly warm, C 0.020 is cream" -- and the page
+ * step is C 0.0022. Hue is therefore free to be anything at all without the
+ * page changing: measured across the six built-ins, every dark page sits at
+ * C 0.003-0.005 over a 200-degree hue spread, and Ember and Clay ship a
+ * BYTE-IDENTICAL `bg` and `text` while nominally being a warm grey and a
+ * terracotta.
+ *
+ * So "the themes all look the same" was not a matter of taste and not fixable
+ * by picking different hues: at this chroma there is nothing for a hue to
+ * change. The multiplier is what makes the neutral hue mean something, which is
+ * also what makes it worth putting a hue control in front of someone.
+ *
+ * The ceiling is measured, not taste, and it is set by CONTRAST rather than by
+ * how colourful the page looks. Chroma at a fixed OKLCH L costs a little APCA
+ * contrast, and `RAMP`'s span was swept to be the SMALLEST that clears the
+ * Lc 15 border floor -- so there is almost no headroom to spend: sweeping every
+ * hue at 5-degree steps in both appearances, the worst `border` measures
+ * Lc 15.08 at tint 2.0 and hovers at 15.0 all the way up, then falls under the
+ * floor at **tint 2.85** for four of 144 seeds. That is the same 8-bit rounding
+ * cliff at particular hues that `RAMP`'s own comment records at Lc 14.95.
+ *
+ * 2.5 is therefore the ceiling: comfortably below the first observed failure,
+ * and past the ~2x where the page stops reading as a tinted grey anyway. The
+ * promise this keeps is the one the whole seed design rests on -- no position
+ * of any slider can produce an illegible palette -- and `verify:theme-gen`
+ * sweeps the full range to hold it.
+ */
+export const TINT_MIN = 0
+export const TINT_MAX = 2.5
+export const TINT_DEFAULT = 1
+
+export function clampTint(v: number): number {
+  return Number.isFinite(v) ? Math.min(TINT_MAX, Math.max(TINT_MIN, v)) : TINT_DEFAULT
+}
+
+/**
  * What the three text rungs have to clear, and against WHICH ground.
  *
  * Two decisions here, both learned the hard way.
@@ -179,18 +221,29 @@ function solve(ok: (l: number) => boolean, ground: Rgb, away: 1 | -1): number {
  * and `--text` become. Only step 9 is interpolated: on a chromatic scale it is
  * the brand colour, and a neutral scale has no real use for it.
  */
-export function neutralLadder(appearance: Appearance, hue: number): Ladder {
+export function neutralLadder(appearance: Appearance, hue: number, tint = TINT_DEFAULT): Ladder {
   const { from, span } = RAMP[appearance]
   const away: 1 | -1 = appearance === 'dark' ? 1 : -1
+  const k = clampTint(tint)
+  const inkLow = INK_CHROMA.low * k
+  const inkHigh = INK_CHROMA.high * k
 
   const rungs = Array.from({ length: 8 }, (_, i) => from + (span * i) / 7)
-  const steps: Oklch[] = rungs.map((l, i) => ({ l, c: NEUTRAL_CHROMA[i], h: hue }))
+  const steps: Oklch[] = rungs.map((l, i) => ({ l, c: NEUTRAL_CHROMA[i] * k, h: hue }))
 
-  // Step 4 is the hardest ground for text in BOTH appearances -- see TEXT_WCAG.
-  const hardest = at(rungs[3], NEUTRAL_CHROMA[3], hue)
-  const l10 = solveWcag(TEXT_WCAG.faint, hardest, hue, INK_CHROMA.low, away)
-  const l11 = solveWcag(TEXT_WCAG.muted, hardest, hue, INK_CHROMA.low, away)
-  const l12 = solveWcag(TEXT_WCAG.strong, hardest, hue, INK_CHROMA.high, away)
+  /*
+   * Step 4 is the hardest ground for text in BOTH appearances -- see
+   * TEXT_WCAG. It is rebuilt from the SCALED chroma rather than the constant,
+   * so the three text rungs are solved against the ground that will actually
+   * be painted. Solving against the untinted step 4 would leave the ratios
+   * nominally correct and measurably wrong at any tint but 1, which is the
+   * same class of error as TEXT_WCAG's own note about solving against the page
+   * instead of the binding ground.
+   */
+  const hardest = at(rungs[3], NEUTRAL_CHROMA[3] * k, hue)
+  const l10 = solveWcag(TEXT_WCAG.faint, hardest, hue, inkLow, away)
+  const l11 = solveWcag(TEXT_WCAG.muted, hardest, hue, inkLow, away)
+  const l12 = solveWcag(TEXT_WCAG.strong, hardest, hue, inkHigh, away)
 
   // Step 9 is a solid mid-grey, the only rung a neutral scale has no real use
   // for -- a chromatic scale's 9 is the brand colour. Interpolated so the
@@ -199,10 +252,10 @@ export function neutralLadder(appearance: Appearance, hue: number): Ladder {
 
   const out = [
     ...steps.map((o) => toHex(at(o.l, o.c, o.h))),
-    toHex(at(l9, INK_CHROMA.low, hue)),
-    toHex(at(l10, INK_CHROMA.low, hue)),
-    toHex(at(l11, INK_CHROMA.low, hue)),
-    toHex(at(l12, INK_CHROMA.high, hue))
+    toHex(at(l9, inkLow, hue)),
+    toHex(at(l10, inkLow, hue)),
+    toHex(at(l11, inkLow, hue)),
+    toHex(at(l12, inkHigh, hue))
   ]
   return { steps: out, appearance }
 }
@@ -289,9 +342,13 @@ const STEP_FOR: Record<Appearance, Record<string, number>> = {
   }
 }
 
-/** Resolve the neutral tokens for one appearance and hue. */
-export function neutralTokens(appearance: Appearance, hue: number): Record<string, string> {
-  const ladder = neutralLadder(appearance, hue)
+/** Resolve the neutral tokens for one appearance, hue and tint. */
+export function neutralTokens(
+  appearance: Appearance,
+  hue: number,
+  tint = TINT_DEFAULT
+): Record<string, string> {
+  const ladder = neutralLadder(appearance, hue, tint)
   const out: Record<string, string> = {}
   for (const [token, step] of Object.entries(STEP_FOR[appearance])) {
     out[token] = ladder.steps[step - 1]

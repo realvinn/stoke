@@ -350,6 +350,25 @@ export interface TerminalColors {
   brightWhite: string
 }
 
+/**
+ * The five fields a whole theme is generated from. See `./themeGen.ts`.
+ *
+ * Declared here rather than beside `buildTheme` only so `Theme` can carry one
+ * without the two modules importing each other.
+ */
+export interface ThemeSeed {
+  id: string
+  name: string
+  appearance: 'dark' | 'light'
+  /** Neutral hue in degrees: what the greys are tinted toward. */
+  hue: number
+  /** Multiplier on the ladder's neutral chroma. 1 is the historical value. */
+  tint: number
+  accent: string
+  /** Hand-set values that escape the generated palette. */
+  overrides?: Partial<Record<keyof ThemeColors, string>>
+}
+
 export interface Theme {
   id: string
   name: string
@@ -358,6 +377,17 @@ export interface Theme {
   colors: ThemeColors
   terminal: TerminalColors
   builtIn?: boolean
+  /**
+   * What this theme was generated from, when it was.
+   *
+   * Optional, and its absence is meaningful rather than a gap: a theme written
+   * by hand into `customThemes` before the editor existed has no seed, and the
+   * editor must open such a theme on its VALUES rather than silently
+   * regenerating it from a seed nobody chose. The forty-three colours stay the
+   * source of truth for rendering either way -- this is only what lets the
+   * editor put the sliders back where they were.
+   */
+  seed?: ThemeSeed
 }
 
 /* --------------------------------------------------------------------- ssh */

@@ -1,4 +1,5 @@
-import type { Theme } from './types'
+import type { Theme, ThemeSeed } from './types'
+import { clampTint, TINT_DEFAULT } from './ladder.ts'
 
 /**
  * Built-in themes.
@@ -469,14 +470,64 @@ export function validateTheme(input: unknown): Theme | null {
       return out
     }
 
-    return {
+    const out: Theme = {
       id: t.id,
       name: typeof t.name === 'string' && t.name.trim() ? t.name : t.id,
       appearance,
       colors: pick(colors, base.colors),
       terminal: pick(terminal, base.terminal)
     }
+
+    /*
+     * Carry the seed through, when there is a valid one.
+     *
+     * This function is a WHITELIST by construction -- it returns a fresh object
+     * with named keys rather than spreading the input -- which is the right
+     * shape for something parsing a hand-editable file, and is also why adding
+     * a field to `Theme` silently loses it here. It did: the editor saved a
+     * theme with a seed, hydration dropped it on the next read, and reopening
+     * the theme fell back to `seedFrom`'s guessed hue. The sliders came back in
+     * the wrong place with no error anywhere, which is this file's own
+     * "validateTheme fills gaps and drops what it does not know" working
+     * exactly as designed against a key nobody told it about.
+     *
+     * The seed is validated rather than trusted for the same reason everything
+     * else here is: `customThemes` is a user-editable array in settings.json.
+     * An unusable seed is dropped and the theme keeps its forty-three colours,
+     * because the colours are what renders -- the seed only decides where the
+     * editor's sliders start.
+     */
+    const seed = validateSeed((t as { seed?: unknown }).seed, appearance)
+    if (seed) out.seed = seed
+    return out
   } catch {
     return null
+  }
+}
+
+/** A seed is only kept if every field it needs is usable. */
+function validateSeed(input: unknown, appearance: Theme['appearance']): ThemeSeed | null {
+  if (!input || typeof input !== 'object') return null
+  const s = input as Partial<ThemeSeed>
+  if (typeof s.accent !== 'string' || !s.accent.trim()) return null
+  if (typeof s.hue !== 'number' || !Number.isFinite(s.hue)) return null
+
+  const overrides: Record<string, string> = {}
+  if (s.overrides && typeof s.overrides === 'object') {
+    for (const [k, v] of Object.entries(s.overrides)) {
+      if (typeof v === 'string' && v.trim()) overrides[k] = v
+    }
+  }
+
+  return {
+    id: typeof s.id === 'string' && s.id ? s.id : 'custom',
+    name: typeof s.name === 'string' && s.name.trim() ? s.name : 'Custom',
+    // The theme's own appearance wins: it is what `colors` was built for, and
+    // a seed disagreeing with it would redraw the palette on first edit.
+    appearance,
+    hue: ((s.hue % 360) + 360) % 360,
+    tint: clampTint(typeof s.tint === 'number' ? s.tint : TINT_DEFAULT),
+    accent: s.accent,
+    ...(Object.keys(overrides).length ? { overrides: overrides as ThemeSeed['overrides'] } : {})
   }
 }
