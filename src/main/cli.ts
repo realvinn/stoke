@@ -210,6 +210,7 @@ export async function findClaude(override: string | null): Promise<string | null
 
 /**
  * What to say when no `claude` turned up, which is not one message but two.
+ * The single source for all four sites that can miss, so they cannot drift.
  *
  * Do not print a diagnosis the tool can disprove. "Install Claude Code" is
  * wrong — and wrong exactly when someone is looking for a cause — if the CLI is
@@ -217,10 +218,20 @@ export async function findClaude(override: string | null): Promise<string | null
  * means reinstalling a working install. Pure and exported so both branches are
  * assertable without depending on what happens to sit in /usr/bin on the
  * machine running the suite.
+ *
+ * The retry sentence is deliberately about what the *user* can do, and its
+ * number is derived from PROBE_RETRY_MS rather than retyped. An earlier draft
+ * said "this retries by itself shortly", which was the same sin one paragraph
+ * up: nothing in the app refetches CliInfo on a timer short enough to honour
+ * it — the renderer sets it on boot and on an `updates:state` push, and the
+ * only automatic push lands at 12s (inside the cooldown) and then every six
+ * hours. Starting a session DOES re-probe, because pty.ts calls findClaude
+ * afresh every time, so "try again" is true where "it will fix itself" was not.
  */
 export function notFoundError(probeFailed: boolean): string {
+  const secs = Math.round(PROBE_RETRY_MS / 1000)
   return probeFailed
-    ? 'Could not find the `claude` executable: asking the login shell for its PATH failed, so an install that needs a shell hook (mise, asdf, fnm, nvm) may be invisible. This retries by itself shortly; if it persists, set an explicit path in Settings.'
+    ? `Could not find the \`claude\` executable: asking the login shell for its PATH failed, so an install that needs a shell hook (mise, asdf, fnm, nvm) may be invisible. Trying again in ${secs}s re-runs that probe; if it keeps failing, set an explicit path in Settings.`
     : 'Could not find the `claude` executable. Install Claude Code, or set an explicit path in Settings.'
 }
 

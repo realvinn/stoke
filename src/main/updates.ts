@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import type { CliRunResult } from '@shared/api'
 import type { CliUpdateInfo } from '@shared/types'
-import { buildEnvPath, findClaude, spawnSpec } from './cli.ts'
+import { buildEnvPath, findClaude, loginPathProbeFailed, notFoundError, spawnSpec } from './cli.ts'
 import { readClaudeSettings } from './claudeSettings.ts'
 
 const execFileAsync = promisify(execFile)
@@ -244,12 +244,7 @@ async function runCli(
 ): Promise<{ ok: boolean; output: string; error: string | null }> {
   const exe = await findClaude(claudePath)
   if (!exe) {
-    return {
-      ok: false,
-      output: '',
-      error:
-        'Could not find the claude executable. Install Claude Code, or set an explicit path in Settings.'
-    }
+    return { ok: false, output: '', error: notFoundError(loginPathProbeFailed()) }
   }
 
   const command = `claude ${args.join(' ')}`

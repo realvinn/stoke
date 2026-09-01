@@ -1335,6 +1335,20 @@ scripts/          the verify-*.mts suites, make-icon.cjs
     is a failure now. And the not-found message is two messages: gotcha 46's rule again, do not
     print a diagnosis the tool can disprove.
 
+    **There are four places that can miss, not one, and the one that matters is not the one
+    with the good message.** `probeClaude` feeds the settings chip; `pty.ts:157` is the throw a
+    user actually hits when starting a session, and `updates.ts:246` and `agent.ts:389` cover
+    `claude update`/`doctor` and every headless worklog run. All four go through
+    `notFoundError()` now, or the useful message reaches only the surface nobody was looking at.
+
+    **And the first draft of that message broke gotcha 46 in the act of citing it.** It said
+    *"this retries by itself shortly"* — which nothing performs: the renderer sets `CliInfo` on
+    boot and on an `updates:state` push (`App.tsx:394,427`), and the only automatic push lands
+    at 12s (`index.ts:856`, inside the 30s cooldown) and then every six hours. What IS true is
+    that `pty.ts` calls `findClaude` afresh on every session start, so *trying again* re-probes.
+    The number in the text is derived from `PROBE_RETRY_MS` rather than retyped, so a cooldown
+    change cannot silently make it a lie.
+
 ## Standing traps when driving the app
 
 Not about any one module, and each cost real time at least once. Carried over from the 0.3.0

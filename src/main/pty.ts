@@ -3,7 +3,14 @@ import { access } from 'node:fs/promises'
 import * as nodePty from '@lydell/node-pty'
 import type { IPty } from '@lydell/node-pty'
 import type { LaunchOptions } from '@shared/types'
-import { buildArgs, buildEnvPath, findClaude, spawnSpec } from './cli.ts'
+import {
+  buildArgs,
+  buildEnvPath,
+  findClaude,
+  loginPathProbeFailed,
+  notFoundError,
+  spawnSpec
+} from './cli.ts'
 import { windowFromBanner } from './sessionFile.ts'
 import { buildSshArgs, sshExecutable } from './ssh.ts'
 import { clearSessionFiles } from './statusLine.ts'
@@ -154,11 +161,7 @@ export class PtyManager {
      * such a session can have.
      */
     const exe = opts.host ? sshExecutable() : await findClaude(claudePathOverride)
-    if (!exe) {
-      throw new Error(
-        'Could not find the `claude` executable. Install Claude Code, or set an explicit path in Settings.'
-      )
-    }
+    if (!exe) throw new Error(notFoundError(loginPathProbeFailed()))
 
     /*
      * The folder has to exist, and node-pty will not tell us if it does not.

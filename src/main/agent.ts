@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process'
 import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { buildEnvPath, findClaude, spawnSpec } from './cli.ts'
+import { buildEnvPath, findClaude, loginPathProbeFailed, notFoundError, spawnSpec } from './cli.ts'
 
 /**
  * A headless `claude -p` run: one prompt in, one JSON result out.
@@ -387,9 +387,7 @@ function snippet(s: string): string {
 export async function runHeadless(opts: HeadlessOptions): Promise<HeadlessResult> {
   const exe = await findClaude(opts.claudePath ?? null)
   if (!exe) {
-    throw new HeadlessError(
-      'Could not find the `claude` executable. Install Claude Code, or set an explicit path in Settings.'
-    )
+    throw new HeadlessError(notFoundError(loginPathProbeFailed()))
   }
 
   const args = buildHeadlessArgs(opts)

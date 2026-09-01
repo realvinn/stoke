@@ -141,6 +141,27 @@ check(
   false
 )
 check('...and names the real cause instead', notFoundError(true).includes('login shell'), true)
+// An earlier draft of this message said "this retries by itself shortly", which
+// is the same sin one line up: nothing refetches CliInfo on a timer short
+// enough to honour it (the only automatic push lands at 12s, inside the
+// cooldown, then every six hours). Starting a session does re-probe, so the
+// message may tell the user to try again and may not promise to self-heal.
+check(
+  'the message does not promise a recovery nothing in the app performs',
+  /by itself|automatically|on its own/i.test(notFoundError(true)),
+  false
+)
+check(
+  'it tells the user to try again instead',
+  notFoundError(true).includes('Trying again'),
+  true
+)
+// Derived, not retyped: a cooldown change must not silently make the text lie.
+check(
+  'and quotes the real cooldown, derived from PROBE_RETRY_MS',
+  notFoundError(true).includes(`${Math.round(PROBE_RETRY_MS / 1000)}s re-runs`),
+  true
+)
 
 // ---------------------------------------------------------------------------
 // The wire. Everything above is pure; this is the part that actually broke.
