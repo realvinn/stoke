@@ -16,6 +16,7 @@ import { HostsSettings } from './HostsSettings'
 import { MicrophoneNotice } from './MicrophoneNotice'
 import { ProfilesSettings } from './ProfilesSettings'
 import { ClaudeCodeSettings } from './ClaudeCodeSettings'
+import { ThemeEditor } from './ThemeEditor'
 import { RemoteSettings, SelfUpdateSettings, UpdatesSettings } from './RemoteSettings'
 import { WorklogSettings } from './WorklogSettings'
 import { EFFORT_LEVELS, MODEL_OPTIONS, PERMISSION_MODES } from '../lib/permissions'
@@ -141,6 +142,14 @@ interface Props {
   onAddRoot: () => void
   /** Forwarded to ProfilesSettings; see the comment on its `onCreated` prop. */
   onProfileCreated: () => void | Promise<void>
+  /**
+   * State the theme the window should paint, or `null` for the saved one.
+   *
+   * Threaded down to `ThemeEditor` rather than let it paint for itself, because
+   * `lib/theme.ts` keeps exactly one writer of colour onto `:root` and a second
+   * one is what the accent bug in `applyAppearance`'s comment already cost.
+   */
+  onPreviewTheme: (theme: Theme | null) => void
   onClose: () => void
 }
 
@@ -152,6 +161,7 @@ export function SettingsSheet({
   onPatch,
   onAddRoot,
   onProfileCreated,
+  onPreviewTheme,
   onClose
 }: Props): React.JSX.Element {
   const themes: Theme[] = [...BUILT_IN_THEMES, ...settings.customThemes]
@@ -314,11 +324,19 @@ export function SettingsSheet({
                     ))}
                   </div>
                   <span className="field-hint">
-                    Themes are plain CSS custom properties. Add your own by editing
-                    <span className="mono"> settings.json</span> in the app data folder — anything
-                    you put in <span className="mono">customThemes</span> shows up here.
+                    Themes are plain CSS custom properties. Editing
+                    <span className="mono"> customThemes</span> in
+                    <span className="mono"> settings.json</span> still works and still shows up
+                    here.
                   </span>
                 </div>
+
+                <ThemeEditor
+                  settings={settings}
+                  allThemes={themes}
+                  onPatch={onPatch}
+                  onPreviewTheme={onPreviewTheme}
+                />
 
                 <div className="field">
                   <span className="field-label">Terminal font</span>

@@ -313,10 +313,30 @@ export function App(): React.JSX.Element {
    */
   const [ultracode, setUltracode] = useState(false)
 
-  const theme = useMemo(
+  const savedTheme = useMemo(
     () => resolveTheme(settings?.themeId ?? '', settings?.customThemes ?? []),
     [settings?.themeId, settings?.customThemes]
   )
+
+  /*
+   * The theme editor's live preview, and the reason it is a piece of App state
+   * rather than something the editor paints for itself.
+   *
+   * `lib/theme.ts` ends with "Nothing else in the codebase should touch
+   * documentElement.style for colour", and that rule is load-bearing rather
+   * than stylistic: it is what the accent bug in `applyAppearance`'s own
+   * comment cost, two writers disagreeing about who owned four tokens. An
+   * editor that wrote its preview straight onto :root would be a second writer
+   * with no way to hand back -- cancelling would have to reconstruct the saved
+   * appearance itself, which is the same reconstruction the effect below
+   * already does correctly.
+   *
+   * So the editor states an intent and the one existing writer keeps writing.
+   * `null` means "no preview", not "no theme"; cancel is `setPreviewTheme(null)`
+   * and the effect repaints the saved theme with no further help.
+   */
+  const [previewTheme, setPreviewTheme] = useState<Theme | null>(null)
+  const theme = previewTheme ?? savedTheme
 
   const refreshProjects = useCallback(async (): Promise<void> => {
     const list = await window.stoke.projects.list()
@@ -1821,7 +1841,16 @@ export function App(): React.JSX.Element {
           onPatch={(patch) => void patchSettings(patch)}
           onAddRoot={() => void addRoot()}
           onProfileCreated={refreshProjects}
-          onClose={() => setSettingsOpen(false)}
+          onPreviewTheme={setPreviewTheme}
+          onClose={() => {
+            // Drop any live preview with the sheet. Closing settings mid-edit
+            // is a cancel by any other name, and leaving the preview applied
+            // would paint a theme that is in no settings file and would
+            // survive until the next theme change -- looking exactly like a
+            // save that happened.
+            setPreviewTheme(null)
+            setSettingsOpen(false)
+          }}
         />
       )}
     </div>
