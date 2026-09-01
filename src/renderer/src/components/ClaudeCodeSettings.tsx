@@ -68,7 +68,6 @@ export function ClaudeCodeSettings({ cliVersion }: Props): React.JSX.Element {
   const [failure, setFailure] = useState<string | null>(null)
   /** A write that landed, but not quietly. See `apply`. */
   const [note, setNote] = useState<string | null>(null)
-  const [open, setOpen] = useState(false)
 
   const refresh = useCallback(async (): Promise<void> => {
     if (!bridge) return
@@ -155,100 +154,102 @@ export function ClaudeCodeSettings({ cliVersion }: Props): React.JSX.Element {
       )}
 
       {/*
-       * Collapsed by default. The sheet is one flat column with no tabs, so an
-       * always-open block of rows would push everything below it off the bottom
-       * for a panel most people open twice.
+       * These rows were behind a collapsed <details> until the sheet grew tabs.
+       * The reason given for the collapse was real at the time and is not any
+       * more: the sheet was then one flat column, so fifteen always-open rows
+       * pushed every later control off the bottom. This is now the whole of the
+       * `claude` pane — nothing is below it to push — so the toggle only stood
+       * between someone who had already chosen this section and the thing they
+       * chose it for. The pane scrolls, which is the answer to length that
+       * every other section here gets.
        *
-       * `+ 1` for the dynamic-workflow row, which is drawn by `WorkflowSizeRow`
-       * rather than from `CLAUDE_SETTINGS` because it writes to a different
-       * file — ~/.claude.json rather than settings.json (gotcha 39). Counting
-       * the array alone said "14 settings" over fifteen visible rows.
+       * The count it stated ("show 15 settings") went with it, and is no loss:
+       * it existed to say what was hidden, and was fragile in its own right —
+       * `CLAUDE_SETTINGS.length + 1` had to be hand-corrected once already for
+       * the dynamic-workflow row, which `WorkflowSizeRow` draws separately
+       * because it writes ~/.claude.json rather than settings.json (gotcha 39).
+       * Rows you can see need no census.
        */}
-      <details className="cc-details" open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
-        <summary className="cc-summary">
-          {open ? 'hide' : 'show'} {CLAUDE_SETTINGS.length + 1} settings
-          {state ? '' : ' — reading…'}
-        </summary>
+      {!state && <span className="field-hint">reading…</span>}
 
-        <div className="cc-rows">
-          <WorkflowSizeRow
-            state={state}
-            busy={busy === '__workflow'}
-            onChange={(value) => void apply('__workflow', () => bridge.setWorkflowSize(value))}
-          />
+      <div className="cc-rows">
+        <WorkflowSizeRow
+          state={state}
+          busy={busy === '__workflow'}
+          onChange={(value) => void apply('__workflow', () => bridge.setWorkflowSize(value))}
+        />
 
-          {CLAUDE_SETTINGS.map((spec) =>
-            spec.kind === 'integer' ? (
-              <IntegerRow
-                key={spec.key}
-                spec={spec}
-                value={typeof values[spec.key] === 'number' ? (values[spec.key] as number) : null}
-                busy={busy === spec.key}
-                onCommit={(value) => void apply(spec.key, () => bridge.set(spec.key, value))}
-              />
-            ) : (
-              <div className="cc-row" key={spec.key}>
-                <span className="cc-text">
-                  <span className="field-label">{spec.label}</span>
-                  {/*
-                   * What "default" means belongs here, not in the option text.
-                   * A <select> cannot ellipsis its own closed value, so
-                   * "default — let Claude Code decide" rendered as
-                   * "default — let Claude C" and the sentence was lost at
-                   * exactly the moment it mattered. Measured in the running
-                   * app, not guessed.
-                   */}
-                  <span className="field-hint">
-                    {spec.hint} <span className="cc-default">default: {spec.unsetMeans}</span>
-                  </span>
+        {CLAUDE_SETTINGS.map((spec) =>
+          spec.kind === 'integer' ? (
+            <IntegerRow
+              key={spec.key}
+              spec={spec}
+              value={typeof values[spec.key] === 'number' ? (values[spec.key] as number) : null}
+              busy={busy === spec.key}
+              onCommit={(value) => void apply(spec.key, () => bridge.set(spec.key, value))}
+            />
+          ) : (
+            <div className="cc-row" key={spec.key}>
+              <span className="cc-text">
+                <span className="field-label">{spec.label}</span>
+                {/*
+                 * What "default" means belongs here, not in the option text.
+                 * A <select> cannot ellipsis its own closed value, so
+                 * "default — let Claude Code decide" rendered as
+                 * "default — let Claude C" and the sentence was lost at
+                 * exactly the moment it mattered. Measured in the running
+                 * app, not guessed.
+                 */}
+                <span className="field-hint">
+                  {spec.hint} <span className="cc-default">default: {spec.unsetMeans}</span>
                 </span>
-                <select
-                  className="select"
-                  aria-label={spec.label}
-                  disabled={busy === spec.key || !state}
-                  value={asOption(spec)}
-                  onChange={(e) => setFromOption(spec, e.target.value)}
-                >
-                  <option value={UNSET}>default</option>
-                  {spec.kind === 'boolean' ? (
-                    <>
-                      <option value="true">on</option>
-                      <option value="false">off</option>
-                    </>
-                  ) : (
-                    spec.options?.map((o) => (
-                      <option value={o} key={o}>
-                        {o}
-                      </option>
-                    ))
-                  )}
-                </select>
-              </div>
-            )
-          )}
-        </div>
-
-        {state && state.untouched.length > 0 && (
-          <span className="field-hint">
-            {/*
-             * Named rather than hidden. This file has a life beyond the rows
-             * above, and an empty-looking panel would read as an empty file —
-             * which matters most to the person about to hand-edit it.
-             */}
-            {state.untouched.length} other key{state.untouched.length === 1 ? '' : 's'} in this file
-            are left exactly as they are: <span className="mono">{state.untouched.join(', ')}</span>
-          </span>
+              </span>
+              <select
+                className="select"
+                aria-label={spec.label}
+                disabled={busy === spec.key || !state}
+                value={asOption(spec)}
+                onChange={(e) => setFromOption(spec, e.target.value)}
+              >
+                <option value={UNSET}>default</option>
+                {spec.kind === 'boolean' ? (
+                  <>
+                    <option value="true">on</option>
+                    <option value="false">off</option>
+                  </>
+                ) : (
+                  spec.options?.map((o) => (
+                    <option value={o} key={o}>
+                      {o}
+                    </option>
+                  ))
+                )}
+              </select>
+            </div>
+          )
         )}
+      </div>
 
-        {installedVersion && installedVersion !== SCHEMA_VERSION && (
-          <span className="field-hint" data-tone="warning">
-            these controls were written against Claude Code {SCHEMA_VERSION}; yours is{' '}
-            {installedVersion}.
-            the schema can move between versions, and an unrecognised value is dropped silently
-            rather than refused.
-          </span>
-        )}
-      </details>
+      {state && state.untouched.length > 0 && (
+        <span className="field-hint">
+          {/*
+           * Named rather than hidden. This file has a life beyond the rows
+           * above, and an empty-looking panel would read as an empty file —
+           * which matters most to the person about to hand-edit it.
+           */}
+          {state.untouched.length} other key{state.untouched.length === 1 ? '' : 's'} in this file
+          are left exactly as they are: <span className="mono">{state.untouched.join(', ')}</span>
+        </span>
+      )}
+
+      {installedVersion && installedVersion !== SCHEMA_VERSION && (
+        <span className="field-hint" data-tone="warning">
+          these controls were written against Claude Code {SCHEMA_VERSION}; yours is{' '}
+          {installedVersion}.
+          the schema can move between versions, and an unrecognised value is dropped silently
+          rather than refused.
+        </span>
+      )}
     </div>
   )
 }
