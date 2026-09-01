@@ -76,15 +76,29 @@ jobs:
       #
       # Everything else is pure and runs anywhere, so it runs here. Keep this
       # list in step with package.json's `check` chain when a suite is added.
+      #
+      # That instruction was already being ignored when it was written: four of
+      # the chain's suites had drifted out of this list — claude-config,
+      # activity, restore and cli — so `npm run check` enforced them and CI did
+      # not, which is the wrong way round for the list a release gate reads. All
+      # four are hermetic (claude-config runs against a temp CLAUDE_CONFIG_DIR,
+      # restore says "no electron, no window" in its own header, activity builds
+      # synthetic transcripts, cli redirects HOME into a temp tree) and all four
+      # pass on a clean checkout, so there was never a reason for the gap. The
+      # two exclusions above are the only intended ones.
       - run: npm run verify:statusline
       - run: npm run verify:unicode
       - run: npm run verify:usage
       - run: npm run verify:profiles
       - run: npm run verify:settings
+      - run: npm run verify:claude-config
       - run: npm run verify:folders
       - run: npm run verify:color
+      - run: npm run verify:activity
       - run: npm run verify:worklog-gate
+      - run: npm run verify:cli
       - run: npm run verify:tabs
+      - run: npm run verify:restore
       - run: npm run verify:shortcuts
       - run: npm run verify:updates
       - run: npm run verify:worklog-runner
