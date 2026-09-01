@@ -823,6 +823,44 @@ export interface CliUpdateState {
   note: string | null
 }
 
+/**
+ * The CLI follows a channel that is behind `latest`, and by how much.
+ *
+ * This exists because "up to date" and "up to date *for the stream you are
+ * following*" are different sentences, and only the second one is ever true of
+ * a pinned install. Measured here on 2026-09-02: `stable` sat at 2.1.236 while
+ * `latest` sat at 2.1.258 — twenty-two releases, and a gap that had been
+ * growing for weeks. The installed CLI was 2.1.237, i.e. *ahead* of its own
+ * channel, so `claude update` correctly declined to do anything and the panel
+ * correctly reported nothing to install. Every part of that was working, and
+ * the machine still sat three weeks behind with nothing anywhere saying so.
+ *
+ * Gotcha 46 is the reason this is a separate field rather than a fix to
+ * `latest`: `CliUpdateInfo.latest` must keep meaning "what the configured
+ * channel would install", because that is the only number `claude update` will
+ * act on. Overwriting it with the `latest` channel's version is precisely the
+ * bug that entry records. So the second number is carried alongside the first,
+ * named for what it is, and the remedy it implies — change the channel — is
+ * offered rather than performed.
+ */
+export interface ChannelLag {
+  /**
+   * The channel the CLI follows. The same string as `CliUpdateInfo.channel`,
+   * repeated so this object can be turned into a sentence on its own.
+   */
+  channel: string
+  /**
+   * What that channel would install, or null when the channel publishes no
+   * dist-tag at all. Null is not a missing reading: `rc` is offered by Stoke's
+   * own control and publishes neither an npm tag nor a GCS object, so pinning
+   * to it means never updating again. That case wants the same remedy as a
+   * merely stale channel, which is why it is a lag rather than only an error.
+   */
+  channelVersion: string | null
+  /** What the `latest` channel would install. */
+  latestVersion: string
+}
+
 /** Mirrors `UpdateInfo` in src/main/updates.ts, which the renderer cannot import. */
 export interface CliUpdateInfo {
   current: string | null
@@ -841,6 +879,18 @@ export interface CliUpdateInfo {
    * advertise an update the updater would always decline. See gotcha 46.
    */
   channel: string
+  /**
+   * The `latest` channel's version, when the configured channel is something
+   * else and is behind it. Null in every other case — including the ordinary
+   * one where the channel already IS `latest`, for which no second registry
+   * request is made at all.
+   *
+   * Deliberately independent of `updateAvailable`, which stays a statement
+   * about the channel the CLI actually follows. The two are both true at once
+   * on a pinned install with nothing to install: `updateAvailable: false` and
+   * a lag of twenty-two releases are not in tension, they are the whole point.
+   */
+  behindLatest: ChannelLag | null
 }
 
 /* ----------------------------------------------------------- plan limits */

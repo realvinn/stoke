@@ -43,7 +43,8 @@ npm run verify:theme-gen      # the theme generator: that a five-field seed repr
                               # built-in byte-for-byte, that no slider position can breach a
                               # contrast floor, and that a saved seed survives hydration
 npm run verify:updates        # the updater: a failure and a success must not read the same,
-                              # and macOS must still build the zip it updates from (gotchas 24, 25)
+                              # whether the channel the CLI follows is itself behind latest,
+                              # and macOS must still build the zip it updates from (24, 25, 46)
 npm run verify:worklog-gate     # which sessions the worklog agent would watch
 npm run verify:worklog-runner   # prompt building, JSON parsing, titles, create-vs-update
 npm run verify:worklog-retry    # writes happen once, and a retry never duplicates a record
@@ -1232,6 +1233,34 @@ scripts/          the verify-*.mts suites, make-icon.cjs
     was the one untested part of the path — gotcha 31 again, and the same shape as gotcha 41's
     pre-parsed `HeadlessResult`. `channelFrom` and `distTagFor` are exported and pure so the rule
     is assertable at all.
+
+    **Reading the channel correctly then made Stoke silent about the channel itself, and that
+    silence was its own bug.** Measured here 2026-09-02: installed 2.1.237, `stable` at 2.1.236,
+    `latest` at 2.1.258. Every part of the machine was behaving — `claude update` declined
+    because the install was *ahead* of its channel, the panel reported nothing to install
+    because on that channel there was nothing to install, `claude doctor` found no installation
+    issues — and the CLI sat twenty-two releases behind for weeks with nothing anywhere saying
+    so. Fixing "we advertise updates the CLI will refuse" had quietly created "we never mention
+    that the pin is the reason". It surfaced only because a feature needed 2.1.255 and someone
+    went looking.
+
+    `channelLag` is the missing sentence. When the channel is not `latest`, `checkForUpdate`
+    now fetches **both** tags — in parallel, and the second request is not made at all on the
+    machines already on `latest`, which is most of them — and reports the gap as `behindLatest`
+    *alongside*, never instead of, `latest`. That separation is the whole design: `info.latest`
+    must keep meaning "what the configured channel would install", because it is the only number
+    `claude update` will act on, and overwriting it with the other channel's version is exactly
+    the bug this entry opens with. The panel offers to switch and update in one press; Stoke
+    never does it unasked, because a deliberate `stable` is a legitimate choice and the channel
+    is a setting Stoke merely draws.
+
+    Two things worth carrying. A channel that publishes **nothing** (`rc`, which Stoke's own
+    control offers) is reported as a lag rather than only as a 404 — "you will never update
+    again" wants the same remedy as "you are stale" — which is why the lag is computed *before*
+    the error return. And the notice is a plain string rendered as-is: backticks written round
+    `claude update` painted as literal backticks, which no assertion saw and one screenshot did.
+    The neighbouring hints wrap code in a `mono` span; a function that has to stay JSX-free so
+    `verify:updates` can run it cannot, so the suite asserts the absence of markdown instead.
 
 47. **A button with no declared box keeps Chromium's `buttonface` fill.** The global reset in
     `app.css` sets only `font` and `color` on `button`, so the settings menu's ten nav rows

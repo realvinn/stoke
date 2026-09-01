@@ -163,6 +163,13 @@ export interface SelfUpdateState {
 export type UpdateInfo = CliUpdateInfo
 
 /**
+ * Re-exported rather than aliased, for the same one-declaration reason: the
+ * renderer draws this shape and `src/main/updates.ts` builds it, so both sides
+ * of the boundary have to be looking at the same lines.
+ */
+export type { ChannelLag } from './types'
+
+/**
  * The outcome of running one `claude` subcommand.
  *
  * `ok` is the exit status and nothing more. Whether an *update* happened is a

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { CliRunResult, RemoteState, SelfUpdateState, UpdateInfo } from '@shared/api'
-import { updateButton, updateVerdict } from '../lib/updateVerdict'
+import { channelLagNotice, updateButton, updateVerdict } from '../lib/updateVerdict'
 import { FieldHint } from './FieldHint'
 import type { CliUpdateState, Settings } from '@shared/types'
 
@@ -579,7 +579,63 @@ export function UpdatesSettings({
     }
   }
 
+  /**
+   * Move the CLI onto the `latest` channel, then update — one press, because
+   * the two halves are useless apart. Switching the channel and leaving the
+   * install where it is achieves nothing until the next six-hourly check;
+   * updating without switching is what `claude update` already declines to do.
+   *
+   * Not folded into `run` above, and the reason is `updateVerdict`'s `wanted`
+   * argument. `run` reads it from the `info` already in state, which here is a
+   * statement about the channel we have *just left* — on this machine it said
+   * "nothing available", so a successful update from 2.1.237 to 2.1.258 would
+   * have been reported against a check that expected no movement. The re-check
+   * between the write and the run is what makes the verdict describe the thing
+   * that actually happened.
+   *
+   * Stoke never reaches this by itself. The channel is the user's setting,
+   * drawn a section away in the Claude Code panel, and silently rewriting it
+   * would be Stoke overruling a pin it merely displays — a deliberate `stable`
+   * is a legitimate choice and this is an offer, not a correction.
+   */
+  const switchToLatest = async (): Promise<void> => {
+    setBusy('channel')
+    setOutput(null)
+    setVerdict(null)
+    try {
+      const written = await window.stoke.claudeConfig.set('autoUpdatesChannel', 'latest')
+      if (!written.ok) {
+        setVerdict({
+          tone: 'danger',
+          text:
+            written.error ??
+            'The channel could not be written to ~/.claude/settings.json.'
+        })
+        return
+      }
+      const rechecked = await window.stoke.updates.check()
+      setInfo(rechecked)
+      const result = await window.stoke.updates.run()
+      setOutput(result.output || null)
+      setVerdict(updateVerdict(result, rechecked.updateAvailable))
+      setInfo(await window.stoke.updates.check())
+    } catch (err) {
+      // Same reason as `run`'s catch: a rejected invoke would otherwise clear
+      // `busy` in the finally and leave the panel exactly as it started, which
+      // is indistinguishable from the click never having landed.
+      setVerdict({
+        tone: 'danger',
+        text: `Stoke could not switch the channel: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      })
+    } finally {
+      setBusy(null)
+    }
+  }
+
   const update = updateButton(info)
+  const lag = info?.behindLatest ? channelLagNotice(info.behindLatest) : null
 
   return (
     <div className="field">
@@ -621,6 +677,32 @@ export function UpdatesSettings({
                 : `Running ${info.current ?? 'unknown'}${info.latest ? `, latest is ${info.latest}` : ''}.`
           : 'Checking…'}
       </span>
+
+      {/*
+        The channel gap, and the one press that closes it.
+
+        Above the buttons rather than beside them because it is a different
+        question from the ones they answer: "Update now" is about this channel
+        and is correctly disabled while the channel has nothing newer. This row
+        exists precisely for the state where every button below is right to say
+        there is nothing to do and the install is still weeks behind. Drawn only
+        when there IS a gap, so a machine on `latest` — most of them — never
+        sees it.
+      */}
+      {lag && (
+        <div className="field-hint" data-tone="warning" style={{ display: 'grid', gap: 'var(--space-8)', justifyItems: 'start' }}>
+          <span>{lag.text}</span>
+          <button
+            className="btn"
+            data-variant="primary"
+            disabled={busy !== null}
+            title="Writes autoUpdatesChannel: latest to ~/.claude/settings.json, then runs claude update."
+            onClick={() => void switchToLatest()}
+          >
+            {busy === 'channel' ? 'Switching…' : lag.action}
+          </button>
+        </div>
+      )}
 
       {/*
         What the automatic checker did while nobody was watching. Shown above

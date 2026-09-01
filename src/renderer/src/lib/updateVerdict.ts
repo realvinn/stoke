@@ -1,4 +1,4 @@
-import type { CliRunResult, UpdateInfo } from '@shared/api'
+import type { ChannelLag, CliRunResult, UpdateInfo } from '@shared/api'
 
 /**
  * Whether "Update now" is worth pressing, and what to say on hover.
@@ -94,4 +94,38 @@ export function updateVerdict(
     }
   }
   return { tone: 'success', text: `Already on ${result.to ?? 'the latest version'}.` }
+}
+
+/**
+ * The one sentence a lagging channel is worth, and the label on the button that
+ * fixes it.
+ *
+ * Here rather than inline in the panel for the reason the rest of this file is:
+ * `node --experimental-strip-types` cannot parse JSX, so anything left beside
+ * the markup is unreachable from `verify:updates`. This is worth reaching —
+ * the numbers in it are the entire argument for pressing the button, and
+ * getting them the wrong way round would read as an instruction to downgrade.
+ *
+ * Two shapes, because the two causes need different words. A channel that
+ * publishes nothing (`rc`) is not "behind" by any number of releases; saying it
+ * is would invite the reader to wait for it to catch up, which it never will.
+ *
+ * No markdown in the text. It is rendered as the string it is, so a backtick
+ * around `claude update` paints as a backtick — caught in a screenshot, which
+ * is the only place it was ever going to show. The neighbouring hints wrap
+ * code in `<span className="mono">`; that is not available to a function that
+ * has to stay JSX-free so `verify:updates` can run it at all.
+ */
+export function channelLagNotice(lag: ChannelLag): { text: string; action: string } {
+  const action = 'Switch to latest and update'
+  if (lag.channelVersion === null) {
+    return {
+      text: `This CLI follows the “${lag.channel}” channel, which publishes no releases at all — so it will never update itself. The latest channel has ${lag.latestVersion}.`,
+      action
+    }
+  }
+  return {
+    text: `This CLI follows the “${lag.channel}” channel, which is behind: ${lag.channelVersion} there against ${lag.latestVersion} on latest. Nothing here is broken — the updater is doing exactly what the channel asks — but the newer releases will not arrive while the pin stands.`,
+    action
+  }
 }

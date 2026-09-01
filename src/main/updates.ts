@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import type { CliRunResult } from '@shared/api'
-import type { CliUpdateInfo } from '@shared/types'
+import type { ChannelLag, CliUpdateInfo } from '@shared/types'
 import { buildEnvPath, findClaude, loginPathProbeFailed, notFoundError, spawnSpec } from './cli.ts'
 import { readClaudeSettings } from './claudeSettings.ts'
 
@@ -77,6 +77,48 @@ export function distTagFor(channel: string): string {
 }
 
 /**
+ * Is the channel this CLI follows behind the one everybody else is on?
+ *
+ * Pure, and separate from the two requests that feed it, for gotcha 31's
+ * reason — the rule is the part worth asserting and the fetch is the part no
+ * suite can reach. `verify:updates` calls it directly.
+ *
+ * The question this answers is the one nothing in Stoke used to ask. Gotcha 46
+ * fixed the panel so it reads the configured channel and therefore stops
+ * advertising updates `claude update` will refuse — correct, and it made the
+ * panel silent about a machine drifting three weeks behind on `stable` while
+ * every screen honestly said there was nothing to install. Reporting the
+ * channel's own version is the truth; reporting only it is not the whole truth.
+ *
+ * The four cases, in the order they are tested:
+ *
+ *  - **The channel already resolves to `latest`.** Nothing to say, and this is
+ *    most machines. `disabled` lands here too, via `distTagFor` — the CLI's
+ *    updates being switched off is its own sentence in the panel and not a
+ *    stale channel, so saying both would be noise on top of a contradiction.
+ *  - **No `latest` version came back.** The extra request failed, or was never
+ *    made. Nothing is claimed from a reading that does not exist; the check the
+ *    user waits on is unaffected either way.
+ *  - **The channel publishes nothing** (`channelVersion` null — `rc`, which
+ *    Stoke's own control offers and npm does not publish). A lag, deliberately,
+ *    because "you will never update again" wants the same remedy as "you are
+ *    stale", and reporting only the 404 leaves the reader to work that out.
+ *  - **Otherwise, compare.** Level or ahead is not a lag: an install can sit
+ *    ahead of its channel (2.1.237 on a `stable` that had rolled back to
+ *    2.1.236), and so can a channel, and neither is something to nag about.
+ */
+export function channelLag(
+  channel: string,
+  channelVersion: string | null,
+  latestVersion: string | null
+): ChannelLag | null {
+  if (distTagFor(channel) === DEFAULT_CHANNEL) return null
+  if (!latestVersion) return null
+  if (channelVersion && compare(latestVersion, channelVersion) <= 0) return null
+  return { channel, channelVersion, latestVersion }
+}
+
+/**
  * `claude` writes colour even when nothing is attached to stdout. Measured
  * against 2.1.226 through a plain `execFile`: the "up to date" line arrives as
  * `\x1b[32mClaude Code is up to date (2.1.226)\x1b[39m`. A <pre> has no terminal
@@ -132,6 +174,42 @@ async function currentVersion(claudePath: string | null): Promise<string | null>
 }
 
 /**
+ * What one dist-tag resolves to, as a value rather than an exception.
+ *
+ * Extracted from `checkForUpdate` when a second lookup joined the first, and
+ * non-throwing because the two callers want opposite things from a failure.
+ * The channel's own lookup failing is the check failing and has to be reported;
+ * the `latest` lookup failing is a missing nicety that must never be able to
+ * turn a working check into a broken one. A shared `throw` makes the second of
+ * those the accident waiting to happen.
+ *
+ * `missing` is separated from `error` for the same reason it always was: a 404
+ * means the tag does not exist, which is a fact about configuration, and
+ * rendering it as a network problem sends the reader to the wrong place.
+ */
+async function lookupTag(
+  tag: string
+): Promise<{ version: string | null; error: string | null; missing: boolean }> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 10_000)
+  try {
+    const res = await fetch(`${REGISTRY}/${encodeURIComponent(tag)}`, { signal: controller.signal })
+    if (res.status === 404) return { version: null, error: null, missing: true }
+    if (!res.ok) return { version: null, error: `registry responded ${res.status}`, missing: false }
+    const body = (await res.json()) as { version?: string }
+    return { version: body.version ?? null, error: null, missing: false }
+  } catch (err) {
+    return {
+      version: null,
+      error: err instanceof Error ? err.message : String(err),
+      missing: false
+    }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/**
  * Read-only check. The npm registry is used rather than running `claude update`,
  * which would install as a side effect of merely looking.
  *
@@ -155,28 +233,44 @@ export async function checkForUpdate(claudePath: string | null): Promise<UpdateI
     updateAvailable: false,
     checkedAt: Date.now(),
     error: null,
-    channel
+    channel,
+    behindLatest: null
   }
 
   const tag = distTagFor(channel)
-  try {
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), 10_000)
-    const res = await fetch(`${REGISTRY}/${encodeURIComponent(tag)}`, { signal: controller.signal })
-    clearTimeout(timer)
+  /*
+   * Two requests, in parallel, and the second one only exists when the channel
+   * is not already `latest` — which on most machines it is, so most checks
+   * still cost exactly one request. Parallel rather than sequential because
+   * the answer to "is my channel stale" is worthless if getting it makes the
+   * check that people actually wait on twice as slow.
+   */
+  const [followed, newest] = await Promise.all([
+    lookupTag(tag),
+    tag === DEFAULT_CHANNEL ? Promise.resolve(null) : lookupTag(DEFAULT_CHANNEL)
+  ])
+
+  /*
+   * Computed BEFORE the error returns below, deliberately. A channel that
+   * publishes no tag is the case most in need of this sentence — `rc` 404s, so
+   * `followed` is an error and the old code returned here having said only
+   * that npm does not publish it. Knowing that `latest` has a version, and
+   * that switching to it is the fix, is the actionable half.
+   */
+  info.behindLatest = channelLag(channel, followed.version, newest?.version ?? null)
+
+  if (followed.missing) {
     // Named rather than reported as a bare 404, which would send the reader to
     // the network when the answer is a channel that publishes nothing.
-    if (res.status === 404) {
-      throw new Error(`the CLI follows the "${channel}" channel, which npm does not publish`)
-    }
-    if (!res.ok) throw new Error(`registry responded ${res.status}`)
-    const body = (await res.json()) as { version?: string }
-    info.latest = body.version ?? null
-  } catch (err) {
-    info.error = err instanceof Error ? err.message : String(err)
+    info.error = `the CLI follows the "${channel}" channel, which npm does not publish`
+    return info
+  }
+  if (followed.error) {
+    info.error = followed.error
     return info
   }
 
+  info.latest = followed.version
   if (info.current && info.latest) {
     info.updateAvailable = compare(info.latest, info.current) > 0
   }

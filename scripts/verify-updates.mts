@@ -26,12 +26,13 @@ import {
   AUTO_RETRY_MS,
   DEFAULT_CHANNEL,
   channelFrom,
+  channelLag,
   distTagFor,
   shouldAutoUpdate,
   updateApplied
 } from '../src/main/updates.ts'
 import { describeExecError } from '../src/main/updates.ts'
-import { updateButton, updateVerdict } from '../src/renderer/src/lib/updateVerdict.ts'
+import { channelLagNotice, updateButton, updateVerdict } from '../src/renderer/src/lib/updateVerdict.ts'
 
 const execFileAsync = promisify(execFile)
 
@@ -726,6 +727,113 @@ check(
   updateApplied({ ok: false, output: '', error: 'exited with code 1', from: '2.1.230', to: '2.1.237' }),
   false
 )
+
+/*
+ * ------------------------------------------------- and whether that channel
+ * is itself worth staying on.
+ *
+ * Gotcha 46 taught the check to follow `autoUpdatesChannel` so the panel stops
+ * advertising updates `claude update` will refuse. Correct, and it made Stoke
+ * silent about the state measured on this machine on 2026-09-02: installed
+ * 2.1.237, `stable` at 2.1.236, `latest` at 2.1.258. Every screen honestly
+ * reported nothing to install, `claude update` honestly declined, and the
+ * install sat twenty-two releases behind with nothing anywhere saying so.
+ *
+ * `channelLag` is the sentence that was missing. It is pure and separate from
+ * the two registry requests that feed it for gotcha 31's reason — the fetch is
+ * the part no suite can reach, the rule is the part worth pinning.
+ */
+console.log('\nand whether the channel it follows is behind latest')
+
+check(
+  'a channel behind latest is a lag, even when there is nothing to install on it',
+  channelLag('stable', '2.1.236', '2.1.258'),
+  { channel: 'stable', channelVersion: '2.1.236', latestVersion: '2.1.258' }
+)
+/*
+ * The case that has to stay quiet, and it is most machines. A second registry
+ * request is not even made when the channel already resolves to `latest`, so
+ * this is also asserting that the extra cost is opt-in.
+ */
+check(
+  'a CLI already on latest has no lag to report',
+  channelLag('latest', '2.1.258', '2.1.258'),
+  null
+)
+check('and neither does an unset channel, which IS latest', channelLag(DEFAULT_CHANNEL, '2.1.258', '2.1.258'), null)
+/*
+ * `disabled` maps to `latest` in `distTagFor`, so it can never be behind it.
+ * Reporting a lag there would contradict the panel's own line about the CLI's
+ * auto-updates being switched off — two sentences, one screen, opposite
+ * remedies.
+ */
+check('a disabled channel is not a stale one', channelLag('disabled', '2.1.258', '2.1.258'), null)
+/*
+ * `rc` is offered by Stoke's own control and publishes neither an npm dist-tag
+ * nor a GCS object, so a CLI pinned to it never updates again. That is a lag
+ * with no number in it, and it is the case most in need of the notice — which
+ * is why `checkForUpdate` computes this BEFORE returning the channel's 404.
+ */
+check(
+  'a channel that publishes nothing at all is a lag, not merely an error',
+  channelLag('rc', null, '2.1.258'),
+  { channel: 'rc', channelVersion: null, latestVersion: '2.1.258' }
+)
+/*
+ * An install can sit ahead of its channel — `stable` rolled back under a
+ * machine already on 2.1.237 — and so can a channel. Neither is something to
+ * nag about, and nagging would be an instruction to downgrade.
+ */
+check('a channel level with latest is not behind it', channelLag('stable', '2.1.258', '2.1.258'), null)
+check('nor is one ahead of it', channelLag('stable', '2.1.260', '2.1.258'), null)
+/*
+ * The extra request is a nicety and must never be able to turn a working check
+ * into a broken one. No reading, no claim.
+ */
+check('no latest reading means no claim', channelLag('stable', '2.1.236', null), null)
+
+console.log('\nand what that lag is allowed to say out loud')
+/*
+ * The numbers the notice carries ARE the argument for pressing the button, so
+ * getting them the wrong way round would read as an instruction to downgrade.
+ * Asserted by direction rather than by matching the whole sentence, so the
+ * wording stays editable and the claim does not.
+ */
+const staleNotice = channelLagNotice({
+  channel: 'stable',
+  channelVersion: '2.1.236',
+  latestVersion: '2.1.258'
+})
+check('the notice names the channel it is complaining about', staleNotice.text.includes('stable'), true)
+check('it states the version that channel is on', staleNotice.text.includes('2.1.236'), true)
+check('and the newer one it could be on', staleNotice.text.includes('2.1.258'), true)
+check(
+  'it does not call a working updater broken',
+  /Nothing here is broken/.test(staleNotice.text),
+  true
+)
+/*
+ * The panel renders this as the string it is, so a backtick meant as markdown
+ * paints as a backtick. Found in a screenshot of the running app and nowhere
+ * else — the string was correct, the assertions were green, and it read as
+ * stray punctuation in the middle of the one sentence explaining the button.
+ * The neighbouring hints wrap code in a `mono` span, which a JSX-free function
+ * cannot reach.
+ */
+check('and it smuggles in no markdown it cannot render', staleNotice.text.includes('`'), false)
+/*
+ * A channel that publishes nothing is not "behind" by any number of releases,
+ * and saying it is would invite waiting for it to catch up — which it never
+ * will. Different cause, different words.
+ */
+const deadNotice = channelLagNotice({ channel: 'rc', channelVersion: null, latestVersion: '2.1.258' })
+check('a channel that publishes nothing says so', /publishes no releases/.test(deadNotice.text), true)
+check(
+  'and it never quotes a version for a channel that has none',
+  /null|undefined/.test(deadNotice.text),
+  false
+)
+check('both shapes offer the same one-press remedy', deadNotice.action, staleNotice.action)
 
 console.log(`\n${failures === 0 ? 'All checks passed.' : `${failures} check(s) FAILED.`}`)
 process.exit(failures === 0 ? 0 : 1)
