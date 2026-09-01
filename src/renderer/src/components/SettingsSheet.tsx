@@ -46,35 +46,85 @@ const ZOOM_TARGET_LABELS: { id: ZoomTarget; label: string; hint: string }[] = [
  * sections costs a click and buys an answer to "where is X" that does not
  * involve scrolling.
  *
- * Order is roughly by how often a section is opened, not by how important it
- * is: Appearance and Sessions are the ones people come back to, and Advanced
- * holds the two things you set once. `hint` is the nav item's tooltip and does
- * the job a subtitle would without making every row two lines tall.
+ * The rows are grouped by what they are about, and the groups run from what you
+ * change to what merely reports. That replaced an order chosen by how often a
+ * section is opened, which sounds reasonable and reads as arbitrary: frequency
+ * is invisible from the menu, so the only thing a reader could see was Updates
+ * sitting fourth, between Projects and Claude Code, with nothing to explain
+ * why. Ten adjacent rows have no structure a reader can recover, so adjacency
+ * alone could not carry the grouping — the headings are the change, and the
+ * reorder follows from them.
+ *
+ * `hint` is the nav item's tooltip and does the job a subtitle would without
+ * making every row two lines tall.
  */
 type SectionId =
   | 'appearance'
-  | 'sessions'
-  | 'projects'
-  | 'updates'
-  | 'claude'
   | 'profiles'
-  | 'worklog'
+  | 'sessions'
+  | 'claude'
+  | 'projects'
   | 'hosts'
+  | 'worklog'
   | 'remote'
+  | 'updates'
   | 'advanced'
 
-const SECTIONS: { id: SectionId; label: string; hint: string }[] = [
-  { id: 'appearance', label: 'Appearance', hint: 'Theme, fonts, and how big everything is' },
-  { id: 'sessions', label: 'Sessions', hint: 'What a new session starts with' },
-  { id: 'projects', label: 'Projects', hint: 'Which folders the sidebar scans' },
-  { id: 'updates', label: 'Updates', hint: 'Stoke and the Claude Code CLI' },
-  { id: 'claude', label: 'Claude Code', hint: "Claude Code's own configuration" },
-  { id: 'profiles', label: 'Profiles', hint: 'Per-folder colours and scan roots' },
-  { id: 'worklog', label: 'Worklog', hint: 'The Notion / ClickUp review queue' },
-  { id: 'hosts', label: 'SSH hosts', hint: 'Remote machines to open sessions on' },
-  { id: 'remote', label: 'Phone access', hint: 'Reaching this window from a phone' },
-  { id: 'advanced', label: 'Advanced', hint: 'Executable path, and things you hid' }
+interface Section {
+  id: SectionId
+  label: string
+  hint: string
+}
+
+/*
+ * Profiles sits under Appearance rather than beside Projects because its
+ * visible effect is the accent colour on the tab strip and the sidebar chip;
+ * the scan root it also carries is the half nobody comes looking for. Updates
+ * and Advanced are last together for the same reason they are one group: both
+ * are read far more often than they are written.
+ */
+const GROUPS: { title: string; sections: Section[] }[] = [
+  {
+    title: 'Appearance',
+    sections: [
+      { id: 'appearance', label: 'Appearance', hint: 'Theme, fonts, and how big everything is' },
+      { id: 'profiles', label: 'Profiles', hint: 'Per-folder colours and scan roots' }
+    ]
+  },
+  {
+    title: 'Configuration',
+    sections: [
+      { id: 'sessions', label: 'Sessions', hint: 'What a new session starts with' },
+      { id: 'claude', label: 'Claude Code', hint: "Claude Code's own configuration" },
+      { id: 'projects', label: 'Projects', hint: 'Which folders the sidebar scans' },
+      { id: 'hosts', label: 'SSH hosts', hint: 'Remote machines to open sessions on' }
+    ]
+  },
+  {
+    title: 'Integrations',
+    sections: [
+      { id: 'worklog', label: 'Worklog', hint: 'The Notion / ClickUp review queue' },
+      { id: 'remote', label: 'Phone access', hint: 'Reaching this window from a phone' }
+    ]
+  },
+  {
+    title: 'System',
+    sections: [
+      { id: 'updates', label: 'Updates', hint: 'Stoke and the Claude Code CLI' },
+      { id: 'advanced', label: 'Advanced', hint: 'Where the claude executable is' }
+    ]
+  }
 ]
+
+/*
+ * The flat list the keyboard nav walks. It is DERIVED from `GROUPS` rather than
+ * maintained beside it, because `onNavKey` finds the element to focus by
+ * indexing `querySelectorAll('[role="tab"]')` with an index it computed from
+ * this array — so the two orders are not merely expected to agree, arrow keys
+ * focus the wrong row the moment they do not. Deriving it makes them the same
+ * order by construction.
+ */
+const SECTIONS: Section[] = GROUPS.flatMap((g) => g.sections)
 
 interface Props {
   settings: Settings
@@ -186,30 +236,49 @@ export function SettingsSheet({
         </div>
 
         <div className="settings-cols">
-          <nav
-            className="settings-nav"
-            role="tablist"
-            aria-orientation="vertical"
-            aria-label="Settings sections"
-            onKeyDown={onNavKey}
-          >
-            {SECTIONS.map((s) => (
-              <button
-                key={s.id}
-                role="tab"
-                id={`settings-tab-${s.id}`}
-                aria-controls={`settings-pane-${s.id}`}
-                aria-selected={section === s.id}
-                // Roving tabIndex: exactly one nav item is in the tab order, so
-                // Tab from the close button lands on the current section and the
-                // next Tab leaves the nav entirely.
-                tabIndex={section === s.id ? 0 : -1}
-                title={s.hint}
-                onClick={() => setSection(s.id)}
-              >
-                {s.label}
-              </button>
-            ))}
+          {/*
+           * One `tablist` per group, not one for the whole menu. A `tablist`'s
+           * only permitted owned elements are tabs, so a heading placed inside
+           * the old single list would have had to be hidden from assistive
+           * technology to stay valid — which is the grouping, deleted for
+           * exactly the readers who cannot see the indentation that would
+           * otherwise convey it. A tablist per group makes each heading a real
+           * accessible name instead. The keydown handler stays on the `nav`
+           * above all four, so arrow keys still walk the ten rows as one run
+           * and wrap end to end; `onNavKey` reads `currentTarget`, which is the
+           * nav rather than the group the event started in.
+           */}
+          <nav className="settings-nav" aria-label="Settings sections" onKeyDown={onNavKey}>
+            {GROUPS.map((g) => {
+              const titleId = `settings-group-${g.title.toLowerCase()}`
+              return (
+                <div className="settings-nav-group" key={g.title}>
+                  <div className="settings-nav-group-title" id={titleId}>
+                    {g.title}
+                  </div>
+                  <div role="tablist" aria-orientation="vertical" aria-labelledby={titleId}>
+                    {g.sections.map((s) => (
+                      <button
+                        key={s.id}
+                        role="tab"
+                        id={`settings-tab-${s.id}`}
+                        aria-controls={`settings-pane-${s.id}`}
+                        aria-selected={section === s.id}
+                        // Roving tabIndex: exactly one nav item is in the tab
+                        // order, so Tab from the close button lands on the
+                        // current section and the next Tab leaves the nav
+                        // entirely.
+                        tabIndex={section === s.id ? 0 : -1}
+                        title={s.hint}
+                        onClick={() => setSection(s.id)}
+                      >
+                        {s.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )
+            })}
           </nav>
 
           <div

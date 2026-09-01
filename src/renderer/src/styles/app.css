@@ -2536,14 +2536,47 @@ body {
   min-height: 0;
 }
 
+/*
+ * Two gaps, not one. The nav's own gap separates the four groups and the
+ * tablist's separates the rows inside one — a single 2px gap over ten rows is
+ * what made the menu one undifferentiated run, and a single large one would
+ * space the rows as far apart as the groups and undo the grouping just as
+ * thoroughly. The ratio is the signal; the absolute values are not.
+ */
 .settings-nav {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-4);
   padding: var(--space-8);
   overflow-y: auto;
   border-right: 1px solid var(--border-subtle);
   background: var(--bg-sunken);
+}
+
+.settings-nav-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-nav-group [role='tablist'] {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/*
+ * Deliberately the same eyebrow as `.sidebar-group`: this is that element's job
+ * one panel over, and two rules that look nearly alike read as a mistake even
+ * when both are correct. Its horizontal padding matches `.settings-nav button`
+ * so the heading and the rows it heads share a left edge.
+ */
+.settings-nav-group-title {
+  padding: var(--space-8) var(--space-12) var(--space-4);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
 }
 
 /*
@@ -2612,12 +2645,30 @@ body {
     grid-template-rows: auto minmax(0, 1fr);
   }
 
+  /*
+   * The group headings are dropped here rather than laid out sideways. Stacked
+   * above their rows they cost one line each; in a row they would sit BESIDE
+   * the rows, spending horizontal space on four words in the one layout that
+   * has none to spare — and pushing Updates further off the end of a strip that
+   * already has to be scrolled to be read. The wider gap between groups carries
+   * what is left of the grouping, which is as much as one scrolling row can.
+   */
   .settings-nav {
     flex-direction: row;
+    gap: var(--space-12);
     overflow-x: auto;
     overflow-y: hidden;
     border-right: none;
     border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .settings-nav-group,
+  .settings-nav-group [role='tablist'] {
+    flex-direction: row;
+  }
+
+  .settings-nav-group-title {
+    display: none;
   }
 
   .settings-nav button {
@@ -2831,35 +2882,11 @@ body {
 
 /* ------------------------------------------------- claude code settings */
 
-/* A disclosure rather than a fourteenth screenful. `.sheet-body` is one flat
-   flex column with no tabs, so anything long has to fold itself away. */
-.cc-summary {
-  font-size: var(--fs-xs);
-  color: var(--text-faint);
-  cursor: default;
-  width: fit-content;
-  list-style: none;
-}
-
-.cc-summary::-webkit-details-marker {
-  display: none;
-}
-
-.cc-summary::before {
-  content: '\25B8';
-  display: inline-block;
-  margin-right: var(--space-8);
-  transition: transform var(--dur-fast) var(--ease);
-}
-
-.cc-details[open] > .cc-summary::before {
-  transform: rotate(90deg);
-}
-
-.cc-details[open] > .cc-summary {
-  margin-bottom: var(--space-16);
-}
-
+/* The `.cc-details` / `.cc-summary` disclosure that used to wrap these rows was
+   removed with the markup: it existed because `.sheet-body` was one flat flex
+   column with no tabs, and this is a section of its own now. Deleted rather
+   than left orphaned, because a rule naming a class nothing renders is a
+   standing invitation to reintroduce the element for the sake of the style. */
 .cc-rows {
   display: flex;
   flex-direction: column;
