@@ -19,7 +19,7 @@
  *   node scripts/verify-usage.mts
  *   STOKE_LIVE_USAGE=1 node scripts/verify-usage.mts
  */
-import { fetchUsage, findToken, parseUsage } from '../src/main/usage.ts'
+import { fetchUsage, findToken, freshestCredentials, parseUsage } from '../src/main/usage.ts'
 import { toSnapshot } from '../src/main/statusLine.ts'
 import { mergeUsageWindows, statusLineWindows } from '../src/shared/statusLine.ts'
 
@@ -295,6 +295,34 @@ check(
   null
 )
 check('nothing at all is null, not a throw', findToken(null), null)
+
+console.log('\nwhich of two credential stores to believe')
+/*
+ * A macOS machine can hold BOTH `~/.claude/.credentials.json` and the login
+ * Keychain item, and they disagree. Measured here: the file held a token that
+ * had expired 24 hours earlier while the Keychain held one good for another 8,
+ * and the file was read first — so the chip said "Claude Code sign-in has
+ * expired" and could never refresh again, with a working credential sitting
+ * beside it. Gotcha 36 recorded that the file "does not exist on macOS", which
+ * was true when it was written and is not any more; preferring by LOCATION was
+ * only ever safe while one of the two could not exist.
+ */
+const t0 = 1_000_000
+const live = { token: 'live', expiresAt: t0 + 60_000, source: 'keychain' as const }
+const stale = { token: 'stale', expiresAt: t0 - 60_000, source: 'file' as const }
+const undated = { token: 'undated', expiresAt: null, source: 'file' as const }
+
+check('a live token beats a stale one whatever order they arrive in', freshestCredentials([stale, live], t0)?.token, 'live')
+check('and the other way round', freshestCredentials([live, stale], t0)?.token, 'live')
+check(
+  'a token with no stated expiry counts as usable, because it is',
+  freshestCredentials([stale, undated], t0)?.token,
+  'undated'
+)
+check('with nothing live, the least stale still comes back so the message can name a time', freshestCredentials([stale], t0)?.token, 'stale')
+check('two live ones: the later expiry wins', freshestCredentials([live, { ...live, token: 'later', expiresAt: t0 + 120_000 }], t0)?.token, 'later')
+check('nulls are skipped', freshestCredentials([null, stale, null], t0)?.token, 'stale')
+check('and nothing at all is null rather than a throw', freshestCredentials([null, null], t0), null)
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
 // Setting the code rather than calling process.exit: the socket from the live

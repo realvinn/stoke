@@ -154,20 +154,58 @@ async function readKeychain(): Promise<StoredCredentials | null> {
 }
 
 /**
- * The token and what is known about it, from whichever store holds it.
+ * The live one of two credentials, when a machine has both.
  *
- * File first: it is the Linux and Windows location, it costs one read, and a
- * Mac that does have the file is answered without ever touching the Keychain.
+ * Not "the first one found", which is what this used to be, and the difference
+ * is a chip that says "Claude Code sign-in has expired" while a perfectly good
+ * token sits in the other store. Measured on this machine:
+ * `~/.claude/.credentials.json` held a token that had expired 24 hours earlier
+ * while the login Keychain held one valid for another 8 — and the file was read
+ * first, so the account route reported expired and the usage chip could never
+ * refresh again.
+ *
+ * The old rule was reasonable when it was written and its premise has simply
+ * stopped being true: gotcha 36 recorded that the file "does not exist on
+ * macOS", so preferring it cost nothing there. It exists now. Freshness is the
+ * property that actually matters, so freshness is what this compares — and an
+ * unexpired credential beats a fresher-looking expired one, because a token
+ * with no stated expiry is usable and an expired one never is.
+ */
+export function freshestCredentials(
+  candidates: (StoredCredentials | null)[],
+  now = Date.now()
+): StoredCredentials | null {
+  const found = candidates.filter((c): c is StoredCredentials => c !== null)
+  if (found.length === 0) return null
+  const live = found.filter((c) => c.expiresAt === null || c.expiresAt > now)
+  // Nothing live: return the least stale, so the message can still name a time.
+  const pool = live.length > 0 ? live : found
+  return pool.reduce((best, c) => ((c.expiresAt ?? Infinity) > (best.expiresAt ?? Infinity) ? c : best))
+}
+
+/**
+ * The token and what is known about it, from whichever store holds a live one.
+ *
+ * Both stores are read on macOS rather than the file short-circuiting the
+ * Keychain, because they disagree — see `freshestCredentials`. Elsewhere there
+ * is only the file, and the Keychain read is not attempted at all.
  */
 export async function readCredentials(): Promise<StoredCredentials | null> {
+  let fromFile: StoredCredentials | null = null
   try {
     const raw = await readFile(join(homedir(), '.claude', '.credentials.json'), 'utf8')
-    const found = credentialsFrom(raw, 'file')
-    if (found) return found
+    fromFile = credentialsFrom(raw, 'file')
   } catch {
-    // No file is the ordinary case on macOS, not an error worth reporting.
+    // No file is ordinary rather than an error worth reporting.
   }
-  return platform() === 'darwin' ? readKeychain() : null
+  if (platform() !== 'darwin') return fromFile
+  /*
+   * The Keychain read is skipped when the file already holds a live token, so
+   * the ordinary case still costs one read and never risks the `security`
+   * prompt this function is careful about elsewhere.
+   */
+  if (fromFile && (fromFile.expiresAt === null || fromFile.expiresAt > Date.now())) return fromFile
+  return freshestCredentials([fromFile, await readKeychain()])
 }
 
 export async function readOauthToken(): Promise<string | null> {
