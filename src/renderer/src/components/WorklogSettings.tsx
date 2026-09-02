@@ -200,8 +200,9 @@ export function WorklogSettings({
         more={
           <>
             <p>
-              Nothing is written to either board until you accept it; Accept all is still you
-              accepting.
+              Nothing is written to either board until you accept it, one proposal at a time, in
+              the strip that appears when a scan finds something. <b>Reject</b> there is
+              permanent: it stops the scan proposing the same thing again.
             </p>
             <p>
               Each review costs tokens: it is a real Claude run on top of the work you just did.

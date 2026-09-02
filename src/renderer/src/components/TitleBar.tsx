@@ -289,12 +289,21 @@ export function TitleBar({
           data-worklog={worklogState}
           onClick={onToggleWorklog}
           aria-pressed={worklogOpen}
+          /*
+            This opens the activity report, so it says so. It used to promise
+            "N awaiting review" and open a page of hours and lines per project —
+            left over from 6304e35, which replaced the review panel with the
+            report and updated neither this button nor its tooltip. The pending
+            count still belongs here, because it is the only always-visible
+            place it appears, but the sentence now names where reviewing
+            actually happens.
+          */
           title={
             worklogCount > 0
-              ? `Worklog — ${worklogCount} awaiting review`
+              ? `Activity — and ${worklogCount} worklog proposal${worklogCount === 1 ? '' : 's'} pending in the review strip`
               : worklogState === 'watching'
-                ? 'Worklog — watching this session; nothing to review yet'
-                : 'Worklog — nothing is watched. Scan a session, or tick a profile in Settings'
+                ? 'Activity — the worklog is watching this session; nothing proposed yet'
+                : 'Activity — the worklog watches nothing. Scan a session, or tick a profile in Settings'
           }
         >
           <IconPin />

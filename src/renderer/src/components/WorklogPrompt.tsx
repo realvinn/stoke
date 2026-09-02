@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import type { WorklogProposal, WorklogTarget } from '@shared/types'
 import { IconClose } from './Icons'
 import { baseName } from '../lib/format'
@@ -10,6 +11,12 @@ interface Props {
   onAccept: (id: string) => void
   /** Leave it in the queue, stop asking about it here. */
   onSkip: (id: string) => void
+  /**
+   * Tombstone it: never write it, and stop the model proposing the same thing
+   * again. Permanent, which is why the button asks twice.
+   */
+  onReject: (id: string) => void
+  /** Bring every pending proposal into the strip, not just this scan's. */
   onReviewAll: () => void
   onDismiss: () => void
 }
@@ -68,9 +75,18 @@ export function WorklogPrompt({
   busy,
   onAccept,
   onSkip,
+  onReject,
   onReviewAll,
   onDismiss
 }: Props): React.JSX.Element | null {
+  /*
+   * Which proposal the Reject button is currently asking about.
+   *
+   * Two presses, not one, and the id is part of the state rather than a bare
+   * boolean so that a queue advancing under a half-pressed Reject cannot carry
+   * the confirmation onto a different proposal.
+   */
+  const [confirming, setConfirming] = useState<string | null>(null)
   const current = proposals[0]
   if (!current) return null
 
@@ -108,12 +124,49 @@ export function WorklogPrompt({
       >
         {busy ? 'Writing…' : current.kind === 'update' ? 'Update it' : 'Add it'}
       </button>
-      {/* Not "Reject". Skipping leaves the proposal in the queue to decide on
-          later; rejecting it is permanent, and that decision belongs somewhere
-          the whole entry is visible. */}
+      {/* Skipping leaves the proposal in the queue to decide on later. */}
       <button className="btn" data-size="sm" disabled={busy} onClick={() => onSkip(current.id)}>
         Not now
       </button>
+      {/*
+        Rejecting IS permanent — it tombstones the proposal so the model stops
+        offering the same thing — and this button used to say so and then not
+        exist: the comment here deferred the decision to "somewhere the whole
+        entry is visible", meaning the review panel, which was later replaced by
+        the activity report. `worklog.reject` has worked end to end the whole
+        time and had no caller anywhere in the renderer, so the only way to stop
+        a proposal coming back was to accept it.
+
+        Asking twice is what the missing panel was really providing: a beat to
+        think, on an irreversible action. The whole entry is on screen here — the
+        question names the record, the board and the status — so a confirm step
+        is the part that was actually load-bearing.
+      */}
+      {confirming === current.id ? (
+        <button
+          className="btn"
+          data-variant="danger"
+          data-size="sm"
+          disabled={busy}
+          onClick={() => {
+            setConfirming(null)
+            onReject(current.id)
+          }}
+        >
+          Never ask again
+        </button>
+      ) : (
+        <button
+          className="btn"
+          data-variant="ghost"
+          data-size="sm"
+          disabled={busy}
+          onClick={() => setConfirming(current.id)}
+          title="Never write this, and stop the scan proposing it again"
+        >
+          Reject
+        </button>
+      )}
       <button className="btn" data-variant="ghost" data-size="sm" onClick={onReviewAll}>
         {more > 0 ? `Review all (${proposals.length})` : 'Review'}
       </button>

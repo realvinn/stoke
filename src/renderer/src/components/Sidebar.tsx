@@ -195,7 +195,6 @@ export function Sidebar({
                     {
                       '--chip': p.accent,
                       '--chip-ink': p.accentContrast,
-                      '--chip-soft': p.accentSoft,
                       '--chip-second': p.secondary ?? p.accent
                     } as React.CSSProperties
                   }

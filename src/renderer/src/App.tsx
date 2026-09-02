@@ -1011,6 +1011,26 @@ export function App(): React.JSX.Element {
     }
   }, [])
 
+  /**
+   * Tombstone a proposal: never write it, and stop the scan offering it again.
+   *
+   * `window.stoke.worklog.reject` and its main-process handler have both worked
+   * end to end since they were written and had NO caller anywhere in the
+   * renderer — the surface that was going to call them was replaced by the
+   * activity report in 6304e35. Rejection is the only thing that adds to
+   * `queue.ts`'s `refused` set, so without it the sole way to stop a proposal
+   * coming back was to accept it, and the pending count only ever went up.
+   *
+   * No `worklogBusy`, unlike accept: this writes one line to a local JSON file
+   * rather than spawning a headless CLI run against two external services, so
+   * there is nothing to guard the rest of the strip against.
+   */
+  const rejectProposal = useCallback(async (id: string): Promise<void> => {
+    // Returns nothing: the handler tombstones and pushes the new list, so the
+    // queue arriving over `worklog:changed` is the confirmation.
+    await window.stoke.worklog.reject(id)
+  }, [])
+
   /*
    * Sequential, not Promise.all. Each accept spawns a headless CLI run that
    * writes to two external services; firing them together would race the queue
@@ -2112,9 +2132,28 @@ export function App(): React.JSX.Element {
                 void acceptProposal(id)
               }}
               onSkip={(id) => setAsked((prev) => new Set(prev).add(id))}
+              onReject={(id) => {
+                setAsked((prev) => new Set(prev).add(id))
+                void rejectProposal(id)
+              }}
+              /*
+               * Brings EVERY pending proposal into the strip, rather than the
+               * ids from this session's own scan events.
+               *
+               * It used to open the activity report — `setWorklogOpen(true)` —
+               * which shows hours and lines per project and has never so much
+               * as imported WorklogProposal. That was left behind when 6304e35
+               * replaced the review panel with the report: the button, its
+               * label and the title bar's "N awaiting review" all went on
+               * naming a surface that no longer existed. So a proposal skipped
+               * with "Not now", or one left pending from an earlier run, was
+               * unreachable — the badge counted up and nothing could act on it.
+               */
               onReviewAll={() => {
-                setWorklogOpen(true)
-                setProposedIds([])
+                setAsked(new Set())
+                setProposedIds(
+                  worklog.filter((p) => p.status === 'pending').map((p) => p.id)
+                )
               }}
               onDismiss={() => setProposedIds([])}
             />

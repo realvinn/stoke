@@ -284,7 +284,6 @@ body {
 :root[data-wallpaper] .sidebar,
 :root[data-wallpaper] .statusbar,
 :root[data-wallpaper] .browser,
-:root[data-wallpaper] .worklog,
 :root[data-wallpaper] .activity {
   background: color-mix(in srgb, var(--bg-sunken) calc(var(--panel-alpha, 0.85) * 100%), transparent);
 }
@@ -2305,266 +2304,12 @@ body {
 /* --------------------------------------------------------------- worklog */
 
 /*
- * The review queue for the worklog agent.
- *
- * Shaped like `.browser` on purpose: it is a sibling column inside `.body-row`,
- * never an overlay. The docked browser is a native WebContentsView that paints
- * above every pixel of renderer DOM, so a panel floating over the terminal
- * would be invisible the moment the browser opened.
+ * The review-queue panel that used to live here was deleted in 6304e35, which
+ * replaced it with the activity report — and 292 lines of its stylesheet were
+ * left behind, styling twenty class names no element has carried since. They
+ * are gone now. Only the strip below survives, which is where a proposal is
+ * actually reviewed.
  */
-.worklog {
-  display: flex;
-  flex-direction: column;
-  flex-shrink: 0;
-  min-width: 0;
-  border-left: 1px solid var(--border);
-  background: var(--bg-sunken);
-}
-
-.worklog-head {
-  display: flex;
-  align-items: center;
-  gap: var(--space-8);
-  padding: var(--space-8) var(--space-8);
-  border-bottom: 1px solid var(--border-subtle);
-}
-
-.worklog-title {
-  font-size: var(--fs-md);
-  font-weight: 600;
-}
-
-/*
- * The standing promise of the whole panel, so it is read before any button is
- * pressed rather than inferred from one afterwards.
- *
- * Muted rather than faint, unlike the neighbouring hints: faint measured 3.58:1
- * on the light theme, and the one sentence that has to be believed before the
- * user presses a write button is not the place to sit under 4.5.
- */
-.worklog-note {
-  margin: 0;
-  padding: var(--space-8) var(--space-12);
-  font-size: var(--fs-xs);
-  color: var(--text-muted);
-}
-
-.worklog-state {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-  padding: var(--space-8) var(--space-12);
-  border-bottom: 1px solid var(--border-subtle);
-}
-
-.worklog-state-line {
-  margin: 0;
-  font-size: var(--fs-sm);
-  line-height: var(--lh-snug);
-  color: var(--text-muted);
-}
-
-/* The one line that answers "is this thing on". Its own colour, so the answer
-   is readable at a glance rather than by reading the sentence. */
-.worklog-state-line[data-tone='on'] {
-  color: var(--text);
-}
-
-.worklog-state-line[data-tone='warning'] {
-  color: var(--warning);
-}
-
-.worklog-bar {
-  display: flex;
-  align-items: center;
-  gap: var(--space-8);
-  padding: var(--space-8) var(--space-12);
-  border-block: 1px solid var(--border);
-  background: var(--bg-elevated);
-}
-
-.worklog-confirm {
-  flex: 1;
-  min-width: 0;
-  font-size: var(--fs-sm);
-  color: var(--text-muted);
-  text-wrap: pretty;
-}
-
-.worklog-list {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-8);
-  padding: var(--space-8);
-}
-
-.worklog-item {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: var(--space-8);
-  padding: var(--space-8) var(--space-12);
-  border: 1px solid var(--border);
-  border-radius: var(--r-lg);
-  background: var(--surface);
-}
-
-/*
- * Status is carried by a wash over the whole card plus its pill, matching how
- * `.banner` and `.pill` already tint. A resolved item should settle into the
- * list, not flag itself down - the items still asking for a decision are the
- * ones with buttons on them, and that is the louder signal.
- */
-.worklog-item[data-status='accepted'] {
-  border-color: color-mix(in srgb, var(--success) 32%, var(--border));
-  background: color-mix(in srgb, var(--success) 6%, var(--surface));
-}
-
-.worklog-item[data-status='failed'] {
-  border-color: color-mix(in srgb, var(--danger) 32%, var(--border));
-  background: color-mix(in srgb, var(--danger) 6%, var(--surface));
-}
-
-/* Rejected stays on screen, deliberately quiet — gone would look like a bug. */
-.worklog-item[data-status='rejected'] {
-  opacity: 0.55;
-  background: transparent;
-}
-
-.worklog-item-head {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-8);
-  width: 100%;
-  min-width: 0;
-}
-
-.worklog-item-title {
-  flex: 1;
-  min-width: 0;
-  margin: 0;
-  font-size: var(--fs-md);
-  font-weight: 600;
-  line-height: var(--lh-snug);
-  text-wrap: pretty;
-}
-
-.worklog-meta {
-  display: flex;
-  align-items: center;
-  gap: var(--space-4);
-  width: 100%;
-  min-width: 0;
-  font-size: var(--fs-xs);
-  color: var(--text-faint);
-}
-
-.worklog-body {
-  width: 100%;
-  margin: 0;
-  font-size: var(--fs-sm);
-  line-height: var(--lh-normal);
-  color: var(--text-muted);
-  /* Bodies are agent prose with real line breaks; keep them. */
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.worklog-body[data-clamped='true'] {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 4;
-  overflow: hidden;
-}
-
-.worklog-targets {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: var(--space-8);
-  width: 100%;
-}
-
-.worklog-targets-label {
-  font-size: var(--fs-xs);
-  color: var(--text-faint);
-}
-
-/*
- * Opens in the system browser: the window's own `setWindowOpenHandler` denies
- * the navigation and hands the URL to the shell, so this can never take the app
- * window away from the user.
- */
-.worklog-link {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.0625rem var(--space-8);
-  border-radius: var(--r-full);
-  background: var(--accent-soft);
-  color: var(--accent-ink);
-  font-size: var(--fs-xs);
-  font-weight: 500;
-  text-decoration: none;
-  white-space: nowrap;
-  transition: background var(--dur-fast) var(--ease);
-}
-
-.worklog-link:hover {
-  background: var(--surface-hover);
-  text-decoration: underline;
-}
-
-.worklog-actions {
-  display: flex;
-  gap: var(--space-8);
-  padding-top: var(--space-4);
-}
-
-/*
- * What an update would change: which record, on which board, and the status
- * move. Set apart from the body because the body describes the work while this
- * describes an edit to somebody else's workspace — the part that cannot be
- * undone from in here.
- */
-.worklog-change {
-  width: 100%;
-  margin: 0;
-  padding: var(--space-8) var(--space-8);
-  border-radius: var(--r-sm);
-  border: 1px solid var(--border);
-  background: var(--bg-sunken);
-  font-size: var(--fs-xs);
-  line-height: var(--lh-normal);
-  color: var(--text-muted);
-  overflow-wrap: anywhere;
-}
-
-.worklog-change-title {
-  color: var(--text);
-  font-weight: 500;
-}
-
-.worklog-status {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.0625rem var(--space-8);
-  border-radius: var(--r-full);
-  background: var(--surface-hover);
-  color: var(--text-muted);
-  font-size: var(--fs-xs);
-  white-space: nowrap;
-}
-
-.worklog-status[data-tone='next'] {
-  background: var(--accent-soft);
-  color: var(--accent-ink);
-  font-weight: 500;
-}
-
-/* ------------------------------------------------- the auto-scan prompt */
 
 /*
  * Sits in the flow above the terminal, the same as the error banner, and for
@@ -2643,36 +2388,6 @@ body {
   flex-shrink: 0;
 }
 
-/* Scoped rather than added to the shared control, which nothing else needs.
- *
- * `height: auto` is load-bearing, not tidying. This rule used to get its
- * smaller size purely from reduced padding, back when `.btn` declared no
- * height at all. `.btn` now sets `height: var(--control-h)` unconditionally so
- * every control draws at one height, which silently stretched these three back
- * to full size — the queue's Accept, Reject and Try again. Letting the height
- * go back to content keeps the padding above meaningful. */
-.worklog .btn[data-size='sm'] {
-  height: auto;
-  padding: 0.1875rem var(--space-8);
-  font-size: var(--fs-sm);
-}
-
-/*
- * The body expander is a text control, not a button beside other buttons, so
- * its label sits flush with the prose it expands. With the shared padding the
- * box lined up but the words did not, which read as a stray indent.
- */
-.worklog-item .btn[data-variant='ghost'][data-size='sm'] {
-  padding-inline: 0;
-  color: var(--accent-ink);
-}
-
-.worklog-item .btn[data-variant='ghost'][data-size='sm']:hover:not(:disabled) {
-  background: transparent;
-  color: var(--accent-ink);
-  text-decoration: underline;
-}
-
 /* --------------------------------------------------------------- resizer */
 
 .resizer {
@@ -2736,7 +2451,10 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   display: block;
-  line-height: var(--statusbar-h, 1.9rem);
+  /* --status-h, not --statusbar-h: the latter is defined nowhere, so this
+     silently fell back to 1.9rem — taller than the 1.625rem bar it sits in. A
+     var() naming nothing does not warn; it just takes the fallback. */
+  line-height: var(--status-h);
 }
 
 /* The dot has to stay beside its text, which a block box would drop below. */
@@ -3412,11 +3130,6 @@ body {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-8);
-}
-
-.theme-editor-chip {
-  display: flex;
-  gap: var(--space-4);
 }
 
 .theme-editor-findings {
