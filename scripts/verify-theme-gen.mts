@@ -16,7 +16,14 @@
  */
 import { BUILT_IN_THEMES, validateTheme } from '../src/shared/themes.ts'
 import { buildTheme, contrastReport, GENERATED_TOKENS } from '../src/shared/themeGen.ts'
-import { clampTint, neutralTokens, TINT_DEFAULT, TINT_MAX } from '../src/shared/ladder.ts'
+import {
+  clampPageChroma,
+  clampTint,
+  neutralTokens,
+  PAGE_CHROMA_MAX,
+  TINT_DEFAULT,
+  TINT_MAX
+} from '../src/shared/ladder.ts'
 import { format, parseNotation, NOTATIONS } from '../src/shared/notation.ts'
 import { parseColor, toOklch } from '../src/shared/color.ts'
 import type { ThemeColors } from '../src/shared/types.ts'
@@ -33,19 +40,17 @@ function ok(label: string, cond: boolean, detail = ''): void {
 }
 
 /*
- * Every hue below was RECOVERED by sweeping, not chosen: for each built-in the
- * suite that produced them tried every half-degree and took the one at which
- * all twelve neutral tokens matched. All six matched exactly, which is why
- * these are assertions rather than tolerances.
+ * The seeds are read off the themes themselves, not kept in a table here. Every
+ * built-in now carries its `seed` (the hues were RECOVERED by sweeping every
+ * half-degree for the one at which all twelve neutrals matched), which is what
+ * lets the editor duplicate a built-in — and means a theme added to
+ * BUILT_IN_THEMES without a seed fails here rather than silently going
+ * uncovered, which the old hand list would have allowed.
  */
-const SEEDS = [
-  { id: 'ember', hue: 55, accent: '#ff9552' },
-  { id: 'nocturne', hue: 253.5, accent: '#7eb2ff' },
-  { id: 'moss', hue: 146, accent: '#8fd67f' },
-  { id: 'daylight', hue: 55, accent: '#b7480a' },
-  { id: 'clay', hue: 50.5, accent: '#d97757' },
-  { id: 'paper', hue: 74.5, accent: '#c25a35' }
-]
+const SEEDS = BUILT_IN_THEMES.map((t) => {
+  if (!t.seed) throw new Error(`${t.id} has no seed; every built-in must carry one`)
+  return t.seed
+})
 
 const NEUTRALS = [
   'bg',
@@ -65,14 +70,7 @@ const NEUTRALS = [
 console.log('every built-in theme regenerates from a five-field seed')
 for (const s of SEEDS) {
   const want = BUILT_IN_THEMES.find((t) => t.id === s.id)!
-  const got = buildTheme({
-    id: s.id,
-    name: want.name,
-    appearance: want.appearance,
-    hue: s.hue,
-    tint: 1,
-    accent: s.accent
-  })
+  const got = buildTheme(s)
   const wrong = NEUTRALS.filter((k) => got.colors[k] !== want.colors[k])
   ok(
     `${want.name}: all twelve neutrals byte-identical at hue ${s.hue}`,
@@ -100,6 +98,37 @@ for (const appearance of ['dark', 'light'] as const) {
   }
 }
 
+console.log('\npage chroma 0 is exactly the historical ladder')
+for (const appearance of ['dark', 'light'] as const) {
+  for (const hue of [0, 55, 146, 253.5, 300]) {
+    check(`${appearance} hue ${hue}: pageChroma 0 === omitted`, neutralTokens(appearance, hue, 1, 0), neutralTokens(appearance, hue, 1))
+  }
+}
+check('the page chroma ceiling is per appearance', [clampPageChroma(9, 'dark'), clampPageChroma(9, 'light')], [PAGE_CHROMA_MAX.dark, PAGE_CHROMA_MAX.light])
+check('and undefined is zero, so old seeds are untouched', clampPageChroma(undefined, 'dark'), 0)
+
+console.log('\nthe page chroma actually colours the page, which the tint could not')
+{
+  const grey = buildTheme({ id: 'g', name: 'g', appearance: 'dark', hue: 200, tint: 1, accent: '#4ecdc4' })
+  const teal = buildTheme({ id: 't', name: 't', appearance: 'dark', hue: 200, tint: 1, pageChroma: 0.03, accent: '#4ecdc4' })
+  const cGrey = toOklch(parseColor(grey.colors.bg)!).c
+  const cTeal = toOklch(parseColor(teal.colors.bg)!).c
+  ok(`page chroma rises from ${cGrey.toFixed(4)} to ${cTeal.toFixed(4)} — past the 0.02 where Nord and Tokyo Night sit`, cTeal > 0.02)
+  ok('and the borders keep their floor at that chroma', contrastReport(teal.colors, 'dark').length === 0, contrastReport(teal.colors, 'dark').map((f) => `${String(f.token)} ${f.measured.toFixed(2)}`).join(' '))
+  ok('steps 6-12 are left to the tint: the text stays near-achromatic', toOklch(parseColor(teal.colors.text)!).c < 0.012)
+}
+
+console.log('\na saved seed survives hydration with its new fields')
+{
+  const teal = buildTheme({ id: 't2', name: 't2', appearance: 'dark', hue: 200, tint: 1, pageChroma: 0.03, black: true, accent: '#4ecdc4' })
+  const back = validateTheme(JSON.parse(JSON.stringify(teal)))
+  check('pageChroma comes back', back?.seed?.pageChroma, 0.03)
+  check('black comes back', back?.seed?.black, true)
+  const light = validateTheme(JSON.parse(JSON.stringify({ ...teal, appearance: 'light', seed: { ...teal.seed, appearance: 'light' } })))
+  check('black is dropped on a light theme, which has no black ladder', light?.seed?.black, undefined)
+  check('and pageChroma is clamped to the light ceiling', light?.seed?.pageChroma, PAGE_CHROMA_MAX.light)
+}
+
 console.log('\nclampTint bounds the slider rather than trusting it')
 check('above the ceiling clamps', clampTint(99), TINT_MAX)
 check('below the floor clamps', clampTint(-4), 0)
@@ -118,18 +147,24 @@ let bad: string[] = []
 for (const appearance of ['dark', 'light'] as const) {
   for (let hue = 0; hue < 360; hue += 15) {
     for (const tint of [0, 0.5, 1, 1.6, 2.0, 2.25, TINT_MAX]) {
-      const t = buildTheme({
-        id: 'sweep',
-        name: 'sweep',
-        appearance,
-        hue,
-        tint,
-        accent: '#ff9552'
-      })
-      swept++
-      const findings = contrastReport(t.colors, appearance)
-      if (findings.length)
-        bad.push(`${appearance} h${hue} t${tint}: ${findings.map((f) => f.token).join(',')}`)
+      for (const pageChroma of [0, 0.02, PAGE_CHROMA_MAX[appearance]]) {
+        for (const black of appearance === 'dark' ? [false, true] : [false]) {
+          const t = buildTheme({
+            id: 'sweep',
+            name: 'sweep',
+            appearance,
+            hue,
+            tint,
+            pageChroma,
+            black,
+            accent: '#ff9552'
+          })
+          swept++
+          const findings = contrastReport(t.colors, appearance)
+          if (findings.length)
+            bad.push(`${appearance} h${hue} t${tint} pc${pageChroma}${black ? ' black' : ''}: ${findings.map((f) => f.token).join(',')}`)
+        }
+      }
     }
   }
 }

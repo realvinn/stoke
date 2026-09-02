@@ -1638,6 +1638,16 @@ function registerIpc(): void {
      */
     const nextTheme = resolveTheme(next.themeId, next.customThemes)
     applyNativeTheme(nextTheme)
+    /*
+     * Chromium paints the window's backgroundColor wherever the renderer has
+     * not painted yet — the strip exposed by a resize, the whole window on a
+     * slow repaint — and it was set once at creation. Switching Ember to
+     * Daylight then flashed #181716 on a white app at every resize.
+     */
+    const prevTheme = resolveTheme(prev.themeId, prev.customThemes)
+    if (win && !win.isDestroyed() && nextTheme.colors.bg !== prevTheme.colors.bg) {
+      win.setBackgroundColor(nextTheme.colors.bg)
+    }
     if (isWindows && win && !win.isDestroyed()) {
       win.setTitleBarOverlay({
         color: nextTheme.colors.bgSunken,

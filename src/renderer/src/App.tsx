@@ -437,6 +437,13 @@ export function App(): React.JSX.Element {
         }))
         return
       }
+      /*
+       * The CLI's idle nudge ("Claude is waiting for your input", a minute
+       * after a reply) says what `done` already says, so it neither changes
+       * the state nor raises a second notification. Measured: it arrived 60s
+       * after every Stop and turned a quiet done dot into a warning one.
+       */
+      if (ev.kind === 'notification' && ev.notificationType === 'idle_prompt') return
       const state: SessionActivity['state'] = ev.kind === 'stop' ? 'done' : 'attention'
       const inFront = tab !== undefined && tab.id === activeTabIdRef.current
       /*
@@ -1838,6 +1845,7 @@ export function App(): React.JSX.Element {
                     fontFamily={settings?.fontFamily ?? 'monospace'}
                     fontSize={settings?.fontSize ?? 13}
                     terminal={settings?.terminal ?? TERMINAL_DEFAULTS}
+                    accent={activeProfile?.accent ?? null}
                     onOpenUrl={openUrl}
                     onRestart={restartTab}
                     onClose={closeTab}

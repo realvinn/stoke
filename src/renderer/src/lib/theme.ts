@@ -103,10 +103,24 @@ function rgba(hex: string, alpha: number): string {
  * 20/40/50% — the one control in the pane that ignored every theme's accent
  * and read the same grey on Moss, Nocturne and Daylight alike.
  */
-export function terminalTheme(theme: Theme): Record<string, string> {
+export function terminalTheme(theme: Theme, accent: string | null = null): Record<string, string> {
   const c = theme.colors
+  /*
+   * A profile recolours the chrome's accent (`applyAppearance`), so the
+   * cursor and the selection follow it too — the pane used to keep the
+   * theme's accent while the tab rule beside it changed, in the same window,
+   * unasked. Only when a profile is active; the theme's own values otherwise.
+   */
+  const fill = accent ? deriveAccent(accent, theme.appearance, c.bg).accent : null
   return {
     ...theme.terminal,
+    ...(fill
+      ? {
+          cursor: fill,
+          selectionBackground: rgba(fill, 0.28),
+          selectionInactiveBackground: rgba(fill, 0.16)
+        }
+      : {}),
     scrollbarSliderBackground: rgba(c.textFaint, 0.35),
     scrollbarSliderHoverBackground: rgba(c.textMuted, 0.5),
     scrollbarSliderActiveBackground: rgba(c.accent, 0.7),

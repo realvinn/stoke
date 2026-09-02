@@ -123,7 +123,7 @@ export const GENERATED_TOKENS = [
 export function buildTheme(seed: ThemeSeed): Theme {
   const tint = clampTint(seed.tint ?? TINT_DEFAULT)
   const accent = normaliseHex(seed.accent) ?? '#888888'
-  const n = neutralTokens(seed.appearance, seed.hue, tint)
+  const n = neutralTokens(seed.appearance, seed.hue, tint, seed.pageChroma ?? 0, seed.black === true)
 
   const base: ThemeColors = {
     bg: n.bg,

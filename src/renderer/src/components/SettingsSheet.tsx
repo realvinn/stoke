@@ -7,7 +7,7 @@ import type {
   Theme
 } from '@shared/types'
 import type { ResolvedProfile } from '@shared/profiles'
-import { BUILT_IN_THEMES } from '@shared/themes'
+import { BUILT_IN_THEMES, resolveTheme } from '@shared/themes'
 import {
   clampFontSize,
   clampTerminal,
@@ -340,40 +340,14 @@ export function SettingsSheet({
           >
             {section === 'appearance' && (
               <>
-                <div className="field">
-                  <span className="field-label">Theme</span>
-                  <div className="theme-grid">
-                    {themes.map((t) => (
-                      <button
-                        key={t.id}
-                        className="theme-swatch"
-                        aria-pressed={settings.themeId === t.id}
-                        onClick={() => onPatch({ themeId: t.id })}
-                      >
-                        <span className="theme-chips">
-                          <span className="theme-chip" style={{ background: t.colors.bg }} />
-                          <span className="theme-chip" style={{ background: t.colors.surface }} />
-                          <span className="theme-chip" style={{ background: t.colors.accent }} />
-                          <span className="theme-chip" style={{ background: t.colors.text }} />
-                        </span>
-                        <span className="theme-name">{t.name}</span>
-                      </button>
-                    ))}
-                  </div>
-                  <span className="field-hint">
-                    Themes are plain CSS custom properties. Editing
-                    <span className="mono"> customThemes</span> in
-                    <span className="mono"> settings.json</span> still works and still shows up
-                    here.
-                  </span>
-                </div>
-
                 <ThemeEditor
                   settings={settings}
                   allThemes={themes}
                   onPatch={onPatch}
                   onPreviewTheme={onPreviewTheme}
                 />
+
+                <ClaudeThemeToggle appearance={resolveTheme(settings.themeId, settings.customThemes).appearance} />
 
                 <div className="field">
                   <span className="field-label">Interface scale</span>
@@ -862,5 +836,75 @@ function TerminalSettingsPane({
         <output className="mono">{t.padding}px</output>
       </label>
     </>
+  )
+}
+
+/**
+ * "Draw Claude Code in this theme's colours."
+ *
+ * Only the CLI's two `-ansi` themes consume Stoke's sixteen terminal slots;
+ * its other four hardcode truecolor and ignore the palette entirely (gotcha
+ * 42), which is why picking a theme here used to leave Claude's own panels a
+ * neutral grey over a tinted page. The control that sets the CLI's theme lived
+ * three sections away and nobody picking a theme found it. This is that one
+ * key, as a checkbox, next to the thing it belongs to; the full vocabulary
+ * stays in the Claude Code section.
+ */
+function ClaudeThemeToggle({ appearance }: { appearance: 'dark' | 'light' }): React.JSX.Element | null {
+  const [value, setValue] = useState<string | null | undefined>(undefined)
+  const [error, setError] = useState<string | null>(null)
+  const wanted = appearance === 'light' ? 'light-ansi' : 'dark-ansi'
+
+  useEffect(() => {
+    let live = true
+    void window.stoke.claudeConfig.read().then((state) => {
+      if (!live) return
+      const v = state.values.theme
+      setValue(typeof v === 'string' ? v : null)
+    })
+    return () => {
+      live = false
+    }
+  }, [])
+
+  /*
+   * Follow the theme's side: a box ticked under a dark theme means dark-ansi,
+   * and switching to a light theme must move it to light-ansi rather than
+   * leave the CLI painting a dark palette on a light page.
+   */
+  const on = value === 'dark-ansi' || value === 'light-ansi'
+  useEffect(() => {
+    if (!on || value === wanted) return
+    void window.stoke.claudeConfig.set('theme', wanted).then((r) => {
+      if (r.ok) setValue(wanted)
+    })
+  }, [on, value, wanted])
+
+  if (value === undefined) return null
+
+  const toggle = async (checked: boolean): Promise<void> => {
+    setError(null)
+    const r = await window.stoke.claudeConfig.set('theme', checked ? wanted : 'auto')
+    if (r.ok) setValue(checked ? wanted : 'auto')
+    else setError(r.error ?? 'Could not write ~/.claude/settings.json.')
+  }
+
+  return (
+    <label className="check-row">
+      <input type="checkbox" checked={on} onChange={(e) => void toggle(e.target.checked)} />
+      <span>
+        <span className="field-label">Draw Claude Code in this theme&rsquo;s colours</span>
+        <span className="field-hint">
+          Uses the sixteen terminal colours above for Claude&rsquo;s own prompt box and panels, for
+          every new session. Off, Claude picks its own greys and only follows light or dark.
+          {error && (
+            <>
+              {' '}
+              <span data-tone="danger">{error}</span>
+            </>
+          )}
+        </span>
+      </span>
+    </label>
   )
 }

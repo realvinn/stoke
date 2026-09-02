@@ -83,6 +83,20 @@ const RAMP: Record<Appearance, { from: number; span: number }> = {
 }
 
 /**
+ * Where a `black` dark ladder starts instead: step 1 within a few units of
+ * true black (#040303), so on an OLED panel the chrome all but disappears and
+ * the terminal card is the only lit surface. Not L 0 exactly: APCA soft-clamps
+ * the darkest greys, and against a #010101 page the subtle border measured
+ * Lc 0.00 by the repo's own maths — a hairline nobody could see. 0.10 is the
+ * lowest start at which `borderSubtle` clears the Lc 9.5 floor verify:color
+ * holds it to, swept across hues. The span is stretched so step 8 lands where
+ * it always does; the ramp stays even, and the two border rungs are re-solved
+ * against the darker page by the guards in `neutralLadder`. Overriding `bg` by
+ * hand was the first attempt, and it broke that evenness.
+ */
+const BLACK_FROM = 0.1
+
+/**
  * Chroma per step for a NEUTRAL scale, rising through the mid steps.
  *
  * The profile is Radix sand's: almost achromatic at the page, a little more
@@ -140,6 +154,34 @@ export function clampTint(v: number): number {
 }
 
 /**
+ * A floor on the chroma of steps 1-5 — the page and its panels — independent
+ * of the tint multiplier above.
+ *
+ * The tint cannot make a theme look different, and that is measurable rather
+ * than taste: its ceiling is set by the border floor, and at that ceiling the
+ * page lands at C 0.006-0.008, which is under this repo's own 0.04 "same
+ * colour" threshold against Ember. Meanwhile the dark themes people actually
+ * recognise sit far above it — measured in OKLCH, Nord's page is C 0.023,
+ * Dracula 0.022, Tokyo Night 0.021, Catppuccin Mocha 0.030, Rosé Pine 0.026,
+ * Solarized 0.049. So the tint reaches the borders and the text, where the
+ * contrast budget is spent, and the page needs a control of its own.
+ *
+ * Steps 6-12 are left to the tint alone. The border and text rungs are solved
+ * against step 4, which this DOES move, so the three text rungs and the
+ * semantic colours re-solve against the painted page; the two border rungs are
+ * held to their Lc 15 floor by `verify:theme-gen`'s sweep, which is what set
+ * the ceilings: dark 0.045 keeps `border` at Lc 15.2-15.3 across every hue,
+ * and light is capped far lower because ladder.ts calibrates C 0.020 at L* 96
+ * as already cream.
+ */
+export const PAGE_CHROMA_MAX: Record<Appearance, number> = { dark: 0.045, light: 0.015 }
+
+export function clampPageChroma(v: number | undefined, appearance: Appearance): number {
+  if (v === undefined || !Number.isFinite(v)) return 0
+  return Math.min(PAGE_CHROMA_MAX[appearance], Math.max(0, v))
+}
+
+/**
  * What the three text rungs have to clear, and against WHICH ground.
  *
  * Two decisions here, both learned the hard way.
@@ -163,6 +205,11 @@ export function clampTint(v: number): number {
  * every dark theme where it is while dragging the light one up to match.
  */
 const TEXT_WCAG = { faint: 4.5, muted: 6.0, strong: 10.0 } as const
+
+/** APCA's discernibility floor for a divider or a ring; what `border` is held to. */
+const BORDER_LC = 15
+/** What `borderSubtle` is held to: the separator step, quieter than a control's edge. */
+const BORDER_SUBTLE_LC = 9.5
 
 export interface Ladder {
   /** Steps 1..12, as hex. Index 0 is step 1. */
@@ -221,15 +268,51 @@ function solve(ok: (l: number) => boolean, ground: Rgb, away: 1 | -1): number {
  * and `--text` become. Only step 9 is interpolated: on a chromatic scale it is
  * the brand colour, and a neutral scale has no real use for it.
  */
-export function neutralLadder(appearance: Appearance, hue: number, tint = TINT_DEFAULT): Ladder {
-  const { from, span } = RAMP[appearance]
+export function neutralLadder(
+  appearance: Appearance,
+  hue: number,
+  tint = TINT_DEFAULT,
+  pageChroma = 0,
+  black = false
+): Ladder {
+  const from = appearance === 'dark' && black ? BLACK_FROM : RAMP[appearance].from
+  // Step 8 stays put, so a black ladder is steeper rather than shifted.
+  const span = appearance === 'dark' && black ? RAMP.dark.from + RAMP.dark.span - BLACK_FROM : RAMP[appearance].span
   const away: 1 | -1 = appearance === 'dark' ? 1 : -1
   const k = clampTint(tint)
+  const pc = clampPageChroma(pageChroma, appearance)
   const inkLow = INK_CHROMA.low * k
   const inkHigh = INK_CHROMA.high * k
 
+  // Steps 1-5 carry at least the page chroma; `at()` clamps to what sRGB can
+  // hold at each lightness, so a dark page asks for less than it is given.
+  const chromaAt = (i: number): number => (i < 5 ? Math.max(NEUTRAL_CHROMA[i] * k, pc) : NEUTRAL_CHROMA[i] * k)
+
   const rungs = Array.from({ length: 8 }, (_, i) => from + (span * i) / 7)
-  const steps: Oklch[] = rungs.map((l, i) => ({ l, c: NEUTRAL_CHROMA[i] * k, h: hue }))
+  const steps: Oklch[] = rungs.map((l, i) => ({ l, c: chromaAt(i), h: hue }))
+
+  /*
+   * The border floor, held by construction rather than by a swept ceiling.
+   *
+   * `RAMP`'s span is the smallest that clears APCA Lc 15 for step 7 against
+   * the page at tint 1 and no page chroma. Any chroma on the page or the
+   * border costs a little contrast, and at particular hues 8-bit rounding
+   * drops step 7 to Lc 14.9 — the same cliff `RAMP`'s comment records. Rather
+   * than lower the ceilings until a 5-degree sweep happens to pass, step 7 is
+   * moved outward until it clears, and step 8 keeps its one-rung lead. At the
+   * historical seed (tint 1, page chroma 0) the rung already clears, so the
+   * `max` leaves every shipped theme byte-identical; `verify:theme-gen` pins
+   * that, and sweeps every hue, tint and page chroma for the floor.
+   */
+  const page = at(rungs[1], chromaAt(1), hue)
+  const need6 = solveLc(BORDER_SUBTLE_LC, page, hue, chromaAt(5), away)
+  if (away === 1 ? need6 > steps[5].l : need6 < steps[5].l) steps[5].l = need6
+  const need7 = solveLc(BORDER_LC, page, hue, chromaAt(6), away)
+  if (away === 1 ? need7 > steps[6].l : need7 < steps[6].l) {
+    const lead = rungs[7] - rungs[6]
+    steps[6].l = need7
+    steps[7].l = Math.min(1, Math.max(0, need7 + lead))
+  }
 
   /*
    * Step 4 is the hardest ground for text in BOTH appearances -- see
@@ -238,9 +321,10 @@ export function neutralLadder(appearance: Appearance, hue: number, tint = TINT_D
    * be painted. Solving against the untinted step 4 would leave the ratios
    * nominally correct and measurably wrong at any tint but 1, which is the
    * same class of error as TEXT_WCAG's own note about solving against the page
-   * instead of the binding ground.
+   * instead of the binding ground. The same expression as `steps`, so a page
+   * chroma moves this ground too.
    */
-  const hardest = at(rungs[3], NEUTRAL_CHROMA[3] * k, hue)
+  const hardest = at(rungs[3], chromaAt(3), hue)
   const l10 = solveWcag(TEXT_WCAG.faint, hardest, hue, inkLow, away)
   const l11 = solveWcag(TEXT_WCAG.muted, hardest, hue, inkLow, away)
   const l12 = solveWcag(TEXT_WCAG.strong, hardest, hue, inkHigh, away)
@@ -346,9 +430,11 @@ const STEP_FOR: Record<Appearance, Record<string, number>> = {
 export function neutralTokens(
   appearance: Appearance,
   hue: number,
-  tint = TINT_DEFAULT
+  tint = TINT_DEFAULT,
+  pageChroma = 0,
+  black = false
 ): Record<string, string> {
-  const ladder = neutralLadder(appearance, hue, tint)
+  const ladder = neutralLadder(appearance, hue, tint, pageChroma, black)
   const out: Record<string, string> = {}
   for (const [token, step] of Object.entries(STEP_FOR[appearance])) {
     out[token] = ladder.steps[step - 1]
@@ -469,7 +555,16 @@ export function terminalPalette(
   // 0.45, not 0.4: at 0.4 a dark theme's brightBlack measured 2.79:1, under the
   // 3.2 floor verify:color pins it at. It is the 'dim/comment' slot, so it is
   // allowed to be quiet -- but not to slip below where it already was.
-  out.brightBlack = appearance === 'dark' ? rung(0.45) : rung(0.3)
+  /*
+   * ...and never under the dim-text floor verify:color holds it to. On the
+   * warm-grey ladders rung(0.45) clears 3.2:1 on its own, so this changes
+   * nothing they ship; on a `black` ladder the page is at L 0 and the same
+   * fraction lands at 2.3:1, so the slot is pushed out to the floor instead.
+   */
+  const dimFloor = toHex(at(solveWcag(BRIGHT_BLACK_WCAG, bg, greyHue, 0.008, away), 0.008, greyHue))
+  const dimRung = appearance === 'dark' ? rung(0.45) : rung(0.3)
+  out.brightBlack =
+    contrastRatio(parseHexOrThrow(dimRung), bg) >= BRIGHT_BLACK_WCAG ? dimRung : dimFloor
   out.white = appearance === 'dark' ? rung(0.72) : rung(0.62)
   out.brightWhite = rung(1)
   return out
@@ -483,6 +578,9 @@ export function terminalPalette(
  * here is the 1.10:1 this palette used to ship.
  */
 const GREY_FLOOR = 3
+
+/** The least `brightBlack` — the dim/comment slot — may contrast with the page. */
+const BRIGHT_BLACK_WCAG = 3.2
 
 /** Local, because color.ts's parseColor is nullable and this file needs a value. */
 function parseHexOrThrow(hex: string): Rgb {

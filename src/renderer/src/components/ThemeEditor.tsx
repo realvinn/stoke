@@ -1,9 +1,9 @@
 /**
- * The custom theme editor.
+ * The theme picker and the custom theme editor.
  *
- * It edits a five-field SEED, not forty-three colours, and that is the design
- * rather than a simplification. `themes.ts` has always said every value is
- * generated from one hue plus one accent; what was missing was any way to
+ * The editor edits a five-field SEED, not forty-three colours, and that is the
+ * design rather than a simplification. `themes.ts` has always said every value
+ * is generated from one hue plus one accent; what was missing was any way to
  * supply them (see `themeGen.ts` on the generator that the repo documented and
  * did not contain). Handing someone forty-three colour fields would have been
  * the other thing gotcha 43 forbids -- the hand-picked palette it replaced
@@ -13,31 +13,36 @@
  * override for when someone means it, plus a contrast report that says what an
  * override cost. Refuse nothing, hide nothing.
  *
+ * The picker lives here too, because "duplicate this one" is the way most
+ * custom themes start and the card is where that button belongs. Each card is
+ * a small window drawn from the theme -- title bar, sidebar, page, an accent
+ * tab rule, the sixteen ANSI dots and an "Aa" -- rather than four chips, since
+ * the neutrals of every dark theme are within a few units of each other and
+ * four chips could not show a difference the themes actually have.
+ *
  * The preview is the whole window, not a swatch grid. Every rule in `app.css`
  * reads its colour from a custom property on `:root`, so the truest preview
- * available is simply to apply the draft -- the sidebar, the tab strip, the
- * status bar and this dialog all repaint together, which is the only way to see
- * that a border has gone invisible against a hovered row. It is applied through
- * `App`'s existing single writer rather than painted here; see `onPreviewTheme`
- * in `App.tsx` for why that rule is worth the extra prop.
+ * available is simply to apply the draft. It is applied through `App`'s
+ * existing single writer rather than painted here; see `onPreviewTheme` in
+ * `App.tsx` for why that rule is worth the extra prop.
  */
 import { useEffect, useMemo, useState } from 'react'
 import type { Settings, Theme, ThemeColors, ThemeSeed } from '@shared/types'
 import { buildTheme, contrastReport, GENERATED_TOKENS } from '@shared/themeGen'
-import { TINT_MAX, TINT_MIN } from '@shared/ladder'
+import { PAGE_CHROMA_MAX, TINT_MAX, TINT_MIN } from '@shared/ladder'
+import { DEFAULT_THEME_ID } from '@shared/themes'
 import { ColorField } from './ColorField'
+import { IconCheck, IconCopy } from './Icons'
 import { NOTATIONS, type Notation } from '@shared/notation'
 
 /**
  * A seed for a theme that has none.
  *
- * Every built-in predates the seed field, and a custom theme written by hand
- * into `settings.json` never had one either. Rather than refuse to open those,
- * the editor starts from a seed whose accent and appearance are taken from the
- * theme itself, so "duplicate Ember and make it bluer" works on a theme that
- * knows nothing about hues. The neutrals will not round-trip exactly -- that is
- * stated in the UI rather than hidden, because a silent near-miss is worse than
- * a named one.
+ * Every built-in carries its seed now, so this only ever fires for a custom
+ * theme written by hand into `settings.json` before the editor existed. Rather
+ * than refuse to open it, the editor starts from a seed whose accent and
+ * appearance are taken from the theme itself. The neutrals will not round-trip
+ * exactly, and the editor says so rather than hiding it.
  */
 function seedFrom(theme: Theme): ThemeSeed {
   return (
@@ -59,6 +64,92 @@ function freshId(name: string, taken: Set<string>): string {
   for (let i = 2; ; i++) if (!taken.has(`${base}-${i}`)) return `${base}-${i}`
 }
 
+const ANSI = [
+  'red',
+  'green',
+  'yellow',
+  'blue',
+  'magenta',
+  'cyan',
+  'brightRed',
+  'brightGreen',
+  'brightYellow',
+  'brightBlue',
+  'brightMagenta',
+  'brightCyan'
+] as const
+
+/** One theme as a small window. */
+function ThemeCard({
+  theme,
+  active,
+  custom,
+  onSelect,
+  onDuplicate,
+  onEdit,
+  onDelete
+}: {
+  theme: Theme
+  active: boolean
+  custom: boolean
+  onSelect: () => void
+  onDuplicate: () => void
+  onEdit?: () => void
+  onDelete?: () => void
+}): React.JSX.Element {
+  const c = theme.colors
+  const t = theme.terminal
+  return (
+    <div className="theme-card" data-active={active || undefined}>
+      <button className="theme-card-pick" aria-pressed={active} onClick={onSelect} title={`Use ${theme.name}`}>
+        <span className="theme-card-window" aria-hidden="true" style={{ background: c.bg }}>
+          <span className="tc-titlebar" style={{ background: c.bgSunken }}>
+            <span className="tc-tab" style={{ background: c.bg, borderTopColor: c.accent }} />
+          </span>
+          <span className="tc-body">
+            <span className="tc-side" style={{ background: c.bgSunken, borderRightColor: c.border }}>
+              <span className="tc-chip" style={{ background: c.accent }} />
+              <span className="tc-line" style={{ background: c.textMuted }} />
+              <span className="tc-line" style={{ background: c.textFaint, width: '60%' }} />
+            </span>
+            <span className="tc-page">
+              <span className="tc-aa" style={{ color: c.text }}>
+                Aa
+              </span>
+              <span className="tc-ansi">
+                {ANSI.map((slot) => (
+                  <span key={slot} style={{ background: t[slot] }} />
+                ))}
+              </span>
+            </span>
+          </span>
+        </span>
+        <span className="theme-card-name">
+          {theme.name}
+          {custom && <span className="theme-card-tag">yours</span>}
+          {active && <IconCheck className="theme-card-check" />}
+        </span>
+      </button>
+      <span className="theme-card-actions">
+        <button className="icon-btn" data-size="sm" onClick={onDuplicate} title={`Duplicate ${theme.name} and edit the copy`}>
+          <IconCopy />
+          <span className="sr-only">Duplicate {theme.name}</span>
+        </button>
+        {onEdit && (
+          <button className="btn" data-size="sm" onClick={onEdit}>
+            Edit
+          </button>
+        )}
+        {onDelete && (
+          <button className="btn" data-size="sm" data-variant="danger" onClick={onDelete}>
+            Delete
+          </button>
+        )}
+      </span>
+    </div>
+  )
+}
+
 interface Props {
   settings: Settings
   /** Built-ins plus customs, so ids can be kept unique across both. */
@@ -74,9 +165,13 @@ export function ThemeEditor({
   onPreviewTheme
 }: Props): React.JSX.Element {
   const [seed, setSeed] = useState<ThemeSeed | null>(null)
+  /** Whether the seed being edited had no seed of its own, so the sliders are a guess. */
+  const [guessed, setGuessed] = useState(false)
   const [notation, setNotation] = useState<Notation>('oklch')
   /** Which generated token has its colour field open. One at a time. */
   const [openToken, setOpenToken] = useState<keyof ThemeColors | null>(null)
+  /** The custom theme whose Delete is awaiting a second press. */
+  const [confirming, setConfirming] = useState<string | null>(null)
 
   const draft = useMemo(() => (seed ? buildTheme(seed) : null), [seed])
   const findings = useMemo(
@@ -101,13 +196,14 @@ export function ThemeEditor({
   const customs = settings.customThemes ?? []
   const taken = new Set(allThemes.map((t) => t.id))
 
-  const start = (from: Theme): void => {
+  /** Open the editor on a theme: in place for a custom, as a fresh copy for a built-in. */
+  const start = (from: Theme, copy: boolean): void => {
     const base = seedFrom(from)
-    const editing = from.seed && !from.builtIn
+    setGuessed(!from.seed)
     setSeed(
-      editing
-        ? base
-        : { ...base, id: freshId(base.name, taken), name: base.name }
+      copy || from.builtIn
+        ? { ...base, id: freshId(`${base.name} copy`, taken), name: `${base.name} copy` }
+        : base
     )
     setOpenToken(null)
   }
@@ -121,60 +217,104 @@ export function ThemeEditor({
   }
 
   const remove = (id: string): void => {
+    setConfirming(null)
     onPatch({
       customThemes: customs.filter((t) => t.id !== id),
       // Fall back to the default rather than leaving `themeId` naming a theme
       // that is gone: `resolveTheme` would land on the default anyway, but the
       // stored value would keep pointing at nothing.
-      ...(settings.themeId === id ? { themeId: 'ember' } : {})
+      ...(settings.themeId === id ? { themeId: DEFAULT_THEME_ID } : {})
     })
   }
 
   if (!seed || !draft) {
+    const groups: { title: string; themes: Theme[] }[] = [
+      { title: 'Dark', themes: allThemes.filter((t) => t.builtIn && t.appearance === 'dark') },
+      { title: 'Light', themes: allThemes.filter((t) => t.builtIn && t.appearance === 'light') },
+      { title: 'Yours', themes: customs }
+    ]
     return (
-      <div className="field">
-        <span className="field-label">Custom themes</span>
-        <span className="field-hint">
-          A theme is one hue, one accent and a tint — every other colour is solved from those
-          against fixed contrast floors, so a theme built here cannot have unreadable text or
-          invisible borders. The whole window previews as you drag.
-        </span>
-        <div className="theme-editor-actions">
-          <button
-            className="btn"
-            onClick={() =>
-              start({
-                ...allThemes[0],
-                seed: {
-                  id: 'custom',
-                  name: 'My theme',
-                  appearance: 'dark',
-                  hue: 55,
-                  tint: 1.6,
-                  accent: '#ff9552'
-                }
-              })
-            }
-          >
-            New theme
-          </button>
-          {customs.map((t) => (
-            <span className="theme-editor-chip" key={t.id}>
-              <button className="btn" onClick={() => start(t)}>
-                Edit {t.name}
-              </button>
-              <button
-                className="btn"
-                data-danger="true"
-                onClick={() => remove(t.id)}
-                title={`Delete ${t.name}`}
-              >
-                Delete
-              </button>
-            </span>
-          ))}
+      <>
+        {groups.map(
+          (g) =>
+            g.themes.length > 0 && (
+              <div className="field" key={g.title}>
+                <span className="field-label">{g.title}</span>
+                <div className="theme-grid">
+                  {g.themes.map((t) => (
+                    <ThemeCard
+                      key={t.id}
+                      theme={t}
+                      active={settings.themeId === t.id}
+                      custom={!t.builtIn}
+                      onSelect={() => onPatch({ themeId: t.id })}
+                      onDuplicate={() => start(t, true)}
+                      onEdit={t.builtIn ? undefined : () => start(t, false)}
+                      onDelete={t.builtIn ? undefined : () => setConfirming(t.id)}
+                    />
+                  ))}
+                </div>
+                {g.title === 'Yours' && confirming && (
+                  <div className="theme-confirm">
+                    <span className="field-hint">
+                      Delete {customs.find((t) => t.id === confirming)?.name ?? confirming}? This cannot be undone.
+                    </span>
+                    <button className="btn" data-size="sm" data-variant="danger" onClick={() => remove(confirming)}>
+                      Delete
+                    </button>
+                    <button className="btn" data-size="sm" data-variant="ghost" onClick={() => setConfirming(null)}>
+                      Keep
+                    </button>
+                  </div>
+                )}
+              </div>
+            )
+        )}
+        <div className="field">
+          <span className="field-label">Make your own</span>
+          <span className="field-hint">
+            Duplicate any theme above and change it, or start fresh. A theme is a hue, a tint, a page
+            colour and an accent — every other colour is solved from those against fixed contrast
+            floors, so a theme built here cannot have unreadable text or invisible borders. The
+            whole window previews as you drag. Hand-written entries in{' '}
+            <span className="mono">customThemes</span> still load.
+          </span>
+          <div className="theme-editor-actions">
+            <button
+              className="btn"
+              onClick={() => {
+                const current = allThemes.find((t) => t.id === settings.themeId) ?? allThemes[0]
+                start(current, true)
+              }}
+            >
+              Duplicate {allThemes.find((t) => t.id === settings.themeId)?.name ?? 'current'}
+            </button>
+            <button
+              className="btn"
+              data-variant="ghost"
+              onClick={() =>
+                start(
+                  {
+                    ...allThemes[0],
+                    seed: {
+                      id: 'custom',
+                      name: 'My theme',
+                      appearance: 'dark',
+                      hue: 200,
+                      tint: 1,
+                      pageChroma: 0.02,
+                      accent: '#4ecdc4'
+                    }
+                  },
+                  true
+                )
+              }
+            >
+              Start fresh
+            </button>
+          </div>
         </div>
-      </div>
+      </>
     )
   }
 
@@ -185,10 +325,17 @@ export function ThemeEditor({
     else delete next[token]
     patch({ overrides: next })
   }
+  const pageMax = PAGE_CHROMA_MAX[seed.appearance]
 
   return (
     <div className="field theme-editor">
       <span className="field-label">Editing {seed.name}</span>
+      {guessed && (
+        <span className="field-hint" data-tone="warning">
+          This theme was written by hand, so the sliders start from a guess and the first drag
+          regenerates its neutrals.
+        </span>
+      )}
 
       <label className="theme-editor-row">
         <span>Name</span>
@@ -206,7 +353,13 @@ export function ThemeEditor({
             <button
               key={a}
               aria-pressed={seed.appearance === a}
-              onClick={() => patch({ appearance: a })}
+              onClick={() =>
+                patch({
+                  appearance: a,
+                  // The light ladder has no black start and a lower page ceiling.
+                  ...(a === 'light' ? { black: false, pageChroma: Math.min(seed.pageChroma ?? 0, PAGE_CHROMA_MAX.light) } : {})
+                })
+              }
             >
               {a}
             </button>
@@ -215,7 +368,7 @@ export function ThemeEditor({
       </div>
 
       <label className="theme-editor-row">
-        <span>Neutral hue</span>
+        <span>Hue</span>
         <input
           type="range"
           min={0}
@@ -226,6 +379,23 @@ export function ThemeEditor({
         />
         <output className="mono">{seed.hue.toFixed(1)}°</output>
       </label>
+
+      <label className="theme-editor-row">
+        <span>Page colour</span>
+        <input
+          type="range"
+          min={0}
+          max={pageMax}
+          step={0.0025}
+          value={Math.min(seed.pageChroma ?? 0, pageMax)}
+          onChange={(e) => patch({ pageChroma: Number(e.target.value) })}
+        />
+        <output className="mono">{(seed.pageChroma ?? 0).toFixed(4)}</output>
+      </label>
+      <span className="field-hint">
+        How strongly the page itself is coloured. 0 is a grey; around 0.02–0.03 is where Nord,
+        Dracula and Tokyo Night sit. The hue above decides which colour.
+      </span>
 
       <label className="theme-editor-row">
         <span>Tint</span>
@@ -240,10 +410,21 @@ export function ThemeEditor({
         <output className="mono">{seed.tint.toFixed(2)}×</output>
       </label>
       <span className="field-hint">
-        How far the greys carry the hue. At 1× — where every built-in sits — the page is
-        near-achromatic and the hue above is almost invisible, which is why Ember and Clay ship the
-        identical background. Past about 2× it starts reading as a colour.
+        How far the text and borders carry the hue. Even at the top of this range the page stays a
+        near-grey; Page colour above is what colours it.
       </span>
+
+      {seed.appearance === 'dark' && (
+        <label className="check-row">
+          <input type="checkbox" checked={seed.black === true} onChange={(e) => patch({ black: e.target.checked })} />
+          <span>
+            <span className="field-label">True black</span>
+            <span className="field-hint">
+              Start the ladder near black, for an OLED panel. Lantern and Graphite are built this way.
+            </span>
+          </span>
+        </label>
+      )}
 
       <div className="theme-editor-row">
         <span>Accent</span>

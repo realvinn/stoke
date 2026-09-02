@@ -402,6 +402,15 @@ export interface ThemeSeed {
   hue: number
   /** Multiplier on the ladder's neutral chroma. 1 is the historical value. */
   tint: number
+  /**
+   * A floor on the chroma of the page and its panels, 0 for a grey. The tint
+   * alone cannot colour the page (see PAGE_CHROMA_MAX in ladder.ts); this can.
+   * Absent means 0, so every seed written before it existed regenerates
+   * byte-identically.
+   */
+  pageChroma?: number
+  /** Dark only: start the ladder at true black rather than Stoke's warm floor. */
+  black?: boolean
   accent: string
   /** Hand-set values that escape the generated palette. */
   overrides?: Partial<Record<keyof ThemeColors, string>>
