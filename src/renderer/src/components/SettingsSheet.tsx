@@ -194,6 +194,13 @@ interface Props {
   onClose: () => void
 }
 
+/**
+ * What Tab can reach. `summary` is in the list because every disclosure in this
+ * sheet is a native <details>, and its summary is the thing that opens it.
+ */
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])'
+
 export function SettingsSheet({
   settings,
   profiles,
@@ -220,6 +227,51 @@ export function SettingsSheet({
   useEffect(() => {
     paneRef.current?.scrollTo({ top: 0 })
   }, [section])
+
+  /*
+   * Focus moves into the dialog when it opens, and Tab stays inside it.
+   *
+   * `aria-modal` is a promise to assistive technology and nothing else: it
+   * does not move focus and it does not stop Tab walking out. So the sheet
+   * opened with focus still on whatever launched it — the gear button, or the
+   * terminal — and the first Tab went into the title bar *behind* the
+   * backdrop, where the ring is invisible under a dimmed overlay and Enter
+   * activates something the user cannot see. Keyboard-only, the sheet was
+   * unreachable without first tabbing through the entire window.
+   *
+   * The selected section rather than the first focusable, so the sheet opens
+   * announcing where it is — which matters most for `initialSection`, where
+   * something else chose the section on the user's behalf.
+   */
+  const modalRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const root = modalRef.current
+    if (!root) return
+    const selected = root.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')
+    ;(selected ?? root).focus()
+  }, [])
+
+  const trapTab = (e: React.KeyboardEvent): void => {
+    if (e.key !== 'Tab') return
+    const root = modalRef.current
+    if (!root) return
+    const items = Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
+      // `offsetParent` is null for anything inside a closed <details>, which is
+      // most of the Remote and Hosts sections at any moment.
+      (el) => el.offsetParent !== null
+    )
+    if (items.length === 0) return
+    const first = items[0]
+    const last = items[items.length - 1]
+    const active = document.activeElement
+    if (!e.shiftKey && active === last) {
+      e.preventDefault()
+      first.focus()
+    } else if (e.shiftKey && (active === first || active === root)) {
+      e.preventDefault()
+      last.focus()
+    }
+  }
 
   /*
    * Offer the Host aliases the user already has rather than making them retype
@@ -278,7 +330,15 @@ export function SettingsSheet({
   return (
     <>
       <div className="backdrop" onClick={onClose} />
-      <div className="settings-modal" role="dialog" aria-modal="true" aria-label="Settings">
+      <div
+        className="settings-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Settings"
+        ref={modalRef}
+        tabIndex={-1}
+        onKeyDown={trapTab}
+      >
         <div className="settings-head">
           <h2>Settings</h2>
           <button className="icon-btn" onClick={onClose} title="Close settings (Esc)">
@@ -605,18 +665,49 @@ export function SettingsSheet({
                   {settings.hiddenProjects.length > 0 ? (
                     <>
                       <span className="field-hint">
-                        {settings.hiddenProjects.length} hidden from the sidebar.
+                        Hidden from the sidebar. Nothing on disk was touched, so showing one
+                        again brings back its whole history.
                       </span>
-                      <button className="btn" onClick={() => onPatch({ hiddenProjects: [] })}>
-                        Show them all again
-                      </button>
+                      {/*
+                        Listed, and restorable one at a time. The only control
+                        here was "Show them all again", so a user who had hidden
+                        eight folders and wanted one of them back had to unhide
+                        all eight and re-hide seven — and could not see which
+                        eight they were, since the panel stated a count and no
+                        names.
+                      */}
+                      <div className="hidden-projects">
+                        {settings.hiddenProjects.map((path) => (
+                          <div className="hidden-project" key={path}>
+                            <span className="truncate mono" title={path}>
+                              {path}
+                            </span>
+                            <button
+                              className="btn"
+                              data-variant="ghost"
+                              onClick={() =>
+                                onPatch({
+                                  hiddenProjects: settings.hiddenProjects.filter((p) => p !== path)
+                                })
+                              }
+                            >
+                              Show
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                      {settings.hiddenProjects.length > 1 && (
+                        <button className="btn" onClick={() => onPatch({ hiddenProjects: [] })}>
+                          Show them all again
+                        </button>
+                      )}
                     </>
                   ) : (
                     // Shown empty rather than hidden entirely: in a flat scroll a
                     // missing section was invisible, but in a named section the
                     // question "where did Hidden projects go" has to have an answer.
                     <span className="field-hint">
-                      None. Hide one from its right-click menu in the sidebar.
+                      None. Hide one from the menu behind a folder&rsquo;s icon in the sidebar.
                     </span>
                   )}
                 </div>

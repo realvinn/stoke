@@ -525,7 +525,7 @@ ok(
 
 console.log('\nwho a report is actually about (Task 29 review, finding 2)')
 /*
- * `lastScan` (App.tsx / WorklogPanel.tsx) is the last scan of *any* session,
+ * `lastScan` (App.tsx) is the last scan of *any* session,
  * and `AutoScanner` fires precisely on sessions that have gone idle — usually
  * not the one on screen. `report()` always names session 's1'; these compare
  * that against a *different* active session to prove the sentence says so.

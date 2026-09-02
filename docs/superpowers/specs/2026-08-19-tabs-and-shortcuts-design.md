@@ -120,6 +120,10 @@ selection modifier). Taking those chords means unpicking a rule that cost real m
 `Cmd+Shift+X` (copy mode) are taken, `K` is not, and the existing `Cmd+K` project palette is a
 different thing (projects on disk, not open tabs).
 
+> Correction, 0.9: copy mode was removed, so `Cmd+Shift+X` is free again. `⇧⌘]` / `⇧⌘[` were
+> since taken for next/previous tab, which is the cheap half of what this switcher was for.
+> Read the paragraph above as the reasoning of its day, not as the current key map.
+
 A new `TabSwitcher` component rather than an extension of `CommandPalette`: the palette ranks
 `Project` records to *start* a session, the switcher lists open `Tab`s to *reach* one, and they
 differ in what they show (live context, paused state, host) and what picking one does. They
