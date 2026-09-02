@@ -13,6 +13,7 @@
 import { connectTarget, lanAddresses } from '../src/main/remote/link.ts'
 import { exitError, installHint } from '../src/main/remote/tunnel.ts'
 import {
+  classifyHostname,
   createdAlready,
   createdId,
   originCertPath,
@@ -252,6 +253,37 @@ check(
   '0f5a6b7c-1234-4abc-9def-0123456789ab'
 )
 check('and absent when it did not say one', createdId('something else entirely'), null)
+
+console.log('\nwhat the public hostname answers, which is the only 1033 detector there is')
+/*
+ * Cloudflare serves error 1033 — "routed to a tunnel with no connections" — as
+ * HTTP 530. It is the single most useful thing this panel can report, because
+ * Stoke can produce that state by itself: `tunnel route dns` refuses to
+ * overwrite an existing record, so a hostname that ever pointed anywhere keeps
+ * pointing there while Stoke runs a different tunnel and draws a QR code for
+ * the name. Reported live as "even when it is running I'm getting 1033".
+ */
+check('530 is 1033, whatever the body says', classifyHostname(530, null, ''), 'tunnel-not-found')
+check('and the body alone is enough', classifyHostname(200, null, '<h1>Error 1033</h1>'), 'tunnel-not-found')
+check('as is the phrase Cloudflare puts above it', classifyHostname(200, null, 'Argo Tunnel error'), 'tunnel-not-found')
+/*
+ * Access is not a failure and must not be reported as success either: Stoke
+ * cannot see past the login, and 1033 is perfectly capable of waiting on the
+ * other side of it.
+ */
+check(
+  'a redirect to the Access login is its own answer',
+  classifyHostname(302, 'https://team.cloudflareaccess.com/cdn-cgi/access/login/x', ''),
+  'access'
+)
+check('an ordinary redirect is not Access', classifyHostname(302, 'https://example.com/', ''), 'ok')
+check('a 200 means something answered', classifyHostname(200, null, 'hello'), 'ok')
+/*
+ * 401 is OUR server asking for the key, so for the question "does this hostname
+ * reach this machine" it is a yes, not a failure.
+ */
+check('and a 401 is our own server asking for the key', classifyHostname(401, null, ''), 'ok')
+check('a 502 is something else again', classifyHostname(502, null, 'bad gateway'), 'other')
 
 console.log('\nwhere the login certificate lives')
 check(

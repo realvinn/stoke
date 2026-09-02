@@ -46,9 +46,11 @@ export interface CloudflareSetup {
   /** `id` is the tunnel UUID once it exists, which is worth showing. */
   create: { state: StepState; id: string | null; detail: string }
   /**
-   * Always `unknown`, and that is not laziness — see `routeIsUndetectable`.
+   * Not detectable from the record itself — see `routeIsUndetectable` — but the
+   * hostname can be ASKED, and its answer is the useful half: error 1033 means
+   * it is routed to a tunnel other than the one running.
    */
-  route: { state: StepState; detail: string }
+  route: { state: StepState; detail: string; verdict: HostnameVerdict | null }
   run: { state: StepState; detail: string }
 }
 
@@ -148,6 +150,83 @@ export function createdId(output: string): string | null {
 export const routeIsUndetectable =
   'Cloudflare does not publish a way to read this back: the record is a proxied CNAME, so DNS shows only Cloudflare addresses. Run it and read what it says.'
 
+/**
+ * What a request to the public hostname actually meets.
+ *
+ * Cloudflare serves error **1033** — "the hostname is routed to a tunnel with
+ * no connections" — as HTTP **530**, and that is the single most useful thing
+ * this panel can tell anyone: it means the DNS record points at a tunnel that
+ * is not the one running. Which is a state Stoke can produce all by itself,
+ * because `tunnel route dns` refuses to overwrite an existing record, so a
+ * hostname that has ever pointed anywhere keeps pointing there while Stoke
+ * cheerfully runs a different tunnel and draws a QR code for the name.
+ *
+ * `access` is not a failure: an Access policy in front of the hostname answers
+ * a programmatic request with a redirect to its own login, so Stoke cannot see
+ * past it. Saying "there is an Access policy here" is the honest end of the
+ * check, and notably 1033 can still be waiting on the other side of it — which
+ * is why the panel offers the remedy rather than claiming the route is fine.
+ */
+export type HostnameVerdict = 'ok' | 'tunnel-not-found' | 'access' | 'dns' | 'other'
+
+/**
+ * Pure, so the mapping can be asserted without a network. 530 is Cloudflare's
+ * status for the whole 1000-series origin errors, so the body decides which.
+ */
+export function classifyHostname(
+  status: number,
+  location: string | null,
+  body: string
+): HostnameVerdict {
+  if (status === 530 || /\berror 1033\b/i.test(body) || /argo tunnel error/i.test(body)) {
+    return 'tunnel-not-found'
+  }
+  if (status >= 300 && status < 400 && /cloudflareaccess\.com/i.test(location ?? '')) return 'access'
+  // 401 is ours: the server answered and asked for the key, which is a success
+  // for this question — something on the other end is Stoke.
+  if (status === 401 || (status >= 200 && status < 400)) return 'ok'
+  return 'other'
+}
+
+/** One line the panel can show, per verdict. */
+export function hostnameDetail(verdict: HostnameVerdict, host: string): string {
+  switch (verdict) {
+    case 'ok':
+      return `${host} reaches this machine.`
+    case 'tunnel-not-found':
+      return `${host} answers with Cloudflare error 1033, which means it is routed to a different tunnel than the one running. Replace the record below.`
+    case 'access':
+      return `${host} is behind a Cloudflare Access policy, so Stoke cannot check past the login. If your browser shows error 1033 after signing in, the record points at a different tunnel — replace it below.`
+    case 'dns':
+      return `${host} did not resolve, or nothing answered. Add the DNS record below.`
+    default:
+      return `${host} answered, but not with anything Stoke recognises.`
+  }
+}
+
+/**
+ * Ask the hostname what it is. Never throws; a failure is a verdict.
+ *
+ * `redirect: 'manual'` because the whole point is to SEE the Access redirect
+ * rather than follow it into a login page and report whatever that says.
+ */
+export async function checkHostname(host: string): Promise<HostnameVerdict> {
+  const name = host.trim()
+  if (!name) return 'dns'
+  try {
+    const res = await fetch(`https://${name}/`, {
+      redirect: 'manual',
+      signal: AbortSignal.timeout(8000),
+      headers: { 'user-agent': 'stoke-setup-check' }
+    })
+    // Only read a body when the status suggests an error page worth reading.
+    const body = res.status >= 400 ? (await res.text().catch(() => '')).slice(0, 4000) : ''
+    return classifyHostname(res.status, res.headers.get('location'), body)
+  } catch {
+    return 'dns'
+  }
+}
+
 /** The last line that looks like a reason, for a message worth reading. */
 function reasonFrom(text: string): string {
   const lines = text
@@ -195,7 +274,7 @@ export async function probeSetup(opts: {
     },
     login: { state: 'todo', certPath },
     create: { state: 'todo', id: null, detail: '' },
-    route: { state: 'unknown', detail: routeIsUndetectable },
+    route: { state: 'unknown', detail: routeIsUndetectable, verdict: null },
     run: {
       state: opts.running ? 'done' : 'todo',
       detail: opts.running ? 'Stoke is running it.' : 'Stoke runs this for you once the steps above are done.'
@@ -215,9 +294,19 @@ export async function probeSetup(opts: {
     return setup
   }
 
+  /*
+   * The hostname is asked what it is, in parallel with the account lookup —
+   * they are independent, and doing them in series doubled the wait on a panel
+   * that opens on every visit to this section.
+   */
+  const asking = opts.hostname.trim()
+    ? checkHostname(opts.hostname)
+    : Promise.resolve<HostnameVerdict | null>(null)
+
   const name = opts.tunnelName.trim()
   if (!name) {
     setup.create.detail = 'Name the tunnel first.'
+    setup.route = await routeStep(await asking, opts.hostname)
     return setup
   }
   try {
@@ -244,7 +333,30 @@ export async function probeSetup(opts: {
     setup.create.state = 'unknown'
     setup.create.detail = `Could not ask Cloudflare: ${reasonFrom(String(err))}`
   }
+  setup.route = await routeStep(await asking, opts.hostname)
   return setup
+}
+
+/**
+ * The route step, from what the hostname answered.
+ *
+ * `access` stays `unknown` rather than becoming `done`: a redirect to the
+ * Access login means Stoke could not see past it, and 1033 is perfectly capable
+ * of waiting on the other side. Claiming success there is how a panel tells you
+ * everything is fine while your phone shows an error page.
+ */
+async function routeStep(
+  verdict: HostnameVerdict | null,
+  hostname: string
+): Promise<CloudflareSetup['route']> {
+  const host = hostname.trim()
+  if (!host || verdict === null) {
+    return { state: 'todo', detail: 'Set a public hostname first.', verdict: null }
+  }
+  const detail = hostnameDetail(verdict, host)
+  const state: StepState =
+    verdict === 'ok' ? 'done' : verdict === 'tunnel-not-found' ? 'failed' : verdict === 'dns' ? 'todo' : 'unknown'
+  return { state, detail, verdict }
 }
 
 /**

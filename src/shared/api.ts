@@ -108,6 +108,13 @@ export interface ClaudeConfigWriteResult {
 export type RemoteReach = 'tunnel' | 'tailnet' | 'lan' | 'loopback'
 
 /** Combined remote-access state: local server, tunnel, and the phone link. */
+/**
+ * What the public hostname answered. `tunnel-not-found` is Cloudflare error
+ * 1033 — routed to a tunnel other than the one running — and is the single
+ * most useful thing this panel can report.
+ */
+export type HostnameVerdict = 'ok' | 'tunnel-not-found' | 'access' | 'dns' | 'other'
+
 /** One of the five setup steps; `install` and `run` are not runnable from here. */
 export type CloudflareStep = 'login' | 'create' | 'route'
 
@@ -122,7 +129,7 @@ export interface CloudflareSetup {
   install: { state: CloudflareStepState; path: string | null; hint: string }
   login: { state: CloudflareStepState; certPath: string }
   create: { state: CloudflareStepState; id: string | null; detail: string }
-  route: { state: CloudflareStepState; detail: string }
+  route: { state: CloudflareStepState; detail: string; verdict: HostnameVerdict | null }
   run: { state: CloudflareStepState; detail: string }
 }
 

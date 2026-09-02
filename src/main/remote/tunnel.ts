@@ -190,7 +190,22 @@ export class TunnelManager {
 
       proc.stdout?.on('data', absorb)
       proc.stderr?.on('data', absorb)
+      /*
+       * Both handlers refuse to speak for a process that is no longer the
+       * current one, and that guard is load-bearing rather than defensive.
+       *
+       * cloudflared does a GRACEFUL shutdown on SIGTERM — it drains its edge
+       * connections, which takes up to its grace period — so restarting the
+       * tunnel leaves the old process alive for a while beside the new one.
+       * Without this check the old one's `exit`, arriving half a minute later,
+       * set `this.proc = null` on the process that had replaced it: the panel
+       * then said "not running" while cloudflared was still running, `stop()`
+       * had nothing left to kill, and the tunnel became an orphan nothing in
+       * Stoke could reach. Measured — two live `cloudflared … run stoke`
+       * processes 25s apart, both parented to the same app.
+       */
       proc.on('error', (err: NodeJS.ErrnoException) => {
+        if (this.proc !== proc) return
         this.error =
           err.code === 'ENOENT'
             ? `cloudflared is not installed, or not on PATH. ${installHint()}`
@@ -199,6 +214,7 @@ export class TunnelManager {
         this.mode = null
       })
       proc.on('exit', (code) => {
+        if (this.proc !== proc) return
         if (code !== 0 && code !== null) this.error = exitError(code, this.log)
         this.proc = null
         this.mode = null
@@ -211,9 +227,26 @@ export class TunnelManager {
   }
 
   stop(): void {
-    if (this.proc && !this.proc.killed) {
+    const proc = this.proc
+    if (proc && !proc.killed) {
       try {
-        this.proc.kill()
+        proc.kill()
+        /*
+         * And SIGKILL if it is still there shortly after. SIGTERM asks
+         * cloudflared to drain its edge connections gracefully, which is right
+         * when quitting and wrong when restarting: for the length of that
+         * drain TWO connectors serve the same tunnel, Cloudflare balances
+         * requests across both, and pressing Run twice stacks a third. The
+         * timer is unref'd so it can never hold the app open at quit.
+         */
+        const force = setTimeout(() => {
+          try {
+            if (!proc.exitCode && proc.exitCode !== 0) proc.kill('SIGKILL')
+          } catch {
+            /* already gone */
+          }
+        }, 4000)
+        force.unref?.()
       } catch {
         /* already gone */
       }

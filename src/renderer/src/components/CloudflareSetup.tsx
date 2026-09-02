@@ -3,6 +3,14 @@ import type { CloudflareSetup as Setup, CloudflareStepState, StepResult } from '
 import { IconCopy } from './Icons'
 
 /**
+ * Said once, in the step it is about. `tunnel route` has no way to read a
+ * record back — it is a proxied CNAME, so public DNS shows only Cloudflare's
+ * own addresses — which is why the step asks the hostname what it answers.
+ */
+const ROUTE_NOTE =
+  'Cloudflare publishes no way to read this record back, so Stoke asks the hostname what it answers instead.'
+
+/**
  * Setting up a Cloudflare Tunnel, one step at a time.
  *
  * This replaces a box that printed four commands and left you to it. That is
@@ -73,14 +81,28 @@ function Step({
   children?: React.ReactNode
 }): React.JSX.Element {
   const pill = PILL[state]
+  /*
+   * Open once, from the state this step had when it first rendered, and never
+   * from `state` again.
+   *
+   * Deriving `open` from the live state is what made the panel "reset you":
+   * every probe rewrote it, so opening the section showed five expanded steps
+   * that all slammed shut a second later when the first answer landed, and
+   * running a step collapsed it under you at the exact moment its output
+   * appeared. Measured: `true,true,true,true,false` immediately after opening
+   * the section, `false,false,false,true,false` once the probe returned.
+   *
+   * The parent renders nothing until the first probe has landed, so this seed
+   * is a real answer rather than "unknown". After that the disclosure belongs
+   * to whoever clicked it.
+   */
+  const [open, setOpen] = useState(state !== 'done')
   return (
-    /*
-     * Open unless it is settled. A native <details> rather than a useState, for
-     * FieldHint's reasons: keyboard-operable, announced, and Cmd+F finds text
-     * inside a closed one. Uncontrolled, so opening a finished step to re-read
-     * it does not fight the component.
-     */
-    <details className="settings-item" open={state !== 'done' || undefined}>
+    <details
+      className="settings-item"
+      open={open}
+      onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}
+    >
       <summary className="settings-item-summary">
         <span className="settings-item-name">
           {n} · {title}
@@ -133,6 +155,20 @@ export function CloudflareSetup({
 
   const name = tunnelName.trim() || 'stoke'
   const host = hostname.trim()
+
+  /*
+   * Nothing until the first probe lands. Rendering the steps against a null
+   * setup would seed every disclosure from "unknown" — which is the state that
+   * used to make all five open and then collapse together a second later.
+   */
+  if (!setup) {
+    return (
+      <div className="field">
+        <span className="field-label">Set it up, step by step</span>
+        <span className="field-hint">Checking what is already done…</span>
+      </div>
+    )
+  }
   const loginResult = result.login
   const createResult = result.create
   const routeResult = result.route
@@ -173,10 +209,10 @@ export function CloudflareSetup({
       <Step
         n={1}
         title="Install cloudflared"
-        state={setup?.install.state ?? 'unknown'}
-        detail={setup?.install.path ?? 'Not found on this machine.'}
+        state={setup.install.state}
+        detail={setup.install.path ?? 'Not found on this machine.'}
       >
-        {setup?.install.state === 'done' ? (
+        {setup.install.state === 'done' ? (
           <span className="field-hint">
             Found at <span className="mono">{setup.install.path}</span>.
           </span>
@@ -186,7 +222,7 @@ export function CloudflareSetup({
               Stoke cannot install this for you — it is a system package. Run this, then press Check
               again.
             </span>
-            <Command text={setup?.install.hint ?? 'brew install cloudflared'} />
+            <Command text={setup.install.hint} />
           </>
         )}
       </Step>
@@ -194,14 +230,14 @@ export function CloudflareSetup({
       <Step
         n={2}
         title="Log in to Cloudflare"
-        state={setup?.login.state ?? 'unknown'}
+        state={setup.login.state}
         detail={
-          setup?.login.state === 'done'
+          setup.login.state === 'done'
             ? 'Signed in on this machine.'
             : 'Needs a browser, once.'
         }
       >
-        {setup?.login.state === 'done' ? (
+        {setup.login.state === 'done' ? (
           <span className="field-hint">
             The certificate is at <span className="mono">{setup.login.certPath}</span>. Delete it to
             sign in as somebody else.
@@ -216,7 +252,7 @@ export function CloudflareSetup({
               <button
                 className="btn"
                 data-variant="primary"
-                disabled={step !== null || setup?.install.state !== 'done'}
+                disabled={step !== null || setup.install.state !== 'done'}
                 onClick={() => void act('login')}
               >
                 {step === 'login' ? 'Waiting for your browser…' : 'Log in'}
@@ -234,10 +270,10 @@ export function CloudflareSetup({
       <Step
         n={3}
         title="Create the tunnel"
-        state={setup?.create.state ?? 'unknown'}
-        detail={setup?.create.detail ?? ''}
+        state={setup.create.state}
+        detail={setup.create.detail}
       >
-        {setup?.create.state === 'done' ? (
+        {setup.create.state === 'done' ? (
           <span className="field-hint">
             Tunnel <span className="mono">{name}</span>
             {setup.create.id && (
@@ -251,7 +287,7 @@ export function CloudflareSetup({
         ) : (
           <>
             <span className="field-hint">
-              {setup?.create.state === 'unknown'
+              {setup.create.state === 'unknown'
                 ? 'Cloudflare could not be asked, so this may already exist. Creating a duplicate name fails harmlessly and is treated as done.'
                 : `Creates a tunnel named ${name} in your account and writes its credentials here.`}
             </span>
@@ -259,7 +295,7 @@ export function CloudflareSetup({
               <button
                 className="btn"
                 data-variant="primary"
-                disabled={step !== null || setup?.login.state !== 'done'}
+                disabled={step !== null || setup.login.state !== 'done'}
                 onClick={() => void act('create')}
               >
                 {step === 'create' ? 'Creating…' : `Create ${name}`}
@@ -274,32 +310,39 @@ export function CloudflareSetup({
       <Step
         n={4}
         title="Point your hostname at it"
-        state={routeResult ? (routeResult.ok ? 'done' : 'failed') : 'unknown'}
-        detail={host ? `${host} → ${name}` : 'Set a public hostname above first.'}
+        state={routeResult ? (routeResult.ok ? 'done' : 'failed') : setup.route.state}
+        detail={host ? setup.route.detail : 'Set a public hostname above first.'}
       >
-        <span className="field-hint">
-          {setup?.route.detail ?? ''} Running it twice is safe.
-        </span>
+        <span className="field-hint">{ROUTE_NOTE} Running it twice is safe.</span>
         <div className="btn-row">
           <button
             className="btn"
             data-variant="primary"
-            disabled={step !== null || !host || setup?.create.state === 'todo'}
+            disabled={step !== null || !host || setup.create.state === 'todo'}
             onClick={() => void act('route')}
             title={host ? undefined : 'Set a public hostname above first'}
           >
             {step === 'route' ? 'Routing…' : 'Add the DNS record'}
           </button>
-          {routeClash && (
-            <button
-              className="btn"
-              disabled={step !== null}
-              onClick={() => void act('route', { overwriteDns: true })}
-              title="Repoints an existing record at this tunnel. Anything currently answering on that hostname stops."
-            >
-              Replace the existing record
-            </button>
-          )}
+          {/*
+            Always offered, not only after a failure. A hostname that has ever
+            pointed anywhere already has a record, so `route dns` refuses — and
+            the result is the tunnel running happily while the name still
+            reaches whatever it used to, which is error 1033 on the phone. The
+            remedy has to be reachable on the first attempt, because that is
+            exactly when it is needed.
+          */}
+          <button
+            className="btn"
+            data-variant={
+              routeClash || setup.route.verdict === 'tunnel-not-found' ? 'primary' : undefined
+            }
+            disabled={step !== null || !host}
+            onClick={() => void act('route', { overwriteDns: true })}
+            title="Repoints an existing record at this tunnel. Anything currently answering on that hostname stops."
+          >
+            Replace the existing record
+          </button>
         </div>
         <Command text={`cloudflared tunnel route dns ${name} ${host || 'code.example.com'}`} />
         {outcome(routeResult)}
