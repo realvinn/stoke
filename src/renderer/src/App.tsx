@@ -40,7 +40,7 @@ import { profileIdForCwd } from './lib/projectProfile'
 import { fromStored, screensFrom, toStored } from './lib/restore'
 import { screenOf } from './lib/termRegistry'
 import { moveTab, neighbourOf, relaunchPlan, replaceOrAppend, restartPlan } from './lib/tabs'
-import { applyAppearance, applyTypography } from './lib/theme'
+import { applyAppearance, applyTypography, applyWallpaper } from './lib/theme'
 import type { SessionActivity, Tab } from './types'
 
 const EMPTY_BROWSER: BrowserState = {
@@ -656,6 +656,15 @@ export function App(): React.JSX.Element {
   useEffect(() => {
     applyAppearance(theme, activeProfile)
   }, [theme, activeProfile])
+
+  const wallpaper = settings?.wallpaper ?? null
+  useEffect(() => {
+    if (!wallpaper) return
+    applyWallpaper(wallpaper, wallpaper.path ? window.stoke.wallpaper.url(wallpaper.path) : null)
+  }, [wallpaper])
+  // The canvas is fully see-through over its card while a wallpaper is set;
+  // the card carries the tint (see app.css's wallpaper block).
+  const termAlpha = wallpaper?.path ? 0 : 1
 
   /*
    * The active tab decides the profile: colour and filter both follow it.
@@ -1846,6 +1855,7 @@ export function App(): React.JSX.Element {
                     fontSize={settings?.fontSize ?? 13}
                     terminal={settings?.terminal ?? TERMINAL_DEFAULTS}
                     accent={activeProfile?.accent ?? null}
+                    alpha={termAlpha}
                     onOpenUrl={openUrl}
                     onRestart={restartTab}
                     onClose={closeTab}

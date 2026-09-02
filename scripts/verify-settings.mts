@@ -7,6 +7,7 @@
  *   node scripts/verify-settings.mts
  */
 import { DEFAULT_SETTINGS, hydrateSettings } from '../src/main/settingsSchema.ts'
+import { wallpaperFileFor } from '../src/main/wallpaper.ts'
 import { DEFAULT_WORKLOG_BOARDS } from '../src/shared/worklog.ts'
 import { nextBoards } from '../src/renderer/src/lib/worklogBoards.ts'
 import type { WorklogTarget } from '../src/shared/types.ts'
@@ -129,6 +130,26 @@ check('a bold weight that is not 600 or 700 falls back', hydrateSettings({ termi
 check('a contrast boost outside the three offered falls back', hydrateSettings({ terminal: { contrastBoost: 3 } }).terminal.contrastBoost, 1)
 check('padding is bounded and whole', [hydrateSettings({ terminal: { padding: -4 } }).terminal.padding, hydrateSettings({ terminal: { padding: 99 } }).terminal.padding, hydrateSettings({ terminal: { padding: 7.6 } }).terminal.padding], [0, 32, 8])
 check('one bad field does not take the others with it', hydrateSettings({ terminal: { lineHeight: 'x', cursorBlink: false } }).terminal, { lineHeight: 1.3, letterSpacing: 0, cursorStyle: 'bar', cursorBlink: false, boldWeight: 600, contrastBoost: 1, smoothScroll: true, frame: true, padding: 12 })
+
+console.log('\nthe wallpaper block')
+check('none by default', hydrateSettings({}).wallpaper, { path: null, blur: 12, dim: 0.35, opacity: 0.85 })
+check('a path is kept', hydrateSettings({ wallpaper: { path: '/x/y.png' } }).wallpaper.path, '/x/y.png')
+check('a blank path is none', hydrateSettings({ wallpaper: { path: '  ' } }).wallpaper.path, null)
+check('opacity has a floor, because below it text sits on the image', hydrateSettings({ wallpaper: { opacity: 0.1 } }).wallpaper.opacity, 0.5)
+check('blur and dim are bounded', [hydrateSettings({ wallpaper: { blur: 99 } }).wallpaper.blur, hydrateSettings({ wallpaper: { dim: 2 } }).wallpaper.dim], [40, 0.9])
+
+console.log('\nthe wallpaper scheme serves one directory and nothing else')
+{
+  const ud = '/tmp/stoke-ud'
+  check('a bare file name in the wallpaper host resolves', wallpaperFileFor(ud, 'stoke-asset://wallpaper/abc123.png'), '/tmp/stoke-ud/wallpaper/abc123.png')
+  check('the encoded form resolves the same', wallpaperFileFor(ud, 'stoke-asset://wallpaper/a%20b.jpg'), '/tmp/stoke-ud/wallpaper/a b.jpg')
+  check('a traversal is refused', wallpaperFileFor(ud, 'stoke-asset://wallpaper/..%2F..%2Fsettings.json'), null)
+  check('so is a nested path', wallpaperFileFor(ud, 'stoke-asset://wallpaper/x/y.png'), null)
+  check('so is another host', wallpaperFileFor(ud, 'stoke-asset://settings/x.png'), null)
+  check('so is a non-image', wallpaperFileFor(ud, 'stoke-asset://wallpaper/x.json'), null)
+  check('so is another scheme', wallpaperFileFor(ud, 'file:///etc/passwd'), null)
+  check('and garbage is not a throw', wallpaperFileFor(ud, 'not a url'), null)
+}
 
 console.log('\nthe remote port, which a number input will not clamp for you either')
 check('a machine that has never said listens on 7878', hydrateSettings({}).remote.port, 7878)

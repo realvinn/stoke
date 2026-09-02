@@ -390,6 +390,14 @@ export interface StokeApi {
    * `undefined` clears it — absent is a distinct state in that schema, not a
    * synonym for false.
    */
+  wallpaper: {
+    /** Open a file dialog; resolves to the new settings, or null if cancelled. */
+    pick(): Promise<Settings | null>
+    clear(): Promise<Settings>
+    /** The URL the renderer may load a stored wallpaper from. */
+    url(path: string): string
+  }
+
   claudeConfig: {
     read(): Promise<ClaudeConfigState>
     set(key: string, value: boolean | string | number | undefined): Promise<ClaudeConfigWriteResult>

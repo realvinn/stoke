@@ -689,9 +689,32 @@ export interface TerminalSettings {
   padding: number
 }
 
+/**
+ * An image behind everything, with the surfaces made translucent over it.
+ *
+ * Every panel, the page and the terminal canvas are ordinarily opaque; with a
+ * wallpaper set they are drawn at `opacity` over the image, which is blurred
+ * by `blur` px and darkened by `dim`. All three exist because a wallpaper
+ * defeats the contrast floors the theme editor promises — the ladder's
+ * guarantees stop at the page — and dimming and blurring the image is what
+ * gives text something quiet to sit on.
+ */
+export interface WallpaperSettings {
+  /** Stoke's own copy of the image under userData, or null for none. */
+  path: string | null
+  /** Blur radius in px, 0–40. */
+  blur: number
+  /** How much the image is darkened, 0–0.9. */
+  dim: number
+  /** How opaque the page and panels are over it, 0.5–1. */
+  opacity: number
+}
+
 export interface Settings {
   themeId: string
   customThemes: Theme[]
+  /** The image behind the window, if any. See WallpaperSettings. */
+  wallpaper: WallpaperSettings
   fontFamily: string
   fontSize: number
   uiScale: number

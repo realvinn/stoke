@@ -85,6 +85,14 @@ const api: StokeApi = {
     onEvent: (cb) => on<[Parameters<typeof cb>[0]]>(CH.sessionEvent, cb)
   },
 
+  wallpaper: {
+    pick: () => ipcRenderer.invoke(CH.wallpaperPick),
+    clear: () => ipcRenderer.invoke(CH.wallpaperClear),
+    // The custom scheme main registers for the one directory wallpapers live
+    // in; only the file name crosses, never a path.
+    url: (path: string) => `stoke-asset://wallpaper/${encodeURIComponent(path.split(/[\\/]/).pop() ?? '')}`
+  },
+
   browser: {
     onFindRequested: (cb) => on<[]>(CH.browserFindRequested, cb),
     setBounds: (rect: Rect) => ipcRenderer.send(CH.browserSetBounds, rect),

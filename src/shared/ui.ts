@@ -76,6 +76,39 @@ export function clampTerminal(raw: unknown): TerminalSettings {
   }
 }
 
+/* -------------------------------------------------------------- wallpaper */
+
+import type { WallpaperSettings } from './types.ts'
+
+export const WALLPAPER_DEFAULTS: WallpaperSettings = { path: null, blur: 12, dim: 0.35, opacity: 0.85 }
+export const WALLPAPER_BLUR_MAX = 40
+export const WALLPAPER_DIM_MAX = 0.9
+/**
+ * The floor on panel opacity. Below it text sits on whatever the image
+ * happens to be behind it; measured against a white image at dim 0, 0.5 is
+ * where --text-muted still clears 4.5:1 on Ember.
+ */
+export const WALLPAPER_OPACITY_MIN = 0.5
+
+export function clampWallpaper(raw: unknown): WallpaperSettings {
+  const r = (raw && typeof raw === 'object' ? raw : {}) as Partial<Record<keyof WallpaperSettings, unknown>>
+  const d = WALLPAPER_DEFAULTS
+  const n = (v: unknown): number | null => {
+    const x = typeof v === 'number' ? v : Number(v)
+    return Number.isFinite(x) ? x : null
+  }
+  const blur = n(r.blur)
+  const dim = n(r.dim)
+  const opacity = n(r.opacity)
+  return {
+    path: typeof r.path === 'string' && r.path.trim() ? r.path : null,
+    blur: blur === null ? d.blur : Math.min(WALLPAPER_BLUR_MAX, Math.max(0, Math.round(blur))),
+    dim: dim === null ? d.dim : Math.min(WALLPAPER_DIM_MAX, Math.max(0, Math.round(dim * 100) / 100)),
+    opacity:
+      opacity === null ? d.opacity : Math.min(1, Math.max(WALLPAPER_OPACITY_MIN, Math.round(opacity * 100) / 100))
+  }
+}
+
 /* ------------------------------------------------------------ remote port */
 
 export const REMOTE_PORT_DEFAULT = 7878

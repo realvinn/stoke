@@ -227,6 +227,78 @@ body {
   text-rendering: optimizeLegibility;
 }
 
+/* -------------------------------------------------------------- wallpaper */
+
+/*
+ * An image behind everything, and every surface made translucent over it.
+ *
+ * The image is a fixed pseudo-element on body, blurred and dimmed by the two
+ * tokens applyWallpaper writes, and scaled up a touch so the blur's edge bleed
+ * stays off screen. With `[data-wallpaper]` set, the page, the chrome and the
+ * terminal pane paint at `--panel-alpha` through color-mix; without it every
+ * rule below is inert and the theme is exactly what it was. Popovers, menus
+ * and the settings sheet stay opaque: they float over the terminal and are
+ * read while it moves.
+ */
+:root[data-wallpaper] body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background: var(--wallpaper-url) center / cover no-repeat;
+  filter: blur(var(--wallpaper-blur, 12px)) brightness(calc(1 - var(--wallpaper-dim, 0.35)));
+  transform: scale(1.06);
+  pointer-events: none;
+}
+
+/*
+ * Nesting is the trap here. The page's containers stack — body, .app,
+ * .main-col, .term-pane, .term-host — and giving each of them the same alpha
+ * compounds to opaque four layers down, which is how the first version showed
+ * no image at all. So the containers go fully transparent and exactly one
+ * surface at each spot carries the alpha: the pane (or its card, when
+ * framed), the launcher, and each piece of chrome. The xterm canvas itself is
+ * given a fully transparent background while a wallpaper is set (see
+ * `terminalTheme`), so the cells sit on the card's tint rather than adding a
+ * second layer over it.
+ */
+:root[data-wallpaper] body,
+:root[data-wallpaper] .app,
+:root[data-wallpaper] .main-col,
+:root[data-wallpaper] .body-row,
+:root[data-wallpaper] .term-stack {
+  background: transparent;
+}
+
+:root[data-wallpaper] .term-pane,
+:root[data-wallpaper] .launcher {
+  background: color-mix(in srgb, var(--bg) calc(var(--panel-alpha, 0.85) * 100%), transparent);
+}
+
+:root[data-wallpaper][data-term-frame='true'] .term-host,
+:root[data-wallpaper][data-term-frame='true'] .paused-screen {
+  background: color-mix(in srgb, var(--bg) calc(var(--panel-alpha, 0.85) * 100%), transparent);
+}
+
+:root[data-wallpaper] .titlebar,
+:root[data-wallpaper] .sidebar,
+:root[data-wallpaper] .statusbar,
+:root[data-wallpaper] .browser,
+:root[data-wallpaper] .worklog,
+:root[data-wallpaper] .activity {
+  background: color-mix(in srgb, var(--bg-sunken) calc(var(--panel-alpha, 0.85) * 100%), transparent);
+}
+
+/* The selected tab joins the pane below it; a second alpha layer would read
+   darker than the pane it is meant to be continuous with. */
+:root[data-wallpaper] .tab[aria-selected='true'] {
+  background: transparent;
+}
+
+:root[data-wallpaper][data-term-frame='true'] .term-pane {
+  background: transparent;
+}
+
 /* ------------------------------------------------------------- scrollbars */
 /* Themed to match the surface, but native metrics and behaviour are kept. */
 
@@ -3361,6 +3433,12 @@ body {
   height: auto;
   padding: 0.125rem var(--space-8);
   font-size: var(--fs-xs);
+}
+
+.wallpaper-thumb {
+  border-radius: var(--r-md);
+  object-fit: cover;
+  box-shadow: 0 0 0 1px var(--swatch-ring);
 }
 
 /* --------------------------------------------------------------- banners */

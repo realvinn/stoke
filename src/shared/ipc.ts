@@ -172,6 +172,11 @@ export const CH = {
    */
   transcribe: 'audio:transcribe',
 
+  // wallpaper
+  /** Pick an image, copy it under userData, and set `settings.wallpaper.path`. */
+  wallpaperPick: 'wallpaper:pick',
+  wallpaperClear: 'wallpaper:clear',
+
   // misc
   openExternal: 'shell:openExternal',
   pickFolder: 'dialog:pickFolder'

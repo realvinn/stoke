@@ -1,4 +1,5 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, net, protocol, shell } from 'electron'
+import { pathToFileURL } from 'node:url'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { CH } from '@shared/ipc'
@@ -19,6 +20,7 @@ import type {
   WorklogWatchState
 } from '@shared/types'
 import { EmbeddedBrowser } from './browser.ts'
+import { clearWallpaper, mimeFor, storeWallpaper, WALLPAPER_SCHEME, wallpaperFileFor } from './wallpaper.ts'
 import { probeClaude } from './cli.ts'
 import { ContextWatcher } from './context.ts'
 import { findSessionFile, listProjects, listSessions } from './projects.ts'
@@ -1951,6 +1953,28 @@ function registerIpc(): void {
   ipcMain.on(CH.openExternal, (_e, url: string) => {
     if (/^https?:/i.test(url)) void shell.openExternal(url)
   })
+  ipcMain.handle(CH.wallpaperPick, async () => {
+    if (!win) return null
+    const res = await dialog.showOpenDialog(win, {
+      properties: ['openFile'],
+      filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'avif'] }]
+    })
+    if (res.canceled || !res.filePaths[0]) return null
+    const path = await storeWallpaper(app.getPath('userData'), res.filePaths[0])
+    const s = getSettings()
+    const next = setSettings({ wallpaper: { ...s.wallpaper, path } })
+    send(CH.settingsChanged, next)
+    return next
+  })
+
+  ipcMain.handle(CH.wallpaperClear, async () => {
+    await clearWallpaper(app.getPath('userData'))
+    const s = getSettings()
+    const next = setSettings({ wallpaper: { ...s.wallpaper, path: null } })
+    send(CH.settingsChanged, next)
+    return next
+  })
+
   ipcMain.handle(CH.pickFolder, async () => {
     if (!win) return null
     const res = await dialog.showOpenDialog(win, { properties: ['openDirectory'] })
@@ -1982,6 +2006,16 @@ if (!app.isPackaged && !app.commandLine.hasSwitch('user-data-dir')) {
 
 // A second launch should focus the existing window rather than open a rival one
 // that fights over the same PTYs and settings file.
+/*
+ * The wallpaper scheme. Registered before `ready`, which is the only time
+ * Electron accepts it, and privileged so the renderer's CSP can name it and
+ * `img-src` can load from it. It serves exactly one directory (see
+ * wallpaper.ts); a `file://` URL would have needed the whole filesystem open.
+ */
+protocol.registerSchemesAsPrivileged([
+  { scheme: WALLPAPER_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true } }
+])
+
 if (!app.requestSingleInstanceLock()) {
   app.quit()
 } else {
@@ -1992,6 +2026,11 @@ if (!app.requestSingleInstanceLock()) {
   })
 
   app.whenReady().then(() => {
+    protocol.handle(WALLPAPER_SCHEME, (request) => {
+      const file = wallpaperFileFor(app.getPath('userData'), request.url)
+      if (!file) return new Response('not found', { status: 404 })
+      return net.fetch(pathToFileURL(file).toString(), { headers: { 'content-type': mimeFor(file) } })
+    })
     // The only sweep for statusLine files that a crash, a SIGKILL or a failed
     // launch left behind on a previous run — see statusLine.ts for why it is
     // age-based rather than a blanket wipe. Once per boot, before any session

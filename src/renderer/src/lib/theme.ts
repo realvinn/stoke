@@ -1,4 +1,4 @@
-import type { TerminalSettings, Theme } from '@shared/types'
+import type { TerminalSettings, Theme, WallpaperSettings } from '@shared/types'
 import type { Profile } from '@shared/profiles'
 import { deriveAccent } from '@shared/accent'
 import { parseColor } from '@shared/color'
@@ -90,6 +90,32 @@ export function applyTypography(
   root.dataset.termFrame = terminal.frame ? 'true' : 'false'
 }
 
+/**
+ * The image behind everything, and how translucent the surfaces are over it.
+ *
+ * Written here rather than in a component because this file is the one
+ * writer of `:root` (see applyAppearance); the stylesheet keys every surface
+ * on `--panel-alpha` and the image on `--wallpaper-url` under
+ * `[data-wallpaper]`. With no image every token is cleared and the
+ * stylesheet falls back to its opaque rules, so a theme with no wallpaper is
+ * byte-for-byte what it was.
+ */
+export function applyWallpaper(w: WallpaperSettings, url: string | null): void {
+  const root = document.documentElement
+  if (!w.path || !url) {
+    delete root.dataset.wallpaper
+    for (const k of ['--wallpaper-url', '--wallpaper-blur', '--wallpaper-dim', '--panel-alpha']) {
+      root.style.removeProperty(k)
+    }
+    return
+  }
+  root.dataset.wallpaper = 'true'
+  root.style.setProperty('--wallpaper-url', `url("${url}")`)
+  root.style.setProperty('--wallpaper-blur', `${w.blur}px`)
+  root.style.setProperty('--wallpaper-dim', String(w.dim))
+  root.style.setProperty('--panel-alpha', String(w.opacity))
+}
+
 function rgba(hex: string, alpha: number): string {
   const c = parseColor(hex)
   return c ? `rgba(${c.r}, ${c.g}, ${c.b}, ${alpha})` : hex
@@ -103,7 +129,16 @@ function rgba(hex: string, alpha: number): string {
  * 20/40/50% — the one control in the pane that ignored every theme's accent
  * and read the same grey on Moss, Nocturne and Daylight alike.
  */
-export function terminalTheme(theme: Theme, accent: string | null = null): Record<string, string> {
+export function terminalTheme(
+  theme: Theme,
+  accent: string | null = null,
+  /**
+   * The canvas background's alpha; 0 while a wallpaper is set, so the cells
+   * sit on the pane's own translucent tint rather than adding a layer to it.
+   * `allowTransparency` is on for exactly this.
+   */
+  alpha = 1
+): Record<string, string> {
   const c = theme.colors
   /*
    * A profile recolours the chrome's accent (`applyAppearance`), so the
@@ -114,6 +149,7 @@ export function terminalTheme(theme: Theme, accent: string | null = null): Recor
   const fill = accent ? deriveAccent(accent, theme.appearance, c.bg).accent : null
   return {
     ...theme.terminal,
+    ...(alpha < 1 ? { background: rgba(theme.terminal.background, alpha) } : {}),
     ...(fill
       ? {
           cursor: fill,

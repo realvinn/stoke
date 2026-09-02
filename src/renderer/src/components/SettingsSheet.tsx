@@ -22,7 +22,12 @@ import {
   TERM_PADDING_MAX,
   TERMINAL_DEFAULTS,
   UI_SCALE_MAX,
-  UI_SCALE_MIN
+  UI_SCALE_MIN,
+  WALLPAPER_BLUR_MAX,
+  WALLPAPER_DEFAULTS,
+  WALLPAPER_DIM_MAX,
+  WALLPAPER_OPACITY_MIN,
+  clampWallpaper
 } from '@shared/ui'
 import { IconClose } from './Icons'
 import { useEffect, useRef, useState } from 'react'
@@ -348,6 +353,8 @@ export function SettingsSheet({
                 />
 
                 <ClaudeThemeToggle appearance={resolveTheme(settings.themeId, settings.customThemes).appearance} />
+
+                <WallpaperField settings={settings} onPatch={onPatch} />
 
                 <div className="field">
                   <span className="field-label">Interface scale</span>
@@ -906,5 +913,82 @@ function ClaudeThemeToggle({ appearance }: { appearance: 'dark' | 'light' }): Re
         </span>
       </span>
     </label>
+  )
+}
+
+/**
+ * The image behind the window. Choose / Remove, then three sliders that
+ * decide whether text is still readable over it: blur, dim, and how opaque
+ * the panels are. The opacity floor is in `clampWallpaper`; the ladder's
+ * contrast guarantees stop at the page, and this is what stands in for them.
+ */
+function WallpaperField({
+  settings,
+  onPatch
+}: {
+  settings: Settings
+  onPatch: (patch: Partial<Settings>) => void
+}): React.JSX.Element {
+  const w = settings.wallpaper ?? WALLPAPER_DEFAULTS
+  const [error, setError] = useState<string | null>(null)
+  const patchW = (p: Partial<Settings['wallpaper']>): void => onPatch({ wallpaper: clampWallpaper({ ...w, ...p }) })
+  return (
+    <div className="field">
+      <span className="field-label">Wallpaper</span>
+      <span className="field-hint">
+        An image behind everything, with the page and panels drawn translucent over it. Dim and
+        blur it enough that text still sits on something quiet; the theme&rsquo;s contrast floors
+        stop at the page.
+      </span>
+      <div style={{ display: 'flex', gap: 'var(--space-8)', alignItems: 'center', flexWrap: 'wrap' }}>
+        {w.path && (
+          <img
+            className="wallpaper-thumb"
+            src={window.stoke.wallpaper.url(w.path)}
+            alt=""
+            width={96}
+            height={54}
+          />
+        )}
+        <button
+          className="btn"
+          onClick={() => {
+            setError(null)
+            void window.stoke.wallpaper.pick().catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+          }}
+        >
+          {w.path ? 'Change image…' : 'Choose an image…'}
+        </button>
+        {w.path && (
+          <button className="btn" data-variant="ghost" onClick={() => void window.stoke.wallpaper.clear()}>
+            Remove
+          </button>
+        )}
+      </div>
+      {error && (
+        <span className="field-hint" data-tone="danger">
+          {error}
+        </span>
+      )}
+      {w.path && (
+        <>
+          <label className="theme-editor-row">
+            <span>Blur</span>
+            <input type="range" min={0} max={WALLPAPER_BLUR_MAX} step={1} value={w.blur} onChange={(e) => patchW({ blur: Number(e.target.value) })} />
+            <output className="mono">{w.blur}px</output>
+          </label>
+          <label className="theme-editor-row">
+            <span>Dim</span>
+            <input type="range" min={0} max={WALLPAPER_DIM_MAX} step={0.05} value={w.dim} onChange={(e) => patchW({ dim: Number(e.target.value) })} />
+            <output className="mono">{Math.round(w.dim * 100)}%</output>
+          </label>
+          <label className="theme-editor-row">
+            <span>Panel opacity</span>
+            <input type="range" min={WALLPAPER_OPACITY_MIN} max={1} step={0.05} value={w.opacity} onChange={(e) => patchW({ opacity: Number(e.target.value) })} />
+            <output className="mono">{Math.round(w.opacity * 100)}%</output>
+          </label>
+        </>
+      )}
+    </div>
   )
 }

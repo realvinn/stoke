@@ -10,7 +10,16 @@ import type { ProfileConfig, ProjectMeta, Settings, SshHost, Theme, WorklogBoard
 import { tidy } from './projectMeta.ts'
 import { DEFAULT_THEME_ID, validateTheme } from '../shared/themes.ts'
 import { DEFAULT_WORKLOG_BOARDS, WORKLOG_TARGETS } from '../shared/worklog.ts'
-import { clampFontSize, clampPort, clampTerminal, clampUiScale, clampZoomTarget, TERMINAL_DEFAULTS } from '../shared/ui.ts'
+import {
+  clampFontSize,
+  clampPort,
+  clampTerminal,
+  clampUiScale,
+  clampWallpaper,
+  clampZoomTarget,
+  TERMINAL_DEFAULTS,
+  WALLPAPER_DEFAULTS
+} from '../shared/ui.ts'
 
 /**
  * Structural check only. A stored profile that is missing colours is still
@@ -26,6 +35,7 @@ function isProfileConfig(v: unknown): v is ProfileConfig {
 export const DEFAULT_SETTINGS: Settings = {
   themeId: DEFAULT_THEME_ID,
   customThemes: [],
+  wallpaper: { ...WALLPAPER_DEFAULTS },
   fontFamily:
     "'JetBrains Mono', 'Cascadia Code', 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace",
   fontSize: 13,
@@ -261,6 +271,7 @@ export function hydrateSettings(raw: unknown): Settings {
     uiScale: clampUiScale(r.uiScale),
     fontSize: clampFontSize(r.fontSize),
     terminal: clampTerminal(r.terminal),
+    wallpaper: clampWallpaper(r.wallpaper),
     zoomTarget: clampZoomTarget(r.zoomTarget)
   }
 }

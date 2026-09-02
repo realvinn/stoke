@@ -81,6 +81,8 @@ interface Props {
   terminal: TerminalSettings
   /** The active profile's accent, or null. Recolours the cursor and selection. */
   accent: string | null
+  /** Canvas opacity, below 1 only while a wallpaper is set. */
+  alpha: number
   /**
    * Clicking a link in the terminal opens it in the docked browser. Holding
    * Shift, or Cmd/Ctrl, sends it to the real browser instead — that path does
@@ -99,6 +101,7 @@ export function TerminalView({
   fontSize,
   terminal: termOpts,
   accent,
+  alpha,
   onOpenUrl,
   onRestart,
   onClose
@@ -126,6 +129,8 @@ export function TerminalView({
   termOptsRef.current = termOpts
   const accentRef = useRef(accent)
   accentRef.current = accent
+  const alphaRef = useRef(alpha)
+  alphaRef.current = alpha
   /**
    * Whether the child has DEC mode 2031 on, i.e. has asked to be told when the
    * terminal's colour scheme changes. Set from the output stream, so it tracks
@@ -274,7 +279,7 @@ export function TerminalView({
        * other link is both safer and the only way these links ever open.
        */
       linkHandler: { activate: openLink },
-      theme: terminalTheme(theme, accentRef.current)
+      theme: terminalTheme(theme, accentRef.current, alphaRef.current)
     })
 
     const fit = new FitAddon()
@@ -990,8 +995,8 @@ export function TerminalView({
   useEffect(() => {
     const term = termRef.current
     if (!term) return
-    term.options.theme = terminalTheme(theme, accent)
-  }, [theme, accent])
+    term.options.theme = terminalTheme(theme, accent, alpha)
+  }, [theme, accent, alpha])
 
   /*
    * Split from the repaint above on purpose, and keyed on the CLASS of the
