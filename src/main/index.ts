@@ -53,7 +53,7 @@ import { autoScanStateFile, readAutoScanState, writeAutoScanState } from './work
 import { readSessionState, sessionStateFile, writeSessionState } from './worklog/sessionStore.ts'
 import { invalidateRecall, recall, scanOutcomeFor } from './worklog/recall.ts'
 import type { CreateProfileInput } from '@shared/profiles'
-import type { RemoteState } from '@shared/api'
+import type { CliRunResult, RemoteState } from '@shared/api'
 import { getSettings, onSettingsChanged, setSettings } from './store.ts'
 import {
   readSessionEvents,
@@ -120,6 +120,20 @@ let mcp: BrowserMcpServer | null = null
 /** Path of the generated --mcp-config file; null until the server is up. */
 let mcpConfigPath: string | null = null
 let remote: RemoteServer | null = null
+/**
+ * Timers armed by `createWindow`, cleared when that window closes.
+ *
+ * Everything in here is per-window rather than per-process, because
+ * `createWindow` is what arms it and macOS calls that again on `activate`
+ * (gotcha 35: closing the last window does not quit). Held in one list so the
+ * teardown cannot forget one — a `setInterval` that outlives its window is not
+ * merely garbage, it keeps calling `send()` at a window that is gone and, in
+ * the CLI-update case, keeps deciding whether to spawn an installer.
+ *
+ * `clearInterval` cancels a timeout handle too — Node returns the same Timeout
+ * object from both — so one loop is enough for both kinds.
+ */
+const timers: NodeJS.Timeout[] = []
 let usageCache: UsageSnapshot | null = null
 /**
  * When the endpoint was last actually CALLED, which is not `usageCache.fetchedAt`.
@@ -1081,16 +1095,26 @@ function createWindow(): void {
   )
   browser.setBookmarks(settings.browser.bookmarks)
 
-  // Self-update: report progress to the UI, and check once shortly after launch
-  // so the check never competes with startup work.
+  /*
+   * Self-update and the CLI check, both deferred so they never compete with
+   * startup work, and both HELD so they can be cleared when the window goes.
+   *
+   * The handles are not tidiness. On macOS closing the last window does not
+   * quit (gotcha 35), and `activate` calls createWindow() again on the next
+   * dock click — so every one of these was re-armed per cycle while the
+   * previous ones kept running. The interval is the one that accumulates: two
+   * close/reopen cycles meant three six-hourly timers, each independently
+   * deciding whether to spawn `claude update`, against a `cliRefreshing` claim
+   * that only serialises them rather than making them one.
+   */
   initSelfUpdate((s) => send(CH.selfState, s))
-  setTimeout(() => void checkSelfUpdate(), 8000)
+  timers.push(setTimeout(() => void checkSelfUpdate(), 8000))
 
   // The CLI's own version, on the same "not during startup" principle. Offset
   // from the self-update check so the two are not spawning subprocesses and
   // making network calls in the same tick.
-  setTimeout(() => void refreshCliUpdate(), 12_000)
-  setInterval(() => void refreshCliUpdate(), AUTO_CHECK_MS)
+  timers.push(setTimeout(() => void refreshCliUpdate(), 12_000))
+  timers.push(setInterval(() => void refreshCliUpdate(), AUTO_CHECK_MS))
 
   // Expose the docked browser to Claude Code. Started eagerly so the config
   // file exists before the first session is launched.
@@ -1267,6 +1291,7 @@ function createWindow(): void {
 
   win.on('closed', () => {
     offSettings()
+    for (const t of timers.splice(0)) clearInterval(t)
     ptys?.killAll()
     watcher?.disposeAll()
     autoscan?.dispose()
@@ -1275,6 +1300,15 @@ function createWindow(): void {
     void remote?.stop()
     tunnel.stop()
     remote = null
+    /*
+     * The docked browser's tabs are real WebContents, and dropping the
+     * reference does not close any of them. Every other subsystem here is torn
+     * down explicitly and this one was only nulled — so on macOS, where closing
+     * the window does not quit and `activate` builds a fresh EmbeddedBrowser,
+     * each close/reopen cycle orphaned one Chromium renderer per open tab, all
+     * still holding the shared `persist:stoke-browser` session.
+     */
+    browser?.destroy()
     browser = null
     ptys = null
     watcher = null
@@ -1818,16 +1852,52 @@ function registerIpc(): void {
     send(CH.updateState, cliState())
     return cliUpdate
   })
-  ipcMain.handle(CH.updateRun, async () => {
-    const result = await runUpdate(getSettings().claudePath)
-    // A manual run is the user deciding, so it clears whatever the automatic
-    // one last said — leaving a stale "Automatic update failed" above a
-    // successful manual run would be the panel contradicting itself.
-    cliAutoNote = null
-    cliLastAttempt = null
-    cliUpdate = await checkForUpdate(getSettings().claudePath)
-    send(CH.updateState, cliState())
-    return result
+  ipcMain.handle(CH.updateRun, async (): Promise<CliRunResult> => {
+    /*
+     * The same claim the timer takes, because the thing being serialised is an
+     * installer rewriting the CLI on disk, and it does not care which of the
+     * two callers asked for it.
+     *
+     * `refreshCliUpdate` has guarded ITSELF against overlapping since gotcha 20
+     * was written, but that guard is private to it: this handler called
+     * `runUpdate` directly, so a press of "Update now" while the six-hourly
+     * check happened to be mid-install ran a second `claude update` against the
+     * same install, concurrently. Not a rare window either — the automatic run
+     * is exactly what puts the "an update is available" line on screen that
+     * makes someone press the button.
+     *
+     * Refused rather than queued. Waiting would leave the button spinning for
+     * up to three minutes with nothing said, and the automatic run is already
+     * doing the thing the user asked for, so saying so is the more useful
+     * answer. `from`/`to` are read anyway so the panel can still show what is
+     * installed rather than blanking.
+     */
+    if (cliRefreshing) {
+      // The cached reading rather than a fresh `claude --version`: spawning a
+      // subprocess to answer a refusal is work done to say "no".
+      const at = cliUpdate?.current ?? null
+      return {
+        ok: false,
+        output: '',
+        error: 'An automatic update is already running. This will finish on its own.',
+        from: at,
+        to: at
+      }
+    }
+    cliRefreshing = true
+    try {
+      const result = await runUpdate(getSettings().claudePath)
+      // A manual run is the user deciding, so it clears whatever the automatic
+      // one last said — leaving a stale "Automatic update failed" above a
+      // successful manual run would be the panel contradicting itself.
+      cliAutoNote = null
+      cliLastAttempt = null
+      cliUpdate = await checkForUpdate(getSettings().claudePath)
+      send(CH.updateState, cliState())
+      return result
+    } finally {
+      cliRefreshing = false
+    }
   })
   ipcMain.handle(CH.updateDoctor, () => runDoctor(getSettings().claudePath))
   ipcMain.handle(CH.updateState, () => cliState())

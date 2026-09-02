@@ -230,6 +230,50 @@ result = await patchClaudeSetting('remoteControlAtStartup', true)
 ok('an unparseable file is refused, not repaired', !result.ok, String(result.error))
 check('and left exactly as found', readFileSync(settingsFile, 'utf8'), '{ "broken": ')
 
+/*
+ * Two of Stoke's OWN writes at once.
+ *
+ * `patchClaudeSetting` is a read-modify-write with an await in the middle, and
+ * it used to have nothing serialising it: both calls read the pre-write file,
+ * each built its own `next` from it, and the later rename dropped the earlier
+ * key while BOTH callers were told `ok: true`. Measured before the fix — the
+ * file held only `autoCompactEnabled` and `verbose` had never existed.
+ *
+ * The panel makes this ordinary rather than exotic: ClaudeCodeSettings disables
+ * only the row currently in flight, so a second control pressed inside one IPC
+ * round trip is exactly the case. Five at once here, because two would pass by
+ * luck if the queue were only re-entrant one deep — and a pre-existing unknown
+ * key rides along, since the failure mode this guards is a whole `next` object
+ * being computed from a stale read.
+ */
+console.log('\nStoke’s own concurrent writes do not drop each other')
+writeFileSync(settingsFile, JSON.stringify({ someKeyFromAFutureVersion: 'kept' }, null, 2))
+const concurrent = await Promise.all([
+  patchClaudeSetting('remoteControlAtStartup', false),
+  patchClaudeSetting('autoCompactEnabled', false),
+  patchClaudeSetting('theme', 'dark'),
+  patchClaudeSetting('autoUpdatesChannel', 'stable'),
+  patchClaudeSetting('includeCoAuthoredBy', false)
+])
+ok(
+  'every write reports success',
+  concurrent.every((r) => r.ok),
+  JSON.stringify(concurrent.map((r) => r.error))
+)
+const afterRace = JSON.parse(readFileSync(settingsFile, 'utf8'))
+check(
+  'and every one of them is actually on disk',
+  [
+    afterRace.remoteControlAtStartup,
+    afterRace.autoCompactEnabled,
+    afterRace.theme,
+    afterRace.autoUpdatesChannel,
+    afterRace.includeCoAuthoredBy
+  ],
+  [false, false, 'dark', 'stable', false]
+)
+check('with the key Stoke does not draw still there', afterRace.someKeyFromAFutureVersion, 'kept')
+
 /* --------------------------------------------------------- global config */
 
 console.log('\nthe global config, which is the one that can cost an account')

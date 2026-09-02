@@ -31,11 +31,47 @@ import { NEVER_OFFERED, validateSetting, type ClaudeSettingValue } from '../shar
  * `null` or `false`, because absent is a distinct state the CLI reads
  * differently — see the tri-state note in shared/claudeConfig.ts.
  *
- * No lock. Unlike the global config this file is hand-owned and the CLI writes
- * it only on an explicit user action, so a temp+rename is enough; the CLI reads
- * it through a watcher, so a running session picks the change up without a
- * restart.
+ * No lock against the CLI. Unlike the global config this file is hand-owned and
+ * the CLI writes it only on an explicit user action, so a temp+rename is enough;
+ * the CLI reads it through a watcher, so a running session picks the change up
+ * without a restart.
+ *
+ * Stoke's own writes ARE serialised, which is a different problem and was
+ * missing. See `queue` below.
  */
+
+/**
+ * One write at a time, in the order they were asked for.
+ *
+ * `patchClaudeSetting` is a read-modify-write with an `await` in the middle, so
+ * two overlapping calls both read the pre-write file, each computes a `next`
+ * from it, and the second rename silently discards the first's key — while both
+ * return `ok: true`. Measured against a real temp settings.json: patching
+ * `verbose` and `autoCompactEnabled` through `Promise.all` left a file
+ * containing only `autoCompactEnabled`, with both callers told they had
+ * succeeded.
+ *
+ * Reachable from the panel as it is drawn: ClaudeCodeSettings disables only the
+ * row currently in flight (`disabled={busy === spec.key}`), so a second control
+ * pressed inside one IPC round trip is an ordinary thing to do, not a race
+ * someone has to engineer. Gotcha 57's shape — two writers, no invalidation —
+ * except that here the second writer is the same function.
+ *
+ * A queue rather than the global config's mkdir lock: that lock exists to
+ * arbitrate with the CLI, which contends for `~/.claude.json` constantly and
+ * writes this file only when a person acts. This one only has to make Stoke
+ * agree with itself, and a promise chain does that without a lock file to leave
+ * behind if the process dies mid-write.
+ */
+let queue: Promise<unknown> = Promise.resolve()
+
+function serialised<T>(job: () => Promise<T>): Promise<T> {
+  // Chained off a swallowed tail so one rejected job cannot poison the queue
+  // for every later caller.
+  const next = queue.then(job, job)
+  queue = next.catch(() => {})
+  return next
+}
 
 export interface ClaudeSettingsRead {
   path: string
@@ -168,10 +204,14 @@ export interface PatchResult {
  * `.catch(void 0)`, so an out-of-range write silently produces *no* setting
  * rather than an error.
  */
-export async function patchClaudeSetting(
-  key: string,
-  value: ClaudeSettingValue
-): Promise<PatchResult> {
+export function patchClaudeSetting(key: string, value: ClaudeSettingValue): Promise<PatchResult> {
+  // Every path is inside the queue, including the validation refusal, so that
+  // the `read` a refusal reports is not a snapshot taken while somebody else's
+  // write was landing.
+  return serialised(() => patchOnce(key, value))
+}
+
+async function patchOnce(key: string, value: ClaudeSettingValue): Promise<PatchResult> {
   const invalid = validateSetting(key, value)
   if (invalid) {
     return { ok: false, error: invalid, read: await readClaudeSettings() }
