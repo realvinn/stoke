@@ -24,7 +24,7 @@ import { IconClose } from './components/Icons'
 import { Launcher } from './components/Launcher'
 import { PausedSession } from './components/PausedSession'
 import { Resizer } from './components/Resizer'
-import { SettingsSheet } from './components/SettingsSheet'
+import { SettingsSheet, type SectionId } from './components/SettingsSheet'
 import { Sidebar } from './components/Sidebar'
 import { StatusBar } from './components/StatusBar'
 import { TerminalView } from './components/TerminalView'
@@ -277,6 +277,12 @@ export function App(): React.JSX.Element {
 
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  /** Where the sheet opens. Set by whoever asked for it, cleared with the sheet. */
+  const [settingsSection, setSettingsSection] = useState<SectionId | undefined>(undefined)
+  const openSettings = useCallback((section?: SectionId): void => {
+    setSettingsSection(section)
+    setSettingsOpen(true)
+  }, [])
   const [maximized, setMaximized] = useState(false)
   /*
    * Tracked apart from `maximized`, because on macOS they are different states
@@ -1631,7 +1637,8 @@ export function App(): React.JSX.Element {
         worklogOpen={worklogOpen}
         onToggleWorklog={() => setWorklogOpen((v) => !v)}
         onOpenPalette={() => setPaletteOpen(true)}
-        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenSettings={() => openSettings()}
+        onOpenPhoneSettings={() => openSettings('remote')}
       />
 
       <div className="body-row">
@@ -1921,7 +1928,7 @@ export function App(): React.JSX.Element {
         }}
         profileLabel={activeProfile?.label ?? null}
         onRevealProject={(p) => void window.stoke.projects.reveal(p)}
-        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenSettings={() => openSettings('updates')}
       />
 
       {paletteOpen && (
@@ -1945,6 +1952,7 @@ export function App(): React.JSX.Element {
           onAddRoot={() => void addRoot()}
           onProfileCreated={refreshProjects}
           onPreviewTheme={setPreviewTheme}
+          initialSection={settingsSection}
           onClose={() => {
             // Drop any live preview with the sheet. Closing settings mid-edit
             // is a cancel by any other name, and leaving the preview applied

@@ -20,7 +20,6 @@ import {
 import { IconClose } from './Icons'
 import { useEffect, useRef, useState } from 'react'
 import { HostsSettings } from './HostsSettings'
-import { MicrophoneNotice } from './MicrophoneNotice'
 import { ProfilesSettings } from './ProfilesSettings'
 import { ClaudeCodeSettings } from './ClaudeCodeSettings'
 import { ThemeEditor } from './ThemeEditor'
@@ -81,7 +80,7 @@ const NOTIFICATION_MODES: { id: NotificationMode; label: string; hint: string }[
  * `hint` is the nav item's tooltip and does the job a subtitle would without
  * making every row two lines tall.
  */
-type SectionId =
+export type SectionId =
   | 'appearance'
   | 'profiles'
   | 'sessions'
@@ -172,6 +171,11 @@ interface Props {
    * one is what the accent bug in `applyAppearance`'s comment already cost.
    */
   onPreviewTheme: (theme: Theme | null) => void
+  /**
+   * Which section to open on. Three other panels say "open Settings" and used
+   * to land on Appearance regardless of what they were talking about.
+   */
+  initialSection?: SectionId
   onClose: () => void
 }
 
@@ -184,10 +188,11 @@ export function SettingsSheet({
   onAddRoot,
   onProfileCreated,
   onPreviewTheme,
+  initialSection,
   onClose
 }: Props): React.JSX.Element {
   const themes: Theme[] = [...BUILT_IN_THEMES, ...settings.customThemes]
-  const [section, setSection] = useState<SectionId>('appearance')
+  const [section, setSection] = useState<SectionId>(initialSection ?? 'appearance')
 
   /*
    * The scrolling pane, reset to the top on every section change.
@@ -687,12 +692,7 @@ export function SettingsSheet({
               />
             )}
 
-            {section === 'remote' && (
-              <>
-                <MicrophoneNotice />
-                <RemoteSettings settings={settings} onPatch={onPatch} />
-              </>
-            )}
+            {section === 'remote' && <RemoteSettings settings={settings} onPatch={onPatch} />}
 
             {section === 'advanced' && (
               <div className="field">

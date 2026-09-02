@@ -235,9 +235,23 @@ attaches to a PTY, replaying its scrollback first.
   loopback" also exempted the LAN, since `bindLan` collapses everything onto one `0.0.0.0`
   listener; adding a `!bindLan` guard then made the condition always true in the Tailscale
   configuration, so every tailnet request 401'd and the terminal simply never opened.
-- **PTY resize from a phone is opt-in.** A phone resizing would reflow the desktop terminal
-  under whoever is sitting at it, so by default the phone renders at the desktop's width and
-  scrolls sideways.
+- **The link says how it gets there.** `link.ts`'s `connectTarget` returns a `reach` beside the
+  URL — a running tunnel, the configured hostname, the tailnet address, the best LAN address,
+  and last `loopback`, which is reported as such so no surface ever draws a QR code of
+  127.0.0.1. `remote:openOnPhone` is the one-press path: it picks the tailnet when Tailscale is
+  up and the LAN otherwise, mints a key if there is none, starts, and pushes `settingsChanged`.
+  A running server is restarted from the `settings:set` handler when a bound field changes.
+- **The phone reflows the desktop terminal by default, and puts it back.** `Fit` is on unless
+  the user turned it off, so opening a session from a phone fits the PTY to the phone's screen
+  and the desktop's xterm follows. The server remembers the desktop's own size the first time a
+  phone resizes a pty and restores it when the last phone detaches. (This used to say resize was
+  opt-in; it has defaulted to on since the first visit stopped rendering a tiny grid in a corner.)
+- **The phone paints the desktop's theme.** `GET /api/theme` serves the resolved theme and the
+  terminal font; the mobile bundle writes the tokens onto `:root` and hands xterm the same
+  sixteen ANSI slots the desktop uses. The stylesheet's Ember copy paints one frame at most.
+- **A dropped socket comes back.** iOS Safari drops a WebSocket seconds after backgrounding; the
+  phone reconnects with backoff and on `visibilitychange`, resetting the terminal before the
+  server's history replay lands.
 
 The mobile UI (`src/remote/`) is a separate Vite build because it is a plain web app, not an
 Electron surface. Input goes through a normal `<textarea>` rather than the terminal: typing

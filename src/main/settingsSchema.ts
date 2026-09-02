@@ -10,7 +10,7 @@ import type { ProfileConfig, ProjectMeta, Settings, SshHost, Theme, WorklogBoard
 import { tidy } from './projectMeta.ts'
 import { DEFAULT_THEME_ID, validateTheme } from '../shared/themes.ts'
 import { DEFAULT_WORKLOG_BOARDS, WORKLOG_TARGETS } from '../shared/worklog.ts'
-import { clampFontSize, clampUiScale, clampZoomTarget } from '../shared/ui.ts'
+import { clampFontSize, clampPort, clampUiScale, clampZoomTarget } from '../shared/ui.ts'
 
 /**
  * Structural check only. A stored profile that is missing colours is still
@@ -190,7 +190,13 @@ export function hydrateSettings(raw: unknown): Settings {
       ...(r.browser ?? {}),
       bookmarks: Array.isArray(r.browser?.bookmarks) ? r.browser.bookmarks : []
     },
-    remote: { ...DEFAULT_SETTINGS.remote, ...(r.remote ?? {}) },
+    remote: {
+      ...DEFAULT_SETTINGS.remote,
+      ...(r.remote ?? {}),
+      // The one remote field a wrong value can silently break: a port outside
+      // the range fails to bind with an EACCES nobody reads. See clampPort.
+      port: clampPort(r.remote?.port ?? DEFAULT_SETTINGS.remote.port)
+    },
     /*
      * Themes are repaired rather than trusted. applyTheme writes whatever keys
      * are on the object, so a custom theme missing a token used to render an

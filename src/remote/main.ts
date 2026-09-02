@@ -18,6 +18,10 @@ interface SessionRow {
   sessionId: string
   cwd: string
   name: string
+  /** The SSH host this runs on, or null for a local session. */
+  host: string | null
+  /** The process has ended; nothing more will ever arrive. */
+  exited: boolean
   startedAt: number
   cols: number
   rows: number
@@ -80,8 +84,59 @@ function toast(message: string): void {
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, { ...init, headers: { 'content-type': 'application/json' } })
+  /*
+   * A replaced key used to surface as "401 Unauthorized" on every screen with
+   * nothing to do about it: the server's own sentence is only ever seen on a
+   * top-level navigation, never through fetch. Say what happened and where the
+   * new code is, once, in place of whatever screen was loading.
+   */
+  if (res.status === 401) {
+    app.replaceChildren(
+      el(
+        'div',
+        { class: 'empty' },
+        el('p', {}, 'This link’s key has been replaced.'),
+        el('p', {}, 'On your computer, press the phone button in Stoke’s title bar and scan the new code.')
+      )
+    )
+    throw new Error('Key replaced')
+  }
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
   return (await res.json()) as T
+}
+
+/* ---------------------------------------------------------------- theme */
+
+/**
+ * Paint the desktop's own theme. The stylesheet carries a fallback copy of one
+ * palette that used to be the only palette, and drifted every time the desktop's
+ * moved (CLAUDE.md gotcha 43); the server now serves the live one, and this
+ * writes it onto :root with the same camelCase -> kebab rule the desktop uses.
+ */
+interface RemoteTheme {
+  appearance: 'dark' | 'light'
+  colors: Record<string, string>
+  terminal: Record<string, string>
+  fontFamily: string
+}
+
+let theme: RemoteTheme | null = null
+
+async function loadTheme(): Promise<RemoteTheme | null> {
+  try {
+    theme = await api<RemoteTheme>('/api/theme')
+  } catch {
+    return theme
+  }
+  const root = document.documentElement
+  for (const [key, value] of Object.entries(theme.colors)) {
+    root.style.setProperty(`--${key.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`, value)
+  }
+  root.style.colorScheme = theme.appearance
+  root.dataset.appearance = theme.appearance
+  const meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')
+  if (meta) meta.content = theme.colors.bgSunken ?? theme.colors.bg
+  return theme
 }
 
 /* --------------------------------------------------------- session list */
@@ -120,12 +175,24 @@ async function showList(): Promise<void> {
   const scroll = el('div', { class: 'scroll' })
   app.append(bar, scroll)
 
+  /*
+   * Refresh on a timer while this screen is up and visible. A session started
+   * or ended on the desktop used to be invisible until the ↻ button. Cleared
+   * by every route away from here, or the list would reload under the terminal.
+   */
+  const timer = window.setInterval(() => {
+    if (document.visibilityState === 'visible') void load(true)
+  }, 5000)
+  const leave = (next: () => Promise<void>): void => {
+    window.clearInterval(timer)
+    void next()
+  }
   refresh.addEventListener('click', () => void load())
-  history.addEventListener('click', () => void showHistory())
-  create.addEventListener('click', () => void showNew())
+  history.addEventListener('click', () => leave(showHistory))
+  create.addEventListener('click', () => leave(showNew))
 
-  async function load(): Promise<void> {
-    scroll.replaceChildren(el('div', { class: 'empty' }, 'Loading…'))
+  async function load(quiet = false): Promise<void> {
+    if (!quiet) scroll.replaceChildren(el('div', { class: 'empty' }, 'Loading…'))
     try {
       const sessions = await api<SessionRow[]>('/api/sessions')
       if (!sessions.length) {
@@ -165,9 +232,17 @@ async function showList(): Promise<void> {
 
     return el(
       'button',
-      { class: 'card', onclick: () => void showTerminal(s) },
-      el('div', { class: 'card-title' }, ctx?.title || s.name),
-      el('div', { class: 'card-sub' }, s.cwd),
+      { class: 'card', 'data-exited': s.exited ? 'true' : undefined, onclick: () => leave(() => showTerminal(s)) },
+      el(
+        'div',
+        { class: 'card-title' },
+        ctx?.title || s.name,
+        ...(s.host ? [el('span', { class: 'chip chip-inline mono' }, 'ssh')] : []),
+        ...(s.exited ? [el('span', { class: 'chip chip-inline', 'data-tone': 'warn' }, 'ended')] : [])
+      ),
+      // An SSH session's cwd is the LOCAL folder Stoke was pointed at, which
+      // says nothing about where it runs; the host is the honest line.
+      el('div', { class: 'card-sub' }, s.host ? `ssh ${s.host}` : s.cwd),
       el(
         'div',
         { class: 'card-meta' },
@@ -176,7 +251,11 @@ async function showList(): Promise<void> {
         el(
           'span',
           {},
-          ctx?.ready ? `${compact(ctx.contextTokens)}/${compact(ctx.contextLimit)}` : 'idle'
+          s.exited
+            ? 'ended'
+            : ctx?.ready
+              ? `${compact(ctx.contextTokens)}/${compact(ctx.contextLimit)}`
+              : 'idle'
         )
       )
     )
@@ -205,9 +284,29 @@ async function showNew(): Promise<void> {
     const start = async (cwd: string): Promise<void> => {
       toast('Starting…')
       try {
-        await api('/api/sessions', { method: 'POST', body: JSON.stringify({ cwd }) })
-        // Give the CLI a moment to print its banner before attaching.
-        setTimeout(() => void showList(), 1200)
+        const started = await api<{ ptyId: string; sessionId: string }>('/api/sessions', {
+          method: 'POST',
+          body: JSON.stringify({ cwd })
+        })
+        // Straight into the session, the way Resume already does, after the
+        // CLI has had a moment to print its banner. It used to return to the
+        // list and leave the tap to the user.
+        setTimeout(
+          () =>
+            void showTerminal({
+              ptyId: started.ptyId,
+              sessionId: started.sessionId,
+              cwd,
+              name: folderName(cwd),
+              host: null,
+              exited: false,
+              startedAt: Date.now(),
+              cols: 100,
+              rows: 30,
+              context: null
+            }),
+          1200
+        )
       } catch (err) {
         toast((err as Error).message)
       }
@@ -395,6 +494,8 @@ async function showTranscript(meta: SessionMetaRow): Promise<void> {
             sessionId: started.sessionId,
             cwd: meta.projectPath,
             name: meta.title || folderName(meta.projectPath),
+            host: null,
+            exited: false,
             startedAt: Date.now(),
             cols: 100,
             rows: 30,
@@ -622,27 +723,81 @@ async function showTerminal(session: SessionRow): Promise<void> {
   }
   app.append(composer)
 
+  /*
+   * The desktop's own palette, including all sixteen ANSI slots, so the CLI's
+   * colours on the phone are the CLI's colours on the desk. This used to be
+   * four hardcoded pre-ladder Ember hexes and xterm's built-in ANSI defaults —
+   * a different black from the page around it, and Ember for a Daylight user.
+   */
+  const t = theme ?? (await loadTheme())
   const term = new Terminal({
-    fontFamily: "'JetBrains Mono', 'SF Mono', Menlo, monospace",
+    fontFamily: t?.fontFamily || "'JetBrains Mono', 'SF Mono', Menlo, monospace",
     fontSize: 11,
-    lineHeight: 1.15,
+    lineHeight: 1.2,
     cursorBlink: false,
     // The desktop drives the real size; scrollback is what matters here.
     scrollback: 5000,
     convertEol: false,
-    theme: {
-      background: '#14110f',
-      foreground: '#f2e9e1',
-      cursor: '#ff9552',
-      selectionBackground: 'rgba(255,149,82,0.3)'
-    }
+    theme: t?.terminal ?? {}
   })
   const fitAddon = new FitAddon()
   term.loadAddon(fitAddon)
   term.open(wrap)
 
+  /*
+   * The socket, and the machinery that brings it back.
+   *
+   * iOS Safari drops a WebSocket seconds after the app is backgrounded, and
+   * before this the only handling was a "Disconnected" toast: every return to
+   * the phone showed a terminal that no longer updated and a composer whose
+   * sends silently went nowhere. The server replays the full history on every
+   * attach, so reconnecting is cheap; `term.reset()` first, or the replay
+   * lands on top of what is already there.
+   */
   const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-  const ws = new WebSocket(`${proto}://${location.host}/ws?ptyId=${encodeURIComponent(session.ptyId)}`)
+  const wsUrl = `${proto}://${location.host}/ws?ptyId=${encodeURIComponent(session.ptyId)}`
+  const linkChip = el('span', { class: 'chip', 'data-tone': 'warn' }, 'reconnecting…')
+  linkChip.hidden = true
+  let ws!: WebSocket
+  let userClosed = false
+  let backoff = 1000
+  let retry: ReturnType<typeof setTimeout> | null = null
+  let ever = false
+  const wsBind: ((socket: WebSocket) => void)[] = []
+  const connect = (): void => {
+    if (userClosed) return
+    if (retry) {
+      clearTimeout(retry)
+      retry = null
+    }
+    const socket = new WebSocket(wsUrl)
+    ws = socket
+    socket.addEventListener('open', () => {
+      backoff = 1000
+      linkChip.hidden = true
+      if (ever) term.reset()
+      ever = true
+    })
+    socket.addEventListener('close', () => {
+      if (userClosed || ws !== socket) return
+      linkChip.hidden = false
+      retry = setTimeout(connect, backoff)
+      backoff = Math.min(backoff * 2, 10_000)
+    })
+    for (const bind of wsBind) bind(socket)
+  }
+  const onSocket = (bind: (socket: WebSocket) => void): void => {
+    wsBind.push(bind)
+    bind(ws)
+  }
+  fitBtn.before(linkChip)
+  connect()
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && !userClosed && ws.readyState !== WebSocket.OPEN) connect()
+  })
+
+  /** Everything to undo when the user leaves this screen. */
+  const onLeave: (() => void)[] = []
 
   const applyFit = (): void => {
     if (!fit) {
@@ -696,10 +851,10 @@ async function showTerminal(session: SessionRow): Promise<void> {
       })
     })
     observer.observe(wrap)
-    ws.addEventListener('close', () => observer.disconnect())
+    onLeave.push(() => observer.disconnect())
   }
 
-  ws.addEventListener('close', () => cleanupVoice?.())
+  onLeave.push(() => cleanupVoice?.())
 
   fitBtn.addEventListener('click', () => {
     fit = !fit
@@ -710,7 +865,7 @@ async function showTerminal(session: SessionRow): Promise<void> {
     else toast('Resized to this screen — the desktop terminal reflows too.')
   })
 
-  ws.addEventListener('message', (ev) => {
+  onSocket((socket) => socket.addEventListener('message', (ev) => {
     const msg = JSON.parse(String(ev.data)) as {
       type: string
       data?: string
@@ -729,14 +884,14 @@ async function showTerminal(session: SessionRow): Promise<void> {
       term.write(msg.data)
     } else if (msg.type === 'exit') {
       term.write(`\r\n\x1b[38;5;209m[session ended${msg.code ? ` (${msg.code})` : ''}]\x1b[0m\r\n`)
+      // Nothing more will come, so there is nothing to reconnect to.
+      userClosed = true
     }
-  })
-
-  ws.addEventListener('close', () => toast('Disconnected'))
-  ws.addEventListener('error', () => toast('Connection error'))
+  }))
 
   const write = (data: string): void => {
     if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'input', data }))
+    else toast('Reconnecting — try again in a moment')
   }
 
   const submit = (): void => {
@@ -866,13 +1021,17 @@ async function showTerminal(session: SessionRow): Promise<void> {
   if (typeof ResizeObserver !== 'undefined') {
     const keyObserver = new ResizeObserver(() => markOverflow())
     keyObserver.observe(keys)
-    ws.addEventListener('close', () => keyObserver.disconnect())
+    onLeave.push(() => keyObserver.disconnect())
   }
 
   back.addEventListener('click', () => {
+    userClosed = true
+    if (retry) clearTimeout(retry)
     ws.close()
+    for (const fn of onLeave) fn()
+    window.clearInterval(poll)
     term.dispose()
-    void showList()
+    void loadTheme().then(() => showList())
   })
 
   // Keep the meter chip current while the session runs.

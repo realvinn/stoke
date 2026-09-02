@@ -104,6 +104,9 @@ export interface ClaudeConfigWriteResult {
   attempts?: number
 }
 
+/** How the phone link reaches this machine. Mirrors `Reach` in remote/server.ts. */
+export type RemoteReach = 'tunnel' | 'tailnet' | 'lan' | 'loopback'
+
 /** Combined remote-access state: local server, tunnel, and the phone link. */
 export interface RemoteState {
   server: {
@@ -113,6 +116,8 @@ export interface RemoteState {
     clients: number
     /** Addresses actually bound, e.g. 127.0.0.1 and the tailnet address. */
     addresses: string[]
+    /** Phones attached per pty id, so a tab can say one is watching. */
+    attachedByPty: Record<string, number>
   }
   tunnel: {
     installed: boolean
@@ -123,11 +128,25 @@ export interface RemoteState {
     log: string[]
     error: string | null
   }
-  url: string
-  /** Data URL of a QR code for `url`, or null if generation failed. */
+  /** The link to open on the phone. Null until a key exists (before the first Turn on). */
+  url: string | null
+  /**
+   * How that link gets there. `loopback` means it does NOT get there — the
+   * panel must say so rather than draw the QR code.
+   */
+  reach: RemoteReach
+  /** The address the link names, for the "Same Wi-Fi · 192.168.1.20" line. */
+  address: string
+  /** Other LAN links that could have been chosen, when the first is a bridge or VPN. */
+  candidates: string[]
+  /** This machine's tailnet address, or null when Tailscale is absent or down. */
+  tailnet: string | null
+  /** Data URL of a QR code for `url`, or null if generation failed or there is no url. */
   qr: string | null
   /** One-time cloudflared commands the user runs themselves. */
   setup: string[]
+  /** Whether the speech sidecar answers at `remote.sttUrl`. Probed at most every 15s. */
+  stt: 'up' | 'down' | 'unknown'
 }
 
 export interface SelfUpdateState {
@@ -322,8 +341,12 @@ export interface StokeApi {
     start(): Promise<RemoteState>
     stop(): Promise<RemoteState>
     newToken(): Promise<RemoteState>
+    /** One press: a reachable transport, a key, the server on, the link back. */
+    openOnPhone(): Promise<RemoteState>
+    onChange(cb: (state: RemoteState) => void): () => void
     tunnelStart(mode: 'named' | 'quick'): Promise<RemoteState>
     tunnelStop(): Promise<RemoteState>
+    tunnelLocate(): Promise<RemoteState>
   }
 
   updates: {

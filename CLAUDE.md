@@ -51,6 +51,8 @@ npm run verify:worklog-retry    # writes happen once, and a retry never duplicat
 npm run verify:worklog-recall   # the read-only board read, its parse and its cache
 npm run verify:worklog-autoscan # when a session is scanned without being asked
 npm run verify:ssh            # ssh argv, ~/.ssh/config parsing, the remote transcript fetch
+npm run verify:remote         # phone access: where the link points and how it says it gets
+                              # there, the LAN interface ranking, what a dead tunnel reports
 npm run verify:selection      # Option-drag selection survives letting go of the mouse.
                               # Opens a real Electron window, so it needs a display
                               # and is the one `check` suite CI does not run
@@ -139,8 +141,11 @@ src/main/         Electron main process
                       signature database that would already be stale
     inject/extract.js runs IN the page; markdown + refs + find. No deps.
   remote/           phone access
-    server.ts         loopback HTTP + WebSocket, token auth, tailnet listener
-    tunnel.ts         supervises cloudflared
+    server.ts         loopback HTTP + WebSocket, token auth, tailnet listener, and
+                      /api/theme so the phone paints the desktop's own palette
+    link.ts           where the phone link points and HOW it gets there (`reach`).
+                      Pure, so verify:remote can hold the fallback order. Gotcha 53
+    tunnel.ts         supervises cloudflared; finds it on the login-shell PATH
 src/preload/      contextBridge -> window.stoke
 src/renderer/     desktop React UI (all colour via CSS custom properties)
 src/remote/       mobile web UI, built separately to out/remote
@@ -1447,6 +1452,30 @@ scripts/          the verify-*.mts suites, make-icon.cjs
     that `pty.ts` calls `findClaude` afresh on every session start, so *trying again* re-probes.
     The number in the text is derived from `PROBE_RETRY_MS` rather than retyped, so a cooldown
     change cannot silently make it a lie.
+
+53. **Phone access read as broken on every fresh install, and the panel was drawing the proof.**
+    Every transport is off by default, `connectUrl` fell through to `http://127.0.0.1:<port>`,
+    and `RemoteSettings` rendered that as a QR code under the heading "Open on your phone". The
+    working path was: Turn on, scroll past the code, tick "Also listen on the local network",
+    Turn off, Turn on, scan — six presses and one undocumented restart, because the server read
+    its config once at start and the `settings:set` handler never restarted it. Two more things
+    compounded it. `remoteConfig()` minted the bearer key as a side effect of being *read*, and
+    the 4s status poll was a reader, so on a fresh install the panel's first poll wrote a token
+    the renderer did not have; the next control the user touched spread its stale `remote` back
+    over it, and the QR code carried a key the server was not holding. And a running quick
+    tunnel's URL was printed bare while the QR kept encoding the LAN link — the key was in the
+    other string, so a phone opening the tunnel got 401.
+
+    The fixes are structural rather than copy. `link.ts`'s `connectTarget` returns a `reach`
+    (`tunnel | tailnet | lan | loopback`) beside the URL, and the panel and the title-bar phone
+    button refuse to draw a QR code for `loopback`. `remote:openOnPhone` is one press: mint a
+    key if none, pick the tailnet when Tailscale is up and the LAN otherwise (a transport the
+    user already chose is kept), start, push `settingsChanged`. Every remote write in main pushes
+    `settingsChanged` now, minting is `ensureRemoteToken` and only the start paths call it, and
+    the `settings:set` handler restarts a running server when a bound field changes. The LAN
+    address is ranked (`lanAddresses`): Docker's bridge100, a VM's vEthernet and any utun sit
+    ahead of Wi-Fi in `networkInterfaces()` order often enough that "first non-internal IPv4"
+    handed the code an address nothing could dial. `verify:remote` holds all of it.
 
 ## Standing traps when driving the app
 

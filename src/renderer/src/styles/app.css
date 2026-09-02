@@ -3403,6 +3403,111 @@ body {
   }
 }
 
+/* ---------------------------------------------------------------- popovers */
+
+/*
+ * One popover, three users: the usage chip, the phone button, and whatever
+ * comes next. Each used to declare its own panel with its own radius, shadow
+ * and z-index fallbacks, which is how the usage panel came to sit at
+ * `var(--z-dropdown, 40)` against a token sheet that defines `--z-dropdown`.
+ */
+.popover-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-dropdown);
+}
+
+.popover {
+  position: absolute;
+  top: calc(100% + var(--space-8));
+  right: 0;
+  z-index: calc(var(--z-dropdown) + 1);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  width: 19rem;
+  padding: var(--space-12);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-panel);
+  animation: pop var(--dur) var(--ease);
+}
+
+.popover-title {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+
+.popover-text {
+  margin: 0;
+  font-size: var(--fs-xs);
+  line-height: var(--lh-normal);
+  color: var(--text-muted);
+}
+
+.popover-text[data-tone='warning'] {
+  color: var(--warning);
+}
+
+.popover-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+}
+
+/* ------------------------------------------------------------ phone access */
+
+.phone-wrap {
+  position: relative;
+  -webkit-app-region: no-drag;
+}
+
+/* A phone is attached: the same small badge the worklog button uses, in the
+   accent, so "someone is watching this machine" is visible without opening it. */
+.phone-wrap .icon-btn[data-attached]::after {
+  content: '';
+  position: absolute;
+  top: var(--space-4);
+  right: var(--space-4);
+  width: 0.375rem;
+  height: 0.375rem;
+  border-radius: var(--r-full);
+  background: var(--accent-ink);
+}
+
+.phone-panel {
+  align-items: stretch;
+}
+
+.phone-qr {
+  align-self: center;
+  border-radius: var(--r-md);
+  /* Drawn in the theme's own page and ink, so the ring is what separates it. */
+  box-shadow: 0 0 0 1px var(--border-subtle);
+}
+
+/* The settings pane's version: code beside its link and buttons. */
+.phone-link {
+  display: flex;
+  gap: var(--space-16);
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.phone-link-text {
+  display: flex;
+  flex: 1 1 14rem;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-8);
+}
+
+.phone-url {
+  overflow-wrap: anywhere;
+}
+
 /* ----------------------------------------------------------- plan limits */
 
 .usage-chip-wrap {

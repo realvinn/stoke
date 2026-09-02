@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { CliRunResult, RemoteState, SelfUpdateState, UpdateInfo } from '@shared/api'
+import type { CliRunResult, RemoteReach, RemoteState, SelfUpdateState, UpdateInfo } from '@shared/api'
+import { clampPort, REMOTE_PORT_DEFAULT } from '@shared/ui'
 import { channelLagNotice, updateButton, updateVerdict } from '../lib/updateVerdict'
+import { useDraft } from '../lib/useDraft'
 import { FieldHint } from './FieldHint'
+import { IconCopy } from './Icons'
+import { MicrophoneNotice } from './MicrophoneNotice'
 import type { CliUpdateState, Settings } from '@shared/types'
 
 interface Props {
@@ -12,34 +16,61 @@ interface Props {
 /** Mirrors the store default; an emptied box falls back here rather than to ''. */
 const DEFAULT_STT_URL = 'http://127.0.0.1:17890'
 
+/** How the segmented control names each way a phone can reach this machine. */
+const REACH_LABEL: Record<RemoteReach, string> = {
+  lan: 'Same Wi-Fi',
+  tailnet: 'Tailscale',
+  tunnel: 'Cloudflare Tunnel',
+  loopback: 'This computer only'
+}
+
 /**
- * Remote access: a loopback server that a Cloudflare Tunnel can point a real
- * hostname at, so sessions are reachable from a phone.
+ * One line that says how the phone gets in: transport, then the address.
+ * Exported so the title bar's phone button can draw the same sentence.
+ */
+export function reachLine(state: RemoteState): string {
+  if (state.reach === 'loopback') return 'Only reachable from this computer'
+  const port = state.reach === 'tunnel' ? '' : ` · port ${state.server.port}`
+  return `${REACH_LABEL[state.reach]} · ${state.address}${port}`
+}
+
+/**
+ * Phone access.
+ *
+ * Ordered around the one question a person opening this panel has: "how do I
+ * get this on my phone". The primary button answers it in one press, the QR
+ * code is only ever drawn for a link a phone can open, and everything that
+ * needs a Cloudflare account or a decision about ports sits behind a
+ * disclosure. The previous layout put "Turn on" first and produced a QR code
+ * of 127.0.0.1 under the heading "Open on your phone" on every fresh install.
  */
 export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element {
   const [state, setState] = useState<RemoteState | null>(null)
   const [busy, setBusy] = useState(false)
+  const [copied, setCopied] = useState(false)
+  const [confirmKey, setConfirmKey] = useState(false)
+  const [tunnelOpen, setTunnelOpen] = useState(false)
   const remote = settings.remote
 
   /*
-   * Escape closes the sheet by unmounting this input (App.tsx binds it on
-   * window), and React delivers no blur to a node that is being unmounted - so
-   * the onBlur repair on the speech-server box never runs on that path. An
-   * emptied box would then persist '' through hydrate, which keeps own
-   * properties over the defaults, and survive a restart: the field renders its
-   * placeholder so it still looks configured, while the microphone 503s.
-   *
-   * Repair on the way out as well. The ref keeps the dep array empty so this
-   * runs only on a real unmount, never on the 4s status poll's re-renders.
+   * Patches are built from the LATEST settings, never a render-time copy.
+   * Main writes `remote` itself (the key, `enabled`), and a patch spread from
+   * an older copy would put the old values back — which is exactly how a
+   * fresh install's first edit used to erase the key the server was holding.
    */
   const latest = useRef({ remote, onPatch })
   latest.current = { remote, onPatch }
+  const patchRemote = useCallback((p: Partial<Settings['remote']>): void => {
+    const { remote: r, onPatch: patch } = latest.current
+    patch({ remote: { ...r, ...p } })
+  }, [])
+
   useEffect(
     () => () => {
-      const { remote: r, onPatch: patch } = latest.current
-      if (!r.sttUrl.trim()) patch({ remote: { ...r, sttUrl: DEFAULT_STT_URL } })
+      const { remote: r } = latest.current
+      if (!r.sttUrl.trim()) patchRemote({ sttUrl: DEFAULT_STT_URL })
     },
-    []
+    [patchRemote]
   )
 
   const refresh = useCallback(async (): Promise<void> => {
@@ -48,9 +79,14 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
 
   useEffect(() => {
     void refresh()
-    // The tunnel takes a few seconds to report a URL, so keep polling gently.
-    const id = window.setInterval(() => void refresh(), 4000)
-    return () => window.clearInterval(id)
+    const off = window.stoke.remote.onChange(setState)
+    // Pushes cover every change Stoke makes itself; the slow poll is only for
+    // cloudflared's asynchronous URL and a phone appearing or leaving.
+    const id = window.setInterval(() => void refresh(), 15_000)
+    return () => {
+      off()
+      window.clearInterval(id)
+    }
   }, [refresh])
 
   const act = async (fn: () => Promise<RemoteState>): Promise<void> => {
@@ -62,294 +98,438 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
     }
   }
 
+  const copyLink = (): void => {
+    if (!state?.url) return
+    window.stoke.clipboard.writeText(state.url)
+    setCopied(true)
+    window.setTimeout(() => setCopied(false), 1600)
+  }
+
   const running = state?.server.running ?? false
   const tunnel = state?.tunnel
+  const reach: RemoteReach = state?.reach ?? 'loopback'
+  const hasTunnel = Boolean(remote.hostname.trim()) || Boolean(tunnel?.running)
+  /** Which segment is lit: what the link actually uses, or what is configured while off. */
+  const chosen: RemoteReach = hasTunnel
+    ? 'tunnel'
+    : remote.bindTailscale && !remote.bindLan
+      ? 'tailnet'
+      : remote.bindLan
+        ? 'lan'
+        : running
+          ? reach
+          : 'loopback'
+
+  const hostnameField = useDraft(remote.hostname, (v) => patchRemote({ hostname: v.trim() }))
+  const tunnelNameField = useDraft(remote.tunnelName, (v) =>
+    patchRemote({ tunnelName: v.trim() || 'stoke' })
+  )
+  const portField = useDraft(String(remote.port), (v) => patchRemote({ port: clampPort(v) }))
+  const sttField = useDraft(remote.sttUrl, (v) => patchRemote({ sttUrl: v.trim() || DEFAULT_STT_URL }))
+
+  const accessUsable = Boolean(remote.hostname.trim()) && tunnel?.running === true && tunnel.mode === 'named'
 
   return (
     <>
       <div className="field">
         <span className="field-label">
-          Remote access{' '}
+          Phone access{' '}
           <span className="pill" data-tone={running ? 'success' : undefined}>
-            {running ? `on · ${state?.server.clients ?? 0} connected` : 'off'}
+            {running
+              ? state && state.server.clients > 0
+                ? `on · ${state.server.clients} connected`
+                : 'on'
+              : 'off'}
           </span>
         </span>
         <span className="field-hint">
-          Serves your live sessions to a phone. Bound to loopback and gated by a key, so it is
-          only reachable through a tunnel you point at it.
+          {running && state
+            ? reach === 'loopback'
+              ? 'The server is on, but nothing outside this computer can reach it yet.'
+              : `Your live sessions, on a phone. ${reachLine(state)}.`
+            : 'Your live sessions on a phone: read, type, dictate, and start or resume work. Over the same Wi-Fi, over Tailscale, or from anywhere through a tunnel.'}
         </span>
 
-        <div style={{ display: 'flex', gap: 'var(--space-8)' }}>
-          <button
-            className="btn"
-            data-variant={running ? undefined : 'primary'}
-            disabled={busy}
-            onClick={() =>
-              void act(() => (running ? window.stoke.remote.stop() : window.stoke.remote.start()))
-            }
-          >
-            {running ? 'Turn off' : 'Turn on'}
-          </button>
-          <button className="btn" disabled={busy} onClick={() => void act(window.stoke.remote.newToken)}>
-            New key
-          </button>
-        </div>
+        {!running && (
+          <div style={{ display: 'flex', gap: 'var(--space-8)', alignItems: 'center' }}>
+            <button
+              className="btn"
+              data-variant="primary"
+              disabled={busy}
+              onClick={() => void act(window.stoke.remote.openOnPhone)}
+            >
+              {busy ? 'Starting…' : 'Open on phone'}
+            </button>
+            <span className="field-hint">
+              Picks {state?.tailnet ? 'Tailscale' : 'your Wi-Fi'} unless you choose below, then shows a code to scan.
+            </span>
+          </div>
+        )}
+
+        {running && state && (
+          <>
+            {state.url && reach !== 'loopback' && state.qr && (
+              <div className="phone-link">
+                <img
+                  className="phone-qr"
+                  src={state.qr}
+                  alt="QR code linking to your sessions"
+                  width={168}
+                  height={168}
+                />
+                <div className="phone-link-text">
+                  <span className="mono field-hint phone-url">{state.url}</span>
+                  <div style={{ display: 'flex', gap: 'var(--space-8)', flexWrap: 'wrap' }}>
+                    <button className="btn" onClick={copyLink}>
+                      <IconCopy />
+                      {copied ? 'Copied' : 'Copy link'}
+                    </button>
+                    <button
+                      className="btn"
+                      data-variant="ghost"
+                      disabled={busy}
+                      onClick={() => void act(window.stoke.remote.stop)}
+                    >
+                      Turn off
+                    </button>
+                  </div>
+                  <span className="field-hint">
+                    The link carries the key. Treat it like a password — anyone with it can drive a
+                    session on this machine.
+                  </span>
+                  {state.candidates.length > 0 && reach === 'lan' && (
+                    <FieldHint
+                      more={
+                        <>
+                          {state.candidates.map((c) => (
+                            <span key={c} className="mono" style={{ display: 'block', overflowWrap: 'anywhere' }}>
+                              {c}
+                            </span>
+                          ))}
+                        </>
+                      }
+                    >
+                      Not loading on the phone? This machine has more than one address.
+                    </FieldHint>
+                  )}
+                </div>
+              </div>
+            )}
+            {reach === 'loopback' && (
+              <>
+                <span className="field-hint" data-tone="warning">
+                  This link only works on this computer. Pick how the phone reaches it below.
+                </span>
+                <button
+                  className="btn"
+                  data-variant="ghost"
+                  disabled={busy}
+                  onClick={() => void act(window.stoke.remote.stop)}
+                  style={{ alignSelf: 'flex-start' }}
+                >
+                  Turn off
+                </button>
+              </>
+            )}
+            {remote.requireAccessHeader && reach !== 'tunnel' && (
+              <span className="field-hint" data-tone="warning">
+                Cloudflare Access is required, so this link only works through the tunnel.
+              </span>
+            )}
+          </>
+        )}
 
         {state?.server.error && (
-          <span className="field-hint" style={{ color: 'var(--danger)' }}>
+          <span className="field-hint" data-tone="danger">
             {state.server.error}
           </span>
         )}
       </div>
 
-      {running && state && (
-        <div className="field">
-          <span className="field-label">Open on your phone</span>
-          {state.qr && (
-            <img
-              src={state.qr}
-              alt="QR code linking to the remote session list"
-              width={180}
-              height={180}
-              style={{ borderRadius: 'var(--r-lg)', alignSelf: 'flex-start' }}
-            />
-          )}
-          <span className="mono field-hint" style={{ overflowWrap: 'anywhere' }}>
-            {state.url}
-          </span>
-          <span className="field-hint">
-            The link carries the key. Treat it like a password — anyone with it can drive a
-            session on this machine.
-          </span>
-        </div>
-      )}
-
       <div className="field">
-        <span className="field-label">Public hostname</span>
-        <input
-          className="input mono"
-          placeholder="code.example.com"
-          value={remote.hostname}
-          spellCheck={false}
-          onChange={(e) => onPatch({ remote: { ...remote, hostname: e.target.value.trim() } })}
-        />
-        <span className="field-hint">The hostname your Cloudflare Tunnel routes to this port.</span>
-      </div>
-
-      <div className="field">
-        <span className="field-label">Port</span>
-        <input
-          className="input"
-          type="number"
-          min={1024}
-          max={65535}
-          value={remote.port}
-          onChange={(e) => onPatch({ remote: { ...remote, port: Number(e.target.value) || 7878 } })}
-        />
-      </div>
-
-      <label className="check-row">
-        <input
-          type="checkbox"
-          checked={remote.requireAccessHeader}
-          onChange={(e) => onPatch({ remote: { ...remote, requireAccessHeader: e.target.checked } })}
-        />
-        <span>
-          <span className="field-label">Require Cloudflare Access</span>
-          <span className="field-hint">
-            Reject anything without Access headers, so the server only answers requests that came
-            through the tunnel. Turn this on once Access is working — it also blocks you on the
-            LAN.
-          </span>
-        </span>
-      </label>
-
-      <label className="check-row">
-        <input
-          type="checkbox"
-          checked={remote.bindLan}
-          onChange={(e) => onPatch({ remote: { ...remote, bindLan: e.target.checked } })}
-        />
-        <span>
-          <span className="field-label">Also listen on the local network</span>
-          <span className="field-hint">
-            Lets a phone on the same Wi-Fi connect without a tunnel. Convenient at home, but it
-            exposes the port to everything on that network.
-          </span>
-        </span>
-      </label>
-
-      <label className="check-row">
-        <input
-          type="checkbox"
-          checked={remote.bindTailscale}
-          disabled={remote.bindLan}
-          onChange={(e) => onPatch({ remote: { ...remote, bindTailscale: e.target.checked } })}
-        />
-        <span>
-          <span className="field-label">Also listen on Tailscale</span>
-          <FieldHint
-            more={
-              remote.bindLan ? undefined : (
-                <>
-                  Unlike the local network option this opens the port to the tailnet only, which is
-                  a much smaller room. Loopback stays bound either way, so a Cloudflare tunnel keeps
-                  working alongside it.
-                </>
-              )
-            }
+        <span className="field-label">Reach it from</span>
+        <div className="segmented" role="group" aria-label="How the phone reaches this machine">
+          <button
+            aria-pressed={chosen === 'lan'}
+            title="Any phone on the same network. Convenient at home; the port is open to that network."
+            onClick={() => patchRemote({ bindLan: true, bindTailscale: false })}
           >
-            {remote.bindLan
-              ? 'Already covered: listening on the local network includes the tailnet.'
-              : 'Reaches this machine from anywhere on your tailnet, with no tunnel.'}
-          </FieldHint>
+            {REACH_LABEL.lan}
+          </button>
+          <button
+            aria-pressed={chosen === 'tailnet'}
+            disabled={!state?.tailnet}
+            title={
+              state?.tailnet
+                ? `Only devices on your tailnet. This machine is ${state.tailnet}.`
+                : 'Tailscale is not running on this machine'
+            }
+            onClick={() => patchRemote({ bindLan: false, bindTailscale: true })}
+          >
+            {REACH_LABEL.tailnet}
+          </button>
+          <button
+            aria-pressed={chosen === 'tunnel'}
+            title="From anywhere, through Cloudflare. Needs a domain and a one-time setup."
+            onClick={() => {
+              setTunnelOpen(true)
+              patchRemote({ bindLan: false, bindTailscale: false })
+            }}
+          >
+            {REACH_LABEL.tunnel}
+          </button>
+        </div>
+        <span className="field-hint">
+          {chosen === 'lan'
+            ? 'Works for any phone on this Wi-Fi. Anything else on that network can see the port too, but the key still gates it.'
+            : chosen === 'tailnet'
+              ? 'Reaches this machine from anywhere on your tailnet, and from nowhere else. No tunnel, no port open to the room.'
+              : chosen === 'tunnel'
+                ? 'A Cloudflare Tunnel points a hostname at this machine; nothing inbound is opened. Set it up below.'
+                : 'Nothing chosen yet. Open on phone picks for you, or choose here.'}
         </span>
-      </label>
-
-      <div className="field">
-        <span className="field-label">Speech server</span>
-        <input
-          className="input mono"
-          placeholder={DEFAULT_STT_URL}
-          value={remote.sttUrl}
-          spellCheck={false}
-          onChange={(e) => onPatch({ remote: { ...remote, sttUrl: e.target.value.trim() } })}
-          onBlur={(e) => {
-            // Fall back on blur, never on change: this input is controlled, so
-            // substituting the default mid-edit re-renders, drops the selection
-            // and parks the caret at the end — select-all, delete, retype would
-            // silently append to the default instead of replacing it.
-            if (!e.target.value.trim()) onPatch({ remote: { ...remote, sttUrl: DEFAULT_STT_URL } })
-          }}
-        />
-        <FieldHint
-          more={
-            <>
-              Stoke proxies to it, so it never has to face the internet. Terminal dictation picks up
-              a change immediately; the phone picks it up the next time the remote server starts.{' '}
-              <code>scripts/stt-sidecar.py</code> in this repo runs one locally.
-            </>
-          }
-        >
-          Where speech is transcribed, for the phone and the terminal alike.
-        </FieldHint>
       </div>
 
-      <div className="field">
-        <span className="field-label">
-          Cloudflare Tunnel{' '}
+      <details
+        className="field-detail"
+        open={tunnelOpen || undefined}
+        onToggle={(e) => setTunnelOpen((e.target as HTMLDetailsElement).open)}
+      >
+        <summary>
+          Reach it from outside your network{' '}
           <span className="pill" data-tone={tunnel?.running ? 'success' : undefined}>
-            {!tunnel?.installed ? 'not installed' : tunnel.running ? 'running' : 'stopped'}
+            {tunnel?.running ? 'tunnel running' : tunnel?.installed ? 'cloudflared installed' : 'needs cloudflared'}
           </span>
-        </span>
-
-        {!tunnel?.installed ? (
-          <span className="field-hint">
-            cloudflared was not found. Install it, then reopen this panel.
-          </span>
-        ) : (
-          <>
-            <div style={{ display: 'flex', gap: 'var(--space-8)', flexWrap: 'wrap' }}>
-              <button
-                className="btn"
-                disabled={busy || !remote.hostname}
-                onClick={() => void act(() => window.stoke.remote.tunnelStart('named'))}
-                title={remote.hostname ? undefined : 'Set a public hostname first'}
-              >
-                Run named tunnel
-              </button>
-              <button
-                className="btn"
-                disabled={busy}
-                onClick={() => void act(() => window.stoke.remote.tunnelStart('quick'))}
-              >
-                Quick tunnel
-              </button>
-              <button className="btn" disabled={busy} onClick={() => void act(window.stoke.remote.tunnelStop)}>
-                Stop
-              </button>
-            </div>
-
-            {tunnel.url && (
-              <span className="mono field-hint" style={{ overflowWrap: 'anywhere' }}>
-                {tunnel.url}
-              </span>
-            )}
-            {tunnel.error && (
-              <span className="field-hint" style={{ color: 'var(--danger)' }}>
-                {tunnel.error}
-              </span>
-            )}
-
-            {/*
-              Say why the button is dead. It was disabled with the reason only in
-              a title attribute, so it read as broken unless you happened to hover
-              it - and a fresh profile always starts with no hostname.
-            */}
-            {!remote.hostname && (
-              <FieldHint
-                tone="warning"
-                more="That is the name your tunnel already routes to this port. Quick tunnel works without one."
-              >
-                Run named tunnel needs a Public hostname above.
-              </FieldHint>
-            )}
-
+        </summary>
+        <div className="field-detail-body" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-12)', paddingTop: 'var(--space-8)' }}>
+          {tunnel && !tunnel.installed && (
             <FieldHint
+              tone="warning"
               more={
                 <>
-                  A quick tunnel gets a throwaway trycloudflare.com address with no Access policy
-                  in front of it, so only the key protects it.
+                  macOS: <span className="mono">brew install cloudflared</span>. Windows:{' '}
+                  <span className="mono">winget install Cloudflare.cloudflared</span>. Then press
+                  Look again.
                 </>
               }
             >
-              Use the named tunnel for anything lasting.
+              cloudflared was not found on this machine.{' '}
+              <button className="btn" data-variant="ghost" disabled={busy} onClick={() => void act(window.stoke.remote.tunnelLocate)} style={{ height: 'auto', padding: '0 var(--space-4)' }}>
+                Look again
+              </button>
             </FieldHint>
+          )}
 
-            <details>
-              <summary className="field-hint" style={{ cursor: 'default' }}>
-                One-time setup commands
-              </summary>
-              <pre
-                className="mono"
-                style={{
-                  fontSize: 'var(--fs-xs)',
-                  whiteSpace: 'pre-wrap',
-                  overflowWrap: 'anywhere',
-                  color: 'var(--text-muted)'
-                }}
+          <div className="field">
+            <span className="field-label">Public hostname</span>
+            <input
+              className="input mono"
+              placeholder="code.example.com"
+              value={hostnameField.draft}
+              spellCheck={false}
+              onChange={(e) => hostnameField.setDraft(e.target.value)}
+              onBlur={hostnameField.onBlur}
+              onKeyDown={hostnameField.onKeyDown}
+            />
+            <span className="field-hint">The hostname your tunnel routes to this port.</span>
+          </div>
+
+          <div className="field">
+            <span className="field-label">Tunnel name</span>
+            <input
+              className="input mono"
+              placeholder="stoke"
+              value={tunnelNameField.draft}
+              spellCheck={false}
+              onChange={(e) => tunnelNameField.setDraft(e.target.value)}
+              onBlur={tunnelNameField.onBlur}
+              onKeyDown={tunnelNameField.onKeyDown}
+            />
+            <span className="field-hint">
+              The name you gave <span className="mono">cloudflared tunnel create</span>. The commands
+              below use it.
+            </span>
+          </div>
+
+          <label className="check-row">
+            <input
+              type="checkbox"
+              checked={remote.autoStartTunnel}
+              disabled={!remote.hostname.trim()}
+              onChange={(e) => patchRemote({ autoStartTunnel: e.target.checked })}
+            />
+            <span>
+              <span className="field-label">Start the tunnel whenever phone access is on</span>
+              <span className="field-hint">
+                {remote.hostname.trim()
+                  ? 'Runs the named tunnel with the server, including at launch.'
+                  : 'Needs a public hostname first.'}
+              </span>
+            </span>
+          </label>
+
+          <div style={{ display: 'flex', gap: 'var(--space-8)', flexWrap: 'wrap' }}>
+            <button
+              className="btn"
+              disabled={busy || !remote.hostname.trim()}
+              onClick={() => void act(() => window.stoke.remote.tunnelStart('named'))}
+              title={remote.hostname.trim() ? undefined : 'Set a public hostname first'}
+            >
+              Run named tunnel
+            </button>
+            <button
+              className="btn"
+              disabled={busy}
+              onClick={() => void act(() => window.stoke.remote.tunnelStart('quick'))}
+              title="A throwaway trycloudflare.com address with no Access policy in front of it. Fine for a few minutes."
+            >
+              Quick tunnel
+            </button>
+            <button className="btn" disabled={busy || !tunnel?.running} onClick={() => void act(window.stoke.remote.tunnelStop)}>
+              Stop
+            </button>
+          </div>
+          {tunnel?.error && (
+            <span className="field-hint" data-tone="danger">
+              {tunnel.error}
+            </span>
+          )}
+          <FieldHint more="A quick tunnel gets a throwaway trycloudflare.com address with no Access policy in front of it, so only the key protects it. Use the named tunnel for anything lasting.">
+            The link and the code above switch to the tunnel while it runs.
+          </FieldHint>
+
+          <label className="check-row">
+            <input
+              type="checkbox"
+              checked={remote.requireAccessHeader}
+              disabled={!accessUsable && !remote.requireAccessHeader}
+              onChange={(e) => patchRemote({ requireAccessHeader: e.target.checked })}
+            />
+            <span>
+              <span className="field-label">Require Cloudflare Access</span>
+              <FieldHint
+                tone={remote.requireAccessHeader && reach !== 'tunnel' ? 'warning' : undefined}
+                more="Reject anything without Access headers, so the server only answers requests that came through the tunnel. It also blocks the Wi-Fi and Tailscale routes, which is why it is only offered once a named tunnel is running."
               >
+                {accessUsable || remote.requireAccessHeader
+                  ? 'Only answer requests that came through the tunnel.'
+                  : 'Available once a named tunnel is running.'}
+              </FieldHint>
+            </span>
+          </label>
+
+          <details className="field-detail">
+            <summary>One-time setup commands</summary>
+            <div className="field-detail-body">
+              <pre className="mono field-hint" style={{ margin: 0, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', color: 'var(--text-muted)' }}>
                 {(state?.setup ?? []).join('\n')}
               </pre>
               <span className="field-hint">
                 These need a browser login, so run them yourself once. Then add a Cloudflare Access
                 policy for the hostname allowing only your email.
               </span>
-            </details>
+            </div>
+          </details>
 
-            {tunnel.log.length > 0 && (
-              <details>
-                <summary className="field-hint" style={{ cursor: 'default' }}>
-                  Tunnel log
-                </summary>
-                <pre
-                  className="mono"
-                  style={{
-                    fontSize: 'var(--fs-xs)',
-                    maxHeight: '10rem',
-                    overflow: 'auto',
-                    whiteSpace: 'pre-wrap',
-                    overflowWrap: 'anywhere',
-                    color: 'var(--text-faint)'
-                  }}
-                >
+          {tunnel && tunnel.log.length > 0 && (
+            <details className="field-detail" open={tunnel.error ? true : undefined}>
+              <summary>Tunnel log</summary>
+              <div className="field-detail-body">
+                <pre className="mono field-hint" style={{ margin: 0, maxHeight: '10rem', overflow: 'auto', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
                   {tunnel.log.slice(-25).join('\n')}
                 </pre>
-              </details>
+              </div>
+            </details>
+          )}
+        </div>
+      </details>
+
+      <details className="field-detail">
+        <summary>Advanced</summary>
+        <div className="field-detail-body" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-12)', paddingTop: 'var(--space-8)' }}>
+          <div className="field">
+            <span className="field-label">Port</span>
+            <input
+              className="input"
+              type="number"
+              min={1024}
+              max={65535}
+              value={portField.draft}
+              onChange={(e) => portField.setDraft(e.target.value)}
+              onBlur={portField.onBlur}
+              onKeyDown={portField.onKeyDown}
+              style={{ width: '8rem' }}
+            />
+            <span className="field-hint">
+              1024–65535. Anything else falls back to {REMOTE_PORT_DEFAULT}. A running server moves
+              to the new port at once.
+            </span>
+          </div>
+
+          <div className="field">
+            <span className="field-label">
+              Speech server{' '}
+              {state && state.stt !== 'unknown' && (
+                <span className="pill" data-tone={state.stt === 'up' ? 'success' : undefined}>
+                  {state.stt === 'up' ? 'running' : 'not running'}
+                </span>
+              )}
+            </span>
+            <input
+              className="input mono"
+              placeholder={DEFAULT_STT_URL}
+              value={sttField.draft}
+              spellCheck={false}
+              onChange={(e) => sttField.setDraft(e.target.value)}
+              onBlur={sttField.onBlur}
+              onKeyDown={sttField.onKeyDown}
+            />
+            <FieldHint
+              more={
+                <>
+                  Stoke proxies to it, so it never has to face the internet. Terminal dictation picks
+                  up a change immediately; the phone picks it up the next time the remote server
+                  starts. <span className="mono">python scripts/stt-sidecar.py</span> in this repo runs
+                  one locally.
+                </>
+              }
+            >
+              {state?.stt === 'down'
+                ? 'Nothing is answering there, so dictation will fail until it is started.'
+                : 'Where speech is transcribed, for the phone and the terminal alike.'}
+            </FieldHint>
+            <MicrophoneNotice />
+          </div>
+
+          <div className="field">
+            <span className="field-label">Key</span>
+            {confirmKey ? (
+              <div style={{ display: 'flex', gap: 'var(--space-8)', alignItems: 'center', flexWrap: 'wrap' }}>
+                <span className="field-hint">Every phone will need to scan the new code. Replace it?</span>
+                <button
+                  className="btn"
+                  data-variant="danger"
+                  disabled={busy}
+                  onClick={() => {
+                    setConfirmKey(false)
+                    void act(window.stoke.remote.newToken)
+                  }}
+                >
+                  Replace
+                </button>
+                <button className="btn" data-variant="ghost" onClick={() => setConfirmKey(false)}>
+                  Keep
+                </button>
+              </div>
+            ) : (
+              <button className="btn" style={{ alignSelf: 'flex-start' }} disabled={busy} onClick={() => setConfirmKey(true)}>
+                Replace the key…
+              </button>
             )}
-          </>
-        )}
-      </div>
+            <span className="field-hint">The link is the key. Replacing it logs every phone out at once.</span>
+          </div>
+        </div>
+      </details>
     </>
   )
 }

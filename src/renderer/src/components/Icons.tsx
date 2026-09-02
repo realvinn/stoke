@@ -38,6 +38,27 @@ export const IconPlus = (p: SVGProps<SVGSVGElement>): React.JSX.Element => (
   </Base>
 )
 
+/** A phone, for the title bar's "open on phone" and the attached-phone marks. */
+export const IconPhone = (p: SVGProps<SVGSVGElement>): React.JSX.Element => (
+  <Base {...p}>
+    <rect x="4.5" y="1.75" width="7" height="12.5" rx="1.5" />
+    <path d="M7 12h2" />
+  </Base>
+)
+
+export const IconCopy = (p: SVGProps<SVGSVGElement>): React.JSX.Element => (
+  <Base {...p}>
+    <rect x="5.5" y="5.5" width="8" height="8" rx="1.25" />
+    <path d="M10.5 5.5V3.75A1.25 1.25 0 0 0 9.25 2.5H3.75A1.25 1.25 0 0 0 2.5 3.75v5.5a1.25 1.25 0 0 0 1.25 1.25H5.5" />
+  </Base>
+)
+
+export const IconCheck = (p: SVGProps<SVGSVGElement>): React.JSX.Element => (
+  <Base {...p}>
+    <path d="M3 8.5l3 3 7-7" />
+  </Base>
+)
+
 export const IconClose = (p: SVGProps<SVGSVGElement>): React.JSX.Element => (
   <Base {...p}>
     <path d="M4 4l8 8M12 4l-8 8" />

@@ -113,8 +113,11 @@ const api: StokeApi = {
     start: () => ipcRenderer.invoke(CH.remoteStart),
     stop: () => ipcRenderer.invoke(CH.remoteStop),
     newToken: () => ipcRenderer.invoke(CH.remoteNewToken),
+    openOnPhone: () => ipcRenderer.invoke(CH.remoteOpenOnPhone),
+    onChange: (cb) => on<[Parameters<typeof cb>[0]]>(CH.remoteChanged, cb),
     tunnelStart: (mode: 'named' | 'quick') => ipcRenderer.invoke(CH.tunnelStart, mode),
-    tunnelStop: () => ipcRenderer.invoke(CH.tunnelStop)
+    tunnelStop: () => ipcRenderer.invoke(CH.tunnelStop),
+    tunnelLocate: () => ipcRenderer.invoke(CH.tunnelLocate)
   },
 
   updates: {

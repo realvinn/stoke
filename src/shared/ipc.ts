@@ -86,8 +86,19 @@ export const CH = {
   remoteStart: 'remote:start',
   remoteStop: 'remote:stop',
   remoteNewToken: 'remote:newToken',
+  /**
+   * The one-press path: pick a transport a phone can actually reach if none is
+   * set, mint a key if there is none, start the server, and hand back the
+   * link. Exists because "Turn on" with the defaults produced a QR code of
+   * 127.0.0.1 under the heading "Open on your phone".
+   */
+  remoteOpenOnPhone: 'remote:openOnPhone',
+  /** Pushed whenever the server, the tunnel or the attached clients change. */
+  remoteChanged: 'remote:changed',
   tunnelStart: 'tunnel:start',
   tunnelStop: 'tunnel:stop',
+  /** Look for cloudflared again, after the user has installed it. */
+  tunnelLocate: 'tunnel:locate',
 
   // claude cli updates
   updateCheck: 'update:check',

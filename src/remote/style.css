@@ -1,16 +1,14 @@
 /*
- * Mobile UI for Stoke's remote access. Same ember palette as the desktop app,
- * but laid out for a phone: everything reachable with a thumb, and a real text
- * input instead of typing into the terminal, which is miserable on a soft
- * keyboard.
+ * Mobile UI for Stoke's remote access, laid out for a phone: everything
+ * reachable with a thumb, and a real text input instead of typing into the
+ * terminal, which is miserable on a soft keyboard.
  *
- * The palette below is a HAND COPY of EMBER from src/shared/themes.ts, and it
- * has to be, because this bundle is built separately (`vite.remote.config.ts`)
- * and shares no module with the desktop renderer. That means it silently drifts
- * every time the desktop palette moves -- it had been carrying the pre-ladder
- * values, so the phone and the window were two different shades of the same
- * theme. If you regenerate the themes, regenerate these fourteen lines with
- * them. `verify:color` cannot see this file.
+ * The palette below is only what paints before the first request answers.
+ * main.ts fetches the desktop's live theme from /api/theme and writes every
+ * token onto :root, so a Daylight desktop gets a Daylight phone and a custom
+ * theme follows too. These fourteen lines are a copy of EMBER from
+ * src/shared/themes.ts for that first frame; nothing else reads them once the
+ * theme has loaded, so drift here costs one frame rather than the whole UI.
  */
 
 :root {
@@ -101,18 +99,34 @@ button {
 }
 
 .chip[data-tone='accent'] {
-  background: rgb(255 149 82 / 0.16);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
   color: var(--accent);
 }
 
 .chip[data-tone='warn'] {
-  background: rgb(232 181 82 / 0.16);
+  background: color-mix(in srgb, var(--warning) 16%, transparent);
   color: var(--warning);
 }
 
 .chip[data-tone='danger'] {
-  background: rgb(242 112 95 / 0.18);
+  background: color-mix(in srgb, var(--danger) 18%, transparent);
   color: var(--danger);
+}
+
+/* A chip inside a card title: ssh, ended. */
+.chip-inline {
+  margin-left: 8px;
+  padding: 1px 7px;
+  font-size: 10px;
+  vertical-align: middle;
+}
+
+.card[data-exited='true'] {
+  opacity: 0.6;
+}
+
+.chip[hidden] {
+  display: none;
 }
 
 .btn {
@@ -340,12 +354,12 @@ button {
 
 .key-row::before {
   left: 0;
-  background: linear-gradient(to right, var(--bg-sunken) 30%, rgb(14 12 11 / 0));
+  background: linear-gradient(to right, var(--bg-sunken) 30%, transparent);
 }
 
 .key-row::after {
   right: 0;
-  background: linear-gradient(to left, var(--bg-sunken) 30%, rgb(14 12 11 / 0));
+  background: linear-gradient(to left, var(--bg-sunken) 30%, transparent);
 }
 
 .key-row[data-more='start']::before,

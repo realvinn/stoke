@@ -49,6 +49,7 @@ import { autoScanStateFile, readAutoScanState, writeAutoScanState } from './work
 import { readSessionState, sessionStateFile, writeSessionState } from './worklog/sessionStore.ts'
 import { invalidateRecall, recall, scanOutcomeFor } from './worklog/recall.ts'
 import type { CreateProfileInput } from '@shared/profiles'
+import type { RemoteState } from '@shared/api'
 import { getSettings, onSettingsChanged, setSettings } from './store.ts'
 import {
   readSessionEvents,
@@ -60,7 +61,7 @@ import {
 } from './statusLine.ts'
 import { createScratchDir, resolveDefaultCwd } from './workspace.ts'
 import { BrowserMcpServer } from './mcp/server.ts'
-import { connectUrl, generateToken, RemoteServer, type RemoteDeps } from './remote/server.ts'
+import { connectTarget, generateToken, RemoteServer, tailnetAddress, type RemoteDeps } from './remote/server.ts'
 import { TunnelManager } from './remote/tunnel.ts'
 import {
   AUTO_CHECK_MS,
@@ -435,15 +436,130 @@ async function launchSession(opts: LaunchOptions): Promise<StartResult> {
   return result
 }
 
-/** Ensure a remote key exists before the server or a QR link needs one. */
+/**
+ * The remote settings as they stand. Reads only.
+ *
+ * This used to mint a key as a side effect of being read, and the read path
+ * was the 4s status poll — so on a fresh install the panel's first poll wrote a
+ * token the renderer did not know about, the next control the user touched
+ * spread its stale copy of `remote` back over it, and the QR code then carried
+ * a key the server was not holding. Minting is `ensureRemoteToken` now, called
+ * only by the start paths, and every write here pushes `settingsChanged`.
+ */
 function remoteConfig(): Settings['remote'] {
-  const s = getSettings()
-  if (!s.remote.token) {
-    const next = setSettings({ remote: { ...s.remote, token: generateToken() } })
-    return next.remote
-  }
-  return s.remote
+  return getSettings().remote
 }
+
+/** Mint the bearer key if there is none yet, and tell the renderer. */
+function ensureRemoteToken(): Settings['remote'] {
+  const s = getSettings()
+  if (s.remote.token) return s.remote
+  const next = setSettings({ remote: { ...s.remote, token: generateToken() } })
+  send(CH.settingsChanged, next)
+  return next.remote
+}
+
+/**
+ * Tell every listener the remote picture moved: the panel, the title bar's
+ * phone button, and the tab strip's attached-phone marks. Defined as a function
+ * declaration so the RemoteServer constructed at boot, above `remoteState`, can
+ * name it.
+ */
+function pushRemote(): void {
+  void remoteState().then((state) => send(CH.remoteChanged, state))
+}
+
+/*
+ * The QR code, memoised on the link it encodes. `remoteState` is read on
+ * every panel poll and every push, and rasterising a 320px code each time
+ * was work for a picture that had not changed.
+ */
+let lastQr: { url: string; bg: string; qr: string } | null = null
+/*
+ * Whether the speech sidecar answers, probed at most every 15s and only
+ * while something is asking. Any HTTP answer counts — the sidecar 405s an
+ * OPTIONS — and a refused connection is the whole signal.
+ */
+let sttProbe: { url: string; at: number; result: 'up' | 'down' } | null = null
+const probeStt = async (url: string): Promise<'up' | 'down' | 'unknown'> => {
+  const base = url.trim().replace(/\/$/, '')
+  if (!base) return 'unknown'
+  if (sttProbe && sttProbe.url === base && Date.now() - sttProbe.at < 15_000) return sttProbe.result
+  let result: 'up' | 'down'
+  try {
+    await fetch(`${base}/transcribe`, { method: 'OPTIONS', signal: AbortSignal.timeout(800) })
+    result = 'up'
+  } catch {
+    result = 'down'
+  }
+  sttProbe = { url: base, at: Date.now(), result }
+  return result
+}
+
+const remoteState = async (): Promise<RemoteState> => {
+  const cfg = remoteConfig()
+  const tun = tunnel.status()
+  /*
+   * The tunnel's live address wins, quick or named, so the QR code and the
+   * link line follow the thing that is actually running. The quick tunnel's
+   * URL used to be printed bare and the QR kept encoding the LAN link, so a
+   * phone opening the tunnel got 401: the key was in the other string.
+   */
+  const target = connectTarget({ ...cfg, tunnelUrl: tun.running ? tun.url : null })
+  // No key, no link: a URL with `?k=` would be a lie the server cannot honour.
+  const url = cfg.token ? target.url : null
+  let qr: string | null = null
+  if (url) {
+    const s = getSettings()
+    const qrTheme = resolveTheme(s.themeId, s.customThemes)
+    if (lastQr && lastQr.url === url && lastQr.bg === qrTheme.colors.bg) {
+      qr = lastQr.qr
+    } else {
+      try {
+        /*
+         * Imported here rather than at the top of the file. `qrcode` is needed
+         * by exactly one thing — the connect code — and a static import is a
+         * synchronous `require` before `app.whenReady` even fires, because
+         * electron-vite externalises dependencies rather than bundling them
+         * (`externalizeDepsPlugin`). Measured at 5-16ms of every launch for a
+         * module most launches never reach. Node caches it, so the second
+         * call pays nothing.
+         */
+        const { default: QRCode } = await import('qrcode')
+        qr = await QRCode.toDataURL(url, {
+          margin: 1,
+          width: 320,
+          // Was Ember's bg and text, hardcoded -- so the code stayed dark-on-warm
+          // inside a light window. A QR reader does not care, but the panel does.
+          color: { dark: qrTheme.colors.text, light: qrTheme.colors.bg }
+        })
+        lastQr = { url, bg: qrTheme.colors.bg, qr }
+      } catch {
+        qr = null
+      }
+    }
+  }
+  return {
+    server: remote?.status() ?? {
+      running: false,
+      port: cfg.port,
+      error: null,
+      clients: 0,
+      addresses: [],
+      attachedByPty: {}
+    },
+    tunnel: tun,
+    url,
+    reach: target.reach,
+    address: target.address,
+    candidates: target.candidates,
+    tailnet: tailnetAddress(),
+    qr,
+    setup: tunnel.setupCommands(cfg.tunnelName, cfg.hostname, cfg.port),
+    stt: await probeStt(cfg.sttUrl)
+  }
+}
+
 
 /**
  * One definition of what the remote server can reach into, used by both places
@@ -462,6 +578,14 @@ function remoteDeps(): RemoteDeps {
     readTranscript: async (sessionId) => {
       const file = await findSessionFile(sessionId)
       return file ? readTranscript(file) : null
+    },
+    hostFor: (sessionId) => {
+      const host = hostForSession(sessionId)
+      return host ? host.label || host.alias : null
+    },
+    theme: () => {
+      const s = getSettings()
+      return { theme: resolveTheme(s.themeId, s.customThemes), fontFamily: s.fontFamily }
     }
   }
 }
@@ -1020,12 +1144,13 @@ function createWindow(): void {
 
   // Bring remote access back up if it was left on.
   if (getSettings().remote.enabled) {
-    const cfg = remoteConfig()
-    remote = new RemoteServer(remoteDeps())
+    const cfg = ensureRemoteToken()
+    remote = new RemoteServer(remoteDeps(), pushRemote)
     void remote.start(cfg).then(() => {
       if (cfg.autoStartTunnel && cfg.hostname) {
         tunnel.start('named', { port: cfg.port, tunnelName: cfg.tunnelName, hostname: cfg.hostname })
       }
+      pushRemote()
     })
   }
 
@@ -1357,69 +1482,63 @@ function registerIpc(): void {
 
   /* ---------------------------------------------------------------- remote */
 
-  const remoteState = async (): Promise<unknown> => {
-    const cfg = remoteConfig()
-    const url = connectUrl(cfg)
-    let qr: string | null = null
-    try {
-      /*
-       * Imported here rather than at the top of the file. `qrcode` is needed by
-       * exactly one thing — the connect code in the remote panel — and a static
-       * import is a synchronous `require` before `app.whenReady` even fires,
-       * because electron-vite externalises dependencies rather than bundling
-       * them (`externalizeDepsPlugin`). Measured at 5-16ms of every launch for
-       * a module most launches never reach. Node caches it, so opening the
-       * panel twice pays once.
-       */
-      const { default: QRCode } = await import('qrcode')
-      const s = getSettings()
-      const qrTheme = resolveTheme(s.themeId, s.customThemes)
-      qr = await QRCode.toDataURL(url, {
-        margin: 1,
-        width: 320,
-        // Was Ember's bg and text, hardcoded -- so the code stayed dark-on-warm
-        // inside a light window. A QR reader does not care, but the panel does.
-        color: { dark: qrTheme.colors.text, light: qrTheme.colors.bg }
-      })
-    } catch {
-      qr = null
-    }
-    return {
-      server: remote?.status() ?? {
-        running: false,
-        port: cfg.port,
-        error: null,
-        clients: 0,
-        addresses: []
-      },
-      tunnel: tunnel.status(),
-      url,
-      qr,
-      setup: tunnel.setupCommands(cfg.tunnelName, cfg.hostname, cfg.port)
-    }
-  }
-
   ipcMain.handle(CH.remoteStatus, () => remoteState())
 
-  ipcMain.handle(CH.remoteStart, async () => {
-    const cfg = remoteConfig()
-    if (!remote) {
-      remote = new RemoteServer(remoteDeps())
+  /**
+   * One press does the whole job.
+   *
+   * A fresh install's "Turn on" used to produce a link a phone could not open:
+   * every transport is off by default, so `connectTarget` fell through to
+   * 127.0.0.1 and the panel drew it as a QR code under "Open on your phone".
+   * Making it work took ticking a box below the code and turning the server off
+   * and on again, and nothing said so. So if nothing reaches beyond this
+   * machine, this picks: the tailnet when Tailscale is up (a smaller room than
+   * the LAN), the local network otherwise. A transport the user already chose
+   * is kept exactly as chosen.
+   */
+  ipcMain.handle(CH.remoteOpenOnPhone, async () => {
+    const cur = ensureRemoteToken()
+    const reaches = cur.bindLan || cur.bindTailscale || Boolean(cur.hostname.trim()) || tunnel.status().running
+    const pick = reaches ? {} : tailnetAddress() ? { bindTailscale: true } : { bindLan: true }
+    const next = setSettings({ remote: { ...cur, ...pick, enabled: true } })
+    send(CH.settingsChanged, next)
+    remote ??= new RemoteServer(remoteDeps(), pushRemote)
+    await remote.start(next.remote)
+    if (next.remote.autoStartTunnel && next.remote.hostname && !tunnel.status().running) {
+      tunnel.start('named', {
+        port: next.remote.port,
+        tunnelName: next.remote.tunnelName,
+        hostname: next.remote.hostname
+      })
     }
+    const state = await remoteState()
+    send(CH.remoteChanged, state)
+    return state
+  })
+
+  ipcMain.handle(CH.remoteStart, async () => {
+    const cfg = ensureRemoteToken()
+    remote ??= new RemoteServer(remoteDeps(), pushRemote)
     await remote.start(cfg)
     if (cfg.autoStartTunnel && cfg.hostname) {
       tunnel.start('named', { port: cfg.port, tunnelName: cfg.tunnelName, hostname: cfg.hostname })
     }
-    setSettings({ remote: { ...cfg, enabled: true } })
-    return remoteState()
+    // Pushed, not merely written: the panel builds every patch from ITS copy
+    // of `remote`, so a write it is not told about is one it will undo.
+    send(CH.settingsChanged, setSettings({ remote: { ...cfg, enabled: true } }))
+    const state = await remoteState()
+    send(CH.remoteChanged, state)
+    return state
   })
 
   ipcMain.handle(CH.remoteStop, async () => {
     await remote?.stop()
     tunnel.stop()
     const s = getSettings()
-    setSettings({ remote: { ...s.remote, enabled: false } })
-    return remoteState()
+    send(CH.settingsChanged, setSettings({ remote: { ...s.remote, enabled: false } }))
+    const state = await remoteState()
+    send(CH.remoteChanged, state)
+    return state
   })
 
   ipcMain.handle(CH.remoteNewToken, async () => {
@@ -1428,17 +1547,35 @@ function registerIpc(): void {
     // Existing phones must re-open the link; restart so the old key stops working.
     if (remote?.status().running) await remote.start(next.remote)
     send(CH.settingsChanged, next)
-    return remoteState()
+    const state = await remoteState()
+    send(CH.remoteChanged, state)
+    return state
   })
 
-  ipcMain.handle(CH.tunnelStart, (_e, mode: 'named' | 'quick') => {
+  ipcMain.handle(CH.tunnelStart, async (_e, mode: 'named' | 'quick') => {
     const cfg = remoteConfig()
+    await tunnel.locate()
     tunnel.start(mode, { port: cfg.port, tunnelName: cfg.tunnelName, hostname: cfg.hostname })
-    return remoteState()
+    /*
+     * A quick tunnel announces its address a second or two after starting, and
+     * cloudflared fails a second or two after that when it is going to. One
+     * follow-up push a few seconds on catches both without the panel polling.
+     */
+    setTimeout(pushRemote, 4000)
+    const state = await remoteState()
+    send(CH.remoteChanged, state)
+    return state
   })
 
-  ipcMain.handle(CH.tunnelStop, () => {
+  ipcMain.handle(CH.tunnelStop, async () => {
     tunnel.stop()
+    const state = await remoteState()
+    send(CH.remoteChanged, state)
+    return state
+  })
+
+  ipcMain.handle(CH.tunnelLocate, async () => {
+    await tunnel.locate(true)
     return remoteState()
   })
 
@@ -1475,9 +1612,24 @@ function registerIpc(): void {
 
   /* -------------------------------------------------------------- settings */
   ipcMain.handle(CH.settingsGet, () => getSettings())
-  ipcMain.handle(CH.settingsSet, (_e, patch: Partial<Settings>) => {
+  ipcMain.handle(CH.settingsSet, async (_e, patch: Partial<Settings>) => {
     const prev = getSettings()
     const next = setSettings(patch)
+    /*
+     * A running remote server reads its config once, at start. So ticking
+     * "also listen on the local network", changing the port, or requiring
+     * Access used to change nothing until the server was turned off and on —
+     * and nothing said so. Restart it here when a field it binds or checks
+     * moves; `start()` stops the old listeners first.
+     */
+    const bindKeys = ['port', 'bindLan', 'bindTailscale', 'requireAccessHeader', 'hostname', 'token'] as const
+    if (remote?.status().running && bindKeys.some((k) => prev.remote[k] !== next.remote[k])) {
+      await remote.start(next.remote)
+      pushRemote()
+    } else if (prev.remote.sttUrl !== next.remote.sttUrl) {
+      sttProbe = null
+      pushRemote()
+    }
     /*
      * The Windows overlay is painted by the OS, not the page, so a theme change
      * leaves the buttons on the old colour until it is told. Profiles repaint

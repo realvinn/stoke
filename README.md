@@ -46,18 +46,23 @@ need to download.
 
 ## phone access
 
-settings -> remote. you get a link and a qr code.
+press the phone button in the title bar, then **open on phone**. you get a code
+to scan. same thing lives in settings -> phone access, with the knobs.
+
+it picks a route a phone can actually use: tailscale if it's running on this
+machine, otherwise your wi-fi. from outside the house, open the "reach it from
+outside your network" section and point a cloudflare tunnel at it — install
+`cloudflared`, give it the hostname yours routes to, and stoke runs the named
+tunnel for you (or a throwaway quick one, which has no access policy in front
+of it and is only worth using for a few minutes). turn on cloudflare access
+once the named tunnel is up.
 
 that link is a password. anyone with it can run commands on your machine, so
-don't paste it anywhere. **new key** in settings kills the old one.
+don't paste it anywhere. **replace the key** under advanced logs every phone
+out.
 
 your desktop has to be awake and running stoke — nothing is hosted anywhere.
-
-to reach it from outside your house, put a cloudflare tunnel in front of it and
-turn on cloudflare access. the same panel runs the tunnel for you: install
-`cloudflared`, give it the hostname yours routes to, and it'll start a named one
-— or a throwaway quick one, which has no access policy in front of it and is
-only worth using for a few minutes.
+add the page to your home screen and it opens like an app.
 
 ## the worklog
 
@@ -124,7 +129,7 @@ npm run verify:context    # the context meter, run against the real transcripts
 ```
 
 the phone server has its own suite, and it wants a stoke that's already running
-— give it the link and key from settings -> remote:
+— give it the link and key from settings -> phone access:
 
 ```bash
 npm run verify:security <url> <token>

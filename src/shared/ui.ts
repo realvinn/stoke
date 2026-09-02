@@ -19,6 +19,23 @@ export function clampFontSize(value: unknown): number {
   return Math.min(FONT_SIZE_MAX, Math.max(FONT_SIZE_MIN, Math.round(n)))
 }
 
+/* ------------------------------------------------------------ remote port */
+
+export const REMOTE_PORT_DEFAULT = 7878
+
+/**
+ * A usable listening port, or the default. Below 1024 needs root and above
+ * 65535 does not exist; a fraction, NaN or an empty box all land on the
+ * default rather than on whatever `Number('')` happens to be. Applied at
+ * hydrate and on commit, never on every keystroke — clamping mid-edit is how
+ * typing "8080" used to persist 8, 80 and 808 on the way.
+ */
+export function clampPort(value: unknown): number {
+  const n = typeof value === 'number' ? value : Number(value)
+  if (!Number.isInteger(n) || n < 1024 || n > 65535) return REMOTE_PORT_DEFAULT
+  return n
+}
+
 /* ------------------------------------------------------------------- zoom */
 
 export const UI_SCALE_DEFAULT = 1

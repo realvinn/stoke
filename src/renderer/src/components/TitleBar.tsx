@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { ContextSnapshot } from '@shared/types'
 import type { WorklogButtonState } from '@shared/worklog'
 import { UsageChip } from './UsageMeter'
+import { PhonePopover } from './PhonePopover'
 import { TabIndicator } from './TabIndicator'
 import {
   BrandMark,
@@ -47,6 +48,8 @@ interface Props {
   onToggleWorklog: () => void
   onOpenPalette: () => void
   onOpenSettings: () => void
+  /** Settings, opened straight at Phone access. */
+  onOpenPhoneSettings: () => void
 }
 
 export function TitleBar({
@@ -71,7 +74,8 @@ export function TitleBar({
   worklogOpen,
   onToggleWorklog,
   onOpenPalette,
-  onOpenSettings
+  onOpenSettings,
+  onOpenPhoneSettings
 }: Props): React.JSX.Element {
   const isMac = platform === 'darwin'
   const [dragId, setDragId] = useState<string | null>(null)
@@ -245,6 +249,7 @@ export function TitleBar({
           <IconPin />
           <span className="sr-only">Toggle worklog review</span>
         </button>
+        <PhonePopover onOpenSettings={onOpenPhoneSettings} />
         <UsageChip />
 
         <button className="icon-btn" onClick={onOpenSettings} title="Settings">

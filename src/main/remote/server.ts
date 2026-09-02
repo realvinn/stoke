@@ -1,16 +1,20 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { readFile } from 'node:fs/promises'
-import { hostname, networkInterfaces } from 'node:os'
+import { hostname } from 'node:os'
 import { extname, join, normalize, sep } from 'node:path'
 import type { Duplex } from 'node:stream'
 import { app } from 'electron'
 import { WebSocketServer, type WebSocket } from 'ws'
-import type { ContextSnapshot, LaunchOptions, Project, SessionMeta } from '@shared/types'
+import type { ContextSnapshot, LaunchOptions, Project, SessionMeta, Theme } from '@shared/types'
 import type { ContextWatcher } from '../context.ts'
 import type { PtyManager, StartResult } from '../pty.ts'
 import type { Transcript } from '../sessionFile.ts'
 import { MAX_AUDIO_BYTES, transcribe } from '../stt.ts'
+import { isTailnetAddress, tailnetAddress } from './link.ts'
+
+export { connectTarget, connectUrl, isTailnetAddress, lanAddresses, tailnetAddress } from './link.ts'
+export type { ConnectTarget, Reach } from './link.ts'
 
 /**
  * Serves Stoke's sessions to a phone or another browser.
@@ -32,6 +36,19 @@ export interface RemoteDeps {
   listSessions: (projectPath: string) => Promise<SessionMeta[]>
   /** The conversation in a past session, for reading it back. */
   readTranscript: (sessionId: string) => Promise<Transcript | null>
+  /**
+   * The SSH host a session runs on, or null for a local one. An SSH session's
+   * `cwd` is the LOCAL folder Stoke happened to be pointed at (CLAUDE.md
+   * gotcha 18), so naming the session by it on the phone names the wrong
+   * machine entirely.
+   */
+  hostFor: (sessionId: string) => string | null
+  /**
+   * The theme the desktop is painting, so the phone can paint the same one.
+   * The mobile bundle used to carry a hand copy of one palette that drifted
+   * every time the desktop's moved (gotcha 43); serving it is the fix.
+   */
+  theme: () => { theme: Theme; fontFamily: string }
 }
 
 /** Session ids are UUIDs, and they are joined onto filesystem paths. */
@@ -79,31 +96,8 @@ export interface RemoteStatus {
   clients: number
   /** Addresses actually bound, so the UI can offer a tailnet link as well as the tunnel. */
   addresses: string[]
-}
-
-/*
- * Tailscale gives every node an address in 100.64.0.0/10, the CGNAT range it
- * borrows for the tailnet. Matching the range rather than the interface name
- * keeps this working everywhere, since the interface is variously "Tailscale",
- * "tailscale0" and a "utun" device depending on the platform.
- */
-/** True for an address in 100.64.0.0/10, the CGNAT range Tailscale uses. */
-export function isTailnetAddress(address: string): boolean {
-  // Node reports an IPv4 socket as ::ffff:100.x on a dual-stack listener.
-  const plain = address.replace(/^::ffff:/i, '')
-  const [first, second] = plain.split('.').map(Number)
-  return first === 100 && second >= 64 && second <= 127
-}
-
-export function tailnetAddress(): string | null {
-  for (const addrs of Object.values(networkInterfaces())) {
-    for (const a of addrs ?? []) {
-      if (a.family !== 'IPv4' || a.internal) continue
-      const [first, second] = a.address.split('.').map(Number)
-      if (first === 100 && second >= 64 && second <= 127) return a.address
-    }
-  }
-  return null
+  /** How many phones are attached to each pty, so a tab can say one is watching. */
+  attachedByPty: Record<string, number>
 }
 
 const MIME: Record<string, string> = {
@@ -113,48 +107,12 @@ const MIME: Record<string, string> = {
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
   '.woff2': 'font/woff2',
-  '.json': 'application/json; charset=utf-8'
+  '.json': 'application/json; charset=utf-8',
+  '.webmanifest': 'application/manifest+json; charset=utf-8'
 }
 
 export function generateToken(): string {
   return randomBytes(24).toString('base64url')
-}
-
-/**
- * The link to open on the phone. Prefers the tunnel hostname; falls back to a
- * LAN address when the server is bound beyond loopback, and otherwise localhost
- * (useful only on this machine, but it makes the state obvious).
- */
-export function connectUrl(opts: {
-  hostname: string
-  port: number
-  token: string
-  bindLan: boolean
-  bindTailscale?: boolean
-}): string {
-  const key = `?k=${encodeURIComponent(opts.token)}`
-  if (opts.hostname.trim()) return `https://${opts.hostname.trim()}/${key}`
-  /*
-   * The tailnet address before the LAN sweep and before loopback. Without this
-   * the link and the QR code fall through to 127.0.0.1, which is useless on the
-   * phone that is meant to scan it - the feature would look broken while the
-   * server was in fact listening correctly.
-   */
-  if (opts.bindTailscale && !opts.bindLan) {
-    const tailnet = tailnetAddress()
-    if (tailnet) return `http://${tailnet}:${opts.port}/${key}`
-  }
-  if (opts.bindLan) {
-    const nets = networkInterfaces()
-    for (const list of Object.values(nets)) {
-      for (const net of list ?? []) {
-        if (net.family === 'IPv4' && !net.internal) {
-          return `http://${net.address}:${opts.port}/${key}`
-        }
-      }
-    }
-  }
-  return `http://127.0.0.1:${opts.port}/${key}`
 }
 
 function safeEqual(a: string, b: string): boolean {
@@ -175,20 +133,33 @@ export class RemoteServer {
   private offExit: (() => void) | null = null
   /** ptyId -> sockets attached to it. */
   private attached = new Map<string, Set<WebSocket>>()
+  /**
+   * The desktop's own size for a pty a phone has resized, so it can be put
+   * back when the last phone leaves. A phone that fits the terminal to its
+   * own screen reflows the desktop's xterm to forty columns under whoever is
+   * sitting at it, and nothing used to undo that.
+   */
+  private desktopSize = new Map<string, { cols: number; rows: number }>()
 
   private readonly deps: RemoteDeps
+  /** Told whenever a client attaches or leaves, so the desktop can say so. */
+  private readonly onClientsChanged: () => void
 
-  constructor(deps: RemoteDeps) {
+  constructor(deps: RemoteDeps, onClientsChanged: () => void = () => {}) {
     this.deps = deps
+    this.onClientsChanged = onClientsChanged
   }
 
   status(): RemoteStatus {
+    const attachedByPty: Record<string, number> = {}
+    for (const [ptyId, set] of this.attached) if (set.size) attachedByPty[ptyId] = set.size
     return {
       running: this.servers.length > 0,
       port: this.config?.port ?? 0,
       error: this.error,
       clients: this.clients.size,
-      addresses: [...this.bound]
+      addresses: [...this.bound],
+      attachedByPty
     }
   }
 
@@ -462,6 +433,20 @@ export class RemoteServer {
       if (url.pathname === '/api/host' && req.method === 'GET') {
         return this.json(res, { machine: hostname(), platform: process.platform }, setCookie)
       }
+      /*
+       * The colours this window is painting, so the phone paints the same
+       * ones. Before this the mobile bundle carried a hand copy of one palette
+       * that no suite could see and that had drifted to pre-ladder values: the
+       * phone's terminal was a different black from its own page.
+       */
+      if (url.pathname === '/api/theme' && req.method === 'GET') {
+        const { theme, fontFamily } = this.deps.theme()
+        return this.json(
+          res,
+          { appearance: theme.appearance, colors: theme.colors, terminal: theme.terminal, fontFamily },
+          setCookie
+        )
+      }
 
       if (url.pathname === '/api/projects' && req.method === 'GET') {
         const projects = await this.deps.listProjects()
@@ -617,6 +602,10 @@ export class RemoteServer {
       sessionId: string
       cwd: string
       name: string
+      /** The SSH host label when the session runs elsewhere, else null. */
+      host: string | null
+      /** True once the process has ended; the phone draws it as ended, not idle. */
+      exited: boolean
       startedAt: number
       cols: number
       rows: number
@@ -626,16 +615,23 @@ export class RemoteServer {
     const ptys = this.deps.ptys()
     const watcher = this.deps.watcher()
     if (!ptys) return []
-    return ptys.list().map((s) => ({
-      ptyId: s.ptyId,
-      sessionId: s.sessionId,
-      cwd: s.cwd,
-      name: s.cwd.split(/[\\/]/).filter(Boolean).pop() ?? s.cwd,
-      startedAt: s.startedAt,
-      cols: s.cols,
-      rows: s.rows,
-      context: watcher?.snapshot(s.sessionId) ?? null
-    }))
+    return ptys.list().map((s) => {
+      const host = this.deps.hostFor(s.sessionId)
+      return {
+        ptyId: s.ptyId,
+        sessionId: s.sessionId,
+        cwd: s.cwd,
+        // An SSH session's cwd is a local folder that has nothing to do with
+        // where it runs (gotcha 18), so the host is the honest name.
+        name: host ?? (s.cwd.split(/[\\/]/).filter(Boolean).pop() ?? s.cwd),
+        host,
+        exited: s.exited,
+        startedAt: s.startedAt,
+        cols: s.cols,
+        rows: s.rows,
+        context: watcher?.snapshot(s.sessionId) ?? null
+      }
+    })
   }
 
   private json(
@@ -777,6 +773,7 @@ export class RemoteServer {
       this.attached.set(ptyId, set)
     }
     set.add(ws)
+    this.onClientsChanged()
 
     const info = ptys.list().find((s) => s.ptyId === ptyId)
     ws.send(
@@ -788,6 +785,15 @@ export class RemoteServer {
         history: ptys.historyFor(ptyId)
       })
     )
+    /*
+     * A process that has already ended is still listed — the desktop keeps
+     * its tab so the output can be read — but it will never write again. Say
+     * so straight after the replay, or the phone shows a terminal that looks
+     * alive and simply never answers.
+     */
+    if (info?.exited) {
+      ws.send(JSON.stringify({ type: 'exit', ptyId, code: null, reason: 'That session has ended.' }))
+    }
 
     ws.on('message', (raw) => {
       let msg: { type?: string; data?: string; cols?: number; rows?: number; force?: boolean }
@@ -802,8 +808,16 @@ export class RemoteServer {
       if (msg.type === 'input' && typeof msg.data === 'string') {
         manager.write(ptyId, msg.data)
       } else if (msg.type === 'resize' && msg.force && msg.cols && msg.rows) {
-        // Only on explicit request: a phone resizing the PTY reflows the
-        // desktop terminal too, which is jarring if someone is sitting at it.
+        /*
+         * Only on explicit request: a phone resizing the PTY reflows the
+         * desktop terminal too, which is jarring if someone is sitting at it.
+         * The desktop's own size is remembered the first time a phone changes
+         * it, so `drop` below can put it back when the last phone leaves.
+         */
+        if (!this.desktopSize.has(ptyId)) {
+          const now = manager.list().find((s) => s.ptyId === ptyId)
+          if (now) this.desktopSize.set(ptyId, { cols: now.cols, rows: now.rows })
+        }
         manager.resize(ptyId, msg.cols, msg.rows)
       }
     })
@@ -811,6 +825,14 @@ export class RemoteServer {
     const drop = (): void => {
       set?.delete(ws)
       this.clients.delete(ws)
+      if (set && set.size === 0) {
+        const saved = this.desktopSize.get(ptyId)
+        if (saved) {
+          this.desktopSize.delete(ptyId)
+          this.deps.ptys()?.resize(ptyId, saved.cols, saved.rows)
+        }
+      }
+      this.onClientsChanged()
     }
     ws.on('close', drop)
     ws.on('error', drop)
