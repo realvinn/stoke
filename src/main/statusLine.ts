@@ -1,5 +1,6 @@
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -274,9 +275,12 @@ export function statusLineCommand(
   // Passed in rather than read, so a suite on any machine can ask what the
   // other platform gets — the Windows branch below is the one thing here that
   // cannot be exercised where this is developed.
-  platform: NodeJS.Platform = process.platform
+  platform: NodeJS.Platform = process.platform,
+  // Likewise: which interpreter the CLI will use decides the syntax, and that
+  // is a fact about the target machine rather than about this one.
+  hasGitBash: boolean = platform === 'win32' && gitBashPath() !== null
 ): string {
-  return shimCommand(sessionId, '', platform)
+  return shimCommand(sessionId, '', platform, hasGitBash)
 }
 
 /**
@@ -286,36 +290,119 @@ export function statusLineCommand(
  */
 export function hookCommand(
   sessionId: string,
-  platform: NodeJS.Platform = process.platform
+  platform: NodeJS.Platform = process.platform,
+  hasGitBash: boolean = platform === 'win32' && gitBashPath() !== null
 ): string {
-  return shimCommand(sessionId, 'event', platform)
+  return shimCommand(sessionId, 'event', platform, hasGitBash)
 }
 
-function shimCommand(sessionId: string, mode: string, platform: NodeJS.Platform): string {
+/**
+ * The paths Claude Code itself searches for Git Bash, in its own order.
+ *
+ * Transcribed from the 2.1.x bundle's locator rather than invented, because the
+ * only question worth answering here is "what will the CLI do", not "where is
+ * bash". Its `de()` reads CLAUDE_CODE_GIT_BASH_PATH first (accepting only a
+ * bash/sh basename, and falling through with a warning if it does not exist),
+ * then these two fixed installs, then `dirname(which('git'))/../../bin/bash.exe`.
+ */
+const GIT_BASH_FIXED = [
+  'C:\\Program Files\\Git\\bin\\bash.exe',
+  'C:\\Program Files (x86)\\Git\\bin\\bash.exe'
+]
+
+/** What the CLI accepts as an override; anything else falls through. */
+const GIT_BASH_NAMES = new Set(['bash.exe', 'sh.exe', 'bash', 'sh'])
+
+/**
+ * Where Claude Code will find Git Bash on this machine, or null for none.
+ *
+ * `env` and `exists` are arguments so a suite on any platform can ask about a
+ * Windows machine's layout — the same reason `claudePaths.ts` takes them.
+ *
+ * This exists because the answer decides the SYNTAX of the statusLine command,
+ * and getting it backwards silently disables the status line and all three
+ * hooks. See `shimCommand`.
+ */
+export function gitBashPath(
+  env: NodeJS.ProcessEnv = process.env,
+  exists: (p: string) => boolean = existsSync
+): string | null {
+  const override = env.CLAUDE_CODE_GIT_BASH_PATH
+  if (override) {
+    // basename by hand rather than through `path`, which resolves against the
+    // separator of the machine this runs on rather than the one described.
+    const base = override.split(/[\\/]/).pop()?.toLowerCase() ?? ''
+    if (GIT_BASH_NAMES.has(base) && exists(override)) return override
+    // Falls through exactly as the CLI does: a bad override warns and is
+    // ignored rather than disabling detection.
+  }
+
+  for (const p of GIT_BASH_FIXED) if (exists(p)) return p
+
+  // `which git`, then up two and across — a Git for Windows install has
+  // cmd/git.exe beside bin/bash.exe.
+  for (const dir of (env.PATH ?? env.Path ?? '').split(';')) {
+    if (!dir) continue
+    const trimmed = dir.replace(/[\\/]+$/, '')
+    if (!exists(`${trimmed}\\git.exe`)) continue
+    const up = trimmed.split(/[\\/]/).slice(0, -1).join('\\')
+    const candidate = `${up}\\bin\\bash.exe`
+    if (exists(candidate)) return candidate
+  }
+
+  return null
+}
+
+function shimCommand(
+  sessionId: string,
+  mode: string,
+  platform: NodeJS.Platform,
+  hasGitBash: boolean
+): string {
   const line =
     `"${join(statusLineDir(), shimName())}" "${key(sessionId)}"` + (mode ? ` "${mode}"` : '')
   /*
-   * `&` in front, on Windows only, because the CLI may run this through
-   * PowerShell.
+   * On Windows the syntax depends on which shell the CLI will use, and it uses
+   * whichever one it can find.
    *
-   * Claude Code prefers Git Bash for a statusLine command and falls back to
-   * PowerShell when Git for Windows is not installed. PowerShell parses a
-   * command line beginning with a quoted string as a *string expression*, not
-   * as an invocation, so `"C:\...\run.cmd" "key"` is a ParserError — measured
-   * against real pwsh 7.6.5, exit 1, and the shim never runs. The failure is
-   * silent from Stoke's side: no payload file appears, so the context ring and
-   * the payload's plan limits are simply absent on a Windows machine with no
-   * Git Bash, with nothing anywhere saying why.
+   * `HD()` in the CLI's own bundle is `cs() ? "bash" : "powershell"`, where
+   * `cs()` is "not Windows, or Git Bash was located" — so Git Bash is the
+   * PREFERRED interpreter on Windows and PowerShell is the fallback. Stoke
+   * sets no `shell` field on either the statusLine or the hook entries, so that
+   * default is what governs. The CLI's own help text says as much: "the command
+   * is executed through Git Bash".
    *
-   * The call operator fixes exactly that and is harmless in the Git Bash
-   * branch, where `&` is only meaningful when it *ends* a command.
+   * The two shells need opposite things, and there is no single string that
+   * satisfies both:
    *
-   * CLAUDE.md's recorded worry about cmd.exe was misdirected, and is corrected
-   * in gotcha 2: cmd.exe is not on this path at all, and its quote-stripping
-   * rule applies at exactly two quote characters — so more quotes is the safe
-   * direction, not the dangerous one.
+   *   PowerShell parses a line beginning with a quoted string as a string
+   *   EXPRESSION rather than an invocation, so `"C:\...\run.cmd" "key"` is a
+   *   ParserError — measured against real pwsh 7.6.5, exit 1. The call operator
+   *   `&` is what makes it an invocation.
+   *
+   *   A POSIX shell — which is what Git Bash is — treats a leading `&` as a
+   *   syntax error outright. Measured: `bash -c '& echo hi'` gives "syntax
+   *   error near unexpected token `&'", and so do sh and zsh.
+   *
+   * 0.5.4 added the `&` unconditionally for the PowerShell case, under a
+   * comment asserting it was "harmless in the Git Bash branch, where `&` is
+   * only meaningful when it *ends* a command". That is false, and it inverted
+   * the bug: the fix for machines without Git for Windows broke every machine
+   * WITH it — which is the CLI's own preferred configuration. On those the shim
+   * never ran at all, so no payload was ever written (no context ring, nothing
+   * for the plan-limit chip), none of the Stop/Notification/UserPromptSubmit
+   * hooks fired (no activity dot, no "Claude is working…", no notifications),
+   * and the user's own previously configured statusLine stopped appearing too,
+   * because the wrapper that re-runs it as pass-through is what failed to
+   * start.
+   *
+   * So the interpreter is detected rather than assumed, by mirroring the CLI's
+   * own locator (`gitBashPath`). Detection can only be wrong in the direction
+   * the machine actually is: if Git Bash appears or disappears between here and
+   * the session launching, the worst case is the state this code was already in
+   * for one of the two populations.
    */
-  return platform === 'win32' ? `& ${line}` : line
+  return platform === 'win32' && !hasGitBash ? `& ${line}` : line
 }
 
 function windowSize(v: unknown): number | null {

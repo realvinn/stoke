@@ -24,6 +24,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import {
   clearSessionFiles,
+  gitBashPath,
   hookCommand,
   parseHookEvent,
   readSessionEvents,
@@ -1239,27 +1240,49 @@ check(
 /*
  * The Windows shape of the command, asserted from a Mac.
  *
- * Claude Code prefers Git Bash for a statusLine command and falls back to
- * PowerShell when Git for Windows is absent. PowerShell parses a line that
- * *starts* with a quoted string as a string expression rather than an
- * invocation, so the bare `"C:\...\run.cmd" "key"` is a ParserError — measured
- * against real pwsh 7.6.5 — and the shim silently never runs, taking the
- * context ring and the payload's plan limits with it. `&` is the call operator
- * that fixes it, and is inert in the Git Bash branch.
+ * Which shell runs it is not fixed, and the two want opposite syntax.
  *
- * `statusLineCommand` takes the platform as an argument precisely so this can
- * be checked on a machine that is not Windows.
+ * Claude Code's own resolver is `cs() ? "bash" : "powershell"` where `cs()` is
+ * "not Windows, or Git Bash was located" — so **Git Bash is the preferred
+ * interpreter on Windows** and PowerShell is the fallback for a machine without
+ * Git for Windows. Stoke sets no `shell` field on either entry, so that default
+ * governs.
+ *
+ *   PowerShell parses a line that STARTS with a quoted string as a string
+ *   expression rather than an invocation, so a bare `"C:\...\run.cmd" "key"`
+ *   is a ParserError — measured against real pwsh 7.6.5. `&` fixes it.
+ *
+ *   Git Bash is a POSIX shell, where a LEADING `&` is a syntax error outright.
+ *   Measured: `bash -c '& echo hi'` → "syntax error near unexpected token `&'".
+ *
+ * This block used to assert the `&` unconditionally, under a comment claiming
+ * it was "inert in the Git Bash branch". It is not, and that made these
+ * assertions pin a bug as correct behaviour — the same defect CLAUDE.md records
+ * against verify:selection in gotcha 10. On a Windows machine with Git for
+ * Windows installed, which is the CLI's own preferred case, the shim never ran:
+ * no payload (no context ring, nothing for the plan-limit chip), none of the
+ * three hooks (no activity dot, no "Claude is working…", no notifications), and
+ * the user's own statusLine gone too, since the wrapper that re-runs it is what
+ * failed to start.
+ *
+ * Both branches are asserted now, and the third argument exists so a machine
+ * that is not Windows can ask about either.
  */
-console.log('\nthe command PowerShell would be handed is an invocation, not a string')
+console.log('\nthe Windows command matches the shell the CLI will actually use')
 check(
-  'on Windows the line begins with the call operator',
-  /^& "/.test(statusLineCommand('stoke-win-shape', 'win32')),
+  'with no Git Bash, PowerShell gets an invocation rather than a string expression',
+  /^& "[^"]+" "stoke-win-shape"$/.test(statusLineCommand('stoke-win-shape', 'win32', false)),
   true
 )
 check(
-  'and the two quoted arguments are still intact behind it',
-  /^& "[^"]+" "stoke-win-shape"$/.test(statusLineCommand('stoke-win-shape', 'win32')),
+  'with Git Bash present, no leading & — a POSIX shell would refuse to parse it',
+  /^"[^"]+" "stoke-win-shape"$/.test(statusLineCommand('stoke-win-shape', 'win32', true)),
   true
+)
+check(
+  'the hooks follow the same rule, since they run through the same shim',
+  [hookCommand('h', 'win32', false).startsWith('& '), hookCommand('h', 'win32', true).startsWith('& ')],
+  [true, false]
 )
 check(
   'POSIX is left exactly as it was — no operator, nothing to parse',
@@ -1270,6 +1293,85 @@ check(
   'and linux agrees with darwin',
   statusLineCommand('same', 'linux'),
   statusLineCommand('same', 'darwin')
+)
+check(
+  'the two quoted arguments survive either way',
+  [
+    /"[^"]+" "same"$/.test(statusLineCommand('same', 'win32', false)),
+    /"[^"]+" "same"$/.test(statusLineCommand('same', 'win32', true))
+  ],
+  [true, true]
+)
+
+/*
+ * Where the CLI looks for Git Bash, mirrored exactly.
+ *
+ * Transcribed from the 2.1.x bundle's own locator: CLAUDE_CODE_GIT_BASH_PATH
+ * first (accepted only if its basename is bash/sh and the file exists, else
+ * ignored with a warning), then two fixed Program Files installs, then
+ * `dirname(which git)/../../bin/bash.exe`. Asserted against a synthetic
+ * filesystem, which is the only way to ask this from a Mac.
+ */
+console.log('\nfinding Git Bash the way the CLI finds it')
+const fsOf = (...present: string[]) => {
+  const set = new Set(present.map((p) => p.toLowerCase()))
+  return (p: string): boolean => set.has(p.toLowerCase())
+}
+const PF = 'C:\\Program Files\\Git\\bin\\bash.exe'
+const PF86 = 'C:\\Program Files (x86)\\Git\\bin\\bash.exe'
+
+check('nothing installed reports none', gitBashPath({}, fsOf()), null)
+check('the standard install is found', gitBashPath({}, fsOf(PF)), PF)
+check('so is the 32-bit one', gitBashPath({}, fsOf(PF86)), PF86)
+check(
+  'and 64-bit wins when both are there, as the CLI orders them',
+  gitBashPath({}, fsOf(PF, PF86)),
+  PF
+)
+check(
+  'a valid override beats the fixed installs',
+  gitBashPath(
+    { CLAUDE_CODE_GIT_BASH_PATH: 'D:\\tools\\bash.exe' } as NodeJS.ProcessEnv,
+    fsOf('D:\\tools\\bash.exe', PF)
+  ),
+  'D:\\tools\\bash.exe'
+)
+check(
+  'an override pointing at nothing falls through rather than disabling detection',
+  gitBashPath(
+    { CLAUDE_CODE_GIT_BASH_PATH: 'D:\\gone\\bash.exe' } as NodeJS.ProcessEnv,
+    fsOf(PF)
+  ),
+  PF
+)
+check(
+  'an override that is not a bash is refused, exactly as the CLI refuses it',
+  gitBashPath(
+    { CLAUDE_CODE_GIT_BASH_PATH: 'D:\\tools\\notepad.exe' } as NodeJS.ProcessEnv,
+    fsOf('D:\\tools\\notepad.exe', PF)
+  ),
+  PF
+)
+check(
+  'git on PATH locates the bash beside it',
+  gitBashPath(
+    { PATH: 'C:\\Windows;D:\\Git\\cmd' } as NodeJS.ProcessEnv,
+    fsOf('D:\\Git\\cmd\\git.exe', 'D:\\Git\\bin\\bash.exe')
+  ),
+  'D:\\Git\\bin\\bash.exe'
+)
+check(
+  'git on PATH with no bash beside it is not a Git Bash install',
+  gitBashPath(
+    { PATH: 'D:\\Git\\cmd' } as NodeJS.ProcessEnv,
+    fsOf('D:\\Git\\cmd\\git.exe')
+  ),
+  null
+)
+check(
+  'a POSIX PATH cannot be mistaken for a Windows one',
+  gitBashPath({ PATH: '/usr/bin:/bin:/usr/local/bin' } as NodeJS.ProcessEnv, fsOf()),
+  null
 )
 
 console.log('\nwhat the chip says: left, when, and how loud')
