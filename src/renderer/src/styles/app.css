@@ -1233,6 +1233,34 @@ body {
 
 /* The pin stays out of the way until the row is hovered, focused, or pinned —
    otherwise it repeats down the whole list as pure noise. */
+/*
+ * A session is running in this folder. Sized and coloured like the worklog dot
+ * in the tab strip rather than the context ring, because it answers the same
+ * kind of question — is something happening here — and must not be mistaken for
+ * the ring's progress.
+ */
+.project-live {
+  width: 0.375rem;
+  height: 0.375rem;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+}
+
+/*
+ * Start, revealed on hover beside the pin. Double-click on the row does the
+ * same thing and always has; it is named only in a title attribute, which is
+ * to say nowhere.
+ */
+.project-start {
+  opacity: 0;
+}
+
+.project:hover .project-start,
+.project:focus-within .project-start {
+  opacity: 1;
+}
+
 .project-pin {
   opacity: 0;
   transition: opacity var(--dur-fast) var(--ease);

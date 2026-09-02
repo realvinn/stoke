@@ -1544,6 +1544,23 @@ export function App(): React.JSX.Element {
 
   /* Memoised: a fresh array each render would rebuild the Sidebar's Set on every tick. */
   const openSessionIds = useMemo(() => tabs.map((t) => t.sessionId), [tabs])
+
+  /*
+   * Folders with a session running right now, for the sidebar's live dot.
+   *
+   * By cwd rather than by session id, because that is the question the row can
+   * answer: a project row knows its path and nothing about which conversation
+   * is open in it. SSH tabs are excluded — `cwd` on one of those is the host
+   * alias, not a folder (gotcha 18), and matching it against a project path
+   * would light up any local folder that happened to share the alias's name.
+   */
+  const runningPaths = useMemo(
+    () =>
+      tabs
+        .filter((t) => t.kind === 'session' && t.status === 'running' && !t.hostId)
+        .map((t) => t.cwd),
+    [tabs]
+  )
   const selectedProject = projects.find((p) => p.path === selectedPath) ?? null
 
   useEffect(() => {
@@ -1712,7 +1729,7 @@ export function App(): React.JSX.Element {
       const project = projects.find((p) => p.path === s.projectPath)
       void startSession({
         cwd: s.projectPath,
-        name: project?.name ?? s.projectPath,
+        name: project?.label ?? project?.name ?? s.projectPath,
         title: s.title ?? s.firstPrompt ?? undefined,
         sessionId: s.id,
         resume: true,
@@ -1769,6 +1786,7 @@ export function App(): React.JSX.Element {
                 sessionsByPath={sessionsByPath}
                 sessionsLoadingPath={sessionsLoadingPath}
                 openSessionIds={openSessionIds}
+                runningPaths={runningPaths}
                 onQueryChange={setQuery}
                 onSelectProject={(p) => selectProject(p.path)}
                 onToggleExpand={(p) => {
@@ -1778,7 +1796,12 @@ export function App(): React.JSX.Element {
                 onStartNew={(p) =>
                   void startSession({
                     cwd: p.path,
-                    name: p.name,
+                    // The label, when the folder has one. It is what the user
+                    // renamed this project to and what every list already
+                    // shows; the tab strip was the one place still saying the
+                    // basename, so a folder renamed "Client site" opened a tab
+                    // called "www".
+                    name: p.label ?? p.name,
                     replaceTabId: activeNewTabId ?? undefined
                   })
                 }
@@ -1844,6 +1867,31 @@ export function App(): React.JSX.Element {
                 Restored {restoreCount} paused {restoreCount === 1 ? 'tab' : 'tabs'} from last
                 time.
               </span>
+              {/*
+                Resume every one, from the bar that announces them.
+                Each paused card already has its own Resume, which is right for
+                picking one out of six and wrong for the common case — you left
+                three sessions open and you want the three of them back. Doing
+                that by hand means selecting each tab in turn, because a card
+                only renders for the tab in front.
+
+                `resumeTabFor` per tab, not one shared launch: each carries its
+                own stored permission mode, model and effort, and each replaces
+                its own tab by id, so they neither collide nor inherit today's
+                toolbar globals.
+              */}
+              <button
+                className="btn"
+                data-variant="primary"
+                onClick={() => {
+                  tabs
+                    .filter((t) => t.status === 'paused')
+                    .forEach((t) => resumeTabFor(t)?.())
+                }}
+                title="Start every restored tab again"
+              >
+                Resume all
+              </button>
               <button
                 className="btn"
                 data-variant="ghost"
@@ -1975,7 +2023,7 @@ export function App(): React.JSX.Element {
               onStartProject={(p) =>
                 void startSession({
                   cwd: p.path,
-                  name: p.name,
+                  name: p.label ?? p.name,
                   replaceTabId: activeNewTabId ?? undefined
                 })
               }
@@ -1988,7 +2036,7 @@ export function App(): React.JSX.Element {
                 if (selectedProject) {
                   void startSession({
                     cwd: selectedProject.path,
-                    name: selectedProject.name,
+                    name: selectedProject.label ?? selectedProject.name,
                     replaceTabId: activeNewTabId ?? undefined
                   })
                 }
@@ -1997,7 +2045,7 @@ export function App(): React.JSX.Element {
                 if (selectedProject) {
                   void startSession({
                     cwd: selectedProject.path,
-                    name: selectedProject.name,
+                    name: selectedProject.label ?? selectedProject.name,
                     continueLast: true,
                     replaceTabId: activeNewTabId ?? undefined
                   })

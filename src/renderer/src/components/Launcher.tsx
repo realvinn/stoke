@@ -123,7 +123,12 @@ export function Launcher({
     <div className="launcher">
       <div className="launcher-card">
         <div className="launcher-head">
-          <h1 className="launcher-title">{project ? project.name : 'Start a session'}</h1>
+          {/* The label, like every other list. The launcher was naming the
+              folder on disk while the sidebar row that opened it named the
+              project. */}
+          <h1 className="launcher-title">
+            {project ? (project.label ?? project.name) : 'Start a session'}
+          </h1>
           <span className="launcher-path mono">{project ? project.path : defaultCwd}</span>
           {project && !project.exists && (
             <span className="pill" data-tone="danger">

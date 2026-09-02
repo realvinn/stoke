@@ -33,6 +33,13 @@ interface Props {
    * had no state of its own at all.
    */
   openSessionIds: string[]
+  /**
+   * Folders with a session running right now. Drives the row's live dot, which
+   * is the one thing the sidebar could not say: with six projects open across
+   * a dozen tabs there was no way to tell, from the list, which ones you were
+   * already in.
+   */
+  runningPaths: string[]
   onQueryChange: (q: string) => void
   onSelectProject: (p: Project) => void
   onToggleExpand: (p: Project) => void
@@ -65,6 +72,7 @@ export function Sidebar({
   sessionsByPath,
   sessionsLoadingPath,
   openSessionIds,
+  runningPaths,
   onQueryChange,
   onSelectProject,
   onToggleExpand,
@@ -92,6 +100,7 @@ export function Sidebar({
 
   /* A Set so a project with a long history is one lookup per row, not a scan. */
   const openSessions = useMemo(() => new Set(openSessionIds), [openSessionIds])
+  const running = useMemo(() => new Set(runningPaths), [runningPaths])
 
   /*
    * The folders the selected chip covers, case-folded.
@@ -338,6 +347,30 @@ export function Sidebar({
                       {/* The label replaces the basename in this list only; the
                           row's title attribute still carries the real path. */}
                       <span className="project-name">{project.label ?? project.name}</span>
+
+                      {/* A session is open in this folder right now. Placed
+                          before the two buttons so it never moves as they
+                          appear and disappear on hover. */}
+                      {running.has(project.path) && (
+                        <span className="project-live" title="A session is running here">
+                          <span className="sr-only">session running</span>
+                        </span>
+                      )}
+
+                      {/* Hover-revealed, like the pin. Double-click already
+                          starts a session and is undiscoverable; the row's own
+                          title says so and nobody reads a title attribute. */}
+                      <button
+                        className="icon-btn project-start"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          onStartNew(project)
+                        }}
+                        title={`Start a session in ${project.path}`}
+                      >
+                        <IconPlus />
+                        <span className="sr-only">Start a session in {project.name}</span>
+                      </button>
 
                       <button
                         className="icon-btn project-pin"
