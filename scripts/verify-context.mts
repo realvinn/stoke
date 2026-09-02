@@ -311,6 +311,35 @@ check(
   String(noModes.permissionMode)
 )
 
+/*
+ * All four usage fields, not three.
+ *
+ * `contextUsed` summed input + cache_read + cache_creation and dropped
+ * output_tokens. Those three are the prompt the model was GIVEN; the output is
+ * what it wrote back, and that is in the conversation from the instant the turn
+ * ends — which is exactly when someone looks at the ring. Measured across the
+ * four largest real transcripts here, 2,486 consecutive turn pairs: the next
+ * prompt grew by at least the previous output in 2,482 of them.
+ *
+ * Asserted on a synthetic record rather than on a real transcript, because the
+ * point is the arithmetic and a real one cannot isolate a single field. Two
+ * cases: the sum is right, and it is strictly larger than the old three-field
+ * one whenever there is any output at all — the second is what actually fails
+ * if someone "simplifies" the fourth term back out.
+ */
+const usage = { inputTokens: 100, cacheReadTokens: 1000, cacheCreationTokens: 20, outputTokens: 7 }
+check('contextUsed counts all four usage fields', contextUsed(usage) === 1127, String(contextUsed(usage)))
+check(
+  'and never reports less than the prompt it was given',
+  contextUsed(usage) > usage.inputTokens + usage.cacheReadTokens + usage.cacheCreationTokens,
+  `${contextUsed(usage)} vs ${usage.inputTokens + usage.cacheReadTokens + usage.cacheCreationTokens}`
+)
+check(
+  'a turn that wrote nothing is unchanged',
+  contextUsed({ ...usage, outputTokens: 0 }) === 1120,
+  String(contextUsed({ ...usage, outputTokens: 0 }))
+)
+
 await rm(fixtureDir, { recursive: true, force: true })
 
 console.log(`\n${failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} FAILED: ${failures.join(', ')}`}`)

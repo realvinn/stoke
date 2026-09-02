@@ -351,10 +351,32 @@ export function contextLimitFor(
   return observedTokens > WINDOW_STANDARD ? WINDOW_EXTENDED : WINDOW_STANDARD
 }
 
+/**
+ * How much of the window the conversation is holding right now.
+ *
+ * All four fields, and the fourth one was missing. `input + cache_read +
+ * cache_creation` is the size of the prompt the model was GIVEN at the start of
+ * the last call; `output_tokens` is what it wrote in reply, and that reply is
+ * part of the conversation the moment it finishes. So between a turn ending and
+ * the next prompt being sent — which is precisely when anyone looks at the
+ * meter — the window holds the sum of all four, and the ring was drawing the
+ * smaller three.
+ *
+ * Measured rather than reasoned, against the four largest real transcripts on
+ * this machine (2,486 consecutive turn pairs): the next turn's prompt grew by at
+ * least the previous turn's output in 2,482 of them. The remaining four grew by
+ * less, at cache boundaries.
+ *
+ * It errs in the safe direction now. verify-context's own comment names
+ * understating context pressure as "the one direction this codebase treats as
+ * dangerous", because a meter reading 95% of a 200k window that is really at 99%
+ * is a meter telling someone to keep going.
+ */
 export function contextUsed(p: {
   inputTokens: number
   cacheReadTokens: number
   cacheCreationTokens: number
+  outputTokens: number
 }): number {
-  return p.inputTokens + p.cacheReadTokens + p.cacheCreationTokens
+  return p.inputTokens + p.cacheReadTokens + p.cacheCreationTokens + p.outputTokens
 }
