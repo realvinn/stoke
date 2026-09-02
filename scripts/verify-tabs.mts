@@ -6,6 +6,7 @@
  *   node scripts/verify-tabs.mts
  */
 import {
+  cycleTab,
   moveTab,
   neighbourOf,
   relaunchPlan,
@@ -308,6 +309,21 @@ check(
   'none'
 )
 check('and neither does no tab at all', relaunchPlan({ tab: null, running: '2.1.237', installed: '2.1.251' }).kind, 'none')
+
+console.log('\ncycling the strip wraps rather than stopping')
+check('next from the middle', cycleTab(five, 'c', 1), 'd')
+check('previous from the middle', cycleTab(five, 'c', -1), 'b')
+check('next from the last wraps to the first', cycleTab(five, 'e', 1), 'a')
+check('previous from the first wraps to the last', cycleTab(five, 'a', -1), 'e')
+check('one tab cycles to itself', cycleTab(['a'], 'a', 1), 'a')
+check('an empty strip has nowhere to go', cycleTab([], 'a', 1), null)
+/*
+ * The first render has no selection at all — the mount effect picks tabs[0]
+ * afterwards — so an unknown id must land somewhere rather than nowhere, or
+ * the first press of the chord after launch does nothing.
+ */
+check('no selection goes to the first tab', cycleTab(five, null, 1), 'a')
+check('and backwards to the last', cycleTab(five, null, -1), 'e')
 
 /*
  * The tally is the LAST thing in this file, and it has to stay that way.

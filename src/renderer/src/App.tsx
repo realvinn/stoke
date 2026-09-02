@@ -39,7 +39,14 @@ import { newTab } from './lib/newTab'
 import { profileIdForCwd } from './lib/projectProfile'
 import { fromStored, screensFrom, toStored } from './lib/restore'
 import { screenOf } from './lib/termRegistry'
-import { moveTab, neighbourOf, relaunchPlan, replaceOrAppend, restartPlan } from './lib/tabs'
+import {
+  cycleTab,
+  moveTab,
+  neighbourOf,
+  relaunchPlan,
+  replaceOrAppend,
+  restartPlan
+} from './lib/tabs'
 import { applyAppearance, applyTypography, applyWallpaper } from './lib/theme'
 import type { SessionActivity, Tab } from './types'
 
@@ -750,7 +757,6 @@ export function App(): React.JSX.Element {
    * could not.
    */
   const sessions = selectedPath ? (sessionsByPath[selectedPath] ?? []) : []
-  const sessionsLoading = selectedPath !== null && sessionsLoadingPath === selectedPath
 
   /* ------------------------------------------------------------------ tabs */
 
@@ -1455,7 +1461,14 @@ export function App(): React.JSX.Element {
    */
   const askClaude = useCallback(
     (url: string, title: string): void => {
-      const live = tabs.filter((t) => t.kind === 'session')
+      /*
+       * Running only. An exited tab still has a `ptyId` and still matches
+       * `kind === 'session'`, so Ask Claude would write the opening line into a
+       * process that is not there — accepted silently by `pty.write`, which
+       * no-ops on an unknown id. Nothing appeared anywhere and the browser
+       * button read as broken.
+       */
+      const live = tabs.filter((t) => t.kind === 'session' && t.status === 'running')
       const target = live.find((t) => t.id === activeTabId) ?? live[live.length - 1]
       if (!target) {
         setError('Start a session first — then Ask Claude types the page into its prompt.')
@@ -1491,6 +1504,22 @@ export function App(): React.JSX.Element {
     [activeTab, sessionLine, cli]
   )
 
+  /*
+   * What the launcher offers when nothing is selected: pinned folders first,
+   * then the ones used most recently. Six, because the point is to get back to
+   * something you were in the middle of, not to duplicate the sidebar.
+   */
+  const recentProjects = useMemo(
+    () =>
+      [...projects]
+        .sort(
+          (a, b) =>
+            Number(b.pinned) - Number(a.pinned) || (b.lastModified ?? 0) - (a.lastModified ?? 0)
+        )
+        .slice(0, 6),
+    [projects]
+  )
+
   /* Memoised: a fresh array each render would rebuild the Sidebar's Set on every tick. */
   const openSessionIds = useMemo(() => tabs.map((t) => t.sessionId), [tabs])
   const selectedProject = projects.find((p) => p.path === selectedPath) ?? null
@@ -1519,6 +1548,11 @@ export function App(): React.JSX.Element {
         case 'tab': {
           const target = tabs[action.index - 1]
           if (target) setActiveTabId(target.id)
+          break
+        }
+        case 'cycleTab': {
+          const next = cycleTab(tabs.map((t) => t.id), activeTabId, action.delta)
+          if (next) setActiveTabId(next)
           break
         }
         case 'zoom': {
@@ -1557,6 +1591,33 @@ export function App(): React.JSX.Element {
 
   /* ---------------------------------------------------------------- render */
 
+  /**
+   * Point a launcher at `path`: the New tab already in view when there is one,
+   * a freshly appended New tab when there is not.
+   *
+   * Distinct from `selectProject`, and the distinction is not stylistic. A
+   * sidebar click must NOT switch tabs — selecting a project cannot be allowed
+   * to hide the terminal in front of you (spec §2.10). But the two gestures
+   * that name a folder outright, Cmd+K's palette and Open a folder, are asking
+   * to go there; moving a selection that nothing on screen is showing made both
+   * of them look like they had failed. The palette was the worse of the two,
+   * because it closes itself on pick: press Cmd+K over a running session, pick
+   * a project, and the entire visible result was the palette disappearing.
+   */
+  const selectInNewTab = useCallback(
+    (path: string): void => {
+      let tabId = activeNewTabId
+      if (!tabId) {
+        const t = newTab(path)
+        setTabs((list) => [...list, t])
+        setActiveTabId(t.id)
+        tabId = t.id
+      }
+      selectProject(path, tabId)
+    },
+    [activeNewTabId, selectProject]
+  )
+
   const openFolder = useCallback(async (): Promise<void> => {
     const dir = await window.stoke.projects.open()
     if (!dir) return
@@ -1564,25 +1625,14 @@ export function App(): React.JSX.Element {
     /*
      * "Open a folder" is one of a New tab's own launcher actions, alongside
      * Start here and Scratch session — like them, it fills the tab it was
-     * invoked from (`activeNewTabId`) instead of always spawning another
-     * beside it. Only when there is no New tab in view (the sidebar's own
-     * Open Folder button while a session tab is active) is a fresh one
-     * appended.
-     *
-     * The id is captured in a local before `selectProject` runs — reading
-     * `activeTabId` there instead would still see the tab that was active a
-     * moment ago, since React has not re-rendered between the mint and the
-     * write. See `selectProject`'s `tabId` parameter.
+     * invoked from instead of always spawning another beside it. Only when
+     * there is no New tab in view (the sidebar's own Open Folder button while
+     * a session tab is active) is a fresh one appended. `selectInNewTab` holds
+     * both halves, including the reason the tab id is captured in a local
+     * rather than re-read from `activeTabId`.
      */
-    let tabId = activeNewTabId
-    if (!tabId) {
-      const t = newTab()
-      setTabs((list) => [...list, t])
-      setActiveTabId(t.id)
-      tabId = t.id
-    }
-    selectProject(dir, tabId)
-  }, [activeNewTabId, refreshProjects, selectProject])
+    selectInNewTab(dir)
+  }, [refreshProjects, selectInNewTab])
 
   const addRoot = useCallback(async (): Promise<void> => {
     const dir = await window.stoke.projects.addRoot()
@@ -1683,8 +1733,8 @@ export function App(): React.JSX.Element {
                 query={query}
                 selectedPath={selectedPath}
                 expandedPath={expandedPath}
-                sessions={sessions}
-                sessionsLoading={sessionsLoading}
+                sessionsByPath={sessionsByPath}
+                sessionsLoadingPath={sessionsLoadingPath}
                 openSessionIds={openSessionIds}
                 onQueryChange={setQuery}
                 onSelectProject={(p) => selectProject(p.path)}
@@ -1692,7 +1742,13 @@ export function App(): React.JSX.Element {
                   selectProject(p.path)
                   toggleExpand(expandedPath === p.path ? null : p.path)
                 }}
-                onStartNew={(p) => void startSession({ cwd: p.path, name: p.name })}
+                onStartNew={(p) =>
+                  void startSession({
+                    cwd: p.path,
+                    name: p.name,
+                    replaceTabId: activeNewTabId ?? undefined
+                  })
+                }
                 onResume={resumeSession}
                 onPin={(p) => {
                   void window.stoke.projects.pin(p.path, !p.pinned).then(async (s) => {
@@ -1760,29 +1816,30 @@ export function App(): React.JSX.Element {
                 data-variant="ghost"
                 onClick={() => {
                   /*
-                   * Same guard `closeTab` uses: a resumed tab has a real
-                   * `claude` process behind it — `ptyId` is non-empty and
-                   * `status` is 'running' — and nothing else here kills it.
-                   * Without this, replacing `tabs` below just drops the tab
-                   * from the strip: the process keeps running with no UI, no
-                   * owner, and no way back to it short of quitting Stoke,
-                   * burning tokens and filling main's replay buffer for as
-                   * long as the app stays open. A paused tab needs nothing —
-                   * `ptyId` is '' and there is no process to kill.
+                   * Closes the RESTORED tabs, and only those.
+                   *
+                   * This button used to be "Start fresh" and killed every tab
+                   * in the strip, live sessions included. The bar it sits in
+                   * says "Restored N paused tabs from last time", so the one
+                   * thing it names is the paused set — and resuming one of
+                   * them, or starting anything new, while the bar was still up
+                   * put a running `claude` in the blast radius of a button
+                   * that never mentioned it. The tab you had just started was
+                   * killed by a control offering to tidy up the old ones.
+                   *
+                   * A paused tab needs no kill: `ptyId` is '' and there is no
+                   * process behind it. That is exactly why nothing is killed
+                   * here any more — the tabs this touches never had one.
                    */
-                  tabs.forEach((t) => {
-                    if (t.kind === 'session' && t.status !== 'paused') {
-                      window.stoke.pty.kill(t.ptyId)
-                      forgetPty(t.ptyId)
-                    }
-                  })
-                  setTabs([newTab()])
-                  setActiveTabId(null)
+                  const keep = tabs.filter((t) => t.status !== 'paused')
+                  const next = keep.length ? keep : [newTab()]
+                  setTabs(next)
+                  if (!next.some((t) => t.id === activeTabId)) setActiveTabId(next[0].id)
                   setRestoredScreens({})
                   setRestoreDismissed(true)
                 }}
               >
-                Start fresh
+                Close {restoreCount === 1 ? 'it' : 'them'}
               </button>
               <button
                 className="icon-btn"
@@ -1880,6 +1937,15 @@ export function App(): React.JSX.Element {
               effort={effort}
               ultracode={ultracode}
               sessions={sessions}
+              recentProjects={recentProjects}
+              onPickProject={(p) => selectProject(p.path)}
+              onStartProject={(p) =>
+                void startSession({
+                  cwd: p.path,
+                  name: p.name,
+                  replaceTabId: activeNewTabId ?? undefined
+                })
+              }
               cli={cli}
               onChangeMode={changeMode}
               onChangeModel={changeModel}
@@ -1972,7 +2038,7 @@ export function App(): React.JSX.Element {
           projects={projects}
           onPick={(p) => {
             setPaletteOpen(false)
-            selectProject(p.path)
+            selectInNewTab(p.path)
           }}
           onClose={() => setPaletteOpen(false)}
         />

@@ -41,6 +41,27 @@ export function replaceOrAppend<T extends { id: string }>(
 }
 
 /**
+ * The tab `delta` places along from `activeId`, wrapping at both ends.
+ *
+ * Wrapping rather than stopping: the strip is a ring in every editor that has
+ * one, and a next-tab chord that silently does nothing at the last tab reads as
+ * the shortcut not being bound. An unknown `activeId` — which is what the very
+ * first render has, before the mount effect picks tabs[0] — lands on the first
+ * tab going forwards and the last going back, rather than returning null and
+ * making the first press of the chord after launch do nothing.
+ *
+ * Pure and here rather than inline in the keydown handler, for the reason
+ * CLAUDE.md gotcha 31 gives: inside that closure the only way to check it is to
+ * press the key.
+ */
+export function cycleTab(ids: string[], activeId: string | null, delta: -1 | 1): string | null {
+  if (ids.length === 0) return null
+  const at = activeId ? ids.indexOf(activeId) : -1
+  if (at < 0) return delta > 0 ? ids[0] : ids[ids.length - 1]
+  return ids[(at + delta + ids.length) % ids.length]
+}
+
+/**
  * `dragId` moved to `overId`'s index, as a new array.
  *
  * Splice-out-then-splice-in, so dragging right lands *after* the target and

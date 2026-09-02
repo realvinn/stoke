@@ -37,6 +37,19 @@ interface Props {
   hosts?: SshHost[]
   onConnectHost?: (host: SshHost) => void
   sessions: SessionMeta[]
+  /**
+   * Projects to offer when nothing is selected, most recent first.
+   *
+   * The empty state used to offer three buttons — start here, scratch, open a
+   * folder — and no way at all to reach a project you already have. With the
+   * sidebar closed (a resizer drag away, and the state a small window lands
+   * in) the launcher could not open any existing work, which made "New session"
+   * mean "new folder". App passes an already-sliced list; the launcher does no
+   * ranking of its own.
+   */
+  recentProjects?: Project[]
+  onPickProject?: (p: Project) => void
+  onStartProject?: (p: Project) => void
   cli: CliInfo | null
   onChangeMode: (m: PermissionMode) => void
   onChangeModel: (m: string) => void
@@ -60,6 +73,9 @@ export function Launcher({
   hosts = [],
   onConnectHost,
   sessions,
+  recentProjects = [],
+  onPickProject,
+  onStartProject,
   cli,
   onChangeMode,
   onChangeModel,
@@ -85,6 +101,24 @@ export function Launcher({
   const activeMode = PERMISSION_MODES.find((m) => m.id === permissionMode)
   const recent = sessions.slice(0, 4)
 
+  /*
+   * The four launch controls, as one line, so they can be folded away.
+   *
+   * They were four always-open rows above the Start button — roughly half the
+   * card — and they are set once and then left alone for weeks. Folding them
+   * behind a summary is only safe if the summary states what they currently
+   * say, because the settings that matter most here are exactly the ones you
+   * would not want silently hidden: a bypassPermissions launcher must never
+   * look like a default one. It reads the same values the rows do rather than
+   * a second copy, and the bypass banner below stays outside the fold.
+   */
+  const optionSummary = [
+    activeMode?.label ?? permissionMode,
+    MODEL_OPTIONS.find((m) => m.id === model)?.label ?? 'Default model',
+    `${effortLabel(effectiveEffort(effort, ultracode))} effort`,
+    ...(ultracode ? ['Ultracode'] : [])
+  ].join(' · ')
+
   return (
     <div className="launcher">
       <div className="launcher-card">
@@ -106,8 +140,14 @@ export function Launcher({
         </div>
 
         {/* Shown in both states, so the launch options apply to a quick start
-            just as much as to a project. */}
-        <div>
+            just as much as to a project. A native <details>, for the reasons
+            FieldHint gives: keyboard-operable, announced, and Cmd+F finds text
+            inside a closed one in Chromium. */}
+        <details className="launcher-options" data-danger={bypass ? 'true' : undefined}>
+          <summary className="launcher-options-summary">
+            <span className="launcher-options-title">Launch options</span>
+            <span className="launcher-options-value truncate">{optionSummary}</span>
+          </summary>
           <div className="launcher-row">
             <span className="launcher-row-label">
               <b>Permissions</b>
@@ -208,7 +248,7 @@ export function Launcher({
               }}
             />
           </label>
-        </div>
+        </details>
 
         {/* Inline rather than a confirmation dialog: the warning stays visible
             for as long as the setting is armed, instead of once at launch. */}
@@ -307,6 +347,40 @@ export function Launcher({
             <span className="launcher-hint">
               <span className="kbd">Enter</span> to start
             </span>
+          </div>
+        )}
+
+        {!project && recentProjects.length > 0 && (
+          <div>
+            <div className="sidebar-group" style={{ padding: '0 0 var(--space-8)' }}>
+              Recent projects
+            </div>
+            <div className="launcher-recent">
+              {recentProjects.map((p) => (
+                <div className="launcher-recent-row" key={p.path}>
+                  <button
+                    className="session"
+                    onClick={() => onPickProject?.(p)}
+                    title={`${p.path}\nPick this project, then Start session`}
+                  >
+                    <span className="session-title">{p.label ?? p.name}</span>
+                    <span className="session-meta">
+                      <span className="truncate">{p.group || p.path}</span>
+                      {p.sessionCount > 0 && <span>{relativeTime(p.lastModified)}</span>}
+                    </span>
+                  </button>
+                  <button
+                    className="btn"
+                    data-variant="ghost"
+                    disabled={cliBroken}
+                    onClick={() => onStartProject?.(p)}
+                    title={`Start a session in ${p.path}`}
+                  >
+                    Start
+                  </button>
+                </div>
+              ))}
+            </div>
           </div>
         )}
 

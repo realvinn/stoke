@@ -13,8 +13,20 @@ interface Props {
   query: string
   selectedPath: string | null
   expandedPath: string | null
-  sessions: SessionMeta[]
-  sessionsLoading: boolean
+  /**
+   * Every fetched session list, keyed by project path — not one array for
+   * "the selected project".
+   *
+   * One array was wrong in a way that only showed after two clicks: expanding
+   * project A fetched A's sessions, then a single click on project B moved the
+   * selection (and the fetch) to B while A's row stayed expanded — so A's open
+   * row listed B's conversations, under A's name, with A's chevron pointing
+   * down. Clicking one resumed a session in a different folder. Keyed by path,
+   * a row can only ever draw its own.
+   */
+  sessionsByPath: Record<string, SessionMeta[]>
+  /** The path being fetched right now, or null. A row shows its own spinner. */
+  sessionsLoadingPath: string | null
   /**
    * Session ids that currently have a tab open. The row backing the terminal
    * you are looking at is the one row in this list worth finding again, and it
@@ -50,8 +62,8 @@ export function Sidebar({
   query,
   selectedPath,
   expandedPath,
-  sessions,
-  sessionsLoading,
+  sessionsByPath,
+  sessionsLoadingPath,
   openSessionIds,
   onQueryChange,
   onSelectProject,
@@ -261,6 +273,9 @@ export function Sidebar({
             <div className="sidebar-group">{group}</div>
             {items.map((project) => {
               const expanded = expandedPath === project.path
+              /* This row's own sessions, never "the selected project's". */
+              const rowSessions = sessionsByPath[project.path] ?? []
+              const rowLoading = sessionsLoadingPath === project.path && rowSessions.length === 0
               return (
                 <div key={project.path}>
                   <div
@@ -360,14 +375,14 @@ export function Sidebar({
 
                   {expanded && (
                     <div className="sessions">
-                      {sessionsLoading && <div className="session-meta">Loading…</div>}
-                      {!sessionsLoading && sessions.length === 0 && (
+                      {rowLoading && <div className="session-meta">Loading…</div>}
+                      {!rowLoading && rowSessions.length === 0 && (
                         <div className="session-meta">
                           No saved sessions. Press Enter to start one.
                         </div>
                       )}
-                      {!sessionsLoading &&
-                        sessions.map((s) => (
+                      {!rowLoading &&
+                        rowSessions.map((s) => (
                           <button
                             key={s.id}
                             className="session"

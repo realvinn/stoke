@@ -16,7 +16,7 @@
  *
  *   node scripts/verify-shortcuts.mts
  */
-import { matchShortcut } from '../src/renderer/src/lib/shortcuts.ts'
+import { chordLabel, matchShortcut } from '../src/renderer/src/lib/shortcuts.ts'
 import {
   FONT_SIZE_MAX,
   FONT_SIZE_MIN,
@@ -193,6 +193,48 @@ check(
   zoomStep({ uiScale: 1, fontSize: 900 }, 1, 'terminal').fontSize,
   FONT_SIZE_MAX
 )
+
+/* ------------------------------------------------------- cycling the strip */
+
+console.log('\nnext / previous tab, and the chord it deliberately is not')
+/*
+ * Ctrl+Tab is the obvious binding and is unusable: xterm's Tab branch reads
+ * only `shiftKey`, so Ctrl+Tab sends C0.HT from xterm's own textarea listener
+ * — which runs before this window-level handler — and preventing the default
+ * afterwards cannot unsend it. If this ever starts matching, every Ctrl+Tab
+ * types a tab character into the prompt as well as switching tabs.
+ */
+check('Ctrl+Tab is not a shortcut on Windows', onWin(key('Tab', { ctrl: true })), null)
+check('nor Ctrl+Shift+Tab', onWin(key('Tab', { ctrl: true, shift: true })), null)
+check('nor Cmd+Tab on macOS', onMac(key('Tab', { meta: true })), null)
+
+const NEXT = { type: 'cycleTab', delta: 1 }
+const PREV = { type: 'cycleTab', delta: -1 }
+check('Cmd+Shift+] is next tab', onMac(key('BracketRight', { meta: true, shift: true })), NEXT)
+check('Cmd+Shift+[ is previous tab', onMac(key('BracketLeft', { meta: true, shift: true })), PREV)
+check('Ctrl+Shift+] is next tab off macOS', onWin(key('BracketRight', { ctrl: true, shift: true })), NEXT)
+check('Ctrl+Shift+[ is previous tab off macOS', onWin(key('BracketLeft', { ctrl: true, shift: true })), PREV)
+
+/*
+ * The Shift is what keeps the brackets out of xterm's `ctrlKey && !shiftKey`
+ * branch, where keyCode 219/221 are ESC and GS. Binding the bare form would
+ * take both of those away from the terminal.
+ */
+check('bare Ctrl+] still reaches the terminal', onWin(key('BracketRight', { ctrl: true })), null)
+check('and bare Ctrl+[', onWin(key('BracketLeft', { ctrl: true })), null)
+check('bare Cmd+] is unbound on macOS too', onMac(key('BracketRight', { meta: true })), null)
+
+console.log('\nthe label says what this platform actually needs')
+/*
+ * The title bar used to print "Ctrl/Cmd+T" everywhere, which is a lie off
+ * macOS: the letter chords all require Shift there, so the tooltip named a
+ * combination that does nothing and reaches the CLI's prompt instead.
+ */
+check('macOS letter chord carries no Shift', chordLabel('newTab', true), '\u2318T')
+check('off macOS it does', chordLabel('newTab', false), 'Ctrl+Shift+T')
+check('the cycle chord carries Shift on macOS as well', chordLabel('nextTab', true), '\u21e7\u2318]')
+check('and off it', chordLabel('prevTab', false), 'Ctrl+Shift+[')
+check('settings is a comma, not a letter', chordLabel('settings', true), '\u2318,')
 
 console.log(failures ? `\n${failures} failed` : '\nall pass')
 process.exit(failures ? 1 : 0)

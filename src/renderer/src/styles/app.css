@@ -1853,6 +1853,114 @@ body {
   color: var(--text-faint);
 }
 
+/*
+ * The four launch controls, folded.
+ *
+ * They occupied roughly half the launcher card and are set once and left; the
+ * summary states what they currently say so folding them hides no decision.
+ * `data-danger` keeps a bypassPermissions launcher visibly different from a
+ * default one even while closed — a fold that can conceal that is not one.
+ */
+/* One hidden project: its path, and the button that brings it back. */
+.hidden-projects {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.hidden-project {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  padding: var(--space-4) var(--space-8);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+
+.hidden-project > .truncate {
+  flex: 1 1 0%;
+  min-width: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+.launcher-options {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  padding: 0 var(--space-12);
+}
+
+.launcher-options[open] {
+  padding-bottom: var(--space-8);
+}
+
+.launcher-options[data-danger='true'] {
+  border-color: var(--danger);
+}
+
+.launcher-options-summary {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-8);
+  padding: var(--space-8) 0;
+  cursor: pointer;
+  list-style: none;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+
+.launcher-options-summary::-webkit-details-marker {
+  display: none;
+}
+
+.launcher-options-summary::before {
+  content: '';
+  width: 0.5rem;
+  height: 0.5rem;
+  flex-shrink: 0;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  rotate: -45deg;
+  translate: 0 -0.1rem;
+  transition: rotate var(--dur-fast) var(--ease);
+}
+
+.launcher-options[open] > .launcher-options-summary::before {
+  rotate: 45deg;
+}
+
+.launcher-options-summary:hover {
+  color: var(--text);
+}
+
+.launcher-options-title {
+  color: var(--text);
+  font-weight: 550;
+}
+
+.launcher-options-value {
+  min-width: 0;
+  flex: 1 1 0%;
+  text-align: right;
+}
+
+/* One recent project: a wide select button plus a narrow Start. */
+.launcher-recent {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.launcher-recent-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+}
+
+.launcher-recent-row > .session {
+  flex: 1 1 0%;
+  min-width: 0;
+}
+
 .launcher-actions {
   display: flex;
   align-items: center;

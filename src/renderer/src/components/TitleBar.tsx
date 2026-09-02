@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { ContextSnapshot } from '@shared/types'
 import type { WorklogButtonState } from '@shared/worklog'
 import { UsageChip } from './UsageMeter'
@@ -17,6 +17,7 @@ import {
   IconSearch,
   IconSidebar
 } from './Icons'
+import { chordLabel } from '../lib/shortcuts'
 import type { SessionActivity, Tab } from '../types'
 
 interface Props {
@@ -80,6 +81,25 @@ export function TitleBar({
   const isMac = platform === 'darwin'
   const [dragId, setDragId] = useState<string | null>(null)
   const [overId, setOverId] = useState<string | null>(null)
+  const listRef = useRef<HTMLDivElement>(null)
+
+  /*
+   * Keep the selected tab on screen.
+   *
+   * The strip scrolls horizontally once it overflows, and nothing scrolled it:
+   * with a dozen tabs open, Cmd+9, the new cycle chord and every OS
+   * notification click could all select a tab that stayed off the end of the
+   * strip. The terminal changed underneath and the strip did not move, which
+   * reads as the wrong tab having been selected.
+   *
+   * `block: 'nearest'` as well as `inline`, or Chromium scrolls the whole app
+   * grid vertically to bring a strip that is already fully visible into a
+   * slightly different position.
+   */
+  useEffect(() => {
+    const el = listRef.current?.querySelector('[aria-selected="true"]')
+    el?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  }, [activeTabId, tabs.length])
 
   return (
     <header className="titlebar" data-platform={platform} data-fullscreen={fullScreen || undefined}>
@@ -107,7 +127,7 @@ export function TitleBar({
         control that does not answer to them.
       */}
       <div className="tabs">
-        <div className="tablist" role="tablist" aria-label="Sessions">
+        <div className="tablist" role="tablist" aria-label="Sessions" ref={listRef}>
           {tabs.map((tab) => {
             const ctx = contexts[tab.sessionId]
             const act = tab.kind === 'session' ? activity[tab.sessionId] : undefined
@@ -129,7 +149,11 @@ export function TitleBar({
                 onAuxClick={(e) => {
                   if (e.button === 1) onCloseTab(tab.id)
                 }}
-                title={`${tab.title} — ${tab.cwd}`}
+                title={
+                  tab.kind === 'new'
+                    ? 'New session — pick a project, or start in the default folder'
+                    : `${tab.title}\n${tab.cwd}`
+                }
                 draggable
                 data-dragging={tab.id === dragId ? 'true' : undefined}
                 data-drop={tab.id === overId ? 'true' : undefined}
@@ -197,24 +221,33 @@ export function TitleBar({
                     e.stopPropagation()
                     onCloseTab(tab.id)
                   }}
-                  title="Close session"
+                  title={`Close (${chordLabel('closeTab', isMac)})`}
                 >
                   <IconClose />
                   <span className="sr-only">Close {tab.title}</span>
+
                 </button>
               </div>
             )
           })}
         </div>
 
-        <button className="icon-btn" onClick={onNewTab} title="New session (Ctrl/Cmd+T)">
+        <button
+          className="icon-btn"
+          onClick={onNewTab}
+          title={`New session (${chordLabel('newTab', isMac)})`}
+        >
           <IconPlus />
           <span className="sr-only">New session</span>
         </button>
       </div>
 
       <div className="titlebar-actions">
-        <button className="icon-btn" onClick={onOpenPalette} title="Find a project (Ctrl/Cmd+K)">
+        <button
+          className="icon-btn"
+          onClick={onOpenPalette}
+          title={`Find a project (${chordLabel('palette', isMac)})`}
+        >
           <IconSearch />
           <span className="sr-only">Find a project</span>
         </button>
@@ -222,7 +255,7 @@ export function TitleBar({
           className="icon-btn"
           onClick={onToggleBrowser}
           aria-pressed={browserOpen}
-          title="Toggle browser (Ctrl/Cmd+B)"
+          title={`Toggle browser (${chordLabel('toggleBrowser', isMac)})`}
         >
           <IconGlobe />
           <span className="sr-only">Toggle browser</span>
@@ -252,7 +285,11 @@ export function TitleBar({
         <PhonePopover onOpenSettings={onOpenPhoneSettings} />
         <UsageChip />
 
-        <button className="icon-btn" onClick={onOpenSettings} title="Settings">
+        <button
+          className="icon-btn"
+          onClick={onOpenSettings}
+          title={`Settings (${chordLabel('settings', isMac)})`}
+        >
           <IconGear />
           <span className="sr-only">Settings</span>
         </button>
