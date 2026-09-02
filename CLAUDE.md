@@ -36,7 +36,8 @@ npm run verify:folders        # folder metadata: trimming, caps, added folders, 
 npm run verify:cli            # finding the `claude` binary: the version-manager shim dirs,
                               # the probe's retry rule, and the two not-found messages.
                               # Hermetic - HOME is redirected into a temp tree (gotcha 52)
-npm run verify:tabs           # which tab is selected after one is closed
+npm run verify:tabs           # which tab is selected after one is closed, and where the
+                              # next/previous chord lands
 npm run verify:shortcuts      # app chords vs the keys the terminal owns, and the zoom maths
 npm run verify:color          # colour maths: contrast, APCA, oklch
 npm run verify:theme-gen      # the theme generator: that a five-field seed reproduces every
@@ -96,6 +97,9 @@ src/main/         Electron main process
   workspace.ts      default folder + scratch folders
   workspaceRoots.ts where a session with no project starts, per platform. Takes the
                     platform and home as arguments so a suite can ask for another machine's
+  wallpaper.ts      the picked image, copied under userData and served over the custom
+                    `stoke-asset://` scheme. Refuses anything that is not a bare file name
+                    inside its own folder, so the scheme cannot be turned into a file reader
   store.ts          settings persistence
   settingsSchema.ts defaults + hydrate, with no electron import so a suite can run it
   updates.ts        claude CLI version/health, and the gate that decides whether to
@@ -164,12 +168,18 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
   worklog.ts        the board targets the worklog can write to, and their defaults
   claudeConfig.ts   which of Claude Code's settings Stoke will draw, their vocabularies, and
                     the never-offer list. Hand-transcribed from the CLI binary's zod schema
-  ui.ts             the uiScale / fontSize bounds, and the clamps both processes use
+  ui.ts             the uiScale / fontSize bounds, TERMINAL_DEFAULTS and WALLPAPER_DEFAULTS,
+                    and the clamps both processes use. A new terminal or wallpaper field needs
+                    its clamp here and its default in settingsSchema.ts in the same change, or
+                    a settings file written by an older build hydrates it as undefined and the
+                    pane that reads it renders blank
   statusLine.ts     the two plan-limit windows the usage chip draws, from the payload
 scripts/          the verify-*.mts suites, make-icon.cjs
   mac-signing-secrets.sh  puts the release signing certificate into GitHub secrets.
                     Exists because macOS 26 removed Keychain Access, so every
                     "export it from the GUI" recipe is now dead. Gotcha 24
+  gen-themes.mts    prints a built-in theme as the literal `themes.ts` checks in, from its
+                    seed. `node scripts/gen-themes.mts lantern`, or `--all`. Gotcha 43
   cdp-eval.mjs      evaluates one expression in the renderer, or screenshots it.
                     Picks the target by its window.stoke object, never by URL
 ```
@@ -1135,6 +1145,32 @@ scripts/          the verify-*.mts suites, make-icon.cjs
     app and reading the value back out of `window.stoke.settings.get()`; no suite saw it until one
     was written for it.
 
+    **Two seed fields were added after the ladder shipped, and both exist because a hue on
+    its own could not tell one dark theme from another.** `pageChroma` puts a FLOOR under the
+    first four steps' chroma (`chromaAt(i) = max(NEUTRAL_CHROMA[i] * tint, pageChroma)`), which
+    is the difference between Lagoon reading as teal and reading as a grey with a teal accent —
+    `tint` scales a profile whose page step is C 0.0022, so multiplying it can only ever move a
+    number that small. `black: true` starts the ladder at L 0.1 rather than RAMP's own first
+    rung, for a page that is nearly black. `validateSeed` clamps both (`PAGE_CHROMA_MAX` 0.045
+    dark / 0.015 light) and refuses `black` on a light theme, where it means nothing.
+
+    Two measurements sit behind those numbers, and neither is guessable. **L 0 is unusable:**
+    APCA soft-clamps black, so a ladder that starts at exactly 0 measures its own `borderSubtle`
+    at Lc 0.00 against its own page — precisely the defect the ladder exists to prevent.
+    `BLACK_FROM = 0.1` was picked by sweeping, not chosen. And **more chroma, or a lower start,
+    pushes the step-6 and step-7 borders under the Lc 15 floor**, so `neutralLadder` now solves
+    those two rungs against the page (`solveLc`) instead of reading them off RAMP, with step 8
+    kept above step 7 by construction. That is what lets `verify:theme-gen` sweep 1512 seeds —
+    every hue against both appearances, tint to its 2.5 ceiling, pageChroma to its own — and
+    have none of them breach a floor. Fixing a failing sweep by lowering the ceilings would have
+    been the wrong repair twice over: the ceilings are what make the themes distinguishable.
+
+    **`scripts/gen-themes.mts` is how a theme literal is produced now.** It reads the seed off
+    the theme itself for anything already shipped, so gotcha 43's "regenerate" instruction is a
+    command you can actually run: `node scripts/gen-themes.mts lantern`, or `--all`. A candidate
+    that is not in `themes.ts` yet lives in that file's own `NEW_SEEDS` array until it is pasted
+    in, after which it is read from `BUILT_IN_THEMES` like the rest.
+
 44. **`--accent` is a fill and `--accent-ink` is a foreground, and they cannot be one token.**
     A profile auto-activates from the active tab's cwd and `applyAppearance` used to write its
     four hand-authored hexes onto `:root` with no appearance check. Every profile accent is
@@ -1477,6 +1513,28 @@ scripts/          the verify-*.mts suites, make-icon.cjs
     ahead of Wi-Fi in `networkInterfaces()` order often enough that "first non-internal IPv4"
     handed the code an address nothing could dial. `verify:remote` holds all of it.
 
+54. **Translucency compounds, so a wallpaper behind three stacked surfaces is a wallpaper
+    nobody can see.** Every container in the shell already had a background — `.app`, the body
+    row, `.main-col`, `.term-pane`, `.term-host` — and dropping each one to 85% alpha does not
+    give 85%, it gives 0.15^5 of the image through. The first attempt rendered as "the picture
+    is not there at all", which sends you looking at the protocol handler rather than at the
+    cascade. The rule the fix encodes: containers go FULLY transparent, and exactly one surface
+    per spot carries `--panel-alpha`. The terminal needs a sixth thing — xterm's own canvas is
+    opaque unless `allowTransparency` is set AND the theme's background is an rgba with alpha
+    below 1 (`terminalTheme(theme, accent, alpha)`), so the card behind it can show through.
+
+    **A custom scheme has to be privileged before `whenReady` and handled inside it**, and the
+    two calls look interchangeable. `protocol.registerSchemesAsPrivileged` must run at module
+    scope — after the app is ready it is silently too late — while `protocol.handle` only works
+    once the app *is* ready. Splitting them is not tidiness; joining them breaks one or the
+    other with no error.
+
+    **`fetch('stoke-asset://…')` fails from the renderer and that is not evidence of anything.**
+    CSP's `connect-src` governs fetch and does not know the scheme, so the request is refused
+    before it reaches main — while `<img>` loads it fine, because that is `img-src`, which
+    `index.html` names the scheme in. Probe a custom scheme with `new Image()` and its
+    `onload`/`naturalWidth`, never with fetch, or you will conclude a working handler is broken.
+
 ## Standing traps when driving the app
 
 Not about any one module, and each cost real time at least once. Carried over from the 0.3.0
@@ -1498,6 +1556,15 @@ handoff notes, which no longer have a file of their own.
 - **Nested backticks inside a template literal terminate it early.** It is a SyntaxError, which
   means it fails before a single line runs and points at the wrong place while doing it. Build
   anything you inject into a page from an array of lines rather than one long template.
+- **Unexplained, and worth knowing before you chase it: `.settings.json` files have gone
+  missing from `$TMPDIR/stoke/statusline/`.** Observed once for the installed app's sessions
+  and once for a resumed session — the payload `.json` beside them survived, only the settings
+  file went. Ruled out by testing: the boot sweep (run against a copy, which it left alone) and
+  the CLI itself (a headless probe kept its file for the whole run), and a fresh session's files
+  persisted five minutes later. Not reproduced. It is harmless as far as anything Stoke does —
+  the CLI reads `--settings` once at startup, so a file that vanishes afterwards costs nothing,
+  and the hooks and statusLine keep working — but do not spend an afternoon assuming a
+  disappearance means a bug in the writer.
 - **The usage endpoint is undocumented** (`usage.ts`): there is no supported programmatic source
   for plan limits, so its shape can change without warning. Tolerate missing fields and report
   unavailable — a wrong number in a status bar is worse than a blank one.
