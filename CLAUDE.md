@@ -41,6 +41,8 @@ npm run verify:tabs           # which tab is selected after one is closed, and w
                               # next/previous chord lands
 npm run verify:shortcuts      # app chords vs the keys the terminal owns, the zoom maths, and
                               # that Ctrl+Tab and the bare brackets still reach the CLI
+npm run verify:drop           # what a dropped file types: quoting per platform, and the
+                              # names that cannot be typed at all
 npm run verify:color          # colour maths: contrast, APCA, oklch
 npm run verify:theme-gen      # the theme generator: that a five-field seed reproduces every
                               # built-in byte-for-byte, that no slider position can breach a
@@ -166,6 +168,9 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     rungs in OKLCH L, solved onto rather than picked. Gotcha 43
   themeGen.ts       seed -> whole theme. The generator themes.ts always claimed existed and
                     the repo did not contain; what the theme editor drives. Gotcha 43
+  drop.ts           what a file dropped on the terminal types: the per-platform quoting,
+                    and the refusal for a name that cannot be typed. Pure, platform passed
+                    in, so verify:drop runs it for every OS. Gotcha 59
   notation.ts       reading and writing one colour as OKLCH/HSL/RGB/hex. Split out of the
                     component so a suite can reach it
   accent.ts         one accent in, five tokens out, per appearance. The reason
@@ -887,6 +892,34 @@ scripts/          the verify-*.mts suites, make-icon.cjs
     running**, and that is why this read as "the usage chip will not refresh". The 30s poll
     (`POLL_MS` in UsageMeter, matched by `USAGE_POLL_MS`'s cache floor in main) was working
     perfectly the whole time. Check what a poll RETURNS before concluding it is not firing.
+
+    **"The chip never works" was two more faults on top of all of the above, and neither was
+    the endpoint.** Measured 2026-09-02, with the account route answering 200 (5h 17%, week
+    61%, Fable 100%) and the live session's payload holding the same figures on disk, while
+    the panel read *"Usage unavailable (429)"*.
+
+    First, **a failed read replaced the good one.** `fetchUsage`'s failure snapshot carries an
+    empty `windows`, the handler assigned it straight over the cache, and `UsageMeter` read
+    `!snap.error ? snap.windows : []` — so the error was allowed to veto data already in hand.
+    "We cannot refresh this right now" and "we know nothing" are different statements and only
+    the first is ever true here. `keepLastGood` keeps the previous windows *and their own*
+    `fetchedAt`, because that timestamp belongs to the data: "as of 18:02" stays true and the
+    existing staleness marking starts working for free.
+
+    Second, **the fifteen-minute backoff was Stoke's invention, not Anthropic's.** The app took
+    a 429 at 18:08 and sat out until 18:23; a direct call with the same token answered **200 at
+    18:16**. So it declined to look for ~7 minutes of a limit that had already lifted, having
+    thrown its numbers away to do it — and a few of those a day is exactly "it never works".
+    `nextBackoff` honours `Retry-After` exactly when sent, and otherwise starts at 60s and
+    doubles to a 15-minute ceiling. There is nothing better to pace against: the endpoint sends
+    **no rate-limit headers at all** on a success (checked — only `anthropic-organization-id`
+    and `anthropic-workspace-id`), so the budget can only be discovered by hitting it.
+
+    `retryUntil` is absolute rather than a duration precisely because those two came apart: with
+    `fetchedAt` now belonging to the data, `fetchedAt + retryAfter` names a time already past and
+    the panel silently stops saying anything. Both functions are pure and asserted in
+    `verify:usage`, because the handler that uses them needs Electron — gotcha 31 again, and the
+    reason the veto survived being written down as correct.
 
     One more, met while testing the above: the endpoint rate-limits, answers **429** with a
     `Retry-After` of 900s, and main honours it — so every read for fifteen minutes returns the
@@ -1672,6 +1705,61 @@ scripts/          the verify-*.mts suites, make-icon.cjs
     One thing NOT to reach for: `cloudflared tunnel token <name>` prints a credential to stdout. If
     it is ever needed, write it with `--cred-file` — never capture it into a log buffer that a
     status object ships to the renderer.
+
+59. **Dropping a file into the terminal is four separate traps, and three of them fail
+    silently.** All measured against the built app on Electron 43, with a real OS drop
+    dispatched over CDP rather than a synthetic `DragEvent`.
+
+    **`File.path` is gone.** Electron 32 removed it; `webUtils.getPathForFile(file)` replaced
+    it. Proven in one call: for the same dropped file `pathForFile` returned
+    `/tmp/Screenshot 2026-09-02 at 6.11.05 pm.png` and `file.path` returned **null** — so the
+    obvious implementation pastes nothing and looks like a handler that never fired. It is a
+    *renderer-side* API (`electron.d.ts:19628`), so main cannot answer it, and the renderer has
+    no `electron` import to call it with: the **preload** is the only process holding both
+    halves, which is why `pathForFile` lives on `window.stoke` rather than behind an IPC channel.
+
+    **`preventDefault` on `dragover` is load-bearing twice.** Without it no `drop` event fires
+    at all — and Chromium's default action for a file dropped on a page is to **navigate to
+    it**, which in a single-page Electron app replaces the entire UI with a picture of the file
+    with no way back but relaunching. `createWindow` now refuses navigation outright
+    (`will-navigate`, compared against the current URL so a reload still passes) as the backstop
+    for every pixel the terminal pane does not claim.
+
+    **Only a drag carrying files may be taken.** The tab strip drags a tab as `text/plain`
+    (`TitleBar.tsx:162`), so a handler that does not test `dataTransfer.types` for `Files`
+    lights its drop affordance and pastes nothing every time a tab is dragged across the
+    terminal. And `dragleave` fires on crossing into a **child** — the pane is full of xterm's
+    canvases — so the affordance needs an enter/leave depth counter or it flickers off
+    immediately.
+
+    **The quoting is the feature.** The single most likely file anyone will ever drop here is a
+    macOS screenshot, and its name has four spaces in it: one argument to the CLI's prompt,
+    four at a shell prompt, and an SSH tab can be sitting at a real shell (gotcha 10). POSIX
+    gets **single** quotes — inside them every character but `'` is literal, so `$`, backticks
+    and backslashes cannot bite, and the one exception is escaped by closing and reopening.
+    Windows gets double quotes and no escaping, since `"` is not legal in a path there.
+
+    One thing that must be refused rather than quoted: **a newline in a filename.**
+    `Terminal.paste()` rewrites every `\n` to a bare `\r` (`Clipboard.ts:14,21-26`), which is
+    Enter — so such a file would not insert a path, it would **submit whatever the user had
+    half-written**. POSIX permits the name, so this is reachable rather than theoretical.
+
+60. **`justify-content: center` and `overflow: auto` on the same box are only compatible while
+    the content fits.** Centring distributes free space by moving the content, and when the
+    space is *negative* it still does: the overflow goes in both directions and the half above
+    the centre line sits at an offset `scrollTop: 0` cannot reach.
+
+    Measured on `.launcher` at a 320px pane with "Launch options" expanded: the card's top was
+    **273.1px above the visible area at scrollTop 0**, and `scrollHeight` reported **617px
+    against 914px of real content** — the browser does not even account for the clipped part, so
+    `maxScrollTop` could never reach it. With `margin: auto` on the child instead: top offset
+    +24px (the padding), **0px clipped**, the full 914px measured, all of it scrollable.
+
+    `margin: auto` centres identically while there is free space and collapses to zero when
+    there is not. Same family as gotcha 11: these properties centre by *consuming space*, so
+    they behave differently once the space is negative. The symptom is always "the top of this
+    is cut off and I cannot scroll to it", and it only appears once something inside grows —
+    which is why expanding a disclosure is the classic trigger.
 
 ## Standing traps when driving the app
 
