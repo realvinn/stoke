@@ -88,7 +88,10 @@ export const DEFAULT_SETTINGS: Settings = {
   // Default true: the wrapper is how the context window and the plan limits
   // reach the app at all, and the line it suppresses duplicates chrome Stoke
   // already draws.
-  hideStatusLine: true
+  hideStatusLine: true,
+  // Background only: a notification for the tab in front is noise, one for a
+  // tab behind another — or a window behind another app — is the point.
+  notifications: 'background'
 }
 
 /**
@@ -244,6 +247,10 @@ export function hydrateSettings(raw: unknown): Settings {
     // `!== false` and not `=== true`: a file written before this key existed
     // must read as on, which is what an untouched machine gets.
     hideStatusLine: r.hideStatusLine !== false,
+    notifications:
+      r.notifications === 'off' || r.notifications === 'always' || r.notifications === 'background'
+        ? r.notifications
+        : DEFAULT_SETTINGS.notifications,
     uiScale: clampUiScale(r.uiScale),
     fontSize: clampFontSize(r.fontSize),
     zoomTarget: clampZoomTarget(r.zoomTarget)

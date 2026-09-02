@@ -31,7 +31,8 @@ const api: StokeApi = {
     isMaximized: () => ipcRenderer.invoke(CH.winIsMaximized),
     onMaximizedChanged: (cb) => on<[boolean]>(CH.winMaximizedChanged, cb),
     isFullScreen: () => ipcRenderer.invoke(CH.winIsFullScreen),
-    onFullScreenChanged: (cb) => on<[boolean]>(CH.winFullScreenChanged, cb)
+    onFullScreenChanged: (cb) => on<[boolean]>(CH.winFullScreenChanged, cb),
+    focus: () => ipcRenderer.send(CH.winFocus)
   },
 
   cli: {
@@ -78,6 +79,10 @@ const api: StokeApi = {
   statusLine: {
     last: () => ipcRenderer.invoke(CH.statusLineLast),
     onUpdate: (cb) => on<[Parameters<typeof cb>[0]]>(CH.statusLineUpdate, cb)
+  },
+
+  session: {
+    onEvent: (cb) => on<[Parameters<typeof cb>[0]]>(CH.sessionEvent, cb)
   },
 
   browser: {

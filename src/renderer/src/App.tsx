@@ -6,6 +6,7 @@ import type {
   EffortLevel,
   PermissionMode,
   Project,
+  SessionEvent,
   SessionMeta,
   Settings,
   SshHost,
@@ -40,7 +41,7 @@ import { fromStored, screensFrom, toStored } from './lib/restore'
 import { screenOf } from './lib/termRegistry'
 import { moveTab, neighbourOf, relaunchPlan, replaceOrAppend, restartPlan } from './lib/tabs'
 import { applyAppearance, applyTypography } from './lib/theme'
-import type { Tab } from './types'
+import type { SessionActivity, Tab } from './types'
 
 const EMPTY_BROWSER: BrowserState = {
   url: '',
@@ -226,6 +227,18 @@ export function App(): React.JSX.Element {
 
   const [contexts, setContexts] = useState<Record<string, ContextSnapshot>>({})
 
+  /*
+   * Where each session is — working, done, or asking for attention — keyed by
+   * session id, from the CLI's own hooks (see SessionEvent). This is what the
+   * tab strip's activity dot and the status bar's "Claude is working…" read,
+   * and what decides whether a finished turn raises an OS notification.
+   *
+   * A `done` or `attention` entry is cleared when its tab is looked at, so the
+   * dot means "something happened here since you last looked" and nothing
+   * else. `working` is never cleared by looking; it ends when the turn does.
+   */
+  const [activity, setActivity] = useState<Record<string, SessionActivity>>({})
+
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [sidebarWidth, setSidebarWidth] = useState(260)
   const [browserOpen, setBrowserOpen] = useState(false)
@@ -365,6 +378,18 @@ export function App(): React.JSX.Element {
   settingsRef.current = settings
 
   /*
+   * The tab list and the selection, readable from the hook-event listener
+   * without re-subscribing on every tab change — the same ref-on-render idiom
+   * as `settingsRef`, and for the same reason (gotcha 31). The listener has to
+   * know which tab an event belongs to and whether that tab is the one in
+   * front, and it is bound once in the bootstrap effect.
+   */
+  const tabsRef = useRef<Tab[]>(tabs)
+  tabsRef.current = tabs
+  const activeTabIdRef = useRef<string | null>(activeTabId)
+  activeTabIdRef.current = activeTabId
+
+  /*
    * The appearance a session should be launched with, read at call time.
    *
    * `startSession` and `connectHost` are useCallbacks whose dependency arrays
@@ -388,6 +413,55 @@ export function App(): React.JSX.Element {
     const offCtx = window.stoke.context.onUpdate((snap) =>
       setContexts((prev) => ({ ...prev, [snap.sessionId]: snap }))
     )
+    /*
+     * Hook events. A prompt starts a turn; a stop ends it; a notification is
+     * the CLI asking for something. The transition to `done` or `attention`
+     * is also the moment an OS notification may be raised, and whether it is
+     * depends on where the user is looking — read through refs, because this
+     * listener is bound once.
+     */
+    const offEvents = window.stoke.session.onEvent((ev: SessionEvent) => {
+      const tab = tabsRef.current.find((t) => t.sessionId === ev.sessionId)
+      if (ev.kind === 'prompt') {
+        setActivity((prev) => ({
+          ...prev,
+          [ev.sessionId]: { state: 'working', at: ev.at, message: null }
+        }))
+        return
+      }
+      const state: SessionActivity['state'] = ev.kind === 'stop' ? 'done' : 'attention'
+      const inFront = tab !== undefined && tab.id === activeTabIdRef.current
+      /*
+       * A `done` or `attention` for the tab in front, with the window focused,
+       * is not news: it is on screen. It is recorded all the same and cleared
+       * by the activation effect below on the next render, so the strip never
+       * flashes a dot for it — and stays if the window is behind another app,
+       * which is when the dot earns its keep.
+       */
+      setActivity((prev) => ({
+        ...prev,
+        [ev.sessionId]: { state, at: ev.at, message: ev.message }
+      }))
+
+      const mode = settingsRef.current?.notifications ?? 'background'
+      const background = !document.hasFocus() || !inFront
+      if (mode === 'off' || (mode === 'background' && !background)) return
+      if (typeof Notification === 'undefined' || Notification.permission === 'denied') return
+      const title = tab?.title ?? tab?.projectName ?? 'Claude Code'
+      const body =
+        ev.kind === 'stop'
+          ? (ev.message ?? 'Finished — waiting for you.')
+          : (ev.message ?? 'Needs your attention.')
+      try {
+        const n = new Notification(title, { body, silent: false, tag: ev.sessionId })
+        n.onclick = () => {
+          window.stoke.window.focus()
+          if (tab) setActiveTabId(tab.id)
+        }
+      } catch {
+        /* the platform refused; the dot in the strip still says it */
+      }
+    })
     /*
      * Per-session CLI versions. Cheap: these pushes already happen for the
      * usage chip, and this reads one more field off the same payload.
@@ -458,6 +532,7 @@ export function App(): React.JSX.Element {
 
     return () => {
       offCtx()
+      offEvents()
       offLine()
       offUpdates()
       offBrowser()
@@ -483,6 +558,32 @@ export function App(): React.JSX.Element {
     window.addEventListener('focus', onFocus)
     return () => window.removeEventListener('focus', onFocus)
   }, [refreshProjects])
+
+  /*
+   * Looking at a tab clears its `done` / `attention`, because the dot means
+   * "since you last looked". Both selecting the tab and the window regaining
+   * focus count as looking; a `working` entry is left alone, since it ends
+   * when the turn does rather than when anyone looks.
+   */
+  const seenActive = useCallback((): void => {
+    if (!document.hasFocus()) return
+    const tab = tabsRef.current.find((t) => t.id === activeTabIdRef.current)
+    if (!tab?.sessionId) return
+    setActivity((prev) => {
+      const cur = prev[tab.sessionId]
+      if (!cur || cur.state === 'working') return prev
+      const next = { ...prev }
+      delete next[tab.sessionId]
+      return next
+    })
+  }, [])
+  useEffect(() => {
+    seenActive()
+  }, [activeTabId, activity, seenActive])
+  useEffect(() => {
+    window.addEventListener('focus', seenActive)
+    return () => window.removeEventListener('focus', seenActive)
+  }, [seenActive])
 
   /* ---------------------------------------------------------------- theme */
 
@@ -1515,6 +1616,7 @@ export function App(): React.JSX.Element {
         tabs={tabs}
         activeTabId={activeTabId}
         contexts={contexts}
+        activity={activity}
         watchedSessions={watchedSessions}
         sidebarOpen={sidebarOpen}
         browserOpen={browserOpen}
@@ -1809,6 +1911,7 @@ export function App(): React.JSX.Element {
       <StatusBar
         tab={activeTab}
         context={activeTab ? (contexts[activeTab.sessionId] ?? null) : null}
+        activity={activeTab ? (activity[activeTab.sessionId] ?? null) : null}
         cli={cli}
         updateAvailable={update?.updateAvailable ? update.latest : null}
         relaunch={relaunch}

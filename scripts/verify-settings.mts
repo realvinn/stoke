@@ -119,6 +119,12 @@ console.log('\nthe status line')
 check('suppression is on for a machine that has never said', hydrateSettings({}).hideStatusLine, true)
 check('and off stays off', hydrateSettings({ hideStatusLine: false }).hideStatusLine, false)
 
+console.log('\nnotifications')
+check('a machine that has never said gets background-only notifications', hydrateSettings({}).notifications, 'background')
+check('off is kept', hydrateSettings({ notifications: 'off' }).notifications, 'off')
+check('always is kept', hydrateSettings({ notifications: 'always' }).notifications, 'always')
+check('a value outside the vocabulary falls back to the default rather than surviving', hydrateSettings({ notifications: 'loud' }).notifications, 'background')
+
 console.log('\nnothing already persisted is disturbed')
 check(
   'pinned and hidden keep their own shape',

@@ -1,4 +1,11 @@
-import type { CliInfo, EffortLevel, PermissionMode, Settings, Theme } from '@shared/types'
+import type {
+  CliInfo,
+  EffortLevel,
+  NotificationMode,
+  PermissionMode,
+  Settings,
+  Theme
+} from '@shared/types'
 import type { ResolvedProfile } from '@shared/profiles'
 import { BUILT_IN_THEMES } from '@shared/themes'
 import {
@@ -34,6 +41,21 @@ const ZOOM_TARGET_LABELS: { id: ZoomTarget; label: string; hint: string }[] = [
   { id: 'both', label: 'Both', hint: 'Interface scale and terminal font together' },
   { id: 'terminal', label: 'Terminal', hint: 'Terminal font only — the interface stays put' },
   { id: 'interface', label: 'Interface', hint: 'Interface only — the terminal text stays put' }
+]
+
+/**
+ * When a finished turn raises an OS notification. "In the background" is the
+ * default: a notification for the tab you are looking at is noise, one for a
+ * tab behind another — or a window behind another app — is the point.
+ */
+const NOTIFICATION_MODES: { id: NotificationMode; label: string; hint: string }[] = [
+  {
+    id: 'background',
+    label: 'In the background',
+    hint: 'Only for a tab you are not looking at, or when Stoke is behind another app'
+  },
+  { id: 'always', label: 'Always', hint: 'Every finished turn, even for the tab in front' },
+  { id: 'off', label: 'Off', hint: 'Never. The dot in the tab strip still shows' }
 ]
 
 /**
@@ -522,6 +544,26 @@ export function SettingsSheet({
                     </span>
                   </span>
                 </label>
+
+                <div className="field">
+                  <span className="field-label">Notify me when Claude finishes</span>
+                  <div className="segmented" role="group" aria-label="Notifications">
+                    {NOTIFICATION_MODES.map((n) => (
+                      <button
+                        key={n.id}
+                        aria-pressed={settings.notifications === n.id}
+                        title={n.hint}
+                        onClick={() => onPatch({ notifications: n.id })}
+                      >
+                        {n.label}
+                      </button>
+                    ))}
+                  </div>
+                  <span className="field-hint">
+                    A system notification when a turn ends or Claude asks for something. The tab
+                    shows a dot either way, so a session you are not looking at can be left to run.
+                  </span>
+                </div>
 
                 <label className="check-row">
                   <input

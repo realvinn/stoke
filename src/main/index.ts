@@ -51,6 +51,7 @@ import { invalidateRecall, recall, scanOutcomeFor } from './worklog/recall.ts'
 import type { CreateProfileInput } from '@shared/profiles'
 import { getSettings, onSettingsChanged, setSettings } from './store.ts'
 import {
+  readSessionEvents,
   readStatusLine,
   sweepStaleSessionFiles,
   userStatusLineCommand,
@@ -1071,6 +1072,12 @@ function registerIpc(): void {
     else win.maximize()
   })
   ipcMain.on(CH.winClose, () => win?.close())
+  ipcMain.on(CH.winFocus, () => {
+    if (!win) return
+    if (win.isMinimized()) win.restore()
+    win.show()
+    win.focus()
+  })
   ipcMain.handle(CH.winIsMaximized, () => win?.isMaximized() ?? false)
   // Asked once on mount, because a window can be launched already full screen
   // and no enter-full-screen event fires for a state it started in.
@@ -1209,6 +1216,39 @@ function registerIpc(): void {
   /* --------------------------------------------------------------- context */
   ipcMain.on(CH.ctxWatch, (_e, sessionId: string) => watcher?.watch(sessionId))
   ipcMain.on(CH.ctxUnwatch, (_e, sessionId: string) => watcher?.unwatch(sessionId))
+  /*
+   * Hook events, polled off the per-session events file every second.
+   *
+   * A poll rather than fs.watch, for the reason context.ts gives: the file is
+   * appended to, watch semantics for appends differ per platform, and there
+   * are only ever a handful of live sessions. One second is the ceiling on how
+   * late a "done" dot or a notification can be, which is well under the time
+   * it takes to switch to the tab and read the answer.
+   *
+   * Reentrancy-guarded, because the read is async and a pass can outlive its
+   * own interval when the disk is slow (gotcha 20). Offsets are dropped for
+   * sessions that have gone, so a key reused by a later launch — impossible
+   * today, since keys are uuids, but cheap to be right about — starts at zero.
+   */
+  const eventOffsets = new Map<string, number>()
+  let pollingEvents = false
+  const pollSessionEvents = async (): Promise<void> => {
+    if (pollingEvents) return
+    pollingEvents = true
+    try {
+      const keys = ptys?.statusKeys() ?? []
+      for (const known of [...eventOffsets.keys()]) if (!keys.includes(known)) eventOffsets.delete(known)
+      for (const key of keys) {
+        const { events, offset } = await readSessionEvents(key, eventOffsets.get(key) ?? 0)
+        eventOffsets.set(key, offset)
+        for (const ev of events) send(CH.sessionEvent, ev)
+      }
+    } finally {
+      pollingEvents = false
+    }
+  }
+  setInterval(() => void pollSessionEvents(), 1000)
+
   ipcMain.handle(CH.statusLineLast, () => {
     // Sweep first, so a session nothing watches — a --continue — still
     // contributes its account-wide rate limits. See refreshLastStatusLine.

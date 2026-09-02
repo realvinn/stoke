@@ -10,6 +10,7 @@ import type {
   Project,
   ProjectMeta,
   Rect,
+  SessionEvent,
   SessionMeta,
   Settings,
   StatusLineSnapshot,
@@ -209,6 +210,8 @@ export interface StokeApi {
      */
     isFullScreen(): Promise<boolean>
     onFullScreenChanged(cb: (fullScreen: boolean) => void): () => void
+    /** Show and focus the window, from a notification click or the like. */
+    focus(): void
   }
 
   cli: {
@@ -278,6 +281,15 @@ export interface StokeApi {
      */
     last(): Promise<StatusLineSnapshot | null>
     onUpdate(cb: (snapshot: StatusLineSnapshot) => void): () => void
+  }
+
+  /**
+   * Where each session is, from the CLI's own hooks. Only local sessions
+   * report — an SSH session's `claude` runs on the far machine and gets no
+   * hooks from here.
+   */
+  session: {
+    onEvent(cb: (event: SessionEvent) => void): () => void
   }
 
   browser: {

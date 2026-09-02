@@ -16,7 +16,7 @@ import {
   IconSearch,
   IconSidebar
 } from './Icons'
-import type { Tab } from '../types'
+import type { SessionActivity, Tab } from '../types'
 
 interface Props {
   platform: string
@@ -26,6 +26,8 @@ interface Props {
   tabs: Tab[]
   activeTabId: string | null
   contexts: Record<string, ContextSnapshot>
+  /** Working / done / needs-attention per session id, from the CLI's hooks. */
+  activity: Record<string, SessionActivity>
   /** Session ids the worklog agent is watching. Drives the red dot in the ring. */
   watchedSessions: Set<string>
   sidebarOpen: boolean
@@ -54,6 +56,7 @@ export function TitleBar({
   tabs,
   activeTabId,
   contexts,
+  activity,
   watchedSessions,
   sidebarOpen,
   browserOpen,
@@ -103,12 +106,14 @@ export function TitleBar({
         <div className="tablist" role="tablist" aria-label="Sessions">
           {tabs.map((tab) => {
             const ctx = contexts[tab.sessionId]
+            const act = tab.kind === 'session' ? activity[tab.sessionId] : undefined
             return (
               <div
                 key={tab.id}
                 className="tab"
                 role="tab"
                 aria-selected={tab.id === activeTabId}
+                data-activity={act?.state}
                 tabIndex={0}
                 onClick={() => onSelectTab(tab.id)}
                 onKeyDown={(e) => {
@@ -156,6 +161,32 @@ export function TitleBar({
                   watched={watchedSessions.has(tab.sessionId)}
                 />
                 <span className="tab-label">{tab.title}</span>
+                {/*
+                  What happened here since you last looked. Working pulses,
+                  done is a solid accent dot, attention is the warning colour.
+                  Not red: red in the strip means the worklog is watching.
+                */}
+                {act && (
+                  <span
+                    className="tab-activity"
+                    data-state={act.state}
+                    title={
+                      act.state === 'working'
+                        ? 'Claude is working'
+                        : act.state === 'done'
+                          ? `Finished${act.message ? `: ${act.message}` : ''}`
+                          : `Needs your attention${act.message ? `: ${act.message}` : ''}`
+                    }
+                  >
+                    <span className="sr-only">
+                      {act.state === 'working'
+                        ? 'Claude is working. '
+                        : act.state === 'done'
+                          ? 'Finished since you last looked. '
+                          : 'Needs your attention. '}
+                    </span>
+                  </span>
+                )}
                 <button
                   className="tab-close"
                   onClick={(e) => {

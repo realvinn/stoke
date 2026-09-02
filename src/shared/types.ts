@@ -267,6 +267,44 @@ export interface StatusLineSnapshot {
   receivedAt: number
 }
 
+/* ---------------------------------------------------------- session events */
+
+/**
+ * Where a session is, as the CLI itself reports it through its hooks.
+ *
+ * Three events, because three states matter to someone with several tabs
+ * open: a prompt went in (Claude is working), the assistant stopped (done,
+ * waiting for you), and the CLI asked for attention (a permission prompt, or
+ * an idle nudge). The transcript watcher cannot say any of this promptly —
+ * it polls a file that is appended mid-turn — and the PTY bytes could only
+ * say it by parsing a TUI. A hook is the CLI stating it in so many words.
+ */
+export type SessionEventKind = 'stop' | 'notification' | 'prompt'
+
+export interface SessionEvent {
+  sessionId: string
+  kind: SessionEventKind
+  /** Epoch ms the event was read, not when the CLI wrote it. */
+  at: number
+  /**
+   * Stop: the last assistant message, clipped. Notification: the CLI's own
+   * message. Prompt: the prompt text, clipped. Null when the payload had none.
+   */
+  message: string | null
+  /** Notification only, e.g. `permission_prompt` or `idle_prompt`. */
+  notificationType: string | null
+  cwd: string | null
+}
+
+/**
+ * When a finished turn or a permission prompt raises an OS notification.
+ *
+ * `background` is the default and the useful one: a notification for the tab
+ * you are looking at is noise, and one for a tab you are not — or a window
+ * behind another app — is the whole point.
+ */
+export type NotificationMode = 'off' | 'background' | 'always'
+
 /* ------------------------------------------------------------------ themes */
 
 /**
@@ -760,6 +798,8 @@ export interface Settings {
    * Stoke already draws. Off passes the user's own command through unchanged.
    */
   hideStatusLine: boolean
+  /** OS notifications when Claude finishes or needs you. See NotificationMode. */
+  notifications: NotificationMode
 }
 
 /* --------------------------------------------------------------- browser */

@@ -3,11 +3,13 @@ import { ContextBar } from './ContextMeter'
 import { modelLabel, shortPath } from '../lib/format'
 import { PERMISSION_LABELS } from '../lib/permissions'
 import type { RelaunchPlan } from '../lib/tabs'
-import type { Tab } from '../types'
+import type { SessionActivity, Tab } from '../types'
 
 interface Props {
   tab: Tab | null
   context: ContextSnapshot | null
+  /** Working / done / attention for the tab in front, or null when idle. */
+  activity: SessionActivity | null
   cli: CliInfo | null
   /** Newer CLI version found at launch, or null when up to date. */
   updateAvailable: string | null
@@ -42,6 +44,7 @@ interface Props {
 export function StatusBar({
   tab,
   context,
+  activity,
   cli,
   updateAvailable,
   relaunch,
@@ -172,6 +175,22 @@ export function StatusBar({
       <span className="status-item">{modelLabel(model)}</span>
 
       {tab.effort !== 'default' && <span className="status-item">effort: {tab.effort}</span>}
+
+      {/*
+        The one line that says whether it is your move. From the CLI's own
+        hooks, so it is right the moment the turn ends rather than a poll
+        later; `working` carries a pulse so a long turn does not read as hung.
+      */}
+      {activity && tab.status === 'running' && (
+        <span className="status-item status-activity" data-state={activity.state}>
+          <span className="status-activity-dot" aria-hidden="true" />
+          {activity.state === 'working'
+            ? 'Claude is working…'
+            : activity.state === 'done'
+              ? 'Finished — your move'
+              : (activity.message ?? 'Needs your attention')}
+        </span>
+      )}
 
       <span className="status-spacer" />
 

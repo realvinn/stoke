@@ -1,5 +1,21 @@
 import type { EffortLevel, PermissionMode } from '@shared/types'
 
+/**
+ * Where a session is right now, from its hook events.
+ *
+ * `working` from the moment a prompt goes in until the assistant stops;
+ * `done` from then until the tab is looked at; `attention` when the CLI has
+ * asked for something (a permission prompt, an idle nudge). Absent means
+ * idle-and-seen, which is what a tab you are looking at should read as.
+ */
+export interface SessionActivity {
+  state: 'working' | 'done' | 'attention'
+  /** Epoch ms of the event that put it in this state. */
+  at: number
+  /** The last reply, or the CLI's message, clipped. */
+  message: string | null
+}
+
 /** A New Project tab has no PTY yet; every session tab does. */
 export type TabKind = 'session' | 'new'
 

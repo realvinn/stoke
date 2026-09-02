@@ -18,6 +18,8 @@ export const CH = {
    */
   winIsFullScreen: 'win:isFullScreen',
   winFullScreenChanged: 'win:fullScreenChanged',
+  /** Bring the window forward — what a clicked notification asks for. */
+  winFocus: 'win:focus',
 
   // cli
   cliInfo: 'cli:info',
@@ -56,6 +58,8 @@ export const CH = {
   // statusline channel (see the design spec, §3)
   statusLineUpdate: 'statusline:update',
   statusLineLast: 'statusline:last',
+  /** A hook event: a prompt went in, the assistant stopped, or the CLI asked for attention. */
+  sessionEvent: 'session:event',
 
   // embedded browser
   browserSetBounds: 'browser:setBounds',

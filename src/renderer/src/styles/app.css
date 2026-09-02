@@ -668,6 +668,45 @@ body {
 }
 
 /*
+ * What happened in this tab since you last looked, from the CLI's own hooks.
+ *
+ * A dot after the label rather than a change to the ring: the ring already
+ * means one thing (context used) and red in the strip already means another
+ * (the worklog is watching), so this gets its own slot and never uses red.
+ * Working pulses so a long turn is visibly alive; done is the accent, solid;
+ * attention is the warning colour, because a permission prompt is the one
+ * state that stops the session until you act.
+ */
+.tab-activity {
+  flex: none;
+  width: 0.375rem;
+  height: 0.375rem;
+  border-radius: var(--r-full);
+  background: var(--accent-ink);
+}
+
+.tab-activity[data-state='working'] {
+  background: var(--text-faint);
+  animation: activity-pulse 1.6s var(--ease) infinite;
+}
+
+.tab-activity[data-state='attention'] {
+  background: var(--warning);
+}
+
+@keyframes activity-pulse {
+  50% {
+    opacity: 0.25;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tab-activity[data-state='working'] {
+    animation: none;
+  }
+}
+
+/*
  * Bypass mode used to own --danger, which put a red dot on every tab on a
  * machine whose default permission mode is bypassPermissions — an alert that
  * was only ever a setting. A dashed warning-coloured track says "the guard
@@ -2316,6 +2355,35 @@ body {
 
 .status-btn:hover {
   color: var(--text);
+}
+
+/* Whose move it is, beside the model. Same three states and colours as the
+   tab strip's dot, so the two never disagree about the same session. */
+.status-activity[data-state='done'] {
+  color: var(--text);
+}
+
+.status-activity[data-state='attention'] {
+  color: var(--warning);
+}
+
+.status-activity-dot {
+  width: 0.375rem;
+  height: 0.375rem;
+  border-radius: var(--r-full);
+  background: var(--text-faint);
+}
+
+.status-activity[data-state='working'] .status-activity-dot {
+  animation: activity-pulse 1.6s var(--ease) infinite;
+}
+
+.status-activity[data-state='done'] .status-activity-dot {
+  background: var(--accent-ink);
+}
+
+.status-activity[data-state='attention'] .status-activity-dot {
+  background: var(--warning);
 }
 
 /* ------------------------------------------------------- overlay surfaces */

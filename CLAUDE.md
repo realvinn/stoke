@@ -71,7 +71,16 @@ src/main/         Electron main process
   context.ts        live context-window watcher (polls transcripts). Publishes on a
                     changed transcript OR a newly-stated window, for gotcha 49's reason
   sessionFile.ts    transcript parsing and the context maths
-  statusLine.ts     Stoke's statusLine wrapper: context window + plan limits
+  statusLine.ts     Stoke's statusLine wrapper: context window + plan limits, and the SAME
+                    shim run as a hook. The session's --settings file carries Stop,
+                    Notification and UserPromptSubmit hooks that append one JSON line each
+                    to <key>.events.jsonl; index.ts polls that every second and pushes
+                    `session:event`, which the tab strip's activity dot, the status bar's
+                    "Claude is working…" line and the OS notifications all read. Measured:
+                    hooks in a --settings file fire and MERGE with the user's own (a project
+                    hook and the flag-file hook both ran on one prompt), and a hook that
+                    prints is shown in the TUI (Stop) or fed to the model (UserPromptSubmit),
+                    so the event branch of the wrapper prints nothing, ever
   usage.ts          plan limits from the undocumented OAuth endpoint the CLI itself calls.
                     Reads the token from ~/.claude/.credentials.json OR, on macOS, the login
                     Keychain - which is why the chip works with no session running (gotcha 36)

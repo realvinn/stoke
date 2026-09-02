@@ -24,7 +24,11 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import {
   clearSessionFiles,
+  hookCommand,
+  parseHookEvent,
+  readSessionEvents,
   readStatusLine,
+  sessionEventsFile,
   sessionSettingsJson,
   statusLineCommand,
   statusLineDir,
@@ -426,6 +430,82 @@ try {
     true
   )
 
+  console.log('\nthe wrapper as a hook: appends the event, prints nothing')
+  /*
+   * Real payloads, captured from claude 2.1.237's Stop and UserPromptSubmit
+   * hooks on 2026-09-02. A Stop hook that prints is shown in the TUI and a
+   * UserPromptSubmit hook's stdout is added to the model's context, so an
+   * empty stdout here is not tidiness — it is the whole contract.
+   */
+  const STOP_EVENT =
+    '{"session_id":"f3a527a8-6718-4397-9756-e2d56178939c","transcript_path":"/tmp/x.jsonl","cwd":"/private/tmp/stoke-hooktest","prompt_id":"9a807c6d-6bf7-4bb8-8712-ea722a89af5c","permission_mode":"default","hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"pong","background_tasks":[],"session_crons":[]}'
+  const PROMPT_EVENT =
+    '{"session_id":"f3a527a8-6718-4397-9756-e2d56178939c","transcript_path":"/tmp/x.jsonl","cwd":"/private/tmp/stoke-hooktest","prompt_id":"9a807c6d-6bf7-4bb8-8712-ea722a89af5c","permission_mode":"default","hook_event_name":"UserPromptSubmit","prompt":"Reply with exactly the word: pong"}'
+  /** Run the hook command the way the CLI runs it, event on stdin. */
+  const runHook = (sessionId: string, input: string): string =>
+    execFileSync(shell, [shellFlag, hookCommand(sessionId)], { input, encoding: 'utf8' })
+  const hooked = 'stoke-verify-hook'
+  try {
+    check('a hook prints nothing at all', runHook(hooked, PROMPT_EVENT), '')
+    check('a second event appends rather than replaces', runHook(hooked, STOP_EVENT), '')
+    check(
+      'both land as one line each',
+      readFileSync(sessionEventsFile(hooked), 'utf8').split('\n').filter(Boolean).length,
+      2
+    )
+    check('a hook does not write a status-line payload', readStatusLine(hooked), null)
+    check('non-JSON on stdin is dropped, never appended', runHook(hooked, 'Error: boom\n'), '')
+    check(
+      'and the file is unchanged by it',
+      readFileSync(sessionEventsFile(hooked), 'utf8').split('\n').filter(Boolean).length,
+      2
+    )
+
+    const first = await readSessionEvents(hooked, 0)
+    check(
+      'the reader returns both events in order, typed',
+      first.events.map((e) => e.kind),
+      ['prompt', 'stop']
+    )
+    check('a prompt carries its text', first.events[0].message, 'Reply with exactly the word: pong')
+    check('a stop carries the last reply', first.events[1].message, 'pong')
+    check(
+      "the payload's own session id wins over the file key (a --continue is keyed on a launch uuid)",
+      first.events[0].sessionId,
+      'f3a527a8-6718-4397-9756-e2d56178939c'
+    )
+    const again = await readSessionEvents(hooked, first.offset)
+    check('reading from the returned offset yields nothing new', again.events.length, 0)
+    check('and the offset stands still', again.offset, first.offset)
+    runHook(hooked, STOP_EVENT)
+    const third = await readSessionEvents(hooked, first.offset)
+    check('a later event is the only thing the next read returns', third.events.map((e) => e.kind), ['stop'])
+    const past = await readSessionEvents(hooked, 1_000_000)
+    check(
+      'an offset past the end (the wrapper restarted the file) starts over rather than waiting forever',
+      past.events.length,
+      3
+    )
+    check('a missing file reads as no events at offset zero', (await readSessionEvents('stoke-verify-no-events', 5)).offset, 0)
+    clearSessionFiles(hooked)
+    check('clearSessionFiles removes the events file too', existsSync(sessionEventsFile(hooked)), false)
+  } finally {
+    clearSessionFiles(hooked)
+  }
+
+  console.log('\nparsing one hook line')
+  check('an unknown hook name is ignored', parseHookEvent(JSON.stringify({ hook_event_name: 'PreToolUse', session_id: 'x' }), 'k'), null)
+  check('a blank line is ignored', parseHookEvent('   ', 'k'), null)
+  check('broken JSON is ignored, never a throw', parseHookEvent('{not json', 'k'), null)
+  const notified = parseHookEvent(
+    JSON.stringify({ hook_event_name: 'Notification', message: 'Claude needs your permission to use Bash', notification_type: 'permission_prompt' }),
+    'launch-key'
+  )
+  check('a notification carries its message and type', [notified?.kind, notified?.message, notified?.notificationType], ['notification', 'Claude needs your permission to use Bash', 'permission_prompt'])
+  check('with no session_id the key stands in', notified?.sessionId, 'launch-key')
+  const long = parseHookEvent(JSON.stringify({ hook_event_name: 'Stop', last_assistant_message: 'x'.repeat(2000) }), 'k')
+  check('a long reply is clipped, since it can be pages', long?.message?.length, 400)
+
   console.log('\na slow or runaway status line cannot wedge the terminal')
   /*
    * The pass-through is the one place Stoke runs a string as a shell command.
@@ -562,10 +642,33 @@ try {
     hideStatusLine: true,
     passthroughCommand: 'bash ~/.claude/statusline-command.sh'
   })
-  check('ultracode and statusLine ride in the same object', Object.keys(json).sort(), [
+  check('ultracode, statusLine and the hooks ride in the same object', Object.keys(json).sort(), [
+    'hooks',
     'statusLine',
     'ultracode'
   ])
+  /*
+   * The hooks are how Stoke learns where a session is. Measured against
+   * 2.1.237: hooks in a --settings file fire, and merge with the user's own
+   * rather than replacing them. Each entry has no matcher and runs the same
+   * shim with an extra argument, and the command must print nothing.
+   */
+  const hooks = json.hooks as Record<string, { hooks: { type: string; command: string; timeout: number }[] }[]>
+  check('the three events that describe a session are subscribed to', Object.keys(hooks).sort(), [
+    'Notification',
+    'Stop',
+    'UserPromptSubmit'
+  ])
+  check(
+    'each hook runs the shim in event mode',
+    Object.values(hooks).map((h) => h[0].hooks[0].command),
+    [hookCommand(both), hookCommand(both), hookCommand(both)]
+  )
+  check(
+    'the hook command is the statusLine command plus one word, so one program serves both',
+    hookCommand(both),
+    `${statusLineCommand(both)} "event"`
+  )
   check('the statusLine entry is a command', (json.statusLine as { type: string }).type, 'command')
   check(
     'and it is the command the wrapper answers to',
@@ -581,8 +684,8 @@ try {
         hideStatusLine: true,
         passthroughCommand: ''
       })
-    ),
-    ['statusLine']
+    ).sort(),
+    ['hooks', 'statusLine']
   )
   check(
     'an empty key gets no statusLine entry, because nothing would name the files',
@@ -648,7 +751,7 @@ try {
       typeof bothKeysFile === 'string' && existsSync(bothKeysFile)
         ? Object.keys(JSON.parse(readFileSync(bothKeysFile, 'utf8'))).sort()
         : bothKeysFile,
-      ['statusLine', 'ultracode']
+      ['hooks', 'statusLine', 'ultracode']
     )
 
     const settingsFile = writeSessionSettingsFile({
@@ -660,8 +763,8 @@ try {
     check('the file is written', typeof settingsFile === 'string' && existsSync(settingsFile), true)
     check(
       'and parses as the object we built',
-      Object.keys(JSON.parse(readFileSync(settingsFile as string, 'utf8'))),
-      ['statusLine']
+      Object.keys(JSON.parse(readFileSync(settingsFile as string, 'utf8'))).sort(),
+      ['hooks', 'statusLine']
     )
     check(
       'the pass-through command is a file beside the payload, never part of the command string',
