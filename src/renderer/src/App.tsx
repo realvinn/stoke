@@ -330,16 +330,26 @@ export function App(): React.JSX.Element {
   const relaunchingRef = useRef(false)
   const [relaunching, setRelaunching] = useState(false)
 
-  // Launch options for the next session, seeded from the saved defaults.
-  const [mode, setMode] = useState<PermissionMode>('default')
-  const [model, setModel] = useState('')
-  const [effort, setEffort] = useState<EffortLevel>('default')
   /*
-   * Ultracode is not an effort level - the CLI's --effort takes only
-   * low/medium/high/xhigh/max - but a boolean it reads from its settings, so it
+   * Launch options for the next session, DERIVED from the saved defaults rather
+   * than mirrored into state beside them.
+   *
+   * They were four `useState`s seeded once on boot and written by the launcher.
+   * Settings has a second writer — the Sessions pane's own Default permissions,
+   * Default model and Default effort controls — and it did not touch this copy,
+   * so changing a default in Settings updated the file and left the launcher
+   * showing the old value AND launching with it. Two writers, one of them
+   * invisible to the other; the drift lasted until the app was restarted, which
+   * is exactly when it re-seeded and the evidence disappeared.
+   *
+   * Ultracode is not an effort level — the CLI's --effort takes only
+   * low/medium/high/xhigh — but a boolean it reads from its settings, so it
    * rides along as its own launch option rather than as a sixth effort.
    */
-  const [ultracode, setUltracode] = useState(false)
+  const mode: PermissionMode = settings?.defaults.permissionMode ?? 'default'
+  const model = settings?.defaults.model ?? ''
+  const effort: EffortLevel = settings?.defaults.effort ?? 'default'
+  const ultracode = settings?.defaults.ultracode ?? false
 
   /*
    * Whether the OS is in dark mode, which decides which of the two stored
@@ -571,10 +581,6 @@ export function App(): React.JSX.Element {
       setSettings(s)
       setSidebarWidth(s.sidebarWidth)
       setBrowserWidth(s.browser.width)
-      setMode(s.defaults.permissionMode)
-      setModel(s.defaults.model)
-      setEffort(s.defaults.effort)
-      setUltracode(s.defaults.ultracode)
       void window.stoke.cli.info().then(setCli)
       void window.stoke.workspace.defaultCwd().then(setDefaultCwd)
       // Quiet check; surfaces as a status-bar pill only when something is newer.
@@ -1692,9 +1698,13 @@ export function App(): React.JSX.Element {
     await refreshProjects()
   }, [refreshProjects])
 
+  /*
+   * One writer each. The settings patch is the whole change now — there is no
+   * local copy left to keep in step, which is what let the Sessions pane and
+   * the launcher disagree about the same four values.
+   */
   const changeMode = useCallback(
     (m: PermissionMode): void => {
-      setMode(m)
       if (settings) void patchSettings({ defaults: { ...settings.defaults, permissionMode: m } })
     },
     [settings, patchSettings]
@@ -1702,7 +1712,6 @@ export function App(): React.JSX.Element {
 
   const changeModel = useCallback(
     (m: string): void => {
-      setModel(m)
       if (settings) void patchSettings({ defaults: { ...settings.defaults, model: m } })
     },
     [settings, patchSettings]
@@ -1710,7 +1719,6 @@ export function App(): React.JSX.Element {
 
   const changeEffort = useCallback(
     (v: EffortLevel): void => {
-      setEffort(v)
       if (settings) void patchSettings({ defaults: { ...settings.defaults, effort: v } })
     },
     [settings, patchSettings]
@@ -1718,7 +1726,6 @@ export function App(): React.JSX.Element {
 
   const changeUltracode = useCallback(
     (v: boolean): void => {
-      setUltracode(v)
       if (settings) void patchSettings({ defaults: { ...settings.defaults, ultracode: v } })
     },
     [settings, patchSettings]

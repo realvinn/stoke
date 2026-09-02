@@ -28,7 +28,8 @@ npm run verify:context        # context meter against the real transcripts on th
 npm run verify:statusline     # the statusLine wrapper: payload, suppression, pass-through
 npm run verify:unicode        # xterm's cell widths for emoji and box drawing
 npm run verify:profiles       # profile resolution + every accent clears 4.5:1
-npm run verify:settings       # settings hydration: repair, clamps, and what it drops
+npm run verify:settings       # settings hydration: repair, clamps, what it drops, and the
+                              # light/dark theme pair the OS chooses between
 npm run verify:claude-config  # writing Claude Code's OWN config: the allowlist, the refusals,
                               # and the ~/.claude.json lock. Runs against real files in a temp
                               # CLAUDE_CONFIG_DIR, never the user's (gotchas 38, 39)
@@ -38,7 +39,8 @@ npm run verify:cli            # finding the `claude` binary: the version-manager
                               # Hermetic - HOME is redirected into a temp tree (gotcha 52)
 npm run verify:tabs           # which tab is selected after one is closed, and where the
                               # next/previous chord lands
-npm run verify:shortcuts      # app chords vs the keys the terminal owns, and the zoom maths
+npm run verify:shortcuts      # app chords vs the keys the terminal owns, the zoom maths, and
+                              # that Ctrl+Tab and the bare brackets still reach the CLI
 npm run verify:color          # colour maths: contrast, APCA, oklch
 npm run verify:theme-gen      # the theme generator: that a five-field seed reproduces every
                               # built-in byte-for-byte, that no slider position can breach a
@@ -1534,6 +1536,62 @@ scripts/          the verify-*.mts suites, make-icon.cjs
     before it reaches main — while `<img>` loads it fine, because that is `img-src`, which
     `index.html` names the scheme in. Probe a custom scheme with `new Image()` and its
     `onload`/`naturalWidth`, never with fetch, or you will conclude a working handler is broken.
+
+55. **`nativeTheme.themeSource` is both the pin and the question, and pinning it makes the
+    answer meaningless.** Stoke sets `themeSource` to its own theme's appearance so the docked
+    browser's `prefers-color-scheme` matches the window around it (see `applyNativeTheme`). That
+    same pin decides what `nativeTheme.shouldUseDarkColors` returns — so "does the OS want dark"
+    cannot be asked while the pin is on, in EITHER process: `matchMedia('(prefers-color-scheme:
+    dark)')` in the renderer resolves against the pin too, and would hand Stoke's own setting
+    back to Stoke forever. Following the system therefore has to release the pin (`'system'`),
+    which is why `applyNativeTheme` takes the settings rather than a resolved theme.
+
+    Two consequences worth carrying. **Order matters in the settings handler**: that call CHANGES
+    what `effectiveTheme` reads, so the previous theme has to be resolved *before* it or the
+    comparison is the new state against itself and the window's `backgroundColor` is never
+    repainted. And **`nativeTheme.on('updated')` also fires when Stoke writes `themeSource`** —
+    every settings save — so the handler is guarded on the value actually having moved.
+
+    A theme pair is two ids, not one plus an inversion. There is no light version of Nocturne to
+    compute: the ladder's light and dark step maps disagree on purpose (gotcha 43), so a light
+    theme is a different theme. `activeThemeId`, `themeSlotFor` and `followPatch` are pure and in
+    `themes.ts` because MAIN needs the same answers — the QR quiet zone and the palette served to
+    the phone are resolved there, and a second copy of the rule is how the phone would come to
+    paint one theme while the desktop painted another.
+
+56. **A shortcut is only safe if xterm ignores it, and Ctrl+Tab is not.** Every chord in
+    `shortcuts.ts` survives because xterm's `evaluateKeyboardEvent` declines it: Meta on macOS,
+    and `ctrlKey && !shiftKey` off it, which is why the letter chords all demand Shift there
+    (gotcha 32 covers the two zoom exceptions). Tab is different — xterm's branch for it reads
+    `shiftKey` and nothing else, so **Ctrl+Tab sends C0.HT to the pty**, from xterm's own listener
+    on the textarea, which runs at target phase *before* a window-level handler. Calling
+    `preventDefault` afterwards cannot unsend it. Next/previous tab is `⇧⌘]` / `Ctrl+Shift+]`
+    instead: the bracket keys sit in the same `ctrlKey && !shiftKey` branch as the letters
+    (keyCode 219/221 give ESC and GS), so the Shift takes them out of it exactly as it does for
+    Ctrl+K, and `verify:shortcuts` asserts the bare forms still reach the terminal.
+
+    **A chord that STEPS from the current value must read pending state.** `cycleTab` computed
+    its step from `activeTabId` as captured by the last render, so two presses inside one frame —
+    a held key — both started from the same tab. Measured over CDP: two events in one tick moved
+    the selection one place; with `setActiveTabId(cur => …)` they move two. Gotcha 51's shape one
+    layer down. Every other case in that switch sets an absolute value and is unaffected.
+
+    Related, and the reason `chordLabel` exists: the title bar hand-wrote "Ctrl/Cmd+T" on every
+    tooltip, which is right on macOS and **wrong on Windows and Linux**, where the letter chords
+    need Shift. A slash between two platforms' modifiers cannot express a per-platform Shift, so
+    the label is derived from the same table the matcher uses.
+
+57. **Two writers on one value, one of them invisible to the other.** App kept `mode`, `model`,
+    `effort` and `ultracode` as `useState`, seeded once on boot from `settings.defaults` and
+    written by the launcher. The Sessions pane writes `settings.defaults` directly through
+    `onPatch` and never touched that copy — so changing a default in Settings updated the file
+    and left the launcher both SHOWING and LAUNCHING with the old value, until a restart re-seeded
+    it and the evidence vanished. They are derived from `settings` now, and the four change
+    handlers do nothing but patch.
+
+    The general form, which has now cost time three times in this file (gotchas 31, 45, and here):
+    **a value that exists in two places has to have exactly one writer, or the second one is a
+    cache with no invalidation.** The tell is a bug that "fixes itself" on restart.
 
 ## Standing traps when driving the app
 
