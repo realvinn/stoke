@@ -62,6 +62,61 @@ export function statusLineWindows(snap: StatusLineSnapshot, now: number): UsageW
 }
 
 /**
+ * Which statusLine reading answers for the account-wide rate limits.
+ *
+ * "Newest arrival wins" is what both processes used to do, and it is wrong for
+ * this one field group, because **a payload states no rate limits until the
+ * first render after an API response completes** (gotcha 21). A tab that was
+ * just opened therefore writes the newest payload on the machine and states
+ * nothing — and under a plain newest-wins rule it EVICTS a live session's real
+ * figures. Reproduced through the real `toSnapshot`: session A carrying
+ * `session:18%, weekly:61%` at t-10s against a one-second-old session B
+ * carrying none selects B, and the chip gets `[]`.
+ *
+ * That is the exact opposite of the intent stated where the value is kept —
+ * "the rate limits in it are account-wide, so any open session's payload
+ * answers for all of them". A payload with no rate limits answers for nothing,
+ * so it must not be allowed to answer.
+ *
+ * The eviction is also sticky rather than momentary: the idle session's later
+ * pushes carry its own older payload mtime, so it keeps losing the comparison
+ * and cannot win its numbers back until its CLI happens to render a fresh
+ * status line.
+ *
+ * `five_hour` and `seven_day` are independently optional (gotcha 21 again), so
+ * this is per window rather than all-or-nothing: a newer payload stating only
+ * the five-hour window must not take the weekly one down with it.
+ *
+ * Everything that is genuinely per-session — the context window, the model, the
+ * prompt id, the CLI version — still comes from the newer snapshot. Only the
+ * two account-wide readings are retained.
+ *
+ * The timestamp is that of the OLDEST reading being presented, so a borrowed
+ * window can never be advertised as fresher than it is. That errs toward the
+ * account endpoint winning the merge below, which is the safe direction: it is
+ * authoritative and it is the only source that has the model-scoped window at
+ * all. Overstating a payload's freshness is precisely the bug gotcha 45
+ * documents.
+ */
+export function keepUsage(
+  prev: StatusLineSnapshot | null,
+  next: StatusLineSnapshot
+): StatusLineSnapshot {
+  if (!prev) return next
+  const [newer, older] = next.receivedAt >= prev.receivedAt ? [next, prev] : [prev, next]
+  const fiveHour = newer.fiveHour ?? older.fiveHour
+  const sevenDay = newer.sevenDay ?? older.sevenDay
+  const borrowed =
+    (newer.fiveHour === null && fiveHour !== null) || (newer.sevenDay === null && sevenDay !== null)
+  return {
+    ...newer,
+    fiveHour,
+    sevenDay,
+    receivedAt: borrowed ? older.receivedAt : newer.receivedAt
+  }
+}
+
+/**
  * Combine the payload's windows with the account's, kind for kind, instead of
  * one source replacing the other outright.
  *

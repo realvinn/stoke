@@ -915,6 +915,31 @@ scripts/          the verify-*.mts suites, make-icon.cjs
     **no rate-limit headers at all** on a success (checked — only `anthropic-organization-id`
     and `anthropic-workspace-id`), so the budget can only be discovered by hitting it.
 
+    **A third fault sits underneath both, and it is the one that survives them.** The payload
+    side chose its reading by `receivedAt` alone — in main (`pushStatusLine`, and again in
+    `refreshLastStatusLine`) and independently in the renderer's `take`. But **a payload states
+    no rate limits until the first render after an API response completes** (gotcha 21), so a
+    tab that was just opened writes the newest payload on the machine and states nothing —
+    and under newest-wins it EVICTED a live session's real figures. Reproduced through the real
+    `toSnapshot`: session A carrying `session:18%, weekly:61%` at t-10s against a one-second-old
+    session B carrying none selects B, and the chip gets `[]`.
+
+    That is the exact opposite of the intent written directly above the value: *"the rate limits
+    in it are account-wide, so any open session's payload answers for all of them"*. A payload
+    with no rate limits answers for nothing. It is sticky, too — the idle session's later pushes
+    carry its own older payload mtime, so it keeps losing the comparison and cannot win its
+    numbers back until its CLI happens to render a fresh status line.
+
+    `keepUsage` retains the two account-wide readings per window (`five_hour` and `seven_day`
+    are independently optional, so a newer payload stating only the first must not take the
+    second down with it) while everything genuinely per-session still follows the newer
+    snapshot. Its timestamp is that of the OLDEST reading being shown, so a borrowed window is
+    never advertised as fresher than it is — overstating a payload's freshness is gotcha 45.
+
+    Why this one hid behind the other two: with a healthy account the chip draws the account's
+    windows and the loss is invisible. It shows exactly when the payload is the only source —
+    during a backoff, with an expired token, offline, or before the first account read.
+
     `retryUntil` is absolute rather than a duration precisely because those two came apart: with
     `fetchedAt` now belonging to the data, `fetchedAt + retryAfter` names a time already past and
     the panel silently stops saying anything. Both functions are pure and asserted in

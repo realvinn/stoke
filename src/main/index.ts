@@ -29,6 +29,7 @@ import { IDLE_GAP_MS, readActivity, type ActivitySessionInput } from './activity
 import { commitSubjects } from './activityGit.ts'
 import { manualProjectPatch, projectMetaPatch } from './projectMeta.ts'
 import { normalizePath, pathRulesFor } from '../shared/paths.ts'
+import { keepUsage } from '../shared/statusLine.ts'
 import { parseSession, readTranscript } from './sessionFile.ts'
 import { fetchRemoteTranscript } from './sshTranscript.ts'
 import { PtyManager, type StartResult } from './pty.ts'
@@ -283,11 +284,12 @@ function pushStatusLine(sessionId: string): void {
   if (!snap) return
   if (statusLineSeen.get(sessionId) === snap.receivedAt) return
   statusLineSeen.set(sessionId, snap.receivedAt)
-  // Same "only move forward" rule as refreshLastStatusLine: two sessions can
-  // both push in close succession, and without this the second to arrive
-  // would win even when its own reading is the older of the two, ticking the
-  // "as of HH:MM" chip and the rate-limit percentages backwards.
-  if (!lastStatusLine || snap.receivedAt > lastStatusLine.receivedAt) lastStatusLine = snap
+  // Same rule as refreshStatusLine: the newer reading wins for everything
+  // per-session, but the two account-wide rate limits are RETAINED when the
+  // newer payload states none — otherwise opening a tab evicts a live
+  // session's figures, because a payload carries no rate limits until its
+  // first render after an API response. See `keepUsage`.
+  lastStatusLine = keepUsage(lastStatusLine, snap)
   send(CH.statusLineUpdate, snap)
 }
 
@@ -311,7 +313,7 @@ function refreshLastStatusLine(): void {
   for (const key of ptys?.statusKeys() ?? []) {
     const snap = readStatusLine(key)
     if (!snap) continue
-    if (!lastStatusLine || snap.receivedAt > lastStatusLine.receivedAt) lastStatusLine = snap
+    lastStatusLine = keepUsage(lastStatusLine, snap)
   }
 }
 const tunnel = new TunnelManager()

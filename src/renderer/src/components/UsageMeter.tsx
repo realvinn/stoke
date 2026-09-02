@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { StatusLineSnapshot, UsageSnapshot, UsageWindow } from '@shared/types'
-import { mergeUsageWindows, statusLineWindows } from '@shared/statusLine'
+import { keepUsage, mergeUsageWindows, statusLineWindows } from '@shared/statusLine'
 import {
   clock,
   countdown,
@@ -138,11 +138,11 @@ export function UsageChip(): React.JSX.Element | null {
     const lastPrompt = new Map<string, string>()
 
     const take = (s: StatusLineSnapshot): void => {
-      // Keep the newest reading rather than the newest arrival. `pushStatusLine`
-      // sends each session's own payload, so with two sessions open an idle
-      // one's older reading can arrive after a live one's and would otherwise
-      // tick the chip backwards.
-      setLine((prev) => (prev && prev.receivedAt > s.receivedAt ? prev : s))
+      // Keep the newest reading rather than the newest arrival — and keep the
+      // account-wide rate limits even when the newest payload states none,
+      // which is every payload until its session's first API response lands.
+      // Same rule main applies to `lastStatusLine`; see `keepUsage`.
+      setLine((prev) => keepUsage(prev, s))
 
       if (s.promptId && lastPrompt.get(s.sessionId) !== s.promptId) {
         lastPrompt.set(s.sessionId, s.promptId)

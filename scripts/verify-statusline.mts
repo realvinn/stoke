@@ -42,7 +42,7 @@ import {
 } from '../src/main/statusLine.ts'
 import { buildArgs } from '../src/main/cli.ts'
 import type { LaunchOptions, StatusLinePayload, UsageWindow } from '../src/shared/types.ts'
-import { mergeUsageWindows, statusLineWindows } from '../src/shared/statusLine.ts'
+import { keepUsage, mergeUsageWindows, statusLineWindows } from '../src/shared/statusLine.ts'
 import {
   countdown,
   isStale,
@@ -1331,5 +1331,74 @@ check('no reading at all is not stale, it is absent', isStale(-Infinity, T0), fa
  * to sit above the PowerShell-shape checks, so those could print FAIL into a
  * total nobody read again and the suite could not fail on them.
  */
+/* --------------------------------------- which payload answers for the limits */
+/*
+ * A payload states no rate limits until the first render after an API response
+ * completes (gotcha 21), so a tab that was just opened writes the newest
+ * payload on the machine and states nothing. Under the old "newest arrival
+ * wins" rule that EVICTED a live session's real figures, and stuck: the idle
+ * session's later pushes carry its own older mtime, so it kept losing.
+ */
+console.log('\nwhich statusLine reading answers for the account-wide limits')
+const withLimits = toSnapshot(
+  'sess-A',
+  {
+    session_id: 'sess-A',
+    rate_limits: {
+      five_hour: { used_percentage: 18, resets_at: 1_788_352_800 },
+      seven_day: { used_percentage: 61, resets_at: 1_788_462_000 }
+    }
+  } as StatusLinePayload,
+  10_000
+)
+const noLimits = toSnapshot('sess-B', { session_id: 'sess-B' } as StatusLinePayload, 20_000)
+const fiveOnly = toSnapshot(
+  'sess-C',
+  {
+    session_id: 'sess-C',
+    rate_limits: { five_hour: { used_percentage: 25, resets_at: 1_788_352_800 } }
+  } as StatusLinePayload,
+  30_000
+)
+
+check('a first reading is taken as-is', keepUsage(null, withLimits).sessionId, 'sess-A')
+// The regression itself.
+check(
+  'a newer payload stating no limits does NOT evict the figures',
+  statusLineWindows(keepUsage(withLimits, noLimits), 10_000).map((w) => w.kind),
+  ['session', 'weekly']
+)
+check(
+  'and the percentages are the retained ones, not zeroes',
+  statusLineWindows(keepUsage(withLimits, noLimits), 10_000).map((w) => w.percent),
+  [18, 61]
+)
+check(
+  'everything per-session still follows the newer payload',
+  keepUsage(withLimits, noLimits).sessionId,
+  'sess-B'
+)
+check(
+  'a borrowed reading is never advertised as fresher than it is',
+  keepUsage(withLimits, noLimits).receivedAt,
+  10_000
+)
+// five_hour and seven_day are independently optional, so this is per window.
+check(
+  'a newer payload stating only the five-hour window keeps the weekly one',
+  statusLineWindows(keepUsage(withLimits, fiveOnly), 10_000).map((w) => `${w.kind}:${w.percent}`),
+  ['session:25', 'weekly:61']
+)
+check(
+  'an out-of-order arrival cannot tick the figures backwards',
+  statusLineWindows(keepUsage(fiveOnly, withLimits), 10_000).map((w) => `${w.kind}:${w.percent}`),
+  ['session:25', 'weekly:61']
+)
+check(
+  'two limit-bearing readings: the newer wins outright and keeps its own stamp',
+  keepUsage(withLimits, { ...withLimits, sessionId: 'sess-D', receivedAt: 40_000 }).receivedAt,
+  40_000
+)
+
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
 process.exitCode = failures ? 1 : 0
