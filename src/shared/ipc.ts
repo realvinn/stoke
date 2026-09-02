@@ -20,6 +20,18 @@ export const CH = {
   winFullScreenChanged: 'win:fullScreenChanged',
   /** Bring the window forward — what a clicked notification asks for. */
   winFocus: 'win:focus',
+  /**
+   * Whether the OS is in dark mode, and a push when that changes.
+   *
+   * Read from main rather than `matchMedia('(prefers-color-scheme: dark)')` in
+   * the renderer, and the difference is not academic: main sets
+   * `nativeTheme.themeSource` to pin the docked browser to the app's own
+   * appearance, and that pin is what the media query in every renderer then
+   * resolves against. Asking the page would return Stoke's own answer back to
+   * Stoke, which is a loop that always agrees with itself.
+   */
+  systemDark: 'system:dark',
+  systemDarkChanged: 'system:darkChanged',
 
   // cli
   cliInfo: 'cli:info',

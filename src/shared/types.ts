@@ -712,6 +712,20 @@ export interface WallpaperSettings {
 
 export interface Settings {
   themeId: string
+  /**
+   * The theme used when the system is in light mode and `followSystemTheme` is
+   * on. Ignored otherwise, and kept rather than cleared so switching following
+   * off and on again does not forget the pair.
+   */
+  themeIdLight: string
+  /**
+   * Let the OS decide which of the two themes above is on screen.
+   *
+   * Off by default: an existing install has exactly one chosen theme, and
+   * turning this on for them would repaint the app the first time their Mac
+   * hit sunset.
+   */
+  followSystemTheme: boolean
   customThemes: Theme[]
   /** The image behind the window, if any. See WallpaperSettings. */
   wallpaper: WallpaperSettings

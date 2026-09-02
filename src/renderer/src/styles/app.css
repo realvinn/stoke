@@ -2967,6 +2967,36 @@ body {
   gap: var(--space-8);
 }
 
+/*
+ * The follow-the-system switch, above the theme cards.
+ *
+ * Placed AFTER `.field` deliberately. Both selectors are one class, so the
+ * later one wins — and `.field` sets `flex-direction: column`, which put the
+ * checkbox on a line of its own under its own hint and made it read as an
+ * unlabelled tick box. Measured, not guessed: the row was 82px tall with the
+ * input 688px from the right edge it was supposed to sit against.
+ */
+.theme-follow {
+  /*
+   * `display: flex` explicitly. `.field` is a grid, so a `flex-direction` alone
+   * did nothing and the checkbox stacked underneath its own hint on a line of
+   * its own — which reads as an unlabelled tick box rather than as a switch.
+   */
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: var(--space-12);
+  cursor: pointer;
+}
+
+.theme-follow-text {
+  display: grid;
+  gap: var(--space-4);
+  flex: 1 1 0%;
+  min-width: 0;
+}
+
+
 .field-label {
   font-size: var(--fs-md);
   font-weight: 550;

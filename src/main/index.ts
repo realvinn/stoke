@@ -3,7 +3,7 @@ import { pathToFileURL } from 'node:url'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { CH } from '@shared/ipc'
-import { resolveTheme } from '@shared/themes'
+import { activeThemeId, resolveTheme } from '@shared/themes'
 import type {
   CliUpdateState,
   LaunchOptions,
@@ -513,7 +513,7 @@ const remoteState = async (): Promise<RemoteState> => {
   let qr: string | null = null
   if (url) {
     const s = getSettings()
-    const qrTheme = resolveTheme(s.themeId, s.customThemes)
+    const qrTheme = effectiveTheme(s)
     if (lastQr && lastQr.url === url && lastQr.bg === qrTheme.colors.bg) {
       qr = lastQr.qr
     } else {
@@ -587,7 +587,7 @@ function remoteDeps(): RemoteDeps {
     },
     theme: () => {
       const s = getSettings()
-      return { theme: resolveTheme(s.themeId, s.customThemes), fontFamily: s.fontFamily }
+      return { theme: effectiveTheme(s), fontFamily: s.fontFamily }
     }
   }
 }
@@ -863,6 +863,26 @@ async function runWorklogScan(sessionId: string, auto: boolean): Promise<Worklog
 }
 
 /**
+ * The theme actually on screen, which is not always `settings.themeId`.
+ *
+ * With `followSystemTheme` on there are two stored ids and the OS picks; every
+ * main-process reader of "the theme" — the window's own backgroundColor, the
+ * Windows title-bar overlay, the QR code's quiet zone, the palette served to
+ * the phone — has to ask the same question, or the phone paints one theme while
+ * the desktop paints the other.
+ *
+ * `nativeTheme.shouldUseDarkColors` is the OS answer only while `themeSource`
+ * is 'system', which `applyNativeTheme` below guarantees whenever following is
+ * on. Off, the value is Stoke's own pin and is not consulted.
+ */
+function effectiveTheme(settings: Settings): Theme {
+  return resolveTheme(
+    activeThemeId(settings, nativeTheme.shouldUseDarkColors),
+    settings.customThemes
+  )
+}
+
+/**
  * Tell Chromium which way round the app is.
  *
  * This is not about Stoke's own chrome, which is CSS custom properties and
@@ -877,14 +897,64 @@ async function runWorklogScan(sessionId: string, auto: boolean): Promise<Worklog
  * view, which the renderer already handles for itself via `colorScheme` on
  * :root (lib/theme.ts) but the WebContentsView does not inherit.
  */
-function applyNativeTheme(theme: Theme): void {
-  nativeTheme.themeSource = theme.appearance
+function applyNativeTheme(settings: Settings): void {
+  /*
+   * Takes the settings rather than a resolved theme, and that is an ordering
+   * fix rather than a preference. This call CHANGES what
+   * `nativeTheme.shouldUseDarkColors` returns, and `effectiveTheme` reads it —
+   * so a caller that resolved a theme first, passed it here, and then resolved
+   * again would get two different answers either side of one line. With the
+   * settings in hand this needs no resolved theme at all: while following, the
+   * appearance is the OS's to decide.
+   *
+   * 'system' while following is also not merely a tidy equivalent. Pinning the
+   * source is exactly what makes `shouldUseDarkColors` report Stoke's own
+   * setting back to Stoke, so the pair would resolve against its own answer and
+   * never switch. Following the OS and asking the OS have to be one state.
+   */
+  nativeTheme.themeSource = settings.followSystemTheme
+    ? 'system'
+    : resolveTheme(settings.themeId, settings.customThemes).appearance
+}
+
+/**
+ * Repaint the parts of the window Chromium and the OS own, not the page.
+ *
+ * Shared by a settings change and by the OS flipping to light while Stoke is
+ * following it — the second one repaints nothing on its own, so without this
+ * the window's backgroundColor stayed on the old theme and flashed the wrong
+ * colour at every resize until something else was saved.
+ */
+function paintWindowChrome(theme: Theme, previousBg: string | null): void {
+  if (!win || win.isDestroyed()) return
+  /*
+   * Chromium paints the window's backgroundColor wherever the renderer has not
+   * painted yet — the strip exposed by a resize, the whole window on a slow
+   * repaint — and it is set once at creation. Switching Ember to Daylight then
+   * flashed #181716 on a white app at every resize.
+   */
+  if (previousBg === null || theme.colors.bg !== previousBg) {
+    win.setBackgroundColor(theme.colors.bg)
+  }
+  /*
+   * The Windows overlay is painted by the OS, not the page, so a theme change
+   * leaves the buttons on the old colour until it is told. Profiles repaint the
+   * accent only, which the overlay does not use, so the theme is the trigger
+   * that matters.
+   */
+  if (isWindows) {
+    win.setTitleBarOverlay({
+      color: theme.colors.bgSunken,
+      symbolColor: theme.colors.textMuted,
+      height: TITLEBAR_H
+    })
+  }
 }
 
 function createWindow(): void {
   const settings = getSettings()
-  const theme = resolveTheme(settings.themeId, settings.customThemes)
-  applyNativeTheme(theme)
+  applyNativeTheme(settings)
+  const theme = effectiveTheme(settings)
 
   win = new BrowserWindow({
     width: 1480,
@@ -1209,6 +1279,34 @@ function registerIpc(): void {
   // Asked once on mount, because a window can be launched already full screen
   // and no enter-full-screen event fires for a state it started in.
   ipcMain.handle(CH.winIsFullScreen, () => win?.isFullScreen() ?? false)
+
+  /*
+   * What the OS says, and a push when it changes.
+   *
+   * `shouldUseDarkColors` is only the OS's answer while `themeSource` is
+   * 'system', which `applyNativeTheme` holds it at for exactly as long as
+   * following is on — so the value is asked for only in the state where it
+   * means anything, and the renderer ignores it in the other.
+   */
+  ipcMain.handle(CH.systemDark, () => nativeTheme.shouldUseDarkColors)
+  let lastSystemDark = nativeTheme.shouldUseDarkColors
+  nativeTheme.on('updated', () => {
+    const dark = nativeTheme.shouldUseDarkColors
+    /*
+     * Guarded on a real change. This event also fires when Stoke itself writes
+     * `themeSource` — which it does on every settings save — so an unguarded
+     * handler would repaint the window and push at the renderer on each one,
+     * and worse, would do it with a value that had not moved.
+     */
+    if (dark === lastSystemDark) return
+    lastSystemDark = dark
+    send(CH.systemDarkChanged, dark)
+    const s = getSettings()
+    if (!s.followSystemTheme) return
+    // The renderer repaints itself from the push above; this is the half it
+    // cannot reach — the window's own background and the Windows overlay.
+    paintWindowChrome(effectiveTheme(s), null)
+  })
 
   /* ------------------------------------------------------------------- cli */
   ipcMain.handle(CH.cliInfo, () => probeClaude(getSettings().claudePath))
@@ -1633,30 +1731,13 @@ function registerIpc(): void {
       pushRemote()
     }
     /*
-     * The Windows overlay is painted by the OS, not the page, so a theme change
-     * leaves the buttons on the old colour until it is told. Profiles repaint
-     * the accent only, which the overlay does not use, so the theme is the
-     * trigger that matters.
+     * `prev` is resolved BEFORE the source is re-pinned, because
+     * `applyNativeTheme` moves what `effectiveTheme` reads. Resolving both
+     * after it would compare the new state against itself and skip the repaint.
      */
-    const nextTheme = resolveTheme(next.themeId, next.customThemes)
-    applyNativeTheme(nextTheme)
-    /*
-     * Chromium paints the window's backgroundColor wherever the renderer has
-     * not painted yet — the strip exposed by a resize, the whole window on a
-     * slow repaint — and it was set once at creation. Switching Ember to
-     * Daylight then flashed #181716 on a white app at every resize.
-     */
-    const prevTheme = resolveTheme(prev.themeId, prev.customThemes)
-    if (win && !win.isDestroyed() && nextTheme.colors.bg !== prevTheme.colors.bg) {
-      win.setBackgroundColor(nextTheme.colors.bg)
-    }
-    if (isWindows && win && !win.isDestroyed()) {
-      win.setTitleBarOverlay({
-        color: nextTheme.colors.bgSunken,
-        symbolColor: nextTheme.colors.textMuted,
-        height: TITLEBAR_H
-      })
-    }
+    const prevTheme = effectiveTheme(prev)
+    applyNativeTheme(next)
+    paintWindowChrome(effectiveTheme(next), prevTheme.colors.bg)
     /*
      * Load-bearing, not merely correct in advance.
      *

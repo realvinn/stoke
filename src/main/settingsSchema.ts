@@ -8,7 +8,7 @@
  */
 import type { ProfileConfig, ProjectMeta, Settings, SshHost, Theme, WorklogBoards } from '@shared/types'
 import { tidy } from './projectMeta.ts'
-import { DEFAULT_THEME_ID, validateTheme } from '../shared/themes.ts'
+import { DEFAULT_LIGHT_THEME_ID, DEFAULT_THEME_ID, validateTheme } from '../shared/themes.ts'
 import { DEFAULT_WORKLOG_BOARDS, WORKLOG_TARGETS } from '../shared/worklog.ts'
 import {
   clampFontSize,
@@ -34,6 +34,8 @@ function isProfileConfig(v: unknown): v is ProfileConfig {
 
 export const DEFAULT_SETTINGS: Settings = {
   themeId: DEFAULT_THEME_ID,
+  themeIdLight: DEFAULT_LIGHT_THEME_ID,
+  followSystemTheme: false,
   customThemes: [],
   wallpaper: { ...WALLPAPER_DEFAULTS },
   fontFamily:
@@ -218,6 +220,20 @@ export function hydrateSettings(raw: unknown): Settings {
     customThemes: Array.isArray(r.customThemes)
       ? r.customThemes.map(validateTheme).filter((t): t is Theme => t !== null)
       : [],
+    /*
+     * The two theme slots and the switch between them, typed rather than
+     * trusted. `resolveTheme` already falls back to Ember for an id it does not
+     * know, so a wrong *name* is survivable — but a number or an object reaches
+     * `find` as itself and matches nothing, and the empty string is a
+     * legitimate-looking value that means "no theme" nowhere in this codebase.
+     */
+    themeId: typeof r.themeId === 'string' && r.themeId.trim() ? r.themeId : DEFAULT_THEME_ID,
+    themeIdLight:
+      typeof r.themeIdLight === 'string' && r.themeIdLight.trim()
+        ? r.themeIdLight
+        : DEFAULT_LIGHT_THEME_ID,
+    // Strictly true, so a string "false" out of a hand-edited file is off.
+    followSystemTheme: r.followSystemTheme === true,
     profiles: Array.isArray(r.profiles)
       ? renameProfileIds(r.profiles.filter(isProfileConfig))
       : [],

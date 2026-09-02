@@ -231,6 +231,13 @@ export interface StokeApi {
     onFullScreenChanged(cb: (fullScreen: boolean) => void): () => void
     /** Show and focus the window, from a notification click or the like. */
     focus(): void
+    /**
+     * Whether the OS is in dark mode. From main, not `matchMedia`: main pins
+     * `nativeTheme.themeSource` to the app's own appearance, so the media query
+     * here would answer with Stoke's own setting rather than the system's.
+     */
+    systemDark(): Promise<boolean>
+    onSystemDarkChanged(cb: (dark: boolean) => void): () => void
   }
 
   cli: {

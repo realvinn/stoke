@@ -30,7 +30,13 @@ import { useEffect, useMemo, useState } from 'react'
 import type { Settings, Theme, ThemeColors, ThemeSeed } from '@shared/types'
 import { buildTheme, contrastReport, GENERATED_TOKENS } from '@shared/themeGen'
 import { PAGE_CHROMA_MAX, TINT_MAX, TINT_MIN } from '@shared/ladder'
-import { DEFAULT_THEME_ID } from '@shared/themes'
+import {
+  DEFAULT_LIGHT_THEME_ID,
+  DEFAULT_THEME_ID,
+  followPatch,
+  resolveTheme,
+  themeSlotFor
+} from '@shared/themes'
 import { ColorField } from './ColorField'
 import { IconCheck, IconCopy } from './Icons'
 import { NOTATIONS, type Notation } from '@shared/notation'
@@ -223,9 +229,31 @@ export function ThemeEditor({
       // Fall back to the default rather than leaving `themeId` naming a theme
       // that is gone: `resolveTheme` would land on the default anyway, but the
       // stored value would keep pointing at nothing.
-      ...(settings.themeId === id ? { themeId: DEFAULT_THEME_ID } : {})
+      ...(settings.themeId === id ? { themeId: DEFAULT_THEME_ID } : {}),
+      // Both slots, or deleting the theme sitting in the light half left it
+      // naming nothing and the deletion looked like it had not worked at dawn.
+      ...(settings.themeIdLight === id ? { themeIdLight: DEFAULT_LIGHT_THEME_ID } : {})
     })
   }
+
+  const following = settings.followSystemTheme
+
+  /**
+   * Which card is marked. While following, BOTH picks are — one per group —
+   * because both are in force, each at its own time of day. Marking only the
+   * one currently painted would make the other look unchosen and invite a
+   * click that overwrites the pair.
+   */
+  const isActive = (t: Theme): boolean =>
+    following
+      ? t.id === (t.appearance === 'dark' ? settings.themeId : settings.themeIdLight)
+      : t.id === settings.themeId
+
+  /** Where a click lands. The shared rule, so main and this cannot disagree. */
+  const pick = (t: Theme): Partial<Settings> =>
+    following && themeSlotFor(t.appearance) === 'themeIdLight'
+      ? { themeIdLight: t.id }
+      : { themeId: t.id }
 
   if (!seed || !draft) {
     const groups: { title: string; themes: Theme[] }[] = [
@@ -235,6 +263,50 @@ export function ThemeEditor({
     ]
     return (
       <>
+        {/*
+          Above the cards, because it changes what clicking one of them means.
+        */}
+        <label className="field theme-follow">
+          <span className="theme-follow-text">
+            <span className="field-label">Follow my system</span>
+            <span className="field-hint">
+              {following
+                ? 'Your dark pick is used when this Mac is dark, your light pick when it is light. Both are marked below; clicking a card sets the one that matches its own appearance.'
+                : 'Use one theme when the system is dark and another when it is light. Off, the theme you pick stays put whatever the system does.'}
+            </span>
+          </span>
+          <input
+            type="checkbox"
+            checked={following}
+            aria-label="Follow my system appearance"
+            onChange={(e) =>
+              onPatch(
+                e.target.checked
+                  ? /*
+                     * The single theme in force until now may be a LIGHT one,
+                     * and moving it into the dark slot unchanged would mean
+                     * switching this on at night visibly changes nothing and
+                     * then paints white at dawn. followPatch moves it to the
+                     * slot that matches its own appearance.
+                     */
+                    { followSystemTheme: true, ...followPatch(
+                      settings.themeId,
+                      settings.themeIdLight,
+                      resolveTheme(settings.themeId, settings.customThemes).appearance
+                    ) }
+                  : { followSystemTheme: false }
+              )
+            }
+            style={{
+              width: '1rem',
+              height: '1rem',
+              margin: 0,
+              accentColor: 'var(--accent)',
+              flexShrink: 0
+            }}
+          />
+        </label>
+
         {groups.map(
           (g) =>
             g.themes.length > 0 && (
@@ -245,9 +317,9 @@ export function ThemeEditor({
                     <ThemeCard
                       key={t.id}
                       theme={t}
-                      active={settings.themeId === t.id}
+                      active={isActive(t)}
                       custom={!t.builtIn}
-                      onSelect={() => onPatch({ themeId: t.id })}
+                      onSelect={() => onPatch(pick(t))}
                       onDuplicate={() => start(t, true)}
                       onEdit={t.builtIn ? undefined : () => start(t, false)}
                       onDelete={t.builtIn ? undefined : () => setConfirming(t.id)}

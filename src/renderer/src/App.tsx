@@ -16,7 +16,7 @@ import type {
 } from '@shared/types'
 import type { UpdateInfo } from '@shared/api'
 import { foldGroup, profileFor, resolveProfiles, visibleProfiles } from '@shared/profiles'
-import { resolveTheme } from '@shared/themes'
+import { activeThemeId, resolveTheme } from '@shared/themes'
 import { worklogButtonState } from '@shared/worklog'
 import { BrowserPanel } from './components/BrowserPanel'
 import { CommandPalette } from './components/CommandPalette'
@@ -341,9 +341,27 @@ export function App(): React.JSX.Element {
    */
   const [ultracode, setUltracode] = useState(false)
 
+  /*
+   * Whether the OS is in dark mode, which decides which of the two stored
+   * themes is on screen while `followSystemTheme` is on.
+   *
+   * From main rather than `matchMedia`, because main pins
+   * `nativeTheme.themeSource` to Stoke's own appearance whenever following is
+   * OFF — so the media query in this page answers with Stoke's setting, not the
+   * system's, and would agree with itself forever. Defaults to dark so the
+   * first paint before the answer arrives matches the default theme.
+   */
+  const [systemDark, setSystemDark] = useState(true)
+  const systemDarkRef = useRef(true)
+  systemDarkRef.current = systemDark
+
   const savedTheme = useMemo(
-    () => resolveTheme(settings?.themeId ?? '', settings?.customThemes ?? []),
-    [settings?.themeId, settings?.customThemes]
+    () =>
+      resolveTheme(
+        settings ? activeThemeId(settings, systemDark) : '',
+        settings?.customThemes ?? []
+      ),
+    [settings, systemDark]
   )
 
   /*
@@ -417,7 +435,8 @@ export function App(): React.JSX.Element {
    */
   const launchAppearance = useCallback((): Theme['appearance'] => {
     const s = settingsRef.current
-    return resolveTheme(s?.themeId ?? '', s?.customThemes ?? []).appearance
+    if (!s) return resolveTheme('', []).appearance
+    return resolveTheme(activeThemeId(s, systemDarkRef.current), s.customThemes).appearance
   }, [])
 
   /* ------------------------------------------------------------- bootstrap */
@@ -525,6 +544,8 @@ export function App(): React.JSX.Element {
     })
     const offBrowser = window.stoke.browser.onState(setBrowserState)
     const offMax = window.stoke.window.onMaximizedChanged(setMaximized)
+    void window.stoke.window.systemDark().then(setSystemDark)
+    const offSystemDark = window.stoke.window.onSystemDarkChanged(setSystemDark)
     const offFull = window.stoke.window.onFullScreenChanged(setFullScreen)
     const offSettings = window.stoke.settings.onChange(setSettings)
     const offWorklog = window.stoke.worklog.onChange(setWorklog)
@@ -574,6 +595,7 @@ export function App(): React.JSX.Element {
       offBrowser()
       offFull()
       offMax()
+      offSystemDark()
       offSettings()
       offWorklog()
       offProposed()

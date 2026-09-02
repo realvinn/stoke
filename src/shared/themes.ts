@@ -859,6 +859,61 @@ export const BUILT_IN_THEMES: Theme[] = [
 ]
 
 export const DEFAULT_THEME_ID = EMBER.id
+/** The light half of the pair, when the app is told to follow the system. */
+export const DEFAULT_LIGHT_THEME_ID = DAYLIGHT.id
+
+/**
+ * Which of the two stored themes is in force.
+ *
+ * Following the system is two ids, not one plus an inversion. A generated
+ * theme's light and dark forms are different themes — the ladder's step maps
+ * disagree on purpose (gotcha 43: in light mode interaction darkens, and
+ * elevation moves to border and shadow), so there is no "the light version of
+ * Nocturne" to compute. The user picks one of each and the OS chooses between
+ * them.
+ *
+ * Pure, and here rather than in the renderer, because main needs the same
+ * answer: the window's own `backgroundColor` and the Windows title-bar overlay
+ * are painted from it, and a second copy of this rule in `index.ts` is how the
+ * two would come to disagree about which theme is on screen.
+ */
+export function activeThemeId(
+  settings: { themeId: string; themeIdLight: string; followSystemTheme: boolean },
+  systemDark: boolean
+): string {
+  if (!settings.followSystemTheme) return settings.themeId
+  return systemDark ? settings.themeId : settings.themeIdLight
+}
+
+/**
+ * Where a picked theme is stored: its own appearance decides which slot.
+ *
+ * While following, clicking a light card must not overwrite the dark slot —
+ * that is how you end up with a light theme painted at midnight and no way to
+ * see what happened. The card grid already groups Dark and Light, so the
+ * gesture reads as "this is my light one" with no extra control.
+ */
+export function themeSlotFor(appearance: 'dark' | 'light'): 'themeId' | 'themeIdLight' {
+  return appearance === 'dark' ? 'themeId' : 'themeIdLight'
+}
+
+/**
+ * The pair to store when "follow my system" is switched ON.
+ *
+ * The single `themeId` in force until now may be a LIGHT theme, and moving it
+ * into the dark slot unchanged would mean switching this on at night visibly
+ * changes nothing and then paints white at dawn. So a light choice is moved to
+ * the light slot and the dark slot falls back to the default dark theme.
+ */
+export function followPatch(
+  themeId: string,
+  themeIdLight: string,
+  appearance: 'dark' | 'light'
+): { themeId: string; themeIdLight: string } {
+  return appearance === 'dark'
+    ? { themeId, themeIdLight }
+    : { themeId: DEFAULT_THEME_ID, themeIdLight: themeId }
+}
 
 export function resolveTheme(id: string, custom: Theme[]): Theme {
   return (

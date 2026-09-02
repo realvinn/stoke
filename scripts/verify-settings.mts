@@ -9,6 +9,13 @@
 import { DEFAULT_SETTINGS, hydrateSettings } from '../src/main/settingsSchema.ts'
 import { wallpaperFileFor } from '../src/main/wallpaper.ts'
 import { DEFAULT_WORKLOG_BOARDS } from '../src/shared/worklog.ts'
+import {
+  DEFAULT_LIGHT_THEME_ID,
+  DEFAULT_THEME_ID,
+  activeThemeId,
+  followPatch,
+  themeSlotFor
+} from '../src/shared/themes.ts'
 import { nextBoards } from '../src/renderer/src/lib/worklogBoards.ts'
 import type { WorklogTarget } from '../src/shared/types.ts'
 
@@ -354,6 +361,43 @@ check(
   'work,gitea-company'
 )
 check('and an untouched machine has no selection', hydrateSettings({}).activeProfile, null)
+
+console.log('\nthe theme pair, and which half the OS has selected')
+const solo = { themeId: 'nocturne', themeIdLight: 'mist', followSystemTheme: false }
+check('not following ignores the system entirely', activeThemeId(solo, false), 'nocturne')
+check('even in dark', activeThemeId(solo, true), 'nocturne')
+const pair = { ...solo, followSystemTheme: true }
+check('following takes the dark slot in dark', activeThemeId(pair, true), 'nocturne')
+check('and the light slot in light', activeThemeId(pair, false), 'mist')
+
+console.log('\na card click lands in the slot matching its own appearance')
+check('a dark theme is the dark pick', themeSlotFor('dark'), 'themeId')
+check('a light theme is the light pick', themeSlotFor('light'), 'themeIdLight')
+
+console.log('\nswitching following ON must not strand a light theme in the dark slot')
+/*
+ * The single theme in force may be a light one. Carrying it into the dark slot
+ * unchanged means the switch appears to do nothing at night and then paints
+ * white at dawn — which reads as the feature being broken rather than as the
+ * pair being wrong.
+ */
+check(
+  'a dark choice stays where it is',
+  followPatch('nocturne', 'daylight', 'dark'),
+  { themeId: 'nocturne', themeIdLight: 'daylight' }
+)
+check(
+  'a light choice moves to the light slot, and dark falls back',
+  followPatch('paper', 'daylight', 'light'),
+  { themeId: DEFAULT_THEME_ID, themeIdLight: 'paper' }
+)
+
+console.log('\nthe two new keys hydrate, and junk in them does not reach resolveTheme')
+check('defaults on an untouched machine', [hydrateSettings({}).themeIdLight, hydrateSettings({}).followSystemTheme], [DEFAULT_LIGHT_THEME_ID, false])
+check('a stored pair survives', hydrateSettings({ themeIdLight: 'mist', followSystemTheme: true }).themeIdLight, 'mist')
+check('a number is not an id', hydrateSettings({ themeIdLight: 42 }).themeIdLight, DEFAULT_LIGHT_THEME_ID)
+check('nor is the empty string', hydrateSettings({ themeId: '   ' }).themeId, DEFAULT_THEME_ID)
+check('and only a real true follows', hydrateSettings({ followSystemTheme: 'true' }).followSystemTheme, false)
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
 process.exitCode = failures ? 1 : 0
