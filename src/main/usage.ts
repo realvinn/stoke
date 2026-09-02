@@ -305,6 +305,80 @@ function fakeUsage(now: number): UsageSnapshot {
   }
 }
 
+/** The first wait after a failure nobody stated a wait for. */
+export const BACKOFF_FIRST_MS = 60_000
+/** The ceiling on Stoke's OWN escalation. A stated Retry-After is not capped here. */
+export const BACKOFF_MAX_MS = 15 * 60_000
+/**
+ * The ceiling on a stated one, so a nonsense header cannot retire the chip for
+ * the life of the process.
+ */
+export const BACKOFF_STATED_MAX_MS = 60 * 60_000
+
+/**
+ * How long to wait after a failed read.
+ *
+ * A flat fifteen minutes used to be applied to every 429 and every 5xx, and the
+ * fifteen was Stoke's invention rather than anything the server asked for. That
+ * is far too blunt for a limit that clears in well under a minute: measured on
+ * 2026-09-02, the app took a 429 at 18:08 and set itself a 15-minute wait,
+ * while a direct call to the same endpoint with the same token answered 200 at
+ * 18:16 — so the chip sat out roughly seven minutes of a limit that had already
+ * lifted, having thrown its numbers away to do it. Repeat that a few times a
+ * day and "the usage chip never works" is an accurate description.
+ *
+ * So: honour a stated Retry-After exactly, because the server knows; and when
+ * nothing was stated, start at a minute and double, which finds a short limit
+ * quickly and still stops hammering a long one. There is nothing else to go on
+ * — the endpoint sends no rate-limit headers of any kind on a successful call
+ * (checked: only `anthropic-organization-id` and `anthropic-workspace-id`), so
+ * the budget cannot be paced against and can only be discovered by hitting it.
+ *
+ * @param previous the wait currently in force, or 0 after a success
+ * @param stated   what the endpoint asked for, in ms, if it asked
+ */
+export function nextBackoff(previous: number, stated?: number): number {
+  if (stated && stated > 0) return Math.min(stated, BACKOFF_STATED_MAX_MS)
+  if (!previous) return BACKOFF_FIRST_MS
+  return Math.min(previous * 2, BACKOFF_MAX_MS)
+}
+
+/**
+ * What the cache should hold after a read failed.
+ *
+ * A failed read must not delete the numbers it failed to refresh. It used to:
+ * the failure snapshot carries an empty `windows`, it replaced the cache
+ * outright, and the meter drew the error INSTEAD of the last answer — so one
+ * transient 429 blanked a chip that had good figures a moment earlier and kept
+ * it blank for the whole backoff. "We cannot refresh this right now" and "we
+ * know nothing" are different statements and only the first is ever true here.
+ *
+ * The previous reading keeps its own `fetchedAt`, because that timestamp
+ * belongs to the DATA: "as of 18:02" stays true, and the meter's staleness
+ * marking starts working on it for free.
+ *
+ * Pure, and separate from the handler that calls it, because the handler needs
+ * Electron and a suite cannot reach it — which is exactly how the veto above
+ * survived being written down as correct in the first place.
+ *
+ * @param previous the last snapshot returned, or null before any read
+ * @param failure  the snapshot `fetchUsage` just produced, carrying the error
+ * @param retryUntil epoch ms of the next attempt
+ */
+export function keepLastGood(
+  previous: UsageSnapshot | null,
+  failure: UsageSnapshot,
+  retryUntil: number
+): UsageSnapshot {
+  if (!previous || previous.windows.length === 0) return { ...failure, retryUntil }
+  return {
+    ...previous,
+    error: failure.error,
+    retryAfter: failure.retryAfter,
+    retryUntil
+  }
+}
+
 export async function fetchUsage(now = Date.now()): Promise<UsageSnapshot> {
   if (process.env.STOKE_FAKE_USAGE) return fakeUsage(now)
 
@@ -339,10 +413,10 @@ export async function fetchUsage(now = Date.now()): Promise<UsageSnapshot> {
     if (!res.ok) {
       /*
        * 429 is the endpoint asking to be left alone, and it does happen - it
-       * arrived during development after a run of repeated calls. Honour
-       * Retry-After when it is sent, and otherwise back off far longer than the
-       * normal poll, because continuing to knock on an undocumented endpoint
-       * that has just said no is how access gets worse rather than better.
+       * arrived during development after a run of repeated calls. Report what
+       * it ASKED for and nothing else; `nextBackoff` decides what to do when it
+       * asked for nothing, because that is a guess and this function's job is
+       * to say what the server said.
        */
       // A bare "Usage unavailable (401)" names the one failure a reader could
       // actually act on, and names it as a number.
@@ -352,7 +426,7 @@ export async function fetchUsage(now = Date.now()): Promise<UsageSnapshot> {
       const snapshot = empty(`Usage unavailable (${res.status}).`)
       if (res.status === 429 || res.status >= 500) {
         const header = Number(res.headers.get('retry-after'))
-        snapshot.retryAfter = Number.isFinite(header) && header > 0 ? header * 1000 : 15 * 60_000
+        if (Number.isFinite(header) && header > 0) snapshot.retryAfter = header * 1000
       }
       return snapshot
     }

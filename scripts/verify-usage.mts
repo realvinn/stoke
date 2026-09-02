@@ -19,7 +19,17 @@
  *   node scripts/verify-usage.mts
  *   STOKE_LIVE_USAGE=1 node scripts/verify-usage.mts
  */
-import { fetchUsage, findToken, freshestCredentials, parseUsage } from '../src/main/usage.ts'
+import {
+  BACKOFF_FIRST_MS,
+  BACKOFF_MAX_MS,
+  BACKOFF_STATED_MAX_MS,
+  fetchUsage,
+  findToken,
+  freshestCredentials,
+  keepLastGood,
+  nextBackoff,
+  parseUsage
+} from '../src/main/usage.ts'
 import { toSnapshot } from '../src/main/statusLine.ts'
 import { mergeUsageWindows, statusLineWindows } from '../src/shared/statusLine.ts'
 
@@ -323,6 +333,84 @@ check('with nothing live, the least stale still comes back so the message can na
 check('two live ones: the later expiry wins', freshestCredentials([live, { ...live, token: 'later', expiresAt: t0 + 120_000 }], t0)?.token, 'later')
 check('nulls are skipped', freshestCredentials([null, stale, null], t0)?.token, 'stale')
 check('and nothing at all is null rather than a throw', freshestCredentials([null, null], t0), null)
+
+/* ------------------------------------------------------------- backing off */
+/*
+ * The chip "never works" bug, in two halves.
+ *
+ * Measured 2026-09-02: the app took a 429 at 18:08 and set itself a flat
+ * fifteen minutes, while a direct call with the same token answered 200 at
+ * 18:16 — so it sat out roughly seven minutes of a limit that had lifted, and
+ * threw its numbers away for the duration. Both halves are asserted here
+ * because neither is reachable through the IPC handler that uses them.
+ */
+console.log('\nhow long to wait after a failed read')
+check('a stated Retry-After is honoured exactly', nextBackoff(0, 30_000), 30_000)
+check('and outranks whatever we had escalated to', nextBackoff(8 * 60_000, 5_000), 5_000)
+check(
+  'a nonsense Retry-After cannot retire the chip for the whole run',
+  nextBackoff(0, 99 * 60 * 60_000),
+  BACKOFF_STATED_MAX_MS
+)
+check('with nothing stated, the first wait is a minute, not fifteen', nextBackoff(0), BACKOFF_FIRST_MS)
+check('a repeat failure doubles', nextBackoff(BACKOFF_FIRST_MS), 2 * BACKOFF_FIRST_MS)
+check('and keeps doubling', nextBackoff(4 * 60_000), 8 * 60_000)
+check('up to a ceiling', nextBackoff(BACKOFF_MAX_MS), BACKOFF_MAX_MS)
+check('which it does not exceed on the way past', nextBackoff(10 * 60_000), BACKOFF_MAX_MS)
+// A success resets the ladder to 0, so the next first failure starts over.
+check('after a success the ladder starts again at a minute', nextBackoff(0), BACKOFF_FIRST_MS)
+
+console.log('\na failed read keeps the numbers it failed to refresh')
+const goodWindow = {
+  kind: 'session' as const,
+  label: '5 hours',
+  percent: 17,
+  severity: 'normal' as const,
+  resetsAt: 1788352800000,
+  elapsed: 0.1,
+  active: true
+}
+const lastGood = {
+  windows: [goodWindow],
+  extraCredits: { percent: 0, enabled: false },
+  fetchedAt: 1_000,
+  error: null
+}
+const failed = {
+  windows: [],
+  extraCredits: null,
+  fetchedAt: 9_000,
+  error: 'Usage unavailable (429).',
+  retryAfter: 60_000
+}
+const kept = keepLastGood(lastGood, failed, 69_000)
+check('the windows survive', kept.windows, [goodWindow])
+check('so does paid overage', kept.extraCredits, { percent: 0, enabled: false })
+// The timestamp belongs to the DATA, not to the attempt — "as of 18:02" has to
+// stay true, and it is what makes the meter start marking the reading stale.
+check('the timestamp stays with the data it describes', kept.fetchedAt, 1_000)
+check('the error is carried beside them, not instead of them', kept.error, 'Usage unavailable (429).')
+check('and the next attempt is stated as an absolute time', kept.retryUntil, 69_000)
+check(
+  'with nothing good to keep, the failure stands alone',
+  keepLastGood(null, failed, 69_000).windows,
+  []
+)
+check(
+  'an earlier snapshot that was itself empty is not treated as good',
+  keepLastGood({ ...lastGood, windows: [] }, failed, 69_000).fetchedAt,
+  9_000
+)
+/*
+ * The regression this pair exists to catch: the meter reads windows off the
+ * snapshot even when `error` is set, so a snapshot that dropped them would
+ * silently blank the chip rather than fail anything.
+ */
+check(
+  'a kept reading still merges as the account source',
+  mergeUsageWindows([], kept.windows, -Infinity, kept.fetchedAt).length,
+  1
+)
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
 // Setting the code rather than calling process.exit: the socket from the live

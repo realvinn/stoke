@@ -83,7 +83,7 @@ import {
   type AutoUpdateAttempt,
   type UpdateInfo
 } from './updates.ts'
-import { fetchUsage, type UsageSnapshot } from './usage.ts'
+import { fetchUsage, keepLastGood, nextBackoff, type UsageSnapshot } from './usage.ts'
 import { patchClaudeSetting, readClaudeSettings, untouchedKeys } from './claudeSettings.ts'
 import {
   readGlobalConfigKey,
@@ -120,6 +120,18 @@ let mcp: BrowserMcpServer | null = null
 let mcpConfigPath: string | null = null
 let remote: RemoteServer | null = null
 let usageCache: UsageSnapshot | null = null
+/**
+ * When the endpoint was last actually CALLED, which is not `usageCache.fetchedAt`.
+ *
+ * They came apart when a failed read stopped throwing the last good numbers
+ * away: the cache now keeps the timestamp of the data it holds, so the
+ * scheduler needs its own record of when it last knocked, or a stale-but-good
+ * reading would look overdue and be re-fetched on every single poll — turning
+ * one rate limit into a permanent one.
+ */
+let usageAttemptedAt = 0
+/** The wait currently in force after a failure; 0 whenever the last read worked. */
+let usageBackoff = 0
 /**
  * The idle refresh interval for the account reading, and the floor a
  * message-triggered one may not go below. The renderer polls on the first and
@@ -1043,6 +1055,7 @@ function createWindow(): void {
     return { action: 'deny' }
   })
 
+
   browser = new EmbeddedBrowser(
     win,
     (state) => send(CH.browserState, state),
@@ -1337,17 +1350,33 @@ function registerIpc(): void {
    * start a turn within the same second, and a floor of a few seconds turns
    * that into one call instead of five while staying imperceptible.
    *
-   * `retryAfter` outranks both. A 429 or a 5xx asks for a longer wait than
-   * either cadence, and a message boundary is not a reason to ignore it —
-   * continuing to knock on an undocumented endpoint that has just said no is
-   * how access gets worse rather than better.
+   * The backoff outranks both. A 429 or a 5xx wants a longer wait than either
+   * cadence, and a message boundary is not a reason to ignore it — continuing
+   * to knock on an undocumented endpoint that has just said no is how access
+   * gets worse rather than better. `nextBackoff` sets its length: what the
+   * server asked for, or a minute doubling to fifteen when it asked for
+   * nothing. It is NOT a flat fifteen minutes any more; see that function for
+   * the measurement that changed it.
    */
   ipcMain.handle(CH.usageRead, async (_e, reason?: UsageReadReason) => {
     const now = Date.now()
     const floor = reason === 'message' ? USAGE_MESSAGE_FLOOR_MS : USAGE_POLL_MS
-    const wait = Math.max(usageCache?.retryAfter ?? 0, floor)
-    if (usageCache && now - usageCache.fetchedAt < wait) return usageCache
-    usageCache = await fetchUsage(now)
+    const wait = Math.max(usageBackoff, floor)
+    if (usageCache && now - usageAttemptedAt < wait) return usageCache
+
+    usageAttemptedAt = now
+    const fresh = await fetchUsage(now)
+    if (!fresh.error) {
+      usageBackoff = 0
+      usageCache = fresh
+      return usageCache
+    }
+
+    // Both halves are pure and asserted in verify:usage — see `keepLastGood`
+    // for why a failure keeps the previous numbers, and `nextBackoff` for why
+    // the wait is no longer a flat fifteen minutes.
+    usageBackoff = nextBackoff(usageBackoff, fresh.retryAfter)
+    usageCache = keepLastGood(usageCache, fresh, now + usageBackoff)
     return usageCache
   })
 

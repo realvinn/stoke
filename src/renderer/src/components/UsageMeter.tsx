@@ -189,21 +189,27 @@ export function UsageChip(): React.JSX.Element | null {
    */
   const fromLine = line ? statusLineWindows(line, now) : []
   /**
-   * When the account endpoint asked us to back off, the clock time it ends.
+   * When the account reading is paused after a failure, the clock time it
+   * resumes.
    *
-   * `retryAfter` is honoured in main (`wait = max(retryAfter, floor)`), so
-   * during it every read returns the same cached failure with the same
-   * `fetchedAt` — which is correct, and indistinguishable from a broken poll
-   * unless the panel says so.
+   * Read off `retryUntil`, which main states as an absolute time, rather than
+   * computed from `fetchedAt + retryAfter`. Those came apart when a failed read
+   * stopped discarding the last good answer: `fetchedAt` now belongs to the
+   * DATA, which may be minutes older than the attempt that failed, so adding a
+   * duration to it would name a time already in the past and the panel would
+   * silently stop saying anything.
    */
   const waitingUntil =
-    snap?.error && snap.retryAfter && snap.fetchedAt
-      ? snap.fetchedAt + snap.retryAfter > now
-        ? clock(snap.fetchedAt + snap.retryAfter)
-        : null
-      : null
+    snap?.error && snap.retryUntil && snap.retryUntil > now ? clock(snap.retryUntil) : null
 
-  const fromAccount = snap && !snap.error ? snap.windows : []
+  /*
+   * An errored snapshot still contributes its windows, because main now keeps
+   * the last good ones on it. This line used to read `!snap.error ? … : []`,
+   * which is what turned one transient 429 into a chip with no numbers at all —
+   * the data was in hand and the error was allowed to veto it. Staleness is
+   * communicated by `asOf`/`data-stale` below, which is what those exist for.
+   */
+  const fromAccount = snap ? snap.windows : []
   const payloadAt = fromLine.length > 0 && line ? line.receivedAt : -Infinity
   const accountAt = fromAccount.length > 0 && snap ? snap.fetchedAt : -Infinity
   const windows: UsageWindow[] = mergeUsageWindows(fromLine, fromAccount, payloadAt, accountAt)
@@ -314,13 +320,29 @@ export function UsageChip(): React.JSX.Element | null {
                     ? ' Plan limits need a Claude.ai sign-in; an API key has none.'
                     : ''}
                   {/*
-                    When the endpoint asked us to wait, say until when. Stoke
-                    honours `Retry-After` — main returns the cached failure
-                    without re-fetching for its whole duration — so "Try again"
-                    is a button that genuinely cannot do anything yet, and one
-                    that silently does nothing is worse than one that says why.
+                    When a read is paused, say until when: main will not
+                    re-fetch before then, so "Try again" genuinely cannot do
+                    anything yet, and a button that silently does nothing is
+                    worse than one that says why.
+
+                    Whose pause it is gets said accurately. `retryAfter` is set
+                    only when the endpoint sent `Retry-After`; without it the
+                    wait is Stoke's own escalating guess, and attributing that
+                    to Anthropic would be inventing a fact about them — the same
+                    error as printing a diagnosis the tool can disprove.
                   */}
-                  {waitingUntil && ` Anthropic asked for a pause; trying again at ${waitingUntil}.`}
+                  {waitingUntil &&
+                    (snap.retryAfter
+                      ? ` Anthropic asked for a pause; trying again at ${waitingUntil}.`
+                      : ` Trying again at ${waitingUntil}.`)}
+                  {/*
+                    And say that the numbers above are still real, just frozen.
+                    Without this the panel shows figures and an error together
+                    and leaves the reader to guess which one to believe.
+                  */}
+                  {windows.length > 0 && asOf
+                    ? ` The figures above are the last good reading, from ${asOf}.`
+                    : ''}
                 </span>
                 <button
                   className="btn"

@@ -1056,13 +1056,28 @@ export interface UsageSnapshot {
   /** Paid overage, when the account has it switched on. */
   extraCredits: { percent: number; enabled: boolean } | null
   fetchedAt: number
-  /** Non-null means the numbers are unavailable, not that usage is zero. */
+  /**
+   * Non-null means the READING failed, which is not the same as having no
+   * numbers: `windows` may still hold the last good answer, stamped with the
+   * `fetchedAt` it was actually fetched at. Draw both — the numbers, and the
+   * fact that they have stopped being refreshed.
+   */
   error: string | null
   /**
-   * How long to wait before asking again, in ms. Set when the endpoint has
-   * rate-limited or failed; absent means the normal poll interval applies.
+   * What the endpoint asked for in `Retry-After`, in ms, and ONLY that — absent
+   * when it sent no such header. Deliberately not a fallback guess: the wait
+   * Stoke chooses when nothing was asked for is a scheduling decision and lives
+   * with the scheduler, so that this field can be read as "what the server
+   * said" without having to know which of the two produced it.
    */
   retryAfter?: number
+  /**
+   * Epoch ms of the next attempt, once one has been scheduled. Absolute rather
+   * than a duration because it has to survive being cached: during a backoff
+   * every read returns the same object, so a duration would have to be measured
+   * against a `fetchedAt` that now belongs to the older, good reading.
+   */
+  retryUntil?: number
 }
 
 /* ------------------------------------------------------------ tab restore */
