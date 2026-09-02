@@ -141,7 +141,7 @@ export type RelaunchPlan =
  * Null for anything with no version number in it at all, which then reads as
  * "not known" rather than being compared as a string.
  */
-function versionNumber(raw: string | null): string | null {
+export function versionNumber(raw: string | null): string | null {
   if (!raw) return null
   // The prerelease tail is captured rather than discarded: two builds that
   // differ only in it ARE different binaries, and treating them as equal would

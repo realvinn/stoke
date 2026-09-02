@@ -1,17 +1,29 @@
 import { useEffect, useRef, useState } from 'react'
 import type { StatusLineSnapshot, UsageSnapshot, UsageWindow } from '@shared/types'
 import { mergeUsageWindows, statusLineWindows } from '@shared/statusLine'
+import {
+  clock,
+  countdown,
+  isStale,
+  remainingLabel,
+  resetLabel,
+  shortLabel,
+  tone,
+  worstTone
+} from '@shared/usageView'
 
 /**
- * How often the account reading is refreshed with nothing else happening, and
- * how often the countdown text is recomputed.
+ * How often the account reading is refreshed with nothing else happening.
  *
- * 30s for both. The account endpoint is polled on this interval *or* whenever a
- * new message starts, whichever comes first — see the `promptId` branch below.
- * The main process holds a cache of the same length, so an interval shorter
- * than this one would return the same object rather than a fresher reading.
+ * 30s. The account endpoint is polled on this interval *or* whenever a new
+ * message starts, whichever comes first — see the `promptId` branch below. The
+ * main process holds a cache of the same length, so an interval shorter than
+ * this one would return the same object rather than a fresher reading.
  */
 const POLL_MS = 30_000
+
+/** The countdown text is recomputed on its own, faster clock. */
+const TICK_MS = 10_000
 
 /**
  * Plan limits, and whether you are ahead of the clock.
@@ -24,43 +36,6 @@ const POLL_MS = 30_000
  * of it means the limit arrives before the reset does.
  */
 
-/**
- * `resetsAt === null` used to mean only one thing: an account window that had
- * never been touched. From the statusLine payload it means something else
- * too — a window `reading()` (statusLine.ts) parsed a `used_percentage` for
- * but no `resets_at` for, independently. So a null reset no longer implies
- * zero usage: with `percent > 0` this says the reset time is unknown, rather
- * than the false "unused", which would contradict the percentage sitting
- * right next to it.
- */
-function countdown(resetsAt: number | null, percent: number, now: number): string {
-  if (resetsAt === null) return percent > 0 ? 'unknown' : 'unused'
-  const ms = resetsAt - now
-  if (ms <= 0) return 'resetting'
-  const mins = Math.floor(ms / 60_000)
-  if (mins < 60) return `${mins}m`
-  const hours = Math.floor(mins / 60)
-  if (hours < 24) return `${hours}h ${mins % 60}m`
-  return `${Math.floor(hours / 24)}d ${hours % 24}h`
-}
-
-/** Local wall-clock HH:MM, for the "as of" on a reading that may be stale. */
-function clock(at: number): string {
-  const d = new Date(at)
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
-}
-
-/**
- * Colour follows the account's own severity, except that overrunning the pace
- * is worth showing before the account is anywhere near its limit — that is the
- * whole point of the marker.
- */
-function tone(w: UsageWindow): string {
-  if (w.severity && w.severity !== 'normal') return w.severity
-  if (w.elapsed !== null && w.percent > w.elapsed * 100 + 10) return 'warning'
-  return 'normal'
-}
-
 function Bar({ window: w, now }: { window: UsageWindow; now: number }): React.JSX.Element {
   const ahead = w.elapsed !== null && w.percent > w.elapsed * 100
   const title =
@@ -70,7 +45,16 @@ function Bar({ window: w, now }: { window: UsageWindow; now: number }): React.JS
         `${ahead ? ' — ahead of pace' : ''}`
 
   return (
-    <div className="usage-row" title={title}>
+    <div
+      className="usage-row"
+      title={title}
+      data-inactive={w.active ? undefined : true}
+      role="meter"
+      aria-valuenow={w.percent}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-label={`${w.label}, ${w.percent}% used`}
+    >
       <span className="usage-label">{w.label}</span>
       <span
         className="usage-track"
@@ -83,24 +67,30 @@ function Bar({ window: w, now }: { window: UsageWindow; now: number }): React.JS
         )}
       </span>
       <span className="usage-pct">{w.percent}%</span>
-      <span className="usage-reset">{countdown(w.resetsAt, w.percent, now)}</span>
+      <span className="usage-reset">
+        {ahead && <span className="usage-ahead">ahead · </span>}
+        {w.active ? resetLabel(w.resetsAt, w.percent, now) : 'not in use'}
+      </span>
     </div>
   )
 }
 
 /**
- * The numbers in the title bar, and the bars behind them.
+ * The plan-limit chip in the title bar, and the panel behind it.
  *
- * Most of the time the only question is "how much is left", which is two
- * numbers and belongs where it can be read without looking for it. The bars
- * answer the second question — am I ahead of the clock — and that is worth a
- * deliberate click rather than permanent screen space.
+ * The chip answers the common question without a click: how much of each
+ * window is left, and when the 5-hour one comes back. Its colour is the worst
+ * of the two windows' tones. The panel is the detail: bars with the pace
+ * marker, the reset as a clock time, extra usage, and which source the figures
+ * came from and when.
  */
 export function UsageChip(): React.JSX.Element | null {
   const [snap, setSnap] = useState<UsageSnapshot | null>(null)
   const [line, setLine] = useState<StatusLineSnapshot | null>(null)
   const [now, setNow] = useState(() => Date.now())
   const [open, setOpen] = useState(false)
+  const panelRef = useRef<HTMLDivElement>(null)
+  const chipRef = useRef<HTMLButtonElement>(null)
 
   /*
    * The account pull, reachable from the statusLine effect below without
@@ -123,7 +113,7 @@ export function UsageChip(): React.JSX.Element | null {
     // The main process caches, and backs off further when rate-limited; this
     // only has to be often enough that the countdown does not visibly stall.
     const poll = setInterval(() => pull('poll'), POLL_MS)
-    const tick = setInterval(() => setNow(Date.now()), POLL_MS)
+    const tick = setInterval(() => setNow(Date.now()), TICK_MS)
     return () => {
       live = false
       clearInterval(poll)
@@ -178,7 +168,12 @@ export function UsageChip(): React.JSX.Element | null {
       if (e.key === 'Escape') setOpen(false)
     }
     document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
+    // Focus lands in the panel so Tab walks it, and comes back to the chip.
+    panelRef.current?.querySelector<HTMLElement>('button, [tabindex]')?.focus()
+    return () => {
+      document.removeEventListener('keydown', onKey)
+      chipRef.current?.focus()
+    }
   }, [open])
 
   /*
@@ -189,14 +184,6 @@ export function UsageChip(): React.JSX.Element | null {
    * the account on the strength of being "the live one" is exactly how the
    * chip came to freeze for the rest of the run.
    *
-   * The two sources fail independently, and that is the point of merging them
-   * rather than picking one. The payload exists only while a session is up;
-   * the account route needs the network and a token. macOS used to have
-   * neither — `readCredentials` looked only at ~/.claude/.credentials.json,
-   * which does not exist there — so the chip really did go blank the moment
-   * the last tab closed. It reads the login Keychain too now, so an idle app
-   * still has figures.
-   *
    * -Infinity, not 0, for a source that has not answered: it has to lose every
    * comparison, and a real timestamp is never below it.
    */
@@ -206,51 +193,66 @@ export function UsageChip(): React.JSX.Element | null {
   const accountAt = fromAccount.length > 0 && snap ? snap.fetchedAt : -Infinity
   const windows: UsageWindow[] = mergeUsageWindows(fromLine, fromAccount, payloadAt, accountAt)
 
-  // Nothing at all rather than a row of zeroes: no reading is not the same as
-  // no usage, and a wrong number here would be believed.
-  if (!windows.length) return null
+  // Before the first account read has answered there is nothing to say, and a
+  // wrong number here would be believed. Once it HAS answered, an error is
+  // drawn as an error rather than as the chip vanishing.
+  if (!snap && !windows.length) return null
 
-  /*
-   * "as of" names when the figures on screen were read, so it has to follow
-   * the same comparison the merge just made rather than always quoting the
-   * payload. Quoting the payload while showing the account's numbers would
-   * put a stale time next to a fresh reading, which is worse than no time.
-   */
   const readAt = Math.max(payloadAt, accountAt)
-  const asOf = Number.isFinite(readAt) ? `as of ${clock(readAt)}` : null
+  const asOf = Number.isFinite(readAt) ? clock(readAt) : null
+  const stale = Number.isFinite(readAt) && isStale(readAt, now)
 
   // The two windows that actually run out. A model-scoped one is shown in the
   // panel but would make the chip a wall of digits.
   const session = windows.find((w) => w.kind === 'session')
   const weekly = windows.find((w) => w.kind === 'weekly')
-  const ahead = windows.some((w) => w.elapsed !== null && w.percent > w.elapsed * 100)
+  const rows = [session, weekly].filter((w): w is UsageWindow => w !== undefined)
+  const worst = worstTone(rows)
 
-  // With both windows the pair of numbers is self-explanatory (5-hour, then
-  // weekly, always in that order). Alone, a bare "29%" names nothing — so a
-  // solo window gets a short prefix, and the tooltip names it too.
-  const soleWindow = session && !weekly ? session : weekly && !session ? weekly : null
-  const chipTitle = soleWindow ? soleWindow.label : 'Plan limits'
+  const label = rows.length
+    ? rows
+        .map(
+          (w) =>
+            `${w.label}: ${remainingLabel(w)}${w.kind === 'session' ? `, ${resetLabel(w.resetsAt, w.percent, now)}` : ''}`
+        )
+        .join('; ')
+    : (snap?.error ?? 'Plan limits unavailable')
 
   return (
     <div className="usage-chip-wrap">
       <button
+        ref={chipRef}
         className="usage-chip"
-        data-ahead={ahead || undefined}
+        data-tone={rows.length ? worst : 'none'}
+        data-stale={stale || undefined}
         aria-expanded={open}
+        aria-label={`Plan limits. ${label}${stale && asOf ? `. As of ${asOf}` : ''}`}
         onClick={() => setOpen((v) => !v)}
-        title={asOf ? `${chipTitle}, ${asOf} — click for detail` : `${chipTitle} — click for detail`}
+        title={`${label}${asOf ? ` — as of ${asOf}` : ''}. Click for detail.`}
       >
-        {session && (
-          <span>
-            {!weekly && '5h '}
-            {session.percent}%
-          </span>
-        )}
-        {session && weekly && <span className="usage-chip-sep">·</span>}
-        {weekly && (
-          <span>
-            {!session && 'wk '}
-            {weekly.percent}%
+        {rows.length ? (
+          rows.map((w) => (
+            <span className="usage-mini" data-tone={tone(w)} key={w.kind} aria-hidden="true">
+              <span className="usage-mini-label">{shortLabel(w)}</span>
+              <span
+                className="usage-track usage-mini-track"
+                style={{ '--usage-fill': w.percent / 100 } as React.CSSProperties}
+              >
+                <span className="usage-fill" />
+                {w.elapsed !== null && (
+                  <span className="usage-pace" style={{ left: `${w.elapsed * 100}%` }} />
+                )}
+              </span>
+              <span className="usage-mini-left">{remainingLabel(w)}</span>
+              <span className="usage-mini-reset">
+                {w.kind === 'session' ? countdown(w.resetsAt, w.percent, now) : ''}
+              </span>
+            </span>
+          ))
+        ) : (
+          <span className="usage-mini" aria-hidden="true">
+            <span className="usage-mini-label">limits</span>
+            <span className="usage-mini-left">—</span>
           </span>
         )}
       </button>
@@ -258,34 +260,63 @@ export function UsageChip(): React.JSX.Element | null {
       {open && (
         <>
           {/* Click-away, behind the panel and above everything else. */}
-          <div className="usage-backdrop" onClick={() => setOpen(false)} />
-          <div className="usage-panel" role="dialog" aria-label="Plan limits">
+          <div className="popover-backdrop" onClick={() => setOpen(false)} />
+          <div className="popover usage-panel" role="dialog" aria-label="Plan limits" ref={panelRef}>
+            <div className="usage-head">
+              <span className="popover-title">Plan limits</span>
+              {asOf && (
+                <span className="usage-head-meta" data-stale={stale || undefined}>
+                  {accountAt > payloadAt ? 'from your account' : 'from the open session'} · {asOf}
+                  {stale ? ' · stale' : ''}
+                </span>
+              )}
+            </div>
+
             {windows.map((w) => (
               <Bar key={`${w.kind}-${w.label}`} window={w} now={now} />
             ))}
-            <p className="usage-note">
-              the white mark is where you would be using it evenly. fill past it means
-              you are going faster than it refills.
-            </p>
-            {/*
-             * Names the source the figures actually came from, which is now a
-             * question with two answers rather than one. This used to say "an
-             * open session's own figures" unconditionally whenever a payload
-             * existed — and it stayed on screen, next to numbers that had
-             * stopped moving, for the rest of the run. It is the sentence
-             * someone reads before deciding whether to trust a reading they
-             * are looking at hours later, so it has to follow the same
-             * comparison the merge made.
-             */}
-            {asOf && (
-              <p className="usage-note">
-                {accountAt > payloadAt
-                  ? `read from your account, ${asOf}. refreshed every ${POLL_MS / 1000}s, and again whenever a message starts.`
-                  : fromAccount.length > 0
-                    ? `an open session's own figures, ${asOf} — the account is read directly too, so these stay up once every session is closed.`
-                    : `read from an open session's status line, ${asOf}. the account could not be reached, so this stops updating when the last session closes.`}
-              </p>
+
+            {snap?.extraCredits?.enabled && (
+              <div className="usage-row" title="Paid overage, once a window is spent">
+                <span className="usage-label">Extra usage</span>
+                <span
+                  className="usage-track"
+                  data-tone="normal"
+                  style={{ '--usage-fill': Math.min(1, snap.extraCredits.percent / 100) } as React.CSSProperties}
+                >
+                  <span className="usage-fill" />
+                </span>
+                <span className="usage-pct">{Math.round(snap.extraCredits.percent)}%</span>
+                <span className="usage-reset">paid overage</span>
+              </div>
             )}
+
+            {snap?.error && (
+              <div className="usage-error">
+                <span className="popover-text" data-tone="warning">
+                  {snap.error}
+                  {snap.error.startsWith('Not signed in')
+                    ? ' Plan limits need a Claude.ai sign-in; an API key has none.'
+                    : ''}
+                </span>
+                <button className="btn" data-size="sm" onClick={() => pullRef.current('message')}>
+                  Try again
+                </button>
+              </div>
+            )}
+
+            <p className="popover-text">
+              {windows.length
+                ? 'The marker is where you would be at an even pace; fill past it means you are going faster than the window refills.'
+                : 'No reading yet.'}
+              {accountAt > payloadAt
+                ? ` Refreshed every ${POLL_MS / 1000}s, and again whenever a message starts.`
+                : fromAccount.length > 0
+                  ? ' The account is read too, so these keep updating once every session is closed.'
+                  : windows.length
+                    ? ' The account could not be reached, so this stops updating when the last session closes.'
+                    : ''}
+            </p>
           </div>
         </>
       )}

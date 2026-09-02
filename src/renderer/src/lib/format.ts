@@ -37,7 +37,9 @@ export function shortPath(p: string, max = 46): string {
 
 /** Human label for a model id, e.g. `claude-opus-5[1m]` -> `Opus 5 · 1M`. */
 export function modelLabel(model: string | null): string {
-  if (!model) return 'default'
+  // The transcript stamps `<synthetic>` on messages the CLI generated itself
+  // (a usage-limit notice, for one), and that is not a model anyone chose.
+  if (!model || model.startsWith('<')) return 'default'
   const oneM = /\[1m\]|-1m\b/i.test(model)
   const base = model.replace(/\[1m\]/i, '').replace(/^claude-/, '')
   const parts = base.split('-').filter(Boolean)

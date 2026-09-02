@@ -305,7 +305,9 @@ export function App(): React.JSX.Element {
    * disk, and a version stamped on the tab at launch would be a cache that
    * goes stale in exactly this case.
    */
-  const [sessionCli, setSessionCli] = useState<Record<string, string | null>>({})
+  const [sessionLine, setSessionLine] = useState<
+    Record<string, { cliVersion: string | null; modelId: string | null; modelName: string | null }>
+  >({})
   /*
    * A relaunch in flight, so the pill can say so and cannot be fired twice.
    *
@@ -473,11 +475,25 @@ export function App(): React.JSX.Element {
      * usage chip, and this reads one more field off the same payload.
      */
     const offLine = window.stoke.statusLine.onUpdate((snap) => {
-      setSessionCli((prev) =>
-        prev[snap.sessionId] === snap.cliVersion
-          ? prev
-          : { ...prev, [snap.sessionId]: snap.cliVersion }
-      )
+      setSessionLine((prev) => {
+        const cur = prev[snap.sessionId]
+        if (
+          cur &&
+          cur.cliVersion === snap.cliVersion &&
+          cur.modelId === snap.modelId &&
+          cur.modelName === snap.modelName
+        ) {
+          return prev
+        }
+        return {
+          ...prev,
+          [snap.sessionId]: {
+            cliVersion: snap.cliVersion,
+            modelId: snap.modelId,
+            modelName: snap.modelName
+          }
+        }
+      })
     })
     /*
      * Re-read the disk whenever the updater reports anything.
@@ -1453,10 +1469,10 @@ export function App(): React.JSX.Element {
     () =>
       relaunchPlan({
         tab: activeTab && activeTab.kind === 'session' ? activeTab : null,
-        running: activeTab ? (sessionCli[activeTab.sessionId] ?? null) : null,
+        running: activeTab ? (sessionLine[activeTab.sessionId]?.cliVersion ?? null) : null,
         installed: cli?.version ?? null
       }),
-    [activeTab, sessionCli, cli]
+    [activeTab, sessionLine, cli]
   )
 
   /* Memoised: a fresh array each render would rebuild the Sidebar's Set on every tick. */
@@ -1919,6 +1935,7 @@ export function App(): React.JSX.Element {
         tab={activeTab}
         context={activeTab ? (contexts[activeTab.sessionId] ?? null) : null}
         activity={activeTab ? (activity[activeTab.sessionId] ?? null) : null}
+        line={activeTab ? (sessionLine[activeTab.sessionId] ?? null) : null}
         cli={cli}
         updateAvailable={update?.updateAvailable ? update.latest : null}
         relaunch={relaunch}

@@ -3516,21 +3516,26 @@ body {
 }
 
 /*
- * Two numbers, read without looking for them. Quiet unless you are burning the
- * window faster than it refills, which is the only state worth interrupting for.
+ * Two rows, read without a click: how much of each window is left, and when
+ * the 5-hour one comes back. The chip used to be two bare percentages with no
+ * labels, framed as "used", with the reset behind a click; the question people
+ * ask is the other way round. Colour is the worst of the two rows' tones and
+ * follows the account's own severity, not only the pace.
  */
 .usage-chip {
-  display: flex;
-  align-items: center;
-  gap: 0.25rem;
-  padding: 0.125rem var(--space-8);
+  display: grid;
+  grid-template-rows: auto auto;
+  gap: 0.1875rem;
+  padding: 0.1875rem var(--space-8);
   border: 1px solid var(--border);
-  border-radius: var(--r-full);
+  border-radius: var(--r-md);
   background: transparent;
   color: var(--text-muted);
-  font-size: 0.6875rem;
+  font-size: var(--fs-xs);
+  line-height: 1.1;
   font-variant-numeric: tabular-nums;
   cursor: pointer;
+  text-align: left;
   transition:
     color var(--dur-fast) var(--ease),
     border-color var(--dur-fast) var(--ease);
@@ -3542,53 +3547,107 @@ body {
   border-color: var(--border-strong);
 }
 
-.usage-chip[data-ahead] {
+.usage-chip[data-tone='warning'] {
   color: var(--warning);
-  border-color: var(--warning);
+  border-color: color-mix(in srgb, var(--warning) 60%, var(--border));
 }
 
-.usage-chip-sep {
+.usage-chip[data-tone='critical'] {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 60%, var(--border));
+}
+
+/* A reading nobody has refreshed: still shown, plainly marked as old. */
+.usage-chip[data-stale] {
+  opacity: 0.7;
+  border-style: dashed;
+}
+
+.usage-mini {
+  display: grid;
+  grid-template-columns: 1.75rem 2.25rem 3.75rem auto;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.usage-mini-label {
   color: var(--text-faint);
 }
 
-.usage-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: var(--z-dropdown, 40);
+.usage-chip[data-tone='warning'] .usage-mini-label,
+.usage-chip[data-tone='critical'] .usage-mini-label {
+  color: inherit;
+  opacity: 0.8;
+}
+
+.usage-mini-track {
+  height: 0.25rem;
+}
+
+.usage-mini-left {
+  text-align: right;
+}
+
+.usage-mini-reset {
+  color: var(--text-faint);
+  min-width: 2.5rem;
+}
+
+.usage-chip[data-tone='warning'] .usage-mini-reset,
+.usage-chip[data-tone='critical'] .usage-mini-reset {
+  color: inherit;
+  opacity: 0.8;
 }
 
 .usage-panel {
-  position: absolute;
-  top: calc(100% + var(--space-8));
-  right: 0;
-  z-index: calc(var(--z-dropdown, 40) + 1);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-8);
-  width: 19rem;
-  padding: var(--space-8);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--r-md, 10px);
-  background: var(--surface);
-  box-shadow: var(--shadow-panel);
+  width: 22rem;
 }
 
-.usage-note {
-  margin: var(--space-4) 0 0;
+.usage-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-8);
+}
+
+.usage-head-meta {
+  font-size: var(--fs-xs);
   color: var(--text-faint);
-  font-size: 0.625rem;
-  line-height: var(--lh-normal);
+  white-space: nowrap;
+}
+
+.usage-head-meta[data-stale] {
+  color: var(--warning);
+}
+
+.usage-error {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-8);
+}
+
+.usage-panel .btn[data-size='sm'] {
+  height: auto;
+  padding: 0.1875rem var(--space-8);
+  font-size: var(--fs-sm);
 }
 
 .usage-row {
-  /* label · bar · percent · countdown. Fixed outer columns keep the numbers
-     aligned down all three rows; the bar absorbs the remainder. */
+  /* label · bar · percent · reset. Fixed outer columns keep the numbers
+     aligned down all the rows; the bar absorbs the remainder. */
   display: grid;
-  grid-template-columns: 3.25rem 1fr 2.25rem 2.75rem;
+  grid-template-columns: 3.75rem 1fr 3.25rem auto;
   align-items: center;
   gap: var(--space-8);
-  font-size: 0.6875rem;
+  font-size: var(--fs-xs);
   color: var(--text-muted);
+}
+
+/* A scoped window the account is not applying right now: drawn, but quiet, so
+   a model at 0% does not read as a live 0%. */
+.usage-row[data-inactive] {
+  opacity: 0.55;
 }
 
 .usage-label,
@@ -3606,6 +3665,11 @@ body {
 
 .usage-pct {
   color: var(--text);
+}
+
+.usage-ahead {
+  color: var(--warning);
+  font-size: 0.9em;
 }
 
 .usage-reset {
@@ -3633,12 +3697,13 @@ body {
   transition: transform var(--dur-slow) var(--ease);
 }
 
-.usage-track[data-tone='warning'] .usage-fill {
+.usage-track[data-tone='warning'] .usage-fill,
+.usage-mini[data-tone='warning'] .usage-fill {
   background: var(--warning);
 }
 
 .usage-track[data-tone='critical'] .usage-fill,
-.usage-track[data-tone='severe'] .usage-fill {
+.usage-mini[data-tone='critical'] .usage-fill {
   background: var(--danger);
 }
 
@@ -3663,6 +3728,11 @@ body {
   box-shadow: 0 0 0 1px var(--bg-sunken);
   /* Not transitioned: it advances about a third of a percent per minute, so a
      transition would buy nothing and animating `left` costs a layout. */
+}
+
+.usage-mini .usage-pace {
+  top: -1px;
+  bottom: -1px;
 }
 
 @media (prefers-reduced-motion: reduce) {

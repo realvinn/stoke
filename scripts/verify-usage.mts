@@ -85,6 +85,11 @@ check('the all-models weekly window is named Weekly', snap.windows[1].label, 'We
 check('a scoped window takes the model name', snap.windows[2].label, 'Fable')
 check('no reset time means no marker rather than a wrong one', snap.windows[0].elapsed, null)
 check('percent survives', snap.windows[1].percent, 27)
+check(
+  'a fractional account percent is rounded at the edge, as the payload side already is (gotcha 21)',
+  parseUsage({ limits: [{ kind: 'session', percent: 27.500000001 }] }, now).windows[0].percent,
+  28
+)
 
 console.log('\nmalformed input degrades rather than throwing')
 check('empty object', parseUsage({}, now).windows.length, 0)

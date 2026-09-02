@@ -43,6 +43,15 @@ import {
 import { buildArgs } from '../src/main/cli.ts'
 import type { LaunchOptions, StatusLinePayload, UsageWindow } from '../src/shared/types.ts'
 import { mergeUsageWindows, statusLineWindows } from '../src/shared/statusLine.ts'
+import {
+  countdown,
+  isStale,
+  remainingLabel,
+  resetLabel,
+  shortLabel,
+  tone,
+  worstTone
+} from '../src/shared/usageView.ts'
 
 let failures = 0
 
@@ -1226,8 +1235,6 @@ check(
   ['session', 'weekly_scoped']
 )
 
-console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
-process.exitCode = failures ? 1 : 0
 
 /*
  * The Windows shape of the command, asserted from a Mac.
@@ -1264,3 +1271,65 @@ check(
   statusLineCommand('same', 'linux'),
   statusLineCommand('same', 'darwin')
 )
+
+console.log('\nwhat the chip says: left, when, and how loud')
+const win = (over: Partial<UsageWindow>): UsageWindow => ({
+  kind: 'session',
+  label: '5 hours',
+  percent: 12,
+  severity: 'normal',
+  resetsAt: null,
+  elapsed: null,
+  active: true,
+  ...over
+})
+check('the chip is framed as what is left, not what is used', remainingLabel(win({ percent: 12 })), '88% left')
+check('a rounded-up percent never shows negative remaining', remainingLabel(win({ percent: 100 })), '0% left')
+check("the account's severity wins even at a low percent", tone(win({ percent: 5, severity: 'warning' })), 'warning')
+check(
+  'critical, severe and exceeded all read as critical',
+  [tone(win({ severity: 'critical' })), tone(win({ severity: 'severe' })), tone(win({ severity: 'exceeded' }))],
+  ['critical', 'critical', 'critical']
+)
+check(
+  'ninety percent used is critical even with no pace to compare against — 95% used at 96% elapsed is not "ahead", and used to stay muted',
+  tone(win({ percent: 95, elapsed: 0.96 })),
+  'critical'
+)
+check('ahead of pace by more than ten points is a warning', tone(win({ percent: 40, elapsed: 0.2 })), 'warning')
+check('on pace is quiet', tone(win({ percent: 40, elapsed: 0.4 })), 'normal')
+check('the chip carries the worst row', worstTone([win({ percent: 10 }), win({ kind: 'weekly', percent: 91 })]), 'critical')
+check('and nothing when there is nothing', worstTone([]), 'normal')
+
+const T0 = Date.UTC(2026, 8, 2, 4, 0, 0) // an arbitrary fixed instant
+check('a countdown under an hour is minutes', countdown(T0 + 42 * 60_000, 30, T0), '42m')
+check('over an hour is hours and minutes', countdown(T0 + (2 * 60 + 13) * 60_000, 30, T0), '2h 13m')
+check('over a day is days and hours', countdown(T0 + (3 * 24 + 5) * 3_600_000, 30, T0), '3d 5h')
+check('a reset in the past is resetting', countdown(T0 - 1, 30, T0), 'resetting')
+check('no reset with usage is unknown, not unused', countdown(null, 30, T0), 'reset unknown')
+check('no reset with no usage is unused', countdown(null, 0, T0), 'unused')
+check(
+  'the reset label names a clock time for the same day',
+  /^resets \d\d:\d\d · in 2h 13m$/.test(resetLabel(T0 + (2 * 60 + 13) * 60_000, 30, T0)),
+  true
+)
+check(
+  'and a weekday for another day',
+  /^resets [A-Z][a-z]{2} \d\d:\d\d · in 3d 5h$/.test(resetLabel(T0 + (3 * 24 + 5) * 3_600_000, 30, T0)),
+  true
+)
+check(
+  'the short labels are the two the chip has room for',
+  [shortLabel(win({})), shortLabel(win({ kind: 'weekly' })), shortLabel(win({ kind: 'weekly_scoped', label: 'Fable' }))],
+  ['5h', 'week', 'Fable']
+)
+check('ninety seconds without a fresh reading is stale', [isStale(T0 - 89_000, T0), isStale(T0 - 91_000, T0)], [false, true])
+check('no reading at all is not stale, it is absent', isStale(-Infinity, T0), false)
+
+/*
+ * The tally is the LAST statement in the file, as gotcha 50 requires: it used
+ * to sit above the PowerShell-shape checks, so those could print FAIL into a
+ * total nobody read again and the suite could not fail on them.
+ */
+console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
+process.exitCode = failures ? 1 : 0

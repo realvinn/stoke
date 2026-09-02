@@ -2,7 +2,7 @@ import type { CliInfo, ContextSnapshot } from '@shared/types'
 import { ContextBar } from './ContextMeter'
 import { modelLabel, shortPath } from '../lib/format'
 import { PERMISSION_LABELS } from '../lib/permissions'
-import type { RelaunchPlan } from '../lib/tabs'
+import { versionNumber, type RelaunchPlan } from '../lib/tabs'
 import type { SessionActivity, Tab } from '../types'
 
 interface Props {
@@ -10,6 +10,11 @@ interface Props {
   context: ContextSnapshot | null
   /** Working / done / attention for the tab in front, or null when idle. */
   activity: SessionActivity | null
+  /**
+   * The tab in front's own statusLine payload: the version it runs and the
+   * model it is on, with the tier suffix the transcript drops (gotcha 21).
+   */
+  line: { cliVersion: string | null; modelId: string | null; modelName: string | null } | null
   cli: CliInfo | null
   /** Newer CLI version found at launch, or null when up to date. */
   updateAvailable: string | null
@@ -45,6 +50,7 @@ export function StatusBar({
   tab,
   context,
   activity,
+  line,
   cli,
   updateAvailable,
   relaunch,
@@ -127,7 +133,33 @@ export function StatusBar({
     </span>
   ) : null
 
-  if (!tab) {
+  /*
+   * A version, when one is known, in every branch. `versionNumber` strips the
+   * `(Claude Code)` tail `claude --version` prints. With a tab in front the
+   * session's own reading wins over the disk's, because they differ exactly
+   * when the relaunch pill is about to say so.
+   */
+  const shownVersion = versionNumber(line?.cliVersion ?? null) ?? versionNumber(cli?.version ?? null)
+  const versionItem = shownVersion ? (
+    <button
+      className="status-btn status-item mono"
+      onClick={onOpenSettings}
+      title={
+        relaunch.kind === 'offer'
+          ? `This session runs ${relaunch.running}; ${relaunch.installed} is installed`
+          : line?.cliVersion
+            ? 'Claude Code version this session is running'
+            : 'Claude Code version installed'
+      }
+    >
+      {shownVersion}
+    </button>
+  ) : null
+
+  // A New tab has no session behind it, so it gets the same footer as no tab
+  // at all — "waiting for first turn…" on a launcher was a promise about a
+  // turn that could not come.
+  if (!tab || tab.kind === 'new') {
     return (
       <footer className="statusbar">
         <span className="status-item">No active session</span>
@@ -139,13 +171,19 @@ export function StatusBar({
             one path that reaches this branch. */}
         {relaunchPill}
         {updatePill}
-        {cli?.version && <span className="status-item mono">{cli.version}</span>}
+        {versionItem}
       </footer>
     )
   }
 
   const bypass = tab.permissionMode === 'bypassPermissions'
-  const model = context?.model ?? (tab.model || null)
+  /*
+   * The payload's model first: it carries the tier suffix (`claude-opus-5[1m]`)
+   * the transcript drops, and it is stated from the first render rather than
+   * after the first assistant turn — so the bar no longer reads `default`
+   * until Claude has said something.
+   */
+  const model = line?.modelId ?? context?.model ?? (tab.model || null)
   /*
    * A paused tab's `context` is seeded at restore with a real saved reading
    * but a zeroed message-count breakdown (`toStored` never persisted one) —
@@ -202,6 +240,8 @@ export function StatusBar({
         an automatic update turns the first into the second — which is why
         both live here and neither is drawn as the other.
       */}
+      {versionItem}
+
       {relaunchPill}
 
       {updatePill}

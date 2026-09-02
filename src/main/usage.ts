@@ -218,7 +218,10 @@ export function parseUsage(body: unknown, now: number): UsageSnapshot {
     windows.push({
       kind,
       label,
-      percent: Math.max(0, Math.min(100, num(limit.percent))),
+      // Rounded at the edge, as statusLineWindows already does for the
+      // payload: gotcha 21's 7.000000000000001 is a real value one side sent,
+      // and the chip prints whatever it is handed.
+      percent: Math.round(Math.max(0, Math.min(100, num(limit.percent)))),
       severity: String(limit.severity ?? 'normal'),
       resetsAt,
       elapsed: elapsedFraction(resetsAt, WINDOW_MS[kind], now),
