@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { CliRunResult, RemoteReach, RemoteState, SelfUpdateState, UpdateInfo } from '@shared/api'
+import type {
+  CliRunResult,
+  HostnameVerdict,
+  RemoteReach,
+  RemoteState,
+  SelfUpdateState,
+  UpdateInfo
+} from '@shared/api'
 import { clampPort, REMOTE_PORT_DEFAULT } from '@shared/ui'
 import { channelLagNotice, updateButton, updateVerdict } from '../lib/updateVerdict'
 import { useDraft } from '../lib/useDraft'
@@ -51,6 +58,15 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
   const [copied, setCopied] = useState(false)
   const [confirmKey, setConfirmKey] = useState(false)
   const [tunnelOpen, setTunnelOpen] = useState(false)
+  /**
+   * What the public hostname answered, from the setup steps below.
+   *
+   * Kept up here because this is where the consequence is: the header draws a
+   * QR code and reports the tunnel running, both true, while the link itself
+   * reaches nothing. An error the panel knows about has to be said next to the
+   * thing it invalidates.
+   */
+  const [verdict, setVerdict] = useState<HostnameVerdict | null>(null)
   const remote = settings.remote
 
   /*
@@ -246,6 +262,47 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
             {state.server.error}
           </span>
         )}
+
+        {/*
+          What the hostname itself answers, said beside the code that encodes
+          it. Error 1033 is the one failure this panel can produce all by
+          itself — `tunnel route dns` refuses to overwrite an existing record,
+          so a hostname that ever pointed anywhere keeps pointing there — and
+          it used to be reported only inside a collapsed step, under a header
+          cheerfully drawing a scannable code for the same name.
+        */}
+        {reach === 'tunnel' && verdict === 'tunnel-not-found' && (
+          <FieldHint
+            tone="warning"
+            more={
+              <>
+                Cloudflare returns 1033 when a hostname is routed to a tunnel that has no
+                connections — which is to say, to a different tunnel than the one running here.
+                Open <b>Reach it from outside your network</b> below and press{' '}
+                <b>Replace the existing record</b> on step 4; that repoints{' '}
+                <span className="mono">{remote.hostname}</span> at this tunnel. Nothing else needs
+                changing, and a Cloudflare Access policy on the hostname is unrelated — leave it on.
+              </>
+            }
+          >
+            This link does not work yet: {remote.hostname} answers with Cloudflare error 1033.
+          </FieldHint>
+        )}
+        {reach === 'tunnel' && verdict === 'access' && (
+          <FieldHint
+            more={
+              <>
+                Access is a good thing to have here: it means a stranger holding the link still has
+                to sign in as you. It also means Stoke cannot check the rest of the way, so if the
+                phone shows <b>error 1033</b> after signing in, the hostname is routed to a
+                different tunnel — press <b>Replace the existing record</b> on step 4 below. Do not
+                turn Access off to fix that; it is a separate layer and would not change it.
+              </>
+            }
+          >
+            {remote.hostname} is behind Cloudflare Access, so you sign in once on the phone.
+          </FieldHint>
+        )}
       </div>
 
       <div className="field">
@@ -357,6 +414,7 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
             running={tunnel?.running ?? false}
             busy={busy}
             onRun={() => void act(() => window.stoke.remote.tunnelStart('named'))}
+            onVerdict={setVerdict}
           />
 
           <label className="check-row">

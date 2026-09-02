@@ -1,5 +1,10 @@
-import { useCallback, useEffect, useState } from 'react'
-import type { CloudflareSetup as Setup, CloudflareStepState, StepResult } from '@shared/api'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import type {
+  CloudflareSetup as Setup,
+  CloudflareStepState,
+  HostnameVerdict,
+  StepResult
+} from '@shared/api'
 import { IconCopy } from './Icons'
 
 /**
@@ -35,6 +40,13 @@ interface Props {
   /** Runs the named tunnel — the last step, and already owned by the panel. */
   onRun: () => void
   busy: boolean
+  /**
+   * What the hostname answered, lifted so the panel can say it where people
+   * look. A 1033 buried inside a collapsed step is a 1033 nobody reads: the
+   * top of the panel meanwhile draws a QR code and reports the tunnel running,
+   * which is true and useless.
+   */
+  onVerdict?: (verdict: HostnameVerdict | null) => void
 }
 
 const PILL: Record<CloudflareStepState, { label: string; tone?: 'success' | 'danger' | 'accent' }> = {
@@ -122,15 +134,27 @@ export function CloudflareSetup({
   hostname,
   running,
   onRun,
-  busy
+  busy,
+  onVerdict
 }: Props): React.JSX.Element {
   const [setup, setSetup] = useState<Setup | null>(null)
   /** Which step is running, so only that one's button says so. */
   const [step, setStep] = useState<string | null>(null)
   const [result, setResult] = useState<Record<string, StepResult>>({})
 
+  /*
+   * The callback is read through a ref rather than listed as a dependency: it
+   * is an inline arrow in the parent, so a new identity every render, and
+   * depending on it would re-run the probe — and its HTTP request to the
+   * hostname — on every keystroke in the fields above.
+   */
+  const notify = useRef(onVerdict)
+  notify.current = onVerdict
+
   const probe = useCallback(async (): Promise<void> => {
-    setSetup(await window.stoke.remote.cloudflareSetup())
+    const next = await window.stoke.remote.cloudflareSetup()
+    setSetup(next)
+    notify.current?.(next.route.verdict)
   }, [])
 
   useEffect(() => {
