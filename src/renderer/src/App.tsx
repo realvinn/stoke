@@ -1551,8 +1551,19 @@ export function App(): React.JSX.Element {
           break
         }
         case 'cycleTab': {
-          const next = cycleTab(tabs.map((t) => t.id), activeTabId, action.delta)
-          if (next) setActiveTabId(next)
+          /*
+           * The functional form, and not for tidiness. `activeTabId` in this
+           * closure is whatever the last render committed, so two presses
+           * inside one frame — a held key, or a fast double press — both
+           * computed their step from the SAME starting tab and landed on the
+           * same one. Measured over CDP: two next-tab events dispatched in one
+           * tick moved the selection exactly one place. Reading the pending
+           * value instead makes the second press start where the first left
+           * off. Gotcha 51's shape, one layer down: state that has not
+           * re-rendered yet is not the state you are in.
+           */
+          const ids = tabs.map((t) => t.id)
+          setActiveTabId((cur) => cycleTab(ids, cur, action.delta) ?? cur)
           break
         }
         case 'zoom': {
