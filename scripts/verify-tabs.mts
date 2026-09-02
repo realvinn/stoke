@@ -7,6 +7,7 @@
  */
 import {
   cycleTab,
+  focusAfterStart,
   moveTab,
   neighbourOf,
   relaunchPlan,
@@ -324,6 +325,58 @@ check('an empty strip has nowhere to go', cycleTab([], 'a', 1), null)
  */
 check('no selection goes to the first tab', cycleTab(five, null, 1), 'a')
 check('and backwards to the last', cycleTab(five, null, -1), 'e')
+
+/*
+ * Which tab is selected once a start resolves.
+ *
+ * `Resume all` fires one start per paused tab, concurrently, and each one used
+ * to call setActiveTabId(newId) unconditionally when its own PTY came up — so
+ * the selected tab was whichever `pty.start` resolved LAST. Whatever you were
+ * looking at, including a live session you were typing into, was taken away a
+ * second or two after the press by a race.
+ *
+ * The rule is asserted rather than the outcome: focus is unconditional for a
+ * single start (you pressed a button, show me the thing), and for a bulk one it
+ * follows only if the tab being replaced was already selected — because a
+ * resumed tab is a NEW object with a new id, so leaving the selection alone
+ * would otherwise leave it naming a tab that no longer exists.
+ */
+console.log('\nwhere the selection lands after a session starts')
+
+// `focusAfterStart` takes React's setter, so the assertions drive it through a
+// stand-in that records what the updater computed.
+function focused(current: string | null, newId: string, replaced: string | null, focus?: boolean): string {
+  let out = current
+  focusAfterStart((update) => { out = update(out) }, newId, replaced, focus)
+  return out as string
+}
+
+check('a single start focuses its new tab', focused('a', 'new', 'b'), 'new')
+check(
+  'even when it replaces the tab you were on',
+  focused('b', 'new', 'b'),
+  'new'
+)
+check(
+  'a bulk start leaves an unrelated selection alone',
+  focused('a', 'new', 'b', false),
+  'a'
+)
+check(
+  'but follows the one tab it replaced under you, which no longer exists',
+  focused('b', 'new', 'b', false),
+  'new'
+)
+check(
+  'three bulk resumes in one tick cannot steal the selection between them',
+  ['x', 'y', 'z'].reduce((sel, id) => focused(sel, `${id}-live`, id, false), 'untouched'),
+  'untouched'
+)
+check(
+  'and with nothing selected there is still something to select',
+  focused(null, 'new', 'b', false),
+  'new'
+)
 
 /*
  * The tally is the LAST thing in this file, and it has to stay that way.

@@ -7,6 +7,17 @@ interface Props {
   screen: string
   /** Null when this tab cannot be resumed — see the card's copy. */
   onResume: (() => void) | null
+  /**
+   * A resume is already in flight for this tab.
+   *
+   * The button has to say so, not merely refuse. Starting a PTY takes a couple
+   * of seconds during which the card does not change at all, and a control that
+   * looks untouched is one that gets pressed again — which is how this became
+   * two `claude --resume` against one transcript in the first place. The ref in
+   * App is what makes the second press harmless; this is what stops it being
+   * made.
+   */
+  resuming: boolean
   onClose: (tabId: string) => void
 }
 
@@ -21,7 +32,14 @@ interface Props {
  * replay buffer cannot be safely resumed mid-repaint), and mounting a second
  * xterm per paused tab to render it would cost a WebGL context each.
  */
-export function PausedSession({ tab, active, screen, onResume, onClose }: Props): React.JSX.Element {
+export function PausedSession({
+  tab,
+  active,
+  screen,
+  onResume,
+  resuming,
+  onClose
+}: Props): React.JSX.Element {
   return (
     <div className="term-pane" hidden={!active}>
       <pre className="paused-screen" aria-hidden="true">
@@ -40,8 +58,13 @@ export function PausedSession({ tab, active, screen, onResume, onClose }: Props)
         </span>
         <div className="paused-actions">
           {onResume && (
-            <button className="btn" data-variant="primary" onClick={onResume}>
-              Resume session
+            <button
+              className="btn"
+              data-variant="primary"
+              onClick={onResume}
+              disabled={resuming}
+            >
+              {resuming ? 'Resuming…' : 'Resume session'}
             </button>
           )}
           <button className="btn" data-variant="ghost" onClick={() => onClose(tab.id)}>

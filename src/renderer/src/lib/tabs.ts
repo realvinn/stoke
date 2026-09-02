@@ -243,3 +243,39 @@ export function relaunchPlan(input: {
 
   return { kind: 'offer', running, installed, sessionId: tab.sessionId }
 }
+
+/**
+ * Which tab is selected once a session finishes starting.
+ *
+ * Every single start focuses its new tab, which is right: you pressed a button
+ * and the thing you asked for should be in front of you. `Resume all` is the
+ * exception, and it was wrong in a way that got worse the more tabs you had.
+ * It fires one `resumeTabFor` per paused tab, all concurrently, and each one
+ * unconditionally called `setActiveTabId(tab.id)` when its own PTY came up — so
+ * the selected tab was decided by whichever `pty.start` happened to resolve
+ * LAST. Whatever you had been looking at, including a live session you were
+ * typing into, was yanked away a second or two after the press, to a tab chosen
+ * by a race.
+ *
+ * `focus: false` says "put this where it belongs, do not take me there". It is
+ * not the same as never focusing, because a resumed tab is a NEW tab object
+ * with a new id replacing the old one at its index: if the tab being replaced
+ * was the selected one, leaving `activeTabId` alone would leave it naming a tab
+ * that no longer exists. So the rule is "follow only if I was already there",
+ * which for `Resume all` means the selection stays exactly where it was in
+ * every case — either on something untouched, or on the same card, now live.
+ *
+ * The updater is functional rather than reading `activeTabId` from a closure:
+ * several of these land in one tick and each must see the previous one's
+ * result, which is gotcha 56's rule.
+ */
+export function focusAfterStart(
+  setActiveTabId: (update: (current: string | null) => string) => void,
+  newTabId: string,
+  replacedTabId: string | null | undefined,
+  focus: boolean | undefined
+): void {
+  setActiveTabId((current) =>
+    focus === false ? (current === replacedTabId ? newTabId : (current ?? newTabId)) : newTabId
+  )
+}

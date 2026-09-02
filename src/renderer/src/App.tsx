@@ -41,6 +41,7 @@ import { fromStored, screensFrom, toStored } from './lib/restore'
 import { screenOf } from './lib/termRegistry'
 import {
   cycleTab,
+  focusAfterStart,
   moveTab,
   neighbourOf,
   relaunchPlan,
@@ -329,6 +330,48 @@ export function App(): React.JSX.Element {
    */
   const relaunchingRef = useRef(false)
   const [relaunching, setRelaunching] = useState(false)
+
+  /*
+   * The same claim, per tab, for Resume and Start again.
+   *
+   * `relaunchTab` got the guard above when gotcha 51 was written, and the two
+   * paths that do the identical thing — `resumeTabFor` for a restored card,
+   * `restartTab` for an ended one — were left without it. Both call
+   * `startSession`/`startHostSession` and then `replaceOrAppend` by id, and
+   * `replaceOrAppend` APPENDS when the id it is given is no longer in the list.
+   * So both carry the same two failures:
+   *
+   *   Pressing Resume twice inside the couple of seconds a PTY takes to come up
+   *   starts two `claude --resume <id>` against one transcript. The button has
+   *   no busy state, so nothing on screen says the first press landed.
+   *
+   *   Worse, `Resume all` followed by `Close them` — two buttons sitting beside
+   *   each other in the same bar. `Close them` filters on `status === 'paused'`
+   *   and the resumes have not resolved yet, so every tab is dropped; each
+   *   `pty.start` then resolves, finds its `replaceTabId` gone, and APPENDS.
+   *   The tabs you just closed reappear at the end of the strip, each backed by
+   *   a real process that the close never killed because a paused tab has no
+   *   PTY to kill.
+   *
+   * A Set rather than a boolean, because these are per-tab and `Resume all`
+   * legitimately runs several at once. The ref is the correctness half, claimed
+   * synchronously before the async call; the state is what lets the button say
+   * so. Same split, same reason, as the relaunch pill above.
+   */
+  const startingRef = useRef<Set<string>>(new Set())
+  const [starting, setStarting] = useState<readonly string[]>([])
+
+  const claimStart = useCallback((tabId: string): boolean => {
+    if (startingRef.current.has(tabId)) return false
+    startingRef.current.add(tabId)
+    setStarting([...startingRef.current])
+    return true
+  }, [])
+
+  const releaseStart = useCallback((tabId: string): void => {
+    startingRef.current.delete(tabId)
+    setStarting([...startingRef.current])
+  }, [])
 
   /*
    * Launch options for the next session, DERIVED from the saved defaults rather
@@ -887,6 +930,8 @@ export function App(): React.JSX.Element {
       continueLast?: boolean
       /** Replace this tab in place instead of appending. Consumes a New tab. */
       replaceTabId?: string
+      /** See `focusAfterStart`. Omitted means focus, as every single start does. */
+      focus?: boolean
       /**
        * Override the App-level launch defaults below. `resumeTabFor` passes the
        * paused tab's own stored values here — the tab a card displays must be
@@ -944,7 +989,7 @@ export function App(): React.JSX.Element {
          * button having failed.
          */
         setTabs((list) => replaceOrAppend(list, tab, opts.replaceTabId))
-        setActiveTabId(tab.id)
+        focusAfterStart(setActiveTabId, tab.id, opts.replaceTabId, opts.focus)
         return true
       } catch (e) {
         setError(ipcErrorMessage(e))
@@ -1018,7 +1063,13 @@ export function App(): React.JSX.Element {
     async (
       host: SshHost,
       replaceTabId?: string,
-      overrides?: { permissionMode?: PermissionMode; model?: string; effort?: EffortLevel }
+      overrides?: {
+        permissionMode?: PermissionMode
+        model?: string
+        effort?: EffortLevel
+        /** See `focusAfterStart`. Omitted means focus, as every single start does. */
+        focus?: boolean
+      }
     ): Promise<boolean> => {
       setError(null)
       const permissionMode = overrides?.permissionMode ?? mode
@@ -1060,7 +1111,7 @@ export function App(): React.JSX.Element {
          * fallback for the launcher's own call site.
          */
         setTabs((list) => replaceOrAppend(list, tab, replaceTabId ?? activeNewTabId))
-        setActiveTabId(tab.id)
+        focusAfterStart(setActiveTabId, tab.id, replaceTabId ?? activeNewTabId, overrides?.focus)
         return true
       } catch (e) {
         setError(ipcErrorMessage(e))
@@ -1092,13 +1143,18 @@ export function App(): React.JSX.Element {
    *
    * Returns null when there is nothing to resume, which the card turns into a
    * Close-only state rather than a button that fails.
+   *
+   * `focus` is passed through to the start: a single Resume takes you to the
+   * tab you just resumed, and `Resume all` does not, because there the tab that
+   * would win is decided by whichever PTY happens to come up last.
    */
   const resumeTabFor = useCallback(
-    (tab: Tab): (() => void) | null => {
+    (tab: Tab, focus = true): (() => void) | null => {
       if (tab.hostId) {
         const host = settings?.hosts.find((h) => h.id === tab.hostId)
         if (!host) return null
         return () => {
+          if (!claimStart(tab.id)) return
           // Dropped only on success. `startHostSession`'s catch leaves this
           // tab paused and just sets `error` — pruning the screen unconditionally,
           // before the outcome is known, would discard the preview out from
@@ -1112,13 +1168,17 @@ export function App(): React.JSX.Element {
           void startHostSession(host, tab.id, {
             permissionMode: tab.permissionMode,
             model: tab.model,
-            effort: tab.effort
-          }).then((ok) => {
-            if (ok) dropRestoredScreen(tab.id)
+            effort: tab.effort,
+            focus
           })
+            .then((ok) => {
+              if (ok) dropRestoredScreen(tab.id)
+            })
+            .finally(() => releaseStart(tab.id))
         }
       }
       return () => {
+        if (!claimStart(tab.id)) return
         void startSession({
           cwd: tab.cwd,
           name: tab.projectName,
@@ -1133,13 +1193,16 @@ export function App(): React.JSX.Element {
           // values, so the tab the user sees paused is the tab they get back.
           permissionMode: tab.permissionMode,
           model: tab.model,
-          effort: tab.effort
-        }).then((ok) => {
-          if (ok) dropRestoredScreen(tab.id)
+          effort: tab.effort,
+          focus
         })
+          .then((ok) => {
+            if (ok) dropRestoredScreen(tab.id)
+          })
+          .finally(() => releaseStart(tab.id))
       }
     },
-    [settings, startSession, startHostSession, dropRestoredScreen]
+    [settings, startSession, startHostSession, dropRestoredScreen, claimStart, releaseStart]
   )
 
   /** Quick start with no project: run in the configured default folder. */
@@ -1322,6 +1385,25 @@ export function App(): React.JSX.Element {
    * change. `cycleTab`'s functional-updater fix is the same bug one commit
    * earlier; a stepping or filtering handler cannot read render-time state.
    */
+  /**
+   * Forget everything keyed by a session id that has gone away.
+   *
+   * The mirror of `dropRestoredScreen` for the three maps that are keyed by
+   * session rather than by tab. One helper so a fourth such map cannot be added
+   * and pruned in only two of the three places.
+   */
+  const dropSessionState = useCallback((sessionId: string): void => {
+    const without = <T,>(cur: Record<string, T>): Record<string, T> => {
+      if (!(sessionId in cur)) return cur
+      const next = { ...cur }
+      delete next[sessionId]
+      return next
+    }
+    setContexts(without)
+    setActivity(without)
+    setSessionLine(without)
+  }, [])
+
   const closeTab = useCallback(
     (id: string): void => {
       const list = tabsRef.current
@@ -1336,6 +1418,20 @@ export function App(): React.JSX.Element {
         forgetPty(tab.ptyId)
       }
       dropRestoredScreen(id)
+      /*
+       * The three session-keyed maps are pruned with it.
+       *
+       * `restoredScreens` had this from the start and the others did not, so
+       * `contexts`, `activity` and `sessionLine` accumulated one entry per
+       * session for the life of the run — every tab ever opened and closed,
+       * every relaunch (which mints a new id), every resumed conversation. Not
+       * large individually, but they are also the maps three components iterate
+       * on every render, so the cost is not only memory.
+       *
+       * Keyed on the session id rather than the tab id, which is what put them
+       * out of reach of the tab-shaped cleanup that already existed.
+       */
+      if (tab.sessionId) dropSessionState(tab.sessionId)
       // Never leave the strip empty: closing the last tab lands on a fresh New
       // Project tab, which is where the app starts anyway.
       const next = list.filter((t) => t.id !== id)
@@ -1348,7 +1444,7 @@ export function App(): React.JSX.Element {
         setActiveTabId(nextId)
       }
     },
-    [dropRestoredScreen]
+    [dropRestoredScreen, dropSessionState]
   )
 
   /**
@@ -1380,6 +1476,17 @@ export function App(): React.JSX.Element {
    */
   const restartTab = useCallback(
     (tab: Tab): void => {
+      /*
+       * Claimed before `forgetPty`, which is the irreversible part — gotcha
+       * 20's rule that the claim precedes the act rather than the await.
+       *
+       * "Start again" sits on a card that has just said the session ended, so a
+       * second press while the first is still starting is the ordinary
+       * impatience this whole class of bug comes from; without the claim it
+       * appended a second tab and a second process, exactly as gotcha 51
+       * measured for the relaunch pill.
+       */
+      if (!claimStart(tab.id)) return
       if (tab.kind === 'session' && tab.ptyId) forgetPty(tab.ptyId)
 
       const hosts = settings?.hosts ?? []
@@ -1387,17 +1494,21 @@ export function App(): React.JSX.Element {
 
       if (plan.kind === 'impossible') {
         setError(plan.reason)
+        releaseStart(tab.id)
         return
       }
 
       if (plan.kind === 'host') {
         const host = hosts.find((h) => h.id === plan.hostId)
-        if (!host) return
+        if (!host) {
+          releaseStart(tab.id)
+          return
+        }
         void startHostSession(host, tab.id, {
           permissionMode: tab.permissionMode,
           model: tab.model,
           effort: tab.effort
-        })
+        }).finally(() => releaseStart(tab.id))
         return
       }
 
@@ -1408,9 +1519,9 @@ export function App(): React.JSX.Element {
         permissionMode: tab.permissionMode,
         model: tab.model,
         effort: tab.effort
-      })
+      }).finally(() => releaseStart(tab.id))
     },
-    [settings, startSession, startHostSession]
+    [settings, startSession, startHostSession, claimStart, releaseStart]
   )
 
   /**
@@ -1911,9 +2022,12 @@ export function App(): React.JSX.Element {
                 className="btn"
                 data-variant="primary"
                 onClick={() => {
+                  // `focus: false` — with several starting at once the winner
+                  // would otherwise be whichever PTY resolved last, which is a
+                  // race deciding what you are looking at. See focusAfterStart.
                   tabs
                     .filter((t) => t.status === 'paused')
-                    .forEach((t) => resumeTabFor(t)?.())
+                    .forEach((t) => resumeTabFor(t, false)?.())
                 }}
                 title="Start every restored tab again"
               >
@@ -1938,8 +2052,20 @@ export function App(): React.JSX.Element {
                    * A paused tab needs no kill: `ptyId` is '' and there is no
                    * process behind it. That is exactly why nothing is killed
                    * here any more — the tabs this touches never had one.
+                   *
+                   * Except for one that is mid-resume, which is why the
+                   * in-flight set is consulted. `Resume all` sits immediately
+                   * to the left of this button and its tabs stay `paused` for
+                   * the couple of seconds their PTYs take to come up — so
+                   * pressing both in sequence used to drop every tab, and then
+                   * each `pty.start` resolved, found its `replaceTabId` gone
+                   * and APPENDED. The tabs came back at the end of the strip
+                   * with live processes behind them, and the close had killed
+                   * nothing because a paused tab has no PTY to kill.
                    */
-                  const keep = tabs.filter((t) => t.status !== 'paused')
+                  const keep = tabs.filter(
+                    (t) => t.status !== 'paused' || startingRef.current.has(t.id)
+                  )
                   const next = keep.length ? keep : [newTab()]
                   setTabs(next)
                   if (!next.some((t) => t.id === activeTabId)) setActiveTabId(next[0].id)
@@ -2008,6 +2134,7 @@ export function App(): React.JSX.Element {
                     active={tab.id === activeTabId}
                     screen={restoredScreens[tab.id] ?? ''}
                     onResume={resumeTabFor(tab)}
+                    resuming={starting.includes(tab.id)}
                     onClose={closeTab}
                   />
                 ) : (
