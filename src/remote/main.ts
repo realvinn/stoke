@@ -1061,4 +1061,37 @@ async function showTerminal(session: SessionRow): Promise<void> {
   })
 }
 
-void showList()
+/*
+ * Boot.
+ *
+ * Two things happen before the first screen, and neither used to.
+ *
+ * The key is taken out of the address bar. It arrives as `?k=<token>` on the
+ * first navigation and the server immediately parks it in a cookie so nothing
+ * later needs it — but the URL kept carrying it, which put a live shell
+ * credential in the phone's address bar, its history, its autocomplete, and any
+ * screenshot or shared link of that page, permanently. `replaceState` drops it
+ * the moment the cookie has been set (this document was served with it), which
+ * is as early as it can go without breaking the exchange itself.
+ *
+ * And the theme is fetched for every screen rather than only the terminal.
+ * `loadTheme` was called lazily from `showTerminal` and from the terminal's
+ * back button, so the session list, history, transcript and new-session screens
+ * painted the hand-copied Ember fallback in style.css no matter what the
+ * desktop was actually running — with `color-scheme: dark` pinned along with
+ * it, so on a light theme the keyboard and scrollbars came up wrong too.
+ * Someone who only browsed history never saw the right theme at all. Awaited so
+ * the first paint is already correct rather than repainting a beat later; a
+ * failed fetch returns the fallback and the list still renders.
+ */
+async function boot(): Promise<void> {
+  const here = new URL(window.location.href)
+  if (here.searchParams.has('k')) {
+    here.searchParams.delete('k')
+    window.history.replaceState(null, '', `${here.pathname}${here.search}${here.hash}`)
+  }
+  await loadTheme()
+  await showList()
+}
+
+void boot()

@@ -63,6 +63,33 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 /** Returned by readJson for a body that arrived but would not parse. */
 const BAD_JSON = Symbol('bad-json')
 
+/**
+ * Largest WebSocket frame accepted, matching `readJson`'s HTTP body bound.
+ *
+ * The HTTP paths were given that bound deliberately — "unbounded, an endless
+ * request body exhausts the main process, which takes down every running
+ * session rather than one call" — and the socket, which runs in the same
+ * process and is reachable by the same authenticated client, had none of it.
+ * `ws` buffers a frame whole before emitting `message`, so without a cap one
+ * frame is an allocation of whatever length the sender claims, and then a
+ * synchronous `JSON.parse` over it on the main thread.
+ *
+ * Generous for what actually travels: the largest legitimate frame is a paste,
+ * and 256 KB of pasted text is far past anything a phone keyboard produces.
+ * `ws` closes the connection with 1009 when a frame exceeds this, which the
+ * client already handles as a dropped socket.
+ */
+const MAX_WS_FRAME = 256 * 1024
+
+/**
+ * Bounds on a phone-requested resize.
+ *
+ * `msg.cols && msg.rows` rejected zero and nothing else, so a crafted frame
+ * could hand node-pty a non-integer or a nine-digit dimension — for a resize
+ * that, by design, also reflows the desktop's own terminal.
+ */
+const MAX_TERM_DIM = 1000
+
 export interface RemoteConfig {
   port: number
   token: string
@@ -77,9 +104,24 @@ export interface RemoteConfig {
    */
   bindTailscale: boolean
   /**
-   * Reject anything without Cloudflare Access headers, so only the tunnel works.
+   * Reject anything that does not carry Cloudflare Access headers.
    *
-   * Enforced on the loopback listener only — see `viaLoopback`.
+   * Two things this is NOT, both of which the previous wording implied.
+   *
+   * It is not enforced "on the loopback listener only". The exemption is for
+   * the dedicated tailnet listener and nothing else — with `bindLan` on there
+   * is one 0.0.0.0 listener, so LAN requests are held to this too. `authorized`
+   * says so at the point it decides; this comment used to contradict it.
+   *
+   * And it is not authentication. The headers are checked for PRESENCE; the
+   * `Cf-Access-Jwt-Assertion` signature is never verified against Cloudflare's
+   * JWKS, because Stoke does not know the team domain or audience to verify it
+   * against. Anything that can open a socket to this port can set the header to
+   * any value it likes — Stoke's own `verify:security` script does exactly that
+   * to stand in for the edge. So this narrows *how* a request must be shaped,
+   * not *who* may make one, and the bearer token remains the only thing that
+   * actually authenticates. Treat it as defence in depth behind the tunnel, and
+   * do not let it justify a weaker token or a wider bind.
    */
   requireAccessHeader: boolean
   /**
@@ -175,7 +217,7 @@ export class RemoteServer {
     this.config = config
 
     try {
-      const wss = new WebSocketServer({ noServer: true })
+      const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_WS_FRAME })
       wss.on('connection', (ws, req) => this.handleSocket(ws, req))
 
       const listen = async (host: string): Promise<void> => {
@@ -811,9 +853,13 @@ export class RemoteServer {
       const manager = this.deps.ptys()
       if (!manager) return
 
+      // A predicate rather than a boolean, so the narrowing reaches `resize`.
+      const dim = (n: unknown): n is number =>
+        typeof n === 'number' && Number.isInteger(n) && n > 0 && n <= MAX_TERM_DIM
+
       if (msg.type === 'input' && typeof msg.data === 'string') {
         manager.write(ptyId, msg.data)
-      } else if (msg.type === 'resize' && msg.force && msg.cols && msg.rows) {
+      } else if (msg.type === 'resize' && msg.force && dim(msg.cols) && dim(msg.rows)) {
         /*
          * Only on explicit request: a phone resizing the PTY reflows the
          * desktop terminal too, which is jarring if someone is sitting at it.
@@ -832,6 +878,19 @@ export class RemoteServer {
       set?.delete(ws)
       this.clients.delete(ws)
       if (set && set.size === 0) {
+        /*
+         * The empty Set was left in the map, so `attached` grew by one entry
+         * per pty ever visited from a phone and never shrank for the life of
+         * the server. Nothing reads a stale empty set wrongly, but it is
+         * unbounded growth keyed by a value the client chooses.
+         *
+         * Removed only if the map still holds THIS set. `drop` is bound to both
+         * `close` and `error`, so it can run twice for one socket — and if
+         * another phone attached to the same pty in between, the second run
+         * would otherwise evict the live set and leave that client attached to
+         * nothing the status could see.
+         */
+        if (this.attached.get(ptyId) === set) this.attached.delete(ptyId)
         const saved = this.desktopSize.get(ptyId)
         if (saved) {
           this.desktopSize.delete(ptyId)

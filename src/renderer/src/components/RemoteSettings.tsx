@@ -475,7 +475,7 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
               <span className="field-label">Require Cloudflare Access</span>
               <FieldHint
                 tone={remote.requireAccessHeader && reach !== 'tunnel' ? 'warning' : undefined}
-                more="Reject anything without Access headers, so the server only answers requests that came through the tunnel. It also blocks the Wi-Fi and Tailscale routes, which is why it is only offered once a named tunnel is running."
+                more="Reject anything that does not carry the headers Cloudflare Access adds, which in practice means requests that did not come through the tunnel. Stoke checks that the headers are there; it cannot verify their signature, so this narrows what reaches the server rather than replacing the key — keep the key private either way. It also blocks the Wi-Fi and Tailscale routes, which is why it is only offered once a named tunnel is running."
               >
                 {accessUsable || remote.requireAccessHeader
                   ? 'Only answer requests that came through the tunnel.'

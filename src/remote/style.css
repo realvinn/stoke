@@ -130,12 +130,26 @@ button {
 }
 
 .btn {
+  /* The same 38px floor `.key` below already argues for, and for the same
+     reason — these are the back, refresh, History and + New controls on every
+     screen, and at 7px of padding around a 13px line they came out around 32px,
+     under the guideline this stylesheet elsewhere calls insufficient. The
+     terminal's key row was fixed when it was noticed there; the buttons on
+     every OTHER screen were left at the size it was fixed from.
+     inline-flex so min-height centres the label rather than just padding the
+     box downwards. */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 38px;
   padding: 7px 12px;
   border: 1px solid var(--border-strong);
   border-radius: 8px;
   background: var(--surface);
   font-size: 13px;
   font-weight: 500;
+  /* No 300ms double-tap-zoom delay on a control someone taps repeatedly. */
+  touch-action: manipulation;
 }
 
 .btn:active {
