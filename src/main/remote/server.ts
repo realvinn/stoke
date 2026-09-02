@@ -13,7 +13,13 @@ import type { Transcript } from '../sessionFile.ts'
 import { MAX_AUDIO_BYTES, transcribe } from '../stt.ts'
 import { isTailnetAddress, tailnetAddress } from './link.ts'
 
-export { connectTarget, connectUrl, isTailnetAddress, lanAddresses, tailnetAddress } from './link.ts'
+/*
+ * `connectUrl` is deliberately absent: it returned `connectTarget(...).url` and
+ * had no caller anywhere in src/, so it was a second entry point that took the
+ * same options and silently discarded the `reach` half of the answer. One way
+ * in, or the next reader picks the one that cannot say how the link gets there.
+ */
+export { connectTarget, isTailnetAddress, lanAddresses, tailnetAddress } from './link.ts'
 export type { ConnectTarget, Reach } from './link.ts'
 
 /**

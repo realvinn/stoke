@@ -406,5 +406,24 @@ check('a number is not an id', hydrateSettings({ themeIdLight: 42 }).themeIdLigh
 check('nor is the empty string', hydrateSettings({ themeId: '   ' }).themeId, DEFAULT_THEME_ID)
 check('and only a real true follows', hydrateSettings({ followSystemTheme: 'true' }).followSystemTheme, false)
 
+console.log('\nthe phone-reach preference')
+/*
+ * The field that ends "the picker is stuck on Cloudflare Tunnel". Hydration
+ * matters here more than usual: the raw `...r.remote` spread would carry a
+ * hand-written value straight into connectTarget, where anything unrecognised
+ * matches no branch and silently means loopback — a phone link that stops
+ * working because of a typo in a file.
+ */
+check('every settings file written before this reads as auto', hydrateSettings({}).remote.reach, 'auto')
+check('and one that never named it', hydrateSettings({ remote: { port: 7878 } }).remote.reach, 'auto')
+check('a real choice survives', hydrateSettings({ remote: { reach: 'tunnel' } }).remote.reach, 'tunnel')
+check('junk does not', hydrateSettings({ remote: { reach: 'banana' } }).remote.reach, 'auto')
+check('nor does a number', hydrateSettings({ remote: { reach: 3 } }).remote.reach, 'auto')
+check(
+  'and it does not disturb the rest of the block',
+  hydrateSettings({ remote: { reach: 'lan', port: 9000, hostname: 'x.example.com' } }).remote,
+  { ...DEFAULT_SETTINGS.remote, reach: 'lan', port: 9000, hostname: 'x.example.com' }
+)
+
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
 process.exitCode = failures ? 1 : 0

@@ -154,6 +154,38 @@ export const FONT_SIZE_STEP = 1
  * content, so both answers are defensible and neither is a default worth
  * arguing for on someone else's behalf.
  */
+/**
+ * How the user WANTS a phone to reach this machine, as distinct from how a
+ * given link happens to get there.
+ *
+ * A third vocabulary next to `Reach` (remote/link.ts) and `RemoteReach`
+ * (api.ts), and deliberately not a fourth copy of either: `loopback` is an
+ * OUTCOME — what you get when the chosen transport is unavailable — and can
+ * never be a thing to choose. `auto` is the fourth choice those two do not
+ * have, and is what a fresh install sits at until "Open on phone" or a segment
+ * decides.
+ *
+ * It exists because the choice used to be inferred from two booleans plus a
+ * non-empty hostname, which cannot represent "I have a tunnel configured and
+ * right now I want the LAN" — so a saved hostname pinned the picker to
+ * Cloudflare Tunnel forever and pointed the QR code at a name nothing served.
+ */
+export type RemoteReachPreference = 'auto' | 'lan' | 'tailnet' | 'tunnel'
+
+export const REMOTE_REACH_PREFERENCES: readonly RemoteReachPreference[] = [
+  'auto',
+  'lan',
+  'tailnet',
+  'tunnel'
+]
+
+/** Anything unrecognised is `auto`, which is also what an older file has. */
+export function clampRemoteReach(value: unknown): RemoteReachPreference {
+  return REMOTE_REACH_PREFERENCES.includes(value as RemoteReachPreference)
+    ? (value as RemoteReachPreference)
+    : 'auto'
+}
+
 export type ZoomTarget = 'both' | 'terminal' | 'interface'
 
 export const ZOOM_TARGETS: readonly ZoomTarget[] = ['both', 'terminal', 'interface']

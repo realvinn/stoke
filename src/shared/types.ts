@@ -2,7 +2,7 @@
  * Types shared by the main process, the preload bridge and the renderer.
  * This file must stay free of any Node or DOM imports.
  */
-import type { ZoomTarget } from './ui.ts'
+import type { RemoteReachPreference, ZoomTarget } from './ui.ts'
 
 /* ------------------------------------------------------------------ launch */
 
@@ -770,6 +770,16 @@ export interface Settings {
     port: number
     /** Bearer key; generated on first use. Also carried in the QR link. */
     token: string
+    /**
+     * Which transport the user CHOSE, as distinct from what the server binds.
+     *
+     * `bindLan` and `bindTailscale` below say what the socket listens on;
+     * this says what the link should use. They were one thing until a saved
+     * `hostname` was found to pin the picker to the tunnel permanently — see
+     * RemoteReachPreference. `auto` is a fresh install, and lets
+     * `connectTarget` fall back in its own order.
+     */
+    reach: RemoteReachPreference
     /** Public hostname the tunnel points at, e.g. stoke.example.com. */
     hostname: string
     /** Listen on the LAN as well as loopback. Off by default. */

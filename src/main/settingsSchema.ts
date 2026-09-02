@@ -13,6 +13,7 @@ import { DEFAULT_WORKLOG_BOARDS, WORKLOG_TARGETS } from '../shared/worklog.ts'
 import {
   clampFontSize,
   clampPort,
+  clampRemoteReach,
   clampTerminal,
   clampUiScale,
   clampWallpaper,
@@ -67,6 +68,8 @@ export const DEFAULT_SETTINGS: Settings = {
     enabled: false,
     port: 7878,
     token: '',
+    /* Nothing chosen: connectTarget falls back, and one press decides. */
+    reach: 'auto',
     hostname: '',
     bindLan: false,
     bindTailscale: false,
@@ -207,7 +210,15 @@ export function hydrateSettings(raw: unknown): Settings {
       ...(r.remote ?? {}),
       // The one remote field a wrong value can silently break: a port outside
       // the range fails to bind with an EACCES nobody reads. See clampPort.
-      port: clampPort(r.remote?.port ?? DEFAULT_SETTINGS.remote.port)
+      port: clampPort(r.remote?.port ?? DEFAULT_SETTINGS.remote.port),
+      /*
+       * Clamped rather than spread through, because the raw `...r.remote`
+       * above would carry a hand-written `"reach": "banana"` into
+       * `connectTarget`, where it matches no branch and silently means
+       * loopback — a phone link that quietly stops working because of a typo
+       * in a file.
+       */
+      reach: clampRemoteReach(r.remote?.reach)
     },
     /*
      * Themes are repaired rather than trusted. applyTheme writes whatever keys

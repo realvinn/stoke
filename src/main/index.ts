@@ -1598,8 +1598,25 @@ function registerIpc(): void {
    */
   ipcMain.handle(CH.remoteOpenOnPhone, async () => {
     const cur = ensureRemoteToken()
-    const reaches = cur.bindLan || cur.bindTailscale || Boolean(cur.hostname.trim()) || tunnel.status().running
-    const pick = reaches ? {} : tailnetAddress() ? { bindTailscale: true } : { bindLan: true }
+    /*
+     * "Has the user already chosen" is the stored preference and a running
+     * tunnel, and deliberately NOT a saved hostname. Counting the hostname is
+     * what made this a no-op on the one machine that most needed it: a
+     * hostname typed months ago made `reaches` true, so nothing was bound, the
+     * server stayed on loopback, and the one press produced an https link to a
+     * name no tunnel was serving.
+     */
+    const chosen = cur.reach !== 'auto' || tunnel.status().running
+    /*
+     * Both halves together. The preference alone gives a link nothing is
+     * listening on; the bind alone leaves the choice inferred, which is the
+     * conflation this field exists to end.
+     */
+    const pick: Partial<typeof cur> = chosen
+      ? {}
+      : tailnetAddress()
+        ? { reach: 'tailnet', bindTailscale: true, bindLan: false }
+        : { reach: 'lan', bindLan: true, bindTailscale: false }
     const next = setSettings({ remote: { ...cur, ...pick, enabled: true } })
     send(CH.settingsChanged, next)
     remote ??= new RemoteServer(remoteDeps(), pushRemote)
@@ -1728,6 +1745,15 @@ function registerIpc(): void {
       pushRemote()
     } else if (prev.remote.sttUrl !== next.remote.sttUrl) {
       sttProbe = null
+      pushRemote()
+    } else if (prev.remote.reach !== next.remote.reach) {
+      /*
+       * NOT a bind key: the preference changes which link is drawn, never what
+       * the socket listens on, so restarting the server for it would drop every
+       * connected phone to repaint a QR code. It still has to be pushed, or the
+       * panel keeps the old code until the 15s poll catches up — which reads as
+       * the segment you just pressed having been ignored.
+       */
       pushRemote()
     }
     /*

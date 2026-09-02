@@ -1,4 +1,5 @@
 import { networkInterfaces } from 'node:os'
+import type { RemoteReachPreference } from '../../shared/ui.ts'
 
 /**
  * Where the phone link points, and how it gets there.
@@ -96,10 +97,11 @@ export function lanAddresses(
 /**
  * The link to open on the phone, and how it gets there.
  *
- * Order of preference: a running tunnel (quick or named), the configured
- * hostname, the tailnet address, the best LAN address, and last of all
- * loopback — which is reported as such so the caller can refuse to draw it
- * as a phone link.
+ * A RUNNING tunnel first, whatever was chosen. Then the explicit choice, even
+ * when it cannot be served — loopback with the panel saying why beats a silent
+ * substitution. Then, for `auto`, whatever the socket is bound to: the tailnet
+ * before the LAN, and loopback last, reported as such so the caller can refuse
+ * to draw it as a phone link.
  */
 export function connectTarget(opts: {
   hostname: string
@@ -107,6 +109,12 @@ export function connectTarget(opts: {
   token: string
   bindLan: boolean
   bindTailscale?: boolean
+  /**
+   * What the user CHOSE. Optional so the suite's older fixtures still read,
+   * and because `auto` — fall back in this function's own order — is both the
+   * default and the honest answer for a machine that has chosen nothing.
+   */
+  reach?: RemoteReachPreference
   /** The URL a running cloudflared announced, quick or named. Wins when set. */
   tunnelUrl?: string | null
   /** Injectable for the suite; defaults to this machine's interfaces. */
@@ -117,32 +125,69 @@ export function connectTarget(opts: {
   const lan = opts.lan ?? lanAddresses()
   const candidates = lan.map((a) => `http://${a}:${opts.port}/${key}`)
 
-  const tunnel = opts.tunnelUrl?.trim().replace(/\/+$/, '')
-  if (tunnel) {
-    return { url: `${tunnel}/${key}`, reach: 'tunnel', address: tunnel.replace(/^https?:\/\//, ''), candidates }
-  }
+  const prefer = opts.reach ?? 'auto'
   const host = opts.hostname.trim()
-  if (host) return { url: `https://${host}/${key}`, reach: 'tunnel', address: host, candidates }
+  const tunnelHost = (): ConnectTarget | null => {
+    const running = opts.tunnelUrl?.trim().replace(/\/+$/, '')
+    if (running) {
+      return {
+        url: `${running}/${key}`,
+        reach: 'tunnel',
+        address: running.replace(/^https?:\/\//, ''),
+        candidates
+      }
+    }
+    return host ? { url: `https://${host}/${key}`, reach: 'tunnel', address: host, candidates } : null
+  }
+  const viaTailnet = (): ConnectTarget | null => {
+    const tailnet = opts.tailnet === undefined ? tailnetAddress() : opts.tailnet
+    return tailnet
+      ? { url: `http://${tailnet}:${opts.port}/${key}`, reach: 'tailnet', address: tailnet, candidates }
+      : null
+  }
+  const viaLan = (): ConnectTarget | null =>
+    lan.length ? { url: candidates[0], reach: 'lan', address: lan[0], candidates: candidates.slice(1) } : null
+  const loopback: ConnectTarget = {
+    url: `http://127.0.0.1:${opts.port}/${key}`,
+    reach: 'loopback',
+    address: '127.0.0.1',
+    candidates
+  }
+
   /*
-   * The tailnet address before the LAN sweep and before loopback. Without this
-   * the link and the QR code fall through to 127.0.0.1, which is useless on the
-   * phone that is meant to scan it - the feature would look broken while the
-   * server was in fact listening correctly.
+   * A RUNNING tunnel wins over every preference, and that is not the same as
+   * the hostname doing so. A live cloudflared is a fact about this moment —
+   * the phone can reach it right now — whereas a saved hostname is a fact
+   * about a config file, and treating the two alike is what made a stored
+   * `hostname` outrank a bound LAN forever: the QR code encoded
+   * `https://<host>/` while the server listened on 192.168.x and nothing was
+   * serving that name.
+   */
+  const running = opts.tunnelUrl?.trim() ? tunnelHost() : null
+  if (running) return running
+
+  /*
+   * An explicit choice is honoured even when it cannot be served, because the
+   * panel's job at that point is to say so — "you picked Cloudflare Tunnel and
+   * no tunnel is running" is a sentence a user can act on, and silently
+   * substituting the LAN is not.
+   */
+  if (prefer === 'tunnel') return tunnelHost() ?? loopback
+  if (prefer === 'tailnet') return viaTailnet() ?? loopback
+  if (prefer === 'lan') return viaLan() ?? loopback
+
+  /*
+   * `auto`: what the socket is actually bound to, in narrowest-first order.
+   * The bare hostname is deliberately NOT consulted here — see above.
    */
   if (opts.bindTailscale && !opts.bindLan) {
-    const tailnet = opts.tailnet === undefined ? tailnetAddress() : opts.tailnet
-    if (tailnet) {
-      return { url: `http://${tailnet}:${opts.port}/${key}`, reach: 'tailnet', address: tailnet, candidates }
-    }
+    const tailnet = viaTailnet()
+    if (tailnet) return tailnet
   }
-  if (opts.bindLan && lan.length) {
-    return { url: candidates[0], reach: 'lan', address: lan[0], candidates: candidates.slice(1) }
+  if (opts.bindLan) {
+    const lanTarget = viaLan()
+    if (lanTarget) return lanTarget
   }
-  return { url: `http://127.0.0.1:${opts.port}/${key}`, reach: 'loopback', address: '127.0.0.1', candidates }
-}
-
-/** The link alone. Kept for callers that only ever wanted the string. */
-export function connectUrl(opts: Parameters<typeof connectTarget>[0]): string {
-  return connectTarget(opts).url
+  return loopback
 }
 

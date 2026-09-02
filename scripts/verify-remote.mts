@@ -12,7 +12,7 @@
  */
 import { connectTarget, lanAddresses } from '../src/main/remote/link.ts'
 import { exitError, installHint } from '../src/main/remote/tunnel.ts'
-import { clampPort } from '../src/shared/ui.ts'
+import { clampPort, clampRemoteReach, REMOTE_REACH_PREFERENCES } from '../src/shared/ui.ts'
 
 let failures = 0
 
@@ -68,10 +68,23 @@ check(
   connectTarget({ ...base, bindLan: true, bindTailscale: true, lan: ['192.168.1.20'], tailnet: '100.64.0.9' }).reach,
   'lan'
 )
+/*
+ * This case used to assert the opposite, and it was pinning a bug as correct
+ * (gotcha 10's lesson): a *saved* hostname beat a bound LAN, so a machine that
+ * had typed a hostname once and never run a tunnel drew a QR code of
+ * `https://<host>/` while the server listened on 192.168.x and nothing served
+ * that name. A hostname is a fact about a config file; only a RUNNING tunnel is
+ * a fact about right now.
+ */
 check(
-  'a configured hostname is the tunnel, over https, with no port',
+  'a saved hostname does NOT beat the LAN the socket is actually bound to',
   connectTarget({ ...base, hostname: 'code.example.com', bindLan: true, lan: ['192.168.1.20'], tailnet: null }),
-  { url: 'https://code.example.com/?k=k3y', reach: 'tunnel', address: 'code.example.com', candidates: ['http://192.168.1.20:7878/?k=k3y'] }
+  { url: 'http://192.168.1.20:7878/?k=k3y', reach: 'lan', address: '192.168.1.20', candidates: [] }
+)
+check(
+  'nor does it beat loopback when nothing is bound — auto never invents a tunnel',
+  connectTarget({ ...base, hostname: 'code.example.com', lan: ['192.168.1.20'], tailnet: null }).reach,
+  'loopback'
 )
 check(
   'a running quick tunnel beats everything, and its link carries the key',
@@ -94,6 +107,66 @@ check(
   connectTarget({ ...base, token: 'a b&c', lan: [], tailnet: null }).url,
   'http://127.0.0.1:7878/?k=a%20b%26c'
 )
+
+console.log('\nan explicit choice is honoured, and is the thing that can be swapped')
+/*
+ * The choice used to be inferred from two booleans plus a non-empty hostname,
+ * which cannot express "I have a tunnel configured and right now I want the
+ * LAN" — so the picker stuck on Cloudflare Tunnel and no other segment could
+ * take. Each preference is asserted BOTH ways: honoured when it can be served,
+ * and falling to loopback rather than silently substituting another transport.
+ */
+const configured = { ...base, hostname: 'code.example.com', lan: ['192.168.1.20'], tailnet: '100.64.0.9' }
+check(
+  'tunnel chosen uses the hostname even with a LAN address to hand',
+  connectTarget({ ...configured, reach: 'tunnel' }).url,
+  'https://code.example.com/?k=k3y'
+)
+check(
+  'LAN chosen wins over a configured hostname — this is the swap that was impossible',
+  connectTarget({ ...configured, reach: 'lan' }),
+  { url: 'http://192.168.1.20:7878/?k=k3y', reach: 'lan', address: '192.168.1.20', candidates: [] }
+)
+check(
+  'tailnet chosen wins over both',
+  connectTarget({ ...configured, reach: 'tailnet' }).address,
+  '100.64.0.9'
+)
+check(
+  'a choice needs no bind flag: the preference is the choice',
+  connectTarget({ ...configured, reach: 'lan', bindLan: false }).reach,
+  'lan'
+)
+check(
+  'tunnel chosen with no hostname is loopback, so the panel can say why',
+  connectTarget({ ...base, reach: 'tunnel', lan: ['192.168.1.20'], tailnet: '100.64.0.9' }).reach,
+  'loopback'
+)
+check(
+  'tailnet chosen with Tailscale down is loopback, not a silent fall to the LAN',
+  connectTarget({ ...base, reach: 'tailnet', lan: ['192.168.1.20'], tailnet: null }).reach,
+  'loopback'
+)
+check(
+  'LAN chosen with no address is loopback',
+  connectTarget({ ...base, reach: 'lan', lan: [], tailnet: null }).reach,
+  'loopback'
+)
+check(
+  'a RUNNING tunnel still beats an explicit LAN — it is a fact about now, not a file',
+  connectTarget({ ...configured, reach: 'lan', tunnelUrl: 'https://x.trycloudflare.com' }).reach,
+  'tunnel'
+)
+check(
+  'auto is the default when the field is absent, and behaves as the binds say',
+  connectTarget({ ...configured, bindLan: true }).reach,
+  'lan'
+)
+
+console.log('\nthe preference vocabulary repairs junk rather than meaning loopback')
+check('an unknown value is auto', clampRemoteReach('banana'), 'auto')
+check('so is undefined, which is every settings file written before this', clampRemoteReach(undefined), 'auto')
+check('and each real value survives', REMOTE_REACH_PREFERENCES.map(clampRemoteReach).join(','), 'auto,lan,tailnet,tunnel')
 
 console.log('\nwhich LAN address a phone can actually dial')
 const nets = {

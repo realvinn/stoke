@@ -108,17 +108,18 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
   const running = state?.server.running ?? false
   const tunnel = state?.tunnel
   const reach: RemoteReach = state?.reach ?? 'loopback'
-  const hasTunnel = Boolean(remote.hostname.trim()) || Boolean(tunnel?.running)
-  /** Which segment is lit: what the link actually uses, or what is configured while off. */
-  const chosen: RemoteReach = hasTunnel
-    ? 'tunnel'
-    : remote.bindTailscale && !remote.bindLan
-      ? 'tailnet'
-      : remote.bindLan
-        ? 'lan'
-        : running
-          ? reach
-          : 'loopback'
+  /**
+   * Which segment is lit: the stored choice, and only otherwise what the link
+   * happens to use.
+   *
+   * It used to be inferred, with `Boolean(remote.hostname.trim())` first in the
+   * ladder — so the moment a hostname was saved this was permanently 'tunnel',
+   * the other two segments lit nothing when pressed, and there was no way back.
+   * That is the bug this field exists to remove; reading the preference is the
+   * whole fix, and preferring a running transport over the stored value here
+   * would be the same conflation in a smaller form.
+   */
+  const chosen: RemoteReach = remote.reach !== 'auto' ? remote.reach : running ? reach : 'loopback'
 
   const hostnameField = useDraft(remote.hostname, (v) => patchRemote({ hostname: v.trim() }))
   const tunnelNameField = useDraft(remote.tunnelName, (v) =>
@@ -252,7 +253,7 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
           <button
             aria-pressed={chosen === 'lan'}
             title="Any phone on the same network. Convenient at home; the port is open to that network."
-            onClick={() => patchRemote({ bindLan: true, bindTailscale: false })}
+            onClick={() => patchRemote({ reach: 'lan', bindLan: true, bindTailscale: false })}
           >
             {REACH_LABEL.lan}
           </button>
@@ -264,7 +265,7 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
                 ? `Only devices on your tailnet. This machine is ${state.tailnet}.`
                 : 'Tailscale is not running on this machine'
             }
-            onClick={() => patchRemote({ bindLan: false, bindTailscale: true })}
+            onClick={() => patchRemote({ reach: 'tailnet', bindLan: false, bindTailscale: true })}
           >
             {REACH_LABEL.tailnet}
           </button>
@@ -273,7 +274,14 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
             title="From anywhere, through Cloudflare. Needs a domain and a one-time setup."
             onClick={() => {
               setTunnelOpen(true)
-              patchRemote({ bindLan: false, bindTailscale: false })
+              /*
+               * The binds go false because cloudflared connects to loopback —
+               * a tunnel needs no listener on the LAN. Writing only those two
+               * falses is what this segment used to do, which is why pressing
+               * it appeared to do nothing at all: they were already false, and
+               * nothing read them.
+               */
+              patchRemote({ reach: 'tunnel', bindLan: false, bindTailscale: false })
             }}
           >
             {REACH_LABEL.tunnel}
@@ -286,7 +294,7 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
               ? 'Reaches this machine from anywhere on your tailnet, and from nowhere else. No tunnel, no port open to the room.'
               : chosen === 'tunnel'
                 ? 'A Cloudflare Tunnel points a hostname at this machine; nothing inbound is opened. Set it up below.'
-                : 'Nothing chosen yet. Open on phone picks for you, or choose here.'}
+                : 'Nothing chosen yet — Open on phone picks for you, or choose here.'}
         </span>
       </div>
 
