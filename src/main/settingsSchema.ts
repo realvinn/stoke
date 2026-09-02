@@ -95,7 +95,6 @@ export const DEFAULT_SETTINGS: Settings = {
   cliAutoUpdate: true,
   sidebarWidth: 260,
   claudePath: null,
-  confirmBypass: true,
   projectMeta: {},
   worklogBoards: DEFAULT_WORKLOG_BOARDS,
   // Default true: the wrapper is how the context window and the plan limits

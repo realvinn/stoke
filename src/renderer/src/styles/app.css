@@ -3368,6 +3368,20 @@ body {
    column with no tabs, and this is a section of its own now. Deleted rather
    than left orphaned, because a rule naming a class nothing renders is a
    standing invitation to reintroduce the element for the sake of the style. */
+/* One heading's worth of Claude Code settings. */
+.cc-group {
+  display: grid;
+  gap: var(--space-8);
+}
+
+.cc-group-title {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
 .cc-rows {
   display: flex;
   flex-direction: column;

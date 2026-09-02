@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ClaudeConfigState, ClaudeConfigWriteResult } from '@shared/api'
 import {
   CLAUDE_SETTINGS,
+  CLAUDE_SETTING_GROUPS,
   WORKFLOW_SIZES,
   WORKFLOW_SIZE_DEFAULT,
   type ClaudeSettingSpec,
@@ -172,14 +173,27 @@ export function ClaudeCodeSettings({ cliVersion }: Props): React.JSX.Element {
        */}
       {!state && <span className="field-hint">reading…</span>}
 
-      <div className="cc-rows">
-        <WorkflowSizeRow
-          state={state}
-          busy={busy === '__workflow'}
-          onChange={(value) => void apply('__workflow', () => bridge.setWorkflowSize(value))}
-        />
-
-        {CLAUDE_SETTINGS.map((spec) =>
+      {/*
+        Under headings, in groups. Fifteen tri-state rows in one flat column is
+        a list you scan rather than read: nothing said that the two Remote
+        Control rows are one feature, or that effort and thinking both change
+        how a turn is spent. The groups come from the shared spec so this
+        component cannot invent one the table does not have.
+      */}
+      {CLAUDE_SETTING_GROUPS.map((group) => (
+        <div className="cc-group" key={group}>
+          <span className="cc-group-title">{group}</span>
+          <div className="cc-rows">
+            {/* Drawn separately because it writes ~/.claude.json rather than
+                settings.json (gotcha 39), so it belongs to its group by hand. */}
+            {group === 'Workflows and Remote Control' && (
+              <WorkflowSizeRow
+                state={state}
+                busy={busy === '__workflow'}
+                onChange={(value) => void apply('__workflow', () => bridge.setWorkflowSize(value))}
+              />
+            )}
+            {CLAUDE_SETTINGS.filter((spec) => spec.group === group).map((spec) =>
           spec.kind === 'integer' ? (
             <IntegerRow
               key={spec.key}
@@ -225,10 +239,12 @@ export function ClaudeCodeSettings({ cliVersion }: Props): React.JSX.Element {
                   ))
                 )}
               </select>
-            </div>
-          )
-        )}
-      </div>
+                </div>
+              )
+            )}
+          </div>
+        </div>
+      ))}
 
       {state && state.untouched.length > 0 && (
         <span className="field-hint">
@@ -242,12 +258,23 @@ export function ClaudeCodeSettings({ cliVersion }: Props): React.JSX.Element {
         </span>
       )}
 
+      {/*
+       * A note, not a warning, and that is the second correction this line has
+       * needed. It first rendered on every launch because it compared
+       * `2.1.237 (Claude Code)` against `2.1.237`; that was fixed, and it then
+       * rendered on every launch for a real reason instead — the CLI updates
+       * itself, so a difference from the transcription version is the NORMAL
+       * state, not an anomaly. A permanent amber warning about a state that is
+       * almost always true trains the reader to skip the one place this panel
+       * has to say something. It is a neutral line now, and it says what to do
+       * about it rather than only that it is so.
+       */}
       {installedVersion && installedVersion !== SCHEMA_VERSION && (
-        <span className="field-hint" data-tone="warning">
-          these controls were written against Claude Code {SCHEMA_VERSION}; yours is{' '}
-          {installedVersion}.
-          the schema can move between versions, and an unrecognised value is dropped silently
-          rather than refused.
+        <span className="field-hint">
+          These controls were transcribed from Claude Code {SCHEMA_VERSION} and yours is{' '}
+          {installedVersion}, which is expected — the CLI updates itself. If a row here does
+          nothing, that version moved the key: an unrecognised value is dropped silently rather
+          than refused.
         </span>
       )}
     </div>

@@ -863,8 +863,6 @@ export interface Settings {
   sidebarWidth: number
   /** Explicit path to the claude executable; null means auto-detect. */
   claudePath: string | null
-  /** Warn before launching a session with permissions bypassed. */
-  confirmBypass: boolean
   /** Per-folder metadata, keyed by `Project.path`. See ProjectMeta. */
   projectMeta: Record<string, ProjectMeta>
   /** Which boards the worklog writes to, and their ids. See WorklogBoards. */

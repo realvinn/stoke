@@ -27,6 +27,8 @@ export type ClaudeSettingValue = boolean | string | number | undefined
 
 export interface ClaudeSettingSpec {
   key: string
+  /** Which heading the panel draws this under. See CLAUDE_SETTING_GROUPS. */
+  group: ClaudeSettingGroup
   label: string
   /** One line, in the sheet's own voice. Says what the key does, not its type. */
   hint: string
@@ -84,10 +86,31 @@ export const NEVER_OFFERED: readonly string[] = [
   'forceLoginMethod'
 ]
 
+/**
+ * The headings the panel draws these under, in order.
+ *
+ * Fifteen tri-state rows in one flat column is a list you scan rather than
+ * read: nothing tells you that the two Remote Control rows are about one
+ * feature, or that `effortLevel` and `alwaysThinkingEnabled` both change how
+ * the model spends a turn. The grouping is the only thing here that is Stoke's
+ * opinion rather than the CLI's schema — the keys, their vocabularies and their
+ * defaults are all transcribed.
+ */
+export const CLAUDE_SETTING_GROUPS = [
+  'Appearance',
+  'The model',
+  'Workflows and Remote Control',
+  'In the session',
+  'Skills, servers and files'
+] as const
+
+export type ClaudeSettingGroup = (typeof CLAUDE_SETTING_GROUPS)[number]
+
 /** The curated set, in the order the panel draws them. */
 export const CLAUDE_SETTINGS: readonly ClaudeSettingSpec[] = [
   {
     key: 'theme',
+    group: 'Appearance',
     label: 'Claude Code colour theme',
     hint: 'match Stoke follows this window automatically, including over SSH. The two -ansi themes are the only ones that use Stoke’s own 16 terminal colours.',
     kind: 'enum',
@@ -128,6 +151,7 @@ export const CLAUDE_SETTINGS: readonly ClaudeSettingSpec[] = [
   },
   {
     key: 'remoteControlAtStartup',
+    group: 'Workflows and Remote Control',
     label: 'Start Remote Control automatically',
     hint: 'off keeps sessions in this window. /remote-control and --rc still work when you ask for them.',
     kind: 'boolean',
@@ -135,6 +159,7 @@ export const CLAUDE_SETTINGS: readonly ClaudeSettingSpec[] = [
   },
   {
     key: 'disableRemoteControl',
+    group: 'Workflows and Remote Control',
     label: 'Disable Remote Control entirely',
     hint: 'kills claude.ai/code, --rc, auto-start and the /remote-control command itself.',
     kind: 'boolean',
@@ -142,6 +167,7 @@ export const CLAUDE_SETTINGS: readonly ClaudeSettingSpec[] = [
   },
   {
     key: 'disableWorkflows',
+    group: 'Workflows and Remote Control',
     label: 'Disable Workflows',
     hint: 'turns off the Workflow tool that orchestrates subagents.',
     kind: 'boolean',
@@ -149,6 +175,7 @@ export const CLAUDE_SETTINGS: readonly ClaudeSettingSpec[] = [
   },
   {
     key: 'workflowKeywordTriggerEnabled',
+    group: 'Workflows and Remote Control',
     label: 'The "ultracode" keyword trigger',
     hint: 'whether typing ultracode in a prompt opts that turn into the Workflow tool.',
     kind: 'boolean',
@@ -156,6 +183,7 @@ export const CLAUDE_SETTINGS: readonly ClaudeSettingSpec[] = [
   },
   {
     key: 'effortLevel',
+    group: 'The model',
     label: 'Effort',
     hint: 'the reasoning effort a supported model starts at.',
     kind: 'enum',
@@ -168,6 +196,7 @@ export const CLAUDE_SETTINGS: readonly ClaudeSettingSpec[] = [
   },
   {
     key: 'alwaysThinkingEnabled',
+    group: 'The model',
     label: 'Thinking',
     hint: 'off disables thinking. absent or on enables it for models that support it.',
     kind: 'boolean',
@@ -175,6 +204,7 @@ export const CLAUDE_SETTINGS: readonly ClaudeSettingSpec[] = [
   },
   {
     key: 'autoCompactEnabled',
+    group: 'The model',
     label: 'Auto-compact',
     hint: 'compact the conversation automatically as the context window fills.',
     kind: 'boolean',
@@ -182,6 +212,7 @@ export const CLAUDE_SETTINGS: readonly ClaudeSettingSpec[] = [
   },
   {
     key: 'editorMode',
+    group: 'In the session',
     label: 'Prompt key bindings',
     kind: 'enum',
     hint: 'how the prompt input behaves.',
@@ -191,6 +222,7 @@ export const CLAUDE_SETTINGS: readonly ClaudeSettingSpec[] = [
   },
   {
     key: 'verbose',
+    group: 'In the session',
     label: 'Verbose tool output',
     hint: 'show full tool output rather than truncated summaries.',
     kind: 'boolean',
@@ -198,6 +230,7 @@ export const CLAUDE_SETTINGS: readonly ClaudeSettingSpec[] = [
   },
   {
     key: 'autoUpdatesChannel',
+    group: 'Skills, servers and files',
     label: 'CLI update channel',
     hint: 'which release stream claude updates itself from.',
     kind: 'enum',
@@ -206,6 +239,7 @@ export const CLAUDE_SETTINGS: readonly ClaudeSettingSpec[] = [
   },
   {
     key: 'cleanupPeriodDays',
+    group: 'Skills, servers and files',
     label: 'Keep transcripts for',
     hint: 'days before a chat transcript is cleaned up. Stoke reads these for the context meter.',
     kind: 'integer',
@@ -214,6 +248,7 @@ export const CLAUDE_SETTINGS: readonly ClaudeSettingSpec[] = [
   },
   {
     key: 'disableBundledSkills',
+    group: 'Skills, servers and files',
     label: 'Disable bundled skills',
     hint: "removes the skills and workflows that ship with Claude Code. Plugins and .claude/skills are untouched.",
     kind: 'boolean',
@@ -221,6 +256,7 @@ export const CLAUDE_SETTINGS: readonly ClaudeSettingSpec[] = [
   },
   {
     key: 'enableAllProjectMcpServers',
+    group: 'Skills, servers and files',
     label: 'Auto-approve project MCP servers',
     hint: 'approves every server in a project .mcp.json without asking. Consider what that runs.',
     kind: 'boolean',
@@ -228,6 +264,7 @@ export const CLAUDE_SETTINGS: readonly ClaudeSettingSpec[] = [
   },
   {
     key: 'includeCoAuthoredBy',
+    group: 'In the session',
     label: 'Co-authored-by on commits',
     hint: "adds Claude's attribution to commits and PRs.",
     kind: 'boolean',

@@ -29,6 +29,7 @@ import {
   WALLPAPER_OPACITY_MIN,
   clampWallpaper
 } from '@shared/ui'
+import { FieldHint } from './FieldHint'
 import { IconClose } from './Icons'
 import { useEffect, useRef, useState } from 'react'
 import { useDraft } from '../lib/useDraft'
@@ -38,7 +39,12 @@ import { ClaudeCodeSettings } from './ClaudeCodeSettings'
 import { ThemeEditor } from './ThemeEditor'
 import { RemoteSettings, SelfUpdateSettings, UpdatesSettings } from './RemoteSettings'
 import { WorklogSettings } from './WorklogSettings'
-import { EFFORT_LEVELS, MODEL_OPTIONS, PERMISSION_MODES } from '../lib/permissions'
+import {
+  EFFORT_LEVELS,
+  MODEL_OPTIONS,
+  PERMISSION_MODES,
+  ULTRACODE_HINT
+} from '../lib/permissions'
 
 /**
  * The zoom targets, worded as what they move rather than as their ids.
@@ -104,7 +110,6 @@ export type SectionId =
   | 'worklog'
   | 'remote'
   | 'updates'
-  | 'advanced'
 
 interface Section {
   id: SectionId
@@ -147,8 +152,15 @@ const GROUPS: { title: string; sections: Section[] }[] = [
   {
     title: 'System',
     sections: [
-      { id: 'updates', label: 'Updates', hint: 'Stoke and the Claude Code CLI' },
-      { id: 'advanced', label: 'Advanced', hint: 'Where the claude executable is' }
+      /*
+       * "Advanced" held exactly one input — where the `claude` executable is —
+       * and that is the same subject this section already covers: which CLI you
+       * have and how it updates. A whole nav row for one path box also made the
+       * menu ten items long, and a row named "Advanced" tells nobody what is in
+       * it, so the one setting most likely to be needed in a hurry (the app
+       * cannot find claude) sat behind the least descriptive label in the list.
+       */
+      { id: 'updates', label: 'Updates', hint: 'Stoke, the CLI, and where it lives' }
     ]
   }
 ]
@@ -278,6 +290,16 @@ export function SettingsSheet({
    * connection details. Read once when the sheet opens; ~/.ssh/config is not
    * something that changes while it is on screen.
    */
+  /*
+   * The default folder, committed on blur rather than per keystroke. Typed into
+   * character by character it wrote a settings file — and a round trip to disk
+   * re-renders the controlled value, so characters typed during one were
+   * dropped. `useDraft`'s own comment has the full account.
+   */
+  const cwdField = useDraft(settings.defaultCwd ?? '', (v) =>
+    onPatch({ defaultCwd: v.trim() || null })
+  )
+
   const [sshAliases, setSshAliases] = useState<string[]>([])
   useEffect(() => {
     let live = true
@@ -539,15 +561,49 @@ export function SettingsSheet({
                   </select>
                 </div>
 
+                {/*
+                  The fourth launch default. The launcher has had an Ultracode
+                  toggle since it shipped and this pane had the other three —
+                  permissions, model, effort — so the one option you would most
+                  want on by default was the one that had to be re-ticked for
+                  every session.
+                */}
+                <label className="check-row">
+                  <input
+                    type="checkbox"
+                    checked={settings.defaults.ultracode}
+                    onChange={(e) =>
+                      onPatch({ defaults: { ...settings.defaults, ultracode: e.target.checked } })
+                    }
+                  />
+                  <span>
+                    <span className="field-label">Start sessions with Ultracode</span>
+                    <FieldHint
+                      more={
+                        <>
+                          Ultracode is a key in the settings file Stoke writes for each session,
+                          not a flag, and the CLI resolves effort to its own maximum while it is
+                          on — so the Effort control above is overridden for as long as this is
+                          ticked, and comes back when it is not.
+                        </>
+                      }
+                    >
+                      {ULTRACODE_HINT}
+                    </FieldHint>
+                  </span>
+                </label>
+
                 <div className="field">
                   <span className="field-label">Default folder</span>
                   <div style={{ display: 'flex', gap: 'var(--space-8)' }}>
                     <input
                       className="input mono"
                       placeholder={defaultCwd}
-                      value={settings.defaultCwd ?? ''}
+                      value={cwdField.draft}
                       spellCheck={false}
-                      onChange={(e) => onPatch({ defaultCwd: e.target.value.trim() || null })}
+                      onChange={(e) => cwdField.setDraft(e.target.value)}
+                      onBlur={cwdField.onBlur}
+                      onKeyDown={cwdField.onKeyDown}
                     />
                     <button
                       className="btn"
@@ -608,17 +664,29 @@ export function SettingsSheet({
                   />
                   <span>
                     <span className="field-label">Hide Claude&rsquo;s status line in Stoke</span>
-                    <span className="field-hint">
-                      Stoke reads the context window and your plan limits from the status line the
-                      CLI pipes to it, and by default prints nothing back — the line duplicates
-                      chrome the app already draws. Turn this off to keep your own status line,
-                      which still runs and still shows exactly what it did before. Your{' '}
-                      <span className="mono">~/.claude/settings.json</span> is never modified, and
-                      either way this applies to sessions started after the change. Plan limits
-                      also depend on being signed in through a Claude.ai plan rather than an API
-                      key — with an API key there is nothing for them to draw on, and they stay
-                      blank no matter how this is set.
-                    </span>
+                    {/*
+                      Ninety words, folded to eleven. Every sentence below is
+                      true and none of it can be worked out from the label —
+                      which is exactly the case FieldHint exists for: all of it
+                      arriving at once is what made the pane read as an essay.
+                    */}
+                    <FieldHint
+                      more={
+                        <>
+                          Stoke installs its own status line to read the context window and your
+                          plan limits from what the CLI pipes to it, and prints nothing back,
+                          because the line duplicates chrome the app already draws. Turn this off
+                          to keep your own: it still runs and still shows exactly what it did
+                          before. Your <span className="mono">~/.claude/settings.json</span> is
+                          never modified either way, and the change applies to sessions started
+                          after it. Plan limits additionally need a Claude.ai sign-in rather than
+                          an API key — under an API key the CLI sends none, so they stay blank
+                          however this is set.
+                        </>
+                      }
+                    >
+                      The chrome above already shows the context ring and your plan limits.
+                    </FieldHint>
                   </span>
                 </label>
               </>
@@ -724,6 +792,7 @@ export function SettingsSheet({
                   autoUpdate={settings.cliAutoUpdate}
                   onChangeAuto={(cliAutoUpdate) => onPatch({ cliAutoUpdate })}
                 />
+                <ClaudePathField settings={settings} cli={cli} onPatch={onPatch} />
               </>
             )}
 
@@ -755,27 +824,60 @@ export function SettingsSheet({
 
             {section === 'remote' && <RemoteSettings settings={settings} onPatch={onPatch} />}
 
-            {section === 'advanced' && (
-              <div className="field">
-                <span className="field-label">Claude CLI path</span>
-                <input
-                  className="input mono"
-                  placeholder="Auto-detected"
-                  value={settings.claudePath ?? ''}
-                  spellCheck={false}
-                  onChange={(e) => onPatch({ claudePath: e.target.value.trim() || null })}
-                />
-                <span className="field-hint">
-                  {cli?.ok
-                    ? `Using ${cli.path}${cli.version ? ` — ${cli.version}` : ''}`
-                    : (cli?.error ?? 'Looking for the claude executable…')}
-                </span>
-              </div>
-            )}
           </div>
         </div>
       </div>
     </>
+  )
+}
+
+/**
+ * Where the `claude` executable is, when it should not be auto-detected.
+ *
+ * A component rather than three lines inline, because it needs `useDraft` and a
+ * hook cannot be called inside the section's conditional JSX. It committed on
+ * every keystroke before, which is the worst possible field to do that in: each
+ * character was written to settings, and a half-typed path is a path that does
+ * not exist, so `probeClaude` ran against `/Users/me/.l` and reported the CLI
+ * missing while you were still typing its name.
+ */
+function ClaudePathField({
+  settings,
+  cli,
+  onPatch
+}: {
+  settings: Settings
+  cli: CliInfo | null
+  onPatch: (patch: Partial<Settings>) => void
+}): React.JSX.Element {
+  const path = useDraft(settings.claudePath ?? '', (v) => onPatch({ claudePath: v.trim() || null }))
+  return (
+    <div className="field">
+      <span className="field-label">Claude CLI path</span>
+      <input
+        className="input mono"
+        placeholder="Auto-detected"
+        value={path.draft}
+        spellCheck={false}
+        onChange={(e) => path.setDraft(e.target.value)}
+        onBlur={path.onBlur}
+        onKeyDown={path.onKeyDown}
+      />
+      <FieldHint
+        more={
+          <>
+            Leave it empty and Stoke looks in the version-manager shim directories first
+            (mise, asdf, fnm), then the system ones, and finally asks a login shell — which is
+            the only channel that finds a `claude` installed by a version manager when Stoke
+            was started from the Dock. Set it only when that has failed.
+          </>
+        }
+      >
+        {cli?.ok
+          ? `Using ${cli.path}${cli.version ? ` — ${cli.version}` : ''}`
+          : (cli?.error ?? 'Looking for the claude executable…')}
+      </FieldHint>
+    </div>
   )
 }
 
