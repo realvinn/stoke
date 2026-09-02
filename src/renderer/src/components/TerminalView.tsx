@@ -1115,7 +1115,24 @@ export function TerminalView({
     const paths = Array.from(e.dataTransfer.files)
       .map((f) => window.stoke.pathForFile(f))
       .filter((p): p is string => p !== null)
-    const text = dropText(paths, window.stoke.platform)
+    /*
+     * An SSH tab's shell is on the far machine, so it is quoted for THAT
+     * machine's conventions rather than for the one Stoke is running on.
+     *
+     * `window.stoke.platform` is Stoke's own `process.platform`, and nothing
+     * tracks a host's OS (gotcha 18's shape: an SSH tab's local facts are not
+     * the session's facts). So Stoke on Windows dropping a file into a session
+     * on a Linux VPS produced `"C:\path with spaces\x.png"` — double quotes,
+     * which a POSIX shell takes literally rather than as quoting, and a
+     * backslash path that means nothing there anyway.
+     *
+     * POSIX for any host tab: single-quoted, which is the safe direction —
+     * inside single quotes every character but `'` is literal, so `$`,
+     * backticks and backslashes cannot bite. An SSH target running Windows is
+     * the rarer case by a wide margin, and if per-host OS is ever recorded on
+     * SshHost this should key off that instead.
+     */
+    const text = dropText(paths, tab.hostId ? 'linux' : window.stoke.platform)
     if (!text) return
     term.paste(text)
     term.focus()

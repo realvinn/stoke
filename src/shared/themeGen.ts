@@ -69,6 +69,23 @@ const SELECTION_ALPHA = { active: 0.28, inactive: 0.16 } as const
  */
 const SEMANTIC_LC: Record<'dark' | 'light', number> = { dark: 64, light: 72 }
 
+/**
+ * How far below its own target a SOLVED value is allowed to measure.
+ *
+ * `semantic()` solves in OKLCH and then rounds to an 8-bit hex, and the rounded
+ * colour does not measure exactly what the solver aimed at: across the twelve
+ * shipped themes the four semantics land at Lc 63.7-64.1 against a 64 target
+ * and 71.5-72.2 against 72. So `contrastReport` checking the bare target fires
+ * on SIX built-in themes — which is a wrong floor rather than six wrong themes,
+ * exactly as `borderSubtle` was above, and a report that cries wolf on the
+ * shipped set is one nobody reads.
+ *
+ * Small on purpose. It absorbs rounding and nothing else: an override that
+ * actually breaks a semantic measures far below this, and the invariant that
+ * matters — a generated theme reports nothing — is asserted in verify:theme-gen.
+ */
+const SOLVED_ROUNDING = 1
+
 function rgba(hex: string, alpha: number): string {
   const c = parseColor(hex)
   if (!c) return hex
@@ -102,7 +119,17 @@ export const GENERATED_TOKENS = [
   'text',
   'textMuted',
   'textFaint',
-  'accent',
+  /*
+   * `accent` is deliberately NOT here, unlike every other colour in the theme.
+   *
+   * This list is what the editor draws as "solved from the seed, click one to
+   * set it by hand" — and accent is a seed INPUT with its own field at the top
+   * of the same panel. Having it in both places gave two controls with the same
+   * label writing different state: the top one sets `seed.accent`, the token
+   * one sets `seed.overrides.accent`, and `buildTheme` applies overrides over
+   * the generated colours — so the moment the token control was touched, the
+   * field labelled "Accent" silently stopped doing anything.
+   */
   'success',
   'warning',
   'danger',
@@ -301,6 +328,45 @@ export function contrastReport(colors: ThemeColors, appearance: Appearance): Con
     if (!c || !page) continue
     const measured = Math.abs(apcaContrast(c, page))
     if (measured < 15) out.push({ token, against: 'bg', measured, floor: 15, scale: 'apca' })
+  }
+
+  /*
+   * The four semantics, against the page, at the floor `buildTheme` solves them
+   * to — which is where they were missing entirely.
+   *
+   * The editor's own copy says an override is "kept exactly as typed, and
+   * anything it breaks is reported above rather than refused". That promise was
+   * only true for text and borders: an override setting `danger` to the page's
+   * own colour — invisible, 1:1 — produced an empty report, and so did the same
+   * on `success`, `warning` and `info`. A report that stays silent on five of
+   * the seventeen tokens it offers to override is worse than no report, because
+   * it is read as "nothing is broken".
+   *
+   * The floor is SEMANTIC_LC's, not `semantic()`'s default of 60, so a hand-set
+   * value is judged by the same number the generated one is solved to.
+   */
+  for (const token of ['success', 'warning', 'danger', 'info'] as const) {
+    const c = rgb(colors[token])
+    if (!c || !page) continue
+    const floor = SEMANTIC_LC[appearance] - SOLVED_ROUNDING
+    const measured = Math.abs(apcaContrast(c, page))
+    if (measured < floor) out.push({ token, against: 'bg', measured, floor, scale: 'apca' })
+  }
+
+  /*
+   * And the accent, which is a fill as well as a colour.
+   *
+   * Judged against the page at the ladder's own discernibility floor rather
+   * than at ACCENT_LC: `--accent` is a background and an outline, and its
+   * legibility as a LABEL is `--accent-ink`'s job, derived separately by
+   * accent.ts and never stored in the seed. So the question here is only
+   * whether the fill can be told apart from the page it sits on — which an
+   * override absolutely can break, and nothing was asking.
+   */
+  const accent = rgb(colors.accent)
+  if (accent && page) {
+    const measured = Math.abs(apcaContrast(accent, page))
+    if (measured < 15) out.push({ token: 'accent', against: 'bg', measured, floor: 15, scale: 'apca' })
   }
 
   return out

@@ -229,6 +229,70 @@ ok(
   found.some((f) => f.token === 'border')
 )
 
+/*
+ * The five tokens the report used to say nothing about.
+ *
+ * The editor offers an override on all seventeen colours and tells the user
+ * "anything it breaks is reported above rather than refused" — while
+ * contrastReport only ever looked at text and borders. An override setting
+ * `danger` to the page's own colour, invisible at 1:1, produced an EMPTY
+ * report, and so did the same on success, warning, info and accent. A report
+ * that is silent on five of the tokens it covers is read as "nothing is
+ * broken", which is worse than having no report.
+ */
+console.log('\nthe semantics and the accent are reported too')
+const semanticsBroken = buildTheme({
+  id: 'sem',
+  name: 'sem',
+  appearance: 'dark',
+  hue: 55,
+  tint: 1,
+  accent: '#ff9552',
+  // Each set to the page's own colour: as invisible as a colour can be.
+  overrides: { success: '#181716', warning: '#181716', danger: '#181716', info: '#181716' }
+})
+const semFound = contrastReport(semanticsBroken.colors, 'dark')
+for (const token of ['success', 'warning', 'danger', 'info']) {
+  ok(
+    `an invisible ${token} override is caught`,
+    semFound.some((f) => f.token === token),
+    semFound.map((f) => String(f.token)).join(' ')
+  )
+}
+const accentBroken = buildTheme({
+  id: 'acc',
+  name: 'acc',
+  appearance: 'dark',
+  hue: 55,
+  tint: 1,
+  accent: '#ff9552',
+  overrides: { accent: '#181716' }
+})
+ok(
+  'and an accent that cannot be told apart from the page',
+  contrastReport(accentBroken.colors, 'dark').some((f) => f.token === 'accent')
+)
+
+/*
+ * And the invariant that makes the report worth reading: a GENERATED theme
+ * reports nothing at all.
+ *
+ * This is the assertion that catches a floor set too high, which is a much
+ * easier mistake than it looks. `semantic()` solves in OKLCH and then rounds to
+ * 8-bit, so the shipped semantics measure Lc 63.7-64.1 against a 64 target —
+ * checking the bare target fired on SIX of the twelve built-ins the first time
+ * this was written. CLAUDE.md records the same trap for `borderSubtle`: a wrong
+ * floor rather than wrong themes.
+ */
+for (const t of BUILT_IN_THEMES) {
+  const findings = contrastReport(t.colors, t.appearance)
+  ok(
+    `${t.id}: a generated theme reports nothing`,
+    findings.length === 0,
+    findings.map((f) => `${String(f.token)} ${f.measured.toFixed(2)} < ${f.floor}`).join(', ')
+  )
+}
+
 console.log('\noverrides reach the terminal palette, not just the page')
 const overridden = buildTheme({
   id: 'ov',

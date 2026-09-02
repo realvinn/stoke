@@ -43,7 +43,17 @@ export function Resizer({
         setDragging(true)
       }}
       onPointerMove={(e) => {
+        // `dragging` alone was the whole guard, and it is only ever cleared by
+        // pointerup. A drag the browser takes away — see onPointerCancel —
+        // therefore left this resizing on plain hover, with nothing held. The
+        // buttons bitmask is the authoritative "is the primary button down",
+        // and it costs nothing to ask.
         if (!dragging) return
+        if ((e.buttons & 1) === 0) {
+          setDragging(false)
+          onCommit(latest.current)
+          return
+        }
         const delta = e.clientX - start.current.x
         const next = clamp(start.current.value + (invert ? -delta : delta), min, max)
         latest.current = next
@@ -52,6 +62,25 @@ export function Resizer({
       onPointerUp={(e) => {
         if (!dragging) return
         e.currentTarget.releasePointerCapture(e.pointerId)
+        setDragging(false)
+        onCommit(latest.current)
+      }}
+      /*
+       * A drag the browser ends on its own: the OS taking the pointer, a
+       * touch cancelled by a scroll gesture, the window losing capture. No
+       * pointerup follows, so without this `dragging` stayed true forever and
+       * the panel resized on every subsequent mouse MOVE across the handle —
+       * a resizer that has to be clicked to switch it back off.
+       *
+       * Commits rather than reverting: the user did drag it somewhere, and
+       * throwing that away because the gesture ended unusually would be the
+       * more surprising of the two.
+       */
+      onPointerCancel={(e) => {
+        if (!dragging) return
+        if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+          e.currentTarget.releasePointerCapture(e.pointerId)
+        }
         setDragging(false)
         onCommit(latest.current)
       }}

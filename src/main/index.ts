@@ -2316,13 +2316,27 @@ if (!app.requestSingleInstanceLock()) {
       if (!file) return new Response('not found', { status: 404 })
       return net.fetch(pathToFileURL(file).toString(), { headers: { 'content-type': mimeFor(file) } })
     })
-    // The only sweep for statusLine files that a crash, a SIGKILL or a failed
-    // launch left behind on a previous run — see statusLine.ts for why it is
-    // age-based rather than a blanket wipe. Once per boot, before any session
-    // (and so before any fresh file this run could mistake for stale) exists.
-    sweepStaleSessionFiles()
     registerIpc()
     createWindow()
+    /*
+     * The only sweep for statusLine files that a crash, a SIGKILL or a failed
+     * launch left behind on a previous run — see statusLine.ts for why it is
+     * age-based rather than a blanket wipe. Once per boot, before any session
+     * (and so before any fresh file this run could mistake for stale) exists.
+     *
+     * AFTER createWindow, not before it. The sweep is `readdirSync` plus up to
+     * two more synchronous fs calls per entry across two passes, and it ran on
+     * the boot path immediately before the window was built — so every one of
+     * those blocked the event loop while nothing was on screen yet. Gotcha 40's
+     * pattern exactly, in the one place a stall is most visible.
+     *
+     * Moving it is enough, and is safer than making it async: what correctness
+     * requires is only that it finish before a session can start, and a session
+     * cannot start before the window exists and the user has acted on it. The
+     * ordering it must not lose — sweeping before any file THIS run writes — is
+     * preserved, because createWindow starts no session by itself.
+     */
+    sweepStaleSessionFiles()
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()
     })

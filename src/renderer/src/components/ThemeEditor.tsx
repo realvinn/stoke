@@ -390,7 +390,24 @@ export function ThemeEditor({
     )
   }
 
-  const patch = (p: Partial<ThemeSeed>): void => setSeed({ ...seed, ...p })
+  const patch = (p: Partial<ThemeSeed>): void => {
+    const next = { ...seed, ...p }
+    /*
+     * Setting the accent clears any override on it.
+     *
+     * `accent` used to appear both here and in the generated-token list below,
+     * so a theme saved while that was true can still carry
+     * `overrides.accent` — which `buildTheme` applies over the seed. Without
+     * this, such a theme has an accent field that visibly changes nothing and
+     * no control anywhere to clear the override, because the token that set it
+     * is no longer drawn.
+     */
+    if (p.accent !== undefined && next.overrides?.accent !== undefined) {
+      const { accent: _drop, ...rest } = next.overrides
+      next.overrides = rest
+    }
+    setSeed(next)
+  }
   const override = (token: keyof ThemeColors, hex: string | null): void => {
     const next = { ...(seed.overrides ?? {}) }
     if (hex) next[token] = hex

@@ -54,6 +54,14 @@ interface Tab {
   netLog: NetEntry[]
   findTotal: number
   findActive: number
+  /**
+   * The URL this tab has already been recovered from once after a renderer
+   * crash. Null when it has not crashed, or has since navigated elsewhere.
+   *
+   * One retry per address, so a page that crashes reproducibly is not reloaded
+   * in a loop — the second crash on the same URL is left alone and logged.
+   */
+  recoveredFrom: string | null
 }
 
 /**
@@ -115,6 +123,7 @@ export class EmbeddedBrowser {
       view,
       consoleLog: [],
       netLog: [],
+      recoveredFrom: null,
       findTotal: 0,
       findActive: 0
     }
@@ -157,6 +166,51 @@ export class EmbeddedBrowser {
     wc.on('did-navigate-in-page', push)
     wc.on('page-title-updated', push)
     wc.on('did-fail-load', push)
+
+    /*
+     * A crashed renderer, which nothing was listening for.
+     *
+     * Every other lifecycle event is wired above and this one was not, so a tab
+     * whose renderer died stayed in the strip looking ordinary and was dead
+     * forever: navigation did nothing, the MCP tools went on targeting it, and
+     * `getTitle()`/`getURL()` kept returning the last values it had. Nothing
+     * anywhere said the page had gone.
+     *
+     * Reloaded once rather than surfaced as a new UI state, because for the
+     * overwhelmingly common causes — an out-of-memory kill on a heavy page, a
+     * GPU process restart — a reload is exactly what the user would do and
+     * exactly what Chrome itself offers. The guard is per URL: a page that
+     * crashes again at the same address is left alone with a log line, so a
+     * reproducible crasher cannot become a reload loop.
+     *
+     * `reason` distinguishes them: a `clean-exit` is the tab being closed
+     * normally and must not be recovered from.
+     */
+    wc.on('render-process-gone', (_e, details) => {
+      const url = wc.getURL()
+      if (details.reason === 'clean-exit') return
+      if (tab.recoveredFrom === url) {
+        console.error(`[stoke] browser tab crashed again at ${url} (${details.reason}); not reloading`)
+        push()
+        return
+      }
+      console.error(`[stoke] browser tab renderer gone (${details.reason}) at ${url}; reloading once`)
+      tab.recoveredFrom = url
+      tab.consoleLog = []
+      tab.netLog = []
+      push()
+      // Deferred a tick: reloading from inside the crash handler races
+      // Chromium's own teardown of the dead renderer.
+      setTimeout(() => {
+        if (!this.tabs.includes(tab) || wc.isDestroyed()) return
+        wc.reload()
+      }, 0)
+    })
+
+    // A tab that navigates somewhere else has spent its one recovery.
+    wc.on('did-navigate', () => {
+      if (tab.recoveredFrom && tab.recoveredFrom !== wc.getURL()) tab.recoveredFrom = null
+    })
 
     wc.on('found-in-page', (_e, result) => {
       tab.findTotal = result.matches ?? 0
