@@ -1636,6 +1636,7 @@ body {
   display: none;
 }
 
+
 .term-host {
   width: 100%;
   height: 100%;
@@ -1852,6 +1853,25 @@ body {
 
 /* -------------------------------------------------------------- launcher */
 
+/*
+ * The launcher centres its card AND scrolls, and those two are only compatible
+ * one particular way.
+ *
+ * `justify-content: center` on a scroll container distributes the free space by
+ * moving the content — including when there is none to distribute. Once the
+ * card is taller than the pane the overflow goes in BOTH directions, and the
+ * half above the centre line sits at a negative offset that `scrollTop: 0`
+ * cannot reach: the top of the card is clipped and no amount of scrolling
+ * brings it back. Expanding "Launch options" is exactly what makes the card
+ * outgrow a short window, so the symptom is that opening the options hides the
+ * thing above them.
+ *
+ * `margin: auto` on the child centres identically while there IS free space and
+ * collapses to zero when there is not, which leaves the card flush with the top
+ * and every pixel of it scrollable. Same reason `align-self: center` is worth
+ * being careful with (gotcha 11): these properties centre by consuming space,
+ * so they behave differently when the space is negative.
+ */
 .launcher {
   flex: 1;
   min-height: 0;
@@ -1859,12 +1879,12 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
   padding: var(--space-24);
 }
 
 .launcher-card {
   width: min(38rem, 100%);
+  margin: auto;
   display: flex;
   flex-direction: column;
   gap: var(--space-16);
