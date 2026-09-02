@@ -867,6 +867,33 @@ scripts/          the verify-*.mts suites, make-icon.cjs
     nothing carries the prefix does the lenient key-name match run, with `mcpOAuth` skipped.
     Pinned by `verify:usage` against the real blob's shape.
 
+    **A macOS machine can hold BOTH stores, and they disagree — so "the file does not exist on
+    macOS" above is no longer true and must not be relied on.** Measured 2026-09-02:
+    `~/.claude/.credentials.json` existed with a token that had expired 24 hours earlier, while
+    the login Keychain held one good for another 8. `readCredentials` read the file first and
+    returned it, so `fetchUsage` short-circuited on `expiresAt <= now` and answered *"Claude Code
+    sign-in has expired"* **without ever making the request** — for as long as the app stayed
+    open. The chip therefore fell back to the statusLine payload, which exists only while `claude`
+    runs, which is exactly the symptom this whole entry was written to remove: a chip that dies
+    with the last session.
+
+    The trap is not the stale file, it is preferring by LOCATION. That was only ever safe while
+    one of the two could not exist. `freshestCredentials` compares expiry instead — an unexpired
+    token wins wherever it lives, a token with no stated expiry counts as usable, and with nothing
+    live the least stale still comes back so the message can name a time. The Keychain is still
+    not read when the file already holds a live token, so the ordinary case costs one read.
+
+    **A poll that faithfully re-fetches an error is indistinguishable from a poll that is not
+    running**, and that is why this read as "the usage chip will not refresh". The 30s poll
+    (`POLL_MS` in UsageMeter, matched by `USAGE_POLL_MS`'s cache floor in main) was working
+    perfectly the whole time. Check what a poll RETURNS before concluding it is not firing.
+
+    One more, met while testing the above: the endpoint rate-limits, answers **429** with a
+    `Retry-After` of 900s, and main honours it — so every read for fifteen minutes returns the
+    same cached failure with the same `fetchedAt`. Correct, and again indistinguishable from a
+    dead poll, so the panel names the time the pause ends and disables its own "Try again", which
+    could otherwise only hand back the same cached object.
+
     Two smaller things. `security` **blocks on a GUI Keychain prompt** when the item's ACL does
     not already trust it — it did not prompt here, but a fresh machine will — so the call carries
     a 5s timeout rather than being allowed to hang a main-process handler. And the account token
