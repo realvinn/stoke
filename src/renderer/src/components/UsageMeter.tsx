@@ -188,6 +188,21 @@ export function UsageChip(): React.JSX.Element | null {
    * comparison, and a real timestamp is never below it.
    */
   const fromLine = line ? statusLineWindows(line, now) : []
+  /**
+   * When the account endpoint asked us to back off, the clock time it ends.
+   *
+   * `retryAfter` is honoured in main (`wait = max(retryAfter, floor)`), so
+   * during it every read returns the same cached failure with the same
+   * `fetchedAt` — which is correct, and indistinguishable from a broken poll
+   * unless the panel says so.
+   */
+  const waitingUntil =
+    snap?.error && snap.retryAfter && snap.fetchedAt
+      ? snap.fetchedAt + snap.retryAfter > now
+        ? clock(snap.fetchedAt + snap.retryAfter)
+        : null
+      : null
+
   const fromAccount = snap && !snap.error ? snap.windows : []
   const payloadAt = fromLine.length > 0 && line ? line.receivedAt : -Infinity
   const accountAt = fromAccount.length > 0 && snap ? snap.fetchedAt : -Infinity
@@ -298,8 +313,21 @@ export function UsageChip(): React.JSX.Element | null {
                   {snap.error.startsWith('Not signed in')
                     ? ' Plan limits need a Claude.ai sign-in; an API key has none.'
                     : ''}
+                  {/*
+                    When the endpoint asked us to wait, say until when. Stoke
+                    honours `Retry-After` — main returns the cached failure
+                    without re-fetching for its whole duration — so "Try again"
+                    is a button that genuinely cannot do anything yet, and one
+                    that silently does nothing is worse than one that says why.
+                  */}
+                  {waitingUntil && ` Anthropic asked for a pause; trying again at ${waitingUntil}.`}
                 </span>
-                <button className="btn" data-size="sm" onClick={() => pullRef.current('message')}>
+                <button
+                  className="btn"
+                  data-size="sm"
+                  disabled={waitingUntil !== null}
+                  onClick={() => pullRef.current('message')}
+                >
                   Try again
                 </button>
               </div>
