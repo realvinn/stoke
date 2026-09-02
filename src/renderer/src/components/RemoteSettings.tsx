@@ -5,6 +5,7 @@ import { channelLagNotice, updateButton, updateVerdict } from '../lib/updateVerd
 import { useDraft } from '../lib/useDraft'
 import { FieldHint } from './FieldHint'
 import { IconCopy } from './Icons'
+import { CloudflareSetup } from './CloudflareSetup'
 import { MicrophoneNotice } from './MicrophoneNotice'
 import type { CliUpdateState, Settings } from '@shared/types'
 
@@ -310,24 +311,6 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
           </span>
         </summary>
         <div className="field-detail-body" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-12)', paddingTop: 'var(--space-8)' }}>
-          {tunnel && !tunnel.installed && (
-            <FieldHint
-              tone="warning"
-              more={
-                <>
-                  macOS: <span className="mono">brew install cloudflared</span>. Windows:{' '}
-                  <span className="mono">winget install Cloudflare.cloudflared</span>. Then press
-                  Look again.
-                </>
-              }
-            >
-              cloudflared was not found on this machine.{' '}
-              <button className="btn" data-variant="ghost" disabled={busy} onClick={() => void act(window.stoke.remote.tunnelLocate)} style={{ height: 'auto', padding: '0 var(--space-4)' }}>
-                Look again
-              </button>
-            </FieldHint>
-          )}
-
           <div className="field">
             <span className="field-label">Public hostname</span>
             <input
@@ -339,7 +322,10 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
               onBlur={hostnameField.onBlur}
               onKeyDown={hostnameField.onKeyDown}
             />
-            <span className="field-hint">The hostname your tunnel routes to this port.</span>
+            <span className="field-hint">
+              The public name you want to reach this machine at, on a domain in that same
+              Cloudflare account. Step 4 points it here.
+            </span>
           </div>
 
           <div className="field">
@@ -354,10 +340,24 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
               onKeyDown={tunnelNameField.onKeyDown}
             />
             <span className="field-hint">
-              The name you gave <span className="mono">cloudflared tunnel create</span>. The commands
-              below use it.
+              What the tunnel is called in your Cloudflare account. Pick anything; step 3 below
+              creates it under this name, and the steps re-check themselves when you change it.
             </span>
           </div>
+
+          {/*
+            The steps, after the two fields they read and before the controls
+            that only make sense once they are done. It probes on open and on
+            every change to either field, so "no tunnel named X" cannot linger
+            after X is renamed.
+          */}
+          <CloudflareSetup
+            tunnelName={remote.tunnelName}
+            hostname={remote.hostname}
+            running={tunnel?.running ?? false}
+            busy={busy}
+            onRun={() => void act(() => window.stoke.remote.tunnelStart('named'))}
+          />
 
           <label className="check-row">
             <input
@@ -376,7 +376,7 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
             </span>
           </label>
 
-          <div style={{ display: 'flex', gap: 'var(--space-8)', flexWrap: 'wrap' }}>
+          <div className="btn-row">
             <button
               className="btn"
               disabled={busy || !remote.hostname.trim()}
@@ -425,19 +425,6 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
               </FieldHint>
             </span>
           </label>
-
-          <details className="field-detail">
-            <summary>One-time setup commands</summary>
-            <div className="field-detail-body">
-              <pre className="mono field-hint" style={{ margin: 0, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', color: 'var(--text-muted)' }}>
-                {(state?.setup ?? []).join('\n')}
-              </pre>
-              <span className="field-hint">
-                These need a browser login, so run them yourself once. Then add a Cloudflare Access
-                policy for the hostname allowing only your email.
-              </span>
-            </div>
-          </details>
 
           {tunnel && tunnel.log.length > 0 && (
             <details className="field-detail" open={tunnel.error ? true : undefined}>

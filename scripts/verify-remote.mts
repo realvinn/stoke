@@ -12,6 +12,12 @@
  */
 import { connectTarget, lanAddresses } from '../src/main/remote/link.ts'
 import { exitError, installHint } from '../src/main/remote/tunnel.ts'
+import {
+  createdAlready,
+  createdId,
+  originCertPath,
+  parseTunnelList
+} from '../src/main/remote/cloudflare.ts'
 import { clampPort, clampRemoteReach, REMOTE_REACH_PREFERENCES } from '../src/shared/ui.ts'
 
 let failures = 0
@@ -203,6 +209,62 @@ check(
 check('with no reason in the log, the code alone', exitError(1, []), 'cloudflared exited with code 1')
 check('the last plain line stands in when nothing is marked as an error', exitError(2, ['starting', 'tunnel stoke not found']), 'cloudflared exited with code 2: tunnel stoke not found')
 check('the install hint names the package manager per platform', [installHint('darwin'), installHint('win32')], ['brew install cloudflared', 'winget install Cloudflare.cloudflared'])
+
+console.log('\nreading cloudflared, where every naive reading is wrong')
+/*
+ * All three of these were measured against cloudflared 2026.6.1, and all three
+ * make a plain implementation report the opposite of the truth.
+ */
+/*
+ * The CLI writes "no tunnels matched" as the literal string `null`, not as
+ * `[]`. Reading that as "unreadable" is what made the panel say "Cloudflare
+ * answered with something this version could not read" for the perfectly
+ * ordinary case of not having created the tunnel yet — measured against a real
+ * account, which is the only way it would ever have been seen.
+ */
+check('no match is the literal string null, which means none', parseTunnelList('null'), [])
+check('and empty output means none as well', parseTunnelList('   '), [])
+check('while genuinely unreadable output stays null, which is a third answer', parseTunnelList('<html>502</html>'), null)
+check('a match comes back as id and name', parseTunnelList('[{"id":"abc","name":"code","created_at":"x"}]'), [
+  { id: 'abc', name: 'code' }
+])
+check('two of them keep their order', parseTunnelList('[{"id":"a","name":"one"},{"id":"b","name":"two"}]')?.length, 2)
+check('junk is not a list', parseTunnelList('not json at all'), null)
+check(
+  'an entry missing its name is dropped rather than read as undefined',
+  parseTunnelList('[{"id":"a"},{"id":"b","name":"two"}]'),
+  [{ id: 'b', name: 'two' }]
+)
+
+/*
+ * `tunnel create` on a name that is taken exits non-zero. Reporting that as a
+ * failure leaves the wizard sitting on a red step for a tunnel the user has.
+ */
+check(
+  'a taken name is the thing we wanted, not an error',
+  createdAlready('failed to create tunnel: tunnel with name already exists'),
+  true
+)
+check('a real failure is not', createdAlready('Cannot determine default origin certificate path'), false)
+check(
+  'the uuid is read out of the success line',
+  createdId('Created tunnel code with id 0f5a6b7c-1234-4abc-9def-0123456789ab'),
+  '0f5a6b7c-1234-4abc-9def-0123456789ab'
+)
+check('and absent when it did not say one', createdId('something else entirely'), null)
+
+console.log('\nwhere the login certificate lives')
+check(
+  'the default is the CLI\'s own',
+  originCertPath({}, '/home/x'),
+  '/home/x/.cloudflared/cert.pem'
+)
+check(
+  'and TUNNEL_ORIGIN_CERT overrides it, because cloudflared honours it',
+  originCertPath({ TUNNEL_ORIGIN_CERT: '/tmp/other.pem' }, '/home/x'),
+  '/tmp/other.pem'
+)
+check('an empty override is not an override', originCertPath({ TUNNEL_ORIGIN_CERT: '  ' }, '/home/x'), '/home/x/.cloudflared/cert.pem')
 
 console.log('\nthe port box')
 check('a real port is kept', clampPort(8080), 8080)

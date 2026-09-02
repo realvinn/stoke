@@ -1,3 +1,4 @@
+import { access } from 'node:fs/promises'
 import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, net, protocol, shell } from 'electron'
 import { pathToFileURL } from 'node:url'
 import { homedir } from 'node:os'
@@ -65,6 +66,13 @@ import { createScratchDir, resolveDefaultCwd } from './workspace.ts'
 import { BrowserMcpServer } from './mcp/server.ts'
 import { connectTarget, generateToken, RemoteServer, tailnetAddress, type RemoteDeps } from './remote/server.ts'
 import { TunnelManager } from './remote/tunnel.ts'
+import {
+  originCertPath,
+  probeSetup,
+  runSetupStep,
+  startLogin,
+  waitForCert
+} from './remote/cloudflare.ts'
 import {
   AUTO_CHECK_MS,
   checkForUpdate,
@@ -1694,6 +1702,56 @@ function registerIpc(): void {
   ipcMain.handle(CH.tunnelLocate, async () => {
     await tunnel.locate(true)
     return remoteState()
+  })
+
+  ipcMain.handle(CH.cloudflareSetup, async () => {
+    const cfg = getSettings().remote
+    return probeSetup({
+      tunnelName: cfg.tunnelName,
+      hostname: cfg.hostname,
+      running: tunnel.status().running
+    })
+  })
+
+  ipcMain.handle(CH.cloudflareStep, async (_e, step: 'login' | 'create' | 'route', opts?: { overwriteDns?: boolean }) => {
+    const cfg = getSettings().remote
+    if (step !== 'login') {
+      return runSetupStep(step, {
+        tunnelName: cfg.tunnelName,
+        hostname: cfg.hostname,
+        overwriteDns: opts?.overwriteDns
+      })
+    }
+    /*
+     * Login is the only step that needs a person and a browser, so it is the
+     * only one shaped like this: start it, hand the URL to the OS, and treat
+     * the CERTIFICATE APPEARING as completion rather than the process exiting
+     * — cloudflared stays alive precisely to write that file when the browser
+     * comes back, and it refuses outright if one is already there.
+     */
+    const certPath = originCertPath()
+    try {
+      await access(certPath)
+      return { ok: true, output: `Already logged in — ${certPath} exists.`, error: null }
+    } catch {
+      /* not logged in, which is the point */
+    }
+    const exe = (await tunnel.locate()) ?? 'cloudflared'
+    const login = startLogin(exe)
+    const url = await login.url
+    if (url) shell.openExternal(url)
+    const ok = await waitForCert(certPath)
+    login.stop()
+    return {
+      ok,
+      url: url ?? undefined,
+      output: login.output(),
+      error: ok
+        ? null
+        : url
+          ? 'Timed out waiting for the browser. Open the link again and finish signing in.'
+          : 'cloudflared did not offer a login link. Check that it is installed.'
+    }
   })
 
   /* ---------------------------------------------------------- self update */

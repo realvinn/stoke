@@ -1925,6 +1925,54 @@ body {
  * default one even while closed — a fold that can conceal that is not one.
  */
 /* One hidden project: its path, and the button that brings it back. */
+/*
+ * A command the user may prefer to run themselves, beside the button that
+ * copies it. `flex: 1 1 0%` AND `min-width: 0` on the <pre>, both required:
+ * without the min-width a long hostname sets a min-content floor and the whole
+ * sheet grows rather than the command wrapping — gotcha 14, one box in.
+ */
+.step-cmd {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-8);
+}
+
+.step-cmd > pre {
+  flex: 1 1 0%;
+  min-width: 0;
+  margin: 0;
+  padding: var(--space-8);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--bg-sunken);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* What a command printed, folded away unless it failed. */
+.step-log {
+  margin: 0;
+  max-height: 10rem;
+  overflow: auto;
+  padding: var(--space-8);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* A row of buttons. The identical inline style object appeared a dozen times. */
+.btn-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  flex-wrap: wrap;
+}
+
 .hidden-projects {
   display: grid;
   gap: var(--space-4);

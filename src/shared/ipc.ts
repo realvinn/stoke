@@ -111,6 +111,16 @@ export const CH = {
   tunnelStop: 'tunnel:stop',
   /** Look for cloudflared again, after the user has installed it. */
   tunnelLocate: 'tunnel:locate',
+  /**
+   * Setting a tunnel UP, as opposed to running one that exists.
+   *
+   * `setup` changes nothing — it reads the binary, the login certificate and
+   * the account's tunnel list — and `step` runs exactly one of the setup
+   * commands. Split because the probe is safe to call on every panel open and
+   * the steps emphatically are not.
+   */
+  cloudflareSetup: 'cloudflare:setup',
+  cloudflareStep: 'cloudflare:step',
 
   // claude cli updates
   updateCheck: 'update:check',

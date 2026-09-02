@@ -127,7 +127,9 @@ const api: StokeApi = {
     onChange: (cb) => on<[Parameters<typeof cb>[0]]>(CH.remoteChanged, cb),
     tunnelStart: (mode: 'named' | 'quick') => ipcRenderer.invoke(CH.tunnelStart, mode),
     tunnelStop: () => ipcRenderer.invoke(CH.tunnelStop),
-    tunnelLocate: () => ipcRenderer.invoke(CH.tunnelLocate)
+    tunnelLocate: () => ipcRenderer.invoke(CH.tunnelLocate),
+    cloudflareSetup: () => ipcRenderer.invoke(CH.cloudflareSetup),
+    cloudflareStep: (step, opts) => ipcRenderer.invoke(CH.cloudflareStep, step, opts)
   },
 
   updates: {

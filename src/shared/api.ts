@@ -108,6 +108,32 @@ export interface ClaudeConfigWriteResult {
 export type RemoteReach = 'tunnel' | 'tailnet' | 'lan' | 'loopback'
 
 /** Combined remote-access state: local server, tunnel, and the phone link. */
+/** One of the five setup steps; `install` and `run` are not runnable from here. */
+export type CloudflareStep = 'login' | 'create' | 'route'
+
+/** todo / done / failed, plus `unknown` for what could not be asked. */
+export type CloudflareStepState = 'todo' | 'done' | 'failed' | 'unknown'
+
+/**
+ * Mirrors `CloudflareSetup` in src/main/remote/cloudflare.ts. Hand-copied for
+ * the same reason `RemoteReach` is: this file must not import from src/main.
+ */
+export interface CloudflareSetup {
+  install: { state: CloudflareStepState; path: string | null; hint: string }
+  login: { state: CloudflareStepState; certPath: string }
+  create: { state: CloudflareStepState; id: string | null; detail: string }
+  route: { state: CloudflareStepState; detail: string }
+  run: { state: CloudflareStepState; detail: string }
+}
+
+export interface StepResult {
+  ok: boolean
+  output: string
+  error: string | null
+  /** Login only: the URL Stoke opened for you, so it can be shown as well. */
+  url?: string
+}
+
 export interface RemoteState {
   server: {
     running: boolean
@@ -354,6 +380,16 @@ export interface StokeApi {
     tunnelStart(mode: 'named' | 'quick'): Promise<RemoteState>
     tunnelStop(): Promise<RemoteState>
     tunnelLocate(): Promise<RemoteState>
+    /**
+     * The state of the five Cloudflare setup steps. Reads only — the binary,
+     * the login certificate, and the account's tunnel list.
+     */
+    cloudflareSetup(): Promise<CloudflareSetup>
+    /**
+     * Run one setup step. `login` opens a browser and waits for you to finish
+     * it there, so it can take minutes; the others are seconds.
+     */
+    cloudflareStep(step: CloudflareStep, opts?: { overwriteDns?: boolean }): Promise<StepResult>
   }
 
   updates: {
