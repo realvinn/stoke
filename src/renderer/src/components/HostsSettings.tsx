@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { SshHost } from '@shared/types'
 import { FieldHint } from './FieldHint'
 import { IconClose, IconPlus } from './Icons'
@@ -114,6 +114,44 @@ export function HostsSettings({ hosts, suggestions, onChange }: Props): React.JS
     },
     [drafts, update]
   )
+
+  /*
+   * Commit whatever is still being typed when this panel goes away.
+   *
+   * The drafts above are committed on blur or Enter, and closing the settings
+   * sheet is neither. App renders it as `{settingsOpen && <SettingsSheet …>}`,
+   * so Escape (or the close button, or clicking the backdrop) UNMOUNTS the
+   * tree — and React fires no blur on an element it is removing. So typing a
+   * new hostname or user and pressing Escape threw the edit away silently,
+   * which reads as the setting not having saved rather than as not having been
+   * committed.
+   *
+   * Written through a ref updated on every render, and an effect with an empty
+   * dependency list, so the cleanup sees the LAST drafts rather than the ones
+   * captured when the effect first ran — gotcha 31's shape. Everything is
+   * folded into a single `onChange` because `hosts` is one array: committing
+   * field by field would have each call overwrite the previous one's result.
+   */
+  const flushRef = useRef<() => void>(() => {})
+  flushRef.current = (): void => {
+    const pending = Object.entries(drafts)
+    if (!pending.length) return
+    let next = hosts
+    let moved = false
+    for (const [key, draft] of pending) {
+      const at = key.lastIndexOf(':')
+      const id = key.slice(0, at)
+      const field = key.slice(at + 1) as HostTextField
+      const host = next.find((h) => h.id === id)
+      if (!host) continue
+      const changes = commitField(host, field, draft)
+      if (!changes) continue
+      next = next.map((h) => (h.id === id ? { ...h, ...changes } : h))
+      moved = true
+    }
+    if (moved) onChange(next)
+  }
+  useEffect(() => () => flushRef.current(), [])
 
   const add = useCallback((): void => {
     onChange([

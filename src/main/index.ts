@@ -54,7 +54,7 @@ import { readSessionState, sessionStateFile, writeSessionState } from './worklog
 import { invalidateRecall, recall, scanOutcomeFor } from './worklog/recall.ts'
 import type { CreateProfileInput } from '@shared/profiles'
 import type { CliRunResult, RemoteState } from '@shared/api'
-import { getSettings, onSettingsChanged, setSettings } from './store.ts'
+import { flushSettings, getSettings, onSettingsChanged, setSettings } from './store.ts'
 import {
   readSessionEvents,
   readStatusLine,
@@ -1291,6 +1291,9 @@ function createWindow(): void {
 
   win.on('closed', () => {
     offSettings()
+    // Before anything else: on macOS this fires and `before-quit` does not
+    // (gotcha 35), so this is the only flush the tail of a slider drag gets.
+    flushSettings()
     for (const t of timers.splice(0)) clearInterval(t)
     ptys?.killAll()
     watcher?.disposeAll()
@@ -2331,6 +2334,9 @@ if (!app.requestSingleInstanceLock()) {
 
   app.on('before-quit', () => {
     if (lastTabState) writeTabState(tabStateFile(app.getPath('userData')), lastTabState)
+    // Settings coalesce bursts of writes (see store.ts). Anything still waiting
+    // is written here rather than lost with the process.
+    flushSettings()
     /*
      * A lock left behind on ~/.claude.json stalls every CLI config write for
      * the ten seconds it takes to go stale. The writer already releases in a

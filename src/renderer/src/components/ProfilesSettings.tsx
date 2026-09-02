@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ProfileConfig, Settings } from '@shared/types'
 import type { CreateProfileInput, ProfilePlan, ResolvedProfile } from '@shared/profiles'
 import {
@@ -142,9 +142,21 @@ export function ProfilesSettings({ settings, onPatch, onCreated }: Props): React
     [counts]
   )
 
-  /** Write one record, replacing any existing one with the same id. */
-  const store = useCallback(
-    (profile: ResolvedProfile, changes: Partial<ProfileConfig>): void => {
+  /**
+   * This profile's stored record with `changes` applied, and the list it
+   * belongs in without the old copy.
+   *
+   * Split out of `store` so the unmount flush below can apply SEVERAL changes
+   * to one list. `store` replaces a single record in `settings.profiles`, so
+   * calling it in a loop would have each call build from the same starting
+   * array and the last one win.
+   */
+  const withProfile = useCallback(
+    (
+      list: ProfileConfig[],
+      profile: ResolvedProfile,
+      changes: Partial<ProfileConfig>
+    ): ProfileConfig[] => {
       const key = foldGroup(profile.id)
       const record: ProfileConfig = {
         id: profile.id,
@@ -157,11 +169,46 @@ export function ProfilesSettings({ settings, onPatch, onCreated }: Props): React
         createdByUser: profile.createdByUser,
         ...changes
       }
-      const rest = settings.profiles.filter((p) => foldGroup(p.id) !== key)
-      onPatch({ profiles: [...rest, record] })
+      return [...list.filter((p) => foldGroup(p.id) !== key), record]
     },
-    [settings.profiles, onPatch]
+    []
   )
+
+  const store = useCallback(
+    (profile: ResolvedProfile, changes: Partial<ProfileConfig>): void => {
+      onPatch({ profiles: withProfile(settings.profiles, profile, changes) })
+    },
+    [settings.profiles, onPatch, withProfile]
+  )
+
+  /*
+   * Commit a rename that is still being typed when this panel goes away.
+   *
+   * Same defect as HostsSettings had: the draft is committed on blur or Enter,
+   * and App renders the sheet as `{settingsOpen && <SettingsSheet …>}`, so
+   * Escape unmounts the tree and React fires no blur on an element it removes.
+   * Renaming a profile and pressing Escape discarded the new name with no sign
+   * that anything had been dropped.
+   *
+   * Ref updated on every render so the cleanup sees the last drafts rather than
+   * the first (gotcha 31), and one `onPatch` for all of them.
+   */
+  const flushRef = useRef<() => void>(() => {})
+  flushRef.current = (): void => {
+    const pending = Object.entries(labels)
+    if (!pending.length) return
+    let next = settings.profiles
+    let moved = false
+    for (const [id, raw] of pending) {
+      const label = raw.trim()
+      const profile = resolved.find((p) => p.id === id)
+      if (!profile || !label || label === profile.label) continue
+      next = withProfile(next, profile, { label })
+      moved = true
+    }
+    if (moved) onPatch({ profiles: next })
+  }
+  useEffect(() => () => flushRef.current(), [])
 
   /*
    * Deleting has two shapes, because a derived profile is not stored anywhere to

@@ -300,6 +300,14 @@ export function SettingsSheet({
     onPatch({ defaultCwd: v.trim() || null })
   )
 
+  /**
+   * What the Interface scale box shows while it is being typed into.
+   *
+   * Null means "show the stored value" — the ordinary state, and where it
+   * returns on blur. See the comment on the input itself.
+   */
+  const [scaleDraft, setScaleDraft] = useState<string | null>(null)
+
   const [sshAliases, setSshAliases] = useState<string[]>([])
   useEffect(() => {
     let live = true
@@ -448,14 +456,45 @@ export function SettingsSheet({
                     store that accepts 9-24, and to fall back with `|| 1`, which
                     turned a typed 0 into 1 rather than into the floor.
                   */}
+                  {/*
+                    A local draft while the box has focus, because clamping every
+                    keystroke made the field unusable to type into. An empty
+                    <input type="number"> reports value "", `Number("")` is 0, and
+                    0 is finite — so `clampUiScale` returned the FLOOR rather than
+                    rejecting it. Selecting the contents and typing a new number
+                    therefore shrank the entire interface to 0.8 on the first
+                    keypress, under the very field being typed into, and the same
+                    happened at every intermediate state a number field reports as
+                    empty (a lone "1." among them).
+
+                    The draft is only what is displayed. The commit still goes
+                    through the same clamp, on blur or Enter, so a pasted 99 is
+                    still bounded — the browser's own min/max are advisory inside
+                    onChange and cannot be relied on.
+                  */}
                   <input
                     className="input"
                     type="number"
                     min={UI_SCALE_MIN}
                     max={UI_SCALE_MAX}
                     step={0.05}
-                    value={settings.uiScale}
-                    onChange={(e) => onPatch({ uiScale: clampUiScale(e.target.value) })}
+                    value={scaleDraft ?? settings.uiScale}
+                    onChange={(e) => {
+                      setScaleDraft(e.target.value)
+                      // Still applied live when the box holds a real number, so
+                      // the spinner arrows and a fully typed value keep their
+                      // immediate feedback.
+                      if (e.target.value.trim() !== '') {
+                        onPatch({ uiScale: clampUiScale(e.target.value) })
+                      }
+                    }}
+                    onBlur={() => {
+                      if (scaleDraft !== null) onPatch({ uiScale: clampUiScale(scaleDraft) })
+                      setScaleDraft(null)
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') e.currentTarget.blur()
+                    }}
                   />
                   <span className="field-hint">Scales everything except the terminal contents.</span>
                 </div>
