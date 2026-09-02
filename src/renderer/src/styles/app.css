@@ -637,6 +637,18 @@ body {
 
 .tab-label {
   font-size: var(--fs-md);
+  /*
+   * Takes the slack, so everything after it is pinned to the tab's right edge.
+   *
+   * Without this the label shrink-wrapped its text and the close button sat
+   * wherever the title happened to end — a hair from the ✕ on a long ai-title,
+   * a third of the way across the tab on "dev". The button moved every time
+   * Claude renamed the session, which is the one thing a close button must
+   * never do. It only became visible once tabs had a fixed width; before that
+   * the tab shrank to its text and the two edges coincided by accident.
+   */
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
