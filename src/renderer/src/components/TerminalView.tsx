@@ -1,11 +1,11 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes'
 import type { ClipboardPeek } from '@shared/api'
-import type { Theme } from '@shared/types'
+import type { TerminalSettings, Theme } from '@shared/types'
 import { createRecorder, voiceSupported, type Recorder } from '@shared/voice'
 import { attachSink } from '../lib/ptyBus'
 import { isButtonlessMotionReport } from '../lib/mouseReport'
@@ -29,6 +29,28 @@ const DRAG_SLOP_PX = 3
  * trusted to be a sane size.
  */
 const MAX_OSC52_BASE64 = 200_000
+
+/**
+ * Read once. The preload freezes `window.stoke` before any renderer module
+ * evaluates, and this component used to re-derive it in four places under
+ * four names. The render tree needs it too: the context menu spells its
+ * chords out per platform.
+ */
+const IS_MAC = window.stoke.platform === 'darwin'
+
+/**
+ * The luminance class the CLI sorts a background into (gotcha 42): it asks
+ * with OSC 11 and calls the answer light above 0.5. Only a change of CLASS is
+ * worth a CSI 997 report — the CLI ignores the report's own dark/light bit and
+ * simply re-runs the query — so this is what the theme effect keys on, rather
+ * than the theme object, which the editor replaces on every slider pixel.
+ */
+function isLightBackground(hex: string): boolean {
+  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/i.exec(hex.trim())
+  if (!m) return false
+  const [r, g, b] = [m[1], m[2], m[3]].map((h) => parseInt(h, 16) / 255)
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.5
+}
 
 /** Where the menu was opened, plus the state it should describe. */
 interface MenuState {
@@ -55,6 +77,8 @@ interface Props {
   theme: Theme
   fontFamily: string
   fontSize: number
+  /** Line height, cursor, weights and the rest. Applied live, without a rebuild. */
+  terminal: TerminalSettings
   /**
    * Clicking a link in the terminal opens it in the docked browser. Holding
    * Shift, or Cmd/Ctrl, sends it to the real browser instead — that path does
@@ -71,15 +95,32 @@ export function TerminalView({
   theme,
   fontFamily,
   fontSize,
+  terminal: termOpts,
   onOpenUrl,
   onRestart,
   onClose
 }: Props): React.JSX.Element {
-  // Component scope, because the render tree needs it too: the context menu
-  // spells its chords out per platform.
-  const isMac = window.stoke.platform === 'darwin'
   const hostRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
+  /*
+   * The one fit, callable from every effect that resizes.
+   *
+   * `applyFit` below refuses to measure a hidden pane, and that refusal is the
+   * whole fix for a session being reflowed into a 20x5 box every time a tab
+   * was switched. The font effect and the reveal effect each used to carry
+   * their own `fit(); pty.resize()` pair WITHOUT the guard — so every zoom
+   * chord refitted every background pane to a dozen columns. Assigned inside
+   * the PTY effect once `applyFit` exists; a no-op before mount.
+   */
+  const fitNowRef = useRef<() => void>(() => {})
+  /*
+   * The drawing options as of the last render, for the constructor. The
+   * terminal is built once per PTY (the effect below depends on `tab.ptyId`
+   * alone), so it reads these through a ref rather than closing over the
+   * first render's values; later changes arrive through the options effect.
+   */
+  const termOptsRef = useRef(termOpts)
+  termOptsRef.current = termOpts
   /**
    * Whether the child has DEC mode 2031 on, i.e. has asked to be told when the
    * terminal's colour scheme changes. Set from the output stream, so it tracks
@@ -113,7 +154,8 @@ export function TerminalView({
     const host = hostRef.current
     if (!host) return
 
-    const isMacPlatform = window.stoke.platform === 'darwin'
+    const isMacPlatform = IS_MAC
+    const opts = termOptsRef.current
 
     /*
      * Where the last press landed, so an activated link can tell a click from a
@@ -146,10 +188,22 @@ export function TerminalView({
     const term = new Terminal({
       fontFamily,
       fontSize,
-      lineHeight: 1.2,
-      letterSpacing: 0,
-      cursorBlink: true,
-      cursorStyle: 'bar',
+      lineHeight: opts.lineHeight,
+      letterSpacing: opts.letterSpacing,
+      cursorBlink: opts.cursorBlink,
+      cursorStyle: opts.cursorStyle,
+      /*
+       * A bar when the pane loses focus, not xterm's default hollow block. The
+       * default outline appears the moment focus leaves for the sidebar or a
+       * popover, and on a bar-cursor terminal it reads as a second cursor.
+       */
+      cursorInactiveStyle: 'bar',
+      fontWeightBold: opts.boldWeight,
+      minimumContrastRatio: opts.contrastBoost,
+      smoothScrollDuration: opts.smoothScroll ? 100 : 0,
+      // WebGL-only: glyphs wider than their cell are scaled to fit rather than
+      // painted over the next one, which is what a wide ligature otherwise does.
+      rescaleOverlappingGlyphs: true,
       scrollback: 20_000,
       allowProposedApi: true,
       allowTransparency: true,
@@ -190,12 +244,12 @@ export function TerminalView({
        * the button is down and gone the instant it comes up.
        *
        * Measured, not reasoned: `npm run verify:selection` drives this exact
-       * gesture through a real xterm in a real Chromium, under the mouse modes
-       * the shipped `claude` binary actually asks for (1000/1004/1006/1007 —
-       * it never requests motion reports). With the default the one-character
-       * drag comes back "", with this line it comes back intact, and every
-       * other case is identical either way. That suite is the reason this is a
-       * one-line change rather than a guess.
+       * gesture through a real xterm in a real Chromium under mouse reporting
+       * (1000/1002/1006 by default; 2.1.237 also asks for 1003, any-event
+       * motion, which the `triggerDataEvent` guard further down handles). With
+       * the default the one-character drag comes back "", with this line it
+       * comes back intact, and every other case is identical either way. That
+       * suite is the reason this is a one-line change rather than a guess.
        *
        * Nothing is lost by turning it off: Option-click-to-move-cursor is a
        * readline convenience that never worked here anyway, since Option is
@@ -215,7 +269,6 @@ export function TerminalView({
        * other link is both safer and the only way these links ever open.
        */
       linkHandler: { activate: openLink },
-      minimumContrastRatio: 1,
       theme: terminalTheme(theme)
     })
 
@@ -263,18 +316,8 @@ export function TerminalView({
 
     term.open(host)
 
-    /*
-     * A read-only handle on the live terminals, keyed by pty id.
-     *
-     * xterm draws through WebGL, so `.xterm-rows` is empty and nothing about
-     * what the terminal renders is readable from the DOM (CLAUDE.md gotcha 5).
-     * Cell widths, the active Unicode version and the cursor column are only
-     * readable from the Terminal object, and a CDP probe has no other route to
-     * it. Nothing in the app reads this map.
-     */
-    const live = window as unknown as { stokeTerminals?: Map<string, Terminal> }
-    live.stokeTerminals ??= new Map()
-    live.stokeTerminals.set(tab.ptyId, term)
+    // The registry also publishes the map as `window.stokeTerminals` for CDP
+    // probes; there used to be a second copy of it kept here.
     registerTerm(tab.ptyId, term)
 
     // WebGL is a large win on a busy terminal but is unavailable on some GPUs
@@ -318,7 +361,7 @@ export function TerminalView({
       if (e.type !== 'keydown') return true
       const mod = e.ctrlKey && e.shiftKey
       const cmd = e.metaKey && !e.ctrlKey
-      const isMac = window.stoke.platform === 'darwin'
+      const isMac = IS_MAC
       // A bare Ctrl chord, with no Shift and no Alt. Only meaningful off macOS,
       // where Cmd carries the clipboard and Ctrl+C must stay SIGINT.
       const bareCtrl = !isMac && e.ctrlKey && !e.shiftKey && !e.altKey
@@ -387,8 +430,16 @@ export function TerminalView({
        */
       if ((mod || (isMac && cmd)) && key === 'v') {
         e.preventDefault()
-        const { text } = window.stoke.clipboard.readSync()
-        if (text) term.paste(text)
+        const clip = window.stoke.clipboard.readSync()
+        if (clip.text) term.paste(clip.text)
+        /*
+         * An image-only clipboard used to be swallowed here on macOS: the key
+         * was consumed and nothing was written, and the Ctrl+V branch below
+         * that hands images to the CLI is gated off macOS. `\x16` is what
+         * Claude Code reads as "paste", and it then takes the image off the OS
+         * clipboard itself — no image bytes cross the PTY.
+         */
+        else if (clip.hasImage) window.stoke.pty.write(tab.ptyId, '\x16')
         return false
       }
 
@@ -737,8 +788,10 @@ export function TerminalView({
     const ro = new ResizeObserver(() => applyFit())
     ro.observe(host)
     applyFit()
+    fitNowRef.current = applyFit
 
     return () => {
+      fitNowRef.current = () => {}
       ro.disconnect()
       host.removeEventListener('mousedown', onDownPoint, true)
       host.removeEventListener('mousedown', onShiftDrag, true)
@@ -748,7 +801,6 @@ export function TerminalView({
       detach()
       onInput.dispose()
       term.dispose()
-      live.stokeTerminals?.delete(tab.ptyId)
       unregisterTerm(tab.ptyId)
       termRef.current = null
       fitRef.current = null
@@ -794,7 +846,7 @@ export function TerminalView({
     const host = hostRef.current
     if (!host || !active) return
 
-    const isMac = window.stoke.platform === 'darwin'
+    const isMac = IS_MAC
 
     const recorder = (recorderRef.current ??= createRecorder(async (wav) => {
       // The renderer never reaches the speech server itself; main proxies it,
@@ -934,39 +986,65 @@ export function TerminalView({
     const term = termRef.current
     if (!term) return
     term.options.theme = terminalTheme(theme)
-    if (!themeNotifyRef.current) return
-    window.stoke.pty.write(tab.ptyId, theme.appearance === 'light' ? '\x1b[?997;2n' : '\x1b[?997;1n')
-  }, [theme, tab.ptyId])
+  }, [theme])
+
+  /*
+   * Split from the repaint above on purpose, and keyed on the CLASS of the
+   * background rather than the theme object. The theme editor pushes a new
+   * draft Theme on every slider pixel, and this effect used to depend on it —
+   * so dragging Neutral hue with a session open wrote tens of CSI 997 reports
+   * a second into the PTY, each making the CLI re-run its OSC 11 query and
+   * re-classify (gotcha 42), for a theme whose light/dark side never moved.
+   * The CLI ignores the report's own dark/light bit and only re-queries, so
+   * the class of `terminal.background` is exactly the thing worth telling it
+   * about — and an override that carries a dark theme's page over 0.5 is told
+   * too, where `theme.appearance` alone would not have said.
+   */
+  const light = isLightBackground(theme.terminal.background)
+  useEffect(() => {
+    if (!termRef.current || !themeNotifyRef.current) return
+    window.stoke.pty.write(tab.ptyId, light ? '\x1b[?997;2n' : '\x1b[?997;1n')
+  }, [light, tab.ptyId])
 
   useEffect(() => {
     const term = termRef.current
     if (!term) return
     term.options.fontFamily = fontFamily
     term.options.fontSize = fontSize
-    try {
-      fitRef.current?.fit()
-      window.stoke.pty.resize(tab.ptyId, term.cols, term.rows)
-    } catch {
-      /* ignore */
-    }
-  }, [fontFamily, fontSize, tab.ptyId])
+    // Through the guarded fit: a hidden pane is left alone and picks the new
+    // size up when it is shown, instead of being reflowed to a dozen columns.
+    fitNowRef.current()
+  }, [fontFamily, fontSize])
+
+  /*
+   * The drawing options, applied live so a slider in Settings moves the pane
+   * under it. Everything here is safe to set on an open terminal; the ones
+   * that change cell geometry (line height, letter spacing) need a refit.
+   */
+  useEffect(() => {
+    const term = termRef.current
+    if (!term) return
+    term.options.lineHeight = termOpts.lineHeight
+    term.options.letterSpacing = termOpts.letterSpacing
+    term.options.cursorStyle = termOpts.cursorStyle
+    term.options.cursorBlink = termOpts.cursorBlink
+    term.options.fontWeightBold = termOpts.boldWeight
+    term.options.minimumContrastRatio = termOpts.contrastBoost
+    term.options.smoothScrollDuration = termOpts.smoothScroll ? 100 : 0
+    fitNowRef.current()
+  }, [termOpts])
 
   // A hidden pane cannot be measured, so refit and focus when it is revealed.
   useEffect(() => {
     if (!active) return
     const id = window.setTimeout(() => {
-      const term = termRef.current
-      if (!term) return
-      try {
-        fitRef.current?.fit()
-        window.stoke.pty.resize(tab.ptyId, term.cols, term.rows)
-      } catch {
-        /* ignore */
-      }
-      term.focus()
+      fitNowRef.current()
+      termRef.current?.focus()
     }, 0)
     return () => window.clearTimeout(id)
   }, [active, tab.ptyId])
+
+  const closeMenu = useCallback(() => setMenu(null), [])
 
   return (
     <div className="term-pane" hidden={!active}>
@@ -977,7 +1055,7 @@ export function TerminalView({
         <ContextMenu
           x={menu.x}
           y={menu.y}
-          onClose={() => setMenu(null)}
+          onClose={closeMenu}
           /*
            * Shown only when there is something to explain, which is exactly
            * when a user has just discovered that dragging did not select.
@@ -1011,7 +1089,7 @@ export function TerminalView({
           items={[
             {
               label: 'Copy',
-              hint: isMac ? '⌘C' : 'Ctrl+Shift+C',
+              hint: IS_MAC ? '⌘C' : 'Ctrl+Shift+C',
               disabled: !menu.selection,
               onSelect: () => {
                 window.stoke.clipboard.writeText(menu.selection)
@@ -1020,11 +1098,14 @@ export function TerminalView({
               }
             },
             {
-              label: 'Paste',
-              hint: isMac ? '⌘V' : 'Ctrl+V',
-              disabled: !menu.clip.text,
+              // An image clipboard used to show a greyed-out Paste with no
+              // explanation. The CLI reads the image itself on `\x16`.
+              label: menu.clip.text ? 'Paste' : menu.clip.hasImage ? 'Paste image' : 'Paste',
+              hint: IS_MAC ? '⌘V' : 'Ctrl+V',
+              disabled: !menu.clip.text && !menu.clip.hasImage,
               onSelect: () => {
-                termRef.current?.paste(menu.clip.text)
+                if (menu.clip.text) termRef.current?.paste(menu.clip.text)
+                else if (menu.clip.hasImage) window.stoke.pty.write(tab.ptyId, '\x16')
                 termRef.current?.focus()
               }
             },

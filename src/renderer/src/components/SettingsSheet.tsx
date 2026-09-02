@@ -10,15 +10,23 @@ import type { ResolvedProfile } from '@shared/profiles'
 import { BUILT_IN_THEMES } from '@shared/themes'
 import {
   clampFontSize,
+  clampTerminal,
   clampUiScale,
   type ZoomTarget,
   FONT_SIZE_MAX,
   FONT_SIZE_MIN,
+  LETTER_SPACING_MAX,
+  LETTER_SPACING_MIN,
+  LINE_HEIGHT_MAX,
+  LINE_HEIGHT_MIN,
+  TERM_PADDING_MAX,
+  TERMINAL_DEFAULTS,
   UI_SCALE_MAX,
   UI_SCALE_MIN
 } from '@shared/ui'
 import { IconClose } from './Icons'
 import { useEffect, useRef, useState } from 'react'
+import { useDraft } from '../lib/useDraft'
 import { HostsSettings } from './HostsSettings'
 import { ProfilesSettings } from './ProfilesSettings'
 import { ClaudeCodeSettings } from './ClaudeCodeSettings'
@@ -82,6 +90,7 @@ const NOTIFICATION_MODES: { id: NotificationMode; label: string; hint: string }[
  */
 export type SectionId =
   | 'appearance'
+  | 'terminal'
   | 'profiles'
   | 'sessions'
   | 'claude'
@@ -109,7 +118,8 @@ const GROUPS: { title: string; sections: Section[] }[] = [
   {
     title: 'Appearance',
     sections: [
-      { id: 'appearance', label: 'Appearance', hint: 'Theme, fonts, and how big everything is' },
+      { id: 'appearance', label: 'Appearance', hint: 'Theme, and how big everything is' },
+      { id: 'terminal', label: 'Terminal', hint: 'Font, line height, cursor, and the frame' },
       { id: 'profiles', label: 'Profiles', hint: 'Per-folder colours and scan roots' }
     ]
   },
@@ -366,31 +376,6 @@ export function SettingsSheet({
                 />
 
                 <div className="field">
-                  <span className="field-label">Terminal font</span>
-                  <input
-                    className="input mono"
-                    value={settings.fontFamily}
-                    spellCheck={false}
-                    onChange={(e) => onPatch({ fontFamily: e.target.value })}
-                  />
-                  <span className="field-hint">
-                    A CSS font stack. The first installed family wins.
-                  </span>
-                </div>
-
-                <div className="field">
-                  <span className="field-label">Terminal size</span>
-                  <input
-                    className="input"
-                    type="number"
-                    min={FONT_SIZE_MIN}
-                    max={FONT_SIZE_MAX}
-                    value={settings.fontSize}
-                    onChange={(e) => onPatch({ fontSize: clampFontSize(e.target.value) })}
-                  />
-                </div>
-
-                <div className="field">
                   <span className="field-label">Interface scale</span>
                   {/*
                     min/max are advisory inside React's onChange — the browser will
@@ -442,6 +427,10 @@ export function SettingsSheet({
                   </span>
                 </div>
               </>
+            )}
+
+            {section === 'terminal' && (
+              <TerminalSettingsPane settings={settings} onPatch={onPatch} />
             )}
 
             {section === 'sessions' && (
@@ -714,6 +703,164 @@ export function SettingsSheet({
           </div>
         </div>
       </div>
+    </>
+  )
+}
+
+/**
+ * The pane's drawing options. A `range` for every number, because a number
+ * box that clamps on each keystroke cannot be typed into (the old Terminal
+ * size box turned "1" of "12" into 9), and because the pane repaints live as
+ * the slider moves, which is the only way to judge a line height.
+ */
+function TerminalSettingsPane({
+  settings,
+  onPatch
+}: {
+  settings: Settings
+  onPatch: (patch: Partial<Settings>) => void
+}): React.JSX.Element {
+  // Defaulted so a settings object from before the block existed still renders.
+  const t = settings.terminal ?? TERMINAL_DEFAULTS
+  const patchTerm = (p: Partial<Settings['terminal']>): void =>
+    onPatch({ terminal: clampTerminal({ ...t, ...p }) })
+  const fontField = useDraft(settings.fontFamily, (v) => onPatch({ fontFamily: v.trim() || settings.fontFamily }))
+  return (
+    <>
+      <div className="field">
+        <span className="field-label">Font</span>
+        <input
+          className="input mono"
+          value={fontField.draft}
+          spellCheck={false}
+          onChange={(e) => fontField.setDraft(e.target.value)}
+          onBlur={fontField.onBlur}
+          onKeyDown={fontField.onKeyDown}
+        />
+        <span className="field-hint">A CSS font stack. The first installed family wins.</span>
+      </div>
+
+      <label className="theme-editor-row">
+        <span>Size</span>
+        <input
+          type="range"
+          min={FONT_SIZE_MIN}
+          max={FONT_SIZE_MAX}
+          step={1}
+          value={settings.fontSize}
+          onChange={(e) => onPatch({ fontSize: clampFontSize(e.target.value) })}
+        />
+        <output className="mono">{settings.fontSize}px</output>
+      </label>
+
+      <label className="theme-editor-row">
+        <span>Line height</span>
+        <input
+          type="range"
+          min={LINE_HEIGHT_MIN}
+          max={LINE_HEIGHT_MAX}
+          step={0.05}
+          value={t.lineHeight}
+          onChange={(e) => patchTerm({ lineHeight: Number(e.target.value) })}
+        />
+        <output className="mono">{t.lineHeight.toFixed(2)}</output>
+      </label>
+      <span className="field-hint">
+        1.2 is a terminal; around 1.3–1.4 the CLI&rsquo;s prose reads like a chat. Box drawing stays
+        joined at any value.
+      </span>
+
+      <label className="theme-editor-row">
+        <span>Letter spacing</span>
+        <input
+          type="range"
+          min={LETTER_SPACING_MIN}
+          max={LETTER_SPACING_MAX}
+          step={0.5}
+          value={t.letterSpacing}
+          onChange={(e) => patchTerm({ letterSpacing: Number(e.target.value) })}
+        />
+        <output className="mono">{t.letterSpacing}px</output>
+      </label>
+
+      <div className="theme-editor-row">
+        <span>Cursor</span>
+        <div className="segmented" role="group" aria-label="Cursor shape">
+          {(['bar', 'block', 'underline'] as const).map((c) => (
+            <button key={c} aria-pressed={t.cursorStyle === c} onClick={() => patchTerm({ cursorStyle: c })}>
+              {c}
+            </button>
+          ))}
+        </div>
+        <label className="check-row" style={{ alignItems: 'center' }}>
+          <input type="checkbox" checked={t.cursorBlink} onChange={(e) => patchTerm({ cursorBlink: e.target.checked })} />
+          <span className="field-hint">blink</span>
+        </label>
+      </div>
+
+      <div className="theme-editor-row">
+        <span>Bold weight</span>
+        <div className="segmented" role="group" aria-label="Bold weight">
+          <button aria-pressed={t.boldWeight === 600} onClick={() => patchTerm({ boldWeight: 600 })}>
+            Semibold
+          </button>
+          <button aria-pressed={t.boldWeight === 700} onClick={() => patchTerm({ boldWeight: 700 })}>
+            Bold
+          </button>
+        </div>
+        <span />
+      </div>
+
+      <div className="theme-editor-row">
+        <span>Text contrast</span>
+        <div className="segmented" role="group" aria-label="Minimum contrast">
+          <button aria-pressed={t.contrastBoost === 1} onClick={() => patchTerm({ contrastBoost: 1 })}>
+            As drawn
+          </button>
+          <button aria-pressed={t.contrastBoost === 4.5} onClick={() => patchTerm({ contrastBoost: 4.5 })}>
+            AA
+          </button>
+          <button aria-pressed={t.contrastBoost === 7} onClick={() => patchTerm({ contrastBoost: 7 })}>
+            AAA
+          </button>
+        </div>
+        <span />
+      </div>
+      <span className="field-hint">
+        Recolours dim text the CLI draws until it clears the ratio. It changes Claude Code&rsquo;s own
+        palette, so it is off unless you want it.
+      </span>
+
+      <label className="check-row">
+        <input type="checkbox" checked={t.smoothScroll} onChange={(e) => patchTerm({ smoothScroll: e.target.checked })} />
+        <span>
+          <span className="field-label">Smooth scrolling</span>
+        </span>
+      </label>
+
+      <label className="check-row">
+        <input type="checkbox" checked={t.frame} onChange={(e) => patchTerm({ frame: e.target.checked })} />
+        <span>
+          <span className="field-label">Frame the terminal</span>
+          <span className="field-hint">
+            Draws the pane as a rounded card inset from the page, with real padding, so the CLI
+            reads as a document rather than a console.
+          </span>
+        </span>
+      </label>
+
+      <label className="theme-editor-row">
+        <span>Inner padding</span>
+        <input
+          type="range"
+          min={0}
+          max={TERM_PADDING_MAX}
+          step={2}
+          value={t.padding}
+          onChange={(e) => patchTerm({ padding: Number(e.target.value) })}
+        />
+        <output className="mono">{t.padding}px</output>
+      </label>
     </>
   )
 }

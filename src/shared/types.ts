@@ -649,12 +649,45 @@ export interface ProfileConfig {
 
 /* ---------------------------------------------------------------- settings */
 
+/**
+ * How the terminal pane is drawn, over and above its font and size.
+ *
+ * These are xterm's own knobs, and until now Stoke set them to constants or
+ * left them at xterm's defaults. Line height in particular is what makes the
+ * CLI read as a document rather than a console: 1.2 is a terminal, 1.35 is a
+ * chat. `frame` draws the pane as a rounded card inset from the page with real
+ * padding, which is the other half of the same effect.
+ */
+export interface TerminalSettings {
+  /** xterm `lineHeight`, 1.0–1.6. */
+  lineHeight: number
+  /** xterm `letterSpacing` in px, -1–3. */
+  letterSpacing: number
+  cursorStyle: 'bar' | 'block' | 'underline'
+  cursorBlink: boolean
+  /** The weight SGR bold is drawn at. JetBrains Mono's 700 is heavy at 13px. */
+  boldWeight: 600 | 700
+  /**
+   * xterm `minimumContrastRatio`. 1 leaves the CLI's colours alone; 4.5 and 7
+   * recolour dim text until it clears the ratio, which also changes Claude
+   * Code's own palette — so it is a choice, not a default.
+   */
+  contrastBoost: 1 | 4.5 | 7
+  smoothScroll: boolean
+  /** Draw the pane as a rounded card with inner padding, inset from the page. */
+  frame: boolean
+  /** Inner padding between the card's edge and the first column, in px, 0–32. */
+  padding: number
+}
+
 export interface Settings {
   themeId: string
   customThemes: Theme[]
   fontFamily: string
   fontSize: number
   uiScale: number
+  /** The pane's drawing options. See TerminalSettings. */
+  terminal: TerminalSettings
   /**
    * What the zoom keys move: the interface, the terminal font, or both.
    * A setting because Stoke has two independent size settings and which one

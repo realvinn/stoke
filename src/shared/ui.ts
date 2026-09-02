@@ -19,6 +19,63 @@ export function clampFontSize(value: unknown): number {
   return Math.min(FONT_SIZE_MAX, Math.max(FONT_SIZE_MIN, Math.round(n)))
 }
 
+/* --------------------------------------------------------------- terminal */
+
+import type { TerminalSettings } from './types.ts'
+
+export const TERMINAL_DEFAULTS: TerminalSettings = {
+  lineHeight: 1.3,
+  letterSpacing: 0,
+  cursorStyle: 'bar',
+  cursorBlink: true,
+  boldWeight: 600,
+  contrastBoost: 1,
+  smoothScroll: true,
+  frame: true,
+  padding: 12
+}
+
+export const LINE_HEIGHT_MIN = 1
+export const LINE_HEIGHT_MAX = 1.6
+export const LETTER_SPACING_MIN = -1
+export const LETTER_SPACING_MAX = 3
+export const TERM_PADDING_MAX = 32
+
+const num = (v: unknown): number | null => {
+  const n = typeof v === 'number' ? v : Number(v)
+  return Number.isFinite(n) ? n : null
+}
+
+/**
+ * Repair a stored terminal block. Every field falls back to its default on
+ * its own, so a file from before a field existed keeps the rest — and a
+ * hand-typed value outside the range lands on the nearest bound rather than
+ * on an xterm exception at mount.
+ */
+export function clampTerminal(raw: unknown): TerminalSettings {
+  const r = (raw && typeof raw === 'object' ? raw : {}) as Partial<Record<keyof TerminalSettings, unknown>>
+  const d = TERMINAL_DEFAULTS
+  const lh = num(r.lineHeight)
+  const ls = num(r.letterSpacing)
+  const pad = num(r.padding)
+  return {
+    lineHeight:
+      lh === null ? d.lineHeight : Math.min(LINE_HEIGHT_MAX, Math.max(LINE_HEIGHT_MIN, Math.round(lh * 20) / 20)),
+    letterSpacing:
+      ls === null ? d.letterSpacing : Math.min(LETTER_SPACING_MAX, Math.max(LETTER_SPACING_MIN, Math.round(ls * 2) / 2)),
+    cursorStyle:
+      r.cursorStyle === 'block' || r.cursorStyle === 'underline' || r.cursorStyle === 'bar'
+        ? r.cursorStyle
+        : d.cursorStyle,
+    cursorBlink: typeof r.cursorBlink === 'boolean' ? r.cursorBlink : d.cursorBlink,
+    boldWeight: r.boldWeight === 700 || r.boldWeight === 600 ? r.boldWeight : d.boldWeight,
+    contrastBoost: r.contrastBoost === 4.5 || r.contrastBoost === 7 || r.contrastBoost === 1 ? r.contrastBoost : d.contrastBoost,
+    smoothScroll: typeof r.smoothScroll === 'boolean' ? r.smoothScroll : d.smoothScroll,
+    frame: typeof r.frame === 'boolean' ? r.frame : d.frame,
+    padding: pad === null ? d.padding : Math.min(TERM_PADDING_MAX, Math.max(0, Math.round(pad)))
+  }
+}
+
 /* ------------------------------------------------------------ remote port */
 
 export const REMOTE_PORT_DEFAULT = 7878

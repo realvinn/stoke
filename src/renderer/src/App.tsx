@@ -33,7 +33,7 @@ import { ActivityPanel } from './components/ActivityPanel'
 import { WorklogPrompt } from './components/WorklogPrompt'
 import { baseName, ipcErrorMessage } from './lib/format'
 import { attachExit, forgetPty, initPtyBus } from './lib/ptyBus'
-import { zoomStep } from '@shared/ui'
+import { TERMINAL_DEFAULTS, zoomStep } from '@shared/ui'
 import { matchShortcut } from './lib/shortcuts'
 import { newTab } from './lib/newTab'
 import { profileIdForCwd } from './lib/projectProfile'
@@ -698,7 +698,7 @@ export function App(): React.JSX.Element {
   ])
 
   useEffect(() => {
-    if (settings) applyTypography(settings.fontFamily, settings.fontSize, settings.uiScale)
+    if (settings) applyTypography(settings.fontFamily, settings.fontSize, settings.uiScale, settings.terminal)
   }, [settings])
 
   /* -------------------------------------------------------------- sessions */
@@ -1837,6 +1837,7 @@ export function App(): React.JSX.Element {
                     theme={theme}
                     fontFamily={settings?.fontFamily ?? 'monospace'}
                     fontSize={settings?.fontSize ?? 13}
+                    terminal={settings?.terminal ?? TERMINAL_DEFAULTS}
                     onOpenUrl={openUrl}
                     onRestart={restartTab}
                     onClose={closeTab}

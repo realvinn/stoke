@@ -10,6 +10,17 @@ import type { Terminal } from '@xterm/xterm'
  */
 const terms = new Map<string, Terminal>()
 
+/*
+ * Also published on `window` for a CDP probe. xterm draws through WebGL, so
+ * `.xterm-rows` is empty and nothing about what the terminal renders is
+ * readable from the DOM (gotcha 5): cell widths, the active Unicode version
+ * and the cursor column are only readable from the Terminal object, and a
+ * probe has no other route to it. Nothing in the app reads this; the suites
+ * and `scripts/cdp-eval.mjs` do, against release builds too, which is why it
+ * is not gated on a dev flag. TerminalView used to keep a second copy.
+ */
+;(window as unknown as { stokeTerminals?: Map<string, Terminal> }).stokeTerminals = terms
+
 export function registerTerm(ptyId: string, term: Terminal): void {
   terms.set(ptyId, term)
 }

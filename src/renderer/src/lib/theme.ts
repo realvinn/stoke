@@ -1,6 +1,7 @@
-import type { Theme } from '@shared/types'
+import type { TerminalSettings, Theme } from '@shared/types'
 import type { Profile } from '@shared/profiles'
 import { deriveAccent } from '@shared/accent'
+import { parseColor } from '@shared/color'
 
 /** camelCase token -> `--kebab-case` custom property. */
 function cssVar(key: string): string {
@@ -67,14 +68,48 @@ export function applyAppearance(theme: Theme, profile: Profile | null): void {
   root.style.setProperty('--accent-ink', tokens.accentInk)
 }
 
-export function applyTypography(fontFamily: string, fontSize: number, uiScale: number): void {
+export function applyTypography(
+  fontFamily: string,
+  fontSize: number,
+  uiScale: number,
+  terminal?: TerminalSettings
+): void {
   const root = document.documentElement
   root.style.setProperty('--mono', fontFamily)
   root.style.setProperty('--term-size', `${fontSize}px`)
   root.style.setProperty('--ui-scale', String(uiScale))
+  if (!terminal) return
+  /*
+   * What the paused tab's ghost screen and the pane's card read. The ghost
+   * used to be drawn at --fs-sm / --lh-tight while the live pane drew at the
+   * font setting and 1.2, so a resumed tab visibly jumped; both follow the
+   * same two numbers now.
+   */
+  root.style.setProperty('--term-lh', String(terminal.lineHeight))
+  root.style.setProperty('--term-pad', `${terminal.padding}px`)
+  root.dataset.termFrame = terminal.frame ? 'true' : 'false'
 }
 
-/** xterm wants its own palette object rather than CSS variables. */
+function rgba(hex: string, alpha: number): string {
+  const c = parseColor(hex)
+  return c ? `rgba(${c.r}, ${c.g}, ${c.b}, ${alpha})` : hex
+}
+
+/**
+ * xterm wants its own palette object rather than CSS variables.
+ *
+ * The scrollbar keys are derived here rather than stored on the theme: xterm 6
+ * draws its own slider and, with nothing said, falls back to the foreground at
+ * 20/40/50% — the one control in the pane that ignored every theme's accent
+ * and read the same grey on Moss, Nocturne and Daylight alike.
+ */
 export function terminalTheme(theme: Theme): Record<string, string> {
-  return { ...theme.terminal }
+  const c = theme.colors
+  return {
+    ...theme.terminal,
+    scrollbarSliderBackground: rgba(c.textFaint, 0.35),
+    scrollbarSliderHoverBackground: rgba(c.textMuted, 0.5),
+    scrollbarSliderActiveBackground: rgba(c.accent, 0.7),
+    overviewRulerBorder: c.borderSubtle
+  }
 }

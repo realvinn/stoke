@@ -43,10 +43,18 @@ export function modelLabel(model: string | null): string {
   const oneM = /\[1m\]|-1m\b/i.test(model)
   const base = model.replace(/\[1m\]/i, '').replace(/^claude-/, '')
   const parts = base.split('-').filter(Boolean)
-  const pretty = parts
-    .slice(0, 2)
-    .map((p) => (/^\d/.test(p) ? p : p.charAt(0).toUpperCase() + p.slice(1)))
-    .join(' ')
+  /*
+   * The family, then every short numeric part joined with a dot: `opus-5` is
+   * "Opus 5", `fable-5-1` is "Fable 5.1", and `haiku-4-5-20251001` is
+   * "Haiku 4.5" — the eight-digit date is a release stamp, not a version.
+   */
+  const family = parts[0] ?? base
+  const version = parts
+    .slice(1)
+    .filter((p) => /^\d{1,2}$/.test(p))
+    .join('.')
+  const name = family.charAt(0).toUpperCase() + family.slice(1)
+  const pretty = version ? `${name} ${version}` : name
   return oneM ? `${pretty} · 1M` : pretty
 }
 
