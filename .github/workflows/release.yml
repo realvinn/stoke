@@ -49,63 +49,30 @@ jobs:
 
       - run: npm run typecheck
 
-      # `npm run check` is NOT used here, and that is deliberate rather than an
-      # oversight. One of its suites is machine-dependent by design and cannot
-      # pass on a clean runner:
+      # `npm run check` is NOT used here, and that is deliberate: it ends in
+      # `npm run build`, which the build jobs below already do per-platform, and
+      # two of its suites cannot run on a clean Linux runner. But the list of
+      # what DOES run is no longer transcribed here — `scripts/ci-verify.mjs`
+      # derives it from package.json's own `check` chain and runs everything in
+      # it except a short, asserted exclusion list.
       #
-      #   verify:context  reads the real transcripts in ~/.claude/projects to
-      #                   check the context meter against actual sessions. On a
-      #                   runner that directory does not exist and the suite
-      #                   throws ENOENT. Its value is that it runs against real
-      #                   data, so making it synthesise fixtures would delete the
-      #                   reason it exists.
+      # That indirection is the fix for a bug this file had twice. It used to
+      # carry twenty hand-written `- run:` lines under a comment telling the
+      # next person to keep them in step with the chain. The instruction was
+      # already being ignored when it was written — claude-config, activity,
+      # restore and cli had drifted out — and after 36d491f fixed those by hand,
+      # it drifted again within two days: verify:theme-gen (f403366),
+      # verify:remote (7b65894) and verify:drop (4c42ba9) each joined `check`
+      # and none of them joined this file. So the theme generator's
+      # byte-for-byte reproduction, a dropped filename's shell quoting and where
+      # the phone link points were all enforced locally and none of them gated a
+      # release.
       #
-      # verify:ssh used to be excluded here too, for a reason that no longer
-      # holds: it asserted six host aliases out of one particular desk's real
-      # ~/.ssh/config, and it threw on OpenSSH >= 9, which rejects its own
-      # two-word alias fixture. Both were fixed, so it runs here now — and it is
-      # worth running, because it is the only suite that checks the argv Stoke
-      # hands a remote `claude` against what ssh itself resolves.
-      #
-      # verify:selection is excluded for a different reason: it is not impure,
-      # it just needs a browser. It opens a real Electron BrowserWindow to drive
-      # xterm's own DOM event handling, which is the only place the bug it
-      # guards is visible at all — and a Linux runner has no display, so it would
-      # need xvfb rather than merely being added to the list below. Left out
-      # deliberately until someone wires that up; it runs in `npm run check`.
-      #
-      # Everything else is pure and runs anywhere, so it runs here. Keep this
-      # list in step with package.json's `check` chain when a suite is added.
-      #
-      # That instruction was already being ignored when it was written: four of
-      # the chain's suites had drifted out of this list — claude-config,
-      # activity, restore and cli — so `npm run check` enforced them and CI did
-      # not, which is the wrong way round for the list a release gate reads. All
-      # four are hermetic (claude-config runs against a temp CLAUDE_CONFIG_DIR,
-      # restore says "no electron, no window" in its own header, activity builds
-      # synthetic transcripts, cli redirects HOME into a temp tree) and all four
-      # pass on a clean checkout, so there was never a reason for the gap. The
-      # two exclusions above are the only intended ones.
-      - run: npm run verify:statusline
-      - run: npm run verify:unicode
-      - run: npm run verify:usage
-      - run: npm run verify:profiles
-      - run: npm run verify:settings
-      - run: npm run verify:claude-config
-      - run: npm run verify:folders
-      - run: npm run verify:color
-      - run: npm run verify:activity
-      - run: npm run verify:worklog-gate
-      - run: npm run verify:cli
-      - run: npm run verify:tabs
-      - run: npm run verify:restore
-      - run: npm run verify:shortcuts
-      - run: npm run verify:updates
-      - run: npm run verify:worklog-runner
-      - run: npm run verify:worklog-retry
-      - run: npm run verify:worklog-recall
-      - run: npm run verify:worklog-autoscan
-      - run: npm run verify:ssh
+      # Two lists that must agree, updated by hand, is the defect — not the
+      # people who did not update the second one. There is one list now, and it
+      # is the one you already have to edit. `npm run verify:ci -- --list`
+      # prints what a push would run without running it.
+      - run: npm run verify:ci
 
       - run: npm run build
 

@@ -39,6 +39,7 @@
     "verify:security": "node scripts/verify-remote-security.mjs",
     "verify:extract": "node scripts/verify-extract.mjs",
     "measure:worklog": "node scripts/measure-worklog-cost.mts",
+    "verify:ci": "node scripts/ci-verify.mjs",
     "check": "npm run typecheck && npm run verify:context && npm run verify:statusline && npm run verify:unicode && npm run verify:usage && npm run verify:profiles && npm run verify:settings && npm run verify:claude-config && npm run verify:folders && npm run verify:color && npm run verify:theme-gen && npm run verify:activity && npm run verify:worklog-gate && npm run verify:tabs && npm run verify:restore && npm run verify:shortcuts && npm run verify:drop && npm run verify:cli && npm run verify:updates && npm run verify:worklog-runner && npm run verify:worklog-retry && npm run verify:worklog-recall && npm run verify:worklog-autoscan && npm run verify:ssh && npm run verify:remote && npm run verify:selection && npm run build",
     "icon": "electron scripts/make-icon.cjs",
     "mac:signing-secrets": "bash scripts/mac-signing-secrets.sh",

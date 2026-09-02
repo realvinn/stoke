@@ -720,3 +720,27 @@ for (const t of BUILT_IN_THEMES) {
     'x'
   )
 }
+
+/*
+ * The tally, and it has to stay the last statement in this file.
+ *
+ * There was no tally at all until 0.9.3. `failures` was declared, incremented
+ * by all four assertion helpers, printed as `FAIL` on every failing line — and
+ * then simply discarded when the script ended, because nothing in the 722 lines
+ * above ever touched `process.exitCode` or `process.exit`. `node
+ * scripts/verify-color.mts; echo $?` printed 0 no matter what the run said.
+ *
+ * That is worse than the gotcha 50 shape it resembles. There, an exit code was
+ * assigned too early, so a third of verify-tabs could not fail; here NONE of
+ * this file could fail, and this file is the only automated check for the APCA
+ * and WCAG maths, the ladder's Lc floors, and the accent-ink derivation across
+ * every built-in theme crossed with every profile swatch — the two things
+ * gotchas 43 and 44 exist to protect. `npm run check` would have gone green
+ * over a regression that reprinted gotcha 44's 1.43:1 focus ring, and so would
+ * the release gate, which runs this suite as its own CI step.
+ *
+ * Counterfactual, measured both ways before this line was added: with a floor
+ * forced to fail the run printed FAIL and exited 0; with this line it exits 1.
+ */
+console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
+process.exitCode = failures ? 1 : 0
