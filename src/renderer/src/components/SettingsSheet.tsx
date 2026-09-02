@@ -1017,8 +1017,9 @@ function TerminalSettingsPane({
         <span>
           <span className="field-label">Frame the terminal</span>
           <span className="field-hint">
-            Draws the pane as a rounded card inset from the page, with real padding, so the CLI
-            reads as a document rather than a console.
+            Off, the terminal fills the pane edge to edge, which is what a terminal does. On, it
+            is a rounded card inset from the page — worth turning on with a wallpaper behind the
+            window, which is what it was built for.
           </span>
         </span>
       </label>

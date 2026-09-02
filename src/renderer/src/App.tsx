@@ -1304,9 +1304,28 @@ export function App(): React.JSX.Element {
     setTabs((list) => moveTab(list, dragId, overId))
   }, [])
 
+  /*
+   * Closing several tabs inside one frame used to close ONE of them.
+   *
+   * Every call read `tabs` as the last render left it, so five clicks in a tick
+   * each computed "the whole list minus my own tab" from the same starting
+   * list, and the last `setTabs` won — four closes silently discarded, with the
+   * processes behind them already killed. Measured over CDP: five close buttons
+   * clicked in one expression left five tabs standing, one of them pointing at
+   * a `claude` that had been terminated.
+   *
+   * The fix is the ref pair this file already keeps for the keydown listener,
+   * written here as well as on render, so a second call in the same tick reads
+   * what the first one decided. That is gotcha 20's shape — claim before the
+   * act, not after — and it is why this no longer depends on `tabs` at all,
+   * which also stops the window keydown listener rebuilding on every tab
+   * change. `cycleTab`'s functional-updater fix is the same bug one commit
+   * earlier; a stepping or filtering handler cannot read render-time state.
+   */
   const closeTab = useCallback(
     (id: string): void => {
-      const tab = tabs.find((t) => t.id === id)
+      const list = tabsRef.current
+      const tab = list.find((t) => t.id === id)
       if (!tab) return
       // A paused tab has no process — `ptyId` is '' — so there is nothing for
       // `pty.kill` to do. `PtySessions.kill('')` is already a harmless no-op
@@ -1319,16 +1338,17 @@ export function App(): React.JSX.Element {
       dropRestoredScreen(id)
       // Never leave the strip empty: closing the last tab lands on a fresh New
       // Project tab, which is where the app starts anyway.
-      const next = tabs.filter((t) => t.id !== id)
+      const next = list.filter((t) => t.id !== id)
       const replacement = next.length ? next : [newTab()]
+      tabsRef.current = replacement
       setTabs(replacement)
-      if (activeTabId === id) {
-        setActiveTabId(
-          next.length ? neighbourOf(tabs.map((t) => t.id), id) : replacement[0].id
-        )
+      if (activeTabIdRef.current === id) {
+        const nextId = next.length ? neighbourOf(list.map((t) => t.id), id) : replacement[0].id
+        activeTabIdRef.current = nextId
+        setActiveTabId(nextId)
       }
     },
-    [tabs, activeTabId, dropRestoredScreen]
+    [dropRestoredScreen]
   )
 
   /**

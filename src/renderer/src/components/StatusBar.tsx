@@ -196,8 +196,15 @@ export function StatusBar({
 
   return (
     <footer className="statusbar">
+      {/*
+        The one item allowed to shrink. Everything else in this bar is a fixed
+        few characters; the path is unbounded, so when the window is narrow it
+        is the path that must give way — otherwise it pushes the context meter
+        and the relaunch pill off the end of a bar that is `overflow: hidden`,
+        and the two things you most need to see are the two that leave.
+      */}
       <button
-        className="status-btn status-item mono"
+        className="status-btn status-item status-shrink mono"
         onClick={() => onRevealProject(tab.cwd)}
         title={`Open ${tab.cwd}`}
       >
@@ -210,7 +217,12 @@ export function StatusBar({
         {PERMISSION_LABELS[tab.permissionMode]}
       </span>
 
-      <span className="status-item">{modelLabel(model)}</span>
+      {/*
+        Only when a model was actually chosen. `modelLabel(null)` is the word
+        "default", which is not a fact about this session — it is the absence of
+        one, printed in the row where every other item is something you set.
+      */}
+      {model && <span className="status-item">{modelLabel(model)}</span>}
 
       {tab.effort !== 'default' && <span className="status-item">effort: {tab.effort}</span>}
 
@@ -220,7 +232,10 @@ export function StatusBar({
         later; `working` carries a pulse so a long turn does not read as hung.
       */}
       {activity && tab.status === 'running' && (
-        <span className="status-item status-activity" data-state={activity.state}>
+        <span
+          className="status-item status-activity status-shrink"
+          data-state={activity.state}
+        >
           <span className="status-activity-dot" aria-hidden="true" />
           {activity.state === 'working'
             ? 'Claude is working…'

@@ -31,7 +31,17 @@ export const TERMINAL_DEFAULTS: TerminalSettings = {
   boldWeight: 600,
   contrastBoost: 1,
   smoothScroll: true,
-  frame: true,
+  /*
+   * Off: the terminal is the page, edge to edge.
+   *
+   * The framed card shipped as the default and it is the wrong default. A
+   * terminal that fills its pane is what every terminal does, and the card —
+   * inset hairline, shadow, sunken ground behind it — is a deliberate look
+   * rather than a neutral one. It stays as an option in the Terminal pane
+   * because it is genuinely nicer with a wallpaper behind it, which is what it
+   * was built alongside.
+   */
+  frame: false,
   padding: 12
 }
 

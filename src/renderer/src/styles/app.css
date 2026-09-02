@@ -550,8 +550,29 @@ body {
   display: flex;
   align-items: center;
   gap: var(--space-8);
-  min-width: 0;
-  max-width: 15rem;
+  /*
+   * Every tab the same width, which is what makes a strip read as a strip.
+   *
+   * They used to size to their own content, so "dev" was 88px beside a 240px
+   * ai-title and the row looked like a ransom note — and worse, a tab's width
+   * changed under the pointer the moment Claude renamed the session, which is
+   * how you click Close on the tab next door.
+   *
+   * One width for all of them, shrinking together when the strip fills and
+   * never growing past it. Below the floor the list scrolls rather than
+   * shrinking further, because a 4rem tab shows no title at all.
+   *
+   * A real `width`, and the two obvious flex spellings both failed here.
+   * `flex: 1 1 0` needs free space to share and there is none: the list
+   * shrink-wraps its content. `flex: 0 1 12rem` should have contributed 192px
+   * to that shrink-wrap and did not — measured in the running app, a lone tab
+   * with `flex-basis: 192px` still came out at its 112px minimum, because
+   * Chromium sizes the wrapping list from the items' CONTENT when they are
+   * shrinkable, not from their basis. A definite width contributes itself.
+   */
+  width: 12rem;
+  flex: 0 1 auto;
+  min-width: 7rem;
   /*
    * Three values: no top padding, 8px inline, and a bottom padding that is the
    * strip's own top padding plus the tab's top border.
@@ -601,15 +622,17 @@ body {
   border-radius: var(--r-full);
 }
 
+/*
+ * The tab being dragged, which is now the tab you are actually moving: the
+ * strip reorders live under the pointer rather than marking a landing spot.
+ *
+ * The dashed outline that used to mark the target is gone with it. Two hints
+ * for one gesture — a ghosted tab here, a dotted rectangle over there — meant
+ * reading both and working out which was the answer, and the dashes read as a
+ * selection or an error as often as a destination.
+ */
 .tab[data-dragging='true'] {
-  opacity: 0.4;
-}
-
-/* Where it will land. An inset outline rather than a background, so it does
-   not read as hover on the tab the pointer happens to be over. */
-.tab[data-drop='true'] {
-  outline: 1px dashed var(--accent-ink);
-  outline-offset: -1px;
+  opacity: 0.6;
 }
 
 .tab-label {
@@ -2596,6 +2619,43 @@ body {
   align-items: center;
   gap: var(--space-8);
   white-space: nowrap;
+  /* Fixed by default: only what carries `status-shrink` gives way. */
+  flex-shrink: 0;
+}
+
+/*
+ * A hairline between adjacent readings, so the row is a set of facts rather
+ * than one run-on sentence. Only between two `.status-item`s: the pills carry
+ * their own outline and a rule beside one reads as a second border.
+ */
+.status-item + .status-item {
+  border-left: 1px solid var(--border-subtle);
+  padding-left: var(--space-12);
+}
+
+/*
+ * The path and the activity line, which are the only two of unbounded length.
+ * The bar is `overflow: hidden`, so without this a long path or a long
+ * attention message pushes the context meter and the relaunch pill out of the
+ * window instead of ellipsising itself.
+ */
+.status-shrink {
+  min-width: 3rem;
+  flex-shrink: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: block;
+  line-height: var(--statusbar-h, 1.9rem);
+}
+
+/* The dot has to stay beside its text, which a block box would drop below. */
+.status-activity.status-shrink {
+  display: flex;
+}
+
+.status-activity.status-shrink > :not(.status-activity-dot) {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .status-spacer {
@@ -2879,8 +2939,15 @@ body {
 /*
  * Deliberately the same eyebrow as `.sidebar-group`: this is that element's job
  * one panel over, and two rules that look nearly alike read as a mistake even
- * when both are correct. Its horizontal padding matches `.settings-nav button`
- * so the heading and the rows it heads share a left edge.
+ * when both are correct.
+ *
+ * The heading sits a step to the LEFT of the rows it heads. They shared a left
+ * edge before, which is tidy and says nothing: four headings and ten rows all
+ * starting at the same x is a flat list with some words in it. The rows are
+ * indented rather than the heading outdented so the panel's own left margin is
+ * unchanged, and the indent is on the button's padding rather than the list's,
+ * so the hover fill still spans the full column and the row stays as big a hit
+ * target as it was.
  */
 .settings-nav-group-title {
   padding: var(--space-8) var(--space-12) var(--space-4);
@@ -2902,7 +2969,7 @@ body {
  */
 .settings-nav button {
   text-align: left;
-  padding: var(--space-8) var(--space-12);
+  padding: var(--space-8) var(--space-12) var(--space-8) var(--space-24);
   border: none;
   border-radius: var(--r-md);
   background: transparent;

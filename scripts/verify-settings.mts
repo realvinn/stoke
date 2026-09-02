@@ -129,14 +129,21 @@ check('and off stays off', hydrateSettings({ hideStatusLine: false }).hideStatus
 
 console.log('\nthe terminal block, field by field')
 check('a machine that has never said gets the defaults', hydrateSettings({}).terminal.lineHeight, 1.3)
-check('and a framed pane', hydrateSettings({}).terminal.frame, true)
+/*
+ * Unframed by default: the terminal fills its pane. The frame shipped as the
+ * default first and is a deliberate look rather than a neutral one, so it is an
+ * option now — which means BOTH directions have to hold, or "make it a setting"
+ * quietly becomes "we changed it".
+ */
+check('and an unframed pane, edge to edge', hydrateSettings({}).terminal.frame, false)
+check('while a machine that asked for the frame keeps it', hydrateSettings({ terminal: { frame: true } }).terminal.frame, true)
 check('line height is clamped to the range xterm draws sanely', [hydrateSettings({ terminal: { lineHeight: 0.4 } }).terminal.lineHeight, hydrateSettings({ terminal: { lineHeight: 9 } }).terminal.lineHeight], [1, 1.6])
 check('and snapped to twentieths, so 1.333 does not survive as a slider position', hydrateSettings({ terminal: { lineHeight: 1.333 } }).terminal.lineHeight, 1.35)
 check('a cursor style outside the vocabulary falls back', hydrateSettings({ terminal: { cursorStyle: 'beam' } }).terminal.cursorStyle, 'bar')
 check('a bold weight that is not 600 or 700 falls back', hydrateSettings({ terminal: { boldWeight: 900 } }).terminal.boldWeight, 600)
 check('a contrast boost outside the three offered falls back', hydrateSettings({ terminal: { contrastBoost: 3 } }).terminal.contrastBoost, 1)
 check('padding is bounded and whole', [hydrateSettings({ terminal: { padding: -4 } }).terminal.padding, hydrateSettings({ terminal: { padding: 99 } }).terminal.padding, hydrateSettings({ terminal: { padding: 7.6 } }).terminal.padding], [0, 32, 8])
-check('one bad field does not take the others with it', hydrateSettings({ terminal: { lineHeight: 'x', cursorBlink: false } }).terminal, { lineHeight: 1.3, letterSpacing: 0, cursorStyle: 'bar', cursorBlink: false, boldWeight: 600, contrastBoost: 1, smoothScroll: true, frame: true, padding: 12 })
+check('one bad field does not take the others with it', hydrateSettings({ terminal: { lineHeight: 'x', cursorBlink: false } }).terminal, { lineHeight: 1.3, letterSpacing: 0, cursorStyle: 'bar', cursorBlink: false, boldWeight: 600, contrastBoost: 1, smoothScroll: true, frame: false, padding: 12 })
 
 console.log('\nthe wallpaper block')
 check('none by default', hydrateSettings({}).wallpaper, { path: null, blur: 12, dim: 0.35, opacity: 0.85 })

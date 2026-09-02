@@ -80,7 +80,6 @@ export function TitleBar({
 }: Props): React.JSX.Element {
   const isMac = platform === 'darwin'
   const [dragId, setDragId] = useState<string | null>(null)
-  const [overId, setOverId] = useState<string | null>(null)
   const listRef = useRef<HTMLDivElement>(null)
 
   /*
@@ -156,30 +155,49 @@ export function TitleBar({
                 }
                 draggable
                 data-dragging={tab.id === dragId ? 'true' : undefined}
-                data-drop={tab.id === overId ? 'true' : undefined}
                 onDragStart={(e) => {
                   setDragId(tab.id)
                   e.dataTransfer.effectAllowed = 'move'
                   // Chromium refuses to begin a drag with an empty payload.
                   e.dataTransfer.setData('text/plain', tab.id)
                 }}
+                /*
+                 * The strip reorders as you drag, rather than marking where the
+                 * tab would land and moving it on release. You are moving the
+                 * tab, so the tab moves.
+                 *
+                 * The midpoint test is what makes that stable. Reordering the
+                 * moment the pointer enters a neighbour means the list changes
+                 * under the cursor, the cursor is then over the tab it just
+                 * displaced, and the two swap back and forth for as long as you
+                 * hold still — a flicker, not a reorder. Requiring the pointer
+                 * to be PAST the target's centre, in the direction of travel,
+                 * means the swap it triggers moves the target behind the
+                 * pointer rather than under it, so it cannot immediately
+                 * re-trigger. `moveTab` returns the same array when there is
+                 * nothing to do, so the repeats dragover fires cost nothing.
+                 */
                 onDragOver={(e) => {
                   if (!dragId || dragId === tab.id) return
                   e.preventDefault()
                   e.dataTransfer.dropEffect = 'move'
-                  setOverId(tab.id)
+                  const from = tabs.findIndex((t) => t.id === dragId)
+                  const to = tabs.findIndex((t) => t.id === tab.id)
+                  if (from < 0 || to < 0) return
+                  const box = e.currentTarget.getBoundingClientRect()
+                  const middle = box.left + box.width / 2
+                  if (to > from ? e.clientX > middle : e.clientX < middle) {
+                    onReorderTab(dragId, tab.id)
+                  }
                 }}
-                onDragLeave={() => setOverId((cur) => (cur === tab.id ? null : cur))}
                 onDrop={(e) => {
+                  // The move already happened. This only ends the gesture —
+                  // and still has to preventDefault, or Chromium treats the
+                  // drop as navigation to the text payload.
                   e.preventDefault()
-                  if (dragId && dragId !== tab.id) onReorderTab(dragId, tab.id)
                   setDragId(null)
-                  setOverId(null)
                 }}
-                onDragEnd={() => {
-                  setDragId(null)
-                  setOverId(null)
-                }}
+                onDragEnd={() => setDragId(null)}
               >
                 <TabIndicator
                   kind={tab.kind}
