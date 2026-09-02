@@ -1786,6 +1786,113 @@ scripts/          the verify-*.mts suites, make-icon.cjs
     is cut off and I cannot scroll to it", and it only appears once something inside grows —
     which is why expanding a disclosure is the classic trigger.
 
+61. **Windows has TWO shells for a `statusLine`/hook command, and they want opposite syntax.**
+    Claude Code's own resolver is `cs() ? "bash" : "powershell"` where `cs()` is "not Windows, or
+    Git Bash was located" — read out of the 2.1.x bundle, along with `de()`, which searches
+    `CLAUDE_CODE_GIT_BASH_PATH` (accepted only if its basename is `bash.exe`/`sh.exe`/`bash`/`sh`
+    and the file exists, otherwise ignored with a warning), then `C:\Program Files\Git\bin\bash.exe`,
+    then `C:\Program Files (x86)\Git\bin\bash.exe`, then `dirname(which git)/../../bin/bash.exe`.
+    So **Git Bash is the preferred interpreter and PowerShell is the fallback**, and the CLI's own
+    help text agrees: "the command is executed through Git Bash". Stoke sets no `shell` field on
+    either entry, so that default governs.
+
+    PowerShell parses a line beginning with a quoted string as a string EXPRESSION, so
+    `"C:\...\run.cmd" "key"` is a ParserError and needs the call operator `&`. A POSIX shell —
+    which Git Bash is — treats a **leading `&` as a syntax error outright**: `bash -c '& echo hi'`
+    gives ``syntax error near unexpected token `&'``, and so do sh and zsh. There is no single
+    string that satisfies both, so the interpreter is detected (`gitBashPath` in `statusLine.ts`,
+    which mirrors `de()` exactly and takes `env`/`exists` as arguments so it can be asserted from
+    a Mac).
+
+    0.5.4 added the `&` unconditionally under a comment asserting it was "harmless in the Git Bash
+    branch, where `&` is only meaningful when it *ends* a command". That is false, and it inverted
+    the bug: the fix for machines without Git for Windows broke every machine with it. On those
+    the shim never ran — no payload (no context ring, nothing for the plan-limit chip), none of the
+    three hooks, and the user's own configured statusLine gone too, since the wrapper that re-runs
+    it as pass-through is what failed to start. **`verify:statusline` was asserting the `&` on
+    win32 unconditionally**, repeating the same false claim in its own comment — gotcha 10's defect
+    a second time, a suite pinning a bug as correct.
+
+62. **A suite with no exit code is not a weaker suite, it is not a suite.** `verify-color.mts`
+    declared `failures`, incremented it in all four assertion helpers, printed `FAIL` on every
+    failing line — and never touched `process.exitCode` or `process.exit` in 722 lines, so
+    `node scripts/verify-color.mts; echo $?` printed 0 whatever the run said. It is the only
+    automated check for the APCA and WCAG maths, the ladder's Lc floors and the accent-ink
+    derivation, so `npm run check` AND the release gate would both have gone green over a
+    regression reprinting gotcha 44's 1.43:1 focus ring. Worse than gotcha 50's ordering bug, where
+    only a third of a file could not fail. Check both: `grep -L 'process.exit' scripts/verify-*.mts`
+    (note `verify-selection` legitimately uses `app.exit`), and that the tally is the LAST statement.
+
+    Related, and the same class one level up: **two lists that must agree, maintained by hand, will
+    diverge — including a list whose own comment tells you to keep it in step.** The release
+    workflow carried twenty `- run:` lines under exactly that instruction; it had already drifted
+    when the instruction was written, was fixed by hand in 36d491f, and drifted again within two
+    days as verify:theme-gen, verify:remote and verify:drop each joined `check` and not the
+    workflow. `scripts/ci-verify.mjs` derives the list from the `check` chain now and fails on a
+    stale exclusion; `npm run verify:ci -- --list` prints the plan without running it.
+
+63. **`setSettings` writes the whole settings file synchronously, and seven controls in the sheet
+    are sliders.** `persist` is `writeFileSync` + `renameSync` on the main thread, and a
+    `<input type="range">` fires `onChange` continuously while dragged — so a drag was tens of full
+    serialise-and-rename cycles a second, each blocking the event loop and with it every PTY reply.
+    Gotcha 40 reached through a slider. Coalesced in `store.ts` on BOTH edges, deliberately: a
+    single discrete change still writes immediately, so the ordinary case gains no window in which
+    a crash loses a setting, and only a burst collapses. Measured: a 40-tick drag produces one file
+    version during the burst and one after. `flushSettings()` runs from `before-quit` **and** the
+    window's `closed` handler, because on macOS the former does not fire when the last window
+    closes (gotcha 35).
+
+    Two more in the same panel, both invisible to any suite. **Closing the sheet fires no `blur`**
+    — App renders it as `{settingsOpen && <SettingsSheet …>}`, so Escape unmounts the tree, and a
+    draft committed on blur is simply lost. HostsSettings and ProfilesSettings flush from an
+    unmount cleanup, through a ref updated on render so the cleanup sees the last drafts rather
+    than the first (gotcha 31). And **`Number("")` is 0, which is finite**, so `clampUiScale` on an
+    emptied number field returned the FLOOR rather than rejecting it — selecting the Interface
+    scale box and typing shrank the whole UI to 0.8 on the first keypress.
+
+64. **The context meter counted three of the four usage fields.** `contextUsed` summed
+    `input + cache_read + cache_creation` — the prompt the model was GIVEN — and dropped
+    `output_tokens`, which is in the conversation the instant the turn ends, i.e. exactly the
+    steady state someone reads the ring in. Measured across the four largest real transcripts here,
+    2,486 consecutive turn pairs: the next prompt grew by at least the previous output in 2,482 of
+    them, the rest at cache boundaries. It errs the safe way now — verify-context's own comment
+    names understating context pressure as "the one direction this codebase treats as dangerous".
+
+65. **`--accent-contrast` is chosen for the solid fill and painted on the hover fill too.**
+    `.btn[data-variant='primary']` sets `color` once and swaps only `background`/`border-color` on
+    `:hover`, and `accentHover` moved OKLCH L a fixed step AWAY from the page — which is TOWARDS
+    the ink whenever the ink is the far one, i.e. usually. 28 of the 108 theme × accent
+    combinations measured under Lc 60 on hover, Clay's own shipped accent among them (63.3 solid,
+    57.7 hover). `verify:color` asserted the ink against `--accent` and never mentioned
+    `accentHover`, so `npm run check` was green throughout: gotcha 44's lesson one property along.
+    Fixed by measuring (`hoverFor`) rather than by shrinking `HOVER_STEP`, which would have dulled
+    all 108 to repair 28 — and the suite now asserts the hover is still visibly DIFFERENT from the
+    fill, because clearing a contrast floor by not moving would satisfy the first assertion by
+    deleting the affordance.
+
+    While extending `contrastReport` to the semantics, the same trap as `borderSubtle`: checking at
+    `SEMANTIC_LC` exactly fired on **six of the twelve built-in themes**, because `semantic()`
+    solves in OKLCH and rounds to 8-bit, landing at Lc 63.7-64.1 against a 64 target. A wrong floor
+    rather than six wrong themes. The invariant to assert is the one that catches it — a GENERATED
+    theme reports nothing — and `verify:theme-gen` now does, for all twelve.
+
+66. **A read-modify-write with an `await` in it needs a queue even when only Stoke writes.**
+    `patchClaudeSetting` reads `~/.claude/settings.json`, sets one key and renames; two overlapping
+    calls both read the pre-write file and the later rename discards the earlier key, while BOTH
+    callers are returned `ok: true`. Reproduced against a real temp file: patching `verbose` and
+    `autoCompactEnabled` through `Promise.all` left only `autoCompactEnabled`. Not exotic —
+    ClaudeCodeSettings disables only the row currently in flight, so a second control pressed
+    inside one IPC round trip is the ordinary case. A promise chain is enough here (unlike
+    `~/.claude.json`, whose lock exists to arbitrate with the CLI — gotcha 38).
+
+    The same shape reached three more places this round, all of them "a second press before the
+    first resolved": `resumeTabFor` and `restartTab` lacked the guard gotcha 51 gave `relaunchTab`,
+    and `Resume all` + `Close them` (adjacent buttons) dropped every tab while its resume was still
+    in flight, after which each `pty.start` found its `replaceTabId` gone and **appended** — the
+    tabs came back with live processes the close had never killed, because a paused tab has no PTY
+    to kill. And the manual "Update now" shared no lock with the six-hourly `refreshCliUpdate`, so
+    it could run a second `claude update` against the same install.
+
 ## Standing traps when driving the app
 
 Not about any one module, and each cost real time at least once. Carried over from the 0.3.0
@@ -1872,11 +1979,14 @@ and an OS-level keystroke needs the Accessibility permission this sandbox lacks.
 stylesheet is proven, the signal that sets the attribute is only read. Enter full screen by hand
 once before believing it.
 
-**Windows carries the opposite risk now: nothing in this round of work ran there.** One change
-in it is actively suspect on that platform: `statusLineCommand()` emits `"<path>" "<id>"` — two
-quoted arguments on one command line — and `cmd.exe`'s own quote-stripping rule only behaves
-like a POSIX shell for a single quoted pair; more than two quote characters on the line and its
-rules diverge, potentially stripping the outer quotes that keep the two arguments apart. That
-shim path has not been exercised since it was written. Treat it as unverified, not merely
-untested, until someone runs a statusLine-driven session through `cmd.exe` and checks the
-payload actually arrives.
+**Windows carries the opposite risk: no round of work here has run there.** The statusLine and
+hook commands are still the suspect part, and the reason has moved. `cmd.exe`'s quote-stripping
+was the original worry and is not on this path at all — the CLI runs the command through Git Bash
+or PowerShell, never cmd (gotcha 61). What replaced it is that Stoke must now DETECT which of
+those two it will be, because they need opposite syntax and the previous code assumed one of them
+unconditionally and got it backwards. `gitBashPath` mirrors the CLI's own locator and
+`verify:statusline` asserts both branches plus ten cases over the locator itself — but every one
+of those assertions runs against a synthetic filesystem on a Mac. **Nobody has watched a payload
+file appear on real Windows.** Treat it as unverified, not merely untested, until someone runs a
+statusLine-driven session there — once with Git for Windows installed and once without, which are
+genuinely different code paths.
