@@ -562,4 +562,14 @@ export interface StokeApi {
    * folder to become a project want `projects.open()` instead.
    */
   pickFolder(): Promise<string | null>
+
+  /**
+   * The absolute path of a dropped `File`, or null when it has none.
+   *
+   * Null is a real answer rather than a failure: a drag out of a browser, or a
+   * directory Chromium will not resolve, both arrive as Files backed by no
+   * path on disk. See the preload for why this cannot be done in either of the
+   * other two processes.
+   */
+  pathForFile(file: File): string | null
 }

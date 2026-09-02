@@ -6,6 +6,7 @@ import { WebglAddon } from '@xterm/addon-webgl'
 import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes'
 import type { ClipboardPeek } from '@shared/api'
 import type { TerminalSettings, Theme } from '@shared/types'
+import { dropText } from '@shared/drop'
 import { createRecorder, voiceSupported, type Recorder } from '@shared/voice'
 import { attachSink } from '../lib/ptyBus'
 import { isButtonlessMotionReport } from '../lib/mouseReport'
@@ -147,6 +148,15 @@ export function TerminalView({
   const [voiceOn, setVoiceOn] = useState(false)
   const [voiceStatus, setVoiceStatus] = useState<'idle' | 'recording' | 'working'>('idle')
   const [voiceError, setVoiceError] = useState<string | null>(null)
+  /** Whether a file drag is currently over this pane, for the drop ring. */
+  const [dropping, setDropping] = useState(false)
+  /*
+   * `dragleave` fires when the pointer crosses into a CHILD, and this pane is
+   * full of them — xterm's canvases and the helper textarea. Counting enters
+   * against leaves is what makes the ring survive the pointer moving across
+   * the terminal rather than flickering off on the first child boundary.
+   */
+  const dragDepth = useRef(0)
   const recorderRef = useRef<Recorder | null>(null)
   /*
    * getUserMedia is async and the first call waits on a permission prompt, so
@@ -1054,10 +1064,75 @@ export function TerminalView({
     return () => window.clearTimeout(id)
   }, [active, tab.ptyId])
 
+  /*
+   * A file dropped on the pane types its own path, which is what Terminal.app
+   * and iTerm2 do and the shortest way to hand Claude Code a screenshot.
+   *
+   * Three things make this more than an `ondrop`. Only a drag carrying FILES is
+   * taken — the tab strip drags a tab as `text/plain` (`TitleBar.tsx:162`), and
+   * without this test dragging a tab across the terminal would light the drop
+   * ring and then paste nothing. `preventDefault` on **dragover** is what makes
+   * a drop happen at all; without it the browser default wins, and in Electron
+   * that default is to NAVIGATE the window to the dropped file, replacing the
+   * whole app with a picture (main also refuses that now, as a backstop). And
+   * the path comes from `webUtils` through the preload, because Electron 32
+   * removed `File.path`.
+   */
+  const filesInDrag = (e: React.DragEvent): boolean =>
+    Array.from(e.dataTransfer.types).includes('Files')
+
+  const onDragEnter = (e: React.DragEvent): void => {
+    if (!filesInDrag(e)) return
+    dragDepth.current += 1
+    setDropping(true)
+  }
+
+  const onDragOver = (e: React.DragEvent): void => {
+    if (!filesInDrag(e)) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'copy'
+  }
+
+  const onDragLeave = (e: React.DragEvent): void => {
+    if (!filesInDrag(e)) return
+    dragDepth.current = Math.max(0, dragDepth.current - 1)
+    if (dragDepth.current === 0) setDropping(false)
+  }
+
+  const onDrop = (e: React.DragEvent): void => {
+    if (!filesInDrag(e)) return
+    e.preventDefault()
+    dragDepth.current = 0
+    setDropping(false)
+    /*
+     * `paste()` rather than a raw pty write, for the same reason the clipboard
+     * path uses it: it wraps the text in bracketed paste when the application
+     * asked for it, so Claude Code receives one paste rather than a burst of
+     * keystrokes it might act on.
+     */
+    const term = termRef.current
+    if (!term) return
+    const paths = Array.from(e.dataTransfer.files)
+      .map((f) => window.stoke.pathForFile(f))
+      .filter((p): p is string => p !== null)
+    const text = dropText(paths, window.stoke.platform)
+    if (!text) return
+    term.paste(text)
+    term.focus()
+  }
+
   const closeMenu = useCallback(() => setMenu(null), [])
 
   return (
-    <div className="term-pane" hidden={!active}>
+    <div
+      className="term-pane"
+      hidden={!active}
+      data-drop={dropping || undefined}
+      onDragEnter={onDragEnter}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
       {/* The right-click is handled by a capture-phase listener on this host,
           attached with the terminal, so it never reaches xterm. */}
       <div className="term-host" ref={hostRef} />

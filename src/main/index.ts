@@ -1055,6 +1055,22 @@ function createWindow(): void {
     return { action: 'deny' }
   })
 
+  /*
+   * The window never navigates. This is the backstop under file drag-and-drop:
+   * Chromium's default action for a file dropped anywhere a `dragover` handler
+   * did not claim is to navigate to it, which in a single-page Electron app
+   * means the entire UI is replaced by a picture of the dropped file and the
+   * only way back is to relaunch. The terminal pane claims its own drops
+   * (`TerminalView`), so this covers every other pixel — the sidebar, the
+   * title bar, the settings modal — where a near-miss would otherwise be
+   * destructive rather than merely inert.
+   *
+   * Scoped to the top-level frame's own navigation: the docked browser is a
+   * separate `WebContentsView` with its own webContents and is unaffected.
+   */
+  win.webContents.on('will-navigate', (e, url) => {
+    if (url !== win?.webContents.getURL()) e.preventDefault()
+  })
 
   browser = new EmbeddedBrowser(
     win,

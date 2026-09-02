@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { IpcRendererEvent } from 'electron'
 import { CH } from '@shared/ipc'
 import type { ClipboardPeek, StokeApi } from '@shared/api'
@@ -207,7 +207,27 @@ const api: StokeApi = {
 
   openExternal: (url: string) => ipcRenderer.send(CH.openExternal, url),
 
-  pickFolder: () => ipcRenderer.invoke(CH.pickFolder)
+  pickFolder: () => ipcRenderer.invoke(CH.pickFolder),
+
+  /*
+   * Has to live here, and only here. Electron 32 removed the `path` property
+   * Chromium used to hang off a dropped `File`, and `webUtils.getPathForFile`
+   * is the replacement — it is a renderer-side API (`electron.d.ts:19628`),
+   * so main cannot answer it, and the renderer has no `electron` import to
+   * call it with. A File crosses the contextBridge as itself, so the preload
+   * is the one place that holds both halves.
+   *
+   * Returns null rather than throwing for anything that is not a real file on
+   * disk: a drag from a browser, or a directory entry Chromium declines to
+   * resolve, both arrive as Files with no path.
+   */
+  pathForFile: (file: File) => {
+    try {
+      return webUtils.getPathForFile(file) || null
+    } catch {
+      return null
+    }
+  }
 }
 
 contextBridge.exposeInMainWorld('stoke', api)

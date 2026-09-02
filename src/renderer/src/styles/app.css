@@ -1636,6 +1636,17 @@ body {
   display: none;
 }
 
+/*
+ * A file is over the terminal and letting go will type its path.
+ *
+ * An inset ring rather than an overlay: the terminal is a canvas (gotcha 5)
+ * and anything painted on top of it during a drag is a surface that has to be
+ * torn down again, whereas a box-shadow on the pane costs no layout and cannot
+ * swallow the drop event that has to reach the pane underneath it.
+ */
+.term-pane[data-drop] .term-host {
+  box-shadow: inset 0 0 0 2px var(--accent-ink);
+}
 
 .term-host {
   width: 100%;
