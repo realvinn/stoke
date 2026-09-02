@@ -1200,7 +1200,7 @@ body {
   gap: var(--space-8);
   padding: var(--space-8);
   border: 1px solid var(--border-strong);
-  /* `--r-lg`, matching `.context-menu` and `.copy-strip`. It was `--r-md` — the
+  /* `--r-lg`, matching `.context-menu` and `.voice-strip`. It was `--r-md` — the
      control radius — which made this the one floating surface in the app whose
      corners were tighter than every other, and a popover that does not agree
      with the other popovers about its own corner reads as a mistake before it
@@ -1478,12 +1478,7 @@ body {
  * terminal rather than in the layout so arming it does not reflow the PTY —
  * a resize mid-session redraws whatever Claude Code is currently painting.
  */
-/*
- * Copy mode shares the dictation strip's chrome and takes the opposite corner,
- * so both modes can be on at once without one sitting on the other.
- */
-.voice-strip,
-.copy-strip {
+.voice-strip {
   position: absolute;
   inset: auto auto var(--space-12) var(--space-12);
   display: flex;
@@ -1498,22 +1493,6 @@ body {
   font-size: var(--fs-sm);
   z-index: var(--z-sticky);
   animation: pop var(--dur) var(--ease);
-}
-
-.copy-strip {
-  inset: auto var(--space-12) var(--space-12) auto;
-  border-color: var(--accent-ink);
-}
-
-/* The chord, drawn as a key rather than described in the sentence: it is the
-   way out of the mode, and the way back into it next time. */
-.copy-strip-key {
-  flex: 0 0 auto;
-  padding: 0 var(--space-4);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--r-sm);
-  color: var(--text-muted);
-  font-size: var(--fs-xs);
 }
 
 .voice-strip[data-tone='error'] {
@@ -3209,18 +3188,18 @@ body {
  * It used to carry `translate: -50% -0.5rem`, and a keyframe that sets
  * `translate` decides where the element STARTS relative to wherever its own
  * rule leaves it — so that `-50%` was only ever correct for a user whose
- * resting translate is also `-50%`. Exactly one of the four is: `.palette`,
+ * resting translate is also `-50%`. Exactly one of its users was: `.palette`,
  * which centres itself with `left: 50%; translate: -50% 0` and therefore just
- * slid down. The other three — `.context-menu`, `.voice-strip`, `.copy-strip` —
- * rest at `translate: none`, so every appearance swooped in sideways across
- * half the element's own width. On an 11rem context menu that is 88px of
- * travel, which is why the menu's outline read as smeared rather than as
- * mispositioned: the border is genuinely somewhere else for the whole
- * animation.
+ * slid down. The others — `.context-menu`, `.voice-strip`, and the copy-mode
+ * strip that has since been removed — rest at `translate: none`, so every
+ * appearance swooped in sideways across half the element's own width. On an
+ * 11rem context menu that is 88px of travel, which is why the menu's outline
+ * read as smeared rather than as mispositioned: the border is genuinely
+ * somewhere else for the whole animation.
  *
  * Measured in the running app rather than reasoned about, in both states: with
- * the animation still running all four report `-50% -8px`, and once it has
- * settled `.palette` reports `-50%` while the other three report `none`.
+ * the animation still running every user reported `-50% -8px`, and once it
+ * had settled `.palette` reported `-50%` while the others reported `none`.
  * CLAUDE.md gotcha 47 asserts the opposite — that the `-50%` is "right for the
  * context menu it was written for" — and that is corrected there too.
  */

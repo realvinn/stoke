@@ -426,10 +426,16 @@ async function main(): Promise<void> {
      * expression is ever changed to something xterm will not act on — the one
      * the suite could not make while it hard-coded a single clone.
      */
+    /*
+     * Off macOS with reporting on there is NO clone: the shim returns early and
+     * xterm reads the real Shift itself, which is the 'shift only' case the
+     * `forces` loop above already holds to the rule. So the shim's own shape
+     * is only ever Alt (macOS, reporting on) or no modifier (reporting off).
+     * The copy-mode clone that carried Shift off macOS went with copy mode.
+     */
     const shimAlt = reporting && isMac
-    const shimShift = reporting && !isMac
     const shimStep = run.steps.find(
-      (s) => s.name === (shimAlt ? 'alt only' : shimShift ? 'shift only' : 'neither modifier')
+      (s) => s.name === (shimAlt ? 'alt only' : 'neither modifier')
     )
     check(
       `${run.label}: the clone the shim dispatches here does select`,

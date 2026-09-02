@@ -316,14 +316,16 @@ scripts/          the verify-*.mts suites, make-icon.cjs
     off **and** something is already selected, because there the extend branch is the feature
     rather than the dead end.
 
-    There is no longer one clone shape, so do not look for one. The shim now emits
-    `{ altKey: reporting && isMac, shiftKey: reporting && !isMac }` — three shapes, one per
-    cell of the matrix — because Copy mode retells drags that carry no modifier at all, and
-    off macOS the modifier xterm wants is the Shift the user is not holding. `verify:selection`
-    asserts the *rule* (`reporting ? (isMac ? altKey : shiftKey) : !shiftKey`) against all three
-    shapes rather than memorising outcomes. Its old pair of assertions could only ever have
-    passed on a Mac: "a clone that keeps Shift selects nothing" is false off macOS with
-    reporting on, which is exactly the clone that now ships there.
+    The clone is `{ altKey: reporting && isMac, shiftKey: false }`, and off macOS with
+    reporting on there is no clone at all — xterm reads the real Shift there itself.
+    `verify:selection` asserts the *rule* (`reporting ? (isMac ? altKey : shiftKey) : !shiftKey`)
+    against every shape rather than memorising outcomes. Its old pair of assertions could only
+    ever have passed on a Mac: "a clone that keeps Shift selects nothing" is false off macOS
+    with reporting on. **Copy mode was removed in 0.9.** It was a mode that made every
+    unmodified drag select while it was on, added because Shift-drag was undiscoverable; it
+    took Escape away from the pane, needed a third clone shape (Shift, off macOS), and once the
+    right-click hint, OSC 52 and `Copy screen` existed it covered nothing they did not. If a
+    mode like it comes back, the third shape comes back with it.
 
     Two more things about that mode nobody had measured: with reporting off a **plain
     unmodified drag selects normally on every platform**, so the VPS tab was never short of a
@@ -339,8 +341,8 @@ scripts/          the verify-*.mts suites, make-icon.cjs
     "user input", which `SelectionService` clears the selection on (`SelectionService.ts:139`).
     Under 1003 the pointer *moving* is a report. So a selection died the instant the mouse moved,
     by one pixel, on **every local tab** — which made right-click → Copy unreachable in practice,
-    because right-clicking means moving to the menu. Shift-drag, Option-drag and Copy mode were all
-    affected identically; none of them is the cause and none of them is the fix.
+    because right-clicking means moving to the menu. Shift-drag, Option-drag and the then-extant Copy
+    mode were all affected identically; none of them is the cause and none of them is the fix.
 
     It is fixable without forking xterm, which the suite's own comment claimed it was not:
     `src/renderer/src/lib/mouseReport.ts` decides whether a payload is bare pointer motion, and

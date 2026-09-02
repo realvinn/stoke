@@ -13,8 +13,9 @@
  * The effect was that a selection died the instant the mouse moved, anywhere in
  * the terminal, by one pixel, on every local tab. Right-click -> Copy was
  * unreachable in practice, because right-clicking means moving to the menu.
- * Shift-drag, Option-drag and Copy mode were all affected identically, since
- * they all end with a selection that the next motion report destroys.
+ * Shift-drag, Option-drag and the since-removed Copy mode were all affected
+ * identically, since they all end with a selection that the next motion report
+ * destroys.
  *
  * So: send the report exactly as before — the CLI still gets every byte, and
  * click-to-focus inside the TUI still works — but do not call it user input
