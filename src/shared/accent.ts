@@ -92,6 +92,16 @@ const AT_FLOOR_TOLERANCE = 2
 const HOVER_STEP = 0.035
 
 /**
+ * The smallest hover move still worth calling a hover.
+ *
+ * Below this the fill is the same colour to the eye, so a button that measured
+ * legible would look inert instead. When the preferred direction cannot hold
+ * the ink at ACCENT_LC with at least this much movement, the hover goes the
+ * OTHER way rather than shrinking to nothing — see `hoverFor`.
+ */
+const MIN_HOVER_STEP = 0.018
+
+/**
  * The soft wash is alpha, not a solid, and that is load-bearing.
  *
  * It is drawn on four different grounds (`--bg`, `--bg-sunken`, `--surface`,
@@ -239,8 +249,31 @@ export function deriveAccent(accent: string, appearance: Appearance, pageBg: str
   }
 
   const solidRgb = fitToSrgb(solid)
-  const hover: Oklch = { l: clamp01(solid.l + away * HOVER_STEP), c: chroma, h: hue }
   const contrast = lc(white, solidRgb) >= lc(ink, solidRgb) ? INK_LIGHT : INK_DARK
+
+  /*
+   * The hover fill has to hold the SAME ink, and it was never checked against
+   * it.
+   *
+   * `--accent-contrast` is chosen once, for the solid fill, and app.css sets it
+   * once: `.btn[data-variant='primary']` declares `color: var(--accent-contrast)`
+   * and swaps only background and border-color on :hover. So the label sits on
+   * both fills and only one of them was ever measured. Moving L by a fixed
+   * HOVER_STEP away from the page moves the fill TOWARDS the ink whenever the
+   * ink is the far one — which is the ordinary case — so hover always costs
+   * contrast, and for a fill that started near the floor it costs enough to
+   * cross it.
+   *
+   * Measured across every built-in theme crossed with every theme and profile
+   * accent, 108 combinations: 28 came out under Lc 60 on hover, including
+   * Clay's own shipped accent against its own hover (63.3 solid, 57.7 hover)
+   * — so this was not only reachable by a user-chosen profile colour. With
+   * profiles Coral or Iris active it failed on every built-in theme.
+   *
+   * Fixed by measuring rather than by shrinking the constant, which would have
+   * dulled the hover everywhere to fix it in a quarter of cases.
+   */
+  const hover = hoverFor(solid, chroma, hue, away, parseColor(contrast)!)
 
   const a = SOFT_ALPHA[appearance]
   const soft = `rgba(${Math.round(solidRgb.r)}, ${Math.round(solidRgb.g)}, ${Math.round(solidRgb.b)}, ${a})`
@@ -267,6 +300,44 @@ export function deriveAccent(accent: string, appearance: Appearance, pageBg: str
     accentContrast: contrast,
     accentInk: inkL === null ? toHex(brand) : toHex(fitToSrgb({ l: inkL, c: chroma, h: hue }))
   }
+}
+
+/**
+ * The hover fill: as much movement as the ink can survive, in the direction
+ * that reads as "raised" for this appearance.
+ *
+ * Three tiers, in order, and the first that holds Lc 60 against `ink` wins.
+ *
+ *  1. The full HOVER_STEP away from the page. The overwhelmingly common case,
+ *     and the reason 80 of the 108 measured combinations are byte-identical to
+ *     what shipped before this function existed.
+ *  2. A shorter step in that same direction, down to MIN_HOVER_STEP. Keeps the
+ *     conventional direction — lighter on dark, darker on light — and merely
+ *     asks for less of it.
+ *  3. The full step the OTHER way. Moving away from the ink can only raise the
+ *     contrast, so this always holds; it is last because it inverts the
+ *     affordance, and worth taking only when the alternative is a hover nobody
+ *     can see or a label nobody can read.
+ *
+ * The solid itself is the floor of the search: `bestInkLc(solid) >= ACCENT_LC`
+ * is guaranteed above by the dead-band escape, so tier 3 cannot fail to find
+ * something and the function always returns a legible fill.
+ */
+function hoverFor(solid: Oklch, chroma: number, hue: number, away: 1 | -1, ink: Rgb): Oklch {
+  const at = (delta: number): Oklch => ({ l: clamp01(solid.l + delta), c: chroma, h: hue })
+  const holds = (cand: Oklch): boolean => lc(ink, round(fitToSrgb(cand))) >= ACCENT_LC
+
+  for (let step = HOVER_STEP; step >= MIN_HOVER_STEP; step -= 0.001) {
+    const cand = at(away * step)
+    if (holds(cand)) return cand
+  }
+
+  const flipped = at(-away * HOVER_STEP)
+  if (holds(flipped)) return flipped
+
+  // Unreachable given the dead-band escape, but a hover identical to the fill
+  // is the honest degenerate answer rather than an illegible one.
+  return solid
 }
 
 function clamp01(n: number): number {

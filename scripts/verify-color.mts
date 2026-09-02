@@ -639,6 +639,40 @@ for (const t of BUILT_IN_THEMES) {
       Math.abs(apcaContrast(parseColor(tokens.accentContrast)!, parseColor(tokens.accent)!)),
       ACCENT_LC
     )
+
+    /*
+     * The SAME ink on the hover fill, which went unchecked until 0.9.3.
+     *
+     * There is one `--accent-contrast`, chosen for the solid fill;
+     * `.btn[data-variant='primary']` sets `color` from it once and swaps only
+     * background and border-color on :hover. So the label sits on two fills and
+     * this suite measured one of them — while the hover was derived by moving
+     * OKLCH L a fixed step away from the page, which moves it towards the ink
+     * whenever the ink is the far one, i.e. usually.
+     *
+     * 28 of these 108 rows were below the floor when the assertion was added,
+     * Clay's own shipped accent among them (63.3 solid, 57.7 hover), and every
+     * built-in theme failed it under the Coral and Iris profiles. No tolerance,
+     * for the same reason as the row above: the module picks this number, so
+     * missing it is the derivation failing rather than an authored colour
+     * sitting a fraction low.
+     */
+    atLeast(
+      `${t.id}/${src.id}: --accent-contrast on the HOVER fill`,
+      Math.abs(apcaContrast(parseColor(tokens.accentContrast)!, parseColor(tokens.accentHover)!)),
+      ACCENT_LC
+    )
+
+    /*
+     * And the hover must still LOOK like a hover. Clearing the floor by not
+     * moving would satisfy the assertion above and silently delete the
+     * affordance, so the distance is asserted too.
+     */
+    atLeast(
+      `${t.id}/${src.id}: hover is visibly different from the fill`,
+      Math.abs(toOklch(parseColor(tokens.accentHover)!).l - toOklch(parseColor(tokens.accent)!).l),
+      0.015
+    )
   }
 }
 
