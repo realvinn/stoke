@@ -7,6 +7,7 @@
  * outside a window — see `scripts/verify-settings.mts`.
  */
 import type { ProfileConfig, ProjectMeta, Settings, SshHost, Theme, WorklogBoards } from '@shared/types'
+import { DEFAULT_PROVIDERS, hydrateProviders } from '../shared/providers.ts'
 import { tidy } from './projectMeta.ts'
 import { DEFAULT_LIGHT_THEME_ID, DEFAULT_THEME_ID, validateTheme } from '../shared/themes.ts'
 import { DEFAULT_WORKLOG_BOARDS, WORKLOG_TARGETS } from '../shared/worklog.ts'
@@ -106,7 +107,8 @@ export const DEFAULT_SETTINGS: Settings = {
   hideStatusLine: true,
   // Background only: a notification for the tab in front is noise, one for a
   // tab behind another — or a window behind another app — is the point.
-  notifications: 'background'
+  notifications: 'background',
+  providers: { ...DEFAULT_PROVIDERS }
 }
 
 /**
@@ -298,6 +300,7 @@ export function hydrateSettings(raw: unknown): Settings {
     fontSize: clampFontSize(r.fontSize),
     terminal: clampTerminal(r.terminal),
     wallpaper: clampWallpaper(r.wallpaper),
-    zoomTarget: clampZoomTarget(r.zoomTarget)
+    zoomTarget: clampZoomTarget(r.zoomTarget),
+    providers: hydrateProviders(r.providers)
   }
 }

@@ -4,6 +4,12 @@ import * as nodePty from '@lydell/node-pty'
 import type { IPty } from '@lydell/node-pty'
 import type { LaunchOptions } from '@shared/types'
 import {
+  applyProviderEnv,
+  validateClaudeAuth,
+  type ProviderSettings,
+  DEFAULT_PROVIDERS
+} from '../shared/providers.ts'
+import {
   buildArgs,
   buildEnvPath,
   findClaude,
@@ -99,7 +105,8 @@ const BANNER_SCAN_LIMIT = 64 * 1024
  *
  * Only session/runtime markers are stripped. Configuration and credentials
  * (ANTHROPIC_API_KEY, CLAUDE_CONFIG_DIR, proxy settings, ...) are passed
- * through untouched.
+ * through untouched, then Settings > Providers may overlay them for a
+ * local session via applyProviderEnv.
  */
 const STRIP_ENV = [
   'ELECTRON_RUN_AS_NODE',
@@ -148,7 +155,8 @@ export class PtyManager {
     opts: LaunchOptions,
     claudePathOverride: string | null,
     mcpConfigPath?: string | null,
-    sessionSettings: (statusKey: string) => string | null = () => null
+    sessionSettings: (statusKey: string) => string | null = () => null,
+    providers: ProviderSettings = DEFAULT_PROVIDERS
   ): Promise<StartResult> {
     /*
      * A remote session is the same machinery with a different argv: ssh instead
@@ -278,6 +286,18 @@ export class PtyManager {
        */
       if (!opts.host && opts.appearance) {
         env.COLORFGBG = opts.appearance === 'light' ? '0;15' : '15;0'
+      }
+
+      /*
+       * Provider keys from Settings. Local only: env does not cross ssh
+       * without SendEnv/AcceptEnv, and a remote claude has its own credentials.
+       * validateClaudeAuth fails closed with a message the launcher can show,
+       * rather than spawning a session that will 401 on the first turn.
+       */
+      if (!opts.host) {
+        const check = validateClaudeAuth(providers)
+        if (!check.ok) throw new Error(check.message)
+        applyProviderEnv(env, providers)
       }
 
       proc = nodePty.spawn(spec.file, spec.args, {

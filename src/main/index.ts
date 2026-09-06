@@ -431,15 +431,20 @@ async function launchSession(opts: LaunchOptions): Promise<StartResult> {
   const settings = getSettings()
   // `statusKey` is what the files are named after, not necessarily a session
   // id: a --continue session has no id until the CLI picks one. See pty.ts.
-  const result = await ptys.start(opts, settings.claudePath, mcpConfigPath, (statusKey) =>
-    writeSessionSettingsFile({
-      sessionId: statusKey,
-      ultracode: opts.ultracode === true,
-      hideStatusLine: settings.hideStatusLine,
-      // Read now rather than cached: it is the user's own settings.json and
-      // they can edit it between one session and the next.
-      passthroughCommand: settings.hideStatusLine ? '' : userStatusLineCommand()
-    })
+  const result = await ptys.start(
+    opts,
+    settings.claudePath,
+    mcpConfigPath,
+    (statusKey) =>
+      writeSessionSettingsFile({
+        sessionId: statusKey,
+        ultracode: opts.ultracode === true,
+        hideStatusLine: settings.hideStatusLine,
+        // Read now rather than cached: it is the user's own settings.json and
+        // they can edit it between one session and the next.
+        passthroughCommand: settings.hideStatusLine ? '' : userStatusLineCommand()
+      }),
+    settings.providers
   )
   // Empty for a --continue, and `watch('')` is a no-op by design (context.ts:99).
   // Such a session has never had a context meter; see this task's header for
