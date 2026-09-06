@@ -271,8 +271,20 @@ export function Sidebar({
 
         {!loading && projects.length > 0 && filtered.length === 0 && (
           <div className="empty">
-            <h3>Nothing matches</h3>
-            <p>No project name, path, or label contains &ldquo;{query}&rdquo;.</p>
+            {query.trim() ? (
+              <>
+                <h3>Nothing matches</h3>
+                <p>No project name, path, or label contains &ldquo;{query}&rdquo;.</p>
+              </>
+            ) : (
+              <>
+                <h3>Nothing in this profile yet</h3>
+                <p>
+                  This profile is a view of one folder. Open a folder inside it to start a
+                  session, or pick All to see every project.
+                </p>
+              </>
+            )}
           </div>
         )}
 
