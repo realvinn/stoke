@@ -6,9 +6,10 @@
  * any directory, and start or resume a chat anywhere. The point is that sitting
  * in a lecture you are not looking at work from somewhere else.
  *
- * They key off `Project.group`, which is already the parent folder's name, and
- * those folders already carry separate git identities.
- * So the grouping is not invented here — it is the one the machine already has.
+ * Membership is a curated `projectPaths` list on the profile. Folder
+ * `Project.group` still seeds defaults and names the worklog / status pill;
+ * moving a project between profiles edits the path list and never moves folders.
+ * PLAN's old "membership = group only" is superseded.
  *
  * Two lists meet in this file:
  *
@@ -29,7 +30,7 @@ import type { ProfileConfig } from './types'
  * --experimental-strip-types, where './paths' resolves to nothing. Both
  * tsconfigs allow the extension after Steps 5a and 5b.
  */
-import { foldGroup } from './paths.ts'
+import { foldGroup, normalizePath, pathKey, pathRulesFor, type PathRules } from './paths.ts'
 
 /** The derived seed's shape. `ResolvedProfile` is assignable to this. */
 export interface Profile {
@@ -360,6 +361,10 @@ function overlay(seed: ResolvedProfile | undefined, rec: ProfileConfig): Resolve
     groups: Array.isArray(rec.groups)
       ? rec.groups.filter((g) => typeof g === 'string' && g.trim() !== '')
       : base.groups,
+    // Absent stays absent (live group-seed). Explicit [] is an empty curated set.
+    projectPaths: Array.isArray(rec.projectPaths)
+      ? rec.projectPaths.filter((p) => typeof p === 'string' && p.trim() !== '')
+      : base.projectPaths,
     label: (typeof rec.label === 'string' && rec.label.trim()) || base.label,
     accent,
     accentHover: rec.accentHover || base.accentHover,
@@ -420,7 +425,9 @@ export function resolveProfiles(
 export function visibleProfiles(
   profiles: ResolvedProfile[],
   counts: Map<string, number>,
-  roots: string[] = []
+  roots: string[] = [],
+  projects: { path: string }[] = [],
+  platform = 'linux'
 ): ResolvedProfile[] {
   const present = new Set<string>()
   for (const [group, n] of counts) if (n > 0) present.add(foldGroup(group))
@@ -428,7 +435,20 @@ export function visibleProfiles(
     const name = folderName(root)
     if (name) present.add(foldGroup(name))
   }
-  return profiles.filter((p) => p.groups.some((g) => present.has(foldGroup(g))))
+  const rules = pathRulesFor(platform)
+  const pathPresent = new Set(projects.map((p) => pathKey(p.path, rules)).filter(Boolean))
+  return profiles.filter((p) => {
+    if (p.groups.some((g) => present.has(foldGroup(g)))) return true
+    // A curated profile whose folder group is gone still earns a chip while any
+    // of its listed projects exist on this machine.
+    if (
+      Array.isArray(p.projectPaths) &&
+      p.projectPaths.some((path) => pathPresent.has(pathKey(path, rules)))
+    ) {
+      return true
+    }
+    return false
+  })
 }
 
 /**
@@ -458,6 +478,116 @@ export function nextProfileId(group: string, taken: string[]): string {
     if (!used.has(foldGroup(candidate))) return candidate
   }
   return `${base}-${Date.now()}`
+}
+
+/* -------------------------------------------------------- curated membership */
+
+/**
+ * Paths under `groups` right now, normalised. Used to seed a profile and for
+ * the "add all in folder" helper. Never moves anything on disk.
+ */
+export function seedPathsForGroups(
+  projects: { path: string; group: string }[],
+  groups: string[],
+  rules: PathRules
+): string[] {
+  const want = new Set(groups.map(foldGroup))
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const p of projects) {
+    if (!want.has(foldGroup(p.group))) continue
+    const key = pathKey(p.path, rules)
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    out.push(normalizePath(p.path, rules))
+  }
+  return out.sort((a, b) => a.localeCompare(b))
+}
+
+/**
+ * Does this project belong on the chip?
+ *
+ * Explicit `projectPaths` wins (including empty). Absent means live seed from
+ * `groups` — the zero-config behaviour until membership is hydrated or edited.
+ */
+export function projectInProfile(
+  project: { path: string; group: string },
+  profile: { groups: string[]; projectPaths?: string[] },
+  rules: PathRules
+): boolean {
+  if (Array.isArray(profile.projectPaths)) {
+    const key = pathKey(project.path, rules)
+    return profile.projectPaths.some((p) => pathKey(p, rules) === key)
+  }
+  return profile.groups.some((g) => foldGroup(g) === foldGroup(project.group))
+}
+
+/**
+ * Snapshot folder-derived membership onto stored records that lack
+ * `projectPaths`, so chips do not empty overnight after the curated-set change.
+ *
+ * Returns a new array when anything changed, otherwise null. Tombstones
+ * (`groups: []`) keep an empty curated set. Derived-only chips (no stored
+ * record) are untouched — they keep live group seeding until the user edits.
+ */
+export function hydrateMembership(
+  stored: ProfileConfig[],
+  projects: { path: string; group: string }[],
+  platform: string
+): ProfileConfig[] | null {
+  const rules = pathRulesFor(platform)
+  let changed = false
+  const next = (stored ?? []).map((rec) => {
+    if (!rec || typeof rec.id !== 'string' || rec.id.trim() === '') return rec
+    if (Array.isArray(rec.projectPaths)) return rec
+    // Deleted seed: remember emptiness rather than re-seeding from the folder.
+    if (Array.isArray(rec.groups) && rec.groups.length === 0) {
+      changed = true
+      return { ...rec, projectPaths: [] }
+    }
+    changed = true
+    return {
+      ...rec,
+      projectPaths: seedPathsForGroups(projects, rec.groups ?? [], rules)
+    }
+  })
+  return changed ? next : null
+}
+
+/**
+ * Ensure a profile has an explicit path list before editing membership.
+ * Live-seed profiles become a snapshot of their current group matches first.
+ */
+export function ensureProjectPaths(
+  profile: { groups: string[]; projectPaths?: string[] },
+  projects: { path: string; group: string }[],
+  rules: PathRules
+): string[] {
+  if (Array.isArray(profile.projectPaths)) {
+    return profile.projectPaths.map((p) => normalizePath(p, rules)).filter(Boolean)
+  }
+  return seedPathsForGroups(projects, profile.groups, rules)
+}
+
+export function addProjectPath(
+  paths: string[],
+  projectPath: string,
+  rules: PathRules
+): string[] {
+  const next = normalizePath(projectPath, rules)
+  if (!next) return paths
+  const key = pathKey(next, rules)
+  if (paths.some((p) => pathKey(p, rules) === key)) return paths
+  return [...paths, next].sort((a, b) => a.localeCompare(b))
+}
+
+export function removeProjectPath(
+  paths: string[],
+  projectPath: string,
+  rules: PathRules
+): string[] {
+  const key = pathKey(projectPath, rules)
+  return paths.filter((p) => pathKey(p, rules) !== key)
 }
 
 /* ------------------------------------------------------------- the creator */

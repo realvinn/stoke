@@ -15,7 +15,7 @@ import type {
   WorklogWatchState
 } from '@shared/types'
 import type { UpdateInfo } from '@shared/api'
-import { foldGroup, profileFor, resolveProfiles, visibleProfiles } from '@shared/profiles'
+import { hydrateMembership, profileFor, resolveProfiles, visibleProfiles } from '@shared/profiles'
 import { activeThemeId, resolveTheme } from '@shared/themes'
 import { worklogButtonState } from '@shared/worklog'
 import { BrowserPanel } from './components/BrowserPanel'
@@ -695,22 +695,39 @@ export function App(): React.JSX.Element {
   /* ---------------------------------------------------------------- theme */
 
   /*
-   * Resolved here rather than only inside the sidebar, because the accent has to
-   * resolve against the same list. It was resolving against the hardcoded
-   * PROFILES instead, so a folder-derived profile coloured its sidebar chip and
-   * then failed to repaint the accent - the one place the two lists could
-   * disagree was the one place it mattered.
+   * Resolved here rather than only inside the sidebar, because the filter chip
+   * and the session pill have to resolve against the same list. It used to
+   * resolve against the hardcoded PROFILES, so a folder-derived profile
+   * coloured its chip and then failed to paint anything else.
    *
    * `resolveProfiles` keeps every stored record, including ones belonging to
-   * another machine; `visibleProfiles` is what the chips and the accent read, so
-   * a record that matches nothing here is not rendered and is not erased either.
+   * another machine; `visibleProfiles` is what the chips read, so a record that
+   * matches nothing here is not rendered and is not erased either.
    */
   const availableProfiles = useMemo(() => {
     const counts = new Map<string, number>()
     for (const p of projects) counts.set(p.group, (counts.get(p.group) ?? 0) + 1)
     const resolved = resolveProfiles(counts, settings?.profiles ?? [])
-    return visibleProfiles(resolved, counts, settings?.projectRoots ?? [])
-  }, [projects, settings?.profiles, settings?.projectRoots])
+    return visibleProfiles(
+      resolved,
+      counts,
+      settings?.projectRoots ?? [],
+      projects,
+      platform
+    )
+  }, [projects, settings?.profiles, settings?.projectRoots, platform])
+
+  /*
+   * One-shot migration: snapshot folder-derived membership onto stored profiles
+   * that lack projectPaths, so curated chips do not empty overnight. Runs after
+   * projects have loaded; hydrateMembership returns null once every record is
+   * explicit, so this does not loop.
+   */
+  useEffect(() => {
+    if (!settings || projectsLoading) return
+    const next = hydrateMembership(settings.profiles, projects, platform)
+    if (next) void patchSettings({ profiles: next })
+  }, [settings, projects, projectsLoading, platform, patchSettings])
 
   /*
    * One effect, one writer. The theme and the profile accent used to be applied
@@ -743,53 +760,6 @@ export function App(): React.JSX.Element {
   // The canvas is fully see-through over its card while a wallpaper is set;
   // the card carries the tint (see app.css's wallpaper block).
   const termAlpha = wallpaper?.path ? 0 : 1
-
-  /*
-   * The active tab decides the profile: colour and filter both follow it.
-   *
-   * Keyed on the tab id through a ref rather than on the resolved value, because
-   * this effect also reruns whenever settings change — and without the ref,
-   * clicking All while a work tab is in front would be undone on the very next
-   * render and the chip could not be moved by hand at all. A manual choice
-   * stands until the next time a tab is activated.
-   *
-   * Three deliberate non-actions:
-   *  - An SSH tab never resolves. `ssh -t <alias>` runs claude on the far
-   *    machine, so `cwd` holds the host alias rather than a folder (CLAUDE.md
-   *    gotcha 18) and mapping it would name whichever local project happened to
-   *    share that word. `hostId` is the only reliable signal that it is one.
-   *  - A folder belonging to no profile leaves the chip exactly where it is,
-   *    rather than clearing it to All.
-   *  - Nothing happens until the project list has loaded, or a startOnLaunch
-   *    session would resolve against an empty list, find nothing, and be marked
-   *    as already handled.
-   */
-  const profiledTabId = useRef<string | null>(null)
-  useEffect(() => {
-    if (!settings || projectsLoading) return
-    if (profiledTabId.current === activeTabId) return
-    profiledTabId.current = activeTabId
-    const tab = tabs.find((t) => t.id === activeTabId)
-    if (!tab || tab.hostId) return
-    const id = profileIdForCwd(
-      tab.cwd,
-      projects,
-      settings.projectRoots,
-      availableProfiles,
-      platform
-    )
-    if (!id || foldGroup(id) === foldGroup(settings.activeProfile ?? '')) return
-    void patchSettings({ activeProfile: id })
-  }, [
-    activeTabId,
-    tabs,
-    projects,
-    projectsLoading,
-    settings,
-    availableProfiles,
-    platform,
-    patchSettings
-  ])
 
   useEffect(() => {
     if (settings) applyTypography(settings.fontFamily, settings.fontSize, settings.uiScale, settings.terminal)
@@ -1668,6 +1638,25 @@ export function App(): React.JSX.Element {
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null
 
   /*
+   * Split: the chip is a sticky view filter (`activeProfile` above). This is
+   * the quieter half — which folder the session in front belongs to — and it
+   * must never write the chip. An SSH tab's cwd is an alias (gotcha 18), so
+   * it resolves to nothing rather than a local folder that happens to share
+   * the word.
+   */
+  const sessionProfile = useMemo(() => {
+    if (!settings || !activeTab || activeTab.kind !== 'session' || activeTab.hostId) return null
+    const id = profileIdForCwd(
+      activeTab.cwd,
+      projects,
+      settings.projectRoots,
+      availableProfiles,
+      platform
+    )
+    return profileFor(id, availableProfiles)
+  }, [settings, activeTab, projects, availableProfiles, platform])
+
+  /*
    * Whether the tab in front is running a `claude` that is no longer the one
    * installed. Every refusal is a stated reason rather than a silent false, so
    * the status bar can explain itself on hover instead of simply not being
@@ -2185,7 +2174,7 @@ export function App(): React.JSX.Element {
                     fontFamily={settings?.fontFamily ?? 'monospace'}
                     fontSize={settings?.fontSize ?? 13}
                     terminal={settings?.terminal ?? TERMINAL_DEFAULTS}
-                    accent={activeProfile?.accent ?? null}
+                    accent={sessionProfile?.accent ?? null}
                     alpha={termAlpha}
                     onOpenUrl={openUrl}
                     onRestart={restartTab}
@@ -2302,7 +2291,7 @@ export function App(): React.JSX.Element {
         onRelaunch={() => {
           if (relaunch.kind === 'offer' && activeTab) relaunchTab(activeTab, relaunch.sessionId)
         }}
-        profileLabel={activeProfile?.label ?? null}
+        sessionProfileLabel={sessionProfile?.label ?? null}
         onRevealProject={(p) => void window.stoke.projects.reveal(p)}
         onOpenSettings={() => openSettings('updates')}
       />

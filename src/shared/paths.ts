@@ -251,8 +251,10 @@ export interface GroupOwner {
 /**
  * Which profile owns the work in `cwd`, or null.
  *
- * Null means **leave the chip where it is**, not "select nothing". A tab whose
- * folder belongs to no profile must not clear whatever the user is looking at.
+ * Null means **this session belongs to no profile**, not "clear the chip".
+ * The chip is a sticky view filter and is not this function's job — callers
+ * use the result for the quieter chrome (status pill, session accent). A tab
+ * whose folder belongs to no profile simply has no pill.
  *
  * Never call this for an SSH tab. `ssh -t <alias>` runs claude on the far
  * machine, so the tab's `cwd` holds the host alias rather than a folder — see

@@ -56,8 +56,8 @@ export interface Tab {
    * `SshHost.id` when this session runs on another machine, else null.
    *
    * The only reliable signal that `cwd` is an alias rather than a folder, which
-   * is what stops profile-follows-tab from mapping an SSH session to whatever
-   * project happens to share its alias's name.
+   * is what stops the session-profile pill from mapping an SSH session to
+   * whatever local project happens to share its alias's name.
    */
   hostId: string | null
   /**

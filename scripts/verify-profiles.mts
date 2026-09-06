@@ -33,9 +33,16 @@ import {
   folderName,
   nextProfileId,
   profileFor,
+  addProjectPath,
+  ensureProjectPaths,
+  hydrateMembership,
+  projectInProfile,
+  removeProjectPath,
   resolveProfiles,
+  seedPathsForGroups,
   visibleProfiles
 } from '../src/shared/profiles.ts'
+import { pathRulesFor } from '../src/shared/paths.ts'
 import {
   chmodSync,
   existsSync,
@@ -610,6 +617,7 @@ try {
     true
   )
   check('the patch persists the same byte-identical root', cafe.patch.projectRoots, [cafe.plan.root])
+  check('and create selects the new profile so the chip lands on it', cafe.patch.activeProfile, cafe.record.id)
 
   mkdirSync(join(unicodeBox, 'Straße'))
   const FOLDS_NON_ASCII = existsSync(join(unicodeBox, 'STRASSE'))
@@ -1175,12 +1183,13 @@ check(
   'Work'
 )
 
-console.log('\nthe chip stays out of the main process')
+console.log('\nthe chip stays out of the worklog')
 /*
  * The worklog gate is keyed on a session's own folder and never on the sidebar
  * selection — gate.ts's header is three paragraphs on why, and both failures
- * are silent. Making the chip follow the active tab is only safe because
- * nothing over there reads it, so that is asserted rather than remembered.
+ * are silent. The Split keeps that: the chip is a sticky filter, the session
+ * pill is a read of profileIdForCwd, and nothing in main may *decide* a
+ * session from `activeProfile`.
  *
  * A source scan, not a type: the coupling this guards against is one `import
  * { getSettings }` away and would typecheck perfectly.
@@ -1204,14 +1213,15 @@ const mentionsChip = tsFilesUnder(MAIN)
   .map((f) => f.slice(MAIN.length).split('\\').join('/'))
 
 /*
- * The two files that may name it: one declares the default and repairs the
- * stored value, the other persists what it is given. Neither decides anything
- * with it. Adding a third is a deliberate act — read gate.ts's header first.
+ * Files that may name `activeProfile`: the default/repair, the persist, and
+ * create (which selects the new filter so the chip lands on it). None of them
+ * may *read* it to decide a session — that is still the worklog's forbidden
+ * act. Adding another is a deliberate act; read gate.ts's header first.
  */
-const SETTINGS_FILES = ['settingsSchema.ts', 'store.ts']
+const CHIP_FILES = ['settingsSchema.ts', 'store.ts', 'profiles.ts']
 check(
-  'only the settings files name it, and they only store it',
-  mentionsChip.filter((f) => !SETTINGS_FILES.includes(f)),
+  'only the settings write and create name it',
+  mentionsChip.filter((f) => !CHIP_FILES.includes(f)),
   []
 )
 check(
@@ -1469,3 +1479,71 @@ check('and the ones it does move are still the colour that was picked', strayed,
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
 process.exitCode = failures ? 1 : 0
+
+console.log('\ncurated membership')
+{
+  const rules = pathRulesFor('win32')
+  const projects = [
+    { path: 'G:\\Code\\work\\alpha', group: 'work' },
+    { path: 'G:\\Code\\work\\beta', group: 'work' },
+    { path: 'G:\\Code\\personal\\gamma', group: 'personal' }
+  ]
+  check(
+    'live seed matches group until projectPaths is set',
+    projectInProfile(projects[0], { groups: ['work'] }, rules),
+    true
+  )
+  check(
+    'explicit empty curated set matches nothing',
+    projectInProfile(projects[0], { groups: ['work'], projectPaths: [] }, rules),
+    false
+  )
+  check(
+    'explicit path list is the filter',
+    projectInProfile(projects[0], { groups: ['work'], projectPaths: ['G:\\Code\\work\\beta'] }, rules),
+    false
+  )
+  check(
+    'seedPathsForGroups collects the folder',
+    seedPathsForGroups(projects, ['work'], rules),
+    ['G:\\Code\\work\\alpha', 'G:\\Code\\work\\beta']
+  )
+  const hydrated = hydrateMembership(
+    [rec({ id: 'work', groups: ['work'] }), rec({ id: 'school', groups: [] })],
+    projects,
+    'win32'
+  )
+  check(
+    'hydrate snapshots group matches onto missing projectPaths',
+    hydrated && hydrated.find((p) => p.id === 'work')?.projectPaths,
+    ['G:\\Code\\work\\alpha', 'G:\\Code\\work\\beta']
+  )
+  check(
+    'hydrate tombstones to an empty curated set',
+    hydrated && hydrated.find((p) => p.id === 'school')?.projectPaths,
+    []
+  )
+  check(
+    'hydrate is a no-op once every record is explicit',
+    hydrateMembership(hydrated!, projects, 'win32'),
+    null
+  )
+  const base = ensureProjectPaths({ groups: ['work'] }, projects, rules)
+  check(
+    'add/remove never touch disk paths, only the list',
+    removeProjectPath(addProjectPath(base, 'G:\\Code\\personal\\gamma', rules), 'G:\\Code\\work\\alpha', rules),
+    ['G:\\Code\\personal\\gamma', 'G:\\Code\\work\\beta']
+  )
+  check(
+    'visibleProfiles keeps a curated profile whose group folder is gone',
+    visibleProfiles(
+      resolveProfiles(counts({}), [rec({ id: 'Task', groups: ['Task'], projectPaths: ['G:\\Code\\work\\alpha'] })]),
+      counts({}),
+      [],
+      projects,
+      'win32'
+    ).map((p) => p.id),
+    ['Task']
+  )
+}
+

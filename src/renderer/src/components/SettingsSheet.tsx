@@ -118,11 +118,11 @@ interface Section {
 }
 
 /*
- * Profiles sits under Appearance rather than beside Projects because its
- * visible effect is the accent colour on the tab strip and the sidebar chip;
- * the scan root it also carries is the half nobody comes looking for. Updates
- * and Advanced are last together for the same reason they are one group: both
- * are read far more often than they are written.
+ * Profiles sits under Appearance rather than beside Projects because the
+ * chip also paints the chrome; the scan root it carries is the half nobody
+ * comes looking for. The thing itself is a view filter by folder group.
+ * Updates and Advanced are last together for the same reason they are one
+ * group: both are read far more often than they are written.
  */
 const GROUPS: { title: string; sections: Section[] }[] = [
   {
@@ -130,7 +130,7 @@ const GROUPS: { title: string; sections: Section[] }[] = [
     sections: [
       { id: 'appearance', label: 'Appearance', hint: 'Theme, and how big everything is' },
       { id: 'terminal', label: 'Terminal', hint: 'Font, line height, cursor, and the frame' },
-      { id: 'profiles', label: 'Profiles', hint: 'Per-folder colours and scan roots' }
+      { id: 'profiles', label: 'Profiles', hint: 'View filter by folder group' }
     ]
   },
   {

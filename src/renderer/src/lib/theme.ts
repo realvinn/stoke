@@ -141,10 +141,11 @@ export function terminalTheme(
 ): Record<string, string> {
   const c = theme.colors
   /*
-   * A profile recolours the chrome's accent (`applyAppearance`), so the
-   * cursor and the selection follow it too — the pane used to keep the
-   * theme's accent while the tab rule beside it changed, in the same window,
-   * unasked. Only when a profile is active; the theme's own values otherwise.
+   * The session accent — the quieter half of the Split. The sidebar chip is
+   * the view filter and paints chrome via `applyAppearance`; this is the
+   * folder the tab in front belongs to, so the cursor and selection can say
+   * "this chat is Work" without moving the chip. Only when the session
+   * resolves to a profile; the theme's own values otherwise.
    */
   const fill = accent ? deriveAccent(accent, theme.appearance, c.bg).accent : null
   return {
