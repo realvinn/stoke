@@ -32,16 +32,17 @@ interface Props {
   relaunchBusy: boolean
   onRelaunch: () => void
   /**
-   * The profile the sidebar is filtered to, or null for All.
+   * The profile the session in front belongs to, or null when it has none
+   * (All is not a profile; an SSH tab has no local folder).
    *
-   * Named, not merely coloured, and here rather than only on the sidebar chip:
-   * the profile follows the active tab now, so it changes without anyone
-   * pressing anything, and the sidebar can be closed. Colour cannot carry it —
-   * verify:profiles measures Ember's accent as identical to Personal's and
-   * Moss's as 0.049 from Work's, inside the palette's own 0.083 "same colour"
-   * band.
+   * This is the quieter half of the Split: the sidebar chip is the view
+   * filter and stays put. This pill names the tab's folder so "this chat is
+   * Work" is visible with the sidebar closed, without collapsing the list.
+   * Colour cannot carry it — verify:profiles measures Ember's accent as
+   * identical to Personal's — so it is named, and it does not use
+   * `data-tone="accent"` (that token is the *filter* chip's paint).
    */
-  profileLabel: string | null
+  sessionProfileLabel: string | null
   onRevealProject: (path: string) => void
   onOpenSettings: () => void
 }
@@ -56,7 +57,7 @@ export function StatusBar({
   relaunch,
   relaunchBusy,
   onRelaunch,
-  profileLabel,
+  sessionProfileLabel,
   onRevealProject,
   onOpenSettings
 }: Props): React.JSX.Element {
@@ -118,18 +119,12 @@ export function StatusBar({
     </button>
   ) : null
 
-  /*
-   * No colour of its own: `applyAppearance` writes the active profile's accent
-   * over --accent and --accent-soft, so data-tone="accent" is already this
-   * profile's colour, and stays right when there is no profile to override it.
-   */
-  const profilePill = profileLabel ? (
+  const profilePill = sessionProfileLabel ? (
     <span
       className="pill"
-      data-tone="accent"
-      title={`Profile: ${profileLabel} — follows the folder of the tab in front`}
+      title={`This session sits under ${sessionProfileLabel} — the sidebar filter is separate`}
     >
-      {profileLabel}
+      {sessionProfileLabel}
     </span>
   ) : null
 

@@ -316,9 +316,9 @@ export function ProfilesSettings({ settings, onPatch, onCreated }: Props): React
     <div className="field">
       <span className="field-label">Profiles</span>
       <span className="field-hint">
-        A profile is a colour and a folder. Picking one in the sidebar shows the projects
-        inside that folder and repaints the accent — it never hides anything from Claude, and
-        you can still open any directory or resume any chat from any profile.
+        A profile is a view filter by folder group. The sidebar chip stays until you change
+        it; it is not an account, and it never hides a folder from Claude — Open, Scratch,
+        search, and the command palette still reach everything.
       </span>
 
       {visible.length === 0 && (

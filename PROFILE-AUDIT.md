@@ -4,9 +4,13 @@ Trong said profiles “don’t feel so right” without naming a bug. This is
 diagnosis, not a redesign. A profile stays a **view filter, never access
 control**.
 
-The only code change in this PR is the sidebar empty state when a selected
-profile has no projects yet (it used to quote an empty search). Everything
-else is a recommendation.
+**Split is the settled decision** (Trong, this PR). The sidebar chip is a
+sticky view filter. The quieter chrome — status pill and the session’s
+terminal accent — follows the tab in front. The worklog still keys off
+the session’s folder group, never the chip.
+
+Shipped with that: create selects the new profile; Settings says one
+thing; the empty-profile sidebar copy no longer quotes a blank search.
 
 ## 1. How profiles work today
 
@@ -43,11 +47,11 @@ tried and removed: picking `G:/Code` and naming it `Task` would have
 made the profile cover every project on the machine. Imports are a
 consequence of the root, never a reason to pick a different one.
 
-**The chip is not the only writer of the selection.** The active tab
-follows its cwd into a profile (`profileIdForCwd` in App). Colour, filter,
-status-bar pill and terminal cursor all move with it. Clicking All is
-undone the next time you activate a tab that belongs to a profile. An
-SSH tab and a folder no profile owns leave the chip where it is.
+**Split (shipped).** The chip is the only writer of the selection. The
+active tab still resolves through `profileIdForCwd`, but only to name
+the status pill and paint the session’s cursor — it must not call
+`patchSettings({ activeProfile })`. An SSH tab and a folder no profile
+owns have no pill. The filter stays where the user left it.
 
 **Worklog** stores `worklogGroups` (folder names), not profile ids, and
 never sees `activeProfile`. The Settings checkboxes are a face over that
@@ -60,38 +64,24 @@ The feature is internally consistent and well tested. The smell is that
 **one chip is doing three jobs**, and the product copy does not agree
 with itself about which job is the point.
 
-### The chip is a mode, not a filter you hold
+### The chip was a mode, not a filter you hold *(fixed: Split)*
 
-PLAN and the original ask: *“I should choose it manually.”* The sidebar
-treats a press as a view filter. App then overwrites that choice from
-the active tab, and the status bar’s tooltip says so:
-`follows the folder of the tab in front`.
+PLAN and the original ask: *“I should choose it manually.”* Before
+Split, App overwrote that choice from the active tab. Pick All → click
+a Work tab → the list collapsed and the chrome turned green. The only
+way to *keep* All was to not activate a project tab.
 
-So: pick All → click a Work tab → the list collapses to Work and the
-chrome turns green. Pick Study → the lecture folder’s tab is in the
-background → the chip jumps back. The only way to *keep* All is to not
-activate a project tab.
+Split is the fix: the chip stays; the status pill and the session
+cursor say which folder the tab belongs to. Personal-on-Ember is still
+a no-op by colour, which is why the pill is named, not merely tinted.
 
-That is the highest-leverage mismatch with “view filter.” A filter you
-cannot hold is a mode. Combined with Personal’s accent being Ember’s own
-`#ff9552`, “did I switch?” is often answered by the list disappearing
-rather than by colour.
+### Three written definitions *(fixed: one sentence)*
 
-### Three written definitions
-
-| Place | A profile is… |
-| --- | --- |
-| `src/shared/profiles.ts` | a view filter, nothing more |
-| `Settings.profiles` comment | a colour, and a worklog switch |
-| Settings → Profiles hint | a colour and a folder |
-| Settings nav | “Per-folder colours and scan roots” (under Appearance) |
-| Status bar | the folder of the tab in front |
-
-None of these is false in isolation. Together they teach three products.
-Settings lives under Appearance because the visible effect is paint;
-the folder half is “the half nobody comes looking for”
-(`SettingsSheet.tsx`). Create, delete, and “why is this chip here?”
-are the half people actually come looking for.
+Settings, the nav hint, and the `Settings.profiles` / `activeProfile`
+comments now all say the same thing: a view filter by folder group.
+Colour and the worklog switch are how it shows and what it can trigger,
+not a second meaning. The pane still sits under Appearance (chrome
+paint); moving the nav row is leftover.
 
 ### Derived chips arrive unasked
 
@@ -120,11 +110,10 @@ preview is honest (`Create G:/Code/Task. It starts empty…`). The
 disappointment is: pick a folder full of repos, type a name, get an
 empty child and a chip that filters to nothing.
 
-After create, the new profile is **not** selected. You stay on All (or
-whatever the active tab then follows). Combined with the old empty-state
-copy, “Create and nothing happened” is still the easy reading.
+After create, the new profile **is** selected (`activeProfile` is in
+the create patch). Combined with Split, that lands and stays.
 
-You also cannot point an existing profile at a different folder, or add
+You still cannot point an existing profile at a different folder, or add
 a second group, in the UI. `groups: string[]` exists; the editor only
 renames and recolours. Worklog already has the “partial groups” checkbox
 state for a case the profile pane cannot produce.
@@ -149,53 +138,29 @@ in the original ask and “per group” in the gate feel like two features.
 
 ## 3. Ranked improvements
 
-### P0 — stop the chip and the tab fighting
+### P0 — Split *(done in this PR)*
 
-**Why.** This is the daily “off.” The settled rule is view filter.
-Tab-follow makes the filter a slave of the front tab, so All is
-unstable and switching conversations rewrites the project list and the
-chrome.
-
-**Do (pick one; this needs Trong):**
-
-1. **Chip is the filter; tab does not move it.** Colour may still
-   follow the tab (status-bar pill already names the profile). Effort:
-   small (delete or gate the effect in `App.tsx` ~767). Risk: low.
-   Closest to “I choose it manually.”
-2. **Split the two.** Chip = filter (sticky, including All). A quieter
-   indicator (status pill only, or a tab glyph) = “this session’s
-   folder.” Effort: small–medium. Risk: low. Best match for “view
-   filter” *and* “I can see where I am.”
-3. Keep follow, but **do not let it leave All** (only move from one
-   named profile to another). Effort: tiny. Risk: low. Half measure;
-   All becomes the one holdable filter.
-
-Do not make the worklog read the chip. That would break the settled
-gate.
+Chip = sticky filter. Tab-follow no longer writes `activeProfile`.
+Status pill (muted, named) and the session’s terminal accent follow
+`profileIdForCwd`. Worklog still does not see the chip.
 
 ### P0 — empty profile state *(done in this PR)*
 
 Selecting a chip with no matching projects used to render the search
-miss: *Nothing matches* / *contains “”*. After create, that is the
-first thing you see if you click the new chip. Copy now says the
-profile is empty and points at Open / All.
+miss: *Nothing matches* / *contains “”*. Copy now says the profile is
+empty and points at Open / All.
 
-### P1 — create should land on the new profile
+### P1 — create should land on the new profile *(done in this PR)*
 
-**Why.** Create writes a chip and leaves you on All, then tab-follow
-may paint a different profile. The user asked to *choose or create*.
-Effort: small (`createProfile` already returns `record.id`; set
-`activeProfile` after success, or include it in the patch). Risk: low,
-but only feels right if P0 lands first — otherwise the next tab click
-undoes it.
+`createProfile`’s patch now includes `activeProfile: record.id`. The
+chip lands on the new profile and, because the filter is sticky, stays
+there.
 
-### P1 — say one thing in Settings
+### P1 — say one thing in Settings *(done in this PR)*
 
-**Why.** Move Profiles next to Projects (or give the nav hint “which
-projects you are looking at”). Lead the pane with the filter, then
-colour, then folder. Drop “a profile is a colour and a folder” as the
-first sentence. Align the `Settings.profiles` comment with
-`shared/profiles.ts`. Effort: small (copy + nav). Risk: none.
+The pane and the nav hint now say view filter by folder group. The
+`Settings.profiles` / `activeProfile` comments match. Profiles still
+sit under Appearance (chrome paint); moving the nav row is leftover.
 
 ### P1 — create preview when the name does not match the picked folder
 
@@ -259,20 +224,21 @@ Tempting, contradicts PLAN. Membership stays `group`. Moving a project
 between profiles is moving it on disk (or, with the P1 folder editor,
 adding its parent as a second group).
 
-## 4. What this PR changes vs what needs a decision
+## 4. What this PR changed vs what still needs a decision
 
-**Changed**
+**Shipped**
 
-- Sidebar empty state when a profile is selected and has no projects
-  (`Sidebar.tsx`). Search miss copy is unchanged.
+- Split: chip is sticky; status pill + session accent follow the tab.
+- Create selects the new profile.
+- Settings copy is one sentence (view filter by folder group).
+- Empty-profile sidebar copy.
 
-**Trong before any of the rest**
+**Still Trong, not this pass**
 
-1. P0: chip sticky vs tab-follow vs split (1 / 2 / 3 above).
-2. P1: create landing on the new profile (yes, once P0 is picked).
-3. P1: “Use this folder” vs “Create a child” on create.
-4. P1: `school` labelled Study — keep, rename, or alias `study`.
-5. P2: should scratch (and other app-owned trees) ever seed a chip?
+1. “Use this folder” vs “Create a child” on create.
+2. Folder editor after create.
+3. `school` labelled Study — keep, rename, or alias `study`.
+4. Should scratch (and other app-owned trees) ever seed a chip?
 
 Not asked, not proposed: theme editor, per-profile Claude defaults,
 worklog keyed on the chip, profiles as permissions.

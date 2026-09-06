@@ -436,7 +436,7 @@ export async function planProfile(rawFolder: string, rawName: string): Promise<P
 
 export interface CreateProfileResult {
   plan: ProfilePlan
-  /** Apply with `setSettings`. Only the two keys that change are present. */
+  /** Apply with `setSettings`. Only the keys that change are present. */
   patch: Partial<Settings>
   record: ProfileConfig
 }
@@ -485,5 +485,9 @@ export async function createProfile(
   const roots = settings.projectRoots ?? []
   const projectRoots = roots.some((r) => sameRoot(r, plan.root)) ? roots : [...roots, plan.root]
 
-  return { plan, patch: { profiles: [...stored, record], projectRoots }, record }
+  return {
+    plan,
+    patch: { profiles: [...stored, record], projectRoots, activeProfile: record.id },
+    record
+  }
 }

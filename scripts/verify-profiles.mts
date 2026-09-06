@@ -610,6 +610,7 @@ try {
     true
   )
   check('the patch persists the same byte-identical root', cafe.patch.projectRoots, [cafe.plan.root])
+  check('and create selects the new profile so the chip lands on it', cafe.patch.activeProfile, cafe.record.id)
 
   mkdirSync(join(unicodeBox, 'Straße'))
   const FOLDS_NON_ASCII = existsSync(join(unicodeBox, 'STRASSE'))
@@ -1175,12 +1176,13 @@ check(
   'Work'
 )
 
-console.log('\nthe chip stays out of the main process')
+console.log('\nthe chip stays out of the worklog')
 /*
  * The worklog gate is keyed on a session's own folder and never on the sidebar
  * selection — gate.ts's header is three paragraphs on why, and both failures
- * are silent. Making the chip follow the active tab is only safe because
- * nothing over there reads it, so that is asserted rather than remembered.
+ * are silent. The Split keeps that: the chip is a sticky filter, the session
+ * pill is a read of profileIdForCwd, and nothing in main may *decide* a
+ * session from `activeProfile`.
  *
  * A source scan, not a type: the coupling this guards against is one `import
  * { getSettings }` away and would typecheck perfectly.
@@ -1204,14 +1206,15 @@ const mentionsChip = tsFilesUnder(MAIN)
   .map((f) => f.slice(MAIN.length).split('\\').join('/'))
 
 /*
- * The two files that may name it: one declares the default and repairs the
- * stored value, the other persists what it is given. Neither decides anything
- * with it. Adding a third is a deliberate act — read gate.ts's header first.
+ * Files that may name `activeProfile`: the default/repair, the persist, and
+ * create (which selects the new filter so the chip lands on it). None of them
+ * may *read* it to decide a session — that is still the worklog's forbidden
+ * act. Adding another is a deliberate act; read gate.ts's header first.
  */
-const SETTINGS_FILES = ['settingsSchema.ts', 'store.ts']
+const CHIP_FILES = ['settingsSchema.ts', 'store.ts', 'profiles.ts']
 check(
-  'only the settings files name it, and they only store it',
-  mentionsChip.filter((f) => !SETTINGS_FILES.includes(f)),
+  'only the settings write and create name it',
+  mentionsChip.filter((f) => !CHIP_FILES.includes(f)),
   []
 )
 check(

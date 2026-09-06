@@ -811,19 +811,20 @@ export interface Settings {
     sttUrl: string
   }
   /**
-   * Which profile's projects to show, by `Project.group`. Null shows all.
+   * Sidebar view filter, by profile id. Null shows all.
    *
-   * Never an access control: every profile can reach every file, and a chat can
-   * be started or resumed in any directory regardless of what is selected here.
+   * Sticky: the active tab must not write this. A profile is a view filter by
+   * folder group, never an account and never access control — Open, Scratch,
+   * search and the command palette still reach every project.
    */
   activeProfile: string | null
   /**
    * Stored overrides for the profiles derived from folder names. Empty means
    * "derive everything", which is how an untouched machine behaves.
    *
-   * A profile is only ever two things: a colour, so projects are tellable
-   * apart at a glance, and a switch for the worklog agent. It carries no
-   * defaults and grants no access.
+   * A profile is a view filter on `Project.group`. Colour and the worklog
+   * watch-switch are how it shows and what it can trigger — they are not a
+   * second meaning.
    */
   profiles: ProfileConfig[]
   /** Remote machines offered in the launcher. See SshHost. */
