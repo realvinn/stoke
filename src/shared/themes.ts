@@ -835,10 +835,419 @@ export const MIST: Theme = {
 }
 
 
+/**
+ * Generated from its seed by scripts/gen-themes.mts.
+ */
+export const HEARTH: Theme = {
+  id: 'hearth',
+  name: 'Hearth',
+  appearance: 'dark',
+  builtIn: true,
+  seed: {
+    id: 'hearth',
+    name: 'Hearth',
+    appearance: 'dark',
+    hue: 38,
+    tint: 1.2,
+    pageChroma: 0.028,
+    accent: '#e87850'
+  },
+  colors: {
+    bg: '#22130e',
+    bgSunken: '#170805',
+    bgElevated: '#2f1e19',
+    surface: '#2f1e19',
+    surfaceHover: '#3c2a25',
+    surfaceActive: '#493731',
+    borderSubtle: '#4c4746',
+    border: '#5a5452',
+    borderStrong: '#696260',
+    text: '#e4dcd9',
+    textMuted: '#b1acaa',
+    textFaint: '#999492',
+    accent: '#e87850',
+    accentHover: '#dc6d45',
+    accentSoft: 'rgba(232, 120, 80, 0.14)',
+    accentContrast: '#ffffff',
+    success: '#77cc85',
+    warning: '#e4b24d',
+    danger: '#ffa192',
+    info: '#80bfff'
+  },
+  terminal: {
+    background: '#22130e',
+    foreground: '#e4dcd9',
+    cursor: '#e87850',
+    cursorAccent: '#22130e',
+    selectionBackground: 'rgba(232, 120, 80, 0.28)',
+    selectionForeground: '#e4dcd9',
+    selectionInactiveBackground: 'rgba(232, 120, 80, 0.16)',
+    red: '#d45749',
+    brightRed: '#ee6f5f',
+    green: '#17933e',
+    brightGreen: '#39aa54',
+    yellow: '#a27900',
+    brightYellow: '#bd8e00',
+    blue: '#1883da',
+    brightBlue: '#399af4',
+    magenta: '#ae61c0',
+    brightMagenta: '#c778d9',
+    cyan: '#008e8e',
+    brightCyan: '#00a7a7',
+    black: '#2f2a28',
+    brightBlack: '#6d6765',
+    white: '#a59f9c',
+    brightWhite: '#e3dcda'
+  }
+}
+
+
+
+/**
+ * Generated from its seed by scripts/gen-themes.mts.
+ */
+export const DUSK: Theme = {
+  id: 'dusk',
+  name: 'Dusk',
+  appearance: 'dark',
+  builtIn: true,
+  seed: {
+    id: 'dusk',
+    name: 'Dusk',
+    appearance: 'dark',
+    hue: 292,
+    tint: 1,
+    pageChroma: 0.03,
+    accent: '#c49bff'
+  },
+  colors: {
+    bg: '#181524',
+    bgSunken: '#0d0a18',
+    bgElevated: '#232030',
+    surface: '#232030',
+    surfaceHover: '#2f2c3d',
+    surfaceActive: '#3b394a',
+    borderSubtle: '#48484c',
+    border: '#565559',
+    borderStrong: '#636368',
+    text: '#dddde2',
+    textMuted: '#adacb0',
+    textFaint: '#959499',
+    accent: '#c49bff',
+    accentHover: '#cdadff',
+    accentSoft: 'rgba(197, 157, 255, 0.14)',
+    accentContrast: '#12100e',
+    success: '#77cc85',
+    warning: '#e4b24d',
+    danger: '#ffa192',
+    info: '#80bfff'
+  },
+  terminal: {
+    background: '#181524',
+    foreground: '#dddde2',
+    cursor: '#c49bff',
+    cursorAccent: '#181524',
+    selectionBackground: 'rgba(196, 155, 255, 0.28)',
+    selectionForeground: '#dddde2',
+    selectionInactiveBackground: 'rgba(196, 155, 255, 0.16)',
+    red: '#d45849',
+    brightRed: '#ee6f60',
+    green: '#17933e',
+    brightGreen: '#39aa54',
+    yellow: '#a27a00',
+    brightYellow: '#be8f00',
+    blue: '#1883da',
+    brightBlue: '#399af4',
+    magenta: '#af61c0',
+    brightMagenta: '#c778d9',
+    cyan: '#008f8f',
+    brightCyan: '#00a8a8',
+    black: '#2b2b2f',
+    brightBlack: '#68686d',
+    white: '#9f9fa5',
+    brightWhite: '#dddde3'
+  }
+}
+
+
+
+/**
+ * Generated from its seed by scripts/gen-themes.mts.
+ */
+export const HARBOR: Theme = {
+  id: 'harbor',
+  name: 'Harbor',
+  appearance: 'dark',
+  builtIn: true,
+  seed: {
+    id: 'harbor',
+    name: 'Harbor',
+    appearance: 'dark',
+    hue: 215,
+    tint: 1,
+    pageChroma: 0.028,
+    accent: '#5ba4d9'
+  },
+  colors: {
+    bg: '#061b1f',
+    bgSunken: '#000f14',
+    bgElevated: '#12262b',
+    surface: '#12262b',
+    surfaceHover: '#1e3338',
+    surfaceActive: '#2a3f45',
+    borderSubtle: '#45494a',
+    border: '#525758',
+    borderStrong: '#5f6566',
+    text: '#dae1e3',
+    textMuted: '#aab0b1',
+    textFaint: '#939899',
+    accent: '#5ba4d9',
+    accentHover: '#4b94c9',
+    accentSoft: 'rgba(86, 159, 212, 0.14)',
+    accentContrast: '#ffffff',
+    success: '#78cd86',
+    warning: '#e5b24e',
+    danger: '#ffa194',
+    info: '#80bfff'
+  },
+  terminal: {
+    background: '#061b1f',
+    foreground: '#dae1e3',
+    cursor: '#5ba4d9',
+    cursorAccent: '#061b1f',
+    selectionBackground: 'rgba(91, 164, 217, 0.28)',
+    selectionForeground: '#dae1e3',
+    selectionInactiveBackground: 'rgba(91, 164, 217, 0.16)',
+    red: '#d5594a',
+    brightRed: '#ef7060',
+    green: '#19943f',
+    brightGreen: '#3bab55',
+    yellow: '#a37a00',
+    brightYellow: '#be8f00',
+    blue: '#1a84db',
+    brightBlue: '#3a9bf5',
+    magenta: '#af62c1',
+    brightMagenta: '#c879da',
+    cyan: '#008f90',
+    brightCyan: '#00a9a9',
+    black: '#272d2e',
+    brightBlack: '#646a6c',
+    white: '#9ca3a4',
+    brightWhite: '#dae1e3'
+  }
+}
+
+
+
+/**
+ * Generated from its seed by scripts/gen-themes.mts.
+ */
+export const CINDER: Theme = {
+  id: 'cinder',
+  name: 'Cinder',
+  appearance: 'dark',
+  builtIn: true,
+  seed: {
+    id: 'cinder',
+    name: 'Cinder',
+    appearance: 'dark',
+    hue: 18,
+    tint: 0.8,
+    pageChroma: 0.02,
+    black: true,
+    accent: '#ff7a6a'
+  },
+  colors: {
+    bg: '#140909',
+    bgSunken: '#080202',
+    bgElevated: '#221616',
+    surface: '#221616',
+    surfaceHover: '#302323',
+    surfaceActive: '#3f3131',
+    borderSubtle: '#474343',
+    border: '#575252',
+    borderStrong: '#676262',
+    text: '#d7d1d1',
+    textMuted: '#a7a3a2',
+    textFaint: '#908c8b',
+    accent: '#ff7a6a',
+    accentHover: '#ffa294',
+    accentSoft: 'rgba(255, 143, 128, 0.14)',
+    accentContrast: '#12100e',
+    success: '#76cb84',
+    warning: '#e3b14c',
+    danger: '#ff9f90',
+    info: '#7dbeff'
+  },
+  terminal: {
+    background: '#140909',
+    foreground: '#d7d1d1',
+    cursor: '#ff7a6a',
+    cursorAccent: '#140909',
+    selectionBackground: 'rgba(255, 122, 106, 0.28)',
+    selectionForeground: '#d7d1d1',
+    selectionInactiveBackground: 'rgba(255, 122, 106, 0.16)',
+    red: '#cd5143',
+    brightRed: '#e76959',
+    green: '#078d38',
+    brightGreen: '#32a44e',
+    yellow: '#9a7400',
+    brightYellow: '#b68900',
+    blue: '#097cd3',
+    brightBlue: '#3093ec',
+    magenta: '#a85ab9',
+    brightMagenta: '#c071d2',
+    cyan: '#008888',
+    brightCyan: '#00a1a1',
+    black: '#231e1e',
+    brightBlack: '#676161',
+    white: '#999292',
+    brightWhite: '#d8d1d1'
+  }
+}
+
+
+
+/**
+ * Generated from its seed by scripts/gen-themes.mts.
+ */
+export const FROST: Theme = {
+  id: 'frost',
+  name: 'Frost',
+  appearance: 'light',
+  builtIn: true,
+  seed: {
+    id: 'frost',
+    name: 'Frost',
+    appearance: 'light',
+    hue: 225,
+    tint: 2.2,
+    pageChroma: 0.014,
+    accent: '#1d4ed8'
+  },
+  colors: {
+    bg: '#ebf6fb',
+    bgSunken: '#dbe6eb',
+    bgElevated: '#f8fdff',
+    surface: '#f8fdff',
+    surfaceHover: '#e3eef3',
+    surfaceActive: '#d3dee3',
+    borderSubtle: '#cbd6db',
+    border: '#c2cfd4',
+    borderStrong: '#b9c7cd',
+    text: '#293439',
+    textMuted: '#4c5559',
+    textFaint: '#5e686c',
+    accent: '#1d4ed8',
+    accentHover: '#1442cc',
+    accentSoft: 'rgba(29, 78, 216, 0.22)',
+    accentContrast: '#ffffff',
+    success: '#1a7433',
+    warning: '#855f00',
+    danger: '#a7463b',
+    info: '#1a68ac'
+  },
+  terminal: {
+    background: '#ebf6fb',
+    foreground: '#293439',
+    cursor: '#1d4ed8',
+    cursorAccent: '#ebf6fb',
+    selectionBackground: 'rgba(29, 78, 216, 0.28)',
+    selectionForeground: '#293439',
+    selectionInactiveBackground: 'rgba(29, 78, 216, 0.16)',
+    red: '#c1473a',
+    brightRed: '#a82e24',
+    green: '#008232',
+    brightGreen: '#006927',
+    yellow: '#8f6a00',
+    brightYellow: '#745600',
+    blue: '#0072c5',
+    brightBlue: '#005da2',
+    magenta: '#9e50af',
+    brightMagenta: '#863a97',
+    cyan: '#007d7e',
+    brightCyan: '#006666',
+    black: '#2e3335',
+    brightBlack: '#474d4f',
+    white: '#646a6c',
+    brightWhite: '#898e91'
+  }
+}
+
+
+
+/**
+ * Generated from its seed by scripts/gen-themes.mts.
+ */
+export const MEADOW: Theme = {
+  id: 'meadow',
+  name: 'Meadow',
+  appearance: 'light',
+  builtIn: true,
+  seed: {
+    id: 'meadow',
+    name: 'Meadow',
+    appearance: 'light',
+    hue: 142,
+    tint: 2,
+    pageChroma: 0.014,
+    accent: '#2f6b3c'
+  },
+  colors: {
+    bg: '#eff7ee',
+    bgSunken: '#dfe6de',
+    bgElevated: '#f7fff6',
+    surface: '#f7fff6',
+    surfaceHover: '#e7eee6',
+    surfaceActive: '#d7ded6',
+    borderSubtle: '#d0d6cf',
+    border: '#c7cfc6',
+    borderStrong: '#bfc7be',
+    text: '#2e342d',
+    textMuted: '#4f554f',
+    textFaint: '#626761',
+    accent: '#2f6b3c',
+    accentHover: '#246133',
+    accentSoft: 'rgba(47, 107, 60, 0.22)',
+    accentContrast: '#ffffff',
+    success: '#1b7534',
+    warning: '#866000',
+    danger: '#a8473c',
+    info: '#1b69ad'
+  },
+  terminal: {
+    background: '#eff7ee',
+    foreground: '#2e342d',
+    cursor: '#2f6b3c',
+    cursorAccent: '#eff7ee',
+    selectionBackground: 'rgba(47, 107, 60, 0.28)',
+    selectionForeground: '#2e342d',
+    selectionInactiveBackground: 'rgba(47, 107, 60, 0.16)',
+    red: '#c2473b',
+    brightRed: '#a92f24',
+    green: '#008232',
+    brightGreen: '#006927',
+    yellow: '#8f6a00',
+    brightYellow: '#745600',
+    blue: '#0073c6',
+    brightBlue: '#005da3',
+    magenta: '#9e51b0',
+    brightMagenta: '#873b98',
+    cyan: '#007d7e',
+    brightCyan: '#006666',
+    black: '#30332f',
+    brightBlack: '#4a4d49',
+    white: '#676a66',
+    brightWhite: '#8b8f8b'
+  }
+}
+
+
+
+
 /*
  * Order is the order the picker draws them: every dark theme, then every light
- * one, with the picker grouping them under those two headings. Ember stays
- * first and stays the default -- Stoke is a shell FOR Claude Code, not a reskin
+ * theme. Ember is first and stays the default -- Stoke is a shell FOR Claude Code, not a reskin
  * of it, and a distinct accent is how you tell at a glance which window you are
  * in. To add one: put its seed in scripts/gen-themes.mts, run it, paste the
  * literal here, and add it to this list; verify:theme-gen then pins it.
@@ -853,9 +1262,15 @@ export const BUILT_IN_THEMES: Theme[] = [
   LAGOON,
   ROSE,
   INK,
+  HEARTH,
+  DUSK,
+  HARBOR,
+  CINDER,
   DAYLIGHT,
   PAPER,
-  MIST
+  MIST,
+  FROST,
+  MEADOW
 ]
 
 export const DEFAULT_THEME_ID = EMBER.id

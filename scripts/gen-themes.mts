@@ -20,12 +20,12 @@ import { buildTheme, contrastReport } from '../src/shared/themeGen.ts'
 import type { Theme, ThemeSeed } from '../src/shared/types.ts'
 
 const NEW_SEEDS: ThemeSeed[] = [
-  { id: 'lantern', name: 'Lantern', appearance: 'dark', hue: 80, tint: 1.4, black: true, accent: '#f7c948' },
-  { id: 'graphite', name: 'Graphite', appearance: 'dark', hue: 0, tint: 0, black: true, accent: '#e8e8e8' },
-  { id: 'lagoon', name: 'Lagoon', appearance: 'dark', hue: 200, tint: 1, pageChroma: 0.03, accent: '#4ecdc4' },
-  { id: 'rose', name: 'Rosé', appearance: 'dark', hue: 350, tint: 1, pageChroma: 0.03, accent: '#f78ec1' },
-  { id: 'ink', name: 'Ink', appearance: 'dark', hue: 250, tint: 1, pageChroma: 0.03, accent: '#7eb2ff' },
-  { id: 'mist', name: 'Mist', appearance: 'light', hue: 200, tint: 2.5, pageChroma: 0.012, accent: '#0f766e' }
+  { id: 'hearth', name: 'Hearth', appearance: 'dark', hue: 38, tint: 1.2, pageChroma: 0.028, accent: '#e87850' },
+  { id: 'dusk', name: 'Dusk', appearance: 'dark', hue: 292, tint: 1, pageChroma: 0.03, accent: '#c49bff' },
+  { id: 'harbor', name: 'Harbor', appearance: 'dark', hue: 215, tint: 1, pageChroma: 0.028, accent: '#5ba4d9' },
+  { id: 'cinder', name: 'Cinder', appearance: 'dark', hue: 18, tint: 0.8, black: true, pageChroma: 0.02, accent: '#ff7a6a' },
+  { id: 'frost', name: 'Frost', appearance: 'light', hue: 225, tint: 2.2, pageChroma: 0.014, accent: '#1d4ed8' },
+  { id: 'meadow', name: 'Meadow', appearance: 'light', hue: 142, tint: 2, pageChroma: 0.014, accent: '#2f6b3c' }
 ]
 
 function literal(constName: string, t: Theme, doc: string): string {

@@ -218,11 +218,11 @@ non-colour selected state on the chip (check, not only fill), makes
 All → Personal visible on the default theme. Effort: small. Risk: low
 (do not restyle the other seven swatches — gotcha 44).
 
-### P2 — do not invent access control or per-project assignment
+### P2 — do not invent access control *(membership is curated now)*
 
-Tempting, contradicts PLAN. Membership stays `group`. Moving a project
-between profiles is moving it on disk (or, with the P1 folder editor,
-adding its parent as a second group).
+Access control still out of scope. Membership is no longer `group`-only:
+`projectPaths` is the curated set; folder groups seed and name worklog /
+pill. Moving between profiles edits path lists, never folders on disk.
 
 ## 4. What this PR changed vs what still needs a decision
 
@@ -242,3 +242,25 @@ adding its parent as a second group).
 
 Not asked, not proposed: theme editor, per-profile Claude defaults,
 worklog keyed on the chip, profiles as permissions.
+
+
+## 5. Curated membership (this PR, after Split)
+
+**Supersedes** PLAN / earlier audit notes that membership equals `Project.group`
+only. A profile is now a **curated set of projects** (`projectPaths` on the
+stored record). Folder groups still:
+
+- seed defaults (projects under `work/` start on Work),
+- power "Add all in folder",
+- drive the worklog watch list and `profileIdForCwd` (status pill / session
+  accent).
+
+The sidebar chip filters to `projectPaths`. Moving a project between profiles
+edits those arrays and **never** renames or moves folders on disk. All / search /
+Open / command palette still reach every project.
+
+**Migration:** `hydrateMembership` snapshots group-matched paths onto stored
+records that lack `projectPaths` once projects have loaded, so chips do not
+empty overnight. Derived-only chips (no stored record) keep live group seeding
+until the user add/removes once. Tombstones use `groups: []` and
+`projectPaths: []`.

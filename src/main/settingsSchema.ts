@@ -33,6 +33,20 @@ function isProfileConfig(v: unknown): v is ProfileConfig {
   return typeof p.id === 'string' && p.id.length > 0 && Array.isArray(p.groups)
 }
 
+/** Drop junk; keep absent distinct from an explicit empty curated set. */
+function tidyProjectPaths(v: unknown): string[] | undefined {
+  if (v === undefined) return undefined
+  if (!Array.isArray(v)) return undefined
+  return v
+    .filter((p): p is string => typeof p === 'string' && p.trim() !== '')
+    .map((p) => p.trim().replace(/[\\/]+$/, ''))
+}
+
+function tidyProfile(p: ProfileConfig): ProfileConfig {
+  const projectPaths = tidyProjectPaths((p as ProfileConfig).projectPaths)
+  return projectPaths === undefined ? p : { ...p, projectPaths }
+}
+
 export const DEFAULT_SETTINGS: Settings = {
   themeId: DEFAULT_THEME_ID,
   themeIdLight: DEFAULT_LIGHT_THEME_ID,
@@ -245,7 +259,7 @@ export function hydrateSettings(raw: unknown): Settings {
     // Strictly true, so a string "false" out of a hand-edited file is off.
     followSystemTheme: r.followSystemTheme === true,
     profiles: Array.isArray(r.profiles)
-      ? renameProfileIds(r.profiles.filter(isProfileConfig))
+      ? renameProfileIds(r.profiles.filter(isProfileConfig).map(tidyProfile))
       : [],
     /*
      * A view filter, and now one the tab strip writes on every activation — so

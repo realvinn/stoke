@@ -328,6 +328,8 @@ Consequences for the design:
 - **The worklog gate keys off the session's project group, not the active sidebar chip.** The
   chip is a view filter and a Work session can run while the user browses Personal. This keeps
   "a profile is a view filter, never access control" intact.
+> **Update (profiles-audit PR):** membership is a curated `projectPaths` set seeded from folder groups; PLAN's earlier "group only" reading is superseded. Still a view filter, never access control.
+
 - **Reading the boards is a separate run from the scan.** `--safe-mode` switches every MCP
   server off, so one call cannot be both hermetic and able to reach a connector. Recall is its
   own read-only run, cached and single-flighted so it is shared across every scan in the window.

@@ -2,7 +2,8 @@ import { useMemo, useState } from 'react'
 import type { Project, ProjectMeta, SessionMeta } from '@shared/types'
 import { ContextBar } from './ContextMeter'
 import type { ResolvedProfile } from '@shared/profiles'
-import { foldGroup } from '@shared/profiles'
+import { foldGroup, projectInProfile } from '@shared/profiles'
+import { pathRulesFor } from '@shared/paths'
 import { IconChevron, IconFolder, IconPin, IconPlus, IconSearch } from './Icons'
 import { ProjectMetaPicker } from './ProjectMetaPicker'
 import { relativeTime } from '../lib/format'
@@ -103,30 +104,25 @@ export function Sidebar({
   const running = useMemo(() => new Set(runningPaths), [runningPaths])
 
   /*
-   * The folders the selected chip covers, case-folded.
+   * The selected chip's curated membership.
    *
-   * A profile can cover more than one folder, and `Project.group` carries
-   * whatever casing the path had, so comparing the selection to the group
-   * directly matched nothing on a folder the user had typed differently.
-   *
-   * An id with no profile behind it is treated as a group name. App only passes
-   * a selection that resolves, so this is defence rather than a live path.
+   * Filtering is by project path (see projectInProfile), not by folder group.
+   * Groups still seed defaults and drive the worklog / status pill; the chip
+   * itself is a sticky view over an explicit set. Searching still reaches
+   * every project — the profile never hides something you typed the name of.
    */
-  const activeGroups = useMemo(() => {
+  const activeRecord = useMemo(() => {
     if (!activeProfile) return null
-    const hit = profiles.find((p) => foldGroup(p.id) === foldGroup(activeProfile))
-    return new Set((hit ? hit.groups : [activeProfile]).map(foldGroup))
+    return profiles.find((p) => foldGroup(p.id) === foldGroup(activeProfile)) ?? null
   }, [profiles, activeProfile])
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
-    /*
-     * Searching reaches across every profile on purpose. The profile narrows
-     * what you browse; it must never hide something you went looking for by
-     * name — it is a view, not a permission.
-     */
+    const rules = pathRulesFor(window.stoke.platform)
     const scoped =
-      q || !activeGroups ? projects : projects.filter((p) => activeGroups.has(foldGroup(p.group)))
+      q || !activeRecord
+        ? projects
+        : projects.filter((p) => projectInProfile(p, activeRecord, rules))
     if (!q) return scoped
     // The label is what the user sees, so it is what they will type. Searching
     // only the basename made a renamed folder unfindable by its own name.
@@ -136,7 +132,7 @@ export function Sidebar({
         p.path.toLowerCase().includes(q) ||
         (p.label ?? '').toLowerCase().includes(q)
     )
-  }, [projects, query, activeGroups])
+  }, [projects, query, activeRecord])
 
   /*
    * Three stable buckets, ordered the way you actually reach for a project.
@@ -190,7 +186,7 @@ export function Sidebar({
                   className="profile-chip"
                   aria-pressed={on}
                   onClick={() => onSelectProfile(on ? null : p.id)}
-                  title={`${p.label} — ${p.groups.join(', ')}`}
+                  title={`${p.label} — ${Array.isArray(p.projectPaths) ? `${p.projectPaths.length} projects` : p.groups.join(', ')}`}
                   style={
                     {
                       '--chip': p.accent,

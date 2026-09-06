@@ -15,7 +15,7 @@ import type {
   WorklogWatchState
 } from '@shared/types'
 import type { UpdateInfo } from '@shared/api'
-import { profileFor, resolveProfiles, visibleProfiles } from '@shared/profiles'
+import { hydrateMembership, profileFor, resolveProfiles, visibleProfiles } from '@shared/profiles'
 import { activeThemeId, resolveTheme } from '@shared/themes'
 import { worklogButtonState } from '@shared/worklog'
 import { BrowserPanel } from './components/BrowserPanel'
@@ -708,8 +708,26 @@ export function App(): React.JSX.Element {
     const counts = new Map<string, number>()
     for (const p of projects) counts.set(p.group, (counts.get(p.group) ?? 0) + 1)
     const resolved = resolveProfiles(counts, settings?.profiles ?? [])
-    return visibleProfiles(resolved, counts, settings?.projectRoots ?? [])
-  }, [projects, settings?.profiles, settings?.projectRoots])
+    return visibleProfiles(
+      resolved,
+      counts,
+      settings?.projectRoots ?? [],
+      projects,
+      platform
+    )
+  }, [projects, settings?.profiles, settings?.projectRoots, platform])
+
+  /*
+   * One-shot migration: snapshot folder-derived membership onto stored profiles
+   * that lack projectPaths, so curated chips do not empty overnight. Runs after
+   * projects have loaded; hydrateMembership returns null once every record is
+   * explicit, so this does not loop.
+   */
+  useEffect(() => {
+    if (!settings || projectsLoading) return
+    const next = hydrateMembership(settings.profiles, projects, platform)
+    if (next) void patchSettings({ profiles: next })
+  }, [settings, projects, projectsLoading, platform, patchSettings])
 
   /*
    * One effect, one writer. The theme and the profile accent used to be applied

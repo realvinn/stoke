@@ -466,9 +466,17 @@ export async function createProfile(
 
   if (plan.willCreate) await mkdir(plan.root, { recursive: true })
 
+  /*
+   * Imports become an explicit curated set. An empty create leaves projectPaths
+   * absent so new folders under the root still join via live group-seed until
+   * the user add/removes once — membership is curated, not a second copy of
+   * the folder tree that freezes empty forever.
+   */
+  const importPaths = plan.imports.map((name) => join(plan.root, name))
   const record: ProfileConfig = {
     id: nextProfileId(plan.group, stored.map((p) => p.id)),
     groups: [plan.group],
+    ...(importPaths.length > 0 ? { projectPaths: importPaths } : {}),
     label: input.name.trim(),
     accent: input.accent,
     accentHover: input.accentHover,

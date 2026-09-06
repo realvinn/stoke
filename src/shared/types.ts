@@ -645,8 +645,22 @@ export interface WorklogProposedEvent {
 export interface ProfileConfig {
   /** Stable id. For a derived record this is the folder group name. */
   id: string
-  /** Project.group values this profile covers, compared case-folded. */
+  /**
+   * Folder groups used to *seed* membership and to name the worklog / status
+   * pill. Not the sidebar filter anymore — see `projectPaths`.
+   */
   groups: string[]
+  /**
+   * Curated project paths this profile includes (normalized, no trailing sep).
+   * The sidebar chip filters to this set. Folder `groups` only seed defaults
+   * and power "add all in folder"; moving a project between profiles edits
+   * these arrays and never renames or moves folders on disk.
+   *
+   * Absent means legacy / live-seed: filter by `groups` until membership is
+   * hydrated or the user add/removes once. An explicit empty array is an empty
+   * curated profile (show the empty-profile sidebar copy).
+   */
+  projectPaths?: string[]
   label: string
   accent: string
   accentHover: string
@@ -813,18 +827,20 @@ export interface Settings {
   /**
    * Sidebar view filter, by profile id. Null shows all.
    *
-   * Sticky: the active tab must not write this. A profile is a view filter by
-   * folder group, never an account and never access control — Open, Scratch,
-   * search and the command palette still reach every project.
+   * Sticky: the active tab must not write this. A profile is a view filter on
+   * a curated project set (seeded from folder groups), never an account and
+   * never access control — Open, Scratch, search and the command palette still
+   * reach every project.
    */
   activeProfile: string | null
   /**
    * Stored overrides for the profiles derived from folder names. Empty means
    * "derive everything", which is how an untouched machine behaves.
    *
-   * A profile is a view filter on `Project.group`. Colour and the worklog
-   * watch-switch are how it shows and what it can trigger — they are not a
-   * second meaning.
+   * A profile is a curated view filter (`projectPaths`, seeded from folder
+   * groups). Colour and the worklog watch-switch are how it shows and what it
+   * can trigger — they are not a second meaning. PLAN's old "membership =
+   * group only" is superseded.
    */
   profiles: ProfileConfig[]
   /** Remote machines offered in the launcher. See SshHost. */

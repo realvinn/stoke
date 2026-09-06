@@ -33,9 +33,16 @@ import {
   folderName,
   nextProfileId,
   profileFor,
+  addProjectPath,
+  ensureProjectPaths,
+  hydrateMembership,
+  projectInProfile,
+  removeProjectPath,
   resolveProfiles,
+  seedPathsForGroups,
   visibleProfiles
 } from '../src/shared/profiles.ts'
+import { pathRulesFor } from '../src/shared/paths.ts'
 import {
   chmodSync,
   existsSync,
@@ -1472,3 +1479,71 @@ check('and the ones it does move are still the colour that was picked', strayed,
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
 process.exitCode = failures ? 1 : 0
+
+console.log('\ncurated membership')
+{
+  const rules = pathRulesFor('win32')
+  const projects = [
+    { path: 'G:\\Code\\work\\alpha', group: 'work' },
+    { path: 'G:\\Code\\work\\beta', group: 'work' },
+    { path: 'G:\\Code\\personal\\gamma', group: 'personal' }
+  ]
+  check(
+    'live seed matches group until projectPaths is set',
+    projectInProfile(projects[0], { groups: ['work'] }, rules),
+    true
+  )
+  check(
+    'explicit empty curated set matches nothing',
+    projectInProfile(projects[0], { groups: ['work'], projectPaths: [] }, rules),
+    false
+  )
+  check(
+    'explicit path list is the filter',
+    projectInProfile(projects[0], { groups: ['work'], projectPaths: ['G:\\Code\\work\\beta'] }, rules),
+    false
+  )
+  check(
+    'seedPathsForGroups collects the folder',
+    seedPathsForGroups(projects, ['work'], rules),
+    ['G:\\Code\\work\\alpha', 'G:\\Code\\work\\beta']
+  )
+  const hydrated = hydrateMembership(
+    [rec({ id: 'work', groups: ['work'] }), rec({ id: 'school', groups: [] })],
+    projects,
+    'win32'
+  )
+  check(
+    'hydrate snapshots group matches onto missing projectPaths',
+    hydrated && hydrated.find((p) => p.id === 'work')?.projectPaths,
+    ['G:\\Code\\work\\alpha', 'G:\\Code\\work\\beta']
+  )
+  check(
+    'hydrate tombstones to an empty curated set',
+    hydrated && hydrated.find((p) => p.id === 'school')?.projectPaths,
+    []
+  )
+  check(
+    'hydrate is a no-op once every record is explicit',
+    hydrateMembership(hydrated!, projects, 'win32'),
+    null
+  )
+  const base = ensureProjectPaths({ groups: ['work'] }, projects, rules)
+  check(
+    'add/remove never touch disk paths, only the list',
+    removeProjectPath(addProjectPath(base, 'G:\\Code\\personal\\gamma', rules), 'G:\\Code\\work\\alpha', rules),
+    ['G:\\Code\\personal\\gamma', 'G:\\Code\\work\\beta']
+  )
+  check(
+    'visibleProfiles keeps a curated profile whose group folder is gone',
+    visibleProfiles(
+      resolveProfiles(counts({}), [rec({ id: 'Task', groups: ['Task'], projectPaths: ['G:\\Code\\work\\alpha'] })]),
+      counts({}),
+      [],
+      projects,
+      'win32'
+    ).map((p) => p.id),
+    ['Task']
+  )
+}
+

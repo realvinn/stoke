@@ -1,14 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { ProfileConfig, Settings } from '@shared/types'
+import type { ProfileConfig, Project, Settings } from '@shared/types'
 import type { CreateProfileInput, ProfilePlan, ResolvedProfile } from '@shared/profiles'
 import {
   PROFILE_SWATCHES,
+  addProjectPath,
   describePlan,
+  ensureProjectPaths,
   foldGroup,
   folderName,
+  projectInProfile,
+  removeProjectPath,
   resolveProfiles,
+  seedPathsForGroups,
   visibleProfiles
 } from '@shared/profiles'
+import { pathKey, pathRulesFor } from '@shared/paths'
 import { IconClose, IconFolder, IconPlus } from './Icons'
 
 /**
@@ -95,7 +101,9 @@ export function ProfilesSettings({ settings, onPatch, onCreated }: Props): React
    * carries settings and nothing else, and the alternative is threading projects
    * through two components that have no other use for them.
    */
+  const [projects, setProjects] = useState<Project[]>([])
   const [counts, setCounts] = useState<Map<string, number>>(new Map())
+  const [addingTo, setAddingTo] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
   const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT)
   const [plan, setPlan] = useState<ProfilePlan | null>(null)
@@ -107,19 +115,22 @@ export function ProfilesSettings({ settings, onPatch, onCreated }: Props): React
 
   useEffect(() => {
     void window.stoke.projects.list().then((list) => {
+      setProjects(list)
       const next = new Map<string, number>()
       for (const p of list) next.set(p.group, (next.get(p.group) ?? 0) + 1)
       setCounts(next)
     })
   }, [settings.projectRoots, settings.profiles])
 
+  const rules = useMemo(() => pathRulesFor(window.stoke.platform), [])
+
   const resolved = useMemo(
     () => resolveProfiles(counts, settings.profiles),
     [counts, settings.profiles]
   )
   const visible = useMemo(
-    () => visibleProfiles(resolved, counts, settings.projectRoots),
-    [resolved, counts, settings.projectRoots]
+    () => visibleProfiles(resolved, counts, settings.projectRoots, projects, window.stoke.platform),
+    [resolved, counts, settings.projectRoots, projects]
   )
   const visibleIds = useMemo(
     () => new Set(visible.map((p) => foldGroup(p.id))),
@@ -132,15 +143,11 @@ export function ProfilesSettings({ settings, onPatch, onCreated }: Props): React
   )
 
   const projectsIn = useCallback(
-    (p: ResolvedProfile): number => {
-      let n = 0
-      for (const [group, c] of counts) {
-        if (p.groups.some((g) => foldGroup(g) === foldGroup(group))) n += c
-      }
-      return n
-    },
-    [counts]
+    (p: ResolvedProfile): Project[] =>
+      projects.filter((proj) => projectInProfile(proj, p, rules)),
+    [projects, rules]
   )
+
 
   /**
    * This profile's stored record with `changes` applied, and the list it
@@ -161,6 +168,7 @@ export function ProfilesSettings({ settings, onPatch, onCreated }: Props): React
       const record: ProfileConfig = {
         id: profile.id,
         groups: profile.groups,
+        ...(profile.projectPaths !== undefined ? { projectPaths: profile.projectPaths } : {}),
         label: profile.label,
         accent: profile.accent,
         accentHover: profile.accentHover,
@@ -179,6 +187,42 @@ export function ProfilesSettings({ settings, onPatch, onCreated }: Props): React
       onPatch({ profiles: withProfile(settings.profiles, profile, changes) })
     },
     [settings.profiles, onPatch, withProfile]
+  )
+
+  const setMembership = useCallback(
+    (profile: ResolvedProfile, projectPaths: string[]): void => {
+      store(profile, { projectPaths })
+    },
+    [store]
+  )
+
+  const removeFromProfile = useCallback(
+    (profile: ResolvedProfile, projectPath: string): void => {
+      const current = ensureProjectPaths(profile, projects, rules)
+      setMembership(profile, removeProjectPath(current, projectPath, rules))
+    },
+    [projects, rules, setMembership]
+  )
+
+  const addToProfile = useCallback(
+    (profile: ResolvedProfile, projectPath: string): void => {
+      const current = ensureProjectPaths(profile, projects, rules)
+      setMembership(profile, addProjectPath(current, projectPath, rules))
+      setAddingTo(null)
+    },
+    [projects, rules, setMembership]
+  )
+
+  const addAllInFolder = useCallback(
+    (profile: ResolvedProfile): void => {
+      const current = ensureProjectPaths(profile, projects, rules)
+      let next = current
+      for (const folderPath of seedPathsForGroups(projects, profile.groups, rules)) {
+        next = addProjectPath(next, folderPath, rules)
+      }
+      setMembership(profile, next)
+    },
+    [projects, rules, setMembership]
   )
 
   /*
@@ -232,6 +276,7 @@ export function ProfilesSettings({ settings, onPatch, onCreated }: Props): React
           {
             id: profile.id,
             groups: [],
+            projectPaths: [],
             label: profile.label,
             accent: profile.accent,
             accentHover: profile.accentHover,
@@ -316,8 +361,8 @@ export function ProfilesSettings({ settings, onPatch, onCreated }: Props): React
     <div className="field">
       <span className="field-label">Profiles</span>
       <span className="field-hint">
-        A profile is a view filter by folder group. The sidebar chip stays until you change
-        it; it is not an account, and it never hides a folder from Claude — Open, Scratch,
+        A profile is a curated set of projects (seeded from folder layout). The sidebar chip stays until you change
+        it; moving projects between profiles never renames folders. It is not an account, and never hides a folder from Claude — Open, Scratch,
         search, and the command palette still reach everything.
       </span>
 
@@ -329,7 +374,10 @@ export function ProfilesSettings({ settings, onPatch, onCreated }: Props): React
       )}
 
       {visible.map((p) => {
-        const n = projectsIn(p)
+        const members = projectsIn(p)
+        const n = members.length
+        const memberKeys = new Set(members.map((m) => pathKey(m.path, rules)))
+        const addable = projects.filter((proj) => !memberKeys.has(pathKey(proj.path, rules)))
         return (
           /* `.settings-item-card` rather than a fourth copy of this inline
              style object. It was byte-identical to the one HostsSettings
@@ -419,11 +467,75 @@ export function ProfilesSettings({ settings, onPatch, onCreated }: Props): React
             />
 
             <span className="field-hint">
-              <span className="mono">{p.groups.join(', ') || 'no folder'}</span>
+              Folder seed: <span className="mono">{p.groups.join(', ') || 'none'}</span>
               {' · '}
               {n === 1 ? '1 project' : `${n} projects`}
               {p.createdByUser ? ' · yours' : ''}
+              {Array.isArray(p.projectPaths) ? ' · curated' : ' · seeded from folder'}
             </span>
+
+            <div className="field" style={{ gap: 'var(--space-4)' }}>
+              <span className="field-hint">Projects on this profile</span>
+              {members.length === 0 && (
+                <span className="field-hint">None yet. Add projects below, or use Add all in folder.</span>
+              )}
+              {members.map((proj) => (
+                <div
+                  key={proj.path}
+                  style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-8)' }}
+                >
+                  <span className="mono truncate" style={{ flex: 1, fontSize: 'var(--fs-xs)' }}>
+                    {proj.label || proj.name}
+                  </span>
+                  <button
+                    className="btn"
+                    data-variant="ghost"
+                    data-size="sm"
+                    onClick={() => removeFromProfile(p, proj.path)}
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))}
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--space-8)' }}>
+                <button
+                  className="btn"
+                  data-variant="ghost"
+                  disabled={p.groups.length === 0}
+                  title="Add every project whose parent folder matches this profile's seed groups"
+                  onClick={() => addAllInFolder(p)}
+                >
+                  Add all in folder
+                </button>
+                {addable.length > 0 && (
+                  <button
+                    className="btn"
+                    data-variant="ghost"
+                    onClick={() => setAddingTo(addingTo === p.id ? null : p.id)}
+                  >
+                    {addingTo === p.id ? 'Close' : 'Add project'}
+                  </button>
+                )}
+              </div>
+              {addingTo === p.id && addable.length > 0 && (
+                <div className="field" style={{ gap: 'var(--space-4)', maxHeight: '10rem', overflow: 'auto' }}>
+                  {addable.map((proj) => (
+                    <button
+                      key={proj.path}
+                      className="btn"
+                      data-variant="ghost"
+                      style={{ justifyContent: 'flex-start' }}
+                      onClick={() => addToProfile(p, proj.path)}
+                    >
+                      <span className="mono truncate">{proj.label || proj.name}</span>
+                      <span className="field-hint" style={{ marginLeft: 'auto' }}>
+                        {proj.group}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         )
       })}
@@ -528,8 +640,9 @@ export function ProfilesSettings({ settings, onPatch, onCreated }: Props): React
               {plan && !plan.error && (
                 <>
                   <br />
-                  Projects will show under the profile <b>{draft.name.trim()}</b>, matching the
-                  folder <span className="mono">{folderName(plan.root)}</span>.
+                  Projects imported from that folder start on this profile. You can add or remove
+                  projects later without moving folders. Seed group:
+                  <span className="mono">{folderName(plan.root)}</span>.
                 </>
               )}
             </span>
