@@ -1,7 +1,15 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent, RefObject } from 'react'
 import { flushSync } from 'react-dom'
-import { autoscrollVelocity, clampDrag, nearestSlot, pastSlop, previewSlot } from './tabs'
+import {
+  autoscrollVelocity,
+  clampDrag,
+  dragView,
+  nearestSlot,
+  pastSlop,
+  previewSlot,
+  revealDelta
+} from './tabs'
 
 /**
  * Chrome-style tab dragging for the session strip: the real tab follows the
@@ -263,16 +271,18 @@ function createTabDrag(get: () => TabDragOptions): TabDrag & {
    * Move the dragged tab to the pointer and, if its slot changed, the neighbours
    * to theirs. Held inside the visible strip as well as its slots, so a tab
    * dragged to an edge to autoscroll stays in view while the strip scrolls
-   * under it rather than following the pointer out past the clip.
+   * under it rather than following the pointer out past the clip — except for
+   * as much of its own slot as was already off screen (`dragView`), so a tab the
+   * edge had cut in half does not leap out from under the pointer as it lifts.
    */
   const place = (d: Dragging): void => {
     const box = d.list.getBoundingClientRect()
     const scroll = d.list.scrollLeft
-    const left = clampDrag(d.x - box.left + scroll - d.grab, d.lefts, {
-      start: scroll,
-      end: scroll + box.width,
-      width: d.width
-    })
+    const left = clampDrag(
+      d.x - box.left + scroll - d.grab,
+      d.lefts,
+      dragView(scroll, box.width, d.lefts[d.from], d.width)
+    )
     d.els[d.from].style.transform = `translateX(${left - d.lefts[d.from]}px)`
     const to = nearestSlot(d.centres, left + d.width / 2)
     if (to === d.to || to < 0) return
@@ -357,8 +367,24 @@ function createTabDrag(get: () => TabDragOptions): TabDrag & {
     const els = tabEls(list)
     list.removeAttribute('data-reordering')
     for (const el of els) el.style.transform = ''
-    const after = els.map((el) => el.getBoundingClientRect().left)
     const lifted = els.find((el) => el.dataset.tabId === liftedId) ?? null
+
+    /*
+     * The tab just put down is the selected one — a press selects — and its
+     * slot can sit half behind the edge of an overflowing strip. A click brings
+     * its tab into view; a drag has no click, and the selected-tab scroll in
+     * TitleBar stood aside while the button was down. So scroll it into view
+     * here, BEFORE measuring: the FLIP below then carries the strip's scroll
+     * too, every tab gliding from where it was on screen to where it now is,
+     * rather than landing and then watching the whole strip jump.
+     */
+    if (lifted) {
+      const box = list.getBoundingClientRect()
+      const r = lifted.getBoundingClientRect()
+      const delta = revealDelta(r.left, r.right, box.left, box.right)
+      if (delta !== 0) list.scrollLeft += delta
+    }
+    const after = els.map((el) => el.getBoundingClientRect().left)
 
     let landing: Animation | null = null
     // WAAPI ignores the global reduced-motion rule, which only shortens CSS.

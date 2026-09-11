@@ -206,6 +206,45 @@ export function clampDrag(left: number, slotLefts: readonly number[], view?: Dra
   return Math.min(Math.max(left, first), last)
 }
 
+/**
+ * The view a lifted tab is held inside (`clampDrag`): the part of the strip on
+ * screen, `scroll` to `scroll + visible`, widened to take in the tab's own slot
+ * `home` when that slot is partly off screen.
+ *
+ * Held by the visible part alone, a tab pressed where the strip's edge cut it
+ * in half leapt the whole hidden width the moment the press became a drag —
+ * measured in the running app, 56px out from under a pointer that had moved 4.
+ * Widened, it follows the pointer from where it was, can go no further out than
+ * that, and is held inside the view as soon as autoscroll or the pointer brings
+ * the view past its slot. A slot already on screen widens nothing.
+ */
+export function dragView(scroll: number, visible: number, home: number, width: number): DragView {
+  return {
+    start: Math.min(scroll, home),
+    end: Math.max(scroll + visible, home + width),
+    width
+  }
+}
+
+/**
+ * How far to scroll a strip whose visible part runs from `start` to `end` so
+ * that the span `left`..`right` is wholly on screen: negative towards the
+ * start, positive towards the end, 0 when it already is. A span wider than the
+ * view is lined up at its start. Screen or content coordinates, as long as all
+ * four agree.
+ *
+ * For the tab a drag just put down. It is the selected tab — a press selects —
+ * and a slot at the edge of an overflowing strip can be half behind the list's
+ * clip: the tab was held on screen for the whole drag and then landed with its
+ * close button and half its title out of sight. Measured in the running app,
+ * 56 of 112px.
+ */
+export function revealDelta(left: number, right: number, start: number, end: number): number {
+  if (left < start) return left - start
+  if (right > end) return Math.min(right - end, left - start)
+  return 0
+}
+
 /** How close to the strip's visible edge, in CSS px, a drag starts scrolling it. */
 export const AUTOSCROLL_ZONE_PX = 24
 /** The fastest the strip scrolls under a drag, in CSS px per second. */

@@ -11,6 +11,7 @@ import {
   AUTOSCROLL_ZONE_PX,
   clampDrag,
   cycleTab,
+  dragView,
   focusAfterStart,
   moveTab,
   nearestSlot,
@@ -20,6 +21,7 @@ import {
   previewShift,
   previewSlot,
   relaunchPlan,
+  revealDelta,
   replaceOrAppend,
   restartPlan
 } from '../src/renderer/src/lib/tabs.ts'
@@ -509,6 +511,45 @@ check(
   )
   check('held at the edge while the strip scrolls, it walks through the slots to the last', scrolled, [2, 3, 3, 4])
 }
+{
+  /*
+   * A tab the strip's edge cuts in half. Held by the visible part alone it
+   * leapt the whole hidden width as the press became a drag — 56px out from
+   * under a pointer that had moved 4, measured in the running app. The view it
+   * is held in takes in its own slot, so it follows the pointer from where it
+   * was and still goes no further out than that.
+   */
+  const w = 112
+  const lefts = [0, 116, 232, 348, 464, 580, 696, 812, 928, 1044]
+  // A 600px view scrolled to 500: slot 9 (1044-1156) is 56px past its end at 1100.
+  const home = lefts[9]
+  const view = dragView(500, 600, home, w)
+  check('a slot already on screen widens nothing', dragView(500, 600, lefts[6], w), { start: 500, end: 1100, width: w })
+  check('a half-hidden tab at the end is not yanked in as it lifts', clampDrag(home - 4, lefts, view), home - 4)
+  check('nor held short of the slot it started in', clampDrag(home, lefts, view), home)
+  check('and goes no further out than that', clampDrag(home + 60, lefts, view), home)
+  // Slot 5 (580-692) is 52px past a 640px view at scroll 0.
+  check(
+    'mid-strip, pushed outwards it stops at its own slot',
+    clampDrag(9000, lefts, dragView(0, 640, lefts[5], w)) + w,
+    692
+  )
+  check(
+    'and once the view has scrolled past that slot, the view holds it again',
+    clampDrag(9000, lefts, dragView(100, 640, lefts[5], w)) + w,
+    740
+  )
+  const cutStart = dragView(260, 600, lefts[2], w) // slot 2 (232-344) is 28px before 260
+  check('likewise at the start: not yanked', clampDrag(lefts[2] + 3, lefts, cutStart), lefts[2] + 3)
+  check('and no further out than its slot', clampDrag(-500, lefts, cutStart), lefts[2])
+}
+
+console.log('\nthe tab a drag puts down is on screen')
+check('a tab already in view needs no scroll', revealDelta(200, 312, 100, 700), 0)
+check('flush with both edges is still in view', [revealDelta(100, 212, 100, 700), revealDelta(588, 700, 100, 700)], [0, 0])
+check('half past the end scrolls forward by exactly the hidden part', revealDelta(644, 756, 100, 700), 56)
+check('half before the start scrolls back by exactly the hidden part', revealDelta(44, 156, 100, 700), -56)
+check('a span wider than the view lines up at its start', revealDelta(150, 900, 100, 700), 50)
 
 console.log('\na press becomes a drag only past the slop')
 check('3px is still a click', pastSlop(3, 0), false)
