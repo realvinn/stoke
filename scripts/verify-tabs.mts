@@ -22,6 +22,7 @@ import {
   previewSlot,
   relaunchPlan,
   revealDelta,
+  stillOver,
   replaceOrAppend,
   restartPlan
 } from '../src/renderer/src/lib/tabs.ts'
@@ -542,6 +543,40 @@ check(
   const cutStart = dragView(260, 600, lefts[2], w) // slot 2 (232-344) is 28px before 260
   check('likewise at the start: not yanked', clampDrag(lefts[2] + 3, lefts, cutStart), lefts[2] + 3)
   check('and no further out than its slot', clampDrag(-500, lefts, cutStart), lefts[2])
+
+  /*
+   * The allowance is for where the tab started, and ends at each edge the
+   * moment the tab is wholly inside it. Kept for the whole drag, a tab pressed
+   * half behind the right edge, dragged to the left edge while the strip
+   * scrolled back, then dragged back past the right edge ran straight out of
+   * sight — wholly behind the + button in the running app, for as long as
+   * autoscroll took to bring its old slot back.
+   */
+  const long = Array.from({ length: 16 }, (_, i) => i * 116)
+  const slot12 = long[12] // 1392-1504; a 600px view at scroll 848 ends at 1448, 56px short
+  let over = stillOver({ start: true, end: true }, slot12 - 4, w, 848, 600)
+  check('pressed half behind the end, only the end still hangs out', over, { start: false, end: true })
+  check(
+    'while it hangs out, the end keeps its allowance',
+    stillOver(over, slot12 - 20, w, 848, 600),
+    { start: false, end: true }
+  )
+  const inside = clampDrag(900, long, dragView(848, 600, slot12, w, over))
+  over = stillOver(over, inside, w, 848, 600)
+  check('dragged wholly inside, the allowance is gone', over, { start: false, end: false })
+  // The strip autoscrolls back 465px while it is held at the start; then back past the end.
+  const back = clampDrag(9000, long, dragView(383, 600, slot12, w, over))
+  check('coming back past the end, it is held at the visible edge, not its old slot', back + w, 983)
+  check(
+    'where the allowance kept for the whole drag would have let it out of sight',
+    clampDrag(9000, long, dragView(383, 600, slot12, w)) >= 983,
+    true
+  )
+  check(
+    'and a tab that starts on screen has no allowance at all',
+    stillOver({ start: true, end: true }, long[9], w, 848, 600),
+    { start: false, end: false }
+  )
 }
 
 console.log('\nthe tab a drag puts down is on screen')

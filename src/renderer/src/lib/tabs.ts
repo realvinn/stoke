@@ -207,9 +207,19 @@ export function clampDrag(left: number, slotLefts: readonly number[], view?: Dra
 }
 
 /**
+ * Which ends of the view a lifted tab may still hang past: at most as far as
+ * its own slot did when the drag began. Only ever switched off (`stillOver`).
+ */
+export interface Overhang {
+  start: boolean
+  end: boolean
+}
+
+/**
  * The view a lifted tab is held inside (`clampDrag`): the part of the strip on
- * screen, `scroll` to `scroll + visible`, widened to take in the tab's own slot
- * `home` when that slot is partly off screen.
+ * screen, `scroll` to `scroll + visible`, widened at each end `over` still
+ * allows to take in the tab's own slot `home`, when that slot is partly off
+ * screen.
  *
  * Held by the visible part alone, a tab pressed where the strip's edge cut it
  * in half leapt the whole hidden width the moment the press became a drag —
@@ -218,11 +228,41 @@ export function clampDrag(left: number, slotLefts: readonly number[], view?: Dra
  * that, and is held inside the view as soon as autoscroll or the pointer brings
  * the view past its slot. A slot already on screen widens nothing.
  */
-export function dragView(scroll: number, visible: number, home: number, width: number): DragView {
+export function dragView(
+  scroll: number,
+  visible: number,
+  home: number,
+  width: number,
+  over: Overhang = { start: true, end: true }
+): DragView {
   return {
-    start: Math.min(scroll, home),
-    end: Math.max(scroll + visible, home + width),
+    start: over.start ? Math.min(scroll, home) : scroll,
+    end: over.end ? Math.max(scroll + visible, home + width) : scroll + visible,
     width
+  }
+}
+
+/**
+ * The overhang left once the lifted tab sits at `left`: an end whose allowance
+ * the tab has come wholly inside is switched off for the rest of the drag.
+ *
+ * The allowance is for where the tab STARTED, not a licence. Kept for the
+ * whole drag, it let a tab pressed half behind the right edge, dragged to the
+ * left edge while the strip scrolled back 465px, and then dragged back past the
+ * right edge run straight out of sight: measured in the running app, wholly
+ * behind the + button for as long as autoscroll took to bring its old slot
+ * back, because the view still stretched to take that slot in.
+ */
+export function stillOver(
+  over: Overhang,
+  left: number,
+  width: number,
+  scroll: number,
+  visible: number
+): Overhang {
+  return {
+    start: over.start && left < scroll,
+    end: over.end && left + width > scroll + visible
   }
 }
 

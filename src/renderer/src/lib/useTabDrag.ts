@@ -8,8 +8,10 @@ import {
   nearestSlot,
   pastSlop,
   previewSlot,
-  revealDelta
+  revealDelta,
+  stillOver
 } from './tabs'
+import type { Overhang } from './tabs'
 
 /**
  * Chrome-style tab dragging for the session strip: the real tab follows the
@@ -89,6 +91,8 @@ interface Dragging {
   last: number
   /** Sub-pixel autoscroll carried between frames. */
   carry: number
+  /** Which ends the tab may still hang past, as far as its own slot did (`dragView`). */
+  over: Overhang
 }
 
 interface Spent {
@@ -260,7 +264,8 @@ function createTabDrag(get: () => TabDragOptions): TabDrag & {
       x,
       raf: 0,
       last: performance.now(),
-      carry: 0
+      carry: 0,
+      over: { start: true, end: true }
     }
     g = d
     place(d)
@@ -274,6 +279,9 @@ function createTabDrag(get: () => TabDragOptions): TabDrag & {
    * under it rather than following the pointer out past the clip — except for
    * as much of its own slot as was already off screen (`dragView`), so a tab the
    * edge had cut in half does not leap out from under the pointer as it lifts.
+   * That allowance ends at each edge the moment the tab is wholly inside it
+   * (`stillOver`), or a tab that went away and came back could use it to run
+   * out of sight.
    */
   const place = (d: Dragging): void => {
     const box = d.list.getBoundingClientRect()
@@ -281,8 +289,9 @@ function createTabDrag(get: () => TabDragOptions): TabDrag & {
     const left = clampDrag(
       d.x - box.left + scroll - d.grab,
       d.lefts,
-      dragView(scroll, box.width, d.lefts[d.from], d.width)
+      dragView(scroll, box.width, d.lefts[d.from], d.width, d.over)
     )
+    d.over = stillOver(d.over, left, d.width, scroll, box.width)
     d.els[d.from].style.transform = `translateX(${left - d.lefts[d.from]}px)`
     const to = nearestSlot(d.centres, left + d.width / 2)
     if (to === d.to || to < 0) return
