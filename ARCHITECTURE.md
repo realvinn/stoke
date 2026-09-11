@@ -371,8 +371,8 @@ wants one, not as a supported output.
 
 ## Testing
 
-Verification lives in `scripts/`, one `verify-*` suite per subject — twenty-seven of them now.
-Twenty-five are in `npm run check`, between the typecheck and the full build; `check` is the
+Verification lives in `scripts/`, one `verify-*` suite per subject — twenty-eight of them now.
+Twenty-six are in `npm run check`, between the typecheck and the full build; `check` is the
 gate, and it is what "done" means here. They are `.mts` run straight through node's
 type-stripping with no build step, except `verify:selection`, which opens a real Electron window
 and so needs a display. Each runs alone:
@@ -388,6 +388,10 @@ npm run verify:claude-config  # writing Claude Code's OWN config: the allowlist,
                               # and the ~/.claude.json lock. Runs against real files in a temp
                               # CLAUDE_CONFIG_DIR, never the user's (gotchas 38, 39)
 npm run verify:folders        # folder metadata: trimming, caps, added folders, hide/pin
+npm run verify:search         # sidebar + palette search: tiers, recency, highlight ranges on
+                              # accented text, the label in both surfaces; and the session
+                              # index against real files in a temp dir - a 40 MB transcript
+                              # costs two 256 KB reads, a second pass costs none
 npm run verify:cli            # finding the `claude` binary: the version-manager shim dirs,
                               # the probe's retry rule, and the two not-found messages.
                               # Hermetic - HOME is redirected into a temp tree (gotcha 52)
@@ -458,7 +462,12 @@ src/main/         Electron main process
   projectMeta.ts    per-folder emoji/label/added-by-hand, and the one pair of caps
   context.ts        live context-window watcher (polls transcripts). Publishes on a
                     changed transcript OR a newly-stated window, for gotcha 49's reason
-  sessionFile.ts    transcript parsing and the context maths
+  sessionFile.ts    transcript parsing and the context maths. `promptOf`/`titleOf` are the
+                    one definition of a session's first prompt and title
+  sessionIndex.ts   every session's title + first prompt, for search: one 256 KB chunk
+                    from each end of a transcript, cached on mtime+size, top-level
+                    `*.jsonl` only (never `<id>/subagents/`). Never `listSessions`, which
+                    parses every file whole
   statusLine.ts     Stoke's statusLine wrapper: context window + plan limits, and the SAME
                     shim run as a hook. The session's --settings file carries Stop,
                     Notification and UserPromptSubmit hooks that append one JSON line each
@@ -547,6 +556,10 @@ src/main/         Electron main process
                       a live API call. Gotcha 58
 src/preload/      contextBridge -> window.stoke
 src/renderer/     desktop React UI (all colour via CSS custom properties)
+  src/lib/projectSearch.ts  the one matcher the sidebar search and the Cmd+K palette share:
+                    label/name/path, session title and first prompt, ranked by tier then
+                    recency, with highlight ranges. No runtime imports, so verify:search
+                    imports it directly
 src/remote/       mobile web UI, built separately to out/remote
 src/shared/       types, IPC channel names, themes, profiles, colour maths
   paths.ts          cwd -> project group. Pure, platform passed in, no node imports,
