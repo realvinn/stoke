@@ -3950,15 +3950,55 @@ body {
   font-size: var(--fs-sm);
 }
 
+/*
+ * label · percent · reset on one line, the bar alone and full width on the
+ * line below. The bar's line holds nothing else, so every bar in the panel
+ * is the same length at the same x whatever its reset text says.
+ *
+ * The one-line grid this replaces (label · bar · percent · reset) ended in an
+ * `auto` column sized to each row's own reset text, and grid grows an `auto`
+ * track before a `1fr` one gets the leftover — so each bar was only what its
+ * text did not take: 0px beside "ahead · resets Mon 09:00 · in 3d 14h", and
+ * the percent after it slid sideways with the bar's end. Its comment said the
+ * numbers lined up; that stopped being true when the reset cell grew from a
+ * bare countdown into resetLabel().
+ *
+ * Label and percent columns are fixed, so the percentages still line up down
+ * the rows. 4.25rem fits "Extra usage", which 3.75rem ellipsised. 2.25rem fits
+ * "100%", and a plan window's percent is clamped to 0-100 and rounded at both
+ * sources (main's `percent` + shared `statusLineWindows`; usage.ts).
+ */
 .usage-row {
-  /* label · bar · percent · reset. Fixed outer columns keep the numbers
-     aligned down all the rows; the bar absorbs the remainder. */
   display: grid;
-  grid-template-columns: 3.75rem 1fr 3.25rem auto;
+  grid-template-columns: 4.25rem 2.25rem minmax(0, 1fr);
+  grid-template-areas:
+    'label pct reset'
+    'track track track';
   align-items: center;
-  gap: var(--space-8);
+  column-gap: var(--space-8);
+  row-gap: var(--space-4);
   font-size: var(--fs-xs);
+  line-height: var(--lh-tight);
   color: var(--text-muted);
+}
+
+/* Scoped to the row: .usage-track is also the title-bar chip's mini bar,
+   whose grid names no areas, so a bare `.usage-track { grid-area: track }`
+   would drop that bar into an implicit track. */
+.usage-row > .usage-label {
+  grid-area: label;
+}
+
+.usage-row > .usage-pct {
+  grid-area: pct;
+}
+
+.usage-row > .usage-reset {
+  grid-area: reset;
+}
+
+.usage-row > .usage-track {
+  grid-area: track;
 }
 
 /* A scoped window the account is not applying right now: drawn, but quiet, so
