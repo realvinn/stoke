@@ -344,6 +344,14 @@ React 19, hand-written CSS, no component library.
 - Every colour is a CSS custom property written onto `:root`, so switching themes is one
   style write with no re-render. xterm gets its palette object separately.
 - Terminals are **never unmounted** on tab switch, only hidden, or scrollback would be lost.
+  Nor are they moved: the panes render in `paneOrder` (sorted by id, `lib/tabs.ts`), not in
+  strip order, because React moving a focused xterm's node blurs it.
+- The tab strip is dragged Chrome-style by `lib/useTabDrag.ts`: pointer events with capture on
+  `.tablist`, the real tab on an inline transform, neighbours sliding to preview slots, one
+  `moveTab` commit on release with a FLIP settle, Escape reverting. Imperative by design — no
+  React state per frame. Its maths (`nearestSlot`, `previewSlot`, `clampDrag`,
+  `autoscrollVelocity`) is in `lib/tabs.ts` and asserted by `verify:tabs`; the wiring is not
+  reachable from any suite (gotcha 31).
 - `lib/ptyBus.ts` retains output per process and replays it on attach, which also makes the
   component safe under React StrictMode's double-mount.
 - Shortcuts (`lib/shortcuts.ts`) use Cmd on macOS and **Ctrl+Shift** elsewhere, because bare
@@ -395,8 +403,10 @@ npm run verify:search         # sidebar + palette search: tiers, recency, highli
 npm run verify:cli            # finding the `claude` binary: the version-manager shim dirs,
                               # the probe's retry rule, and the two not-found messages.
                               # Hermetic - HOME is redirected into a temp tree (gotcha 52)
-npm run verify:tabs           # which tab is selected after one is closed, and where the
-                              # next/previous chord lands
+npm run verify:tabs           # which tab is selected after one is closed, where the
+                              # next/previous chord lands, and the tab drag's maths: that its
+                              # preview is exactly the reorder it commits, and that no
+                              # reorder moves a terminal pane
 npm run verify:shortcuts      # app chords vs the keys the terminal owns, the zoom maths, and
                               # that Ctrl+Tab and the bare brackets still reach the CLI
 npm run verify:drop           # what a dropped file types: quoting per platform, and the

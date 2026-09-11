@@ -45,6 +45,7 @@ import {
   focusAfterStart,
   moveTab,
   neighbourOf,
+  paneOrder,
   relaunchPlan,
   replaceOrAppend,
   restartPlan
@@ -1458,9 +1459,9 @@ export function App(): React.JSX.Element {
   }, [browsePath, browseExpanded])
 
   const reorderTab = useCallback((dragId: string, overId: string): void => {
-    // Keyed by tab id in the render, so React moves the DOM nodes rather than
-    // rebuilding them — and ptyBus replays the retained scrollback anyway, so
-    // even a rebuild would not blank a terminal.
+    // Once per drag, on release (`useTabDrag`). Only the strip's own nodes
+    // move: the terminal panes render in `paneOrder`, which a reorder cannot
+    // change, so no xterm is moved, remounted or blurred by it.
     setTabs((list) => moveTab(list, dragId, overId))
   }, [])
 
@@ -1778,6 +1779,16 @@ export function App(): React.JSX.Element {
 
   /* Memoised: a fresh array each render would rebuild the Sidebar's Set on every tick. */
   const openSessionIds = useMemo(() => tabs.map((t) => t.sessionId), [tabs])
+
+  /*
+   * The terminal panes, in an order a strip reorder cannot change.
+   *
+   * They used to render in strip order, so dragging the active tab rightwards
+   * made React move that pane's DOM node — and a moved node loses focus, which
+   * took the keyboard away from the session being typed into. Only one pane is
+   * ever visible, so their order means nothing on screen. See `paneOrder`.
+   */
+  const panes = useMemo(() => paneOrder(tabs), [tabs])
 
   /*
    * Folders with a session running right now, for the sidebar's live dot.
@@ -2248,36 +2259,34 @@ export function App(): React.JSX.Element {
             className="term-stack"
             style={{ display: activeTab?.kind === 'session' ? 'block' : 'none' }}
           >
-            {tabs
-              .filter((tab) => tab.kind === 'session')
-              .map((tab) =>
-                tab.status === 'paused' ? (
-                  <PausedSession
-                    key={tab.id}
-                    tab={tab}
-                    active={tab.id === activeTabId}
-                    screen={restoredScreens[tab.id] ?? ''}
-                    onResume={resumeTabFor(tab)}
-                    resuming={starting.includes(tab.id)}
-                    onClose={closeTab}
-                  />
-                ) : (
-                  <TerminalView
-                    key={tab.id}
-                    tab={tab}
-                    active={tab.id === activeTabId}
-                    theme={theme}
-                    fontFamily={settings?.fontFamily ?? 'monospace'}
-                    fontSize={settings?.fontSize ?? 13}
-                    terminal={settings?.terminal ?? TERMINAL_DEFAULTS}
-                    accent={activeProfile?.accent ?? null}
-                    alpha={termAlpha}
-                    onOpenUrl={openUrl}
-                    onRestart={restartTab}
-                    onClose={closeTab}
-                  />
-                )
-              )}
+            {panes.map((tab) =>
+              tab.status === 'paused' ? (
+                <PausedSession
+                  key={tab.id}
+                  tab={tab}
+                  active={tab.id === activeTabId}
+                  screen={restoredScreens[tab.id] ?? ''}
+                  onResume={resumeTabFor(tab)}
+                  resuming={starting.includes(tab.id)}
+                  onClose={closeTab}
+                />
+              ) : (
+                <TerminalView
+                  key={tab.id}
+                  tab={tab}
+                  active={tab.id === activeTabId}
+                  theme={theme}
+                  fontFamily={settings?.fontFamily ?? 'monospace'}
+                  fontSize={settings?.fontSize ?? 13}
+                  terminal={settings?.terminal ?? TERMINAL_DEFAULTS}
+                  accent={activeProfile?.accent ?? null}
+                  alpha={termAlpha}
+                  onOpenUrl={openUrl}
+                  onRestart={restartTab}
+                  onClose={closeTab}
+                />
+              )
+            )}
           </div>
 
           {/*
