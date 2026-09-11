@@ -78,6 +78,19 @@ const CIRC = 2 * Math.PI * RING_R
  */
 const WATCH_R = 2.86
 
+/*
+ * The bypass mark's beads: zero-length dashes with round caps, `BEADS` of them
+ * evenly round the track. The pitch is computed here from the same radius the
+ * track is drawn at and handed to app.css as `--ring-bead-pitch`, so the pattern
+ * always closes cleanly at 12 o'clock — a dash length typed into the stylesheet
+ * would stop closing the moment RING_R changed. 8 beads of 2.5 units on a
+ * 35.19-unit circumference leaves a 1.9-unit gap between them: 2.19px beads and
+ * 1.66px gaps at Interface scale 1, dotted rather than the 11 square teeth the
+ * 1.6/1.6 dash drew.
+ */
+const BEADS = 8
+const BEAD_PITCH = CIRC / BEADS
+
 /**
  * Compact ring for tab strips, where there is no room for a bar and caption.
  *
@@ -117,7 +130,12 @@ export function ContextRing({
    */
   const dataLevel = paused ? 'paused' : ready ? level(ratio) : 'empty'
   return (
-    <svg className="ring" viewBox="0 0 16 16" data-level={dataLevel}>
+    <svg
+      className="ring"
+      viewBox="0 0 16 16"
+      data-level={dataLevel}
+      style={{ ['--ring-bead-pitch' as string]: String(BEAD_PITCH) }}
+    >
       <title>
         {paused
           ? `Paused — ${pct}% used when last active`

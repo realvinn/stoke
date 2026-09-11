@@ -18,6 +18,7 @@ import { deriveAccent } from '../src/shared/accent.ts'
 import {
   apcaContrast,
   contrastRatio,
+  oklchToRgb,
   over,
   parseColor,
   perceptualDistance,
@@ -352,6 +353,61 @@ console.log('\n-- why --on-danger stays right for a theme none of the four are -
   console.log(
     `${ok ? 'ok  ' : 'FAIL'} ${'contrastRatio(a, b) === contrastRatio(b, a)'.padEnd(46)} ${`${pairs.length} pairs`.padStart(10)}  (holds for any colour, not just these four)`
   )
+}
+
+console.log('\n-- the bypass mark: slate beads on the ring track --')
+/*
+ * `--ring-bypass` in app.css, mirrored: `color-mix(in oklab, --border-strong,
+ * --text-faint)` on a dark theme and `... --text-faint 75%)` on a light one. If
+ * you change one, change the other — this is the assertion that catches it.
+ *
+ * Mirrored faithfully rather than approximated: both inputs are opaque, so
+ * CSS's premultiplied interpolation reduces to a plain lerp of OKLab L, a and b,
+ * which is what `mixOklab` does, then rounds to the 8-bit value that paints. The
+ * mix reconstructs ladder step 9, a mid-grey that is always in gamut, so no gamut
+ * mapping can make Chromium's answer differ from this one by more than rounding.
+ *
+ * Held to 3:1 (WCAG 1.4.11) on --bg-sunken, an unselected tab, and on --bg, the
+ * selected one. It replaced a --warning dash that measured 10:1 and was the
+ * loudest mark on screen, on every tab, for a setting; the job now is to be
+ * visible and quiet, and the floor is where "visible" stops. The half-way grey
+ * is 2.38:1 on a light --bg-sunken, which is why light mixes further.
+ */
+const BYPASS_MIX: Record<Theme['appearance'], number> = { dark: 0.5, light: 0.75 }
+
+function mixOklab(a: Rgb, b: Rgb, towardB: number): Rgb {
+  const lab = (c: Rgb): [number, number, number] => {
+    const o = toOklch(c)
+    const h = (o.h * Math.PI) / 180
+    return [o.l, o.c * Math.cos(h), o.c * Math.sin(h)]
+  }
+  const [l1, a1, b1] = lab(a)
+  const [l2, a2, b2] = lab(b)
+  const l = l1 + (l2 - l1) * towardB
+  const x = a1 + (a2 - a1) * towardB
+  const y = b1 + (b2 - b1) * towardB
+  const out = oklchToRgb({ l, c: Math.hypot(x, y), h: (Math.atan2(y, x) * 180) / Math.PI })
+  return { r: Math.round(out.r), g: Math.round(out.g), b: Math.round(out.b), a: 1 }
+}
+
+for (const t of BUILT_IN_THEMES) {
+  const mark = mixOklab(
+    parseColor(t.colors.borderStrong)!,
+    parseColor(t.colors.textFaint)!,
+    BYPASS_MIX[t.appearance]
+  )
+  const onSunken = contrastRatio(mark, parseColor(t.colors.bgSunken)!)
+  const onBg = contrastRatio(mark, parseColor(t.colors.bg)!)
+  const ok = onSunken >= 3 && onBg >= 3
+  if (!ok) failures++
+  console.log(
+    `${ok ? 'ok  ' : 'FAIL'} ${`${t.id}: --ring-bypass ${toHex(mark)}`.padEnd(46)} ${`${onSunken.toFixed(2)}/${onBg.toFixed(
+      2
+    )}`.padStart(10)}  (expected >= 3 on sunken/bg, APCA Lc ${Math.abs(
+      apcaContrast(mark, parseColor(t.colors.bgSunken)!)
+    ).toFixed(1)} on sunken)`
+  )
+  note(`${t.id}: --ring-bypass on --surface-hover`, contrastRatio(mark, parseColor(t.colors.surfaceHover)!).toFixed(2))
 }
 
 console.log('\n-- text tokens on the grounds they actually render on --')
