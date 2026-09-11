@@ -12,7 +12,7 @@ interface Props {
    * See the ContextSnapshot.permissionMode work in this workstream.
    */
   permissionMode: PermissionMode
-  /** The worklog agent is watching this session. The only red in the strip. */
+  /** The worklog agent is watching this session: the dot in the ring's centre. */
   watched: boolean
 }
 
@@ -25,10 +25,22 @@ interface Props {
  * no reading: an empty circle occupies the slot honestly, where a blank space
  * would read as a rendering failure.
  *
- * The red dot in the middle means exactly one thing — the worklog agent is
- * watching this session. Bypass mode and a nearly-full ring both used to be
- * red as well, so red meant three unrelated things at once and therefore
- * nothing; both now have their own treatment.
+ * Three things share the slot, and each says itself with a different shape:
+ *
+ *  - The ARC is context used, in traffic-light colours — green to 30%, orange
+ *    to 60%, red from 61%, and from 81% a solid red disc (ContextMeter.tsx,
+ *    shared/contextLevel.ts). So red in the strip is context pressure again:
+ *    it used to be kept off the ring, amber at 90%, so that red could mean
+ *    only the worklog dot. The arc is solid with round ends from 12 o'clock.
+ *  - The DOT in the middle is the worklog agent watching this session. Still
+ *    --danger, and a filled centre rather than an arc, so the two reds cannot
+ *    be read for each other; over a full ring's red disc it is inverted to the
+ *    page colour rather than lost.
+ *  - The TRACK, beaded in slate, is bypass mode — a setting, not an alarm. It
+ *    was a red dot once, then an amber dashed track, and on a machine whose
+ *    default mode is bypass that put the loudest colour on screen on every tab
+ *    all the time. It is the theme's own neutral now (--ring-bypass), and the
+ *    beads rather than the colour carry "the guard rails are off".
  *
  * The dot is drawn by ContextRing, inside the ring's own <svg>, rather than
  * laid over it as a second child of this slot. Two boxes centred in one grid

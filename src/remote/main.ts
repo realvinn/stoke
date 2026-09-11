@@ -3,6 +3,8 @@ import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import './style.css'
 import { createRecorder, postTranscription, voiceSupported } from '@shared/voice'
+import { contextLevel, contextPercent, type ContextLevel } from '@shared/contextLevel'
+import { meterScale } from '@shared/meter'
 
 /**
  * Stoke on a phone.
@@ -66,6 +68,32 @@ function compact(n: number): string {
   if (n < 1000) return String(Math.round(n))
   if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`
   return `${(n / 1_000_000).toFixed(2)}M`
+}
+
+/*
+ * The context meter, in the desktop's four tiers: 0-30% green, 31-60% orange,
+ * 61-80% red, 81%+ red with a red-tinted track. The tier comes from
+ * shared/contextLevel.ts, which the desktop's ContextBar and ContextRing run
+ * too — this file used to carry three hand copies of an older 70/90 rule. The
+ * fill's length stays the unrounded ratio; only the colour is banded.
+ */
+function contextMeter(used: number, limit: number): HTMLDivElement {
+  const ratio = limit > 0 && used > 0 ? Math.min(1, used / limit) : 0
+  const meter = el('div', { class: 'meter', 'data-level': contextLevel(contextPercent(used, limit)) })
+  meter.append(el('i', { style: `transform: scaleX(${ratio})` }))
+  return meter
+}
+
+/**
+ * The terminal bar's chip is TEXT, so it takes the text-grade semantic tones
+ * rather than the meter's graphics-grade colours: green, then the theme's
+ * warning, then red. `full` needs no fourth tone; the number already says it.
+ */
+const CHIP_TONE: Record<ContextLevel, string> = {
+  low: 'success',
+  mid: 'warn',
+  high: 'danger',
+  full: 'danger'
 }
 
 function ago(ms: number): string {
@@ -132,6 +160,17 @@ async function loadTheme(): Promise<RemoteTheme | null> {
   for (const [key, value] of Object.entries(theme.colors)) {
     root.style.setProperty(`--${key.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`, value)
   }
+  /*
+   * The context meter's green / orange / red are derived, not part of
+   * theme.colors, so they do not arrive with the palette. Solved here by the
+   * very function the desktop's applyAppearance calls, against the same two
+   * grounds, so the phone's bars cannot drift from the desktop's. Before this
+   * lands (and if the fetch fails) style.css falls back to the semantic tokens.
+   */
+  const meter = meterScale(theme.colors.bg, theme.colors.bgSunken, theme.appearance)
+  root.style.setProperty('--meter-low', meter.low)
+  root.style.setProperty('--meter-mid', meter.mid)
+  root.style.setProperty('--meter-high', meter.high)
   root.style.colorScheme = theme.appearance
   root.dataset.appearance = theme.appearance
   const meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')
@@ -224,11 +263,7 @@ async function showList(): Promise<void> {
 
   function card(s: SessionRow): HTMLElement {
     const ctx = s.context
-    const ratio = ctx && ctx.contextLimit ? Math.min(1, ctx.contextTokens / ctx.contextLimit) : 0
-    const level = ratio >= 0.9 ? 'critical' : ratio >= 0.7 ? 'warn' : 'ok'
-
-    const meter = el('div', { class: 'meter', 'data-level': level })
-    meter.append(el('i', { style: `transform: scaleX(${ratio})` }))
+    const meter = contextMeter(ctx?.contextTokens ?? 0, ctx?.contextLimit ?? 0)
 
     return el(
       'button',
@@ -430,12 +465,8 @@ async function showProjectHistory(cwd: string, name: string): Promise<void> {
     }
     scroll.replaceChildren(
       ...data.sessions.map((s) => {
-        const ratio = s.contextLimit ? Math.min(1, s.contextTokens / s.contextLimit) : 0
-        const meter = el('div', {
-          class: 'meter',
-          'data-level': ratio >= 0.9 ? 'critical' : ratio >= 0.7 ? 'warn' : 'ok'
-        })
-        meter.append(el('i', { style: `transform: scaleX(${ratio})` }))
+        // A past session gets the same tiers as a live one, as on the desktop.
+        const meter = contextMeter(s.contextTokens, s.contextLimit)
         return el(
           'button',
           { class: 'card', onclick: () => void showTranscript(s) },
@@ -1041,12 +1072,9 @@ async function showTerminal(session: SessionRow): Promise<void> {
       const me = list.find((s) => s.ptyId === session.ptyId)
       const ctx = me?.context
       if (!ctx?.ready) return
-      const ratio = ctx.contextLimit ? ctx.contextTokens / ctx.contextLimit : 0
-      meterChip.textContent = `${Math.round(ratio * 100)}% · ${ctx.messageCount} msgs`
-      meterChip.setAttribute(
-        'data-tone',
-        ratio >= 0.9 ? 'danger' : ratio >= 0.7 ? 'warn' : 'accent'
-      )
+      const pct = contextPercent(ctx.contextTokens, ctx.contextLimit)
+      meterChip.textContent = `${pct}% · ${ctx.messageCount} msgs`
+      meterChip.setAttribute('data-tone', CHIP_TONE[contextLevel(pct)])
       if (me && ctx.title) title.textContent = ctx.title
     } catch {
       /* transient */

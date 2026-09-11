@@ -1,10 +1,19 @@
+import { contextLevel, contextPercent } from '@shared/contextLevel'
 import { compactTokens } from '../lib/format'
 
-/** Thresholds at which the meter changes colour to warn about context pressure. */
-function level(ratio: number): 'ok' | 'warn' | 'critical' {
-  if (ratio >= 0.9) return 'critical'
-  if (ratio >= 0.7) return 'warn'
-  return 'ok'
+/*
+ * Which colour a reading is: `contextLevel(contextPercent(used, limit))`, from
+ * src/shared/contextLevel.ts, the one copy of the rule the phone runs too.
+ * 0-30% low (green), 31-60% mid (orange), 61-80% high (red), 81%+ full (solid
+ * red). Banded on the SAME rounded percent the caption and the tooltip print, so
+ * the colour changes exactly when the number does. The colours themselves are
+ * --meter-low/-mid/-high, solved per theme by shared/meter.ts.
+ *
+ * The fill's LENGTH still comes from the unrounded ratio: the bar and the arc
+ * are geometry, and 30.4% is drawn as 30.4%.
+ */
+function ratioOf(used: number, limit: number): number {
+  return limit > 0 && used > 0 ? Math.min(1, used / limit) : 0
 }
 
 interface MeterProps {
@@ -14,10 +23,15 @@ interface MeterProps {
   showLabel?: boolean
   /**
    * Restored from the last run: draw the reading, but it must not be able to
-   * paint warn/critical. Mirrors `ContextRing`'s `paused` prop and the same
+   * paint an alarm tier. Mirrors `ContextRing`'s `paused` prop and the same
    * reasoning — a session that is not running cannot be in a live alarm
    * state, however high the number it was saved with. `--text-muted` is the
    * same "no live data" colour `.ring-plus`/`.ring-pause` already use.
+   *
+   * Only the status bar's reading of a paused tab sets this. The sidebar and
+   * launcher rows are past sessions too, and deliberately draw the same tiers
+   * as a live one: there the number is the point — it is how full that
+   * conversation would be if you resumed it now.
    */
   paused?: boolean
 }
@@ -28,9 +42,9 @@ export function ContextBar({
   showLabel = true,
   paused = false
 }: MeterProps): React.JSX.Element {
-  const ratio = limit > 0 ? Math.min(1, used / limit) : 0
-  const pct = Math.round(ratio * 100)
-  const dataLevel = paused ? 'paused' : level(ratio)
+  const ratio = ratioOf(used, limit)
+  const pct = contextPercent(used, limit)
+  const dataLevel = paused ? 'paused' : contextLevel(pct)
   return (
     <div className="meter-inline">
       <div
@@ -45,8 +59,9 @@ export function ContextBar({
       >
         <div className="meter-fill" />
       </div>
+      {/* `.meter-caption` directly after `.meter`: app.css turns it --danger at 'full'. */}
       {showLabel && (
-        <span className="mono" style={{ fontSize: 'var(--fs-xs)' }}>
+        <span className="meter-caption mono">
           {compactTokens(used)}/{compactTokens(limit)} · {pct}%
         </span>
       )}
@@ -77,6 +92,22 @@ const CIRC = 2 * Math.PI * RING_R
  * a rem-sized box only did at whole-pixel scales.
  */
 const WATCH_R = 2.86
+
+/*
+ * The solid disc a full (81%+) ring gets. "Just solid red" was the ask, and a
+ * redder arc is not solid: shape carries it, the same way the arc's length
+ * carries how full.
+ *
+ * Inside this <svg> for gotcha 33's reason, like the watch dot. Its radius
+ * follows from the stroke: `.ring circle` draws the track and the arc 2.5 wide
+ * (app.css), so their inner edge is at RING_R - 1.25. The core reaches 0.25 past
+ * that, under the arc, so antialiasing leaves no hairline of page between the
+ * disc and the arc — and it is drawn BEFORE the track, so wherever the arc has
+ * not reached yet the track paints over that overlap and the unfilled part of
+ * the ring still reads as a gap. The bypass beads sit on it whole for the same
+ * reason. A circle about the centre is unaffected by `.ring`'s -90deg turn.
+ */
+const CORE_R = RING_R - 1
 
 /*
  * The bypass mark's beads: zero-length dashes with round caps, `BEADS` of them
@@ -115,20 +146,21 @@ export function ContextRing({
   /** Restored from the last run: draw the reading, but say it is not live. */
   paused?: boolean
 }): React.JSX.Element {
-  const ratio = ready && limit > 0 ? Math.min(1, used / limit) : 0
-  const pct = Math.round(ratio * 100)
+  const ratio = ready ? ratioOf(used, limit) : 0
+  const pct = ready ? contextPercent(used, limit) : 0
   /*
-   * `paused` gets its own data-level rather than falling through to
-   * `level(ratio)`. That ratio is a reading from the last run, not a live
-   * one — if it happened to be >= 70%, `.ring[data-level='warn']` /
-   * `['critical']` would paint an arc in an alert colour for a session
-   * nobody is watching right now. Those rules only target `.ring-fill`,
-   * which a paused ring never renders (see below), so today this is a
-   * belt-and-suspenders fix rather than a visible one — but "cannot ever
-   * match a warn/critical selector" is the actual guarantee gotcha 33's
+   * `paused` gets its own data-level rather than falling through to the
+   * reading's tier. That reading is from the last run, not a live one — if it
+   * happened to be 61% or more, `.ring[data-level='high']` / `['full']` would
+   * paint an alarm for a session nobody is watching right now. Most of those
+   * rules target `.ring-fill` and `.ring-core`, which a paused ring never
+   * renders (see below) — but `['full'] .tab-watch` targets the worklog dot,
+   * which it does, and would turn a watched paused tab's dot to the page
+   * colour over no disc: erased. So this is not only belt-and-suspenders any
+   * more; "cannot ever match an alarm selector" is the guarantee gotcha 33's
    * rule is asking for, not "happens not to match this cascade today."
    */
-  const dataLevel = paused ? 'paused' : ready ? level(ratio) : 'empty'
+  const dataLevel = paused ? 'paused' : ready ? contextLevel(pct) : 'empty'
   return (
     <svg
       className="ring"
@@ -143,6 +175,7 @@ export function ContextRing({
             ? `Context ${pct}% used`
             : 'Context not read yet'}
       </title>
+      {dataLevel === 'full' && <circle className="ring-core" cx="8" cy="8" r={CORE_R} />}
       <circle className="ring-track" cx="8" cy="8" r={RING_R} />
       {paused ? (
         <>
@@ -192,6 +225,11 @@ export function ContextRing({
               strokeLinecap="round"
             />
           )}
+          {/*
+           * Last, so it sits on top of the full ring's disc. Red on red would
+           * vanish there, so app.css inverts it to --bg at 'full' — the one
+           * level where the centre of the ring is not the tab's own ground.
+           */}
           {watched && <circle className="tab-watch" cx="8" cy="8" r={WATCH_R} />}
         </>
       )}

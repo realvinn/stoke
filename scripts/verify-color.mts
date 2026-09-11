@@ -26,6 +26,8 @@ import {
   toOklch
 } from '../src/shared/color.ts'
 import type { Rgb } from '../src/shared/color.ts'
+import { neutralTokens, PAGE_CHROMA_MAX, TINT_MAX } from '../src/shared/ladder.ts'
+import { meterScale, METER_WCAG } from '../src/shared/meter.ts'
 import { PROFILE_SWATCHES } from '../src/shared/profiles.ts'
 import { BUILT_IN_THEMES } from '../src/shared/themes.ts'
 import type { Theme } from '../src/shared/types.ts'
@@ -352,6 +354,122 @@ console.log('\n-- why --on-danger stays right for a theme none of the four are -
   if (!ok) failures++
   console.log(
     `${ok ? 'ok  ' : 'FAIL'} ${'contrastRatio(a, b) === contrastRatio(b, a)'.padEnd(46)} ${`${pairs.length} pairs`.padStart(10)}  (holds for any colour, not just these four)`
+  )
+}
+
+console.log('\n-- the context meter: green, orange, red on every theme --')
+/*
+ * --meter-low / --meter-mid / --meter-high, which `applyAppearance` (and the
+ * phone's `loadTheme`) write from `meterScale`. Asserted against the real
+ * function, not a copy of its output, for every built-in theme.
+ *
+ * Three properties, each the reason the scale exists at all:
+ *
+ *  - 3:1 on BOTH --bg and --bg-sunken (WCAG 1.4.11, a non-text graphic). The
+ *    ring sits on --bg-sunken on an unselected tab and --bg on the selected
+ *    one; the bar's own track is --bg-sunken. `METER_WCAG` is the module's own
+ *    export, so this cannot pass by asserting a different number than it solves.
+ *  - Adjacent tiers visibly different: perceptual distance >= 0.08, twice the
+ *    0.04 this repo calls "the same colour" (gotcha 44). This is the property
+ *    the theme's own semantics could NOT give: an orange solved like `warning`
+ *    lands 0.05-0.07 from both `warning` and `danger`.
+ *  - Still the colour it is named for. A floor can drag lightness far enough
+ *    that chroma collapses or the hue shifts in the 8-bit rounding, which would
+ *    satisfy the contrast rows and deliver a brown or a grey. The hues are the
+ *    seed hues in shared/meter.ts, mirrored because the module exports no seed.
+ *
+ * Plus the one pairing the ring adds: at 81%+ the worklog dot is --bg drawn ON
+ * a --meter-high disc, so that pair needs 3:1 too. `contrastRatio` is symmetric,
+ * so it is the --bg floor read from the other side — asserted anyway, under its
+ * own name, so a future change to the dot's fill has a row that says what broke.
+ */
+/** Mirrors the seed hues in shared/meter.ts. */
+const METER_HUE = { low: 148, mid: 55, high: 27 } as const
+/** Twice the 0.04 this repo treats as "the same colour". */
+const METER_TIER_DISTANCE = 0.08
+/** Below this a "traffic light" is a grey with a tint; every shipped tier is >= 0.153. */
+const METER_MIN_CHROMA = 0.12
+/** 8-bit rounding moves hue by well under a degree here; more means a clip moved it. */
+const METER_HUE_TOLERANCE = 6
+
+const hueGap = (a: number, b: number): number => Math.abs(((a - b + 540) % 360) - 180)
+
+for (const t of BUILT_IN_THEMES) {
+  const scale = meterScale(t.colors.bg, t.colors.bgSunken, t.appearance)
+  const bg = parseColor(t.colors.bg)!
+  const sunken = parseColor(t.colors.bgSunken)!
+  const hover = parseColor(t.colors.surfaceHover)!
+  for (const tier of ['low', 'mid', 'high'] as const) {
+    const c = parseColor(scale[tier])!
+    const onBg = contrastRatio(c, bg)
+    const onSunken = contrastRatio(c, sunken)
+    const o = toOklch(c)
+    const ok =
+      onBg >= METER_WCAG &&
+      onSunken >= METER_WCAG &&
+      o.c >= METER_MIN_CHROMA &&
+      hueGap(o.h, METER_HUE[tier]) <= METER_HUE_TOLERANCE
+    if (!ok) failures++
+    console.log(
+      `${ok ? 'ok  ' : 'FAIL'} ${`${t.id}: --meter-${tier} ${scale[tier]}`.padEnd(46)} ${`${onBg.toFixed(2)}/${onSunken.toFixed(
+        2
+      )}`.padStart(10)}  (expected >= ${METER_WCAG} on bg/sunken; C ${o.c.toFixed(3)} >= ${METER_MIN_CHROMA}, H ${o.h.toFixed(
+        0
+      )} ~${METER_HUE[tier]})`
+    )
+    // A hovered tab is a third ground the ring passes over. Not part of the
+    // solve (it is transient, and in light mode it sits between the other
+    // two), so it is printed, not asserted.
+    note(`${t.id}: --meter-${tier} on --surface-hover`, contrastRatio(c, hover).toFixed(2))
+  }
+  const [low, mid, high] = [parseColor(scale.low)!, parseColor(scale.mid)!, parseColor(scale.high)!]
+  atLeast(`${t.id}: green vs orange, perceptual distance`, perceptualDistance(low, mid), METER_TIER_DISTANCE)
+  atLeast(`${t.id}: orange vs red, perceptual distance`, perceptualDistance(mid, high), METER_TIER_DISTANCE)
+  atLeast(`${t.id}: --bg dot on the full ring's red disc`, contrastRatio(bg, high), 3)
+}
+
+/*
+ * The claim "solved per theme" has to hold for a theme nobody has shipped.
+ *
+ * The twelve rows above prove twelve pages. A user's theme comes out of the
+ * same generator with any hue, tint up to TINT_MAX, a page chroma up to its
+ * ceiling and a near-black page — so the generator's range is swept, the same
+ * shape as verify:theme-gen's contrast sweep. One line: every seed either keeps
+ * all three floors and both distances, or the first few that did not are named.
+ */
+{
+  let swept = 0
+  const bad: string[] = []
+  let closest = Infinity
+  for (const appearance of ['dark', 'light'] as const) {
+    for (let hue = 0; hue < 360; hue += 15) {
+      for (const tint of [0, 1, TINT_MAX]) {
+        for (const pageChroma of [0, PAGE_CHROMA_MAX[appearance]]) {
+          for (const black of appearance === 'dark' ? [false, true] : [false]) {
+            const n = neutralTokens(appearance, hue, tint, pageChroma, black)
+            const s = meterScale(n.bg, n.bgSunken, appearance)
+            const grounds = [parseColor(n.bg)!, parseColor(n.bgSunken)!]
+            const tiers = [parseColor(s.low)!, parseColor(s.mid)!, parseColor(s.high)!]
+            swept++
+            const tag = `${appearance} h${hue} t${tint} pc${pageChroma}${black ? ' black' : ''}`
+            for (const c of tiers) {
+              const worst = Math.min(...grounds.map((g) => contrastRatio(c, g)))
+              if (worst < METER_WCAG) bad.push(`${tag}: ${toHex(c)} ${worst.toFixed(2)}:1`)
+            }
+            const d = Math.min(perceptualDistance(tiers[0], tiers[1]), perceptualDistance(tiers[1], tiers[2]))
+            closest = Math.min(closest, d)
+            if (d < METER_TIER_DISTANCE) bad.push(`${tag}: tiers ${d.toFixed(3)} apart`)
+          }
+        }
+      }
+    }
+  }
+  const ok = bad.length === 0
+  if (!ok) failures++
+  console.log(
+    `${ok ? 'ok  ' : 'FAIL'} ${`${swept} generated themes: floors + distinct tiers`.padEnd(46)} ${`${closest.toFixed(3)}`.padStart(10)}  (closest adjacent tiers; expected >= ${METER_TIER_DISTANCE})${
+      ok ? '' : `  ${bad.slice(0, 4).join(' | ')}`
+    }`
   )
 }
 

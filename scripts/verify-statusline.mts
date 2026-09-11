@@ -44,6 +44,7 @@ import {
 import { buildArgs } from '../src/main/cli.ts'
 import type { LaunchOptions, StatusLinePayload, UsageWindow } from '../src/shared/types.ts'
 import { keepUsage, mergeUsageWindows, statusLineWindows } from '../src/shared/statusLine.ts'
+import { contextLevel, contextPercent } from '../src/shared/contextLevel.ts'
 import {
   countdown,
   isStale,
@@ -1501,6 +1502,64 @@ check(
   keepUsage(withLimits, { ...withLimits, sessionId: 'sess-D', receivedAt: 40_000 }).receivedAt,
   40_000
 )
+
+/* ------------------------------------------- the context meter's four tiers */
+/*
+ * The sibling of the chip's `tone()` above: how loud the CONTEXT meter is.
+ * 0-30% green, 31-60% orange, 61-80% red, 81%+ solid red, banded on the
+ * rounded percent the caption and the ring's tooltip print. Every boundary is
+ * asserted from both sides, because a band is only as right as its edges.
+ *
+ * This replaced four hand copies of an older 70/90 rule (ContextMeter.tsx and
+ * three ternaries in the phone's main.ts), none exported and none asserted
+ * anywhere — and it lives here rather than in verify:context because that
+ * suite is excluded from CI (ci-verify.mjs), and a threshold nobody runs is not
+ * pinned.
+ */
+console.log('\nhow loud the context meter is')
+const levels = (pcts: number[]): string[] => pcts.map(contextLevel)
+check('0 and 30 are low (green)', levels([0, 30]), ['low', 'low'])
+check('31 and 60 are mid (orange)', levels([31, 60]), ['mid', 'mid'])
+check('61 and 80 are high (red)', levels([61, 80]), ['high', 'high'])
+check('81 and 100 are full (solid red)', levels([81, 100]), ['full', 'full'])
+
+// The rounding pairs: the colour changes exactly when the printed % does.
+const band = (used: number, limit: number): [number, string] => {
+  const pct = contextPercent(used, limit)
+  return [pct, contextLevel(pct)]
+}
+check('30.49% prints 30 and is low', band(60_980, 200_000), [30, 'low'])
+check('30.5% prints 31 and is mid', band(61_000, 200_000), [31, 'mid'])
+check('60.49% prints 60 and is mid', band(120_980, 200_000), [60, 'mid'])
+check('60.5% prints 61 and is high', band(121_000, 200_000), [61, 'high'])
+check('80.49% prints 80 and is high', band(160_980, 200_000), [80, 'high'])
+check('80.5% prints 81 and is full', band(161_000, 200_000), [81, 'full'])
+// The case the old unrounded rule got wrong: the caption said 70% while the
+// colour was still healthy. One function now feeds both, so they agree.
+check(
+  'the band follows the printed number on a 1M window too',
+  [band(305_000, 1_000_000), band(304_999, 1_000_000)],
+  [[31, 'mid'], [30, 'low']]
+)
+check(
+  'a true half rounds up, as a reader would (57/200 is 28.5%, not 28.49…)',
+  contextPercent(57, 200),
+  29
+)
+
+// The clamps and the garbage.
+check('used over the limit is 100% and full', band(250_000, 200_000), [100, 'full'])
+check('a limit of 0 is 0% and low, not Infinity', band(50_000, 0), [0, 'low'])
+check('no reading at all is 0% and low', band(0, 200_000), [0, 'low'])
+check('a negative count is 0% and low', band(-5, 200_000), [0, 'low'])
+check('a NaN count is 0% and low', band(Number.NaN, 200_000), [0, 'low'])
+check('a NaN limit is 0% and low', band(50_000, Number.NaN), [0, 'low'])
+/*
+ * NaN handed straight to the band must not paint solid red. `>=` from the top
+ * is what guarantees it: NaN fails every comparison and falls through to low,
+ * where an ascending `<=` chain would send it to its last branch — full.
+ */
+check('contextLevel(NaN) is low, never full', contextLevel(Number.NaN), 'low')
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
 process.exitCode = failures ? 1 : 0

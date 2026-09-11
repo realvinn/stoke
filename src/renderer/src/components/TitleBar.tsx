@@ -217,7 +217,8 @@ export function TitleBar({
                 {/*
                   What happened here since you last looked. Working pulses,
                   done is a solid accent dot, attention is the warning colour.
-                  Not red: red in the strip means the worklog is watching.
+                  Not red: red in the strip already says two things, a ring
+                  past 60% and the worklog dot in its centre.
                 */}
                 {act && (
                   <span

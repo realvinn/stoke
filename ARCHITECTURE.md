@@ -387,7 +387,8 @@ and so needs a display. Each runs alone:
 
 ```bash
 npm run verify:context        # context meter against the real transcripts on this machine
-npm run verify:statusline     # the statusLine wrapper: payload, suppression, pass-through
+npm run verify:statusline     # the statusLine wrapper: payload, suppression, pass-through,
+                              # and the context meter's four tiers at every boundary
 npm run verify:unicode        # xterm's cell widths for emoji and box drawing
 npm run verify:profiles       # profile resolution + every accent clears 4.5:1
 npm run verify:settings       # settings hydration: repair, clamps, what it drops, and the
@@ -411,7 +412,8 @@ npm run verify:shortcuts      # app chords vs the keys the terminal owns, the zo
                               # that Ctrl+Tab and the bare brackets still reach the CLI
 npm run verify:drop           # what a dropped file types: quoting per platform, and the
                               # names that cannot be typed at all
-npm run verify:color          # colour maths: contrast, APCA, oklch
+npm run verify:color          # colour maths: contrast, APCA, oklch; every theme's tokens, the
+                              # accent matrix, the meter colours and the bypass mark at 3:1
 npm run verify:theme-gen      # the theme generator: that a five-field seed reproduces every
                               # built-in byte-for-byte, that no slider position can breach a
                               # contrast floor, and that a saved seed survives hydration
@@ -586,6 +588,13 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
   accent.ts         one accent in, five tokens out, per appearance. The reason
                     --accent (a fill) and --accent-ink (a foreground) are two
                     things and not one. Gotcha 44
+  meter.ts          the context meter's green / orange / red (--meter-low/-mid/-high),
+                    graphics-grade and solved per theme to 3:1 on --bg and --bg-sunken.
+                    Written by applyAppearance and by the phone's loadTheme; not on
+                    ThemeColors, so no theme literal moves (gotcha 43)
+  contextLevel.ts   the percent the meter prints and its tier: 0-30 low, 31-60 mid,
+                    61-80 high, 81+ full, banded on the ROUNDED percent. No imports, so
+                    the ring, the bar, the phone and verify:statusline run one copy
   worklog.ts        the board targets the worklog can write to, and their defaults
   claudeConfig.ts   which of Claude Code's settings Stoke will draw, their vocabularies, and
                     the never-offer list. Hand-transcribed from the CLI binary's zod schema
