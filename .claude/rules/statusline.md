@@ -6,6 +6,7 @@ paths:
   - "src/shared/statusLine.ts"
   - "scripts/verify-context.mts"
   - "scripts/verify-statusline.mts"
+  - "src/shared/contextLevel.ts"
 ---
 
 # statusLine payload and context meter

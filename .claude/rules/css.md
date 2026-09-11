@@ -14,6 +14,7 @@ paths:
   - "src/renderer/src/components/WorklogPrompt.tsx"
   - "src/renderer/src/lib/theme.ts"
   - "src/renderer/src/styles/app.css"
+  - "src/shared/ring.ts"
 ---
 
 # CSS and layout traps

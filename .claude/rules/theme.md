@@ -15,6 +15,7 @@ paths:
   - "scripts/verify-profiles.mts"
   - "scripts/verify-settings.mts"
   - "scripts/verify-theme-gen.mts"
+  - "src/shared/meter.ts"
 ---
 
 # Palette and accents

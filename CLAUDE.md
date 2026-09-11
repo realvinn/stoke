@@ -28,7 +28,7 @@ npm run dist:mac   # dmg + zip, arm64 (the zip is what auto-update installs). MU
 ```
 
 Every suite runs alone as `npm run verify:<name>`: context, statusline, unicode, usage,
-profiles, settings, claude-config, folders, color, theme-gen, activity, worklog-gate, tabs,
+profiles, settings, claude-config, folders, search, color, theme-gen, activity, worklog-gate, tabs,
 restore, shortcuts, drop, cli, updates, worklog-runner, worklog-retry, worklog-recall,
 worklog-autoscan, ssh, remote, selection — the `check` chain — plus extract and security, which
 need a live instance (`verify:security <url> <token> --access`). `verify:selection` opens a real
@@ -351,6 +351,14 @@ rule file named on the group line.
   not spend an afternoon treating it as a writer bug.
 - **The usage endpoint is undocumented** (`usage.ts`): tolerate missing fields and report
   unavailable — a wrong number in a status bar is worse than a blank one.
+- **A `Page.captureScreenshot` with a `clip` ends any pointer drag in progress**: DevTools
+  emulates the viewport for it, and Chromium delivers a trusted `lostpointercapture` plus a
+  buttons-0 move, which lands the drag. Screenshot mid-drag without `clip`, and crop afterwards.
+- **`Page.captureScreenshot` hangs while the window is hidden behind others** — launch with
+  `--disable-backgrounding-occluded-windows` for any run that screenshots.
+- **Resuming a real session to test something touches its transcript**: on exit the CLI appends
+  `last-prompt`/`cost-state` records even with nothing typed, so the chat re-sorts as recent. Use
+  a throwaway session, or a fake `claudePath` under a separate `--user-data-dir`.
 
 ## Verification
 
