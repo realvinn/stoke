@@ -481,6 +481,34 @@ check(
   nearestSlot(centres, clampDrag(5000, slotLefts) + TAB_W / 2),
   4
 )
+{
+  /*
+   * An overflowing strip: the lifted tab is held inside the part on screen as
+   * well as inside its slots. Held by the slots alone, a tab dragged to the
+   * edge to autoscroll sat half past it and was clipped for the whole scroll —
+   * 52 of 112px out of sight, measured in the running app.
+   */
+  const view = { start: 100, end: 700, width: TAB_W }
+  check('a view holds the lifted tab off the hidden end', clampDrag(9000, slotLefts, view), 508)
+  check('and its far edge is exactly the visible edge', clampDrag(9000, slotLefts, view) + TAB_W, 700)
+  check('a view holds it off the hidden start', clampDrag(-80, slotLefts, view), 100)
+  check('inside the view nothing is clamped', clampDrag(300, slotLefts, view), 300)
+  check(
+    'a view showing the whole strip changes nothing',
+    [-80, 300, 9000].map((l) => clampDrag(l, slotLefts, { start: 0, end: 976, width: TAB_W })),
+    [-80, 300, 9000].map((l) => clampDrag(l, slotLefts))
+  )
+  check(
+    'a view narrower than the tab is ignored, not inverted',
+    clampDrag(9000, slotLefts, { start: 100, end: 250, width: TAB_W }),
+    784
+  )
+  // As autoscroll carries the view to the end, the held tab reaches the last slot.
+  const scrolled = [0, 100, 200, 300].map((s) =>
+    nearestSlot(centres, clampDrag(9000, slotLefts, { start: s, end: s + 676, width: TAB_W }) + TAB_W / 2)
+  )
+  check('held at the edge while the strip scrolls, it walks through the slots to the last', scrolled, [2, 3, 3, 4])
+}
 
 console.log('\na press becomes a drag only past the slop')
 check('3px is still a click', pastSlop(3, 0), false)

@@ -259,10 +259,20 @@ function createTabDrag(get: () => TabDragOptions): TabDrag & {
     d.raf = requestAnimationFrame(frame)
   }
 
-  /** Move the dragged tab to the pointer and, if its slot changed, the neighbours to theirs. */
+  /**
+   * Move the dragged tab to the pointer and, if its slot changed, the neighbours
+   * to theirs. Held inside the visible strip as well as its slots, so a tab
+   * dragged to an edge to autoscroll stays in view while the strip scrolls
+   * under it rather than following the pointer out past the clip.
+   */
   const place = (d: Dragging): void => {
     const box = d.list.getBoundingClientRect()
-    const left = clampDrag(d.x - box.left + d.list.scrollLeft - d.grab, d.lefts)
+    const scroll = d.list.scrollLeft
+    const left = clampDrag(d.x - box.left + scroll - d.grab, d.lefts, {
+      start: scroll,
+      end: scroll + box.width,
+      width: d.width
+    })
     d.els[d.from].style.transform = `translateX(${left - d.lefts[d.from]}px)`
     const to = nearestSlot(d.centres, left + d.width / 2)
     if (to === d.to || to < 0) return

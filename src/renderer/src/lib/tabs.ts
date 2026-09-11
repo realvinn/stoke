@@ -163,17 +163,40 @@ export function previewSlot(i: number, from: number, to: number): number {
   return i === from ? to : i + previewShift(i, from, to)
 }
 
+/** The part of an overflowing strip that is on screen, in the slots' own content coordinates. */
+export interface DragView {
+  /** The list's `scrollLeft`. */
+  start: number
+  /** `scrollLeft` plus the list's visible width. */
+  end: number
+  /** The dragged tab's width, so its far edge is held inside `end` too. */
+  width: number
+}
+
 /**
- * The dragged tab's left edge, held between the first slot and the last.
+ * The dragged tab's left edge, held between the first slot and the last —
+ * and, given the `view`, inside the part of the strip that is on screen.
  *
  * The strip's own slots are the bound, which is also what keeps a lifted tab
  * out of the macOS traffic-light clearance, off the Windows caption buttons and
  * away from the + button: none of those is inside the list.
+ *
+ * The view matters once the strip overflows. Held by the slots alone, a tab
+ * dragged to the edge to autoscroll followed the pointer half past it for the
+ * whole of the scroll, and the list's overflow clipped it: measured in the
+ * running app, 52 of a 112px tab out of sight, close button and half the title
+ * gone behind the + button, while it was the one thing being moved. Chrome
+ * holds a dragged tab inside the visible strip, and so does this. A view too
+ * narrow to hold the tab at all is ignored rather than inverted.
  */
-export function clampDrag(left: number, slotLefts: readonly number[]): number {
+export function clampDrag(left: number, slotLefts: readonly number[], view?: DragView): number {
   if (slotLefts.length === 0) return left
-  const first = slotLefts[0]
-  const last = slotLefts[slotLefts.length - 1]
+  let first = slotLefts[0]
+  let last = slotLefts[slotLefts.length - 1]
+  if (view && view.end - view.width >= view.start) {
+    first = Math.max(first, view.start)
+    last = Math.min(last, view.end - view.width)
+  }
   return Math.min(Math.max(left, first), last)
 }
 
