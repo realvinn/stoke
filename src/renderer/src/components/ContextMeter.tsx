@@ -1,4 +1,5 @@
 import { contextLevel, contextPercent } from '@shared/contextLevel'
+import { beadCentre, RING_R, RING_STROKE, ringBeads } from '@shared/ring'
 import { compactTokens } from '../lib/format'
 
 /*
@@ -69,8 +70,11 @@ export function ContextBar({
   )
 }
 
-/** Radius of the tab ring, shared so anything drawn in the same slot lines up. */
-export const RING_R = 5.6
+/**
+ * Radius of the tab ring, shared so anything drawn in the same slot lines up.
+ * Defined in shared/ring.ts, beside the bead layout that is computed from it.
+ */
+export { RING_R }
 const CIRC = 2 * Math.PI * RING_R
 
 /*
@@ -113,17 +117,18 @@ const WATCH_R = 2.86
 const CORE_R = RING_R - 0.6
 
 /*
- * The bypass mark's beads: zero-length dashes with round caps, `BEADS` of them
- * evenly round the track. The pitch is computed here from the same radius the
- * track is drawn at and handed to app.css as `--ring-bead-pitch`, so the pattern
- * always closes cleanly at 12 o'clock — a dash length typed into the stylesheet
- * would stop closing the moment RING_R changed. 8 beads of 2.5 units on a
- * 35.19-unit circumference leaves a 1.9-unit gap between them: 2.19px beads and
- * 1.66px gaps at Interface scale 1, dotted rather than the 11 square teeth the
- * 1.6/1.6 dash drew.
+ * The bypass mark's beads: `RING_BEADS` discs as wide as the track, evenly round
+ * it from 12 o'clock -- 2.19px beads with 1.66px gaps at Interface scale 1,
+ * dotted rather than the 11 square teeth the old 1.6/1.6 dash drew.
+ *
+ * Separate <circle>s placed by shared/ring.ts rather than one dashed track
+ * (`stroke-dasharray: 0 <pitch>`), because a dash pattern cannot skip a dash:
+ * wherever the arc stopped short of a bead, that bead stuck out past the arc's
+ * round cap as a grey nub, and at 81% sat on the red disc's edge as a grey blob.
+ * `ringBeads` leaves out every bead the arc would touch, whole, and
+ * verify:statusline holds that rule against the geometry.
  */
-const BEADS = 8
-const BEAD_PITCH = CIRC / BEADS
+const BEAD_R = RING_STROKE / 2
 
 /**
  * Compact ring for tab strips, where there is no room for a bar and caption.
@@ -139,7 +144,8 @@ export function ContextRing({
   limit,
   ready = true,
   watched = false,
-  paused = false
+  paused = false,
+  bypass = false
 }: {
   used: number
   limit: number
@@ -148,9 +154,14 @@ export function ContextRing({
   watched?: boolean
   /** Restored from the last run: draw the reading, but say it is not live. */
   paused?: boolean
+  /** Permissions bypassed: beads in place of the plain track. See BEAD_R. */
+  bypass?: boolean
 }): React.JSX.Element {
   const ratio = ready ? ratioOf(used, limit) : 0
   const pct = ready ? contextPercent(used, limit) : 0
+  // The beads make room for the arc, so they need to know how much of the
+  // ring it covers -- none at all when it is not drawn (paused, not ready).
+  const beads = bypass ? ringBeads(paused ? 0 : ratio) : []
   /*
    * `paused` gets its own data-level rather than falling through to the
    * reading's tier. That reading is from the last run, not a live one — if it
@@ -165,12 +176,7 @@ export function ContextRing({
    */
   const dataLevel = paused ? 'paused' : ready ? contextLevel(pct) : 'empty'
   return (
-    <svg
-      className="ring"
-      viewBox="0 0 16 16"
-      data-level={dataLevel}
-      style={{ ['--ring-bead-pitch' as string]: String(BEAD_PITCH) }}
-    >
+    <svg className="ring" viewBox="0 0 16 16" data-level={dataLevel}>
       <title>
         {paused
           ? `Paused — ${pct}% used when last active`
@@ -178,8 +184,12 @@ export function ContextRing({
             ? `Context ${pct}% used`
             : 'Context not read yet'}
       </title>
-      <circle className="ring-track" cx="8" cy="8" r={RING_R} />
+      {!bypass && <circle className="ring-track" cx="8" cy="8" r={RING_R} />}
       {dataLevel === 'full' && <circle className="ring-core" cx="8" cy="8" r={CORE_R} />}
+      {beads.map((k) => {
+        const { cx, cy } = beadCentre(k)
+        return <circle key={k} className="ring-bead" cx={cx} cy={cy} r={BEAD_R} />
+      })}
       {paused ? (
         <>
           {/*

@@ -46,6 +46,14 @@ import type { LaunchOptions, StatusLinePayload, UsageWindow } from '../src/share
 import { keepUsage, mergeUsageWindows, statusLineWindows } from '../src/shared/statusLine.ts'
 import { contextLevel, contextPercent } from '../src/shared/contextLevel.ts'
 import {
+  BEAD_CLEARANCE,
+  beadCentre,
+  RING_BEADS,
+  RING_R,
+  RING_STROKE,
+  ringBeads
+} from '../src/shared/ring.ts'
+import {
   countdown,
   isStale,
   remainingLabel,
@@ -1560,6 +1568,52 @@ check('a NaN limit is 0% and low', band(50_000, Number.NaN), [0, 'low'])
  * where an ascending `<=` chain would send it to its last branch — full.
  */
 check('contextLevel(NaN) is low, never full', contextLevel(Number.NaN), 'low')
+
+/* ------------------------------------------ bypass beads never touch the arc */
+/*
+ * shared/ring.ts decides which of the ring's eight bypass beads to draw. They
+ * used to be one dashed track under the arc, and a dash cannot be skipped, so a
+ * bead the arc stopped short of stuck out past its round cap as a grey nub --
+ * seen in the running app at 20%, 30%, 70% and 81%. The rule is now geometric,
+ * so it is checked against the geometry: for every fill from 0 to 100% in
+ * 0.1% steps, every bead is measured against the arc's own centreline (sampled
+ * densely here, not with ringBeads' chord formula) and must be drawn exactly
+ * when it clears both round caps by BEAD_CLEARANCE. Both directions matter: a
+ * rule that hid every bead would pass a "never touches" check on its own.
+ */
+console.log('\nbypass beads never touch the arc')
+check('no arc (not ready, paused): all eight beads', ringBeads(0), [0, 1, 2, 3, 4, 5, 6, 7])
+check('the start cap sits on bead 0, so any arc at all hides it', ringBeads(0.001), [1, 2, 3, 4, 5, 6, 7])
+check('20%: the bead the arc half-covered (the 3 o’clock one) goes', ringBeads(0.2), [3, 4, 5, 6, 7])
+check('50%', ringBeads(0.5), [5, 6, 7])
+check('70%: only the bead before 12 o’clock is clear', ringBeads(0.7), [7])
+check('81% (full): no bead is clear of both caps', ringBeads(0.81), [])
+check('100%', ringBeads(1), [])
+check('NaN is no arc, not a full one', ringBeads(Number.NaN), [0, 1, 2, 3, 4, 5, 6, 7])
+check('out of range is clamped', [ringBeads(-1), ringBeads(2)], [[0, 1, 2, 3, 4, 5, 6, 7], []])
+{
+  const reach = RING_STROKE + BEAD_CLEARANCE // two bead radii plus the gap
+  const bad: string[] = []
+  for (let tenth = 1; tenth <= 1000; tenth++) {
+    const ratio = tenth / 1000
+    // The arc's centreline, from 12 o'clock round to where the fill ends.
+    const line: [number, number][] = []
+    for (let i = 0; i <= 720; i++) {
+      const a = (2 * Math.PI * ratio * i) / 720
+      line.push([8 + RING_R * Math.cos(a), 8 + RING_R * Math.sin(a)])
+    }
+    const drawn = new Set(ringBeads(ratio))
+    for (let k = 0; k < RING_BEADS; k++) {
+      const { cx, cy } = beadCentre(k)
+      const gap = Math.min(...line.map(([x, y]) => Math.hypot(x - cx, y - cy)))
+      // A sampled centreline over-reads the distance by at most half a sample
+      // step (0.05 units at 100%), so only a clear margin either way counts.
+      if (drawn.has(k) && gap < reach - 0.06) bad.push(`${(ratio * 100).toFixed(1)}%: bead ${k} drawn ${gap.toFixed(2)} from the arc`)
+      if (!drawn.has(k) && gap > reach + 0.06) bad.push(`${(ratio * 100).toFixed(1)}%: bead ${k} hidden though ${gap.toFixed(2)} clear`)
+    }
+  }
+  check('0.1% to 100%: a bead is drawn exactly when it clears the arc', bad.slice(0, 3), [])
+}
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
 process.exitCode = failures ? 1 : 0

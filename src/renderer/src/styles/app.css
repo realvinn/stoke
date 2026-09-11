@@ -95,7 +95,7 @@ button {
      is told apart by shape (a filled centre, never an arc) and inverted to
      --bg over a full ring's red disc (see `.ring[data-level='full']`). */
   --tab-dot-worklog: var(--danger);
-  /* Bypass mode's mark: the ring's own track, beaded, in the theme's own slate.
+  /* Bypass mode's mark: beads in place of the ring's track, in the theme's slate.
      A standing SETTING, not an alarm, so it stays out of --warning, which is
      for live alerts (the attention dot, the status line, the usage chip).
      The mix reconstructs ladder step 9 -- the mid-grey between --border-strong
@@ -892,7 +892,7 @@ body {
 }
 
 /*
- * Bypass mode: the ring's own track, beaded, in the theme's slate.
+ * Bypass mode: beads in place of the ring's track, in the theme's slate.
  *
  * Twice moved and the same mistake both times until now. Bypass used to own
  * --danger, which put a red dot on every tab on a machine whose default mode is
@@ -905,18 +905,21 @@ body {
  *
  * Now it is --ring-bypass (step 9 of the theme's own neutral ladder; see
  * :root), so the SHAPE says "the guard rails are off" and the colour stays
- * quiet: round beads, closed cleanly at 12 o'clock because the pitch comes from
- * the ring's own radius (`--ring-bead-pitch`, ContextMeter.tsx). Two cues keep
- * it apart from the arc drawn over it in every theme: it has next to no chroma
- * (C ~0.007 on Ink) where the arc is a saturated colour, and it is dots where
+ * quiet: eight round beads in place of the track, one at 12 o'clock. Two cues
+ * keep them apart from the arc in every theme: they have next to no chroma
+ * (C ~0.007 on Ink) where the arc is a saturated colour, and they are dots where
  * the arc is one solid stroke from 12 o'clock. Lightness is NOT one of them —
  * on a light theme the two sit close — which is why the shape changed and not
  * only the colour. And the arc's alarm colours stay live alerts, not a setting's.
+ *
+ * Each bead is its own <circle> (ContextMeter.tsx), not a dash of one dashed
+ * track: a dash pattern cannot skip the bead the arc half-covers, which stuck
+ * out past the arc's round end as a grey nub. shared/ring.ts leaves those out
+ * whole. (0,2,0) beats `.ring circle`'s `fill: none`, as `.ring .tab-watch` does.
  */
-.tab-indicator[data-mode='bypass'] .ring-track {
-  stroke: var(--ring-bypass);
-  stroke-dasharray: 0 var(--ring-bead-pitch);
-  stroke-linecap: round;
+.ring .ring-bead {
+  fill: var(--ring-bypass);
+  stroke: none;
 }
 
 /* ------------------------------------------------------- titlebar actions */

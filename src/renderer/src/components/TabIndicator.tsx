@@ -36,11 +36,12 @@ interface Props {
  *    --danger, and a filled centre rather than an arc, so the two reds cannot
  *    be read for each other; over a full ring's red disc it is inverted to the
  *    page colour rather than lost.
- *  - The TRACK, beaded in slate, is bypass mode — a setting, not an alarm. It
- *    was a red dot once, then an amber dashed track, and on a machine whose
- *    default mode is bypass that put the loudest colour on screen on every tab
- *    all the time. It is the theme's own neutral now (--ring-bypass), and the
- *    beads rather than the colour carry "the guard rails are off".
+ *  - In bypass mode the TRACK is a ring of slate beads — a setting, not an
+ *    alarm. It was a red dot once, then an amber dashed track, and on a machine
+ *    whose default mode is bypass that put the loudest colour on screen on every
+ *    tab all the time. It is the theme's own neutral now (--ring-bypass), and
+ *    the beads rather than the colour carry "the guard rails are off". They
+ *    are drawn by ContextRing, which leaves out any bead the arc would touch.
  *
  * The dot is drawn by ContextRing, inside the ring's own <svg>, rather than
  * laid over it as a second child of this slot. Two boxes centred in one grid
@@ -94,6 +95,7 @@ export function TabIndicator({
         ready={ready}
         watched={watched}
         paused={status === 'paused'}
+        bypass={bypass}
       />
       <span className="sr-only">
         {watched ? 'Worklog is watching this session. ' : ''}

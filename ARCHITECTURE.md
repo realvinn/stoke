@@ -388,7 +388,8 @@ and so needs a display. Each runs alone:
 ```bash
 npm run verify:context        # context meter against the real transcripts on this machine
 npm run verify:statusline     # the statusLine wrapper: payload, suppression, pass-through,
-                              # and the context meter's four tiers at every boundary
+                              # the context meter's four tiers at every boundary, and that
+                              # no bypass bead is drawn where the ring's arc would touch it
 npm run verify:unicode        # xterm's cell widths for emoji and box drawing
 npm run verify:profiles       # profile resolution + every accent clears 4.5:1
 npm run verify:settings       # settings hydration: repair, clamps, what it drops, and the
@@ -595,6 +596,9 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
   contextLevel.ts   the percent the meter prints and its tier: 0-30 low, 31-60 mid,
                     61-80 high, 81+ full, banded on the ROUNDED percent. No imports, so
                     the ring, the bar, the phone and verify:statusline run one copy
+  ring.ts           the tab ring's radius and stroke, and which of bypass mode's eight
+                    beads it draws: any bead the arc would touch is left out whole, so
+                    none pokes out past the arc's round end. No imports, for the suite
   worklog.ts        the board targets the worklog can write to, and their defaults
   claudeConfig.ts   which of Claude Code's settings Stoke will draw, their vocabularies, and
                     the never-offer list. Hand-transcribed from the CLI binary's zod schema
