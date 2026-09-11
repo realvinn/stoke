@@ -177,10 +177,16 @@ export function TitleBar({
                  * them on the tab — and no press on a label starts a text
                  * selection. Enter and Space still select a keyboard-focused
                  * tab.
+                 *
+                 * Every button, not only the primary. A middle press focused
+                 * the tab it was about to close, so focus fell to <body> and
+                 * the next keystrokes went nowhere; a right press parked them
+                 * on the tab. Both measured in the running app. It also keeps
+                 * a middle press on the scrollable strip from starting
+                 * Chromium's autoscroll where that is on. `auxclick` still
+                 * fires, so middle-click still closes.
                  */
-                onMouseDown={(e) => {
-                  if (e.button === 0) e.preventDefault()
-                }}
+                onMouseDown={(e) => e.preventDefault()}
                 onClick={(e) => {
                   onSelectTab(tab.id)
                   e.currentTarget.scrollIntoView({ block: 'nearest', inline: 'nearest' })
