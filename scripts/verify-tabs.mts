@@ -6,10 +6,19 @@
  *   node scripts/verify-tabs.mts
  */
 import {
+  autoscrollVelocity,
+  AUTOSCROLL_MAX_PX_S,
+  AUTOSCROLL_ZONE_PX,
+  clampDrag,
   cycleTab,
   focusAfterStart,
   moveTab,
+  nearestSlot,
   neighbourOf,
+  paneOrder,
+  pastSlop,
+  previewShift,
+  previewSlot,
   relaunchPlan,
   replaceOrAppend,
   restartPlan
@@ -377,6 +386,170 @@ check(
   focused(null, 'new', 'b', false),
   'new'
 )
+
+/*
+ * The Chrome-style drag.
+ *
+ * It replaced HTML5 drag-and-drop, where a neighbour only moved once the
+ * POINTER was past its centre and then teleported a slot, because each swap
+ * was a committed reorder. Now the strip shows a preview with transforms and
+ * commits `moveTab` once, on release — so the one property that matters most is
+ * that the preview and the commit agree. If they did not, the settle animation
+ * would carry every tab to where the preview said and the commit would then
+ * put one somewhere else: a jump at the exact moment the drag ends.
+ *
+ * Only the maths is here. The wiring — pointer capture, Escape in the window's
+ * capture phase, the FLIP settle, the terminal keeping focus — is side effects
+ * in closures (gotcha 31) and is proven over CDP against the built app.
+ */
+console.log('\nthe drag preview is exactly the reorder it commits')
+{
+  let agree = 0
+  let permutations = 0
+  let total = 0
+  for (let from = 0; from < five5.length; from++) {
+    for (let to = 0; to < five5.length; to++) {
+      total++
+      const preview: ({ id: string } | undefined)[] = new Array(five5.length)
+      five5.forEach((tab, i) => {
+        preview[previewSlot(i, from, to)] = tab
+      })
+      const filled = new Set(five5.map((_, i) => previewSlot(i, from, to)))
+      if (filled.size === five5.length && preview.every(Boolean)) permutations++
+      const committed = moveTab(five5, five5[from].id, five5[to].id)
+      if (JSON.stringify(ids(preview as { id: string }[])) === JSON.stringify(ids(committed))) agree++
+    }
+  }
+  check(`for all ${total} (from, to) on five tabs, the preview order equals moveTab's`, agree, total)
+  check('and every preview puts exactly one tab in every slot', permutations, total)
+}
+check('the dragged tab itself shifts 0 — it follows the pointer, not a slot', previewShift(1, 1, 3), 0)
+check('dragging right: a passed neighbour closes the gap leftwards', previewShift(2, 1, 3), -1)
+check('dragging right: the tab now under the dragged one goes too', previewShift(3, 1, 3), -1)
+check('dragging right: nothing past the target moves', previewShift(4, 1, 3), 0)
+check('dragging left: the target makes room rightwards', previewShift(1, 3, 1), 1)
+check('dragging left: nothing before the target moves', previewShift(0, 3, 1), 0)
+check('no move, no shift', [0, 1, 2, 3, 4].map((i) => previewShift(i, 2, 2)), [0, 0, 0, 0, 0])
+
+/*
+ * Geometry as the strip really lays it out at Interface scale 1: 12rem tabs,
+ * a 4px gap, so slots every 196px. Fractional on purpose in the second half —
+ * rects, not integer offsetLeft, are what the drag measures, so a 1.1 scale's
+ * 211.2px tabs must not round a swap a pixel early.
+ */
+console.log('\nwhere a dragged tab lands')
+const slotLefts = [0, 196, 392, 588, 784]
+const TAB_W = 192
+const centres = slotLefts.map((l) => l + TAB_W / 2)
+check('a tab at rest is its own nearest slot', slotLefts.map((l) => nearestSlot(centres, l + TAB_W / 2)), [0, 1, 2, 3, 4])
+check('just short of half a slot rightwards stays put', nearestSlot(centres, centres[1] + 97.9), 1)
+check('just past half a slot rightwards takes the next one', nearestSlot(centres, centres[1] + 98.1), 2)
+check('just past half a slot leftwards takes the previous one', nearestSlot(centres, centres[1] - 98.1), 0)
+check('exactly halfway is a tie, and a tie goes to the lower slot', nearestSlot(centres, centres[1] + 98), 1)
+check('no slots, no answer', nearestSlot([], 50), -1)
+{
+  /*
+   * The old rule depended on where the tab was grabbed: 0.5 to 1.5 tab widths
+   * of travel before anything moved. The dragged tab's own centre is what is
+   * measured now, and the grab offset cancels out of it.
+   */
+  const from = 1
+  const landings = [5, 60, 120, 187].map((grab) => {
+    const pressX = slotLefts[from] + grab
+    const left = clampDrag(pressX + 99 - grab, slotLefts)
+    return nearestSlot(centres, left + TAB_W / 2)
+  })
+  check('the same travel swaps at the same point wherever the tab was grabbed', landings, [2, 2, 2, 2])
+}
+{
+  // Interface scale 1.1: 211.2px tabs and 4.4px gaps, so the midpoint between
+  // the first two slots is 107.8px out — which integer offsets would put at 108.
+  const scaled = [0, 215.6, 431.2, 646.8]
+  const scaledCentres = scaled.map((l) => l + 105.6)
+  check(
+    'fractional slots swap at their own midpoint, not a rounded one',
+    [107.7, 107.9].map((d) => nearestSlot(scaledCentres, scaledCentres[0] + d)),
+    [0, 1]
+  )
+}
+check('a drag inside the strip is not clamped', clampDrag(300, slotLefts), 300)
+check('dragging past the first slot holds at the first', clampDrag(-80, slotLefts), 0)
+check('dragging past the last slot holds at the last', clampDrag(9000, slotLefts), 784)
+check('a strip of one holds its tab still', clampDrag(40, [12]), 12)
+check(
+  'held at the far end, the dragged tab still takes the last slot',
+  nearestSlot(centres, clampDrag(5000, slotLefts) + TAB_W / 2),
+  4
+)
+
+console.log('\na press becomes a drag only past the slop')
+check('3px is still a click', pastSlop(3, 0), false)
+check('just past 3px is a drag', pastSlop(3.01, 0), true)
+check('diagonal travel is measured as distance, not per axis', pastSlop(2, 2), false)
+check('and counts once it is far enough', pastSlop(3, 3), true)
+check('straight down onto the terminal is a drag too, so the strip claims it', pastSlop(0, -4), true)
+
+console.log('\nautoscroll near the strip\'s edges')
+const view = { start: 100, end: 700 }
+check('the middle of the strip does not scroll', autoscrollVelocity(400, view.start, view.end), 0)
+check(
+  'the edge of the zone is still zero, so the ramp starts from rest',
+  autoscrollVelocity(view.start + AUTOSCROLL_ZONE_PX, view.start, view.end),
+  0
+)
+check(
+  'halfway into the start zone scrolls back at half speed',
+  autoscrollVelocity(view.start + AUTOSCROLL_ZONE_PX / 2, view.start, view.end),
+  -AUTOSCROLL_MAX_PX_S / 2
+)
+check(
+  'at the end edge it scrolls forwards at full speed',
+  autoscrollVelocity(view.end, view.start, view.end),
+  AUTOSCROLL_MAX_PX_S
+)
+check(
+  'past the end, off the strip, it keeps full speed rather than stopping',
+  autoscrollVelocity(view.end + 300, view.start, view.end),
+  AUTOSCROLL_MAX_PX_S
+)
+check(
+  'and past the start likewise, backwards',
+  autoscrollVelocity(view.start - 300, view.start, view.end),
+  -AUTOSCROLL_MAX_PX_S
+)
+check('a strip too narrow to have a middle never scrolls', autoscrollVelocity(110, 100, 140), 0)
+
+/*
+ * The terminal panes render in an order that does not follow the strip, so a
+ * reorder moves no pane's DOM node and cannot blur the xterm you are typing in.
+ */
+console.log('\nreordering the strip never moves a terminal pane')
+{
+  const tabsFor = (order: string[]) =>
+    order.map((id) => ({ id, kind: id.startsWith('new') ? 'new' : 'session' }))
+  const base = ['s3', 'new-1', 's1', 's4', 's2']
+  const want = ids(paneOrder(tabsFor(base)))
+  let same = 0
+  let moves = 0
+  for (let from = 0; from < base.length; from++) {
+    for (let to = 0; to < base.length; to++) {
+      moves++
+      const moved = moveTab(tabsFor(base), base[from], base[to])
+      if (JSON.stringify(ids(paneOrder(moved))) === JSON.stringify(want)) same++
+    }
+  }
+  check(`all ${moves} reorders of the strip leave the pane order untouched`, same, moves)
+  check('New Project tabs have no pane', want.includes('new-1'), false)
+  check('every session tab has one', want.length, 4)
+  const input = tabsFor(base)
+  paneOrder(input)
+  check('the strip itself is not re-sorted', ids(input), base)
+  check(
+    'opening a tab inserts its pane without reordering the others',
+    ids(paneOrder(tabsFor([...base, 's0']))).filter((id) => id !== 's0'),
+    want
+  )
+}
 
 /*
  * The tally is the LAST thing in this file, and it has to stay that way.

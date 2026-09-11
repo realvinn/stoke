@@ -1,6 +1,7 @@
 /**
  * Pure tab-list arithmetic, kept out of the React callbacks that used to own
- * it — the only way to check that code was to click.
+ * it — the only way to check that code was to click. No imports, so
+ * `scripts/verify-tabs.mts` runs it under `node --experimental-strip-types`.
  */
 
 /**
@@ -68,6 +69,10 @@ export function cycleTab(ids: string[], activeId: string | null, delta: -1 | 1):
  * dragging left lands *before* it — which is what the pointer is over in each
  * case. An unknown id on either side returns the same list rather than
  * throwing: a drop can land after the tab it was aimed at has closed.
+ *
+ * This is the one commit a tab drag makes, on release. Everything the strip
+ * shows before then is a preview drawn with transforms (`previewSlot` below),
+ * and the suite asserts the preview and this commit agree for every move.
  */
 export function moveTab<T extends { id: string }>(
   list: T[],
@@ -81,6 +86,140 @@ export function moveTab<T extends { id: string }>(
   const [moved] = next.splice(from, 1)
   next.splice(to, 0, moved)
   return next
+}
+
+/*
+ * ------------------------------------------------------------ dragging a tab
+ *
+ * The maths behind the Chrome-style drag in `useTabDrag`. The drag used to be
+ * HTML5 drag-and-drop, which hands the moving object to the OS: a translucent
+ * bitmap floated freely over the whole window while the real tab sat faded in
+ * its slot, and a neighbour only moved once the POINTER passed its centre —
+ * 0.5 to 1.5 tab widths depending on where the tab was grabbed — and then
+ * teleported a whole slot in one frame, because every swap was a committed
+ * reorder of App state. "It doesn't move the other tabs."
+ *
+ * Now the real tab follows the pointer along the strip, the target slot is
+ * decided by the dragged tab's own centre against a snapshot of the slots taken
+ * when the drag began, and the neighbours slide into their preview slots with a
+ * transform. Nothing the drag does changes what it measures, so no hysteresis
+ * is needed, and the order is committed once, on release.
+ *
+ * Pure and here rather than inside the pointer handlers for gotcha 31's reason:
+ * in a closure, the only way to check any of it is to drag.
+ */
+
+/** Pointer travel, in CSS px, before a press on a tab becomes a drag. */
+export const TAB_DRAG_SLOP_PX = 3
+
+/**
+ * Whether a press has travelled far enough to be a drag rather than a click.
+ *
+ * Any direction, not only along the strip: a press that wanders down onto the
+ * terminal has to be claimed by the strip too, or the terminal receives the
+ * held-button motion as drag reports for the CLI. CSS px throughout — Interface
+ * scale changes rem, not pointer coordinates.
+ */
+export function pastSlop(dx: number, dy: number, slop: number = TAB_DRAG_SLOP_PX): boolean {
+  return Math.hypot(dx, dy) > slop
+}
+
+/**
+ * The slot whose centre is nearest `x`, or -1 when there are no slots.
+ *
+ * Applied to the dragged tab's own centre, this is Chrome's swap: a neighbour
+ * gives way once the dragged tab covers half of it, however far from the edge
+ * the tab was grabbed. A tie goes to the lower index (strict `<`), so a tab
+ * poised exactly halfway between two slots does not flicker between them.
+ */
+export function nearestSlot(centres: readonly number[], x: number): number {
+  let best = -1
+  let bestDistance = Infinity
+  for (let i = 0; i < centres.length; i++) {
+    const d = Math.abs(centres[i] - x)
+    if (d < bestDistance) {
+      best = i
+      bestDistance = d
+    }
+  }
+  return best
+}
+
+/**
+ * How many slots tab `i` moves while the tab at `from` is previewed at `to`.
+ *
+ * Dragging right, everything the dragged tab has passed shifts one slot left to
+ * close the gap it left; dragging left, one slot right. The dragged tab itself
+ * reads 0 here — it follows the pointer, not a slot.
+ */
+export function previewShift(i: number, from: number, to: number): -1 | 0 | 1 {
+  if (from < to && i > from && i <= to) return -1
+  if (to < from && i >= to && i < from) return 1
+  return 0
+}
+
+/** The slot tab `i` occupies in the preview. The dragged tab is shown at `to`. */
+export function previewSlot(i: number, from: number, to: number): number {
+  return i === from ? to : i + previewShift(i, from, to)
+}
+
+/**
+ * The dragged tab's left edge, held between the first slot and the last.
+ *
+ * The strip's own slots are the bound, which is also what keeps a lifted tab
+ * out of the macOS traffic-light clearance, off the Windows caption buttons and
+ * away from the + button: none of those is inside the list.
+ */
+export function clampDrag(left: number, slotLefts: readonly number[]): number {
+  if (slotLefts.length === 0) return left
+  const first = slotLefts[0]
+  const last = slotLefts[slotLefts.length - 1]
+  return Math.min(Math.max(left, first), last)
+}
+
+/** How close to the strip's visible edge, in CSS px, a drag starts scrolling it. */
+export const AUTOSCROLL_ZONE_PX = 24
+/** The fastest the strip scrolls under a drag, in CSS px per second. */
+export const AUTOSCROLL_MAX_PX_S = 600
+
+/**
+ * How fast an overflowing strip should scroll under a drag, in px per second:
+ * negative towards the start, positive towards the end, 0 in the middle.
+ *
+ * It ramps with depth into the edge zone and holds at full speed past the edge,
+ * so dragging off the end of the strip keeps it moving. HTML5 drag-and-drop may
+ * or may not have autoscrolled a hidden-scrollbar list; a pointer drag
+ * certainly does not, so this is the whole of it.
+ */
+export function autoscrollVelocity(
+  x: number,
+  start: number,
+  end: number,
+  zone: number = AUTOSCROLL_ZONE_PX,
+  max: number = AUTOSCROLL_MAX_PX_S
+): number {
+  if (end - start <= 2 * zone) return 0
+  if (x < start + zone) return -max * Math.min(1, (start + zone - x) / zone)
+  if (x > end - zone) return max * Math.min(1, (x - (end - zone)) / zone)
+  return 0
+}
+
+/**
+ * The session tabs in the order their terminal panes are rendered — sorted by
+ * id, which is to say an order that does not follow the strip.
+ *
+ * The panes are stacked and all but one hidden, so their DOM order means
+ * nothing on screen. It mattered anyway, because it followed the strip: a
+ * reorder that moved a pane's node blurred the xterm inside it, so dragging
+ * the active tab rightwards took the keyboard away from the session you were
+ * typing into. Keyed on a pure function of the SET of tabs, a reorder moves no
+ * pane at all, and an open or a close only inserts or removes one — React
+ * never moves an existing node for either.
+ */
+export function paneOrder<T extends { id: string; kind: string }>(list: readonly T[]): T[] {
+  return list
+    .filter((t) => t.kind === 'session')
+    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
 }
 
 /**
