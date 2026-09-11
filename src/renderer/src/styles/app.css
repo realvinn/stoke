@@ -4027,6 +4027,13 @@ body {
 .usage-ahead {
   color: var(--warning);
   font-size: 0.9em;
+  /* The smaller font inherits the row's unitless line-height, and at some
+     Interface scales its rounded metrics make the line box a fraction taller
+     than the strut's: 0.9px at 0.8, 0.34 at 1.2, 0.23 at 1.3. The row that
+     says "ahead" came out that much taller than the others, so its bar and
+     every row below it moved down and the bars stopped being evenly spaced.
+     A line box no taller than its own glyphs cannot outgrow the strut. */
+  line-height: 1;
 }
 
 .usage-reset {
