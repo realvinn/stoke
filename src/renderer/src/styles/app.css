@@ -105,6 +105,12 @@ button {
      the half-way grey measures 2.38:1 on their --bg-sunken. Mirrored as
      BYPASS_MIX in scripts/verify-color.mts, which holds both at 3:1. */
   --ring-bypass: color-mix(in oklab, var(--border-strong), var(--text-faint));
+  /* How much of --meter-high tints a full bar's unfilled track (see
+     `.meter[data-level='full']`). 30% here, 15% in the light block below:
+     the red fill must still clear 3:1 against the track it ends on, and on a
+     light --bg-sunken a 30% tint leaves only 2.57:1. Mirrored as FULL_TINT in
+     scripts/verify-color.mts, which holds both. */
+  --meter-full-tint: 30%;
   /* --meter-low / --meter-mid / --meter-high, the context meter's green,
      orange and red, are NOT declared here: lib/theme.ts's applyAppearance
      writes them, solved against each theme's own --bg and --bg-sunken by
@@ -234,6 +240,11 @@ button {
      light --bg-sunken (an unselected tab), under WCAG 1.4.11's 3:1 for a
      non-text mark; this is 3.25-3.27:1. Mirrored in verify-color.mts. */
   --ring-bypass: color-mix(in oklab, var(--border-strong), var(--text-faint) 75%);
+  /* 15%, not 30%: a light track tinted 30% red is 2.57:1 against the red fill
+     ending on it, so "how much is left" drops under 3:1 exactly when the bar
+     is full. 15% is 3.23:1 and still a visible pink (0.073 from the plain
+     track, where 0.04 is "the same colour"). Mirrored in verify-color.mts. */
+  --meter-full-tint: 15%;
 }
 
 body {
@@ -1737,12 +1748,15 @@ mark.hit {
 /*
  * Full reads as a red BAR, not 81% of one: the unfilled rest of the track is
  * tinted with the same red, so the fill still shows how much is left while the
- * whole meter says "full". The caption is text, so it takes the TEXT-grade red,
- * --danger: the graphics-grade --meter-high is 3:1 by construction and would
- * fail 4.5:1 as a label on a light theme.
+ * whole meter says "full". How much red is --meter-full-tint, lighter on a
+ * light theme, where 30% left the fill only 2.57:1 against the track it ends
+ * on -- under the 3:1 every other meter edge is held to, and at the one level
+ * where how much is left matters most. The caption is text, so it takes the
+ * TEXT-grade red, --danger: the graphics-grade --meter-high is 3:1 by
+ * construction and would fail 4.5:1 as a label on a light theme.
  */
 .meter[data-level='full'] {
-  background: color-mix(in srgb, var(--meter-high) 30%, var(--bg-sunken));
+  background: color-mix(in srgb, var(--meter-high) var(--meter-full-tint), var(--bg-sunken));
 }
 
 .meter[data-level='full'] + .meter-caption {

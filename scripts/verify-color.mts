@@ -528,6 +528,36 @@ for (const t of BUILT_IN_THEMES) {
   note(`${t.id}: --ring-bypass on --surface-hover`, contrastRatio(mark, parseColor(t.colors.surfaceHover)!).toFixed(2))
 }
 
+console.log('\n-- the full bar: the red fill against its own red-tinted track --')
+/*
+ * At 81%+ the bar's unfilled track is `color-mix(in srgb, --meter-high
+ * <--meter-full-tint>, --bg-sunken)`, mirrored here: 30% on a dark theme, 15% on
+ * a light one. Change one, change the other.
+ *
+ * The fill ends ON that track, so the edge that says how much is left is fill
+ * against tint, and it is held to the same 3:1 as every other meter edge above.
+ * It shipped at 30% for both appearances, which measured 2.57:1 on all three
+ * light themes -- the one boundary in the meter under the floor, at the one
+ * level where it matters most -- and no row here looked at it. The tint must
+ * also stay a tint: at least 0.04 from the plain track (gotcha 44's "the same
+ * colour"), or the floor could be met by not tinting at all. Both inputs are
+ * opaque, so `srgb` interpolation is a plain lerp of the 8-bit channels.
+ */
+const FULL_TINT: Record<Theme['appearance'], number> = { dark: 0.3, light: 0.15 }
+
+function tinted(red: Rgb, ground: Rgb, amount: number): Rgb {
+  const at = (a: number, b: number): number => Math.round(a * amount + b * (1 - amount))
+  return { r: at(red.r, ground.r), g: at(red.g, ground.g), b: at(red.b, ground.b), a: 1 }
+}
+
+for (const t of BUILT_IN_THEMES) {
+  const red = parseColor(meterScale(t.colors.bg, t.colors.bgSunken, t.appearance).high)!
+  const sunken = parseColor(t.colors.bgSunken)!
+  const track = tinted(red, sunken, FULL_TINT[t.appearance])
+  atLeast(`${t.id}: fill on its tinted track ${toHex(track)}`, contrastRatio(red, track), METER_WCAG)
+  atLeast(`${t.id}: the tint still reads as a tint`, perceptualDistance(track, sunken), 0.04)
+}
+
 console.log('\n-- text tokens on the grounds they actually render on --')
 /*
  * Four grounds, not one. The three text tokens are drawn on every panel the
