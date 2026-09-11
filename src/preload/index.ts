@@ -48,6 +48,7 @@ const api: StokeApi = {
   projects: {
     list: () => ipcRenderer.invoke(CH.projectsList),
     sessions: (projectPath: string) => ipcRenderer.invoke(CH.sessionsList, projectPath),
+    sessionIndex: () => ipcRenderer.invoke(CH.sessionsIndex),
     addRoot: () => ipcRenderer.invoke(CH.projectsAddRoot),
     open: () => ipcRenderer.invoke(CH.projectsAdd),
     hide: (path: string, hidden: boolean) => ipcRenderer.invoke(CH.projectsHide, path, hidden),

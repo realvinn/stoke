@@ -137,6 +137,22 @@ export interface SessionMeta {
   gitBranch: string | null
 }
 
+/**
+ * One session as search sees it: enough to match it, show it and resume it,
+ * and nothing that needs a full parse of its transcript to know.
+ *
+ * A `Pick` of `SessionMeta` rather than a shape of its own, so a row from the
+ * expanded list and a row from the index are the same value to everything that
+ * resumes one. `title` and `firstPrompt` mean exactly what they mean there —
+ * `sessionIndex.ts` uses the same two record readers `parseSession` does. More
+ * searchable text (the conversation itself) can join later as further fields
+ * without any consumer of these five having to change.
+ */
+export type SessionIndexEntry = Pick<
+  SessionMeta,
+  'id' | 'projectPath' | 'title' | 'firstPrompt' | 'modified'
+>
+
 /* ----------------------------------------------------------------- context */
 
 /** Live context-window reading for one session, derived from its JSONL. */

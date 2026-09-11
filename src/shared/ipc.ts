@@ -48,6 +48,13 @@ export const CH = {
   projectsReveal: 'projects:reveal',
   projectsMeta: 'projects:meta',
   sessionsList: 'sessions:list',
+  /**
+   * Every listed project's sessions, as title + first prompt only, for the
+   * sidebar's search. `sessionsList` is one project and parses every transcript
+   * in full, which is right for the one list a user expanded and far too heavy
+   * to run for all of them on a keystroke.
+   */
+  sessionsIndex: 'sessions:index',
   sessionsChanged: 'sessions:changed',
 
   // sessions that are not tied to a saved project
