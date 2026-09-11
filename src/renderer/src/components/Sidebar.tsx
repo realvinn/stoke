@@ -186,10 +186,20 @@ export function Sidebar({
    */
   const viewKey = query.trim()
   const [searchView, setSearchView] = useState({
-    query: '',
+    query: viewKey,
     folded: [] as string[],
     all: [] as string[]
   })
+  /*
+   * Dropped the moment the query changes, not merely ignored while it differs.
+   * Ignoring was the first version, and it kept the flips of the last query
+   * they were made in: fold a row under "the", type "ther", clear the box, and
+   * a later search for "the" came back with that row still folded and the
+   * other still showing every match — measured over CDP. Reset while
+   * rendering (React's "adjust state when a prop changes"), not in an effect,
+   * so the old flips never paint for a frame under the new query.
+   */
+  if (searchView.query !== viewKey) setSearchView({ query: viewKey, folded: [], all: [] })
   const view =
     searchView.query === viewKey ? searchView : { query: viewKey, folded: [], all: [] }
   const flip = (list: 'folded' | 'all', path: string): void =>
