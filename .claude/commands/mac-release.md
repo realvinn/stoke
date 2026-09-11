@@ -8,8 +8,9 @@ Stoke was built and verified entirely on Windows. Every macOS code path is writt
 **never been executed**. Your job is to build it here, exercise the Mac-specific paths, fix
 what is broken, and record what you found.
 
-Read `CLAUDE.md` and `ARCHITECTURE.md` first — they carry the conventions and the list of
-bugs already found, so you do not rediscover them.
+Read `CLAUDE.md` and `ARCHITECTURE.md` first — they carry the conventions and the index of
+bugs already found, so you do not rediscover them — then `.claude/rules/release.md` and
+`.claude/rules/driving.md`, which hold the full signing, update and per-platform entries.
 
 ## 1. Build it
 
@@ -73,5 +74,6 @@ Verify by running the app, not by reasoning about it. Launch with
 ## 4. Record it
 
 Update the verification table in `PLAN.md` with what you tested and the result, replacing the
-"Not verified: macOS" note. Add anything surprising to the gotchas list in `CLAUDE.md`.
+"Not verified: macOS" note. Record anything surprising as a new gotcha, the way CLAUDE.md's
+"Recording a new gotcha" says: the full entry in `.claude/rules/`, one line in the index.
 Commit with a message explaining what was actually broken and why.

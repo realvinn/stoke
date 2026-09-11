@@ -371,21 +371,68 @@ wants one, not as a supported output.
 
 ## Testing
 
-Verification lives in `scripts/`, one `verify-*` suite per subject — eighteen of them now.
-Sixteen are `.mts`, run straight through node's type-stripping with no build step, and those
-sixteen are exactly what `npm run check` runs between the typecheck and the full build; `check`
-is the gate, and it is what "done" means here. Between them they cover the context maths, the
-statusLine payload and the plan limits read out of it, settings hydration, folder metadata,
-profile resolution, colour and contrast, terminal cell widths, tab selection after a close, the
-ssh argv and remote transcript fetch, the updater's error handling, and five separate suites for
-the worklog. Each runs alone; `CLAUDE.md` is where the per-suite descriptions live.
+Verification lives in `scripts/`, one `verify-*` suite per subject — twenty-seven of them now.
+Twenty-five are in `npm run check`, between the typecheck and the full build; `check` is the
+gate, and it is what "done" means here. They are `.mts` run straight through node's
+type-stripping with no build step, except `verify:selection`, which opens a real Electron window
+and so needs a display. Each runs alone:
 
-The other two are `.mjs` and want a live instance rather than a fixture, which is why `check`
-cannot run them: `verify:extract` drives the page extractor through Stoke's own MCP endpoint,
-and `verify:security` is pointed at a running remote server with a URL and a token. CI leaves
-out two more of its own — fourteen suites run there — for reasons written into
-`.github/workflows/release.yml`. `verify:ssh` fails on a modern OpenSSH, which rejects the
-suite's two-word host-alias fixture; pre-existing, and unrelated to any release. And
+```bash
+npm run verify:context        # context meter against the real transcripts on this machine
+npm run verify:statusline     # the statusLine wrapper: payload, suppression, pass-through
+npm run verify:unicode        # xterm's cell widths for emoji and box drawing
+npm run verify:profiles       # profile resolution + every accent clears 4.5:1
+npm run verify:settings       # settings hydration: repair, clamps, what it drops, and the
+                              # light/dark theme pair the OS chooses between
+npm run verify:claude-config  # writing Claude Code's OWN config: the allowlist, the refusals,
+                              # and the ~/.claude.json lock. Runs against real files in a temp
+                              # CLAUDE_CONFIG_DIR, never the user's (gotchas 38, 39)
+npm run verify:folders        # folder metadata: trimming, caps, added folders, hide/pin
+npm run verify:cli            # finding the `claude` binary: the version-manager shim dirs,
+                              # the probe's retry rule, and the two not-found messages.
+                              # Hermetic - HOME is redirected into a temp tree (gotcha 52)
+npm run verify:tabs           # which tab is selected after one is closed, and where the
+                              # next/previous chord lands
+npm run verify:shortcuts      # app chords vs the keys the terminal owns, the zoom maths, and
+                              # that Ctrl+Tab and the bare brackets still reach the CLI
+npm run verify:drop           # what a dropped file types: quoting per platform, and the
+                              # names that cannot be typed at all
+npm run verify:color          # colour maths: contrast, APCA, oklch
+npm run verify:theme-gen      # the theme generator: that a five-field seed reproduces every
+                              # built-in byte-for-byte, that no slider position can breach a
+                              # contrast floor, and that a saved seed survives hydration
+npm run verify:updates        # the updater: a failure and a success must not read the same,
+                              # whether the channel the CLI follows is itself behind latest,
+                              # and macOS must still build the zip it updates from (24, 25, 46)
+npm run verify:worklog-gate     # which sessions the worklog agent would watch
+npm run verify:worklog-runner   # prompt building, JSON parsing, titles, create-vs-update
+npm run verify:worklog-retry    # writes happen once, and a retry never duplicates a record
+npm run verify:worklog-recall   # the read-only board read, its parse and its cache
+npm run verify:worklog-autoscan # when a session is scanned without being asked
+npm run verify:ssh            # ssh argv, ~/.ssh/config parsing, the remote transcript fetch
+npm run verify:remote         # phone access: where the link points and how it says it gets
+                              # there, the LAN interface ranking, what a dead tunnel reports
+npm run verify:selection      # Option-drag selection survives letting go of the mouse.
+                              # Opens a real Electron window, so it needs a display
+                              # and is one of the two `check` suites CI skips
+                              # (the other is verify:context)
+npm run verify:extract        # page extractor regression set
+npm run verify:usage          # plan limits from the statusLine payload; STOKE_LIVE_USAGE=1 adds the account call
+npm run verify:security <url> <token> --access   # remote server, against a running instance
+```
+
+Two more sit in the `check` chain without an entry above: `verify:activity` (the activity
+report's active time and lines written — a session's wall-clock span is not time worked) and
+`verify:restore` (the tab-restore store: what survives a quit, what is trimmed, what a corrupt
+file does).
+
+The two `.mjs` suites want a live instance rather than a fixture, which is why `check` cannot
+run them: `verify:extract` drives the page extractor through Stoke's own MCP endpoint, and
+`verify:security` is pointed at a running remote server with a URL and a token.
+
+CI runs the `check` chain minus two, and the list is derived rather than transcribed:
+`scripts/ci-verify.mjs` reads the chain out of `package.json` and fails on a stale exclusion
+(`npm run verify:ci -- --list` prints the plan). `verify:selection` needs a display. And
 **`verify:context` deliberately reads the real transcripts under `~/.claude/projects`**: that is
 the reason it exists, not an oversight. It asserts the context maths, the window inference and
 the live watcher path against actual sessions on the machine, so on a clean runner the directory
@@ -396,3 +443,149 @@ Beyond that, verification has been done by driving the running app over CDP — 
 `--remote-debugging-port`, clicking through real flows and capturing screenshots. That is how
 every bug listed in CLAUDE.md was found; all of them produced *empty or wrong output rather
 than errors*, which is exactly the class a typecheck cannot catch.
+
+## File map
+
+Every file worth knowing about, and the one thing about it that is easy to get wrong. CLAUDE.md
+carries a shorter copy; this is the full one.
+
+```
+src/main/         Electron main process
+  index.ts          lifecycle, window, every IPC handler
+  pty.ts            PTY sessions, env sanitising, scrollback, fan-out
+  cli.ts            locating claude, building its argv
+  projects.ts       project + session discovery from Claude's own files
+  projectMeta.ts    per-folder emoji/label/added-by-hand, and the one pair of caps
+  context.ts        live context-window watcher (polls transcripts). Publishes on a
+                    changed transcript OR a newly-stated window, for gotcha 49's reason
+  sessionFile.ts    transcript parsing and the context maths
+  statusLine.ts     Stoke's statusLine wrapper: context window + plan limits, and the SAME
+                    shim run as a hook. The session's --settings file carries Stop,
+                    Notification and UserPromptSubmit hooks that append one JSON line each
+                    to <key>.events.jsonl; index.ts polls that every second and pushes
+                    `session:event`, which the tab strip's activity dot, the status bar's
+                    "Claude is working…" line and the OS notifications all read. Measured:
+                    hooks in a --settings file fire and MERGE with the user's own (a project
+                    hook and the flag-file hook both ran on one prompt), and a hook that
+                    prints is shown in the TUI (Stop) or fed to the model (UserPromptSubmit),
+                    so the event branch of the wrapper prints nothing, ever
+  usage.ts          plan limits from the undocumented OAuth endpoint the CLI itself calls.
+                    Reads the token from ~/.claude/.credentials.json OR, on macOS, the login
+                    Keychain - which is why the chip works with no session running (gotcha 36)
+  claudePaths.ts    where Claude Code's own two config files are. Pure; env and home are
+                    arguments, so a suite can ask about another machine's layout
+  claudeSettings.ts ~/.claude/settings.json: read, and patch one allowlisted key, preserving
+                    every key Stoke does not draw
+  claudeGlobalConfig.ts  ~/.claude.json: the lock protocol, the refusals, and the
+                    verify-after-write. See gotcha 38 before touching it
+  browser.ts        docked Chromium: tabs, find, console/network capture
+  workspace.ts      default folder + scratch folders
+  workspaceRoots.ts where a session with no project starts, per platform. Takes the
+                    platform and home as arguments so a suite can ask for another machine's
+  wallpaper.ts      the picked image, copied under userData and served over the custom
+                    `stoke-asset://` scheme. Refuses anything that is not a bare file name
+                    inside its own folder, so the scheme cannot be turned into a file reader
+  store.ts          settings persistence
+  settingsSchema.ts defaults + hydrate, with no electron import so a suite can run it
+  tabStore.ts       the tabs that were open at quit. Restoring is a relaunch
+                    (`claude --resume`), never a reattach: a CLI child cannot outlive the app
+  activity.ts       what was worked on, from Claude Code's own transcripts. Pure and
+                    electron-free so verify:activity can run it
+  activityGit.ts    commit subjects to put names to the activity numbers. Corroboration,
+                    never a dependency: several work folders have no repository at all
+  updates.ts        claude CLI version/health, and the gate that decides whether to
+                    install an update unasked. Reads the CLI's own `autoUpdatesChannel`
+                    rather than assuming `latest`, because those are different numbers
+                    (gotcha 46). The gate is pure and separate from the six-hour timer
+                    that calls it, for gotcha 31's reason
+  selfUpdate.ts     Stoke's own updates (electron-updater)
+  codesign.ts       whether this copy's signature could ever accept a downloaded update.
+                    No electron import, so verify:updates can run the rule. Gotcha 24
+  profiles.ts       plans and creates a profile's folder + scan root
+  ssh.ts            ~/.ssh/config parsing, the ssh argv, the transcript command
+  sshTranscript.ts  pulls a remote session's JSONL back, so SSH sessions can be read
+  agent.ts          headless `claude -p` runner (prompt on stdin, json out)
+  stt.ts            the one place Stoke talks to the speech sidecar. Both the desktop and
+                    the phone route through it, because "only main may reach it" is the
+                    sidecar's whole authentication story
+  audio/            reads the default capture device, to warn about virtual cables
+  worklog/          the Notion/ClickUp review queue
+    gate.ts           which project groups are watched
+    watch.ts          the one predicate: is this session watched, and why not
+    sessionStore.ts   session -> folder/host, on disk, so a restart keeps placing them
+    autoscan.ts       when a quiet session is scanned without being asked
+    autoscanStore.ts  its baselines on disk, split out so autoscan.ts imports nothing
+    recall.ts         reads the boards (read-only, cached) so updates beat duplicates
+    runner.ts         scan (read-only) and apply (writes, on accept only)
+    queue.ts          the persisted proposal list
+    json.ts           the shared "read JSON out of a model's reply" rescue
+  mcp/              MCP server exposing the browser to Claude
+    server.ts         HTTP transport + the 17 tool definitions
+    page.ts           drives the page through the injected extractor
+    cdp.ts            short-lived CDP sessions over the docked page. browser.ts long
+                      claimed the debugger slot had to stay free because only one client
+                      may attach; probing Electron 43 disproved that, which is what makes
+                      audit.ts, design.ts and perf.ts possible at all
+    audit.ts          passive security/hygiene audit: reads only what Chromium already
+                      received or rendered. Nothing probes, so "not observed" is reported
+                      as exactly that
+    design.ts         what a page looks like, as text: a DOMSnapshot compressed hard
+    perf.ts           why a page is slow, as a checklist. Reloads by default, because
+                      unused bytes only mean anything if tracking started first
+    stack.ts          what a page is built with, from live evidence rather than a
+                      signature database that would already be stale
+    inject/extract.js runs IN the page; markdown + refs + find. No deps.
+  remote/           phone access
+    server.ts         loopback HTTP + WebSocket, token auth, tailnet listener, and
+                      /api/theme so the phone paints the desktop's own palette
+    link.ts           where the phone link points and HOW it gets there (`reach`).
+                      Pure, so verify:remote can hold the fallback order. Gotcha 53
+    tunnel.ts         supervises cloudflared; finds it on the login-shell PATH
+    cloudflare.ts     everything BEFORE a tunnel exists: is it installed, are you logged in,
+                      does the tunnel exist, does a hostname point at it. The probe mutates
+                      nothing and has a third answer, `unknown`, because the account lookup is
+                      a live API call. Gotcha 58
+src/preload/      contextBridge -> window.stoke
+src/renderer/     desktop React UI (all colour via CSS custom properties)
+src/remote/       mobile web UI, built separately to out/remote
+src/shared/       types, IPC channel names, themes, profiles, colour maths
+  paths.ts          cwd -> project group. Pure, platform passed in, no node imports,
+                    so the renderer runs the identical rule for the profile chip
+  ladder.ts         the 12-step ladder every built-in theme is generated from. Fixed
+                    rungs in OKLCH L, solved onto rather than picked. Gotcha 43
+  themeGen.ts       seed -> whole theme. The generator themes.ts always claimed existed and
+                    the repo did not contain; what the theme editor drives. Gotcha 43
+  drop.ts           what a file dropped on the terminal types: the per-platform quoting,
+                    and the refusal for a name that cannot be typed. Pure, platform passed
+                    in, so verify:drop runs it for every OS. Gotcha 59
+  notation.ts       reading and writing one colour as OKLCH/HSL/RGB/hex. Split out of the
+                    component so a suite can reach it
+  accent.ts         one accent in, five tokens out, per appearance. The reason
+                    --accent (a fill) and --accent-ink (a foreground) are two
+                    things and not one. Gotcha 44
+  worklog.ts        the board targets the worklog can write to, and their defaults
+  claudeConfig.ts   which of Claude Code's settings Stoke will draw, their vocabularies, and
+                    the never-offer list. Hand-transcribed from the CLI binary's zod schema
+  ui.ts             the uiScale / fontSize bounds, TERMINAL_DEFAULTS and WALLPAPER_DEFAULTS,
+                    and the clamps both processes use. A new terminal or wallpaper field needs
+                    its default in TERMINAL_DEFAULTS/WALLPAPER_DEFAULTS and a line in
+                    clampTerminal/clampWallpaper in the same change: the clamps rebuild the
+                    object from named keys, so a settings file written by an older build
+                    hydrates a field they miss as undefined and the pane that reads it
+                    renders blank. settingsSchema.ts only spreads the defaults
+  statusLine.ts     the two plan-limit windows the usage chip draws, from the payload
+  usageView.ts      the plan-limit chip's arithmetic, framed as what is left and when it
+                    comes back. Pure, so a suite can hold it
+  color.ts          contrast, APCA and oklch maths behind the ladder and the accent ink
+  api.ts            the type of window.stoke, shared by preload and renderer
+scripts/          the verify-*.mts suites, make-icon.cjs
+  ci-verify.mjs     derives CI's suite list from the `check` chain and fails on a stale
+                    exclusion. `npm run verify:ci -- --list` prints the plan
+  mac-signing-secrets.sh  puts the release signing certificate into GitHub secrets.
+                    Exists because macOS 26 removed Keychain Access, so every
+                    "export it from the GUI" recipe is now dead. Gotcha 24
+  gen-themes.mts    prints a built-in theme as the literal `themes.ts` checks in, from its
+                    seed. `node scripts/gen-themes.mts lantern`, or `--all`. Gotcha 43
+  cdp-eval.mjs      evaluates one expression in the renderer, or screenshots it.
+                    Picks the target by its window.stoke object, never by URL
+```
