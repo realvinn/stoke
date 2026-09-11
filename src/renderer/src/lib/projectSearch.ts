@@ -219,13 +219,35 @@ export function matchRanges(text: string, query: string): Range[] | null {
 }
 
 /**
+ * How many characters of context a snippet keeps in front of its first hit.
+ *
+ * Sized for the narrowest row the hit has to be visible in, not for reading
+ * comfort. At the sidebar's 200px minimum a session row's 13px title line holds
+ * about 22 characters before its CSS ellipsis. The first value, 24, spent all of
+ * them on context: an untitled session whose prompt read "…sure it's hosted on
+ * my CloudFlo tunnel?" painted its "CloudFlo" mark at x=180 of a line that ends
+ * at x=183, so the row showed a match with the match itself cut off. The 11px
+ * metadata line did the same to a basename hidden behind a label: "Laro" in
+ * "/Users/thevinh/dev/work/Laro" painted at x=173-196 of a line ending at 182.
+ * Both measured over CDP. At 12 the hit starts at most 13 characters in,
+ * leaving about nine characters of it on screen at the minimum width and all of
+ * it at the default one.
+ */
+export const SNIPPET_LEAD = 12
+
+/**
  * A window of `text` that starts a little before the first hit, so a match at
  * character 200 of a 300-character prompt is not ellipsised off the end of a
  * one-line row. Starts on a word (or path segment) boundary when there is one
  * inside the lead-in, marks each cut end with `…`, and shifts the ranges to
  * match. Text whose first hit is already near the start comes back whole.
  */
-export function snippet(text: string, ranges: readonly Range[], before = 24, max = 160): Snippet {
+export function snippet(
+  text: string,
+  ranges: readonly Range[],
+  before = SNIPPET_LEAD,
+  max = 160
+): Snippet {
   const first = ranges[0]
   let start = 0
   if (first && first[0] > before) {

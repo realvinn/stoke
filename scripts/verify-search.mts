@@ -38,6 +38,7 @@ import {
   searchProjects,
   SESSION_CAP,
   snippet,
+  SNIPPET_LEAD,
   TIERS
 } from '../src/renderer/src/lib/projectSearch.ts'
 import type { Range } from '../src/renderer/src/lib/projectSearch.ts'
@@ -152,6 +153,28 @@ check('a hit near the start leaves the text whole', snippet('hello world', [[6, 
   const s = snippet(p, matchRanges(p, 'stoke') ?? [])
   check('a path is cut at a separator', p.includes(`/${s.text.slice(1)}`), true)
   check('...and still marks the hit', marked(s.text, s.ranges), ['stoke'])
+}
+{
+  // A real untitled session's prompt. At the sidebar's 200px minimum its 13px
+  // title line holds ~22 characters, and the first lead-in (24) painted the
+  // "CloudFlo" mark at x=180 of a line ending at x=183 — a row showing a match
+  // with the match cut off by its own ellipsis.
+  const t = "Can you make sure it's hosted on my CloudFlo tunnel?"
+  const s = snippet(t, matchRanges(t, 'cloudflo') ?? [])
+  const NARROWEST_ROW_CHARS = 22
+  check(
+    `the whole hit sits inside the ${NARROWEST_ROW_CHARS} characters the narrowest row shows`,
+    (s.ranges[0]?.[1] ?? Infinity) <= NARROWEST_ROW_CHARS,
+    true
+  )
+  check('...which the lead-in guarantees for a word of nine', SNIPPET_LEAD + 1 + 9 <= NARROWEST_ROW_CHARS, true)
+  check('...still starting on a word', s.text, '…on my CloudFlo tunnel?')
+  const p = '/Users/me/dev/work/Laro'
+  check(
+    'a path behind a label keeps its hit in the narrow metadata line too',
+    snippet(p, matchRanges(p, 'laro') ?? []).text,
+    '…dev/work/Laro'
+  )
 }
 {
   const t = `${'lead '.repeat(6)}needle ${'tail '.repeat(80)}`
