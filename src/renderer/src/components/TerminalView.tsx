@@ -1069,9 +1069,11 @@ export function TerminalView({
    * and iTerm2 do and the shortest way to hand Claude Code a screenshot.
    *
    * Three things make this more than an `ondrop`. Only a drag carrying FILES is
-   * taken — the tab strip drags a tab as `text/plain` (`TitleBar.tsx:162`), and
-   * without this test dragging a tab across the terminal would light the drop
-   * ring and then paste nothing. `preventDefault` on **dragover** is what makes
+   * taken — text dragged in from another app or out of the docked browser
+   * arrives as `text/plain`, and without this test it would light the drop ring
+   * and then paste nothing. (The tab strip used to be one of those drags too;
+   * it drags with pointer events now, `useTabDrag`, and emits no DragEvent at
+   * all.) `preventDefault` on **dragover** is what makes
    * a drop happen at all; without it the browser default wins, and in Electron
    * that default is to NAVIGATE the window to the dropped file, replacing the
    * whole app with a picture (main also refuses that now, as a backstop). And

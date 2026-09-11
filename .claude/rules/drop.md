@@ -56,3 +56,6 @@ half-written**. POSIX permits the name, so this is reachable rather than theoret
 > by a second pass. The entry above is the original text; where the two disagree, the code
 > has moved on. Line numbers drift; search for the names.
 > - `quotePath` (src/shared/drop.ts:44-47) still works this way, but the caller no longer always passes Stoke's own platform. src/renderer/src/components/TerminalView.tsx:1135 calls `dropText(paths, tab.hostId ? 'linux' : window.stoke.platform)`, so a drop on any SSH tab is POSIX single-quoted even when Stoke runs on Windows. Only a local tab on Windows gets double quotes.
+
+> **Checked against the code on 2026-09-11** — after the tab strip moved to pointer events.
+> - The tab strip no longer drags as `text/plain`. `TitleBar.tsx` has no `draggable`, `setData` or `dataTransfer` left; a tab is dragged by `useTabDrag` (src/renderer/src/lib/useTabDrag.ts) with pointer events, pointer capture on `.tablist` and transforms, and emits no DragEvent at all — so it can no longer light the terminal's drop ring, and no tab id leaves the window as text. The `Files` guard in `TerminalView` still stands, for text dragged in from another app or out of the docked browser, which does arrive as `text/plain`.

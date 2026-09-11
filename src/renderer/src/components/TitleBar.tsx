@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import type { ContextSnapshot } from '@shared/types'
 import type { WorklogButtonState } from '@shared/worklog'
 import { UsageChip } from './UsageMeter'
@@ -18,6 +18,7 @@ import {
   IconSidebar
 } from './Icons'
 import { chordLabel } from '../lib/shortcuts'
+import { useTabDrag } from '../lib/useTabDrag'
 import type { SessionActivity, Tab } from '../types'
 
 interface Props {
@@ -37,7 +38,10 @@ interface Props {
   onSelectTab: (id: string) => void
   onCloseTab: (id: string) => void
   onNewTab: () => void
-  /** Reorder: the dragged tab takes the target's index. */
+  /**
+   * Reorder: the dragged tab takes the target's index. Called once per drag,
+   * on release — the strip previews the move itself until then.
+   */
   onReorderTab: (dragId: string, overId: string) => void
   onToggleSidebar: () => void
   onToggleBrowser: () => void
@@ -79,8 +83,15 @@ export function TitleBar({
   onOpenPhoneSettings
 }: Props): React.JSX.Element {
   const isMac = platform === 'darwin'
-  const [dragId, setDragId] = useState<string | null>(null)
   const listRef = useRef<HTMLDivElement>(null)
+  const ids = useMemo(() => tabs.map((t) => t.id), [tabs])
+  const drag = useTabDrag({
+    listRef,
+    ids,
+    isMac,
+    onSelect: onSelectTab,
+    onReorder: onReorderTab
+  })
 
   /*
    * Keep the selected tab on screen.
@@ -91,14 +102,20 @@ export function TitleBar({
    * strip. The terminal changed underneath and the strip did not move, which
    * reads as the wrong tab having been selected.
    *
+   * Not while a tab is pressed. Selection happens on the press now, and
+   * scrolling a half-visible tab into view at that moment slides the strip out
+   * from under a pointer that may be about to drag it. A plain click brings
+   * its tab into view from `onClick`, after the release, as it always did.
+   *
    * `block: 'nearest'` as well as `inline`, or Chromium scrolls the whole app
    * grid vertically to bring a strip that is already fully visible into a
    * slightly different position.
    */
   useEffect(() => {
+    if (drag.busy()) return
     const el = listRef.current?.querySelector('[aria-selected="true"]')
     el?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
-  }, [activeTabId, tabs.length])
+  }, [activeTabId, tabs.length, drag])
 
   return (
     <header className="titlebar" data-platform={platform} data-fullscreen={fullScreen || undefined}>
@@ -137,8 +154,37 @@ export function TitleBar({
                 role="tab"
                 aria-selected={tab.id === activeTabId}
                 data-activity={act?.state}
+                /*
+                 * What `useTabDrag` finds tabs by. It also writes
+                 * `data-dragging` and an inline transform onto this node while
+                 * a drag runs; neither is a prop here, so a re-render mid-drag
+                 * leaves both alone.
+                 */
+                data-tab-id={tab.id}
                 tabIndex={0}
-                onClick={() => onSelectTab(tab.id)}
+                /*
+                 * Selection happens on the PRESS (`useTabDrag`), as in Chrome,
+                 * so the tab you drag is the tab on screen. The click still
+                 * selects, for a tap and for anything that clicks without
+                 * pressing, and brings a half-hidden tab into view once the
+                 * button is up rather than while a drag might be starting.
+                 */
+                onPointerDown={(e) => drag.onPointerDown(e, tab.id)}
+                /*
+                 * No focus for the tab on a press. Focus stays in the terminal,
+                 * which is where the keystrokes after a tab switch are meant to
+                 * go — pressing the tab that was already selected used to leave
+                 * them on the tab — and no press on a label starts a text
+                 * selection. Enter and Space still select a keyboard-focused
+                 * tab.
+                 */
+                onMouseDown={(e) => {
+                  if (e.button === 0) e.preventDefault()
+                }}
+                onClick={(e) => {
+                  onSelectTab(tab.id)
+                  e.currentTarget.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+                }}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' || e.key === ' ') {
                     e.preventDefault()
@@ -153,51 +199,6 @@ export function TitleBar({
                     ? 'New session — pick a project, or start in the default folder'
                     : `${tab.title}\n${tab.cwd}`
                 }
-                draggable
-                data-dragging={tab.id === dragId ? 'true' : undefined}
-                onDragStart={(e) => {
-                  setDragId(tab.id)
-                  e.dataTransfer.effectAllowed = 'move'
-                  // Chromium refuses to begin a drag with an empty payload.
-                  e.dataTransfer.setData('text/plain', tab.id)
-                }}
-                /*
-                 * The strip reorders as you drag, rather than marking where the
-                 * tab would land and moving it on release. You are moving the
-                 * tab, so the tab moves.
-                 *
-                 * The midpoint test is what makes that stable. Reordering the
-                 * moment the pointer enters a neighbour means the list changes
-                 * under the cursor, the cursor is then over the tab it just
-                 * displaced, and the two swap back and forth for as long as you
-                 * hold still — a flicker, not a reorder. Requiring the pointer
-                 * to be PAST the target's centre, in the direction of travel,
-                 * means the swap it triggers moves the target behind the
-                 * pointer rather than under it, so it cannot immediately
-                 * re-trigger. `moveTab` returns the same array when there is
-                 * nothing to do, so the repeats dragover fires cost nothing.
-                 */
-                onDragOver={(e) => {
-                  if (!dragId || dragId === tab.id) return
-                  e.preventDefault()
-                  e.dataTransfer.dropEffect = 'move'
-                  const from = tabs.findIndex((t) => t.id === dragId)
-                  const to = tabs.findIndex((t) => t.id === tab.id)
-                  if (from < 0 || to < 0) return
-                  const box = e.currentTarget.getBoundingClientRect()
-                  const middle = box.left + box.width / 2
-                  if (to > from ? e.clientX > middle : e.clientX < middle) {
-                    onReorderTab(dragId, tab.id)
-                  }
-                }}
-                onDrop={(e) => {
-                  // The move already happened. This only ends the gesture —
-                  // and still has to preventDefault, or Chromium treats the
-                  // drop as navigation to the text payload.
-                  e.preventDefault()
-                  setDragId(null)
-                }}
-                onDragEnd={() => setDragId(null)}
               >
                 <TabIndicator
                   kind={tab.kind}

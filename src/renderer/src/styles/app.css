@@ -510,6 +510,10 @@ body {
  * beside them stays put, and `min-width: 0` is what lets it shrink instead of
  * pushing the shell wider than the window — see CLAUDE.md gotcha 14, which is
  * about exactly this failure one level up.
+ *
+ * `isolation` makes it a stacking context, so the one-step z-index that lifts
+ * a dragged tab over its neighbours is scoped to the strip and cannot compete
+ * with anything outside it.
  */
 .tablist {
   display: flex;
@@ -519,6 +523,7 @@ body {
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
+  isolation: isolate;
 }
 
 .tablist::-webkit-scrollbar {
@@ -595,6 +600,12 @@ body {
   background: transparent;
   color: var(--text-muted);
   cursor: default;
+  /*
+   * A press on a tab selects it or starts a drag, never a text selection.
+   * `draggable` used to suppress label selection as a side effect; the tab is
+   * dragged with pointer events now, so this has to say it.
+   */
+  user-select: none;
   transition:
     background var(--dur-fast) var(--ease),
     color var(--dur-fast) var(--ease);
@@ -622,16 +633,59 @@ body {
 }
 
 /*
- * The tab being dragged, which is now the tab you are actually moving: the
- * strip reorders live under the pointer rather than marking a landing spot.
+ * Dragging a tab, Chrome's way (`useTabDrag`).
  *
- * The dashed outline that used to mark the target is gone with it. Two hints
- * for one gesture — a ghosted tab here, a dotted rectangle over there — meant
- * reading both and working out which was the answer, and the dashes read as a
- * selection or an error as often as a destination.
+ * It used to be HTML5 drag-and-drop: the OS floated a translucent bitmap of
+ * the tab wherever the pointer went, the real tab sat in its slot at 0.6
+ * opacity, and a neighbour jumped a whole slot only once the pointer was past
+ * its centre. Now the real tab is what moves. It follows the pointer along the
+ * strip on an inline transform, and while `data-reordering` is on the list the
+ * OTHER tabs slide into their preview slots on this transition. Never the
+ * dragged one: it has to track the pointer exactly, not lag behind it.
+ *
+ * The transition exists only while reordering, so the transforms can be
+ * cleared in the same style change that removes it and nothing animates back —
+ * the settle on release is a WAAPI FLIP from wherever each tab was on screen.
+ */
+.tablist[data-reordering='true'] .tab:not([data-dragging='true']) {
+  transition:
+    transform var(--dur) var(--ease),
+    background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+
+/*
+ * The lifted tab: opaque, above its neighbours, with a shadow — the one thing
+ * in the strip with depth, for as long as it is off its slot. It stays lifted
+ * through the settle and comes down when it lands, or it would drop under the
+ * neighbour it is still overlapping. `.tablist`'s overflow clips the shadow at
+ * the top and bottom, which is fine: it is the sideways edge that says "above".
  */
 .tab[data-dragging='true'] {
-  opacity: 0.6;
+  z-index: calc(var(--z-base) + 1);
+  background: var(--surface-hover);
+  color: var(--text);
+  box-shadow: var(--shadow-md);
+  will-change: transform;
+}
+
+.tab[data-dragging='true'][aria-selected='true'] {
+  background: var(--bg);
+}
+
+/*
+ * Under a wallpaper the selected tab is transparent, to join the pane below it
+ * (`:root[data-wallpaper] .tab[aria-selected='true']`, 0-4-0). A lifted tab
+ * joins nothing — it is over its neighbours — and transparent it would show
+ * their labels through its own (gotcha 54). One more class out-ranks that rule
+ * wherever it sits in the file.
+ */
+:root[data-wallpaper] .tablist .tab[data-dragging='true'] {
+  background: var(--surface-hover);
+}
+
+:root[data-wallpaper] .tablist .tab[data-dragging='true'][aria-selected='true'] {
+  background: var(--bg);
 }
 
 .tab-label {
