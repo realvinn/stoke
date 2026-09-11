@@ -115,10 +115,16 @@ export const TAB_DRAG_SLOP_PX = 3
 /**
  * Whether a press has travelled far enough to be a drag rather than a click.
  *
- * Any direction, not only along the strip: a press that wanders down onto the
- * terminal has to be claimed by the strip too, or the terminal receives the
- * held-button motion as drag reports for the CLI. CSS px throughout — Interface
- * scale changes rem, not pointer coordinates.
+ * Any direction, not only along the strip, so a press that wanders down off the
+ * tab still lifts it and hands the rest of the press to the strip's pointer
+ * capture. That is tidiness, not protection for the terminal: xterm reports
+ * held-button motion and the release only for a press it saw itself, so a press
+ * that began on a tab reaches the CLI as nothing whichever way it wanders —
+ * measured in the running app against a session reporting any-motion (1003):
+ * a press elsewhere, dragged across the pane and let go there, gave the pty no
+ * mouse report at all, where a press inside the pane gave press, drag and
+ * release. CSS px throughout — Interface scale changes rem, not pointer
+ * coordinates.
  */
 export function pastSlop(dx: number, dy: number, slop: number = TAB_DRAG_SLOP_PX): boolean {
   return Math.hypot(dx, dy) > slop
