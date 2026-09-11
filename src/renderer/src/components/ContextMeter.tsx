@@ -98,16 +98,19 @@ const WATCH_R = 2.86
  * redder arc is not solid: shape carries it, the same way the arc's length
  * carries how full.
  *
- * Inside this <svg> for gotcha 33's reason, like the watch dot. Its radius
- * follows from the stroke: `.ring circle` draws the track and the arc 2.5 wide
- * (app.css), so their inner edge is at RING_R - 1.25. The core reaches 0.25 past
- * that, under the arc, so antialiasing leaves no hairline of page between the
- * disc and the arc — and it is drawn BEFORE the track, so wherever the arc has
- * not reached yet the track paints over that overlap and the unfilled part of
- * the ring still reads as a gap. The bypass beads sit on it whole for the same
- * reason. A circle about the centre is unaffected by `.ring`'s -90deg turn.
+ * Inside this <svg> for gotcha 33's reason, like the watch dot, and drawn AFTER
+ * the track with its edge well under the arc. `.ring circle` draws the track and
+ * the arc 2.5 wide (app.css), so their inner edge is at RING_R - 1.25 = 4.35.
+ * The arc's antialiased inner edge is blended with whatever is beneath it, and
+ * with the disc drawn first (r 4.6) that was the grey track, which painted over
+ * the disc everywhere, under the arc included: a visible light circle inside the
+ * "solid" disc on every full ring without bypass, measured in the running app at
+ * 43/255 off the red on Daylight at 2x. On top of the track at r 5.0 the edge
+ * sits on red at 2x and within a few percent of it at 1x; measured 0/255. The
+ * price is that the unfilled notch shows the track 1.85 units deep instead of
+ * 2.5. A circle about the centre is unaffected by `.ring`'s -90deg turn.
  */
-const CORE_R = RING_R - 1
+const CORE_R = RING_R - 0.6
 
 /*
  * The bypass mark's beads: zero-length dashes with round caps, `BEADS` of them
@@ -175,8 +178,8 @@ export function ContextRing({
             ? `Context ${pct}% used`
             : 'Context not read yet'}
       </title>
-      {dataLevel === 'full' && <circle className="ring-core" cx="8" cy="8" r={CORE_R} />}
       <circle className="ring-track" cx="8" cy="8" r={RING_R} />
+      {dataLevel === 'full' && <circle className="ring-core" cx="8" cy="8" r={CORE_R} />}
       {paused ? (
         <>
           {/*
