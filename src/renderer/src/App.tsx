@@ -7,6 +7,7 @@ import type {
   PermissionMode,
   Project,
   SessionEvent,
+  SessionIndexEntry,
   SessionMeta,
   Settings,
   SshHost,
@@ -97,6 +98,19 @@ export function App(): React.JSX.Element {
   const [sessionsByPath, setSessionsByPath] = useState<Record<string, SessionMeta[]>>({})
   /** The path currently being fetched, or null. Drives the loading state. */
   const [sessionsLoadingPath, setSessionsLoadingPath] = useState<string | null>(null)
+
+  /*
+   * Every session's title and first prompt, across every project, for the
+   * sidebar's search — a separate thing from `sessionsByPath`, which holds only
+   * the projects clicked this run, and so could never answer "which of all my
+   * conversations mentions this".
+   *
+   * Null until the first search asks for it: a sidebar nobody searches never
+   * pays for it. One writer, `loadSessionIndex` below.
+   */
+  const [sessionIndex, setSessionIndex] = useState<SessionIndexEntry[] | null>(null)
+  const [sessionIndexLoading, setSessionIndexLoading] = useState(false)
+  const [sessionIndexError, setSessionIndexError] = useState<string | null>(null)
 
   /*
    * The app always has at least one tab: a New Project tab is a real tab now,
@@ -443,6 +457,36 @@ export function App(): React.JSX.Element {
     setProjectsLoading(false)
   }, [])
 
+  /*
+   * (Re)fetch the session index. Cheap to call again — main re-reads only the
+   * transcripts whose mtime or size moved — so it is simply called whenever
+   * the answer might have changed while someone is searching.
+   *
+   * Numbered so a slow reply cannot land on top of a newer one: only the
+   * latest request may write, and only it clears the loading flag.
+   */
+  const searching = query.trim() !== ''
+  const searchingRef = useRef(searching)
+  searchingRef.current = searching
+  const indexRequest = useRef(0)
+  const loadSessionIndex = useCallback((): void => {
+    const req = ++indexRequest.current
+    setSessionIndexLoading(true)
+    window.stoke.projects.sessionIndex().then(
+      (list) => {
+        if (req !== indexRequest.current) return
+        setSessionIndex(list)
+        setSessionIndexError(null)
+        setSessionIndexLoading(false)
+      },
+      (e: unknown) => {
+        if (req !== indexRequest.current) return
+        setSessionIndexError(ipcErrorMessage(e))
+        setSessionIndexLoading(false)
+      }
+    )
+  }, [])
+
   const patchSettings = useCallback(async (patch: Partial<Settings>): Promise<void> => {
     const next = await window.stoke.settings.set(patch)
     setSettings(next)
@@ -659,12 +703,16 @@ export function App(): React.JSX.Element {
     void window.stoke.workspace.defaultCwd().then(setDefaultCwd)
   }, [settings?.defaultCwd, settings])
 
-  // Project timestamps go stale while the window is in the background.
+  // Project timestamps go stale while the window is in the background — and so
+  // do session titles, which Claude rewrites as a conversation goes on.
   useEffect(() => {
-    const onFocus = (): void => void refreshProjects()
+    const onFocus = (): void => {
+      void refreshProjects()
+      if (searchingRef.current) loadSessionIndex()
+    }
     window.addEventListener('focus', onFocus)
     return () => window.removeEventListener('focus', onFocus)
-  }, [refreshProjects])
+  }, [refreshProjects, loadSessionIndex])
 
   /*
    * Looking at a tab clears its `done` / `attention`, because the dot means
@@ -828,6 +876,35 @@ export function App(): React.JSX.Element {
    * could not.
    */
   const sessions = selectedPath ? (sessionsByPath[selectedPath] ?? []) : []
+
+  /*
+   * When search reads the index: the moment a query appears — the first one,
+   * and every time the box goes from empty to not — so a search always starts
+   * from the disk as it is now rather than as it was the last time someone
+   * searched. Not per keystroke: matching is local, and the list of sessions
+   * does not change because a letter was typed.
+   */
+  useEffect(() => {
+    if (searching) loadSessionIndex()
+  }, [searching, loadSessionIndex])
+
+  /*
+   * And again whenever a session tab starts, ends or goes away while a query is
+   * showing: that is when a transcript appears, is retitled or stops growing.
+   * Keyed on the session tabs' ids and statuses rather than on `tabs`, which
+   * changes on every title update and selection.
+   */
+  const sessionTabsKey = useMemo(
+    () =>
+      tabs
+        .filter((t) => t.kind === 'session')
+        .map((t) => `${t.id}:${t.status}`)
+        .join('|'),
+    [tabs]
+  )
+  useEffect(() => {
+    if (searchingRef.current) loadSessionIndex()
+  }, [sessionTabsKey, loadSessionIndex])
 
   /* ------------------------------------------------------------------ tabs */
 
@@ -1882,8 +1959,13 @@ export function App(): React.JSX.Element {
     [settings, patchSettings]
   )
 
+  /*
+   * Takes the index entry's shape, which a full `SessionMeta` also satisfies:
+   * a search hit and a row of an expanded list resume through this one path,
+   * reading the same four fields, so the two cannot start different sessions.
+   */
   const resumeSession = useCallback(
-    (s: SessionMeta): void => {
+    (s: SessionIndexEntry): void => {
       const project = projects.find((p) => p.path === s.projectPath)
       void startSession({
         cwd: s.projectPath,
@@ -1939,6 +2021,9 @@ export function App(): React.JSX.Element {
                 projects={projects}
                 loading={projectsLoading}
                 query={query}
+                sessionIndex={sessionIndex}
+                sessionIndexLoading={sessionIndexLoading}
+                sessionIndexError={sessionIndexError}
                 selectedPath={selectedPath}
                 expandedPath={expandedPath}
                 sessionsByPath={sessionsByPath}

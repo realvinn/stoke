@@ -1512,6 +1512,67 @@ body {
   color: var(--text-faint);
 }
 
+/* ------------------------------------------------------------ search hits */
+
+/*
+ * The part of a name, title or prompt a search matched.
+ *
+ * The text keeps the colour of the line it sits in, so every row it appears in
+ * keeps exactly the contrast it already had — the UA's black-on-yellow would
+ * have been the one hardcoded palette in the app. The wash is the accent's own
+ * soft tint, and the underline is the part that survives a theme where that
+ * tint barely separates from the page: it is 14% alpha, laid over a selected
+ * row it is fainter still, and a highlight only some themes can see is not a
+ * highlight. The ink, not the fill, because a 1px line is a foreground
+ * (gotcha 44).
+ */
+mark.hit {
+  background: var(--accent-soft);
+  color: inherit;
+  border-radius: var(--r-sm);
+  text-decoration: underline;
+  text-decoration-color: var(--accent-ink);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.125rem;
+}
+
+/* The first prompt around a hit, under a titled session that matched only there. */
+.session-snippet {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* "Show N more" under a project's first few matching sessions. Declares its own
+   border and background, or Chromium's grey `buttonface` shows (gotcha 47). */
+.session-more {
+  align-self: flex-start;
+  padding: var(--space-4) var(--space-8);
+  border: none;
+  border-radius: var(--r-md);
+  background: transparent;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  cursor: default;
+  transition: background var(--dur-fast) var(--ease);
+}
+
+.session-more:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+/* One line of status in the sidebar list: "Searching sessions…", or why it could not. */
+.sidebar-note {
+  margin: 0;
+  padding: var(--space-8);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-snug);
+  color: var(--text-muted);
+}
+
 /* --------------------------------------------------------- context meter */
 
 .meter {
