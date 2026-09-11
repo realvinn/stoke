@@ -455,6 +455,29 @@ export function scopeProjects(
   return projects.filter(inScope)
 }
 
+/**
+ * Whether the session index has yet to arrive for the first time, so a search
+ * has not looked at a single session: say "Searching sessions…", and never
+ * "Nothing matches".
+ *
+ * "Not loading and no error" is not idle here. The first fetch is started by an
+ * effect in App, and React paints the render that first shows a query BEFORE
+ * effects run — so for one frame the index is null, nothing is loading and
+ * nothing has failed. Keyed on `loading` alone, that frame said "Nothing
+ * matches “q” in … session titles or first prompts" about conversations nobody
+ * had read yet. Measured over CDP on the first search of a run: the claim was
+ * painted 5.5 ms after the keystroke and replaced by "Searching sessions…" at
+ * 10.5 ms. A failed fetch is not pending — the sidebar says why instead — but a
+ * retry after one is.
+ */
+export function indexPending(
+  index: readonly unknown[] | null,
+  loading: boolean,
+  error: string | null
+): boolean {
+  return index === null && (loading || error === null)
+}
+
 /** How many matching sessions a project shows before "Show N more". */
 export const SESSION_CAP = 5
 

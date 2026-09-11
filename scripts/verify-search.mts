@@ -31,6 +31,7 @@ import type { Project, SessionIndexEntry } from '../src/shared/types.ts'
 import {
   capSessions,
   fold,
+  indexPending,
   matchRanges,
   rankForPalette,
   scopeProjects,
@@ -419,6 +420,20 @@ console.log('\nper-project cap')
   check('"Show more" shows all of them', capSessions(hit?.sessions ?? [], true).shown.length, 8)
   check('exactly the cap hides nothing', capSessions(many.slice(0, SESSION_CAP), false).hidden, 0)
 }
+
+/* ------------------------------------------------- before the index arrives */
+
+console.log('\nno session has been searched until the index first arrives')
+// The first: React paints the render that shows a query before App's effect
+// starts the fetch, so this frame has no index, no fetch and no error. Keyed on
+// the loading flag it read as done, and painted "Nothing matches" (measured
+// over CDP: 5.5 ms after the keystroke, replaced at 10.5 ms).
+check('the frame before the first fetch starts is pending', indexPending(null, false, null), true)
+check('the first fetch in flight is pending', indexPending(null, true, null), true)
+check('a failed first fetch is not pending: the sidebar says why', indexPending(null, false, 'boom'), false)
+check('...but a retry after it is', indexPending(null, true, 'boom'), true)
+check('an index in hand is never pending', indexPending([], false, null), false)
+check('...not even while it is refreshed', indexPending([], true, null), false)
 
 /* ---------------------------------------------------------- the real index */
 

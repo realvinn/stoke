@@ -9,6 +9,7 @@ import { ProjectMetaPicker } from './ProjectMetaPicker'
 import { relativeTime } from '../lib/format'
 import {
   capSessions,
+  indexPending,
   scopeProjects,
   searchProjects,
   snippet,
@@ -170,6 +171,9 @@ export function Sidebar({
     () => (searching ? searchProjects(scoped, sessionIndex ?? NO_INDEX, query) : null),
     [searching, scoped, sessionIndex, query]
   )
+
+  /* No session has been looked at yet — including the frame before App's effect starts the fetch. */
+  const pending = indexPending(sessionIndex, sessionIndexLoading, sessionIndexError)
 
   /*
    * Which hit rows the user folded, and which asked for every match rather than
@@ -599,7 +603,7 @@ export function Sidebar({
         )}
 
         {/* Only the first fetch says so: a refresh keeps the results already on screen. */}
-        {searching && sessionIndexLoading && sessionIndex === null && (
+        {searching && pending && (
           <p className="sidebar-note" aria-live="polite">
             Searching sessions…
           </p>
@@ -614,10 +618,13 @@ export function Sidebar({
           </p>
         )}
 
+        {/* Not with no projects at all: "No projects yet" above already says
+            everything, and this would contradict it. */}
         {!loading &&
+          projects.length > 0 &&
           hits !== null &&
           hits.length === 0 &&
-          !(sessionIndexLoading && sessionIndex === null) && (
+          !pending && (
             <div className="empty">
               <h3>Nothing matches</h3>
               <p>
