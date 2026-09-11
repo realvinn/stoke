@@ -281,7 +281,7 @@ export function Sidebar({
     const { shown, hidden } = capSessions(hit.sessions, view.all.includes(path))
     return (
       <div className="sessions">
-        {shown.map(({ session: s, label, detail }) => (
+        {shown.map(({ session: s, field, label, detail }) => (
           <button
             key={s.id}
             className="session"
@@ -289,7 +289,8 @@ export function Sidebar({
             onClick={() => onResume(s)}
             title={s.firstPrompt ?? s.id}
           >
-            <span className="session-title">
+            {/* A title that holds the hit is shown whole — see `.hit-whole`. */}
+            <span className={field === 'title' ? 'session-title hit-whole' : 'session-title'}>
               <Highlight text={label.text} ranges={label.ranges} />
             </span>
             {detail && (
@@ -344,6 +345,8 @@ export function Sidebar({
       expanded: boolean
       onChevron: () => void
       name: React.ReactNode
+      /** The name holds a search hit, so it wraps rather than ellipsising it away. */
+      nameWhole?: boolean
       meta: React.ReactNode
       body: React.ReactNode
     }
@@ -406,7 +409,9 @@ export function Sidebar({
 
           {/* The label replaces the basename in this list only; the
               row's title attribute still carries the real path. */}
-          <span className="project-name">{row.name}</span>
+          <span className={row.nameWhole ? 'project-name hit-whole' : 'project-name'}>
+            {row.name}
+          </span>
 
           {/* A session is open in this folder right now. Placed
               before the two buttons so it never moves as they
@@ -474,6 +479,7 @@ export function Sidebar({
       expanded,
       onChevron: hasSessions ? () => flip('folded', project.path) : () => onToggleExpand(project),
       name: <Highlight text={project.label ?? project.name} ranges={hit.nameRanges} />,
+      nameWhole: hit.nameRanges.length > 0,
       meta: where ? (
         <>
           {!project.exists && <span className="project-missing">missing</span>}

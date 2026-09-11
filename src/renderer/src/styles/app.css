@@ -1536,6 +1536,26 @@ mark.hit {
   text-underline-offset: 0.125rem;
 }
 
+/*
+ * A project name or session title that holds a search hit wraps instead of
+ * ellipsising. Both lines are `nowrap` + ellipsis everywhere else, so a hit past
+ * the line's end was listed with the hit itself cut off: at the default 260px
+ * sidebar "Lecture application optimization and Discord integration" painted
+ * its only "integration" mark at x=298-359 of a title line that ends at 243,
+ * and "ai26-p0-search-realvinn" its "realvinn" at 172-221 of a name line that
+ * ends at 180 — rows that said nothing about why they were there. Measured
+ * over CDP. Windowing them the way a prompt is windowed (`snippet()`) would cut
+ * the start off a short title instead, which is the part you recognise it by;
+ * wrapping keeps the whole line at every width and Interface scale. Prompt
+ * labels and path lines stay on one line: they are windowed so the hit is near
+ * their start, and a 300-character prompt must not fill the list.
+ */
+.project-name.hit-whole,
+.session-title.hit-whole {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 /* The first prompt around a hit, under a titled session that matched only there. */
 .session-snippet {
   font-size: var(--fs-xs);
