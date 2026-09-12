@@ -181,7 +181,9 @@ rule file named on the group line.
   starts `Mozilla/5.0` so `routeFor` tests it first and falls back to HTML, and an x64 AppImage
   carries no arch in its name. Never gate on `spctl`, never kill Stoke, and keep
   `--fire-frames`/`--print-plan`/`--sha512` — they are how `verify:install` runs the shipped
-  script rather than a copy.
+  script rather than a copy, under every shell: keep `setopt sh_word_split` for zsh, which
+  parses the script perfectly and could not run a line of it. Put the renamed-aside
+  `/Applications/Stoke.app` back whenever the new copy does not land.
 
 **Docked browser** — `.claude/rules/browser.md`
 - **3.** Mount every `WebContentsView` in the window's view tree at once and merely hide it —

@@ -9,6 +9,7 @@ paths:
   - "install/index.html"
   - "worker/index.ts"
   - "worker/route.ts"
+  - "wrangler.jsonc"
   - "scripts/verify-install.mts"
 ---
 
@@ -246,6 +247,62 @@ and `WT_SESSION` all set to what would otherwise win, so a rule that consulted t
 degraded reason shows up as `truecolor` rather than `none`. And `--sha512` is what makes the base64
 claim above assertable.
 
+**`zsh -n` is not `zsh`, and the whole script was dead under the shell macOS makes the
+default while every assertion passed.** zsh does not split an unquoted parameter expansion on
+IFS unless it is told to, and three things here depend on that splitting: the flicker table
+(`for fire_v in $FIRE_FLICKER`), the stage thresholds in `fire_stage_of`, and the painter's
+`KEY:text` segments. So `$FIRE_FLICKER` arrived as ONE word, `eval "FIRE_FLICK_0=0 1 2 1 0 2"`
+ran `1` as a command, and `zsh install.sh` died with `command not found: 1` on its first line of
+real work — including for `--fire-frames`, which is the flag the suite uses. Measured: exit 127,
+before the version was even resolved. `setopt sh_word_split` behind a `[ -n "${ZSH_VERSION:-}" ]`
+guard is the whole fix, and `emulate sh` is NOT: it resets the options to sh's defaults and would
+take the `set -eu` above it with them.
+
+The generalisable half is the suite's, not the script's: `verify:install` parsed install.sh under
+four shells and RAN it under one, so the difference between "parses" and "works" was the only gap
+it had and it was exactly where the bug lived. It now runs every offline flag under every shell
+and requires the output to be **byte-identical to `/bin/sh`'s** — identical rather than merely
+exit 0, because a shell that painted wrongly would still exit 0. (Pass `LINES`/`COLUMNS`
+explicitly when comparing: zsh assigns `LINES` itself, as **0** when there is no terminal, so
+`--print-plan tty` degrades there and nowhere else for a reason that is not the script's.)
+
+**The `?` in the `?sh` override is a glob, and zsh refuses an unmatched one outright.** The
+landing page documented `curl -fsSL https://stoke.vinn.dev?sh | sh`, which on a stock Mac
+terminal is `zsh: no matches found: https://stoke.vinn.dev?sh` and never runs curl at all — and
+that line exists for the one person behind a User-Agent-rewriting proxy for whom nothing else
+works. bash and dash pass an unmatched glob through unchanged, which is why it reads as fine.
+Quote it. `verify:install` now scans the page and README for a `stoke.vinn.dev` URL carrying `?`
+or `*` outside quotes.
+
+**"Rename aside" is only an improvement while the replacement arrives.** The macOS replace
+renames `/Applications/Stoke.app` out of the way and then copies the new one in — and the copy
+was unguarded, so a read-only `/Applications`, a full disk or a `ditto` that dies took `set -e`
+straight out of the script with nothing on screen but ditto's own line. Measured against a
+relocated copy of the script with a ditto that refuses to write: **no `/Applications/Stoke.app`
+at all**, a `Stoke.app.replaced-NNN` nobody had been told about, and no sentence anywhere saying
+the app the user had was gone. The copy is guarded now and the aside is moved BACK on failure,
+which is allowed for the same reason the rename was; `rm -rf` on the half-written bundle first is
+safe precisely because that bundle is one this script created. Same class, same fix, for the
+unpack: a bare tool error does not say whether anything was installed, and at that point the
+answer is always "no".
+
+**On Linux, `mv` from the temp dir is a COPY, and that is two failures rather than a style
+point.** `$TMPDIR` is `/tmp` on nearly every Linux and nearly always a different filesystem from
+`$HOME`, so `mv "$lin_src" ~/.local/bin/stoke` opens the destination for writing: `ETXTBSY` for
+as long as Stoke is running, and a truncated binary where the working one was if it fails part
+way. Copy into the target DIRECTORY under a temporary name and rename within it — atomic, and it
+replaces a running AppImage happily, since the running process keeps the old inode until it
+exits. That is also why the Linux path never asks Stoke to quit, and why it now says so: a
+rename is silent, so a running copy carries on being the old version with nothing anywhere
+saying why the upgrade "did nothing".
+
+**Three bodies come back from one URL and nothing varies on it, so the response is `private`.**
+`Vary: User-Agent` is refused for the reason above, and that refusal only holds if no shared
+cache is invited to store the body: a `public` response with no `Vary` is one a corporate MITM
+proxy — the very thing the `?sh` override exists for — may hand to the next client whatever it
+asked for, which is a shell receiving the landing page or a browser offered a script. `private`
+keeps the five-minute TTL for the end client, which has exactly one User-Agent.
+
 **A "never does X" assertion has to run against the code, not the file.** The scripts explain at
 length why they do not use `spctl`, `/allusers`, `Get-FileHash` or `Invoke-WebRequest` — so the
 first version of every one of those assertions failed on its own explanation. `verify:install`
@@ -259,5 +316,24 @@ delete the comment.
 > "not yet" through `uname` shims. `install.ps1` has been run **never**, and parsed by a PowerShell
 > **never**, because there is none on this machine: every Windows claim in it is read out of
 > `app-builder-lib`'s templates and Microsoft's docs. Nobody has watched the NSIS `/S` path, the
-> HKCU upgrade detection or the VT probe do anything at all. The Worker has never answered a
-> request either — `wrangler` is not installed and nothing has been deployed.
+> HKCU upgrade detection or the VT probe do anything at all.
+>
+> **Checked again on 2026-09-12, and several of those gaps are now closed.** Against the real
+> v0.9.4 zip on this machine: `ditto -x -k` unpacks it, `codesign --verify --strict --deep` exits
+> **0**, and `spctl --assess` answers `rejected` with exit **3** — the claim that gating on spctl
+> would refuse every valid build, measured rather than cited. The macOS install half (rename
+> aside, copy in, remove the aside, clear the pending cache, `open`) and the whole Linux half
+> (arch-less x64 AppImage chosen over the arm64 one, stage-and-rename into `~/.local/bin`, desktop
+> entry, recorded version, PATH warning) have both been run end to end against a copy of the
+> script relocated onto temp directories, with the download served by a stand-in `curl`. Every
+> failure path has been exercised the same way and each one fails closed with a sentence: an HTML
+> body with status 200 for the manifest and for the asset, a truncated file, a wrong digest, a
+> 404, no network at all, an unpack that fails and a copy that fails. Ctrl-C mid-download exits
+> 130, removes the temp directory, and the **last escape sequence on the wire is `ESC[?25h`**.
+> A body truncated at 10/30/60/90/99% and piped into `sh` installs nothing at any of them.
+> The Worker has now answered real requests under `wrangler dev --local` — the whole User-Agent
+> matrix, and all three bodies byte-identical to the files in `install/` — but nothing has been
+> deployed, so the custom domain, the certificate and Cloudflare's bot defences remain untested.
+> What is still genuinely unrun on macOS: the write into the real `/Applications` and the App
+> Management refusal behind it, and `osascript -e 'quit app "Stoke"'` against a running copy
+> (which will also raise a TCC prompt the first time, from whatever terminal ran the one-liner).
