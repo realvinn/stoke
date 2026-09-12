@@ -133,7 +133,19 @@ function clamp01(progress: number): number {
   return progress > 1 ? 1 : progress
 }
 
-/** The stage index (0-3) for a progress fraction. Out-of-range values clamp. */
+/**
+ * The stage index (0-3) for a progress fraction. Out-of-range values clamp, and
+ * NaN — which is what a divide by a zero Content-Length gives — reads as 0.
+ *
+ * One consequence the caller has to handle rather than inherit: clamping means
+ * the sentinel `-1` that a "no Content-Length" download would naturally pass is
+ * SPARK, forever. A chunked response would therefore burn a spark for the whole
+ * install and never grow. There is deliberately no indeterminate schedule here,
+ * because this module has no clock (it is pinned frame by frame by a suite) —
+ * the installer owns it, and the honest shape is to climb on elapsed time and
+ * reach `roaring` only when the transfer actually finishes. Never fabricate a
+ * percentage from it; the degraded path already refuses to (`plainProgress`).
+ */
 export function stageIndexFor(progress: number): number {
   const p = clamp01(progress)
   let i = 0
@@ -257,10 +269,19 @@ export const ESC = '\u001b'
  * `ladder.ts` and `accent.ts` already set here (gotcha 43: do not hand-pick a
  * hex).
  *
- * The 256 indices are nearest neighbours in the xterm cube, computed rather
- * than guessed: 230 #ffffd7 (d^2 265 against 255's 458), 216 #ffaf87 (466
- * against 223's 1586), 209 #ff875f (365 against 215's 845), 166 #d75f00 (1585
+ * The 256 indices are computed rather than guessed, in sRGB squared distance
+ * over the whole cube AND the greyscale ramp: 230 #ffffd7 (d^2 265, against
+ * 255 #eeeeee's 458), 209 #ff875f (365 against 215's 845), 166 #d75f00 (1585
  * against 208's ~2400), 94 #875f00 (2331 against 58's 3051).
+ *
+ * SPARK is the one that is NOT the nearest, so it is called out rather than
+ * quietly claimed: 222 #ffd787 is nearer to #ffc48c in raw sRGB (386 against
+ * 216 #ffaf87's 466), and the two are a dead heat perceptually (OKLab dE 0.0504
+ * against 0.0506 — under the 0.04 this repo already calls "the same colour").
+ * 216 is kept because it is the one that keeps the RAMP readable: the tier's
+ * core is 230 #ffffd7, and 222 sits almost on top of it while 216 lands between
+ * it and MID. Re-derive before changing it; verify:campfire pins the truecolor
+ * triples to the brand file but cannot pick a 256 index for you.
  *
  * The 16-colour tier is deliberately 8-COLOUR SAFE: SGR 30-37 plus SGR 1, never
  * the aixterm 90-97 brights. Microsoft's own table defines SGR 1 as "applies
@@ -431,10 +452,20 @@ export function decileOf(done: number, total: number | null): number {
 /**
  * One line of the degraded path, or null when nothing new has happened.
  *
+ * The caller owns `lastDecile` and must SEED IT AT -1, not 0: decile 0 is a
+ * real reading (`    0%  0.0 MB`, the line that says the download started), so
+ * seeding at 0 silently swallows it and the log opens at 10%. Update it with
+ * `decileOf(done, total)` — which is why that is exported — every time this
+ * returns a line, and never otherwise.
+ *
  * The loop ticks eight times a second; this prints on a decile change and
  * nothing else, so a 40-second install leaves eleven lines in a CI log rather
  * than 320. Append-only, no `\r`, no escape byte: `tee`, `| less`, a CI log
  * viewer and a support paste all show the same thing afterwards.
+ *
+ * The last line belongs to the download being OVER, not to a tick landing on
+ * the final byte: call this once more with `done === total` when the transfer
+ * returns, or a run whose last tick read 99.6% never prints a 100% line.
  *
  * With no Content-Length there is no percentage — just the megabytes. A
  * fabricated percent in a log that someone later reads back is worse than no

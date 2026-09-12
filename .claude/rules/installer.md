@@ -67,6 +67,16 @@ path prints one line per decile, append-only, no `\r` and no escape byte, and pr
 percentage at all** when the server sent no Content-Length: a fabricated percent in a log
 someone later pastes into a support thread is worse than no percent.
 
+The other half of that, which is easy to leave untested and was: **a degraded terminal gets no
+colour TIER either, not merely no animation.** `colorMode` returns `none` for every
+`degradedReason`, before it ever looks at `COLORTERM` or `WT_SESSION` — deleting that one line
+passed every other assertion in `verify:campfire` while making `renderPlan({}, piped).color`
+`ansi256`, i.e. a pipe full of escape sequences, which is the exact failure the `none` assertions
+exist to prevent one level down. `verify:campfire` now asserts `animate === false && color ===
+'none'` for all six degraded shapes with `TERM=xterm-256color`, `COLORTERM=truecolor` and
+`WT_SESSION` all set, since those are what would win. Seed `plainProgress`'s `lastDecile` at
+**-1**, not 0: decile 0 is the real `0%` line that says the download started.
+
 **On Windows the 16-colour tier is a choice, not a degradation.** The console host documents
 that for colours beyond its sixteen it "will choose the nearest appropriate color from the
 existing 16 color table", and its rounding table cannot be modified — `#e85f24`, `#ff9552` and
@@ -93,14 +103,26 @@ the segment encoding (`KEY:text|KEY:text`, so the draw loop forks no `awk` eight
 was hand-written once during the research and shipped `(|#|=|` and a stray trailing pair into a
 running script, which printed a literal `||` at the user and were found only by reading a real
 run's stripped output. The defences are generation plus `decode(encode(x)) === x`, asserted on
-the shipped bytes as well as on the module.
+the shipped bytes as well as on the module. Two things about that comparison: the block's own
+preamble is **per target** — a ps1 block naming `FIRE_STAGE_PCT` and telling its reader to reach
+for `printf` is a wrong instruction in a file nobody is allowed to correct by hand — and the
+sentinel scan stops at any directory carrying its own `.git`, because `.claude/worktrees/` holds
+a full checkout per parallel stream on this machine and a plain walk compares somebody else's
+branch against this branch's generator. Measured: a stale block under `.claude/worktrees/` failed
+the run naming a path that is not part of the checkout at all.
 
 **And say out loud what no suite here can see** (gotcha 31, which this feature is unusually
 exposed to): nothing pure proves that a Windows console renders the sequences, that the cursor
 comes back after Ctrl-C or a `taskkill /F`, or that the canvas stays put when the terminal
 scrolls at the bottom of the window. `node scripts/campfire-demo.mts` is the harness for all
-three — `--sweep` redirects cleanly, so a Windows tester can be sent a file to `type`. The three
-boxes are macOS Terminal or iTerm, Windows Terminal + pwsh, and bare conhost + PowerShell 5.1.
+three — `--sweep` redirects cleanly, so a Windows tester can be sent a file to `type`, but it
+must be `--sweep --mode=ansi16 > frames.txt`: redirected with no `--mode` the tier is `none` by
+the very rule above, so the file carries **zero escape bytes** and cannot answer the one question
+that tester is there to answer. The demo says so on stderr rather than leaving it to be
+discovered. It also traps SIGTERM and SIGHUP as well as SIGINT, because node runs no `exit`
+listener under their default disposition — verified on a real pty, and verified failing with the
+SIGTERM line removed. The three boxes are macOS Terminal or iTerm, Windows Terminal + pwsh, and
+bare conhost + PowerShell 5.1.
 
 > **Not verified from this machine** — there is no `pwsh` or `powershell` here, so the
 > PowerShell art block has never been parsed by PowerShell. The here-string shape (`@'` ending
