@@ -11,6 +11,11 @@ release/
 .playwright-mcp/
 .superpowers/
 
+# `wrangler dev`'s local state and temp directories. Nothing in here is the
+# Worker — that is worker/ and wrangler.jsonc — and a dev run writes a workerd
+# cache and a sqlite state tree into it every time.
+.wrangler/
+
 # Per-machine Claude Code settings. `.claude/` is otherwise tracked — the
 # commands and agent definitions in it are shared — but this one file holds
 # whatever permissions and paths a particular desk happened to approve.

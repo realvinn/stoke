@@ -11,6 +11,7 @@ import type {
   ProjectMeta,
   Rect,
   SessionEvent,
+  SessionIndexEntry,
   SessionMeta,
   Settings,
   StatusLineSnapshot,
@@ -291,6 +292,12 @@ export interface StokeApi {
   projects: {
     list(): Promise<Project[]>
     sessions(projectPath: string): Promise<SessionMeta[]>
+    /**
+     * Every listed project's sessions, title and first prompt only, newest
+     * first — what the sidebar's search matches against. Cheap to call again:
+     * main re-reads only transcripts whose mtime or size moved.
+     */
+    sessionIndex(): Promise<SessionIndexEntry[]>
     /** Pick a folder to add as a scan root; returns the chosen path. */
     addRoot(): Promise<string | null>
     /** Pick a one-off folder to open a session in. */

@@ -1,0 +1,58 @@
+<!--
+  Source for build/uninstallerSidebar.bmp (164x314). Regenerate with `npm run art`.
+
+  The same hearth as installerSidebar.svg with the fire out: logs, embers and
+  the last of the heat. It costs one extra ~155 KB BMP (about 27 KB once NSIS
+  compresses it) and it is the one installer screen people screenshot.
+
+  The #logs and #logs-lit path data is shared byte-for-byte with
+  installerSidebar.svg and background.svg; verify:installer-art asserts that.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="164" height="314" viewBox="0 0 164 314">
+  <defs>
+    <linearGradient id="page" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#241c17"/>
+      <stop offset="1" stop-color="#0d0b0a"/>
+    </linearGradient>
+    <radialGradient id="hearth">
+      <stop stop-color="#e85f24" stop-opacity="0.22"/>
+      <stop offset="0.42" stop-color="#e85f24" stop-opacity="0.08"/>
+      <stop offset="1" stop-color="#e85f24" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="coals">
+      <stop stop-color="#e85f24" stop-opacity="0.34"/>
+      <stop offset="1" stop-color="#e85f24" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="hearth-line" x1="0" y1="0" x2="1" y2="0">
+      <stop stop-color="#e85f24" stop-opacity="0"/>
+      <stop offset="0.5" stop-color="#e85f24" stop-opacity="0.32"/>
+      <stop offset="1" stop-color="#e85f24" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="smoke" x1="0" y1="1" x2="0" y2="0">
+      <stop stop-color="#8d7f76" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#8d7f76" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <path fill="url(#page)" d="M0 0H164V314H0Z"/>
+
+  <ellipse cx="82" cy="292" rx="128" ry="104" fill="url(#hearth)"/>
+  <!-- The heat that is left is IN the logs, so the light is tight and low. -->
+  <ellipse cx="82" cy="272" rx="46" ry="22" fill="url(#coals)"/>
+
+  <path stroke="url(#hearth-line)" stroke-width="1" d="M0 283.5H164"/>
+
+  <!-- One thread of smoke where the flame was. -->
+  <path fill="none" stroke="url(#smoke)" stroke-width="2" stroke-linecap="round" d="M84 258C80 240 90 230 86 212C83 198 90 188 87 174"/>
+
+  <path id="logs" fill="none" stroke="#241c17" stroke-width="9" stroke-linecap="round" d="M52 264L110 277M54 278L111 263"/>
+  <path id="logs-lit" fill="none" stroke="#ff9552" stroke-opacity="0.22" stroke-width="1" stroke-linecap="round" d="M52 261L109 274M55 275L110 260"/>
+
+  <!-- Embers cooling. -->
+  <circle cx="74" cy="272" r="1.6" fill="#ff9552" opacity="0.8"/>
+  <circle cx="92" cy="276" r="1.3" fill="#e85f24" opacity="0.7"/>
+  <circle cx="64" cy="270" r="1.1" fill="#e85f24" opacity="0.6"/>
+  <circle cx="83" cy="267" r="1" fill="#ff9552" opacity="0.5"/>
+  <circle cx="101" cy="272" r="1" fill="#e85f24" opacity="0.42"/>
+  <circle cx="57" cy="276" r="0.9" fill="#e85f24" opacity="0.34"/>
+</svg>

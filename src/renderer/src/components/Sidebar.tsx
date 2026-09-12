@@ -1,16 +1,38 @@
 import { useMemo, useState } from 'react'
-import type { Project, ProjectMeta, SessionMeta } from '@shared/types'
+import type { Project, ProjectMeta, SessionIndexEntry, SessionMeta } from '@shared/types'
 import { ContextBar } from './ContextMeter'
 import type { ResolvedProfile } from '@shared/profiles'
 import { foldGroup } from '@shared/profiles'
+import { Highlight } from './Highlight'
 import { IconChevron, IconFolder, IconPin, IconPlus, IconSearch } from './Icons'
 import { ProjectMetaPicker } from './ProjectMetaPicker'
 import { relativeTime } from '../lib/format'
+import {
+  capSessions,
+  indexPending,
+  scopeProjects,
+  searchProjects,
+  snippet,
+  type ProjectHit
+} from '../lib/projectSearch'
+
+/* One stable empty index, so the matcher's per-index grouping is not rebuilt per keystroke. */
+const NO_INDEX: SessionIndexEntry[] = []
 
 interface Props {
   projects: Project[]
   loading: boolean
   query: string
+  /**
+   * Every session's title and first prompt, across every listed project, for
+   * search. Null until the first search fetched it — it is not loaded for a
+   * sidebar nobody is searching.
+   */
+  sessionIndex: SessionIndexEntry[] | null
+  /** True while that index is being (re)fetched. */
+  sessionIndexLoading: boolean
+  /** Why the last fetch failed, or null. Project matching carries on without it. */
+  sessionIndexError: string | null
   selectedPath: string | null
   expandedPath: string | null
   /**
@@ -44,7 +66,8 @@ interface Props {
   onSelectProject: (p: Project) => void
   onToggleExpand: (p: Project) => void
   onStartNew: (p: Project) => void
-  onResume: (s: SessionMeta) => void
+  /** A full `SessionMeta` from an expanded list, or an index entry from a search hit. */
+  onResume: (s: SessionIndexEntry) => void
   onPin: (p: Project) => void
   /** Set or clear one folder's icon and display name. `null` clears the record. */
   onSetMeta: (project: Project, meta: ProjectMeta | null) => void
@@ -67,6 +90,9 @@ export function Sidebar({
   projects,
   loading,
   query,
+  sessionIndex,
+  sessionIndexLoading,
+  sessionIndexError,
   selectedPath,
   expandedPath,
   sessionsByPath,
@@ -118,25 +144,70 @@ export function Sidebar({
     return new Set((hit ? hit.groups : [activeProfile]).map(foldGroup))
   }, [profiles, activeProfile])
 
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    /*
-     * Searching reaches across every profile on purpose. The profile narrows
-     * what you browse; it must never hide something you went looking for by
-     * name — it is a view, not a permission.
-     */
-    const scoped =
-      q || !activeGroups ? projects : projects.filter((p) => activeGroups.has(foldGroup(p.group)))
-    if (!q) return scoped
-    // The label is what the user sees, so it is what they will type. Searching
-    // only the basename made a renamed folder unfindable by its own name.
-    return scoped.filter(
-      (p) =>
-        p.name.toLowerCase().includes(q) ||
-        p.path.toLowerCase().includes(q) ||
-        (p.label ?? '').toLowerCase().includes(q)
-    )
-  }, [projects, query, activeGroups])
+  const searching = query.trim() !== ''
+
+  /*
+   * Searching reaches across every profile on purpose (`scopeProjects` says
+   * why). The profile applies only to browsing.
+   */
+  const scoped = useMemo(
+    () =>
+      scopeProjects(
+        projects,
+        query,
+        activeGroups ? (p) => activeGroups.has(foldGroup(p.group)) : null
+      ),
+    [projects, query, activeGroups]
+  )
+
+  /*
+   * One ranked list while a query is active: project label, name and path, and
+   * every session's title and first prompt — the label is what the user sees,
+   * so it is what they will type, and a conversation is as often what they
+   * remember as the folder it happened in. Before the index has arrived the
+   * projects still match on their own fields; the sessions join when it lands.
+   */
+  const hits = useMemo(
+    () => (searching ? searchProjects(scoped, sessionIndex ?? NO_INDEX, query) : null),
+    [searching, scoped, sessionIndex, query]
+  )
+
+  /* No session has been looked at yet — including the frame before App's effect starts the fetch. */
+  const pending = indexPending(sessionIndex, sessionIndexLoading, sessionIndexError)
+
+  /*
+   * Which hit rows the user folded, and which asked for every match rather than
+   * the first few — for this query only, so a new query starts clean.
+   *
+   * Held here and not in App's `expandedPath`/`browseExpanded`. What a search
+   * expands is derived from its hits; written into the browse state it would be
+   * a second writer on that value (gotcha 57), and clearing the query would not
+   * give back the view the user had before they typed.
+   */
+  const viewKey = query.trim()
+  const [searchView, setSearchView] = useState({
+    query: viewKey,
+    folded: [] as string[],
+    all: [] as string[]
+  })
+  /*
+   * Dropped the moment the query changes, not merely ignored while it differs.
+   * Ignoring was the first version, and it kept the flips of the last query
+   * they were made in: fold a row under "the", type "ther", clear the box, and
+   * a later search for "the" came back with that row still folded and the
+   * other still showing every match — measured over CDP. Reset while
+   * rendering (React's "adjust state when a prop changes"), not in an effect,
+   * so the old flips never paint for a frame under the new query.
+   */
+  if (searchView.query !== viewKey) setSearchView({ query: viewKey, folded: [], all: [] })
+  const view =
+    searchView.query === viewKey ? searchView : { query: viewKey, folded: [], all: [] }
+  const flip = (list: 'folded' | 'all', path: string): void =>
+    setSearchView((cur) => {
+      const base = cur.query === viewKey ? cur : { query: viewKey, folded: [], all: [] }
+      const on = base[list].includes(path)
+      return { ...base, [list]: on ? base[list].filter((p) => p !== path) : [...base[list], path] }
+    })
 
   /*
    * Three stable buckets, ordered the way you actually reach for a project.
@@ -145,13 +216,18 @@ export function Sidebar({
    * exactly one project, so the sidebar filled with single-item headings like
    * "NORMALZOMBIEHORDESHOOTER". Recency is the useful axis; the parent folder
    * is demoted to a per-row detail instead.
+   *
+   * Browsing only. A search result is one list in rank order: splitting it into
+   * these buckets would put a pinned project that merely shares a path segment
+   * above the conversation someone was actually looking for.
    */
   const groups = useMemo(() => {
+    if (searching) return []
     const pinned: Project[] = []
     const recent: Project[] = []
     const rest: Project[] = []
 
-    for (const p of filtered) {
+    for (const p of scoped) {
       if (p.pinned) pinned.push(p)
       else if (p.sessionCount > 0) recent.push(p)
       else rest.push(p)
@@ -165,7 +241,268 @@ export function Sidebar({
     if (recent.length) out.push(['Recent', recent])
     if (rest.length) out.push(['Other projects', rest])
     return out
-  }, [filtered])
+  }, [scoped, searching])
+
+  /* The whole list of an expanded project's sessions — browsing, or a search row with no session hits. */
+  const fullSessions = (project: Project): React.JSX.Element => {
+    /* This row's own sessions, never "the selected project's". */
+    const rowSessions = sessionsByPath[project.path] ?? []
+    const rowLoading = sessionsLoadingPath === project.path && rowSessions.length === 0
+    return (
+      <div className="sessions">
+        {rowLoading && <div className="session-meta">Loading…</div>}
+        {!rowLoading && rowSessions.length === 0 && (
+          <div className="session-meta">No saved sessions. Press Enter to start one.</div>
+        )}
+        {!rowLoading &&
+          rowSessions.map((s) => (
+            <button
+              key={s.id}
+              className="session"
+              aria-current={openSessions.has(s.id) ? 'true' : undefined}
+              onClick={() => onResume(s)}
+              title={s.firstPrompt ?? s.id}
+            >
+              <span className="session-title">
+                {s.title ?? s.firstPrompt ?? 'Untitled session'}
+              </span>
+              <span className="session-meta">
+                <span>{relativeTime(s.modified)}</span>
+                {s.contextTokens > 0 && (
+                  <ContextBar used={s.contextTokens} limit={s.contextLimit} showLabel={false} />
+                )}
+                {s.gitBranch && s.gitBranch !== 'HEAD' && (
+                  <span className="truncate">{s.gitBranch}</span>
+                )}
+              </span>
+            </button>
+          ))}
+      </div>
+    )
+  }
+
+  /*
+   * Only the sessions that matched, first five and then "Show N more". Clicking
+   * one resumes it exactly as the same row in an expanded list does: the same
+   * `onResume`, with the same id, folder, title and first prompt.
+   */
+  const sessionHits = (hit: ProjectHit): React.JSX.Element => {
+    const path = hit.project.path
+    const { shown, hidden } = capSessions(hit.sessions, view.all.includes(path))
+    return (
+      <div className="sessions">
+        {shown.map(({ session: s, field, label, detail }) => (
+          <button
+            key={s.id}
+            className="session"
+            aria-current={openSessions.has(s.id) ? 'true' : undefined}
+            onClick={() => onResume(s)}
+            title={s.firstPrompt ?? s.id}
+          >
+            {/* A title that holds the hit is shown whole — see `.hit-whole`. */}
+            <span className={field === 'title' ? 'session-title hit-whole' : 'session-title'}>
+              <Highlight text={label.text} ranges={label.ranges} />
+            </span>
+            {detail && (
+              <span className="session-snippet">
+                <Highlight text={detail.text} ranges={detail.ranges} />
+              </span>
+            )}
+            <span className="session-meta">
+              <span>{relativeTime(s.modified)}</span>
+            </span>
+          </button>
+        ))}
+        {hidden > 0 && (
+          <button className="session-more" onClick={() => flip('all', path)}>
+            Show {hidden} more
+          </button>
+        )}
+      </div>
+    )
+  }
+
+  /* Projects with history show their activity; ones without show where they
+     live, which is more use than repeating "no sessions · never" down the
+     whole list. */
+  const defaultMeta = (project: Project): React.JSX.Element => (
+    <>
+      {!project.exists && <span className="project-missing">missing</span>}
+      {project.sessionCount > 0 ? (
+        <>
+          <span>
+            {project.sessionCount} session
+            {project.sessionCount === 1 ? '' : 's'}
+          </span>
+          <span aria-hidden="true">·</span>
+          <span>{relativeTime(project.lastModified)}</span>
+        </>
+      ) : (
+        <span className="truncate">{project.group || project.path}</span>
+      )}
+    </>
+  )
+
+  /*
+   * One project row, shared by browsing and search so the two can never drift
+   * apart in what a click, a double-click or a key does. The callers differ
+   * only in what the name and metadata lines say, what the chevron toggles,
+   * and what is listed under the row.
+   */
+  const renderProject = (
+    project: Project,
+    row: {
+      expanded: boolean
+      onChevron: () => void
+      name: React.ReactNode
+      /** The name holds a search hit, so it wraps rather than ellipsising it away. */
+      nameWhole?: boolean
+      meta: React.ReactNode
+      body: React.ReactNode
+    }
+  ): React.JSX.Element => (
+    <div key={project.path}>
+      <div
+        className="project"
+        aria-current={selectedPath === project.path}
+        role="button"
+        tabIndex={0}
+        onClick={() => onSelectProject(project)}
+        onDoubleClick={() => onStartNew(project)}
+        onKeyDown={(e) => {
+          /*
+           * Enter and Space both do exactly what a click does.
+           *
+           * This row announces itself as `role="button"`, and the
+           * one promise that role makes is that both keys fire the
+           * element's own click. It used to start a session on
+           * Enter and select on Space, so assistive tech said
+           * "button", the user pressed the obvious key, and got a
+           * spawned process instead of a selection.
+           *
+           * Starting a session is the double-click escalation, so
+           * it keeps a modifier of its own rather than losing its
+           * keyboard route. metaKey OR ctrlKey, so the component
+           * needs no platform prop to be right on both.
+           */
+          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+            e.preventDefault()
+            onStartNew(project)
+          } else if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault()
+            onSelectProject(project)
+          }
+        }}
+        title={`${project.path}\nEnter selects · Cmd/Ctrl+Enter starts a session`}
+      >
+        <div className="project-top">
+          <button
+            className="icon-btn project-chevron"
+            onClick={(e) => {
+              e.stopPropagation()
+              row.onChevron()
+            }}
+            aria-expanded={row.expanded}
+            title={row.expanded ? 'Hide sessions' : 'Show sessions'}
+          >
+            <IconChevron />
+            <span className="sr-only">{row.expanded ? 'Hide sessions' : 'Show sessions'}</span>
+          </button>
+
+          <ProjectMetaPicker
+            project={project}
+            open={pickerPath === project.path}
+            onOpenChange={(v) => setPickerPath(v ? project.path : null)}
+            onCommit={(meta) => onSetMeta(project, meta)}
+            onHide={() => onHide(project)}
+          />
+
+          {/* The label replaces the basename in this list only; the
+              row's title attribute still carries the real path. */}
+          <span className={row.nameWhole ? 'project-name hit-whole' : 'project-name'}>
+            {row.name}
+          </span>
+
+          {/* A session is open in this folder right now. Placed
+              before the two buttons so it never moves as they
+              appear and disappear on hover. */}
+          {running.has(project.path) && (
+            <span className="project-live" title="A session is running here">
+              <span className="sr-only">session running</span>
+            </span>
+          )}
+
+          {/* Hover-revealed, like the pin. Double-click already
+              starts a session and is undiscoverable; the row's own
+              title says so and nobody reads a title attribute. */}
+          <button
+            className="icon-btn project-start"
+            onClick={(e) => {
+              e.stopPropagation()
+              onStartNew(project)
+            }}
+            title={`Start a session in ${project.path}`}
+          >
+            <IconPlus />
+            <span className="sr-only">Start a session in {project.name}</span>
+          </button>
+
+          <button
+            className="icon-btn project-pin"
+            aria-pressed={project.pinned}
+            onClick={(e) => {
+              e.stopPropagation()
+              onPin(project)
+            }}
+            title={project.pinned ? 'Unpin' : 'Pin to top'}
+          >
+            <IconPin />
+            <span className="sr-only">{project.pinned ? 'Unpin' : 'Pin'}</span>
+          </button>
+        </div>
+
+        <div className="project-meta">{row.meta}</div>
+      </div>
+
+      {row.body}
+    </div>
+  )
+
+  /*
+   * A search row. A project with matching sessions opens on them by itself —
+   * derived from the hits, and folded away only by its own chevron, for this
+   * query. One without them opens the ordinary way, onto its whole list.
+   *
+   * The metadata line swaps to the path, highlighted, when that is the only
+   * place the match can be seen: a hit in a parent folder, or on a basename the
+   * row hides behind a label.
+   */
+  const renderHit = (hit: ProjectHit): React.JSX.Element => {
+    const { project } = hit
+    const hasSessions = hit.sessions.length > 0
+    const expanded = hasSessions
+      ? !view.folded.includes(project.path)
+      : expandedPath === project.path
+    const pathOnly = hit.nameRanges.length === 0 && hit.pathRanges.length > 0
+    const where = pathOnly ? snippet(project.path, hit.pathRanges) : null
+    return renderProject(project, {
+      expanded,
+      onChevron: hasSessions ? () => flip('folded', project.path) : () => onToggleExpand(project),
+      name: <Highlight text={project.label ?? project.name} ranges={hit.nameRanges} />,
+      nameWhole: hit.nameRanges.length > 0,
+      meta: where ? (
+        <>
+          {!project.exists && <span className="project-missing">missing</span>}
+          <span className="truncate">
+            <Highlight text={where.text} ranges={where.ranges} />
+          </span>
+        </>
+      ) : (
+        defaultMeta(project)
+      ),
+      body: !expanded ? null : hasSessions ? sessionHits(hit) : fullSessions(project)
+    })
+  }
 
   return (
     <nav className="sidebar" style={{ width: '100%' }} aria-label="Projects">
@@ -207,7 +544,7 @@ export function Sidebar({
         )}
 
         <label className="sr-only" htmlFor="project-search">
-          Search projects
+          Search projects and sessions
         </label>
         <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
           <IconSearch
@@ -222,7 +559,7 @@ export function Sidebar({
             id="project-search"
             className="input"
             style={{ paddingLeft: '1.875rem' }}
-            placeholder="Search projects"
+            placeholder="Search projects and sessions"
             value={query}
             onChange={(e) => onQueryChange(e.target.value)}
             spellCheck={false}
@@ -269,181 +606,70 @@ export function Sidebar({
           </div>
         )}
 
-        {!loading && projects.length > 0 && filtered.length === 0 && (
+        {/*
+          Browsing with a profile that leaves nothing to show. Only reachable
+          without a query — a query ignores the profile — so this is not a
+          search result and says nothing about matching.
+        */}
+        {!loading && !searching && projects.length > 0 && scoped.length === 0 && (
           <div className="empty">
-            <h3>Nothing matches</h3>
-            <p>No project name, path, or label contains &ldquo;{query}&rdquo;.</p>
+            <h3>Nothing here</h3>
+            <p>No project belongs to this profile. Choose All to see every project.</p>
           </div>
         )}
+
+        {/* Only the first fetch says so: a refresh keeps the results already on screen. */}
+        {searching && pending && (
+          <p className="sidebar-note" aria-live="polite">
+            Searching sessions…
+          </p>
+        )}
+
+        {/* Project names still match without it, so a failed index narrows the
+            search rather than ending it — and says so, rather than reporting a
+            conversation as absent that was never looked at. */}
+        {searching && sessionIndexError && (
+          <p className="sidebar-note" role="status">
+            Session titles could not be searched: {sessionIndexError}
+          </p>
+        )}
+
+        {/* Not with no projects at all: "No projects yet" above already says
+            everything, and this would contradict it. */}
+        {!loading &&
+          projects.length > 0 &&
+          hits !== null &&
+          hits.length === 0 &&
+          !pending && (
+            <div className="empty">
+              <h3>Nothing matches</h3>
+              <p>
+                {sessionIndexError ? (
+                  <>No project name, path or label contains &ldquo;{query.trim()}&rdquo;.</>
+                ) : (
+                  <>
+                    Nothing matches &ldquo;{query.trim()}&rdquo; in project names, paths, labels,
+                    session titles or first prompts.
+                  </>
+                )}
+              </p>
+            </div>
+          )}
+
+        {hits?.map(renderHit)}
 
         {groups.map(([group, items]) => (
           <div key={group}>
             <div className="sidebar-group">{group}</div>
             {items.map((project) => {
               const expanded = expandedPath === project.path
-              /* This row's own sessions, never "the selected project's". */
-              const rowSessions = sessionsByPath[project.path] ?? []
-              const rowLoading = sessionsLoadingPath === project.path && rowSessions.length === 0
-              return (
-                <div key={project.path}>
-                  <div
-                    className="project"
-                    aria-current={selectedPath === project.path}
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => onSelectProject(project)}
-                    onDoubleClick={() => onStartNew(project)}
-                    onKeyDown={(e) => {
-                      /*
-                       * Enter and Space both do exactly what a click does.
-                       *
-                       * This row announces itself as `role="button"`, and the
-                       * one promise that role makes is that both keys fire the
-                       * element's own click. It used to start a session on
-                       * Enter and select on Space, so assistive tech said
-                       * "button", the user pressed the obvious key, and got a
-                       * spawned process instead of a selection.
-                       *
-                       * Starting a session is the double-click escalation, so
-                       * it keeps a modifier of its own rather than losing its
-                       * keyboard route. metaKey OR ctrlKey, so the component
-                       * needs no platform prop to be right on both.
-                       */
-                      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-                        e.preventDefault()
-                        onStartNew(project)
-                      } else if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault()
-                        onSelectProject(project)
-                      }
-                    }}
-                    title={`${project.path}\nEnter selects · Cmd/Ctrl+Enter starts a session`}
-                  >
-                    <div className="project-top">
-                      <button
-                        className="icon-btn project-chevron"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          onToggleExpand(project)
-                        }}
-                        aria-expanded={expanded}
-                        title={expanded ? 'Hide sessions' : 'Show sessions'}
-                      >
-                        <IconChevron />
-                        <span className="sr-only">
-                          {expanded ? 'Hide sessions' : 'Show sessions'}
-                        </span>
-                      </button>
-
-                      <ProjectMetaPicker
-                        project={project}
-                        open={pickerPath === project.path}
-                        onOpenChange={(v) => setPickerPath(v ? project.path : null)}
-                        onCommit={(meta) => onSetMeta(project, meta)}
-                        onHide={() => onHide(project)}
-                      />
-
-                      {/* The label replaces the basename in this list only; the
-                          row's title attribute still carries the real path. */}
-                      <span className="project-name">{project.label ?? project.name}</span>
-
-                      {/* A session is open in this folder right now. Placed
-                          before the two buttons so it never moves as they
-                          appear and disappear on hover. */}
-                      {running.has(project.path) && (
-                        <span className="project-live" title="A session is running here">
-                          <span className="sr-only">session running</span>
-                        </span>
-                      )}
-
-                      {/* Hover-revealed, like the pin. Double-click already
-                          starts a session and is undiscoverable; the row's own
-                          title says so and nobody reads a title attribute. */}
-                      <button
-                        className="icon-btn project-start"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          onStartNew(project)
-                        }}
-                        title={`Start a session in ${project.path}`}
-                      >
-                        <IconPlus />
-                        <span className="sr-only">Start a session in {project.name}</span>
-                      </button>
-
-                      <button
-                        className="icon-btn project-pin"
-                        aria-pressed={project.pinned}
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          onPin(project)
-                        }}
-                        title={project.pinned ? 'Unpin' : 'Pin to top'}
-                      >
-                        <IconPin />
-                        <span className="sr-only">{project.pinned ? 'Unpin' : 'Pin'}</span>
-                      </button>
-                    </div>
-
-                    {/* Projects with history show their activity; ones without
-                        show where they live, which is more use than repeating
-                        "no sessions · never" down the whole list. */}
-                    <div className="project-meta">
-                      {!project.exists && <span className="project-missing">missing</span>}
-                      {project.sessionCount > 0 ? (
-                        <>
-                          <span>
-                            {project.sessionCount} session
-                            {project.sessionCount === 1 ? '' : 's'}
-                          </span>
-                          <span aria-hidden="true">·</span>
-                          <span>{relativeTime(project.lastModified)}</span>
-                        </>
-                      ) : (
-                        <span className="truncate">{project.group || project.path}</span>
-                      )}
-                    </div>
-                  </div>
-
-                  {expanded && (
-                    <div className="sessions">
-                      {rowLoading && <div className="session-meta">Loading…</div>}
-                      {!rowLoading && rowSessions.length === 0 && (
-                        <div className="session-meta">
-                          No saved sessions. Press Enter to start one.
-                        </div>
-                      )}
-                      {!rowLoading &&
-                        rowSessions.map((s) => (
-                          <button
-                            key={s.id}
-                            className="session"
-                            aria-current={openSessions.has(s.id) ? 'true' : undefined}
-                            onClick={() => onResume(s)}
-                            title={s.firstPrompt ?? s.id}
-                          >
-                            <span className="session-title">
-                              {s.title ?? s.firstPrompt ?? 'Untitled session'}
-                            </span>
-                            <span className="session-meta">
-                              <span>{relativeTime(s.modified)}</span>
-                              {s.contextTokens > 0 && (
-                                <ContextBar
-                                  used={s.contextTokens}
-                                  limit={s.contextLimit}
-                                  showLabel={false}
-                                />
-                              )}
-                              {s.gitBranch && s.gitBranch !== 'HEAD' && (
-                                <span className="truncate">{s.gitBranch}</span>
-                              )}
-                            </span>
-                          </button>
-                        ))}
-                    </div>
-                  )}
-                </div>
-              )
+              return renderProject(project, {
+                expanded,
+                onChevron: () => onToggleExpand(project),
+                name: project.label ?? project.name,
+                meta: defaultMeta(project),
+                body: expanded ? fullSessions(project) : null
+              })
             })}
           </div>
         ))}

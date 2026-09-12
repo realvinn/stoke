@@ -81,7 +81,7 @@ async function readLines(file: string): Promise<{ lines: string[]; exact: boolea
   return { lines: [...headLines, ...tailLines], exact: false }
 }
 
-function textOf(content: unknown): string | null {
+export function textOf(content: unknown): string | null {
   if (typeof content === 'string') return content
   if (Array.isArray(content)) {
     const parts: string[] = []
@@ -97,7 +97,7 @@ function textOf(content: unknown): string | null {
 }
 
 /** Local-command noise and system reminders make useless session titles. */
-function isUsefulPrompt(s: string): boolean {
+export function isUsefulPrompt(s: string): boolean {
   const t = s.trim()
   if (!t) return false
   if (t.startsWith('<command-name>')) return false
@@ -109,6 +109,31 @@ function isUsefulPrompt(s: string): boolean {
   if (t.startsWith('<system-reminder>')) return false
   if (t.startsWith("Caveat: The messages below")) return false
   return true
+}
+
+/**
+ * The session's "first prompt", if this record is one: a user record whose text
+ * is something a person typed, collapsed to one line and cut at 300 characters.
+ *
+ * Its own function, and exported, because two readers need the identical rule:
+ * `parseSession`, which the sidebar's expanded list shows, and the session
+ * index (`sessionIndex.ts`) that search matches against. Were they two copies,
+ * a search could match a prompt the row it lands on then displays differently,
+ * or skip a session whose row shows a prompt containing the very words typed.
+ */
+export function promptOf(rec: Record<string, unknown>): string | null {
+  if (rec.type !== 'user') return null
+  const msg = rec.message as { content?: unknown } | undefined
+  const text = textOf(msg?.content)
+  if (!text || !isUsefulPrompt(text)) return null
+  return text.replace(/\s+/g, ' ').trim().slice(0, 300)
+}
+
+/** Claude Code's own generated title, if this record carries one. Later records win. */
+export function titleOf(rec: Record<string, unknown>): string | null {
+  if (rec.type !== 'ai-title') return null
+  const t = rec.aiTitle
+  return typeof t === 'string' && t.trim() ? t.trim() : null
 }
 
 /*
@@ -149,8 +174,8 @@ export async function parseSession(file: string): Promise<ParsedSession> {
 
     if (type === 'ai-title') {
       // Later records win — Claude retitles a session as it evolves.
-      const t = rec.aiTitle
-      if (typeof t === 'string' && t.trim()) out.title = t.trim()
+      const t = titleOf(rec)
+      if (t) out.title = t
       continue
     }
 
@@ -168,13 +193,7 @@ export async function parseSession(file: string): Promise<ParsedSession> {
       out.messageCount++
       if (typeof rec.cwd === 'string') out.cwd = rec.cwd
       if (typeof rec.gitBranch === 'string') out.gitBranch = rec.gitBranch
-      if (!out.firstPrompt) {
-        const msg = rec.message as { content?: unknown } | undefined
-        const text = textOf(msg?.content)
-        if (text && isUsefulPrompt(text)) {
-          out.firstPrompt = text.replace(/\s+/g, ' ').trim().slice(0, 300)
-        }
-      }
+      if (!out.firstPrompt) out.firstPrompt = promptOf(rec)
       continue
     }
 

@@ -1,6 +1,7 @@
 /**
  * Pure tab-list arithmetic, kept out of the React callbacks that used to own
- * it — the only way to check that code was to click.
+ * it — the only way to check that code was to click. No imports, so
+ * `scripts/verify-tabs.mts` runs it under `node --experimental-strip-types`.
  */
 
 /**
@@ -68,6 +69,10 @@ export function cycleTab(ids: string[], activeId: string | null, delta: -1 | 1):
  * dragging left lands *before* it — which is what the pointer is over in each
  * case. An unknown id on either side returns the same list rather than
  * throwing: a drop can land after the tab it was aimed at has closed.
+ *
+ * This is the one commit a tab drag makes, on release. Everything the strip
+ * shows before then is a preview drawn with transforms (`previewSlot` below),
+ * and the suite asserts the preview and this commit agree for every move.
  */
 export function moveTab<T extends { id: string }>(
   list: T[],
@@ -81,6 +86,248 @@ export function moveTab<T extends { id: string }>(
   const [moved] = next.splice(from, 1)
   next.splice(to, 0, moved)
   return next
+}
+
+/*
+ * ------------------------------------------------------------ dragging a tab
+ *
+ * The maths behind the Chrome-style drag in `useTabDrag`. The drag used to be
+ * HTML5 drag-and-drop, which hands the moving object to the OS: a translucent
+ * bitmap floated freely over the whole window while the real tab sat faded in
+ * its slot, and a neighbour only moved once the POINTER passed its centre —
+ * 0.5 to 1.5 tab widths depending on where the tab was grabbed — and then
+ * teleported a whole slot in one frame, because every swap was a committed
+ * reorder of App state. "It doesn't move the other tabs."
+ *
+ * Now the real tab follows the pointer along the strip, the target slot is
+ * decided by the dragged tab's own centre against a snapshot of the slots taken
+ * when the drag began, and the neighbours slide into their preview slots with a
+ * transform. Nothing the drag does changes what it measures, so no hysteresis
+ * is needed, and the order is committed once, on release.
+ *
+ * Pure and here rather than inside the pointer handlers for gotcha 31's reason:
+ * in a closure, the only way to check any of it is to drag.
+ */
+
+/** Pointer travel, in CSS px, before a press on a tab becomes a drag. */
+export const TAB_DRAG_SLOP_PX = 3
+
+/**
+ * Whether a press has travelled far enough to be a drag rather than a click.
+ *
+ * Any direction, not only along the strip, so a press that wanders down off the
+ * tab still lifts it and hands the rest of the press to the strip's pointer
+ * capture. That is tidiness, not protection for the terminal: xterm reports
+ * held-button motion and the release only for a press it saw itself, so a press
+ * that began on a tab reaches the CLI as nothing whichever way it wanders —
+ * measured in the running app against a session reporting any-motion (1003):
+ * a press elsewhere, dragged across the pane and let go there, gave the pty no
+ * mouse report at all, where a press inside the pane gave press, drag and
+ * release. CSS px throughout — Interface scale changes rem, not pointer
+ * coordinates.
+ */
+export function pastSlop(dx: number, dy: number, slop: number = TAB_DRAG_SLOP_PX): boolean {
+  return Math.hypot(dx, dy) > slop
+}
+
+/**
+ * The slot whose centre is nearest `x`, or -1 when there are no slots.
+ *
+ * Applied to the dragged tab's own centre, this is Chrome's swap: a neighbour
+ * gives way once the dragged tab covers half of it, however far from the edge
+ * the tab was grabbed. A tie goes to the lower index (strict `<`), so a tab
+ * poised exactly halfway between two slots does not flicker between them.
+ */
+export function nearestSlot(centres: readonly number[], x: number): number {
+  let best = -1
+  let bestDistance = Infinity
+  for (let i = 0; i < centres.length; i++) {
+    const d = Math.abs(centres[i] - x)
+    if (d < bestDistance) {
+      best = i
+      bestDistance = d
+    }
+  }
+  return best
+}
+
+/**
+ * How many slots tab `i` moves while the tab at `from` is previewed at `to`.
+ *
+ * Dragging right, everything the dragged tab has passed shifts one slot left to
+ * close the gap it left; dragging left, one slot right. The dragged tab itself
+ * reads 0 here — it follows the pointer, not a slot.
+ */
+export function previewShift(i: number, from: number, to: number): -1 | 0 | 1 {
+  if (from < to && i > from && i <= to) return -1
+  if (to < from && i >= to && i < from) return 1
+  return 0
+}
+
+/** The slot tab `i` occupies in the preview. The dragged tab is shown at `to`. */
+export function previewSlot(i: number, from: number, to: number): number {
+  return i === from ? to : i + previewShift(i, from, to)
+}
+
+/** The part of an overflowing strip that is on screen, in the slots' own content coordinates. */
+export interface DragView {
+  /** The list's `scrollLeft`. */
+  start: number
+  /** `scrollLeft` plus the list's visible width. */
+  end: number
+  /** The dragged tab's width, so its far edge is held inside `end` too. */
+  width: number
+}
+
+/**
+ * The dragged tab's left edge, held between the first slot and the last —
+ * and, given the `view`, inside the part of the strip that is on screen.
+ *
+ * The strip's own slots are the bound, which is also what keeps a lifted tab
+ * out of the macOS traffic-light clearance, off the Windows caption buttons and
+ * away from the + button: none of those is inside the list.
+ *
+ * The view matters once the strip overflows. Held by the slots alone, a tab
+ * dragged to the edge to autoscroll followed the pointer half past it for the
+ * whole of the scroll, and the list's overflow clipped it: measured in the
+ * running app, 52 of a 112px tab out of sight, close button and half the title
+ * gone behind the + button, while it was the one thing being moved. Chrome
+ * holds a dragged tab inside the visible strip, and so does this. A view too
+ * narrow to hold the tab at all is ignored rather than inverted.
+ */
+export function clampDrag(left: number, slotLefts: readonly number[], view?: DragView): number {
+  if (slotLefts.length === 0) return left
+  let first = slotLefts[0]
+  let last = slotLefts[slotLefts.length - 1]
+  if (view && view.end - view.width >= view.start) {
+    first = Math.max(first, view.start)
+    last = Math.min(last, view.end - view.width)
+  }
+  return Math.min(Math.max(left, first), last)
+}
+
+/**
+ * Which ends of the view a lifted tab may still hang past: at most as far as
+ * its own slot did when the drag began. Only ever switched off (`stillOver`).
+ */
+export interface Overhang {
+  start: boolean
+  end: boolean
+}
+
+/**
+ * The view a lifted tab is held inside (`clampDrag`): the part of the strip on
+ * screen, `scroll` to `scroll + visible`, widened at each end `over` still
+ * allows to take in the tab's own slot `home`, when that slot is partly off
+ * screen.
+ *
+ * Held by the visible part alone, a tab pressed where the strip's edge cut it
+ * in half leapt the whole hidden width the moment the press became a drag —
+ * measured in the running app, 56px out from under a pointer that had moved 4.
+ * Widened, it follows the pointer from where it was, can go no further out than
+ * that, and is held inside the view as soon as autoscroll or the pointer brings
+ * the view past its slot. A slot already on screen widens nothing.
+ */
+export function dragView(
+  scroll: number,
+  visible: number,
+  home: number,
+  width: number,
+  over: Overhang = { start: true, end: true }
+): DragView {
+  return {
+    start: over.start ? Math.min(scroll, home) : scroll,
+    end: over.end ? Math.max(scroll + visible, home + width) : scroll + visible,
+    width
+  }
+}
+
+/**
+ * The overhang left once the lifted tab sits at `left`: an end whose allowance
+ * the tab has come wholly inside is switched off for the rest of the drag.
+ *
+ * The allowance is for where the tab STARTED, not a licence. Kept for the
+ * whole drag, it let a tab pressed half behind the right edge, dragged to the
+ * left edge while the strip scrolled back 465px, and then dragged back past the
+ * right edge run straight out of sight: measured in the running app, wholly
+ * behind the + button for as long as autoscroll took to bring its old slot
+ * back, because the view still stretched to take that slot in.
+ */
+export function stillOver(
+  over: Overhang,
+  left: number,
+  width: number,
+  scroll: number,
+  visible: number
+): Overhang {
+  return {
+    start: over.start && left < scroll,
+    end: over.end && left + width > scroll + visible
+  }
+}
+
+/**
+ * How far to scroll a strip whose visible part runs from `start` to `end` so
+ * that the span `left`..`right` is wholly on screen: negative towards the
+ * start, positive towards the end, 0 when it already is. A span wider than the
+ * view is lined up at its start. Screen or content coordinates, as long as all
+ * four agree.
+ *
+ * For the tab a drag just put down. It is the selected tab — a press selects —
+ * and a slot at the edge of an overflowing strip can be half behind the list's
+ * clip: the tab was held on screen for the whole drag and then landed with its
+ * close button and half its title out of sight. Measured in the running app,
+ * 56 of 112px.
+ */
+export function revealDelta(left: number, right: number, start: number, end: number): number {
+  if (left < start) return left - start
+  if (right > end) return Math.min(right - end, left - start)
+  return 0
+}
+
+/** How close to the strip's visible edge, in CSS px, a drag starts scrolling it. */
+export const AUTOSCROLL_ZONE_PX = 24
+/** The fastest the strip scrolls under a drag, in CSS px per second. */
+export const AUTOSCROLL_MAX_PX_S = 600
+
+/**
+ * How fast an overflowing strip should scroll under a drag, in px per second:
+ * negative towards the start, positive towards the end, 0 in the middle.
+ *
+ * It ramps with depth into the edge zone and holds at full speed past the edge,
+ * so dragging off the end of the strip keeps it moving. HTML5 drag-and-drop may
+ * or may not have autoscrolled a hidden-scrollbar list; a pointer drag
+ * certainly does not, so this is the whole of it.
+ */
+export function autoscrollVelocity(
+  x: number,
+  start: number,
+  end: number,
+  zone: number = AUTOSCROLL_ZONE_PX,
+  max: number = AUTOSCROLL_MAX_PX_S
+): number {
+  if (end - start <= 2 * zone) return 0
+  if (x < start + zone) return -max * Math.min(1, (start + zone - x) / zone)
+  if (x > end - zone) return max * Math.min(1, (x - (end - zone)) / zone)
+  return 0
+}
+
+/**
+ * The session tabs in the order their terminal panes are rendered — sorted by
+ * id, which is to say an order that does not follow the strip.
+ *
+ * The panes are stacked and all but one hidden, so their DOM order means
+ * nothing on screen. It mattered anyway, because it followed the strip: a
+ * reorder that moved a pane's node blurred the xterm inside it, so dragging
+ * the active tab rightwards took the keyboard away from the session you were
+ * typing into. Keyed on a pure function of the SET of tabs, a reorder moves no
+ * pane at all, and an open or a close only inserts or removes one — React
+ * never moves an existing node for either.
+ */
+export function paneOrder<T extends { id: string; kind: string }>(list: readonly T[]): T[] {
+  return list
+    .filter((t) => t.kind === 'session')
+    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
 }
 
 /**

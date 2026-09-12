@@ -90,10 +90,31 @@ button {
   /* A fixed slot for the tab indicator, so the empty circle, the filled ring
      and the ring-plus-dot are all the same width and the label never moves. */
   --tab-indicator: 0.875rem;   /* 14px */
-  /* The only red in the tab strip: "the worklog is watching this session". */
+  /* The dot in the ring's centre: "the worklog is watching this session". Not
+     the only red in the strip any more -- a ring past 60% is red too -- so it
+     is told apart by shape (a filled centre, never an arc) and inverted to
+     --bg over a full ring's red disc (see `.ring[data-level='full']`). */
   --tab-dot-worklog: var(--danger);
-  /* A nearly-full context ring. No longer --danger: red means one thing now. */
-  --ring-full: var(--warning);
+  /* Bypass mode's mark: beads in place of the ring's track, in the theme's slate.
+     A standing SETTING, not an alarm, so it stays out of --warning, which is
+     for live alerts (the attention dot, the status line, the usage chip).
+     The mix reconstructs ladder step 9 -- the mid-grey between --border-strong
+     (step 8) and --text-faint (step 10) that `neutralLadder` computes and maps
+     to no token -- so it follows every theme's hue with no new ThemeColors key
+     (gotcha 43). Light themes mix further toward --text-faint, below, because
+     the half-way grey measures 2.38:1 on their --bg-sunken. Mirrored as
+     BYPASS_MIX in scripts/verify-color.mts, which holds both at 3:1. */
+  --ring-bypass: color-mix(in oklab, var(--border-strong), var(--text-faint));
+  /* How much of --meter-high tints a full bar's unfilled track (see
+     `.meter[data-level='full']`). 30% here, 15% in the light block below:
+     the red fill must still clear 3:1 against the track it ends on, and on a
+     light --bg-sunken a 30% tint leaves only 2.57:1. Mirrored as FULL_TINT in
+     scripts/verify-color.mts, which holds both. */
+  --meter-full-tint: 30%;
+  /* --meter-low / --meter-mid / --meter-high, the context meter's green,
+     orange and red, are NOT declared here: lib/theme.ts's applyAppearance
+     writes them, solved against each theme's own --bg and --bg-sunken by
+     shared/meter.ts, the same way it owns --accent-ink. */
   /* macOS traffic lights are fixed device px, so their clearance must be too.
      A rem here is why Stoke only laid out correctly at Interface scale 1.0.
 
@@ -215,6 +236,15 @@ button {
   --shadow-panel:
     0 0 0 1px color-mix(in srgb, var(--text) 8%, transparent),
     0 12px 32px color-mix(in srgb, var(--text) 14%, transparent);
+  /* 75% toward --text-faint, not 50%: the half-way grey is 2.38-2.39:1 on a
+     light --bg-sunken (an unselected tab), under WCAG 1.4.11's 3:1 for a
+     non-text mark; this is 3.25-3.27:1. Mirrored in verify-color.mts. */
+  --ring-bypass: color-mix(in oklab, var(--border-strong), var(--text-faint) 75%);
+  /* 15%, not 30%: a light track tinted 30% red is 2.57:1 against the red fill
+     ending on it, so "how much is left" drops under 3:1 exactly when the bar
+     is full. 15% is 3.23:1 and still a visible pink (0.073 from the plain
+     track, where 0.04 is "the same colour"). Mirrored in verify-color.mts. */
+  --meter-full-tint: 15%;
 }
 
 body {
@@ -510,6 +540,10 @@ body {
  * beside them stays put, and `min-width: 0` is what lets it shrink instead of
  * pushing the shell wider than the window — see CLAUDE.md gotcha 14, which is
  * about exactly this failure one level up.
+ *
+ * `isolation` makes it a stacking context, so the one-step z-index that lifts
+ * a dragged tab over its neighbours is scoped to the strip and cannot compete
+ * with anything outside it.
  */
 .tablist {
   display: flex;
@@ -519,6 +553,7 @@ body {
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
+  isolation: isolate;
 }
 
 .tablist::-webkit-scrollbar {
@@ -595,6 +630,12 @@ body {
   background: transparent;
   color: var(--text-muted);
   cursor: default;
+  /*
+   * A press on a tab selects it or starts a drag, never a text selection.
+   * `draggable` used to suppress label selection as a side effect; the tab is
+   * dragged with pointer events now, so this has to say it.
+   */
+  user-select: none;
   transition:
     background var(--dur-fast) var(--ease),
     color var(--dur-fast) var(--ease);
@@ -622,16 +663,59 @@ body {
 }
 
 /*
- * The tab being dragged, which is now the tab you are actually moving: the
- * strip reorders live under the pointer rather than marking a landing spot.
+ * Dragging a tab, Chrome's way (`useTabDrag`).
  *
- * The dashed outline that used to mark the target is gone with it. Two hints
- * for one gesture — a ghosted tab here, a dotted rectangle over there — meant
- * reading both and working out which was the answer, and the dashes read as a
- * selection or an error as often as a destination.
+ * It used to be HTML5 drag-and-drop: the OS floated a translucent bitmap of
+ * the tab wherever the pointer went, the real tab sat in its slot at 0.6
+ * opacity, and a neighbour jumped a whole slot only once the pointer was past
+ * its centre. Now the real tab is what moves. It follows the pointer along the
+ * strip on an inline transform, and while `data-reordering` is on the list the
+ * OTHER tabs slide into their preview slots on this transition. Never the
+ * dragged one: it has to track the pointer exactly, not lag behind it.
+ *
+ * The transition exists only while reordering, so the transforms can be
+ * cleared in the same style change that removes it and nothing animates back —
+ * the settle on release is a WAAPI FLIP from wherever each tab was on screen.
+ */
+.tablist[data-reordering='true'] .tab:not([data-dragging='true']) {
+  transition:
+    transform var(--dur) var(--ease),
+    background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+
+/*
+ * The lifted tab: opaque, above its neighbours, with a shadow — the one thing
+ * in the strip with depth, for as long as it is off its slot. It stays lifted
+ * through the settle and comes down when it lands, or it would drop under the
+ * neighbour it is still overlapping. `.tablist`'s overflow clips the shadow at
+ * the top and bottom, which is fine: it is the sideways edge that says "above".
  */
 .tab[data-dragging='true'] {
-  opacity: 0.6;
+  z-index: calc(var(--z-base) + 1);
+  background: var(--surface-hover);
+  color: var(--text);
+  box-shadow: var(--shadow-md);
+  will-change: transform;
+}
+
+.tab[data-dragging='true'][aria-selected='true'] {
+  background: var(--bg);
+}
+
+/*
+ * Under a wallpaper the selected tab is transparent, to join the pane below it
+ * (`:root[data-wallpaper] .tab[aria-selected='true']`, 0-4-0). A lifted tab
+ * joins nothing — it is over its neighbours — and transparent it would show
+ * their labels through its own (gotcha 54). One more class out-ranks that rule
+ * wherever it sits in the file.
+ */
+:root[data-wallpaper] .tablist .tab[data-dragging='true'] {
+  background: var(--surface-hover);
+}
+
+:root[data-wallpaper] .tablist .tab[data-dragging='true'][aria-selected='true'] {
+  background: var(--bg);
 }
 
 .tab-label {
@@ -734,8 +818,13 @@ body {
 }
 
 /*
- * The only red in the tab strip, and it means one thing: the worklog agent is
- * watching this session.
+ * The worklog agent is watching this session.
+ *
+ * Red, and no longer the only red in the strip: the context arc turns red from
+ * 61% and fills to a solid disc from 81% (`.ring` below). The two cannot be
+ * mistaken for each other because they are different shapes — this is a filled
+ * centre, that is an arc round the edge — and over the full ring's disc, the
+ * one place they would touch, this dot is inverted to --bg.
  *
  * A <circle> inside the ring's own <svg>, not a box laid over it. As a 5px
  * span centred in the 14px slot it was offset by 4.5px, and Chromium snaps a
@@ -777,8 +866,9 @@ body {
  * What happened in this tab since you last looked, from the CLI's own hooks.
  *
  * A dot after the label rather than a change to the ring: the ring already
- * means one thing (context used) and red in the strip already means another
- * (the worklog is watching), so this gets its own slot and never uses red.
+ * means context used, and red in the strip already says two things (a ring
+ * past 60%, and the worklog dot in its centre), so this gets its own slot and
+ * never uses red.
  * Working pulses so a long turn is visibly alive; done is the accent, solid;
  * attention is the warning colour, because a permission prompt is the one
  * state that stops the session until you act.
@@ -813,15 +903,34 @@ body {
 }
 
 /*
- * Bypass mode used to own --danger, which put a red dot on every tab on a
- * machine whose default permission mode is bypassPermissions — an alert that
- * was only ever a setting. A dashed warning-coloured track says "the guard
- * rails are off" and cannot be mistaken for the context fill, which is always
- * a solid arc starting at the top.
+ * Bypass mode: beads in place of the ring's track, in the theme's slate.
+ *
+ * Twice moved and the same mistake both times until now. Bypass used to own
+ * --danger, which put a red dot on every tab on a machine whose default mode is
+ * bypassPermissions — an alert that was only ever a setting. Then it became a
+ * dashed --warning track, which changed the colour and kept the permanence: an
+ * amber at C 0.13 against a navy page, 10:1 on an unselected tab (three times
+ * the plain track), drawn as eleven square 1.4px teeth — a cog, and as light as
+ * the context arc drawn over it, so from 70% the arc and the track were the
+ * same colour. It was the loudest thing on screen and it was on every tab.
+ *
+ * Now it is --ring-bypass (step 9 of the theme's own neutral ladder; see
+ * :root), so the SHAPE says "the guard rails are off" and the colour stays
+ * quiet: eight round beads in place of the track, one at 12 o'clock. Two cues
+ * keep them apart from the arc in every theme: they have next to no chroma
+ * (C ~0.007 on Ink) where the arc is a saturated colour, and they are dots where
+ * the arc is one solid stroke from 12 o'clock. Lightness is NOT one of them —
+ * on a light theme the two sit close — which is why the shape changed and not
+ * only the colour. And the arc's alarm colours stay live alerts, not a setting's.
+ *
+ * Each bead is its own <circle> (ContextMeter.tsx), not a dash of one dashed
+ * track: a dash pattern cannot skip the bead the arc half-covers, which stuck
+ * out past the arc's round end as a grey nub. shared/ring.ts leaves those out
+ * whole. (0,2,0) beats `.ring circle`'s `fill: none`, as `.ring .tab-watch` does.
  */
-.tab-indicator[data-mode='bypass'] .ring-track {
-  stroke: var(--warning);
-  stroke-dasharray: 1.6 1.6;
+.ring .ring-bead {
+  fill: var(--ring-bypass);
+  stroke: none;
 }
 
 /* ------------------------------------------------------- titlebar actions */
@@ -1512,8 +1621,100 @@ body {
   color: var(--text-faint);
 }
 
+/* ------------------------------------------------------------ search hits */
+
+/*
+ * The part of a name, title or prompt a search matched.
+ *
+ * The text keeps the colour of the line it sits in, so every row it appears in
+ * keeps exactly the contrast it already had — the UA's black-on-yellow would
+ * have been the one hardcoded palette in the app. The wash is the accent's own
+ * soft tint, and the underline is the part that survives a theme where that
+ * tint barely separates from the page: it is 14% alpha, laid over a selected
+ * row it is fainter still, and a highlight only some themes can see is not a
+ * highlight. The ink, not the fill, because a 1px line is a foreground
+ * (gotcha 44).
+ */
+mark.hit {
+  background: var(--accent-soft);
+  color: inherit;
+  border-radius: var(--r-sm);
+  text-decoration: underline;
+  text-decoration-color: var(--accent-ink);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.125rem;
+}
+
+/*
+ * A project name or session title that holds a search hit wraps instead of
+ * ellipsising. Both lines are `nowrap` + ellipsis everywhere else, so a hit past
+ * the line's end was listed with the hit itself cut off: at the default 260px
+ * sidebar "Lecture application optimization and Discord integration" painted
+ * its only "integration" mark at x=298-359 of a title line that ends at 243,
+ * and "ai26-p0-search-realvinn" its "realvinn" at 172-221 of a name line that
+ * ends at 180 — rows that said nothing about why they were there. Measured
+ * over CDP. Windowing them the way a prompt is windowed (`snippet()`) would cut
+ * the start off a short title instead, which is the part you recognise it by;
+ * wrapping keeps the whole line at every width and Interface scale. Prompt
+ * labels and path lines stay on one line: they are windowed so the hit is near
+ * their start, and a 300-character prompt must not fill the list.
+ */
+.project-name.hit-whole,
+.session-title.hit-whole {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* The first prompt around a hit, under a titled session that matched only there. */
+.session-snippet {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* "Show N more" under a project's first few matching sessions. Declares its own
+   border and background, or Chromium's grey `buttonface` shows (gotcha 47). */
+.session-more {
+  align-self: flex-start;
+  padding: var(--space-4) var(--space-8);
+  border: none;
+  border-radius: var(--r-md);
+  background: transparent;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  cursor: default;
+  transition: background var(--dur-fast) var(--ease);
+}
+
+.session-more:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+/* One line of status in the sidebar list: "Searching sessions…", or why it could not. */
+.sidebar-note {
+  margin: 0;
+  padding: var(--space-8);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-snug);
+  color: var(--text-muted);
+}
+
 /* --------------------------------------------------------- context meter */
 
+/*
+ * Four tiers, from shared/contextLevel.ts: low (0-30%) green, mid (31-60%)
+ * orange, high (61-80%) red, full (81%+) solid red. The colours are
+ * --meter-low/-mid/-high, graphics-grade and solved per theme to 3:1 against
+ * --bg and --bg-sunken (shared/meter.ts) — not --success/--warning/--danger,
+ * which are text colours and read as mint, gold and pink on a dark page.
+ *
+ * The names are new on purpose (gotcha 22): the old warn/critical selectors now
+ * match nothing, so a missed one is a meter with no alarm colour, not a meter
+ * quietly painting the old amber. Healthy is green, no longer the accent.
+ */
 .meter {
   --meter-scale: 0;
   position: relative;
@@ -1531,21 +1732,40 @@ body {
   inset: 0;
   transform-origin: left center;
   transform: scaleX(var(--meter-scale));
-  background: var(--accent-ink);
+  background: var(--meter-low);
   transition: transform var(--dur-slow) var(--ease);
 }
 
-.meter[data-level='warn'] .meter-fill {
-  background: var(--warning);
+.meter[data-level='mid'] .meter-fill {
+  background: var(--meter-mid);
 }
 
-.meter[data-level='critical'] .meter-fill {
-  background: var(--danger);
+.meter[data-level='high'] .meter-fill,
+.meter[data-level='full'] .meter-fill {
+  background: var(--meter-high);
+}
+
+/*
+ * Full reads as a red BAR, not 81% of one: the unfilled rest of the track is
+ * tinted with the same red, so the fill still shows how much is left while the
+ * whole meter says "full". How much red is --meter-full-tint, lighter on a
+ * light theme, where 30% left the fill only 2.57:1 against the track it ends
+ * on -- under the 3:1 every other meter edge is held to, and at the one level
+ * where how much is left matters most. The caption is text, so it takes the
+ * TEXT-grade red, --danger: the graphics-grade --meter-high is 3:1 by
+ * construction and would fail 4.5:1 as a label on a light theme.
+ */
+.meter[data-level='full'] {
+  background: color-mix(in srgb, var(--meter-high) var(--meter-full-tint), var(--bg-sunken));
+}
+
+.meter[data-level='full'] + .meter-caption {
+  color: var(--danger);
 }
 
 /*
  * A reading restored from the last run, shown in the status bar for a paused
- * tab. Never warn/critical: those colours mean a live session is under
+ * tab. Never an alarm tier: those colours mean a live session is under
  * pressure right now, and a paused tab has no live session — only a saved
  * number that happened to be high when Stoke last quit. Same --text-muted
  * `.ring-pause` already uses for "no live data" on the tab strip's ring.
@@ -1566,6 +1786,10 @@ body {
   flex-shrink: 0;
 }
 
+.meter-caption {
+  font-size: var(--fs-xs);
+}
+
 /* Compact ring used inside tabs. */
 .ring {
   width: 0.875rem;
@@ -1583,23 +1807,47 @@ body {
   stroke: var(--border-strong);
 }
 
+/* The same four tiers and colours as the bar above. */
 .ring .ring-fill {
-  stroke: var(--accent-ink);
+  stroke: var(--meter-low);
   transition: stroke-dashoffset var(--dur-slow) var(--ease);
 }
 
-.ring[data-level='warn'] .ring-fill {
-  stroke: var(--warning);
+.ring[data-level='mid'] .ring-fill {
+  stroke: var(--meter-mid);
 }
 
 /*
- * Not --danger. Red in the tab strip now means one thing only — the worklog is
- * watching this session — and a ring cannot be allowed to say it by accident.
- * At 90% the arc is nearly a closed circle, so the shape already carries the
- * urgency the colour used to.
+ * Red from 61%. The ring used to stop at amber even at 90%, so that red in the
+ * strip could mean only the worklog dot — which also meant the status bar's
+ * bar went red while the tab's ring beside it stayed amber. The ask was a real
+ * red; the worklog dot keeps its own meaning by being a different shape, and is
+ * inverted over the full disc below.
  */
-.ring[data-level='critical'] .ring-fill {
-  stroke: var(--ring-full);
+.ring[data-level='high'] .ring-fill,
+.ring[data-level='full'] .ring-fill {
+  stroke: var(--meter-high);
+}
+
+/*
+ * "Just solid red": from 81% the ring is a filled red disc with the arc still
+ * drawn round it. A <circle> inside the ring's own <svg>, never a background on
+ * .tab-indicator (gotcha 33). (0,2,0), because `.ring circle` is (0,1,1) and
+ * sets `fill: none` — the trap `.ring .tab-watch` already documents.
+ */
+.ring .ring-core {
+  fill: var(--meter-high);
+  stroke: none;
+}
+
+/*
+ * The worklog dot would be red on red over the disc and simply disappear, so
+ * there it takes the page colour instead: a hole in the disc, which is still a
+ * dot in the centre. --bg on --meter-high clears 3:1 in every built-in theme
+ * (verify-color asserts it), which is the solved floor read from the other side.
+ */
+.ring[data-level='full'] .tab-watch {
+  fill: var(--bg);
 }
 
 /*
@@ -3950,15 +4198,55 @@ body {
   font-size: var(--fs-sm);
 }
 
+/*
+ * label · percent · reset on one line, the bar alone and full width on the
+ * line below. The bar's line holds nothing else, so every bar in the panel
+ * is the same length at the same x whatever its reset text says.
+ *
+ * The one-line grid this replaces (label · bar · percent · reset) ended in an
+ * `auto` column sized to each row's own reset text, and grid grows an `auto`
+ * track before a `1fr` one gets the leftover — so each bar was only what its
+ * text did not take: 0px beside "ahead · resets Mon 09:00 · in 3d 14h", and
+ * the percent after it slid sideways with the bar's end. Its comment said the
+ * numbers lined up; that stopped being true when the reset cell grew from a
+ * bare countdown into resetLabel().
+ *
+ * Label and percent columns are fixed, so the percentages still line up down
+ * the rows. 4.25rem fits "Extra usage", which 3.75rem ellipsised. 2.25rem fits
+ * "100%", and a plan window's percent is clamped to 0-100 and rounded at both
+ * sources (main's `percent` + shared `statusLineWindows`; usage.ts).
+ */
 .usage-row {
-  /* label · bar · percent · reset. Fixed outer columns keep the numbers
-     aligned down all the rows; the bar absorbs the remainder. */
   display: grid;
-  grid-template-columns: 3.75rem 1fr 3.25rem auto;
+  grid-template-columns: 4.25rem 2.25rem minmax(0, 1fr);
+  grid-template-areas:
+    'label pct reset'
+    'track track track';
   align-items: center;
-  gap: var(--space-8);
+  column-gap: var(--space-8);
+  row-gap: var(--space-4);
   font-size: var(--fs-xs);
+  line-height: var(--lh-tight);
   color: var(--text-muted);
+}
+
+/* Scoped to the row: .usage-track is also the title-bar chip's mini bar,
+   whose grid names no areas, so a bare `.usage-track { grid-area: track }`
+   would drop that bar into an implicit track. */
+.usage-row > .usage-label {
+  grid-area: label;
+}
+
+.usage-row > .usage-pct {
+  grid-area: pct;
+}
+
+.usage-row > .usage-reset {
+  grid-area: reset;
+}
+
+.usage-row > .usage-track {
+  grid-area: track;
 }
 
 /* A scoped window the account is not applying right now: drawn, but quiet, so
@@ -3987,6 +4275,13 @@ body {
 .usage-ahead {
   color: var(--warning);
   font-size: 0.9em;
+  /* The smaller font inherits the row's unitless line-height, and at some
+     Interface scales its rounded metrics make the line box a fraction taller
+     than the strut's: 0.9px at 0.8, 0.34 at 1.2, 0.23 at 1.3. The row that
+     says "ahead" came out that much taller than the others, so its bar and
+     every row below it moved down and the bars stopped being evenly spaced.
+     A line box no taller than its own glyphs cannot outgrow the strut. */
+  line-height: 1;
 }
 
 .usage-reset {
@@ -4183,4 +4478,240 @@ body {
 
 .activity-commit {
   color: var(--text-faint);
+}
+
+/* ---------------------------------------------- first-run campfire (splash) */
+
+/*
+ * Shown once per install or upgrade, over everything, for a few seconds. The
+ * decision to show it is `welcomePlan`'s (src/shared/welcome.ts); this is only
+ * what it looks like.
+ *
+ * `--z-toast`, above `--z-modal`: on the one launch this appears, nothing else
+ * should be able to sit in front of it, and the settings sheet is reachable
+ * from a keyboard chord that fires before this is dismissed.
+ *
+ * One thing it genuinely cannot cover, and it is not a bug here: a
+ * `WebContentsView` paints above every pixel of renderer DOM (gotcha 14), so
+ * with the docked browser open the splash would stop at its edge. A first run
+ * opens no browser, and an upgrade run restores tabs rather than panels.
+ */
+.campfire {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-toast);
+  display: grid;
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
+  backdrop-filter: blur(3px);
+  animation: fade var(--dur-slow) var(--ease);
+  cursor: default;
+}
+
+/*
+ * `margin: auto`, not `place-items: center`. Centring by distributing free
+ * space puts the top of the card above `scrollTop: 0` the moment the content
+ * outgrows the box, and `margin: auto` collapses to zero instead (gotcha 60).
+ * It is also what makes `modal-in` the right entrance — the card's resting
+ * `translate` is `none`, and `pop` would start it half its own width to the
+ * left (gotcha 47).
+ */
+.campfire-card {
+  margin: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-8);
+  padding: var(--space-32);
+  text-align: center;
+  animation: modal-in var(--dur-slow) var(--ease);
+}
+
+/*
+ * Every colour the fire is made of, derived from the one accent the theme (or
+ * the active profile) already resolved. `--accent` is a FILL and this is all
+ * fill, so none of it wants `--accent-ink` (gotcha 44).
+ *
+ * The three flame stops and the core are relative-colour steps off `--accent`
+ * rather than mixes toward a literal white: white is only "hotter" on a dark
+ * theme, and mixing toward `--text` inverts on the three light ones. Moving
+ * lightness and pulling chroma keeps the same relationship on all twelve —
+ * measured in the running app, not assumed, because an unsupported colour
+ * function is invalid at computed-value time and would simply not paint.
+ */
+.campfire-art {
+  --campfire-hot: oklch(from var(--accent) calc(l + 0.1) calc(c * 0.75) h);
+  --campfire-mid: var(--accent);
+  --campfire-deep: oklch(from var(--accent) calc(l - 0.12) c h);
+  --campfire-core: oklch(from var(--accent) calc(l + 0.2) calc(c * 0.35) h);
+  --campfire-halo: color-mix(in srgb, var(--accent) 40%, transparent);
+  width: min(11rem, 34vh);
+  height: auto;
+  overflow: visible;
+}
+
+.campfire-stop-hot {
+  stop-color: var(--campfire-hot);
+}
+
+.campfire-stop-mid {
+  stop-color: var(--campfire-mid);
+}
+
+.campfire-stop-deep {
+  stop-color: var(--campfire-deep);
+}
+
+.campfire-stop-core {
+  stop-color: var(--campfire-core);
+}
+
+.campfire-stop-halo {
+  stop-color: var(--campfire-halo);
+}
+
+.campfire-stop-halo-out {
+  stop-color: transparent;
+}
+
+/*
+ * The two logs. `--border-strong` alone was measured on screen as a plain grey
+ * bowtie under a warm fire — technically a neutral from the theme, and reading
+ * as a piece of UI chrome that had wandered into the artwork. A third of the
+ * accent mixed in is enough to make them wood without introducing a colour the
+ * theme does not already own.
+ */
+.campfire-logs {
+  fill: none;
+  stroke: color-mix(in oklab, var(--accent) 32%, var(--border));
+  stroke-width: 9;
+  stroke-linecap: round;
+}
+
+.campfire-spark {
+  fill: var(--campfire-core);
+  opacity: 0;
+  animation: campfire-spark 2100ms var(--ease) infinite;
+}
+
+/*
+ * `transform-box: view-box` plus an explicit origin at the base of the flame,
+ * so the fire leans and stretches from the logs rather than about its own
+ * centre. Without the `transform-box` the origin would be resolved against the
+ * <g>'s bounding box, which moves as the animation runs.
+ */
+.campfire-body,
+.campfire-halo {
+  transform-box: view-box;
+  transform-origin: 83px 264px;
+}
+
+.campfire-body {
+  animation: campfire-sway 1700ms ease-in-out infinite alternate;
+}
+
+.campfire-core {
+  transform-box: view-box;
+  transform-origin: 83px 260px;
+  animation: campfire-lick 760ms ease-in-out infinite alternate;
+}
+
+.campfire-halo {
+  animation: campfire-breathe 2600ms ease-in-out infinite alternate;
+}
+
+.campfire-title {
+  margin: var(--space-8) 0 0;
+  font-size: var(--fs-2xl);
+  font-weight: 600;
+  line-height: var(--lh-snug);
+  color: var(--text);
+}
+
+.campfire-sub {
+  margin: 0;
+  max-width: 22rem;
+  font-size: var(--fs-base);
+  line-height: var(--lh-normal);
+  color: var(--text-muted);
+}
+
+.campfire-hint {
+  margin: var(--space-16) 0 0;
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+}
+
+@keyframes campfire-sway {
+  from {
+    scale: 0.97 0.98;
+    rotate: -1.5deg;
+  }
+
+  to {
+    scale: 1.02 1.05;
+    rotate: 1.5deg;
+  }
+}
+
+@keyframes campfire-lick {
+  from {
+    scale: 0.9 0.88;
+    opacity: 0.85;
+  }
+
+  to {
+    scale: 1.05 1.12;
+    opacity: 1;
+  }
+}
+
+@keyframes campfire-breathe {
+  from {
+    scale: 0.92;
+    opacity: 0.7;
+  }
+
+  to {
+    scale: 1.06;
+    opacity: 1;
+  }
+}
+
+@keyframes campfire-spark {
+  0% {
+    opacity: 0;
+    translate: 0 0;
+  }
+
+  25% {
+    opacity: 0.9;
+  }
+
+  100% {
+    opacity: 0;
+    translate: 0 -34px;
+  }
+}
+
+/*
+ * Reduced motion. The global block above already forces every animation to 1ms
+ * and one iteration, which stops the fire dead — the keyframes are written so
+ * that the resting, un-animated shape is the good static one, so what is left
+ * is a still campfire rather than a squashed frame of a moving one.
+ *
+ * Stated again here rather than left to the global rule for one reason the
+ * global rule cannot cover: the sparks rest at `opacity: 0`, so with the
+ * animation gone they would be five invisible circles. They are removed
+ * outright instead, and the card keeps its fade so it does not appear with no
+ * transition at all.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .campfire,
+  .campfire-card {
+    animation: fade 1ms;
+  }
+
+  .campfire-spark {
+    display: none;
+  }
 }

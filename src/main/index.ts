@@ -25,6 +25,7 @@ import { clearWallpaper, mimeFor, storeWallpaper, WALLPAPER_SCHEME, wallpaperFil
 import { probeClaude } from './cli.ts'
 import { ContextWatcher } from './context.ts'
 import { findSessionFile, listProjects, listSessions } from './projects.ts'
+import { indexSessions } from './sessionIndex.ts'
 import { IDLE_GAP_MS, readActivity, type ActivitySessionInput } from './activity.ts'
 import { commitSubjects } from './activityGit.ts'
 import { manualProjectPatch, projectMetaPatch } from './projectMeta.ts'
@@ -1443,6 +1444,13 @@ function registerIpc(): void {
   /* -------------------------------------------------------------- projects */
   ipcMain.handle(CH.projectsList, () => listProjects(getSettings()))
   ipcMain.handle(CH.sessionsList, (_e, projectPath: string) => listSessions(projectPath))
+  /*
+   * Every session's title and first prompt, for the sidebar's search. The
+   * project list is read here rather than taken from the renderer: it is
+   * `listProjects` that drops hidden projects, so asking it again is what keeps
+   * a hidden project's sessions from reaching the renderer by way of search.
+   */
+  ipcMain.handle(CH.sessionsIndex, async () => indexSessions(await listProjects(getSettings())))
 
   ipcMain.handle(CH.projectsAddRoot, async () => {
     if (!win) return null

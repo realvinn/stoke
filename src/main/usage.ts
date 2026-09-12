@@ -289,8 +289,12 @@ export function parseUsage(body: unknown, now: number): UsageSnapshot {
  * for a reason that has nothing to do with the component.
  *
  * Off unless STOKE_FAKE_USAGE is set, so it can never reach a real window by
- * accident. The two windows straddle the pace marker deliberately: one under,
- * one over, so both styles are exercised.
+ * accident. The first two windows straddle the pace marker deliberately: one
+ * under, one over, so both styles are exercised; the third is an inactive
+ * scoped one, drawn dimmed. Extra usage is on for the same reason: it is the
+ * panel's only row with no window behind it, and "Extra usage" is the widest
+ * label the row's label column has to hold, so with it off that row could not
+ * be looked at in the running app at all.
  */
 function fakeUsage(now: number): UsageSnapshot {
   return {
@@ -299,7 +303,7 @@ function fakeUsage(now: number): UsageSnapshot {
       { kind: 'weekly', label: 'Weekly', percent: 64, severity: 'normal', resetsAt: now + 3 * 86_400_000, elapsed: 0.41, active: true },
       { kind: 'weekly_scoped', label: 'Fable', percent: 0, severity: 'normal', resetsAt: null, elapsed: null, active: false }
     ],
-    extraCredits: null,
+    extraCredits: { percent: 12, enabled: true },
     fetchedAt: now,
     error: null
   }

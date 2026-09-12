@@ -5,7 +5,8 @@ a desktop app for claude code. one window instead of a pile of terminals.
 it runs the real `claude` command underneath, so skills, mcp, plugins and slash
 commands all work exactly like they do in a terminal.
 
-windows and mac.
+windows and mac. a linux appimage is built too, but nothing here has ever
+been run on linux — treat it as experimental.
 
 ## what you get
 
@@ -18,7 +19,26 @@ windows and mac.
 - your phone can drive it. hold the mic button to talk instead of typing
 - it writes up your work into notion and clickup, if you let it. see below
 
-## run it
+## install it
+
+```bash
+curl -fsSL https://stoke.vinn.dev | sh          # mac, linux
+```
+
+```powershell
+irm https://stoke.vinn.dev | iex                # windows
+```
+
+that resolves the latest release, checks every byte against the sha512 in the
+release's own update manifest, and puts the app where it goes. run the same line
+again to upgrade. `STOKE_DRY_RUN=1` does all of it except the installing.
+
+the scripts are [install/install.sh](install/install.sh) and
+[install/install.ps1](install/install.ps1), and the endpoint serves those files
+byte for byte — <https://stoke.vinn.dev/install.sh> is worth reading before you
+pipe anything into a shell.
+
+## run it from source
 
 you need [node](https://nodejs.org) and [claude code](https://claude.com/product/claude-code) first.
 
@@ -36,13 +56,44 @@ npm run dist:win     # windows -> release/Stoke-<version>-x64-setup.exe
 npm run dist:mac     # mac (m1) -> release/Stoke-<version>-arm64.dmg
 ```
 
-a mac app can only be built on a mac. windows can't make one.
+`npm run targets` prints the rest. each one has to run on its own machine: a mac
+app can only be built on a mac, and — less obviously — an arm64 installer can
+only be built on an arm64 machine, because the terminal's native binary is
+picked by name at runtime and npm only installs the build host's.
 
-or build nothing at all: every tag builds both on ci, so the windows installer
-and the mac dmg are sitting on
+or build nothing at all: every tag builds all five on ci, so the windows
+installers, the mac dmgs and the linux appimage are sitting on
 [releases](https://github.com/realvinn/stoke/releases). there's a `.zip` up there
 too — that one is only how a mac installs its own updates, not something you
 need to download.
+
+## deploying the install endpoint
+
+`stoke.vinn.dev` is one cloudflare worker whose whole job is deciding whether
+you get the sh script, the ps1 script or the landing page. the two scripts are
+baked into it from `install/` at deploy time. two commands, by hand:
+
+```bash
+npx wrangler login       # once, in a browser
+npm run deploy:install   # every time install/ or worker/ changes
+```
+
+cutting a release does **not** need a deploy. the scripts ask github for the
+latest release at run time, so a new tag is picked up by the next `curl | sh`
+with nothing else to remember.
+
+two things to set once in the cloudflare dashboard, and the first one breaks the
+one-liner silently if you skip it:
+
+- **turn bot fight mode off for that hostname**, or add a waf skip rule for
+  `http.host eq "stoke.vinn.dev"`. a managed challenge answers with an html
+  interstitial and **http 200**, which `curl -f` does not catch and `sh` will
+  happily execute. both scripts check that what came back is really a release
+  manifest for exactly this reason, but the fix is to stop it being served.
+- **always use https** on for the zone.
+
+`npm run verify:install` covers the routing rule, both scripts and the campfire
+they draw — none of it needs a deploy or a token.
 
 ## phone access
 
@@ -119,11 +170,23 @@ tag. these bits of it still haven't been proven:
   build for a downloaded one, so the download button stays greyed out and sends
   you to the releases page until there's a developer id to sign with
 
+the windows half of the one-liner is in the same position, only more so:
+`install/install.ps1` has never been run, and has never been *parsed* by any
+powershell, because there is none on the machine it was written on. the mac and
+linux half has been driven end to end against a real release.
+
+one thing worth knowing about installing this way rather than downloading the
+dmg: `curl` attaches no quarantine attribute, so the app gets past the gatekeeper
+prompt a browser download would have shown you. the build is signed but not
+notarized by apple, and the windows installer isn't signed at all. that's
+convenient and it's exactly why the script is worth reading first.
+
 ## checks
 
 ```bash
 npm run check             # typecheck, every suite, then the build. this is the gate
 npm run verify:usage      # the limit numbers
+npm run verify:install    # the one-liner: who gets which script, and what they do
 npm run verify:context    # the context meter, run against the real transcripts
                           # in ~/.claude on whatever machine you run it on
 ```

@@ -13,15 +13,47 @@ Apple's own tooling, which does not exist on Windows.
 
 So the M1 is actually the more capable build machine. There is no way to make the Windows
 box emit a Mac app, and any tutorial claiming otherwise is describing a CI runner that is
-secretly a Mac. For an actual release neither desk has to choose: a pushed tag builds both
-platforms on GitHub's runners and publishes them together — `.github/workflows/release.yml`,
+secretly a Mac. For an actual release neither desk has to choose: a pushed tag builds every
+platform on GitHub's runners and publishes them together — `.github/workflows/release.yml`,
 described under Windows below.
 
-**Linux is configured and has never been built.** `electron-builder.yml` carries a `linux:`
-block with an AppImage target, but no npm script passes `--linux` and no CI job builds it, so
-no Linux artifact has ever come out of this repo and nothing here has been run on Linux at
-all. Treat that block as an intention rather than a supported platform; the README's "windows
-and mac" is the honest list.
+## The second rule: the ARCH has to match too, and getting it wrong is silent
+
+The table above is about the OS. There is an equally hard rule about the CPU, and unlike the
+first one it fails without telling you. `@lydell/node-pty` picks its native binary by name at
+**run** time —
+
+```js
+const PACKAGE_NAME = `@lydell/node-pty-${process.platform}-${process.arch}`
+```
+
+— and npm installs only the sibling package matching the machine `npm ci` ran on. So an M1
+running `npm run dist:win:arm64` has `node-pty-darwin-arm64` on disk and no
+`node-pty-win32-arm64`, and the installer it produces builds, installs, launches and kills
+every terminal tab with `MODULE_NOT_FOUND`. **There is no build error.**
+
+So each `dist:*` script belongs to one machine:
+
+```bash
+npm run dist:win        # on Windows x64
+npm run dist:win:arm64  # on Windows on ARM
+npm run dist:mac        # on Apple silicon
+npm run dist:mac:intel  # on an Intel Mac
+npm run dist:linux      # on Linux x64
+```
+
+`npm run targets` prints that table, its runners and its flags, from `scripts/targets.mjs` —
+which is the single list the release workflow's matrix is built from too, so the two cannot
+disagree. There is no universal Mac build for the same reason: electron-builder packs both
+slices from one `node_modules`, so one of them always gets the wrong terminal.
+
+**Linux x64 is now built and has still never been run.** `npm run dist:linux` and a
+`ubuntu-latest` job produce an AppImage — the only Linux format electron-updater can install
+without elevation — and `electron-builder.yml` sets `toolsets.appimage` so it carries the
+static FUSE-3 runtime instead of the legacy one that needs libfuse2 and will not start on a
+default Ubuntu 24.04. But nothing in this repo has ever *run* on Linux: not the PTY layer, not
+`cli.ts`'s login-shell probe, not the docked browser. Treat a Linux release as experimental,
+and `--appimage-extract-and-run` is the escape hatch inside a container.
 
 ## Windows
 
@@ -41,11 +73,21 @@ up to date.
 
 `dist:win` does **not** publish — it only writes into `release/`. Publishing is the tag's job,
 not a hand upload. `.github/workflows/release.yml` fires on any `v*` tag: it runs the typecheck
-and every verify suite that can pass on a clean runner, builds the Windows installer on
-`windows-latest` and the Mac `.dmg` and `.zip` on `macos-14`, and then a single publish job —
-single, because letting each matrix job publish for itself made both race and produce two draft
-releases with the assets split between them — creates the GitHub release from both sets of
-artifacts. So cutting a release is a version bump, a commit, and an annotated tag:
+and every verify suite that can pass on a clean runner, then builds each entry in
+`scripts/targets.mjs` on its own native runner, and then a single publish job — single, because
+letting each matrix job publish for itself made both race and produce two draft releases with
+the assets split between them — merges the per-job update manifests and creates the GitHub
+release from all of them.
+
+That merge is not housekeeping. electron-builder names an update manifest after the *platform*
+and adds the arch only on Linux, so the two Windows jobs both write `latest.yml` and the two
+macOS jobs both write `latest-mac.yml`. Flattening them would silently keep one of each and
+every installed copy on the losing arch would stop seeing updates, with nothing anywhere saying
+so. `scripts/merge-update-manifests.mjs` combines them, and
+`scripts/check-release-assets.mjs` refuses to publish a release whose feeds do not cover every
+platform the matrix claims to build.
+
+So cutting a release is a version bump, a commit, and an annotated tag:
 
 ```bash
 npm version 0.4.0 --no-git-tag-version
@@ -116,12 +158,18 @@ npm install
 npm run dev
 ```
 
-Other targets if you ever need them:
+The Intel build exists too, but it has to be produced **on an Intel Mac** — see "the second
+rule" above:
 
 ```bash
-npm run dist:mac:intel      # x64, for an Intel Mac
-npm run dist:mac:universal  # one binary that runs on both (roughly double the size)
+npm run dist:mac:intel      # x64, and only from an x64 Mac
 ```
+
+There is no `dist:mac:universal`. It was removed rather than left as an option: a universal
+bundle is packed twice from one `node_modules`, so whichever architecture the build machine is
+not gets no `node-pty-darwin-*` directory at all and its terminal throws MODULE_NOT_FOUND on the
+first session. The release publishes two dmgs instead, and electron-updater picks between them
+by filename, so an Intel install only ever sees Intel files.
 
 ### 3. If macOS refuses to open it
 
@@ -442,3 +490,33 @@ npm run icon    # rewrites build/icon.png at 1024x1024
 
 electron-builder derives the `.ico` and `.icns` from that PNG, so there is no binary icon
 asset to maintain by hand.
+
+## Regenerating the installer artwork
+
+Four more SVGs in `build/` are the sources for the Windows wizard's images and the macOS dmg
+background. After editing any of them:
+
+```bash
+npm run art                   # rewrites the three .bmp files and the dmg background pair
+npm run verify:installer-art  # and check they are still the format the installers can read
+```
+
+That writes `build/installerSidebar.bmp` and `build/uninstallerSidebar.bmp` (164×314),
+`build/installerHeader.bmp` (150×57), and `build/background.png` / `build/background@2x.png`
+(540×380 and 1080×760). All five are committed, like `build/icon.png` — **and so is
+`build/installer-art.json`**, which records a hash of every source and every output. That file is
+the only thing that can tell a raster apart from a stale raster: a `.bmp` does not say which SVG
+it came from, so without it, editing a source and skipping this command leaves the previous
+bitmap in place with every gate green. `verify:installer-art` recomputes the hashes, so commit
+the manifest in the same change as the art it describes.
+
+Two things worth knowing before changing them. The BMPs must stay 24-bit with the classic
+40-byte header — NSIS displays nothing else, and a wrong one is a makensis *warning* and a blank
+image rather than a failed build, which is what `verify:installer-art` exists to catch. And the
+dmg background's **@1x** size is the Finder window size in points, so the 540×380 and its
+1080×760 sibling have to stay a matched pair. The art is also composed around the default icon
+positions — measured from a built dmg's `.DS_Store` as 80px icons centred on (130,220) and
+(410,220), with labels beneath; moving those means redrawing the background.
+
+**Unverified:** how the Windows bitmaps look in a real wizard. Nobody has watched a Stoke
+Windows installer run.

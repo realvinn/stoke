@@ -6,11 +6,23 @@
  *   node scripts/verify-tabs.mts
  */
 import {
+  autoscrollVelocity,
+  AUTOSCROLL_MAX_PX_S,
+  AUTOSCROLL_ZONE_PX,
+  clampDrag,
   cycleTab,
+  dragView,
   focusAfterStart,
   moveTab,
+  nearestSlot,
   neighbourOf,
+  paneOrder,
+  pastSlop,
+  previewShift,
+  previewSlot,
   relaunchPlan,
+  revealDelta,
+  stillOver,
   replaceOrAppend,
   restartPlan
 } from '../src/renderer/src/lib/tabs.ts'
@@ -377,6 +389,271 @@ check(
   focused(null, 'new', 'b', false),
   'new'
 )
+
+/*
+ * The Chrome-style drag.
+ *
+ * It replaced HTML5 drag-and-drop, where a neighbour only moved once the
+ * POINTER was past its centre and then teleported a slot, because each swap
+ * was a committed reorder. Now the strip shows a preview with transforms and
+ * commits `moveTab` once, on release — so the one property that matters most is
+ * that the preview and the commit agree. If they did not, the settle animation
+ * would carry every tab to where the preview said and the commit would then
+ * put one somewhere else: a jump at the exact moment the drag ends.
+ *
+ * Only the maths is here. The wiring — pointer capture, Escape in the window's
+ * capture phase, the FLIP settle, the terminal keeping focus — is side effects
+ * in closures (gotcha 31) and is proven over CDP against the built app.
+ */
+console.log('\nthe drag preview is exactly the reorder it commits')
+{
+  let agree = 0
+  let permutations = 0
+  let total = 0
+  for (let from = 0; from < five5.length; from++) {
+    for (let to = 0; to < five5.length; to++) {
+      total++
+      const preview: ({ id: string } | undefined)[] = new Array(five5.length)
+      five5.forEach((tab, i) => {
+        preview[previewSlot(i, from, to)] = tab
+      })
+      const filled = new Set(five5.map((_, i) => previewSlot(i, from, to)))
+      if (filled.size === five5.length && preview.every(Boolean)) permutations++
+      const committed = moveTab(five5, five5[from].id, five5[to].id)
+      if (JSON.stringify(ids(preview as { id: string }[])) === JSON.stringify(ids(committed))) agree++
+    }
+  }
+  check(`for all ${total} (from, to) on five tabs, the preview order equals moveTab's`, agree, total)
+  check('and every preview puts exactly one tab in every slot', permutations, total)
+}
+check('the dragged tab itself shifts 0 — it follows the pointer, not a slot', previewShift(1, 1, 3), 0)
+check('dragging right: a passed neighbour closes the gap leftwards', previewShift(2, 1, 3), -1)
+check('dragging right: the tab now under the dragged one goes too', previewShift(3, 1, 3), -1)
+check('dragging right: nothing past the target moves', previewShift(4, 1, 3), 0)
+check('dragging left: the target makes room rightwards', previewShift(1, 3, 1), 1)
+check('dragging left: nothing before the target moves', previewShift(0, 3, 1), 0)
+check('no move, no shift', [0, 1, 2, 3, 4].map((i) => previewShift(i, 2, 2)), [0, 0, 0, 0, 0])
+
+/*
+ * Geometry as the strip really lays it out at Interface scale 1: 12rem tabs,
+ * a 4px gap, so slots every 196px. Fractional on purpose in the second half —
+ * rects, not integer offsetLeft, are what the drag measures, so a 1.1 scale's
+ * 211.2px tabs must not round a swap a pixel early.
+ */
+console.log('\nwhere a dragged tab lands')
+const slotLefts = [0, 196, 392, 588, 784]
+const TAB_W = 192
+const centres = slotLefts.map((l) => l + TAB_W / 2)
+check('a tab at rest is its own nearest slot', slotLefts.map((l) => nearestSlot(centres, l + TAB_W / 2)), [0, 1, 2, 3, 4])
+check('just short of half a slot rightwards stays put', nearestSlot(centres, centres[1] + 97.9), 1)
+check('just past half a slot rightwards takes the next one', nearestSlot(centres, centres[1] + 98.1), 2)
+check('just past half a slot leftwards takes the previous one', nearestSlot(centres, centres[1] - 98.1), 0)
+check('exactly halfway is a tie, and a tie goes to the lower slot', nearestSlot(centres, centres[1] + 98), 1)
+check('no slots, no answer', nearestSlot([], 50), -1)
+{
+  /*
+   * The old rule depended on where the tab was grabbed: 0.5 to 1.5 tab widths
+   * of travel before anything moved. The dragged tab's own centre is what is
+   * measured now, and the grab offset cancels out of it.
+   */
+  const from = 1
+  const landings = [5, 60, 120, 187].map((grab) => {
+    const pressX = slotLefts[from] + grab
+    const left = clampDrag(pressX + 99 - grab, slotLefts)
+    return nearestSlot(centres, left + TAB_W / 2)
+  })
+  check('the same travel swaps at the same point wherever the tab was grabbed', landings, [2, 2, 2, 2])
+}
+{
+  // Interface scale 1.1: 211.2px tabs and 4.4px gaps, so the midpoint between
+  // the first two slots is 107.8px out — which integer offsets would put at 108.
+  const scaled = [0, 215.6, 431.2, 646.8]
+  const scaledCentres = scaled.map((l) => l + 105.6)
+  check(
+    'fractional slots swap at their own midpoint, not a rounded one',
+    [107.7, 107.9].map((d) => nearestSlot(scaledCentres, scaledCentres[0] + d)),
+    [0, 1]
+  )
+}
+check('a drag inside the strip is not clamped', clampDrag(300, slotLefts), 300)
+check('dragging past the first slot holds at the first', clampDrag(-80, slotLefts), 0)
+check('dragging past the last slot holds at the last', clampDrag(9000, slotLefts), 784)
+check('a strip of one holds its tab still', clampDrag(40, [12]), 12)
+check(
+  'held at the far end, the dragged tab still takes the last slot',
+  nearestSlot(centres, clampDrag(5000, slotLefts) + TAB_W / 2),
+  4
+)
+{
+  /*
+   * An overflowing strip: the lifted tab is held inside the part on screen as
+   * well as inside its slots. Held by the slots alone, a tab dragged to the
+   * edge to autoscroll sat half past it and was clipped for the whole scroll —
+   * 52 of 112px out of sight, measured in the running app.
+   */
+  const view = { start: 100, end: 700, width: TAB_W }
+  check('a view holds the lifted tab off the hidden end', clampDrag(9000, slotLefts, view), 508)
+  check('and its far edge is exactly the visible edge', clampDrag(9000, slotLefts, view) + TAB_W, 700)
+  check('a view holds it off the hidden start', clampDrag(-80, slotLefts, view), 100)
+  check('inside the view nothing is clamped', clampDrag(300, slotLefts, view), 300)
+  check(
+    'a view showing the whole strip changes nothing',
+    [-80, 300, 9000].map((l) => clampDrag(l, slotLefts, { start: 0, end: 976, width: TAB_W })),
+    [-80, 300, 9000].map((l) => clampDrag(l, slotLefts))
+  )
+  check(
+    'a view narrower than the tab is ignored, not inverted',
+    clampDrag(9000, slotLefts, { start: 100, end: 250, width: TAB_W }),
+    784
+  )
+  // As autoscroll carries the view to the end, the held tab reaches the last slot.
+  const scrolled = [0, 100, 200, 300].map((s) =>
+    nearestSlot(centres, clampDrag(9000, slotLefts, { start: s, end: s + 676, width: TAB_W }) + TAB_W / 2)
+  )
+  check('held at the edge while the strip scrolls, it walks through the slots to the last', scrolled, [2, 3, 3, 4])
+}
+{
+  /*
+   * A tab the strip's edge cuts in half. Held by the visible part alone it
+   * leapt the whole hidden width as the press became a drag — 56px out from
+   * under a pointer that had moved 4, measured in the running app. The view it
+   * is held in takes in its own slot, so it follows the pointer from where it
+   * was and still goes no further out than that.
+   */
+  const w = 112
+  const lefts = [0, 116, 232, 348, 464, 580, 696, 812, 928, 1044]
+  // A 600px view scrolled to 500: slot 9 (1044-1156) is 56px past its end at 1100.
+  const home = lefts[9]
+  const view = dragView(500, 600, home, w)
+  check('a slot already on screen widens nothing', dragView(500, 600, lefts[6], w), { start: 500, end: 1100, width: w })
+  check('a half-hidden tab at the end is not yanked in as it lifts', clampDrag(home - 4, lefts, view), home - 4)
+  check('nor held short of the slot it started in', clampDrag(home, lefts, view), home)
+  check('and goes no further out than that', clampDrag(home + 60, lefts, view), home)
+  // Slot 5 (580-692) is 52px past a 640px view at scroll 0.
+  check(
+    'mid-strip, pushed outwards it stops at its own slot',
+    clampDrag(9000, lefts, dragView(0, 640, lefts[5], w)) + w,
+    692
+  )
+  check(
+    'and once the view has scrolled past that slot, the view holds it again',
+    clampDrag(9000, lefts, dragView(100, 640, lefts[5], w)) + w,
+    740
+  )
+  const cutStart = dragView(260, 600, lefts[2], w) // slot 2 (232-344) is 28px before 260
+  check('likewise at the start: not yanked', clampDrag(lefts[2] + 3, lefts, cutStart), lefts[2] + 3)
+  check('and no further out than its slot', clampDrag(-500, lefts, cutStart), lefts[2])
+
+  /*
+   * The allowance is for where the tab started, and ends at each edge the
+   * moment the tab is wholly inside it. Kept for the whole drag, a tab pressed
+   * half behind the right edge, dragged to the left edge while the strip
+   * scrolled back, then dragged back past the right edge ran straight out of
+   * sight — wholly behind the + button in the running app, for as long as
+   * autoscroll took to bring its old slot back.
+   */
+  const long = Array.from({ length: 16 }, (_, i) => i * 116)
+  const slot12 = long[12] // 1392-1504; a 600px view at scroll 848 ends at 1448, 56px short
+  let over = stillOver({ start: true, end: true }, slot12 - 4, w, 848, 600)
+  check('pressed half behind the end, only the end still hangs out', over, { start: false, end: true })
+  check(
+    'while it hangs out, the end keeps its allowance',
+    stillOver(over, slot12 - 20, w, 848, 600),
+    { start: false, end: true }
+  )
+  const inside = clampDrag(900, long, dragView(848, 600, slot12, w, over))
+  over = stillOver(over, inside, w, 848, 600)
+  check('dragged wholly inside, the allowance is gone', over, { start: false, end: false })
+  // The strip autoscrolls back 465px while it is held at the start; then back past the end.
+  const back = clampDrag(9000, long, dragView(383, 600, slot12, w, over))
+  check('coming back past the end, it is held at the visible edge, not its old slot', back + w, 983)
+  check(
+    'where the allowance kept for the whole drag would have let it out of sight',
+    clampDrag(9000, long, dragView(383, 600, slot12, w)) >= 983,
+    true
+  )
+  check(
+    'and a tab that starts on screen has no allowance at all',
+    stillOver({ start: true, end: true }, long[9], w, 848, 600),
+    { start: false, end: false }
+  )
+}
+
+console.log('\nthe tab a drag puts down is on screen')
+check('a tab already in view needs no scroll', revealDelta(200, 312, 100, 700), 0)
+check('flush with both edges is still in view', [revealDelta(100, 212, 100, 700), revealDelta(588, 700, 100, 700)], [0, 0])
+check('half past the end scrolls forward by exactly the hidden part', revealDelta(644, 756, 100, 700), 56)
+check('half before the start scrolls back by exactly the hidden part', revealDelta(44, 156, 100, 700), -56)
+check('a span wider than the view lines up at its start', revealDelta(150, 900, 100, 700), 50)
+
+console.log('\na press becomes a drag only past the slop')
+check('3px is still a click', pastSlop(3, 0), false)
+check('just past 3px is a drag', pastSlop(3.01, 0), true)
+check('diagonal travel is measured as distance, not per axis', pastSlop(2, 2), false)
+check('and counts once it is far enough', pastSlop(3, 3), true)
+check('straight down onto the terminal is a drag too, so the strip claims it', pastSlop(0, -4), true)
+
+console.log('\nautoscroll near the strip\'s edges')
+const view = { start: 100, end: 700 }
+check('the middle of the strip does not scroll', autoscrollVelocity(400, view.start, view.end), 0)
+check(
+  'the edge of the zone is still zero, so the ramp starts from rest',
+  autoscrollVelocity(view.start + AUTOSCROLL_ZONE_PX, view.start, view.end),
+  0
+)
+check(
+  'halfway into the start zone scrolls back at half speed',
+  autoscrollVelocity(view.start + AUTOSCROLL_ZONE_PX / 2, view.start, view.end),
+  -AUTOSCROLL_MAX_PX_S / 2
+)
+check(
+  'at the end edge it scrolls forwards at full speed',
+  autoscrollVelocity(view.end, view.start, view.end),
+  AUTOSCROLL_MAX_PX_S
+)
+check(
+  'past the end, off the strip, it keeps full speed rather than stopping',
+  autoscrollVelocity(view.end + 300, view.start, view.end),
+  AUTOSCROLL_MAX_PX_S
+)
+check(
+  'and past the start likewise, backwards',
+  autoscrollVelocity(view.start - 300, view.start, view.end),
+  -AUTOSCROLL_MAX_PX_S
+)
+check('a strip too narrow to have a middle never scrolls', autoscrollVelocity(110, 100, 140), 0)
+
+/*
+ * The terminal panes render in an order that does not follow the strip, so a
+ * reorder moves no pane's DOM node and cannot blur the xterm you are typing in.
+ */
+console.log('\nreordering the strip never moves a terminal pane')
+{
+  const tabsFor = (order: string[]) =>
+    order.map((id) => ({ id, kind: id.startsWith('new') ? 'new' : 'session' }))
+  const base = ['s3', 'new-1', 's1', 's4', 's2']
+  const want = ids(paneOrder(tabsFor(base)))
+  let same = 0
+  let moves = 0
+  for (let from = 0; from < base.length; from++) {
+    for (let to = 0; to < base.length; to++) {
+      moves++
+      const moved = moveTab(tabsFor(base), base[from], base[to])
+      if (JSON.stringify(ids(paneOrder(moved))) === JSON.stringify(want)) same++
+    }
+  }
+  check(`all ${moves} reorders of the strip leave the pane order untouched`, same, moves)
+  check('New Project tabs have no pane', want.includes('new-1'), false)
+  check('every session tab has one', want.length, 4)
+  const input = tabsFor(base)
+  paneOrder(input)
+  check('the strip itself is not re-sorted', ids(input), base)
+  check(
+    'opening a tab inserts its pane without reordering the others',
+    ids(paneOrder(tabsFor([...base, 's0']))).filter((id) => id !== 's0'),
+    want
+  )
+}
 
 /*
  * The tally is the LAST thing in this file, and it has to stay that way.

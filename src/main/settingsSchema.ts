@@ -11,6 +11,7 @@ import { DEFAULT_PROVIDERS, hydrateProviders } from '../shared/providers.ts'
 import { tidy } from './projectMeta.ts'
 import { DEFAULT_LIGHT_THEME_ID, DEFAULT_THEME_ID, validateTheme } from '../shared/themes.ts'
 import { DEFAULT_WORKLOG_BOARDS, WORKLOG_TARGETS } from '../shared/worklog.ts'
+import { clampWelcomeSeen } from '../shared/welcome.ts'
 import {
   clampFontSize,
   clampPort,
@@ -108,7 +109,11 @@ export const DEFAULT_SETTINGS: Settings = {
   // Background only: a notification for the tab in front is noise, one for a
   // tab behind another — or a window behind another app — is the point.
   notifications: 'background',
-  providers: { ...DEFAULT_PROVIDERS }
+  providers: { ...DEFAULT_PROVIDERS },
+  // Never seen. Every existing settings file also has no such key and therefore
+  // reads as this, which is right: the first launch after an upgrade is exactly
+  // one of the two moments the campfire is for.
+  welcomeSeenVersion: null
 }
 
 /**
@@ -296,6 +301,13 @@ export function hydrateSettings(raw: unknown): Settings {
       r.notifications === 'off' || r.notifications === 'always' || r.notifications === 'background'
         ? r.notifications
         : DEFAULT_SETTINGS.notifications,
+    /*
+     * Repaired rather than spread through. The raw value reaches `welcomePlan`,
+     * and a hand-written `"welcomeSeenVersion": true` would parse as no version
+     * at all — which reads as "never seen" and replays the splash on every
+     * launch. The clamp turns that into a single replay and then a clean write.
+     */
+    welcomeSeenVersion: clampWelcomeSeen(r.welcomeSeenVersion),
     uiScale: clampUiScale(r.uiScale),
     fontSize: clampFontSize(r.fontSize),
     terminal: clampTerminal(r.terminal),

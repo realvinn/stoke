@@ -2,6 +2,7 @@ import type { TerminalSettings, Theme, WallpaperSettings } from '@shared/types'
 import type { Profile } from '@shared/profiles'
 import { deriveAccent } from '@shared/accent'
 import { parseColor } from '@shared/color'
+import { meterScale } from '@shared/meter'
 
 /** camelCase token -> `--kebab-case` custom property. */
 function cssVar(key: string): string {
@@ -66,6 +67,20 @@ export function applyAppearance(theme: Theme, profile: Profile | null): void {
   root.style.setProperty('--accent-soft', tokens.accentSoft)
   root.style.setProperty('--accent-contrast', tokens.accentContrast)
   root.style.setProperty('--accent-ink', tokens.accentInk)
+
+  /*
+   * The context meter's green / orange / red: graphics-grade colours solved
+   * against this theme's own two grounds (see shared/meter.ts for why none of
+   * the theme's semantic tokens can be them). Written on every path for the
+   * same reason as --accent-ink above -- app.css declares no fallback, so an
+   * unwritten one would leave the ring and the bar with no colour at all. Not
+   * profile-dependent: a profile recolours the accent, and the meter no longer
+   * uses the accent.
+   */
+  const meter = meterScale(theme.colors.bg, theme.colors.bgSunken, theme.appearance)
+  root.style.setProperty('--meter-low', meter.low)
+  root.style.setProperty('--meter-mid', meter.mid)
+  root.style.setProperty('--meter-high', meter.high)
 }
 
 export function applyTypography(

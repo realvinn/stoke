@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Project } from '@shared/types'
 import { relativeTime } from '../lib/format'
+import { rankForPalette } from '../lib/projectSearch'
+import { Highlight } from './Highlight'
 
 interface Props {
   projects: Project[]
@@ -8,23 +10,14 @@ interface Props {
   onClose: () => void
 }
 
-/** Subsequence match, so "hrth" still finds "stoke". */
-function score(project: Project, query: string): number {
-  if (!query) return 1
-  const name = project.name.toLowerCase()
-  const path = project.path.toLowerCase()
-  if (name.startsWith(query)) return 1000 - name.length
-  if (name.includes(query)) return 500 - name.length
-  if (path.includes(query)) return 250
-
-  let i = 0
-  for (const ch of name) {
-    if (ch === query[i]) i++
-    if (i === query.length) return 100
-  }
-  return 0
-}
-
+/*
+ * Matching and ranking live in `projectSearch.ts`, shared with the sidebar. The
+ * palette carried its own `score()` that read the name and the path and never
+ * the label, so a folder renamed "Client site" could be found by that name in
+ * the sidebar and not here — and was listed here under the basename it had
+ * been renamed away from. It keeps its one extra, the subsequence match that
+ * lets "hrth" find "stoke", as the lowest tier.
+ */
 export function CommandPalette({ projects, onPick, onClose }: Props): React.JSX.Element {
   const [query, setQuery] = useState('')
   const [index, setIndex] = useState(0)
@@ -35,15 +28,7 @@ export function CommandPalette({ projects, onPick, onClose }: Props): React.JSX.
     inputRef.current?.focus()
   }, [])
 
-  const results = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    return projects
-      .map((p) => ({ p, s: score(p, q) }))
-      .filter((r) => r.s > 0)
-      .sort((a, b) => b.s - a.s)
-      .slice(0, 40)
-      .map((r) => r.p)
-  }, [projects, query])
+  const results = useMemo(() => rankForPalette(projects, query), [projects, query])
 
   useEffect(() => {
     setIndex(0)
@@ -82,7 +67,7 @@ export function CommandPalette({ projects, onPick, onClose }: Props): React.JSX.
               setIndex((i) => Math.max(0, i - 1))
             } else if (e.key === 'Enter') {
               e.preventDefault()
-              commit(results[index])
+              commit(results[index]?.project)
             }
           }}
         />
@@ -92,7 +77,7 @@ export function CommandPalette({ projects, onPick, onClose }: Props): React.JSX.
               <p>No project matches that.</p>
             </div>
           )}
-          {results.map((p, i) => (
+          {results.map(({ project: p, nameRanges, pathRanges }, i) => (
             <button
               key={p.path}
               className="palette-item"
@@ -100,8 +85,17 @@ export function CommandPalette({ projects, onPick, onClose }: Props): React.JSX.
               onMouseEnter={() => setIndex(i)}
               onClick={() => commit(p)}
             >
-              <span className="palette-item-name truncate">{p.name}</span>
-              <span className="palette-item-path truncate">{p.path}</span>
+              {/* The label, when the folder has one — what every other list
+                  shows, and what the user renamed this project to. */}
+              <span className="palette-item-name truncate">
+                <Highlight text={p.label ?? p.name} ranges={nameRanges} />
+              </span>
+              {/* The path lights up only when the name cannot — a hit in a
+                  parent folder, or a basename hidden behind a label. Both at
+                  once is the same word marked twice. */}
+              <span className="palette-item-path truncate">
+                <Highlight text={p.path} ranges={nameRanges.length ? [] : pathRanges} />
+              </span>
               <span className="palette-item-path">{relativeTime(p.lastModified)}</span>
             </button>
           ))}

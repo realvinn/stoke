@@ -55,7 +55,14 @@ function Bar({ window: w, now }: { window: UsageWindow; now: number }): React.JS
       aria-valuemax={100}
       aria-label={`${w.label}, ${w.percent}% used`}
     >
+      {/* In the order they are drawn: the text line, then the bar alone on
+          the line below (app.css `.usage-row`'s grid areas). */}
       <span className="usage-label">{w.label}</span>
+      <span className="usage-pct">{w.percent}%</span>
+      <span className="usage-reset">
+        {ahead && <span className="usage-ahead">ahead · </span>}
+        {w.active ? resetLabel(w.resetsAt, w.percent, now) : 'not in use'}
+      </span>
       <span
         className="usage-track"
         data-tone={tone(w)}
@@ -65,11 +72,6 @@ function Bar({ window: w, now }: { window: UsageWindow; now: number }): React.JS
         {w.elapsed !== null && (
           <span className="usage-pace" style={{ left: `${w.elapsed * 100}%` }} aria-hidden="true" />
         )}
-      </span>
-      <span className="usage-pct">{w.percent}%</span>
-      <span className="usage-reset">
-        {ahead && <span className="usage-ahead">ahead · </span>}
-        {w.active ? resetLabel(w.resetsAt, w.percent, now) : 'not in use'}
       </span>
     </div>
   )
@@ -300,6 +302,8 @@ export function UsageChip(): React.JSX.Element | null {
             {snap?.extraCredits?.enabled && (
               <div className="usage-row" title="Paid overage, once a window is spent">
                 <span className="usage-label">Extra usage</span>
+                <span className="usage-pct">{Math.round(snap.extraCredits.percent)}%</span>
+                <span className="usage-reset">paid overage</span>
                 <span
                   className="usage-track"
                   data-tone="normal"
@@ -307,8 +311,6 @@ export function UsageChip(): React.JSX.Element | null {
                 >
                   <span className="usage-fill" />
                 </span>
-                <span className="usage-pct">{Math.round(snap.extraCredits.percent)}%</span>
-                <span className="usage-reset">paid overage</span>
               </div>
             )}
 

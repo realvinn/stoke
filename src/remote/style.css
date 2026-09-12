@@ -103,6 +103,12 @@ button {
   color: var(--accent);
 }
 
+/* The terminal bar's context chip while the window is under 31% (main.ts CHIP_TONE). */
+.chip[data-tone='success'] {
+  background: color-mix(in srgb, var(--success) 16%, transparent);
+  color: var(--success);
+}
+
 .chip[data-tone='warn'] {
   background: color-mix(in srgb, var(--warning) 16%, transparent);
   color: var(--warning);
@@ -224,19 +230,42 @@ button {
   overflow: hidden;
 }
 
+/*
+ * The desktop's four tiers and colours (shared/contextLevel.ts for the tier,
+ * shared/meter.ts for the paint). --meter-* are solved per theme in main.ts's
+ * loadTheme by the same function the desktop uses, and are not in theme.colors,
+ * so each falls back to the nearest semantic token for the first frame and for
+ * a failed theme fetch -- a fallback, not a hand copy of the solved values,
+ * so there is nothing here to drift.
+ */
 .meter i {
   display: block;
   height: 100%;
-  background: var(--accent);
+  background: var(--meter-low, var(--success));
   transform-origin: left center;
 }
 
-.meter[data-level='warn'] i {
-  background: var(--warning);
+.meter[data-level='mid'] i {
+  background: var(--meter-mid, var(--warning));
 }
 
-.meter[data-level='critical'] i {
-  background: var(--danger);
+.meter[data-level='high'] i,
+.meter[data-level='full'] i {
+  background: var(--meter-high, var(--danger));
+}
+
+/*
+ * Full: the rest of the track is tinted red too, so the whole bar reads full.
+ * Less red on a light theme, as on the desktop (--meter-full-tint in app.css):
+ * a 30% tint on a light --bg-sunken leaves the fill only 2.57:1 against the
+ * track it ends on; 15% is 3.23:1. loadTheme sets data-appearance.
+ */
+.meter[data-level='full'] {
+  background: color-mix(in srgb, var(--meter-high, var(--danger)) 30%, var(--bg-sunken));
+}
+
+:root[data-appearance='light'] .meter[data-level='full'] {
+  background: color-mix(in srgb, var(--meter-high, var(--danger)) 15%, var(--bg-sunken));
 }
 
 .empty {

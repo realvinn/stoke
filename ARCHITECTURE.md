@@ -344,6 +344,14 @@ React 19, hand-written CSS, no component library.
 - Every colour is a CSS custom property written onto `:root`, so switching themes is one
   style write with no re-render. xterm gets its palette object separately.
 - Terminals are **never unmounted** on tab switch, only hidden, or scrollback would be lost.
+  Nor are they moved: the panes render in `paneOrder` (sorted by id, `lib/tabs.ts`), not in
+  strip order, because React moving a focused xterm's node blurs it.
+- The tab strip is dragged Chrome-style by `lib/useTabDrag.ts`: pointer events with capture on
+  `.tablist`, the real tab on an inline transform, neighbours sliding to preview slots, one
+  `moveTab` commit on release with a FLIP settle, Escape reverting. Imperative by design — no
+  React state per frame. Its maths (`nearestSlot`, `previewSlot`, `clampDrag`,
+  `autoscrollVelocity`) is in `lib/tabs.ts` and asserted by `verify:tabs`; the wiring is not
+  reachable from any suite (gotcha 31).
 - `lib/ptyBus.ts` retains output per process and replays it on attach, which also makes the
   component safe under React StrictMode's double-mount.
 - Shortcuts (`lib/shortcuts.ts`) use Cmd on macOS and **Ctrl+Shift** elsewhere, because bare
@@ -356,36 +364,170 @@ React 19, hand-written CSS, no component library.
 mobile bundle into `out/remote`. `build/icon.svg` is the icon source and `npm run icon`
 rasterises it through Electron itself, avoiding an image toolchain.
 
+The **installer artwork** works the same way. Four more SVGs in `build/` are the sources, and
+`npm run art` rasterises them to the bitmaps the Windows wizard and the macOS dmg actually
+read: `installerSidebar.bmp` and `uninstallerSidebar.bmp` (164×314), `installerHeader.bmp`
+(150×57), and `background.png` / `background@2x.png` (540×380 and 1080×760). The BMPs are
+written by hand, because Chromium's canvas cannot encode one and NSIS only displays the classic
+40-byte-header "Windows 3.x" variant. All five outputs are **committed**, like `build/icon.png`,
+so no release runner rasterises anything; `npm run art` is a deliberate act and does not run in
+`check`. What `check` runs is `verify:installer-art` over the committed files, because
+electron-builder validates none of them — see gotcha 69, and `.claude/rules/release.md` for what
+each failure looks like from outside. `npm run art` also writes `build/installer-art.json`,
+committed with them: it hashes each source and each output, which is the only way the suite can
+tell a current raster from one whose SVG has moved on since.
+
+`build/installer.nsh` is the only NSIS script Stoke owns, named by `nsis.include`, and it does
+one thing: `!insertmacro MUI_PAGE_WELCOME` inside a `customWelcomePage` macro. Without it the
+164×314 sidebar is read by no installer page until `MUI_PAGE_FINISH`, so the art commissioned
+for the wizard appears once, at the end, after every decision has been made — electron-builder
+adds no welcome page by default and inserts that macro only `!ifmacrodef`. `nsis.script` is the
+key that must never be used: it replaces the whole generated script and takes the uninstaller's
+generation *and* its signing with it. **None of the NSIS half is verified** — no round of work
+in this repo has run on Windows, so `verify:welcome` checks that the file says what
+app-builder-lib's own templates need it to say, and nothing about what a wizard draws.
+
+The same campfire appears **inside the app**, once per install or upgrade:
+`src/renderer/src/components/Campfire.tsx` draws `installerSidebar.svg`'s own flame paths as an
+SVG/CSS animation tinted from `--accent`, and `src/shared/welcome.ts` decides whether it plays
+at all. It is loaded through `import()` so a launch that is not showing it fetches, parses and
+evaluates none of its **JavaScript** (gotcha 40's lesson, one process over) — measured at 5,340
+bytes of its own chunk, 1,612 gzipped. Its CSS is the exception and is not free: Vite does not
+split a single imported `app.css`, so the campfire's 5,563 bytes of rules sit in the one 142 KB
+stylesheet every launch parses. The `import()` also carries a `.catch`, because `lazy` rethrows
+a rejected factory during render and nothing in this tree is an error boundary — without it a
+chunk that will not load blanks the entire window, measured. What it remembers is one settings
+field, `welcomeSeenVersion`: a version rather than a boolean, so an upgrade can be marked as
+well as an install without spending a second field.
+
 Self-update uses `electron-updater` against GitHub releases, configured in the `publish` block
 of `electron-builder.yml`. It only activates for a packaged app with a published release.
 
 **macOS packages can only be built on macOS**, and the Windows NSIS installer needs Windows,
-so neither installer can be produced on the other's machine. That is what
-`.github/workflows/release.yml` exists for: a pushed tag fans out to a `windows-latest` and a
-`macos-14` runner, and one later job creates the release from both sets of artifacts.
+so neither installer can be produced on the other's machine. The architecture is just as hard a
+constraint and fails silently instead (gotcha 67), so a release is **one arch per job on a
+native runner**: five legs, read out of `scripts/targets.mjs` by a `prepare` job rather than
+written into the workflow a second time. One later job downloads all five, merges the per-job
+`latest*.yml` — electron-builder names those per platform, so both Windows jobs and both macOS
+jobs write the same name (gotcha 68) — refuses to publish a feed that cannot update some arch,
+and creates the release.
 
-There is **no Linux build**. `electron-builder.yml` declares an `AppImage` target, but nothing
-invokes it — there is no `dist:linux` script and no CI job passes `--linux` — so no Linux
-package has ever been produced or shipped. Treat that target as a starting point for whoever
-wants one, not as a supported output.
+**Linux x64 is now built and has still never been run.** `npm run dist:linux` and a
+`ubuntu-latest` matrix leg produce an AppImage, and `toolsets.appimage` is set so it carries
+the static FUSE-3 runtime rather than the legacy one that needs libfuse2 and will not start on
+a default Ubuntu 24.04. AppImage is the only Linux format in scope, because it is the only one
+electron-updater installs without elevation; there is no `tar.gz`, because an unpacked tarball
+sets no `$APPIMAGE` and so can never update itself by any route. None of that is the same as
+the app working: nothing in `pty.ts`, `cli.ts`'s login-shell probe, `claudePaths.ts` or
+`workspaceRoots.ts` has ever executed on Linux. Treat a Linux release as experimental.
+Linux arm64 is deliberately not built (`NOT_BUILT` in `scripts/targets.mjs`).
 
 ## Testing
 
-Verification lives in `scripts/`, one `verify-*` suite per subject — eighteen of them now.
-Sixteen are `.mts`, run straight through node's type-stripping with no build step, and those
-sixteen are exactly what `npm run check` runs between the typecheck and the full build; `check`
-is the gate, and it is what "done" means here. Between them they cover the context maths, the
-statusLine payload and the plan limits read out of it, settings hydration, folder metadata,
-profile resolution, colour and contrast, terminal cell widths, tab selection after a close, the
-ssh argv and remote transcript fetch, the updater's error handling, and five separate suites for
-the worklog. Each runs alone; `CLAUDE.md` is where the per-suite descriptions live.
+Verification lives in `scripts/`, one `verify-*` suite per subject — thirty-four of them now.
+Thirty-two are in `npm run check`, between the typecheck and the full build; `check` is the
+gate, and it is what "done" means here. They are `.mts` run straight through node's
+type-stripping with no build step, except `verify:selection`, which opens a real Electron window
+and so needs a display. Each runs alone:
 
-The other two are `.mjs` and want a live instance rather than a fixture, which is why `check`
-cannot run them: `verify:extract` drives the page extractor through Stoke's own MCP endpoint,
-and `verify:security` is pointed at a running remote server with a URL and a token. CI leaves
-out two more of its own — fourteen suites run there — for reasons written into
-`.github/workflows/release.yml`. `verify:ssh` fails on a modern OpenSSH, which rejects the
-suite's two-word host-alias fixture; pre-existing, and unrelated to any release. And
+```bash
+npm run verify:context        # context meter against the real transcripts on this machine
+npm run verify:statusline     # the statusLine wrapper: payload, suppression, pass-through,
+                              # the context meter's four tiers at every boundary, and that
+                              # no bypass bead is drawn where the ring's arc would touch it
+npm run verify:unicode        # xterm's cell widths for emoji and box drawing
+npm run verify:profiles       # profile resolution + every accent clears 4.5:1
+npm run verify:settings       # settings hydration: repair, clamps, what it drops, and the
+                              # light/dark theme pair the OS chooses between
+npm run verify:claude-config  # writing Claude Code's OWN config: the allowlist, the refusals,
+                              # and the ~/.claude.json lock. Runs against real files in a temp
+                              # CLAUDE_CONFIG_DIR, never the user's (gotchas 38, 39)
+npm run verify:folders        # folder metadata: trimming, caps, added folders, hide/pin
+npm run verify:search         # sidebar + palette search: tiers, recency, highlight ranges on
+                              # accented text, the label in both surfaces; and the session
+                              # index against real files in a temp dir - a 40 MB transcript
+                              # costs two 256 KB reads, a second pass costs none
+npm run verify:cli            # finding the `claude` binary: the version-manager shim dirs,
+                              # the probe's retry rule, and the two not-found messages.
+                              # Hermetic - HOME is redirected into a temp tree (gotcha 52)
+npm run verify:tabs           # which tab is selected after one is closed, where the
+                              # next/previous chord lands, and the tab drag's maths: that its
+                              # preview is exactly the reorder it commits, and that no
+                              # reorder moves a terminal pane
+npm run verify:shortcuts      # app chords vs the keys the terminal owns, the zoom maths, and
+                              # that Ctrl+Tab and the bare brackets still reach the CLI
+npm run verify:drop           # what a dropped file types: quoting per platform, and the
+                              # names that cannot be typed at all
+npm run verify:campfire       # the installer's campfire: the locked alphabet that lets one
+                              # copy of the art live in a POSIX string and a PowerShell
+                              # here-string, a hearth that never moves, the stage boundaries,
+                              # a golden hash per colour tier, zero escape bytes in `none`,
+                              # and the shipped art blocks against the generator. Also runs
+                              # the block through sh, bash, zsh and dash for real
+npm run verify:color          # colour maths: contrast, APCA, oklch; every theme's tokens, the
+                              # accent matrix, the meter colours and the bypass mark at 3:1
+npm run verify:theme-gen      # the theme generator: that a five-field seed reproduces every
+                              # built-in byte-for-byte, that no slider position can breach a
+                              # contrast floor, and that a saved seed survives hydration
+npm run verify:updates        # the updater: a failure and a success must not read the same,
+                              # whether the channel the CLI follows is itself behind latest,
+                              # and macOS must still build the zip it updates from (24, 25, 46)
+npm run verify:worklog-gate     # which sessions the worklog agent would watch
+npm run verify:worklog-runner   # prompt building, JSON parsing, titles, create-vs-update
+npm run verify:worklog-retry    # writes happen once, and a retry never duplicates a record
+npm run verify:worklog-recall   # the read-only board read, its parse and its cache
+npm run verify:worklog-autoscan # when a session is scanned without being asked
+npm run verify:ssh            # ssh argv, ~/.ssh/config parsing, the remote transcript fetch
+npm run verify:remote         # phone access: where the link points and how it says it gets
+                              # there, the LAN interface ranking, what a dead tunnel reports
+npm run verify:installer-art  # the committed installer bitmaps: BMP3 headers decoded by hand,
+                              # exact dimensions, that neither the bitmaps nor the dmg PNGs are a
+                              # well-formed blank, that the generator, electron-builder.yml and
+                              # the four SVG sources name the same files and share one campfire,
+                              # and — via build/installer-art.json — that every raster was
+                              # generated from the SVG committed beside it
+npm run verify:install        # the one-line installer and the endpoint that serves it: the whole
+                              # User-Agent matrix through the Worker's routing rule (PowerShell
+                              # before anything browser-shaped, and HTML as the fallback), the
+                              # truncation guard as the LAST line of both scripts, `-n` under sh,
+                              # bash, dash and zsh, install.sh's own painter run and diffed
+                              # against campfire.ts's paint() in all four tiers, its degrade
+                              # rules against renderPlan's, the sha512-is-base64 digest run on
+                              # random bytes, and the NSIS upgrade GUID recomputed from
+                              # electron-builder.yml's appId
+npm run verify:welcome        # the first-run campfire: which (lastSeen, current) version pairs
+                              # play it and which must not, the settings field it remembers that
+                              # in, that the component carries no colour and no second copy of
+                              # the flame geometry, that App imports it with import() rather than
+                              # statically — and, from the other end of the same feature, that
+                              # build/installer.nsh still defines customWelcomePage and
+                              # electron-builder.yml still names it through `include`
+npm run verify:selection      # Option-drag selection survives letting go of the mouse.
+                              # Opens a real Electron window, so it needs a display
+                              # and is one of the two `check` suites CI skips
+                              # (the other is verify:context)
+npm run verify:extract        # page extractor regression set
+npm run verify:usage          # plan limits from the statusLine payload; STOKE_LIVE_USAGE=1 adds the account call
+npm run verify:security <url> <token> --access   # remote server, against a running instance
+```
+
+Four more sit in the `check` chain without an entry above: `verify:activity` (the activity
+report's active time and lines written — a session's wall-clock span is not time worked),
+`verify:restore` (the tab-restore store: what survives a quit, what is trimmed, what a corrupt
+file does), `verify:targets` (that every runner in the release matrix is native for the arch it
+builds, that the `dist:*` scripts and the workflow both read `scripts/targets.mjs`, and that
+every platform/arch node-pty publishes is built or named as deliberately unbuilt) and
+`verify:manifests` (the update-manifest merger and the publish gate, asserted against the real
+published v0.9.4 manifests, against electron-builder's own `writeUpdateInfoFiles`, and against
+electron-updater's own `findFile`/`filterFilesForArch`).
+
+The two `.mjs` suites want a live instance rather than a fixture, which is why `check` cannot
+run them: `verify:extract` drives the page extractor through Stoke's own MCP endpoint, and
+`verify:security` is pointed at a running remote server with a URL and a token.
+
+CI runs the `check` chain minus two, and the list is derived rather than transcribed:
+`scripts/ci-verify.mjs` reads the chain out of `package.json` and fails on a stale exclusion
+(`npm run verify:ci -- --list` prints the plan). `verify:selection` needs a display. And
 **`verify:context` deliberately reads the real transcripts under `~/.claude/projects`**: that is
 the reason it exists, not an oversight. It asserts the context maths, the window inference and
 the live watcher path against actual sessions on the machine, so on a clean runner the directory
@@ -396,3 +538,239 @@ Beyond that, verification has been done by driving the running app over CDP — 
 `--remote-debugging-port`, clicking through real flows and capturing screenshots. That is how
 every bug listed in CLAUDE.md was found; all of them produced *empty or wrong output rather
 than errors*, which is exactly the class a typecheck cannot catch.
+
+## File map
+
+Every file worth knowing about, and the one thing about it that is easy to get wrong. CLAUDE.md
+carries a shorter copy; this is the full one.
+
+```
+src/main/         Electron main process
+  index.ts          lifecycle, window, every IPC handler
+  pty.ts            PTY sessions, env sanitising, scrollback, fan-out
+  cli.ts            locating claude, building its argv
+  projects.ts       project + session discovery from Claude's own files
+  projectMeta.ts    per-folder emoji/label/added-by-hand, and the one pair of caps
+  context.ts        live context-window watcher (polls transcripts). Publishes on a
+                    changed transcript OR a newly-stated window, for gotcha 49's reason
+  sessionFile.ts    transcript parsing and the context maths. `promptOf`/`titleOf` are the
+                    one definition of a session's first prompt and title
+  sessionIndex.ts   every session's title + first prompt, for search: one 256 KB chunk
+                    from each end of a transcript, cached on mtime+size, top-level
+                    `*.jsonl` only (never `<id>/subagents/`). Never `listSessions`, which
+                    parses every file whole
+  statusLine.ts     Stoke's statusLine wrapper: context window + plan limits, and the SAME
+                    shim run as a hook. The session's --settings file carries Stop,
+                    Notification and UserPromptSubmit hooks that append one JSON line each
+                    to <key>.events.jsonl; index.ts polls that every second and pushes
+                    `session:event`, which the tab strip's activity dot, the status bar's
+                    "Claude is working…" line and the OS notifications all read. Measured:
+                    hooks in a --settings file fire and MERGE with the user's own (a project
+                    hook and the flag-file hook both ran on one prompt), and a hook that
+                    prints is shown in the TUI (Stop) or fed to the model (UserPromptSubmit),
+                    so the event branch of the wrapper prints nothing, ever
+  usage.ts          plan limits from the undocumented OAuth endpoint the CLI itself calls.
+                    Reads the token from ~/.claude/.credentials.json OR, on macOS, the login
+                    Keychain - which is why the chip works with no session running (gotcha 36)
+  claudePaths.ts    where Claude Code's own two config files are. Pure; env and home are
+                    arguments, so a suite can ask about another machine's layout
+  claudeSettings.ts ~/.claude/settings.json: read, and patch one allowlisted key, preserving
+                    every key Stoke does not draw
+  claudeGlobalConfig.ts  ~/.claude.json: the lock protocol, the refusals, and the
+                    verify-after-write. See gotcha 38 before touching it
+  browser.ts        docked Chromium: tabs, find, console/network capture
+  workspace.ts      default folder + scratch folders
+  workspaceRoots.ts where a session with no project starts, per platform. Takes the
+                    platform and home as arguments so a suite can ask for another machine's
+  wallpaper.ts      the picked image, copied under userData and served over the custom
+                    `stoke-asset://` scheme. Refuses anything that is not a bare file name
+                    inside its own folder, so the scheme cannot be turned into a file reader
+  store.ts          settings persistence
+  settingsSchema.ts defaults + hydrate, with no electron import so a suite can run it
+  tabStore.ts       the tabs that were open at quit. Restoring is a relaunch
+                    (`claude --resume`), never a reattach: a CLI child cannot outlive the app
+  activity.ts       what was worked on, from Claude Code's own transcripts. Pure and
+                    electron-free so verify:activity can run it
+  activityGit.ts    commit subjects to put names to the activity numbers. Corroboration,
+                    never a dependency: several work folders have no repository at all
+  updates.ts        claude CLI version/health, and the gate that decides whether to
+                    install an update unasked. Reads the CLI's own `autoUpdatesChannel`
+                    rather than assuming `latest`, because those are different numbers
+                    (gotcha 46). The gate is pure and separate from the six-hour timer
+                    that calls it, for gotcha 31's reason
+  selfUpdate.ts     Stoke's own updates (electron-updater)
+  codesign.ts       whether this copy's signature could ever accept a downloaded update.
+                    No electron import, so verify:updates can run the rule. Gotcha 24
+  profiles.ts       plans and creates a profile's folder + scan root
+  ssh.ts            ~/.ssh/config parsing, the ssh argv, the transcript command
+  sshTranscript.ts  pulls a remote session's JSONL back, so SSH sessions can be read
+  agent.ts          headless `claude -p` runner (prompt on stdin, json out)
+  stt.ts            the one place Stoke talks to the speech sidecar. Both the desktop and
+                    the phone route through it, because "only main may reach it" is the
+                    sidecar's whole authentication story
+  audio/            reads the default capture device, to warn about virtual cables
+  worklog/          the Notion/ClickUp review queue
+    gate.ts           which project groups are watched
+    watch.ts          the one predicate: is this session watched, and why not
+    sessionStore.ts   session -> folder/host, on disk, so a restart keeps placing them
+    autoscan.ts       when a quiet session is scanned without being asked
+    autoscanStore.ts  its baselines on disk, split out so autoscan.ts imports nothing
+    recall.ts         reads the boards (read-only, cached) so updates beat duplicates
+    runner.ts         scan (read-only) and apply (writes, on accept only)
+    queue.ts          the persisted proposal list
+    json.ts           the shared "read JSON out of a model's reply" rescue
+  mcp/              MCP server exposing the browser to Claude
+    server.ts         HTTP transport + the 17 tool definitions
+    page.ts           drives the page through the injected extractor
+    cdp.ts            short-lived CDP sessions over the docked page. browser.ts long
+                      claimed the debugger slot had to stay free because only one client
+                      may attach; probing Electron 43 disproved that, which is what makes
+                      audit.ts, design.ts and perf.ts possible at all
+    audit.ts          passive security/hygiene audit: reads only what Chromium already
+                      received or rendered. Nothing probes, so "not observed" is reported
+                      as exactly that
+    design.ts         what a page looks like, as text: a DOMSnapshot compressed hard
+    perf.ts           why a page is slow, as a checklist. Reloads by default, because
+                      unused bytes only mean anything if tracking started first
+    stack.ts          what a page is built with, from live evidence rather than a
+                      signature database that would already be stale
+    inject/extract.js runs IN the page; markdown + refs + find. No deps.
+  remote/           phone access
+    server.ts         loopback HTTP + WebSocket, token auth, tailnet listener, and
+                      /api/theme so the phone paints the desktop's own palette
+    link.ts           where the phone link points and HOW it gets there (`reach`).
+                      Pure, so verify:remote can hold the fallback order. Gotcha 53
+    tunnel.ts         supervises cloudflared; finds it on the login-shell PATH
+    cloudflare.ts     everything BEFORE a tunnel exists: is it installed, are you logged in,
+                      does the tunnel exist, does a hostname point at it. The probe mutates
+                      nothing and has a third answer, `unknown`, because the account lookup is
+                      a live API call. Gotcha 58
+src/preload/      contextBridge -> window.stoke
+src/renderer/     desktop React UI (all colour via CSS custom properties)
+  src/lib/projectSearch.ts  the one matcher the sidebar search and the Cmd+K palette share:
+                    label/name/path, session title and first prompt, ranked by tier then
+                    recency, with highlight ranges. No runtime imports, so verify:search
+                    imports it directly
+src/remote/       mobile web UI, built separately to out/remote
+src/shared/       types, IPC channel names, themes, profiles, colour maths
+  paths.ts          cwd -> project group. Pure, platform passed in, no node imports,
+                    so the renderer runs the identical rule for the profile chip
+  ladder.ts         the 12-step ladder every built-in theme is generated from. Fixed
+                    rungs in OKLCH L, solved onto rather than picked. Gotcha 43
+  themeGen.ts       seed -> whole theme. The generator themes.ts always claimed existed and
+                    the repo did not contain; what the theme editor drives. Gotcha 43
+  drop.ts           what a file dropped on the terminal types: the per-platform quoting,
+                    and the refusal for a name that cannot be typed. Pure, platform passed
+                    in, so verify:drop runs it for every OS. Gotcha 59
+  campfire.ts       the fire the one-line installer burns while it downloads: twelve frames
+                    over a constant hearth, which one a progress value shows, the four
+                    colour tiers and the segment encoding the shell draws from, and the
+                    plain lines that replace all of it when the terminal cannot draw.
+                    Nothing in the app imports it — the installers do, through
+                    gen-installer-art.mts. No imports at all, no RNG, no clock. Gotcha 70
+                    gen-installer-art.mts. No imports at all, no RNG, no clock. Gotcha 67
+  welcome.ts        whether the first-run campfire plays, from two strings: the version whose
+                    splash was last watched and the version running now. A semver comparison
+                    and the clamp that repairs the stored value, together in one file because
+                    a clamp that kept what the comparator cannot read would replay the splash
+                    on every launch. Nothing about how it looks
+  notation.ts       reading and writing one colour as OKLCH/HSL/RGB/hex. Split out of the
+                    component so a suite can reach it
+  accent.ts         one accent in, five tokens out, per appearance. The reason
+                    --accent (a fill) and --accent-ink (a foreground) are two
+                    things and not one. Gotcha 44
+  meter.ts          the context meter's green / orange / red (--meter-low/-mid/-high),
+                    graphics-grade and solved per theme to 3:1 on --bg and --bg-sunken.
+                    Written by applyAppearance and by the phone's loadTheme; not on
+                    ThemeColors, so no theme literal moves (gotcha 43)
+  contextLevel.ts   the percent the meter prints and its tier: 0-30 low, 31-60 mid,
+                    61-80 high, 81+ full, banded on the ROUNDED percent. No imports, so
+                    the ring, the bar, the phone and verify:statusline run one copy
+  ring.ts           the tab ring's radius and stroke, and which of bypass mode's eight
+                    beads it draws: any bead the arc would touch is left out whole, so
+                    none pokes out past the arc's round end. No imports, for the suite
+  worklog.ts        the board targets the worklog can write to, and their defaults
+  claudeConfig.ts   which of Claude Code's settings Stoke will draw, their vocabularies, and
+                    the never-offer list. Hand-transcribed from the CLI binary's zod schema
+  ui.ts             the uiScale / fontSize bounds, TERMINAL_DEFAULTS and WALLPAPER_DEFAULTS,
+                    and the clamps both processes use. A new terminal or wallpaper field needs
+                    its default in TERMINAL_DEFAULTS/WALLPAPER_DEFAULTS and a line in
+                    clampTerminal/clampWallpaper in the same change: the clamps rebuild the
+                    object from named keys, so a settings file written by an older build
+                    hydrates a field they miss as undefined and the pane that reads it
+                    renders blank. settingsSchema.ts only spreads the defaults
+  statusLine.ts     the two plan-limit windows the usage chip draws, from the payload
+  usageView.ts      the plan-limit chip's arithmetic, framed as what is left and when it
+                    comes back. Pure, so a suite can hold it
+  color.ts          contrast, APCA and oklch maths behind the ladder and the accent ink
+  api.ts            the type of window.stoke, shared by preload and renderer
+scripts/          the verify-*.mts suites, make-icon.cjs
+  ci-verify.mjs     derives CI's suite list from the `check` chain and fails on a stale
+                    exclusion. `npm run verify:ci -- --list` prints the plan
+  targets.mjs       the ONE list of what a release builds: key, job name, runner,
+                    electron-builder flags, and the platform/arch the runner must be.
+                    The release workflow reads its matrix from it (`--matrix`) and every
+                    `dist:*` script resolves its flags from it (`--build <key>`), so the
+                    two cannot drift. One arch per job on a NATIVE runner, because npm
+                    installs only the host's `@lydell/node-pty-<platform>-<arch>` and
+                    node-pty resolves that name at runtime — a cross-arch build ships a
+                    terminal that throws MODULE_NOT_FOUND with no build error. Gotcha 67
+  assert-packaged-pty.mjs  each build job reads back which node-pty it actually packaged,
+                    under app.asar.unpacked. The only thing that turns that silent runtime
+                    failure into a red job
+  merge-update-manifests.mjs  the publish job's merge: electron-builder names a manifest
+                    per PLATFORM (arch-suffixed only on Linux), so two Windows jobs and
+                    two macOS jobs each write one `latest.yml`/`latest-mac.yml` and only
+                    one can survive a flatten. Groups by basename, merges each group by
+                    updateInfoBuilder's own rules, refuses a version mismatch. Dependency
+                    free, including its YAML, so the publish job needs no `npm ci`
+  check-release-assets.mjs  the publish gate: for every target in targets.mjs, the feed
+                    its updater fetches must list a file its updater will accept, and that
+                    file must be on disk. Derived from the matrix, so a new platform
+                    tightens it in the same edit
+  make-installer-art.cjs  rasterises build/'s four installer SVGs through Electron, as
+                    make-icon.cjs does, plus a hand-written BMP3 encoder: canvas cannot
+                    emit a BMP and NSIS shows only the 40-byte-header kind. Alpha is
+                    composited onto a per-asset solid, since BMP3 has none. Gotcha 69
+  mac-signing-secrets.sh  puts the release signing certificate into GitHub secrets.
+                    Exists because macOS 26 removed Keychain Access, so every
+                    "export it from the GUI" recipe is now dead. Gotcha 24
+  gen-themes.mts    prints a built-in theme as the literal `themes.ts` checks in, from its
+                    seed. `node scripts/gen-themes.mts lantern`, or `--all`. Gotcha 43
+  gen-installer-art.mts  prints the campfire art block the sh and ps1 installers carry,
+                    between `# BEGIN CAMPFIRE ART` sentinels. Same arrangement as
+                    gen-themes.mts: the generator is the only way the art is produced and
+                    verify:campfire compares the shipped block against it byte for byte,
+                    so a hand-edited frame fails check. `sh`, `ps1` or `--all`
+  campfire-demo.mts  watches the fire without an install: `--sweep` for every frame (safe to
+                    redirect and `type` on Windows), `--plain` for the degraded path,
+                    `--mode=` to force a tier. The only way to see the things no pure suite
+                    can: whether a console renders the sequences, and whether the cursor
+                    comes back
+  cdp-eval.mjs      evaluates one expression in the renderer, or screenshots it.
+                    Picks the target by its window.stoke object, never by URL
+install/          the one-line installer, and the page a browser gets instead
+  install.sh        macOS and Linux. Whole body inside main(), called on the LAST line,
+                    because `sh` executes a piped script as it reads it. Resolves the
+                    version from the release's own latest*.yml, verifies the sha512 —
+                    which is BASE64, not hex — burns the campfire while it downloads, and
+                    installs. `--print-plan`, `--fire-frames` and `--sha512` are offline
+                    debugging flags that verify:install runs the shipped code through.
+                    Gotcha 71
+  install.ps1       Windows, under PowerShell 5.1 and 7. Same shape, Install-Stoke on the
+                    last line. NEVER RUN: there is no PowerShell on this machine, so the
+                    file has not been parsed by one. Gotcha 71
+  index.html        what a browser gets from stoke.vinn.dev, and the fallback for anything
+                    the Worker could not identify. No frameworks, no fonts, Stoke's palette
+worker/           the Cloudflare Worker behind stoke.vinn.dev
+  route.ts          which of the three bodies a request gets, and why. Pure and import-free
+                    so verify:install can run the whole User-Agent matrix through it — the
+                    PowerShell test must come before anything browser-shaped, because
+                    PowerShell's own User-Agent starts `Mozilla/5.0`. Gotcha 71
+  index.ts          content negotiation and nothing else. The three bodies are EMBEDDED at
+                    deploy time from install/, never fetched at request time, and the
+                    Worker never learns what the current release is — the scripts resolve
+                    that themselves, so cutting a release needs no deploy
+wrangler.jsonc    deployed by hand: `npx wrangler login`, then `npm run deploy:install`.
+                    A custom domain, so Cloudflare makes the DNS record and the certificate
+```

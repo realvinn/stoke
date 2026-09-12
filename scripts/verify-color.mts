@@ -18,6 +18,7 @@ import { deriveAccent } from '../src/shared/accent.ts'
 import {
   apcaContrast,
   contrastRatio,
+  oklchToRgb,
   over,
   parseColor,
   perceptualDistance,
@@ -25,6 +26,8 @@ import {
   toOklch
 } from '../src/shared/color.ts'
 import type { Rgb } from '../src/shared/color.ts'
+import { neutralTokens, PAGE_CHROMA_MAX, TINT_MAX } from '../src/shared/ladder.ts'
+import { meterScale, METER_WCAG } from '../src/shared/meter.ts'
 import { PROFILE_SWATCHES } from '../src/shared/profiles.ts'
 import { BUILT_IN_THEMES } from '../src/shared/themes.ts'
 import type { Theme } from '../src/shared/types.ts'
@@ -352,6 +355,207 @@ console.log('\n-- why --on-danger stays right for a theme none of the four are -
   console.log(
     `${ok ? 'ok  ' : 'FAIL'} ${'contrastRatio(a, b) === contrastRatio(b, a)'.padEnd(46)} ${`${pairs.length} pairs`.padStart(10)}  (holds for any colour, not just these four)`
   )
+}
+
+console.log('\n-- the context meter: green, orange, red on every theme --')
+/*
+ * --meter-low / --meter-mid / --meter-high, which `applyAppearance` (and the
+ * phone's `loadTheme`) write from `meterScale`. Asserted against the real
+ * function, not a copy of its output, for every built-in theme.
+ *
+ * Three properties, each the reason the scale exists at all:
+ *
+ *  - 3:1 on BOTH --bg and --bg-sunken (WCAG 1.4.11, a non-text graphic). The
+ *    ring sits on --bg-sunken on an unselected tab and --bg on the selected
+ *    one; the bar's own track is --bg-sunken. `METER_WCAG` is the module's own
+ *    export, so this cannot pass by asserting a different number than it solves.
+ *  - Adjacent tiers visibly different: perceptual distance >= 0.08, twice the
+ *    0.04 this repo calls "the same colour" (gotcha 44). This is the property
+ *    the theme's own semantics could NOT give: an orange solved like `warning`
+ *    lands 0.05-0.07 from both `warning` and `danger`.
+ *  - Still the colour it is named for. A floor can drag lightness far enough
+ *    that chroma collapses or the hue shifts in the 8-bit rounding, which would
+ *    satisfy the contrast rows and deliver a brown or a grey. The hues are the
+ *    seed hues in shared/meter.ts, mirrored because the module exports no seed.
+ *
+ * Plus the one pairing the ring adds: at 81%+ the worklog dot is --bg drawn ON
+ * a --meter-high disc, so that pair needs 3:1 too. `contrastRatio` is symmetric,
+ * so it is the --bg floor read from the other side — asserted anyway, under its
+ * own name, so a future change to the dot's fill has a row that says what broke.
+ */
+/** Mirrors the seed hues in shared/meter.ts. */
+const METER_HUE = { low: 148, mid: 55, high: 27 } as const
+/** Twice the 0.04 this repo treats as "the same colour". */
+const METER_TIER_DISTANCE = 0.08
+/** Below this a "traffic light" is a grey with a tint; every shipped tier is >= 0.153. */
+const METER_MIN_CHROMA = 0.12
+/** 8-bit rounding moves hue by well under a degree here; more means a clip moved it. */
+const METER_HUE_TOLERANCE = 6
+
+const hueGap = (a: number, b: number): number => Math.abs(((a - b + 540) % 360) - 180)
+
+for (const t of BUILT_IN_THEMES) {
+  const scale = meterScale(t.colors.bg, t.colors.bgSunken, t.appearance)
+  const bg = parseColor(t.colors.bg)!
+  const sunken = parseColor(t.colors.bgSunken)!
+  const hover = parseColor(t.colors.surfaceHover)!
+  for (const tier of ['low', 'mid', 'high'] as const) {
+    const c = parseColor(scale[tier])!
+    const onBg = contrastRatio(c, bg)
+    const onSunken = contrastRatio(c, sunken)
+    const o = toOklch(c)
+    const ok =
+      onBg >= METER_WCAG &&
+      onSunken >= METER_WCAG &&
+      o.c >= METER_MIN_CHROMA &&
+      hueGap(o.h, METER_HUE[tier]) <= METER_HUE_TOLERANCE
+    if (!ok) failures++
+    console.log(
+      `${ok ? 'ok  ' : 'FAIL'} ${`${t.id}: --meter-${tier} ${scale[tier]}`.padEnd(46)} ${`${onBg.toFixed(2)}/${onSunken.toFixed(
+        2
+      )}`.padStart(10)}  (expected >= ${METER_WCAG} on bg/sunken; C ${o.c.toFixed(3)} >= ${METER_MIN_CHROMA}, H ${o.h.toFixed(
+        0
+      )} ~${METER_HUE[tier]})`
+    )
+    // A hovered tab is a third ground the ring passes over. Not part of the
+    // solve (it is transient, and in light mode it sits between the other
+    // two), so it is printed, not asserted.
+    note(`${t.id}: --meter-${tier} on --surface-hover`, contrastRatio(c, hover).toFixed(2))
+  }
+  const [low, mid, high] = [parseColor(scale.low)!, parseColor(scale.mid)!, parseColor(scale.high)!]
+  atLeast(`${t.id}: green vs orange, perceptual distance`, perceptualDistance(low, mid), METER_TIER_DISTANCE)
+  atLeast(`${t.id}: orange vs red, perceptual distance`, perceptualDistance(mid, high), METER_TIER_DISTANCE)
+  atLeast(`${t.id}: --bg dot on the full ring's red disc`, contrastRatio(bg, high), 3)
+}
+
+/*
+ * The claim "solved per theme" has to hold for a theme nobody has shipped.
+ *
+ * The twelve rows above prove twelve pages. A user's theme comes out of the
+ * same generator with any hue, tint up to TINT_MAX, a page chroma up to its
+ * ceiling and a near-black page — so the generator's range is swept, the same
+ * shape as verify:theme-gen's contrast sweep. One line: every seed either keeps
+ * all three floors and both distances, or the first few that did not are named.
+ */
+{
+  let swept = 0
+  const bad: string[] = []
+  let closest = Infinity
+  for (const appearance of ['dark', 'light'] as const) {
+    for (let hue = 0; hue < 360; hue += 15) {
+      for (const tint of [0, 1, TINT_MAX]) {
+        for (const pageChroma of [0, PAGE_CHROMA_MAX[appearance]]) {
+          for (const black of appearance === 'dark' ? [false, true] : [false]) {
+            const n = neutralTokens(appearance, hue, tint, pageChroma, black)
+            const s = meterScale(n.bg, n.bgSunken, appearance)
+            const grounds = [parseColor(n.bg)!, parseColor(n.bgSunken)!]
+            const tiers = [parseColor(s.low)!, parseColor(s.mid)!, parseColor(s.high)!]
+            swept++
+            const tag = `${appearance} h${hue} t${tint} pc${pageChroma}${black ? ' black' : ''}`
+            for (const c of tiers) {
+              const worst = Math.min(...grounds.map((g) => contrastRatio(c, g)))
+              if (worst < METER_WCAG) bad.push(`${tag}: ${toHex(c)} ${worst.toFixed(2)}:1`)
+            }
+            const d = Math.min(perceptualDistance(tiers[0], tiers[1]), perceptualDistance(tiers[1], tiers[2]))
+            closest = Math.min(closest, d)
+            if (d < METER_TIER_DISTANCE) bad.push(`${tag}: tiers ${d.toFixed(3)} apart`)
+          }
+        }
+      }
+    }
+  }
+  const ok = bad.length === 0
+  if (!ok) failures++
+  console.log(
+    `${ok ? 'ok  ' : 'FAIL'} ${`${swept} generated themes: floors + distinct tiers`.padEnd(46)} ${`${closest.toFixed(3)}`.padStart(10)}  (closest adjacent tiers; expected >= ${METER_TIER_DISTANCE})${
+      ok ? '' : `  ${bad.slice(0, 4).join(' | ')}`
+    }`
+  )
+}
+
+console.log('\n-- the bypass mark: slate beads on the ring track --')
+/*
+ * `--ring-bypass` in app.css, mirrored: `color-mix(in oklab, --border-strong,
+ * --text-faint)` on a dark theme and `... --text-faint 75%)` on a light one. If
+ * you change one, change the other — this is the assertion that catches it.
+ *
+ * Mirrored faithfully rather than approximated: both inputs are opaque, so
+ * CSS's premultiplied interpolation reduces to a plain lerp of OKLab L, a and b,
+ * which is what `mixOklab` does, then rounds to the 8-bit value that paints. The
+ * mix reconstructs ladder step 9, a mid-grey that is always in gamut, so no gamut
+ * mapping can make Chromium's answer differ from this one by more than rounding.
+ *
+ * Held to 3:1 (WCAG 1.4.11) on --bg-sunken, an unselected tab, and on --bg, the
+ * selected one. It replaced a --warning dash that measured 10:1 and was the
+ * loudest mark on screen, on every tab, for a setting; the job now is to be
+ * visible and quiet, and the floor is where "visible" stops. The half-way grey
+ * is 2.38:1 on a light --bg-sunken, which is why light mixes further.
+ */
+const BYPASS_MIX: Record<Theme['appearance'], number> = { dark: 0.5, light: 0.75 }
+
+function mixOklab(a: Rgb, b: Rgb, towardB: number): Rgb {
+  const lab = (c: Rgb): [number, number, number] => {
+    const o = toOklch(c)
+    const h = (o.h * Math.PI) / 180
+    return [o.l, o.c * Math.cos(h), o.c * Math.sin(h)]
+  }
+  const [l1, a1, b1] = lab(a)
+  const [l2, a2, b2] = lab(b)
+  const l = l1 + (l2 - l1) * towardB
+  const x = a1 + (a2 - a1) * towardB
+  const y = b1 + (b2 - b1) * towardB
+  const out = oklchToRgb({ l, c: Math.hypot(x, y), h: (Math.atan2(y, x) * 180) / Math.PI })
+  return { r: Math.round(out.r), g: Math.round(out.g), b: Math.round(out.b), a: 1 }
+}
+
+for (const t of BUILT_IN_THEMES) {
+  const mark = mixOklab(
+    parseColor(t.colors.borderStrong)!,
+    parseColor(t.colors.textFaint)!,
+    BYPASS_MIX[t.appearance]
+  )
+  const onSunken = contrastRatio(mark, parseColor(t.colors.bgSunken)!)
+  const onBg = contrastRatio(mark, parseColor(t.colors.bg)!)
+  const ok = onSunken >= 3 && onBg >= 3
+  if (!ok) failures++
+  console.log(
+    `${ok ? 'ok  ' : 'FAIL'} ${`${t.id}: --ring-bypass ${toHex(mark)}`.padEnd(46)} ${`${onSunken.toFixed(2)}/${onBg.toFixed(
+      2
+    )}`.padStart(10)}  (expected >= 3 on sunken/bg, APCA Lc ${Math.abs(
+      apcaContrast(mark, parseColor(t.colors.bgSunken)!)
+    ).toFixed(1)} on sunken)`
+  )
+  note(`${t.id}: --ring-bypass on --surface-hover`, contrastRatio(mark, parseColor(t.colors.surfaceHover)!).toFixed(2))
+}
+
+console.log('\n-- the full bar: the red fill against its own red-tinted track --')
+/*
+ * At 81%+ the bar's unfilled track is `color-mix(in srgb, --meter-high
+ * <--meter-full-tint>, --bg-sunken)`, mirrored here: 30% on a dark theme, 15% on
+ * a light one. Change one, change the other.
+ *
+ * The fill ends ON that track, so the edge that says how much is left is fill
+ * against tint, and it is held to the same 3:1 as every other meter edge above.
+ * It shipped at 30% for both appearances, which measured 2.57:1 on all three
+ * light themes -- the one boundary in the meter under the floor, at the one
+ * level where it matters most -- and no row here looked at it. The tint must
+ * also stay a tint: at least 0.04 from the plain track (gotcha 44's "the same
+ * colour"), or the floor could be met by not tinting at all. Both inputs are
+ * opaque, so `srgb` interpolation is a plain lerp of the 8-bit channels.
+ */
+const FULL_TINT: Record<Theme['appearance'], number> = { dark: 0.3, light: 0.15 }
+
+function tinted(red: Rgb, ground: Rgb, amount: number): Rgb {
+  const at = (a: number, b: number): number => Math.round(a * amount + b * (1 - amount))
+  return { r: at(red.r, ground.r), g: at(red.g, ground.g), b: at(red.b, ground.b), a: 1 }
+}
+
+for (const t of BUILT_IN_THEMES) {
+  const red = parseColor(meterScale(t.colors.bg, t.colors.bgSunken, t.appearance).high)!
+  const sunken = parseColor(t.colors.bgSunken)!
+  const track = tinted(red, sunken, FULL_TINT[t.appearance])
+  atLeast(`${t.id}: fill on its tinted track ${toHex(track)}`, contrastRatio(red, track), METER_WCAG)
+  atLeast(`${t.id}: the tint still reads as a tint`, perceptualDistance(track, sunken), 0.04)
 }
 
 console.log('\n-- text tokens on the grounds they actually render on --')

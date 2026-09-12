@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
   BrowserState,
   CliInfo,
@@ -7,6 +7,7 @@ import type {
   PermissionMode,
   Project,
   SessionEvent,
+  SessionIndexEntry,
   SessionMeta,
   Settings,
   SshHost,
@@ -34,6 +35,7 @@ import { WorklogPrompt } from './components/WorklogPrompt'
 import { baseName, ipcErrorMessage } from './lib/format'
 import { attachExit, forgetPty, initPtyBus } from './lib/ptyBus'
 import { TERMINAL_DEFAULTS, zoomStep } from '@shared/ui'
+import { welcomePlan, type WelcomeReason } from '@shared/welcome'
 import { matchShortcut } from './lib/shortcuts'
 import { newTab } from './lib/newTab'
 import { profileIdForCwd } from './lib/projectProfile'
@@ -44,12 +46,60 @@ import {
   focusAfterStart,
   moveTab,
   neighbourOf,
+  paneOrder,
   relaunchPlan,
   replaceOrAppend,
   restartPlan
 } from './lib/tabs'
 import { applyAppearance, applyTypography, applyWallpaper } from './lib/theme'
 import type { SessionActivity, Tab } from './types'
+
+/*
+ * The first-run campfire, as a chunk of its own.
+ *
+ * `lazy()` here does NOT start the import — React calls the factory the first
+ * time the element is rendered, which is only ever on the launch after an
+ * install or an upgrade. Static-importing it instead would put its module and
+ * its SVG into the one renderer bundle, where every launch pays to parse and
+ * evaluate it in order to render null. That is gotcha 40's finding (a static
+ * import of something most launches never use is simply boot cost) applied one
+ * process over; measured in the built bundle, the split is ~4 KB of JS that a
+ * repeat launch never fetches.
+ *
+ * The `.then` mapping is only because `lazy` wants a default export and this
+ * repo exports components by name.
+ *
+ * The `.catch` is the part that is not decoration. `lazy` rethrows a rejected
+ * factory during render, and this tree has NO error boundary anywhere — main.tsx
+ * renders `<App/>` straight into `createRoot` — so a chunk that cannot be
+ * fetched or evaluated does not lose the splash, it unmounts the whole window
+ * and leaves a blank one. That would land on the single launch after an install
+ * or an upgrade, which is the worst launch available to break, and the failure
+ * needs no exotic disk: a future edit to Campfire.tsx that throws at module
+ * scope on some machine has exactly this shape. Falling back to a component
+ * that dismisses itself keeps the app up AND records the version, so it does
+ * not merely fail silently once — it fails silently once and then stops asking.
+ */
+type CampfireModule = typeof import('./components/Campfire')
+
+const Campfire = lazy(() =>
+  import('./components/Campfire')
+    .then((m) => ({ default: m.Campfire }))
+    .catch(() => ({ default: SkipCampfire }))
+)
+
+/** The campfire when its chunk will not load: no splash, and mark it as seen. */
+const SkipCampfire: CampfireModule['Campfire'] = ({ onDismiss }) => {
+  useEffect(() => onDismiss(), [onDismiss])
+  return <></>
+}
+
+/** What the splash needs to draw itself, and what to record once it is gone. */
+interface WelcomeScreen {
+  reason: WelcomeReason
+  version: string
+  record: string | null
+}
 
 const EMPTY_BROWSER: BrowserState = {
   url: '',
@@ -71,6 +121,8 @@ export function App(): React.JSX.Element {
 
   const [settings, setSettings] = useState<Settings | null>(null)
   const [cli, setCli] = useState<CliInfo | null>(null)
+  /** The first-run campfire, or null on every launch that is not one. */
+  const [welcome, setWelcome] = useState<WelcomeScreen | null>(null)
 
   const [projects, setProjects] = useState<Project[]>([])
   const [projectsLoading, setProjectsLoading] = useState(true)
@@ -97,6 +149,19 @@ export function App(): React.JSX.Element {
   const [sessionsByPath, setSessionsByPath] = useState<Record<string, SessionMeta[]>>({})
   /** The path currently being fetched, or null. Drives the loading state. */
   const [sessionsLoadingPath, setSessionsLoadingPath] = useState<string | null>(null)
+
+  /*
+   * Every session's title and first prompt, across every project, for the
+   * sidebar's search — a separate thing from `sessionsByPath`, which holds only
+   * the projects clicked this run, and so could never answer "which of all my
+   * conversations mentions this".
+   *
+   * Null until the first search asks for it: a sidebar nobody searches never
+   * pays for it. One writer, `loadSessionIndex` below.
+   */
+  const [sessionIndex, setSessionIndex] = useState<SessionIndexEntry[] | null>(null)
+  const [sessionIndexLoading, setSessionIndexLoading] = useState(false)
+  const [sessionIndexError, setSessionIndexError] = useState<string | null>(null)
 
   /*
    * The app always has at least one tab: a New Project tab is a real tab now,
@@ -443,6 +508,36 @@ export function App(): React.JSX.Element {
     setProjectsLoading(false)
   }, [])
 
+  /*
+   * (Re)fetch the session index. Cheap to call again — main re-reads only the
+   * transcripts whose mtime or size moved — so it is simply called whenever
+   * the answer might have changed while someone is searching.
+   *
+   * Numbered so a slow reply cannot land on top of a newer one: only the
+   * latest request may write, and only it clears the loading flag.
+   */
+  const searching = query.trim() !== ''
+  const searchingRef = useRef(searching)
+  searchingRef.current = searching
+  const indexRequest = useRef(0)
+  const loadSessionIndex = useCallback((): void => {
+    const req = ++indexRequest.current
+    setSessionIndexLoading(true)
+    window.stoke.projects.sessionIndex().then(
+      (list) => {
+        if (req !== indexRequest.current) return
+        setSessionIndex(list)
+        setSessionIndexError(null)
+        setSessionIndexLoading(false)
+      },
+      (e: unknown) => {
+        if (req !== indexRequest.current) return
+        setSessionIndexError(ipcErrorMessage(e))
+        setSessionIndexLoading(false)
+      }
+    )
+  }, [])
+
   const patchSettings = useCallback(async (patch: Partial<Settings>): Promise<void> => {
     const next = await window.stoke.settings.set(patch)
     setSettings(next)
@@ -659,12 +754,16 @@ export function App(): React.JSX.Element {
     void window.stoke.workspace.defaultCwd().then(setDefaultCwd)
   }, [settings?.defaultCwd, settings])
 
-  // Project timestamps go stale while the window is in the background.
+  // Project timestamps go stale while the window is in the background — and so
+  // do session titles, which Claude rewrites as a conversation goes on.
   useEffect(() => {
-    const onFocus = (): void => void refreshProjects()
+    const onFocus = (): void => {
+      void refreshProjects()
+      if (searchingRef.current) loadSessionIndex()
+    }
     window.addEventListener('focus', onFocus)
     return () => window.removeEventListener('focus', onFocus)
-  }, [refreshProjects])
+  }, [refreshProjects, loadSessionIndex])
 
   /*
    * Looking at a tab clears its `done` / `attention`, because the dot means
@@ -828,6 +927,35 @@ export function App(): React.JSX.Element {
    * could not.
    */
   const sessions = selectedPath ? (sessionsByPath[selectedPath] ?? []) : []
+
+  /*
+   * When search reads the index: the moment a query appears — the first one,
+   * and every time the box goes from empty to not — so a search always starts
+   * from the disk as it is now rather than as it was the last time someone
+   * searched. Not per keystroke: matching is local, and the list of sessions
+   * does not change because a letter was typed.
+   */
+  useEffect(() => {
+    if (searching) loadSessionIndex()
+  }, [searching, loadSessionIndex])
+
+  /*
+   * And again whenever a session tab starts, ends or goes away while a query is
+   * showing: that is when a transcript appears, is retitled or stops growing.
+   * Keyed on the session tabs' ids and statuses rather than on `tabs`, which
+   * changes on every title update and selection.
+   */
+  const sessionTabsKey = useMemo(
+    () =>
+      tabs
+        .filter((t) => t.kind === 'session')
+        .map((t) => `${t.id}:${t.status}`)
+        .join('|'),
+    [tabs]
+  )
+  useEffect(() => {
+    if (searchingRef.current) loadSessionIndex()
+  }, [sessionTabsKey, loadSessionIndex])
 
   /* ------------------------------------------------------------------ tabs */
 
@@ -1381,9 +1509,9 @@ export function App(): React.JSX.Element {
   }, [browsePath, browseExpanded])
 
   const reorderTab = useCallback((dragId: string, overId: string): void => {
-    // Keyed by tab id in the render, so React moves the DOM nodes rather than
-    // rebuilding them — and ptyBus replays the retained scrollback anyway, so
-    // even a rebuild would not blank a terminal.
+    // Once per drag, on release (`useTabDrag`). Only the strip's own nodes
+    // move: the terminal panes render in `paneOrder`, which a reorder cannot
+    // change, so no xterm is moved, remounted or blurred by it.
     setTabs((list) => moveTab(list, dragId, overId))
   }, [])
 
@@ -1703,6 +1831,16 @@ export function App(): React.JSX.Element {
   const openSessionIds = useMemo(() => tabs.map((t) => t.sessionId), [tabs])
 
   /*
+   * The terminal panes, in an order a strip reorder cannot change.
+   *
+   * They used to render in strip order, so dragging the active tab rightwards
+   * made React move that pane's DOM node — and a moved node loses focus, which
+   * took the keyboard away from the session being typed into. Only one pane is
+   * ever visible, so their order means nothing on screen. See `paneOrder`.
+   */
+  const panes = useMemo(() => paneOrder(tabs), [tabs])
+
+  /*
    * Folders with a session running right now, for the sidebar's live dot.
    *
    * By cwd rather than by session id, because that is the question the row can
@@ -1785,6 +1923,55 @@ export function App(): React.JSX.Element {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [isMac, tabs, activeTabId, closeTab, openNewTab])
+
+  /* ------------------------------------------------- first-run campfire */
+
+  /*
+   * Whether the splash plays is decided once, on the first render that has
+   * settings, and never again for the life of the process.
+   *
+   * The ref is claimed BEFORE the `self.state()` await rather than after it
+   * (gotcha 20): settings arrive as one state write and then change again on
+   * every later patch, so without a claim ahead of the await two passes could
+   * both read `welcomeSeenVersion` as null and both decide to play.
+   */
+  const welcomeDecided = useRef(false)
+  const welcomeRef = useRef<WelcomeScreen | null>(null)
+  useEffect(() => {
+    if (!settings || welcomeDecided.current) return
+    welcomeDecided.current = true
+    void (async () => {
+      /*
+       * `self.state()` is a plain getter over `app.getVersion()` — it starts no
+       * update check and touches no network. package.json's version is what an
+       * unpackaged run reports, which is what makes this testable at all.
+       */
+      const version = (await window.stoke.self.state()).currentVersion
+      const plan = welcomePlan(settings.welcomeSeenVersion, version)
+      if (!plan.play) return
+      const screen = { reason: plan.reason, version, record: plan.record }
+      welcomeRef.current = screen
+      setWelcome(screen)
+    })()
+  }, [settings])
+
+  /*
+   * Dismissal, from any of the three routes, at most once. The ref is cleared
+   * first so a click that lands in the same tick as the auto-dismiss timer
+   * cannot write the setting twice — gotcha 51's shape, smaller: state has not
+   * re-rendered yet when the second call arrives.
+   */
+  const dismissWelcome = useCallback((): void => {
+    const record = welcomeRef.current?.record ?? null
+    if (!welcomeRef.current) return
+    welcomeRef.current = null
+    setWelcome(null)
+    // Written on dismissal rather than on mount: a splash recorded as seen
+    // before it finished would, if the app went away mid-animation, be a
+    // screen nobody watched that can never be shown again. `store.ts` writes a
+    // single discrete change straight through, so this is on disk at once.
+    if (record) void patchSettings({ welcomeSeenVersion: record })
+  }, [patchSettings])
 
   // Escape closes whichever overlay is on top.
   useEffect(() => {
@@ -1882,8 +2069,13 @@ export function App(): React.JSX.Element {
     [settings, patchSettings]
   )
 
+  /*
+   * Takes the index entry's shape, which a full `SessionMeta` also satisfies:
+   * a search hit and a row of an expanded list resume through this one path,
+   * reading the same four fields, so the two cannot start different sessions.
+   */
   const resumeSession = useCallback(
-    (s: SessionMeta): void => {
+    (s: SessionIndexEntry): void => {
       const project = projects.find((p) => p.path === s.projectPath)
       void startSession({
         cwd: s.projectPath,
@@ -1939,6 +2131,9 @@ export function App(): React.JSX.Element {
                 projects={projects}
                 loading={projectsLoading}
                 query={query}
+                sessionIndex={sessionIndex}
+                sessionIndexLoading={sessionIndexLoading}
+                sessionIndexError={sessionIndexError}
                 selectedPath={selectedPath}
                 expandedPath={expandedPath}
                 sessionsByPath={sessionsByPath}
@@ -2163,36 +2358,34 @@ export function App(): React.JSX.Element {
             className="term-stack"
             style={{ display: activeTab?.kind === 'session' ? 'block' : 'none' }}
           >
-            {tabs
-              .filter((tab) => tab.kind === 'session')
-              .map((tab) =>
-                tab.status === 'paused' ? (
-                  <PausedSession
-                    key={tab.id}
-                    tab={tab}
-                    active={tab.id === activeTabId}
-                    screen={restoredScreens[tab.id] ?? ''}
-                    onResume={resumeTabFor(tab)}
-                    resuming={starting.includes(tab.id)}
-                    onClose={closeTab}
-                  />
-                ) : (
-                  <TerminalView
-                    key={tab.id}
-                    tab={tab}
-                    active={tab.id === activeTabId}
-                    theme={theme}
-                    fontFamily={settings?.fontFamily ?? 'monospace'}
-                    fontSize={settings?.fontSize ?? 13}
-                    terminal={settings?.terminal ?? TERMINAL_DEFAULTS}
-                    accent={activeProfile?.accent ?? null}
-                    alpha={termAlpha}
-                    onOpenUrl={openUrl}
-                    onRestart={restartTab}
-                    onClose={closeTab}
-                  />
-                )
-              )}
+            {panes.map((tab) =>
+              tab.status === 'paused' ? (
+                <PausedSession
+                  key={tab.id}
+                  tab={tab}
+                  active={tab.id === activeTabId}
+                  screen={restoredScreens[tab.id] ?? ''}
+                  onResume={resumeTabFor(tab)}
+                  resuming={starting.includes(tab.id)}
+                  onClose={closeTab}
+                />
+              ) : (
+                <TerminalView
+                  key={tab.id}
+                  tab={tab}
+                  active={tab.id === activeTabId}
+                  theme={theme}
+                  fontFamily={settings?.fontFamily ?? 'monospace'}
+                  fontSize={settings?.fontSize ?? 13}
+                  terminal={settings?.terminal ?? TERMINAL_DEFAULTS}
+                  accent={activeProfile?.accent ?? null}
+                  alpha={termAlpha}
+                  onOpenUrl={openUrl}
+                  onRestart={restartTab}
+                  onClose={closeTab}
+                />
+              )
+            )}
           </div>
 
           {/*
@@ -2339,6 +2532,22 @@ export function App(): React.JSX.Element {
             setSettingsOpen(false)
           }}
         />
+      )}
+
+      {/*
+        Last in the tree and highest in z, so it sits over whatever the launch
+        restored. `fallback={null}` rather than a spinner: the chunk is a few
+        kilobytes off the local disk, and a spinner that flashes for one frame
+        before a welcome screen is worse than one frame of nothing.
+      */}
+      {welcome && (
+        <Suspense fallback={null}>
+          <Campfire
+            reason={welcome.reason}
+            version={welcome.version}
+            onDismiss={dismissWelcome}
+          />
+        </Suspense>
       )}
     </div>
   )

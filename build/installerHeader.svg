@@ -1,0 +1,53 @@
+<!--
+  Source for build/installerHeader.bmp (150x57). Regenerate with `npm run art`.
+
+  Two facts decide everything about this tile, both read out of the shipped
+  templates rather than guessed:
+
+  - electron-builder sets MUI_HEADERIMAGE_RIGHT unconditionally whenever
+    installerHeader resolves (app-builder-lib, NsisTarget.js, the `installerHeader`
+    asyncTask). There is no option to put it on the left, so this art sits at the
+    right-hand end of the header strip with the page title to its left.
+  - MUI2's MUI_BGCOLOR defaults to FFFFFF, so the strip behind it is white. A dark
+    tile would read as a dark rectangle glued onto a pale bar. So the ground here
+    is white and the tile is meant to disappear into the strip, leaving only the
+    mark. The alternative (a dark tile plus MUI_BGCOLOR/MUI_TEXTCOLOR overrides
+    from a top-level build/installer.nsh) is deliberately not taken: it is the
+    one place a wrong define makes the wizard's own title text unreadable, on a
+    platform nobody here has run.
+
+  The flame runs a darker ramp than build/icon.svg's, because icon.svg's top stop
+  (#ffc48c) is nearly invisible on white, and it carries no bright core for the
+  same reason. The #flame path data itself is shared byte-for-byte with
+  installerSidebar.svg, uninstallerSidebar.svg and background.svg;
+  verify:installer-art asserts that.
+
+  UNVERIFIED: how this reads in a real wizard, at 100% and at 150% scaling.
+  Nobody has watched a Stoke Windows installer run.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="150" height="57" viewBox="0 0 150 57">
+  <defs>
+    <linearGradient id="flame-fill" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#f79a4a"/>
+      <stop offset="0.52" stop-color="#ef7a2c"/>
+      <stop offset="1" stop-color="#cf4f13"/>
+    </linearGradient>
+    <radialGradient id="blush">
+      <stop stop-color="#ff9552" stop-opacity="0.16"/>
+      <stop offset="0.55" stop-color="#ff9552" stop-opacity="0.06"/>
+      <stop offset="1" stop-color="#ff9552" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- MUI's own header colour, so the tile's edges do not show. -->
+  <path fill="#ffffff" d="M0 0H150V57H0Z"/>
+
+  <ellipse cx="105" cy="40" rx="46" ry="30" fill="url(#blush)"/>
+
+  <g transform="translate(69.1,-62.9) scale(0.42)">
+    <path id="flame" fill="url(#flame-fill)" d="M83 263C62 263 51 249 55 232C58 220 67 212 67 199C73 205 76 213 75 221C86 207 92 190 86 168C109 190 104 209 99 222C106 220 111 213 112 208C123 230 118 252 101 260C95 263 89 264 83 263Z"/>
+  </g>
+
+  <!-- A hearth line rather than a hard tile edge: the bottom of the strip. -->
+  <path stroke="#e85f24" stroke-opacity="0.22" stroke-width="1" d="M78 52.5H132"/>
+</svg>
