@@ -34,6 +34,27 @@ nsis:
   perMachine: false
   allowToChangeInstallationDirectory: true
   shortcutName: Stoke
+  # Installer artwork. The SVG sources sit beside the bitmaps in build/ and
+  # `npm run art` regenerates them; `npm run verify:installer-art` asserts the
+  # format, because electron-builder validates none of it (a wrong-format BMP is
+  # a makensis WARNING, a blank image and a green build).
+  #
+  # These three paths are what electron-builder would find by itself anyway, and
+  # naming them is still worth it: an UNSET key whose default file is missing or
+  # misspelled falls silently back to NSIS's stock nsis3-metro sidebar, while a
+  # SET key whose file is missing throws InvalidConfigurationError and stops the
+  # build. Explicit turns a silent downgrade into a loud failure.
+  #
+  # Two keys deliberately absent. `installerHeaderIcon` only ever reaches the
+  # script inside NsisTarget's `if (oneClick)` branch, and oneClick is false
+  # here, so adding it would silently do nothing. `script` is never to be used:
+  # it replaces the whole generated script and with it the uninstaller's
+  # generation and signing. A `build/installer.nsh` picked up by the `include`
+  # key is the seam if a custom welcome page or MUI colour overrides are ever
+  # wanted -- there is no such file today, so the installer is still stock.
+  installerHeader: build/installerHeader.bmp
+  installerSidebar: build/installerSidebar.bmp
+  uninstallerSidebar: build/uninstallerSidebar.bmp
 mac:
   icon: build/icon.png
   # Pinned, not auto-discovered. There is more than one code-signing identity in
@@ -78,6 +99,20 @@ mac:
       Stoke uses the microphone for voice dictation, so you can speak a prompt
       instead of typing it. Audio is sent only to the speech server you
       configure and never to Stoke's developers.
+dmg:
+  # build/background@2x.png (1080x760) is picked up automatically beside it:
+  # dmg-builder merges the pair with `tiffutil -cathidpicheck` and sizes the
+  # Finder window from the @1x rep. Naming the @1x here rather than leaving it
+  # to auto-discovery has the same payoff as the nsis keys above -- a missing
+  # file becomes an error instead of a silent fall back to electron-builder's
+  # own default background.
+  #
+  # `dmg.window` is deliberately NOT set. The window is derived from this
+  # image's own size (dmgUtil's customizeDmg runs sips on it), so setting both
+  # is how the art and the window come apart. `dmg.contents` is left at its
+  # defaults too -- app at 130,220 and /Applications at 410,220 -- because
+  # build/background.svg is composed around exactly those coordinates.
+  background: build/background.png
 linux:
   # AppImage and nothing else, for one reason: it is the only Linux format
   # electron-updater can install without elevation. AppImageUpdater replaces the
