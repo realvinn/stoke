@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ProviderSettings, ClaudeAuthMode } from '@shared/providers'
 import {
   DEFAULT_PROVIDERS,
@@ -81,6 +81,43 @@ export function ProvidersSettings({ providers, onChange }: Props): React.JSX.Ele
     })
     if (next !== p[key]) patch({ [key]: next } as Partial<ProviderSettings>)
   }
+
+  /*
+   * Escape closes the sheet by UNMOUNTING it (App.tsx owns that key, and
+   * SettingsSheet says so in its own comment), and React delivers no blur to a
+   * node that is going away - so a draft committed on blur alone is lost.
+   *
+   * Here that was worse than a lost edit. The auth-mode select patches
+   * immediately, so picking "Anthropic API key", pasting the key and pressing
+   * Escape saved the MODE and dropped the KEY - after which validateClaudeAuth
+   * fails closed in pty.ts and every new local session refuses to start,
+   * naming the field the user had just filled in. Measured both ways against
+   * the running app: without this the key reads back as "", with it the key
+   * survives, and the pre-fix build answers pty:start with "Anthropic API key
+   * is empty".
+   *
+   * Written through a ref assigned on every render with an empty-dep effect,
+   * so the cleanup sees the LAST drafts rather than those captured when the
+   * effect first ran (gotcha 31's shape). Folded into ONE onChange because
+   * `patch` spreads the current render's `p`: committing field by field would
+   * have each call overwrite the previous one's result - the reason
+   * HostsSettings does the same, and the reason per-field `useDraft` hooks are
+   * wrong here.
+   */
+  const flushRef = useRef<() => void>(() => {})
+  flushRef.current = (): void => {
+    const pending = Object.entries(drafts)
+    if (!pending.length) return
+    const changes: Record<string, string> = {}
+    let moved = false
+    for (const [key, draft] of pending) {
+      if (draft === p[key as keyof ProviderSettings]) continue
+      changes[key] = draft
+      moved = true
+    }
+    if (moved) onChange({ ...p, ...(changes as Partial<ProviderSettings>) })
+  }
+  useEffect(() => () => flushRef.current(), [])
 
   const check = validateClaudeAuth(p)
   const anthropicHint = keyFormatHint('anthropic', draftOf('anthropicApiKey'))
@@ -247,11 +284,17 @@ export function ProvidersSettings({ providers, onChange }: Props): React.JSX.Ele
         </div>
       </div>
 
-      {p.claudeAuth === 'default' && (
+      {/*
+        Shown once the user has actually LEFT default, not while they are still
+        on it. A cached Claude.ai login can only fight a gateway or a console
+        key, so on 'default' this advice is inert - and it used to disappear at
+        the exact moment it became actionable.
+      */}
+      {p.claudeAuth !== 'default' && (
         <span className="field-hint">
-          Tip: if you previously used Claude.ai login and are switching to OpenRouter or
-          an API key, run <span className="mono">/logout</span> once inside a session so
-          a cached login cannot fight the new env.
+          Tip: if you previously signed in with Claude.ai, run{' '}
+          <span className="mono">/logout</span> once inside a session - a cached login
+          otherwise fights the credentials set here.
         </span>
       )}
     </div>
