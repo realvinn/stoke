@@ -803,7 +803,8 @@ async function runWorklogScan(sessionId: string, auto: boolean): Promise<Worklog
       // The same directory the write would use, so both runs see the same MCP
       // servers. runHeadless falls back to a scratch dir if it has been deleted.
       cwd,
-      claudePath: settings.claudePath
+      claudePath: settings.claudePath,
+      providers: settings.providers
     })
     if (snapshot.error) console.warn('[stoke] worklog recall failed:', snapshot.error)
 
@@ -815,6 +816,7 @@ async function runWorklogScan(sessionId: string, auto: boolean): Promise<Worklog
       recall: snapshot,
       auto,
       claudePath: settings.claudePath,
+      providers: settings.providers,
       boards
     })
     if (outcome.demoted > 0) {
@@ -2159,6 +2161,7 @@ function registerIpc(): void {
         // without a budget the write sat on the CLI's default; without boards
         // it wrote to a destination the user may have switched off.
         claudePath: settings.claudePath,
+        providers: settings.providers,
         maxBudgetUsd: APPLY_MAX_BUDGET_USD,
         // The user's own switches and ids, not the shipped default — a board
         // switched off in Settings must not still receive the write, and an

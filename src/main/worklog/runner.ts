@@ -1,5 +1,6 @@
 import { readTranscript, type TranscriptTurn } from '../sessionFile.ts'
 import { isBudgetExhausted, runHeadless, type HeadlessOptions } from '../agent.ts'
+import type { ProviderSettings } from '../../shared/providers.ts'
 import { asRecord, candidates, clip, oneLine } from './json.ts'
 import {
   EMPTY_RECALL,
@@ -767,6 +768,8 @@ export interface ScanInput {
   transcriptFile: string
   title?: string | null
   claudePath?: string | null
+  /** Provider keys from Settings, for the spawned run. See HeadlessOptions. */
+  providers?: ProviderSettings
   timeoutMs?: number
   maxBudgetUsd?: number
   /** What the boards already hold. Omitted means "could not look". */
@@ -888,7 +891,7 @@ export const APPLY_MAX_BUDGET_USD = 10
  */
 export function scanRunOptions(
   prompt: string,
-  input: Pick<ScanInput, 'claudePath' | 'timeoutMs' | 'maxBudgetUsd'>
+  input: Pick<ScanInput, 'claudePath' | 'timeoutMs' | 'maxBudgetUsd' | 'providers'>
 ): HeadlessOptions {
   return {
     prompt,
@@ -906,7 +909,8 @@ export function scanRunOptions(
     disallowedTools: SCAN_DISALLOWED_TOOLS,
     timeoutMs: input.timeoutMs,
     maxBudgetUsd: input.maxBudgetUsd ?? SCAN_MAX_BUDGET_USD,
-    claudePath: input.claudePath ?? null
+    claudePath: input.claudePath ?? null,
+    providers: input.providers
   }
 }
 
@@ -930,7 +934,8 @@ export function applyRunOptions(
     effort: 'medium',
     timeoutMs: opts.timeoutMs,
     maxBudgetUsd: opts.maxBudgetUsd ?? APPLY_MAX_BUDGET_USD,
-    claudePath: opts.claudePath ?? null
+    claudePath: opts.claudePath ?? null,
+    providers: opts.providers
   }
 }
 
@@ -1118,6 +1123,8 @@ export function groundProposals(
 
 export interface ApplyOptions {
   claudePath?: string | null
+  /** Provider keys from Settings, for the spawned run. See HeadlessOptions. */
+  providers?: ProviderSettings
   /**
    * Which boards to write to, and their ids. Absent means the shipped
    * defaults — which is what every existing caller and test relies on.

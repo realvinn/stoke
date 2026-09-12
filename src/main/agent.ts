@@ -3,6 +3,8 @@ import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { buildEnvPath, findClaude, loginPathProbeFailed, notFoundError, spawnSpec } from './cli.ts'
+import { applyProviderEnv, DEFAULT_PROVIDERS } from '../shared/providers.ts'
+import type { ProviderSettings } from '../shared/providers.ts'
 
 /**
  * A headless `claude -p` run: one prompt in, one JSON result out.
@@ -109,6 +111,21 @@ export interface HeadlessOptions {
   maxBudgetUsd?: number
   /** Explicit path to the claude executable; null auto-detects. */
   claudePath?: string | null
+  /**
+   * Provider keys from Settings, applied to the spawned env exactly as pty.ts
+   * applies them to a terminal session.
+   *
+   * Threaded rather than read from the store, like `claudePath` above, so the
+   * runner stays assertable without a live settings file. Omitted means the
+   * defaults, which touch no ANTHROPIC_* var and so leave an inherited
+   * Claude.ai login alone - the behaviour every headless run had before.
+   *
+   * Without this a user whose ONLY credential is the one typed into Settings -
+   * the stated reason that panel exists, since a GUI launched from the Dock or
+   * Start menu sees no shell-profile exports - got working terminal tabs and a
+   * worklog that could not authenticate at all.
+   */
+  providers?: ProviderSettings
 }
 
 export interface HeadlessResult {
@@ -400,6 +417,7 @@ export async function runHeadless(opts: HeadlessOptions): Promise<HeadlessResult
     env[k] = v
   }
   env.PATH = await buildEnvPath()
+  applyProviderEnv(env, opts.providers ?? DEFAULT_PROVIDERS)
 
   // A cwd that has since been deleted (a scratch project, a removed worktree)
   // makes the spawn fail with ENOENT, which reads like "claude is missing".
