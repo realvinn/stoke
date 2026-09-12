@@ -377,6 +377,24 @@ each failure looks like from outside. `npm run art` also writes `build/installer
 committed with them: it hashes each source and each output, which is the only way the suite can
 tell a current raster from one whose SVG has moved on since.
 
+`build/installer.nsh` is the only NSIS script Stoke owns, named by `nsis.include`, and it does
+one thing: `!insertmacro MUI_PAGE_WELCOME` inside a `customWelcomePage` macro. Without it the
+164×314 sidebar is read by no installer page until `MUI_PAGE_FINISH`, so the art commissioned
+for the wizard appears once, at the end, after every decision has been made — electron-builder
+adds no welcome page by default and inserts that macro only `!ifmacrodef`. `nsis.script` is the
+key that must never be used: it replaces the whole generated script and takes the uninstaller's
+generation *and* its signing with it. **None of the NSIS half is verified** — no round of work
+in this repo has run on Windows, so `verify:welcome` checks that the file says what
+app-builder-lib's own templates need it to say, and nothing about what a wizard draws.
+
+The same campfire appears **inside the app**, once per install or upgrade:
+`src/renderer/src/components/Campfire.tsx` draws `installerSidebar.svg`'s own flame paths as an
+SVG/CSS animation tinted from `--accent`, and `src/shared/welcome.ts` decides whether it plays
+at all. It is loaded through `import()` so a launch that is not showing it never fetches,
+parses or evaluates it (gotcha 40's lesson, one process over) — measured at ~4 KB of its own
+chunk. What it remembers is one settings field, `welcomeSeenVersion`: a version rather than a
+boolean, so an upgrade can be marked as well as an install without spending a second field.
+
 Self-update uses `electron-updater` against GitHub releases, configured in the `publish` block
 of `electron-builder.yml`. It only activates for a packaged app with a published release.
 
@@ -472,6 +490,13 @@ npm run verify:install        # the one-line installer and the endpoint that ser
                               # rules against renderPlan's, the sha512-is-base64 digest run on
                               # random bytes, and the NSIS upgrade GUID recomputed from
                               # electron-builder.yml's appId
+npm run verify:welcome        # the first-run campfire: which (lastSeen, current) version pairs
+                              # play it and which must not, the settings field it remembers that
+                              # in, that the component carries no colour and no second copy of
+                              # the flame geometry, that App imports it with import() rather than
+                              # statically — and, from the other end of the same feature, that
+                              # build/installer.nsh still defines customWelcomePage and
+                              # electron-builder.yml still names it through `include`
 npm run verify:selection      # Option-drag selection survives letting go of the mouse.
                               # Opens a real Electron window, so it needs a display
                               # and is one of the two `check` suites CI skips
@@ -638,6 +663,12 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     plain lines that replace all of it when the terminal cannot draw.
                     Nothing in the app imports it — the installers do, through
                     gen-installer-art.mts. No imports at all, no RNG, no clock. Gotcha 70
+                    gen-installer-art.mts. No imports at all, no RNG, no clock. Gotcha 67
+  welcome.ts        whether the first-run campfire plays, from two strings: the version whose
+                    splash was last watched and the version running now. A semver comparison
+                    and the clamp that repairs the stored value, together in one file because
+                    a clamp that kept what the comparator cannot read would replay the splash
+                    on every launch. Nothing about how it looks
   notation.ts       reading and writing one colour as OKLCH/HSL/RGB/hex. Split out of the
                     component so a suite can reach it
   accent.ts         one accent in, five tokens out, per appearance. The reason
