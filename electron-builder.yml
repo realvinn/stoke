@@ -45,16 +45,24 @@ nsis:
   # SET key whose file is missing throws InvalidConfigurationError and stops the
   # build. Explicit turns a silent downgrade into a loud failure.
   #
-  # Two keys deliberately absent. `installerHeaderIcon` only ever reaches the
+  # One key deliberately absent. `installerHeaderIcon` only ever reaches the
   # script inside NsisTarget's `if (oneClick)` branch, and oneClick is false
-  # here, so adding it would silently do nothing. `script` is never to be used:
-  # it replaces the whole generated script and with it the uninstaller's
-  # generation and signing. A `build/installer.nsh` picked up by the `include`
-  # key is the seam if a custom welcome page or MUI colour overrides are ever
-  # wanted -- there is no such file today, so the installer is still stock.
+  # here, so adding it would silently do nothing.
   installerHeader: build/installerHeader.bmp
   installerSidebar: build/installerSidebar.bmp
   uninstallerSidebar: build/uninstallerSidebar.bmp
+  # The one script Stoke owns, and it does exactly one thing: adds the welcome
+  # page. Without it MUI_WELCOMEFINISHPAGE_BITMAP -- i.e. installerSidebar.bmp
+  # above -- is read by no installer page until MUI_PAGE_FINISH, so the art
+  # shows once, at the end, after every decision has been made. See the file;
+  # it explains what it does not set and why.
+  #
+  # `include`, never `script`. `script` replaces the whole generated script and
+  # takes the uninstaller's generation AND its signing with it. Named rather
+  # than left to default to this same path, for the same reason as the three
+  # images above: a SET key whose file is missing stops the build, an UNSET one
+  # loses the page in silence.
+  include: build/installer.nsh
 mac:
   icon: build/icon.png
   # Pinned, not auto-discovered. There is more than one code-signing identity in
