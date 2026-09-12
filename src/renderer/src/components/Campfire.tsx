@@ -7,10 +7,18 @@ import { WELCOME_DISMISS_MS, type WelcomeReason } from '@shared/welcome'
  * decision (shared/welcome.ts) and nothing here re-derives it.
  *
  * This module is loaded through `import()` from App, so it is a chunk of its
- * own and costs a launch that is not showing it exactly nothing — no parse, no
- * evaluate, no fetch. That is gotcha 40's lesson carried into the renderer:
- * "only used on some launches" is not the same as "only paid for on some
- * launches" unless the import is dynamic.
+ * own and costs a launch that is not showing it no JavaScript at all — no
+ * fetch, no parse, no evaluate. That is gotcha 40's lesson carried into the
+ * renderer: "only used on some launches" is not the same as "only paid for on
+ * some launches" unless the import is dynamic.
+ *
+ * The stylesheet is the honest exception, and saying "costs nothing" flatly
+ * would be wrong. Vite does not code-split CSS out of a single imported
+ * `app.css`, so the campfire's rules — 5,563 bytes of the 142 KB sheet,
+ * measured in the built output — are in the one file every launch parses,
+ * whether or not the splash ever appears. That is the right trade rather than a
+ * miss: this repo keeps all colour in one sheet on purpose, and 4% of a
+ * stylesheet is not what gotcha 40 was about.
  *
  * Two art rules worth stating because breaking either is invisible.
  *

@@ -390,10 +390,15 @@ app-builder-lib's own templates need it to say, and nothing about what a wizard 
 The same campfire appears **inside the app**, once per install or upgrade:
 `src/renderer/src/components/Campfire.tsx` draws `installerSidebar.svg`'s own flame paths as an
 SVG/CSS animation tinted from `--accent`, and `src/shared/welcome.ts` decides whether it plays
-at all. It is loaded through `import()` so a launch that is not showing it never fetches,
-parses or evaluates it (gotcha 40's lesson, one process over) — measured at ~4 KB of its own
-chunk. What it remembers is one settings field, `welcomeSeenVersion`: a version rather than a
-boolean, so an upgrade can be marked as well as an install without spending a second field.
+at all. It is loaded through `import()` so a launch that is not showing it fetches, parses and
+evaluates none of its **JavaScript** (gotcha 40's lesson, one process over) — measured at 5,340
+bytes of its own chunk, 1,612 gzipped. Its CSS is the exception and is not free: Vite does not
+split a single imported `app.css`, so the campfire's 5,563 bytes of rules sit in the one 142 KB
+stylesheet every launch parses. The `import()` also carries a `.catch`, because `lazy` rethrows
+a rejected factory during render and nothing in this tree is an error boundary — without it a
+chunk that will not load blanks the entire window, measured. What it remembers is one settings
+field, `welcomeSeenVersion`: a version rather than a boolean, so an upgrade can be marked as
+well as an install without spending a second field.
 
 Self-update uses `electron-updater` against GitHub releases, configured in the `publish` block
 of `electron-builder.yml`. It only activates for a packaged app with a published release.
