@@ -38,8 +38,8 @@ A `dist:*` exists per target and each MUST run on that target's own platform and
 Every suite runs alone as `npm run verify:<name>`: context, statusline, unicode, usage,
 profiles, settings, claude-config, folders, search, color, theme-gen, activity, worklog-gate, tabs,
 restore, shortcuts, drop, campfire, cli, updates, targets, manifests, worklog-runner,
-worklog-retry, worklog-recall, worklog-autoscan, ssh, remote, installer-art, install, selection —
-the `check` chain — plus extract and security, which
+worklog-retry, worklog-recall, worklog-autoscan, ssh, remote, installer-art, install, welcome,
+selection — the `check` chain — plus extract and security, which
 need a live instance (`verify:security <url> <token> --access`). `verify:selection` opens a real
 Electron window and needs a display; `verify:context` reads this machine's real transcripts on
 purpose; CI skips both (`npm run verify:ci -- --list`). `STOKE_LIVE_USAGE=1` adds the account
@@ -322,6 +322,10 @@ rule file named on the group line.
 - **60.** Centre inside a scroll container with `margin: auto` on the child, not `justify-content:
   center` — once content outgrows the box, centring pushes its top above `scrollTop: 0`,
   unreachable.
+- **71.** Give every new animation a deliberate reduced-motion answer: the global block forces
+  `1ms`/one iteration, so the resting style is what paints, and anything resting at `opacity: 0`
+  (`.campfire-spark`) vanishes rather than stills. Prove it with
+  `--force-prefers-reduced-motion` and a screenshot.
 
 **React state** — `.claude/rules/renderer.md`
 - **31.** `npm run check` cannot see a side effect inside a closure, or the wire from real input

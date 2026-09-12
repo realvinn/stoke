@@ -7,6 +7,7 @@ paths:
   - "src/renderer/src/components/CommandPalette.tsx"
   - "src/renderer/src/components/ContextMenu.tsx"
   - "src/renderer/src/components/ContextMeter.tsx"
+  - "src/renderer/src/components/Campfire.tsx"
   - "src/renderer/src/components/Launcher.tsx"
   - "src/renderer/src/components/SettingsSheet.tsx"
   - "src/renderer/src/components/TabIndicator.tsx"
@@ -173,3 +174,38 @@ there is not. Same family as gotcha 11: these properties centre by *consuming sp
 they behave differently once the space is negative. The symptom is always "the top of this
 is cut off and I cannot scroll to it", and it only appears once something inside grows —
 which is why expanding a disclosure is the classic trigger.
+
+## 71. The global reduced-motion block silently deletes anything whose visible state lives only in its keyframes
+
+**`app.css`'s global `prefers-reduced-motion` block makes most animations behave and makes a
+particular kind of element vanish, and the difference is invisible in the stylesheet.** The block
+is `animation-duration: 1ms !important; animation-iteration-count: 1 !important` on `*`, which is
+the right blunt instrument: an animation still runs, for one millisecond, and the element is then
+painted from its own base rule. So the question every new animation has to answer is **what does
+this element look like with its animation deleted** — and there are two ways to get that wrong.
+
+**A keyframe pair whose endpoints are both "mid-motion" leaves a frozen wrong frame.** Writing
+`from { scale: 0.9 } to { scale: 1.1 }` for a flicker means the resting style is the good one and
+the 1ms run ends back at it — fine. Writing the *static* look into `50%` and the extremes into
+`0%`/`100%` reads identically in the stylesheet and leaves a permanently squashed shape.
+
+**Worse, and the one that actually bit: an element that rests at `opacity: 0` disappears
+entirely.** The first-run campfire's five sparks are `<circle>`s whose whole existence is a
+`0% { opacity: 0 } … 100% { opacity: 0 }` rise, because a spark is *only* a moving thing. With
+motion reduced they were still in the DOM, still laid out, still measured as present by any
+probe that asks `querySelector`, and painted nothing — so the check that would catch it is not
+"is it there" but a screenshot. They are `display: none` under reduced motion now, which is the
+honest statement: a spark with no motion is not a dimmer spark, it is not a spark.
+
+The general rule: **the reduced-motion answer for a decorative element is either a deliberate
+still state or removal, never whatever the keyframes happen to leave behind.** `.campfire`'s own
+`@media (prefers-reduced-motion: reduce)` block does both — the card keeps `fade` so it does not
+appear with no transition at all, and the sparks go.
+
+Verified in the running app rather than reasoned about, because none of it is visible to `npm run
+check`: Electron takes `--force-prefers-reduced-motion`, which is the only way to get a real
+`matchMedia('(prefers-reduced-motion: reduce)').matches === true` at boot — CDP's
+`Emulation.setEmulatedMedia` arrives after the splash has already decided what to paint. Measured
+under it: `matches` true, `.campfire-body` and `.campfire-core` both at `animationDuration
+0.001s`, `.campfire-spark` at `display: none`, and a screenshot showing a still, correct fire
+rather than a frame of a moving one.
