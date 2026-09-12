@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
   BrowserState,
   CliInfo,
@@ -35,6 +35,7 @@ import { WorklogPrompt } from './components/WorklogPrompt'
 import { baseName, ipcErrorMessage } from './lib/format'
 import { attachExit, forgetPty, initPtyBus } from './lib/ptyBus'
 import { TERMINAL_DEFAULTS, zoomStep } from '@shared/ui'
+import { welcomePlan, type WelcomeReason } from '@shared/welcome'
 import { matchShortcut } from './lib/shortcuts'
 import { newTab } from './lib/newTab'
 import { profileIdForCwd } from './lib/projectProfile'
@@ -52,6 +53,32 @@ import {
 } from './lib/tabs'
 import { applyAppearance, applyTypography, applyWallpaper } from './lib/theme'
 import type { SessionActivity, Tab } from './types'
+
+/*
+ * The first-run campfire, as a chunk of its own.
+ *
+ * `lazy()` here does NOT start the import — React calls the factory the first
+ * time the element is rendered, which is only ever on the launch after an
+ * install or an upgrade. Static-importing it instead would put its module and
+ * its SVG into the one renderer bundle, where every launch pays to parse and
+ * evaluate it in order to render null. That is gotcha 40's finding (a static
+ * import of something most launches never use is simply boot cost) applied one
+ * process over; measured in the built bundle, the split is ~4 KB of JS that a
+ * repeat launch never fetches.
+ *
+ * The `.then` mapping is only because `lazy` wants a default export and this
+ * repo exports components by name.
+ */
+const Campfire = lazy(() =>
+  import('./components/Campfire').then((m) => ({ default: m.Campfire }))
+)
+
+/** What the splash needs to draw itself, and what to record once it is gone. */
+interface WelcomeScreen {
+  reason: WelcomeReason
+  version: string
+  record: string | null
+}
 
 const EMPTY_BROWSER: BrowserState = {
   url: '',
@@ -73,6 +100,8 @@ export function App(): React.JSX.Element {
 
   const [settings, setSettings] = useState<Settings | null>(null)
   const [cli, setCli] = useState<CliInfo | null>(null)
+  /** The first-run campfire, or null on every launch that is not one. */
+  const [welcome, setWelcome] = useState<WelcomeScreen | null>(null)
 
   const [projects, setProjects] = useState<Project[]>([])
   const [projectsLoading, setProjectsLoading] = useState(true)
@@ -1874,6 +1903,55 @@ export function App(): React.JSX.Element {
     return () => window.removeEventListener('keydown', onKey)
   }, [isMac, tabs, activeTabId, closeTab, openNewTab])
 
+  /* ------------------------------------------------- first-run campfire */
+
+  /*
+   * Whether the splash plays is decided once, on the first render that has
+   * settings, and never again for the life of the process.
+   *
+   * The ref is claimed BEFORE the `self.state()` await rather than after it
+   * (gotcha 20): settings arrive as one state write and then change again on
+   * every later patch, so without a claim ahead of the await two passes could
+   * both read `welcomeSeenVersion` as null and both decide to play.
+   */
+  const welcomeDecided = useRef(false)
+  const welcomeRef = useRef<WelcomeScreen | null>(null)
+  useEffect(() => {
+    if (!settings || welcomeDecided.current) return
+    welcomeDecided.current = true
+    void (async () => {
+      /*
+       * `self.state()` is a plain getter over `app.getVersion()` — it starts no
+       * update check and touches no network. package.json's version is what an
+       * unpackaged run reports, which is what makes this testable at all.
+       */
+      const version = (await window.stoke.self.state()).currentVersion
+      const plan = welcomePlan(settings.welcomeSeenVersion, version)
+      if (!plan.play) return
+      const screen = { reason: plan.reason, version, record: plan.record }
+      welcomeRef.current = screen
+      setWelcome(screen)
+    })()
+  }, [settings])
+
+  /*
+   * Dismissal, from any of the three routes, at most once. The ref is cleared
+   * first so a click that lands in the same tick as the auto-dismiss timer
+   * cannot write the setting twice — gotcha 51's shape, smaller: state has not
+   * re-rendered yet when the second call arrives.
+   */
+  const dismissWelcome = useCallback((): void => {
+    const record = welcomeRef.current?.record ?? null
+    if (!welcomeRef.current) return
+    welcomeRef.current = null
+    setWelcome(null)
+    // Written on dismissal rather than on mount: a splash recorded as seen
+    // before it finished would, if the app went away mid-animation, be a
+    // screen nobody watched that can never be shown again. `store.ts` writes a
+    // single discrete change straight through, so this is on disk at once.
+    if (record) void patchSettings({ welcomeSeenVersion: record })
+  }, [patchSettings])
+
   // Escape closes whichever overlay is on top.
   useEffect(() => {
     if (!settingsOpen) return
@@ -2433,6 +2511,22 @@ export function App(): React.JSX.Element {
             setSettingsOpen(false)
           }}
         />
+      )}
+
+      {/*
+        Last in the tree and highest in z, so it sits over whatever the launch
+        restored. `fallback={null}` rather than a spinner: the chunk is a few
+        kilobytes off the local disk, and a spinner that flashes for one frame
+        before a welcome screen is worse than one frame of nothing.
+      */}
+      {welcome && (
+        <Suspense fallback={null}>
+          <Campfire
+            reason={welcome.reason}
+            version={welcome.version}
+            onDismiss={dismissWelcome}
+          />
+        </Suspense>
       )}
     </div>
   )

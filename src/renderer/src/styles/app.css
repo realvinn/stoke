@@ -4479,3 +4479,239 @@ mark.hit {
 .activity-commit {
   color: var(--text-faint);
 }
+
+/* ---------------------------------------------- first-run campfire (splash) */
+
+/*
+ * Shown once per install or upgrade, over everything, for a few seconds. The
+ * decision to show it is `welcomePlan`'s (src/shared/welcome.ts); this is only
+ * what it looks like.
+ *
+ * `--z-toast`, above `--z-modal`: on the one launch this appears, nothing else
+ * should be able to sit in front of it, and the settings sheet is reachable
+ * from a keyboard chord that fires before this is dismissed.
+ *
+ * One thing it genuinely cannot cover, and it is not a bug here: a
+ * `WebContentsView` paints above every pixel of renderer DOM (gotcha 14), so
+ * with the docked browser open the splash would stop at its edge. A first run
+ * opens no browser, and an upgrade run restores tabs rather than panels.
+ */
+.campfire {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-toast);
+  display: grid;
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
+  backdrop-filter: blur(3px);
+  animation: fade var(--dur-slow) var(--ease);
+  cursor: default;
+}
+
+/*
+ * `margin: auto`, not `place-items: center`. Centring by distributing free
+ * space puts the top of the card above `scrollTop: 0` the moment the content
+ * outgrows the box, and `margin: auto` collapses to zero instead (gotcha 60).
+ * It is also what makes `modal-in` the right entrance — the card's resting
+ * `translate` is `none`, and `pop` would start it half its own width to the
+ * left (gotcha 47).
+ */
+.campfire-card {
+  margin: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-8);
+  padding: var(--space-32);
+  text-align: center;
+  animation: modal-in var(--dur-slow) var(--ease);
+}
+
+/*
+ * Every colour the fire is made of, derived from the one accent the theme (or
+ * the active profile) already resolved. `--accent` is a FILL and this is all
+ * fill, so none of it wants `--accent-ink` (gotcha 44).
+ *
+ * The three flame stops and the core are relative-colour steps off `--accent`
+ * rather than mixes toward a literal white: white is only "hotter" on a dark
+ * theme, and mixing toward `--text` inverts on the three light ones. Moving
+ * lightness and pulling chroma keeps the same relationship on all twelve —
+ * measured in the running app, not assumed, because an unsupported colour
+ * function is invalid at computed-value time and would simply not paint.
+ */
+.campfire-art {
+  --campfire-hot: oklch(from var(--accent) calc(l + 0.1) calc(c * 0.75) h);
+  --campfire-mid: var(--accent);
+  --campfire-deep: oklch(from var(--accent) calc(l - 0.12) c h);
+  --campfire-core: oklch(from var(--accent) calc(l + 0.2) calc(c * 0.35) h);
+  --campfire-halo: color-mix(in srgb, var(--accent) 40%, transparent);
+  width: min(11rem, 34vh);
+  height: auto;
+  overflow: visible;
+}
+
+.campfire-stop-hot {
+  stop-color: var(--campfire-hot);
+}
+
+.campfire-stop-mid {
+  stop-color: var(--campfire-mid);
+}
+
+.campfire-stop-deep {
+  stop-color: var(--campfire-deep);
+}
+
+.campfire-stop-core {
+  stop-color: var(--campfire-core);
+}
+
+.campfire-stop-halo {
+  stop-color: var(--campfire-halo);
+}
+
+.campfire-stop-halo-out {
+  stop-color: transparent;
+}
+
+/*
+ * The two logs. `--border-strong` alone was measured on screen as a plain grey
+ * bowtie under a warm fire — technically a neutral from the theme, and reading
+ * as a piece of UI chrome that had wandered into the artwork. A third of the
+ * accent mixed in is enough to make them wood without introducing a colour the
+ * theme does not already own.
+ */
+.campfire-logs {
+  fill: none;
+  stroke: color-mix(in oklab, var(--accent) 32%, var(--border));
+  stroke-width: 9;
+  stroke-linecap: round;
+}
+
+.campfire-spark {
+  fill: var(--campfire-core);
+  opacity: 0;
+  animation: campfire-spark 2100ms var(--ease) infinite;
+}
+
+/*
+ * `transform-box: view-box` plus an explicit origin at the base of the flame,
+ * so the fire leans and stretches from the logs rather than about its own
+ * centre. Without the `transform-box` the origin would be resolved against the
+ * <g>'s bounding box, which moves as the animation runs.
+ */
+.campfire-body,
+.campfire-halo {
+  transform-box: view-box;
+  transform-origin: 83px 264px;
+}
+
+.campfire-body {
+  animation: campfire-sway 1700ms ease-in-out infinite alternate;
+}
+
+.campfire-core {
+  transform-box: view-box;
+  transform-origin: 83px 260px;
+  animation: campfire-lick 760ms ease-in-out infinite alternate;
+}
+
+.campfire-halo {
+  animation: campfire-breathe 2600ms ease-in-out infinite alternate;
+}
+
+.campfire-title {
+  margin: var(--space-8) 0 0;
+  font-size: var(--fs-2xl);
+  font-weight: 600;
+  line-height: var(--lh-snug);
+  color: var(--text);
+}
+
+.campfire-sub {
+  margin: 0;
+  max-width: 22rem;
+  font-size: var(--fs-base);
+  line-height: var(--lh-normal);
+  color: var(--text-muted);
+}
+
+.campfire-hint {
+  margin: var(--space-16) 0 0;
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+}
+
+@keyframes campfire-sway {
+  from {
+    scale: 0.97 0.98;
+    rotate: -1.5deg;
+  }
+
+  to {
+    scale: 1.02 1.05;
+    rotate: 1.5deg;
+  }
+}
+
+@keyframes campfire-lick {
+  from {
+    scale: 0.9 0.88;
+    opacity: 0.85;
+  }
+
+  to {
+    scale: 1.05 1.12;
+    opacity: 1;
+  }
+}
+
+@keyframes campfire-breathe {
+  from {
+    scale: 0.92;
+    opacity: 0.7;
+  }
+
+  to {
+    scale: 1.06;
+    opacity: 1;
+  }
+}
+
+@keyframes campfire-spark {
+  0% {
+    opacity: 0;
+    translate: 0 0;
+  }
+
+  25% {
+    opacity: 0.9;
+  }
+
+  100% {
+    opacity: 0;
+    translate: 0 -34px;
+  }
+}
+
+/*
+ * Reduced motion. The global block above already forces every animation to 1ms
+ * and one iteration, which stops the fire dead — the keyframes are written so
+ * that the resting, un-animated shape is the good static one, so what is left
+ * is a still campfire rather than a squashed frame of a moving one.
+ *
+ * Stated again here rather than left to the global rule for one reason the
+ * global rule cannot cover: the sparks rest at `opacity: 0`, so with the
+ * animation gone they would be five invisible circles. They are removed
+ * outright instead, and the card keeps its fade so it does not appear with no
+ * transition at all.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .campfire,
+  .campfire-card {
+    animation: fade 1ms;
+  }
+
+  .campfire-spark {
+    display: none;
+  }
+}
