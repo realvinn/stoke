@@ -1,4 +1,5 @@
 import { isBudgetExhausted, runHeadless, type HeadlessOptions, type HeadlessResult } from '../agent.ts'
+import type { ProviderSettings } from '../../shared/providers.ts'
 import { asRecord, clip, oneLine, parsedCandidates } from './json.ts'
 import { WORKLOG_TARGETS } from '../../shared/worklog.ts'
 import type { WorklogExistingItem, WorklogScanOutcome, WorklogTarget } from '@shared/types'
@@ -331,6 +332,8 @@ export interface RecallOptions {
    */
   cwd?: string
   claudePath?: string | null
+  /** Provider keys from Settings, for the spawned run. See HeadlessOptions. */
+  providers?: ProviderSettings
   timeoutMs?: number
   maxBudgetUsd?: number
   /** Override the runner, so the read path can be tested without a live board. */
@@ -391,7 +394,8 @@ export function recallRunOptions(opts: RecallOptions): HeadlessOptions {
     effort: 'low',
     timeoutMs: opts.timeoutMs,
     maxBudgetUsd: opts.maxBudgetUsd ?? RECALL_MAX_BUDGET_USD,
-    claudePath: opts.claudePath ?? null
+    claudePath: opts.claudePath ?? null,
+    providers: opts.providers
   }
 }
 

@@ -18,6 +18,10 @@ been run on linux — treat it as experimental.
   it faster than the clock is ticking
 - your phone can drive it. hold the mic button to talk instead of typing
 - it writes up your work into notion and clickup, if you let it. see below
+- api keys in settings, so a launch from the dock or start menu has them:
+  an anthropic console key, openrouter, or any anthropic-compatible gateway,
+  plus openai and xai keys for codex and grok. they are stored in plain text
+  in stoke's own settings.json, like the rest of your settings
 
 ## install it
 

@@ -3,6 +3,8 @@ import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { buildEnvPath, findClaude, loginPathProbeFailed, notFoundError, spawnSpec } from './cli.ts'
+import { applyProviderEnv, DEFAULT_PROVIDERS, validateClaudeAuth } from '../shared/providers.ts'
+import type { ProviderSettings } from '../shared/providers.ts'
 
 /**
  * A headless `claude -p` run: one prompt in, one JSON result out.
@@ -109,6 +111,21 @@ export interface HeadlessOptions {
   maxBudgetUsd?: number
   /** Explicit path to the claude executable; null auto-detects. */
   claudePath?: string | null
+  /**
+   * Provider keys from Settings, applied to the spawned env exactly as pty.ts
+   * applies them to a terminal session.
+   *
+   * Threaded rather than read from the store, like `claudePath` above, so the
+   * runner stays assertable without a live settings file. Omitted means the
+   * defaults, which touch no ANTHROPIC_* var and so leave an inherited
+   * Claude.ai login alone - the behaviour every headless run had before.
+   *
+   * Without this a user whose ONLY credential is the one typed into Settings -
+   * the stated reason that panel exists, since a GUI launched from the Dock or
+   * Start menu sees no shell-profile exports - got working terminal tabs and a
+   * worklog that could not authenticate at all.
+   */
+  providers?: ProviderSettings
 }
 
 export interface HeadlessResult {
@@ -400,6 +417,24 @@ export async function runHeadless(opts: HeadlessOptions): Promise<HeadlessResult
     env[k] = v
   }
   env.PATH = await buildEnvPath()
+  /*
+   * Fail closed exactly as pty.ts:298-300 does, and only when a provider block
+   * was actually supplied.
+   *
+   * Applying a half-filled one is worse than refusing it, and it is two clicks
+   * away: the auth-mode select patches immediately, so choosing "OpenRouter"
+   * and closing the sheet before pasting the key persists
+   * `claudeAuth: 'openrouter'` with an empty token. Applied blindly that sets
+   * ANTHROPIC_BASE_URL with a blank ANTHROPIC_AUTH_TOKEN over an inherited
+   * Claude.ai login that was working a moment ago, and the 401 comes back as a
+   * generic headless failure instead of the sentence validateClaudeAuth has
+   * already written for the launcher.
+   */
+  if (opts.providers) {
+    const check = validateClaudeAuth(opts.providers)
+    if (!check.ok) throw new HeadlessError(check.message)
+  }
+  applyProviderEnv(env, opts.providers ?? DEFAULT_PROVIDERS)
 
   // A cwd that has since been deleted (a scratch project, a removed worktree)
   // makes the spawn fail with ENOENT, which reads like "claude is missing".

@@ -18,6 +18,7 @@
  *
  *   node scripts/verify-worklog-runner.mts
  */
+import { DEFAULT_PROVIDERS } from '../src/shared/providers.ts'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -442,6 +443,39 @@ check(
  * before that second fallback gets a chance to paper over the first one being
  * gone, so it fails on the removal regardless of the coincidence.
  */
+/*
+ * The provider block has to reach the spawned run, or a user whose only
+ * credential is the one typed into Settings gets working terminal tabs and a
+ * worklog that cannot authenticate at all.
+ *
+ * Asserted on the builder's return value rather than through a spawn, because
+ * the builder IS the wire that was missing: until this, deleting
+ * `providers: input.providers` from scanRunOptions changed no assertion
+ * anywhere in the repo. Same shape as the budget check below.
+ */
+{
+  const P = {
+    ...DEFAULT_PROVIDERS,
+    claudeAuth: 'anthropic' as const,
+    anthropicApiKey: 'sk-ant-threaded'
+  }
+  check(
+    'scanRunOptions forwards the provider block to the run',
+    scanRunOptions('irrelevant prompt', { providers: P }).providers,
+    P
+  )
+  check(
+    'applyRunOptions forwards it too',
+    applyRunOptions(proposal(), 'clickup', { providers: P }).providers,
+    P
+  )
+  check(
+    'omitting it stays undefined, so agent.ts falls back to the inert default',
+    scanRunOptions('irrelevant prompt', {}).providers,
+    undefined
+  )
+}
+
 check(
   'scanRunOptions wires SCAN_MAX_BUDGET_USD in itself, not relying on agent.ts default falling through',
   scanRunOptions('irrelevant prompt', {}).maxBudgetUsd,

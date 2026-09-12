@@ -7,6 +7,7 @@
  * outside a window — see `scripts/verify-settings.mts`.
  */
 import type { ProfileConfig, ProjectMeta, Settings, SshHost, Theme, WorklogBoards } from '@shared/types'
+import { DEFAULT_PROVIDERS, hydrateProviders } from '../shared/providers.ts'
 import { tidy } from './projectMeta.ts'
 import { DEFAULT_LIGHT_THEME_ID, DEFAULT_THEME_ID, validateTheme } from '../shared/themes.ts'
 import { DEFAULT_WORKLOG_BOARDS, WORKLOG_TARGETS } from '../shared/worklog.ts'
@@ -108,6 +109,7 @@ export const DEFAULT_SETTINGS: Settings = {
   // Background only: a notification for the tab in front is noise, one for a
   // tab behind another — or a window behind another app — is the point.
   notifications: 'background',
+  providers: { ...DEFAULT_PROVIDERS },
   // Never seen. Every existing settings file also has no such key and therefore
   // reads as this, which is right: the first launch after an upgrade is exactly
   // one of the two moments the campfire is for.
@@ -310,6 +312,7 @@ export function hydrateSettings(raw: unknown): Settings {
     fontSize: clampFontSize(r.fontSize),
     terminal: clampTerminal(r.terminal),
     wallpaper: clampWallpaper(r.wallpaper),
-    zoomTarget: clampZoomTarget(r.zoomTarget)
+    zoomTarget: clampZoomTarget(r.zoomTarget),
+    providers: hydrateProviders(r.providers)
   }
 }

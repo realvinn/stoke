@@ -36,6 +36,7 @@ import { useDraft } from '../lib/useDraft'
 import { HostsSettings } from './HostsSettings'
 import { ProfilesSettings } from './ProfilesSettings'
 import { ClaudeCodeSettings } from './ClaudeCodeSettings'
+import { ProvidersSettings } from './ProvidersSettings'
 import { ThemeEditor } from './ThemeEditor'
 import { RemoteSettings, SelfUpdateSettings, UpdatesSettings } from './RemoteSettings'
 import { WorklogSettings } from './WorklogSettings'
@@ -105,6 +106,7 @@ export type SectionId =
   | 'profiles'
   | 'sessions'
   | 'claude'
+  | 'providers'
   | 'projects'
   | 'hosts'
   | 'worklog'
@@ -138,6 +140,7 @@ const GROUPS: { title: string; sections: Section[] }[] = [
     sections: [
       { id: 'sessions', label: 'Sessions', hint: 'What a new session starts with' },
       { id: 'claude', label: 'Claude Code', hint: "Claude Code's own configuration" },
+      { id: 'providers', label: 'Providers', hint: 'API keys: Anthropic, OpenRouter, OpenAI/Codex, xAI/Grok' },
       { id: 'projects', label: 'Projects', hint: 'Which folders the sidebar scans' },
       { id: 'hosts', label: 'SSH hosts', hint: 'Remote machines to open sessions on' }
     ]
@@ -836,6 +839,13 @@ export function SettingsSheet({
             )}
 
             {section === 'claude' && <ClaudeCodeSettings cliVersion={cli?.version ?? null} />}
+
+          {section === 'providers' && (
+            <ProvidersSettings
+              providers={settings.providers}
+              onChange={(providers) => onPatch({ providers })}
+            />
+          )}
 
             {section === 'profiles' && (
               <ProfilesSettings settings={settings} onPatch={onPatch} onCreated={onProfileCreated} />

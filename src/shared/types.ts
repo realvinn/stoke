@@ -2,6 +2,7 @@
  * Types shared by the main process, the preload bridge and the renderer.
  * This file must stay free of any Node or DOM imports.
  */
+import type { ProviderSettings } from './providers.ts'
 import type { RemoteReachPreference, ZoomTarget } from './ui.ts'
 
 /* ------------------------------------------------------------------ launch */
@@ -903,6 +904,11 @@ export interface Settings {
   hideStatusLine: boolean
   /** OS notifications when Claude finishes or needs you. See NotificationMode. */
   notifications: NotificationMode
+  /**
+   * API keys and how local Claude Code sessions authenticate.
+   * See providers.ts. Keys stay in settings.json on this machine.
+   */
+  providers: ProviderSettings
   /**
    * The Stoke version whose first-run campfire has already been watched, or
    * null on a machine that has never seen one.
