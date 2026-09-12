@@ -266,6 +266,19 @@ exit 0, because a shell that painted wrongly would still exit 0. (Pass `LINES`/`
 explicitly when comparing: zsh assigns `LINES` itself, as **0** when there is no terminal, so
 `--print-plan tty` degrades there and nowhere else for a reason that is not the script's.)
 
+**And zsh has a SECOND, unrelated hazard in the same file: `$NAME[` is an array subscript there,
+even inside double quotes.** `printf '%s' "$ESC[?25l"` is `zsh: invalid subscript`, fatal, so the
+fire died on its first byte — and the same construct was in `fire_cleanup`, which means the cursor
+would never have come back either. `setopt sh_word_split` does nothing about it. Write `$ESC'['`,
+as `fire_draw` already did, which is the only reason that was not a third site.
+
+That one is worth more as a lesson about the suite than as a fix. `fire_open`, `fire_draw` and
+`fire_cleanup` only ever run with a terminal on the other end, so **no pipe and no offline flag
+can reach them** — the suite had just been taught to run every flag under every shell and still
+could not see it. It took a real pty. The suite now sources install.sh with `--help` (main returns
+without doing anything) and calls the three functions directly, which is how the animate path gets
+asserted at all: hide first, restore last, one redraw per draw, no 1049.
+
 **The `?` in the `?sh` override is a glob, and zsh refuses an unmatched one outright.** The
 landing page documented `curl -fsSL https://stoke.vinn.dev?sh | sh`, which on a stock Mac
 terminal is `zsh: no matches found: https://stoke.vinn.dev?sh` and never runs curl at all — and
