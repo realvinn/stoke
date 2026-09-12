@@ -175,7 +175,7 @@ they behave differently once the space is negative. The symptom is always "the t
 is cut off and I cannot scroll to it", and it only appears once something inside grows —
 which is why expanding a disclosure is the classic trigger.
 
-## 71. The global reduced-motion block silently deletes anything whose visible state lives only in its keyframes
+## 72. The global reduced-motion block silently deletes anything whose visible state lives only in its keyframes
 
 **`app.css`'s global `prefers-reduced-motion` block makes most animations behave and makes a
 particular kind of element vanish, and the difference is invisible in the stylesheet.** The block

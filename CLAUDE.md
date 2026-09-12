@@ -322,7 +322,7 @@ rule file named on the group line.
 - **60.** Centre inside a scroll container with `margin: auto` on the child, not `justify-content:
   center` — once content outgrows the box, centring pushes its top above `scrollTop: 0`,
   unreachable.
-- **71.** Give every new animation a deliberate reduced-motion answer: the global block forces
+- **72.** Give every new animation a deliberate reduced-motion answer: the global block forces
   `1ms`/one iteration, so the resting style is what paints, and anything resting at `opacity: 0`
   (`.campfire-spark`) vanishes rather than stills. Prove it with
   `--force-prefers-reduced-motion` and a screenshot.
