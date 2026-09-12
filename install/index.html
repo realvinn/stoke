@@ -158,7 +158,9 @@
       <p>
         If something between you and here rewrites your User-Agent and you get the wrong one,
         <code>?sh</code> and <code>?ps1</code> override the guess:
-        <code>curl -fsSL https://stoke.vinn.dev?sh | sh</code>.
+        <code>curl -fsSL 'https://stoke.vinn.dev/?sh' | sh</code>. The quotes are not decoration
+        — <code>?</code> is a glob, and zsh, which is what a Mac terminal starts in, refuses an
+        unquoted one outright with <code>no matches found</code>.
       </p>
 
       <h2>Knobs</h2>
