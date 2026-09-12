@@ -236,6 +236,48 @@ if (dump) {
   refuses('a tab is refused rather than written in a style this cannot reproduce', () => serializeManifest({ v: 'a\tb' }), /double-quoted/)
   refuses('so is a newline', () => serializeManifest({ v: 'a\nb' }), /double-quoted/)
   check('and a non-ASCII name is written plain, exactly as js-yaml writes it', serializeManifest({ v: 'Stöke-é.zip' }), yaml({ v: 'Stöke-é.zip' }))
+
+  // WHICH characters get refused is js-yaml's decision, so it is read out of
+  // js-yaml rather than out of a list someone typed. The rule: the merger must
+  // refuse exactly the values js-yaml would write in a double-quoted or block
+  // style, and write every other one itself.
+  //
+  // The first version of UNWRITABLE named 0x00-0x1F, 0x7F and FEFF and missed
+  // 0x80-0xA0 (a non-breaking space included), 2028/2029, a lone surrogate and
+  // FFFE/FFFF — for all of which js-yaml double-quotes and the merger quietly
+  // wrote a plain scalar instead. A hand-kept list is how that gap opened; this
+  // sweep is what closes it, and it also pins the `u` flag, without which an
+  // ordinary emoji would be refused because its surrogate halves are in range.
+  const style = (v: string) => {
+    const out = yaml({ v })
+    return out.startsWith('v: "') || out.startsWith('v: |') || out.startsWith('v: >') ? 'escaped' : 'writable'
+  }
+  const refusedByMerger = (v: string) => {
+    try {
+      serializeManifest({ v })
+      return 'writable'
+    } catch {
+      return 'escaped'
+    }
+  }
+  const disagreements: string[] = []
+  let sampled = 0
+  for (let cp = 0; cp <= 0x10ffff; cp += cp < 0x10000 ? 1 : 1009) {
+    if (cp >= 0xd800 && cp <= 0xdfff) continue // paired below, on their own
+    const v = 'a' + String.fromCodePoint(cp) + 'b'
+    sampled++
+    if (refusedByMerger(v) !== style(v)) disagreements.push('U+' + cp.toString(16))
+  }
+  for (const cp of [0xd800, 0xdbff, 0xdc00, 0xdfff]) {
+    const v = 'a' + String.fromCharCode(cp) + 'b'
+    sampled++
+    if (refusedByMerger(v) !== style(v)) disagreements.push('lone U+' + cp.toString(16))
+  }
+  check(`${sampled} code points: the merger refuses exactly what js-yaml would escape`, disagreements.slice(0, 8), [])
+  refuses('a non-breaking space is refused, not written plain', () => serializeManifest({ v: 'a\u00a0b' }), /double-quoted/)
+  refuses('so is U+2028, which is a line break to some readers and not to others', () => serializeManifest({ v: 'a\u2028b' }), /double-quoted/)
+  refuses('and a lone surrogate', () => serializeManifest({ v: 'a\ud800b' }), /double-quoted/)
+  check('but an emoji is still written plain — the u flag is what keeps it out of the surrogate range', serializeManifest({ v: 'Stoke-\u{1f600}.zip' }), yaml({ v: 'Stoke-\u{1f600}.zip' }))
 }
 
 // ---------------------------------------------------------------------------

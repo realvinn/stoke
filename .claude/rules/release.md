@@ -204,8 +204,16 @@ latest `releaseDate`. It carries its own YAML reader and writer so the publish j
 implicit resolvers, with three things that are measured rather than reasoned: `,[]{}` are
 unsafe only as the FIRST character because a manifest value is always in block context;
 `yes`/`no`/`on`/`off` are quoted by `DEPRECATED_BOOLEANS_SYNTAX` even though js-yaml 4 no
-longer resolves them as booleans; and a tab or a line break is **refused**, because those send
-js-yaml to a double-quoted style this does not reproduce.
+longer resolves them as booleans; and a character js-yaml calls **unprintable is refused**,
+because those send it to a double-quoted or block style this does not reproduce. That last set
+is the exact complement of js-yaml's own `isPrintable` and is wider than it looks —
+`0x7F-0xA0` (a non-breaking space included), `2028`/`2029`, a lone surrogate and
+`FFFE`/`FFFF` are all in it, and the first version of `UNWRITABLE` named only `0x00-0x1F`,
+`0x7F` and `FEFF`, so for everything in that gap js-yaml double-quoted while the merger wrote
+a plain scalar. The `u` flag on that regex is load-bearing in the other direction: without it
+`\ud800-\udfff` matches the two halves of an ordinary astral character, so an emoji in a
+filename would be refused. `verify:manifests` sweeps 64,532 code points and asserts the two
+agree, rather than keeping a hand-written list of offenders — which is how the gap opened.
 
 `verify:manifests` is the suite, and it takes its oracles from the real thing rather than from
 fixtures: the published v0.9.4 manifests must round-trip byte for byte, a two-arch merge must
@@ -213,6 +221,11 @@ equal what electron-builder's own `writeUpdateInfoFiles` writes for the same art
 electron-updater's own `findFile`/`MacUpdater.filterFilesForArch` must hand each arch its own
 zip out of the merged feed. The counterfactual is asserted too: against an un-merged feed,
 `findFile` throws `No files provided` on the arch that was dropped.
+
+`verify:targets` asserts the publish job's three steps in **order**, not merely their
+presence. A gate that runs after `gh release create` is not a gate — the release is on the
+page and every installed updater can already see it — and a suite that only checks the step
+exists stays green through exactly that edit, which was proven by making it.
 
 **The publish gate is derived from the matrix, not written out.** `check-release-assets.mjs`
 asks `scripts/targets.mjs` which feed each target's updater fetches and what it must find

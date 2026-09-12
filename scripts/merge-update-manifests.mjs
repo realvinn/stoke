@@ -127,13 +127,29 @@ function resolvesImplicitly(value) {
 }
 
 /**
- * A tab, a line break or a control character sends js-yaml to its
- * double-quoted or block style, which has its own escaping rules and which no
- * url, digest or version can legitimately need. Reproducing those rules on
- * spec would be the guess this whole file avoids, so the value is refused
- * instead — loudly, at the point it appears.
+ * A character js-yaml calls unprintable sends it to its double-quoted or block
+ * style, which has its own escaping rules and which no url, digest or version
+ * can legitimately need. Reproducing those rules on spec would be the guess
+ * this whole file avoids, so the value is refused instead — loudly, at the
+ * point it appears.
+ *
+ * This is the exact complement of js-yaml's own `isPrintable`, not a list of
+ * the obvious offenders, and the difference was measured rather than reasoned.
+ * `isPrintable` is
+ *
+ *   0x20-0x7E | 0xA1-0xD7FF (minus 2028/2029) | 0xE000-0xFFFD (minus FEFF)
+ *             | 0x10000-0x10FFFF
+ *
+ * so **0x7F through 0xA0 — a non-breaking space included — plus 2028/2029, a
+ * lone surrogate and FFFE/FFFF are unprintable too**, and the first version of
+ * this regex named only 0x00-0x1F, 0x7F and FEFF. For every character in that
+ * gap the two implementations disagreed silently: js-yaml double-quoted, this
+ * wrote a plain scalar, and the promise to refuse rather than guess was not
+ * being kept. The `u` flag is load-bearing — without it \ud800-\udfff matches
+ * the two halves of an ordinary astral character, which js-yaml calls
+ * printable, so an emoji in a filename would be refused instead.
  */
-const UNWRITABLE = /[\u0000-\u001f\u007f\ufeff]/
+const UNWRITABLE = /[\u0000-\u001f\u007f-\u00a0\u2028\u2029\ud800-\udfff\ufeff\ufffe\uffff]/u
 
 /**
  * True when js-yaml would single-quote this string rather than write it plain.
