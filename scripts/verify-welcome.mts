@@ -18,7 +18,12 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { WELCOME_DISMISS_MS, clampWelcomeSeen, welcomePlan } from '../src/shared/welcome.ts'
+import {
+  WELCOME_DISMISS_MS,
+  WELCOME_SEEN_MAX,
+  clampWelcomeSeen,
+  welcomePlan
+} from '../src/shared/welcome.ts'
 import { DEFAULT_SETTINGS, hydrateSettings } from '../src/main/settingsSchema.ts'
 
 const ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..')
@@ -99,6 +104,17 @@ check('junk in the settings file replays once', plan('banana', '0.9.4'), 'play:i
 check('so does a leading v, which npm prints and package.json never holds', plan('v0.9.4', '0.9.4'), 'play:install')
 check('what gets recorded is the running version', welcomePlan(null, '0.9.4').record, '0.9.4')
 check('trimmed', welcomePlan(null, ' 0.9.4 ').record, '0.9.4')
+/*
+ * A version that parses but is too long for the stored field is the loop this
+ * file's own comments only closed from one side. It is reachable: build
+ * metadata is legal semver and a CI-stamped `0.9.4+ci.<build id>` clears 64
+ * characters without trying. Recorded raw it would be written, refused by
+ * `hydrateSettings` on the next read, and therefore read as "never seen" — a
+ * splash on every launch, for ever, in front of whatever was restored.
+ */
+const LONG = `0.9.4+ci.${'a'.repeat(WELCOME_SEEN_MAX)}`
+check('a version too long to store plays nothing', plan(null, LONG), 'quiet:unknown')
+check('and records nothing', welcomePlan(null, LONG).record, null)
 
 console.log('\nthe stored field is repaired, not trusted')
 check('a real version survives', clampWelcomeSeen('0.9.4'), '0.9.4')
@@ -124,6 +140,23 @@ console.log('\nevery value the clamp keeps is one the plan can read')
 for (const v of ['0.9.4', '1.0.0', '10.20.30', '0.4.0-beta.3', '1.0.0-rc.1', '2.0.0+build.9']) {
   const kept = clampWelcomeSeen(v)
   ok(`${v} survives the clamp and then compares equal to itself`, kept !== null && plan(kept, v) === 'quiet:seen')
+}
+
+/*
+ * And the converse, which is the half that was missing and the half that loops.
+ * The property above stops a STORED value the comparator cannot read; this one
+ * stops a RECORDED value the clamp will not keep. Both directions have the same
+ * consequence — the field reads as "never seen" on the next launch — and only
+ * this one is reachable from a version string the app itself hands over.
+ */
+console.log('and every value the plan records is one the clamp keeps')
+for (const v of ['0.9.4', ' 0.9.4 ', '10.20.30', '0.4.0-beta.3', '2.0.0+build.9', LONG, 'banana', '']) {
+  const rec = welcomePlan(null, v).record
+  ok(
+    `${JSON.stringify(v)} records something hydration will not throw away`,
+    rec === null || clampWelcomeSeen(rec) === rec,
+    `recorded ${JSON.stringify(rec)}, which hydrates back to ${JSON.stringify(clampWelcomeSeen(rec))}`
+  )
 }
 
 console.log('\nsettings hydration')

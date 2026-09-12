@@ -131,11 +131,23 @@ export function clampWelcomeSeen(value: unknown): string | null {
  * the friendly-looking choice and it is the one that cannot stop: with nothing
  * to record, the next launch asks the same question and gets the same answer,
  * for ever.
+ *
+ * `record` is what the CLAMP keeps, not what `parseVersion` accepts, and the
+ * two are not the same set — the clamp also refuses anything past
+ * `WELCOME_SEEN_MAX`. Recording the raw version instead was a real loop, in the
+ * one direction this file's comments did not claim to have closed: a version
+ * long enough to clear 64 characters (`0.9.4+ci.<a long build id>` reaches it
+ * without trying) parses, plays, is written back, is refused by
+ * `hydrateSettings` on the next read, and therefore reads as "never seen" —
+ * every launch, for ever, exactly the failure the clamp's own comment warns
+ * about from the other side. The clamp is the single gate on both sides now, so
+ * anything recorded survives a round trip through the settings file by
+ * construction.
  */
 export function welcomePlan(seen: string | null | undefined, current: string): WelcomePlan {
-  const now = parseVersion(typeof current === 'string' ? current : '')
-  if (!now) return { play: false, reason: 'unknown', record: null }
-  const record = current.trim()
+  const record = clampWelcomeSeen(current)
+  const now = record === null ? null : parseVersion(record)
+  if (!now || record === null) return { play: false, reason: 'unknown', record: null }
 
   const before = parseVersion(clampWelcomeSeen(seen) ?? '')
   if (!before) return { play: true, reason: 'install', record }
