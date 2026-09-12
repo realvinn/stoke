@@ -1,0 +1,33 @@
+{
+  // The Worker behind https://stoke.vinn.dev — see worker/index.ts.
+  //
+  // Deployed BY HAND, deliberately: `npx wrangler login` once, then
+  // `npm run deploy:install`. No Cloudflare token lives in this repo or in
+  // GitHub Actions, because whoever can deploy this Worker can run code as the
+  // user on every machine that runs the one-liner. That blast radius is larger
+  // than anything else this project ships and it is worth one manual step.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "stoke-install",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-09-01",
+
+  // A CUSTOM DOMAIN, not a route. Cloudflare creates the DNS record and the
+  // certificate for it; a plain route requires a proxied record to already
+  // exist, and without one every request gets ERR_NAME_NOT_RESOLVED rather than
+  // an error naming the cause. `stoke.vinn.dev` is a first-level subdomain of
+  // an active zone with no existing CNAME, which is what this needs.
+  "routes": [{ "pattern": "stoke.vinn.dev", "custom_domain": true }],
+
+  // The three bodies, embedded at bundle time rather than fetched at request
+  // time. `fallthrough` so wrangler's own built-in rules still apply to
+  // anything else.
+  "rules": [{ "type": "Text", "globs": ["**/*.sh", "**/*.ps1", "**/*.html"], "fallthrough": true }],
+
+  // Left OFF on purpose. Worker responses are not edge-cached by default, and
+  // that is the right starting point here: the bodies are a few KB of embedded
+  // string, CPU per request is negligible, and the free plan's 100,000
+  // requests/day is far beyond any plausible traffic. Turning it on would also
+  // invite `Vary: User-Agent`, which is a trap — see the note on CACHE_CONTROL
+  // in worker/route.ts.
+  "observability": { "enabled": true }
+}

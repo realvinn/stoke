@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Install Stoke</title>
+    <meta name="description" content="One line installs Stoke, a desktop shell for Claude Code, on macOS, Windows and Linux." />
+    <meta name="color-scheme" content="dark" />
+    <!--
+      What a browser gets from stoke.vinn.dev. The Worker serves this to anything
+      that is not curl, wget or PowerShell, and to anything it could not identify
+      at all — serving executable text by default to an unknown client is the
+      wrong direction to fail in, and half of what fetches a pasted link is a
+      preview bot.
+
+      No frameworks, no web fonts, no build step: it is embedded in the Worker as
+      a string and it is the fallback for an endpoint whose whole job is to be
+      dependable. Every colour is one of Stoke's own — #241c17 page, #ff9552
+      flame, taken from build/icon.svg — and they are CSS custom properties for
+      the same reason the app's are.
+    -->
+    <style>
+      :root {
+        --page: #241c17;
+        --sunken: #1b1512;
+        --surface: #2e2520;
+        --border: #453931;
+        --text: #efe6df;
+        --muted: #b3a49a;
+        --flame: #ff9552;
+        --flame-soft: #ffc48c;
+        --ember: #e85f24;
+        --core: #fff3e2;
+      }
+      * { box-sizing: border-box; }
+      html { -webkit-text-size-adjust: 100%; }
+      body {
+        margin: 0;
+        padding: 4rem 1.5rem 6rem;
+        background: var(--page);
+        color: var(--text);
+        font: 16px/1.65 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      }
+      main { max-width: 44rem; margin: 0 auto; }
+      h1 {
+        margin: 0 0 0.25rem;
+        font-size: 2.25rem;
+        letter-spacing: -0.02em;
+      }
+      h2 {
+        margin: 3rem 0 0.75rem;
+        font-size: 1.05rem;
+        font-weight: 600;
+        letter-spacing: 0.01em;
+        color: var(--flame-soft);
+      }
+      p { margin: 0 0 1rem; }
+      .lede { color: var(--muted); font-size: 1.05rem; margin-bottom: 2.5rem; }
+      a { color: var(--flame); }
+      a:hover { color: var(--flame-soft); }
+      code, pre, .fire {
+        font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+      }
+      pre {
+        margin: 0 0 0.75rem;
+        padding: 0.9rem 1.1rem;
+        background: var(--sunken);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        overflow-x: auto;
+        font-size: 0.95rem;
+      }
+      pre .prompt { color: var(--muted); user-select: none; }
+      code { background: var(--surface); padding: 0.1em 0.35em; border-radius: 4px; font-size: 0.9em; }
+      ul { margin: 0 0 1rem; padding-left: 1.2rem; }
+      li { margin-bottom: 0.4rem; }
+      .fire {
+        float: right;
+        margin: 0 0 1rem 1.5rem;
+        white-space: pre;
+        line-height: 1.1;
+        font-size: 0.95rem;
+        color: var(--ember);
+      }
+      .fire .core { color: var(--core); }
+      .fire .spark { color: var(--flame-soft); }
+      .fire .mid { color: var(--flame); }
+      .fire .log { color: #7c3a1d; }
+      footer {
+        margin-top: 4rem;
+        padding-top: 1.5rem;
+        border-top: 1px solid var(--border);
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+      @media (max-width: 34rem) {
+        body { padding-top: 2.5rem; }
+        .fire { float: none; margin: 0 0 1.5rem; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <!--
+        The roaring frame of the same campfire the installer burns in the
+        terminal, from src/shared/campfire.ts. Not generated — the generator
+        emits shell and PowerShell, and one static frame in one static page is
+        not worth a third target. aria-hidden because it is decoration; the
+        heading beside it says what this is.
+      -->
+      <div class="fire" aria-hidden="true"><span class="spark">   .   <span class="core">*</span>   .</span>
+<span class="spark">    \ ) ( /</span>
+<span class="mid">   ( )(<span class="core">#</span>)( )</span>
+<span class="mid">  ( ((<span class="core">###</span>)) )</span>
+ (_((<span class="core">#####</span>))_)
+<span class="log">\__/\_/_\_/\__/</span>
+<span class="log">.-.,_______,.-.</span></div>
+
+      <h1>Stoke</h1>
+      <p class="lede">
+        A desktop shell for Claude Code: one window for every project, session and the browser,
+        instead of a pile of terminals. One line installs it, and the same line upgrades it.
+      </p>
+
+      <h2>macOS and Linux</h2>
+      <pre><span class="prompt">$ </span>curl -fsSL https://stoke.vinn.dev | sh</pre>
+
+      <h2>Windows</h2>
+      <pre><span class="prompt">&gt; </span>irm https://stoke.vinn.dev | iex</pre>
+
+      <h2>What it does</h2>
+      <ul>
+        <li>Asks GitHub for the latest release — no account, no token, nothing to sign in to.</li>
+        <li>Stops straight away if the version you already have is the one it would install.</li>
+        <li>Downloads the build for your machine from
+          <a href="https://github.com/realvinn/stoke/releases">github.com/realvinn/stoke/releases</a>
+          and nowhere else, with a campfire to watch while it does.</li>
+        <li>Checks every byte against the SHA-512 in that release's own update manifest, and
+          deletes the file and stops if it does not match.</li>
+        <li>On macOS, asks a running Stoke to quit properly first — killing it would strand the
+          <code>claude</code> processes its sessions are running — then puts the app in
+          <code>/Applications</code> and opens it.</li>
+        <li>On Windows, closes Stoke the same way and runs the installer silently, in the place
+          your existing copy is already in. No administrator rights unless you already had an
+          all-users install.</li>
+        <li>On Linux, puts the AppImage at <code>~/.local/bin/stoke</code> with a desktop entry.</li>
+      </ul>
+
+      <h2>Read it first</h2>
+      <p>
+        Piping anything to a shell runs it as you. These are the exact bytes this page serves, at
+        stable URLs, so you can read them before you run them:
+        <a href="/install.sh">install.sh</a> · <a href="/install.ps1">install.ps1</a>.
+        They are the files in
+        <a href="https://github.com/realvinn/stoke/tree/main/install">install/</a> in the repo, byte
+        for byte.
+      </p>
+      <p>
+        If something between you and here rewrites your User-Agent and you get the wrong one,
+        <code>?sh</code> and <code>?ps1</code> override the guess:
+        <code>curl -fsSL https://stoke.vinn.dev?sh | sh</code>.
+      </p>
+
+      <h2>Knobs</h2>
+      <ul>
+        <li><code>STOKE_DRY_RUN=1</code> — resolve, download and verify, then stop. Installs nothing.</li>
+        <li><code>NO_COLOR=1</code> — the fire in one colour. It still burns; NO_COLOR is about
+          colour, not about motion.</li>
+        <li><code>STOKE_NO_ANIMATION=1</code> — no fire at all, one honest line per tenth instead.
+          A pipe, <code>TERM=dumb</code> and CI already get this without being asked.</li>
+        <li><code>STOKE_FORCE=1</code> — install even when what you have is the same or newer.</li>
+      </ul>
+
+      <h2>Honestly</h2>
+      <p>
+        The macOS build is signed but not notarized by Apple, and the Windows installer is not
+        signed at all. A browser download would show you a Gatekeeper or SmartScreen warning about
+        that; <code>curl</code> attaches no quarantine attribute, so this route quietly does not.
+        That is convenient and it is exactly why it is worth reading the script first.
+      </p>
+      <p>
+        Linux has an AppImage from the next release onwards, and no Stoke build has ever been run
+        on Linux. Treat it as experimental — the installer says so too.
+      </p>
+
+      <footer>
+        <a href="https://github.com/realvinn/stoke">github.com/realvinn/stoke</a> ·
+        <a href="https://github.com/realvinn/stoke/releases">every build</a> ·
+        MIT
+      </footer>
+    </main>
+  </body>
+</html>
