@@ -68,10 +68,31 @@ import type { SessionActivity, Tab } from './types'
  *
  * The `.then` mapping is only because `lazy` wants a default export and this
  * repo exports components by name.
+ *
+ * The `.catch` is the part that is not decoration. `lazy` rethrows a rejected
+ * factory during render, and this tree has NO error boundary anywhere — main.tsx
+ * renders `<App/>` straight into `createRoot` — so a chunk that cannot be
+ * fetched or evaluated does not lose the splash, it unmounts the whole window
+ * and leaves a blank one. That would land on the single launch after an install
+ * or an upgrade, which is the worst launch available to break, and the failure
+ * needs no exotic disk: a future edit to Campfire.tsx that throws at module
+ * scope on some machine has exactly this shape. Falling back to a component
+ * that dismisses itself keeps the app up AND records the version, so it does
+ * not merely fail silently once — it fails silently once and then stops asking.
  */
+type CampfireModule = typeof import('./components/Campfire')
+
 const Campfire = lazy(() =>
-  import('./components/Campfire').then((m) => ({ default: m.Campfire }))
+  import('./components/Campfire')
+    .then((m) => ({ default: m.Campfire }))
+    .catch(() => ({ default: SkipCampfire }))
 )
+
+/** The campfire when its chunk will not load: no splash, and mark it as seen. */
+const SkipCampfire: CampfireModule['Campfire'] = ({ onDismiss }) => {
+  useEffect(() => onDismiss(), [onDismiss])
+  return <></>
+}
 
 /** What the splash needs to draw itself, and what to record once it is gone. */
 interface WelcomeScreen {

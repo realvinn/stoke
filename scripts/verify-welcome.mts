@@ -246,6 +246,25 @@ ok(
   'a static import puts it back in the main chunk'
 )
 
+/*
+ * And that the chunk cannot take the window with it.
+ *
+ * `lazy` rethrows a rejected factory during render; main.tsx renders `<App/>`
+ * straight into `createRoot` with no error boundary anywhere in the tree, so a
+ * chunk that will not load unmounts everything. Measured against the built app
+ * by hiding the chunk file and launching a fresh profile: without the `.catch`,
+ * `document.querySelector('.app')` is null, `#root` has **0** children and the
+ * screenshot is an empty window, with `welcomeSeenVersion` still null so the
+ * next launch does it again; with it, the app is up, the splash is skipped and
+ * the version is recorded. A text assertion is all this suite can do — the
+ * counterfactual is in the commit message.
+ */
+ok(
+  'and a chunk that fails to load cannot blank the app',
+  /import\('\.\/components\/Campfire'\)[\s\S]{0,200}?\.catch\(/.test(APP),
+  'lazy() rethrows in render and this tree has no error boundary'
+)
+
 console.log('\nreduced motion')
 /*
  * The global `prefers-reduced-motion` block already forces every animation to
