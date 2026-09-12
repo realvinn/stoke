@@ -15,7 +15,7 @@
  * the assertions below check that the file says what app-builder-lib's own
  * templates need it to say, and nothing about what a wizard draws.
  */
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -354,6 +354,30 @@ ok(
  * uninstaller.
  */
 ok('and still no nsis.script', !/^\s+script:/m.test(NSIS_BLOCK ?? ''))
+
+/*
+ * And that a rule file actually reaches installer.nsh.
+ *
+ * CLAUDE.md's own procedure: "an entry no path reaches is never loaded". This
+ * one matters more than most, because `build/installer.nsh` is compiled into an
+ * elevated Windows installer that nobody in this repo can run — the reasoning
+ * for what it must not contain (MUI colour overrides, ManifestDPIAware,
+ * `nsis.script`) is all in release.md, and a `paths:` list that does not name
+ * the file means the next person to open it is handed none of it. It was
+ * reachable by nothing when this stream landed: the only `build/` glob anywhere
+ * was `build/*.svg`.
+ */
+console.log('\nthe rules a reader of installer.nsh gets handed')
+const RULE_GLOBS = readdirSync(join(ROOT, '.claude', 'rules'))
+  .filter((f) => f.endsWith('.md'))
+  .flatMap((f) => [...read('.claude', 'rules', f).matchAll(/^\s+- "([^"]+)"$/gm)].map((m) => m[1]))
+const reaches = (path: string): boolean =>
+  RULE_GLOBS.some((g) =>
+    new RegExp(`^${g.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]*')}$`).test(path)
+  )
+ok('some rule file names build/installer.nsh in its paths', reaches('build/installer.nsh'))
+ok('and one names src/shared/welcome.ts', reaches('src/shared/welcome.ts'))
+ok('and one names the Campfire component', reaches('src/renderer/src/components/Campfire.tsx'))
 
 console.log('\nthe suite is in the chain CI derives its list from')
 const PKG = JSON.parse(read('package.json')) as { scripts: Record<string, string> }

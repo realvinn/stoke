@@ -3,6 +3,7 @@ paths:
   - ".github/workflows/release.yml"
   - "electron-builder.yml"
   - "build/*.svg"
+  - "build/*.nsh"
   - "scripts/mac-signing-secrets.sh"
   - "scripts/make-icon.cjs"
   - "scripts/make-installer-art.cjs"
@@ -304,7 +305,12 @@ uninstaller must be the dimmer.
 `if (oneClick)` branch and `oneClick` is `false` here, so adding it to the yml would look like
 branding and do nothing. `nsis.script` must never be used — it replaces the whole generated
 script and takes the uninstaller's generation *and its signing* with it; `build/installer.nsh`
-via the `include` key is the seam, and there is no such file today.
+via the `include` key is the seam. ~~there is no such file today~~ — **there is now**: it holds
+`customWelcomePage` and nothing else, and `nsis.include` names it explicitly for the same reason
+the three image keys are named (an unset key loses the file in silence, a set one stops the
+build). `verify:welcome` holds it, reading the macro's BODY out of the comment-stripped source:
+the file is mostly prose and its prose quotes the directives, so a check against the raw bytes
+matched the explanation and passed over an empty macro.
 
 **The header image is forced to the right, onto a white bar.** `NsisTarget` sets
 `MUI_HEADERIMAGE_RIGHT` unconditionally whenever `installerHeader` resolves, with no option to
@@ -315,11 +321,16 @@ legitimate but costs `MUI_BGCOLOR`/`MUI_TEXTCOLOR` overrides from a top-level `i
 which is the one place a wrong define makes the wizard's own title text unreadable. The suite
 asserts the tile's mean luma, so a redraw has to move that number deliberately.
 
-**There is no welcome page, so the sidebar is nearly invisible.** electron-builder's assisted
-page order is install-mode, directory, instfiles, `MUI_PAGE_FINISH`; `customWelcomePage` is only
-inserted `!ifmacrodef`. `MUI_WELCOMEFINISHPAGE_BITMAP` is read only by the welcome and finish
-pages, so the 164×314 art appears on exactly **one** installer screen, at the end — and on both
-uninstaller screens, which is what makes `uninstallerSidebar.bmp` worth its 155 KB.
+**There was no welcome page, so the sidebar was nearly invisible — `build/installer.nsh` is
+what added one.** electron-builder's assisted page order is install-mode, directory, instfiles,
+`MUI_PAGE_FINISH`; `customWelcomePage` is only inserted `!ifmacrodef`, and
+`MUI_WELCOMEFINISHPAGE_BITMAP` is read only by the welcome and finish pages. Without that macro
+the 164×314 art appears on exactly **one** installer screen, at the end, after every decision
+has been made — and on both uninstaller screens, which is what makes `uninstallerSidebar.bmp`
+worth its 155 KB. **None of that is verified**: no round of work in this repo has run on
+Windows, `npm run dist:win` cannot run from macOS, and the claim that the macro produces a page
+before the directory page is read out of `assistedInstaller.nsh` and the MUI2 readme rather than
+watched. Treat it as unverified, not merely untested.
 
 **The dmg window size comes from the background image, in POINTS.** `dmgUtil`'s `customizeDmg`
 runs `sips` on the background and writes `settings.window` from the result, so a lone 1080×760
