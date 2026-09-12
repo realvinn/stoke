@@ -162,5 +162,16 @@ export function contentTypeFor(body: InstallerBody): string {
  * hit rate goes to zero. If edge caching is ever turned on, put the variant in
  * the cache KEY (a synthesized `https://stoke.vinn.dev/__v/ps1` request against
  * `caches.default`), which gives exactly three entries.
+ *
+ * `private` rather than `public`, and that is the other half of the same
+ * decision. Three different bodies come back from one URL depending on the
+ * User-Agent, and with no `Vary` a SHARED cache — a corporate MITM proxy, which
+ * is the very thing the `?sh` override exists for — is entitled to store one of
+ * them and hand it to the next client whatever it asked for. That is a shell
+ * receiving the landing page, or a browser being offered a script to download.
+ * `private` says only the end client may store this, and an end client has one
+ * User-Agent, so the variant confusion cannot arise there. It costs nothing:
+ * the edge cache this would otherwise feed is off (see wrangler.jsonc), and the
+ * body is a few KB of embedded string.
  */
-export const CACHE_CONTROL = 'public, max-age=300, must-revalidate'
+export const CACHE_CONTROL = 'private, max-age=300, must-revalidate'
