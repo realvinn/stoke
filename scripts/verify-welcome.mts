@@ -271,18 +271,47 @@ const NSH = read('build', 'installer.nsh')
 const YML = read('electron-builder.yml')
 
 /*
+ * Every assertion below reads NSH_CODE, never NSH.
+ *
+ * This file is four fifths prose, and the prose quotes the very directives the
+ * suite is looking for — `!insertmacro MUI_PAGE_WELCOME`, MUI_BGCOLOR,
+ * ManifestDPIAware are all named in comments explaining why they are or are not
+ * there. A check run against the raw bytes therefore passes on the explanation
+ * and says nothing at all about the code: deleting the real
+ * `!insertmacro MUI_PAGE_WELCOME` from inside the macro, and then emptying the
+ * macro altogether, both left this suite green (measured, both ways). That is
+ * gotcha 50's defect in its worst possible place — the NSIS half is the one
+ * part of this feature no human here can verify, so this suite is its only
+ * guard, and it was guarding a sentence.
+ */
+const NSH_CODE = NSH.split('\n')
+  .filter((l) => !/^\s*[;#]/.test(l))
+  .join('\n')
+
+/*
  * `assistedInstaller.nsh` inserts the page only `!ifmacrodef customWelcomePage`
  * and only `!ifndef BUILD_UNINSTALLER`, so the macro has to carry exactly that
  * name. A typo here is a file that compiles, installs, and has no welcome page.
  */
-ok('build/installer.nsh defines customWelcomePage', /^!macro\s+customWelcomePage\s*$/m.test(NSH))
-ok('and closes it', /^!macroend\s*$/m.test(NSH))
-ok('and inserts MUI_PAGE_WELCOME inside it', /!insertmacro\s+MUI_PAGE_WELCOME/.test(NSH))
+ok('build/installer.nsh defines customWelcomePage', /^!macro\s+customWelcomePage\s*$/m.test(NSH_CODE))
+ok('and closes it', /^!macroend\s*$/m.test(NSH_CODE))
+
+/*
+ * The page itself, asserted on the macro's BODY rather than anywhere in the
+ * file. An `!insertmacro MUI_PAGE_WELCOME` at top level would not be inserted
+ * by the assisted template at all — it would land before MUI2.nsh is included
+ * and be a different bug with the same spelling.
+ */
+const BODY = /^!macro\s+customWelcomePage\s*$([\s\S]*?)^!macroend\s*$/m.exec(NSH_CODE)?.[1] ?? ''
+ok('the macro body is not empty', BODY.trim().length > 0, 'an empty customWelcomePage draws no page')
+ok('and it is the body that inserts MUI_PAGE_WELCOME', /!insertmacro\s+MUI_PAGE_WELCOME/.test(BODY))
 
 /*
  * makensis reads this file as bytes. Anything outside ASCII depends on the
  * compiler's code page, and a BOM is its own trap (gotcha 8) — one written by
  * an editor on Windows would arrive as a stray character before `!macro`.
+ * Checked on the whole file, comments included, because that is what makensis
+ * reads.
  */
 ok('it is plain ASCII', !/[^\t\n\r\x20-\x7e]/.test(NSH))
 ok('with no BOM', !NSH.startsWith('﻿'))
@@ -295,12 +324,6 @@ ok('with no BOM', !NSH.startsWith('﻿'))
  * the other side). ManifestDPIAware breaks the component page's tree bitmap by
  * NSIS's own reference.
  */
-/* Directives only: this file explains both of those at length in its own
-   comments, and a check that cannot tell a comment from a `!define` would fail
-   on the explanation and pass on the mistake. */
-const NSH_CODE = NSH.split('\n')
-  .filter((l) => !/^\s*[;#]/.test(l))
-  .join('\n')
 ok('it sets no MUI colour overrides the header art is not drawn for', !/MUI_(?:BGCOLOR|TEXTCOLOR)/.test(NSH_CODE))
 ok('and does not touch ManifestDPIAware', !/ManifestDPIAware/.test(NSH_CODE))
 
