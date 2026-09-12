@@ -30,6 +30,8 @@ import {
   ESC,
   FLICKER,
   HEARTH,
+  RESET,
+  SGR,
   STAGES,
   STAGE_THRESHOLDS,
   colorFor,
@@ -44,6 +46,7 @@ import {
   plainProgress,
   renderPlan,
   stageFor,
+  type ColorKey,
   type ColorMode,
   type Terminal
 } from '../src/shared/campfire.ts'
@@ -166,7 +169,32 @@ check(
   frameFor(0.5, 6).join('|') === frameFor(0.5, 0).join('|') && frameFor(0.5, 7).join('|') === frameFor(0.5, 1).join('|'),
   true
 )
+/*
+ * "It wraps at six" is satisfied by a THREE-cycle too, which is exactly the
+ * metronome FLICKER exists to avoid -- swapping `tick % FLICKER.length` for
+ * `tick % 3` passed every other assertion in this file, so the six-entry array
+ * above was pinned while its use was not. The whole cycle is asserted against
+ * the stage's own frames now, and the tell is asserted directly: tick 3 shows
+ * flicker frame 1, which 0,1,2,0,1,2 can never do.
+ */
+const burningFrames = STAGES[2].frames
+check(
+  'the six-tick cycle is the one FLICKER names, frame by frame',
+  [0, 1, 2, 3, 4, 5, 6, 7].map((t) =>
+    burningFrames.findIndex((f) => [...f, ...HEARTH].join('\n') === frameFor(0.5, t).join('\n'))
+  ),
+  [0, 1, 2, 1, 0, 2, 0, 1]
+)
+ok(
+  'so tick 3 is not tick 0 again, which is what a three-frame metronome would give',
+  frameFor(0.5, 3).join('\n') !== frameFor(0.5, 0).join('\n')
+)
 check('a negative tick does not fall off the front of the array', frameFor(0.5, -1).length, CANVAS.rows)
+check(
+  '  and lands on the same frame as the tick six places along',
+  frameFor(0.5, -1).join('\n') === frameFor(0.5, 5).join('\n'),
+  true
+)
 
 console.log('\nwhich glyph gets which colour')
 /*
@@ -276,6 +304,32 @@ check('an ordinary terminal animates', renderPlan({ TERM: 'xterm-256color' }, tt
   color: 'ansi256',
   reason: null
 })
+/*
+ * And the half of that answer nothing here was checking: a terminal that cannot
+ * render cursor movement must not be handed a colour TIER either. Deleting
+ * `colorMode`'s degraded early-return passed every other assertion in this file
+ * while making `renderPlan({}, piped).color` `ansi256` -- a pipe full of escape
+ * sequences, which is the exact failure the `none` assertions below exist to
+ * prevent, one level up. Asserted for every shape that degrades, with the
+ * richest possible environment, since COLORTERM and WT_SESSION are what would
+ * win if the early return were gone.
+ */
+const rich = { TERM: 'xterm-256color', COLORTERM: 'truecolor', WT_SESSION: '1' }
+for (const [why, env, t] of [
+  ['a pipe', rich, { ...tty, isTty: false }],
+  ['TERM=dumb', { ...rich, TERM: 'dumb' }, tty],
+  ['CI', { ...rich, CI: 'true' }, tty],
+  ['the escape hatch', { ...rich, STOKE_NO_ANIMATION: '1' }, tty],
+  ['a window too short', rich, { ...tty, rows: 8 }],
+  ['a window too narrow', rich, { ...tty, cols: 15 }]
+] as [string, Record<string, string | undefined>, Terminal][]) {
+  const plan = renderPlan(env, t)
+  ok(
+    `${why}: no animation AND no colour tier, however rich the environment says it is`,
+    !plan.animate && plan.color === 'none',
+    JSON.stringify(plan)
+  )
+}
 
 console.log('\npainting')
 /*
@@ -304,6 +358,73 @@ ok(
   'paint colours nothing itself: no cursor movement, no erase, no alternate screen',
   MODES.every((m) => !/\[[0-9]*[AKJ]|\[\?1049/.test(paint(FRAMES[9], m)))
 )
+
+console.log('\nthe palette is the brand file, and the 16-colour tier is 8-colour safe')
+/*
+ * The golden sheets below would notice a changed palette byte, but only as a
+ * hash nobody can read -- and the honest response to a failing hash is to
+ * regenerate it, which is exactly how a typo rides in. These say what the
+ * numbers are supposed to BE. The four flame hexes are build/icon.svg's own
+ * gradient stops; the log brown is the one colour not in that file and is
+ * DERIVED rather than invented, 45% #e85f24 over 55% #241c17 -- the same rule
+ * ladder.ts and accent.ts already set here (gotcha 43: do not hand-pick a hex).
+ */
+const PAINTED: Exclude<ColorKey, '_'>[] = ['C', 'S', 'M', 'B', 'L']
+const TIERS = MODES.filter((m) => m !== 'none') as Exclude<ColorMode, 'none'>[]
+const BRAND: Record<Exclude<ColorKey, '_'>, string> = {
+  C: '#fff3e2',
+  S: '#ffc48c',
+  M: '#ff9552',
+  B: '#e85f24',
+  L: '#7c3a1d'
+}
+const hexOf = (seq: string): string => {
+  const m = /^\[38;2;(\d+);(\d+);(\d+)m$/.exec(seq)
+  return m ? '#' + [m[1], m[2], m[3]].map((n) => Number(n).toString(16).padStart(2, '0')).join('') : seq
+}
+check(
+  'truecolor is the brand gradient, component for component',
+  Object.fromEntries(PAINTED.map((k) => [k, hexOf(SGR.truecolor[k])])),
+  BRAND
+)
+check(
+  'and the log brown really is 45% flame over 55% page, not a hand-picked hex',
+  BRAND.L,
+  '#' +
+    [
+      [0xe8, 0x24],
+      [0x5f, 0x1c],
+      [0x24, 0x17]
+    ]
+      .map(([flame, page]) => Math.round(0.45 * flame + 0.55 * page).toString(16).padStart(2, '0'))
+      .join('')
+)
+ok(
+  'every 256 value is an extended-colour SGR naming one cube index',
+  PAINTED.every((k) => /^\[38;5;\d{1,3}m$/.test(SGR.ansi256[k])),
+  JSON.stringify(SGR.ansi256)
+)
+/*
+ * SGR 30-37 plus SGR 1, never the aixterm 90-97 brights: Microsoft's own table
+ * defines SGR 1 as "applies brightness/intensity flag to foreground color",
+ * which is the promotion wanted, and 90-97 is undefined on the eight-colour
+ * terminals this tier exists for. Every value also carries an explicit
+ * intensity digit, so moving between two of them cannot leave a stale bold.
+ */
+const a16 = PAINTED.map((k) => SGR.ansi16[k])
+ok(
+  'the 16-colour tier uses only SGR 0/1 and 30-37 -- no aixterm brights',
+  a16.every((s) => /^\[[01];3[0-7]m$/.test(s)),
+  JSON.stringify(a16)
+)
+ok(
+  'no palette value carries an ESC byte or anything a shell would expand',
+  TIERS.every((m) => PAINTED.every((k) => !/['"`$@]/.test(SGR[m][k]) && !SGR[m][k].includes(ESC))) &&
+    !/['"`$@]/.test(RESET) &&
+    !RESET.includes(ESC)
+)
+check('the reset is a bare SGR 0', RESET, '[0m')
+check('no tier paints a space', [SGR.truecolor._, SGR.ansi256._, SGR.ansi16._], ['', '', ''])
 
 console.log('\nthe golden sheet')
 /*
@@ -473,13 +594,24 @@ for (const named of ['installer/install.sh', 'installer/install.ps1']) {
   }
 }
 
+/*
+ * Every file in THIS checkout carrying the sentinel -- and nothing in another
+ * one. `.claude/worktrees/` holds a full checkout per parallel stream on this
+ * machine (three of them, while this was written), so a plain walk compares the
+ * art on somebody else's branch against this branch's generator. Measured: a
+ * stale block under `.claude/worktrees/` failed the run naming a path that is
+ * not part of the checkout at all, which is a red `npm run check` you cannot fix
+ * by editing your own tree. A nested checkout is whatever carries its own
+ * `.git`, so that is the test rather than a list of directory names -- it covers
+ * a submodule or a vendored clone the same way.
+ */
 function filesWithSentinel(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
     if (['node_modules', '.git', 'out', 'release', 'dist', 'build'].includes(entry)) continue
     const path = join(dir, entry)
     const st = statSync(path)
     if (st.isDirectory()) {
-      filesWithSentinel(path, out)
+      if (!existsSync(join(path, '.git'))) filesWithSentinel(path, out)
       continue
     }
     if (!/\.(sh|ps1|bash|cmd|txt)$/.test(entry) || st.size > 512_000) continue
