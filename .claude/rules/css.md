@@ -203,9 +203,19 @@ still state or removal, never whatever the keyframes happen to leave behind.** `
 appear with no transition at all, and the sparks go.
 
 Verified in the running app rather than reasoned about, because none of it is visible to `npm run
-check`: Electron takes `--force-prefers-reduced-motion`, which is the only way to get a real
-`matchMedia('(prefers-reduced-motion: reduce)').matches === true` at boot — CDP's
-`Emulation.setEmulatedMedia` arrives after the splash has already decided what to paint. Measured
-under it: `matches` true, `.campfire-body` and `.campfire-core` both at `animationDuration
-0.001s`, `.campfire-spark` at `display: none`, and a screenshot showing a still, correct fire
-rather than a frame of a moving one.
+check`: Electron takes `--force-prefers-reduced-motion`, which gets a real
+`matchMedia('(prefers-reduced-motion: reduce)').matches === true` at boot. Measured under it:
+`matches` true, `.campfire-body` and `.campfire-core` both at `animationDuration 0.001s`,
+`.campfire-spark` at `display: none`, and a screenshot showing a still, correct fire rather than
+a frame of a moving one.
+
+> **Corrected 2026-09-12, by measuring it.** This paragraph used to call the flag "the only way",
+> on the grounds that "CDP's `Emulation.setEmulatedMedia` arrives after the splash has already
+> decided what to paint". That is false, and it is a diagnosis the tool disproves in one call: a
+> media query is live, and nothing here decides anything once. Driven against the built app with
+> the splash already mounted and animating, `Emulation.setEmulatedMedia` with
+> `prefers-reduced-motion: reduce` moved it from `{matches: false, spark: "inline", bodyDur:
+> "1.7s"}` to `{matches: true, spark: "none", bodyDur: "0.001s"}` inside 250 ms. Both tools work
+> on a mounted element; prefer the flag anyway, for the two honest reasons — it is the state a
+> user with the OS setting actually boots into, and it needs no race against a splash that is
+> only up for `WELCOME_DISMISS_MS`.
