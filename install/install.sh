@@ -1148,10 +1148,17 @@ main() {
     # A missing Linux manifest is an expected answer rather than a fault — the
     # release matrix gained Linux after v0.9.4 — so it gets its own sentence and
     # the downloader's own 404 is not quoted over the top of it.
+    #
+    # It names the ARCHITECTURE, because the two Linux manifests go missing for
+    # different reasons and only one of them is temporary: latest-linux.yml
+    # arrives with the next release, while latest-linux-arm64.yml is not built
+    # at all (`node scripts/targets.mjs --list`). "There is no Linux build yet"
+    # is true today and becomes a lie for an arm64 reader the moment x64 ships.
     if [ "$PLATFORM" = linux ]; then
-      die 'There is no Linux build in the latest Stoke release yet.' \
+      die "The latest Stoke release has no Linux $ARCH build." \
         "The macOS and Windows builds are at $STOKE_RELEASES" \
-        'A Linux AppImage is built from the next release onwards.'
+        'Linux AppImages start with the next release; that page lists what each' \
+        'one actually has.'
     fi
     fetch_said
     die "Could not fetch $MANIFEST from the latest release." \
