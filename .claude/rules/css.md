@@ -9,6 +9,7 @@ paths:
   - "src/renderer/src/components/ContextMeter.tsx"
   - "src/renderer/src/components/Campfire.tsx"
   - "src/renderer/src/components/Launcher.tsx"
+  - "src/renderer/src/components/ProvidersSettings.tsx"
   - "src/renderer/src/components/SettingsSheet.tsx"
   - "src/renderer/src/components/TabIndicator.tsx"
   - "src/renderer/src/components/TitleBar.tsx"

@@ -4,6 +4,7 @@ paths:
   - "electron.vite.config.ts"
   - "src/renderer/src/components/HostsSettings.tsx"
   - "src/renderer/src/components/ProfilesSettings.tsx"
+  - "src/renderer/src/components/ProvidersSettings.tsx"
   - "src/renderer/src/components/SettingsSheet.tsx"
   - "src/renderer/src/lib/useDraft.ts"
   - "src/shared/ui.ts"
