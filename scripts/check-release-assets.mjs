@@ -37,9 +37,14 @@ import { TARGETS } from './targets.mjs'
  * arches, because there the url substring is the ONLY thing that tells the two
  * apart: electron-updater picks `files.find(f => f.url.includes(process.arch))`
  * (Provider.js). It is off for Linux, whose feed is already per-arch and whose
- * AppImage is named with no arch token at all for x64 —
- * `getArtifactArchName(x64, "AppImage")` is `x86_64`, which does not contain
- * "x64", so asserting the substring there would fail a correct release.
+ * x64 AppImage carries no arch token at all: the repo sets an `artifactName`
+ * for win and mac but none for linux, and with no user pattern
+ * `expandArtifactNamePattern` passes `arch` as **null** for the default arch
+ * (x64), which `expandMacro` then strips `-${arch}` out for entirely —
+ * `Stoke-<version>.AppImage`. (Even with a pattern it would not help:
+ * `getArtifactArchName(x64, "AppImage")` is `x86_64`, which contains no
+ * "x64".) Either way, asserting the substring on Linux would fail a correct
+ * release.
  *
  * `zip` is on for macOS only: MacUpdater searches the feed for a .zip and
  * rejects "dmg" and "pkg" by name, so a mac arch listed only as a dmg is an

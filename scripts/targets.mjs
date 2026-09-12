@@ -191,6 +191,15 @@ function main(argv) {
     const args = [...target.args, ...extra]
     console.log(`electron-builder ${args.join(' ')}`)
     const run = spawnSync('npx', ['electron-builder', ...args], { stdio: 'inherit', shell: process.platform === 'win32' })
+    // A spawn that never started has `status: null` and its reason only in
+    // `error`, so `run.status ?? 1` alone exits 1 having printed nothing at
+    // all — the shape this repo keeps meeting (gotchas 46, 52): never make the
+    // tool's own answer unreadable. electron-builder's own non-zero exits have
+    // already printed through `stdio: 'inherit'`.
+    if (run.error) {
+      console.error(`Could not run electron-builder: ${run.error.message}`)
+      process.exit(1)
+    }
     process.exit(run.status ?? 1)
   }
 

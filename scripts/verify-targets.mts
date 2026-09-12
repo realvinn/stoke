@@ -274,6 +274,21 @@ check('gates on the merged result', /check-release-assets\.mjs release-assets/.t
 check('and uploads the merged directory, never the raw download tree', /gh release create "\$TAG" release-assets\/\*/.test(runsOf('publish')), true)
 check('nothing publishes from dist/', /gh release create [^\n]*\bdist\/\*/.test(runsOf('publish')), false)
 
+// ORDER, not just presence, and the distinction is the whole of it: a gate that
+// runs after `gh release create` is not a gate, it is a post-mortem — the
+// release is already on the page, already being fetched by every installed
+// copy's updater, and the red job changes none of that. The three steps were
+// asserted only to EXIST until a reviewer moved the gate below the publish step
+// and this suite stayed green.
+const publishRuns = stepsOf('publish').map((s) => String(s.run ?? ''))
+const stepWith = (re: RegExp) => publishRuns.findIndex((r) => re.test(r))
+const mergeAt = stepWith(/merge-update-manifests\.mjs/)
+const gateAt = stepWith(/check-release-assets\.mjs/)
+const createAt = stepWith(/gh release create/)
+check('each of the three publish steps is actually there', [mergeAt, gateAt, createAt].some((i) => i === -1), false)
+check('the merge runs before the gate, which has nothing to read otherwise', mergeAt < gateAt, true)
+check('and the gate runs BEFORE the release is created, or it is a post-mortem', gateAt < createAt, true)
+
 check('workflow_dispatch is still a trigger, so the whole matrix can be rehearsed without a tag', 'workflow_dispatch' in triggers, true)
 check('a tag still triggers it', triggers.push?.tags, ['v*'])
 check('and publishing is still gated on a tag', jobs.publish?.if, "startsWith(github.ref, 'refs/tags/')")
