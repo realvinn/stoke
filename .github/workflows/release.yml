@@ -1,10 +1,19 @@
-# Builds and publishes a release for both platforms.
+# Builds and publishes a release for every platform and architecture Stoke ships.
 #
-# This exists because neither installer can be produced on the other's machine.
-# The Windows NSIS installer needs Windows (or wine, which is its own kind of
-# unreliable), and the mac dmg needs a Mac — and every release before this one
-# shipped the Windows exe alone, because that is the machine the tag was cut on.
-# A tag pushed from either desk now produces both.
+# This exists because no installer can be produced on another platform's
+# machine. The Windows NSIS installer needs Windows (or wine, which is its own
+# kind of unreliable) and the mac dmg needs a Mac — and every release before
+# this workflow shipped the Windows exe alone, because that is the machine the
+# tag was cut on.
+#
+# ONE ARCH PER JOB, ON A NATIVE RUNNER, and it is not an optimisation. npm
+# installs only the `@lydell/node-pty-<platform>-<arch>` matching the build
+# host, and node-pty resolves that name at RUNTIME — so a cross-arch build
+# produces an installer that installs, launches, and throws MODULE_NOT_FOUND on
+# the first pty.start, with no build error anywhere. scripts/targets.mjs holds
+# the whole argument and the whole list; this file reads the matrix from it
+# rather than keeping a second copy, and every build job asserts what it
+# actually packaged.
 #
 # Cutting a release:
 #
@@ -76,26 +85,38 @@ jobs:
 
       - run: npm run build
 
+  # The matrix, read out of scripts/targets.mjs rather than written here.
+  #
+  # It used to be five hand-written lines under `include:`, with the same flags
+  # written a second time in package.json's dist:* scripts and nothing to
+  # reconcile them — which is the defect this repo has already paid for twice
+  # (scripts/ci-verify.mjs, CLAUDE.md gotcha 62), and it had already drifted:
+  # package.json carried dist:win:arm64 and dist:mac:intel for platforms this
+  # workflow never built. `npm run targets` prints what a release contains.
+  prepare:
+    name: Resolve the build matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.targets.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: targets
+        run: |
+          set -euo pipefail
+          node scripts/targets.mjs --list
+          echo "matrix=$(node scripts/targets.mjs --matrix)" >> "$GITHUB_OUTPUT"
+
   build:
     name: ${{ matrix.name }}
-    needs: verify
-    # One platform failing must not delete the other's artifacts from the run.
-    # A half-published release is recoverable; losing the built installer that
-    # did work, because its sibling died, is just a wasted 20 minutes.
+    needs: [verify, prepare]
+    # One platform failing must not delete the others' artifacts from the run.
+    # A half-published release is recoverable; losing the built installers that
+    # did work, because a sibling died, is just a wasted 20 minutes — and with
+    # five legs instead of two that is five times more valuable than it was.
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - name: Windows x64
-            os: windows-latest
-            args: --win --x64
-          - name: macOS arm64
-            os: macos-14
-            # The mac flags are NOT here, because how this build is signed
-            # depends on a secret and a matrix cannot read one. See "Resolve
-            # macOS signing" below.
-            args: --mac --arm64
-    runs-on: ${{ matrix.os }}
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -172,8 +193,21 @@ jobs:
         env:
           CSC_P12_BASE64: ${{ secrets.MAC_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          TARGET_KEY: ${{ matrix.key }}
         run: |
           set -euo pipefail
+          # Every trap this step already carries was found by RUNNING it, on an
+          # arm64 image, and an Intel image is a different image with a
+          # different LibreSSL and a different `security`. Nothing here is known
+          # to work on macos-15-intel — it is stated rather than assumed, and
+          # the facts a failure would need are printed before anything can fail.
+          # The hard `find-identity | grep -q` below is what stops an Intel job
+          # falling through to an unsigned bundle that looks fine.
+          if [ "$TARGET_KEY" != "mac-arm64" ]; then
+            echo "::notice::$TARGET_KEY runs the keychain import on $RUNNER_OS/$(uname -m), which only macos-14/arm64 has ever been measured on."
+          fi
+          sw_vers || true
+          openssl version || true
           KC="$RUNNER_TEMP/stoke-signing.keychain-db"
           KCPW="$(openssl rand -base64 24)"
           echo "$CSC_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/stoke.p12"
@@ -211,7 +245,7 @@ jobs:
           # Fail here rather than shipping an unsigned app that looks fine.
           security find-identity -v -p codesigning | grep -q "Stoke"
           echo "MAC_SIGN_ARGS=" >> "$GITHUB_ENV"
-          echo "::notice::Signing with the release certificate — this build can auto-update."
+          echo "::notice::$TARGET_KEY is signing with the release certificate — this build can auto-update."
 
       # The fallback, and it is a real signing pass rather than an absence of
       # one. `-c.mac.identity=-` asks for a genuine ad-hoc signature: correct
@@ -233,6 +267,10 @@ jobs:
       # reject the prebuilt Electron framework — build/entitlements.mac.plist
       # already carries com.apple.security.cs.disable-library-validation, which
       # is exactly the escape electron-builder's own warning names.
+      #
+      # With two mac jobs this now warns twice, which is correct: an Intel
+      # install and an Apple silicon install are separate update chains and
+      # both are broken by an ad-hoc signature.
       - name: Fall back to an ad-hoc signature
         if: steps.signing.outputs.have == 'false'
         run: |
@@ -240,7 +278,7 @@ jobs:
             echo "CSC_IDENTITY_AUTO_DISCOVERY=false"
             echo "MAC_SIGN_ARGS=-c.mac.identity=-"
           } >> "$GITHUB_ENV"
-          echo "::warning::MAC_CSC_LINK is unset or empty, so this macOS build is ad-hoc signed and CANNOT auto-update. See BUILDING.md."
+          echo "::warning::MAC_CSC_LINK is unset or empty, so ${{ matrix.key }} is ad-hoc signed and CANNOT auto-update. See BUILDING.md."
 
       # `--publish never`, always, even on a tag. Letting each matrix job
       # publish for itself is what the first attempt did, and both jobs raced to
@@ -252,13 +290,16 @@ jobs:
       # electron-builder is invoked directly rather than through `npm run
       # dist:win -- …`: npm appends extra args to the end of the whole script
       # string, and these scripts are `npm run build && …` chains, so where a
-      # flag lands depends on shell parsing rather than on anything stated. The
-      # flags here are the same ones package.json uses.
+      # flag lands depends on shell parsing rather than on anything stated.
+      # `matrix.args` comes from scripts/targets.mjs, which is where the dist:*
+      # scripts get theirs too, so the two cannot disagree about what a
+      # platform's build is.
       #
-      # latest.yml / latest-mac.yml — the manifests electron-updater actually
-      # reads — are still written into release/ under `never`, because a publish
-      # provider is configured. Verified against a local build before relying on
-      # it; without them an installed copy would never notice the release.
+      # latest.yml / latest-mac.yml / latest-linux.yml — the manifests
+      # electron-updater actually reads — are still written into release/ under
+      # `never`, because a publish provider is configured. Verified against a
+      # local build before relying on it; without them an installed copy would
+      # never notice the release.
       #
       # Split by platform rather than one step with an interpolated arg string,
       # because $MAC_SIGN_ARGS has to be expanded by a shell that understands it
@@ -278,20 +319,45 @@ jobs:
         if: runner.os == 'macOS'
         run: npx electron-builder ${{ matrix.args }} $MAC_SIGN_ARGS --publish never
 
+      # Linux needs no signing of any kind: the AppImage is a self-contained
+      # file with no Gatekeeper and no Authenticode to satisfy, and
+      # AppImageUpdater replaces it in place.
+      - name: Build installers (Linux)
+        if: runner.os == 'Linux'
+        run: npx electron-builder ${{ matrix.args }} --publish never
+
+      # The one mistake in this whole workflow that has no build error.
+      #
+      # node-pty resolves "@lydell/node-pty-" + process.platform + "-" +
+      # process.arch at RUNTIME, and npm only installs the sibling matching the
+      # build host. A build that packaged the wrong one installs, launches, and
+      # throws MODULE_NOT_FOUND on the first session — every tab dead, this run
+      # green. So each job reads back what it actually packaged. It costs a
+      # directory listing and it is the difference between a failed job and a
+      # broken release.
+      - name: Assert the packaged terminal binary matches this runner
+        run: node scripts/assert-packaged-pty.mjs ${{ matrix.key }}
+
       # Uploaded even on failure: if a later step dies, the installer that did
       # build still exists somewhere retrievable rather than only inside a
       # container that has already been destroyed.
+      #
+      # Named per TARGET, not per runner: two macOS jobs on different runner
+      # labels would still be one artifact name if this said matrix.runner, and
+      # a name collision here is the same silent overwrite the publish job's
+      # merge exists to prevent.
       - name: Upload installers
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: installers-${{ matrix.os }}
+          name: installers-${{ matrix.key }}
           if-no-files-found: warn
           retention-days: 14
           path: |
             release/*.exe
             release/*.dmg
             release/*.zip
+            release/*.AppImage
             release/*.blockmap
             release/latest*.yml
 
@@ -305,11 +371,46 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Checked out for scripts/, and for package.json's version. No `npm ci`:
+      # the merger and the gate below import nothing outside node's own
+      # builtins, precisely so this job stays a download and two node scripts.
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # NO `merge-multiple`, and its absence is load-bearing.
+      #
+      # electron-builder names a manifest after the platform and — only on
+      # Linux — the arch. Windows x64 and Windows arm64 both write `latest.yml`;
+      # macOS arm64 and macOS x64 both write `latest-mac.yml`. With
+      # merge-multiple the download flattens every artifact into one directory,
+      # so those same-named files silently become one, whichever landed last
+      # wins, and the losing arch's installed copies never learn the release
+      # exists. The old guards below this line would all still have passed. Each
+      # artifact lands in dist/<artifact-name>/ instead, and the merger reads
+      # the tree.
       - uses: actions/download-artifact@v4
         with:
           pattern: installers-*
-          merge-multiple: true
           path: dist
+
+      - name: Merge the per-job update manifests
+        run: |
+          set -euo pipefail
+          find dist -type f | sort
+          node scripts/merge-update-manifests.mjs dist --out release-assets
+
+      # The gate. A release that quietly drops one platform's feed looks
+      # complete from every angle — green run, assets on the page — and the
+      # dropped arch's installed copies simply stop updating, with nothing on
+      # any screen saying so. That is exactly what v0.4.0-beta.3 shipped. The
+      # rules are derived from scripts/targets.mjs, so adding a platform to the
+      # matrix tightens this in the same edit.
+      - name: Refuse to publish a release that cannot update somebody
+        env:
+          TAG: ${{ github.ref_name }}
+        run: node scripts/check-release-assets.mjs release-assets --version "${TAG#v}"
 
       - name: Create the release
         env:
@@ -317,36 +418,15 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          ls -la dist
-
-          # Both manifests must survive to the release or that platform's
-          # installed copies never learn the version exists. Checked explicitly
-          # because their absence is silent: the release looks complete.
-          for manifest in latest.yml latest-mac.yml; do
-            test -f "dist/$manifest" || { echo "::error::dist/$manifest missing — $manifest platform could not auto-update"; exit 1; }
-          done
-
-          # A present latest-mac.yml is not sufficient, and believing it was is
-          # how v0.4.0-beta.3 shipped a Mac that could not update itself. The
-          # manifest listed only the dmg; electron-updater's MacUpdater searches
-          # the feed for a .zip and rejects "dmg" and "pkg" by name, so the
-          # download threw before fetching a byte while the release looked
-          # complete from every angle here. Assert the archive is really there.
-          grep -q '\.zip' dist/latest-mac.yml || {
-            echo "::error::dist/latest-mac.yml lists no .zip — macOS cannot auto-update from this release"
-            exit 1
-          }
-          ls dist/*.zip >/dev/null 2>&1 || {
-            echo "::error::no .zip in dist — the macOS update archive was not built"
-            exit 1
-          }
+          ls -la release-assets
 
           # The tag's annotation is the release notes, so what is written once
           # at `git tag -a` is what people read.
           #
-          # Read over the API rather than out of a checkout. actions/checkout
-          # materialises the pushed tag as a *lightweight* ref pointing at the
-          # commit, so `git for-each-ref --format='%(contents:subject)'` returns
+          # Read over the API rather than out of the checkout, even though
+          # there is one now. actions/checkout materialises the pushed tag as a
+          # *lightweight* ref pointing at the commit, so
+          # `git for-each-ref --format='%(contents:subject)'` returns
           # the commit's subject instead of the tag's — which is how beta.3
           # first shipped titled "Publish from one job, because two racing jobs
           # made two drafts". Wrong, and wrong in a way that reads as plausible.
@@ -368,9 +448,16 @@ jobs:
           # channel. Deriving it from the tag keeps the two from disagreeing.
           case "$TAG" in *-*) PRERELEASE=--prerelease ;; *) PRERELEASE= ;; esac
 
-          # --repo explicitly: with no checkout there is no git remote for gh
-          # to infer it from.
-          gh release create "$TAG" dist/* \
+          # release-assets/, not dist/: dist/ is the download tree, one
+          # directory per build job, with five un-merged latest*.yml files in
+          # it. release-assets/ is what the merger produced — every artifact
+          # flattened, one manifest per platform — and it is the only directory
+          # that should ever reach a release.
+          #
+          # --repo explicitly rather than inferred from the checkout's remote,
+          # because it is the one thing here that must not depend on how the
+          # checkout was configured.
+          gh release create "$TAG" release-assets/* \
             --repo "$GITHUB_REPOSITORY" \
             --title "${TITLE:-$TAG}" \
             --notes-file notes.md \

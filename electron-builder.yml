@@ -79,5 +79,31 @@ mac:
       instead of typing it. Audio is sent only to the speech server you
       configure and never to Stoke's developers.
 linux:
+  # AppImage and nothing else, for one reason: it is the only Linux format
+  # electron-updater can install without elevation. AppImageUpdater replaces the
+  # file in place; DebUpdater and RpmUpdater shell out to the package manager,
+  # which brings sudo/pkexec, a `package-type` marker file and a second updater
+  # path into scope. A tar.gz is worse than either — there is no TarUpdater at
+  # all, and AppImageUpdater.isUpdaterActive() returns false unless the runtime
+  # set $APPIMAGE, so an unpacked tarball can never update itself by any route.
+  # A one-line installer that laid one down would be creating installs that go
+  # stale in silence, which is the failure this whole release round is about.
   target: [AppImage]
   category: Development
+# Which AppImage runtime gets built, and it is not cosmetic.
+#
+# With no toolsets.appimage key, AppImageTarget.build takes
+# buildLegacyFuse2AppImage (`if (appimageTool == null || appimageTool ===
+# "0.0.0")`) — the classic type-2 runtime that dlopens libfuse.so.2, which is
+# absent by default on Ubuntu 22.04 and 24.04. That is the familiar
+# "fuse: failed to open /dev/fuse" refusal, i.e. a file most people cannot run.
+# Naming a version switches it to buildStaticRuntimeAppImage, whose runtime has
+# FUSE 3 built in and needs nothing installed. `--appimage-extract-and-run` is
+# still the escape hatch inside a container.
+#
+# electron-builder's own scheme labels 1.0.2 and 1.0.3 "Betas" and defaults to
+# 0.0.0, so this is a deliberate choice of the newer runtime over the one that
+# will not start. Nobody here has run either: no Stoke build has ever been
+# launched on Linux at all.
+toolsets:
+  appimage: '1.0.3'
