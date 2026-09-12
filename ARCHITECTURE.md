@@ -368,9 +368,13 @@ Self-update uses `electron-updater` against GitHub releases, configured in the `
 of `electron-builder.yml`. It only activates for a packaged app with a published release.
 
 **macOS packages can only be built on macOS**, and the Windows NSIS installer needs Windows,
-so neither installer can be produced on the other's machine. That is what
-`.github/workflows/release.yml` exists for: a pushed tag fans out to a `windows-latest` and a
-`macos-14` runner, and one later job creates the release from both sets of artifacts.
+so neither installer can be produced on the other's machine. The architecture is just as hard a
+constraint and fails silently instead (gotcha 67), so a release is **one arch per job on a
+native runner**: five legs, read out of `scripts/targets.mjs` by a `prepare` job rather than
+written into the workflow a second time. One later job downloads all five, merges the per-job
+`latest*.yml` — electron-builder names those per platform, so both Windows jobs and both macOS
+jobs write the same name (gotcha 68) — refuses to publish a feed that cannot update some arch,
+and creates the release.
 
 **Linux x64 is now built and has still never been run.** `npm run dist:linux` and a
 `ubuntu-latest` matrix leg produce an AppImage, and `toolsets.appimage` is set so it carries

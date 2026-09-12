@@ -5,7 +5,8 @@ a desktop app for claude code. one window instead of a pile of terminals.
 it runs the real `claude` command underneath, so skills, mcp, plugins and slash
 commands all work exactly like they do in a terminal.
 
-windows and mac.
+windows and mac. a linux appimage is built too, but nothing here has ever
+been run on linux — treat it as experimental.
 
 ## what you get
 
@@ -36,10 +37,13 @@ npm run dist:win     # windows -> release/Stoke-<version>-x64-setup.exe
 npm run dist:mac     # mac (m1) -> release/Stoke-<version>-arm64.dmg
 ```
 
-a mac app can only be built on a mac. windows can't make one.
+`npm run targets` prints the rest. each one has to run on its own machine: a mac
+app can only be built on a mac, and — less obviously — an arm64 installer can
+only be built on an arm64 machine, because the terminal's native binary is
+picked by name at runtime and npm only installs the build host's.
 
-or build nothing at all: every tag builds both on ci, so the windows installer
-and the mac dmg are sitting on
+or build nothing at all: every tag builds all five on ci, so the windows
+installers, the mac dmgs and the linux appimage are sitting on
 [releases](https://github.com/realvinn/stoke/releases). there's a `.zip` up there
 too — that one is only how a mac installs its own updates, not something you
 need to download.
