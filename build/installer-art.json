@@ -1,0 +1,16 @@
+{
+  "note": "Written by `npm run art`. verify:installer-art recomputes these, so an SVG edited without regenerating fails the check instead of silently shipping the previous bitmap. Sources are hashed with CRLF normalised to LF.",
+  "sources": {
+    "installerSidebar.svg": "5a978206ff741e3b551a42dd77a980e7623882509db1f588861b915eb3fbb123",
+    "uninstallerSidebar.svg": "4f551a7f24bc02974dfb648efa01c75e8dd7823a7e1a4e696acf08c3873dfbed",
+    "installerHeader.svg": "80b49eda7d127fb2bc2b9bf03afe05828d75b879a10887426f091e5693dad20e",
+    "background.svg": "6ef95b1bce306f0b98efb15dfa1850004aac70a69a1bec9512193ba8c7a8a73b"
+  },
+  "outputs": {
+    "installerSidebar.bmp": "d7cf5f2dce139a323d52721f58028f88d47452ba0f24c1d430ef6aeeb04abc06",
+    "uninstallerSidebar.bmp": "e3e3acbea9551db095e21af16bacddf37971661cd2b6284f022a34d0628f7ca8",
+    "installerHeader.bmp": "3f9463dd98b77f80cd9703295c3d4bcd6194e6d774f45a6a1bb4ec999a56901e",
+    "background.png": "e38bba5a2132fc607c38cf44acc3a2a076cb8af7298f469aae10366cc8689f4f",
+    "background@2x.png": "71838e5e6e1357381bda68817ece90915c70b40761bb3bd7c5b70f977c3bb372"
+  }
+}

@@ -373,7 +373,9 @@ written by hand, because Chromium's canvas cannot encode one and NSIS only displ
 so no release runner rasterises anything; `npm run art` is a deliberate act and does not run in
 `check`. What `check` runs is `verify:installer-art` over the committed files, because
 electron-builder validates none of them — see gotcha 69, and `.claude/rules/release.md` for what
-each failure looks like from outside.
+each failure looks like from outside. `npm run art` also writes `build/installer-art.json`,
+committed with them: it hashes each source and each output, which is the only way the suite can
+tell a current raster from one whose SVG has moved on since.
 
 Self-update uses `electron-updater` against GitHub releases, configured in the `publish` block
 of `electron-builder.yml`. It only activates for a packaged app with a published release.
@@ -456,9 +458,11 @@ npm run verify:ssh            # ssh argv, ~/.ssh/config parsing, the remote tran
 npm run verify:remote         # phone access: where the link points and how it says it gets
                               # there, the LAN interface ranking, what a dead tunnel reports
 npm run verify:installer-art  # the committed installer bitmaps: BMP3 headers decoded by hand,
-                              # exact dimensions, that the art is not a well-formed blank, and
-                              # that the generator, electron-builder.yml and the four SVG
-                              # sources still name the same files and share one campfire
+                              # exact dimensions, that neither the bitmaps nor the dmg PNGs are a
+                              # well-formed blank, that the generator, electron-builder.yml and
+                              # the four SVG sources name the same files and share one campfire,
+                              # and — via build/installer-art.json — that every raster was
+                              # generated from the SVG committed beside it
 npm run verify:selection      # Option-drag selection survives letting go of the mouse.
                               # Opens a real Electron window, so it needs a display
                               # and is one of the two `check` suites CI skips

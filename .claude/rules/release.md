@@ -266,6 +266,34 @@ That is CLAUDE.md gotcha 62's shape — a green build over a broken artefact —
 decodes the BMP headers by hand rather than through the encoder that wrote them, because a
 decoder sharing code with its encoder agrees with it by construction.
 
+**A fifth failure mode, and the first four assertions could not see it: a committed raster that
+no longer matches its own SVG.** A bitmap cannot say what it was drawn from, so editing a `.svg`
+and forgetting `npm run art` left the previous bytes in `build/`, `npm run check` green, and the
+installer shipping last week's art. Measured by recolouring every ember in
+`uninstallerSidebar.svg` and watching the suite print `all pass`. It is invisible from both
+ends by construction — the reviewable half of this pipeline is the SVG and the shipped half is a
+binary nobody reads in a diff — and it is the failure this pipeline will actually meet, because
+the art is the part that gets iterated. `npm run art` therefore writes
+`build/installer-art.json`, a sha256 of every source and every output, and the suite recomputes
+both; a stale tree names `npm run art` instead of passing. Sources hash with CRLF folded to LF,
+so an editor that saves CRLF cannot fail a correct tree on one machine only. **The manifest is a
+committed artefact like the bitmaps — regenerate and commit it in the same change.**
+
+Three more holes were open in the first draft of the suite and are closed; each was a *silent
+pass*, confirmed by breaking the thing and watching the run stay green. The `dmg.window` guard
+tested `/^\s+window:\s*$/`, so it caught the nested-block form and missed
+`window: { x: 100, … }` — the flow mapping electron-builder's own docs use, i.e. the one that
+would actually arrive. It also located its block with `indexOf('\ndmg:')` and no check, and
+`''.slice(-1)` matches nothing, so deleting the `dmg:` block turned the guard into a pass. And
+**the dmg background pair had no content assertion at all** while each BMP had four: a
+well-formed 540×380 PNG of nothing cleared every check, on the one asset whose whole pipeline is
+provable from macOS. The suite decodes both PNGs now (inflate + the five row filters, no
+dependency — CI has no `sips`), asserts colour, warmth, peak, mean luma and full opacity, and
+asserts the `@2x` is the *same picture* by a 6×4 luma grid, because "twice the size" passes just
+as happily over an unrelated image. Lastly the two sidebars are the same size, palette and
+composition, so one copied to both names passed everything — they must now differ, and the
+uninstaller must be the dimmer.
+
 **Four smaller things, each read out of the shipped templates rather than remembered.**
 
 `installerHeaderIcon` is dead in this config: `NsisTarget` only writes it inside the

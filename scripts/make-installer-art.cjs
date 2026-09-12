@@ -50,10 +50,34 @@
  * Windows.
  */
 const { app, BrowserWindow } = require('electron')
+const { createHash } = require('node:crypto')
 const { readFileSync, writeFileSync, writeSync } = require('node:fs')
 const { join } = require('node:path')
 
 const BUILD_DIR = join(__dirname, '..', 'build')
+
+/**
+ * The manifest is what ties a committed raster to the SVG it came from.
+ *
+ * Without it the two halves of this pipeline are a hand-maintained pair that
+ * cannot disagree loudly: editing a .svg and forgetting `npm run art` leaves
+ * the OLD bitmap in build/ and every gate green, because verify:installer-art
+ * can only see that the bytes on disk are a well-formed BMP -- which they are,
+ * they are just last week's. The reviewable half is the SVG and the shipped
+ * half is a binary nobody reads in a diff, so the drift is invisible from both
+ * ends. That is CLAUDE.md gotcha 62's "two lists maintained by hand" one level
+ * down, and it was reachable: measured by recolouring every ember in
+ * uninstallerSidebar.svg, skipping this script, and watching the suite pass.
+ *
+ * So every run records what it read and what it wrote, and the suite recomputes
+ * both. Sources are hashed with newlines normalised: .gitattributes checks this
+ * tree out `eol=lf`, but an editor that saves CRLF before the commit would
+ * otherwise turn a correct tree red on one machine only.
+ */
+const MANIFEST = 'installer-art.json'
+
+const sha256 = (buf) => createHash('sha256').update(buf).digest('hex')
+const hashSource = (text) => sha256(Buffer.from(text.replace(/\r\n/g, '\n'), 'utf8'))
 
 /**
  * `flatten` is the colour the asset's own art is drawn on, so a transparent
@@ -178,12 +202,15 @@ app.disableHardwareAcceleration()
 app.whenReady().then(async () => {
   const win = new BrowserWindow({ show: false, width: 200, height: 200 })
   const report = []
+  const sources = {}
+  const outputs = {}
 
   try {
     await win.loadURL('about:blank')
 
     for (const asset of ASSETS) {
       const svg = readFileSync(join(BUILD_DIR, asset.svg), 'utf8')
+      sources[asset.svg] = hashSource(svg)
       const outPath = join(BUILD_DIR, asset.out)
 
       if (asset.kind === 'bmp') {
@@ -196,6 +223,7 @@ app.whenReady().then(async () => {
         }
         const bmp = encodeBmp24(rgba, asset.w, asset.h, asset.flatten)
         writeFileSync(outPath, bmp)
+        outputs[asset.out] = sha256(bmp)
         report.push(`wrote ${outPath} (${asset.w}x${asset.h} BMP3 24-bit, ${bmp.length} bytes)`)
       } else {
         const width = asset.w * asset.scale
@@ -209,9 +237,28 @@ app.whenReady().then(async () => {
         }
         const png = Buffer.from(dataUrl.slice(prefix.length), 'base64')
         writeFileSync(outPath, png)
+        outputs[asset.out] = sha256(png)
         report.push(`wrote ${outPath} (${width}x${height} PNG, ${png.length} bytes)`)
       }
     }
+
+    const manifestPath = join(BUILD_DIR, MANIFEST)
+    writeFileSync(
+      manifestPath,
+      JSON.stringify(
+        {
+          note:
+            'Written by `npm run art`. verify:installer-art recomputes these, so an SVG ' +
+            'edited without regenerating fails the check instead of silently shipping the ' +
+            'previous bitmap. Sources are hashed with CRLF normalised to LF.',
+          sources,
+          outputs,
+        },
+        null,
+        2
+      ) + '\n'
+    )
+    report.push(`wrote ${manifestPath} (${Object.keys(sources).length} sources, ${Object.keys(outputs).length} outputs)`)
 
     // writeSync rather than console.log: app.exit() does not flush a piped
     // stdout, so a line printed just before it can simply never arrive.

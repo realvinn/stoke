@@ -503,7 +503,12 @@ npm run verify:installer-art  # and check they are still the format the installe
 
 That writes `build/installerSidebar.bmp` and `build/uninstallerSidebar.bmp` (164×314),
 `build/installerHeader.bmp` (150×57), and `build/background.png` / `build/background@2x.png`
-(540×380 and 1080×760). All five are committed, like `build/icon.png`.
+(540×380 and 1080×760). All five are committed, like `build/icon.png` — **and so is
+`build/installer-art.json`**, which records a hash of every source and every output. That file is
+the only thing that can tell a raster apart from a stale raster: a `.bmp` does not say which SVG
+it came from, so without it, editing a source and skipping this command leaves the previous
+bitmap in place with every gate green. `verify:installer-art` recomputes the hashes, so commit
+the manifest in the same change as the art it describes.
 
 Two things worth knowing before changing them. The BMPs must stay 24-bit with the classic
 40-byte header — NSIS displays nothing else, and a wrong one is a makensis *warning* and a blank

@@ -341,10 +341,12 @@ rule file named on the group line.
   `merge-multiple: true`: only Linux gets an arch suffix, so two Windows or two macOS jobs both
   write one name and the flatten drops an arch silently. The publish gate
   (`check-release-assets.mjs`) derives what each feed must list from the same target list.
-- **69.** Regenerate installer art with `npm run art` and never hand-write a `.bmp`: NSIS shows
-  only the 40-byte-header BMP3 the encoder emits, electron-builder validates none of it, and an
-  UNSET image key hides a missing file. Keep `dmg.background` without `dmg.window`, and keep the
-  art clear of `dmg.contents`' icon boxes (measured: 80px, centred 130,220 and 410,220).
+- **69.** Regenerate installer art with `npm run art` and commit `build/installer-art.json` with
+  it — the hashes are what catch an SVG edited without regenerating, which nothing else can see.
+  Never hand-write a `.bmp`: NSIS shows only the 40-byte-header BMP3 the encoder emits,
+  electron-builder validates none of it, and an UNSET image key hides a missing file. Keep
+  `dmg.background` without `dmg.window`, and keep the art clear of `dmg.contents`' icon boxes
+  (measured: 80px, centred 130,220 and 410,220).
 
 **Verify suites** — `.claude/rules/suites.md`
 - **9.** Never stub IPC by assigning over `window.stoke` methods in a test — contextBridge freezes
