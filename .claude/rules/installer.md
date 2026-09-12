@@ -229,6 +229,28 @@ recorded `InstallLocation`.
 `autoInstallOnAppQuit`, so a build the user downloaded in the update panel and has not yet quit for
 is sitting there waiting to be installed over whatever the script just put down.
 
+> **Checked against the released feed on 2026-09-12.** v0.9.5 is the first release built by the
+> five-platform matrix, and it invalidates two claims above. **macOS is no longer arm64-only**: the
+> Rosetta paragraph's "the refusal would be total" and its *"has no mac x64 build"* measurement
+> both described a matrix that no longer exists — `Stoke-0.9.5-x64.zip` is published, so misreading
+> `uname -m` under Rosetta now costs a translated build rather than an install. The flip to arm64
+> is still correct and is now load-bearing for a second reason: electron-updater's `MacUpdater`
+> reads `sysctl.proc_translated` itself and prefers an arm64 file, so a script that installed the
+> Intel build there would hand it an updater that immediately wanted the other architecture.
+> **`latest-linux.yml` exists now**, so its fetch 404ing is a fault rather than the expected
+> answer; only `latest-linux-arm64.yml` is still a deliberate 404 (`targets.mjs --list`), and the
+> Linux refusal branch names arm64 rather than Linux for that reason.
+>
+> **Shim `uname` on PATH to reach the branches this machine cannot.** A four-line `uname` that
+> answers `-s`/`-m` with the target's strings, prepended to PATH with `STOKE_DRY_RUN=1`, runs the
+> shipped script through another platform's resolve/download/verify without a VM — it is how the
+> Rosetta pair above was measured and the only way most of this file gets exercised at all. Run
+> that way against the live v0.9.5 release, `linux/x86_64` resolved `latest-linux.yml` and verified
+> `Stoke-0.9.5.AppImage` (121.9 MB), `Darwin/x86_64` verified `Stoke-0.9.5-x64.zip` (126.9 MB), and
+> `Linux/aarch64` took the refusal. It stops at the download: what a shim cannot reach is the
+> install itself — the AppImage landing in `~/.local/bin`, the `ditto` into `/Applications` on a
+> machine that has no Stoke — so "the Linux path works" still means "resolves and verifies".
+
 **The one number in the fire that is hand-written is the stride.** The generated art block states
 `n = stage * 3 + flicker` in its preamble and carries no variable for that 3, so both scripts
 declare `FIRE_STRIDE` / `$FireStride` and `verify:install` asserts them against `STAGES[i].frames.length`.

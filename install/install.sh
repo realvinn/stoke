@@ -1090,7 +1090,7 @@ main() {
   case "$(uname -s)" in
     Darwin) PLATFORM=mac ;;
     Linux) PLATFORM=linux ;;
-    *) die "Stoke has no build for $(uname -s)." "There are builds for macOS and Windows at $STOKE_RELEASES" ;;
+    *) die "Stoke has no build for $(uname -s)." "There are builds for macOS, Windows and Linux at $STOKE_RELEASES" ;;
   esac
 
   ARCH=''
@@ -1099,10 +1099,13 @@ main() {
     x86_64 | amd64) ARCH=x64 ;;
     *) die "Stoke has no build for a $(uname -m) CPU." ;;
   esac
-  # A shell running under Rosetta reports x86_64 on an Apple Silicon Mac, and
-  # installing the Intel build there would be both slower and — while the
-  # release matrix is still arm64-only — an outright refusal on a machine that
-  # can run Stoke perfectly well.
+  # A shell running under Rosetta reports x86_64 on an Apple Silicon Mac. Since
+  # v0.9.5 there IS an Intel build to give it, so this is no longer the
+  # difference between installing and refusing — but it is still the difference
+  # between the native build and a translated one, and electron-updater makes
+  # the same correction (MacUpdater reads sysctl.proc_translated and prefers an
+  # arm64 file), so agreeing with it keeps the installed copy and its own
+  # updates on one architecture.
   if [ "$PLATFORM" = mac ] && [ "$ARCH" = x64 ]; then
     if [ "$(sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)" = 1 ]; then
       ARCH=arm64
@@ -1145,20 +1148,17 @@ main() {
   esac
 
   if ! fetch_quiet "$STOKE_LATEST_DL/$MANIFEST" "$TMPD/$MANIFEST"; then
-    # A missing Linux manifest is an expected answer rather than a fault — the
-    # release matrix gained Linux after v0.9.4 — so it gets its own sentence and
-    # the downloader's own 404 is not quoted over the top of it.
-    #
-    # It names the ARCHITECTURE, because the two Linux manifests go missing for
-    # different reasons and only one of them is temporary: latest-linux.yml
-    # arrives with the next release, while latest-linux-arm64.yml is not built
-    # at all (`node scripts/targets.mjs --list`). "There is no Linux build yet"
-    # is true today and becomes a lie for an arm64 reader the moment x64 ships.
-    if [ "$PLATFORM" = linux ]; then
-      die "The latest Stoke release has no Linux $ARCH build." \
-        "The macOS and Windows builds are at $STOKE_RELEASES" \
-        'Linux AppImages start with the next release; that page lists what each' \
-        'one actually has.'
+    # A missing latest-linux-arm64.yml is an expected answer rather than a
+    # fault: that target is deliberately not built (`node scripts/targets.mjs
+    # --list`), so it gets its own sentence and the downloader's own 404 is not
+    # quoted over the top of it. x64 is a different case — v0.9.5 shipped an
+    # AppImage, so its manifest going missing IS a fault and falls through to
+    # the generic message below, which quotes what the downloader said.
+    if [ "$PLATFORM" = linux ] && [ "$ARCH" = arm64 ]; then
+      die 'Stoke has no Linux arm64 build.' \
+        'There are builds for x86-64 Linux, macOS and Windows at' \
+        "  $STOKE_RELEASES" \
+        'That page lists what each release actually has.'
     fi
     fetch_said
     die "Could not fetch $MANIFEST from the latest release." \
