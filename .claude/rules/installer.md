@@ -14,7 +14,7 @@ The ASCII fire the installer burns while it downloads, and the constraints that 
 may be made of. Loaded when a file in `paths` is read; CLAUDE.md keeps a one-line index of each.
 Numbers are permanent — code comments cite them as "CLAUDE.md gotcha N".
 
-## 67. The installer's fire is a quoting contract before it is an animation
+## 70. The installer's fire is a quoting contract before it is an animation
 
 **The installer's fire is a quoting contract before it is an animation, and five of its six
 rules exist because a plausible implementation fails somewhere nobody on this machine would
