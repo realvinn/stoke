@@ -821,10 +821,19 @@ install_macos() {
   mkdir -p "$TMPD/x"
   # ditto over unzip: Apple's own tool, and it preserves the xattrs and the
   # framework symlinks. Both work; this one is the one that is theirs.
+  # Both are guarded rather than left to `set -eu`. An unguarded failure here
+  # exits the script with nothing on screen but the tool's own one line, which
+  # does not say whether anything was installed — and at this point the answer
+  # is "no", which is the only thing the reader wants to know.
+  mac_unpacked=0
   if command -v ditto >/dev/null 2>&1; then
-    ditto -x -k "$mac_zip" "$TMPD/x"
+    if ditto -x -k "$mac_zip" "$TMPD/x"; then mac_unpacked=1; fi
   else
-    unzip -q "$mac_zip" -d "$TMPD/x"
+    if unzip -q "$mac_zip" -d "$TMPD/x"; then mac_unpacked=1; fi
+  fi
+  if [ "$mac_unpacked" != 1 ]; then
+    die 'Could not unpack the downloaded archive (its own error is above).' \
+      'Nothing has been installed.'
   fi
   mac_app=$TMPD/x/Stoke.app
   if [ ! -d "$mac_app" ]; then
@@ -863,10 +872,39 @@ install_macos() {
         'Drag Stoke.app to the Bin yourself and run this again.'
     fi
   fi
+  # And if the new copy does not land, PUT THE OLD ONE BACK. "Rename aside" is
+  # only ever an improvement while the replacement arrives; on the path where it
+  # does not — a read-only /Applications, a full disk, a ditto that dies — an
+  # unguarded copy left the machine with NO /Applications/Stoke.app at all, a
+  # Stoke.app.replaced-NNN nobody was told about, and ditto's one line of stderr
+  # as the entire explanation. Measured against a relocated copy of this script
+  # with a ditto that refuses to write: the app vanished from /Applications and
+  # the script said nothing about it.
+  mac_landed=0
   if command -v ditto >/dev/null 2>&1; then
-    ditto "$mac_app" /Applications/Stoke.app
+    if ditto "$mac_app" /Applications/Stoke.app; then mac_landed=1; fi
   else
-    cp -R "$mac_app" /Applications/Stoke.app
+    if cp -R "$mac_app" /Applications/Stoke.app; then mac_landed=1; fi
+  fi
+  if [ "$mac_landed" != 1 ]; then
+    # Remove whatever half landed before restoring: it is a bundle THIS script
+    # created, so App Management allows it, unlike one another installer put here.
+    rm -rf /Applications/Stoke.app 2>/dev/null || true
+    if [ -z "$mac_aside" ]; then
+      die 'Could not write Stoke into /Applications (its own error is above).' \
+        'Nothing has been installed, and nothing that was there has changed.' \
+        'Check that /Applications is writable and that the disk is not full.'
+    fi
+    if mv "$mac_aside" /Applications/Stoke.app 2>/dev/null; then
+      die 'Could not write the new Stoke into /Applications (its own error is above).' \
+        'The copy you already had has been put back, so nothing has changed.' \
+        'Check that /Applications is writable and that the disk is not full.'
+    fi
+    die 'Could not write the new Stoke into /Applications (its own error is above),' \
+      'and the copy you had could not be put back either. It is still on disk, at' \
+      "  $mac_aside" \
+      'Rename that back to /Applications/Stoke.app, or download a build from' \
+      "  $STOKE_RELEASES"
   fi
   if [ -n "$mac_aside" ]; then
     rm -rf "$mac_aside" 2>/dev/null || true
@@ -882,14 +920,33 @@ install_macos() {
 install_linux() {
   lin_src=$1
   lin_bin=$HOME/.local/bin/stoke
-  mkdir -p "$HOME/.local/bin"
   # NO VERSION IN THE FILENAME, and that is load-bearing rather than tidy.
   # electron-updater's AppImageUpdater overwrites the running AppImage in place
   # only when the existing name carries no `<n>.<n>.<n>` in it; with a version
   # in the name it writes a NEW file beside the old one, and the .desktop entry
   # and everything on PATH keep pointing at the stale binary forever.
-  mv "$lin_src" "$lin_bin"
-  chmod +x "$lin_bin"
+  #
+  # Copy into the TARGET directory and rename, rather than `mv` from the temp
+  # dir, and that is not tidiness either. $TMPDIR is /tmp on nearly every Linux
+  # and is nearly always a different filesystem from $HOME, so `mv` there is a
+  # COPY: it opens ~/.local/bin/stoke for writing, which is ETXTBSY ("Text file
+  # busy") for as long as Stoke is running, and a copy that fails part way
+  # leaves a truncated binary where the working one was. A rename WITHIN one
+  # directory is atomic and replaces a running AppImage perfectly happily — the
+  # running process keeps the old inode until it exits, which is also why this
+  # script never asks Stoke to quit on Linux.
+  lin_stage=$HOME/.local/bin/.stoke.new.$$
+  if ! mkdir -p "$HOME/.local/bin" || ! cp "$lin_src" "$lin_stage"; then
+    rm -f "$lin_stage" 2>/dev/null || true
+    die "Could not write to $HOME/.local/bin (its own error is above)." \
+      'Nothing has been installed, and anything already there is untouched.'
+  fi
+  chmod +x "$lin_stage"
+  if ! mv -f "$lin_stage" "$lin_bin"; then
+    rm -f "$lin_stage" 2>/dev/null || true
+    die "Could not replace $lin_bin (its own error is above)." \
+      'Nothing has been installed, and the copy you had is untouched.'
+  fi
 
   mkdir -p "$HOME/.local/share/applications" "$HOME/.local/share/icons/hicolor/512x512/apps"
   # Best effort: the AppImage carries its own icon at the root. `--appimage-extract`
@@ -1200,6 +1257,15 @@ main() {
     say "  Stoke $REL_VERSION is installed. Run 'stoke' to start it."
     say '  If it refuses to start with a FUSE error, run it as'
     say '  `stoke --appimage-extract-and-run` or install libfuse2.'
+    # Said out loud because the replacement is a rename and a rename is silent:
+    # a running copy keeps the old inode and carries on being the old version
+    # with no warning anywhere, which reads as "the upgrade did nothing".
+    if pgrep -f "$lin_bin" >/dev/null 2>&1; then
+      blank
+      say '  Stoke is running, and it is still the build it started as. Quit it and'
+      say '  start it again to be on this one. Nothing was killed: its sessions are'
+      say '  running claude processes that would be stranded.'
+    fi
   fi
   blank
   say '  Run the same one-liner again any time to upgrade.'
