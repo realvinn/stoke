@@ -100,6 +100,12 @@ jobs:
       matrix: ${{ steps.targets.outputs.matrix }}
     steps:
       - uses: actions/checkout@v4
+      # Pinned rather than taking whatever the runner image ships, for the same
+      # reason the other jobs do: the whole matrix comes out of this step, and
+      # "the image moved" is not a failure anybody would look for here.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
       - id: targets
         run: |
           set -euo pipefail
