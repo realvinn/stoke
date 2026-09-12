@@ -12,8 +12,10 @@ import {
   hydrateProviders,
   keyFormatHint,
   validateClaudeAuth,
+  providersSummary,
   type ProviderSettings
 } from '../src/shared/providers.ts'
+import { hydrateSettings } from '../src/main/settingsSchema.ts'
 
 let failures = 0
 function ok(name: string, condition: boolean, detail = ''): void {
@@ -148,6 +150,91 @@ ok(
   !!keyFormatHint('openrouter', 'sk-proj-abc')
 )
 ok('empty key has no hint', keyFormatHint('openai', '') === null)
+
+console.log('\napply - custom gateway')
+{
+  const env = {
+    ANTHROPIC_API_KEY: 'stale-console-key',
+    ANTHROPIC_BASE_URL: 'https://leftover.example'
+  }
+  applyProviderEnv(env, {
+    ...DEFAULT_PROVIDERS,
+    claudeAuth: 'custom',
+    customBaseUrl: 'http://127.0.0.1:8787',
+    customAuthToken: 'bridge-token'
+  })
+  check('base url is the gateway', env.ANTHROPIC_BASE_URL, 'http://127.0.0.1:8787')
+  check('token goes in as the auth token', env.ANTHROPIC_AUTH_TOKEN, 'bridge-token')
+  /*
+   * Blanked, NOT deleted, and this is the assertion the branch exists for. The
+   * spawned process inherits the parent env, so deleting the var would leave a
+   * shell-exported ANTHROPIC_API_KEY standing and Claude Code would prefer the
+   * console key over the gateway the user just chose - billing the wrong
+   * account, silently, with the UI still showing the gateway as selected.
+   */
+  check('a stale console key is blanked, not deleted', env.ANTHROPIC_API_KEY, '')
+  ok('the key is still PRESENT as a var', 'ANTHROPIC_API_KEY' in env)
+}
+
+console.log('\nsummary never carries a secret')
+{
+  const secrets = {
+    ...DEFAULT_PROVIDERS,
+    claudeAuth: 'openrouter' as const,
+    anthropicApiKey: 'sk-ant-SECRETA',
+    openrouterApiKey: 'sk-or-v1-SECRETB',
+    openaiApiKey: 'sk-proj-SECRETC',
+    xaiApiKey: 'xai-SECRETD',
+    customAuthToken: 'bearer-SECRETE'
+  }
+  // providersSummary is drawn in the settings pane: its whole job is to say
+  // which keys are saved without ever quoting one.
+  const text = providersSummary(secrets)
+  for (const secret of ['SECRETA', 'SECRETB', 'SECRETC', 'SECRETD', 'SECRETE']) {
+    ok('summary omits ' + secret, !text.includes(secret), text)
+  }
+  ok('but it does name which keys are saved', text.includes('OpenRouter'), text)
+  ok(
+    'no keys reads as exactly that',
+    providersSummary(DEFAULT_PROVIDERS).endsWith('No keys saved yet.')
+  )
+}
+
+console.log('\na saved block survives a settings round trip')
+{
+  /*
+   * hydrateSettings rebuilds from named keys rather than spreading its input,
+   * so a field added to the Settings type and missed there is dropped on the
+   * next read with no error anywhere - the trap that silently reset the theme
+   * editor's saved seed. Assert the whole block, not merely that it exists.
+   * Counterfactual measured: replacing the hydrate call with the default makes
+   * this section fail and the suite exit 1.
+   */
+  const saved: ProviderSettings = {
+    ...DEFAULT_PROVIDERS,
+    claudeAuth: 'custom',
+    customBaseUrl: 'http://127.0.0.1:8787',
+    customAuthToken: 'bridge-token',
+    anthropicApiKey: 'sk-ant-kept',
+    openrouterApiKey: 'sk-or-v1-kept',
+    openaiApiKey: 'sk-proj-kept',
+    xaiApiKey: 'xai-kept'
+  }
+  check('every provider field round-trips', hydrateSettings({ providers: saved }).providers, saved)
+
+  const older = hydrateSettings({})
+  check('a settings file predating the panel hydrates to defaults', older.providers, {
+    ...DEFAULT_PROVIDERS
+  })
+  ok(
+    'and that default is inert - no ANTHROPIC_* var is touched',
+    (() => {
+      const env: Record<string, string> = { ANTHROPIC_API_KEY: 'from-shell' }
+      applyProviderEnv(env, older.providers)
+      return env.ANTHROPIC_API_KEY === 'from-shell' && !('ANTHROPIC_BASE_URL' in env)
+    })()
+  )
+}
 
 if (failures) {
   console.log(`\n${failures} failure(s)`)
