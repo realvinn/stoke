@@ -25,12 +25,16 @@ npm run build      # electron-vite build + the separate remote/mobile bundle
 npm run icon       # rasterise build/icon.svg -> build/icon.png
 npm run dist:win   # installer -> release/Stoke-<version>-x64-setup.exe
 npm run dist:mac   # dmg + zip, arm64 (the zip is what auto-update installs). MUST run on a Mac.
+npm run targets    # every platform a release builds, its runner and its flags (targets.mjs)
 ```
+
+A `dist:*` exists per target and each MUST run on that target's own platform and arch
+(gotcha 67): `dist:win`, `dist:win:arm64`, `dist:mac`, `dist:mac:intel`, `dist:linux`.
 
 Every suite runs alone as `npm run verify:<name>`: context, statusline, unicode, usage,
 profiles, settings, claude-config, folders, search, color, theme-gen, activity, worklog-gate, tabs,
-restore, shortcuts, drop, cli, updates, worklog-runner, worklog-retry, worklog-recall,
-worklog-autoscan, ssh, remote, selection — the `check` chain — plus extract and security, which
+restore, shortcuts, drop, cli, updates, targets, manifests, worklog-runner, worklog-retry,
+worklog-recall, worklog-autoscan, ssh, remote, selection — the `check` chain — plus extract and security, which
 need a live instance (`verify:security <url> <token> --access`). `verify:selection` opens a real
 Electron window and needs a display; `verify:context` reads this machine's real transcripts on
 purpose; CI skips both (`npm run verify:ci -- --list`). `STOKE_LIVE_USAGE=1` adds the account
@@ -320,6 +324,14 @@ rule file named on the group line.
   (`RELEASE_IDENTITY`): `MacUpdater` rejects a dmg-only feed and Squirrel an ad-hoc or
   foreign-signed swap. CI `add-trusted-cert`s the .p12 and leaves `CSC_LINK` unset (set, it
   silently ships unsigned). Rename `Stoke` in all five places at once.
+- **67.** Build one arch per job on a NATIVE runner and keep the list only in
+  `scripts/targets.mjs` (the workflow and every `dist:*` read it): npm installs just the host's
+  `@lydell/node-pty-<platform>-<arch>`, so a cross-arch or `--universal` build ships a terminal
+  that throws MODULE_NOT_FOUND with no build error. `assert-packaged-pty.mjs` is what catches it.
+- **68.** Merge the per-job `latest*.yml` with `merge-update-manifests.mjs` and never
+  `merge-multiple: true`: only Linux gets an arch suffix, so two Windows or two macOS jobs both
+  write one name and the flatten drops an arch silently. The publish gate
+  (`check-release-assets.mjs`) derives what each feed must list from the same target list.
 
 **Verify suites** — `.claude/rules/suites.md`
 - **9.** Never stub IPC by assigning over `window.stoke` methods in a test — contextBridge freezes

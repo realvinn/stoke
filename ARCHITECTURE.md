@@ -372,15 +372,20 @@ so neither installer can be produced on the other's machine. That is what
 `.github/workflows/release.yml` exists for: a pushed tag fans out to a `windows-latest` and a
 `macos-14` runner, and one later job creates the release from both sets of artifacts.
 
-There is **no Linux build**. `electron-builder.yml` declares an `AppImage` target, but nothing
-invokes it — there is no `dist:linux` script and no CI job passes `--linux` — so no Linux
-package has ever been produced or shipped. Treat that target as a starting point for whoever
-wants one, not as a supported output.
+**Linux x64 is now built and has still never been run.** `npm run dist:linux` and a
+`ubuntu-latest` matrix leg produce an AppImage, and `toolsets.appimage` is set so it carries
+the static FUSE-3 runtime rather than the legacy one that needs libfuse2 and will not start on
+a default Ubuntu 24.04. AppImage is the only Linux format in scope, because it is the only one
+electron-updater installs without elevation; there is no `tar.gz`, because an unpacked tarball
+sets no `$APPIMAGE` and so can never update itself by any route. None of that is the same as
+the app working: nothing in `pty.ts`, `cli.ts`'s login-shell probe, `claudePaths.ts` or
+`workspaceRoots.ts` has ever executed on Linux. Treat a Linux release as experimental.
+Linux arm64 is deliberately not built (`NOT_BUILT` in `scripts/targets.mjs`).
 
 ## Testing
 
-Verification lives in `scripts/`, one `verify-*` suite per subject — twenty-eight of them now.
-Twenty-six are in `npm run check`, between the typecheck and the full build; `check` is the
+Verification lives in `scripts/`, one `verify-*` suite per subject — thirty of them now.
+Twenty-eight are in `npm run check`, between the typecheck and the full build; `check` is the
 gate, and it is what "done" means here. They are `.mts` run straight through node's
 type-stripping with no build step, except `verify:selection`, which opens a real Electron window
 and so needs a display. Each runs alone:
@@ -438,10 +443,15 @@ npm run verify:usage          # plan limits from the statusLine payload; STOKE_L
 npm run verify:security <url> <token> --access   # remote server, against a running instance
 ```
 
-Two more sit in the `check` chain without an entry above: `verify:activity` (the activity
-report's active time and lines written — a session's wall-clock span is not time worked) and
+Four more sit in the `check` chain without an entry above: `verify:activity` (the activity
+report's active time and lines written — a session's wall-clock span is not time worked),
 `verify:restore` (the tab-restore store: what survives a quit, what is trimmed, what a corrupt
-file does).
+file does), `verify:targets` (that every runner in the release matrix is native for the arch it
+builds, that the `dist:*` scripts and the workflow both read `scripts/targets.mjs`, and that
+every platform/arch node-pty publishes is built or named as deliberately unbuilt) and
+`verify:manifests` (the update-manifest merger and the publish gate, asserted against the real
+published v0.9.4 manifests, against electron-builder's own `writeUpdateInfoFiles`, and against
+electron-updater's own `findFile`/`filterFilesForArch`).
 
 The two `.mjs` suites want a live instance rather than a fixture, which is why `check` cannot
 run them: `verify:extract` drives the page extractor through Stoke's own MCP endpoint, and
@@ -617,6 +627,27 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
 scripts/          the verify-*.mts suites, make-icon.cjs
   ci-verify.mjs     derives CI's suite list from the `check` chain and fails on a stale
                     exclusion. `npm run verify:ci -- --list` prints the plan
+  targets.mjs       the ONE list of what a release builds: key, job name, runner,
+                    electron-builder flags, and the platform/arch the runner must be.
+                    The release workflow reads its matrix from it (`--matrix`) and every
+                    `dist:*` script resolves its flags from it (`--build <key>`), so the
+                    two cannot drift. One arch per job on a NATIVE runner, because npm
+                    installs only the host's `@lydell/node-pty-<platform>-<arch>` and
+                    node-pty resolves that name at runtime — a cross-arch build ships a
+                    terminal that throws MODULE_NOT_FOUND with no build error. Gotcha 67
+  assert-packaged-pty.mjs  each build job reads back which node-pty it actually packaged,
+                    under app.asar.unpacked. The only thing that turns that silent runtime
+                    failure into a red job
+  merge-update-manifests.mjs  the publish job's merge: electron-builder names a manifest
+                    per PLATFORM (arch-suffixed only on Linux), so two Windows jobs and
+                    two macOS jobs each write one `latest.yml`/`latest-mac.yml` and only
+                    one can survive a flatten. Groups by basename, merges each group by
+                    updateInfoBuilder's own rules, refuses a version mismatch. Dependency
+                    free, including its YAML, so the publish job needs no `npm ci`
+  check-release-assets.mjs  the publish gate: for every target in targets.mjs, the feed
+                    its updater fetches must list a file its updater will accept, and that
+                    file must be on disk. Derived from the matrix, so a new platform
+                    tightens it in the same edit
   mac-signing-secrets.sh  puts the release signing certificate into GitHub secrets.
                     Exists because macOS 26 removed Keychain Access, so every
                     "export it from the GUI" recipe is now dead. Gotcha 24
