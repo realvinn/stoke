@@ -1,0 +1,97 @@
+<!--
+  Source for build/background.png (540x380) and build/background@2x.png
+  (1080x760). Regenerate with `npm run art`.
+
+  The 540x380 is not a free choice: electron-builder sizes the Finder window from
+  this image (dmg-builder, dmgUtil.js `customizeDmg` runs `sips` on it and writes
+  settings.window from the result), and dmgbuild's window rect is in POINTS. A
+  lone 1080x760 background with no @1x sibling therefore gives a 1080x760-point
+  window. The pair is what keeps the window right and the art sharp: electron-
+  builder merges them with `tiffutil -cathidpicheck` and `sips` reads the @1x rep.
+
+  Layout is dictated by dmg.contents' defaults, which this repo leaves alone
+  (dmg-builder, dmg.js `computeDmgOptions`): the app at x:130,y:220 and the
+  /Applications link at x:410,y:220, as icon CENTRES in device-independent px
+  from the window's top-left. These are not read off the docs: a real dmg was
+  built here and its .DS_Store says iconSize 80, textSize 12, labelOnBottom, and
+  Iloc centres (130,220) and (410,220). So the boxes are x 90..170 and
+  x 370..450, y 180..260, with the label under each to about y 284. Everything
+  in those columns is left flat and dark: detail behind a Finder label, which
+  Finder draws in the system colour, turns to mud.
+
+  So the fire is the hero above them all, ending at y 140 with 40px to spare;
+  the chevron lives in the wide free column between them; and the bottom carries
+  nothing but ember light. The margins are deliberately larger than 80px needs,
+  because dmg.iconSize is unset and dmgbuild's own documented default is 128. If
+  that ever wins instead, the boxes grow to x 66..194 and y 156..284, and this
+  composition still clears them.
+
+  There is no type anywhere in this file on purpose. Text would make the output
+  depend on whatever fonts the machine running `npm run art` happens to have,
+  and these are committed artefacts that any machine may regenerate.
+
+  The campfire path data is shared byte-for-byte with installerSidebar.svg,
+  uninstallerSidebar.svg and installerHeader.svg; verify:installer-art asserts it.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="540" height="380" viewBox="0 0 540 380">
+  <defs>
+    <linearGradient id="page" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#241c17"/>
+      <stop offset="1" stop-color="#0d0b0a"/>
+    </linearGradient>
+    <linearGradient id="flame-fill" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#ffc48c"/>
+      <stop offset="0.52" stop-color="#ff9552"/>
+      <stop offset="1" stop-color="#e85f24"/>
+    </linearGradient>
+    <linearGradient id="core-fill" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#fff3e2"/>
+      <stop offset="1" stop-color="#ffcf94"/>
+    </linearGradient>
+    <radialGradient id="halo">
+      <stop stop-color="#ff9552" stop-opacity="0.26"/>
+      <stop offset="0.45" stop-color="#ff9552" stop-opacity="0.09"/>
+      <stop offset="1" stop-color="#ff9552" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="spill">
+      <stop stop-color="#ff9552" stop-opacity="0.085"/>
+      <stop offset="0.5" stop-color="#ff9552" stop-opacity="0.035"/>
+      <stop offset="1" stop-color="#ff9552" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="hearth-line" x1="0" y1="0" x2="1" y2="0">
+      <stop stop-color="#e85f24" stop-opacity="0"/>
+      <stop offset="0.5" stop-color="#e85f24" stop-opacity="0.40"/>
+      <stop offset="1" stop-color="#e85f24" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <path fill="url(#page)" d="M0 0H540V380H0Z"/>
+
+  <!-- The light comes from the fire and spills down the page, rather than
+       pooling at the far edge: a bottom glow under a top-lit fire reads as two
+       light sources and makes the middle look empty rather than lit. -->
+  <ellipse cx="270" cy="140" rx="400" ry="250" fill="url(#spill)"/>
+  <ellipse cx="270" cy="100" rx="150" ry="120" fill="url(#halo)"/>
+
+  <path stroke="url(#hearth-line)" stroke-width="1" d="M130 140.5H410"/>
+
+  <g transform="translate(200.3,-100.55) scale(0.85)">
+    <path id="flame" fill="url(#flame-fill)" d="M83 263C62 263 51 249 55 232C58 220 67 212 67 199C73 205 76 213 75 221C86 207 92 190 86 168C109 190 104 209 99 222C106 220 111 213 112 208C123 230 118 252 101 260C95 263 89 264 83 263Z"/>
+    <path id="core" fill="url(#core-fill)" d="M83 260C72 259 69 251 72 242C74 235 81 230 85 220C91 231 87 237 91 243C94 240 97 235 98 232C103 245 98 259 88 261Z"/>
+    <path id="logs" fill="none" stroke="#1a1411" stroke-width="9" stroke-linecap="round" d="M52 264L110 277M54 278L111 263"/>
+    <path id="logs-lit" fill="none" stroke="#ff9552" stroke-opacity="0.30" stroke-width="1" stroke-linecap="round" d="M52 261L109 274M55 275L110 260"/>
+  </g>
+
+  <!-- Embers on the logs, drawn unscaled so they stay round at any size. -->
+  <circle cx="263" cy="127" r="1.2" fill="#ff9552" opacity="0.6"/>
+  <circle cx="279" cy="131" r="1" fill="#ffc48c" opacity="0.45"/>
+
+  <!-- Sparks drifting up out of the frame. -->
+  <path fill="none" stroke="#ff9552" stroke-opacity="0.32" stroke-width="1.5" stroke-linecap="round" d="M258 30Q256 25 259 20"/>
+  <circle cx="288" cy="26" r="1.1" fill="#ff9552" opacity="0.22"/>
+  <circle cx="272" cy="12" r="0.9" fill="#ffc48c" opacity="0.14"/>
+
+  <!-- "Drag it across." The only free column between the two icon boxes. -->
+  <path fill="none" stroke="#ff9552" stroke-opacity="0.16" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" d="M234 204L252 220L234 236"/>
+  <path fill="none" stroke="#ff9552" stroke-opacity="0.44" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" d="M266 204L284 220L266 236"/>
+</svg>

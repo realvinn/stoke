@@ -1,0 +1,72 @@
+<!--
+  Source for build/installerSidebar.bmp (164x314). Regenerate with `npm run art`.
+
+  The campfire geometry (#flame, #core, #logs, #logs-lit path data) is shared
+  byte-for-byte with installerHeader.svg, uninstallerSidebar.svg and
+  background.svg. verify:installer-art asserts they stay identical, because four
+  hand-copied paths are exactly the drift this repo has been bitten by twice.
+
+  Composition rules this file obeys, and why:
+  - No text and no wordmark. The NSIS wizard is DPI-unaware, so Windows bitmap-
+    scales the whole window on a scaled display and small type turns to mush.
+  - The top third stays quiet, so the art survives whatever MUI paints near it.
+  - Palette is build/icon.svg's own: page #241c17 -> #0d0b0a, flame #ffc48c ->
+    #ff9552 -> #e85f24, core #fff3e2 -> #ffcf94, glow #ff9552.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="164" height="314" viewBox="0 0 164 314">
+  <defs>
+    <linearGradient id="page" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#241c17"/>
+      <stop offset="1" stop-color="#0d0b0a"/>
+    </linearGradient>
+    <linearGradient id="flame-fill" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#ffc48c"/>
+      <stop offset="0.52" stop-color="#ff9552"/>
+      <stop offset="1" stop-color="#e85f24"/>
+    </linearGradient>
+    <linearGradient id="core-fill" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#fff3e2"/>
+      <stop offset="1" stop-color="#ffcf94"/>
+    </linearGradient>
+    <radialGradient id="hearth">
+      <stop stop-color="#ff9552" stop-opacity="0.30"/>
+      <stop offset="0.42" stop-color="#ff9552" stop-opacity="0.11"/>
+      <stop offset="1" stop-color="#ff9552" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="halo">
+      <stop stop-color="#ff9552" stop-opacity="0.20"/>
+      <stop offset="1" stop-color="#ff9552" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="hearth-line" x1="0" y1="0" x2="1" y2="0">
+      <stop stop-color="#e85f24" stop-opacity="0"/>
+      <stop offset="0.5" stop-color="#e85f24" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#e85f24" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <path fill="url(#page)" d="M0 0H164V314H0Z"/>
+
+  <!-- The light comes from a hearth sitting off the bottom edge, not from the
+       middle of a wall: glow centre is below the logs. -->
+  <ellipse cx="82" cy="292" rx="128" ry="104" fill="url(#hearth)"/>
+  <ellipse cx="82" cy="238" rx="58" ry="64" fill="url(#halo)"/>
+
+  <path stroke="url(#hearth-line)" stroke-width="1" d="M0 283.5H164"/>
+
+  <path id="flame" fill="url(#flame-fill)" d="M83 263C62 263 51 249 55 232C58 220 67 212 67 199C73 205 76 213 75 221C86 207 92 190 86 168C109 190 104 209 99 222C106 220 111 213 112 208C123 230 118 252 101 260C95 263 89 264 83 263Z"/>
+  <path id="core" fill="url(#core-fill)" d="M83 260C72 259 69 251 72 242C74 235 81 230 85 220C91 231 87 237 91 243C94 240 97 235 98 232C103 245 98 259 88 261Z"/>
+
+  <path id="logs" fill="none" stroke="#1a1411" stroke-width="9" stroke-linecap="round" d="M52 264L110 277M54 278L111 263"/>
+  <path id="logs-lit" fill="none" stroke="#ff9552" stroke-opacity="0.30" stroke-width="1" stroke-linecap="round" d="M52 261L109 274M55 275L110 260"/>
+
+  <!-- Embers on the logs. -->
+  <circle cx="74" cy="272" r="1.1" fill="#ff9552" opacity="0.65"/>
+  <circle cx="92" cy="276" r="1" fill="#ffc48c" opacity="0.5"/>
+  <circle cx="64" cy="270" r="0.9" fill="#e85f24" opacity="0.5"/>
+
+  <!-- Sparks rising into the quiet upper third. -->
+  <path fill="none" stroke="#ff9552" stroke-opacity="0.40" stroke-width="1.5" stroke-linecap="round" d="M77 155Q75 150 78 145"/>
+  <circle cx="99" cy="124" r="1.1" fill="#ff9552" opacity="0.26"/>
+  <circle cx="71" cy="106" r="0.9" fill="#ffc48c" opacity="0.16"/>
+  <circle cx="93" cy="86" r="0.8" fill="#ff9552" opacity="0.10"/>
+</svg>
