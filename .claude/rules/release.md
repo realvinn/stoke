@@ -259,7 +259,11 @@ the NSIS target or in dmg-builder. So, in increasing order of nastiness:
   and the dmg to electron-builder's own `background.tiff`, both silently. With the key SET,
   `getResource` throws `InvalidConfigurationError` and the build stops. That is the whole reason
   `electron-builder.yml` names three paths it would have found anyway: it converts a silent
-  downgrade into a loud failure.
+  downgrade into a loud failure. **Measured, not inferred**: moving `build/background.png` aside
+  and running the real dmg target exits **1** with `cannot find specified resource
+  "build/background.png", nor relative to …/build, neither relative to project dir`. The three
+  NSIS image keys go through the same `getResource`, so the same holds for them — that half is
+  by shared code path rather than by a Windows build.
 
 That is CLAUDE.md gotcha 62's shape — a green build over a broken artefact — which is why
 `verify:installer-art` was written in the same commit as the art rather than after it. It
