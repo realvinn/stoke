@@ -166,11 +166,16 @@ console.log('\napply - custom gateway')
   check('base url is the gateway', env.ANTHROPIC_BASE_URL, 'http://127.0.0.1:8787')
   check('token goes in as the auth token', env.ANTHROPIC_AUTH_TOKEN, 'bridge-token')
   /*
-   * Blanked, NOT deleted, and this is the assertion the branch exists for. The
-   * spawned process inherits the parent env, so deleting the var would leave a
-   * shell-exported ANTHROPIC_API_KEY standing and Claude Code would prefer the
-   * console key over the gateway the user just chose - billing the wrong
-   * account, silently, with the UI still showing the gateway as selected.
+   * Blanked, NOT deleted, and this is the assertion the branch exists for.
+   *
+   * NOT because the child inherits the parent env - it does not: both spawn
+   * paths build a fresh object and pass it wholesale (agent.ts, pty.ts), which
+   * is exactly why the 'anthropic' branch can legitimately `delete`. The
+   * reason is Claude Code's own fallback, which applyProviderEnv's docstring
+   * states: an unset ANTHROPIC_API_KEY is not the same as "", and the CLI may
+   * fall back to a cached Anthropic login when the variable is merely absent -
+   * billing the wrong account, silently, with the UI still showing the gateway
+   * as selected.
    */
   check('a stale console key is blanked, not deleted', env.ANTHROPIC_API_KEY, '')
   ok('the key is still PRESENT as a var', 'ANTHROPIC_API_KEY' in env)

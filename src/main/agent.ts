@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { buildEnvPath, findClaude, loginPathProbeFailed, notFoundError, spawnSpec } from './cli.ts'
-import { applyProviderEnv, DEFAULT_PROVIDERS } from '../shared/providers.ts'
+import { applyProviderEnv, DEFAULT_PROVIDERS, validateClaudeAuth } from '../shared/providers.ts'
 import type { ProviderSettings } from '../shared/providers.ts'
 
 /**
@@ -417,6 +417,23 @@ export async function runHeadless(opts: HeadlessOptions): Promise<HeadlessResult
     env[k] = v
   }
   env.PATH = await buildEnvPath()
+  /*
+   * Fail closed exactly as pty.ts:298-300 does, and only when a provider block
+   * was actually supplied.
+   *
+   * Applying a half-filled one is worse than refusing it, and it is two clicks
+   * away: the auth-mode select patches immediately, so choosing "OpenRouter"
+   * and closing the sheet before pasting the key persists
+   * `claudeAuth: 'openrouter'` with an empty token. Applied blindly that sets
+   * ANTHROPIC_BASE_URL with a blank ANTHROPIC_AUTH_TOKEN over an inherited
+   * Claude.ai login that was working a moment ago, and the 401 comes back as a
+   * generic headless failure instead of the sentence validateClaudeAuth has
+   * already written for the launcher.
+   */
+  if (opts.providers) {
+    const check = validateClaudeAuth(opts.providers)
+    if (!check.ok) throw new HeadlessError(check.message)
+  }
   applyProviderEnv(env, opts.providers ?? DEFAULT_PROVIDERS)
 
   // A cwd that has since been deleted (a scratch project, a removed worktree)
