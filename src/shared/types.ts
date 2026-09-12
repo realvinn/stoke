@@ -903,6 +903,17 @@ export interface Settings {
   hideStatusLine: boolean
   /** OS notifications when Claude finishes or needs you. See NotificationMode. */
   notifications: NotificationMode
+  /**
+   * The Stoke version whose first-run campfire has already been watched, or
+   * null on a machine that has never seen one.
+   *
+   * A version rather than a boolean so that an upgrade can be marked as well as
+   * an install without spending a second field — see `welcomePlan` in
+   * shared/welcome.ts, which owns the whole rule. Repaired by
+   * `clampWelcomeSeen`: junk reads as null, which plays the splash once, which
+   * is the recoverable direction.
+   */
+  welcomeSeenVersion: string | null
 }
 
 /* --------------------------------------------------------------- browser */
