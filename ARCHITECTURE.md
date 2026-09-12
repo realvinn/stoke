@@ -388,8 +388,8 @@ Linux arm64 is deliberately not built (`NOT_BUILT` in `scripts/targets.mjs`).
 
 ## Testing
 
-Verification lives in `scripts/`, one `verify-*` suite per subject — thirty of them now.
-Twenty-eight are in `npm run check`, between the typecheck and the full build; `check` is the
+Verification lives in `scripts/`, one `verify-*` suite per subject — thirty-one of them now.
+Twenty-nine are in `npm run check`, between the typecheck and the full build; `check` is the
 gate, and it is what "done" means here. They are `.mts` run straight through node's
 type-stripping with no build step, except `verify:selection`, which opens a real Electron window
 and so needs a display. Each runs alone:
@@ -422,6 +422,12 @@ npm run verify:shortcuts      # app chords vs the keys the terminal owns, the zo
                               # that Ctrl+Tab and the bare brackets still reach the CLI
 npm run verify:drop           # what a dropped file types: quoting per platform, and the
                               # names that cannot be typed at all
+npm run verify:campfire       # the installer's campfire: the locked alphabet that lets one
+                              # copy of the art live in a POSIX string and a PowerShell
+                              # here-string, a hearth that never moves, the stage boundaries,
+                              # a golden hash per colour tier, zero escape bytes in `none`,
+                              # and the shipped art blocks against the generator. Also runs
+                              # the block through sh, bash, zsh and dash for real
 npm run verify:color          # colour maths: contrast, APCA, oklch; every theme's tokens, the
                               # accent matrix, the meter colours and the bypass mark at 3:1
 npm run verify:theme-gen      # the theme generator: that a five-field seed reproduces every
@@ -598,6 +604,12 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
   drop.ts           what a file dropped on the terminal types: the per-platform quoting,
                     and the refusal for a name that cannot be typed. Pure, platform passed
                     in, so verify:drop runs it for every OS. Gotcha 59
+  campfire.ts       the fire the one-line installer burns while it downloads: twelve frames
+                    over a constant hearth, which one a progress value shows, the four
+                    colour tiers and the segment encoding the shell draws from, and the
+                    plain lines that replace all of it when the terminal cannot draw.
+                    Nothing in the app imports it — the installers do, through
+                    gen-installer-art.mts. No imports at all, no RNG, no clock. Gotcha 67
   notation.ts       reading and writing one colour as OKLCH/HSL/RGB/hex. Split out of the
                     component so a suite can reach it
   accent.ts         one accent in, five tokens out, per appearance. The reason
@@ -657,6 +669,16 @@ scripts/          the verify-*.mts suites, make-icon.cjs
                     "export it from the GUI" recipe is now dead. Gotcha 24
   gen-themes.mts    prints a built-in theme as the literal `themes.ts` checks in, from its
                     seed. `node scripts/gen-themes.mts lantern`, or `--all`. Gotcha 43
+  gen-installer-art.mts  prints the campfire art block the sh and ps1 installers carry,
+                    between `# BEGIN CAMPFIRE ART` sentinels. Same arrangement as
+                    gen-themes.mts: the generator is the only way the art is produced and
+                    verify:campfire compares the shipped block against it byte for byte,
+                    so a hand-edited frame fails check. `sh`, `ps1` or `--all`
+  campfire-demo.mts  watches the fire without an install: `--sweep` for every frame (safe to
+                    redirect and `type` on Windows), `--plain` for the degraded path,
+                    `--mode=` to force a tier. The only way to see the things no pure suite
+                    can: whether a console renders the sequences, and whether the cursor
+                    comes back
   cdp-eval.mjs      evaluates one expression in the renderer, or screenshots it.
                     Picks the target by its window.stoke object, never by URL
 ```
