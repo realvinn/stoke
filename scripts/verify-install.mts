@@ -352,6 +352,54 @@ try {
       }
     }
   }
+  /*
+   * And the animate path, which no flag and no pipe can reach — `fire_open`,
+   * `fire_draw` and `fire_cleanup` only ever run with a real terminal on the
+   * other end, so they were the part of this script that nothing here touched.
+   * That is not a theoretical gap: `printf '%s' "$ESC[?25l"` is `zsh: invalid
+   * subscript`, because zsh reads `$NAME[` as an array subscript even inside
+   * double quotes — so under zsh the fire died on its first byte AND the cursor
+   * was never restored, with `setopt sh_word_split` doing nothing about it and
+   * every offline flag passing. It took a pty to see. This calls the three
+   * functions directly instead, by sourcing the script with `--help` so main
+   * returns without doing anything.
+   *
+   * Asserted on its own terms as well as across shells, so it says something
+   * even if every shell agreed on being wrong: hide first, restore last, three
+   * redraws for three draws, and never the alternate screen buffer.
+   */
+  const drive = 'set -- --help; . "$STOKE_SH" >/dev/null 2>&1;' +
+    ' FIRE_ANIMATE=1; fire_set_tier truecolor; fire_open;' +
+    ' fire_draw 5; fire_draw 50; fire_draw 100; fire_cleanup'
+  if (process.platform !== 'win32' && existsSync('/bin/sh')) {
+    let reference = ''
+    for (const shell of SHELLS) {
+      if (!existsSync(shell)) continue
+      let got = ''
+      let err = ''
+      try {
+        got = execFileSync(shell, ['-c', drive], {
+          encoding: 'utf8',
+          env: { ...shellEnv, STOKE_SH: SH },
+          stdio: ['ignore', 'pipe', 'pipe']
+        })
+      } catch (e) {
+        err = String((e as { stderr?: Buffer }).stderr ?? e).trim()
+      }
+      if (err) {
+        ok(`${shell} draws the fire`, false, err)
+        continue
+      }
+      if (!reference) {
+        reference = got
+        ok('the fire hides the cursor before it draws anything', got.startsWith('[?25l'), JSON.stringify(got.slice(0, 12)))
+        ok('and restores it last of all, so a failure cannot leave it hidden', got.endsWith('[?25h[0m'), JSON.stringify(got.slice(-12)))
+        check('one redraw per draw, and the canvas is seven rows', got.split('[7A').length - 1, 3)
+        ok('and never the alternate screen buffer', !got.includes('1049'))
+      }
+      ok(`${shell} draws the fire identically`, got === reference, JSON.stringify(got.slice(0, 80)))
+    }
+  }
 } finally {
   rmSync(shellTmp, { recursive: true, force: true })
 }

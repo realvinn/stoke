@@ -501,7 +501,14 @@ fire_draw() {
 fire_open() {
   if [ "$FIRE_ANIMATE" != 1 ]; then return 0; fi
   FIRE_OPEN=1
-  printf '%s' "$ESC[?25l"
+  # `$ESC'['` and never "$ESC[": zsh reads `$NAME[` as an array subscript even
+  # inside double quotes, so `"$ESC[?25l"` is `zsh: invalid subscript` and the
+  # fire dies on its first byte. It is the same hazard as the word splitting at
+  # the top of this file and `setopt sh_word_split` does NOT cover it. Both
+  # sites are on the animate path, so neither a pipe nor any offline flag can
+  # reach them: it took a real pty. `fire_draw` below was already written this
+  # way, which is the only reason it was not a third.
+  printf '%s' "$ESC"'[?25l'
   fire_i=0
   while [ "$fire_i" -lt "$FIRE_ROWS" ]; do
     printf '\n'
@@ -514,7 +521,7 @@ fire_open() {
 fire_cleanup() {
   if [ "$FIRE_OPEN" = 1 ]; then
     FIRE_OPEN=0
-    printf '%s' "$ESC[?25h$ESC$SGR_RESET"
+    printf '%s' "$ESC"'[?25h'"$ESC$SGR_RESET"
   fi
 }
 
