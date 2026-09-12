@@ -11,8 +11,10 @@
  * here (gotcha 31): whether conhost renders the sequences at all, whether the
  * cursor comes back after Ctrl-C, and whether the canvas drifts when the
  * terminal scrolls at the bottom of the window. `--sweep` redirects cleanly, so
- * a Windows tester can be sent `node scripts/campfire-demo.mts --sweep > frames.txt`
- * and `type frames.txt`.
+ * a Windows tester can be sent a file to `type` -- but NAME A TIER when you do,
+ * `--sweep --mode=ansi16 > frames.txt`, because a redirected run with no --mode
+ * is a non-TTY and therefore the `none` tier, and a file with no escape byte in
+ * it cannot answer the question that tester is being asked.
  *
  * It is a viewer, not the installer: it drives a fake byte counter rather than a
  * download. The redraw rules it demonstrates are the ones the installer must
@@ -58,7 +60,22 @@ const write = (s: string): void => {
 }
 
 if (flag('sweep') !== undefined) {
-  // Every frame, top to bottom, so one screen (or one file) shows the whole set.
+  /*
+   * Every frame, top to bottom, so one screen (or one file) shows the whole set.
+   *
+   * Redirected, `mode` resolves to `none` -- stdout is not a terminal, which is
+   * the degraded path by design -- so `--sweep > frames.txt` writes a file with
+   * ZERO escape bytes. That is right for reading the art and useless for the
+   * question a Windows tester is actually being asked, which is whether their
+   * console renders the sequences at all. So say so, on stderr, where it cannot
+   * land in the file: stdout stays byte-clean, which is what "redirects
+   * cleanly" has to keep meaning.
+   */
+  if (forced === undefined && !term.isTty) {
+    console.error('note: stdout is not a terminal, so these frames carry no colour at all.')
+    console.error('      For a file that tests whether a console renders the sequences, name')
+    console.error('      a tier: --sweep --mode=ansi16 (bare conhost) or --mode=truecolor.')
+  }
   for (const stage of STAGES) {
     for (let f = 0; f < stage.frames.length; f++) {
       write(`${stage.name} ${'abc'[f]}\n`)
@@ -108,10 +125,27 @@ const cleanup = (): void => {
   write(`${ESC}[?25h${ESC}[0m`)
 }
 process.on('exit', cleanup)
-process.on('SIGINT', () => {
-  cleanup()
-  process.exit(130)
-})
+/*
+ * An EXIT handler alone is not enough, and this is the half an installer gets
+ * wrong. Node runs no `exit` listener when the DEFAULT SIGTERM or SIGHUP
+ * disposition kills the process, so `kill <pid>` and a closed terminal both
+ * leave ESC[?25l in effect and the user with an invisible cursor and no idea
+ * why. Measured both ways on a real pty: with these handlers the capture ends
+ * `ESC[?25h`, and with SIGTERM's removed it does not. The codes are the shell's
+ * own 128 + signal, so a caller still sees what happened. SIGKILL cannot be
+ * caught by anything, which is the whole reason the window in which the cursor
+ * is hidden is kept short.
+ */
+for (const [sig, code] of [
+  ['SIGINT', 130],
+  ['SIGTERM', 143],
+  ['SIGHUP', 129]
+] as const) {
+  process.on(sig, () => {
+    cleanup()
+    process.exit(code)
+  })
+}
 
 write(`${ESC}[?25l`)
 // Make the block exist before drawing into it, so any scrolling has already
