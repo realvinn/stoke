@@ -2,7 +2,11 @@
 paths:
   - ".github/workflows/release.yml"
   - "electron-builder.yml"
+  - "build/*.svg"
   - "scripts/mac-signing-secrets.sh"
+  - "scripts/make-icon.cjs"
+  - "scripts/make-installer-art.cjs"
+  - "scripts/verify-installer-art.mts"
   - "scripts/verify-updates.mts"
   - "scripts/verify-targets.mts"
   - "scripts/verify-manifests.mts"
@@ -232,3 +236,91 @@ asks `scripts/targets.mjs` which feed each target's updater fetches and what it 
 there, so adding a platform tightens the gate in the same edit. A missing manifest, a mac arch
 listed only as a dmg, a manifest naming a file that was never uploaded, or a tag that disagrees
 with what the manifests say all refuse the release.
+## 69. Installer artwork is validated by nobody, and three of its four failure modes are silent
+
+**electron-builder checks none of the installer images it ships.** `getResource` resolves a
+path and stops (`platformPackager.js`, `async getResource`); `nsisValidation` greps makensis
+stderr for `/^Error:/` lines and compares the installer's size to its payload, and that is the
+whole of it. There is no magic-byte check, no dimension check and no bit-depth check anywhere in
+the NSIS target or in dmg-builder. So, in increasing order of nastiness:
+
+- **A PNG renamed `.bmp`, or a BMP carrying a V4/V5 header** — makensis emits a *warning*, not an
+  `Error:`, the image renders blank or as garbage, and `npm run dist:win` exits 0 with a green
+  tick. NSIS loads these through the Win32 `LoadImage`, which only understands the classic 40-byte
+  `BITMAPINFOHEADER` — `file(1)` calls it "Windows 3.x format", and it is what
+  `scripts/make-installer-art.cjs` writes by hand because Chromium's canvas encodes png/jpeg/webp
+  and nothing else. `BITMAPV4HEADER`/`BITMAPV5HEADER` is what ImageMagick, Photoshop and "Windows
+  98/2000 and newer" export by default, and it is **not displayed**.
+- **Wrong dimensions** — no diagnostic at all. MUI stretches to fit.
+- **Alpha** — BMP3 has none and NSIS ignores it even in a 32-bit BMP, so a transparent pixel
+  arrives as whatever is in its RGB bytes, usually black. The generator composites onto a solid
+  colour named per asset (`flatten`).
+- **A missing file, with the key UNSET** — the sidebar falls back to NSIS's stock `nsis3-metro`
+  and the dmg to electron-builder's own `background.tiff`, both silently. With the key SET,
+  `getResource` throws `InvalidConfigurationError` and the build stops. That is the whole reason
+  `electron-builder.yml` names three paths it would have found anyway: it converts a silent
+  downgrade into a loud failure.
+
+That is CLAUDE.md gotcha 62's shape — a green build over a broken artefact — which is why
+`verify:installer-art` was written in the same commit as the art rather than after it. It
+decodes the BMP headers by hand rather than through the encoder that wrote them, because a
+decoder sharing code with its encoder agrees with it by construction.
+
+**Four smaller things, each read out of the shipped templates rather than remembered.**
+
+`installerHeaderIcon` is dead in this config: `NsisTarget` only writes it inside the
+`if (oneClick)` branch and `oneClick` is `false` here, so adding it to the yml would look like
+branding and do nothing. `nsis.script` must never be used — it replaces the whole generated
+script and takes the uninstaller's generation *and its signing* with it; `build/installer.nsh`
+via the `include` key is the seam, and there is no such file today.
+
+**The header image is forced to the right, onto a white bar.** `NsisTarget` sets
+`MUI_HEADERIMAGE_RIGHT` unconditionally whenever `installerHeader` resolves, with no option to
+move it, and MUI2's `MUI_BGCOLOR` defaults to `FFFFFF`. So `build/installerHeader.svg` is drawn
+on white and runs a *darker* flame ramp than `build/icon.svg` — icon.svg's top stop `#ffc48c` is
+nearly invisible on white, and the near-white core would read as a hole. Going dark instead is
+legitimate but costs `MUI_BGCOLOR`/`MUI_TEXTCOLOR` overrides from a top-level `installer.nsh`,
+which is the one place a wrong define makes the wizard's own title text unreadable. The suite
+asserts the tile's mean luma, so a redraw has to move that number deliberately.
+
+**There is no welcome page, so the sidebar is nearly invisible.** electron-builder's assisted
+page order is install-mode, directory, instfiles, `MUI_PAGE_FINISH`; `customWelcomePage` is only
+inserted `!ifmacrodef`. `MUI_WELCOMEFINISHPAGE_BITMAP` is read only by the welcome and finish
+pages, so the 164×314 art appears on exactly **one** installer screen, at the end — and on both
+uninstaller screens, which is what makes `uninstallerSidebar.bmp` worth its 155 KB.
+
+**The dmg window size comes from the background image, in POINTS.** `dmgUtil`'s `customizeDmg`
+runs `sips` on the background and writes `settings.window` from the result, so a lone 1080×760
+`background.png` with no `@1x` sibling gives a 1080×760-**point** Finder window. The pair is the
+fix: dmg-builder merges them with `tiffutil -cathidpicheck` and `sips` reads the @1x rep.
+`dmg.window` is therefore not set — in dmg-builder 26.15.3 it is read only on the
+*no-background* branch, so beside a background it is a dead key that reads like an override.
+(The research this work came from said the reverse, that an explicit `window` silently wins;
+the code disagrees, and the code is what ships. Either way: set one, never both.) `dmg.contents`
+is left at its defaults, and **what those defaults actually produce was measured, not read**: a
+real dmg was built here and its `.DS_Store` reports `WindowBounds {{400, 530}, {540, 380}}`,
+`iconSize 80`, `textSize 12`, `labelOnBottom`, and `Iloc` centres `(130,220)` and `(410,220)`.
+So the icon boxes are `x 90..170` and `x 370..450`, `y 180..260`, with a label under each to
+about `y 284` — **not** the 128 that dmgbuild's own documentation gives as its default and that
+the first draft of `background.svg` was composed around. `dmg.iconSize` is unset, so if that
+128 ever wins the boxes grow to `x 66..194`, `y 156..284`; the art clears both, which is why the
+margins are larger than 80 needs. `build/background.svg` keeps those columns flat and dark,
+because detail behind a Finder label turns to mud.
+
+**And one trap that is not about installers at all: a `--` inside an XML comment.** It is
+illegal there, so the document is not well-formed, the browser refuses to decode it, and
+`img.decode()` rejects with a `DOMException` — which does not survive Electron's
+`executeJavaScript` bridge. The generator reported `installer art generation failed: {}` and
+named nothing, for prose that read perfectly well. `draw()` now catches inside the page and
+returns the reason as data (`background.svg: EncodingError: The source image cannot be
+decoded.`), and the suite greps the sources for it.
+
+**Unverified, and it is the whole Windows half.** Every format claim here is read from
+`app-builder-lib@26.15.3`'s own templates and measured with `file(1)` and `sips` on macOS. That
+these bitmaps *render* in a real NSIS wizard, at 100% and at 150% scaling, is not verified by
+anything — no round of work in this repo has run on Windows. The wizard is also DPI-unaware
+(`ManifestDPIAware` is never set, and NSIS's own default is `notset`), so Windows bitmap-scales
+the whole window on a scaled display with nearest-neighbour. That is why the art is big shapes
+and carries no text anywhere: not taste, survivability. `ManifestDPIAware true` from a custom
+include should work, is unverified, and NSIS's own reference warns it breaks the component-page
+tree bitmap — leave it.

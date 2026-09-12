@@ -364,6 +364,17 @@ React 19, hand-written CSS, no component library.
 mobile bundle into `out/remote`. `build/icon.svg` is the icon source and `npm run icon`
 rasterises it through Electron itself, avoiding an image toolchain.
 
+The **installer artwork** works the same way. Four more SVGs in `build/` are the sources, and
+`npm run art` rasterises them to the bitmaps the Windows wizard and the macOS dmg actually
+read: `installerSidebar.bmp` and `uninstallerSidebar.bmp` (164×314), `installerHeader.bmp`
+(150×57), and `background.png` / `background@2x.png` (540×380 and 1080×760). The BMPs are
+written by hand, because Chromium's canvas cannot encode one and NSIS only displays the classic
+40-byte-header "Windows 3.x" variant. All five outputs are **committed**, like `build/icon.png`,
+so no release runner rasterises anything; `npm run art` is a deliberate act and does not run in
+`check`. What `check` runs is `verify:installer-art` over the committed files, because
+electron-builder validates none of them — see gotcha 69, and `.claude/rules/release.md` for what
+each failure looks like from outside.
+
 Self-update uses `electron-updater` against GitHub releases, configured in the `publish` block
 of `electron-builder.yml`. It only activates for a packaged app with a published release.
 
@@ -388,8 +399,8 @@ Linux arm64 is deliberately not built (`NOT_BUILT` in `scripts/targets.mjs`).
 
 ## Testing
 
-Verification lives in `scripts/`, one `verify-*` suite per subject — thirty-one of them now.
-Twenty-nine are in `npm run check`, between the typecheck and the full build; `check` is the
+Verification lives in `scripts/`, one `verify-*` suite per subject — thirty-two of them now.
+Thirty are in `npm run check`, between the typecheck and the full build; `check` is the
 gate, and it is what "done" means here. They are `.mts` run straight through node's
 type-stripping with no build step, except `verify:selection`, which opens a real Electron window
 and so needs a display. Each runs alone:
@@ -444,6 +455,10 @@ npm run verify:worklog-autoscan # when a session is scanned without being asked
 npm run verify:ssh            # ssh argv, ~/.ssh/config parsing, the remote transcript fetch
 npm run verify:remote         # phone access: where the link points and how it says it gets
                               # there, the LAN interface ranking, what a dead tunnel reports
+npm run verify:installer-art  # the committed installer bitmaps: BMP3 headers decoded by hand,
+                              # exact dimensions, that the art is not a well-formed blank, and
+                              # that the generator, electron-builder.yml and the four SVG
+                              # sources still name the same files and share one campfire
 npm run verify:selection      # Option-drag selection survives letting go of the mouse.
                               # Opens a real Electron window, so it needs a display
                               # and is one of the two `check` suites CI skips
@@ -664,6 +679,10 @@ scripts/          the verify-*.mts suites, make-icon.cjs
                     its updater fetches must list a file its updater will accept, and that
                     file must be on disk. Derived from the matrix, so a new platform
                     tightens it in the same edit
+  make-installer-art.cjs  rasterises build/'s four installer SVGs through Electron, as
+                    make-icon.cjs does, plus a hand-written BMP3 encoder: canvas cannot
+                    emit a BMP and NSIS shows only the 40-byte-header kind. Alpha is
+                    composited onto a per-asset solid, since BMP3 has none. Gotcha 67
   mac-signing-secrets.sh  puts the release signing certificate into GitHub secrets.
                     Exists because macOS 26 removed Keychain Access, so every
                     "export it from the GUI" recipe is now dead. Gotcha 24

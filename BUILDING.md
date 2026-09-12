@@ -490,3 +490,28 @@ npm run icon    # rewrites build/icon.png at 1024x1024
 
 electron-builder derives the `.ico` and `.icns` from that PNG, so there is no binary icon
 asset to maintain by hand.
+
+## Regenerating the installer artwork
+
+Four more SVGs in `build/` are the sources for the Windows wizard's images and the macOS dmg
+background. After editing any of them:
+
+```bash
+npm run art                   # rewrites the three .bmp files and the dmg background pair
+npm run verify:installer-art  # and check they are still the format the installers can read
+```
+
+That writes `build/installerSidebar.bmp` and `build/uninstallerSidebar.bmp` (164×314),
+`build/installerHeader.bmp` (150×57), and `build/background.png` / `build/background@2x.png`
+(540×380 and 1080×760). All five are committed, like `build/icon.png`.
+
+Two things worth knowing before changing them. The BMPs must stay 24-bit with the classic
+40-byte header — NSIS displays nothing else, and a wrong one is a makensis *warning* and a blank
+image rather than a failed build, which is what `verify:installer-art` exists to catch. And the
+dmg background's **@1x** size is the Finder window size in points, so the 540×380 and its
+1080×760 sibling have to stay a matched pair. The art is also composed around the default icon
+positions — measured from a built dmg's `.DS_Store` as 80px icons centred on (130,220) and
+(410,220), with labels beneath; moving those means redrawing the background.
+
+**Unverified:** how the Windows bitmaps look in a real wizard. Nobody has watched a Stoke
+Windows installer run.
