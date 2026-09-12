@@ -194,6 +194,20 @@ ok(`the cache TTL is ${maxAge}s, which is at most five minutes`, maxAge > 0 && m
  * Windows build times every locale.
  */
 ok('nothing varies the cache on User-Agent', !/vary/i.test(CACHE_CONTROL))
+/*
+ * The other half of that decision, and it has to be asserted or the two halves
+ * come apart. Three different bodies come back from one URL depending on the
+ * User-Agent. With no `Vary`, a `public` response is one a SHARED cache — a
+ * corporate MITM proxy, the very thing the `?sh` override exists for — may
+ * store and hand to the next client whatever that one asked for: a shell
+ * receiving the landing page, or a browser offered a script. `private` keeps
+ * the short TTL for the end client, which has exactly one User-Agent.
+ */
+ok(
+  'and the body is not offered to shared caches, since three of them share one URL',
+  /(^|[,\s])(private|no-store)([,\s]|$)/.test(CACHE_CONTROL),
+  CACHE_CONTROL
+)
 const workerText = readFileSync(join(root, 'worker', 'index.ts'), 'utf8')
 // The comments in that file discuss the things it must not do, by name, so they
 // have to come out before asking whether it does them — same reason as `code()`.
@@ -275,6 +289,71 @@ if (process.platform === 'win32') {
     }
     ok(`${shell} -n install.sh`, err === '', err)
   }
+}
+/*
+ * And then RUN it under each of them, because parsing is not running and the
+ * gap between the two is where a real bug lived: `zsh -n install.sh` was clean
+ * while `zsh install.sh` died on its first line of work with `command not
+ * found: 1`. zsh does not split an unquoted parameter expansion on IFS unless
+ * asked, and three things in the script depend on that splitting — the flicker
+ * table, the stage thresholds and the painter's segments — so the whole file
+ * was dead under the shell macOS makes the default while every assertion here
+ * stayed green. `setopt sh_word_split` is the fix; this is what proves it.
+ *
+ * Byte-identical to /bin/sh's output, not merely exit 0: a shell that ran the
+ * painter wrongly would still exit 0. Between them the four flags cover the
+ * painter, the degrade rules, the digest pipeline and the help text.
+ *
+ * LINES and COLUMNS are set explicitly because zsh assigns LINES itself — 0
+ * when there is no terminal — so `--print-plan tty` would report "the window is
+ * under 12 rows" there and nowhere else, for a reason that is not the script's.
+ */
+const shellTmp = mkdtempSync(join(tmpdir(), 'stoke-install-shells-'))
+try {
+  const blob = join(shellTmp, 'blob.bin')
+  writeFileSync(blob, randomBytes(20_000))
+  const FLAGS: string[][] = [
+    ['--fire-frames', 'truecolor'],
+    ['--fire-frames', 'none'],
+    ['--print-plan', 'tty'],
+    ['--print-plan', 'pipe'],
+    ['--sha512', blob],
+    ['--help']
+  ]
+  const shellEnv = {
+    PATH: process.env.PATH ?? '/usr/bin:/bin',
+    TERM: 'xterm-256color',
+    COLORTERM: 'truecolor',
+    LINES: '40',
+    COLUMNS: '120'
+  }
+  const runFlag = (shell: string, flag: string[]): string =>
+    execFileSync(shell, [SH, ...flag], { encoding: 'utf8', env: shellEnv, stdio: ['ignore', 'pipe', 'pipe'] })
+  if (process.platform === 'win32' || !existsSync('/bin/sh')) {
+    console.log('  SKIP  needs a POSIX shell to run the script with.')
+  } else {
+    for (const shell of SHELLS) {
+      if (!existsSync(shell)) continue
+      for (const flag of FLAGS) {
+        const name = `${shell} runs ${flag[0]} ${flag[1]?.startsWith('/') ? '<file>' : (flag[1] ?? '')}`.trim()
+        let got = ''
+        let err = ''
+        try {
+          got = runFlag(shell, flag)
+        } catch (e) {
+          err = String((e as { stderr?: Buffer }).stderr ?? e).trim()
+        }
+        if (err) {
+          ok(name, false, err)
+          continue
+        }
+        const want = runFlag('/bin/sh', flag)
+        ok(`${name}, identically to /bin/sh`, got === want, `${JSON.stringify(got.slice(0, 120))} vs ${JSON.stringify(want.slice(0, 120))}`)
+      }
+    }
+  }
+} finally {
+  rmSync(shellTmp, { recursive: true, force: true })
 }
 /*
  * PowerShell cannot be parsed from here at all — there is no pwsh and no
@@ -574,10 +653,32 @@ check(`install.ps1's upgrade-detection GUID is the one electron-builder derives 
  */
 const SH_LINE = 'curl -fsSL https://stoke.vinn.dev | sh'
 const PS1_LINE = 'irm https://stoke.vinn.dev | iex'
+const readmeText = readFileSync(join(root, 'README.md'), 'utf8')
 ok('the landing page shows the sh one-liner', htmlText.includes(SH_LINE))
 ok('and the ps1 one', htmlText.includes(PS1_LINE))
 ok('install.sh sends a Windows user to exactly that ps1 line', shText.includes(`STOKE_PS1_LINE='${PS1_LINE}'`))
 ok('install.ps1 sends a macOS user to exactly that sh line', ps1Text.includes(`$StokeShLine = '${SH_LINE}'`))
+/*
+ * README is the fifth place the address is written and was the one nothing
+ * held: it is what a reader on GitHub copies, so a hostname that moved
+ * everywhere except there is a one-liner that points at nothing, with the repo
+ * looking correct. Same shape as gotchas 62 and 68 — a hand-kept copy of a
+ * value with no assertion over it.
+ */
+ok('README shows the same sh one-liner', readmeText.includes(SH_LINE))
+ok('and the same ps1 one', readmeText.includes(PS1_LINE))
+/*
+ * And no documented command may leave a glob character unquoted in a URL.
+ * `curl -fsSL https://stoke.vinn.dev?sh | sh` is the override the landing page
+ * offers to anyone behind a User-Agent-rewriting proxy — and `?` is a glob, so
+ * zsh, which is what a Mac terminal starts in, refuses it outright with `no
+ * matches found` and never runs curl at all. The one person following that
+ * instruction is the one person for whom nothing else works.
+ */
+const unquotedGlob = [...(htmlText + readmeText).matchAll(/(^|.)(https:\/\/stoke\.vinn\.dev[^\s<'"]*[?*][^\s<'"]*)/g)]
+  .filter((m) => m[1] !== "'" && m[1] !== '"')
+  .map((m) => m[2])
+check('every documented URL carrying a glob character is quoted, or zsh refuses it', unquotedGlob, [])
 const wrangler = readFileSync(join(root, 'wrangler.jsonc'), 'utf8')
 ok('the Worker is bound to stoke.vinn.dev as a custom domain', /"pattern":\s*"stoke\.vinn\.dev",\s*"custom_domain":\s*true/.test(wrangler))
 ok('and the landing page links to the readable script URLs', htmlText.includes('/install.sh') && htmlText.includes('/install.ps1'))

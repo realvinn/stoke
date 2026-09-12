@@ -31,6 +31,21 @@
 # ---------------------------------------------------------------------------
 set -eu
 
+# zsh does not split an unquoted parameter expansion on IFS unless it is asked
+# to, and three things here depend on that splitting: the flicker table built
+# below, the stage thresholds in `fire_stage_of`, and the painter's KEY:text
+# segments. Without this line `for fire_v in $FIRE_FLICKER` saw ONE word, so
+# `eval "FIRE_FLICK_0=0 1 2 1 0 2"` ran `1` as a command and the script died on
+# `command not found: 1` before it had done anything at all — under the shell
+# macOS makes the default, which is exactly where somebody types
+# `zsh install.sh` after reading it. `zsh -n` parses the file perfectly, which
+# is why a suite that only parsed could not see it; verify:install RUNS every
+# offline flag under all four shells now.
+#
+# `setopt sh_word_split` and nothing wider: `emulate sh` would also reset the
+# shell options to sh's defaults and take the `set -eu` above with it.
+if [ -n "${ZSH_VERSION:-}" ]; then setopt sh_word_split 2>/dev/null || true; fi
+
 STOKE_RELEASES='https://github.com/realvinn/stoke/releases'
 STOKE_LATEST_DL="$STOKE_RELEASES/latest/download"
 STOKE_PS1_LINE='irm https://stoke.vinn.dev | iex'
