@@ -463,6 +463,15 @@ npm run verify:installer-art  # the committed installer bitmaps: BMP3 headers de
                               # the four SVG sources name the same files and share one campfire,
                               # and — via build/installer-art.json — that every raster was
                               # generated from the SVG committed beside it
+npm run verify:install        # the one-line installer and the endpoint that serves it: the whole
+                              # User-Agent matrix through the Worker's routing rule (PowerShell
+                              # before anything browser-shaped, and HTML as the fallback), the
+                              # truncation guard as the LAST line of both scripts, `-n` under sh,
+                              # bash, dash and zsh, install.sh's own painter run and diffed
+                              # against campfire.ts's paint() in all four tiers, its degrade
+                              # rules against renderPlan's, the sha512-is-base64 digest run on
+                              # random bytes, and the NSIS upgrade GUID recomputed from
+                              # electron-builder.yml's appId
 npm run verify:selection      # Option-drag selection survives letting go of the mouse.
                               # Opens a real Electron window, so it needs a display
                               # and is one of the two `check` suites CI skips
@@ -628,7 +637,7 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     colour tiers and the segment encoding the shell draws from, and the
                     plain lines that replace all of it when the terminal cannot draw.
                     Nothing in the app imports it — the installers do, through
-                    gen-installer-art.mts. No imports at all, no RNG, no clock. Gotcha 67
+                    gen-installer-art.mts. No imports at all, no RNG, no clock. Gotcha 70
   notation.ts       reading and writing one colour as OKLCH/HSL/RGB/hex. Split out of the
                     component so a suite can reach it
   accent.ts         one accent in, five tokens out, per appearance. The reason
@@ -686,7 +695,7 @@ scripts/          the verify-*.mts suites, make-icon.cjs
   make-installer-art.cjs  rasterises build/'s four installer SVGs through Electron, as
                     make-icon.cjs does, plus a hand-written BMP3 encoder: canvas cannot
                     emit a BMP and NSIS shows only the 40-byte-header kind. Alpha is
-                    composited onto a per-asset solid, since BMP3 has none. Gotcha 67
+                    composited onto a per-asset solid, since BMP3 has none. Gotcha 69
   mac-signing-secrets.sh  puts the release signing certificate into GitHub secrets.
                     Exists because macOS 26 removed Keychain Access, so every
                     "export it from the GUI" recipe is now dead. Gotcha 24
@@ -704,4 +713,28 @@ scripts/          the verify-*.mts suites, make-icon.cjs
                     comes back
   cdp-eval.mjs      evaluates one expression in the renderer, or screenshots it.
                     Picks the target by its window.stoke object, never by URL
+install/          the one-line installer, and the page a browser gets instead
+  install.sh        macOS and Linux. Whole body inside main(), called on the LAST line,
+                    because `sh` executes a piped script as it reads it. Resolves the
+                    version from the release's own latest*.yml, verifies the sha512 —
+                    which is BASE64, not hex — burns the campfire while it downloads, and
+                    installs. `--print-plan`, `--fire-frames` and `--sha512` are offline
+                    debugging flags that verify:install runs the shipped code through.
+                    Gotcha 71
+  install.ps1       Windows, under PowerShell 5.1 and 7. Same shape, Install-Stoke on the
+                    last line. NEVER RUN: there is no PowerShell on this machine, so the
+                    file has not been parsed by one. Gotcha 71
+  index.html        what a browser gets from stoke.vinn.dev, and the fallback for anything
+                    the Worker could not identify. No frameworks, no fonts, Stoke's palette
+worker/           the Cloudflare Worker behind stoke.vinn.dev
+  route.ts          which of the three bodies a request gets, and why. Pure and import-free
+                    so verify:install can run the whole User-Agent matrix through it — the
+                    PowerShell test must come before anything browser-shaped, because
+                    PowerShell's own User-Agent starts `Mozilla/5.0`. Gotcha 71
+  index.ts          content negotiation and nothing else. The three bodies are EMBEDDED at
+                    deploy time from install/, never fetched at request time, and the
+                    Worker never learns what the current release is — the scripts resolve
+                    that themselves, so cutting a release needs no deploy
+wrangler.jsonc    deployed by hand: `npx wrangler login`, then `npm run deploy:install`.
+                    A custom domain, so Cloudflare makes the DNS record and the certificate
 ```
