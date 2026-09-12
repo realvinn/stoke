@@ -576,7 +576,7 @@ const carriers = filesWithSentinel(root)
 if (carriers.length === 0) {
   console.log(
     '  SKIP  no file carries the sentinel yet. The installer scripts are a later stream;\n' +
-      `        when installer/install.sh and installer/install.ps1 land with a ${BEGIN_MARK}\n` +
+      `        when install/install.sh and install/install.ps1 land with a ${BEGIN_MARK}\n` +
       '        block pasted from `node scripts/gen-installer-art.mts`, this compares them.'
   )
 } else {
@@ -587,7 +587,7 @@ if (carriers.length === 0) {
     ok(`${rel} carries the generator's block byte for byte`, got === want, got === null ? 'no sentinel pair' : 'regenerate it: node scripts/gen-installer-art.mts ' + (file.endsWith('.ps1') ? 'ps1' : 'sh'))
   }
 }
-for (const named of ['installer/install.sh', 'installer/install.ps1']) {
+for (const named of ['install/install.sh', 'install/install.ps1']) {
   const path = join(root, named)
   if (existsSync(path) && !readFileSync(path, 'utf8').includes(BEGIN_MARK)) {
     ok(`${named} carries the generated block rather than hand-written art`, false, `add the ${BEGIN_MARK} block`)

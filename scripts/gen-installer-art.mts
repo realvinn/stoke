@@ -1,8 +1,8 @@
 /*
  * Print the campfire art block the installers carry, from src/shared/campfire.ts.
  *
- *   node scripts/gen-installer-art.mts sh    > the block for installer/install.sh
- *   node scripts/gen-installer-art.mts ps1   > the block for installer/install.ps1
+ *   node scripts/gen-installer-art.mts sh    > the block for install/install.sh
+ *   node scripts/gen-installer-art.mts ps1   > the block for install/install.ps1
  *   node scripts/gen-installer-art.mts --all
  *
  * Same arrangement as scripts/gen-themes.mts and verify:theme-gen (gotcha 43):
