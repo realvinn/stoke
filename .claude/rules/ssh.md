@@ -1,6 +1,10 @@
 ---
 paths:
   - "src/main/ssh.ts"
+  - "src/main/sshEnroll.ts"
+  - "src/shared/sshAuth.ts"
+  - "scripts/verify-ssh-enroll.mts"
+  - "src/renderer/src/components/SshKeyPrompt.tsx"
   - "src/main/sshTranscript.ts"
   - "src/main/pty.ts"
   - "src/main/remote/server.ts"
@@ -89,3 +93,71 @@ menu's `Copy screen` takes the viewport rather than the buffer.
 > - This is fixed, but the entry never says so, and its present-tense heading reads like an open bug. src/main/ssh.ts:376 pushes `-e none` on every SSH argv, ahead of `-t`, `--` and the alias. buildSshArgs is the only argv an SSH tab gets (src/main/pty.ts:219-221). scripts/verify-ssh.mts:167-244 pins it, including that `-e none` comes before the destination (:180-198).
 > - This is not open. src/renderer/src/components/TerminalView.tsx:321-335 registers `term.parser.registerOscHandler(52, …)`. Writes go to `window.stoke.clipboard.writeText`, capped at `MAX_OSC52_BASE64` = 200,000 base64 characters (:32). A payload with no `;`, an empty payload, a `?` read and an oversized payload are all swallowed. The entry's own next sentence says the same thing, so calling it 'still open' contradicts itself.
 > - The TERM assignment has moved. `env.TERM = 'xterm-256color'` is now src/main/pty.ts:259, and node-pty's `name: 'xterm-256color'` is :284.
+
+## 75. A password prompt is recognised by what FOLLOWS it, not by the word "password"
+
+**Every naive way to detect "ssh is asking for a password" also detects something the user is about
+to type a different secret into.** The list is longer than it looks, and each entry is a real thing
+that appears in a real terminal:
+
+```
+[sudo] password for v:                          a local sudo — a DIFFERENT password
+Password for 'https://v@github.com':            git's credential helper — a TOKEN
+Enter passphrase for key '/home/v/.ssh/id_...': ssh's OWN key prompt — the user already has a key
+Do not share your password with anyone.         a server Banner, sent pre-auth by a machine we
+                                                do not control, inside the detection window
+```
+
+A substring search for `password` matches all four. So does almost any regex with a free-form
+`for <something>` clause, which is why that clause is absent from the PAM pattern in
+`src/shared/sshAuth.ts` even though real PAM prompts sometimes have one — a pattern loose enough to
+admit `Enter your LDAP password:` is loose enough to admit `[sudo] password for v:`. The miss is a
+false negative and costs one unoffered key; the match costs a dialog offered while someone types a
+production credential.
+
+**The load-bearing rule is the tail anchor, and it is structural rather than lexical.** A prompt is
+written *without a trailing newline*, because the program is about to block on the tty. So only the
+text after the last line break can be a prompt. A banner line ends in `\n` and therefore can never
+be one, whatever it says — which is the only defence against the banner case, since gates on
+transport and byte budget both pass for it. The prompt patterns themselves are full matches taken
+from the strings in the shipped `ssh` binary (`%s@%s's password:`, `Enter %.30s@%.128s's old
+password:`, and the two others), not from memory.
+
+Three more gates, each closing a case the shape rules cannot:
+
+- **Transport.** Only a session launched with `opts.host` is scanned at all (`pty.ts`:
+  `sshAuth: opts.host ? newSshAuthScan() : null`). One ternary excludes every local sudo, every
+  local credential helper and every "password" the CLI itself prints, with no pattern matching
+  whatsoever. Do not be tempted to widen it.
+- **An escape byte closes the window permanently.** ssh's pre-auth output is plain ASCII with no
+  `0x1b` in it at all (measured), so the first escape means something else is painting — `claude`,
+  `tmux` and `byobu` all emit one in their first frame. Checked before the detector within a chunk,
+  not after, so a chunk carrying both reports nothing: the safe answer to an ambiguous order is the
+  quiet one.
+- **Fired is one-way.** ssh asks three times by default (`numberofpasswordprompts 3`) and the
+  enrollment PTY has `sshAuth: null` — without both, one connection produces three offers and the
+  enrollment's own prompt produces an infinite loop.
+
+**The parsed `user@host` is display-only and must stay that way.** It is text the far end sent.
+Enrollment builds its argv from `SshHost.alias` — the same string the session that prompted was
+built from — so a hostile server cannot redirect a key to a machine of its choosing. The parsed
+value is shown precisely so a mismatch through a `ProxyJump` is visible to the user.
+
+**`ssh-copy-id` exiting 0 is not evidence that anything works.** `PubkeyAuthentication no`, an
+`AuthorizedKeysFile` pointing elsewhere, and a group-writable home directory each produce a happy
+install and a server that still asks for a password. Only `buildPubkeyProbeArgs` — a real
+connection with `BatchMode=yes`, which cannot prompt — may set `keyEnrolled`. This is CLAUDE.md's
+"never print a diagnosis the tool can disprove" applied to a success message.
+
+**Quoting: refuse, never escape.** `ssh-copy-id` sends the key on stdin (`cat >> authorized_keys`)
+where it cannot be shell. The no-`ssh-copy-id` fallback has to embed it, so `isSafePublicKeyLine`
+is a character whitelist and `buildRemoteInstallCommand` returns null rather than quoting anything
+— the same rule `SAFE_ID` already applies to session ids. `isEnrollableAlias` is stricter than
+`isConnectableAlias` for a specific reason: `buildSshArgs` can cope with a leading dash by emitting
+`--`, and `ssh-copy-id` has no `--` in its usage line, so there an alias that looks like an option
+becomes one.
+
+**Gotcha 29 survives here in a different spelling.** The user types a password into the enrollment
+PTY, so a `~` after a newline is still an ssh escape — but `ssh-copy-id` is a wrapper with no `-e`
+flag. `-o EscapeChar=none` is the `ssh_config` form of the same setting; `ssh -G -o EscapeChar=none`
+reports `escapechar none`.

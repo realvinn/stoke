@@ -265,6 +265,10 @@ rule file named on the group line.
 - **29.** Keep `-e none` before the destination in `buildSshArgs` or a `~` after a pasted newline
   is an ssh escape (`~.` hangs up); honour OSC 52 writes but refuse the `?` read, or any printed
   text can read the clipboard.
+- **75.** Detect an ssh password prompt by the TAIL — a prompt has no trailing newline, so a server
+  banner can never be one — plus `opts.host`, an escape byte closing the window, and fire-once
+  (`sshAuthStep`). The parsed `user@host` is display-only; enroll against `SshHost.alias`, and only
+  a `BatchMode` probe may set `keyEnrolled`.
 
 **Phone access** — `.claude/rules/phone.md`
 - **53.** Draw no QR for `connectTarget`'s `loopback` reach, mint the key only in start paths
