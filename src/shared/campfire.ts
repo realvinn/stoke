@@ -24,7 +24,7 @@
  * up a line per tick and smear the fire up the screen. Short stages are padded
  * with EMPTY rows, never shortened.
  */
-export const CANVAS = { rows: 7, cols: 15 } as const
+export const CANVAS = { rows: 7, cols: 17 } as const
 
 /**
  * The last two rows of every frame, byte-identical in all twelve. A fire that
@@ -33,7 +33,7 @@ export const CANVAS = { rows: 7, cols: 15 } as const
  * cannot show. It is stored ONCE and appended by `frameFor`, so no frame can
  * disagree with another about it by construction.
  */
-export const HEARTH: readonly [string, string] = ['\\__/\\_/_\\_/\\__/', '.-.,_______,.-.']
+export const HEARTH: readonly [string, string] = ['  (===========)', '(====)~~~~(=====)']
 
 /** Rows 0-4 of a frame are flame; 5 and 6 are the hearth. */
 export const FLAME_ROWS = 5
@@ -63,7 +63,7 @@ export type StageName = 'spark' | 'kindling' | 'burning' | 'roaring'
  * `*` is a glob character and is safe only because every expansion is quoted
  * and everything is printed with `printf '%s'`.
  */
-export const ALPHABET = ' ()/\\_-.,*#=^'
+export const ALPHABET = ' ()/\\_-.,*#=^~+'
 
 /** True when every character of `text` is in the alphabet above. */
 export function inAlphabet(text: string): boolean {
@@ -80,33 +80,33 @@ export const STAGES: readonly { name: StageName; frames: readonly (readonly stri
   {
     name: 'spark',
     frames: [
-      ['', '', '', '       .', '      (*)'],
-      ['', '', '', '         ^', '      (,)'],
-      ['', '', '', '     ,', '      (.)']
+      ['', '', '        .', '        ^', '       /#\\'],
+      ['', '', '          ,', '         ^', '       /#\\'],
+      ['', '', '      .', '       ^', '       /#\\']
     ]
   },
   {
     name: 'kindling',
     frames: [
-      ['', '', '       .', '      ( )', '     (###)'],
-      ['', '', '        ^', '      ) (', '     (#=#)'],
-      ['', '', '      ,', '      ( )', '     (#*#)']
+      ['', '        .', '       /^\\', '      /+#+\\', '     _/###\\_'],
+      ['', '          ,', '        /^/', '      /+#+\\', '     _/###\\_'],
+      ['', '      *', '      \\^\\', '      /+#+\\', '     _/###\\_']
     ]
   },
   {
     name: 'burning',
     frames: [
-      ['', '      . ^', '     ) ( )', '    ( (#) )', '   ( (###) )'],
-      ['', '     ^  .', '     ( ) (', '    ) (#) (', '   ( (###) )'],
-      ['', '       * .', '     ( ) )', '    ( (#) )', '   (_(###)_)']
+      ['           *', '         /^\\', '     /+\\ /++\\', '    /+#\\/##+\\', '   _/+#####+\\_'],
+      ['             ,', '          /^/', '      /+/ /++/', '    /+#\\/##+\\', '   _/+#####+\\_'],
+      ['       .', '        \\^\\', '    \\+\\ \\++\\', '    /+#\\/##+\\', '   _/+#####+\\_']
     ]
   },
   {
     name: 'roaring',
     frames: [
-      ['   .   *   .', '    \\ ) ( /', '   ( )(#)( )', '  ( ((###)) )', ' (_((#####))_)'],
-      ['  *   .    ^', '   ( \\ ) (/)', '  ( )( # )( )', '  ( ((###)) )', ' (_((#####))_)'],
-      ['   ^  .  *  .', '    ) ( \\ /', '   ( )(#)( )', '  ( ((###)) )', ' (_((#####))_)']
+      ['    *     ^  .', '     /^\\ /~~\\', '    /++\\/++++\\', '   /+##\\/###+\\', ' _/+#########+\\_'],
+      ['     ,      ^   *', '      /^/ /~~/', '     /++//++++/', '   /+##\\/###+\\', ' _/+#########+\\_'],
+      ['  *      ^   ,', '    \\^\\ \\~~\\', '   \\++\\\\++++\\', '   /+##\\/###+\\', ' _/+#########+\\_']
     ]
   }
 ]

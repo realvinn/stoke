@@ -110,7 +110,24 @@ ok(
   FRAMES.every((f) => f[5] === HEARTH[0] && f[6] === HEARTH[1]),
   JSON.stringify(FRAMES.map((f) => f.slice(5)).filter((h) => h[0] !== HEARTH[0] || h[1] !== HEARTH[1]))
 )
-check('both hearth rows are the full width', HEARTH.map((r) => r.length), [CANVAS.cols, CANVAS.cols])
+/*
+ * CANVAS.cols is the WIDEST row, not a width every row is padded to. The draw
+ * loop emits ESC[K per row, so a short row clears to the end of the line by
+ * itself and trailing spaces would be bytes shipped for nothing — which is
+ * also why the flame rows are stored right-trimmed. Asserted from both sides
+ * so `cols` can be neither too small (a row would wrap, and a wrapped row
+ * walks the cursor and smears every frame after it) nor quietly too large.
+ */
+{
+  const widths = [...FRAMES.flatMap((f) => f.map((r) => r.length)), ...HEARTH.map((r) => r.length)]
+  ok(
+    `no row is wider than CANVAS.cols (${CANVAS.cols})`,
+    widths.every((w) => w <= CANVAS.cols),
+    `widest is ${Math.max(...widths)}`
+  )
+  ok('and at least one row is exactly that wide', widths.includes(CANVAS.cols))
+  ok('no row carries trailing spaces', [...FRAMES.flat(), ...HEARTH].every((r) => r === r.trimEnd()))
+}
 
 console.log('\nthe alphabet, which is a quoting contract')
 /*
@@ -136,7 +153,20 @@ ok(
   'nothing above 0x7E: the base art is pure ASCII, so a cp437 console cannot mojibake it',
   [...artText].every((c) => c.charCodeAt(0) >= 0x20 && c.charCodeAt(0) <= 0x7e)
 )
-check('the alphabet itself has not grown', ALPHABET, ' ()/\\_-.,*#=^')
+/*
+ * Pinned, so widening it is a deliberate edit with this comment in the diff
+ * rather than something that happens by accident while drawing.
+ *
+ * `~` and `+` were added for the v0.9.6 fire: the previous art had only `( )`
+ * to build a flame out of and read as loose parentheses rather than as fire.
+ * Both are inert in every context this art passes through — a POSIX
+ * single-quoted string, a PowerShell single-quoted here-string, and `printf
+ * '%s'` — and neither is a delimiter of the segment encoding. Anything further
+ * needs the same check: the two that look harmless and are NOT are `|` and
+ * `:`, which are the encoding's own delimiters and would corrupt the data
+ * rather than the picture.
+ */
+check('the alphabet itself has not grown', ALPHABET, ' ()/\\_-.,*#=^~+')
 
 console.log('\nstage boundaries, from both sides')
 check('nothing downloaded yet is already a spark', stageFor(0), 'spark')
@@ -204,9 +234,9 @@ console.log('\nwhich glyph gets which colour')
  */
 check('a core glyph is white-hot even on the bottom flame row', colorFor('#', 4), 'C')
 check('and at the top', colorFor('*', 0), 'C')
-check('the lone ember at spark stage is a core inside a base ring', frameFor(0, 0)[4], '      (*)')
-check('  its centre', colorFor('*', 4), 'C')
-check('  its ring', colorFor('(', 4), 'B')
+check('the lone ember at spark stage is a core inside a base wedge', frameFor(0, 0)[4], '       /#\\')
+check('  its centre', colorFor('#', 4), 'C')
+check('  its wedge', colorFor('/', 4), 'B')
 check('a spark glyph is a spark wherever it is', colorFor('^', 4), 'S')
 check('an ordinary glyph takes its row colour, high', colorFor('(', 1), 'S')
 check('  middle', colorFor('(', 2), 'M')
@@ -435,10 +465,14 @@ console.log('\nthe golden sheet')
  * `node scripts/campfire-demo.mts --sweep --mode=<tier>` and look at it.
  */
 const GOLDEN: Record<ColorMode, string> = {
-  truecolor: '5de6f23a6bfb8292ac3408bcbfc1c93aa03fffddebb221a892dea6783deda733',
-  ansi256: '1597644b13381254cff867ba562c205d182be71675449cb856980489fd70b393',
-  ansi16: '4372b3f297520dd366dcacc624886cdc2bdcadd4601b45772e0061a2634d7763',
-  none: '2825b429ec3cde4a41b3d0c296f5487e642184ffd8bccbc4883b3d1c3f7dace1'
+  // Re-cut for the v0.9.6 fire. Looked at with
+  // `node scripts/campfire-demo.mts --sweep --mode=none` first, as the note
+  // above says to, rather than pasted from the failure output — a golden hash
+  // updated without looking is a golden hash that pins whatever broke.
+  truecolor: '47b0483a5dc8c0dec1b173d00187ef36cf855afb04860fbad14b030125a48c46',
+  ansi256: '3ced726869fa2529e2251ada94b5cd74cb5d8d188f5aa8bc5613de600e333231',
+  ansi16: '45288e6dfd17f61db5c8503a6739ca34eb74b3fce3a99e16019f69c0dbbd2e18',
+  none: '3d0004a699949c4d00454cdc9b32a846d1fb25a0640ed9fd1d647c713d352e9e'
 }
 for (const mode of MODES) {
   const sheet = FRAMES.map((f) => paint(f, mode)).join('\n--\n')
