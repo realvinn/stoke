@@ -744,5 +744,72 @@ for (const [body, file] of [
   ok(`the Worker embeds ${file} for the ${body} body`, workerText.includes(`'${file}'`))
 }
 
+console.log('\nwhat the script makes of a machine it is not running on')
+/*
+ * The environment decisions — platform, arch, and whether this box is about to
+ * be handed a build that cannot start — are the least testable code in the
+ * installer and the most consequential: they read `uname` and `id`, so on any
+ * one machine five of the six branches are unreachable, and the Linux ones had
+ * never executed at all until v0.9.5 shipped a Linux build.
+ *
+ * So the SHIPPED script is run with `uname` and `id` shimmed onto the front of
+ * PATH. `--preflight` resolves nothing and downloads nothing, which is what
+ * makes this affordable in a suite; the same shim trick with STOKE_DRY_RUN=1
+ * is how the full resolve/verify path gets exercised by hand (gotcha 71).
+ *
+ * The root case is not hypothetical. Electron aborts hard on Linux as root —
+ * "Running as root without --no-sandbox is not supported", a FATAL inside
+ * Chromium's startup that no JavaScript of ours can catch — and the installer
+ * cheerfully installed into /root and said "installed" right up until 0.9.5.
+ */
+{
+  const shimDir = mkdtempSync(join(tmpdir(), 'stoke-preflight-'))
+  const shim = (name: string, body: string): void => {
+    const f = join(shimDir, name)
+    writeFileSync(f, body, { mode: 0o755 })
+  }
+  const preflight = (os: string, machine: string, uid: string): Record<string, string> => {
+    shim('uname', `#!/bin/sh\ncase "$1" in\n  -s) echo ${os} ;;\n  -m) echo ${machine} ;;\n  *) echo ${os} ;;\nesac\n`)
+    shim('id', `#!/bin/sh\ncase "$1" in\n  -u) echo ${uid} ;;\n  *) echo "uid=${uid}" ;;\nesac\n`)
+    const out = execFileSync('/bin/sh', [SH, '--preflight'], {
+      encoding: 'utf8',
+      env: { PATH: `${shimDir}:${process.env.PATH ?? '/usr/bin:/bin'}` }
+    })
+    const map: Record<string, string> = {}
+    for (const line of out.split('\n')) {
+      const m = /^([a-z_]+)=(.*)$/.exec(line)
+      if (m) map[m[1]] = m[2]
+    }
+    return map
+  }
+
+  try {
+    check(
+      'a normal user on x86-64 Linux gets the linux x64 build and no warning',
+      preflight('Linux', 'x86_64', '1000'),
+      { arch: 'x64', platform: 'linux', root: 'no', root_warning: 'no' }
+    )
+    check(
+      'ROOT on Linux is warned: Electron aborts there and the app cannot catch it',
+      preflight('Linux', 'x86_64', '0').root_warning,
+      'yes'
+    )
+    check(
+      'root on macOS is NOT warned — crbug.com/638180 is a Linux-only refusal',
+      preflight('Darwin', 'arm64', '0'),
+      { arch: 'arm64', platform: 'mac', root: 'yes', root_warning: 'no' }
+    )
+    check('aarch64 Linux resolves arm64', preflight('Linux', 'aarch64', '1000').arch, 'arm64')
+    check('amd64 is x64', preflight('Linux', 'amd64', '1000').arch, 'x64')
+    check('a Mac reports mac arm64', preflight('Darwin', 'arm64', '501').platform, 'mac')
+    check('an Intel Mac reports x64', preflight('Darwin', 'x86_64', '501').arch, 'x64')
+    check('MINGW is recognised as Windows, not as unsupported', preflight('MINGW64_NT-10.0', 'x86_64', '1000').platform, 'windows')
+    check('a CPU with no build says so rather than guessing', preflight('Linux', 'riscv64', '1000').arch, 'unsupported')
+    check('and so does an OS with no build', preflight('FreeBSD', 'x86_64', '1000').platform, 'unsupported')
+  } finally {
+    rmSync(shimDir, { recursive: true, force: true })
+  }
+}
+
 console.log(failures ? `\n${failures} FAILED` : '\nall pass')
 process.exitCode = failures ? 1 : 0

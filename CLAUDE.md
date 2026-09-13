@@ -177,6 +177,9 @@ rule file named on the group line.
   `gen-installer-art.mts` — an `'` ends a POSIX string, `@` a PowerShell here-string, and bash
   3.2 cannot parse a heredoc of unbalanced parens inside `$()`. Never the alternate screen;
   `NO_COLOR` takes the colour, not the motion.
+- **76.** Electron `LOG(FATAL)`s as root on Linux before any JS runs, so only `install.sh` can warn
+  — and it cannot wrap, since the AppImage must BE `~/.local/bin/stoke` for in-place self-update.
+  Keep `--preflight`, which is how `verify:install` shims `uname`/`id` and covers all six branches.
 - **71.** Assert every input the installer trusts: a manifest's `sha512` is BASE64 (hex never
   matches), a bot challenge is HTML with status **200** that `curl -f` passes, PowerShell's UA
   starts `Mozilla/5.0` so `routeFor` tests it first and falls back to HTML, and an x64 AppImage

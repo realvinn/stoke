@@ -249,6 +249,47 @@ blank() { printf '\n'; }
 # A two-column line, so the transcript of an install reads as a table.
 note() { printf '  %-11s %s\n' "$1" "$2"; }
 
+# Am I root? Used only to warn — never to decide where to install, which is
+# always $HOME and is therefore already correct for whoever is running this.
+is_root() { [ "$(id -u 2>/dev/null || echo 1)" = 0 ]; }
+
+# Electron REFUSES to start as root on Linux.
+#
+#   [FATAL:electron_main_delegate.cc] Running as root without --no-sandbox is
+#   not supported. See https://crbug.com/638180.
+#   Trace/breakpoint trap (core dumped)
+#
+# That is a hard abort inside Chromium's own startup, long before any of
+# Stoke's JavaScript runs, so the app cannot catch it, explain it, or add the
+# flag for itself. The check is Linux-only (crbug.com/638180 is a Linux bug).
+#
+# The installer cannot fix it either — the AppImage has to BE ~/.local/bin/stoke
+# for electron-updater to replace it in place, so there is nowhere to put a
+# wrapper script that would notice. What it CAN do is refuse to promise
+# something that will not work: warning here costs one paragraph, and not
+# warning costs a core dump with a Chromium bug number in it.
+root_warning() {
+  blank
+  say '  Careful: you are root.'
+  blank
+  say '  Electron will not start as root without --no-sandbox, and it aborts hard'
+  say '  rather than explaining itself. Two ways out, best first:'
+  blank
+  say '    1. Install and run as your normal user. Re-run this as them, not with'
+  say '       sudo — everything goes under their $HOME, nothing needs root.'
+  blank
+  say '    2. If this machine only has root (a container, or a VPS you never made'
+  say '       a user on), launch it with the sandbox off:'
+  blank
+  say '           stoke --no-sandbox'
+  blank
+  say '       Understand what that costs: Stoke embeds a browser and runs CLI'
+  say '       processes with your permissions. As root with no sandbox, anything'
+  say '       a page can do, it does as root.'
+  blank
+  say "  Installing anyway, into root's own $HOME."
+}
+
 die() {
   fire_cleanup
   blank >&2
@@ -273,6 +314,8 @@ stoke installer
   --print-plan [tty|pipe]  what the fire would do in this environment.
   --fire-frames TIER  the twelve frames as they would be painted.
                       TIER is truecolor, ansi256, ansi16 or none.
+  --preflight         what this script makes of THIS machine. Resolves nothing,
+                      downloads nothing, writes nothing.
   --sha512 FILE       a file's sha512 in the base64 form the release manifests
                       use, so a download can be checked against one by hand.
 
@@ -986,6 +1029,9 @@ DESKTOP
 
   clear_pending "${XDG_CACHE_HOME:-$HOME/.cache}/stoke-updater/pending"
   note 'installed' "$lin_bin"
+  # Said again at the end, because the warning above is now several screens and
+  # a campfire ago, and this is the line the user is about to type.
+  if is_root; then note 'run it with' 'stoke --no-sandbox   (you are root — see above)'; fi
 
   case ":${PATH}:" in
     *":$HOME/.local/bin:"*) : ;;
@@ -1027,6 +1073,46 @@ do_print_plan() {
   printf 'reason=%s\n' "$FIRE_WHY"
 }
 
+# `--preflight`: every decision this script makes about the MACHINE, printed,
+# with nothing resolved, downloaded or written.
+#
+# It exists because those decisions are the least testable code here and the
+# most likely to be wrong: they read `uname` and `id`, so on any one machine
+# five of the six branches are unreachable. `verify:install` runs the SHIPPED
+# script under `uname`/`id` shims and asserts this output, which is how the
+# Linux and root branches get covered from a Mac. It is also a straight answer
+# to "what would this do on my box?" without spending 120 MB to find out.
+#
+# One `key=value` per line, sorted and machine-readable, because a suite
+# asserting on prose is a suite that fails when the prose improves.
+do_preflight() {
+  pf_os=$(uname -s 2>/dev/null || echo unknown)
+  pf_machine=$(uname -m 2>/dev/null || echo unknown)
+  pf_platform=unsupported
+  case "$pf_os" in
+    Darwin) pf_platform=mac ;;
+    Linux) pf_platform=linux ;;
+    MINGW* | MSYS* | CYGWIN* | Windows_NT) pf_platform=windows ;;
+  esac
+  pf_arch=unsupported
+  case "$pf_machine" in
+    arm64 | aarch64) pf_arch=arm64 ;;
+    x86_64 | amd64) pf_arch=x64 ;;
+  esac
+  if is_root; then pf_root=yes; else pf_root=no; fi
+  # The one derived answer, and the point of the whole flag: whether this
+  # machine is about to be handed a build that cannot start (see root_warning).
+  if [ "$pf_platform" = linux ] && [ "$pf_root" = yes ]; then
+    pf_warn=yes
+  else
+    pf_warn=no
+  fi
+  say "arch=$pf_arch"
+  say "platform=$pf_platform"
+  say "root=$pf_root"
+  say "root_warning=$pf_warn"
+}
+
 # `--fire-frames TIER`: the twelve frames, painted, seven lines each and nothing
 # else — so `--fire-frames none` is a file with no escape byte in it, and the
 # other three can be diffed against campfire.ts's own `paint()`.
@@ -1057,6 +1143,10 @@ main() {
       ;;
     --fire-frames)
       do_fire_frames "${2:-}"
+      return 0
+      ;;
+    --preflight)
+      do_preflight
       return 0
       ;;
     --sha512)
@@ -1111,6 +1201,10 @@ main() {
       ARCH=arm64
     fi
   fi
+
+  # Before the download, not after: 120 MB is a long time to spend on a copy
+  # that cannot start, and this is the last moment interrupting is free.
+  if [ "$PLATFORM" = linux ] && is_root; then root_warning; fi
 
   if [ -t 1 ]; then fire_plan tty; else fire_plan pipe; fi
   # The frame interval comes from the art block (FIRE_MS), so the shell and

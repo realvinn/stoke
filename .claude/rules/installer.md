@@ -418,3 +418,41 @@ with.
 > base64 ending `==`. No bot challenge appeared for a plain `curl` UA, so Bot Fight Mode is not
 > currently interstitialling the hostname — that remains worth re-checking, since a challenge is
 > HTML with status 200 that `curl -f` passes (71).
+
+## 76. Electron refuses to start as root on Linux, and nothing in the app can catch it
+
+**A Linux user running Stoke as root gets this and nothing else:**
+
+```
+[FATAL:electron/shell/app/electron_main_delegate.cc:224] Running as root without
+--no-sandbox is not supported. See https://crbug.com/638180.
+Trace/breakpoint trap (core dumped)
+```
+
+It is a `LOG(FATAL)` inside Chromium's own startup, long before the main process's JavaScript is
+loaded, so there is no hook, no `app.on('ready')`, no try/catch and no "friendly error dialog"
+available. Do not go looking for one. The check is Linux-only — crbug.com/638180 is a Linux bug,
+and root on macOS starts normally — which is exactly why it survived every round of development
+here.
+
+**The installer cannot wrap its way out of it either**, and the reason is worth writing down
+because a wrapper script is the obvious first idea. The AppImage has to BE `~/.local/bin/stoke`:
+electron-updater's `AppImageUpdater` overwrites the running AppImage in place only when the
+existing name carries no `<n>.<n>.<n>`, and if a wrapper occupied that path the updater would
+replace the wrapper with an AppImage or write beside it and leave everything on PATH pointing at
+a stale binary. Moving the AppImage elsewhere to make room is a change to the one self-update path
+on the one platform no release has ever been updated on.
+
+So what is left is honesty, and that is `install.sh`'s job: **warn before the download**, when
+interrupting is still free, and say the two ways out in order — install as a normal user, or
+`stoke --no-sandbox` with a plain sentence about what the sandbox was for. Up to v0.9.5 the
+installer wrote into `/root/.local/bin`, printed `installed`, and left the user to discover a core
+dump with a Chromium bug number in it.
+
+**`--preflight` exists for this.** Every decision the script makes about the machine — platform,
+arch, root, and whether the warning fires — printed as `key=value`, resolving nothing and
+downloading nothing. It is what lets `verify:install` shim `uname` and `id` onto the front of PATH
+and assert all six branches from a Mac, including the two Linux ones that no machine here can
+reach. Breaking the root condition turns exactly one assertion red (measured). The rule from
+gotcha 74 applies to shell as well as to TypeScript: code that reads the real environment needs a
+way to be asked about a different one, or five of its six branches are untestable everywhere.
