@@ -373,7 +373,7 @@ delete the comment.
 > Management refusal behind it, and `osascript -e 'quit app "Stoke"'` against a running copy
 > (which will also raise a TCC prompt the first time, from whatever terminal ran the one-liner).
 
-## 76. Cloudflare attaches a custom domain long before it publishes the DNS record
+## 77. Cloudflare attaches a custom domain long before it publishes the DNS record
 
 `npm run deploy:install` printed `Deployed stoke-install triggers / stoke.vinn.dev (custom
 domain)` and `GET /accounts/{id}/workers/domains` listed the hostname as `enabled: true` with a
@@ -435,19 +435,29 @@ available. Do not go looking for one. The check is Linux-only — crbug.com/6381
 and root on macOS starts normally — which is exactly why it survived every round of development
 here.
 
-**The installer cannot wrap its way out of it either**, and the reason is worth writing down
-because a wrapper script is the obvious first idea. The AppImage has to BE `~/.local/bin/stoke`:
-electron-updater's `AppImageUpdater` overwrites the running AppImage in place only when the
-existing name carries no `<n>.<n>.<n>`, and if a wrapper occupied that path the updater would
-replace the wrapper with an AppImage or write beside it and leave everything on PATH pointing at
-a stale binary. Moving the AppImage elsewhere to make room is a change to the one self-update path
-on the one platform no release has ever been updated on.
+**A wrapper IS the fix, and `~/.local/bin/stoke` is now that wrapper** — `linux_wrapper` writes
+it, the AppImage sits beside it at `stoke.AppImage`, and as root the wrapper prints one line about
+the cost and execs with `--no-sandbox`. Non-root pays one `id -u` and nothing else.
 
-So what is left is honesty, and that is `install.sh`'s job: **warn before the download**, when
-interrupting is still free, and say the two ways out in order — install as a normal user, or
-`stoke --no-sandbox` with a plain sentence about what the sandbox was for. Up to v0.9.5 the
-installer wrote into `/root/.local/bin`, printed `installed`, and left the user to discover a core
-dump with a Chromium bug number in it.
+**Do not expect `AppRun` to have handled this.** It looks like it does: it adds `--no-sandbox` when
+`unshare -Ur true` fails. As root that probe SUCCEEDS, and its own generated comment says so —
+"when running as root, this check will always succeed ... this probe is mostly a no-op in that
+scenario". Root is the one case the sandbox-detecting launcher does not detect.
+
+`install.sh` still **warns before the download**, when interrupting is still free, because a root
+install is a real choice rather than a typo — but it now warns about what running as root costs,
+not about a build that cannot start. Up to v0.9.5 it wrote into `/root/.local/bin`, printed
+`installed`, and left the user to find a core dump with a Chromium bug number in it.
+
+> **Checked against the code on 2026-09-13.** This entry used to say the installer "cannot wrap its
+> way out of it", because the AppImage had to BE `~/.local/bin/stoke` for in-place self-update.
+> That was wrong, and it blocked the fix for a release. `node_modules/electron-updater/out/
+> AppImageUpdater.js` reads `process.env["APPIMAGE"]` at lines 18, 38 and 73 and reads `execPath`,
+> `argv` and `PATH` nowhere; the in-place decision is `path.basename(installerPath) ===
+> existingBaseName || !/\d+\.\d+\.\d+/.test(existingBaseName)`. The constraint is a version-free
+> BASENAME, at whatever path the runtime sets `$APPIMAGE` to — not a location on PATH. The updater
+> cannot see a wrapper, so a wrapper on PATH is free. `verify:install` now RUNS the shipped
+> wrapper, both branches, with `id` shimmed for the root one.
 
 **`--preflight` exists for this.** Every decision the script makes about the machine — platform,
 arch, root, and whether the warning fires — printed as `key=value`, resolving nothing and

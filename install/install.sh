@@ -28,6 +28,7 @@
 #     sh install.sh --print-plan [tty|pipe]   what the fire would do here
 #     sh install.sh --fire-frames <tier>      the twelve frames, painted
 #     sh install.sh --sha512 <file>           the manifest's own digest form
+#     sh install.sh --print-wrapper            the Linux launcher, as installed
 # ---------------------------------------------------------------------------
 set -eu
 
@@ -263,29 +264,35 @@ is_root() { [ "$(id -u 2>/dev/null || echo 1)" = 0 ]; }
 # Stoke's JavaScript runs, so the app cannot catch it, explain it, or add the
 # flag for itself. The check is Linux-only (crbug.com/638180 is a Linux bug).
 #
-# The installer cannot fix it either — the AppImage has to BE ~/.local/bin/stoke
-# for electron-updater to replace it in place, so there is nowhere to put a
-# wrapper script that would notice. What it CAN do is refuse to promise
-# something that will not work: warning here costs one paragraph, and not
-# warning costs a core dump with a Chromium bug number in it.
+# The AppImage's own AppRun looks like it handles this and does not: it adds
+# --no-sandbox when `unshare -Ur true` FAILS, and as root that probe succeeds.
+# Its own generated comment says so — "when running as root, this check will
+# always succeed ... this probe is mostly a no-op in that scenario" — so root
+# is precisely the case AppRun leaves uncovered.
+#
+# So the installer covers it, with the wrapper `linux_wrapper` writes. An
+# earlier version of this comment said that was impossible, because the
+# AppImage had to BE ~/.local/bin/stoke for electron-updater to replace it in
+# place. That was wrong: AppImageUpdater reads $APPIMAGE and nothing else —
+# never PATH, never argv, never execPath — and overwrites in place whenever
+# that file's basename carries no <n>.<n>.<n>. The AppImage sits at
+# stoke.AppImage next door, which satisfies it, and the updater cannot see the
+# wrapper at all.
 root_warning() {
   blank
   say '  Careful: you are root.'
   blank
-  say '  Electron will not start as root without --no-sandbox, and it aborts hard'
-  say '  rather than explaining itself. Two ways out, best first:'
+  say '  Electron will not start as root with its sandbox on, so Stoke will be'
+  say '  launched with the sandbox OFF. It will still start, and stoke will still'
+  say '  be the command — but understand what it costs:'
   blank
-  say '    1. Install and run as your normal user. Re-run this as them, not with'
-  say '       sudo — everything goes under their $HOME, nothing needs root.'
+  say '    Stoke embeds a browser and runs CLI processes with your permissions.'
+  say '    As root with no sandbox, anything a page can do, it does as root, to'
+  say '    every file on this machine.'
   blank
-  say '    2. If this machine only has root (a container, or a VPS you never made'
-  say '       a user on), launch it with the sandbox off:'
-  blank
-  say '           stoke --no-sandbox'
-  blank
-  say '       Understand what that costs: Stoke embeds a browser and runs CLI'
-  say '       processes with your permissions. As root with no sandbox, anything'
-  say '       a page can do, it does as root.'
+  say '  Installing and running as a normal user avoids all of that. Re-run this'
+  say '  as them, not with sudo — everything goes under their $HOME, and nothing'
+  say '  here needs root.'
   blank
   say "  Installing anyway, into root's own $HOME."
 }
@@ -314,6 +321,7 @@ stoke installer
   --print-plan [tty|pipe]  what the fire would do in this environment.
   --fire-frames TIER  the twelve frames as they would be painted.
                       TIER is truecolor, ansi256, ansi16 or none.
+  --print-wrapper [APPIMAGE]  the Linux launcher this would install.
   --preflight         what this script makes of THIS machine. Resolves nothing,
                       downloads nothing, writes nothing.
   --sha512 FILE       a file's sha512 in the base64 form the release manifests
@@ -967,9 +975,49 @@ install_macos() {
   note 'installed' '/Applications/Stoke.app'
 }
 
+# The launcher that goes on PATH, printed rather than written so that
+# `--print-wrapper` and `install_linux` can never disagree about it: the suite
+# runs THIS function's output, not a copy of it (gotcha 71).
+#
+# Unquoted heredoc, so $1 interpolates as the baked AppImage path while every
+# runtime expansion is escaped. Nothing here is inside $(), so gotcha 70's
+# bash 3.2 heredoc hazard does not apply.
+linux_wrapper() {
+  cat <<WRAPPER
+#!/bin/sh
+# Stoke's launcher. Written by the installer and replaced on every upgrade.
+#
+# This file is on PATH; the AppImage is beside it, keeping a version-free name
+# so electron-updater overwrites it in place. The updater reads \$APPIMAGE and
+# never PATH, so it cannot see this script.
+STOKE_APPIMAGE='$1'
+
+if [ ! -x "\$STOKE_APPIMAGE" ]; then
+  printf '%s\n' \\
+    "stoke: \$STOKE_APPIMAGE is missing or not executable." \\
+    'Re-run the installer: curl -fsSL https://stoke.vinn.dev | sh' >&2
+  exit 127
+fi
+
+# Electron aborts as root unless the sandbox is off (crbug.com/638180), inside
+# Chromium's startup and before any JavaScript, so nothing downstream of here
+# can add the flag or explain itself. AppRun will not do it either: it tests
+# \`unshare -Ur true\`, which succeeds as root.
+if [ "\$(id -u)" = 0 ]; then
+  printf '%s\n' \\
+    'stoke: running as root, so Chromium sandbox is off. Stoke can reach every' \\
+    'stoke: file on this machine. A normal user account is recommended.' >&2
+  exec "\$STOKE_APPIMAGE" --no-sandbox "\$@"
+fi
+
+exec "\$STOKE_APPIMAGE" "\$@"
+WRAPPER
+}
+
 install_linux() {
   lin_src=$1
   lin_bin=$HOME/.local/bin/stoke
+  lin_app=$HOME/.local/bin/stoke.AppImage
   # NO VERSION IN THE FILENAME, and that is load-bearing rather than tidy.
   # electron-updater's AppImageUpdater overwrites the running AppImage in place
   # only when the existing name carries no `<n>.<n>.<n>` in it; with a version
@@ -992,16 +1040,38 @@ install_linux() {
       'Nothing has been installed, and anything already there is untouched.'
   fi
   chmod +x "$lin_stage"
-  if ! mv -f "$lin_stage" "$lin_bin"; then
+  if ! mv -f "$lin_stage" "$lin_app"; then
     rm -f "$lin_stage" 2>/dev/null || true
-    die "Could not replace $lin_bin (its own error is above)." \
+    die "Could not replace $lin_app (its own error is above)." \
       'Nothing has been installed, and the copy you had is untouched.'
+  fi
+
+  # The launcher, written after the AppImage it points at, and through the same
+  # stage-and-rename dance for the same reason: $lin_bin may be the previous
+  # install's AppImage, still running and still ETXTBSY.
+  #
+  # Upgrading from 0.9.6 or earlier lands here with an AppImage at $lin_bin.
+  # Overwriting it with the wrapper is the migration, and it is one-way by
+  # design: a copy still running from the old layout has $APPIMAGE pointing at
+  # $lin_bin, so its own self-update would put an AppImage back over this
+  # wrapper. Quitting it before it next updates itself is all that costs.
+  lin_wstage=$HOME/.local/bin/.stoke.wrapper.$$
+  if ! linux_wrapper "$lin_app" >"$lin_wstage"; then
+    rm -f "$lin_wstage" 2>/dev/null || true
+    die "Could not write the launcher to $HOME/.local/bin (its own error is above)." \
+      "The AppImage is installed at $lin_app and can be run directly."
+  fi
+  chmod +x "$lin_wstage"
+  if ! mv -f "$lin_wstage" "$lin_bin"; then
+    rm -f "$lin_wstage" 2>/dev/null || true
+    die "Could not replace $lin_bin (its own error is above)." \
+      "The AppImage is installed at $lin_app and can be run directly."
   fi
 
   mkdir -p "$HOME/.local/share/applications" "$HOME/.local/share/icons/hicolor/512x512/apps"
   # Best effort: the AppImage carries its own icon at the root. `--appimage-extract`
   # needs no FUSE, so this works even where running the app would not.
-  if (cd "$TMPD" && "$lin_bin" --appimage-extract stoke.png >/dev/null 2>&1); then
+  if (cd "$TMPD" && "$lin_app" --appimage-extract stoke.png >/dev/null 2>&1); then
     if [ -f "$TMPD/squashfs-root/stoke.png" ]; then
       cp "$TMPD/squashfs-root/stoke.png" "$HOME/.local/share/icons/hicolor/512x512/apps/stoke.png"
     fi
@@ -1030,8 +1100,9 @@ DESKTOP
   clear_pending "${XDG_CACHE_HOME:-$HOME/.cache}/stoke-updater/pending"
   note 'installed' "$lin_bin"
   # Said again at the end, because the warning above is now several screens and
-  # a campfire ago, and this is the line the user is about to type.
-  if is_root; then note 'run it with' 'stoke --no-sandbox   (you are root — see above)'; fi
+  # a campfire ago. The command is plain `stoke` either way now; what root needs
+  # repeating is what it costs, not what to type.
+  if is_root; then note 'sandbox' 'off, because you are root - see above'; fi
 
   case ":${PATH}:" in
     *":$HOME/.local/bin:"*) : ;;
@@ -1147,6 +1218,12 @@ main() {
       ;;
     --preflight)
       do_preflight
+      return 0
+      ;;
+    --print-wrapper)
+      # The Linux launcher, as install_linux would write it. Takes the AppImage
+      # path so a suite can point it at a stand-in and RUN both branches.
+      linux_wrapper "${2:-$HOME/.local/bin/stoke.AppImage}"
       return 0
       ;;
     --sha512)

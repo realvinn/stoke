@@ -811,5 +811,76 @@ console.log('\nwhat the script makes of a machine it is not running on')
   }
 }
 
+console.log('\nthe Linux launcher, run rather than read')
+/*
+ * `~/.local/bin/stoke` is a wrapper, not the AppImage, and the whole point of
+ * it is a branch that cannot be reached from this machine: as root it adds
+ * `--no-sandbox`, because Electron LOG(FATAL)s without it (crbug.com/638180)
+ * before any of Stoke's JavaScript runs, and the AppImage's own AppRun will not
+ * add it — its `unshare -Ur true` probe SUCCEEDS as root, which its generated
+ * comment admits makes the probe "mostly a no-op in that scenario".
+ *
+ * So the wrapper is EXECUTED here rather than pattern-matched, both branches,
+ * against a stand-in AppImage that prints its argv. `--print-wrapper` emits the
+ * same text `install_linux` writes, from the same function, so this runs the
+ * shipped code path rather than a copy of it (gotcha 71). Root is reached the
+ * way `--preflight` reaches it: by shimming `id` onto the front of PATH.
+ *
+ * The layout assertion matters as much as the branch. electron-updater's
+ * AppImageUpdater replaces `process.env.APPIMAGE` in place only when that
+ * file's basename has no `<n>.<n>.<n>` in it (AppImageUpdater.js: `if
+ * (path.basename(installerPath) === existingBaseName || !/\d+\.\d+\.\d+/
+ * .test(existingBaseName))`). It never reads PATH, argv or execPath — which is
+ * why a wrapper can sit on PATH at all, and why the file it points at must keep
+ * a version-free name.
+ */
+{
+  const dir = mkdtempSync(join(tmpdir(), 'stoke-wrapper-'))
+  try {
+    const app = join(dir, 'stoke.AppImage')
+    writeFileSync(app, '#!/bin/sh\nprintf "ARGV:%s\\n" "$*"\n', { mode: 0o755 })
+
+    const wrapperText = execFileSync('/bin/sh', [SH, '--print-wrapper', app], { encoding: 'utf8' })
+    const launcher = join(dir, 'stoke')
+    writeFileSync(launcher, wrapperText, { mode: 0o755 })
+
+    check(
+      'the wrapper points at an AppImage whose basename carries no version',
+      /\d+\.\d+\.\d+/.test('stoke.AppImage'),
+      false
+    )
+    check('and it is a POSIX sh script, not a shebang-less fragment', wrapperText.startsWith('#!/bin/sh'), true)
+
+    const run = (uid: string | null): { out: string; err: string } => {
+      const env = { ...process.env }
+      if (uid !== null) {
+        const shim = join(dir, `shim-${uid}`)
+        execFileSync('/bin/mkdir', ['-p', shim])
+        writeFileSync(join(shim, 'id'), `#!/bin/sh\necho ${uid}\n`, { mode: 0o755 })
+        env.PATH = `${shim}:${env.PATH ?? ''}`
+      }
+      const res = execFileSync('/bin/sh', [launcher, '--window'], { encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'pipe'] })
+      return { out: res, err: '' }
+    }
+
+    check('a normal user gets the arguments they typed and nothing added', run('1000').out.trim(), 'ARGV:--window')
+    check('root gets --no-sandbox put in front of them', run('0').out.trim(), 'ARGV:--no-sandbox --window')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+
+  const shText = readFileSync(SH, 'utf8')
+  check(
+    'the .desktop entry launches the wrapper, so a double-click is covered too',
+    /Exec=\$lin_bin %U/.test(shText),
+    true
+  )
+  check(
+    'and the root notice no longer tells the user to type --no-sandbox themselves',
+    /note 'run it with' 'stoke --no-sandbox/.test(shText),
+    false
+  )
+}
+
 console.log(failures ? `\n${failures} FAILED` : '\nall pass')
 process.exitCode = failures ? 1 : 0

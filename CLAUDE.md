@@ -177,9 +177,11 @@ rule file named on the group line.
   `gen-installer-art.mts` — an `'` ends a POSIX string, `@` a PowerShell here-string, and bash
   3.2 cannot parse a heredoc of unbalanced parens inside `$()`. Never the alternate screen;
   `NO_COLOR` takes the colour, not the motion.
-- **76.** Electron `LOG(FATAL)`s as root on Linux before any JS runs, so only `install.sh` can warn
-  — and it cannot wrap, since the AppImage must BE `~/.local/bin/stoke` for in-place self-update.
-  Keep `--preflight`, which is how `verify:install` shims `uname`/`id` and covers all six branches.
+- **76.** Electron `LOG(FATAL)`s as root on Linux before any JS runs, and `AppRun` misses it (its
+  `unshare -Ur true` probe succeeds as root), so `~/.local/bin/stoke` is a wrapper that adds
+  `--no-sandbox` for uid 0; the AppImage is `stoke.AppImage` beside it, version-free so
+  `AppImageUpdater` — which reads only `$APPIMAGE` — still replaces it in place. Keep `--preflight`
+  and `--print-wrapper`: they are how `verify:install` covers branches this machine cannot reach.
 - **71.** Assert every input the installer trusts: a manifest's `sha512` is BASE64 (hex never
   matches), a bot challenge is HTML with status **200** that `curl -f` passes, PowerShell's UA
   starts `Mozilla/5.0` so `routeFor` tests it first and falls back to HTML, and an x64 AppImage
@@ -188,7 +190,7 @@ rule file named on the group line.
   script rather than a copy, under every shell: keep `setopt sh_word_split` for zsh, which
   parses the script perfectly and could not run a line of it. Put the renamed-aside
   `/Applications/Stoke.app` back whenever the new copy does not land.
-- **76.** After `deploy:install`, expect the custom domain to be `enabled` with a `cert_id` while
+- **77.** After `deploy:install`, expect the custom domain to be `enabled` with a `cert_id` while
   DNS still says NXDOMAIN — the binding and the record are written separately, and the record took
   ~30 min. Prove the gap with `curl --resolve <host>:443:<zone proxy IP>` (200 + `ssl=0` means only
   DNS is missing), then wait: delete-and-redeploy does not hurry it, and the wrangler token has no
