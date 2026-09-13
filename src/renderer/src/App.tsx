@@ -17,6 +17,8 @@ import type {
   SessionIndexEntry,
   SessionMeta,
   Settings,
+  SshAuthPromptEvent,
+  SshEnrollEvent,
   SshHost,
   Theme,
   WorklogProposal,
@@ -62,6 +64,7 @@ import { StatusBar } from './components/StatusBar'
 import { TerminalView } from './components/TerminalView'
 import { TitleBar } from './components/TitleBar'
 import { ActivityPanel } from './components/ActivityPanel'
+import { SshKeyPrompt } from './components/SshKeyPrompt'
 import { WorklogPrompt } from './components/WorklogPrompt'
 import { baseName, ipcErrorMessage } from './lib/format'
 import {
@@ -479,6 +482,33 @@ export function App(): React.JSX.Element {
   const [proposedIds, setProposedIds] = useState<string[]>([])
   const [asked, setAsked] = useState<Set<string>>(new Set())
 
+  /*
+   * The SSH key offer: one machine's password prompt, and whatever the
+   * enrollment it may start has said so far.
+   *
+   * One at a time, deliberately. A second prompt replaces the first rather than
+   * queueing — an offer is only meaningful next to the session that raised it,
+   * and a queue of them would be a list of questions about connections that
+   * have since given up asking.
+   *
+   * Nothing here installs anything. `window.stoke.ssh.enroll` is called from
+   * exactly one place, `startSshEnroll` below, and that has exactly one caller:
+   * the Add-a-key button.
+   */
+  const [sshOffer, setSshOffer] = useState<SshAuthPromptEvent | null>(null)
+  const [sshEnroll, setSshEnroll] = useState<SshEnrollEvent | null>(null)
+  /*
+   * Which host an enrollment is running for, as a ref AND as state, for gotcha
+   * 51's two separate reasons. The ref is correctness: it is claimed before the
+   * IPC call, so a second press landing before React has re-rendered the
+   * disabled button cannot start a second `ssh-copy-id` against the same
+   * machine. The state is honesty: an install takes as long as it takes the
+   * user to type a password, and a button that looks pressable is what invites
+   * the second press. Released in `.finally`, so a rejected enroll unsticks it.
+   */
+  const sshEnrollingRef = useRef<string | null>(null)
+  const [sshEnrolling, setSshEnrolling] = useState<string | null>(null)
+
   const [paletteOpen, setPaletteOpen] = useState(false)
   // The phone popover is open. Not part of `overlayOpen` (it makes nothing
   // inert), but the docked browser must hide while it is up or its QR paints
@@ -779,6 +809,62 @@ export function App(): React.JSX.Element {
    */
   const settingsRef = useRef<Settings | null>(settings)
   settingsRef.current = settings
+
+  /**
+   * Install a key on `hostId`.
+   *
+   * The only call to `ssh.enroll` in the renderer, and its own only caller is
+   * the Add-a-key button. Nothing runs from the password detector to here, so
+   * "a key is installed only after somebody pressed a button" is a property of
+   * the wiring rather than a promise about it — and the install still cannot
+   * finish without the user typing the password into the terminal, which Stoke
+   * never sees.
+   */
+  const startSshEnroll = useCallback((hostId: string): void => {
+    // Claimed BEFORE the call, never after: the await is the window (gotcha
+    // 51). A second press otherwise starts a second ssh-copy-id against the
+    // same machine, and the first one is sitting on a password prompt.
+    if (sshEnrollingRef.current !== null) return
+    sshEnrollingRef.current = hostId
+    setSshEnrolling(hostId)
+    // Said at once rather than waiting for main's own 'starting': the button
+    // going quiet for a second is what a second press is made of.
+    setSshEnroll({ hostId, stage: 'starting', message: '' })
+    void window.stoke.ssh
+      .enroll(hostId)
+      .catch((e: unknown) => {
+        // An IPC rejection is the one failure main cannot report as an event.
+        setSshEnroll({ hostId, stage: 'failed', message: ipcErrorMessage(e), ok: false })
+      })
+      .finally(() => {
+        sshEnrollingRef.current = null
+        setSshEnrolling(null)
+      })
+  }, [])
+
+  /** Not now, the close button and Escape. Session-only: nothing is written. */
+  const dismissSshOffer = useCallback((): void => setSshOffer(null), [])
+
+  /**
+   * Never for this host.
+   *
+   * One boolean on one host, from one press. HostsSettings draws it as a
+   * checkbox per machine, so it is both findable and undoable — which is the
+   * whole reason this does not ask twice the way rejecting a worklog proposal
+   * does. Read through `settingsRef` so the callback does not rebuild, and so
+   * it writes the hosts that are current at the press rather than at render.
+   */
+  const refuseSshKey = useCallback(
+    (hostId: string): void => {
+      setSshOffer(null)
+      const s = settingsRef.current
+      if (!s) return
+      void patchSettings({
+        hosts: s.hosts.map((h) => (h.id === hostId ? { ...h, keyEnrollRefused: true } : h))
+      })
+    },
+    [patchSettings]
+  )
 
   /*
    * The tab list and the selection, readable from the hook-event listener
@@ -1111,6 +1197,27 @@ export function App(): React.JSX.Element {
       })
     })
 
+    /*
+     * A remote asked one of Stoke's sessions for a password.
+     *
+     * Main has already decided whether an offer is due at all — the setting,
+     * this host's refusal, and whether an enrollment is already running are all
+     * `shouldOfferKey`'s business, and it sends nothing when the answer is no.
+     * This end only draws the question.
+     */
+    const offSshPrompt = window.stoke.ssh.onPasswordPrompt((e) => {
+      setSshOffer(e)
+      /*
+       * Progress belongs to the enrollment that is still running, and to
+       * nothing else. Without the guard a new question would arrive under the
+       * last run's "Done"; with a blanket reset, a prompt arriving while an
+       * install is mid-flight (the remote asks for the password it is waiting
+       * for) would blank the progress the user is watching.
+       */
+      setSshEnroll((cur) => (cur && cur.hostId === sshEnrollingRef.current ? cur : null))
+    })
+    const offSshEnroll = window.stoke.ssh.onEnrollEvent(setSshEnroll)
+
     void (async () => {
       const s = await window.stoke.settings.get()
       setSettings(s)
@@ -1145,6 +1252,8 @@ export function App(): React.JSX.Element {
       offProposed()
       offWatch()
       offRemoteStart()
+      offSshPrompt()
+      offSshEnroll()
     }
   }, [refreshProjects])
 
@@ -4028,6 +4137,14 @@ export function App(): React.JSX.Element {
     )
   })()
 
+  /*
+   * The machine an offer belongs to, or undefined when settings has no such
+   * host — which is a real state: the host can be deleted between the prompt
+   * landing and the render. There is then nothing to enroll and nothing
+   * truthful to name, so the strip is not drawn at all.
+   */
+  const sshOfferHost = sshOffer ? settings?.hosts.find((h) => h.id === sshOffer.hostId) : undefined
+
   const worklogPending = worklog.filter((p) => p.status === 'pending').length
   const worklogState = useMemo(
     () => worklogButtonState(worklogWatch, worklogPending),
@@ -4276,6 +4393,30 @@ export function App(): React.JSX.Element {
                 <IconClose />
               </button>
             </div>
+          )}
+
+          {/*
+            Same row, same reason as the worklog strip below, and the reason is
+            the whole design of this control: a modal, an overlay or a popover
+            would be painted over by the docked browser's WebContentsView
+            (gotcha 14) exactly while somebody is working with the browser open.
+          */}
+          {sshOffer && sshOfferHost && (
+            <SshKeyPrompt
+              prompt={sshOffer}
+              host={sshOfferHost}
+              /* Only this host's own progress: an event for another machine is
+                 not news about the one being asked about. */
+              progress={sshEnroll && sshEnroll.hostId === sshOfferHost.id ? sshEnroll : null}
+              busy={sshEnrolling === sshOfferHost.id}
+              /* Escape is the settings sheet's, the palette's and the report's
+                 while any of them is up — App owns that stack, and a strip in
+                 the flow is never the thing on top. */
+              escapeDismisses={!settingsOpen && !paletteOpen && !worklogOpen && welcome === null}
+              onEnroll={() => startSshEnroll(sshOfferHost.id)}
+              onDismiss={dismissSshOffer}
+              onNever={() => refuseSshKey(sshOfferHost.id)}
+            />
           )}
 
           {/*

@@ -3259,6 +3259,86 @@ mark.hit {
   flex-shrink: 0;
 }
 
+/* ----------------------------------------------------------- ssh key offer */
+
+/*
+ * The offer to install an SSH key, raised by a remote asking for a password.
+ *
+ * Same row, same geometry and the same reason as `.worklog-prompt` above: the
+ * docked browser is a native WebContentsView painting over all renderer DOM
+ * (gotcha 14), so an overlay, a modal or a popover would be invisible exactly
+ * when the browser is open. It is a sibling in `.main-col`, never a fourth
+ * `.app` row -- that track belongs to the status bar.
+ *
+ * No animation, deliberately. Under the global reduced-motion block an
+ * animation is forced to 1ms and one iteration, so whatever the element rests
+ * at is what paints (gotcha 72) -- and the honest resting state for a question
+ * is "on screen". Nothing here needs motion to be understood.
+ */
+.ssh-prompt {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  padding: var(--space-8);
+  border-bottom: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg));
+  color: var(--text);
+  font-size: var(--fs-sm);
+  /* One line. A strip that reflows the terminal underneath it as an
+     enrollment's stages arrive is worse than no strip. */
+  min-height: 2.5rem;
+  overflow: hidden;
+}
+
+.ssh-prompt-kind {
+  flex-shrink: 0;
+  padding: 0.0625rem var(--space-8);
+  border-radius: var(--r-full);
+  background: var(--accent-soft);
+  /* Ink, not --accent: this is text on a tint, and --accent is a fill colour
+     that falls as low as 1.43:1 as a foreground (gotcha 44). */
+  color: var(--accent-ink);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+/* `flex: 1 1 0%` with `min-width: 0`, both required: a nowrap flex item's
+   min-content width otherwise propagates up through `.main-col` into the grid
+   and widens the whole app rather than clipping the sentence (gotcha 14). The
+   full line, and the user@host, are in the element's `title`. */
+.ssh-prompt-text {
+  flex: 1 1 0%;
+  min-width: 0;
+  margin: 0;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ssh-prompt-text strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* The `user@host` the far end printed. Bounded here as well as in the
+   component: it is remote text, and the buttons must survive it. */
+.ssh-prompt-meta {
+  flex-shrink: 1;
+  min-width: 0;
+  max-width: 12rem;
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+}
+
+/* Never shrink the answers -- a clipped question can still be read on hover,
+   a clipped button cannot be pressed anywhere else. */
+.ssh-prompt .btn,
+.ssh-prompt .icon-btn {
+  flex-shrink: 0;
+}
+
 /* --------------------------------------------------------------- resizer */
 
 .resizer {
@@ -4150,7 +4230,12 @@ summary.agent-picker-section:hover {
   cursor: default;
 }
 
-.check-row input[type='checkbox'] {
+/* Radios too: a three-way setting in this shape (SSH key enrollment) is the
+   same row with the same geometry, and an unstyled radio sits a pixel high
+   against a two-line label. `accent-color` is the one property that tints a
+   native control, so the fill goes through --accent like every other fill. */
+.check-row input[type='checkbox'],
+.check-row input[type='radio'] {
   width: 1rem;
   height: 1rem;
   margin: 0.125rem 0 0;

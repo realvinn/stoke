@@ -978,6 +978,8 @@ export function SettingsSheet({
                 hosts={settings.hosts}
                 suggestions={sshAliases}
                 onChange={(hosts) => onPatch({ hosts })}
+                keyEnroll={settings.sshKeyEnroll}
+                onChangeKeyEnroll={(sshKeyEnroll) => onPatch({ sshKeyEnroll })}
               />
             )}
 
