@@ -106,6 +106,7 @@ export const DEFAULT_SETTINGS: Settings = {
   // reach the app at all, and the line it suppresses duplicates chrome Stoke
   // already draws.
   hideStatusLine: true,
+  showBrand: true,
   /*
    * 'ask', not 'auto', and not 'off'.
    *
@@ -318,6 +319,7 @@ export function hydrateSettings(raw: unknown): Settings {
     // `!== false` and not `=== true`: a file written before this key existed
     // must read as on, which is what an untouched machine gets.
     hideStatusLine: r.hideStatusLine !== false,
+    showBrand: r.showBrand !== false,
     // A whitelist, not a typeof: the top-level `...r` spread keeps unknown junk
     // verbatim, so anything that is not one of the three literals must be
     // replaced rather than merely type-checked.

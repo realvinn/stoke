@@ -36,11 +36,11 @@ import { baseName, ipcErrorMessage } from './lib/format'
 import { attachExit, forgetPty, initPtyBus } from './lib/ptyBus'
 import { TERMINAL_DEFAULTS, zoomStep } from '@shared/ui'
 import { welcomePlan, type WelcomeReason } from '@shared/welcome'
-import { matchShortcut } from './lib/shortcuts'
+import { matchShortcut, typeThroughKey } from './lib/shortcuts'
 import { newTab } from './lib/newTab'
 import { profileIdForCwd } from './lib/projectProfile'
 import { fromStored, screensFrom, toStored } from './lib/restore'
-import { screenOf } from './lib/termRegistry'
+import { focusTerm, screenOf } from './lib/termRegistry'
 import {
   cycleTab,
   focusAfterStart,
@@ -1796,6 +1796,24 @@ export function App(): React.JSX.Element {
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null
 
   /*
+   * Read by the window keydown listener, which is bound once and must not be
+   * rebound per keystroke (gotcha 31: a listener reads changing values through
+   * a ref, never through its deps). Both are assigned during render, so the
+   * listener always sees the frame the user is looking at.
+   *
+   * The target is null unless there is a RUNNING session tab in front — a
+   * paused or exited tab has no pty, and an unclaimed keystroke must not
+   * quietly start one or be swallowed on the New Project tab.
+   */
+  const overlayRef = useRef(false)
+  overlayRef.current = overlayOpen
+  const typeThroughTargetRef = useRef<string | null>(null)
+  typeThroughTargetRef.current =
+    activeTab && activeTab.kind === 'session' && activeTab.status === 'running'
+      ? activeTab.ptyId
+      : null
+
+  /*
    * Whether the tab in front is running a `claude` that is no longer the one
    * installed. Every refusal is a stated reason rather than a silent false, so
    * the status bar can explain itself on hover instead of simply not being
@@ -1861,7 +1879,40 @@ export function App(): React.JSX.Element {
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       const action = matchShortcut(e, isMac)
-      if (!action) return
+      if (!action) {
+        /*
+          Nobody claimed this keystroke, so the terminal gets it.
+
+          Without this, clicking anything in the chrome — the usage chip is how
+          it was found, but the tab strip and the status bar are the same shape
+          — leaves focus on a <button>, and everything typed afterwards is
+          delivered correctly to an element that does nothing with it. The
+          characters are not lost to a bug in the chip; they are lost to there
+          being no rule about where an unclaimed keystroke goes.
+
+          `typeThroughKey` decides, and refuses far more than it accepts (see
+          it for the list). The one it produces is written straight to the pty,
+          because focus moves asynchronously and this event will never reach
+          xterm; the focus call is what makes the SECOND keystroke land without
+          coming back through here.
+        */
+        const ptyId = typeThroughTargetRef.current
+        const send = typeThroughKey(
+          {
+            key: e.key,
+            ctrlKey: e.ctrlKey,
+            metaKey: e.metaKey,
+            altKey: e.altKey,
+            target: e.target as HTMLElement | null
+          },
+          { overlayOpen: overlayRef.current, hasTerminal: ptyId !== null }
+        )
+        if (send === null || ptyId === null) return
+        e.preventDefault()
+        window.stoke.pty.write(ptyId, send)
+        focusTerm(ptyId)
+        return
+      }
       e.preventDefault()
       switch (action.type) {
         case 'palette':
@@ -2099,6 +2150,7 @@ export function App(): React.JSX.Element {
     <div className="app">
       <TitleBar
         platform={platform}
+        showBrand={settings?.showBrand !== false}
         maximized={maximized}
         fullScreen={fullScreen}
         tabs={tabs}

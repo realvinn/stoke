@@ -9,6 +9,7 @@ import type {
 } from '@shared/api'
 import { clampPort, REMOTE_PORT_DEFAULT } from '@shared/ui'
 import { channelLagNotice, updateButton, updateVerdict } from '../lib/updateVerdict'
+import { cliUpToDate, selfUpToDate } from '@shared/updateCheck'
 import { useDraft } from '../lib/useDraft'
 import { FieldHint } from './FieldHint'
 import { IconCopy } from './Icons'
@@ -215,20 +216,28 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
                     The link carries the key. Treat it like a password — anyone with it can drive a
                     session on this machine.
                   </span>
+                  {/*
+                    Shown, not folded behind "Why?". A disclosure is for
+                    REASONING the short line had to leave out; these are the
+                    addresses themselves, and they are the answer to the
+                    question the line above asks. Someone whose phone will not
+                    load the page is troubleshooting, and making them find and
+                    click a summary to see the thing they need to type is the
+                    one moment a collapsed hint costs more than it saves.
+                  */}
                   {state.candidates.length > 0 && reach === 'lan' && (
-                    <FieldHint
-                      more={
-                        <>
-                          {state.candidates.map((c) => (
-                            <span key={c} className="mono" style={{ display: 'block', overflowWrap: 'anywhere' }}>
-                              {c}
-                            </span>
-                          ))}
-                        </>
-                      }
-                    >
-                      Not loading on the phone? This machine has more than one address.
-                    </FieldHint>
+                    <div className="field-hint">
+                      Not loading on the phone? This machine has more than one address — try these:
+                      {state.candidates.map((c) => (
+                        <span
+                          key={c}
+                          className="mono"
+                          style={{ display: 'block', overflowWrap: 'anywhere' }}
+                        >
+                          {c}
+                        </span>
+                      ))}
+                    </div>
                   )}
                 </div>
               </div>
@@ -605,6 +614,9 @@ export function SelfUpdateSettings({
 
   if (!state) return <></>
 
+  // Same reasoning as the CLI badge above: derived during render, not ticked.
+  const selfOk = selfUpToDate(state, Date.now())
+
   return (
     <div className="field">
       <span className="field-label">
@@ -612,6 +624,11 @@ export function SelfUpdateSettings({
         {state.availableVersion && (
           <span className="pill" data-tone="accent">
             {state.availableVersion} available
+          </span>
+        )}
+        {selfOk && (
+          <span className="pill" data-tone="success" title={selfOk.title}>
+            {selfOk.badge}
           </span>
         )}
       </span>
@@ -642,7 +659,8 @@ export function SelfUpdateSettings({
                   ? state.blocked
                   : state.availableVersion
                     ? 'An update is available.'
-                    : 'Up to date.'}
+                    : ''}
+          {selfOk && selfOk.checked && <span className="field-stamp">{selfOk.checked}</span>}
         </span>
       )}
 
@@ -869,6 +887,14 @@ export function UpdatesSettings({
 
   const update = updateButton(info)
   const lag = info?.behindLatest ? channelLagNotice(info.behindLatest) : null
+  /*
+    The quiet state, which is the one the panel is in almost all the time and
+    the one it used to say least about. `Date.now()` is read during render on
+    purpose: this is a settings sheet the user has just opened, the value is
+    re-derived on every re-render, and a ticking clock for a line that reads
+    "checked at 14:32" would be motion for its own sake.
+  */
+  const cliOk = cliUpToDate(info, Date.now())
 
   return (
     <div className="field">
@@ -881,6 +907,11 @@ export function UpdatesSettings({
         {info?.updateAvailable && (
           <span className="pill" data-tone="accent">
             {info.latest} available
+          </span>
+        )}
+        {cliOk && (
+          <span className="pill" data-tone="success" title={cliOk.title}>
+            {cliOk.badge}
           </span>
         )}
       </span>
@@ -909,6 +940,7 @@ export function UpdatesSettings({
                   }.`
                 : `Running ${info.current ?? 'unknown'}${info.latest ? `, latest is ${info.latest}` : ''}.`
           : 'Checking…'}
+        {cliOk && cliOk.checked && <span className="field-stamp">{cliOk.checked}</span>}
       </span>
 
       {/*

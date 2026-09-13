@@ -449,6 +449,29 @@ export function SettingsSheet({
 
                 <WallpaperField settings={settings} onPatch={onPatch} />
 
+                {/*
+                  Offered on macOS too, where it does nothing, and that is
+                  deliberate: the brand is never drawn beside the traffic
+                  lights, so hiding the row on a Mac would make a setting that
+                  exists on one of your machines and not another — and nobody
+                  can search for a row that is not there. The hint says so.
+                */}
+                <label className="check-row">
+                  <input
+                    type="checkbox"
+                    checked={settings.showBrand}
+                    onChange={(e) => onPatch({ showBrand: e.target.checked })}
+                  />
+                  <span>
+                    <span className="field-label">Show the Stoke mark in the title bar</span>
+                    <FieldHint>
+                      {window.stoke.platform === 'darwin'
+                        ? 'Windows and Linux only — on macOS that corner belongs to the traffic lights.'
+                        : 'The mark and name in the top-left corner.'}
+                    </FieldHint>
+                  </span>
+                </label>
+
                 <div className="field">
                   <span className="field-label">Interface scale</span>
                   {/*

@@ -16,7 +16,7 @@
  *
  *   node scripts/verify-shortcuts.mts
  */
-import { chordLabel, matchShortcut } from '../src/renderer/src/lib/shortcuts.ts'
+import { chordLabel, matchShortcut, typeThroughKey } from '../src/renderer/src/lib/shortcuts.ts'
 import {
   FONT_SIZE_MAX,
   FONT_SIZE_MIN,
@@ -235,6 +235,69 @@ check('off macOS it does', chordLabel('newTab', false), 'Ctrl+Shift+T')
 check('the cycle chord carries Shift on macOS as well', chordLabel('nextTab', true), '\u21e7\u2318]')
 check('and off it', chordLabel('prevTab', false), 'Ctrl+Shift+[')
 check('settings is a comma, not a letter', chordLabel('settings', true), '\u2318,')
+
+console.log('\nkeystrokes nobody claimed go to the terminal')
+/*
+ * The bug: click the usage chip, then type, and nothing happens. The characters
+ * are delivered correctly — to a <button>, which does nothing with them. Every
+ * control in the chrome has that shape, so the fix is a rule rather than a
+ * patch, and the rule is mostly about what it REFUSES: a character sent to the
+ * wrong place is typed into the user's shell behind their back, which is worse
+ * than a character dropped.
+ */
+{
+  const key = (over: Record<string, unknown> = {}) => ({
+    key: 'a',
+    ctrlKey: false,
+    metaKey: false,
+    altKey: false,
+    target: { tagName: 'BUTTON', isContentEditable: false },
+    ...over
+  })
+  const live = { overlayOpen: false, hasTerminal: true }
+
+  check('a plain letter on a button goes to the terminal', typeThroughKey(key(), live), 'a')
+  check('so does a digit', typeThroughKey(key({ key: '7' }), live), '7')
+  check('and a space', typeThroughKey(key({ key: ' ' }), live), ' ')
+  check('Shift is not a modifier that claims anything', typeThroughKey(key({ key: 'A' }), live), 'A')
+  check('Enter sends a carriage return, not a newline', typeThroughKey(key({ key: 'Enter' }), live), '\r')
+  check('Backspace sends DEL, which is what a terminal expects', typeThroughKey(key({ key: 'Backspace' }), live), '\x7f')
+
+  // Chords belong to matchShortcut. Routing them here would send a bare letter
+  // to the pty for every shortcut the app does not happen to bind (gotcha 56).
+  check('Ctrl is refused', typeThroughKey(key({ ctrlKey: true }), live), null)
+  check('Meta is refused', typeThroughKey(key({ metaKey: true }), live), null)
+  check('Alt is refused', typeThroughKey(key({ altKey: true }), live), null)
+
+  // These already work, and must never be double-delivered.
+  for (const tagName of ['INPUT', 'TEXTAREA', 'SELECT']) {
+    check(`typing in a ${tagName} is left alone`, typeThroughKey(key({ target: { tagName } }), live), null)
+  }
+  check(
+    "xterm's own textarea is left alone, so nothing is typed twice",
+    typeThroughKey(key({ target: { tagName: 'TEXTAREA', isContentEditable: false } }), live),
+    null
+  )
+  check(
+    'a contenteditable is left alone whatever its tag',
+    typeThroughKey(key({ target: { tagName: 'DIV', isContentEditable: true } }), live),
+    null
+  )
+
+  // Named keys all mean something out here.
+  for (const k of ['Tab', 'Escape', 'ArrowUp', 'ArrowLeft', 'F5', 'Home', 'PageDown', 'Shift', 'Dead']) {
+    check(`${k} is not text`, typeThroughKey(key({ key: k }), live), null)
+  }
+
+  check('nothing while the palette or settings own the screen', typeThroughKey(key(), { overlayOpen: true, hasTerminal: true }), null)
+  check('nothing with no running terminal in front', typeThroughKey(key(), { overlayOpen: false, hasTerminal: false }), null)
+  check('and Enter with no terminal does not run an invisible shell', typeThroughKey(key({ key: 'Enter' }), { overlayOpen: false, hasTerminal: false }), null)
+
+  // An emoji from the OS picker is one code point and two UTF-16 units; the
+  // length test has to agree with the user about what "one character" is.
+  check('an astral character counts as one', typeThroughKey(key({ key: '\u{1F525}' }), live), '\u{1F525}')
+  check('a null target does not throw', typeThroughKey(key({ target: null }), live), 'a')
+}
 
 console.log(failures ? `\n${failures} failed` : '\nall pass')
 process.exit(failures ? 1 : 0)

@@ -232,16 +232,14 @@ export function WorklogSettings({
         <input type="checkbox" checked={auto} onChange={(e) => onChangeAuto(e.target.checked)} />
         <span>
           <span className="field-label">Scan while I work</span>
-          <FieldHint
-            more={
-              <>
-                A watched session is reviewed on its own once it has been quiet for a couple of
-                minutes, and Stoke asks whether to file it. Off, and scanning only happens when
-                you press Scan in the worklog panel.
-              </>
-            }
-          >
-            Review a watched session once it goes quiet.
+          {/*
+            No disclosure: the one it had restated this line in longer words.
+            Its only new fact was what OFF does, which belongs in the visible
+            line — that is the half of a checkbox a label never says.
+          */}
+          <FieldHint>
+            Reviewed a couple of minutes after a watched session goes quiet. Off, only when you
+            press Scan.
           </FieldHint>
         </span>
       </label>

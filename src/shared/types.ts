@@ -963,6 +963,16 @@ export interface Settings {
    * Stoke already draws. Off passes the user's own command through unchanged.
    */
   hideStatusLine: boolean
+  /**
+   * Draw the Stoke mark and name in the title bar's left corner.
+   *
+   * Only ever visible off macOS — on macOS that corner belongs to the traffic
+   * lights and the brand is not drawn at all — so this is a Windows/Linux
+   * setting that is deliberately still offered everywhere rather than hidden
+   * per platform, since a settings row that exists on one machine and not
+   * another is the kind of difference nobody can search for.
+   */
+  showBrand: boolean
   /** What to do when a remote asks for a password. See SshKeyEnroll. */
   sshKeyEnroll: SshKeyEnroll
   /** OS notifications when Claude finishes or needs you. See NotificationMode. */

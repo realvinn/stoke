@@ -21,6 +21,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import type { UpdateInfo } from '../src/shared/api.ts'
+import { checkedLabel, cliUpToDate, selfUpToDate } from '../src/shared/updateCheck.ts'
 import { leafAuthority, signatureBlocker } from '../src/main/codesign.ts'
 import {
   AUTO_RETRY_MS,
@@ -834,6 +835,101 @@ check(
   false
 )
 check('both shapes offer the same one-press remedy', deadNotice.action, staleNotice.action)
+
+console.log('\nthe quiet state: a badge and when it was last looked at')
+/*
+ * Every input is built from LOCAL calendar parts and compared against a `now`
+ * built the same way, so these pass in any timezone. That is also why
+ * `checkedLabel` formats 24-hour HH:MM from a fixed month table instead of
+ * calling toLocaleString: a locale-formatted string cannot be pinned without
+ * pinning the runner's locale and zone, and this is the line whose entire job
+ * is to be precise about a time.
+ */
+{
+  const at = (y: number, mo: number, d: number, h: number, mi: number): number =>
+    new Date(y, mo, d, h, mi, 0, 0).getTime()
+  const NOW = at(2026, 8, 13, 15, 0) // 13 Sep 2026, 15:00 local
+
+  check('never checked says nothing at all', checkedLabel(null, NOW), { kind: 'never', text: '', title: '' })
+  check('a zero stamp is "never", not 1970', checkedLabel(0, NOW).kind, 'never')
+  check('under a minute is "just now"', checkedLabel(NOW - 59_000, NOW).kind, 'just-now')
+  check('a minute exactly crosses into minutes', checkedLabel(NOW - 60_000, NOW).text, 'checked 1 min ago')
+  check('and rounds down within the hour', checkedLabel(NOW - 59 * 60_000, NOW).text, 'checked 59 min ago')
+  check(
+    'an hour old, same day, switches to the clock time',
+    checkedLabel(at(2026, 8, 13, 13, 5), NOW).text,
+    'checked at 13:05'
+  )
+  check(
+    'yesterday carries the date',
+    checkedLabel(at(2026, 8, 12, 9, 7), NOW).text,
+    'checked 12 Sep at 09:07'
+  )
+  check(
+    'the title is always the full stamp',
+    checkedLabel(at(2026, 8, 12, 9, 7), NOW).title,
+    '12 Sep 2026, 09:07'
+  )
+  // A clock that stepped backwards must not render "-3 min ago".
+  check('a future stamp clamps to just now', checkedLabel(NOW + 180_000, NOW).kind, 'just-now')
+
+  const self = (over: Record<string, unknown> = {}): Parameters<typeof selfUpToDate>[0] => ({
+    supported: true,
+    currentVersion: '0.9.6',
+    availableVersion: null,
+    downloaded: false,
+    downloading: false,
+    error: null,
+    blocked: null,
+    checkedAt: at(2026, 8, 13, 14, 32),
+    ...over
+  })
+  check('Stoke with nothing to do gets the badge', selfUpToDate(self(), NOW)?.badge, 'Up to date')
+  check('a check within the hour reads as relative', selfUpToDate(self(), NOW)?.checked, 'checked 28 min ago')
+  check(
+    'and an older one as the clock time',
+    selfUpToDate(self({ checkedAt: at(2026, 8, 13, 9, 4) }), NOW)?.checked,
+    'checked at 09:04'
+  )
+  // Each of these is a state where a green "Up to date" would be a lie sitting
+  // on top of the sentence that tells the truth.
+  check('no badge while downloading', selfUpToDate(self({ downloading: true }), NOW), null)
+  check('none with a download waiting to install', selfUpToDate(self({ downloaded: true }), NOW), null)
+  check('none over an error', selfUpToDate(self({ error: 'ERR_UPDATER_ZIP_FILE_NOT_FOUND' }), NOW), null)
+  check('none when a version is available', selfUpToDate(self({ availableVersion: '0.9.7' }), NOW), null)
+  check('none running from source', selfUpToDate(self({ supported: false }), NOW), null)
+  // But a build that cannot install an update it does not need IS up to date.
+  check(
+    'blocked but with nothing to install still gets it',
+    selfUpToDate(self({ blocked: 'ad-hoc signature' }), NOW)?.badge,
+    'Up to date'
+  )
+
+  // `check1` defaults to an update BEING available, which is the right default
+  // for the button tests above and exactly wrong here — so the quiet case is
+  // spelled out rather than inherited.
+  const cli = (over: Partial<UpdateInfo> = {}): UpdateInfo =>
+    check1({
+      current: '2.1.270',
+      latest: '2.1.270',
+      updateAvailable: false,
+      checkedAt: at(2026, 8, 13, 14, 32),
+      ...over
+    })
+  check('the CLI on the newest version gets the badge', cliUpToDate(cli(), NOW)?.badge, 'Up to date')
+  check('no badge before the first check', cliUpToDate(null, NOW), null)
+  check('none when an update is available', cliUpToDate(cli({ updateAvailable: true }), NOW), null)
+  check('none when the registry could not be reached', cliUpToDate(cli({ error: 'ENOTFOUND' }), NOW), null)
+  // A missing `claude` yields a perfectly successful registry lookup, so
+  // testing `latest` alone would print an all-clear about a version nobody read.
+  check('none when the installed version could not be read', cliUpToDate(cli({ current: null }), NOW), null)
+  check('none when nothing came back to compare against', cliUpToDate(cli({ latest: null }), NOW), null)
+  check(
+    'none on a pinned channel that is behind latest — gotcha 46',
+    cliUpToDate(cli({ behindLatest: { channel: 'stable', latest: '2.1.251', behind: 22 } as never }), NOW),
+    null
+  )
+}
 
 console.log(`\n${failures === 0 ? 'All checks passed.' : `${failures} check(s) FAILED.`}`)
 process.exit(failures === 0 ? 0 : 1)

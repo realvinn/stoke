@@ -157,3 +157,66 @@ export function chordLabel(name: ChordName, isMac: boolean): string {
   const shift = cycles || !isMac
   return isMac ? `${shift ? '\u21e7' : ''}\u2318${CHORD_KEY[name]}` : `Ctrl+${shift ? 'Shift+' : ''}${CHORD_KEY[name]}`
 }
+
+/* -------------------------------------------------- typing through the chrome */
+
+/**
+ * What a keystroke aimed at nothing in particular should send to the terminal.
+ *
+ * The bug this exists for: click the usage chip, close it, start typing, and
+ * the characters go nowhere. They are not lost to a bug in the chip — they are
+ * delivered correctly to a `<button>`, which does nothing with them. Every
+ * control in the chrome has the same shape, so fixing the chip would leave the
+ * tab strip, the status bar and the next control anyone adds still broken. The
+ * only fix that stays fixed is a rule about where unclaimed keystrokes go.
+ *
+ * Pure, and separated from the listener that calls it, because the interesting
+ * part is entirely in what it REFUSES. Returning a character that should have
+ * gone somewhere else is worse than dropping one: it types into the user's
+ * shell behind their back.
+ *
+ * Refused, and each for its own reason:
+ *   - anything with Ctrl, Meta or Alt. Those are chords, and `matchShortcut`
+ *     above owns them — routing them here as text would send raw letters to the
+ *     pty for every shortcut the app does not happen to bind (gotcha 56).
+ *   - anything typed into a real editable: an input, a textarea, a select, a
+ *     contenteditable, or xterm's own hidden textarea. Those already work, and
+ *     this must never double-deliver.
+ *   - anything while an overlay owns the screen. The palette and the settings
+ *     sheet have their own fields and their own Escape.
+ *   - every named key except Enter and Backspace. `key` is a single character
+ *     for printable input and a word for everything else, so length is the test;
+ *     Tab, Escape, the arrows and the function keys all have meanings out here.
+ *   - Enter with no terminal, which would otherwise mean "run whatever is in
+ *     the shell I cannot see".
+ *
+ * Returns the exact bytes to write, so the caller neither builds nor guesses
+ * them: `\r` for Enter (the terminal wants a carriage return, not `\n`) and
+ * `\x7f` for Backspace (DEL, which is what a real terminal sends).
+ */
+export function typeThroughKey(
+  e: {
+    key: string
+    ctrlKey: boolean
+    metaKey: boolean
+    altKey: boolean
+    /** The element the event was delivered to. */
+    target: { tagName?: string; isContentEditable?: boolean } | null
+  },
+  ctx: { overlayOpen: boolean; hasTerminal: boolean }
+): string | null {
+  if (!ctx.hasTerminal || ctx.overlayOpen) return null
+  if (e.ctrlKey || e.metaKey || e.altKey) return null
+
+  const tag = (e.target?.tagName ?? '').toUpperCase()
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return null
+  if (e.target?.isContentEditable === true) return null
+
+  if (e.key === 'Enter') return '\r'
+  if (e.key === 'Backspace') return '\x7f'
+  // A printable character is exactly one code point; everything else is a name.
+  // `[...key].length` rather than `key.length` so an astral character (an emoji
+  // from a picker) counts as one rather than two.
+  if ([...e.key].length !== 1) return null
+  return e.key
+}

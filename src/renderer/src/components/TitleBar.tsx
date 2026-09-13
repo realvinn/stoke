@@ -23,6 +23,11 @@ import type { SessionActivity, Tab } from '../types'
 
 interface Props {
   platform: string
+  /**
+   * Draw the Stoke mark and name. Off macOS only — that corner is the traffic
+   * lights' on macOS and the brand is never drawn there.
+   */
+  showBrand: boolean
   maximized: boolean
   /** Full screen hides the macOS traffic lights, so their clearance must go too. */
   fullScreen: boolean
@@ -59,6 +64,7 @@ interface Props {
 
 export function TitleBar({
   platform,
+  showBrand,
   maximized,
   fullScreen,
   tabs,
@@ -129,7 +135,7 @@ export function TitleBar({
         <span className="sr-only">Toggle sidebar</span>
       </button>
 
-      {!isMac && (
+      {!isMac && showBrand && (
         <div className="brand">
           <BrandMark />
           <span className="brand-name">Stoke</span>

@@ -30,6 +30,19 @@ export function unregisterTerm(ptyId: string): void {
 }
 
 /**
+ * Put the caret back in a terminal, from outside its TerminalView.
+ *
+ * For the unclaimed-keystroke route in App (`typeThroughKey`): once a chrome
+ * control has taken focus, every later keystroke is delivered to a button
+ * unless something moves it back, and App has no ref to the terminal. Silent
+ * when the id is not registered, which is the ordinary case for a paused or
+ * exited tab.
+ */
+export function focusTerm(ptyId: string): void {
+  terms.get(ptyId)?.focus()
+}
+
+/**
  * The visible viewport as plain text, trailing blank lines dropped.
  *
  * The viewport rather than the buffer: it is what the user was looking at, and

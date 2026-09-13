@@ -1235,6 +1235,22 @@ body {
   color: var(--danger);
 }
 
+/*
+ * "checked at 14:32", beside a version line.
+ *
+ * A separate element rather than more sentence, because it answers a different
+ * question from the words in front of it and should be skippable: the version
+ * is what you came for, the stamp is what you check when the version surprises
+ * you. Quieter than the hint it sits in, and it never wraps mid-stamp.
+ */
+.field-stamp {
+  margin-left: var(--space-6);
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .pill[data-tone='success'] {
   background: color-mix(in srgb, var(--success) 16%, transparent);
   color: var(--success);
