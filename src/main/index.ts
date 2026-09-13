@@ -30,6 +30,8 @@ import type {
   ProjectMeta,
   Rect,
   Settings,
+  SshAuthPromptEvent,
+  SshEnrollEvent,
   SshHost,
   StatusLineSnapshot,
   LiveSessionState,
@@ -95,6 +97,7 @@ import { claudeVoiceEnabled, isMicAccess, type MicAccess } from '../shared/voice
 import { transcribe } from './stt.ts'
 import { createProfile, planProfile } from './profiles.ts'
 import { readSshConfigHosts } from './ssh.ts'
+import { shouldOfferKey } from '../shared/sshAuth.ts'
 import {
   consumeUpdateRestart,
   readTabState,
@@ -450,6 +453,19 @@ const lastContextLimit = new Map<string, number>()
  * blank for one.
  */
 const sessionHosts = new Map<string, SshHost>()
+
+/**
+ * Hosts with a key enrollment running, claimed by the IPC handler before its
+ * first await (gotchas 20 and 66).
+ *
+ * A second copy of the claim `sshEnroll.ts` keeps, and deliberately so: the
+ * offer is decided from inside `PtyManager`'s data callback, which is
+ * synchronous, and asking the other module would mean awaiting a lazy import
+ * there. Both are cheap and they answer different questions — this one keeps a
+ * second offer off the screen, that one keeps a second ssh-copy-id off the
+ * machine.
+ */
+const enrolling = new Set<string>()
 
 /**
  * When each entry in `sessionCwds`/`sessionHosts` was last genuinely written —
@@ -1657,6 +1673,39 @@ function createWindow(): void {
       // same exit event, while it is still known, so this entry does not
       // sit in `statusLineSeen` forever.
       if (sessionId) statusLineSeen.delete(sessionId)
+    },
+    /*
+     * A remote asked one of our sessions for a password.
+     *
+     * Everything this does is decide whether to SAY so. `shouldOfferKey` is
+     * pure and its whole truth table is asserted without bytes; a 'no' sends
+     * nothing at all, so an offer the user turned off costs one map lookup and
+     * leaves no trace. Nothing here can install anything — that needs
+     * `CH.sshEnroll`, which needs a press.
+     *
+     * The host is resolved by ID from settings, never from the `user@host` the
+     * far end printed: that text is display-only (gotcha 75), and it travels on
+     * to the renderer purely so a mismatch through a ProxyJump is visible.
+     */
+    (ptyId, hostId, prompt) => {
+      const settings = getSettings()
+      const host = settings.hosts.find((h) => h.id === hostId)
+      if (!host) return
+      const offer = shouldOfferKey({
+        setting: settings.sshKeyEnroll,
+        refused: host.keyEnrollRefused === true,
+        enrolled: host.keyEnrolled === true,
+        inFlight: enrolling.has(hostId)
+      })
+      if (offer === 'no') return
+      const event: SshAuthPromptEvent = {
+        ptyId,
+        hostId,
+        offer,
+        user: prompt.user,
+        host: prompt.host
+      }
+      send(CH.sshAuthPrompt, event)
     }
   )
   /*
@@ -2783,6 +2832,59 @@ function registerIpc(): void {
 
   /* ------------------------------------------------------------------- ssh */
   ipcMain.handle(CH.sshHosts, () => readSshConfigHosts())
+
+  /**
+   * Install a key on a host. The one and only path to `sshEnroll.ts`.
+   *
+   * The renderer sends an ID, never an alias or a path: the host is looked up
+   * in settings here, so the destination a key is copied to is always a string
+   * the user typed into Settings themselves. Refusing to take an alias over the
+   * wire is what makes the detector's parsed `user@host` structurally unable to
+   * redirect anything (gotcha 75).
+   *
+   * The claim is taken before the first await and released in a `finally`
+   * (gotchas 20, 51, 66) — this spawns a terminal, and two presses would
+   * otherwise produce two of them, both prompting for the same password.
+   *
+   * `sshEnroll.ts` is imported lazily and never at module scope: a static
+   * import is resolved and evaluated before `app.whenReady()` fires, and this
+   * one is for a button most launches never press (gotcha 40).
+   */
+  ipcMain.handle(CH.sshEnroll, async (_e, hostId: string) => {
+    if (typeof hostId !== 'string' || !hostId) return
+    if (enrolling.has(hostId)) return
+    const host = getSettings().hosts.find((h) => h.id === hostId)
+    if (!host) {
+      const gone: SshEnrollEvent = {
+        hostId,
+        stage: 'failed',
+        message: 'That host is no longer in Settings.'
+      }
+      send(CH.sshEnrollEvent, gone)
+      return
+    }
+    enrolling.add(hostId)
+    try {
+      const { enroll } = await import('./sshEnroll.ts')
+      const result = await enroll(host, {
+        emit: (event: SshEnrollEvent) => send(CH.sshEnrollEvent, event)
+      })
+      /*
+       * Only a proven connection writes the flag. `enroll` returns `ok` from
+       * `verifyPubkeyAuth` alone, never from ssh-copy-id's exit status, and the
+       * host is re-read here rather than patched from the copy taken above: the
+       * user may have edited Settings while the install was waiting on a
+       * password.
+       */
+      if (!result.ok) return
+      const hosts = getSettings().hosts.map((h) =>
+        h.id === hostId ? { ...h, keyEnrolled: true } : h
+      )
+      send(CH.settingsChanged, setSettings({ hosts }))
+    } finally {
+      enrolling.delete(hostId)
+    }
+  })
 
   /* ------------------------------------------------------------------ tabs */
   ipcMain.on(CH.tabsSave, (_e, state: StoredTabs) => {

@@ -25,6 +25,16 @@ import {
 } from './cli.ts'
 import { windowFromBanner } from './sessionFile.ts'
 import { buildSshArgs, sshExecutable } from './ssh.ts'
+// Relative and with the extension, like every other main-process import here:
+// this module is loaded directly under `node --experimental-strip-types`, which
+// resolves no aliases. The detector itself is pure and lives in shared/ so a
+// suite can replay a byte stream against it with no PTY at all (gotcha 75).
+import {
+  newSshAuthScan,
+  sshAuthStep,
+  type SshAuthPrompt,
+  type SshAuthScan
+} from '../shared/sshAuth.ts'
 import { claimSessionFiles, releaseSessionFiles } from './statusLine.ts'
 import type { RegistryTarget } from '../shared/claudeRegistry.ts'
 import {
@@ -123,6 +133,28 @@ interface Session {
   bannerWindow: number | null
   /** Bytes of output still worth scanning for the banner. */
   bannerScanned: number
+  /**
+   * `SshHost.id` when this session runs on another machine, null when it is
+   * local. Carried so a detected password prompt can name the host that asked
+   * WITHOUT parsing anything the far end printed: the `user@host` in the prompt
+   * is text a remote machine sent, and enrollment builds its argv from
+   * `SshHost.alias` instead (gotcha 75).
+   */
+  hostId: string | null
+  /**
+   * The password-prompt window, or null for a session that is never scanned.
+   *
+   * `opts.host ? newSshAuthScan() : null` in `start()` is the whole first gate
+   * of the detector, and it is a transport check rather than a pattern: only a
+   * session Stoke launched as `ssh` is looked at, so every local `sudo`, every
+   * git credential helper, every `ssh-add` passphrase and every "password" the
+   * CLI itself prints is excluded with no matching whatsoever. Do not widen it.
+   *
+   * Null too for the enrollment PTY, which is not a session at all — it lives
+   * in sshEnroll.ts and never reaches this map — because ssh-copy-id's own
+   * password prompt would otherwise offer to fix itself, forever.
+   */
+  sshAuth: SshAuthScan | null
   startedAt: number
   /** Last pty output, or the last registry state change reported via `touch`. */
   lastActivityAt: number
@@ -220,6 +252,48 @@ const STRIP_ENV = [
   'CLAUDE_PID'
 ]
 
+/**
+ * The environment every PTY Stoke spawns starts from: the inherited one minus
+ * `STRIP_ENV`, one PATH, and the terminal's own identity.
+ *
+ * Pure (source, PATH and platform are arguments) so the rule can be read off
+ * without a spawn. Only the parts that are true of ANY child live here — every
+ * session kind, the SSH key enrollment (`opts.enroll`) included. A session's
+ * appearance hint and its provider keys are local-session-only and stay in
+ * `start()`, where the tests that gate them already are.
+ *
+ * PATH goes through `setPathKey` and nowhere else (gotcha 99). The first draft
+ * of this extraction (88ee181) carried the old `env.PATH = …; if (platform !==
+ * 'win32') env.Path = env.PATH` forward from before that fix — two keys on
+ * Windows, the stale inherited `Path` first — and `verify:cli` now refuses any
+ * direct PATH assignment in this file.
+ */
+export function ptyEnvFrom(
+  source: Record<string, string | undefined>,
+  path: string,
+  platform: string = process.platform
+): Record<string, string> {
+  const env: Record<string, string> = {}
+  for (const [k, v] of Object.entries(source)) {
+    if (v === undefined) continue
+    if (STRIP_ENV.includes(k)) continue
+    env[k] = v
+  }
+  // One PATH key, not two: on Windows the copied env already holds `Path`,
+  // and a second `PATH` beside it lost to the stale one (cli.ts setPathKey).
+  setPathKey(env, path, platform)
+  env.TERM = 'xterm-256color'
+  env.COLORTERM = 'truecolor'
+  // Tell Claude Code it is inside a wrapper, in case that ever matters to it.
+  env.TERM_PROGRAM = 'Stoke'
+  return env
+}
+
+/** `ptyEnvFrom` over this process's own environment and the PATH a child gets. */
+export async function buildPtyEnv(): Promise<Record<string, string>> {
+  return ptyEnvFrom(process.env, await buildEnvPath())
+}
+
 export class PtyManager {
   private sessions = new Map<string, Session>()
   private readonly onData: (ptyId: string, data: string) => void
@@ -233,15 +307,29 @@ export class PtyManager {
    * session that ended on its own, not only one the user closed by hand.
    */
   private readonly onExit: (ptyId: string, code: number, signal: number | undefined, sessionId: string) => void
+  /**
+   * A remote asked one of our sessions for a password.
+   *
+   * Reports the fact and nothing else: no password is read, held or passed
+   * here — ssh turns echo off, so the bytes never appear in the stream this
+   * scans in the first place. `hostId` is Stoke's own id for the host the
+   * session was launched against; `prompt` carries the far end's text for
+   * display only. Whether to offer anything at all is index.ts's decision
+   * (`shouldOfferKey` against the settings), and installing anything at all
+   * needs a user press (`CH.sshEnroll`).
+   */
+  private readonly onSshAuth: (ptyId: string, hostId: string, prompt: SshAuthPrompt) => void
 
   // Explicit fields rather than TS parameter properties, matching ContextWatcher
   // so the main-process modules stay runnable under node's type stripping.
   constructor(
     onData: (ptyId: string, data: string) => void,
-    onExit: (ptyId: string, code: number, signal: number | undefined, sessionId: string) => void
+    onExit: (ptyId: string, code: number, signal: number | undefined, sessionId: string) => void,
+    onSshAuth: (ptyId: string, hostId: string, prompt: SshAuthPrompt) => void
   ) {
     this.onData = onData
     this.onExit = onExit
+    this.onSshAuth = onSshAuth
   }
 
   /**
@@ -410,14 +498,7 @@ export class PtyManager {
 
     const spec = spawnSpec(exe, args)
 
-    const env: Record<string, string> = {}
-    for (const [k, v] of Object.entries(process.env)) {
-      if (v === undefined) continue
-      if (STRIP_ENV.includes(k)) continue
-      env[k] = v
-    }
-
-    // buildEnvPath and the native spawn are the only things between here and
+    // buildPtyEnv and the native spawn are the only things between here and
     // proc.onExit being registered below that can throw - and settingsFile
     // above has already written statusKey's .settings.json (and maybe .cmd)
     // to disk by this point. A project folder deleted since the launcher
@@ -426,13 +507,7 @@ export class PtyManager {
     // ever runs from an exit handler this session never gets to register.
     let proc: IPty
     try {
-      // One PATH key, not two: on Windows the copied env already holds `Path`,
-      // and a second `PATH` beside it lost to the stale one (cli.ts setPathKey).
-      setPathKey(env, await buildEnvPath())
-      env.TERM = 'xterm-256color'
-      env.COLORTERM = 'truecolor'
-      // Tell Claude Code it is inside a wrapper, in case that ever matters to it.
-      env.TERM_PROGRAM = 'Stoke'
+      const env = await buildPtyEnv()
       /*
        * Which way round the colours are, in the one form a TUI already reads.
        *
@@ -514,6 +589,8 @@ export class PtyManager {
       length: 0,
       bannerWindow: null,
       bannerScanned: 0,
+      hostId: opts.host?.id ?? null,
+      sshAuth: opts.host ? newSshAuthScan() : null,
       startedAt: now,
       lastActivityAt: now,
       cols: Math.max(20, opts.cols || 120),
@@ -558,6 +635,19 @@ export class PtyManager {
       if (session.bannerWindow === null && session.bannerScanned < BANNER_SCAN_LIMIT) {
         session.bannerScanned += data.length
         session.bannerWindow = windowFromBanner(session.chunks.join(''))
+      }
+      /*
+       * Is the far end asking for a password? Only ever for a session launched
+       * against a host (`sshAuth` is null otherwise), and `sshAuthStep` closes
+       * its own window on the first escape byte, at 16 KB, or once it has
+       * fired — ssh asks three times by default and the user is offered a key
+       * once. Nothing here reads a password: it is typed with echo off, so it
+       * is not in this stream at all.
+       */
+      if (session.sshAuth) {
+        const { next, fire } = sshAuthStep(session.sshAuth, data)
+        session.sshAuth = next
+        if (fire && session.hostId) this.onSshAuth(ptyId, session.hostId, fire)
       }
       this.onData(ptyId, data)
       for (const fn of this.subscribers) fn(ptyId, data)
