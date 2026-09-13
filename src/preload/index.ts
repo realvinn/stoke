@@ -40,7 +40,8 @@ const api: StokeApi = {
   },
 
   cli: {
-    info: () => ipcRenderer.invoke(CH.cliInfo)
+    info: () => ipcRenderer.invoke(CH.cliInfo),
+    detect: () => ipcRenderer.invoke(CH.cliDetect)
   },
 
   usage: {

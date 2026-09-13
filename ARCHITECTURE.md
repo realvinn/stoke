@@ -703,6 +703,17 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
   usageView.ts      the plan-limit chip's arithmetic, framed as what is left and when it
                     comes back. Pure, so a suite can hold it
   color.ts          contrast, APCA and oklch maths behind the ladder and the accent ink
+  codingClis.ts     the coding CLIs Stoke can look for — id, label, and the executable
+                    names to try per platform (Windows needs .exe/.cmd/.bat spelled out,
+                    since an npm install is a .cmd shim). Detection only: Stoke can
+                    LAUNCH nothing but claude, because the ring, resume, the worklog and
+                    the plan chip are all fed by Claude Code's own transcript format
+  updateCheck.ts    "Up to date, checked at 14:32" for both update panels, and every
+                    state that must NOT show a green badge — an error, a download in
+                    flight, a version that could not be read, a channel behind latest
+  sshAuth.ts        recognising that a remote is asking for a PASSWORD rather than for a
+                    key passphrase or a sudo password, and whether to offer to enroll a
+                    key. The tail anchor is the load-bearing rule; gotcha 75
   api.ts            the type of window.stoke, shared by preload and renderer
 scripts/          the verify-*.mts suites, make-icon.cjs
   ci-verify.mjs     derives CI's suite list from the `check` chain and fails on a stale

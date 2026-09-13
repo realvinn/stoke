@@ -80,7 +80,7 @@ src/remote/          mobile web UI, built separately to out/remote
 src/shared/          compiled by BOTH tsconfigs, so no `node:` imports (browser-only voice.ts is
                      excluded from the node project by name). types, ipc.ts, themes,
                      ladder/themeGen/accent/notation/color, paths, drop, claudeConfig, worklog,
-                     statusLine, usageView, providers, ui.ts. A new terminal or wallpaper field needs its default
+                     statusLine, usageView, providers, codingClis, updateCheck, sshAuth, ui.ts. A new terminal or wallpaper field needs its default
                      in TERMINAL_DEFAULTS/WALLPAPER_DEFAULTS AND a line in clampTerminal/
                      clampWallpaper (all in ui.ts) in the same change: the clamps rebuild the
                      object from named keys, so a field they miss hydrates as undefined

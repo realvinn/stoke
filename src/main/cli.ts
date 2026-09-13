@@ -4,6 +4,9 @@ import { homedir, tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { promisify } from 'node:util'
 import type { CliInfo, LaunchOptions } from '@shared/types'
+// Relative and with the extension: this module is run directly under
+// `node --experimental-strip-types`, which resolves no path aliases.
+import { binNamesFor, CODING_CLIS, type CodingCliStatus } from '../shared/codingClis.ts'
 
 const execFileAsync = promisify(execFile)
 
@@ -189,23 +192,55 @@ function isFile(p: string): boolean {
 }
 
 /** Executable name variants to try inside each search directory. */
-function candidateNames(): string[] {
-  return isWin ? ['claude.exe', 'claude.cmd', 'claude.bat', 'claude'] : ['claude']
+function candidateNames(): readonly string[] {
+  return binNamesFor(CODING_CLIS[0], process.platform)
 }
 
-/** Find the claude executable, honouring an explicit user override first. */
-export async function findClaude(override: string | null): Promise<string | null> {
-  if (override && isFile(override)) return override
-
+/**
+ * Find an executable on the same PATH a session would get.
+ *
+ * Factored out of `findClaude` rather than duplicated, because the search path
+ * is the interesting part and it is not `process.env.PATH`: `buildEnvPath` puts
+ * the version-manager shim directories ahead of the system ones and, where it
+ * can, asks a login shell — the only channel that finds a CLI installed by
+ * mise/asdf/fnm when Stoke was started from the Dock (gotcha 52). A second copy
+ * of this would answer differently on exactly the machines where the answer is
+ * hard to get right.
+ */
+export async function findTool(names: readonly string[]): Promise<string | null> {
   const searchPath = await buildEnvPath()
   for (const dir of searchPath.split(delimiter)) {
     if (!dir) continue
-    for (const name of candidateNames()) {
+    for (const name of names) {
       const full = join(dir, name)
       if (isFile(full)) return full
     }
   }
   return null
+}
+
+/** Find the claude executable, honouring an explicit user override first. */
+export async function findClaude(override: string | null): Promise<string | null> {
+  if (override && isFile(override)) return override
+  return findTool(candidateNames())
+}
+
+/**
+ * Which of the coding CLIs Stoke knows about are on this machine.
+ *
+ * Reports paths, nothing more. Stoke cannot yet RUN any of these but `claude` —
+ * the context ring, resume, the worklog and the plan-limit chip are all fed by
+ * Claude Code's own transcript format and its statusLine hook — so this answers
+ * "have I got it?" and deliberately stops there, rather than offering a picker
+ * that records a preference nothing reads.
+ */
+export async function detectCodingClis(): Promise<CodingCliStatus[]> {
+  return Promise.all(
+    CODING_CLIS.map(async (cli) => ({
+      id: cli.id,
+      path: await findTool(binNamesFor(cli, process.platform))
+    }))
+  )
 }
 
 /**

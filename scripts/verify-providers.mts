@@ -1,3 +1,4 @@
+import { binNamesFor, CODING_CLIS, cliStatusLine } from '../src/shared/codingClis.ts'
 /*
  * Provider env mapping is the contract between Settings and a spawned Claude
  * session. It used to be "whatever the shell exported"; a GUI launch sees none
@@ -104,8 +105,6 @@ console.log('\napply — openrouter')
   check('auth token', env.ANTHROPIC_AUTH_TOKEN, 'sk-or-v1-test')
   ok('API key explicitly empty (not deleted)', env.ANTHROPIC_API_KEY === '')
   check('gateway discovery', env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY, '1')
-  check('openai key injected', env.OPENAI_API_KEY, 'sk-openai')
-  check('xai key injected', env.XAI_API_KEY, 'xai-test')
   ok('PATH preserved', env.PATH === '/usr/bin')
 }
 
@@ -127,17 +126,33 @@ console.log('\napply — anthropic clears gateway leftovers')
   ok('discovery cleared', env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY === undefined)
 }
 
-console.log('\napply — default leaves anthropic alone, still injects openai/xai')
+console.log('\napply — default leaves the shell alone, and injects no third-party keys')
 {
   const env: Record<string, string> = { ANTHROPIC_API_KEY: 'from-shell' }
-  applyProviderEnv(env, {
-    ...DEFAULT_PROVIDERS,
-    openaiApiKey: 'sk-o',
-    xaiApiKey: 'xai'
-  })
+  applyProviderEnv(env, { ...DEFAULT_PROVIDERS })
   check('anthropic untouched', env.ANTHROPIC_API_KEY, 'from-shell')
-  check('openai set', env.OPENAI_API_KEY, 'sk-o')
-  check('xai set', env.XAI_API_KEY, 'xai')
+  /*
+   * A regression guard, not a tautology. OPENAI_API_KEY and XAI_API_KEY used to
+   * be stored and injected into every session, and neither did anything to it:
+   * Claude Code speaks neither wire format, so the only thing they could reach
+   * was a separate CLI the user would run inside the session — which reads its
+   * own config anyway. Holding somebody's OpenAI and xAI keys on disk to set
+   * variables nothing consumes is a liability with no feature attached, so they
+   * were removed. This fails if they come back.
+   */
+  ok('no OPENAI_API_KEY is set', env.OPENAI_API_KEY === undefined)
+  ok('no XAI_API_KEY is set', env.XAI_API_KEY === undefined)
+}
+
+console.log('\nthe fields that no longer exist stay gone')
+{
+  // A settings file written by an older build still carries them. Hydration
+  // must drop them rather than carry a secret forward for nothing.
+  const stale = hydrateSettings({
+    providers: { ...DEFAULT_PROVIDERS, openaiApiKey: 'sk-o', xaiApiKey: 'xai' } as never
+  }).providers as Record<string, unknown>
+  ok('an old openaiApiKey is not carried forward', stale.openaiApiKey === undefined)
+  ok('nor an old xaiApiKey', stale.xaiApiKey === undefined)
 }
 
 console.log('\nhints')
@@ -221,9 +236,7 @@ console.log('\na saved block survives a settings round trip')
     customBaseUrl: 'http://127.0.0.1:8787',
     customAuthToken: 'bridge-token',
     anthropicApiKey: 'sk-ant-kept',
-    openrouterApiKey: 'sk-or-v1-kept',
-    openaiApiKey: 'sk-proj-kept',
-    xaiApiKey: 'xai-kept'
+    openrouterApiKey: 'sk-or-v1-kept'
   }
   check('every provider field round-trips', hydrateSettings({ providers: saved }).providers, saved)
 
@@ -239,6 +252,49 @@ console.log('\na saved block survives a settings round trip')
       return env.ANTHROPIC_API_KEY === 'from-shell' && !('ANTHROPIC_BASE_URL' in env)
     })()
   )
+}
+
+console.log('\nthe coding CLIs Stoke knows about')
+/*
+ * Detection replaced the two dead API keys. The list itself is worth pinning:
+ * a Windows binary is usually an npm `.cmd` shim rather than an `.exe`, and a
+ * bare name finds neither, so a platform that silently lost its variants would
+ * report every CLI as missing on Windows and nothing here would notice.
+ */
+{
+  const ids = CODING_CLIS.map((c) => c.id)
+  check('claude is first, because findClaude reads its names from this list', ids[0], 'claude')
+  check('and the other three are the ones asked for', ids.slice(1).sort(), ['codex', 'grok', 'opencode'])
+  ok('every id is unique', new Set(ids).size === ids.length)
+  for (const c of CODING_CLIS) {
+    const win = binNamesFor(c, 'win32')
+    const posix = binNamesFor(c, 'darwin')
+    check(`${c.id}: one bare name on posix`, posix, [c.id])
+    ok(
+      `${c.id}: windows tries .exe, .cmd and .bat as well as the bare name`,
+      ['.exe', '.cmd', '.bat'].every((ext) => win.includes(`${c.id}${ext}`)) && win.includes(c.id),
+      JSON.stringify(win)
+    )
+    ok(`${c.id}: the bare name is last on windows, so a real .exe wins`, win[win.length - 1] === c.id)
+    ok(`${c.id}: links somewhere over https`, c.home.startsWith('https://'))
+  }
+  check('linux gets the posix names, not the windows ones', binNamesFor(CODING_CLIS[1], 'linux'), ['codex'])
+
+  /*
+   * The wording, which is the part that can be wrong in a way that costs
+   * someone an afternoon: when the login-shell probe has failed, "not
+   * installed" is a statement about Stoke's PATH rather than about the machine
+   * (gotcha 52), and following it means reinstalling something already there.
+   */
+  const codex = CODING_CLIS[1]
+  check('a found CLI shows its path', cliStatusLine(codex, { id: 'codex', path: '/usr/bin/codex' }, false), '/usr/bin/codex')
+  check('a missing one says so plainly', cliStatusLine(codex, { id: 'codex', path: null }, false), 'Not installed.')
+  ok(
+    'but not when the login-shell probe failed — then it may be a PATH problem',
+    /PATH problem/.test(cliStatusLine(codex, { id: 'codex', path: null }, true)) &&
+      !/^Not installed/.test(cliStatusLine(codex, { id: 'codex', path: null }, true))
+  )
+  ok('an absent entry reads the same as a null path', cliStatusLine(codex, undefined, false) === 'Not installed.')
 }
 
 if (failures) {

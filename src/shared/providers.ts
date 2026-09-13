@@ -12,11 +12,16 @@
  *   - Anthropic console key  -> ANTHROPIC_API_KEY (X-Api-Key)
  *   - OpenRouter / gateways  -> ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN
  *                              (Bearer), with ANTHROPIC_API_KEY explicitly ""
- *   - OpenAI / Codex         -> OPENAI_API_KEY (Codex CLI reads this; Claude
- *                              Code does not speak OpenAI wire format)
- *   - xAI / Grok             -> XAI_API_KEY (bridges / MCP / Codex custom
- *                              providers). Direct Anthropic-skin on api.x.ai
- *                              is deprecated; use a bridge URL via Custom.
+ *
+ * There were two more, OPENAI_API_KEY and XAI_API_KEY, and they are gone. Both
+ * were injected into every session and neither did anything to it: Claude Code
+ * does not speak either wire format, so the only thing they could reach was a
+ * separate CLI the user would then run inside the session — which reads its own
+ * config anyway. Storing somebody's OpenAI and xAI keys to set environment
+ * variables nothing consumes is a liability with no feature attached to it. If
+ * you want Claude Code driven by another model, that is OpenRouter or a Custom
+ * Anthropic-compatible gateway above, both of which actually work. Whether the
+ * other CLIs are installed is answered by `codingClis.ts` instead.
  *
  * Pure module: no electron, no fs. Asserted by scripts/verify-providers.mts.
  */
@@ -51,16 +56,6 @@ export interface ProviderSettings {
    * guaranteed to work with Claude Code's tool use.
    */
   openrouterModelDiscovery: boolean
-  /**
-   * OpenAI / Codex API key. Always injected as OPENAI_API_KEY when non-empty,
-   * regardless of claudeAuth. Does not drive Claude Code by itself.
-   */
-  openaiApiKey: string
-  /**
-   * xAI / Grok API key. Always injected as XAI_API_KEY when non-empty.
-   * Point Claude Code at a local Anthropic-compatible bridge via Custom.
-   */
-  xaiApiKey: string
 }
 
 export const DEFAULT_PROVIDERS: ProviderSettings = {
@@ -69,9 +64,7 @@ export const DEFAULT_PROVIDERS: ProviderSettings = {
   openrouterApiKey: '',
   customBaseUrl: '',
   customAuthToken: '',
-  openrouterModelDiscovery: false,
-  openaiApiKey: '',
-  xaiApiKey: ''
+  openrouterModelDiscovery: false
 }
 
 const AUTH_MODES: readonly ClaudeAuthMode[] = ['default', 'anthropic', 'openrouter', 'custom']
@@ -101,8 +94,6 @@ export function hydrateProviders(raw: unknown): ProviderSettings {
     customBaseUrl: tidyKey(r.customBaseUrl).replace(/\/+$/, ''),
     customAuthToken: tidyKey(r.customAuthToken),
     openrouterModelDiscovery: r.openrouterModelDiscovery === true,
-    openaiApiKey: tidyKey(r.openaiApiKey),
-    xaiApiKey: tidyKey(r.xaiApiKey)
   }
 }
 
@@ -191,8 +182,6 @@ export function keyFormatHint(kind: 'anthropic' | 'openrouter' | 'openai' | 'xai
  * back to a cached Anthropic login or a parent-process key when the variable
  * is merely absent.
  *
- * OPENAI_API_KEY / XAI_API_KEY are applied whenever set, so Codex and Grok
- * tooling see them even when Claude auth stays on Default.
  *
  * Returns the same object for chaining / tests.
  */
@@ -201,9 +190,6 @@ export function applyProviderEnv(
   providers: ProviderSettings
 ): Record<string, string> {
   const p = hydrateProviders(providers)
-
-  if (p.openaiApiKey) env.OPENAI_API_KEY = p.openaiApiKey
-  if (p.xaiApiKey) env.XAI_API_KEY = p.xaiApiKey
 
   switch (p.claudeAuth) {
     case 'default':
@@ -243,8 +229,6 @@ export function providersSummary(p: ProviderSettings): string {
   const keys: string[] = []
   if (p.anthropicApiKey) keys.push('Anthropic')
   if (p.openrouterApiKey) keys.push('OpenRouter')
-  if (p.openaiApiKey) keys.push('OpenAI/Codex')
-  if (p.xaiApiKey) keys.push('xAI/Grok')
   const auth =
     p.claudeAuth === 'default'
       ? 'Claude auth: default (login / inherited env)'

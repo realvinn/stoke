@@ -35,6 +35,8 @@ export const CH = {
 
   // cli
   cliInfo: 'cli:info',
+  /** Which known coding CLIs are on this machine, and where. */
+  cliDetect: 'cli:detect',
 
   // plan limits
   usageRead: 'usage:read',

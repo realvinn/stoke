@@ -22,7 +22,7 @@ import type {
 } from '@shared/types'
 import { EmbeddedBrowser } from './browser.ts'
 import { clearWallpaper, mimeFor, storeWallpaper, WALLPAPER_SCHEME, wallpaperFileFor } from './wallpaper.ts'
-import { probeClaude } from './cli.ts'
+import { detectCodingClis, probeClaude } from './cli.ts'
 import { ContextWatcher } from './context.ts'
 import { findSessionFile, listProjects, listSessions } from './projects.ts'
 import { indexSessions } from './sessionIndex.ts'
@@ -1394,6 +1394,7 @@ function registerIpc(): void {
 
   /* ------------------------------------------------------------------- cli */
   ipcMain.handle(CH.cliInfo, () => probeClaude(getSettings().claudePath))
+  ipcMain.handle(CH.cliDetect, () => detectCodingClis())
 
   /* ---------------------------------------------------------- plan limits */
   /*

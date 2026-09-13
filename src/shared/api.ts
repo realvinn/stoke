@@ -1,4 +1,5 @@
 import type { CreateProfileInput, ProfilePlan } from './profiles'
+import type { CodingCliStatus } from './codingClis'
 import type {
   ActivityReport,
   BrowserState,
@@ -278,6 +279,14 @@ export interface StokeApi {
 
   cli: {
     info(): Promise<CliInfo>
+    /**
+     * Which of the coding CLIs Stoke knows about are installed, and where.
+     *
+     * Reports only. Stoke can launch `claude` and nothing else yet — the
+     * context ring, resume and the worklog are all fed by Claude Code's own
+     * transcript format — so this answers "have I got it?" and stops there.
+     */
+    detect(): Promise<CodingCliStatus[]>
   }
 
   usage: {
