@@ -174,8 +174,12 @@ instructive way:
   incoming session's wrapper rewrites the payload roughly three times a second, so it reappears
   within the tick. `.settings.json` and `.cmd` are written once at launch and never again — so
   exactly the two files that cannot heal themselves are the two that stay missing.
-- **"The boot sweep and the CLI were ruled out"** was correct, and ruling out the two obvious
-  suspects is what made the third one invisible. The deleter was Stoke's own exit handler.
+- **"The boot sweep and the CLI were ruled out"** was half right, and the half that was wrong is
+  gotcha 74. The CLI is innocent. The sweep was acquitted by running it *against a copy* — which
+  tested `sweepStaleSessionFiles()` on the real clock, the one call that is genuinely safe, and
+  never tested the one the SUITE makes with a 2033 clock against the real shared directory. That
+  one empties it. Both mechanisms are real and they are not alternatives: the race breaks a
+  relaunch for one session, the suite quietly wipes every session on the machine.
 - **"Harmless, the CLI reads `--settings` once at startup"** inverted the risk. Reading it once at
   startup is precisely what makes it fatal: the one moment the file must exist is the moment the
   replacement is starting, which is the moment the outgoing handler is firing.
@@ -192,3 +196,10 @@ The general shape, which is gotcha 20 seen from the other end: **claiming before
 protects you from a second caller arriving; it does nothing about a FIRST caller arriving late.**
 Any resource named after something stable (a session id, a project path, a host alias) rather than
 per-launch needs an owner, or a dying predecessor will clean up its successor.
+
+> **Checked on 2026-09-13, after the fix.** An adversarial pass that was asked to refute this could
+> not refute the mechanism, but it did refute the ATTRIBUTION: the original note recorded "the
+> installed app's sessionS", plural, in one event, and a late `proc.onExit` can only ever touch the
+> one key being relaunched. A directory-wide deleter was needed to explain that, and there is one —
+> gotcha 74. Ownership does not help there: `sweepStaleSessionFiles` goes straight to `rmSync`
+> without consulting `fileOwners`, by design, since its whole job is files whose owner is gone.

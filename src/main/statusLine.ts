@@ -848,9 +848,19 @@ function fileKeyAndKind(name: string): { fileKey: string; kind: 'payload' | 'set
  * Never throws: every filesystem call is individually guarded, matching
  * `writeStatusLineWrapper`'s contract, because a sweep that took the app's
  * boot down with it would be strictly worse than the leak it exists to fix.
+ *
+ * `dir` exists so a TEST can point this at its own fixtures. It defaults to the
+ * shared directory and the app never passes it — but a suite that sweeps the
+ * real directory with a made-up clock deletes the live files of every Stoke
+ * running on the machine, which is precisely the dev-vs-installed hazard the
+ * paragraph above describes, and `verify-statusline.mts` did exactly that for
+ * five weeks (gotcha 74). Both arguments have to be faked together: a fixed
+ * `now` is only hermetic if the files it is compared against are fixtures too.
  */
-export function sweepStaleSessionFiles(now: number = Date.now()): void {
-  const dir = statusLineDir()
+export function sweepStaleSessionFiles(
+  now: number = Date.now(),
+  dir: string = statusLineDir()
+): void {
   let names: string[]
   try {
     names = readdirSync(dir)

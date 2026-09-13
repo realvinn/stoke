@@ -383,6 +383,9 @@ rule file named on the group line.
 - **62.** End every verify suite by setting `process.exitCode` from its failures, and add suites
   only to the `check` chain — `scripts/ci-verify.mjs` derives CI from it; a hand-kept second list
   drifts.
+- **74.** Fake every input or none: a suite that hands a function a synthetic clock must hand it
+  synthetic paths too (`sweepStaleSessionFiles(now, dir)`), and must assert a bystander survives —
+  a fixed clock over the real shared directory deletes every running Stoke's live files, greenly.
 
 ## Standing traps when driving the app
 
@@ -396,12 +399,12 @@ rule file named on the group line.
 - **`app.exit()` does not flush a piped stdout** — write the result to a file and read that back.
 - **Nested backticks inside a template literal end it early**, as a SyntaxError that points at the
   wrong place. Build anything injected into a page from an array of lines.
-- **A `.settings.json` missing from `$TMPDIR/stoke/statusline/` is gotcha 73**, not a mystery: the
-  outgoing PTY's exit handler deleting the incoming session's file during a relaunch. This entry
-  used to say it was harmless and unexplained, and told you not to investigate — it cost a
-  user-visible "Settings file not found" on every unlucky relaunch. The surviving payload beside it
-  was the clue, not the alibi: the wrapper rewrites that file three times a second, so only the
-  files written once at launch stay missing.
+- **A `.settings.json` missing from `$TMPDIR/stoke/statusline/` has two causes, both found and
+  both fixed**: gotcha 73 (a relaunch's outgoing PTY deleting the incoming session's file) and
+  gotcha 74 (`npm run check` sweeping the real shared directory with a 2033 clock, which wiped
+  every running Stoke). This entry used to call it harmless and unexplained and tell you not to
+  investigate. The surviving payload beside it was the clue, not the alibi: the wrapper rewrites
+  that file three times a second, so only the write-once files stay missing.
 - **The usage endpoint is undocumented** (`usage.ts`): tolerate missing fields and report
   unavailable — a wrong number in a status bar is worse than a blank one.
 - **A `Page.captureScreenshot` with a `clip` ends any pointer drag in progress**: DevTools

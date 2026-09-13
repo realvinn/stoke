@@ -874,9 +874,18 @@ try {
   /*
    * sweepStaleSessionFiles is the only cleanup that ever runs for a session
    * that crashed, was SIGKILLed, or never survived to register its exit
-   * handler — see pty.ts. Entirely hermetic: SWEEP_NOW is a fixed instant far
-   * from the real clock, and every fixture's mtime is set explicitly with
-   * utimesSync, never left to whatever the OS happens to stamp on write.
+   * handler — see pty.ts.
+   *
+   * Hermetic in BOTH arguments, which is the whole point (gotcha 74). SWEEP_NOW
+   * is a fixed instant far from the real clock and every fixture's mtime is set
+   * explicitly with utimesSync — but a fixed clock alone is not hermeticity, it
+   * is the opposite: relative to an instant seven years ahead, EVERY real file
+   * in the shared directory is stale, no live payload can be fresh, and the
+   * protection branch this block exists to prove can never fire for them. This
+   * ran against `statusLineDir()` for five weeks and deleted the .settings.json
+   * and .cmd of every Stoke session open on the machine on every `npm run
+   * check` — the exact dev-vs-installed hazard the assertions below claim the
+   * sweep prevents. So the fixtures get a directory of their own.
    */
   const SWEEP_NOW = 2_000_000_000_000 // an arbitrary fixed instant, not the real clock
   const LONG_AGO = (SWEEP_NOW - 7 * 24 * 60 * 60 * 1000) / 1000 // well past any plausible threshold; utimesSync wants seconds
@@ -887,17 +896,33 @@ try {
   const freshKey = 'stoke-verify-sweep-fresh'
   const liveSessionKey = 'stoke-verify-sweep-live'
   const deadSessionKey = 'stoke-verify-sweep-dead'
-  const staleFile = statusLinePayloadFile(staleKey)
-  const freshFile = statusLinePayloadFile(freshKey)
-  const liveSettingsFile = join(statusLineDir(), `${liveSessionKey}.settings.json`)
-  const liveCmdFile = join(statusLineDir(), `${liveSessionKey}.cmd`)
-  const livePayloadFile = statusLinePayloadFile(liveSessionKey)
-  const deadSettingsFile = join(statusLineDir(), `${deadSessionKey}.settings.json`)
-  const deadCmdFile = join(statusLineDir(), `${deadSessionKey}.cmd`)
-  const deadPayloadFile = statusLinePayloadFile(deadSessionKey)
-  const wrapperFile = join(statusLineDir(), 'wrapper.mjs')
+  // A directory of this suite's own, never the shared one.
+  const sweepDir = join(tmpdir(), 'stoke', `verify-sweep-${process.pid}`)
+  mkdirSync(sweepDir, { recursive: true })
+  const staleFile = join(sweepDir, `${staleKey}.json`)
+  const freshFile = join(sweepDir, `${freshKey}.json`)
+  const liveSettingsFile = join(sweepDir, `${liveSessionKey}.settings.json`)
+  const liveCmdFile = join(sweepDir, `${liveSessionKey}.cmd`)
+  const livePayloadFile = join(sweepDir, `${liveSessionKey}.json`)
+  const deadSettingsFile = join(sweepDir, `${deadSessionKey}.settings.json`)
+  const deadCmdFile = join(sweepDir, `${deadSessionKey}.cmd`)
+  const deadPayloadFile = join(sweepDir, `${deadSessionKey}.json`)
+  // Stand-ins for the two shared files, by basename — NEVER_SWEEP matches on
+  // the name, so a copy in the fixture directory exercises the same branch
+  // without backdating the real ones out from under a running Stoke.
+  const wrapperFile = join(sweepDir, 'wrapper.mjs')
+  const shimFile = join(sweepDir, 'run.sh')
+
+  // A stand-in for somebody else's live session, in the SHARED directory, with
+  // an ordinary real-clock mtime — i.e. ancient relative to SWEEP_NOW. If the
+  // sweep under test ever goes back to reading statusLineDir(), this is the
+  // file it eats, and the check below turns that into a red run instead of a
+  // silent afternoon.
+  const realBystander = join(statusLineDir(), 'stoke-verify-sweep-bystander.settings.json')
 
   try {
+    writeFileSync(realBystander, '{}', 'utf8')
+
     writeFileSync(staleFile, '{}', 'utf8')
     setMtime(staleFile, LONG_AGO)
 
@@ -923,14 +948,16 @@ try {
     writeFileSync(deadPayloadFile, '{}', 'utf8')
     setMtime(deadPayloadFile, LONG_AGO)
 
-    // wrapper.mjs and the shim (`shim`, written earlier in this suite) are
-    // shared infrastructure that writeStatusLineWrapper rewrites on every
-    // launch — backdated deliberately, so a sweep that treated them like any
-    // other file would remove them.
+    // wrapper.mjs and the shim are shared infrastructure that
+    // writeStatusLineWrapper rewrites on every launch — backdated
+    // deliberately, so a sweep that treated them like any other file would
+    // remove them.
+    writeFileSync(wrapperFile, '// wrapper', 'utf8')
     setMtime(wrapperFile, LONG_AGO)
-    setMtime(shim, LONG_AGO)
+    writeFileSync(shimFile, '#!/bin/sh\n', 'utf8')
+    setMtime(shimFile, LONG_AGO)
 
-    sweepStaleSessionFiles(SWEEP_NOW)
+    sweepStaleSessionFiles(SWEEP_NOW, sweepDir)
 
     check('a stale payload with nobody left to own it is removed', existsSync(staleFile), false)
     check(
@@ -951,7 +978,15 @@ try {
       [false, false, false]
     )
     check('wrapper.mjs is never removed, no matter its age', existsSync(wrapperFile), true)
-    check('and neither is the platform shim', existsSync(shim), true)
+    check('and neither is the platform shim', existsSync(shimFile), true)
+    // The point of the fixture directory, asserted rather than assumed: a real
+    // session's files sitting in the SHARED directory are untouched by a sweep
+    // run with a clock seven years ahead.
+    check(
+      'the shared directory is not what a fixed-clock sweep just swept',
+      existsSync(realBystander),
+      true
+    )
   } finally {
     cleanup(
       staleFile,
@@ -961,10 +996,14 @@ try {
       livePayloadFile,
       deadSettingsFile,
       deadCmdFile,
-      deadPayloadFile
+      deadPayloadFile,
+      wrapperFile,
+      shimFile,
+      realBystander,
+      sweepDir
     )
-    // Both were deliberately backdated above; restore a wrapper an ordinary
-    // run would actually trust before this suite hands control back.
+    // Restore a wrapper an ordinary run would actually trust before this suite
+    // hands control back.
     writeStatusLineWrapper()
   }
 } finally {
