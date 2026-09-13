@@ -1712,5 +1712,26 @@ check('out of range is clamped', [ringBeads(-1), ringBeads(2)], [[0, 1, 2, 3, 4,
   }
 }
 
+/*
+ * The shim a WINDOWS machine is told to run is `run.cmd`, not `run.sh`.
+ *
+ * Every other win32 assertion in this file matches the path as `[^"]+`, so for
+ * five weeks none of them could see that `shimName()` ignored the platform it
+ * was handed and read `process.platform` instead — which on this machine made
+ * the "what does Windows get?" answer name a POSIX shell script. Harmless in
+ * production, where the two agree, and fatal to the only tests that can ever
+ * look at the Windows branch from here. The filename is the assertion now.
+ */
+{
+  const winHook = hookCommand('shim-name', 'win32', false)
+  const winBash = hookCommand('shim-name', 'win32', true)
+  const posix = hookCommand('shim-name', 'darwin', false)
+  check('a win32 statusLine command names run.cmd', /[\\/]run\.cmd" /.test(winHook), true)
+  check('and so does the Git Bash spelling of it', /[\\/]run\.cmd" /.test(winBash), true)
+  check('a win32 command never names run.sh', winHook.includes('run.sh'), false)
+  check('a posix command names run.sh', /[\\/]run\.sh" /.test(posix), true)
+  check('and never names run.cmd', posix.includes('run.cmd'), false)
+}
+
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
 process.exitCode = failures ? 1 : 0

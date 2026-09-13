@@ -188,8 +188,20 @@ if (cmd) {
 // shown as no status line.
 `
 
-function shimName(): string {
-  return process.platform === 'win32' ? 'run.cmd' : 'run.sh'
+/**
+ * The shim's filename on `platform`.
+ *
+ * Takes the platform rather than reading it, because `statusLineCommand` and
+ * `hookCommand` both take one — and for five weeks this function ignored it and
+ * read `process.platform` instead. Production was unaffected (on a real Windows
+ * machine the two agree), but it meant every win32 assertion in
+ * `verify-statusline.mts` was asserting a command line that named `run.sh`, so
+ * the Windows filename had no test at all. Same family as gotcha 74: a function
+ * that takes a fake input and then consults the real one for part of its answer
+ * is not answering the question it was asked.
+ */
+function shimName(platform: NodeJS.Platform = process.platform): string {
+  return platform === 'win32' ? 'run.cmd' : 'run.sh'
 }
 
 /**
@@ -360,7 +372,7 @@ function shimCommand(
   hasGitBash: boolean
 ): string {
   const line =
-    `"${join(statusLineDir(), shimName())}" "${key(sessionId)}"` + (mode ? ` "${mode}"` : '')
+    `"${join(statusLineDir(), shimName(platform))}" "${key(sessionId)}"` + (mode ? ` "${mode}"` : '')
   /*
    * On Windows the syntax depends on which shell the CLI will use, and it uses
    * whichever one it can find.
