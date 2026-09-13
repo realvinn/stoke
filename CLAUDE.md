@@ -212,6 +212,9 @@ rule file named on the group line.
   CLI prefers, rejects it.
 - **64.** Count `output_tokens` in `contextUsed` with input and both cache fields: the last reply
   is already in context, and understating context pressure is the dangerous direction.
+- **73.** Release a session's statusLine files BY OWNER (`claimSessionFiles`/`releaseSessionFiles`,
+  claimed before the write): a relaunch reuses the status key, so the outgoing PTY's late
+  `proc.onExit` would delete the incoming session's `--settings` file and `claude` refuses to start.
 
 **Usage chip** — `.claude/rules/usage.md`
 - **21.** Treat a missing `rate_limits` or either missing window as unknown, never 0% (none arrive
@@ -393,10 +396,12 @@ rule file named on the group line.
 - **`app.exit()` does not flush a piped stdout** — write the result to a file and read that back.
 - **Nested backticks inside a template literal end it early**, as a SyntaxError that points at the
   wrong place. Build anything injected into a page from an array of lines.
-- **`.settings.json` files have gone missing from `$TMPDIR/stoke/statusline/`**, twice, unexplained
-  and not reproduced; the payload `.json` beside them survived. The boot sweep and the CLI were
-  both ruled out by test, and it is harmless (the CLI reads `--settings` once at startup), so do
-  not spend an afternoon treating it as a writer bug.
+- **A `.settings.json` missing from `$TMPDIR/stoke/statusline/` is gotcha 73**, not a mystery: the
+  outgoing PTY's exit handler deleting the incoming session's file during a relaunch. This entry
+  used to say it was harmless and unexplained, and told you not to investigate — it cost a
+  user-visible "Settings file not found" on every unlucky relaunch. The surviving payload beside it
+  was the clue, not the alibi: the wrapper rewrites that file three times a second, so only the
+  files written once at launch stay missing.
 - **The usage endpoint is undocumented** (`usage.ts`): tolerate missing fields and report
   unavailable — a wrong number in a status bar is worse than a blank one.
 - **A `Page.captureScreenshot` with a `clip` ends any pointer drag in progress**: DevTools

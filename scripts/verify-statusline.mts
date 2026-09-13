@@ -23,7 +23,9 @@ import {
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import {
+  claimSessionFiles,
   clearSessionFiles,
+  releaseSessionFiles,
   gitBashPath,
   hookCommand,
   parseHookEvent,
@@ -1613,6 +1615,62 @@ check('out of range is clamped', [ringBeads(-1), ringBeads(2)], [[0, 1, 2, 3, 4,
     }
   }
   check('0.1% to 100%: a bead is drawn exactly when it clears the arc', bad.slice(0, 3), [])
+}
+
+/*
+ * Gotcha 73: a relaunch reuses the status key, so the outgoing PTY's exit must
+ * not delete the incoming one's files.
+ *
+ * This models `relaunchTab` exactly — it fires `pty.kill` WITHOUT awaiting it
+ * and starts the replacement immediately, so the outgoing child is still dying
+ * while the incoming one writes. The four steps below are the four calls that
+ * really happen, in the order they really happen in; before the owner argument
+ * existed, step 4 deleted step 3's file and `claude` exited on startup with
+ * "Settings file not found".
+ *
+ * Written against the real functions rather than a model of them, because the
+ * bug was entirely in which call won, not in what any one call computed.
+ */
+{
+  const KEY = 'verify-statusline-relaunch-0000-0000-0000'
+  const settings = join(statusLineDir(), `${KEY}.settings.json`)
+  const input = { sessionId: KEY, ultracode: false, hideStatusLine: false, passthroughCommand: '' }
+  const OLD = 'pty-outgoing'
+  const NEW = 'pty-incoming'
+  try {
+    claimSessionFiles(KEY, OLD)
+    writeSessionSettingsFile(input)
+    check('relaunch: the outgoing session has its settings file', existsSync(settings), true)
+
+    releaseSessionFiles(KEY, OLD) // pty.kill(), synchronous, before the restart
+    check('relaunch: kill() takes it away', existsSync(settings), false)
+
+    claimSessionFiles(KEY, NEW) // the replacement claims the same key...
+    writeSessionSettingsFile(input) // ...and writes the same filename
+    check('relaunch: the incoming session wrote its own', existsSync(settings), true)
+
+    // The outgoing child finally dies and proc.onExit fires — late, and after
+    // the replacement is already on disk. THIS is the one that used to delete
+    // a live session's settings out from under it.
+    releaseSessionFiles(KEY, OLD)
+    check(
+      'relaunch: a late exit from the outgoing PTY leaves the incoming file alone',
+      existsSync(settings),
+      true
+    )
+
+    // Ownership must not become a leak: the owner's own exit still cleans up.
+    releaseSessionFiles(KEY, NEW)
+    check('relaunch: the owner\'s own exit still removes it', existsSync(settings), false)
+
+    // An unclaimed key still clears, so every path with no newer launch to
+    // worry about keeps working as a plain teardown.
+    writeSessionSettingsFile(input)
+    releaseSessionFiles(KEY, 'nobody-ever-claimed-this')
+    check('release clears a key no launch ever claimed', existsSync(settings), false)
+  } finally {
+    clearSessionFiles(KEY)
+  }
 }
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)

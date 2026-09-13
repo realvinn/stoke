@@ -698,9 +698,69 @@ export function writeSessionSettingsFile(input: SessionSettingsInput): string | 
   }
 }
 
-/** Remove everything written for one session. Called when its PTY exits. */
+/**
+ * Which launch currently owns each status key's files.
+ *
+ * A status key is NOT unique per launch. `pty.ts` derives it from the session
+ * id, so relaunching or resuming session X gives the new PTY byte for byte the
+ * same key — and therefore the same three filenames — as the PTY it replaces.
+ * That is deliberate (the meter finds a resumed session's payload where it left
+ * it), but it means "delete the files for key X" is ambiguous the moment two
+ * launches for X overlap, and on a relaunch they always do: `relaunchTab` fires
+ * `pty.kill` and does not await it, then starts the replacement immediately, so
+ * the outgoing child is still dying while the incoming one writes.
+ *
+ * Without an owner, the outgoing PTY's `proc.onExit` — which fires whenever the
+ * child finally dies, not when it was asked to — deletes the INCOMING session's
+ * freshly written `<key>.settings.json`, and `claude` exits on startup with
+ * "Settings file not found: ...". The user sees a relaunch that refuses to come
+ * back and has to resume by hand. Intermittent by construction: it depends on
+ * whether the old child dies before or after the new one writes, which is why it
+ * went unexplained for so long and why the payload `.json` appeared to survive
+ * — the new session's wrapper rewrites that three times a second, so it comes
+ * straight back, while `.settings.json` and `.cmd` are written once at launch
+ * and never again. See gotcha 73.
+ */
+const fileOwners = new Map<string, string>()
+
+/**
+ * Take ownership of a status key's files for this launch.
+ *
+ * Call it immediately before writing them, never after: the point is to be the
+ * registered owner for the whole window in which the files exist, and the
+ * outgoing PTY's exit can land anywhere inside it (gotcha 20).
+ */
+export function claimSessionFiles(statusKey: string, owner: string): void {
+  if (!statusKey || !owner) return
+  fileOwners.set(statusKey, owner)
+}
+
+/**
+ * Remove one launch's files — unless a newer launch has claimed the same key,
+ * in which case the files on disk are the newer one's and this is a late exit
+ * handler that must keep its hands off them.
+ *
+ * An unowned key (nothing ever claimed it, or an earlier release already gave
+ * it up) still clears, so this stays a safe teardown for every path that has no
+ * newer launch to worry about.
+ */
+export function releaseSessionFiles(statusKey: string, owner: string): void {
+  if (!statusKey) return
+  const current = fileOwners.get(statusKey)
+  if (current !== undefined && current !== owner) return
+  fileOwners.delete(statusKey)
+  clearSessionFiles(statusKey)
+}
+
+/**
+ * Remove everything written for one session, unconditionally.
+ *
+ * Prefer `releaseSessionFiles` from anything holding a PTY: this one does not
+ * know whether the files it is deleting are still the caller's.
+ */
 export function clearSessionFiles(sessionId: string): void {
   if (!sessionId) return
+  fileOwners.delete(sessionId)
   for (const f of [
     statusLinePayloadFile(sessionId),
     passthroughFile(sessionId),

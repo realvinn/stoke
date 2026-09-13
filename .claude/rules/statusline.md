@@ -1,6 +1,7 @@
 ---
 paths:
   - "src/main/statusLine.ts"
+  - "src/main/pty.ts"
   - "src/main/context.ts"
   - "src/main/sessionFile.ts"
   - "src/shared/statusLine.ts"
@@ -142,3 +143,52 @@ steady state someone reads the ring in. Measured across the four largest real tr
 2,486 consecutive turn pairs: the next prompt grew by at least the previous output in 2,482 of
 them, the rest at cache boundaries. It errs the safe way now — verify-context's own comment
 names understating context pressure as "the one direction this codebase treats as dangerous".
+
+## 73. A status key is not unique per launch, so "delete this session's files" is ambiguous during a relaunch
+
+**`relaunchTab` fires `pty.kill` without awaiting it and starts the replacement immediately, so the
+outgoing PTY is still dying while the incoming one writes — and both use the SAME status key.** The
+key comes from the session id (`pty.ts`: `statusKey = opts.host ? '' : sessionId || randomUUID()`,
+and a `--resume` carries the original id), so the two launches name the same three files. The
+outgoing PTY's `proc.onExit` fires when the child actually dies, not when it was asked to, and it
+used to call `clearSessionFiles(statusKey)` unconditionally. When it lost the race it deleted the
+INCOMING session's `<key>.settings.json`, and `claude` refused to start:
+
+```
+Error: Settings file not found: /var/folders/.../T/stoke/statusline/<id>.settings.json
+```
+
+The relaunch pill finishes, the tab comes back dead, and the user resumes by hand.
+
+**This was in CLAUDE.md's standing traps for months as harmless and unexplained** — "gone missing
+twice, unexplained and not reproduced; the payload `.json` beside them survived... it is harmless
+(the CLI reads `--settings` once at startup)". Every part of that reading was wrong in an
+instructive way:
+
+- **"Not reproduced"** because the reproduction is a sequence, not a state. Nothing is wrong with
+  any single call; the bug is entirely in which of two calls lands last, and that depends on how
+  long `claude` takes to die. `scripts/verify-statusline.mts` reproduces it 100% of the time by
+  simply making the four calls in the order `relaunchTab` makes them.
+- **"The payload survived"** is the strongest clue in the whole note and it was read as evidence
+  AGAINST a deletion. It is evidence for one: `clearSessionFiles` removes all four files, but the
+  incoming session's wrapper rewrites the payload roughly three times a second, so it reappears
+  within the tick. `.settings.json` and `.cmd` are written once at launch and never again — so
+  exactly the two files that cannot heal themselves are the two that stay missing.
+- **"The boot sweep and the CLI were ruled out"** was correct, and ruling out the two obvious
+  suspects is what made the third one invisible. The deleter was Stoke's own exit handler.
+- **"Harmless, the CLI reads `--settings` once at startup"** inverted the risk. Reading it once at
+  startup is precisely what makes it fatal: the one moment the file must exist is the moment the
+  replacement is starting, which is the moment the outgoing handler is firing.
+
+**The fix is ownership, not ordering.** `claimSessionFiles(statusKey, ptyId)` is called immediately
+before the files are written — the `ptyId` is minted early purely so it can be the claim — and
+`releaseSessionFiles(statusKey, ptyId)` refuses to delete a key some newer launch has since claimed.
+An unclaimed key still clears, so every teardown path that has no successor to worry about is
+unchanged. Do not try to fix this by awaiting the kill or sleeping before the start: the exit is
+delivered by the OS whenever the child dies, and there is no duration that is correct for every
+machine.
+
+The general shape, which is gotcha 20 seen from the other end: **claiming before the first await
+protects you from a second caller arriving; it does nothing about a FIRST caller arriving late.**
+Any resource named after something stable (a session id, a project path, a host alias) rather than
+per-launch needs an owner, or a dying predecessor will clean up its successor.

@@ -19,7 +19,7 @@ import {
 } from './cli.ts'
 import { windowFromBanner } from './sessionFile.ts'
 import { buildSshArgs, sshExecutable } from './ssh.ts'
-import { clearSessionFiles } from './statusLine.ts'
+import { claimSessionFiles, releaseSessionFiles } from './statusLine.ts'
 
 export interface StartResult {
   ptyId: string
@@ -220,6 +220,16 @@ export class PtyManager {
      */
     const statusKey = opts.host ? '' : sessionId || randomUUID()
 
+    /*
+     * Minted here rather than after the spawn because it is also this launch's
+     * CLAIM on statusKey's files, and the claim has to be in place before they
+     * are written: a relaunch reuses the same statusKey, and the outgoing PTY's
+     * exit handler can fire at any point from here on (gotcha 73). randomUUID
+     * has no side effects, so moving it earlier costs nothing.
+     */
+    const ptyId = randomUUID()
+    if (statusKey) claimSessionFiles(statusKey, ptyId)
+
     // One --settings, holding both the ultracode key and the statusLine
     // wrapper: a second silently discards the first. Local only — a remote
     // session runs ssh, and this file is on this disk.
@@ -309,11 +319,10 @@ export class PtyManager {
         useConpty: process.platform === 'win32' ? true : undefined
       })
     } catch (err) {
-      clearSessionFiles(statusKey)
+      releaseSessionFiles(statusKey, ptyId)
       throw err
     }
 
-    const ptyId = randomUUID()
     const session: Session = {
       ptyId,
       sessionId,
@@ -363,7 +372,13 @@ export class PtyManager {
       // ever started. Also called from kill() for the app-quit path, where
       // this callback cannot be trusted to run in time — a second call here
       // for the same key is a no-op, not a double-delete.
-      clearSessionFiles(session.statusKey)
+      //
+      // BY OWNER, because this fires when the child actually dies rather than
+      // when it was asked to: on a relaunch the replacement session already
+      // holds this very key, and clearing it unconditionally deletes the new
+      // session's settings file out from under a CLI that has not read it yet
+      // (gotcha 73).
+      releaseSessionFiles(session.statusKey, session.ptyId)
       this.onExit(ptyId, exitCode, signal, session.sessionId)
       for (const fn of this.exitSubscribers) fn(ptyId, exitCode)
     })
@@ -416,9 +431,10 @@ export class PtyManager {
      * Harmless to run twice: proc.onExit below still fires later - for a
      * session that exits on its own, this is the only cleanup that runs -
      * and clearSessionFiles' rmSync already tolerates a file that is already
-     * gone.
+     * gone. It is the LATE one that needed care, not the second one: see
+     * gotcha 73 and the owner argument here.
      */
-    clearSessionFiles(s.statusKey)
+    releaseSessionFiles(s.statusKey, s.ptyId)
   }
 
   /**
