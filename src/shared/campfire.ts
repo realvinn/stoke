@@ -24,7 +24,7 @@
  * up a line per tick and smear the fire up the screen. Short stages are padded
  * with EMPTY rows, never shortened.
  */
-export const CANVAS = { rows: 7, cols: 17 } as const
+export const CANVAS = { rows: 10, cols: 17 } as const
 
 /**
  * The last two rows of every frame, byte-identical in all twelve. A fire that
@@ -33,10 +33,10 @@ export const CANVAS = { rows: 7, cols: 17 } as const
  * cannot show. It is stored ONCE and appended by `frameFor`, so no frame can
  * disagree with another about it by construction.
  */
-export const HEARTH: readonly [string, string] = ['  (===========)', '(====)~~~~(=====)']
+export const HEARTH: readonly [string, string] = ['(===-.,___,.-===)', '_,.-=========-.,_']
 
-/** Rows 0-4 of a frame are flame; 5 and 6 are the hearth. */
-export const FLAME_ROWS = 5
+/** Rows 0-7 of a frame are flame; 8 and 9 are the hearth. */
+export const FLAME_ROWS = 8
 
 export type StageName = 'spark' | 'kindling' | 'burning' | 'roaring'
 
@@ -74,39 +74,41 @@ export function inAlphabet(text: string): boolean {
 /**
  * The twelve frames: four stages of three flicker frames each. Flame rows are
  * stored right-trimmed — the renderer emits `ESC[K` per row rather than padding
- * to 15, which is 3 bytes instead of up to 15 and is correct at any width.
+ * to CANVAS.cols, which is 3 bytes instead of up to 17 and is correct at any
+ * width. Short stages are padded with EMPTY rows at the TOP, so the fire always
+ * sits on the hearth rather than floating.
  */
 export const STAGES: readonly { name: StageName; frames: readonly (readonly string[])[] }[] = [
   {
     name: 'spark',
     frames: [
-      ['', '', '        .', '        ^', '       /#\\'],
-      ['', '', '          ,', '         ^', '       /#\\'],
-      ['', '', '      .', '       ^', '       /#\\']
+      ['', '', '', '', '', '  *     .', '         ^', '         (#)'],
+      ['', '', '', '', '', '   .         *', '          ^', '         (#)'],
+      ['', '', '', '', '', ' ,    ^', '        ^', '         (#)']
     ]
   },
   {
     name: 'kindling',
     frames: [
-      ['', '        .', '       /^\\', '      /+#+\\', '     _/###\\_'],
-      ['', '          ,', '        /^/', '      /+#+\\', '     _/###\\_'],
-      ['', '      *', '      \\^\\', '      /+#+\\', '     _/###\\_']
+      ['', '', '', '', '  *     .      ,', '         (~)', '        (+~)', '       (+#+)'],
+      ['', '', '', '', '   .         *  ^', '          (~)', '        (+~)', '       (+#+)'],
+      ['', '', '', '', ' ,    ^       *', '        (~)', '        (+~)', '       (+#+)']
     ]
   },
   {
     name: 'burning',
     frames: [
-      ['           *', '         /^\\', '     /+\\ /++\\', '    /+#\\/##+\\', '   _/+#####+\\_'],
-      ['             ,', '          /^/', '      /+/ /++/', '    /+#\\/##+\\', '   _/+#####+\\_'],
-      ['       .', '        \\^\\', '    \\+\\ \\++\\', '    /+#\\/##+\\', '   _/+#####+\\_']
+      ['', '', '  *     .      ,', '          (~)', '         (+~)', '        (++~)', '   (~) (+#+)', '      (++#++)'],
+      ['', '', '   .         *  ^', '           (~)', '          (+~)', '        (++~)', '   (~) (+#+)', '      (++#++)'],
+      ['', '', ' ,    ^       *', '         (~)', '        (+~)', '        (++~)', '   (~) (+#+)', '      (++#++)']
     ]
   },
   {
     name: 'roaring',
     frames: [
-      ['    *     ^  .', '     /^\\ /~~\\', '    /++\\/++++\\', '   /+##\\/###+\\', ' _/+#########+\\_'],
-      ['     ,      ^   *', '      /^/ /~~/', '     /++//++++/', '   /+##\\/###+\\', ' _/+#########+\\_'],
-      ['  *      ^   ,', '    \\^\\ \\~~\\', '   \\++\\\\++++\\', '   /+##\\/###+\\', ' _/+#########+\\_']
+      ['  *     .      ,', '         ~    .', '           (~)', '         (+~)', '        (++~)', '   (~) (+#+)', '   (+)(++#++)', '     (++###++)'],
+      ['   .         *  ^', '           ~   .', '            (+~~', '          (+~)', '         (++~)', '   (~) (+#+)', '   (+)(++#++)', '     (++###++)'],
+      [' ,    ^       *', '       ~     .', '          ~~+)', '        (+~)', '       (++~)', '   (~) (+#+)', '   (+)(++#++)', '     (++###++)']
     ]
   }
 ]

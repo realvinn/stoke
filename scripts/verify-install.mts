@@ -36,7 +36,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { HEARTH, STAGES, paint, type ColorMode } from '../src/shared/campfire.ts'
+import { CANVAS, HEARTH, STAGES, paint, type ColorMode } from '../src/shared/campfire.ts'
 import { CACHE_CONTROL, contentTypeFor, routeFor, type InstallerBody } from '../worker/route.ts'
 import { shArtBlock, ps1ArtBlock, extractBlock } from './gen-installer-art.mts'
 
@@ -394,7 +394,11 @@ try {
         reference = got
         ok('the fire hides the cursor before it draws anything', got.startsWith('[?25l'), JSON.stringify(got.slice(0, 12)))
         ok('and restores it last of all, so a failure cannot leave it hidden', got.endsWith('[?25h[0m'), JSON.stringify(got.slice(-12)))
-        check('one redraw per draw, and the canvas is seven rows', got.split('[7A').length - 1, 3)
+        check(
+          `one redraw per draw, and the canvas is ${CANVAS.rows} rows`,
+          got.split(`[${CANVAS.rows}A`).length - 1,
+          3
+        )
         ok('and never the alternate screen buffer', !got.includes('1049'))
       }
       ok(`${shell} draws the fire identically`, got === reference, JSON.stringify(got.slice(0, 80)))
@@ -497,7 +501,11 @@ if (process.platform === 'win32' || !existsSync('/bin/sh')) {
    */
   const mono = execFileSync('/bin/sh', [SH, '--fire-frames', 'none'], { encoding: 'utf8' })
   ok('and the monochrome tier contains no escape byte at all', !mono.includes('\u001b'))
-  check('every frame is exactly the seven rows of the fixed canvas', mono.trimEnd().split('\n').length, 12 * 7)
+  check(
+    `every frame is exactly the ${CANVAS.rows} rows of the fixed canvas`,
+    mono.trimEnd().split('\n').length,
+    12 * CANVAS.rows
+  )
 
   // ---------------------------------------------------------------------------
   console.log('\nwhen the fire burns, and in what')

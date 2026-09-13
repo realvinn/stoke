@@ -48,8 +48,8 @@ try {
 # DO NOT EDIT BY HAND: verify:campfire asserts this block byte for byte against
 # the generator, and a hand-encoded row has already shipped a visible `||` once.
 #
-# Canvas is a fixed 7 rows x 17 columns for every frame, because redraw in
-# place is ESC[7A and nothing else -- a shorter frame walks the cursor up the
+# Canvas is a fixed 10 rows x 17 columns for every frame, because redraw in
+# place is ESC[10A and nothing else -- a shorter frame walks the cursor up the
 # screen a row per tick. Flame rows are stored right-trimmed; emit ESC[K per row
 # rather than padding to the full width.
 #
@@ -66,7 +66,7 @@ try {
 # Print these with [Console]::Out.Write($row), never Write-Host and never a
 # format operator -- $PSStyle.OutputRendering strips escape sequences from
 # anything PowerShell formats, and the art is full of backslashes.
-$FireRows = 7
+$FireRows = 10
 $FireCols = 17
 $FireMs = 125
 $FireFlicker = @(0, 1, 2, 1, 0, 2)
@@ -74,178 +74,250 @@ $FireStagePct = @(8, 35, 75)
 $FireF0 = @'
 
 
-_:        |S:.
-_:        |S:^
-_:       |B:/|C:#|B:\
+
+
+
+_:  |C:*|_:     |S:.
+_:         |S:^
+_:         |B:(|C:#|B:)
 '@
 $FireF1 = @'
 
 
-_:          |S:,
-_:         |S:^
-_:       |B:/|C:#|B:\
+
+
+
+_:   |S:.|_:         |C:*
+_:          |S:^
+_:         |B:(|C:#|B:)
 '@
 $FireF2 = @'
 
 
-_:      |S:.
-_:       |S:^
-_:       |B:/|C:#|B:\
+
+
+
+_: |S:,|_:    |S:^
+_:        |S:^
+_:         |B:(|C:#|B:)
 '@
 $FireF3 = @'
 
-_:        |S:.
-_:       |M:/|S:^|M:\
-_:      |M:/+|C:#|M:+\
-_:     |B:_/|C:###|B:\_
+
+
+
+_:  |C:*|_:     |S:.|_:      |S:,
+_:         |B:(~)
+_:        |B:(+~)
+_:       |B:(+|C:#|B:+)
 '@
 $FireF4 = @'
 
-_:          |S:,
-_:        |M:/|S:^|M:/
-_:      |M:/+|C:#|M:+\
-_:     |B:_/|C:###|B:\_
+
+
+
+_:   |S:.|_:         |C:*|_:  |S:^
+_:          |B:(~)
+_:        |B:(+~)
+_:       |B:(+|C:#|B:+)
 '@
 $FireF5 = @'
 
-_:      |C:*
-_:      |M:\|S:^|M:\
-_:      |M:/+|C:#|M:+\
-_:     |B:_/|C:###|B:\_
+
+
+
+_: |S:,|_:    |S:^|_:       |C:*
+_:        |B:(~)
+_:        |B:(+~)
+_:       |B:(+|C:#|B:+)
 '@
 $FireF6 = @'
-_:           |C:*
-_:         |S:/^\
-_:     |M:/+\|_: |M:/++\
-_:    |M:/+|C:#|M:\/|C:##|M:+\
-_:   |B:_/+|C:#####|B:+\_
+
+
+_:  |C:*|_:     |S:.|_:      |S:,
+_:          |M:(~)
+_:         |B:(+~)
+_:        |B:(++~)
+_:   |B:(~)|_: |B:(+|C:#|B:+)
+_:      |B:(++|C:#|B:++)
 '@
 $FireF7 = @'
-_:             |S:,
-_:          |S:/^/
-_:      |M:/+/|_: |M:/++/
-_:    |M:/+|C:#|M:\/|C:##|M:+\
-_:   |B:_/+|C:#####|B:+\_
+
+
+_:   |S:.|_:         |C:*|_:  |S:^
+_:           |M:(~)
+_:          |B:(+~)
+_:        |B:(++~)
+_:   |B:(~)|_: |B:(+|C:#|B:+)
+_:      |B:(++|C:#|B:++)
 '@
 $FireF8 = @'
-_:       |S:.
-_:        |S:\^\
-_:    |M:\+\|_: |M:\++\
-_:    |M:/+|C:#|M:\/|C:##|M:+\
-_:   |B:_/+|C:#####|B:+\_
+
+
+_: |S:,|_:    |S:^|_:       |C:*
+_:         |M:(~)
+_:        |B:(+~)
+_:        |B:(++~)
+_:   |B:(~)|_: |B:(+|C:#|B:+)
+_:      |B:(++|C:#|B:++)
 '@
 $FireF9 = @'
-_:    |C:*|_:     |S:^|_:  |S:.
-_:     |S:/^\|_: |S:/~~\
-_:    |M:/++\/++++\
-_:   |M:/+|C:##|M:\/|C:###|M:+\
-_: |B:_/+|C:#########|B:+\_
+_:  |C:*|_:     |S:.|_:      |S:,
+_:         |S:~|_:    |S:.
+_:           |M:(~)
+_:         |M:(+~)
+_:        |B:(++~)
+_:   |B:(~)|_: |B:(+|C:#|B:+)
+_:   |B:(+)(++|C:#|B:++)
+_:     |B:(++|C:###|B:++)
 '@
 $FireF10 = @'
-_:     |S:,|_:      |S:^|_:   |C:*
-_:      |S:/^/|_: |S:/~~/
-_:     |M:/++//++++/
-_:   |M:/+|C:##|M:\/|C:###|M:+\
-_: |B:_/+|C:#########|B:+\_
+_:   |S:.|_:         |C:*|_:  |S:^
+_:           |S:~|_:   |S:.
+_:            |M:(+~~
+_:          |M:(+~)
+_:         |B:(++~)
+_:   |B:(~)|_: |B:(+|C:#|B:+)
+_:   |B:(+)(++|C:#|B:++)
+_:     |B:(++|C:###|B:++)
 '@
 $FireF11 = @'
-_:  |C:*|_:      |S:^|_:   |S:,
-_:    |S:\^\|_: |S:\~~\
-_:   |M:\++\\++++\
-_:   |M:/+|C:##|M:\/|C:###|M:+\
-_: |B:_/+|C:#########|B:+\_
+_: |S:,|_:    |S:^|_:       |C:*
+_:       |S:~|_:     |S:.
+_:          |M:~~+)
+_:        |M:(+~)
+_:       |B:(++~)
+_:   |B:(~)|_: |B:(+|C:#|B:+)
+_:   |B:(+)(++|C:#|B:++)
+_:     |B:(++|C:###|B:++)
 '@
 $FireFH = @'
-_:  |L:(===========)
-L:(====)~~~~(=====)
+L:(===-.,___,.-===)
+L:_,.-=========-.,_
 '@
 $FireM0 = @'
 
 
-        .
-        ^
-       /#\
+
+
+
+  *     .
+         ^
+         (#)
 '@
 $FireM1 = @'
 
 
-          ,
-         ^
-       /#\
+
+
+
+   .         *
+          ^
+         (#)
 '@
 $FireM2 = @'
 
 
-      .
-       ^
-       /#\
+
+
+
+ ,    ^
+        ^
+         (#)
 '@
 $FireM3 = @'
 
-        .
-       /^\
-      /+#+\
-     _/###\_
+
+
+
+  *     .      ,
+         (~)
+        (+~)
+       (+#+)
 '@
 $FireM4 = @'
 
-          ,
-        /^/
-      /+#+\
-     _/###\_
+
+
+
+   .         *  ^
+          (~)
+        (+~)
+       (+#+)
 '@
 $FireM5 = @'
 
-      *
-      \^\
-      /+#+\
-     _/###\_
+
+
+
+ ,    ^       *
+        (~)
+        (+~)
+       (+#+)
 '@
 $FireM6 = @'
-           *
-         /^\
-     /+\ /++\
-    /+#\/##+\
-   _/+#####+\_
+
+
+  *     .      ,
+          (~)
+         (+~)
+        (++~)
+   (~) (+#+)
+      (++#++)
 '@
 $FireM7 = @'
-             ,
-          /^/
-      /+/ /++/
-    /+#\/##+\
-   _/+#####+\_
+
+
+   .         *  ^
+           (~)
+          (+~)
+        (++~)
+   (~) (+#+)
+      (++#++)
 '@
 $FireM8 = @'
-       .
-        \^\
-    \+\ \++\
-    /+#\/##+\
-   _/+#####+\_
+
+
+ ,    ^       *
+         (~)
+        (+~)
+        (++~)
+   (~) (+#+)
+      (++#++)
 '@
 $FireM9 = @'
-    *     ^  .
-     /^\ /~~\
-    /++\/++++\
-   /+##\/###+\
- _/+#########+\_
+  *     .      ,
+         ~    .
+           (~)
+         (+~)
+        (++~)
+   (~) (+#+)
+   (+)(++#++)
+     (++###++)
 '@
 $FireM10 = @'
-     ,      ^   *
-      /^/ /~~/
-     /++//++++/
-   /+##\/###+\
- _/+#########+\_
+   .         *  ^
+           ~   .
+            (+~~
+          (+~)
+         (++~)
+   (~) (+#+)
+   (+)(++#++)
+     (++###++)
 '@
 $FireM11 = @'
-  *      ^   ,
-    \^\ \~~\
-   \++\\++++\
-   /+##\/###+\
- _/+#########+\_
+ ,    ^       *
+       ~     .
+          ~~+)
+        (+~)
+       (++~)
+   (~) (+#+)
+   (+)(++#++)
+     (++###++)
 '@
 $FireMH = @'
-  (===========)
-(====)~~~~(=====)
+(===-.,___,.-===)
+_,.-=========-.,_
 '@
 $FireF = @($FireF0, $FireF1, $FireF2, $FireF3, $FireF4, $FireF5, $FireF6, $FireF7, $FireF8, $FireF9, $FireF10, $FireF11)
 $FireM = @($FireM0, $FireM1, $FireM2, $FireM3, $FireM4, $FireM5, $FireM6, $FireM7, $FireM8, $FireM9, $FireM10, $FireM11)
@@ -706,7 +778,10 @@ function Get-FirePlan {
 
   if (-not $reason) {
     try {
-      if ([Console]::WindowHeight -lt 12) { $reason = 'the window is under 12 rows' }
+      # Derived from $FireRows rather than hardcoded, for the reason install.sh
+      # gives at the same test: the canvas has grown once already.
+      $fireMin = $FireRows + 5
+      if ([Console]::WindowHeight -lt $fireMin) { $reason = "the window is under $fireMin rows" }
       elseif ([Console]::WindowWidth -lt 20) { $reason = 'the window is under 20 columns' }
     } catch {
       # No console buffer to measure. Unknown is not a reason to degrade.

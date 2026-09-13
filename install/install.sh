@@ -56,8 +56,8 @@ STOKE_PS1_LINE='irm https://stoke.vinn.dev | iex'
 # DO NOT EDIT BY HAND: verify:campfire asserts this block byte for byte against
 # the generator, and a hand-encoded row has already shipped a visible `||` once.
 #
-# Canvas is a fixed 7 rows x 17 columns for every frame, because redraw in
-# place is ESC[7A and nothing else -- a shorter frame walks the cursor up the
+# Canvas is a fixed 10 rows x 17 columns for every frame, because redraw in
+# place is ESC[10A and nothing else -- a shorter frame walks the cursor up the
 # screen a row per tick. Flame rows are stored right-trimmed; emit ESC[K per row
 # rather than padding to the full width.
 #
@@ -73,135 +73,207 @@ STOKE_PS1_LINE='irm https://stoke.vinn.dev | iex'
 #
 # Print these with a literal format string -- printf '%s' "$row", never
 # printf "$row" -- the art is full of backslashes and % is not escaped here.
-FIRE_ROWS=7
+FIRE_ROWS=10
 FIRE_COLS=17
 FIRE_MS=125
 FIRE_FLICKER='0 1 2 1 0 2'
 FIRE_STAGE_PCT='8 35 75'
 FIRE_F0='
 
-_:        |S:.
-_:        |S:^
-_:       |B:/|C:#|B:\'
+
+
+
+_:  |C:*|_:     |S:.
+_:         |S:^
+_:         |B:(|C:#|B:)'
 FIRE_F1='
 
-_:          |S:,
-_:         |S:^
-_:       |B:/|C:#|B:\'
+
+
+
+_:   |S:.|_:         |C:*
+_:          |S:^
+_:         |B:(|C:#|B:)'
 FIRE_F2='
 
-_:      |S:.
-_:       |S:^
-_:       |B:/|C:#|B:\'
+
+
+
+_: |S:,|_:    |S:^
+_:        |S:^
+_:         |B:(|C:#|B:)'
 FIRE_F3='
-_:        |S:.
-_:       |M:/|S:^|M:\
-_:      |M:/+|C:#|M:+\
-_:     |B:_/|C:###|B:\_'
+
+
+
+_:  |C:*|_:     |S:.|_:      |S:,
+_:         |B:(~)
+_:        |B:(+~)
+_:       |B:(+|C:#|B:+)'
 FIRE_F4='
-_:          |S:,
-_:        |M:/|S:^|M:/
-_:      |M:/+|C:#|M:+\
-_:     |B:_/|C:###|B:\_'
+
+
+
+_:   |S:.|_:         |C:*|_:  |S:^
+_:          |B:(~)
+_:        |B:(+~)
+_:       |B:(+|C:#|B:+)'
 FIRE_F5='
-_:      |C:*
-_:      |M:\|S:^|M:\
-_:      |M:/+|C:#|M:+\
-_:     |B:_/|C:###|B:\_'
-FIRE_F6='_:           |C:*
-_:         |S:/^\
-_:     |M:/+\|_: |M:/++\
-_:    |M:/+|C:#|M:\/|C:##|M:+\
-_:   |B:_/+|C:#####|B:+\_'
-FIRE_F7='_:             |S:,
-_:          |S:/^/
-_:      |M:/+/|_: |M:/++/
-_:    |M:/+|C:#|M:\/|C:##|M:+\
-_:   |B:_/+|C:#####|B:+\_'
-FIRE_F8='_:       |S:.
-_:        |S:\^\
-_:    |M:\+\|_: |M:\++\
-_:    |M:/+|C:#|M:\/|C:##|M:+\
-_:   |B:_/+|C:#####|B:+\_'
-FIRE_F9='_:    |C:*|_:     |S:^|_:  |S:.
-_:     |S:/^\|_: |S:/~~\
-_:    |M:/++\/++++\
-_:   |M:/+|C:##|M:\/|C:###|M:+\
-_: |B:_/+|C:#########|B:+\_'
-FIRE_F10='_:     |S:,|_:      |S:^|_:   |C:*
-_:      |S:/^/|_: |S:/~~/
-_:     |M:/++//++++/
-_:   |M:/+|C:##|M:\/|C:###|M:+\
-_: |B:_/+|C:#########|B:+\_'
-FIRE_F11='_:  |C:*|_:      |S:^|_:   |S:,
-_:    |S:\^\|_: |S:\~~\
-_:   |M:\++\\++++\
-_:   |M:/+|C:##|M:\/|C:###|M:+\
-_: |B:_/+|C:#########|B:+\_'
-FIRE_FH='_:  |L:(===========)
-L:(====)~~~~(=====)'
+
+
+
+_: |S:,|_:    |S:^|_:       |C:*
+_:        |B:(~)
+_:        |B:(+~)
+_:       |B:(+|C:#|B:+)'
+FIRE_F6='
+
+_:  |C:*|_:     |S:.|_:      |S:,
+_:          |M:(~)
+_:         |B:(+~)
+_:        |B:(++~)
+_:   |B:(~)|_: |B:(+|C:#|B:+)
+_:      |B:(++|C:#|B:++)'
+FIRE_F7='
+
+_:   |S:.|_:         |C:*|_:  |S:^
+_:           |M:(~)
+_:          |B:(+~)
+_:        |B:(++~)
+_:   |B:(~)|_: |B:(+|C:#|B:+)
+_:      |B:(++|C:#|B:++)'
+FIRE_F8='
+
+_: |S:,|_:    |S:^|_:       |C:*
+_:         |M:(~)
+_:        |B:(+~)
+_:        |B:(++~)
+_:   |B:(~)|_: |B:(+|C:#|B:+)
+_:      |B:(++|C:#|B:++)'
+FIRE_F9='_:  |C:*|_:     |S:.|_:      |S:,
+_:         |S:~|_:    |S:.
+_:           |M:(~)
+_:         |M:(+~)
+_:        |B:(++~)
+_:   |B:(~)|_: |B:(+|C:#|B:+)
+_:   |B:(+)(++|C:#|B:++)
+_:     |B:(++|C:###|B:++)'
+FIRE_F10='_:   |S:.|_:         |C:*|_:  |S:^
+_:           |S:~|_:   |S:.
+_:            |M:(+~~
+_:          |M:(+~)
+_:         |B:(++~)
+_:   |B:(~)|_: |B:(+|C:#|B:+)
+_:   |B:(+)(++|C:#|B:++)
+_:     |B:(++|C:###|B:++)'
+FIRE_F11='_: |S:,|_:    |S:^|_:       |C:*
+_:       |S:~|_:     |S:.
+_:          |M:~~+)
+_:        |M:(+~)
+_:       |B:(++~)
+_:   |B:(~)|_: |B:(+|C:#|B:+)
+_:   |B:(+)(++|C:#|B:++)
+_:     |B:(++|C:###|B:++)'
+FIRE_FH='L:(===-.,___,.-===)
+L:_,.-=========-.,_'
 FIRE_M0='
 
-        .
-        ^
-       /#\'
+
+
+
+  *     .
+         ^
+         (#)'
 FIRE_M1='
 
-          ,
-         ^
-       /#\'
+
+
+
+   .         *
+          ^
+         (#)'
 FIRE_M2='
 
-      .
-       ^
-       /#\'
+
+
+
+ ,    ^
+        ^
+         (#)'
 FIRE_M3='
-        .
-       /^\
-      /+#+\
-     _/###\_'
+
+
+
+  *     .      ,
+         (~)
+        (+~)
+       (+#+)'
 FIRE_M4='
-          ,
-        /^/
-      /+#+\
-     _/###\_'
+
+
+
+   .         *  ^
+          (~)
+        (+~)
+       (+#+)'
 FIRE_M5='
-      *
-      \^\
-      /+#+\
-     _/###\_'
-FIRE_M6='           *
-         /^\
-     /+\ /++\
-    /+#\/##+\
-   _/+#####+\_'
-FIRE_M7='             ,
-          /^/
-      /+/ /++/
-    /+#\/##+\
-   _/+#####+\_'
-FIRE_M8='       .
-        \^\
-    \+\ \++\
-    /+#\/##+\
-   _/+#####+\_'
-FIRE_M9='    *     ^  .
-     /^\ /~~\
-    /++\/++++\
-   /+##\/###+\
- _/+#########+\_'
-FIRE_M10='     ,      ^   *
-      /^/ /~~/
-     /++//++++/
-   /+##\/###+\
- _/+#########+\_'
-FIRE_M11='  *      ^   ,
-    \^\ \~~\
-   \++\\++++\
-   /+##\/###+\
- _/+#########+\_'
-FIRE_MH='  (===========)
-(====)~~~~(=====)'
+
+
+
+ ,    ^       *
+        (~)
+        (+~)
+       (+#+)'
+FIRE_M6='
+
+  *     .      ,
+          (~)
+         (+~)
+        (++~)
+   (~) (+#+)
+      (++#++)'
+FIRE_M7='
+
+   .         *  ^
+           (~)
+          (+~)
+        (++~)
+   (~) (+#+)
+      (++#++)'
+FIRE_M8='
+
+ ,    ^       *
+         (~)
+        (+~)
+        (++~)
+   (~) (+#+)
+      (++#++)'
+FIRE_M9='  *     .      ,
+         ~    .
+           (~)
+         (+~)
+        (++~)
+   (~) (+#+)
+   (+)(++#++)
+     (++###++)'
+FIRE_M10='   .         *  ^
+           ~   .
+            (+~~
+          (+~)
+         (++~)
+   (~) (+#+)
+   (+)(++#++)
+     (++###++)'
+FIRE_M11=' ,    ^       *
+       ~     .
+          ~~+)
+        (+~)
+       (++~)
+   (~) (+#+)
+   (+)(++#++)
+     (++###++)'
+FIRE_MH='(===-.,___,.-===)
+_,.-=========-.,_'
 # The palette, as the bytes AFTER ESC. ESC itself comes from `printf '\033'`
 # -- octal, because \e is a bash/zsh extension that dash and busybox ash lack.
 SGR_TC_C='[38;2;255;243;226m'
@@ -382,7 +454,14 @@ fire_plan() {
     fire_c=$(term_cols)
     case $fire_l in
       '' | *[!0-9]*) : ;;
-      *) if [ "$fire_l" -lt 12 ]; then FIRE_WHY='the window is under 12 rows'; fi ;;
+      # Derived from FIRE_ROWS, never hardcoded: the canvas grew from 7 rows to
+      # 10 once, and a threshold left at 12 would have let the fire paint into a
+      # 13-row window and smear up the screen a row per tick. FIRE_ROWS is
+      # generated from campfire.ts's CANVAS, so the two cannot drift again. The
+      # +5 is the surrounding text the run prints around the fire.
+      *) if [ "$fire_l" -lt "$((FIRE_ROWS + 5))" ]; then
+           FIRE_WHY="the window is under $((FIRE_ROWS + 5)) rows"
+         fi ;;
     esac
     if [ -z "$FIRE_WHY" ]; then
       case $fire_c in

@@ -41,6 +41,7 @@ import {
   CANVAS,
   FLICKER,
   FRAME_MS,
+  FLAME_ROWS,
   HEARTH,
   RESET,
   SGR,
@@ -153,7 +154,7 @@ export function shArtBlock(): string {
   frames.forEach((rows, i) => {
     out.push(`FIRE_F${i}='${rows.map((r, y) => encodeRow(r, y)).join('\n')}'`)
   })
-  out.push(`FIRE_FH='${HEARTH.map((r, y) => encodeRow(r, y + 5)).join('\n')}'`)
+  out.push(`FIRE_FH='${HEARTH.map((r, y) => encodeRow(r, y + FLAME_ROWS)).join('\n')}'`)
   frames.forEach((rows, i) => {
     out.push(`FIRE_M${i}='${rows.join('\n')}'`)
   })
@@ -187,7 +188,7 @@ export function ps1ArtBlock(): string {
     out.push(`$${name} = @'`, body, `'@`)
   }
   frames.forEach((rows, i) => here(`FireF${i}`, rows.map((r, y) => encodeRow(r, y)).join('\n')))
-  here('FireFH', HEARTH.map((r, y) => encodeRow(r, y + 5)).join('\n'))
+  here('FireFH', HEARTH.map((r, y) => encodeRow(r, y + FLAME_ROWS)).join('\n'))
   frames.forEach((rows, i) => here(`FireM${i}`, rows.join('\n')))
   here('FireMH', HEARTH.join('\n'))
   out.push(`$FireF = @(${frames.map((_, i) => `$FireF${i}`).join(', ')})`)

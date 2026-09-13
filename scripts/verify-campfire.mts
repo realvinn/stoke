@@ -24,32 +24,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, w
 import { tmpdir } from 'node:os'
 import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import {
-  ALPHABET,
-  CANVAS,
-  ESC,
-  FLICKER,
-  HEARTH,
-  RESET,
-  SGR,
-  STAGES,
-  STAGE_THRESHOLDS,
-  colorFor,
-  colorMode,
-  decileOf,
-  decodeRow,
-  degradedReason,
-  encodeRow,
-  frameFor,
-  inAlphabet,
-  paint,
-  plainProgress,
-  renderPlan,
-  stageFor,
-  type ColorKey,
-  type ColorMode,
-  type Terminal
-} from '../src/shared/campfire.ts'
+import { ALPHABET, CANVAS, ESC, FLAME_ROWS, FLICKER, HEARTH, RESET, SGR, STAGES, STAGE_THRESHOLDS, colorFor, colorMode, decileOf, decodeRow, degradedReason, encodeRow, frameFor, inAlphabet, paint, plainProgress, renderPlan, stageFor, type ColorKey, type ColorMode, type Terminal } from '../src/shared/campfire.ts'
 import { BEGIN_MARK, END_MARK, extractBlock, ps1ArtBlock, shArtBlock } from './gen-installer-art.mts'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -107,8 +82,10 @@ console.log('\nthe hearth never moves')
  */
 ok(
   'the last two rows of every frame are the hearth, byte for byte',
-  FRAMES.every((f) => f[5] === HEARTH[0] && f[6] === HEARTH[1]),
-  JSON.stringify(FRAMES.map((f) => f.slice(5)).filter((h) => h[0] !== HEARTH[0] || h[1] !== HEARTH[1]))
+  FRAMES.every((f) => f[FLAME_ROWS] === HEARTH[0] && f[FLAME_ROWS + 1] === HEARTH[1]),
+  JSON.stringify(
+    FRAMES.map((f) => f.slice(FLAME_ROWS)).filter((h) => h[0] !== HEARTH[0] || h[1] !== HEARTH[1])
+  )
 )
 /*
  * CANVAS.cols is the WIDEST row, not a width every row is padded to. The draw
@@ -232,19 +209,27 @@ console.log('\nwhich glyph gets which colour')
  * spark stage the only content is on rows 3-4, so a row map paints the ember in
  * the DIMMEST tier and the fire opens looking like ash. Glyph class first.
  */
-check('a core glyph is white-hot even on the bottom flame row', colorFor('#', 4), 'C')
+/*
+ * Every row index here is derived from FLAME_ROWS rather than written as a
+ * number. The canvas grew from 7 rows to 10 once, and the four assertions that
+ * had 5 and 6 in them went red while the code they test was still correct:
+ * `colorFor` asks `rowIndex >= FLAME_ROWS`, so a literal 5 stopped meaning
+ * "the hearth" and started meaning "a flame row" without a word of it changing.
+ */
+const LAST_FLAME = FLAME_ROWS - 1
+check('a core glyph is white-hot even on the bottom flame row', colorFor('#', LAST_FLAME), 'C')
 check('and at the top', colorFor('*', 0), 'C')
-check('the lone ember at spark stage is a core inside a base wedge', frameFor(0, 0)[4], '       /#\\')
-check('  its centre', colorFor('#', 4), 'C')
-check('  its wedge', colorFor('/', 4), 'B')
-check('a spark glyph is a spark wherever it is', colorFor('^', 4), 'S')
+check('the lone ember at spark stage is a core inside a round shoulder', frameFor(0, 0)[LAST_FLAME], '         (#)')
+check('  its centre', colorFor('#', LAST_FLAME), 'C')
+check('  the shoulder around it', colorFor('(', LAST_FLAME), 'B')
+check('a spark glyph is a spark wherever it is', colorFor('^', LAST_FLAME), 'S')
 check('an ordinary glyph takes its row colour, high', colorFor('(', 1), 'S')
 check('  middle', colorFor('(', 2), 'M')
-check('  low', colorFor(')', 4), 'B')
-check('the hearth is log-coloured whatever the glyph', colorFor('.', 5), 'L')
-check('  including its dashes and commas', colorFor(',', 6), 'L')
+check('  low', colorFor(')', LAST_FLAME), 'B')
+check('the hearth is log-coloured whatever the glyph', colorFor('.', FLAME_ROWS), 'L')
+check('  including its dashes and commas', colorFor(',', FLAME_ROWS + 1), 'L')
 check('a space is never painted', colorFor(' ', 0), '_')
-check('  not even in the hearth', colorFor(' ', 6), '_')
+check('  not even in the hearth', colorFor(' ', FLAME_ROWS + 1), '_')
 
 console.log('\nthe segment encoding round-trips')
 /*
@@ -465,14 +450,16 @@ console.log('\nthe golden sheet')
  * `node scripts/campfire-demo.mts --sweep --mode=<tier>` and look at it.
  */
 const GOLDEN: Record<ColorMode, string> = {
-  // Re-cut for the v0.9.6 fire. Looked at with
+  // Re-cut for the 10-row fire. Looked at with
   // `node scripts/campfire-demo.mts --sweep --mode=none` first, as the note
   // above says to, rather than pasted from the failure output — a golden hash
-  // updated without looking is a golden hash that pins whatever broke.
-  truecolor: '47b0483a5dc8c0dec1b173d00187ef36cf855afb04860fbad14b030125a48c46',
-  ansi256: '3ced726869fa2529e2251ada94b5cd74cb5d8d188f5aa8bc5613de600e333231',
-  ansi16: '45288e6dfd17f61db5c8503a6739ca34eb74b3fce3a99e16019f69c0dbbd2e18',
-  none: '3d0004a699949c4d00454cdc9b32a846d1fb25a0640ed9fd1d647c713d352e9e'
+  // updated without looking is a golden hash that pins whatever broke. The
+  // segmentation was read back per row as well, because this round moved
+  // FLAME_ROWS: the hearth must come out one `L` run, not glyph-coloured.
+  truecolor: '1163dbfebb2b1df5ab645d2e45c021488f98abecc8bbbcef989bf5b8fc4d00aa',
+  ansi256: '355814d67c0ddd5ffb3a0ee7281a708f547d3c56044d2f4dca6917e77fea1004',
+  ansi16: '7da17b9889b1c4ddae70342bb1051b4e7841a74f53f267bbbf9504b4fb6d41cd',
+  none: '29f48d24dbd65b378ab903cb4b724bdefb002ab89fd4571a923d83f948d90315'
 }
 for (const mode of MODES) {
   const sheet = FRAMES.map((f) => paint(f, mode)).join('\n--\n')
@@ -685,15 +672,18 @@ if (process.platform === 'win32') {
   ].join('\n')
   const script = join(dir, 'art.sh')
   writeFileSync(script, sh + driver)
+  // Every bound here comes from the module, never from a literal: the canvas
+  // has grown once (7 rows to 10), and a hardcoded 5 silently reinterprets the
+  // hearth as flame rows while still comparing two strings for equality.
   const want =
-    FRAMES.map((f) => f.slice(0, 5))
+    FRAMES.map((f) => f.slice(0, FLAME_ROWS))
       .map((rows) => rows.map((r, y) => encodeRow(r, y)).join('\n') + '\n' + rows.join('\n'))
       .join('\n') +
     '\n' +
-    HEARTH.map((r, y) => encodeRow(r, y + 5)).join('\n') +
+    HEARTH.map((r, y) => encodeRow(r, y + FLAME_ROWS)).join('\n') +
     '\n' +
     HEARTH.join('\n') +
-    '\n7 0 1 2 1 0 2 8 35 75\n'
+    `\n${CANVAS.rows} ${FLICKER.join(' ')} ${STAGE_THRESHOLDS.map((t) => Math.round(t * 100)).join(' ')}\n`
   for (const shell of ['/bin/sh', '/bin/bash', '/bin/zsh', '/bin/dash']) {
     if (!existsSync(shell)) {
       console.log(`  SKIP  ${shell} is not on this machine`)
