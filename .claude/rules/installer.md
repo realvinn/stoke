@@ -372,3 +372,49 @@ delete the comment.
 > What is still genuinely unrun on macOS: the write into the real `/Applications` and the App
 > Management refusal behind it, and `osascript -e 'quit app "Stoke"'` against a running copy
 > (which will also raise a TCC prompt the first time, from whatever terminal ran the one-liner).
+
+## 76. Cloudflare attaches a custom domain long before it publishes the DNS record
+
+`npm run deploy:install` printed `Deployed stoke-install triggers / stoke.vinn.dev (custom
+domain)` and `GET /accounts/{id}/workers/domains` listed the hostname as `enabled: true` with a
+`cert_id` — while both of the zone's own authoritative nameservers answered **NXDOMAIN** for it,
+and kept answering NXDOMAIN for about thirty minutes. Every API surface the wrangler token can
+reach said "done"; only DNS disagreed.
+
+The binding and the record are two separate objects. The account-level binding (hostname -> script,
+plus the certificate) is what `wrangler deploy` creates synchronously. The DNS record inside the
+zone is written separately and asynchronously, and it is what actually makes the name resolve.
+
+**Prove where the gap is before touching anything**, by pinning the hostname to the zone's own
+proxy IP — any address the apex resolves to — and letting the edge route on the `Host` header:
+
+```
+curl --resolve stoke.vinn.dev:443:104.21.9.126 \
+  -o /dev/null -w '%{http_code} %{ssl_verify_result}\n' https://stoke.vinn.dev
+200 0
+```
+
+`200` with `ssl_verify_result=0` means the Worker, the route and the certificate are all already
+correct and DNS is the only missing hop. A proxied record decides what resolvers answer, never
+what the edge does with a `Host` header, so this test is valid while the name does not exist.
+
+Then **wait**, and do not escalate. Deleting the binding (`DELETE
+/accounts/{id}/workers/domains/{id}`) and re-running the deploy does not force the record out any
+sooner; re-issuing the attach as a `PUT` is an upsert that returns the existing row unchanged and
+writes nothing. Both were tried here and neither helped — the record simply appeared later.
+
+The wrangler OAuth token cannot see or write DNS records at all: `GET /zones/{id}/dns_records` is
+`403 code 10000`, and there is no `dns_records` scope anywhere in the scope set wrangler requests.
+So the dashboard is the only fallback if a record genuinely never lands, and the record to add by
+hand is a **proxied A** record (`192.0.2.0`, the address Cloudflare documents for originless
+setups) or a proxied AAAA to `100::` — never a CNAME, which a custom domain refuses to coexist
+with.
+
+> **Checked against the code on 2026-09-13.** First real deploy of the Worker. After the record
+> published, all three bodies were confirmed live by User-Agent — curl -> `install.sh`, a
+> PowerShell UA -> `install.ps1`, a browser UA -> the landing page — plus `/install.sh` and
+> `/install.ps1` as readable URLs, and the shipped body piped into `sh` ran `--print-plan pipe`
+> (`animate=0 / color=none / reason=stdout is not a terminal`) and `--sha512`, which returned
+> base64 ending `==`. No bot challenge appeared for a plain `curl` UA, so Bot Fight Mode is not
+> currently interstitialling the hostname — that remains worth re-checking, since a challenge is
+> HTML with status 200 that `curl -f` passes (71).

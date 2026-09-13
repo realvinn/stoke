@@ -185,6 +185,11 @@ rule file named on the group line.
   script rather than a copy, under every shell: keep `setopt sh_word_split` for zsh, which
   parses the script perfectly and could not run a line of it. Put the renamed-aside
   `/Applications/Stoke.app` back whenever the new copy does not land.
+- **76.** After `deploy:install`, expect the custom domain to be `enabled` with a `cert_id` while
+  DNS still says NXDOMAIN — the binding and the record are written separately, and the record took
+  ~30 min. Prove the gap with `curl --resolve <host>:443:<zone proxy IP>` (200 + `ssl=0` means only
+  DNS is missing), then wait: delete-and-redeploy does not hurry it, and the wrangler token has no
+  `dns_records` scope to fix it by hand.
 
 **Docked browser** — `.claude/rules/browser.md`
 - **3.** Mount every `WebContentsView` in the window's view tree at once and merely hide it —
