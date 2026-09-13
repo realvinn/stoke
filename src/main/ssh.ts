@@ -23,6 +23,10 @@ import { readFile, readdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { delimiter, dirname, isAbsolute, join } from 'node:path'
 import type { SshHost } from '@shared/types'
+// Relative and with the extension, not the `@shared` alias: this module is run
+// directly by `verify-ssh.mts` under `node --experimental-strip-types`, which
+// resolves no aliases. A type-only import would be erased and could use either.
+import { buildRemoteInstallCommand, isEnrollableAlias } from '../shared/sshAuth.ts'
 
 const isWin = process.platform === 'win32'
 
@@ -157,8 +161,8 @@ function isFile(p: string): boolean {
   }
 }
 
-/** Expand `~` at the front of an Include argument. ssh does this too. */
-function expandTilde(p: string): string {
+/** Expand `~` at the front of an Include argument, or of an `ssh -G` identityfile. ssh does this too. */
+export function expandTilde(p: string): string {
   if (p === '~') return homedir()
   if (p.startsWith('~/') || p.startsWith('~\\')) return join(homedir(), p.slice(2))
   return p
@@ -381,6 +385,117 @@ export function buildSshArgs(host: SshHost): string[] {
   if (command) args.push(command)
 
   return args
+}
+
+/* ---------------------------------------------------------- key enrollment */
+
+/**
+ * The `ssh-copy-id` to spawn, or null if the machine has none.
+ *
+ * Null is a real branch rather than a defensive one: `ssh-copy-id` is a
+ * `#!/bin/sh` script, and Windows OpenSSH ships `ssh.exe`, `ssh-keygen.exe` and
+ * `ssh-add.exe` and no such script. Returning a bare name there — the way
+ * `sshExecutable` deliberately does — would turn "not installed" into an ENOENT
+ * from a spawn, which reads like a crash rather than like a platform that needs
+ * the fallback path.
+ */
+export function sshCopyIdExecutable(): string | null {
+  const out: string[] = []
+  if (!isWin) out.push('/usr/bin/ssh-copy-id', '/usr/local/bin/ssh-copy-id', '/opt/homebrew/bin/ssh-copy-id')
+  const name = isWin ? 'ssh-copy-id.exe' : 'ssh-copy-id'
+  for (const dir of (process.env.PATH ?? '').split(delimiter)) {
+    if (dir) out.push(join(dir, name))
+  }
+  for (const candidate of out) if (isFile(candidate)) return candidate
+  return null
+}
+
+/**
+ * `ssh-copy-id`'s argv.
+ *
+ * `-o EscapeChar=none` rather than `-e none`: gotcha 29 must survive here too —
+ * the user types a password into this PTY and a `~` after a newline would be an
+ * ssh escape — but `ssh-copy-id` is a wrapper with no `-e` flag of its own. It
+ * forwards `-o` to ssh, and `EscapeChar` is the `ssh_config` spelling of the
+ * same setting (`ssh -G -o EscapeChar=none` reports `escapechar none`).
+ *
+ * `NumberOfPasswordPrompts=1` so a mistyped password fails immediately instead
+ * of sitting through ssh's default three, which from inside a pane looks like
+ * the tool having hung.
+ *
+ * `ControlPath=none` because a multiplexed connection would reuse an existing
+ * authenticated channel and prove nothing about whether the key works.
+ *
+ * Every `-o` precedes the alias: ssh stops parsing options at the first
+ * non-option argument, the same rule `buildSshArgs` is pinned on.
+ */
+export function buildCopyIdArgs(host: SshHost, pubPath: string): string[] | null {
+  const alias = host.alias.trim()
+  if (!isEnrollableAlias(alias)) return null
+  return [
+    '-i',
+    pubPath,
+    '-o',
+    'EscapeChar=none',
+    '-o',
+    'ControlPath=none',
+    '-o',
+    'NumberOfPasswordPrompts=1',
+    alias
+  ]
+}
+
+/**
+ * The no-`ssh-copy-id` path: plain ssh running an append command.
+ *
+ * Null when the key line is not provably safe to embed, or the alias is not
+ * provably safe to hand to ssh as a destination. Refuse, never escape — the
+ * same rule `SAFE_ID` applies to session ids, and for the same reason: this
+ * string is executed by the far machine's login shell.
+ */
+export function buildEnrollFallbackArgs(host: SshHost, pubkeyLine: string): string[] | null {
+  const alias = host.alias.trim()
+  if (!isEnrollableAlias(alias)) return null
+  const command = buildRemoteInstallCommand(pubkeyLine)
+  if (!command) return null
+  return ['-e', 'none', '-t', '-o', 'ControlPath=none', '-o', 'NumberOfPasswordPrompts=1', alias, command]
+}
+
+/**
+ * Does public-key authentication actually work for this host?
+ *
+ * The only thing that may set `SshHost.keyEnrolled`. `ssh-copy-id` exiting 0
+ * means the key reached `authorized_keys`, which is not the same claim:
+ * `PubkeyAuthentication no`, an `AuthorizedKeysFile` pointing somewhere else, or
+ * a group-writable home directory each produce a happy install and a server that
+ * still asks for a password. Only a connection can tell, and this is the
+ * connection — `BatchMode=yes` guarantees it can never prompt, so it either
+ * succeeds on the key or exits non-zero.
+ *
+ * Lifted from `ssh-copy-id`'s own pre-flight check, which uses the same three
+ * options for the same reason.
+ */
+export function buildPubkeyProbeArgs(host: SshHost, keyPath: string): string[] | null {
+  const alias = host.alias.trim()
+  if (!isEnrollableAlias(alias)) return null
+  return [
+    '-o',
+    'BatchMode=yes',
+    '-o',
+    'PreferredAuthentications=publickey',
+    '-o',
+    'IdentitiesOnly=yes',
+    '-o',
+    'ControlPath=none',
+    '-o',
+    'ConnectTimeout=10',
+    '-e',
+    'none',
+    '-i',
+    keyPath,
+    alias,
+    'exit'
+  ]
 }
 
 /* ------------------------------------------------------ the remote transcript */

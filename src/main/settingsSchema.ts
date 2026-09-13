@@ -106,6 +106,19 @@ export const DEFAULT_SETTINGS: Settings = {
   // reach the app at all, and the line it suppresses duplicates chrome Stoke
   // already draws.
   hideStatusLine: true,
+  /*
+   * 'ask', not 'auto', and not 'off'.
+   *
+   * Not 'auto': this writes a public key into somebody else's authorized_keys
+   * and may generate key material. The repo's own defaulting argument points
+   * the same way — betaUpdates is false because "a beta is a build whose risky
+   * paths have not been run; it has to be asked for rather than arrive".
+   *
+   * Not 'off': detection is read-only. It looks at bytes already painted on the
+   * user's own screen, opens no connection and adds nothing to the argv
+   * (gotcha 19). Shipping it off means nobody finds the feature they asked for.
+   */
+  sshKeyEnroll: 'ask',
   // Background only: a notification for the tab in front is noise, one for a
   // tab behind another — or a window behind another app — is the point.
   notifications: 'background',
@@ -277,7 +290,15 @@ export function hydrateSettings(raw: unknown): Settings {
           // `worklog` decides whether an agent reads that machine's transcripts,
           // so anything that is not literally `true` is off. A truthy leftover
           // from a hand-edited file must not switch it on.
-          .map((h) => ({ ...h, worklog: h.worklog === true }))
+          // Same rule for the key fields: `keyEnrollRefused` silences an offer
+          // and `keyEnrolled` claims a key is installed and working, so a
+          // truthy leftover from a hand-edited file must not assert either.
+          .map((h) => ({
+            ...h,
+            worklog: h.worklog === true,
+            keyEnrollRefused: h.keyEnrollRefused === true,
+            keyEnrolled: h.keyEnrolled === true
+          }))
       : [],
     worklogGroups: Array.isArray(r.worklogGroups)
       ? r.worklogGroups.filter((g): g is string => typeof g === 'string')
@@ -297,6 +318,11 @@ export function hydrateSettings(raw: unknown): Settings {
     // `!== false` and not `=== true`: a file written before this key existed
     // must read as on, which is what an untouched machine gets.
     hideStatusLine: r.hideStatusLine !== false,
+    // A whitelist, not a typeof: the top-level `...r` spread keeps unknown junk
+    // verbatim, so anything that is not one of the three literals must be
+    // replaced rather than merely type-checked.
+    sshKeyEnroll:
+      r.sshKeyEnroll === 'auto' || r.sshKeyEnroll === 'off' ? r.sshKeyEnroll : 'ask',
     notifications:
       r.notifications === 'off' || r.notifications === 'always' || r.notifications === 'background'
         ? r.notifications

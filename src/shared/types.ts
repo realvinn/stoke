@@ -488,6 +488,67 @@ export interface SshHost {
    * silent. Off unless asked, like `worklogGroups`.
    */
   worklog?: boolean
+  /**
+   * The user pressed "Never for this host" on the add-a-key offer.
+   *
+   * Per host rather than global, for the same reason `worklog` is: the answer
+   * genuinely differs per machine — no on a shared bastion or a client's box,
+   * yes on your own VPS — and a global "never" would force the stricter answer
+   * onto every host from a button pressed under one password prompt. A global
+   * off exists too, as `Settings.sshKeyEnroll: 'off'`, where it is a considered
+   * choice rather than a dismissal.
+   */
+  keyEnrollRefused?: boolean
+  /**
+   * Stoke has installed a key here and verified it works.
+   *
+   * Set only after a `BatchMode=yes` probe succeeded — `ssh-copy-id` exiting 0
+   * does not mean pubkey auth works (`PubkeyAuthentication no`, an
+   * `AuthorizedKeysFile` pointing elsewhere, or a group-writable home all
+   * produce a happy exit and a server that still asks). Never suppresses the
+   * offer; it only changes the wording, because a host asking again means the
+   * key is not working and going quiet is the one answer with no way back.
+   */
+  keyEnrolled?: boolean
+}
+
+/**
+ * What Stoke does when a remote asks for a password.
+ *
+ * One three-value key rather than two booleans: "offer at all" and "offer or
+ * just start" are not independent, and `{ prompt: false, auto: true }` would be
+ * expressible but meaningless (gotcha 57 — one writer, one representation).
+ *
+ * `'auto'` can never mean silent. Installing a key requires authenticating,
+ * authenticating requires the password, and the password is the one thing Stoke
+ * must never hold — so `'auto'` buys exactly one thing: it skips the Yes/No and
+ * opens the enrollment pane straight away. The user still types.
+ */
+export type SshKeyEnroll = 'ask' | 'auto' | 'off'
+
+/** A remote asked for a password. Sent to the renderer to raise the offer. */
+export interface SshAuthPromptEvent {
+  ptyId: string
+  hostId: string
+  /** 'ask' opens the offer; 'auto' opens the enrollment pane straight away. */
+  offer: 'ask' | 'auto'
+  /**
+   * The `user@host` ssh printed, for display only — it is text the far end
+   * sent. Empty when the prompt did not name one. Enrollment always uses
+   * `SshHost.alias`.
+   */
+  user: string
+  host: string
+}
+
+/** Progress of one enrollment, from the moment the user presses Add a key. */
+export interface SshEnrollEvent {
+  hostId: string
+  stage: 'starting' | 'generating' | 'installing' | 'verifying' | 'done' | 'failed'
+  /** A line to show the user. Tool output verbatim where there is any. */
+  message: string
+  /** Set on 'done'. False means installed but pubkey auth still does not work. */
+  ok?: boolean
 }
 
 /* ----------------------------------------------------------------- worklog */
@@ -902,6 +963,8 @@ export interface Settings {
    * Stoke already draws. Off passes the user's own command through unchanged.
    */
   hideStatusLine: boolean
+  /** What to do when a remote asks for a password. See SshKeyEnroll. */
+  sshKeyEnroll: SshKeyEnroll
   /** OS notifications when Claude finishes or needs you. See NotificationMode. */
   notifications: NotificationMode
   /**

@@ -166,6 +166,12 @@ export const CH = {
 
   // ssh
   sshHosts: 'ssh:hosts',
+  /** main -> renderer: a remote just asked this session for a password. */
+  sshAuthPrompt: 'ssh:auth-prompt',
+  /** renderer -> main: the user pressed "Add a key". The ONLY way to enroll. */
+  sshEnroll: 'ssh:enroll',
+  /** main -> renderer: progress and outcome of an enrollment. */
+  sshEnrollEvent: 'ssh:enroll-event',
 
   // tab restore
   tabsSave: 'tabs:save',

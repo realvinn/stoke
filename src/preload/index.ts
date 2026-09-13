@@ -7,6 +7,8 @@ import type {
   LaunchOptions,
   ProjectMeta,
   Settings,
+  SshAuthPromptEvent,
+  SshEnrollEvent,
   StoredTabs,
   UsageReadReason
 } from '@shared/types'
@@ -169,7 +171,10 @@ const api: StokeApi = {
   },
 
   ssh: {
-    configHosts: () => ipcRenderer.invoke(CH.sshHosts)
+    configHosts: () => ipcRenderer.invoke(CH.sshHosts),
+    enroll: (hostId: string) => ipcRenderer.invoke(CH.sshEnroll, hostId),
+    onPasswordPrompt: (cb) => on<[SshAuthPromptEvent]>(CH.sshAuthPrompt, cb),
+    onEnrollEvent: (cb) => on<[SshEnrollEvent]>(CH.sshEnrollEvent, cb)
   },
 
   activity: {
