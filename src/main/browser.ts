@@ -44,6 +44,25 @@ const LOG_LIMIT = 300
 const PARTITION = 'persist:stoke-browser'
 
 /**
+ * The only permissions a browsed page may have, out of the twenty-odd Electron
+ * routes through the two handlers.
+ *
+ * Both are pure viewport affordances: they reach nothing on the machine, they
+ * need a user gesture, and the user can always press Escape. Denying them would
+ * make the docked browser visibly worse than a browser — no full-screen video,
+ * no canvas or map that captures the pointer — for no gain, and a security
+ * measure that degrades daily use is one that gets turned off.
+ *
+ * Everything else is refused: `media` (microphone and camera), `geolocation`,
+ * `clipboard-read`, `notifications`, `display-capture`, `midi`, `serial`,
+ * `hid`, `usb`, `idle-detection`, `openExternal` and the rest. None of them has
+ * a use in a pane that exists to read documentation and dashboards, and each is
+ * a way for a page — or for whatever talked the agent into opening one — to
+ * reach past it.
+ */
+const HARMLESS_PERMISSIONS = new Set(['fullscreen', 'pointerLock'])
+
+/**
  * Size a page gets whenever it is not showing in the panel. It must be a real
  * rect: Chromium only lays a document out if its view has a non-zero viewport,
  * and the agent reads layout-dependent things (visibility, geometry, innerText).
@@ -389,8 +408,9 @@ export class EmbeddedBrowser {
     if (this.permsHooked) return
     this.permsHooked = true
     const ses = session.fromPartition(PARTITION)
-    ses.setPermissionRequestHandler((_wc, _permission, callback) => callback(false))
-    ses.setPermissionCheckHandler(() => false)
+    const allow = (permission: string): boolean => HARMLESS_PERMISSIONS.has(permission)
+    ses.setPermissionRequestHandler((_wc, permission, callback) => callback(allow(permission)))
+    ses.setPermissionCheckHandler((_wc, permission) => allow(permission))
   }
 
   private hookNetwork(): void {
