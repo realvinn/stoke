@@ -400,6 +400,9 @@ rule file named on the group line.
 - **74.** Fake every input or none: a suite that hands a function a synthetic clock must hand it
   synthetic paths too (`sweepStaleSessionFiles(now, dir)`), and must assert a bystander survives —
   a fixed clock over the real shared directory deletes every running Stoke's live files, greenly.
+- **78.** Import into a suite-loaded module only from `src/shared`, by relative path with the
+  `.ts` extension — strip-types resolves no aliases, so an `@shared/...` specifier passes
+  typecheck AND build and dies only when the suite runs.
 
 ## Standing traps when driving the app
 

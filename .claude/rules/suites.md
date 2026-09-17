@@ -6,6 +6,7 @@ paths:
   - "tsconfig.node.json"
   - "tsconfig.web.json"
   - "src/preload/index.ts"
+  - "src/renderer/src/lib/tabs.ts"
   - "src/shared/*.ts"
   - ".github/workflows/release.yml"
 ---
@@ -111,3 +112,29 @@ Two rules come out of it:
    red — measured — where before, every assertion stayed green while the damage happened beside
    them. A suite that cannot observe its own side effects will report success on a run that broke
    the machine.
+
+## 78. A path alias in a module a suite imports typechecks, builds, and dies only when the suite runs
+
+**A verify suite runs its subject under `node --experimental-strip-types`, which resolves no
+path aliases and compiles nothing** — so an `@shared/...` specifier anywhere in the import graph
+of a module a suite loads is invisible to every gate except the suite itself. `npm run
+typecheck` passes (tsconfig has the alias), `npm run build` passes (vite has the alias), and
+`node scripts/verify-<x>.mts` dies with `ERR_MODULE_NOT_FOUND` on a path nobody wrote.
+
+`src/renderer/src/lib/tabs.ts` carried the blunt version of this rule in its header — *"No
+imports, so `scripts/verify-tabs.mts` runs it under `node --experimental-strip-types`"* — which
+is a true constraint stated one size too large, and the cost of stating it that way is that the
+first person who needs an import has to rediscover what the real limit is. It is the same rule
+`src/main` already follows and CLAUDE.md already states for main: **relative path, `.ts`
+extension spelled out, and nothing outside `src/shared`.** `src/main/cli.ts` importing
+`'../shared/codingClis.ts'` is the shape; `'@shared/codingClis'` is the shape that breaks.
+
+Two corollaries worth carrying:
+
+- **`src/shared` is the only safe destination**, because gotcha 27 already forbids `node:`
+  imports there. A pure module that reaches into `src/renderer` or `src/main` instead can pull
+  `electron` or `@lydell/node-pty` into a suite's process, and those fail differently and later.
+- **The failure is loud but the window is narrow.** It surfaces only in `npm run check`, after
+  typecheck and before build, so an edit verified by typechecking alone looks completely clean.
+  That is gotcha 31's lesson pointing the other way: some things only a suite can see, and some
+  things only the app can.
