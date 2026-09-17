@@ -25,6 +25,7 @@ export function toStored(
     const snap = t.sessionId ? contexts[t.sessionId] : undefined
     return {
       kind: t.kind,
+      cliId: t.cliId,
       sessionId: t.sessionId,
       cwd: t.cwd,
       projectName: t.projectName,
@@ -56,6 +57,9 @@ export function fromStored(state: StoredTabs): { tabs: Tab[]; activeId: string |
   const tabs: Tab[] = state.tabs.map((s, i) => ({
     id: restoredId(i),
     kind: s.kind,
+    // Already hydrated by `tabStore.tabOf`, so this is a known-good id rather
+    // than whatever was on disk.
+    cliId: s.cliId,
     ptyId: '',
     sessionId: s.sessionId,
     cwd: s.cwd,

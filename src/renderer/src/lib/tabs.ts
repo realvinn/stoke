@@ -1,8 +1,17 @@
 /**
  * Pure tab-list arithmetic, kept out of the React callbacks that used to own
- * it — the only way to check that code was to click. No imports, so
- * `scripts/verify-tabs.mts` runs it under `node --experimental-strip-types`.
+ * it — the only way to check that code was to click.
+ *
+ * `scripts/verify-tabs.mts` runs this under `node --experimental-strip-types`,
+ * which resolves no path aliases and compiles nothing. So the rule is not "no
+ * imports" any more, it is narrower and it is the one that actually matters:
+ * import ONLY from `src/shared`, ONLY by relative path, and ONLY with the `.ts`
+ * extension spelled out — the same convention `src/main` follows and for the
+ * same reason. An `@shared/...` specifier here typechecks and builds perfectly
+ * and dies the moment the suite runs.
  */
+import { cliFor, cliIdOf, isClaudeCode } from '../../../shared/codingClis.ts'
+import type { CodingCliId } from '../../../shared/codingClis.ts'
 
 /**
  * Which tab id to select once `closedId` is gone, or null when the list empties.
@@ -349,11 +358,11 @@ export function paneOrder<T extends { id: string; kind: string }>(list: readonly
  */
 export type RestartPlan =
   | { kind: 'host'; hostId: string }
-  | { kind: 'local'; cwd: string }
+  | { kind: 'local'; cwd: string; cli: CodingCliId }
   | { kind: 'impossible'; reason: string }
 
 export function restartPlan(
-  tab: { cwd: string; hostId?: string | null },
+  tab: { cwd: string; hostId?: string | null; cliId?: CodingCliId },
   hostIds: string[]
 ): RestartPlan {
   if (tab.hostId) {
@@ -364,7 +373,12 @@ export function restartPlan(
           reason: 'That host is no longer in Settings, so there is nothing to reconnect to.'
         }
   }
-  return { kind: 'local', cwd: tab.cwd }
+  /*
+   * The CLI travels with the plan. Without it "Start again" on an exited Codex
+   * tab spawns `claude` in that folder — a different program, silently, in a
+   * tab that still says Codex.
+   */
+  return { kind: 'local', cwd: tab.cwd, cli: cliIdOf(tab.cliId) }
 }
 
 /**
@@ -424,6 +438,7 @@ export function relaunchPlan(input: {
     status: 'running' | 'exited' | 'paused'
     sessionId: string
     hostId: string | null
+    cliId?: CodingCliId
   } | null
   /**
    * This session's own reading, or null if none has arrived. A bare
@@ -464,6 +479,23 @@ export function relaunchPlan(input: {
    */
   if (tab.hostId) {
     return { kind: 'none', reason: 'This session runs on another machine, which updates itself.' }
+  }
+
+  /*
+   * Before the no-id branch below, deliberately.
+   *
+   * A non-Claude session has no id either, so falling through would refuse it
+   * with "this session was continued rather than started" — a sentence about
+   * Claude Code's `--continue`, offered for a tab not running Claude Code at
+   * all. And the refusal has to happen at all, because this pill's entire
+   * action is `claude --resume <id>`: an offer here would replace a Codex
+   * session with a Claude one, in the same tab, on one click.
+   */
+  if (!isClaudeCode(cliIdOf(tab.cliId))) {
+    return {
+      kind: 'none',
+      reason: `This session runs ${cliFor(cliIdOf(tab.cliId)).label}, which Stoke does not update.`
+    }
   }
 
   /*

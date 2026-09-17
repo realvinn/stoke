@@ -1,3 +1,4 @@
+import { DEFAULT_CLI } from '@shared/codingClis'
 import type { Tab } from '../types'
 
 /**
@@ -18,6 +19,10 @@ export function newTab(
   return {
     id: `new-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
     kind: 'new',
+    // A launcher is not running anything yet. It carries the default so the
+    // field is never absent; the CLI a launch actually uses is chosen on the
+    // launcher itself and reaches the session tab that replaces this one.
+    cliId: DEFAULT_CLI,
     ptyId: '',
     sessionId: '',
     cwd: '',

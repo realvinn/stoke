@@ -138,7 +138,28 @@ console.log('\n"Start again" restarts a tab the way it was started')
 check(
   'a local tab restarts locally, in its own folder',
   restartPlan({ cwd: '/Users/x/dev/stoke', hostId: null }, ['host-1']),
-  { kind: 'local', cwd: '/Users/x/dev/stoke' }
+  { kind: 'local', cwd: '/Users/x/dev/stoke', cli: 'claude' }
+)
+/*
+ * The CLI travels with the plan, and the default direction is what protects
+ * every caller that predates the field: a tab with no `cliId` is a Claude tab,
+ * because every tab written before this existed was one.
+ */
+check(
+  'a tab that does not name a CLI restarts as Claude Code',
+  restartPlan({ cwd: '/tmp/x', hostId: null }, []).kind === 'local' &&
+    (restartPlan({ cwd: '/tmp/x', hostId: null }, []) as { cli: string }).cli,
+  'claude'
+)
+check(
+  'a Codex tab restarts as Codex, not as claude in the same folder',
+  restartPlan({ cwd: '/tmp/x', hostId: null, cliId: 'codex' }, []),
+  { kind: 'local', cwd: '/tmp/x', cli: 'codex' }
+)
+check(
+  'a corrupted cli id restarts as Claude Code rather than spawning it',
+  restartPlan({ cwd: '/tmp/x', hostId: null, cliId: 'banana' as never }, []),
+  { kind: 'local', cwd: '/tmp/x', cli: 'claude' }
 )
 check(
   'a remote tab reconnects to its host, NOT to a local folder named after the alias',
@@ -163,7 +184,51 @@ check(
 check(
   'an empty hostId is a local tab, not a broken remote one',
   restartPlan({ cwd: '/tmp/scratch', hostId: '' }, ['host-1']),
-  { kind: 'local', cwd: '/tmp/scratch' }
+  { kind: 'local', cwd: '/tmp/scratch', cli: 'claude' }
+)
+
+/*
+ * The relaunch pill against a session that is not Claude Code.
+ *
+ * This matters more than it looks. The pill's whole action is
+ * `claude --resume <id>`, so an offer on a Codex tab does not fail — it
+ * SUCCEEDS, replacing a Codex session with a Claude one in the same tab, on one
+ * click. The refusal also has to come before the no-id branch: a Codex tab has
+ * no session id either, and being told "this session was continued rather than
+ * started" is a sentence about a Claude flag, offered for a tab not running
+ * Claude.
+ */
+console.log('\nthe relaunch pill never offers to relaunch another CLI as claude')
+for (const cli of ['codex', 'opencode', 'grok'] as const) {
+  const plan = relaunchPlan({
+    tab: { kind: 'session', status: 'running', sessionId: '', hostId: null, cliId: cli },
+    running: '2.1.237',
+    installed: '9.9.9 (Claude Code)'
+  })
+  check(`${cli} is refused`, plan.kind, 'none')
+  check(
+    `${cli}'s refusal names the CLI, not Claude's --continue`,
+    plan.kind === 'none' && /Stoke does not update/.test(plan.reason) && !/continued/.test(plan.reason),
+    true
+  )
+}
+check(
+  'a Claude tab with the same shape is still offered, so the guard is not a blanket refusal',
+  relaunchPlan({
+    tab: { kind: 'session', status: 'running', sessionId: 'abc', hostId: null, cliId: 'claude' },
+    running: '2.1.237',
+    installed: '9.9.9 (Claude Code)'
+  }).kind,
+  'offer'
+)
+check(
+  'and a tab that names no CLI is treated as Claude, so nothing that predates the field changed',
+  relaunchPlan({
+    tab: { kind: 'session', status: 'running', sessionId: 'abc', hostId: null },
+    running: '2.1.237',
+    installed: '9.9.9 (Claude Code)'
+  }).kind,
+  'offer'
 )
 
 /*

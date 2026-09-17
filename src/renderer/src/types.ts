@@ -1,3 +1,4 @@
+import type { CodingCliId } from '@shared/codingClis'
 import type { EffortLevel, PermissionMode } from '@shared/types'
 
 /**
@@ -23,6 +24,15 @@ export type TabKind = 'session' | 'new'
 export interface Tab {
   id: string
   kind: TabKind
+  /**
+   * Which coding CLI this tab is running.
+   *
+   * Read by everything that draws beside the terminal — the context slot, the
+   * plan chip, the version item, the relaunch pill — through `capsFor`, so that
+   * a tab running another binary shows nothing there rather than Claude's
+   * numbers. Never optional: a tab always knows what it is.
+   */
+  cliId: CodingCliId
   /** Empty string on a `new` tab, which has no process. */
   ptyId: string
   /** Claude Code session id — the key the context meter watches. Empty on `new`. */

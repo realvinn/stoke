@@ -1,3 +1,6 @@
+import { capsFor, CODING_CLIS, DEFAULT_CLI } from '@shared/codingClis'
+import type { CodingCli } from '@shared/codingClis'
+import type { CodingCliId } from '@shared/codingClis'
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
   BrowserState,
@@ -1071,8 +1074,15 @@ export function App(): React.JSX.Element {
       model?: string
       effort?: EffortLevel
       ultracode?: boolean
+      /**
+       * Which coding CLI to spawn. Omitted means Claude Code, which is what
+       * every existing caller means and what every tab was before this existed.
+       */
+      cli?: CodingCliId
     }): Promise<boolean> => {
       setError(null)
+      const launchCli = opts.cli ?? DEFAULT_CLI
+      const caps = capsFor(launchCli)
       const permissionMode = opts.permissionMode ?? mode
       const sessionModel = opts.model ?? model
       const sessionEffort = opts.effort ?? effort
@@ -1080,9 +1090,18 @@ export function App(): React.JSX.Element {
       try {
         const res = await window.stoke.pty.start({
           cwd: opts.cwd,
-          sessionId: opts.sessionId,
-          resume: opts.resume,
-          continueLast: opts.continueLast,
+          cli: launchCli,
+          /*
+           * Claude's flags go only to Claude. `--session-id`, `--resume` and
+           * `--continue` are what mint and address a Claude transcript, and
+           * gotcha 19 is the version of this mistake that has already been
+           * paid for: an older remote `claude` EXITS on a flag it does not
+           * know, so a flag sent to the wrong binary is not a no-op, it is a
+           * session that will not start.
+           */
+          sessionId: caps.resume === 'mintedId' ? opts.sessionId : undefined,
+          resume: caps.resume === 'mintedId' ? opts.resume : undefined,
+          continueLast: caps.resume === 'mintedId' ? opts.continueLast : undefined,
           permissionMode,
           model: sessionModel,
           effort: sessionEffort,
@@ -1096,6 +1115,7 @@ export function App(): React.JSX.Element {
         const tab: Tab = {
           id: res.ptyId,
           kind: 'session',
+          cliId: launchCli,
           ptyId: res.ptyId,
           sessionId: res.sessionId,
           cwd: opts.cwd,
@@ -1237,6 +1257,9 @@ export function App(): React.JSX.Element {
         const tab: Tab = {
           id: res.ptyId,
           kind: 'session' as const,
+          // An SSH tab runs `claude` on the far machine (gotcha 18). It is a
+          // Claude tab whose instrumentation is off for a different reason.
+          cliId: 'claude',
           ptyId: res.ptyId,
           sessionId: res.sessionId,
           cwd: host.alias,
@@ -1662,6 +1685,9 @@ export function App(): React.JSX.Element {
 
       void startSession({
         cwd: plan.cwd,
+        // From the plan, not from the tab, so there is one decision and one
+        // place it is made.
+        cli: plan.cli,
         name: tab.projectName,
         replaceTabId: tab.id,
         permissionMode: tab.permissionMode,
@@ -1747,6 +1773,33 @@ export function App(): React.JSX.Element {
 
   const overlayOpen = paletteOpen || settingsOpen
   const seededBrowser = useRef(false)
+
+  /*
+   * Which other coding CLIs are on this machine.
+   *
+   * Read once on mount rather than per launcher render: it is a PATH walk
+   * behind an IPC round trip, and installing a CLI mid-session is rare enough
+   * that a restart is a fair price for noticing it. Claude Code is filtered out
+   * here rather than in the component — it is not an "other CLI", it is the one
+   * every other control on the launcher already means.
+   */
+  const [otherClis, setOtherClis] = useState<CodingCli[]>([])
+  useEffect(() => {
+    let alive = true
+    void window.stoke.cli
+      .detect()
+      .then((found) => {
+        if (!alive) return
+        const installed = new Set(found.filter((f) => f.path).map((f) => f.id))
+        setOtherClis(CODING_CLIS.filter((c) => c.id !== 'claude' && installed.has(c.id)))
+      })
+      .catch(() => {
+        /* Detection is a convenience; a failure just means no extra buttons. */
+      })
+    return () => {
+      alive = false
+    }
+  }, [])
 
   // The WebContentsView paints above the DOM, so it must be detached while a
   // palette or settings sheet is open or it would cover them.
@@ -2520,6 +2573,17 @@ export function App(): React.JSX.Element {
                 })
               }
               cli={cli}
+              otherClis={otherClis}
+              onStartCli={(id) => {
+                const target = selectedProject?.path ?? defaultCwd
+                if (!target) return
+                void startSession({
+                  cwd: target,
+                  cli: id,
+                  name: selectedProject?.label ?? selectedProject?.name ?? baseName(target),
+                  replaceTabId: activeNewTabId ?? undefined
+                })
+              }}
               onChangeMode={changeMode}
               onChangeModel={changeModel}
               onChangeEffort={changeEffort}

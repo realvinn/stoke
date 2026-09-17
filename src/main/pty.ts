@@ -3,6 +3,7 @@ import { access } from 'node:fs/promises'
 import * as nodePty from '@lydell/node-pty'
 import type { IPty } from '@lydell/node-pty'
 import type { LaunchOptions } from '@shared/types'
+import { cliIdOf, isClaudeCode } from '../shared/codingClis.ts'
 import {
   applyProviderEnv,
   validateClaudeAuth,
@@ -12,7 +13,7 @@ import {
 import {
   buildArgs,
   buildEnvPath,
-  findClaude,
+  findCli,
   loginPathProbeFailed,
   notFoundError,
   spawnSpec
@@ -168,8 +169,25 @@ export class PtyManager {
      * no Stoke-side resume. A multiplexer in `host.command` is the only resume
      * such a session can have.
      */
-    const exe = opts.host ? sshExecutable() : await findClaude(claudePathOverride)
-    if (!exe) throw new Error(notFoundError(loginPathProbeFailed()))
+    /*
+     * Two independent reasons the instrumentation may be off, and they are not
+     * the same reason.
+     *
+     * `remote` is gotcha 18's: the session runs on another machine, so its
+     * transcript, its settings and its `claude` are all over there.
+     * `instrumented` is the new one: the session is another BINARY, so
+     * Claude's transcript format, its `--session-id`, its `--settings` file and
+     * its statusLine hook do not describe it at all.
+     *
+     * They differ on exactly one gate below — the cwd check — because a Codex
+     * session has a real local working directory and a remote one does not.
+     */
+    const cliId = cliIdOf(opts.cli)
+    const remote = !!opts.host
+    const instrumented = !remote && isClaudeCode(cliId)
+
+    const exe = remote ? sshExecutable() : await findCli(cliId, isClaudeCode(cliId) ? claudePathOverride : null)
+    if (!exe) throw new Error(notFoundError(loginPathProbeFailed(), cliId))
 
     /*
      * The folder has to exist, and node-pty will not tell us if it does not.
@@ -185,7 +203,7 @@ export class PtyManager {
      * real working directory is on the far machine (gotcha 18), so `opts.cwd`
      * is a local path that has nothing to do with where the session will land.
      */
-    if (!opts.host) {
+    if (!remote) {
       try {
         await access(opts.cwd)
       } catch {
@@ -218,7 +236,7 @@ export class PtyManager {
      * and its `claude` and its settings live on the far machine. That is what
      * makes `statusKeys()` below able to mean "has a payload to read".
      */
-    const statusKey = opts.host ? '' : sessionId || randomUUID()
+    const statusKey = instrumented ? sessionId || randomUUID() : ''
 
     /*
      * Minted here rather than after the spawn because it is also this launch's
@@ -233,17 +251,28 @@ export class PtyManager {
     // One --settings, holding both the ultracode key and the statusLine
     // wrapper: a second silently discards the first. Local only — a remote
     // session runs ssh, and this file is on this disk.
-    const settingsFile = opts.host ? null : sessionSettings(statusKey)
-    const args = opts.host
-      ? buildSshArgs(opts.host)
-      : buildArgs({ ...opts, sessionId }, settingsFile)
+    const settingsFile = instrumented ? sessionSettings(statusKey) : null
+    /*
+     * A non-Claude CLI gets its bare name and the folder, and nothing else.
+     *
+     * `buildArgs` emits Claude Code's flags — `--session-id`, `--resume`,
+     * `--permission-mode`, `--model`, `--effort`, `--settings`. Gotcha 19 is
+     * what handing those to another binary costs: an older remote `claude`
+     * EXITS on a flag it does not recognise, so the failure is not a flag
+     * being ignored, it is a session that never starts.
+     */
+    const args = remote
+      ? buildSshArgs(opts.host!)
+      : instrumented
+        ? buildArgs({ ...opts, sessionId }, settingsFile)
+        : []
 
     // Hand the session Stoke's own browser tools. A file path rather than an
     // inline JSON string: quoting JSON through a shell differs per platform and
     // fails silently when it goes wrong.
     // Only meaningful locally: the flags belong to claude, and a remote session
     // is running ssh. The remote's own CLI config governs there.
-    if (mcpConfigPath && !opts.host) args.push('--mcp-config', mcpConfigPath)
+    if (mcpConfigPath && instrumented) args.push('--mcp-config', mcpConfigPath)
 
     // Ultracode and the statusLine wrapper both need nothing here: buildArgs
     // has already folded them into the single `--settings <file>` above. Do
@@ -294,7 +323,7 @@ export class PtyManager {
        * not cross ssh without SendEnv/AcceptEnv, so the far end would either
        * not see it or see it describing the wrong machine's terminal.
        */
-      if (!opts.host && opts.appearance) {
+      if (!remote && opts.appearance) {
         env.COLORFGBG = opts.appearance === 'light' ? '0;15' : '15;0'
       }
 
@@ -304,7 +333,14 @@ export class PtyManager {
        * validateClaudeAuth fails closed with a message the launcher can show,
        * rather than spawning a session that will 401 on the first turn.
        */
-      if (!opts.host) {
+      /*
+       * Gated on `instrumented`, not `!remote`. These are ANTHROPIC_* variables
+       * read by Claude Code, and `validateClaudeAuth` can REFUSE THE LAUNCH —
+       * so leaving this on `!remote` meant a missing Anthropic key stopping a
+       * Codex session from starting, and a configured one putting
+       * ANTHROPIC_BASE_URL into a process that has never heard of it.
+       */
+      if (instrumented) {
         const check = validateClaudeAuth(providers)
         if (!check.ok) throw new Error(check.message)
         applyProviderEnv(env, providers)

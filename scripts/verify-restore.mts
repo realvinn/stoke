@@ -37,6 +37,7 @@ const NOW = 1_760_000_000_000
 function tab(over: Partial<StoredTab> = {}): StoredTab {
   return {
     kind: 'session',
+    cliId: 'claude',
     sessionId: 'sess-1',
     cwd: '/w/stoke',
     projectName: 'stoke',
@@ -174,6 +175,31 @@ console.log('\ncorruption is never fatal')
     check(`${name} reads as empty`, readTabState(file, NOW), empty)
   }
   rmSync(dir, { recursive: true, force: true })
+}
+
+/*
+ * Which CLI a restored tab spawns.
+ *
+ * `tabs.json` is a file on disk that a previous version wrote and a user can
+ * edit, and this field decides which BINARY a restore launches — so it is the
+ * one place where an unhydrated value is not a cosmetic bug. The default runs
+ * one way on purpose: unknown means Claude Code, never "spawn whatever string
+ * was in the file".
+ */
+console.log('\nthe CLI a restored tab spawns')
+{
+  const roundTrip = (raw: unknown): unknown =>
+    normaliseTabs(
+      { version: 1, savedAt: NOW, activeIndex: 0, tabs: [{ ...tab(), cliId: raw }] },
+      NOW
+    ).tabs[0].cliId
+
+  check('a known id survives the round trip', roundTrip('codex'), 'codex')
+  check('opencode too', roundTrip('opencode'), 'opencode')
+  check('a tab written before this field existed restores as Claude Code', roundTrip(undefined), 'claude')
+  check('and so does a corrupted one, rather than spawning it', roundTrip('banana'), 'claude')
+  check('a non-string cannot become a command', roundTrip({ toString: () => 'codex' }), 'claude')
+  check('nor can a number', roundTrip(7), 'claude')
 }
 
 console.log('\nwhat it drops')

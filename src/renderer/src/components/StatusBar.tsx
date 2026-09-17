@@ -1,3 +1,4 @@
+import { capsFor, cliFor, cliIdOf, isClaudeCode } from '@shared/codingClis'
 import type { CliInfo, ContextSnapshot } from '@shared/types'
 import { ContextBar } from './ContextMeter'
 import { modelLabel, shortPath } from '../lib/format'
@@ -139,7 +140,21 @@ export function StatusBar({
    * session's own reading wins over the disk's, because they differ exactly
    * when the relaunch pill is about to say so.
    */
-  const shownVersion = versionNumber(line?.cliVersion ?? null) ?? versionNumber(cli?.version ?? null)
+  /*
+   * Both sources here are Claude Code's, so neither may be shown beside a
+   * session that is not Claude Code.
+   *
+   * `line.cliVersion` comes from a statusLine payload, which only an
+   * instrumented Claude session writes — so on a Codex tab it is null and the
+   * fallback took over, printing the local `claude --version` under the
+   * tooltip "Claude Code version installed". A true sentence about the machine,
+   * rendered as if it described the session in front of it, which is the exact
+   * shape this project treats as worse than showing nothing.
+   */
+  const claudeTab = isClaudeCode(cliIdOf(tab?.cliId))
+  const shownVersion = claudeTab
+    ? (versionNumber(line?.cliVersion ?? null) ?? versionNumber(cli?.version ?? null))
+    : null
   const versionItem = shownVersion ? (
     <button
       className="status-btn status-item mono"
@@ -177,6 +192,7 @@ export function StatusBar({
   }
 
   const bypass = tab.permissionMode === 'bypassPermissions'
+  const caps = capsFor(cliIdOf(tab.cliId))
   /*
    * The payload's model first: it carries the tier suffix (`claude-opus-5[1m]`)
    * the transcript drops, and it is stated from the first render rather than
@@ -213,18 +229,32 @@ export function StatusBar({
 
       {profilePill}
 
-      <span className="pill" data-tone={bypass ? 'danger' : undefined}>
-        {PERMISSION_LABELS[tab.permissionMode]}
-      </span>
+      {/*
+        Claude Code's three launch flags, and only for a session that was given
+        them.
+
+        `--permission-mode`, `--model` and `--effort` are `buildArgs` output, so
+        on a CLI Stoke launches bare they describe nothing: the pill read "Ask"
+        beside a Codex session, which is a specific and wrong claim about how
+        that session handles tool use. `capsFor` is the same table that decided
+        not to pass the flags, so the display cannot drift from the launch.
+      */}
+      {caps.launchFlags.permissionMode && (
+        <span className="pill" data-tone={bypass ? 'danger' : undefined}>
+          {PERMISSION_LABELS[tab.permissionMode]}
+        </span>
+      )}
 
       {/*
         Only when a model was actually chosen. `modelLabel(null)` is the word
         "default", which is not a fact about this session — it is the absence of
         one, printed in the row where every other item is something you set.
       */}
-      {model && <span className="status-item">{modelLabel(model)}</span>}
+      {caps.launchFlags.model && model && <span className="status-item">{modelLabel(model)}</span>}
 
-      {tab.effort !== 'default' && <span className="status-item">effort: {tab.effort}</span>}
+      {caps.launchFlags.effort && tab.effort !== 'default' && (
+        <span className="status-item">effort: {tab.effort}</span>
+      )}
 
       {/*
         The one line that says whether it is your move. From the CLI's own
@@ -277,8 +307,21 @@ export function StatusBar({
             <ContextBar used={context.contextTokens} limit={context.contextLimit} paused={paused} />
           </span>
         </>
-      ) : (
+      ) : claudeTab ? (
         <span className="status-item">waiting for first turn…</span>
+      ) : (
+        /*
+         * Not "waiting for first turn…", which is a promise: it says a reading
+         * is coming, and for a session Stoke does not instrument none ever is.
+         * The user would watch a status bar that never resolves and reasonably
+         * conclude the meter was broken.
+         */
+        <span
+          className="status-item"
+          title="Stoke reads context usage from Claude Code's own status line, which this CLI does not write."
+        >
+          {cliFor(cliIdOf(tab.cliId)).label} — no context reading
+        </span>
       )}
     </footer>
   )

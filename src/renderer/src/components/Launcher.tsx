@@ -1,3 +1,4 @@
+import type { CodingCli, CodingCliId } from '@shared/codingClis'
 import { useEffect, useRef } from 'react'
 import type {
   CliInfo,
@@ -61,6 +62,15 @@ interface Props {
   onOpenFolder: () => void
   onStartDefault: () => void
   onStartScratch: () => void
+  /**
+   * Which non-Claude CLIs were found on this machine, in `CODING_CLIS` order.
+   *
+   * Passed in already filtered rather than detected here: the lookup is an IPC
+   * round trip that App already makes for Settings, and a component that
+   * fetches on mount would run it again on every launcher render.
+   */
+  otherClis?: CodingCli[]
+  onStartCli?: (id: CodingCliId) => void
 }
 
 export function Launcher({
@@ -86,6 +96,8 @@ export function Launcher({
   onResume,
   onOpenFolder,
   onStartDefault,
+  otherClis = [],
+  onStartCli,
   onStartScratch
 }: Props): React.JSX.Element {
   const startRef = useRef<HTMLButtonElement>(null)
@@ -298,6 +310,45 @@ export function Launcher({
                   title={h.command ? `ssh ${h.alias} → ${h.command}` : `ssh ${h.alias}`}
                 >
                   {h.label || h.alias}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/*
+          The other coding CLIs, when any are installed.
+
+          Separate from "Continue last" and from the primary Start, and worded
+          so the trade is visible BEFORE the click rather than discovered as an
+          empty status bar afterwards. Not gated on `cliBroken`: that flag is
+          about a missing `claude`, which has nothing to do with whether `codex`
+          runs.
+
+          Detection-only entries are omitted rather than shown disabled — a
+          greyed button for a tool you have never installed is noise, and
+          Settings › Providers already lists what was and was not found, with
+          gotcha 52's distinction between "not installed" and "Stoke could not
+          read your PATH".
+        */}
+        {otherClis.length > 0 && (
+          <div className="launcher-row">
+            <span className="launcher-row-label">
+              <b>Other CLIs</b>
+              <span>
+                Opens that CLI in this folder, with Stoke&rsquo;s terminal around it. No context
+                ring, no resume, no worklog — those all read Claude Code&rsquo;s own files.
+              </span>
+            </span>
+            <div style={{ display: 'flex', gap: 'var(--space-8)', flexWrap: 'wrap' }}>
+              {otherClis.map((c) => (
+                <button
+                  key={c.id}
+                  className="btn"
+                  onClick={() => onStartCli?.(c.id)}
+                  title={`Run ${c.label} here — ${c.vendor}`}
+                >
+                  {c.label}
                 </button>
               ))}
             </div>

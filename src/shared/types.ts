@@ -2,6 +2,7 @@
  * Types shared by the main process, the preload bridge and the renderer.
  * This file must stay free of any Node or DOM imports.
  */
+import type { CodingCliId } from './codingClis.ts'
 import type { ProviderSettings } from './providers.ts'
 import type { RemoteReachPreference, ZoomTarget } from './ui.ts'
 
@@ -24,6 +25,16 @@ export type EffortLevel = 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max
 
 export interface LaunchOptions {
   cwd: string
+  /**
+   * Which coding CLI to spawn. Absent means Claude Code.
+   *
+   * Optional rather than required so every existing caller stays correct
+   * unchanged: a launch that does not mention a CLI is the launch Stoke has
+   * always made. `capsFor` decides what may then be drawn around it — see
+   * `CLI_CAPS` in `shared/codingClis.ts`, which is what keeps a Codex tab from
+   * showing Claude's context ring, plan chip and version.
+   */
+  cli?: CodingCliId
   /** Explicit session id. New sessions get one generated so we can find the JSONL. */
   sessionId?: string
   /** Resume an existing session id (`--resume`). */
@@ -1202,6 +1213,15 @@ export interface StoredTabContext {
  */
 export interface StoredTab {
   kind: 'session' | 'new'
+  /**
+   * Which CLI this tab was running. Hydrated through `cliIdOf`, never read raw.
+   *
+   * A restored tab decides what gets spawned, so an unvalidated value here is a
+   * launch of an arbitrary binary name off a file on disk. Anything missing or
+   * unrecognised is Claude Code, which is both the historical truth (every tab
+   * written before this field existed was one) and the safe direction.
+   */
+  cliId: CodingCliId
   /** '' for a --continue session, which never learns its own id (gotcha 26). */
   sessionId: string
   cwd: string

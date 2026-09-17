@@ -6,7 +6,13 @@ import { promisify } from 'node:util'
 import type { CliInfo, LaunchOptions } from '@shared/types'
 // Relative and with the extension: this module is run directly under
 // `node --experimental-strip-types`, which resolves no path aliases.
-import { binNamesFor, CODING_CLIS, type CodingCliStatus } from '../shared/codingClis.ts'
+import {
+  binNamesFor,
+  cliFor,
+  CODING_CLIS,
+  type CodingCliId,
+  type CodingCliStatus
+} from '../shared/codingClis.ts'
 
 const execFileAsync = promisify(execFile)
 
@@ -226,13 +232,27 @@ export async function findClaude(override: string | null): Promise<string | null
 }
 
 /**
+ * The same lookup, for any CLI Stoke knows about.
+ *
+ * `findClaude` stays as it is rather than becoming a call to this: it carries
+ * the Settings override, the four-site error message and every one of gotcha
+ * 52's shim-directory lessons, and rewriting its callers to pass `'claude'`
+ * would be churn with a chance of regression and no gain.
+ */
+export async function findCli(id: CodingCliId, override: string | null = null): Promise<string | null> {
+  if (id === 'claude') return findClaude(override)
+  if (override && isFile(override)) return override
+  return findTool(binNamesFor(cliFor(id), process.platform))
+}
+
+/**
  * Which of the coding CLIs Stoke knows about are on this machine.
  *
- * Reports paths, nothing more. Stoke cannot yet RUN any of these but `claude` —
- * the context ring, resume, the worklog and the plan-limit chip are all fed by
- * Claude Code's own transcript format and its statusLine hook — so this answers
- * "have I got it?" and deliberately stops there, rather than offering a picker
- * that records a preference nothing reads.
+ * Reports paths, nothing more. Stoke can RUN these now, but only Claude Code
+ * gets the instrumentation around it — the context ring, resume, the worklog
+ * and the plan-limit chip are all fed by Claude Code's own transcript format
+ * and its statusLine hook. What each other CLI may honestly show is in
+ * `CLI_CAPS`, not assumed here.
  */
 export async function detectCodingClis(): Promise<CodingCliStatus[]> {
   return Promise.all(
@@ -263,11 +283,13 @@ export async function detectCodingClis(): Promise<CodingCliStatus[]> {
  * hours. Starting a session DOES re-probe, because pty.ts calls findClaude
  * afresh every time, so "try again" is true where "it will fix itself" was not.
  */
-export function notFoundError(probeFailed: boolean): string {
+export function notFoundError(probeFailed: boolean, id: CodingCliId = 'claude'): string {
   const secs = Math.round(PROBE_RETRY_MS / 1000)
+  const cli = cliFor(id)
+  const bin = cli.bins.posix[0]
   return probeFailed
-    ? `Could not find the \`claude\` executable: asking the login shell for its PATH failed, so an install that needs a shell hook (mise, asdf, fnm, nvm) may be invisible. Trying again in ${secs}s re-runs that probe; if it keeps failing, set an explicit path in Settings.`
-    : 'Could not find the `claude` executable. Install Claude Code, or set an explicit path in Settings.'
+    ? `Could not find the \`${bin}\` executable: asking the login shell for its PATH failed, so an install that needs a shell hook (mise, asdf, fnm, nvm) may be invisible. Trying again in ${secs}s re-runs that probe; if it keeps failing, set an explicit path in Settings.`
+    : `Could not find the \`${bin}\` executable. Install ${cli.label}, or set an explicit path in Settings.`
 }
 
 export async function probeClaude(override: string | null): Promise<CliInfo> {

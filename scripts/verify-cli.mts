@@ -35,6 +35,12 @@ import {
   probeClaude,
   shouldReprobe
 } from '../src/main/cli.ts'
+import {
+  CLI_CAPS,
+  cliIdOf,
+  CODING_CLIS,
+  isClaudeCode
+} from '../src/shared/codingClis.ts'
 
 let failures = 0
 
@@ -256,6 +262,69 @@ for (const marker of [
 for (const keep of ['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR', 'HOME', 'PATH']) {
   check(`${keep} is NOT stripped`, ptyStrip.includes(keep), false)
 }
+
+
+/*
+ * ------------------------------------------------------- the honesty seam
+ *
+ * `CLI_CAPS` decides what Stoke may draw beside a session, and every surface it
+ * governs reads a Claude Code artefact: a statusLine payload, a
+ * `~/.claude/projects/**.jsonl` transcript, an Anthropic OAuth endpoint, a
+ * Stoke-minted `--session-id`. Raising a capability without building the thing
+ * that feeds it does not fail — it renders Claude's numbers beside somebody
+ * else's session, silently.
+ *
+ * So this asserts the floor rather than the ceiling: today, only Claude Code is
+ * instrumented. When the Codex ring lands (its rollout jsonl states a
+ * `model_context_window`, a `total_token_usage` and `rate_limits`), the
+ * assertion for `codex.ring` is expected to change IN THAT COMMIT, together
+ * with the watcher. That is the point: this makes the change deliberate and
+ * visible in a diff instead of a one-word edit nobody reviews.
+ */
+console.log('\nCLI_CAPS: no CLI claims an instrument it has not got')
+check('claude is the fully instrumented one', CLI_CAPS.claude, {
+  ring: 'statusline',
+  resume: 'mintedId',
+  worklog: true,
+  usage: 'anthropic',
+  launchFlags: { permissionMode: true, effort: true, model: true }
+})
+for (const id of ['codex', 'grok', 'opencode'] as const) {
+  const caps = CLI_CAPS[id]
+  check(`${id} draws no context ring`, caps.ring, 'none')
+  check(`${id} offers no resume, so no --session-id is minted for it`, caps.resume, 'none')
+  check(`${id} is not reviewed by the worklog, which shells out to claude -p`, caps.worklog, false)
+  check(`${id} claims no plan usage — that endpoint is Anthropic's`, caps.usage, 'none')
+  check(
+    `${id} is passed none of Claude's launch flags`,
+    caps.launchFlags,
+    { permissionMode: false, effort: false, model: false }
+  )
+}
+check(
+  'every known CLI has an entry, so a new one cannot default to instrumented',
+  CODING_CLIS.every((c) => !!CLI_CAPS[c.id]),
+  true
+)
+
+console.log('\nhydrating a cli id, which decides which binary a restore spawns')
+check('a known id passes through', cliIdOf('codex'), 'codex')
+check('an unknown one is Claude Code, not a command', cliIdOf('banana'), 'claude')
+check('and so is a missing one — every tab predating the field was Claude', cliIdOf(undefined), 'claude')
+check('an object that stringifies to a cli name is still refused', cliIdOf({ toString: () => 'codex' }), 'claude')
+check('isClaudeCode agrees with the table', isClaudeCode('claude') && !isClaudeCode('codex'), true)
+
+console.log('\na missing binary is named honestly, whichever one it was')
+check('claude keeps its own message', /Install Claude Code/.test(notFoundError(false, 'claude')), true)
+check('and its own binary name', /`claude`/.test(notFoundError(false, 'claude')), true)
+check('codex names codex', /`codex`/.test(notFoundError(false, 'codex')), true)
+check('and does NOT tell you to install Claude Code', /Claude Code/.test(notFoundError(false, 'codex')), false)
+check('it names the right product instead', /Install Codex CLI/.test(notFoundError(false, 'codex')), true)
+check(
+  'the probe-failed branch keeps gotcha 52 distinction for another CLI too',
+  /login shell/.test(notFoundError(true, 'codex')) && /`codex`/.test(notFoundError(true, 'codex')),
+  true
+)
 
 rmSync(sandbox, { recursive: true, force: true })
 

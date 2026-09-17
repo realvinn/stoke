@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { EffortLevel, PermissionMode, StoredTab, StoredTabs } from '../shared/types.ts'
+import { cliIdOf } from '../shared/codingClis.ts'
 
 /**
  * The tabs that were open when Stoke last quit.
@@ -89,6 +90,9 @@ function tabOf(v: unknown): StoredTab | null {
   const ctx = isRecord(v.context) ? v.context : null
   return {
     kind,
+    // Hydrated, never taken raw: this value chooses which binary a restore
+    // spawns, and the file it comes from is one a user can edit.
+    cliId: cliIdOf(v.cliId),
     sessionId: str(v.sessionId),
     cwd,
     projectName: str(v.projectName),
