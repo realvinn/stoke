@@ -29,6 +29,9 @@ import type { Rgb } from '../src/shared/color.ts'
 import { neutralTokens, PAGE_CHROMA_MAX, TINT_MAX } from '../src/shared/ladder.ts'
 import { meterScale, METER_WCAG } from '../src/shared/meter.ts'
 import { PROFILE_SWATCHES } from '../src/shared/profiles.ts'
+import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { BUILT_IN_THEMES } from '../src/shared/themes.ts'
 import type { Theme } from '../src/shared/types.ts'
 
@@ -980,5 +983,79 @@ for (const t of BUILT_IN_THEMES) {
  * Counterfactual, measured both ways before this line was added: with a floor
  * forced to fail the run printed FAIL and exited 0; with this line it exits 1.
  */
+
+/*
+ * ------------------------------------------------------------ token defined?
+ *
+ * Every `var(--token)` written without a fallback, against every name anything
+ * actually defines. A custom property that does not exist is invalid at
+ * computed-value time, so the whole declaration is dropped — silently, with no
+ * console warning and no visual clue beyond the property simply not applying.
+ *
+ * `.field-stamp` asked for `var(--space-6)` and the scale is 4, 8, 12, 16, 24,
+ * 32, 48. It had no left margin at all and read as a rendering quirk. Nothing
+ * in the check chain could see it: a typo in a token name is not a type error,
+ * it does not throw, and the build emits it unchanged. This is the only check
+ * that can, and it is why gotcha 22 says to rename a token rather than
+ * renumber it in place.
+ *
+ * Definitions come from three places because tokens do: `--x:` in any
+ * stylesheet, the theme colours pushed onto :root by `applyTheme` (camelCase
+ * keys through the same kebab conversion `theme.ts` uses), and the literal
+ * `setProperty('--x', …)` calls for everything derived at runtime.
+ */
+console.log('\nCSS tokens: every var(--x) without a fallback resolves')
+
+const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', 'src')
+
+function sourceFiles(dir: string, out: string[] = []): string[] {
+  for (const entry of readdirSync(dir)) {
+    const full = join(dir, entry)
+    if (statSync(full).isDirectory()) sourceFiles(full, out)
+    else if (/\.(css|tsx|ts)$/.test(full)) out.push(full)
+  }
+  return out
+}
+
+/*
+ * Comments are stripped first, and not for tidiness: the prose in this repo
+ * quotes token names constantly, and the first run of this check failed on a
+ * `var(--x)` inside the comment that explains the check.
+ */
+const stripComments = (text: string): string =>
+  text.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/^\s*\/\/.*$/gm, ' ')
+
+/** camelCase theme key -> `--kebab-case`, the same conversion `theme.ts` makes. */
+const cssVar = (key: string): string => `--${key.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`
+
+const defined = new Set<string>()
+const usedIn = new Map<string, Set<string>>()
+
+for (const theme of BUILT_IN_THEMES) {
+  for (const key of Object.keys(theme.colors ?? {})) defined.add(cssVar(key))
+}
+
+for (const file of sourceFiles(SRC)) {
+  const text = stripComments(readFileSync(file, 'utf8'))
+  for (const m of text.matchAll(/(--[a-z0-9-]+)\s*:/gi)) defined.add(m[1])
+  for (const m of text.matchAll(/setProperty\(\s*['"`](--[a-z0-9-]+)['"`]/gi)) defined.add(m[1])
+  // A `var(--x, fallback)` is a deliberate optional read and is left alone.
+  for (const m of text.matchAll(/var\(\s*(--[a-z0-9-]+)\s*\)/gi)) {
+    const where = usedIn.get(m[1]) ?? new Set<string>()
+    where.add(file.slice(SRC.length + 1))
+    usedIn.set(m[1], where)
+  }
+}
+
+const undefinedTokens = [...usedIn.keys()].filter((t) => !defined.has(t)).sort()
+for (const token of undefinedTokens) {
+  failures++
+  console.log(`  FAIL  ${token} is read but never defined\n        used in ${[...usedIn.get(token)!].join(', ')}`)
+}
+console.log(
+  `  ${undefinedTokens.length ? 'FAIL' : 'PASS'}  ${usedIn.size} tokens read without a fallback, ` +
+    `${defined.size} defined, ${undefinedTokens.length} unresolved`
+)
+
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
 process.exitCode = failures ? 1 : 0

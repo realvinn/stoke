@@ -1244,7 +1244,14 @@ body {
  * you. Quieter than the hint it sits in, and it never wraps mid-stamp.
  */
 .field-stamp {
-  margin-left: var(--space-6);
+  /*
+   * `--space-6` was written here and has never existed: the scale is 4, 8, 12,
+   * 16, 24, 32, 48. An undefined custom property is invalid at computed-value
+   * time, so the declaration was dropped and the stamp sat flush against the
+   * version in front of it. `verify:color` now fails on any `var(--x)` with no
+   * definition, which is the only thing that can see this class of typo.
+   */
+  margin-left: var(--space-8);
   color: var(--text-faint);
   font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
