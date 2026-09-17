@@ -1,7 +1,7 @@
 import type { WebContents } from 'electron'
 import extractSource from './inject/extract.js?raw'
 import type { EmbeddedBrowser } from '../browser.ts'
-import { normalizeUrl } from '../browser.ts'
+import { normalizeUrl, refusedScheme } from '../../shared/url.ts'
 
 /**
  * Drives the docked page on the agent's behalf.
@@ -104,7 +104,23 @@ export class PageAgent {
     return { settled: steady >= 2 }
   }
 
+  /**
+   * Throws rather than loading a refused scheme, so the model is told instead of
+   * quietly handed a search-results page for the URL it asked for. Note what is
+   * NOT passed: `allowLocalFiles`. `browser_read` renders whatever is loaded
+   * into the transcript, so `file://` here is an arbitrary local-file read on
+   * behalf of whatever is driving the tools.
+   */
   async open(url: string): Promise<void> {
+    const refused = refusedScheme(url)
+    if (refused) {
+      throw new Error(
+        `browser_open will not load a ${refused}: URL — the docked browser accepts http, https and about only. ` +
+          (refused === 'file'
+            ? 'Read local files with the Read tool, which the user can see and gate.'
+            : '')
+      )
+    }
     const wc = this.wc()
     await wc.loadURL(normalizeUrl(url))
     await this.waitForStable()

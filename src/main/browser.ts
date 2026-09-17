@@ -2,6 +2,9 @@ import { randomUUID } from 'node:crypto'
 import { BrowserWindow, session, shell, WebContentsView } from 'electron'
 import type { WebContents } from 'electron'
 import type { BrowserState, BrowserTabState, Rect } from '@shared/types'
+// Relative and with the extension, so this module still runs under
+// `node --experimental-strip-types` (no path aliases there).
+import { normalizeUrl } from '../shared/url.ts'
 
 /** Recent console output, exposed to the agent through the MCP tools. */
 export interface ConsoleEntry {
@@ -77,6 +80,7 @@ export class EmbeddedBrowser {
   private userVisible = false
   private bounds: Rect = { x: 0, y: 0, width: 0, height: 0 }
   private netHooked = false
+  private permsHooked = false
 
   private readonly win: BrowserWindow
   private readonly emit: (state: BrowserState) => void
@@ -248,6 +252,7 @@ export class EmbeddedBrowser {
 
     this.hookConsole(wc, tab)
     this.hookNetwork()
+    this.hookPermissions()
 
     view.setBackgroundColor('#00000000')
 
@@ -366,6 +371,28 @@ export class EmbeddedBrowser {
    *
    * Entries are routed back to their tab via webContentsId.
    */
+  /**
+   * Deny every device permission in the docked browser's partition.
+   *
+   * Without a handler this session is not *denied*, it is UNGATED: Electron's
+   * default approves, so every page loaded here could take the microphone, the
+   * camera, geolocation and clipboard-read for the asking — while the app's own
+   * window next door (index.ts, `setPermissionRequestHandler`) allows `media`
+   * only, and only to its own renderer. The browsed page was the less trusted
+   * of the two and had the larger grant.
+   *
+   * The check handler matters as much as the request handler: a synchronous
+   * `permissions.query()` and several getters consult it without ever raising a
+   * request, so a request-only handler still reports "granted".
+   */
+  private hookPermissions(): void {
+    if (this.permsHooked) return
+    this.permsHooked = true
+    const ses = session.fromPartition(PARTITION)
+    ses.setPermissionRequestHandler((_wc, _permission, callback) => callback(false))
+    ses.setPermissionCheckHandler(() => false)
+  }
+
   private hookNetwork(): void {
     if (this.netHooked) return
     this.netHooked = true
@@ -513,11 +540,18 @@ export class EmbeddedBrowser {
     this.applyVisibility()
   }
 
+  /**
+   * The address bar, and only the address bar. `allowLocalFiles` is granted
+   * here because the actor is a person who typed the path; the MCP `open` tool
+   * calls `normalizeUrl` without it.
+   */
   navigate(input: string): void {
     const tab = this.ensure()
-    void tab.view.webContents.loadURL(normalizeUrl(input)).catch(() => {
-      /* bad address; did-fail-load already reported it */
-    })
+    void tab.view.webContents
+      .loadURL(normalizeUrl(input, { allowLocalFiles: true }))
+      .catch(() => {
+        /* bad address; did-fail-load already reported it */
+      })
   }
 
   back(): void {
@@ -583,13 +617,3 @@ export class EmbeddedBrowser {
   }
 }
 
-/** Accepts URLs, bare hostnames, localhost:port and free text (searched). */
-export function normalizeUrl(input: string): string {
-  const raw = input.trim()
-  if (!raw) return 'about:blank'
-  if (/^[a-z][a-z0-9+.-]*:/i.test(raw)) return raw
-  if (/^localhost(:\d+)?(\/|$)/i.test(raw)) return `http://${raw}`
-  if (/^\d{1,3}(\.\d{1,3}){3}(:\d+)?(\/|$)/.test(raw)) return `http://${raw}`
-  if (/^[^\s/]+\.[^\s/]{2,}(\/|$|:\d)/.test(raw)) return `https://${raw}`
-  return `https://duckduckgo.com/?q=${encodeURIComponent(raw)}`
-}

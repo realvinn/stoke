@@ -1039,11 +1039,17 @@ function createWindow(): void {
    *
    * Scoped twice over. `media` is the only permission approved, and only for
    * this window's own renderer — the app UI, whose code is in this repo. The
-   * docked browser cannot reach this handler at all: it runs in a dedicated
-   * persistent partition (browser.ts:36,109), a different session from the one
-   * being configured here, so an arbitrary page cannot inherit the microphone
-   * from the app that embeds it. The identity check is belt and braces against
-   * that ever changing, and everything else is denied outright.
+   * identity check is belt and braces against that ever changing, and
+   * everything else is denied outright.
+   *
+   * The docked browser cannot reach this handler at all: it runs in a dedicated
+   * persistent partition (`PARTITION` in browser.ts), a different session from
+   * the one being configured here. That used to be written down as the reason a
+   * browsed page could not take the microphone, and it was the wrong conclusion
+   * from a true premise — an unhandled session is not denied, it is ungated, so
+   * the browsed page had the LARGER grant of the two. Its partition gets its own
+   * deny-all in `EmbeddedBrowser.hookPermissions`; this handler covers only the
+   * app's own window.
    *
    * This is only Chromium's half. On macOS the OS gates the microphone too, and
    * that half is not code: the hardened runtime needs

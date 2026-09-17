@@ -11,11 +11,21 @@
  * automatically after a navigation clears it.
  */
 ;(() => {
-  if (window.__stoke && window.__stoke.version === 6) return
+  if (window.__stoke && window.__stoke.version === 7) return
 
   /** ref -> element, rebuilt by snapshot(). Cleared implicitly on navigation. */
   const refs = new Map()
   let refSeq = 0
+
+  /**
+   * Input types whose value never leaves the page.
+   *
+   * `type` is the only signal available in-page — a bank may well use
+   * `type="text"` for an account number and nothing here can know it — so this
+   * is a floor, not a guarantee. It covers the case that actually arises: a
+   * snapshot taken while a sign-in form is filled.
+   */
+  const SECRET_TYPES = new Set(['password'])
 
   /* ----------------------------------------------------------- visibility */
 
@@ -181,7 +191,21 @@
       if (el.disabled) item.disabled = true
       if (el.checked) item.checked = true
       if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
-        if (el.value) item.value = el.value.length > 60 ? `${el.value.slice(0, 57)}…` : el.value
+        /*
+         * A snapshot is read by the model and then written to the transcript on
+         * disk, so a captured secret is captured twice and permanently. The
+         * guard used to be on tag name alone, which meant that a snapshot of any
+         * page with a filled sign-in form put the password in both places.
+         *
+         * Report that it is filled, not what it holds: "is there a password in
+         * this box yet" is the only thing an agent driving a form needs, and it
+         * is the whole of what this now answers.
+         */
+        if (SECRET_TYPES.has(el.type)) {
+          if (el.value) item.value = '[redacted]'
+        } else if (el.value) {
+          item.value = el.value.length > 60 ? `${el.value.slice(0, 57)}…` : el.value
+        }
       }
       if (el.tagName === 'SELECT') {
         item.options = [...el.options].slice(0, 25).map((o) => o.value || o.text)
@@ -864,7 +888,7 @@
   }
 
   window.__stoke = {
-    version: 6,
+    version: 7,
     snapshot,
     read,
     outline,
