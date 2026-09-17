@@ -1702,6 +1702,24 @@ export function App(): React.JSX.Element {
 
       forgetPty(tab.ptyId)
       window.stoke.pty.kill(tab.ptyId)
+      /*
+       * Forget the version this session reported, because the session that
+       * reported it is the one being killed.
+       *
+       * A relaunch reuses the session id, and `relaunchPlan` reads the version
+       * out of `sessionLine[sessionId]` — so the old reading survived the
+       * relaunch and the pill lit again, offering an update to the binary the
+       * new process had just been started on. It cleared itself seconds later
+       * when the first statusLine payload arrived, which made it look like a
+       * flicker rather than a wrong answer. Cleared, `relaunchPlan` returns
+       * "has not reported its version yet", which is both true and quiet.
+       */
+      setSessionLine((cur) => {
+        if (!(sessionId in cur)) return cur
+        const next = { ...cur }
+        delete next[sessionId]
+        return next
+      })
       void startSession({
         cwd: tab.cwd,
         name: tab.projectName,
@@ -1758,6 +1776,17 @@ export function App(): React.JSX.Element {
   }, [browserState.url, settings, patchSettings])
 
   const openUrl = useCallback((url: string): void => {
+    /*
+     * Claim the seed here, not only in the effect below.
+     *
+     * `setBrowserOpen(true)` runs that effect, and on the first open of a run
+     * it took the `else` branch and called `browser.show(lastUrl || homepage)`
+     * — AFTER the `show(url)` on the next line, so the homepage won. The first
+     * terminal link anyone clicked in a session opened the wrong page, every
+     * run, and the second one worked, which is exactly the shape that gets
+     * written off as a misclick.
+     */
+    seededBrowser.current = true
     setBrowserOpen(true)
     window.stoke.browser.show(url)
   }, [])
@@ -2127,6 +2156,31 @@ export function App(): React.JSX.Element {
    */
   const resumeSession = useCallback(
     (s: SessionIndexEntry): void => {
+      /*
+       * A conversation already open is focused, not started again.
+       *
+       * Nothing stopped a second tab being opened on the same session id, and
+       * the two were not independent: `closeTab` prunes the session-keyed maps
+       * with `dropSessionState(tab.sessionId)`, so closing EITHER twin wiped
+       * the context ring, the activity dot and the version line of the one
+       * still open. Two `claude` processes also then held the same transcript.
+       *
+       * Reachable from three places that cannot see each other — a search hit,
+       * a row in an expanded project, and the command palette — so "I already
+       * have that open" is not something the user can be expected to track.
+       *
+       * `running` only. A paused or exited tab on the same id has its own
+       * answer already ("Resume session", "Start again"), and short-circuiting
+       * those would turn a deliberate resume into a press that looks like it
+       * did nothing.
+       */
+      const open = tabsRef.current.find(
+        (t) => t.kind === 'session' && t.sessionId === s.id && t.status === 'running'
+      )
+      if (open) {
+        setActiveTabId(open.id)
+        return
+      }
       const project = projects.find((p) => p.path === s.projectPath)
       void startSession({
         cwd: s.projectPath,
