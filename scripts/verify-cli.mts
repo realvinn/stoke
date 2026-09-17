@@ -23,7 +23,7 @@
  *
  *   node scripts/verify-cli.mts
  */
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -203,6 +203,60 @@ check('an explicit path in Settings still outranks the search', await findClaude
 process.env.HOME = realHome
 process.env.PATH = realPath
 process.env.SHELL = realShell
+
+/*
+ * ------------------------------------------------------- STRIP_ENV, in sync
+ *
+ * Gotcha 1 requires the two copies of this list — `pty.ts` for terminal tabs
+ * and `agent.ts` for headless `claude -p` runs — to be identical, and until now
+ * nothing said so out loud. They are two hand-maintained literals in two files
+ * that are edited for different reasons, which is the exact shape gotcha 62
+ * names: two lists that must agree, maintained by hand, will diverge.
+ *
+ * The failure is silent and it is not small. An inherited `CLAUDECODE` or
+ * `CLAUDE_CODE_SESSION_ID` makes the spawned `claude` believe it is a nested
+ * child, so it writes no transcript — and with no transcript there is no
+ * resume, no context ring and no session in the sidebar. A drift in the agent
+ * copy alone would break every worklog run while every terminal tab stayed
+ * perfectly fine, which is the version of this bug that would take longest to
+ * find.
+ *
+ * Compared as text rather than by importing either module: `pty.ts` loads
+ * `@lydell/node-pty`, a native binding this suite has no reason to pull in, and
+ * the thing being protected is the source literal anyway.
+ */
+function stripEnvList(file: string): string[] {
+  const src = readFileSync(new URL(`../src/main/${file}`, import.meta.url), 'utf8')
+  const m = /const STRIP_ENV = \[([\s\S]*?)\]/.exec(src)
+  if (!m) return []
+  return [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1])
+}
+
+const ptyStrip = stripEnvList('pty.ts')
+const agentStrip = stripEnvList('agent.ts')
+
+console.log('\nSTRIP_ENV (gotcha 1): the two copies must not drift')
+check('pty.ts has a STRIP_ENV list at all', ptyStrip.length > 0, true)
+check('agent.ts has one too', agentStrip.length > 0, true)
+check('the two lists are identical, in the same order', agentStrip, ptyStrip)
+for (const marker of [
+  'CLAUDECODE',
+  'CLAUDE_CODE_CHILD_SESSION',
+  'CLAUDE_CODE_ENTRYPOINT',
+  'CLAUDE_CODE_SESSION_ID'
+]) {
+  check(`${marker} is stripped, or the child writes no transcript`, ptyStrip.includes(marker), true)
+}
+/*
+ * The other direction, and the one that would be a real incident: these carry
+ * the user's credentials and the config the CLI is meant to obey. Stripping one
+ * would sign the user out of a session Stoke started, or silently ignore their
+ * configuration, and no test above would notice.
+ */
+for (const keep of ['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR', 'HOME', 'PATH']) {
+  check(`${keep} is NOT stripped`, ptyStrip.includes(keep), false)
+}
+
 rmSync(sandbox, { recursive: true, force: true })
 
 // The tally is the last statement in the file, and must stay that way: anything
