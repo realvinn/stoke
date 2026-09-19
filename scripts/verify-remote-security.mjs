@@ -134,6 +134,24 @@ try {
 }
 
 /*
+ * Once the shell went public, the cookie was built from ANY ?k: a stranger
+ * could navigate the phone to /?k=garbage and overwrite its working 90-day
+ * cookie, logging it out. Only a key that authorised the request is stored.
+ */
+console.log('\na wrong key is never stored')
+try {
+  const res = await fetch(`${base}/?k=${'x'.repeat(key.length)}`, {
+    headers: ACCESS,
+    signal: AbortSignal.timeout(20_000)
+  })
+  check('the shell still loads for a wrong key', 200, res.status)
+  check('with no set-cookie', null, res.headers.get('set-cookie'))
+} catch (e) {
+  console.log(`  FAIL  could not fetch the shell — ${e.message}`)
+  fail++
+}
+
+/*
  * Raw socket rather than fetch: Connection and Upgrade are forbidden header
  * names, so fetch throws a TypeError before the request leaves the process and
  * the check silently never runs.

@@ -24,8 +24,12 @@ import { CODING_CLIS } from '../../shared/codingClis.ts'
 import { isTailnetAddress, tailnetAddress } from './link.ts'
 import {
   answerBytes,
+  answerVerdict,
   isGatedRemotePath,
+  mayStoreKeyCookie,
   phoneStatusFor,
+  trackPrompt,
+  type PromptTrack,
   sortSessionRows,
   stripLocalHostnameSuffix,
   type AnswerKey,
@@ -59,7 +63,15 @@ export type { ConnectTarget, Reach } from './link.ts'
  *    non-WebSocket path — the SPA fallback), `/assets/*`, `/manifest.webmanifest`
  *    and the icons are served WITHOUT the bearer key; none of it embeds data.
  *    Every `/api/*` route and every WebSocket upgrade stays gated exactly as
- *    before (`isGatedRemotePath`). `/?k=<key>` still sets the HttpOnly cookie.
+ *    before (`isGatedRemotePath`). `/?k=<key>` sets the HttpOnly cookie only
+ *    when that key is the right one (`mayStoreKeyCookie`).
+ *    POLICY CHANGE, deliberately: the shell also skips `requireAccessHeader`.
+ *    It used to be "nothing without Access"; now it is "no DATA without
+ *    Access". The shell is static files that name no project, path or session
+ *    (verify-remote-security checks the page names no project path), and a
+ *    phone must load something before it can say why it is locked out. Every
+ *    route that returns data, and every socket, still requires Access when it
+ *    is on.
  * 2. `GET /api/host` adds `stt` ('ready'|'down'|'off'), `agents`
  *    (`[{id,name}]`, installed + chosen, Claude first), `defaults`
  *    (`{permissionMode,model,effort}` — bypass is never offered), and a
@@ -82,8 +94,13 @@ export type { ConnectTarget, Reach } from './link.ts'
  *    after a short delay (CLAUDE.md gotchas 85, 86 / PX-1). Bracketed paste
  *    made Claude file every phone message as `<pasted_content>` and refuse to
  *    act on it. `{type:'input', data}` is unchanged.
- * 7. `POST /api/sessions/:ptyId/answer {key}`: writes only while that pty's
- *    status is `'waiting'`, else 409 `{error:'not waiting'}`.
+ * 7. `POST /api/sessions/:ptyId/answer {key, promptId}`: writes only while
+ *    that pty's status is `'waiting'` (else 409 `{error:'not waiting'}`) AND
+ *    `promptId` names the prompt on screen with nothing typed into the pty
+ *    since it appeared (else 409 `{error:'stale', promptId}`). Rows, the
+ *    `attached` frame and `status` frames carry `promptId`; it changes with
+ *    every new prompt, and when a later registry reading re-confirms one after
+ *    input (`trackPrompt`).
  * 8. `POST /api/sessions` accepts `{cwd, cli?, permissionMode?, model?,
  *    effort?}`; `cli` must be an installed agent; bypass stays 403;
  *    `knownCwd` compares realpaths on both sides (F6).
@@ -143,6 +160,12 @@ export interface RemoteSessionRow {
   context: ContextSnapshot | null
   status: PhoneSessionStatus
   waitingFor: string | null
+  /**
+   * The prompt a `waiting` session is showing (`trackPrompt`), null otherwise.
+   * The answer route requires it back, so a tap can only ever answer the
+   * prompt the phone was shown.
+   */
+  promptId: string | null
   lastActivityAt: number | null
   cli: string
   agentName: string
@@ -271,7 +294,7 @@ export function generateToken(): string {
 function friendlyListenError(err: unknown, port: number): string {
   const code = (err as NodeJS.ErrnoException)?.code
   if (code === 'EADDRINUSE') {
-    return `Port ${port} is already in use — maybe by another Stoke. Pick a different port in Advanced.`
+    return `Port ${port} is already in use — maybe by another Stoke. Pick a different port.`
   }
   return err instanceof Error ? err.message : String(err)
 }
@@ -281,6 +304,13 @@ function safeEqual(a: string, b: string): boolean {
   const bb = Buffer.from(b)
   if (ab.length !== bb.length) return false
   return timingSafeEqual(ab, bb)
+}
+
+/** What the phone is told about one pty's state. */
+interface PtyStatus {
+  status: PhoneSessionStatus
+  waitingFor: string | null
+  promptId: string | null
 }
 
 export class RemoteServer {
@@ -307,7 +337,9 @@ export class RemoteServer {
   private lastEventsPayload: string | null = null
   private eventsDebounce: NodeJS.Timeout | null = null
   /** The last `{status,waitingFor}` sent per pty, so `onRegistryState` sends only real changes. */
-  private lastPtyStatus = new Map<string, { status: PhoneSessionStatus; waitingFor: string | null }>()
+  private lastPtyStatus = new Map<string, PtyStatus>()
+  /** The prompt each waiting pty is showing — see `trackPrompt`. */
+  private prompts = new Map<string, PromptTrack>()
 
   private readonly deps: RemoteDeps
   /** Told whenever a client attaches or leaves, so the desktop can say so. */
@@ -453,6 +485,9 @@ export class RemoteServer {
   }
 
   async stop(): Promise<void> {
+    // Turned off is not failed: a busy-port error must not outlive the server
+    // the user switched off (the popover and panel both show it).
+    this.error = null
     this.offData?.()
     this.offExit?.()
     this.offData = null
@@ -523,14 +558,32 @@ export class RemoteServer {
    */
   onRegistryState(ptyId: string): void {
     this.notifySessionsChanged()
+    this.pushStatus(ptyId)
+  }
+
+  /**
+   * Every registry pass, changed or not: a prompt can be re-confirmed under a
+   * new id by a later reading (`trackPrompt`), and a phone holding the old id
+   * must be told, or it can never answer it.
+   */
+  onRegistryPass(): void {
+    const live = new Set(this.deps.ptys()?.list().map((s) => s.ptyId) ?? [])
+    for (const id of [...this.prompts.keys()]) if (!live.has(id)) this.prompts.delete(id)
+    for (const ptyId of this.attached.keys()) this.pushStatus(ptyId)
+    if (this.eventsClients.size) this.notifySessionsChanged()
+  }
+
+  private pushStatus(ptyId: string): void {
     const set = this.attached.get(ptyId)
     if (!set || set.size === 0) return
     const next = this.statusFor(ptyId)
     if (!next) return
     const prev = this.lastPtyStatus.get(ptyId)
-    if (prev && prev.status === next.status && prev.waitingFor === next.waitingFor) return
+    if (prev && prev.status === next.status && prev.waitingFor === next.waitingFor && prev.promptId === next.promptId) {
+      return
+    }
     this.lastPtyStatus.set(ptyId, next)
-    const text = JSON.stringify({ type: 'status', status: next.status, waitingFor: next.waitingFor })
+    const text = JSON.stringify({ type: 'status', ...next })
     for (const ws of set) if (ws.readyState === 1) ws.send(text)
   }
 
@@ -712,8 +765,16 @@ export class RemoteServer {
 
     // First visit arrives with ?k=<token>; park it in a cookie so later asset
     // and socket requests authenticate without the key in every URL.
+    /*
+     * Only a key that authorised THIS request is stored (`mayStoreKeyCookie`).
+     * `tokenFrom` reads `?k` before the cookie, so `authorized` here is a
+     * verdict on `queryKey` itself. Once the shell went public, `/?k=<anything>`
+     * got a Set-Cookie with no check at all: any page could navigate the phone
+     * to a garbage key and overwrite its working 90-day cookie. A wrong key now
+     * gets the shell with no cookie, and its Connect screen explains it.
+     */
     const queryKey = url.searchParams.get('k')
-    const setCookie: Record<string, string> = queryKey
+    const setCookie: Record<string, string> = queryKey && mayStoreKeyCookie(queryKey, this.authorized(req))
       ? {
           /*
            * The cookie is a shell credential, so it carries Secure and must
@@ -943,6 +1004,27 @@ export class RemoteServer {
           cli = body.cli
         }
 
+        /*
+         * One transcript, one `claude`. A Resume on a session that is running
+         * in another pty (a desktop tab, another phone, this phone's own
+         * previous Resume) used to start a second process on it: the desktop
+         * then held two tabs on one id, and closing the ended twin wiped the
+         * live one's context meter (`dropSessionState`). Refused with the pty
+         * that has it, so the phone opens that one instead.
+         */
+        const resumeId = typeof body?.sessionId === 'string' && UUID.test(body.sessionId) ? body.sessionId : null
+        if (resumeId && body?.resume === true) {
+          const livePty = this.deps.ptys()?.liveFor(resumeId) ?? null
+          if (livePty) {
+            return this.json(
+              res,
+              { error: 'That conversation is already open.', live: true, ptyId: livePty },
+              setCookie,
+              409
+            )
+          }
+        }
+
         const started = await this.deps.startSession({
           cwd,
           cli: cli as LaunchOptions['cli'],
@@ -973,13 +1055,28 @@ export class RemoteServer {
         const ptyId = answerMatch[1]
         const parsed = await this.readJson(req)
         if (parsed === BAD_JSON) return this.json(res, { error: 'Malformed JSON body.' }, setCookie, 400)
-        const key = (parsed as { key?: unknown } | null)?.key
+        const body = parsed as { key?: unknown; promptId?: unknown } | null
+        const key = body?.key
         if (key !== '1' && key !== '2' && key !== '3' && key !== 'esc' && key !== 'enter') {
           return this.json(res, { error: "key must be '1', '2', '3', 'esc' or 'enter'." }, setCookie, 400)
         }
+        /*
+         * The prompt the phone was shown must be the one on screen now, with
+         * nothing typed since (`answerVerdict`). The registry alone lags up to
+         * a poll: a prompt answered at the desk still read `waiting`, and a tap
+         * in that second wrote a stray digit and returned 200.
+         */
         const status = this.statusFor(ptyId)
         if (status?.status !== 'waiting') {
           return this.json(res, { error: 'not waiting' }, setCookie, 409)
+        }
+        const verdict = answerVerdict(
+          this.prompts.get(ptyId) ?? null,
+          body?.promptId,
+          this.deps.ptys()?.lastInputAt(ptyId) ?? null
+        )
+        if (verdict !== 'ok') {
+          return this.json(res, { error: verdict, promptId: status.promptId }, setCookie, 409)
         }
         const manager = this.deps.ptys()
         const ok = manager ? this.answer(manager, ptyId, key) : false
@@ -1014,18 +1111,37 @@ export class RemoteServer {
    * exist at all (as opposed to existing but unreadable, which is
    * `'unknown'`).
    */
-  private statusFor(ptyId: string): { status: PhoneSessionStatus; waitingFor: string | null } | null {
+  private statusFor(ptyId: string): PtyStatus | null {
     const info = this.deps.ptys()?.list().find((s) => s.ptyId === ptyId)
     if (!info) return null
     const reg = this.deps.registryStates().find((s) => s.ptyId === ptyId) ?? null
-    return {
-      status: phoneStatusFor({
-        exited: info.exited,
-        instrumented: info.instrumented,
-        registryStatus: reg?.status ?? null
-      }),
-      waitingFor: reg?.waitingFor ?? null
-    }
+    const status = phoneStatusFor({
+      exited: info.exited,
+      instrumented: info.instrumented,
+      registryStatus: reg?.status ?? null
+    })
+    return { status, waitingFor: reg?.waitingFor ?? null, promptId: this.promptFor(ptyId, status, reg)?.id ?? null }
+  }
+
+  /**
+   * The prompt `ptyId` is showing now, updated from its latest registry
+   * reading and the pty's last input. Stored, so an id stays the same from one
+   * read to the next until `trackPrompt` says the prompt changed.
+   */
+  private promptFor(ptyId: string, status: PhoneSessionStatus, reg: LiveSessionState | null): PromptTrack | null {
+    const next = trackPrompt(
+      this.prompts.get(ptyId) ?? null,
+      {
+        waiting: status === 'waiting',
+        waitingFor: reg?.waitingFor ?? null,
+        statusUpdatedAt: reg?.statusUpdatedAt ?? null,
+        readAt: reg?.readAt ?? Date.now()
+      },
+      this.deps.ptys()?.lastInputAt(ptyId) ?? null
+    )
+    if (next) this.prompts.set(ptyId, next)
+    else this.prompts.delete(ptyId)
+    return next
   }
 
   /** `POST /api/sessions/:ptyId/answer`'s write, once the 'waiting' gate has passed. */
@@ -1047,6 +1163,7 @@ export class RemoteServer {
       // An SSH session's cwd is a local folder that has nothing to do with
       // where it runs (gotcha 18), so the host is the honest name.
       const projectName = s.cwd.split(/[\\/]/).filter(Boolean).pop() ?? s.cwd
+      const status = phoneStatusFor({ exited: s.exited, instrumented: s.instrumented, registryStatus: reg?.status ?? null })
       return {
         ptyId: s.ptyId,
         sessionId: s.sessionId,
@@ -1058,8 +1175,9 @@ export class RemoteServer {
         cols: s.cols,
         rows: s.rows,
         context,
-        status: phoneStatusFor({ exited: s.exited, instrumented: s.instrumented, registryStatus: reg?.status ?? null }),
+        status,
         waitingFor: reg?.waitingFor ?? null,
+        promptId: this.promptFor(s.ptyId, status, reg)?.id ?? null,
         lastActivityAt: s.lastActivityAt,
         cli: s.cli,
         agentName: CODING_CLIS.find((c) => c.id === s.cli)?.label ?? s.cli,
@@ -1234,6 +1352,37 @@ export class RemoteServer {
       return
     }
 
+    /*
+     * `?peek=1`: the list reading a waiting session's prompt labels. One
+     * `attached` frame (history included — the screen is rebuilt from it) and
+     * a normal close, and never counted as a phone attached: every waiting row
+     * used to register as a watching phone for the length of its replay, so
+     * the desktop's "phone attached" dot flickered once per prompt.
+     */
+    if (url.searchParams.get('peek') === '1') {
+      const peeked = ptys.list().find((s) => s.ptyId === ptyId)
+      const st = this.statusFor(ptyId)
+      ws.send(
+        JSON.stringify({
+          type: 'attached',
+          ptyId,
+          cols: peeked?.cols ?? 100,
+          rows: peeked?.rows ?? 30,
+          status: st?.status ?? 'unknown',
+          waitingFor: st?.waitingFor ?? null,
+          promptId: st?.promptId ?? null,
+          history: ptys.historyFor(ptyId)
+        })
+      )
+      ws.close(1000, 'peek')
+      const forget = (): void => {
+        this.clients.delete(ws)
+      }
+      ws.on('close', forget)
+      ws.on('error', forget)
+      return
+    }
+
     this.attachKeepalive(ws)
 
     let set = this.attached.get(ptyId)
@@ -1268,6 +1417,7 @@ export class RemoteServer {
         desktopRows: desktop.rows,
         status: status?.status ?? 'unknown',
         waitingFor: status?.waitingFor ?? null,
+        promptId: status?.promptId ?? null,
         history: ptys.historyFor(ptyId)
       })
     )

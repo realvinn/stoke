@@ -43,6 +43,7 @@ import {
 } from '../shared/stokeArgs.ts'
 import { installCommand, readCommandState, removeCommand, type CommandEnv } from './stokeCommand.ts'
 import { keepUsage } from '../shared/statusLine.ts'
+import { shouldRestartRemote } from '../shared/remotePhone.ts'
 import { parseSession, readTranscript } from './sessionFile.ts'
 import { fetchRemoteTranscript } from './sshTranscript.ts'
 import { PtyManager, type StartResult } from './pty.ts'
@@ -1576,7 +1577,10 @@ function createWindow(): void {
         // frame to any phone attached to this pty directly (phone contract
         // point 5).
         remote?.onRegistryState(st.ptyId)
-      }
+      },
+      // The phone's prompt identity can move on a pass that changed nothing
+      // the renderer cares about (`trackPrompt`'s re-confirmation).
+      passed: () => remote?.onRegistryPass()
     }
   )
   timers.push(setInterval(() => void registry?.pass(), REGISTRY_POLL_MS))
@@ -2422,8 +2426,13 @@ function registerIpc(): void {
      * and nothing said so. Restart it here when a field it binds or checks
      * moves; `start()` stops the old listeners first.
      */
-    const bindKeys = ['port', 'bindLan', 'bindTailscale', 'requireAccessHeader', 'hostname', 'token'] as const
-    if (remote?.status().running && bindKeys.some((k) => prev.remote[k] !== next.remote[k])) {
+    /*
+     * A server that FAILED to bind (a busy port) is retried too, while Phone
+     * access is still on: its error tells the user to pick another port, and
+     * doing so used to change nothing until they turned it off and on
+     * (`shouldRestartRemote`, review of PX-8).
+     */
+    if (remote && shouldRestartRemote(prev.remote, next.remote, remote.status())) {
       await remote.start(next.remote)
       pushRemote()
     } else if (prev.remote.sttUrl !== next.remote.sttUrl) {
