@@ -405,6 +405,40 @@ export function answerVerdict(
 
 /* ------------------------------------------------------- server decisions */
 
+export type ResumeVerdict =
+  | { ok: true }
+  | { ok: false; status: 400 | 404 | 409; error: string; live?: true; ptyId?: string }
+
+/**
+ * Whether `POST /api/sessions` with `resume: true` may start a process.
+ *
+ * Resume must never quietly become a new conversation (gotcha 92). Main's
+ * `resumeOrMint` turns `--resume` on an id with no transcript into
+ * `--session-id`, which is right for a desktop relaunch of a tab nobody typed
+ * into — and wrong for a phone that pressed "Resume conversation" on a row with
+ * a title and twenty messages: it got a 200 and an empty session. So a Claude
+ * resume of an id with no transcript is a 404 here, before anything spawns,
+ * and a resume that names no valid id at all is a 400 (it used to spawn with
+ * `resume` set and no id). `hasTranscript` is null for an agent whose
+ * transcripts Stoke cannot look up, which is not checked.
+ */
+export function resumeVerdict(opts: {
+  resume: boolean
+  sessionId: string | null
+  livePty: string | null
+  hasTranscript: boolean | null
+}): ResumeVerdict {
+  if (!opts.resume) return { ok: true }
+  if (!opts.sessionId) return { ok: false, status: 400, error: 'Resume needs a session id.' }
+  if (opts.livePty) {
+    return { ok: false, status: 409, error: 'That conversation is already open.', live: true, ptyId: opts.livePty }
+  }
+  if (opts.hasTranscript === false) {
+    return { ok: false, status: 404, error: 'No transcript for that session — it cannot be resumed.' }
+  }
+  return { ok: true }
+}
+
 /**
  * Whether the remote server should be (re)started for a settings write —
  * review finding on PX-8.

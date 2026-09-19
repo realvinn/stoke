@@ -234,6 +234,8 @@ rule file named on the group line.
   `proc.onExit` would delete the incoming session's `--settings` file and `claude` refuses to start.
 - **80.** Follow the session a pty is on NOW via the CLI's registry (`RegistryPoller`,
   `rebindSession`): `/clear` and `/resume` move it; its files stay on the launch key (`payloadKeyFor`).
+- **92.** Never registry-fall-back for a pty once matched by pid (`everMatched`); the folder fallback
+  needs descent (`descendsFrom`); a phone Resume of an id with no transcript is refused (`resumeVerdict`).
 
 **Usage chip** — `.claude/rules/usage.md`
 - **21.** Treat a missing `rate_limits` or either missing window as unknown, never 0% (none arrive

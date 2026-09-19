@@ -265,3 +265,32 @@ Three things that are easy to get wrong:
   Windows `.cmd` install, whose pty pid is cmd.exe's. `pickEntry` then takes the ONE entry holding the
   id Stoke already has, else the ONE unclaimed entry in the same folder that started after the spawn,
   and refuses ambiguity either way. Unverified on Windows.
+
+## 92. A dying tab was rebound to a stranger's `claude` in the same folder, and its Resume minted a blank session
+
+**The registry's folder fallback took a foreign process for a tab whose own file had just gone.**
+Found by the phone QA (2026-09-19): after `/exit` on a pty holding `cd7a7f25…` (21 messages, titled
+"Apple"), the ended row and the desktop tab both carried `98de4ade…`, an id with no transcript, and
+the row lost its title. Another Stoke was running `claude` in the SAME folder at the time. The
+mechanism, reproduced against the old `RegistryPoller` in a hermetic replay: SIGHUP removes a
+process's `<pid>.json` ~0.37s before the pty exits; for that pass the target is not pid-matched and
+is older than `REGISTRY_FALLBACK_AFTER_MS`, so it fell to `pickEntry`'s fallbacks, and "the one
+unclaimed entry in the same folder that started after the spawn" is exactly a terminal `claude` or
+a second Stoke in the same repo. The rebind then followed the tab everywhere (tabs.json, the phone
+row).
+
+Then the phone's "Resume conversation" sent `resume: true` with that id, got a 200, and main's
+`resumeOrMint` — right for a desktop relaunch of a tab nobody typed into — quietly turned
+`--resume` into `--session-id` and started an empty conversation.
+
+Three locks:
+
+- **`everMatched`** (sessionRegistry.ts): a pty whose own file was ever read never falls back. Its
+  file going away means dying, never "look elsewhere". Only a pty never matched by pid (a Windows
+  `.cmd` install, whose pty pid is cmd.exe's) may use the fallbacks at all.
+- **Descent** (`pickEntry`'s `descends`, `descendsFrom` over `readProcessTable`): the folder
+  fallback takes only a process under the pty's own pid, and answers nothing with no process
+  table. Same folder is not identity. The Windows table (CIM) is UNVERIFIED.
+- **`resumeVerdict`** (remotePhone.ts): `POST /api/sessions` with `resume: true` is a 404 for a
+  Claude id with no transcript and a 400 with no valid id, before anything spawns. A Resume must
+  never silently become a new conversation.

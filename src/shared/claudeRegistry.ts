@@ -162,19 +162,29 @@ const STARTED_SLACK_MS = 5000
  *     is not claude's — a Windows `.cmd` install runs through `cmd.exe /c`, so
  *     the pty pid is cmd.exe's — the session id is the next-best key.
  *  3. **The one unclaimed entry in the same folder that started after the
- *     spawn.** The `--continue` case on such a machine, where Stoke holds no id.
+ *     spawn, and whose process descends from the pty's.** The `--continue`
+ *     case on such a machine, where Stoke holds no id.
  *
  * 2 and 3 are fallbacks for a layout this machine cannot produce, and they are
  * UNVERIFIED on Windows. Both refuse ambiguity — two candidates is no answer —
  * because naming the wrong process would rebind a tab to a stranger's session.
  * `claimed` is every session id some OTHER target has already matched by pid,
  * so a fallback cannot steal a session that is provably somebody else's.
+ *
+ * **Same folder is not enough on its own (gotcha 92).** A terminal `claude`, or
+ * a second Stoke, in the same repo is an unclaimed entry in the same folder that
+ * started after the spawn — and a dying tab whose own file had just gone was
+ * rebound to exactly such a stranger, so its Resume named a conversation with
+ * no transcript. `descends(pid)` says whether a process is the pty's own child
+ * (or deeper); without it (no process table) the folder fallback answers
+ * nothing, because a blank ring is cheap and a stranger's session is not.
  */
 export function pickEntry(
   target: RegistryTarget,
   byPid: RegistryEntry | null,
   all: readonly RegistryEntry[] | null,
-  claimed: ReadonlySet<string>
+  claimed: ReadonlySet<string>,
+  descends: ((pid: number) => boolean) | null = null
 ): RegistryEntry | null {
   if (byPid && (byPid.pid === null || byPid.pid === target.pid)) return byPid
   if (!all) return null
@@ -184,13 +194,44 @@ export function pickEntry(
     if (same.length === 1) return same[0]
     if (same.length > 1) return null
   }
+  if (!descends) return null
   const here = free.filter(
     (e) =>
+      e.pid !== null &&
+      descends(e.pid) &&
       e.cwd !== null &&
       samePath(e.cwd, target.cwd) &&
       (e.startedAt === null || e.startedAt >= target.startedAt - STARTED_SLACK_MS)
   )
   return here.length === 1 ? here[0] : null
+}
+
+/**
+ * Whether `pid` is `ancestor` or one of its descendants, by a pid -> parent pid
+ * table (`ps -A -o pid=,ppid=`). Bounded, so a table with a cycle in it (pids
+ * are reused) cannot loop.
+ */
+export function descendsFrom(
+  pid: number,
+  ancestor: number,
+  parents: ReadonlyMap<number, number>
+): boolean {
+  let at: number | undefined = pid
+  for (let hops = 0; at !== undefined && at > 1 && hops < 64; hops++) {
+    if (at === ancestor) return true
+    at = parents.get(at)
+  }
+  return false
+}
+
+/** `ps -A -o pid=,ppid=` output (or `<pid> <ppid>` lines from anywhere) as a table. */
+export function parseProcessTable(text: string): Map<number, number> {
+  const out = new Map<number, number>()
+  for (const line of text.split(/\r?\n/)) {
+    const m = /^\s*(\d+)\s+(\d+)\s*$/.exec(line)
+    if (m) out.set(Number(m[1]), Number(m[2]))
+  }
+  return out
 }
 
 /**

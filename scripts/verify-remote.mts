@@ -29,6 +29,7 @@ import {
   mayStoreKeyCookie,
   phoneStatusFor,
   PROMPT_SETTLE_MS,
+  resumeVerdict,
   shouldRestartRemote,
   sortSessionRows,
   stripLocalHostnameSuffix,
@@ -551,6 +552,26 @@ check('a digit is typing', isTerminalReport('2'), false)
 check('a wrong ?k is never stored as the cookie', mayStoreKeyCookie('WRONGKEY', false), false)
 check('the right one is', mayStoreKeyCookie('RIGHTKEY', true), true)
 check('no ?k: nothing to store', mayStoreKeyCookie(null, true), false)
+
+// Gotcha 92: "Resume conversation" must never quietly become a new one.
+{
+  const id = '98de4ade-5c86-433a-ad9c-0491efdfbde3'
+  check('a Claude resume of an id with no transcript is refused, 404, before anything spawns', (() => {
+    const v = resumeVerdict({ resume: true, sessionId: id, livePty: null, hasTranscript: false })
+    return v.ok ? 'started' : v.status
+  })(), 404)
+  check('one with a transcript starts', resumeVerdict({ resume: true, sessionId: id, livePty: null, hasTranscript: true }).ok, true)
+  check('one already running in a pty is the 409 that opens it instead', (() => {
+    const v = resumeVerdict({ resume: true, sessionId: id, livePty: 'pty-1', hasTranscript: true })
+    return v.ok ? 'started' : [v.status, v.ptyId]
+  })(), [409, 'pty-1'])
+  check('resume naming no valid id is a 400, not a spawn with --resume and nothing after it', (() => {
+    const v = resumeVerdict({ resume: true, sessionId: null, livePty: null, hasTranscript: null })
+    return v.ok ? 'started' : v.status
+  })(), 400)
+  check('an agent whose transcripts Stoke cannot look up is not checked', resumeVerdict({ resume: true, sessionId: id, livePty: null, hasTranscript: null }).ok, true)
+  check('a new session (no resume) is never refused on transcripts', resumeVerdict({ resume: false, sessionId: id, livePty: null, hasTranscript: false }).ok, true)
+}
 
 console.log(failures ? `\n${failures} FAILED` : '\nall pass')
 process.exitCode = failures ? 1 : 0

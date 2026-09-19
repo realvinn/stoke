@@ -28,6 +28,7 @@ import {
   isGatedRemotePath,
   mayStoreKeyCookie,
   phoneStatusFor,
+  resumeVerdict,
   trackPrompt,
   type PromptTrack,
   sortSessionRows,
@@ -125,6 +126,8 @@ export interface RemoteDeps {
   listSessions: (projectPath: string) => Promise<SessionMeta[]>
   /** The conversation in a past session, for reading it back. */
   readTranscript: (sessionId: string) => Promise<Transcript | null>
+  /** Whether a Claude transcript exists for this id, in either projects root. */
+  transcriptExists: (sessionId: string) => Promise<boolean>
   /**
    * The SSH host a session runs on, or null for a local one. An SSH session's
    * `cwd` is the LOCAL folder Stoke happened to be pointed at (CLAUDE.md
@@ -1081,16 +1084,24 @@ export class RemoteServer {
          * that has it, so the phone opens that one instead.
          */
         const resumeId = typeof body?.sessionId === 'string' && UUID.test(body.sessionId) ? body.sessionId : null
-        if (resumeId && body?.resume === true) {
-          const livePty = this.deps.ptys()?.liveFor(resumeId) ?? null
-          if (livePty) {
-            return this.json(
-              res,
-              { error: 'That conversation is already open.', live: true, ptyId: livePty },
-              setCookie,
-              409
-            )
-          }
+        const resuming = body?.resume === true
+        /*
+         * And a Resume never silently becomes a new conversation (gotcha 92):
+         * an id with no transcript is refused here rather than handed to
+         * `resumeOrMint`, which would mint a fresh session under it.
+         */
+        const verdict = resumeVerdict({
+          resume: resuming,
+          sessionId: resumeId,
+          livePty: resuming && resumeId ? (this.deps.ptys()?.liveFor(resumeId) ?? null) : null,
+          hasTranscript:
+            resuming && resumeId && (cli === undefined || cli === 'claude')
+              ? await this.deps.transcriptExists(resumeId)
+              : null
+        })
+        if (!verdict.ok) {
+          const { status, ...payload } = verdict
+          return this.json(res, { error: payload.error, live: payload.live, ptyId: payload.ptyId }, setCookie, status)
         }
 
         const started = await this.deps.startSession({
@@ -1099,10 +1110,8 @@ export class RemoteServer {
           // Resuming needs both flags: the id says which transcript, and
           // resume turns it into --resume rather than --session-id, which
           // would instead try to create a session that already exists.
-          sessionId: typeof body?.sessionId === 'string' && UUID.test(body.sessionId)
-            ? body.sessionId
-            : undefined,
-          resume: body?.resume === true && Boolean(body?.sessionId),
+          sessionId: resumeId ?? undefined,
+          resume: resuming && resumeId !== null,
           permissionMode: requested,
           model: typeof body?.model === 'string' ? body.model : '',
           effort: body?.effort ?? 'default',
