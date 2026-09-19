@@ -197,3 +197,19 @@ Proven without a live `claude`: `scripts/verify-folders.mts` adds a real symlink
 (`realpathSync`-resolved, since macOS's own `$TMPDIR` is itself symlinked) tmp dir, gives the two
 paths it resolves to different `projectMeta` fields, and asserts `listProjects` returns exactly one
 row, keyed by the real path, carrying both sides' fields.
+
+> **Checked against the code on 2026-09-19.** The merge above is a VIEW, and three things still
+> read or wrote the UNRESOLVED string underneath it, all confirmed live with a planted stale key:
+> `projectMetaPatch` (Remove, "No icon") only ever replaces the exact key matching the path the
+> renderer sent — the row's realpath — so the stale symlinked key it can never reach re-merged its
+> old fields back in on every list, making Remove and clearing the emoji no-ops and "No icon" write
+> a second key. `pinnedProjects`/`hiddenProjects` were compared against the unresolved string even
+> after this fix shipped, so a pin or hide saved under a symlinked path matched nothing — a pinned
+> folder lost its pin, a hidden one came back. And `CH.workspaceDefault` (the launcher's "Start
+> here" and the default New-tab folder) was never realpath'd, only `acceptLaunch`'s `req.cwd` was
+> — so a launcher tab and a `stoke DIR` in the same symlinked folder disagreed on `pathKey` and
+> `handleLaunch` started a second `claude` beside the first. Fixed by `migrateSymlinkedProjectKeys`
+> (`projects.ts`), a one-time boot-time rewrite of every stored `projectMeta`/`projectRoots`/
+> `pinnedProjects`/`hiddenProjects` key still under a symlinked path onto its real one, plus
+> realpathing `pinnedProjects`/`hiddenProjects` in `listProjects` for a project added mid-session,
+> plus realpathing `CH.workspaceDefault`'s result the same way `acceptLaunch` already did.

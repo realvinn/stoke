@@ -248,3 +248,11 @@ gotcha 35 already documents as fragile at exactly this moment. CLAUDE.md's own s
 ("Quit properly so before-quit runs `ptys.killAll()`") already treats quitting the whole app as a
 deliberate, coarser action than closing one tab. Left as a risk for whoever owns app-quit
 lifecycle, not silently — this note is that flag.
+
+> **Checked against the code on 2026-09-19.** Adding `onWait` introduced a focus regression:
+> the relaunch and restart callers both pass an inline `onWait={() => answerBusy('wait')}`, and
+> `BusyDialog`'s focus effect depended on `[onWait]`, so a fresh callback identity on every App
+> re-render re-ran it and pulled focus back to Wait even after the user had tabbed to Cancel —
+> measured live, focus Cancel, cause any unrelated re-render, and Enter fired Wait instead. The
+> close dialog was never affected (`onWait` is always undefined there). Fixed by depending on
+> `!!onWait` with an empty effect-deps array, so the effect can only ever run once, on mount.
