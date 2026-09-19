@@ -101,3 +101,34 @@ status object ships to the renderer.
 > by a second pass. The entry above is the original text; where the two disagree, the code
 > has moved on. Line numbers drift; search for the names.
 > - The code now probes the hostname over HTTP and sets the route step from the answer. `checkHostname` (src/main/remote/cloudflare.ts:213-228) fetches `https://<host>/` with `redirect: 'manual'`. `classifyHostname` (:176-189) maps HTTP 530 or an 'error 1033' body to `tunnel-not-found`, meaning the record points at a different tunnel. It maps a redirect to cloudflareaccess.com to `access`, and a 401 or any 2xx/3xx to `ok`. `routeStep` (:348-360) turns those into failed, unknown (access/other), done and todo (dns). scripts/verify-remote.mts:266-286 asserts the mapping. Only the DNS record itself is still unreadable (`routeIsUndetectable`, :150). The file's own comment at :142-144 still calls an HTTP probe useless, which contradicts `checkHostname` in the same file.
+
+## 85. A phone's text and its Enter key were one pty write, and Claude Code read the whole thing as a paste
+
+**The composer sent a prompt and the trailing `\r` as a single WebSocket frame, and `PtyManager.write`
+forwarded that as one write to the pty.** Claude Code's own input box treats a fast multi-byte chunk
+as a paste — that is a property of the TUI, not of Stoke's socket — so the `\r` *inside* the chunk
+becomes a literal newline in the box instead of submitting, and the NEXT lone `\r` (a real Enter
+key, or a second tap of Send) is what actually starts the turn. Audit finding PX-1: short prompts
+(a bare digit, 29 characters) submitted fine, because they fit under whatever threshold Claude's
+paste detector uses; 80, 83 and 97-character prompts landed in the box and sat there. A raw
+WebSocket client confirmed it on the wire: one frame `{type:'input', data:'…\r'}`, and the first
+lone `\r` sent afterward changed nothing — only the second one submitted.
+
+The fix is two separate pty writes, timed apart, for a NEW `{type:'submit', text}` message (`{type:
+'input', data}` is unchanged and still raw keystrokes). `submitFrames` (`src/shared/remotePhone.ts`)
+decides the text: wrapped in `ESC[200~ … ESC[201~` when the pty currently has DECSET 2004 (bracketed
+paste) on — tracked from the pty's own output stream by `trackBracketedPaste`, never assumed — so a
+multi-line prompt's embedded newlines stay newlines rather than each submitting early. `submit()` in
+`pty.ts` writes that body, then writes a bare `\r` on its own after a short delay (started ~80ms;
+adjust from what a real `claude` measures — Ink's paste-vs-keystroke window is not documented). A
+session with bracketed paste off (a raw shell, `shell` status) gets the plain text with no brackets.
+
+**Do not fold the two writes back into one "for efficiency"**: that is the exact bug. And do not
+key the bracket only on `isClaudeCode(cli)` — an `agentPlan`-launched CLI can turn bracketed paste on
+or off itself mid-session (a mode switch, a sub-shell), which is why this reads the live stream
+rather than the launch-time agent id.
+
+> Recorded 2026-09-19. `scripts/verify-remote.mts` covers `submitFrames` and `trackBracketedPaste` in
+> isolation; proving the fix against a REAL `claude` (a 200-char prompt starting a turn on the first
+> submit, per the phone contract) is a manual/CDP check, not a suite — Ink's own paste threshold is
+> not something this repo can assert without spawning the binary.

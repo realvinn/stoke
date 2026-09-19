@@ -268,3 +268,28 @@ for and what the tooltip says; main has the last word. `verify:cli` holds the ta
 the built app: a never-prompted session relaunched as `--session-id b4adba2f…` and came up on the
 banner; the counterfactual, `--resume` on an id with no transcript, exited 1 with "No conversation
 found" in a probe run beside it.
+
+## 84. `proc.onExit` deleting a session at once made every crash indistinguishable from the session never having existed
+
+**`PtyManager.start()`'s `proc.onExit` used to call `this.sessions.delete(ptyId)` unconditionally**,
+whether the process was killed by closing its tab or exited on its own — a crash, a fatal error, a
+plain `/exit`. `server.ts`'s own `sessionList()`/`handleSocket` already had a branch for "a process
+that has already ended is still listed... say so" (`info?.exited`), written on the assumption the
+desktop keeps an ended tab visible the way `App.tsx`'s OWN, main-process-independent tab list does —
+but nothing fed it, because the map entry the phone's `/api/sessions` reads was gone by the time
+anyone asked. Audit finding F1: sent `/exit` over a phone WebSocket, got the documented
+`{type:'exit', code:0}` frame live, then `GET /api/sessions` returned `[]` at once — the session
+vanished with no trace rather than showing as ended.
+
+The fix is to stop deleting on exit and start deleting on a timer. `onExit` now sets `session.exited
+= true`, stamps `session.endedAt`/`session.exitCode`, and leaves the entry in `this.sessions`;
+`list()` prunes anything past `ENDED_RETENTION_MS` (ten minutes, `src/shared/remotePhone.ts`) before
+mapping. `write()`/`resize()` already refuse an exited session (`s.exited` check), so the ring is
+read-only for free. **Only the explicit-close path (`kill()`/`stop()`) still deletes at once** — a
+tab the user closed by hand must disappear immediately, which is the one piece of the old behaviour
+that was correct and phone contract point 3 keeps. `registryTargets()` already excluded exited
+sessions, so this changes nothing about what the registry poller watches.
+
+> Recorded 2026-09-19, alongside the phone contract that needed it (`src/main/remote/server.ts`'s
+> header comment). `scripts/verify-remote.mts` covers `pruneEnded` in isolation, against an explicit
+> map and a fake clock (gotcha 74) — it does not drive a real `PtyManager`.
