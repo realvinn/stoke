@@ -37,6 +37,13 @@ that resolves the latest release, checks every byte against the sha512 in the
 release's own update manifest, and puts the app where it goes. run the same line
 again to upgrade. `STOKE_DRY_RUN=1` does all of it except the installing.
 
+then, from any terminal, `stoke .` opens the folder you are in (or brings the tab
+already running there forward), `stoke --new` always opens another tab,
+`stoke --cli codex` starts a different coding cli, and `stoke --help` lists the
+rest. on a mac the installer links the command into `~/.local/bin`; on linux it is
+the launcher the installer writes; on windows, settings › updates › command line
+puts it on your path (not yet run on windows).
+
 the scripts are [install/install.sh](install/install.sh) and
 [install/install.ps1](install/install.ps1), and the endpoint serves those files
 byte for byte — <https://stoke.vinn.dev/install.sh> is worth reading before you

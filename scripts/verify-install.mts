@@ -30,14 +30,34 @@
  * src/shared/campfire.ts. The script prints them with `--fire-frames`, which is
  * the shipped code path the download loop uses, not a copy of it.
  */
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  copyFileSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  rmSync,
+  writeFileSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { CANVAS, HEARTH, STAGES, paint, type ColorMode } from '../src/shared/campfire.ts'
-import { CACHE_CONTROL, contentTypeFor, routeFor, type InstallerBody } from '../worker/route.ts'
+import {
+  CACHE_CONTROL,
+  contentTypeFor,
+  httpsRedirect,
+  redirectBody,
+  routeFor,
+  type InstallerBody
+} from '../worker/route.ts'
+import { parseStokeArgs, stokeHelp } from '../src/shared/stokeArgs.ts'
+import { LINUX_WRAPPER_MARK } from '../src/shared/stokeCommand.ts'
 import { shArtBlock, ps1ArtBlock, extractBlock } from './gen-installer-art.mts'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -177,6 +197,26 @@ check('/install.ps1 likewise', route(BASE + 'install.ps1', { 'user-agent': CHROM
 ])
 check('an unknown path is negotiated rather than 404d', route(BASE + 'favicon.ico', {}), ['html', 'fallback'])
 
+console.log('\n  plain HTTP gets a redirect, never a script')
+/*
+ * Measured before this existed: `curl -D - http://stoke.vinn.dev/` answered 200
+ * with the whole installer, over a connection anyone on the path could rewrite,
+ * headed for `| sh`. The Worker now answers plain HTTP with a 301 and nothing
+ * executable, before it looks at what was asked for.
+ */
+check('http is sent to https', httpsRedirect('http://stoke.vinn.dev/'), 'https://stoke.vinn.dev/')
+check('with its query, so ?sh still means ?sh', httpsRedirect('http://stoke.vinn.dev/?sh'), 'https://stoke.vinn.dev/?sh')
+check('and its path', httpsRedirect('http://stoke.vinn.dev/install.ps1'), 'https://stoke.vinn.dev/install.ps1')
+check('https is served', httpsRedirect('https://stoke.vinn.dev/'), null)
+check('cf-visitor saying http is believed too', httpsRedirect('https://stoke.vinn.dev/', { 'cf-visitor': '{"scheme":"http"}' }), 'https://stoke.vinn.dev/')
+check('and saying https is not a reason to redirect', httpsRedirect('https://stoke.vinn.dev/', { 'cf-visitor': '{"scheme":"https"}' }), null)
+check('wrangler dev on localhost is left alone', httpsRedirect('http://localhost:8787/?sh'), null)
+check('as is 127.0.0.1', httpsRedirect('http://127.0.0.1:8787/'), null)
+ok(
+  'the redirect body is a comment in sh AND PowerShell, so a curl without -L pipes nothing runnable',
+  redirectBody('https://stoke.vinn.dev/').split('\n').filter(Boolean).every((l) => l.startsWith('#'))
+)
+
 console.log('\n  what is sent with them')
 check('a script is text/plain, never JSON or XML', contentTypeFor('sh'), 'text/plain; charset=utf-8')
 check('the ps1 too, or Invoke-RestMethod deserializes it into an object', contentTypeFor('ps1'), 'text/plain; charset=utf-8')
@@ -222,6 +262,13 @@ ok('the Worker sets no Vary header either', !/['"]vary['"]/i.test(workerCode))
  */
 ok('and it fetches nothing at request time', !/\bfetch\s*\(/.test(workerCode.replace(/\bfetch\(request: Request\)/g, '')))
 ok('it serves only the three embedded bodies', /BODIES\[route\.body\]/.test(workerCode))
+ok(
+  'and asks httpsRedirect BEFORE routing, answering 301 with a location',
+  workerCode.indexOf('httpsRedirect(request.url') !== -1 &&
+    workerCode.indexOf('httpsRedirect(request.url') < workerCode.indexOf('routeFor(request.url') &&
+    /status:\s*301/.test(workerCode) &&
+    /location:\s*secure/.test(workerCode)
+)
 
 // ---------------------------------------------------------------------------
 console.log('\nthe truncation guard')
@@ -776,12 +823,24 @@ console.log('\nwhat the script makes of a machine it is not running on')
     const f = join(shimDir, name)
     writeFileSync(f, body, { mode: 0o755 })
   }
-  const preflight = (os: string, machine: string, uid: string): Record<string, string> => {
+  /*
+   * `pgrep` is shimmed too, always: the real one would count whatever Stoke
+   * happens to be running on the machine running the suite, and the answer
+   * would change with it.
+   */
+  const preflight = (
+    os: string,
+    machine: string,
+    uid: string,
+    extra: { running?: number; env?: Record<string, string>; shell?: string } = {}
+  ): Record<string, string> => {
     shim('uname', `#!/bin/sh\ncase "$1" in\n  -s) echo ${os} ;;\n  -m) echo ${machine} ;;\n  *) echo ${os} ;;\nesac\n`)
     shim('id', `#!/bin/sh\ncase "$1" in\n  -u) echo ${uid} ;;\n  *) echo "uid=${uid}" ;;\nesac\n`)
-    const out = execFileSync('/bin/sh', [SH, '--preflight'], {
+    const pids = Array.from({ length: extra.running ?? 0 }, (_, i) => 4100 + i).join(' ')
+    shim('pgrep', pids ? `#!/bin/sh\nfor p in ${pids}; do echo $p; done\n` : '#!/bin/sh\nexit 1\n')
+    const out = execFileSync(extra.shell ?? '/bin/sh', [SH, '--preflight'], {
       encoding: 'utf8',
-      env: { PATH: `${shimDir}:${process.env.PATH ?? '/usr/bin:/bin'}` }
+      env: { PATH: `${shimDir}:${process.env.PATH ?? '/usr/bin:/bin'}`, ...(extra.env ?? {}) }
     })
     const map: Record<string, string> = {}
     for (const line of out.split('\n')) {
@@ -795,7 +854,7 @@ console.log('\nwhat the script makes of a machine it is not running on')
     check(
       'a normal user on x86-64 Linux gets the linux x64 build and no warning',
       preflight('Linux', 'x86_64', '1000'),
-      { arch: 'x64', platform: 'linux', root: 'no', root_warning: 'no' }
+      { arch: 'x64', inside_stoke: 'no', platform: 'linux', refusal: 'none', root: 'no', root_warning: 'no' }
     )
     check(
       'ROOT on Linux is warned: Electron aborts there and the app cannot catch it',
@@ -805,7 +864,7 @@ console.log('\nwhat the script makes of a machine it is not running on')
     check(
       'root on macOS is NOT warned — crbug.com/638180 is a Linux-only refusal',
       preflight('Darwin', 'arm64', '0'),
-      { arch: 'arm64', platform: 'mac', root: 'yes', root_warning: 'no' }
+      { arch: 'arm64', inside_stoke: 'no', platform: 'mac', refusal: 'none', root: 'yes', root_warning: 'no' }
     )
     check('aarch64 Linux resolves arm64', preflight('Linux', 'aarch64', '1000').arch, 'arm64')
     check('amd64 is x64', preflight('Linux', 'amd64', '1000').arch, 'x64')
@@ -814,6 +873,61 @@ console.log('\nwhat the script makes of a machine it is not running on')
     check('MINGW is recognised as Windows, not as unsupported', preflight('MINGW64_NT-10.0', 'x86_64', '1000').platform, 'windows')
     check('a CPU with no build says so rather than guessing', preflight('Linux', 'riscv64', '1000').arch, 'unsupported')
     check('and so does an OS with no build', preflight('FreeBSD', 'x86_64', '1000').platform, 'unsupported')
+
+    /*
+     * The two ways a Mac install used to end badly, decided before anything
+     * is downloaded. Inside a Stoke terminal, installing quits the Stoke that
+     * owns this very shell (every Stoke pty sets TERM_PROGRAM=Stoke), so the
+     * install died halfway with the old app renamed aside. With two copies
+     * running, `quit app "Stoke"` asks one and the wait timed out on the other
+     * after thirty seconds.
+     */
+    const inside = { TERM_PROGRAM: 'Stoke' }
+    check('inside a Stoke terminal on a Mac, it refuses', preflight('Darwin', 'arm64', '501', { env: inside }).refusal, 'inside-stoke')
+    check('and says it is inside', preflight('Darwin', 'arm64', '501', { env: inside }).inside_stoke, 'yes')
+    check('on Linux it does not refuse: the replace there is a rename that quits nothing', preflight('Linux', 'x86_64', '1000', { env: inside }).refusal, 'none')
+    check('Terminal.app is not Stoke', preflight('Darwin', 'arm64', '501', { env: { TERM_PROGRAM: 'Apple_Terminal' } }).refusal, 'none')
+    check('two copies of Stoke running refuses up front', preflight('Darwin', 'arm64', '501', { running: 2 }).refusal, 'several-running')
+    check('one copy is the ordinary case', preflight('Darwin', 'arm64', '501', { running: 1 }).refusal, 'none')
+    check('none is too', preflight('Darwin', 'arm64', '501', { running: 0 }).refusal, 'none')
+    check('inside Stoke is the reason given when both hold', preflight('Darwin', 'arm64', '501', { env: inside, running: 3 }).refusal, 'inside-stoke')
+    for (const shell of ['/bin/bash', '/bin/dash', '/bin/zsh']) {
+      if (!existsSync(shell)) continue
+      check(
+        `${shell} makes the same calls`,
+        [preflight('Darwin', 'arm64', '501', { env: inside, shell }).refusal, preflight('Darwin', 'arm64', '501', { running: 2, shell }).refusal],
+        ['inside-stoke', 'several-running']
+      )
+    }
+
+    /*
+     * And the real main acts on it BEFORE the first byte of network: run with
+     * no flag, `curl` and `wget` replaced by a recorder that fails, and the
+     * recorder must never have been called. Then the counterfactual — a dry run
+     * quits nothing, so it is allowed past, and does reach the network.
+     */
+    const called = join(shimDir, 'fetch-called')
+    shim('curl', `#!/bin/sh\necho "$@" >> '${called}'\nexit 22\n`)
+    shim('wget', `#!/bin/sh\necho "$@" >> '${called}'\nexit 1\n`)
+    const runMain = (env: Record<string, string>) => {
+      rmSync(called, { force: true })
+      const r = spawnSync('/bin/sh', [SH], {
+        encoding: 'utf8',
+        env: { PATH: `${shimDir}:${process.env.PATH ?? '/usr/bin:/bin'}`, HOME: shimDir, TMPDIR: shimDir, ...env }
+      })
+      return { status: r.status, err: r.stderr, fetched: existsSync(called) }
+    }
+    preflight('Darwin', 'arm64', '501') // reset the uname/id/pgrep shims to a Mac with nothing running
+    const refusedInside = runMain({ TERM_PROGRAM: 'Stoke' })
+    check('main refuses inside Stoke, exit 1, before any download', [refusedInside.status, refusedInside.fetched], [1, false])
+    ok('and names both ways out', /Settings > Updates/.test(refusedInside.err) && refusedInside.err.includes('curl -fsSL https://stoke.vinn.dev | sh'), refusedInside.err)
+    preflight('Darwin', 'arm64', '501', { running: 2 })
+    const refusedTwo = runMain({})
+    check('main refuses with two copies running, before any download', [refusedTwo.status, refusedTwo.fetched], [1, false])
+    ok('and lists the pids it saw', refusedTwo.err.includes('4100 4101'), refusedTwo.err)
+    preflight('Darwin', 'arm64', '501')
+    const dry = runMain({ TERM_PROGRAM: 'Stoke', STOKE_DRY_RUN: '1' })
+    check('a dry run inside Stoke is let through, and reaches the network', dry.fetched, true)
   } finally {
     rmSync(shimDir, { recursive: true, force: true })
   }
@@ -828,11 +942,18 @@ console.log('\nthe Linux launcher, run rather than read')
  * add it — its `unshare -Ur true` probe SUCCEEDS as root, which its generated
  * comment admits makes the probe "mostly a no-op in that scenario".
  *
- * So the wrapper is EXECUTED here rather than pattern-matched, both branches,
- * against a stand-in AppImage that prints its argv. `--print-wrapper` emits the
- * same text `install_linux` writes, from the same function, so this runs the
+ * So the wrapper is EXECUTED here rather than pattern-matched, against a
+ * stand-in AppImage that records its argv. `--print-wrapper` emits the same
+ * text `install_linux` writes, from the same function, so this runs the
  * shipped code path rather than a copy of it (gotcha 71). Root is reached the
  * way `--preflight` reaches it: by shimming `id` onto the front of PATH.
+ *
+ * It is also the `stoke` command on Linux now, so it carries the same contract
+ * as build/bin/stoke on a Mac: --help and --version answered without starting
+ * anything, and every typed argument wrapped as `--stoke-cli --stoke-cwd=… --`
+ * for src/shared/stokeArgs.ts. And it launches DETACHED (setsid, else nohup),
+ * so closing the terminal cannot take Stoke and its sessions down — which is
+ * why the stand-in writes its argv to a file: the app's stdout goes to a log.
  *
  * The layout assertion matters as much as the branch. electron-updater's
  * AppImageUpdater replaces `process.env.APPIMAGE` in place only when that
@@ -843,10 +964,17 @@ console.log('\nthe Linux launcher, run rather than read')
  * a version-free name.
  */
 {
-  const dir = mkdtempSync(join(tmpdir(), 'stoke-wrapper-'))
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'stoke-wrapper-')))
   try {
+    const record = join(dir, 'argv.txt')
     const app = join(dir, 'stoke.AppImage')
-    writeFileSync(app, '#!/bin/sh\nprintf "ARGV:%s\\n" "$*"\n', { mode: 0o755 })
+    writeFileSync(
+      app,
+      '#!/bin/sh\n' +
+        `{ printf 'ERAN=%s\\n' "\${ELECTRON_RUN_AS_NODE-unset}"; for a in "$@"; do printf '%s\\n' "$a"; done; } > '${record}'\n` +
+        'if [ "${STAND_IN_FAIL:-}" = 1 ]; then echo "fuse: failed to open /dev/fuse" >&2; exit 127; fi\n',
+      { mode: 0o755 }
+    )
 
     const wrapperText = execFileSync('/bin/sh', [SH, '--print-wrapper', app], { encoding: 'utf8' })
     const launcher = join(dir, 'stoke')
@@ -858,21 +986,86 @@ console.log('\nthe Linux launcher, run rather than read')
       false
     )
     check('and it is a POSIX sh script, not a shebang-less fragment', wrapperText.startsWith('#!/bin/sh'), true)
-
-    const run = (uid: string | null): { out: string; err: string } => {
-      const env = { ...process.env }
-      if (uid !== null) {
-        const shim = join(dir, `shim-${uid}`)
-        execFileSync('/bin/mkdir', ['-p', shim])
-        writeFileSync(join(shim, 'id'), `#!/bin/sh\necho ${uid}\n`, { mode: 0o755 })
-        env.PATH = `${shim}:${env.PATH ?? ''}`
+    ok(
+      `and carries the mark Settings > Updates reads it back by (${LINUX_WRAPPER_MARK})`,
+      wrapperText.split('\n').slice(0, 3).some((l) => l.startsWith(LINUX_WRAPPER_MARK))
+    )
+    for (const shell of ['/bin/sh', '/bin/bash', '/bin/dash', '/bin/zsh']) {
+      if (!existsSync(shell)) continue
+      let err = ''
+      try {
+        execFileSync(shell, ['-n', launcher], { stdio: 'pipe' })
+      } catch (e) {
+        err = String((e as { stderr?: Buffer }).stderr ?? e)
       }
-      const res = execFileSync('/bin/sh', [launcher, '--window'], { encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'pipe'] })
-      return { out: res, err: '' }
+      ok(`${shell} -n <the launcher>`, err === '', err)
     }
 
-    check('a normal user gets the arguments they typed and nothing added', run('1000').out.trim(), 'ARGV:--window')
-    check('root gets --no-sandbox put in front of them', run('0').out.trim(), 'ARGV:--no-sandbox --window')
+    const where = join(dir, 'a project')
+    mkdirSync(where)
+    const home = join(dir, 'home')
+    mkdirSync(join(home, '.local', 'share', 'stoke'), { recursive: true })
+    const run = (uid: string, args: string[], env: Record<string, string> = {}) => {
+      rmSync(record, { force: true })
+      const shim = join(dir, `shim-${uid}`)
+      mkdirSync(shim, { recursive: true })
+      writeFileSync(join(shim, 'id'), `#!/bin/sh\necho ${uid}\n`, { mode: 0o755 })
+      const r = spawnSync('/bin/sh', [launcher, ...args], {
+        encoding: 'utf8',
+        cwd: where,
+        env: {
+          PATH: `${shim}:${process.env.PATH ?? '/usr/bin:/bin'}`,
+          HOME: home,
+          PWD: where,
+          TMPDIR: dir,
+          ELECTRON_RUN_AS_NODE: '1',
+          ...env
+        }
+      })
+      const seen = existsSync(record) ? readFileSync(record, 'utf8').trimEnd().split('\n') : null
+      return { status: r.status, out: r.stdout, err: r.stderr, erun: seen?.[0] ?? null, argv: seen ? seen.slice(1) : null }
+    }
+
+    check('a bare `stoke` starts the app with nothing added', run('1000', []).argv, [])
+    check(
+      'anything typed is wrapped for the parser, with this folder as the cwd',
+      run('1000', ['--cli', 'codex', 'x y']).argv,
+      ['--stoke-cli', `--stoke-cwd=${where}`, '--', '--cli', 'codex', 'x y']
+    )
+    const viaLauncher = run('1000', ['.']).argv ?? []
+    check(
+      'launcher -> parser: `stoke .` is a session in the folder it was typed in',
+      parseStokeArgs(['stoke', ...viaLauncher], { home, platform: 'linux' }),
+      { kind: 'session', cwd: where, cli: 'claude', launch: 'reuse' }
+    )
+    check(
+      'root gets --no-sandbox, ahead of the request',
+      run('0', ['.']).argv,
+      ['--no-sandbox', '--stoke-cli', `--stoke-cwd=${where}`, '--', '.']
+    )
+    check('and on a bare launch too', run('0', []).argv, ['--no-sandbox'])
+    ok('and is told what that costs', /sandbox is off/.test(run('0', []).err))
+    check('ELECTRON_RUN_AS_NODE never reaches the app (gotcha 1)', run('1000', ['.']).erun, 'ERAN=unset')
+    check(
+      '--appimage-* goes through untouched, first, for the runtime to read',
+      run('1000', ['--appimage-extract-and-run', '.']).argv,
+      ['--appimage-extract-and-run', '.']
+    )
+    const help = run('1000', ['--help'])
+    check('--help prints stokeHelp(linux) and starts nothing', [help.out, help.argv], [stokeHelp('linux'), null])
+    writeFileSync(join(home, '.local', 'share', 'stoke', 'installed-version'), '1.2.3\n')
+    const version = run('1000', ['--version'])
+    check('--version reads what the installer recorded, and starts nothing', [version.out, version.argv], ['Stoke 1.2.3\n', null])
+    check('install-cli is answered, not forwarded', run('1000', ['install-cli']).argv, null)
+    const broken = run('1000', ['.'], { STAND_IN_FAIL: '1' })
+    check('an app that cannot start fails the command', broken.status, 127)
+    ok('and its own error is shown, not swallowed by the detached launch', broken.err.includes('fuse: failed'), broken.err)
+    check('a launch that works exits 0', run('1000', ['.']).status, 0)
+    ok(
+      'the launch is detached: setsid where there is one, nohup where not',
+      /command -v setsid/.test(wrapperText) && /setsid "\$STOKE_APPIMAGE" "\$@" <\/dev\/null/.test(wrapperText) &&
+        /nohup "\$STOKE_APPIMAGE" "\$@" <\/dev\/null/.test(wrapperText)
+    )
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -889,6 +1082,98 @@ console.log('\nthe Linux launcher, run rather than read')
     false
   )
 }
+
+console.log('\nthe macOS install links the stoke command, through the command itself')
+/*
+ * After the copy lands, install_macos runs the NEW bundle's own `stoke
+ * install-cli` (mac_link_cli), so the installer and the command share one rule
+ * for what at ~/.local/bin/stoke may be replaced. `--link-cli <shim>` is that
+ * exact function against a shim the suite names, under a temp HOME.
+ */
+if (process.platform === 'win32' || !existsSync('/bin/sh')) {
+  console.log('  SKIP  needs a POSIX shell.')
+} else {
+  const tmp = realpathSync(mkdtempSync(join(tmpdir(), 'stoke-linkcli-')))
+  try {
+    const shims = join(tmp, 'shims')
+    mkdirSync(shims)
+    writeFileSync(join(shims, 'uname'), '#!/bin/sh\necho Darwin\n', { mode: 0o755 })
+    const app = join(tmp, 'Applications', 'Stoke.app')
+    const shim = join(app, 'Contents', 'Resources', 'bin', 'stoke')
+    mkdirSync(dirname(shim), { recursive: true })
+    copyFileSync(join(root, 'build', 'bin', 'stoke'), shim)
+    execFileSync('/bin/chmod', ['755', shim])
+    writeFileSync(join(app, 'Contents', 'Info.plist'), '<plist><dict><key>CFBundleShortVersionString</key>\n<string>0.0.1</string></dict></plist>\n')
+
+    const link = (shell: string, target: string, home: string) =>
+      spawnSync(shell, [SH, '--link-cli', target], {
+        encoding: 'utf8',
+        env: { PATH: `${shims}:/usr/bin:/bin`, HOME: home }
+      })
+    const homeFor = (name: string): string => {
+      const h = join(tmp, name)
+      mkdirSync(h, { recursive: true })
+      return h
+    }
+
+    let reference = ''
+    for (const shell of ['/bin/sh', '/bin/bash', '/bin/dash', '/bin/zsh']) {
+      if (!existsSync(shell)) continue
+      const home = homeFor(`home-${shell.split('/').pop()}`)
+      const r = link(shell, shim, home)
+      const made = join(home, '.local', 'bin', 'stoke')
+      check(`${shell}: exits 0 and links ~/.local/bin/stoke to the new bundle`, [r.status, lstatSync(made).isSymbolicLink() && readlinkSync(made)], [0, shim])
+      const out = r.stdout.split(home).join('<HOME>')
+      if (!reference) {
+        reference = out
+        ok('it says what it did, and the PATH line to add', out.includes('command') && out.includes('export PATH="$HOME/.local/bin:$PATH"'), out)
+      }
+      ok(`${shell}: says it identically`, out === reference, JSON.stringify(out))
+    }
+    const foreignHome = homeFor('home-foreign')
+    mkdirSync(join(foreignHome, '.local', 'bin'), { recursive: true })
+    writeFileSync(join(foreignHome, '.local', 'bin', 'stoke'), 'mine\n')
+    const refused = link('/bin/sh', shim, foreignHome)
+    check(
+      'somebody else’s stoke is left alone, and the install still succeeds',
+      [refused.status, readFileSync(join(foreignHome, '.local', 'bin', 'stoke'), 'utf8'), /not linked/.test(refused.stdout)],
+      [0, 'mine\n', true]
+    )
+    const olderHome = homeFor('home-older')
+    const older = link('/bin/sh', join(tmp, 'Applications', 'Old.app', 'Contents', 'Resources', 'bin', 'stoke'), olderHome)
+    check(
+      'a release with no shim yet is said plainly and creates nothing',
+      [older.status, /no stoke command yet/.test(older.stdout), existsSync(join(olderHome, '.local', 'bin', 'stoke'))],
+      [0, true, false]
+    )
+  } finally {
+    rmSync(tmp, { recursive: true, force: true })
+  }
+}
+const shAll = readFileSync(SH, 'utf8')
+ok('install_macos calls it on the bundle it just copied', /mac_link_cli \/Applications\/Stoke\.app\/Contents\/Resources\/bin\/stoke/.test(code(shAll)))
+
+console.log('\nthe Windows installer does the same, unverified')
+/*
+ * No PowerShell here, so this is read, not run — said out loud rather than
+ * left as a gap. What can be held from a Mac: the same inside-Stoke refusal,
+ * placed before the first request, and a PATH edit that keeps %VAR% entries.
+ */
+const insideAt = ps1Code.indexOf("$env:TERM_PROGRAM -eq 'Stoke'")
+ok('install.ps1 refuses inside Stoke', insideAt !== -1)
+ok('before it fetches the manifest', insideAt !== -1 && insideAt < ps1Code.indexOf('Invoke-RestMethod -Uri'))
+ok('but lets a dry run through', /TERM_PROGRAM -eq 'Stoke' -and -not \$env:STOKE_DRY_RUN/.test(ps1Code))
+ok('it adds resources\\bin to the user PATH after installing', /Add-StokeToPath \(Join-Path \$after\.Location 'resources\\bin'\)/.test(ps1Code))
+ok('reading the raw value, so %VAR% entries are not frozen', ps1Code.includes('DoNotExpandEnvironmentNames'))
+ok('writing REG_EXPAND_SZ back', ps1Code.includes('RegistryValueKind]::ExpandString'))
+ok('and never setx, which truncates at 1024 characters', !/\bsetx\b/i.test(ps1Code))
+
+console.log('\nthe landing page says what is true now')
+ok('it no longer calls ~/.local/bin/stoke the AppImage', !/puts the AppImage at <code>~\/\.local\/bin\/stoke<\/code>/.test(htmlText))
+ok('it names where the AppImage does go', htmlText.includes('~/.local/bin/stoke.AppImage'))
+ok('it no longer says Linux builds arrive "from the next release onwards"', !/next release onwards/.test(htmlText))
+ok('nor that the installer calls Linux experimental, which it does not', !/the installer says so too/.test(htmlText))
+ok('it documents the stoke command', htmlText.includes('stoke .') && htmlText.includes('stoke --help'))
 
 console.log(failures ? `\n${failures} FAILED` : '\nall pass')
 process.exitCode = failures ? 1 : 0

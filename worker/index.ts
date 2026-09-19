@@ -23,7 +23,14 @@
  * of the install endpoint, and mean a force-push to `main` silently changes what
  * every one-liner executes with no deploy and no audit trail.
  */
-import { CACHE_CONTROL, contentTypeFor, routeFor, type InstallerBody } from './route.ts'
+import {
+  CACHE_CONTROL,
+  contentTypeFor,
+  httpsRedirect,
+  redirectBody,
+  routeFor,
+  type InstallerBody
+} from './route.ts'
 import sh from '../install/install.sh'
 import ps1 from '../install/install.ps1'
 import html from '../install/index.html'
@@ -43,6 +50,22 @@ export default {
 
     const headers: Record<string, string> = {}
     for (const [name, value] of request.headers) headers[name] = value
+
+    // Plain HTTP gets no script, ever: see httpsRedirect for what it used to get.
+    const secure = httpsRedirect(request.url, headers)
+    if (secure) {
+      return new Response(redirectBody(secure), {
+        status: 301,
+        headers: {
+          location: secure,
+          'content-type': 'text/plain; charset=utf-8',
+          'cache-control': CACHE_CONTROL,
+          'referrer-policy': 'no-referrer',
+          'x-content-type-options': 'nosniff'
+        }
+      })
+    }
+
     const route = routeFor(request.url, headers)
 
     return new Response(BODIES[route.body], {

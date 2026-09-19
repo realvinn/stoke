@@ -337,6 +337,27 @@ deleted, so "no, don't log that" is permanent — and because proposal ids are t
 dedupe key, updates were given their own key shape so the `create` key could stay byte-for-byte
 what it was and no old rejection could come back.
 
+## `stoke` from a terminal
+
+`stoke .` in any terminal opens that folder in the running Stoke — or starts Stoke — and focuses
+the tab already running there rather than opening a twin. The command is a shell shim shipped
+inside the app (`build/bin/stoke`, `build/bin/stoke.cmd`, via `extraResources`) and linked onto
+PATH as `~/.local/bin/stoke` on macOS; on Linux it is the launcher the one-line installer writes,
+and on Windows the shim's folder goes on the user PATH. The shim answers `--help`, `--version`
+and `install-cli` itself and turns everything else into
+`--stoke-cli --stoke-cwd=<shell cwd> -- <what was typed>` for the app — `open -n` on macOS,
+because a running app is only activated by `open -a` and its arguments dropped.
+
+Main parses its OWN argv before the single-instance lock (`parseStokeArgs`, in
+`src/shared/stokeArgs.ts`) and hands the parsed request to the running instance as the lock's
+`additionalData`, because the `argv` a `second-instance` handler receives has been reordered by
+Chromium. An argv without the `--stoke-cli` marker is never a request, and the `--` after the
+marker is Chromium's switch terminator, so nothing typed can configure the browser. Main checks
+the folder (async, with a deadline), adds it to the sidebar, and QUEUES the request until the
+renderer asks for it once tab restore has settled (`CH.cliPending`); after that it pushes
+(`CH.cliRequest`). App.tsx claims a (cli, folder) before its first await and holds the claim until
+that session's tab is in the list, so two quick `stoke .` cannot open two tabs.
+
 ## Renderer
 
 React 19, hand-written CSS, no component library.
@@ -450,6 +471,13 @@ npm run verify:search         # sidebar + palette search: tiers, recency, highli
 npm run verify:cli            # finding the `claude` binary: the version-manager shim dirs,
                               # the probe's retry rule, and the two not-found messages.
                               # Hermetic - HOME is redirected into a temp tree (gotcha 52)
+npm run verify:stoke-args     # `stoke …` from a terminal: no marker, no request; every command,
+                              # path form and refusal; an argv reordered the way Chromium
+                              # reorders it; a forwarded request rebuilt, never trusted. Then
+                              # build/bin/stoke RUN against a fake bundle, with `open` recorded
+                              # and fed back through the parser, its install-cli against the
+                              # fixtures the link rules classify, and src/main/stokeCommand.ts
+                              # against the same ones, under a temp HOME with a bystander file
 npm run verify:tabs           # which tab is selected after one is closed, where the
                               # next/previous chord lands, and the tab drag's maths: that its
                               # preview is exactly the reorder it commits, and that no
@@ -500,8 +528,11 @@ npm run verify:install        # the one-line installer and the endpoint that ser
                               # bash, dash and zsh, install.sh's own painter run and diffed
                               # against campfire.ts's paint() in all four tiers, its degrade
                               # rules against renderPlan's, the sha512-is-base64 digest run on
-                              # random bytes, and the NSIS upgrade GUID recomputed from
-                              # electron-builder.yml's appId
+                              # random bytes, the NSIS upgrade GUID recomputed from
+                              # electron-builder.yml's appId, http answered with a 301, the
+                              # Mac refusals (inside Stoke, several copies) run through main
+                              # before any download, the Linux launcher run both as a user
+                              # and as root, and the macOS `stoke` link step via --link-cli
 npm run verify:welcome        # the first-run campfire: which (lastSeen, current) version pairs
                               # play it and which must not, the settings field it remembers that
                               # in, that the component carries no colour and no second copy of
@@ -556,6 +587,11 @@ src/main/         Electron main process
   index.ts          lifecycle, window, every IPC handler
   pty.ts            PTY sessions, env sanitising, scrollback, fan-out
   cli.ts            locating claude, building its argv
+  stokeCommand.ts   Settings > Updates > Command line: `~/.local/bin/stoke` as a symlink
+                    to this bundle's shim (macOS, async fs), the installer's launcher read
+                    back (Linux, never written from here: an AppImage mount is under /tmp),
+                    the user PATH through PowerShell (Windows, unverified). Replaces nothing
+                    that is not a link into some Stoke.app. No electron import
   projects.ts       project + session discovery from Claude's own files
   projectMeta.ts    per-folder emoji/label/added-by-hand, and the one pair of caps
   context.ts        live context-window watcher (polls transcripts). Publishes on a
@@ -723,6 +759,15 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     honestly draw beside each. Only Claude Code feeds the ring, resume, the
                     worklog and the plan chip; every other CLI starts at the floor, so a
                     Codex tab shows nothing there rather than Claude's numbers
+  stokeArgs.ts      `stoke …` from a terminal: an argv into one request (focus, session,
+                    open, update, error), or null. ONLY an argv carrying `--stoke-cli` is a
+                    request; the first `--` after it is Chromium's terminator, not the
+                    user's. Also `requestFrom` (a forwarded request rebuilt field by field)
+                    and `stokeHelp`, which the three shell copies of the help are held to
+  stokeCommand.ts   the rules for what at ~/.local/bin/stoke is Stoke's to replace, whether
+                    a bundle can be linked to at all (not translocated, not a mounted dmg),
+                    and whether a folder is on a PATH. The shim's install-cli follows the
+                    same rules, and verify:stoke-args runs both against the same fixtures
   updateCheck.ts    "Up to date, checked at 14:32" for both update panels, and every
                     state that must NOT show a green badge — an error, a download in
                     flight, a version that could not be read, a channel behind latest
@@ -775,6 +820,15 @@ scripts/          the verify-*.mts suites, make-icon.cjs
                     comes back
   cdp-eval.mjs      evaluates one expression in the renderer, or screenshots it.
                     Picks the target by its window.stoke object, never by URL
+build/bin/        the `stoke` command, shipped inside the app by `extraResources`
+  stoke             macOS: resolves its own symlink back to the bundle, answers --help,
+                    --version (PlistBuddy on the bundle's Info.plist), install-cli and
+                    uninstall-cli, and otherwise runs `open -n -a <bundle> --args
+                    --stoke-cli --stoke-cwd=$PWD -- "$@"`. A script in Resources is sealed
+                    as a resource, so `codesign --verify --strict --deep` still covers it
+  stoke.cmd         Windows: `start "" <install>\Stoke.exe --stoke-cli --stoke-cwd=%CD% --
+                    %*`. CRLF on purpose (.gitattributes), and cmd.exe expands %* before it
+                    runs, so metacharacters in a folder name need quoting. NEVER RUN
 install/          the one-line installer, and the page a browser gets instead
   install.sh        macOS and Linux. Whole body inside main(), called on the LAST line,
                     because `sh` executes a piped script as it reads it. Resolves the
@@ -782,7 +836,12 @@ install/          the one-line installer, and the page a browser gets instead
                     which is BASE64, not hex — burns the campfire while it downloads, and
                     installs. `--print-plan`, `--fire-frames` and `--sha512` are offline
                     debugging flags that verify:install runs the shipped code through.
-                    Gotcha 71
+                    On a Mac it refuses before downloading inside a Stoke terminal
+                    (installing quits the app that owns the shell) or with several copies
+                    running, and after installing links the `stoke` command by running the
+                    new bundle's own `install-cli` (`--link-cli` is that step, for the
+                    suite). The Linux launcher it writes wraps typed arguments for the app
+                    and launches detached. Gotchas 71, 76
   install.ps1       Windows, under PowerShell 5.1 and 7. Same shape, Install-Stoke on the
                     last line. NEVER RUN: there is no PowerShell on this machine, so the
                     file has not been parsed by one. Gotcha 71
@@ -793,7 +852,8 @@ worker/           the Cloudflare Worker behind stoke.vinn.dev
                     so verify:install can run the whole User-Agent matrix through it — the
                     PowerShell test must come before anything browser-shaped, because
                     PowerShell's own User-Agent starts `Mozilla/5.0`. Gotcha 71
-  index.ts          content negotiation and nothing else. The three bodies are EMBEDDED at
+  index.ts          content negotiation, after a 301 from http to https (`httpsRedirect`:
+                    plain HTTP used to be served the whole script). The three bodies are EMBEDDED at
                     deploy time from install/, never fetched at request time, and the
                     Worker never learns what the current release is — the scripts resolve
                     that themselves, so cutting a release needs no deploy
