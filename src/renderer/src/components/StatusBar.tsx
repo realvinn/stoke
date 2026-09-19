@@ -3,6 +3,7 @@ import type { CliInfo, ContextSnapshot } from '@shared/types'
 import { ContextBar } from './ContextMeter'
 import { modelLabel, shortPath } from '../lib/format'
 import { PERMISSION_LABELS } from '../lib/permissions'
+import { MODE_LABELS } from '@shared/launch'
 import { versionNumber, type RelaunchPlan } from '../lib/tabs'
 import type { SessionActivity, Tab } from '../types'
 
@@ -61,6 +62,11 @@ interface Props {
   profileLabel: string | null
   onRevealProject: (path: string) => void
   onOpenSettings: () => void
+  /**
+   * The mode Claude Code's own settings name (`permissions.defaultMode`), for
+   * a tab launched with no `--permission-mode`. Null when no file sets one.
+   */
+  claudeDefaultMode?: string | null
 }
 
 export function StatusBar({
@@ -80,7 +86,8 @@ export function StatusBar({
   liveVersion,
   profileLabel,
   onRevealProject,
-  onOpenSettings
+  onOpenSettings,
+  claudeDefaultMode = null
 }: Props): React.JSX.Element {
   /*
    * Named for what it does to the conversation, not to the process. "Restart"
@@ -296,7 +303,13 @@ export function StatusBar({
       */}
       {!installTab && caps.launchFlags.permissionMode && (
         <span className="pill" data-tone={bypass ? 'danger' : undefined}>
-          {PERMISSION_LABELS[tab.permissionMode]}
+          {/* A tab launched with no flag runs in whatever mode the user's
+              settings name: the pill said "Ask" while the TUI beside it said
+              "auto mode on" (QA L11), until the first turn wrote the real one
+              into the transcript. */}
+          {tab.permissionMode === 'default' && claudeDefaultMode
+            ? (MODE_LABELS[claudeDefaultMode] ?? claudeDefaultMode)
+            : PERMISSION_LABELS[tab.permissionMode]}
         </span>
       )}
 
