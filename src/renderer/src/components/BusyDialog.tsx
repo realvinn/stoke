@@ -47,9 +47,17 @@ export function BusyDialog({
   const cancelRef = useRef<HTMLButtonElement>(null)
   const dialogRef = useRef<HTMLDivElement>(null)
 
+  // Focus once, on mount. Depending on `onWait` itself re-runs this on every
+  // render for a caller that passes an inline arrow (the relaunch and restart
+  // callers both do), stealing focus back from whatever the user tabbed to —
+  // measured: focus Cancel, cause any re-render, and Enter fires Wait instead
+  // (gotcha 90 correction). `hasWait` is a boolean, so it is stable across
+  // renders even when the callback identity is not.
+  const hasWait = !!onWait
   useEffect(() => {
-    ;(onWait ? waitRef.current : cancelRef.current)?.focus()
-  }, [onWait])
+    ;(hasWait ? waitRef.current : cancelRef.current)?.focus()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   /*
    * Tab stays inside the dialog. Without this a Tab out of it lands in the
