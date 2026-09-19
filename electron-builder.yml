@@ -103,10 +103,18 @@ mac:
     # microphone with no usage string — it does not deny the request — so
     # omitting this turns dictation into an unexplained crash. The text is what
     # the system permission prompt shows, so it says who is listening and why.
+    #
+    # It has to speak for the CLIs too. A `claude` in a Stoke tab records as
+    # Stoke — TCC attributes a pty child to its responsible process, measured
+    # 2026-09-19 — so the prompt a first `/voice` raises is THIS one, and the
+    # old text ("audio is sent only to the speech server you configure") was
+    # false for it: Claude Code streams to Anthropic's speech service.
     NSMicrophoneUsageDescription: >-
-      Stoke uses the microphone for voice dictation, so you can speak a prompt
-      instead of typing it. Audio is sent only to the speech server you
-      configure and never to Stoke's developers.
+      Stoke and the coding CLIs it runs use the microphone for voice input:
+      Claude Code's /voice records through Stoke, and so does Stoke's own
+      dictation. Stoke's dictation sends audio only to the speech server you
+      configure; a CLI's voice mode sends it to that CLI's own service. Nothing
+      goes to Stoke's developers.
 dmg:
   # build/background@2x.png (1080x760) is picked up automatically beside it:
   # dmg-builder merges the pair with `tiffutil -cathidpicheck` and sizes the

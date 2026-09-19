@@ -14,7 +14,6 @@ import { useDraft } from '../lib/useDraft'
 import { FieldHint } from './FieldHint'
 import { IconCopy } from './Icons'
 import { CloudflareSetup } from './CloudflareSetup'
-import { MicrophoneNotice } from './MicrophoneNotice'
 import type { CliUpdateState, Settings } from '@shared/types'
 
 interface Props {
@@ -560,7 +559,6 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
                 ? 'Nothing is answering there, so dictation will fail until it is started.'
                 : 'Where speech is transcribed, for the phone and the terminal alike.'}
             </FieldHint>
-            <MicrophoneNotice />
           </div>
 
           <div className="field">

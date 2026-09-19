@@ -49,7 +49,7 @@ const TIMEOUT_MS = 120_000
 export async function transcribe(sttUrl: string | undefined, wav: Uint8Array): Promise<SttResult> {
   const base = sttUrl?.trim()
   if (!base) {
-    return { ok: false, error: 'No speech server configured. Set one in Settings.' }
+    return { ok: false, error: 'No speech server is set for Stoke’s dictation. Add one in Settings → Voice.' }
   }
   if (wav.byteLength === 0) return { ok: false, error: 'Nothing was recorded.' }
   if (wav.byteLength > MAX_AUDIO_BYTES) return { ok: false, error: 'Recording too large.' }
@@ -73,6 +73,15 @@ export async function transcribe(sttUrl: string | undefined, wav: Uint8Array): P
     return { ok: true, text: typeof data.text === 'string' ? data.text.trim() : '' }
   } catch (err) {
     const why = err instanceof Error ? err.message : String(err)
-    return { ok: false, error: `Speech server unreachable: ${why}` }
+    /*
+     * Names the address and says what it is NOT. The first version of this read
+     * "Speech server unreachable: fetch failed", which in a strip that appears
+     * when you hold Space to talk was read as "the microphone does not work" —
+     * while the microphone had recorded perfectly and only this request failed.
+     */
+    return {
+      ok: false,
+      error: `Speech server at ${base} did not answer (${why}). That is Stoke’s dictation server, not the microphone — start it, or change it in Settings → Voice.`
+    }
   }
 }

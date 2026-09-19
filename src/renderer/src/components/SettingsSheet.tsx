@@ -39,6 +39,7 @@ import { ClaudeCodeSettings } from './ClaudeCodeSettings'
 import { ProvidersSettings } from './ProvidersSettings'
 import { ThemeEditor } from './ThemeEditor'
 import { RemoteSettings, SelfUpdateSettings, UpdatesSettings } from './RemoteSettings'
+import { VoiceSettings } from './VoiceSettings'
 import { WorklogSettings } from './WorklogSettings'
 import {
   EFFORT_LEVELS,
@@ -107,6 +108,7 @@ export type SectionId =
   | 'sessions'
   | 'claude'
   | 'providers'
+  | 'voice'
   | 'projects'
   | 'hosts'
   | 'worklog'
@@ -141,6 +143,7 @@ const GROUPS: { title: string; sections: Section[] }[] = [
       { id: 'sessions', label: 'Sessions', hint: 'What a new session starts with' },
       { id: 'claude', label: 'Claude Code', hint: "Claude Code's own configuration" },
       { id: 'providers', label: 'Providers', hint: 'API keys: Anthropic, OpenRouter, OpenAI/Codex, xAI/Grok' },
+      { id: 'voice', label: 'Voice', hint: 'The microphone, Claude Code’s /voice, and Stoke’s dictation' },
       { id: 'projects', label: 'Projects', hint: 'Which folders the sidebar scans' },
       { id: 'hosts', label: 'SSH hosts', hint: 'Remote machines to open sessions on' }
     ]
@@ -895,6 +898,10 @@ export function SettingsSheet({
             )}
 
             {section === 'remote' && <RemoteSettings settings={settings} onPatch={onPatch} />}
+
+            {section === 'voice' && (
+              <VoiceSettings settings={settings} onOpenSection={(id) => setSection(id)} />
+            )}
 
           </div>
         </div>

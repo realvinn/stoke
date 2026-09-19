@@ -38,7 +38,7 @@ A `dist:*` exists per target and each MUST run on that target's own platform and
 Every suite runs alone as `npm run verify:<name>`: context, statusline, unicode, usage,
 profiles, settings, providers, claude-config, folders, search, color, theme-gen, activity,
 worklog-gate, tabs,
-restore, shortcuts, drop, campfire, cli, updates, targets, manifests, worklog-runner,
+restore, shortcuts, drop, browser-url, voice, campfire, cli, updates, targets, manifests, worklog-runner,
 worklog-retry, worklog-recall, worklog-autoscan, ssh, remote, installer-art, install, welcome,
 selection — the `check` chain — plus extract and security, which
 need a live instance (`verify:security <url> <token> --access`). `verify:selection` opens a real
@@ -158,6 +158,8 @@ rule file named on the group line.
 - **42.** Never pin Claude Code's `theme` in `--settings` (outranks `/theme`, misses SSH); on
   `auto` the CLI follows OSC 11, so set `term.options.theme` first, then send `CSI ?997;{1,2}n`
   only while mode 2031 is on.
+- **79.** Give a held Space one owner per tab (`spaceOwner`): Claude Code's `/voice` on a local
+  Claude tab, else Stoke's dictation, which must swallow the repeats too (`dictationKeyAction`).
 
 **Keyboard chords** — `.claude/rules/keys.md`
 - **32.** Zoom-out must stay bare Cmd/Ctrl+`-` and refuse Shift: Ctrl+Shift+`-` is Ctrl+`_`, which

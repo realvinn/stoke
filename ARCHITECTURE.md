@@ -424,8 +424,8 @@ Linux arm64 is deliberately not built (`NOT_BUILT` in `scripts/targets.mjs`).
 
 ## Testing
 
-Verification lives in `scripts/`, one `verify-*` suite per subject — thirty-four of them now.
-Thirty-two are in `npm run check`, between the typecheck and the full build; `check` is the
+Verification lives in `scripts/`, one `verify-*` suite per subject — thirty-seven of them now.
+Thirty-five are in `npm run check`, between the typecheck and the full build; `check` is the
 gate, and it is what "done" means here. They are `.mts` run straight through node's
 type-stripping with no build step, except `verify:selection`, which opens a real Electron window
 and so needs a display. Each runs alone:
@@ -458,6 +458,13 @@ npm run verify:shortcuts      # app chords vs the keys the terminal owns, the zo
                               # that Ctrl+Tab and the bare brackets still reach the CLI
 npm run verify:drop           # what a dropped file types: quoting per platform, and the
                               # names that cannot be typed at all
+npm run verify:browser-url    # what the docked browser will load: file://, javascript:,
+                              # data: refused to a tool call, file:// kept for the address
+                              # bar, and localhost:3000 not mistaken for a scheme
+npm run verify:voice          # who owns a held Space: Claude Code's /voice or Stoke's
+                              # dictation, and that dictation swallows the REPEATS too;
+                              # what a refused microphone is called; and the wire from
+                              # TerminalView to those rules (gotcha 79)
 npm run verify:campfire       # the installer's campfire: the locked alphabet that lets one
                               # copy of the art live in a POSIX string and a PowerShell
                               # here-string, a hearth that never moves, the stage boundaries,
@@ -659,6 +666,13 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     rungs in OKLCH L, solved onto rather than picked. Gotcha 43
   themeGen.ts       seed -> whole theme. The generator themes.ts always claimed existed and
                     the repo did not contain; what the theme editor drives. Gotcha 43
+  url.ts            what the docked browser may load, and what the address bar makes of
+                    `localhost:3000`. `browser_open` is refused file://, javascript: and
+                    data: outright — `browser_read` would hand a local file to the model
+  voiceRoute.ts     who owns a held Space bar in a tab — Claude Code's /voice or Stoke's
+                    dictation — and the words for a refused microphone. On macOS a CLI in a
+                    Stoke pty records AS Stoke (TCC's responsible process), so Stoke's one
+                    Privacy switch is every CLI's. Gotcha 79
   drop.ts           what a file dropped on the terminal types: the per-platform quoting,
                     and the refusal for a name that cannot be typed. Pure, platform passed
                     in, so verify:drop runs it for every OS. Gotcha 59
@@ -703,11 +717,12 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
   usageView.ts      the plan-limit chip's arithmetic, framed as what is left and when it
                     comes back. Pure, so a suite can hold it
   color.ts          contrast, APCA and oklch maths behind the ladder and the accent ink
-  codingClis.ts     the coding CLIs Stoke can look for — id, label, and the executable
+  codingClis.ts     the coding CLIs Stoke can launch — id, label, and the executable
                     names to try per platform (Windows needs .exe/.cmd/.bat spelled out,
-                    since an npm install is a .cmd shim). Detection only: Stoke can
-                    LAUNCH nothing but claude, because the ring, resume, the worklog and
-                    the plan chip are all fed by Claude Code's own transcript format
+                    since an npm install is a .cmd shim) — and CLI_CAPS, what Stoke may
+                    honestly draw beside each. Only Claude Code feeds the ring, resume, the
+                    worklog and the plan chip; every other CLI starts at the floor, so a
+                    Codex tab shows nothing there rather than Claude's numbers
   updateCheck.ts    "Up to date, checked at 14:32" for both update panels, and every
                     state that must NOT show a green badge — an error, a download in
                     flight, a version that could not be read, a channel behind latest

@@ -8,6 +8,7 @@ import type { ClipboardPeek } from '@shared/api'
 import type { TerminalSettings, Theme } from '@shared/types'
 import { dropText } from '@shared/drop'
 import { createRecorder, voiceSupported, type Recorder } from '@shared/voice'
+import { CLI_OWNS_SPACE, dictationKeyAction, microphoneError, spaceOwner } from '@shared/voiceRoute'
 import { attachSink } from '../lib/ptyBus'
 import { isButtonlessMotionReport } from '../lib/mouseReport'
 import { matchShortcut } from '../lib/shortcuts'
@@ -148,6 +149,12 @@ export function TerminalView({
   const [voiceOn, setVoiceOn] = useState(false)
   const [voiceStatus, setVoiceStatus] = useState<'idle' | 'recording' | 'working'>('idle')
   const [voiceError, setVoiceError] = useState<string | null>(null)
+  /**
+   * A one-off sentence shown INSTEAD of switching dictation on — today only the
+   * tab where Claude Code's own /voice owns Space. Separate from `voiceError`
+   * because nothing failed: the key simply belongs to someone else here.
+   */
+  const [voiceNotice, setVoiceNotice] = useState<string | null>(null)
   /** Whether a file drag is currently over this pane, for the drop ring. */
   const [dropping, setDropping] = useState(false)
   /*
@@ -851,6 +858,39 @@ export function TerminalView({
   }
 
   /*
+   * Switch Stoke's dictation, after asking who owns Space in this tab.
+   *
+   * Asked at the moment of switching, not cached at mount: `/voice` is typed
+   * inside the session and flips the setting while the tab is open. If the
+   * answer cannot be read, dictation starts as before — a missed hint costs a
+   * double recording the user can see, while refusing would take a feature away
+   * on a read error.
+   */
+  const toggleDictation = (): void => {
+    setVoiceError(null)
+    setVoiceNotice(null)
+    if (voiceOn) {
+      setVoiceOn(false)
+      return
+    }
+    void window.stoke.audio
+      .voiceState()
+      .catch(() => null)
+      .then((state) => {
+        if (state && spaceOwner(tab, state.claudeVoice) === 'cli') setVoiceNotice(CLI_OWNS_SPACE)
+        else setVoiceOn(true)
+      })
+  }
+  const toggleDictationRef = useRef(toggleDictation)
+  toggleDictationRef.current = toggleDictation
+
+  useEffect(() => {
+    if (!voiceNotice) return
+    const t = setTimeout(() => setVoiceNotice(null), 9000)
+    return () => clearTimeout(t)
+  }, [voiceNotice])
+
+  /*
    * Dictation's keys, bound on the host in the capture phase so they are taken
    * before xterm's hidden textarea ever sees them — the same technique the
    * right-click uses, and for the same reason: while Claude Code is running,
@@ -893,7 +933,8 @@ export function TerminalView({
           setVoiceStatus('idle')
         }
       } catch (err) {
-        fail(err, 'Could not open the microphone.')
+        setVoiceStatus('idle')
+        setVoiceError(microphoneError(err, window.stoke.platform))
       }
     }
 
@@ -922,8 +963,7 @@ export function TerminalView({
       if (chord && e.code === 'KeyD') {
         e.preventDefault()
         e.stopPropagation()
-        setVoiceError(null)
-        setVoiceOn((on) => !on)
+        toggleDictationRef.current()
         return
       }
 
@@ -936,11 +976,19 @@ export function TerminalView({
         return
       }
 
-      // `repeat` matters: holding Space fires keydown continuously, and without
-      // this each repeat would start a new recording over the live one.
-      if (e.code !== 'Space' || e.repeat) return
+      /*
+       * A held Space is a first keydown and then a stream of repeats, and BOTH
+       * have to be taken. The repeats used to be let through (`if (e.repeat)
+       * return`, to avoid restarting the live recording) — which handed the
+       * pty exactly the repeat stream Claude Code's /voice listens for, so one
+       * press started two recorders. Swallowed now, and only the first starts
+       * anything (voiceRoute.ts).
+       */
+      const action = dictationKeyAction(e)
+      if (action === 'pass') return
       e.preventDefault()
       e.stopPropagation()
+      if (action === 'swallow') return
       spaceDownRef.current = true
       void beginRecording()
     }
@@ -1237,8 +1285,7 @@ export function TerminalView({
                   {
                     label: voiceOn ? 'Stop dictation' : 'Dictate…',
                     onSelect: () => {
-                      setVoiceError(null)
-                      setVoiceOn((on) => !on)
+                      toggleDictation()
                       termRef.current?.focus()
                     }
                   }
@@ -1253,6 +1300,12 @@ export function TerminalView({
             }
           ]}
         />
+      )}
+      {!voiceOn && voiceNotice && (
+        <div className="voice-strip" role="status">
+          <span className="voice-dot" data-state="idle" />
+          <span className="voice-text">{voiceNotice}</span>
+        </div>
       )}
       {voiceOn && (
         <div className="voice-strip" role="status" data-tone={voiceError ? 'error' : undefined}>

@@ -203,6 +203,16 @@ export const CH = {
   // audio
   micCheck: 'audio:micCheck',
   /**
+   * The OS microphone permission for Stoke, and whether Claude Code's own
+   * `/voice` is on. Cheap on purpose — no PowerShell, unlike `micCheck` — because
+   * the terminal asks it every time dictation is switched on.
+   */
+  voiceState: 'audio:voiceState',
+  /** Ask macOS for the microphone now, from a button, rather than mid-recording. */
+  micRequest: 'audio:micRequest',
+  /** Open the OS microphone privacy page. The URL is chosen in main, never passed in. */
+  micPrivacy: 'audio:micPrivacy',
+  /**
    * A dictated clip, in. The renderer records and encodes the WAV but never
    * reaches the speech server itself — the sidecar has no auth, so only main
    * may talk to it. Same rule the phone's `/api/transcribe` route follows.

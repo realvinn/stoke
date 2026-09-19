@@ -1,3 +1,4 @@
+import type { MicAccess } from './voiceRoute'
 import type { CreateProfileInput, ProfilePlan } from './profiles'
 import type { CodingCliStatus } from './codingClis'
 import type {
@@ -41,6 +42,17 @@ export interface MicrophoneCheck {
   suspect: boolean
   /** Real microphones that could be selected instead. */
   alternatives: AudioDevice[]
+}
+
+/**
+ * The two facts that decide whether a held Space records anything: the OS
+ * permission (which on macOS covers every CLI Stoke runs, since they record as
+ * Stoke), and whether Claude Code's own `/voice` owns the key. See
+ * `src/shared/voiceRoute.ts`.
+ */
+export interface VoiceState {
+  access: MicAccess
+  claudeVoice: boolean
 }
 
 /** What is on the OS clipboard right now, read in one synchronous hop. */
@@ -560,6 +572,12 @@ export interface StokeApi {
   audio: {
     /** What voice dictation will record from, and whether it looks like a virtual cable. */
     micCheck(): Promise<MicrophoneCheck>
+    /** OS permission for Stoke's microphone, and whether Claude Code's /voice is on. */
+    voiceState(): Promise<VoiceState>
+    /** Ask for the microphone now (macOS shows its prompt once), then report again. */
+    requestMic(): Promise<VoiceState>
+    /** Open the system's microphone privacy page. */
+    openMicPrivacy(): void
     /**
      * A finished 16 kHz mono 16-bit PCM WAV in, a transcript out.
      *

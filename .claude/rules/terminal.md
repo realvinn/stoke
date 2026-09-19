@@ -4,6 +4,9 @@ paths:
   - "src/renderer/src/lib/mouseReport.ts"
   - "src/renderer/src/lib/termRegistry.ts"
   - "scripts/verify-selection.mts"
+  - "src/shared/voiceRoute.ts"
+  - "scripts/verify-voice.mts"
+  - "src/renderer/src/components/VoiceSettings.tsx"
 ---
 
 # Terminal: xterm selection, links, OSC
@@ -265,3 +268,51 @@ Moss and Nocturne will.
 > - The push is now src/main/cli.ts:386 (`if (file) args.push('--settings', file)` inside `buildArgs`). cli.ts:273 is now the ultracode doc comment. The SSH branch that skips the push is src/main/pty.ts:218-221: `settingsFile` is null for a host, and `args` is `buildSshArgs(opts.host)`.
 > - It now fires only when the light/dark class of `theme.terminal.background` flips, not on every theme change. src/renderer/src/components/TerminalView.tsx:1023-1027 keys the effect on `isLightBackground(...)` (:49-54, the CLI's own 0.2126/0.7152/0.0722 > 0.5 rule). The reason is that keying it on the theme object let the theme editor write tens of CSI 997 reports a second. The repaint (`term.options.theme = ...`, :1005-1009) is a separate effect declared earlier, and that is what keeps the 'theme first, then report' order. The report is written to the pty (`window.stoke.pty.write`), not to `term.write`.
 > - src/shared/themes.ts now ships twelve built-ins: nine dark and three light (daylight, paper, mist). Running the CLI's formula on each `terminal.background` gives 0.0510-0.0919 for the dark ones (graphite 0.0510, lantern 0.0512) and 0.9552-0.9586 for the light ones. They all still classify correctly, but the count and the figures are out of date.
+
+## 79. Two dictation features wanted one key, and the loser looked like a broken microphone
+
+**Reported as "Claude Code can't access my microphone in Stoke". It could, the whole time.**
+Every layer was measured on 2026-09-19 before anything was changed, and each one was fine:
+
+- **macOS permission.** A Swift probe run as a child of the installed Stoke's pty reported
+  `responsibility_get_pid_responsible_for_pid` → Stoke's own pid, and
+  `AVCaptureDevice.authorizationStatus(.audio) = 3 authorized`. TCC attributes a pty child to its
+  RESPONSIBLE process, so `claude` records as Stoke — there is no "claude" row in Privacy &
+  Security to find, and the Stoke row is the switch for every CLI in every tab.
+- **Audio.** The same probe recorded 91,200 frames from the MacBook Pro Microphone, peak 0.033.
+- **The CLI.** `claude` 2.1.278 spawned in a node-pty with `pty.ts`'s exact env (`TERM_PROGRAM=Stoke`
+  and all) and fed a held Space logged `[voice] handleKeyEvent: idle, starting recording session`,
+  `audio-capture-napi loaded`, `[voice_stream] WebSocket connected` and 46 KB of audio, then
+  answered "No speech detected." Its only environment gate is `CLAUDE_CODE_REMOTE`, which Stoke
+  never sets.
+- **A real Stoke tab**, driven over CDP with `Input.dispatchKeyEvent` (a keyDown, 75 autoRepeat
+  keyDowns 33ms apart, a keyUp) against the installed 0.9.5: "Voice: processing…", then "No speech
+  detected." Working.
+
+**What broke it was Stoke's own dictation.** ⇧⌘D arms a hold-Space recorder in `TerminalView`,
+bound on the host in the capture phase — and its keydown did `if (e.code !== 'Space' || e.repeat)
+return` BEFORE `preventDefault`. It took the first press and let every auto-repeat through to
+xterm and the pty, and **the auto-repeat stream is exactly what Claude Code's `/voice` listens
+for**. One held Space started two recorders. Stoke's then failed — its dictation posts to a speech
+server the user runs, and a stopped one reads `Speech server unreachable: fetch failed` in a strip
+that appears the moment you hold Space to talk — while Claude's ran underneath it. The screenshot
+shows both at once: Stoke's red error pill, and Claude's "No speech detected." above it.
+
+The fix is ownership decided before a key is pressed (`src/shared/voiceRoute.ts`):
+`spaceOwner` gives a LOCAL Claude tab whose `/voice` is on (`voiceEnabled` or `voice.enabled` in
+`~/.claude/settings.json` — `/voice` writes both) to the CLI, and ⇧⌘D there shows a sentence
+instead of arming. Everywhere else Stoke's dictation may own Space, and `dictationKeyAction`
+makes it own the whole hold — a repeat is `swallow`, never `pass`. An SSH tab stays Stoke's even
+running `claude`, since that `claude` is on a machine with no microphone. The speech server's
+failure now names its address and says it is not the microphone; getUserMedia's
+`NotAllowedError` names the Stoke switch in Privacy & Security; Settings → Voice reads
+`systemPreferences.getMediaAccessStatus('microphone')` and says the Stoke row covers every CLI;
+and `NSMicrophoneUsageDescription` no longer promises "audio is sent only to the speech server
+you configure", which was false for the prompt `claude`'s first `/voice` raises.
+
+Two things worth carrying. **A capture-phase key handler that returns before `preventDefault`
+has not declined the key — it has passed it on**, to xterm and so to the CLI; decide the whole
+hold, repeats included. And **nothing covered voice** — no suite touched either recorder — so
+`verify:voice` also reads `TerminalView.tsx` for the calls, gotcha 31's wire, and its wire checks
+were run against the old file from `HEAD` to confirm they fail there.
+

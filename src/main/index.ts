@@ -1,5 +1,5 @@
 import { access } from 'node:fs/promises'
-import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, net, protocol, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, net, protocol, shell, systemPreferences } from 'electron'
 import { pathToFileURL } from 'node:url'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
@@ -35,6 +35,7 @@ import { parseSession, readTranscript } from './sessionFile.ts'
 import { fetchRemoteTranscript } from './sshTranscript.ts'
 import { PtyManager, type StartResult } from './pty.ts'
 import { checkMicrophone } from './audio/defaultDevice.ts'
+import { claudeVoiceEnabled, isMicAccess, type MicAccess } from '../shared/voiceRoute.ts'
 import { transcribe } from './stt.ts'
 import { createProfile, planProfile } from './profiles.ts'
 import { readSshConfigHosts } from './ssh.ts'
@@ -54,7 +55,7 @@ import { autoScanStateFile, readAutoScanState, writeAutoScanState } from './work
 import { readSessionState, sessionStateFile, writeSessionState } from './worklog/sessionStore.ts'
 import { invalidateRecall, recall, scanOutcomeFor } from './worklog/recall.ts'
 import type { CreateProfileInput } from '@shared/profiles'
-import type { CliRunResult, RemoteState } from '@shared/api'
+import type { CliRunResult, RemoteState, VoiceState } from '@shared/api'
 import { flushSettings, getSettings, onSettingsChanged, setSettings } from './store.ts'
 import {
   readSessionEvents,
@@ -2221,6 +2222,42 @@ function registerIpc(): void {
 
   /* ----------------------------------------------------------------- audio */
   ipcMain.handle(CH.micCheck, () => checkMicrophone())
+
+  /*
+   * The microphone permission, asked of the OS for Stoke — which on macOS is
+   * also the permission for every `claude` in a Stoke tab, since a pty child
+   * records as its responsible process (see voiceRoute.ts). Windows has a
+   * desktop-apps switch this reads too; Linux has no per-app gate at all.
+   */
+  const micAccess = (): MicAccess => {
+    if (process.platform !== 'darwin' && process.platform !== 'win32') return 'not-applicable'
+    try {
+      const status = systemPreferences.getMediaAccessStatus('microphone')
+      return isMicAccess(status) ? status : 'unknown'
+    } catch {
+      return 'unknown'
+    }
+  }
+  const voiceState = async (): Promise<VoiceState> => ({
+    access: micAccess(),
+    claudeVoice: claudeVoiceEnabled((await readClaudeSettings()).values)
+  })
+  ipcMain.handle(CH.voiceState, () => voiceState())
+  ipcMain.handle(CH.micRequest, async () => {
+    // Only macOS has a prompt to show. A 'denied' answer never prompts again —
+    // the OS remembers it — which is why Settings offers the privacy page too.
+    if (process.platform === 'darwin') await systemPreferences.askForMediaAccess('microphone')
+    return voiceState()
+  })
+  ipcMain.on(CH.micPrivacy, () => {
+    const url =
+      process.platform === 'darwin'
+        ? 'x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone'
+        : process.platform === 'win32'
+          ? 'ms-settings:privacy-microphone'
+          : null
+    if (url) void shell.openExternal(url)
+  })
 
   /*
    * Desktop dictation. The renderer records and encodes the WAV — it has the
