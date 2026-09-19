@@ -979,6 +979,24 @@ check(
   'n1'
 )
 check('with no New tab anywhere, null (append one)', newTabToReuse([{ id: 's1', kind: 'session' }], 's1'), null)
+check(
+  'a background New tab with staged choices (Bypass) is not reused for another folder',
+  newTabToReuse(
+    [{ id: 's1', kind: 'session' }, { id: 'n1', kind: 'new', launch: { permissionMode: 'bypassPermissions' } }, { id: 'n2', kind: 'new' }],
+    's1'
+  ),
+  'n2'
+)
+check(
+  '…and with only that one, a fresh tab is appended',
+  newTabToReuse([{ id: 's1', kind: 'session' }, { id: 'n1', kind: 'new', launch: { model: 'sonnet' } }], 's1'),
+  null
+)
+check(
+  'the New tab in front is reused whatever it has staged: its chips are on screen',
+  newTabToReuse([{ id: 'n1', kind: 'new', launch: { model: 'sonnet' } }], 'n1'),
+  'n1'
+)
 
 console.log('\ntabLabel: tabs say which project and which agent (QA L16)')
 check(

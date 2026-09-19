@@ -835,14 +835,23 @@ export function continuePlan(input: {
  * `stoke --open`) should aim, or null to append one.
  *
  * The active tab when it is a New tab; otherwise the first New tab already in
- * the strip. Appending whenever a session tab was in front left idle "New
- * session" tabs piling up — four tabs, two of them unused launchers, after a
- * couple of palette picks (QA L17).
+ * the strip that has no launch choices of its own staged. Appending whenever a
+ * session tab was in front left idle "New session" tabs piling up — four tabs,
+ * two of them unused launchers, after a couple of palette picks (QA L17).
+ *
+ * A background tab with a staged override (`launch`, e.g. Bypass picked on
+ * its chips for the folder it was aimed at) is not reused: the gesture would
+ * bring it forward aimed at a different folder with that choice still armed,
+ * made for somewhere else. The tab in front is reused whatever it holds — its
+ * chips were on screen when the gesture was made.
  */
-export function newTabToReuse(tabs: readonly { id: string; kind: string }[], activeId: string | null): string | null {
+export function newTabToReuse(
+  tabs: readonly { id: string; kind: string; launch?: object }[],
+  activeId: string | null
+): string | null {
   const active = tabs.find((t) => t.id === activeId)
   if (active?.kind === 'new') return active.id
-  return tabs.find((t) => t.kind === 'new')?.id ?? null
+  return tabs.find((t) => t.kind === 'new' && !t.launch)?.id ?? null
 }
 
 /**

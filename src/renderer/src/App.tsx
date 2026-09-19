@@ -3216,6 +3216,27 @@ export function App(): React.JSX.Element {
         if (from && tabsRef.current.some((t) => t.id === from && t.kind === 'new')) closeTab(from)
         return
       }
+      /*
+       * A PAUSED tab on the same id is resumed where it is, not beside it.
+       * Starting a second tab left the paused card behind with its own
+       * Resume, and pressing that later put two `claude` processes on one
+       * transcript — the twin the running check above exists to prevent
+       * (review of QA L2). The asking New tab closes, as for a running one;
+       * the launcher's own choices, when it passed any, replace the card's.
+       * Local only: a paused SSH card resumes by host, not by id (gotcha 19).
+       */
+      const paused = tabsRef.current.find(
+        (t) => t.kind === 'session' && t.sessionId === s.id && t.status === 'paused' && !t.hostId
+      )
+      if (paused) {
+        const from = opts?.fromTabId
+        activeTabIdRef.current = paused.id
+        setActiveTabId(paused.id)
+        if (from && tabsRef.current.some((t) => t.id === from && t.kind === 'new')) closeTab(from)
+        const run = resumeTabFor(opts?.launch ? { ...paused, ...opts.launch } : paused)
+        if (run) void run()
+        return
+      }
       const project = projects.find((p) => p.path === s.projectPath)
       void startSession({
         cwd: s.projectPath,
@@ -3227,7 +3248,7 @@ export function App(): React.JSX.Element {
         ...(opts?.launch ?? {})
       })
     },
-    [projects, startSession, activeNewTabId, closeTab]
+    [projects, startSession, activeNewTabId, closeTab, resumeTabFor]
   )
 
   /* ------------------------------------------------------------ launcher */
