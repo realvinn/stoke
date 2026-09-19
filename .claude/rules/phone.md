@@ -173,6 +173,16 @@ meta-Enter and needs the bracket to keep its newlines. `verify:remote` holds the
 real `claude` can hold the paste heuristics, so re-measure them when Claude Code's input box
 changes.
 
+> **Checked against the code on 2026-09-19** (review of qa/phone). Typing takes real time — 10ms a
+> chunk plus 80ms before the Enter — and `submit()` started one timer chain per call with nothing
+> between calls, so two submits sent together were written interleaved: a 228-character "apple"
+> prompt and a 32-character "banana" one landed as ONE user turn, spliced. The phone's queued-send
+> flush (PX-3) always sends several back to back. Each session now has a `SubmitQueue`
+> (`remotePhone.ts`): a submit starts typing only after the previous one's Enter, plus
+> `SUBMIT_AFTER_ENTER_MS`. `verify:remote` asserts the order with real short timers and fails
+> when the chain is removed. Raw `{type:'input'}` keys are NOT queued, on purpose: Esc and ctrl-c
+> must interrupt.
+
 ## 87. The phone's terminal: pad the box, not xterm's parent, and resize the pty only on a width change
 
 Two audit findings with one cause each. **PX-7**: `.term-wrap` carried `padding: 6px 4px` under

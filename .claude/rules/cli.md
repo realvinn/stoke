@@ -291,5 +291,16 @@ that was correct and phone contract point 3 keeps. `registryTargets()` already e
 sessions, so this changes nothing about what the registry poller watches.
 
 > Recorded 2026-09-19, alongside the phone contract that needed it (`src/main/remote/server.ts`'s
-> header comment). `scripts/verify-remote.mts` covers `pruneEnded` in isolation, against an explicit
-> map and a fake clock (gotcha 74) — it does not drive a real `PtyManager`.
+> header comment).
+
+> **Checked against the code on 2026-09-19** (review of qa/phone). Two corrections.
+> - The suite used to test a shared `pruneEnded` that production never called; `PtyManager` pruned
+>   through its own private copy. Both now go through `isEndedExpired(endedAt, now)` in
+>   `src/shared/remotePhone.ts`, which `verify:remote` tests on a fake clock. It still does not
+>   drive a real `PtyManager`.
+> - "Changes nothing about the registry poller" held only for `registryTargets()`. `statusKeyFor`,
+>   `bannerWindowFor` and `statusKeys` iterated exited entries too, and Map order puts the older,
+>   exited one first: a session rebound by `/clear` (statusKey still the launch key K), exited, then
+>   resumed on its new id S2, had `payloadKeyFor(S2)` answer K, whose files were released at exit,
+>   for up to ten minutes. All three skip `exited` now; any new by-session-id lookup on
+>   `this.sessions` must too.
