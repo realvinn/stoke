@@ -152,6 +152,9 @@ type BusyPrompt = { kind: 'relaunch'; tabId: string } | { kind: 'restart'; tabId
  */
 const RELAUNCH_EXIT_CAP_MS = 3000
 
+/** How long a first run keeps the shell inert waiting for agent detection to open the picker. */
+const FIRST_RUN_WAIT_MS = 5000
+
 const EMPTY_BROWSER: BrowserState = {
   url: '',
   title: '',
@@ -197,8 +200,11 @@ export function App(): React.JSX.Element {
       .then(setAgentDetection)
       .catch(() => {
         /* Detection is a convenience; a failure leaves the last answer standing. */
+        setAgentDetectFailed(true)
       })
   }, [])
+  /** Detection threw: no first-run picker is coming, so nothing waits for one. */
+  const [agentDetectFailed, setAgentDetectFailed] = useState(false)
   /** The agent picker: opened by hand, or once on a launch that has never answered it. */
   const [agentPickerOpen, setAgentPickerOpen] = useState(false)
 
@@ -1217,10 +1223,13 @@ export function App(): React.JSX.Element {
    * window focus, since those files are edited outside Stoke.
    */
   const [claudeDefaults, setClaudeDefaults] = useState<ClaudeLaunchDefaults>(NO_CLAUDE_DEFAULTS)
+  // A session tab in front reads its own folder's files, for the status bar's
+  // mode pill; an SSH tab's cwd is a host alias (gotcha 18), so it reads none.
+  const activeLocalCwd = tabs.find((t) => t.id === activeTabId && t.kind === 'session' && !t.hostId)?.cwd ?? null
+  const defaultsPath = activeIsNew ? launchPath : activeLocalCwd
   useEffect(() => {
-    if (!activeIsNew) return
     let cancelled = false
-    window.stoke.claudeConfig.launchDefaults(launchPath).then(
+    window.stoke.claudeConfig.launchDefaults(defaultsPath).then(
       (d) => {
         if (!cancelled) setClaudeDefaults(d)
       },
@@ -1229,7 +1238,7 @@ export function App(): React.JSX.Element {
     return () => {
       cancelled = true
     }
-  }, [activeIsNew, launchPath, focusTick])
+  }, [defaultsPath, focusTick])
 
   /* -------------------------------------------------------------- sessions */
 
@@ -2614,6 +2623,43 @@ export function App(): React.JSX.Element {
   const seededBrowser = useRef(false)
 
   /*
+   * Ask once. A launch whose settings have never answered the picker opens it
+   * as soon as the campfire is out of the way and detection has landed — after,
+   * so the picker can pre-tick what is installed rather than flash empty. The
+   * ref makes it once per launch even if the user closes it without choosing.
+   */
+  const pickerAsked = useRef(false)
+  const [pickerAskedState, setPickerAskedState] = useState(false)
+  useEffect(() => {
+    if (pickerAsked.current || !settings || !welcomeSettled || welcome || !agentDetection) return
+    if (settings.agents.chosen !== null) return
+    pickerAsked.current = true
+    setPickerAskedState(true)
+    setAgentPickerOpen(true)
+  }, [settings, welcomeSettled, welcome, agentDetection])
+
+  /*
+   * The gap between the splash and the picker it is about to open (QA L1).
+   * Measured on a fresh profile: the splash went at 1161ms, the picker came at
+   * 1419ms, and for those 258ms the launcher's Start had focus and the shell
+   * was live — a second Enter, the one that dismissed the splash tapped twice,
+   * started `claude` under the picker. So the shell stays inert from boot until
+   * the splash decision is made and, on a launch that will ask, until the
+   * picker has opened. Detection that fails, or has not answered in
+   * FIRST_RUN_WAIT_MS, lets go: an inert shell with no picker coming would
+   * be a window nothing can be typed into.
+   */
+  const [firstRunWaitOver, setFirstRunWaitOver] = useState(false)
+  const firstRunAsking = !!settings && settings.agents.chosen === null && !pickerAskedState
+  useEffect(() => {
+    if (!firstRunAsking || firstRunWaitOver) return
+    const t = window.setTimeout(() => setFirstRunWaitOver(true), FIRST_RUN_WAIT_MS)
+    return () => window.clearTimeout(t)
+  }, [firstRunAsking, firstRunWaitOver])
+  const firstRunPending =
+    !!settings && (!welcomeSettled || (firstRunAsking && !firstRunWaitOver && !agentDetectFailed))
+
+  /*
    * Everything behind a modal is inert while it is up — the title bar, the body
    * row and the status bar, which are the shell's three rows; the overlays are
    * their siblings and stay live (QA L1). The welcome splash counts: it said
@@ -2622,7 +2668,7 @@ export function App(): React.JSX.Element {
    * Tab from the agent picker walked out of its dialog into the title bar (L7).
    * `inert` also blurs whatever held focus back there, so no key reaches it.
    */
-  const shellInert = overlayOpen || welcome !== null
+  const shellInert = overlayOpen || welcome !== null || firstRunPending
   const appRef = useRef<HTMLDivElement>(null)
   // A LAYOUT effect: it must land before the children's passive effects run,
   // or the launcher's "focus Start now the overlay is gone" hits an element
@@ -2667,19 +2713,6 @@ export function App(): React.JSX.Element {
       .map((id) => cliFor(id))
   }, [agentDetection, settings?.agents.chosen])
 
-  /*
-   * Ask once. A launch whose settings have never answered the picker opens it
-   * as soon as the campfire is out of the way and detection has landed — after,
-   * so the picker can pre-tick what is installed rather than flash empty. The
-   * ref makes it once per launch even if the user closes it without choosing.
-   */
-  const pickerAsked = useRef(false)
-  useEffect(() => {
-    if (pickerAsked.current || !settings || !welcomeSettled || welcome || !agentDetection) return
-    if (settings.agents.chosen !== null) return
-    pickerAsked.current = true
-    setAgentPickerOpen(true)
-  }, [settings, welcomeSettled, welcome, agentDetection])
 
   /** Open a tab that installs these agents, from the vendors' own commands. */
   const installAgents = useCallback(
@@ -3795,6 +3828,7 @@ export function App(): React.JSX.Element {
 
       <StatusBar
         tab={activeTab}
+        claudeDefaultMode={activeTab?.hostId ? null : claudeDefaults.permissionMode}
         context={activeTab ? (contexts[activeTab.sessionId] ?? null) : null}
         activity={activeTab ? (activity[activeTab.sessionId] ?? null) : null}
         line={activeTab ? (sessionLine[activeTab.sessionId] ?? null) : null}
