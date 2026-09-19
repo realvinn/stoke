@@ -24,6 +24,14 @@ import { windowFromBanner } from './sessionFile.ts'
 import { buildSshArgs, sshExecutable } from './ssh.ts'
 import { claimSessionFiles, releaseSessionFiles } from './statusLine.ts'
 import type { RegistryTarget } from '../shared/claudeRegistry.ts'
+import { ENDED_RETENTION_MS, submitFrames, trackBracketedPaste } from '../shared/remotePhone.ts'
+
+/**
+ * How long after `submit()` writes the (optionally bracketed) text before it
+ * writes the bare `\r` that submits it — see CLAUDE.md gotcha 85. Started at
+ * the audit's own measurement; adjust here if a real `claude` needs longer.
+ */
+const SUBMIT_ENTER_DELAY_MS = 80
 
 export interface StartResult {
   ptyId: string
@@ -63,6 +71,18 @@ interface Session {
   /** A local Claude Code session: the only kind with a registry file to read. */
   instrumented: boolean
   exited: boolean
+  /**
+   * When the process exited, or null while it is still running.
+   *
+   * Set once, alongside `exited`, and never cleared: it is what lets an
+   * exited session stay in `sessions` for `ENDED_RETENTION_MS` (phone contract
+   * point 3 / audit F1) instead of being deleted the instant `proc.onExit`
+   * fires, which used to make a real crash or a plain `/exit` indistinguishable
+   * from the session never having existed.
+   */
+  endedAt: number | null
+  /** The process's own exit code, once it has one. */
+  exitCode: number | null
   /** Settles when the process has actually exited. */
   exitedPromise: Promise<void>
   /** Retained output so a client joining late can replay the session. */
@@ -79,8 +99,19 @@ interface Session {
   /** Bytes of output still worth scanning for the banner. */
   bannerScanned: number
   startedAt: number
+  /** Last pty output, or the last registry state change reported via `touch`. */
+  lastActivityAt: number
   cols: number
   rows: number
+  /** The coding CLI this session runs, e.g. `'claude'`, `'codex'`. */
+  cli: string
+  /**
+   * DECSET 2004 (bracketed paste), tracked from the pty's own output stream.
+   *
+   * `submit()` uses this to decide whether a phone's text needs the paste
+   * brackets — see `submitFrames` and CLAUDE.md gotcha 85 / audit PX-1.
+   */
+  bracketedPaste: boolean
 }
 
 /** Summary of a live session, used by the remote UI's session list. */
@@ -89,9 +120,19 @@ export interface SessionInfo {
   sessionId: string
   cwd: string
   exited: boolean
+  /** When the process exited, epoch ms, or null while it is still running. */
+  endedAt: number | null
+  /** The process's exit code, once it has one. */
+  exitCode: number | null
   startedAt: number
+  /** Last pty output, or the last registry state change `touch()` reported. */
+  lastActivityAt: number
   cols: number
   rows: number
+  /** The coding CLI this session runs — `'claude'` unless another agent launched it. */
+  cli: string
+  /** A local Claude Code session: the only kind the registry poller can read. */
+  instrumented: boolean
 }
 
 /**
@@ -407,6 +448,7 @@ export class PtyManager {
     }
 
     let markExited: () => void = () => {}
+    const now = Date.now()
     const session: Session = {
       ptyId,
       sessionId,
@@ -416,6 +458,8 @@ export class PtyManager {
       realCwd: cwd,
       instrumented,
       exited: false,
+      endedAt: null,
+      exitCode: null,
       exitedPromise: new Promise<void>((resolve) => {
         markExited = resolve
       }),
@@ -423,9 +467,12 @@ export class PtyManager {
       length: 0,
       bannerWindow: null,
       bannerScanned: 0,
-      startedAt: Date.now(),
+      startedAt: now,
+      lastActivityAt: now,
       cols: Math.max(20, opts.cols || 120),
-      rows: Math.max(5, opts.rows || 30)
+      rows: Math.max(5, opts.rows || 30),
+      cli: cliId,
+      bracketedPaste: false
     }
     this.sessions.set(ptyId, session)
     // Off the spawn path: nothing waits on it, and the fallback that reads it
@@ -442,6 +489,8 @@ export class PtyManager {
     proc.onData((data) => {
       session.chunks.push(data)
       session.length += data.length
+      session.lastActivityAt = Date.now()
+      session.bracketedPaste = trackBracketedPaste(data, session.bracketedPaste)
       // Drop whole chunks so a replay never starts mid-escape-sequence.
       while (session.length > MAX_HISTORY && session.chunks.length > 1) {
         session.length -= (session.chunks.shift() as string).length
@@ -463,11 +512,22 @@ export class PtyManager {
 
     proc.onExit(({ exitCode, signal }) => {
       session.exited = true
+      session.endedAt = Date.now()
+      session.exitCode = exitCode
       markExited()
-      // Only this session's own entry. `stop()` below has already removed it,
-      // and deleting by id unconditionally is still right: ids are uuids and
-      // never reused.
-      this.sessions.delete(ptyId)
+      /*
+       * Left in `this.sessions`, not deleted — CLAUDE.md gotcha 84 / audit F1.
+       * A session that exits on its own (a crash, `/exit`, a fatal error) used
+       * to disappear from the map in this same tick, which meant `list()`
+       * could never report `exited: true` for a real exit and a phone
+       * watching it got nothing: no error, no final output, the row simply
+       * gone. It now stays, read-only (`write`/`resize` already refuse an
+       * exited session), until `list()` prunes it past `ENDED_RETENTION_MS`.
+       * `kill()`/`stop()` — an explicit close, a tab the user closed by hand —
+       * still delete at once; that half of the old behaviour was correct and
+       * phone contract point 3 keeps it. ids are uuids and never reused, so
+       * this is unambiguously this session's own entry.
+       */
       // The payload, the pass-through command and the settings file are all
       // per-session temp files, named after the launch key rather than the
       // session id — a --continue has no id here. Nothing reads them once the
@@ -497,6 +557,49 @@ export class PtyManager {
     } catch {
       /* process died between the renderer's keystroke and here */
     }
+  }
+
+  /**
+   * A phone's `{type:'submit', text}` — CLAUDE.md gotcha 85 / audit PX-1.
+   *
+   * Two pty writes, not one: Claude Code's own input box reads a fast
+   * multi-byte chunk as a paste, so a text-plus-`\r` write in one go lands
+   * the `\r` as a newline INSIDE the box rather than submitting it. The text
+   * (bracketed when the pty currently has DECSET 2004 on) goes now; the bare
+   * `\r` that actually submits follows after `SUBMIT_ENTER_DELAY_MS`, and is
+   * itself checked against the session still being alive, since the delay
+   * gives a fast `/exit` time to land first.
+   */
+  submit(ptyId: string, text: string): boolean {
+    const s = this.sessions.get(ptyId)
+    if (!s || s.exited) return false
+    const { body, enter } = submitFrames(text, s.bracketedPaste)
+    try {
+      s.proc.write(body)
+    } catch {
+      return false
+    }
+    setTimeout(() => {
+      const cur = this.sessions.get(ptyId)
+      if (!cur || cur.exited) return
+      try {
+        cur.proc.write(enter)
+      } catch {
+        /* process died in the gap between the two writes */
+      }
+    }, SUBMIT_ENTER_DELAY_MS)
+    return true
+  }
+
+  /**
+   * Stamp a session's last-activity time from something other than its own
+   * pty output — the registry poller, when a session's status changes with
+   * no bytes written (a permission dialog appearing is a state change, not
+   * output). A no-op past exit or for an unknown ptyId.
+   */
+  touch(ptyId: string): void {
+    const s = this.sessions.get(ptyId)
+    if (s && !s.exited) s.lastActivityAt = Date.now()
   }
 
   resize(ptyId: string, cols: number, rows: number): void {
@@ -682,15 +785,30 @@ export class PtyManager {
   }
 
   list(): SessionInfo[] {
+    this.pruneEnded()
     return [...this.sessions.values()].map((s) => ({
       ptyId: s.ptyId,
       sessionId: s.sessionId,
       cwd: s.cwd,
       exited: s.exited,
+      endedAt: s.endedAt,
+      exitCode: s.exitCode,
       startedAt: s.startedAt,
+      lastActivityAt: s.lastActivityAt,
       cols: s.cols,
-      rows: s.rows
+      rows: s.rows,
+      cli: s.cli,
+      instrumented: s.instrumented
     }))
+  }
+
+  /** Drop an exited session once it has sat in the ring past `ENDED_RETENTION_MS`. */
+  private pruneEnded(now: number = Date.now()): void {
+    for (const [id, s] of this.sessions) {
+      if (s.exited && s.endedAt !== null && now - s.endedAt > ENDED_RETENTION_MS) {
+        this.sessions.delete(id)
+      }
+    }
   }
 
   killAll(): void {
