@@ -122,7 +122,9 @@ export const CODING_CLIS: readonly CodingCli[] = [
       // install.sh, 2026-09-19. Set, it keeps the old copy and carries on.
       darwin: 'curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh',
       linux: 'curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh',
-      win32: 'irm https://chatgpt.com/codex/install.ps1 | iex'
+      // install.ps1 reads the same variable (its line 14), and its Prompt-YesNo
+      // otherwise stops on Read-Host mid-batch — found by review.
+      win32: '$env:CODEX_NON_INTERACTIVE="1"; irm https://chatgpt.com/codex/install.ps1 | iex'
     },
     // `resume` is a subcommand and filters by the working folder unless `--all`.
     continueArgs: ['resume', '--last'],

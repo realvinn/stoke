@@ -431,6 +431,19 @@ export interface InstallStep {
   note?: string
 }
 
+/**
+ * PowerShell's `-EncodedCommand` form: base64 of the UTF-16LE bytes. `btoa`
+ * rather than Buffer, because this module is shared with the renderer.
+ */
+export function powershellEncode(script: string): string {
+  let bin = ''
+  for (let i = 0; i < script.length; i++) {
+    const c = script.charCodeAt(i)
+    bin += String.fromCharCode(c & 0xff, c >> 8)
+  }
+  return btoa(bin)
+}
+
 /** What installing these would run on this platform, in table order. Unknown or unscripted ids are left out. */
 export function installSteps(ids: readonly string[], platform: string): InstallStep[] {
   const want = new Set(ids.filter(isCodingCliId))
@@ -457,15 +470,38 @@ export function installSteps(ids: readonly string[], platform: string): InstallS
  * renderer sends can become part of a command.
  */
 export function installScript(ids: readonly string[], platform: string): string | null {
-  const steps = installSteps(ids, platform)
+  return scriptFor(installSteps(ids, platform), platform)
+}
+
+/**
+ * The script for a given list of steps. Separate from `installScript` so a
+ * suite can EXECUTE the wrapper with a synthetic step — never a table command:
+ * a test that once swapped a vendor URL with `String.replace` swapped only its
+ * first occurrence (the printed one), ran the real installers, and upgraded
+ * the machine's Codex and installed Pi globally.
+ */
+export function scriptFor(steps: readonly InstallStep[], platform: string): string | null {
   if (!steps.length) return null
   if (platform === 'win32') {
     const lines = ['$failed = @()']
     for (const s of steps) {
       lines.push(`Write-Host ''`, `Write-Host '==> Installing ${s.label}' -ForegroundColor Cyan`)
       if (s.needs) lines.push(`Write-Host '    needs ${s.needs}'`)
+      if (s.note) lines.push(`Write-Host '    ${s.note.replace(/'/g, "''")}'`)
       lines.push(`Write-Host '    ${s.command.replace(/'/g, "''")}'`)
-      lines.push(`try { ${s.command}; if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) { $failed += '${s.label}' } } catch { Write-Host $_ -ForegroundColor Red; $failed += '${s.label}' }`)
+      /*
+       * Each step in its own PowerShell, found by review twice over. In one
+       * shared session a vendor script's `exit` inside `irm | iex` ends the
+       * WHOLE run, so the agents after it never install; and `$LASTEXITCODE`
+       * is only set by native programs, so a later pure-PowerShell step read
+       * an earlier step's failure as its own. A child process's exit code is
+       * its step's and nobody else's. `-EncodedCommand` for the same quoting
+       * reason as the outer script (pty.ts installerArgs).
+       */
+      lines.push(
+        `& powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${powershellEncode(s.command)}`,
+        `if ($LASTEXITCODE -ne 0) { $failed += '${s.label}' }`
+      )
     }
     lines.push(
       `Write-Host ''`,
@@ -475,7 +511,14 @@ export function installScript(ids: readonly string[], platform: string): string 
     return lines.join('\n')
   }
   const q = (t: string): string => `'${t.replace(/'/g, `'\\''`)}'`
-  const lines = ['failed=""']
+  /*
+   * pipefail, or a download that fails does not fail its step: `curl … | bash`
+   * takes bash's status, and bash reading an empty pipe exits 0 — so a 404 or
+   * no network printed "Done." and the exit card said "Installed" (found by
+   * review, reproduced). Guarded, because a plain POSIX sh (dash) has no such
+   * option; bash, which installerShell prefers, does.
+   */
+  const lines = ['(set -o pipefail) 2>/dev/null && set -o pipefail', 'failed=""']
   for (const s of steps) {
     lines.push(`printf '\\n\\033[1m==> Installing %s\\033[0m\\n' ${q(s.label)}`)
     if (s.needs) lines.push(`printf '    needs %s\\n' ${q(s.needs)}`)

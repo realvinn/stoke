@@ -62,6 +62,9 @@ export function AgentPicker({
     const onKey = (e: KeyboardEvent): void => {
       if (e.key !== 'Escape') return
       e.preventDefault()
+      // Opened from Settings, the sheet's own Escape handler is underneath;
+      // one Escape closes one dialog.
+      e.stopPropagation()
       onClose()
     }
     window.addEventListener('keydown', onKey, true)
@@ -71,17 +74,38 @@ export function AgentPicker({
   const all = CODING_CLIS.map((c) => c.id)
   const allPicked = all.every((id) => picked.has(id))
   const nonePicked = all.every((id) => !picked.has(id))
-  const toInstall = detection ? [...picked].filter((id) => !installed.has(id)) : []
+  /*
+   * With the PATH unreadable, a saved agent that detection cannot see may well
+   * be installed — so a reopened picker keeps it chosen but does not put it on
+   * the install list unless the user ticks it again (found by review: the
+   * first-run rule "nothing is ticked for installing" did not reach a reopen).
+   */
+  const [unconfirmed, setUnconfirmed] = useState<Set<CodingCliId>>(new Set())
+  const unconfirmedSeeded = useRef(false)
+  useEffect(() => {
+    if (unconfirmedSeeded.current || !detection || chosen === null) return
+    unconfirmedSeeded.current = true
+    if (detection.probeFailed) setUnconfirmed(new Set(chosen.filter((id) => !installed.has(id))))
+  }, [detection, chosen, installed])
+  const toInstall = detection ? [...picked].filter((id) => !installed.has(id) && !unconfirmed.has(id)) : []
   const steps = installSteps(toInstall, platform)
   const unscripted = toInstall.filter((id) => !steps.some((s) => s.id === id))
 
-  const toggle = (id: CodingCliId): void =>
+  const toggle = (id: CodingCliId): void => {
+    // A tick by hand is a decision; it is no longer "unconfirmed".
+    setUnconfirmed((cur) => {
+      if (!cur.has(id)) return cur
+      const next = new Set(cur)
+      next.delete(id)
+      return next
+    })
     setPicked((cur) => {
       const next = new Set(cur)
       if (next.has(id)) next.delete(id)
       else next.add(id)
       return next
     })
+  }
 
   const selectAll = useRef<HTMLInputElement>(null)
   useEffect(() => {
@@ -125,7 +149,9 @@ export function AgentPicker({
                 ? 'checking…'
                 : have
                   ? 'installed'
-                  : on
+                  : on && unconfirmed.has(c.id)
+                    ? 'not seen — untick and tick to install'
+                    : on
                     ? step
                       ? 'will install'
                       : 'install by hand'
@@ -152,7 +178,7 @@ export function AgentPicker({
                       <code className="mono">{conflictOf(c.id)}</code>; this is not it.
                     </span>
                   )}
-                  {on && !have && detection && (
+                  {on && !have && detection && !unconfirmed.has(c.id) && (
                     <span className="agent-row-cmd">
                       {step ? (
                         <>

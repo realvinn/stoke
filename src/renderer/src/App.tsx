@@ -2476,9 +2476,27 @@ export function App(): React.JSX.Element {
                   // `focus: false` — with several starting at once the winner
                   // would otherwise be whichever PTY resolved last, which is a
                   // race deciding what you are looking at. See focusAfterStart.
+                  /*
+                   * One "latest session in this folder" per agent and folder.
+                   * A continue-only CLI — or a Claude tab with no id — can only
+                   * reach the newest session there, so two such tabs in one
+                   * folder would both attach to the SAME session, two writers
+                   * on one transcript (found by review). The first continues;
+                   * the rest stay paused, each still resumable from its card.
+                   */
+                  const seen = new Set<string>()
                   tabs
                     .filter((t) => t.status === 'paused')
-                    .forEach((t) => resumeTabFor(t, false)?.())
+                    .forEach((t) => {
+                      const latestOnly =
+                        !t.hostId && (capsFor(t.cliId).resume === 'continue' || !t.sessionId)
+                      if (latestOnly) {
+                        const key = `${t.cliId}\0${t.cwd}`
+                        if (seen.has(key)) return
+                        seen.add(key)
+                      }
+                      resumeTabFor(t, false)?.()
+                    })
                 }}
                 title="Start every restored tab again"
               >

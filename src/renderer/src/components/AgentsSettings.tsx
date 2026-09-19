@@ -117,7 +117,13 @@ export function AgentsSettings({
             onEndpoint={(ep) => setEndpoint(c.id, ep)}
             openrouterKey={settings.providers.openrouterApiKey}
             installCommand={installSteps([c.id], platform)[0]?.command ?? null}
-            onInstall={() => onInstall([c.id])}
+            onInstall={() => {
+              // Installing an agent is choosing it: without this the launcher,
+              // which shows only chosen agents, would not offer what was just
+              // installed — while the exit card said it did.
+              if (!shown(c.id)) setShown(c.id, true)
+              onInstall([c.id])
+            }}
           />
         ))}
       </div>

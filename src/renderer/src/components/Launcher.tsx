@@ -335,9 +335,9 @@ export function Launcher({
             <span className="launcher-row-label">
               <b>Other agents</b>
               <span>
-                Opens that agent in this folder, with Stoke&rsquo;s terminal around it. Resuming
-                continues its latest session here; the context ring and the worklog read Claude
-                Code&rsquo;s files only.
+                Opens that agent in this folder, with Stoke&rsquo;s terminal around it. Most can pick
+                up their latest session here when resumed; the context ring and the worklog read
+                Claude Code&rsquo;s files only.
               </span>
             </span>
             <div style={{ display: 'flex', gap: 'var(--space-8)', flexWrap: 'wrap' }}>

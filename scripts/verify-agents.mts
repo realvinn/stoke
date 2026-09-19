@@ -29,6 +29,8 @@ import {
   httpUrlMcpConfig,
   installScript,
   installSteps,
+  powershellEncode,
+  scriptFor,
   isEndpointUrl,
   NO_KEY,
   OPENROUTER_OPENAI_BASE_URL,
@@ -42,6 +44,7 @@ import { CLI_CAPS, CODING_CLIS, type CodingCliId } from '../src/shared/codingCli
 import { SHARED_SKILLS_DIR, SKILL_DIRS, skillReport } from '../src/shared/skills.ts'
 import { scanSkills } from '../src/main/skillsScan.ts'
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -320,8 +323,50 @@ console.log('\ninstalling')
   ok('and says what each needs first', /needs %s\\n' 'Node\.js 22\.19 or newer'/.test(mac), mac)
   ok('a failure is recorded and the rest still run', (mac.match(/\|\| failed=/g) ?? []).length === 2)
   ok('and the script exits non-zero if any failed, which the exit card reads', /exit 1; fi/.test(mac))
-  const win = installScript(['codex'], 'win32') ?? ''
-  ok('windows gets PowerShell', win.includes('irm https://chatgpt.com/codex/install.ps1 | iex') && win.includes('$failed'))
+  /*
+   * Run for real — but only ever a SYNTHETIC step, never a table command. The
+   * first version of this test built the script from the table and swapped the
+   * vendor URL with `String.replace`, which replaces the first occurrence: the
+   * printed one. The executed line still fetched the real installer, and two
+   * runs upgraded this machine's Codex and installed Pi globally. So the step
+   * below is made up, and the script is built with `scriptFor`.
+   *
+   * What it proves: a download that fails must fail its step. Without pipefail
+   * `curl … | sh` took sh's status — 0 on an empty pipe — and the tab printed
+   * "Done." (found by review).
+   */
+  {
+    const fake = scriptFor(
+      [
+        { id: 'codex', label: 'Unreachable', command: 'curl -fsSL http://127.0.0.1:9/none | sh' },
+        { id: 'pi', label: 'Harmless', command: 'true' }
+      ],
+      'darwin'
+    ) ?? ''
+    ok('the synthetic script runs no table command', !/https:\/\//.test(fake))
+    const r = spawnSync('/bin/bash', ['-c', fake], { encoding: 'utf8', timeout: 20_000, cwd: tmpdir() })
+    ok(
+      'a failed download fails its step, the next step still runs, and the script exits 1 naming it',
+      r.status === 1 && /Did not install:.*Unreachable/.test(r.stdout) && /Installing.*Harmless/s.test(r.stdout),
+      `status ${r.status}: ${JSON.stringify(r.stdout.slice(-240))}`
+    )
+  }
+  const win = installScript(['codex', 'copilot'], 'win32') ?? ''
+  const decode = (b64: string): string => {
+    const bin = atob(b64)
+    let out = ''
+    for (let i = 0; i < bin.length; i += 2) out += String.fromCharCode(bin.charCodeAt(i) | (bin.charCodeAt(i + 1) << 8))
+    return out
+  }
+  const encoded = [...win.matchAll(/-EncodedCommand (\S+)/g)].map((m) => decode(m[1]))
+  ok(
+    'windows: each step in its OWN PowerShell, so a vendor script’s `exit` ends only its step and its exit code is its own',
+    encoded.length === 2 && encoded[1] === 'winget install GitHub.Copilot',
+    JSON.stringify(encoded)
+  )
+  ok('codex on windows is told not to stop and ask, too', encoded[0]?.startsWith('$env:CODEX_NON_INTERACTIVE="1";') === true, encoded[0])
+  check('powershellEncode survives non-ASCII', decode(powershellEncode('Write-Host "héllo — ✓"')), 'Write-Host "héllo — ✓"')
+  ok('a failed step is recorded and the script exits 1 on any', win.includes("$failed += 'Copilot CLI'") && /exit 1 }/.test(win))
   check('nothing to install is no script at all', installScript(['banana'], 'darwin'), null)
   for (const c of CODING_CLIS) {
     for (const plat of ['darwin', 'linux', 'win32'] as const) {

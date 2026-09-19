@@ -193,7 +193,17 @@ export function extraSearchDirs(): string[] {
       join(home, '.grok', 'bin'),
       join(home, '.kimi-code', 'bin'),
       join(home, '.amp', 'bin'),
-      join(process.env.LOCALAPPDATA ?? join(home, 'AppData', 'Local'), 'cursor-agent')
+      join(process.env.LOCALAPPDATA ?? join(home, 'AppData', 'Local'), 'cursor-agent'),
+      /*
+       * Three more, found by review from the vendors' install.ps1 scripts. On
+       * Windows there is no login shell to re-read (`loginShellPath` is null),
+       * so a PATH entry an installer adds is invisible to this process until it
+       * restarts — the only way Stoke finds a just-installed agent is to look
+       * where the installer puts it.
+       */
+      join(process.env.LOCALAPPDATA ?? join(home, 'AppData', 'Local'), 'Programs', 'OpenAI', 'Codex', 'bin'),
+      join(process.env.LOCALAPPDATA ?? join(home, 'AppData', 'Local'), 'qwen-code', 'bin'),
+      join(process.env.LOCALAPPDATA ?? join(home, 'AppData', 'Local'), 'Microsoft', 'WinGet', 'Links')
     ]
   }
   return [
@@ -293,11 +303,25 @@ async function isAgent(path: string, pattern: RegExp): Promise<boolean> {
       env: { ...process.env, PATH: await buildEnvPath() }
     })
     yes = pattern.test(`${stdout}\n${stderr}`)
-  } catch {
-    yes = false
+  } catch (err) {
+    /*
+     * Only a program that RAN and answered is a definite "not this agent". A
+     * timeout (`killed`, checked before any code — gotcha 25) or a spawn error
+     * (ENOENT, EACCES, ETXTBSY mid-install) says nothing about identity, and
+     * caching it would keep a real agent "not installed" for the rest of the
+     * run, past "Look again" — found by review.
+     */
+    const e = err as { killed?: boolean; code?: unknown; stdout?: string; stderr?: string }
+    if (e.killed || typeof e.code !== 'number') return false
+    yes = pattern.test(`${e.stdout ?? ''}\n${e.stderr ?? ''}`)
   }
   identityCache.set(path, yes)
   return yes
+}
+
+/** Forget every identity answer, for a fresh detection after an install. */
+export function forgetIdentities(): void {
+  identityCache.clear()
 }
 
 /**

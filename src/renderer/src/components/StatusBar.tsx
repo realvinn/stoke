@@ -151,7 +151,11 @@ export function StatusBar({
    * rendered as if it described the session in front of it, which is the exact
    * shape this project treats as worse than showing nothing.
    */
-  const claudeTab = isClaudeCode(cliIdOf(tab?.cliId))
+  // An install tab carries its first agent as `cliId` — which can be Claude
+  // Code — but it is a shell running installers, not a session: none of the
+  // session items below describe it (found by review).
+  const installTab = !!tab?.installing?.length
+  const claudeTab = !installTab && isClaudeCode(cliIdOf(tab?.cliId))
   const shownVersion = claudeTab
     ? (versionNumber(line?.cliVersion ?? null) ?? versionNumber(cli?.version ?? null))
     : null
@@ -239,7 +243,7 @@ export function StatusBar({
         that session handles tool use. `capsFor` is the same table that decided
         not to pass the flags, so the display cannot drift from the launch.
       */}
-      {caps.launchFlags.permissionMode && (
+      {!installTab && caps.launchFlags.permissionMode && (
         <span className="pill" data-tone={bypass ? 'danger' : undefined}>
           {PERMISSION_LABELS[tab.permissionMode]}
         </span>
@@ -250,9 +254,9 @@ export function StatusBar({
         "default", which is not a fact about this session — it is the absence of
         one, printed in the row where every other item is something you set.
       */}
-      {caps.launchFlags.model && model && <span className="status-item">{modelLabel(model)}</span>}
+      {!installTab && caps.launchFlags.model && model && <span className="status-item">{modelLabel(model)}</span>}
 
-      {caps.launchFlags.effort && tab.effort !== 'default' && (
+      {!installTab && caps.launchFlags.effort && tab.effort !== 'default' && (
         <span className="status-item">effort: {tab.effort}</span>
       )}
 
