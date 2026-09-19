@@ -759,6 +759,9 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     (`cliRelaunch: 'auto'`) and `looksTyped` (what counts as a draft); and
                     the launcher's: `continuePlan` (Continue resumes by id, never a twin),
                     `newTabToReuse`, `tabLabel`
+  src/lib/pressBurst.ts  the window's one record of the Enter/Space burst in progress,
+                    registered first from main.tsx; the agent picker and a launcher armed by
+                    the splash or picker closing ask it `activationAllowed`. Gotcha 88
   src/lib/projectSearch.ts  the one matcher the sidebar search and the Cmd+K palette share:
                     label/name/path, session title and first prompt, ranked by tier then
                     recency, with highlight ranges. No runtime imports, so verify:search
@@ -806,7 +809,8 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     Gotcha 89
   launcher.ts       the new-session page's pure half: same-name disambiguation, the
                     folder switcher's groups, which conversations list, the keyboard map,
-                    and the agent picker's sections and scoped Select all
+                    the pinned launch aim (`launchAim`), the activation-key burst rule
+                    (`pressAllowed`), and the agent picker's sections and scoped Select all
   welcome.ts        whether the first-run campfire plays, from two strings: the version whose
                     splash was last watched and the version running now. A semver comparison
                     and the clamp that repairs the stored value, together in one file because

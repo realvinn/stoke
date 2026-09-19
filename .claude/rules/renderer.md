@@ -266,3 +266,20 @@ two fresh Enters 150ms apart. The shell stayed inert through the gap, the picker
 Continue focused and the second fresh Enter pressed it (which installs nothing: only installed
 agents are ticked), focus landed on Start Claude Code, and the shim's log held only `--version`
 probes.
+
+> **Checked against the code on 2026-09-19 (review round).** The three locks above did not cover
+> the picker itself: a fresh Enter every 40ms from boot answered it before it painted (it opens
+> with Continue focused), and the next Enter started `claude` in the user's most recent REAL
+> project, since the fallback aim is that project. A fourth lock now: `pressAllowed`
+> (shared/launcher.ts) over the window's one burst record (`lib/pressBurst.ts`, registered first
+> from main.tsx so every other capture listener sees the press already folded in). Presses under
+> `PRESS_QUIET_MS` apart are one burst, repeats always continue one, and a surface ARMED at time T
+> takes an Enter/Space only from a burst that began at least `PRESS_ARM_MS` after T. The picker
+> arms when it mounts; the launcher is armed (`armedAt`) when the splash is dismissed or the
+> picker closes, and never by the palette or Settings, whose Enter-then-Enter is a real flow.
+> Measured with the launch-logging shim on a fresh profile: 66 fresh Enters at 40ms from boot left
+> the picker up and the shim with only `--version` probes; after a 1.2s pause one Enter answered
+> it; 34 more Enters at 40ms straight after did not press Start; after another pause one Enter
+> started it. The splash also stopped cancelling chords: `preventDefault` on Cmd+Q/W/R kept the
+> default menu's accelerators from ever seeing them (not drivable over CDP: synthetic key events
+> carry no native event for the menu).
