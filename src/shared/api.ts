@@ -1,3 +1,4 @@
+import type { SkillDirScan } from './skills'
 import type { MicAccess } from './voiceRoute'
 import type { CreateProfileInput, ProfilePlan } from './profiles'
 import type { CodingCliDetection } from './codingClis'
@@ -298,6 +299,8 @@ export interface StokeApi {
      * added its bin directory to the shell rc.
      */
     detect(opts?: { fresh?: boolean }): Promise<CodingCliDetection>
+    /** What each skill folder the agents read holds. Never writes anything. */
+    skills(): Promise<SkillDirScan[]>
   }
 
   usage: {

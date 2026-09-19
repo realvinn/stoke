@@ -38,6 +38,11 @@ import {
   type LaunchPlanInput
 } from '../src/shared/agents.ts'
 import { CLI_CAPS, CODING_CLIS, type CodingCliId } from '../src/shared/codingClis.ts'
+import { SHARED_SKILLS_DIR, SKILL_DIRS, skillReport } from '../src/shared/skills.ts'
+import { scanSkills } from '../src/main/skillsScan.ts'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 let failures = 0
 
@@ -312,6 +317,48 @@ console.log('\ninstalling')
       )
     }
   }
+}
+
+console.log('\nskills: who can see what, from a fake home (never the real one — gotcha 74)')
+{
+  const home = mkdtempSync(join(tmpdir(), 'stoke-skills-'))
+  const skill = (dir: string, name: string): string => {
+    const at = join(home, dir, name)
+    mkdirSync(at, { recursive: true })
+    writeFileSync(join(at, 'SKILL.md'), `---\nname: ${name}\ndescription: x\n---\n`)
+    return at
+  }
+  try {
+    const shared = skill('.agents/skills', 'shared-one')
+    mkdirSync(join(home, '.claude/skills'), { recursive: true })
+    symlinkSync(shared, join(home, '.claude/skills', 'shared-one'))
+    skill('.claude/skills', 'claude-only')
+    skill('.claude/skills', 'copied')
+    skill('.codex/skills', 'copied')
+    mkdirSync(join(home, '.agents/skills', 'not-a-skill'), { recursive: true })
+    const scans = await scanSkills(home)
+    const names = (dir: string) => scans.find((x) => x.dir === dir)?.skills.map((k) => k.name)
+    check('a folder with no SKILL.md is not a skill', names('~/.agents/skills'), ['shared-one'])
+    check('a link counts in the folder it sits in', names('~/.claude/skills'), ['claude-only', 'copied', 'shared-one'])
+    const r = skillReport(scans, ['claude', 'codex', 'cursor', 'aider'])
+    check('three distinct skills', r.total, 3)
+    check('per agent', r.perAgent, [
+      { id: 'claude', visible: 3 },
+      { id: 'codex', visible: 1 },
+      { id: 'cursor', visible: 3 },
+      { id: 'aider', visible: 0 }
+    ])
+    check(
+      'the Claude-only skills are the ones Codex misses — and Aider, which has no skills, misses nothing',
+      r.partial.map((x) => [x.name, x.missing]),
+      [['claude-only', ['codex']], ['copied', ['codex']]]
+    )
+    check('a link is one skill, not a copy; two real folders are', r.duplicated.map((x) => x.name), ['copied'])
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+  ok('every agent has a skills entry, so a new one cannot be forgotten', CODING_CLIS.every((c) => Array.isArray(SKILL_DIRS[c.id])))
+  ok('and the shared folder is in nearly all of them', CODING_CLIS.filter((c) => SKILL_DIRS[c.id].includes(SHARED_SKILLS_DIR)).length >= CODING_CLIS.length - 2)
 }
 
 console.log(failures ? `\n${failures} FAILED` : '\nall pass')

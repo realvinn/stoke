@@ -37,6 +37,8 @@ export const CH = {
   cliInfo: 'cli:info',
   /** Which known coding CLIs are on this machine, and where. */
   cliDetect: 'cli:detect',
+  /** Which skills each agent's folders hold. Read-only; see shared/skills.ts. */
+  skillsScan: 'skills:scan',
 
   // plan limits
   usageRead: 'usage:read',

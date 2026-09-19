@@ -16,6 +16,8 @@ import {
   type EndpointMode
 } from '@shared/agents'
 import type { Settings } from '@shared/types'
+import { SHARED_SKILLS_DIR, skillReport, type SkillDirScan } from '@shared/skills'
+import { cliFor } from '@shared/codingClis'
 
 /*
  * Settings › Coding agents: which agents show in the launcher, installing the
@@ -96,6 +98,10 @@ export function AgentsSettings({
           </span>
         )}
       </div>
+
+      <SkillsReport
+        agents={CODING_CLIS.map((c) => c.id).filter((id) => shown(id) && installed.has(id))}
+      />
 
       <div className="agent-settings">
         {CODING_CLIS.map((c) => (
@@ -299,6 +305,72 @@ function AgentRow({
         <span className="field-hint">
           Uses its own sign-in; it has no way to be pointed at another endpoint from outside.
         </span>
+      )}
+    </div>
+  )
+}
+
+/*
+ * Which skills each of your agents can see. Read-only: it says where a skill
+ * has to live to reach everyone, and never moves one (shared/skills.ts says
+ * why a sync would be worse than the problem).
+ */
+function SkillsReport({ agents }: { agents: CodingCliId[] }): React.JSX.Element | null {
+  const [scans, setScans] = useState<SkillDirScan[] | null>(null)
+  useEffect(() => {
+    let live = true
+    void window.stoke.cli.skills().then((s) => {
+      if (live) setScans(s)
+    })
+    return () => {
+      live = false
+    }
+  }, [])
+  if (!scans || agents.length === 0) return null
+  const report = skillReport(scans, agents)
+  if (report.total === 0) return null
+  const label = (id: CodingCliId): string => cliFor(id).label
+  return (
+    <div className="field">
+      <span className="field-label">Skills</span>
+      <span className="field-hint">
+        Every agent here reads the same SKILL.md format, from different folders.{' '}
+        <span className="mono">{SHARED_SKILLS_DIR}</span> is the one nearly all of them share;
+        Claude Code reads only <span className="mono">~/.claude/skills</span>, so a skill kept in the
+        shared folder and linked into Claude’s reaches all of them.
+      </span>
+      <span className="field-hint">
+        {report.perAgent.map((a) => `${label(a.id)} ${a.visible}`).join(' · ')} — of {report.total}.
+      </span>
+      {report.partial.length > 0 && (
+        <details>
+          <summary className="field-hint">
+            {report.partial.length} skill{report.partial.length === 1 ? '' : 's'} some of your agents
+            cannot see
+          </summary>
+          <ul className="field-hint" style={{ margin: 0, paddingLeft: 'var(--space-16)' }}>
+            {report.partial.map((r) => (
+              <li key={r.name}>
+                <span className="mono">{r.name}</span> — not {r.missing.map(label).join(', ')}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+      {report.duplicated.length > 0 && (
+        <details>
+          <summary className="field-hint" data-tone="warning">
+            {report.duplicated.length} skill{report.duplicated.length === 1 ? ' exists' : 's exist'} as
+            separate copies, which drift apart on the next edit
+          </summary>
+          <ul className="field-hint" style={{ margin: 0, paddingLeft: 'var(--space-16)' }}>
+            {report.duplicated.map((r) => (
+              <li key={r.name}>
+                <span className="mono">{r.name}</span> — {r.dirs.join(', ')}
+              </li>
+            ))}
+          </ul>
+        </details>
       )}
     </div>
   )

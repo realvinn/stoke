@@ -23,6 +23,7 @@ import type {
 import { EmbeddedBrowser } from './browser.ts'
 import { clearWallpaper, mimeFor, storeWallpaper, WALLPAPER_SCHEME, wallpaperFileFor } from './wallpaper.ts'
 import { detectCodingClis, forgetLoginPath, probeClaude } from './cli.ts'
+import { scanSkills } from './skillsScan.ts'
 import { ContextWatcher } from './context.ts'
 import { findSessionFile, listProjects, listSessions } from './projects.ts'
 import { indexSessions } from './sessionIndex.ts'
@@ -1455,6 +1456,7 @@ function registerIpc(): void {
 
   /* ------------------------------------------------------------------- cli */
   ipcMain.handle(CH.cliInfo, () => probeClaude(getSettings().claudePath))
+  ipcMain.handle(CH.skillsScan, () => scanSkills())
   ipcMain.handle(CH.cliDetect, (_e, opts?: { fresh?: boolean }) => {
     if (opts?.fresh === true) forgetLoginPath()
     return detectCodingClis()

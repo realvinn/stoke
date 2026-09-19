@@ -620,6 +620,9 @@ src/main/         Electron main process
   ssh.ts            ~/.ssh/config parsing, the ssh argv, the transcript command
   sshTranscript.ts  pulls a remote session's JSONL back, so SSH sessions can be read
   agent.ts          headless `claude -p` runner (prompt on stdin, json out)
+  skillsScan.ts     lists the skills in every folder an agent reads, with each one's real
+                    path, so a symlink is told apart from a copy that drifts. Read-only;
+                    `home` is a parameter so verify:agents runs it on a fake tree
   stt.ts            the one place Stoke talks to the speech sidecar. Both the desktop and
                     the phone route through it, because "only main may reach it" is the
                     sidecar's whole authentication story
@@ -683,6 +686,10 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     into the agent's own config, gotcha 38's rule for tools that rewrite
                     their files. `installScript` builds a tab's shell script from the table
                     and ids it validates, so the renderer can never contribute command text
+  skills.ts         which skill folders each agent reads, and the report of who can see
+                    which skill. `~/.agents/skills` is the one nearly all share; Claude Code
+                    reads only `~/.claude/skills`. A report, never a sync — linking between
+                    folders would hand agents that read both every skill twice
   voiceRoute.ts     who owns a held Space bar in a tab — Claude Code's /voice or Stoke's
                     dictation — and the words for a refused microphone. On macOS a CLI in a
                     Stoke pty records AS Stoke (TCC's responsible process), so Stoke's one
