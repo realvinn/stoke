@@ -3,6 +3,7 @@ import type { MicAccess } from './voiceRoute'
 import type { CreateProfileInput, ProfilePlan } from './profiles'
 import type { CodingCliDetection } from './codingClis'
 import type { StokeCliRequest } from './stokeArgs'
+import type { ClaudeLaunchDefaults } from './launch'
 import type {
   ActivityReport,
   BrowserState,
@@ -538,6 +539,11 @@ export interface StokeApi {
      * survived before reporting success.
      */
     setWorkflowSize(value: string | undefined): Promise<ClaudeConfigWriteResult>
+    /**
+     * The permission mode, model and effort `claude` would use in `cwd` with no
+     * flag, read from its settings files (user, project, local). Read-only.
+     */
+    launchDefaults(cwd: string | null): Promise<ClaudeLaunchDefaults>
   }
 
   /**

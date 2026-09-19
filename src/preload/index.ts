@@ -168,7 +168,8 @@ const api: StokeApi = {
     set: (key: string, value: boolean | string | number | undefined) =>
       ipcRenderer.invoke(CH.claudeConfigSet, key, value),
     setWorkflowSize: (value: string | undefined) =>
-      ipcRenderer.invoke(CH.claudeWorkflowSize, value)
+      ipcRenderer.invoke(CH.claudeWorkflowSize, value),
+    launchDefaults: (cwd: string | null) => ipcRenderer.invoke(CH.claudeLaunchDefaults, cwd)
   },
 
   profiles: {

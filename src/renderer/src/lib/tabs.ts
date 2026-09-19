@@ -770,3 +770,94 @@ export function focusAfterStart(
     focus === false ? (current === replacedTabId ? newTabId : (current ?? newTabId)) : newTabId
   )
 }
+
+/* --------------------------------------------------- the launcher's tabs */
+
+/** The fields of a tab the launcher's decisions read. */
+export interface TabLike {
+  id: string
+  kind: string
+  status: string
+  sessionId: string
+  cwd: string
+  cliId: CodingCliId
+  hostId: string | null
+}
+
+export type ContinuePlan =
+  | { kind: 'resume'; sessionId: string }
+  | { kind: 'focus'; tabId: string }
+  | { kind: 'continue' }
+  | { kind: 'none' }
+
+/**
+ * What "Continue" on the launcher does.
+ *
+ * It used to spawn `claude --continue` in the folder unconditionally, so a
+ * conversation already running in another tab got a second `claude` writing
+ * the same transcript — and closing either twin wiped the survivor's
+ * session-keyed state (QA L2). Now:
+ *
+ *  - the newest conversation is known → resume it BY ID, through the same path
+ *    every other resume takes, which focuses a running tab instead of spawning;
+ *  - the list has not loaded yet → `--continue` is the only way to name it, but
+ *    not while a running local tab of this agent already sits in the folder
+ *    (that tab is focused instead);
+ *  - the folder has no conversations → nothing to continue.
+ *
+ * `samePath` decides folder equality, so the caller's platform rules (case
+ * folding on macOS/Windows) apply.
+ */
+export function continuePlan(input: {
+  sessions: readonly { id: string }[]
+  loading: boolean
+  tabs: readonly TabLike[]
+  cwd: string
+  cli: CodingCliId
+  samePath: (a: string, b: string) => boolean
+}): ContinuePlan {
+  const newest = input.sessions[0]
+  if (newest) return { kind: 'resume', sessionId: newest.id }
+  if (!input.loading) return { kind: 'none' }
+  const open = input.tabs.find(
+    (t) =>
+      t.kind === 'session' &&
+      t.status === 'running' &&
+      !t.hostId &&
+      t.cliId === input.cli &&
+      input.samePath(t.cwd, input.cwd)
+  )
+  return open ? { kind: 'focus', tabId: open.id } : { kind: 'continue' }
+}
+
+/**
+ * Which New tab a "go to this folder" gesture (the palette, Open folder,
+ * `stoke --open`) should aim, or null to append one.
+ *
+ * The active tab when it is a New tab; otherwise the first New tab already in
+ * the strip. Appending whenever a session tab was in front left idle "New
+ * session" tabs piling up — four tabs, two of them unused launchers, after a
+ * couple of palette picks (QA L17).
+ */
+export function newTabToReuse(tabs: readonly { id: string; kind: string }[], activeId: string | null): string | null {
+  const active = tabs.find((t) => t.id === activeId)
+  if (active?.kind === 'new') return active.id
+  return tabs.find((t) => t.kind === 'new')?.id ?? null
+}
+
+/**
+ * The words a tab shows in the strip.
+ *
+ * A New tab aimed at a project says so (`New · stoke`), so two of them are
+ * not two identical "New session" labels; a tab running another agent keeps
+ * its title and `agentTag` names the agent, because a Codex tab and a Claude
+ * tab in one folder were both just `proj-a` (QA L16).
+ */
+export function tabLabel(
+  tab: { kind: string; title: string; cliId: CodingCliId; installing?: readonly string[] },
+  newTarget: string | null
+): { text: string; agentTag: string | null } {
+  if (tab.kind === 'new') return { text: newTarget ? `New · ${newTarget}` : tab.title, agentTag: null }
+  const tag = isClaudeCode(tab.cliId) || tab.installing?.length ? null : cliFor(tab.cliId).bins.posix[0]
+  return { text: tab.title, agentTag: tag }
+}

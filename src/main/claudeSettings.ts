@@ -14,6 +14,8 @@ import { randomBytes } from 'node:crypto'
 import { homedir } from 'node:os'
 import { claudeSettingsPath } from './claudePaths.ts'
 import { NEVER_OFFERED, validateSetting, type ClaudeSettingValue } from '../shared/claudeConfig.ts'
+import { join } from 'node:path'
+import { resolveClaudeDefaults, type ClaudeLaunchDefaults, type SettingsLayer } from '../shared/launch.ts'
 
 /**
  * Reading and patching Claude Code's own `~/.claude/settings.json`.
@@ -124,6 +126,56 @@ export async function readClaudeSettings(): Promise<ClaudeSettingsRead> {
       exists: true
     }
   }
+}
+
+/**
+ * A project's own settings file, read under a deadline and never trusted.
+ *
+ * The folder is whatever the launcher is aimed at, which can be a network
+ * volume or a folder that has just been deleted; a read that stalls must not
+ * hold up the chips (gotcha 40). Anything that is not a JSON object is treated
+ * as absent — this reader decides what a label says, never what is written.
+ */
+async function readLayer(path: string, name: string, deadlineMs: number): Promise<SettingsLayer> {
+  const read = readFile(path, 'utf8').then(
+    (raw) => {
+      try {
+        const parsed: unknown = JSON.parse(stripBom(raw))
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+          ? (parsed as Record<string, unknown>)
+          : null
+      } catch {
+        return null
+      }
+    },
+    () => null
+  )
+  let timer: NodeJS.Timeout | undefined
+  const late = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), deadlineMs)
+  })
+  const values = await Promise.race([read, late])
+  clearTimeout(timer)
+  return { name, values }
+}
+
+/**
+ * What `claude` would launch with in `cwd` when Stoke sends no mode, model or
+ * effort flag: the user file, then the project's `.claude/settings.json`, then
+ * its `.claude/settings.local.json`, folded by `resolveClaudeDefaults` in the
+ * CLI's own precedence (QA L11). Read-only; nothing here writes.
+ *
+ * Managed (policy) settings are not read, so a machine under an MDM policy can
+ * still see a label that the policy overrides — the one layer this misses.
+ */
+export async function readLaunchDefaults(cwd: string | null): Promise<ClaudeLaunchDefaults> {
+  const userRead = await readClaudeSettings()
+  const layers: SettingsLayer[] = [{ name: '~/.claude/settings.json', values: userRead.values }]
+  if (cwd) {
+    layers.push(await readLayer(join(cwd, '.claude', 'settings.json'), '.claude/settings.json', 1500))
+    layers.push(await readLayer(join(cwd, '.claude', 'settings.local.json'), '.claude/settings.local.json', 1500))
+  }
+  return resolveClaudeDefaults(layers, { ANTHROPIC_MODEL: process.env.ANTHROPIC_MODEL })
 }
 
 /**

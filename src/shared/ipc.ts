@@ -172,6 +172,8 @@ export const CH = {
   claudeConfigRead: 'claudeConfig:read',
   claudeConfigSet: 'claudeConfig:set',
   claudeWorkflowSize: 'claudeConfig:workflowSize',
+  /** What `claude` launches with in a folder when Stoke sends no flag (QA L11). Read-only. */
+  claudeLaunchDefaults: 'claudeConfig:launchDefaults',
 
   // profiles
   profilesPlan: 'profiles:plan',
