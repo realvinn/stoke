@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { CODING_CLIS, type CodingCliDetection, type CodingCliId } from '@shared/codingClis'
 import { installSteps } from '@shared/agents'
-import { pickerSections, selectAllInstalled } from '@shared/launcher'
+import { isActivationKey, pickerSections, selectAllInstalled } from '@shared/launcher'
+import { activationAllowed, pressClock } from '../lib/pressBurst'
 
 /*
  * "Which coding agents do you use?" — asked once, and again whenever the user
@@ -73,11 +74,20 @@ export function AgentPicker({
     }
   }, [detection])
 
+  /*
+   * Armed when it opens (gotcha 88). Continue takes focus at once, and on a
+   * first run this opens in the middle of the Enters someone is pressing to
+   * get past the splash: the QA's fresh Enter every 40ms answered it before it
+   * had painted (agents.chosen saved, the picker never seen), and the next
+   * Enter started `claude` behind it. An Enter or Space now presses nothing
+   * here unless its burst began after this opened — stop, then press, and it
+   * counts. A held key's repeats are part of the burst, so they never do.
+   */
+  const armedAt = useRef(pressClock())
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
-      // The repeats of an Enter held to get past the splash must not press
-      // Continue, which takes focus the moment this opens.
-      if (e.key === 'Enter' && e.repeat) {
+      if (isActivationKey(e.key) && (e.repeat || !activationAllowed(armedAt.current))) {
         e.preventDefault()
         e.stopPropagation()
         return

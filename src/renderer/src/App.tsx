@@ -31,7 +31,8 @@ import {
   type LaunchChoice,
   type LaunchOverride
 } from '@shared/launch'
-import { disambiguate, rankProjects, type FolderChoice } from '@shared/launcher'
+import { disambiguate, launchAim, type FolderChoice } from '@shared/launcher'
+import { pressClock } from './lib/pressBurst'
 import type { StokeCliRequest } from '@shared/stokeArgs'
 import { activeThemeId, resolveTheme } from '@shared/themes'
 import { worklogButtonState } from '@shared/worklog'
@@ -185,6 +186,12 @@ export function App(): React.JSX.Element {
    * splash also answered a picker nobody had seen (measured).
    */
   const [welcomeSettled, setWelcomeSettled] = useState(false)
+  /*
+   * When the splash or the agent picker last went away. The launcher takes no
+   * Enter or Space that is the tail of a burst already going then — the Enters
+   * someone presses to get past the first run (gotcha 88, `pressAllowed`).
+   */
+  const [launcherArmedAt, setLauncherArmedAt] = useState<number | null>(null)
 
   /*
    * Which coding agents are on this machine, and whether the PATH could be read
@@ -1196,13 +1203,39 @@ export function App(): React.JSX.Element {
    * pick away in the folder switcher instead. Null only while the project list
    * is still loading with nothing selected — the header shows a skeleton rather
    * than flashing the default folder and then jumping.
+   *
+   * The fallback is pinned per tab the first time it resolves (`launchAim`):
+   * recomputed on every project refresh, it re-aimed a launcher under the
+   * user's focused Start button whenever another project's transcript moved.
+   * A pin is not a selection — the sidebar does not highlight it — so it lives
+   * beside the tabs rather than in `selectedPath`.
    */
-  const launchPath = useMemo((): string | null => {
-    if (!activeIsNew) return null
-    if (selectedPath) return selectedPath
-    if (projectsLoading) return null
-    return rankProjects(scopedProjects.filter((p) => p.exists))[0]?.path ?? (defaultCwd || null)
-  }, [activeIsNew, selectedPath, projectsLoading, scopedProjects, defaultCwd])
+  const [aimPins, setAimPins] = useState<Record<string, string>>({})
+  const aim = useMemo(
+    () =>
+      activeIsNew && activeTabId
+        ? launchAim({
+            selected: selectedPath,
+            pinned: aimPins[activeTabId] ?? null,
+            projects: scopedProjects,
+            loading: projectsLoading,
+            defaultCwd
+          })
+        : null,
+    [activeIsNew, activeTabId, selectedPath, aimPins, scopedProjects, projectsLoading, defaultCwd]
+  )
+  const launchPath = aim?.path ?? null
+  useEffect(() => {
+    const pin = aim?.pin
+    if (!pin || !activeTabId || aimPins[activeTabId] === pin) return
+    setAimPins((cur) => {
+      // Pins of tabs that are gone are dropped on the way.
+      const next: Record<string, string> = {}
+      for (const t of tabsRef.current) if (t.kind === 'new' && cur[t.id]) next[t.id] = cur[t.id]
+      next[activeTabId] = pin
+      return next
+    })
+  }, [aim, activeTabId, aimPins])
 
   const launchTarget = useMemo((): LaunchTarget | null => {
     if (!launchPath) return null
@@ -3040,6 +3073,7 @@ export function App(): React.JSX.Element {
     if (!welcomeRef.current) return
     welcomeRef.current = null
     setWelcome(null)
+    setLauncherArmedAt(pressClock())
     // Written on dismissal rather than on mount: a splash recorded as seen
     // before it finished would, if the app went away mid-animation, be a
     // screen nobody watched that can never be shown again. `store.ts` writes a
@@ -3277,6 +3311,9 @@ export function App(): React.JSX.Element {
           void openFolder()
           return
         case 'scratch':
+          // Scratch starts `claude` at once, so it needs what Start needs; the
+          // switcher shows the row disabled, and this is the backstop.
+          if (cli && !cli.ok) return
           void startScratch(launchNow.choice)
           return
         case 'host': {
@@ -3292,7 +3329,7 @@ export function App(): React.JSX.Element {
         }
       }
     },
-    [selectProject, openFolder, startScratch, startHostSession, activeNewTabId, launchNow]
+    [selectProject, openFolder, startScratch, startHostSession, activeNewTabId, launchNow, cli]
   )
 
   /**
@@ -3960,11 +3997,13 @@ export function App(): React.JSX.Element {
           platform={platform}
           onDone={(chosen, install) => {
             setAgentPickerOpen(false)
+            setLauncherArmedAt(pressClock())
             void patchSettings({ agents: { ...settings.agents, chosen } })
             installAgents(install)
           }}
           onClose={() => {
             setAgentPickerOpen(false)
+            setLauncherArmedAt(pressClock())
             /*
              * Closing a first-run picker without choosing records the agents
              * that are installed, which is what the launcher was showing anyway.

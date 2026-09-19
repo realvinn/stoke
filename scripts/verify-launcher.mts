@@ -27,8 +27,14 @@ import {
   disambiguate,
   flatChoices,
   folderChoices,
+  NO_BURST,
+  PRESS_ARM_MS,
+  launchAim,
   launcherKey,
+  newestConversation,
+  nextBurst,
   pickerSections,
+  pressAllowed,
   rankProjects,
   selectAllInstalled,
   sessionTitle,
@@ -313,6 +319,115 @@ check('an untitled session says so', sessionTitle({ title: null, firstPrompt: nu
 
 /* ------------------------------------------------------------------ keys */
 
+console.log('\nContinue names only a conversation with something in it')
+check('the newest non-empty one', newestConversation(list)?.id, list.find((x) => x.messageCount > 0)?.id)
+check(
+  'a folder of empty sessions offers no Continue (it resumed a hidden "Untitled session")',
+  newestConversation([
+    { id: 'e1', title: null, firstPrompt: null, messageCount: 0 },
+    { id: 'e2', title: null, firstPrompt: null, messageCount: 0 }
+  ]),
+  null
+)
+
+console.log('\nthe status bar names the mode the session is in (review of QA L11)')
+check('no flag, nothing reported: the settings default', sessionMode({ reported: null, launched: 'default', claudeDefault: 'auto' }), 'auto')
+check(
+  'no flag, and the transcript reported default (Shift+Tab to Ask): Ask, not the settings default',
+  sessionMode({ reported: 'default', launched: 'default', claudeDefault: 'auto' }),
+  'default'
+)
+check('a reported plan wins over the settings default', sessionMode({ reported: 'plan', launched: 'default', claudeDefault: 'auto' }), 'plan')
+check('a flag with nothing reported is the flag', sessionMode({ reported: null, launched: 'plan', claudeDefault: 'auto' }), 'plan')
+check('no flag and no file sets one: the CLI default, Ask', sessionMode({ reported: null, launched: 'default', claudeDefault: null }), 'default')
+check(
+  "no flag while the folder's settings have not answered: nothing, not the last folder's",
+  sessionMode({ reported: null, launched: 'default', claudeDefault: undefined }),
+  null
+)
+check(
+  'bypass from settings is bypass (the danger tone reads this)',
+  sessionMode({ reported: null, launched: 'default', claudeDefault: 'bypassPermissions' }),
+  'bypassPermissions'
+)
+
+console.log('\na New tab keeps the folder it showed (review of QA L5/L6)')
+const pa = { path: '/p/a', name: 'proj-a', label: null, exists: true, pinned: false, sessionCount: 1, lastModified: 200 }
+const pb = { path: '/p/b', name: 'proj-b', label: null, exists: true, pinned: false, sessionCount: 1, lastModified: 100 }
+const aim0 = launchAim({ selected: null, pinned: null, projects: [pa, pb], loading: false, defaultCwd: '/home' })
+check('unselected, it aims at the most recent project and pins it', aim0, { path: '/p/a', pin: '/p/a' })
+const pbTouched = { ...pb, lastModified: 300 }
+check(
+  "another project's transcript moving does not re-aim it (measured: proj-a became proj-b under a focused Start)",
+  launchAim({ selected: null, pinned: aim0.pin, projects: [pa, pbTouched], loading: false, defaultCwd: '/home' }).path,
+  '/p/a'
+)
+check(
+  'an explicit pick still moves it',
+  launchAim({ selected: '/p/b', pinned: '/p/a', projects: [pa, pbTouched], loading: false, defaultCwd: '/home' }).path,
+  '/p/b'
+)
+check(
+  'a pinned default folder stays pinned when a first project appears',
+  launchAim({ selected: null, pinned: '/home', projects: [pa], loading: false, defaultCwd: '/home' }).path,
+  '/home'
+)
+check(
+  'a pin whose project left the list (hidden, another profile) resolves afresh',
+  launchAim({ selected: null, pinned: '/p/a', projects: [pbTouched], loading: false, defaultCwd: '/home' }),
+  { path: '/p/b', pin: '/p/b' }
+)
+check(
+  'nothing while the list loads with no pin',
+  launchAim({ selected: null, pinned: null, projects: [], loading: true, defaultCwd: '/home' }),
+  { path: null, pin: null }
+)
+
+console.log('\nactivation-key bursts (review of QA L1)')
+/*
+ * The QA's run, replayed: a fresh (non-repeat) Enter every 40ms from boot. The
+ * splash went at 781ms; the agent picker opened (armed) inside the next 460ms,
+ * and one of these Enters answered it. Then the launcher armed as the picker
+ * closed, and the next Enter started claude in a real project.
+ */
+function replay(presses: { at: number; repeat?: boolean }[], armedAt: number): number[] {
+  let b = NO_BURST
+  const passed: number[] = []
+  for (const p of presses) {
+    b = nextBurst(b, p.at, p.repeat ?? false)
+    if (p.at >= armedAt && pressAllowed(b, armedAt)) passed.push(p.at)
+  }
+  return passed
+}
+const every40 = Array.from({ length: 100 }, (_, i) => ({ at: 40 * i }))
+check('an Enter every 40ms from boot never answers a picker that opened at 1000ms', replay(every40, 1000), [])
+check('…nor the launcher armed when that picker closed', replay(every40, 1244), [])
+check(
+  'stop for a moment, press once: that press counts',
+  replay([...every40, { at: 4500 }], 1000),
+  [4500]
+)
+check(
+  'a single press well after it opened counts (the ordinary case)',
+  replay([{ at: 100 }, { at: 2000 }], 1000),
+  [2000]
+)
+check(
+  'a burst begun before anyone could have seen it does not, however long it runs',
+  replay(Array.from({ length: 30 }, (_, i) => ({ at: 1050 + 100 * i })), 1000),
+  []
+)
+check(
+  `a burst begun ${PRESS_ARM_MS}ms or more after it opened is a deliberate press`,
+  replay([{ at: 1000 + PRESS_ARM_MS }, { at: 1000 + PRESS_ARM_MS + 150 }], 1000),
+  [1000 + PRESS_ARM_MS, 1000 + PRESS_ARM_MS + 150]
+)
+check(
+  "a held key's repeats continue its burst even after a long initial delay",
+  replay([{ at: 900 }, { at: 1600, repeat: true }, { at: 1650, repeat: true }], 1000),
+  []
+)
+
 console.log('\nthe keyboard model')
 const k = (key: string, mods: Partial<LauncherKeyEvent> = {}): LauncherKeyEvent => ({
   key,
@@ -324,11 +439,17 @@ const k = (key: string, mods: Partial<LauncherKeyEvent> = {}): LauncherKeyEvent 
   ...mods
 })
 const out = { inField: false }
-const inField = { inField: true }
+const inField = { inField: true, hasQuery: true }
+const emptyField = { inField: true, hasQuery: false }
 check('plain Enter is left to the focused button', launcherKey(k('Enter'), out), null)
 check('a HELD Enter is swallowed, so its repeats cannot start a session (QA L1)', launcherKey(k('Enter', { repeat: true }), out), { type: 'swallow' })
 check('…in the filter too', launcherKey(k('Enter', { repeat: true }), inField), { type: 'swallow' })
 check('Enter in the filter resumes the top match', launcherKey(k('Enter'), inField), { type: 'resume', index: 0 })
+check(
+  'Enter in the EMPTY filter resumes nothing (it resumed the newest conversation)',
+  launcherKey(k('Enter'), emptyField),
+  null
+)
 check('Cmd+Enter continues', launcherKey(k('Enter', { metaKey: true }), out), { type: 'continue' })
 check('Ctrl+Enter continues', launcherKey(k('Enter', { ctrlKey: true }), out), { type: 'continue' })
 check('Alt+Enter opens the agent menu', launcherKey(k('Enter', { altKey: true }), out), { type: 'agents' })

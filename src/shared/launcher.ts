@@ -220,6 +220,17 @@ export function sessionView<T extends SessionLike>(
   return { shown: [...shown], more: matched.length - shown.length, empty, matched: matched.length }
 }
 
+/**
+ * The conversation Continue resumes: the newest one with a message in it, or
+ * none. It fell back to the newest session of all, so a folder holding only
+ * 0-message sessions offered Continue on an "Untitled session" the list itself
+ * hides (`sessionView` drops empties), and pressing it resumed a conversation
+ * with nothing to continue.
+ */
+export function newestConversation<T extends SessionLike>(sessions: readonly T[]): T | null {
+  return sessions.find((s) => s.messageCount > 0) ?? null
+}
+
 /** How a conversation row names itself. */
 export function sessionTitle(s: { title: string | null; firstPrompt: string | null }): string {
   return s.title ?? s.firstPrompt ?? 'Untitled session'
@@ -257,7 +268,7 @@ export interface LauncherKeyEvent {
  *   /               Open the folder switcher
  *   Cmd/Ctrl+O      Open a folder (the system dialog)
  *   1–9             Resume the Nth listed conversation
- *   Enter (filter)  Resume the top match
+ *   Enter (filter)  Resume the top match, once something is typed
  *   ↓ / ↑           Move between Start and the conversation list
  *   a printable key Type into the conversation filter
  *   Esc             Clear the filter
@@ -268,15 +279,22 @@ export interface LauncherKeyEvent {
  * repeats of a key held to get past the welcome splash must not press the Start
  * button that gets focus when the splash closes (QA L1).
  */
-export function launcherKey(e: LauncherKeyEvent, ctx: { inField: boolean }): LauncherKeyAction | null {
+export function launcherKey(
+  e: LauncherKeyEvent,
+  ctx: { inField: boolean; hasQuery?: boolean }
+): LauncherKeyAction | null {
   const mod = e.metaKey || e.ctrlKey
   if (e.key === 'Enter') {
     if (e.repeat) return { type: 'swallow' }
     if (mod && !e.altKey) return { type: 'continue' }
     if (e.altKey && !mod) return { type: 'agents' }
-    // Typed a filter, pressed Enter: the top match is what was meant. The
-    // input has no Enter of its own, so without this it did nothing at all.
-    if (ctx.inField && !e.shiftKey) return { type: 'resume', index: 0 }
+    /*
+     * Typed a filter, pressed Enter: the top match is what was meant. Only with
+     * something typed — an Enter in the EMPTY filter resumed the newest
+     * conversation, which nobody chose (review of QA L12): the field can hold
+     * focus with nothing in it after Escape or a click.
+     */
+    if (ctx.inField && !e.shiftKey && ctx.hasQuery) return { type: 'resume', index: 0 }
     return null
   }
   if (e.key === 'Escape') return { type: 'escape' }
@@ -288,6 +306,86 @@ export function launcherKey(e: LauncherKeyEvent, ctx: { inField: boolean }): Lau
   if (/^[1-9]$/.test(e.key)) return { type: 'resume', index: Number(e.key) - 1 }
   if (e.key.length === 1 && e.key !== ' ') return { type: 'filter', char: e.key }
   return null
+}
+
+/* ------------------------------------------------------- the launch aim */
+
+/**
+ * Where a New tab's launcher is aimed, and what to pin so it stays there.
+ *
+ * An explicit pick (`selected`) always wins. With none, the tab is aimed at
+ * the profile's most recent existing project, else the default folder — and
+ * that fallback is PINNED to the tab the first time it resolves. It used to be
+ * recomputed from `rankProjects()[0]` on every project refresh, which happens
+ * on window focus, a transcript appearing, a pty exiting and a new tab: the
+ * switcher read `proj-a` with Start focused, a transcript in `proj-b` moved,
+ * and 1.5s later the same Enter would have started in `proj-b` (review of QA
+ * L5/L6). Only an explicit pick moves a tab now.
+ *
+ * A pin is dropped only when its folder leaves the list it came from — hidden,
+ * or outside a newly chosen profile — since then there is nothing on screen to
+ * be aimed at; the fallback is then resolved and pinned afresh. Null while the
+ * list is still loading and nothing is selected or pinned.
+ */
+export function launchAim(input: {
+  selected: string | null
+  pinned: string | null
+  projects: readonly ProjectLike[]
+  loading: boolean
+  defaultCwd: string
+}): { path: string | null; pin: string | null } {
+  if (input.selected) return { path: input.selected, pin: null }
+  const pinned = input.pinned
+  if (pinned && (input.projects.some((p) => p.path === pinned) || pinned === input.defaultCwd)) {
+    return { path: pinned, pin: pinned }
+  }
+  if (input.loading) return { path: null, pin: null }
+  const path = rankProjects(input.projects.filter((p) => p.exists))[0]?.path ?? (input.defaultCwd || null)
+  return { path, pin: path }
+}
+
+/* ------------------------------------------------- activation-key bursts */
+
+/**
+ * Enter and Space are "activation" keys: on a focused button they press it.
+ * Someone getting past the first-run splash presses them in a burst — the QA
+ * sent a fresh Enter every 40ms from boot — and every surface that appears
+ * mid-burst with a focused button is pressed by the rest of it: the agent
+ * picker lived under one sample interval, and the Enters after it started
+ * `claude` in the user's most recent real project (review of QA L1).
+ *
+ * So a surface that opens with a focused button ARMS at the moment it opens,
+ * and takes an activation key only when the burst that press belongs to began
+ * at least `PRESS_ARM_MS` after it armed: not the tail of a burst already going
+ * when it appeared, and not one begun before anyone could have seen it. A
+ * burst is presses less than `PRESS_QUIET_MS` apart; a held key's repeats
+ * always continue one. Stop, then press once, and the press counts.
+ */
+export const PRESS_QUIET_MS = 400
+export const PRESS_ARM_MS = 300
+
+export function isActivationKey(key: string): boolean {
+  return key === 'Enter' || key === ' '
+}
+
+export interface PressBurst {
+  /** When the latest activation key went down. */
+  lastAt: number
+  /** When the burst that press belongs to began. */
+  startedAt: number
+}
+
+export const NO_BURST: PressBurst = { lastAt: -Infinity, startedAt: -Infinity }
+
+/** Fold one activation keydown at `now` into the burst record. */
+export function nextBurst(prev: PressBurst, now: number, repeat: boolean): PressBurst {
+  const continues = repeat || now - prev.lastAt < PRESS_QUIET_MS
+  return { lastAt: now, startedAt: continues ? prev.startedAt : now }
+}
+
+/** Whether an activation key whose burst is `burst` (already folded with this press) may act on a surface armed at `armedAt`. */
+export function pressAllowed(burst: PressBurst, armedAt: number): boolean {
+  return burst.startedAt - armedAt >= PRESS_ARM_MS
 }
 
 /* ------------------------------------------------------ first-run picker */

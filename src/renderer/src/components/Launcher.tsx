@@ -13,7 +13,9 @@ import {
   type ResolvedLaunch
 } from '@shared/launch'
 import {
+  isActivationKey,
   launcherKey,
+  newestConversation,
   sessionTitle,
   sessionView,
   type FolderChoice,
@@ -23,6 +25,7 @@ import { ContextBar } from './ContextMeter'
 import { FolderSwitcher } from './FolderSwitcher'
 import { IconChevron } from './Icons'
 import { compactTokens, relativeTime } from '../lib/format'
+import { activationAllowed } from '../lib/pressBurst'
 import { EFFORT_LEVELS, PERMISSION_MODES, ULTRACODE_HINT } from '../lib/permissions'
 
 /** Where the next session runs. */
@@ -67,6 +70,12 @@ interface Props {
   onSetCliPath: () => void
   /** An overlay (splash, picker, palette, settings, dialog) is over the page. */
   overlayOpen: boolean
+  /**
+   * When the splash or the agent picker last went away (`pressClock()`), or
+   * null. Enter and Space press nothing here while they are the tail of a
+   * burst that was already going then (gotcha 88).
+   */
+  armedAt?: number | null
   otherClis: CodingCli[]
   onStartCli: (id: CodingCliId) => void
   onAddAgents?: () => void
@@ -139,15 +148,27 @@ export function Launcher(props: Props): React.JSX.Element {
     () => sessionView(sessions, { query, showEmpty, all: showAll, limit: ROWS }),
     [sessions, query, showEmpty, showAll]
   )
-  const newest = sessions.find((s) => s.messageCount > 0) ?? sessions[0] ?? null
+  const newest = newestConversation(sessions)
 
   const rows = (): HTMLElement[] =>
     Array.from(listRef.current?.querySelectorAll<HTMLElement>('.launcher-conv') ?? [])
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>): void => {
+    /*
+     * The Enters that got someone past the splash and the agent picker must not
+     * press Start as well (review of QA L1): measured, a burst of fresh Enters
+     * answered the picker and the next one started `claude` in the user's most
+     * recent real project. `activationAllowed` holds the burst; this card's
+     * handler runs before the focused button's own Enter/Space default.
+     */
+    if (props.armedAt != null && isActivationKey(e.key) && !activationAllowed(props.armedAt)) {
+      e.preventDefault()
+      e.stopPropagation()
+      return
+    }
     const el = e.target as HTMLElement
     const inField = el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT'
-    const action = launcherKey(e, { inField })
+    const action = launcherKey(e, { inField, hasQuery: query.trim() !== '' })
     if (!action) return
     switch (action.type) {
       case 'swallow':
