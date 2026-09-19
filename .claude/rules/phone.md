@@ -204,3 +204,10 @@ F2) once. A laptop browser (`native`, ≥1024px) never resizes the pty at all. M
 growing the composer to four lines and shrinking the viewport to 500px while focused sent nothing;
 one rotation sent exactly one resize. Do not reintroduce a resize on height — the keyboard IS a
 height change.
+
+> **Checked against the code on 2026-09-19** (second review of qa/phone). A view learned the pty's
+> size only from `attached`, so a laptop kept the old grid after the desktop or another phone
+> resized it. The server now sends `{type:'size', cols, rows, desktopCols, desktopRows}` once a
+> registry pass to each attached socket not yet told the current size (`pushSizes`); the client
+> re-runs `relayout('observe')`, which still never sends a resize on its own. Measured: an open
+> 1440 view went from 30 to 25 rows when a second socket fitted the pty to 90x25.
