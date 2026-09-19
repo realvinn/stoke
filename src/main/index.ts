@@ -1,4 +1,4 @@
-import { access, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { access, mkdir, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises'
 import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, net, protocol, shell, systemPreferences } from 'electron'
 import { pathToFileURL } from 'node:url'
 import { homedir } from 'node:os'
@@ -38,6 +38,7 @@ import {
   folderProblem,
   parseStokeArgs,
   requestFrom,
+  withFolder,
   type FolderProblem,
   type StokeCliRequest
 } from '../shared/stokeArgs.ts'
@@ -877,6 +878,41 @@ async function launchFolderProblem(path: string): Promise<FolderProblem | null> 
 }
 
 /**
+ * `path` through symlinks, or `path` unchanged when it cannot be resolved
+ * inside the same deadline `launchFolderProblem` gives the stat before this
+ * (gotcha 40) — a folder that just answered `stat` a moment ago failing THIS
+ * call is rare enough that falling back to the typed string, rather than
+ * failing the whole launch, is the right trade.
+ *
+ * This is the fix for gotcha 91: `stoke .` from `/tmp` (a symlink to
+ * `/private/tmp` on macOS) used to store the typed path while the `claude` it
+ * spawned recorded `process.cwd()`'s OS-resolved one (`pty.ts`'s `realCwd`),
+ * so the sidebar carried two rows for the same folder — one live, one not.
+ * Resolving here, before the folder is ever remembered or handed to the
+ * renderer, means every later consumer (the sidebar, the launcher, the pty
+ * itself) agrees on one path from the start.
+ */
+async function realpathFolder(path: string): Promise<string> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      realpath(path),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' })),
+          LAUNCH_FOLDER_DEADLINE_MS
+        )
+        timer.unref?.()
+      })
+    ])
+  } catch {
+    return path
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+/**
  * Put a folder `stoke` named into the sidebar, as Open a Folder does — but
  * only when it is not already there by hand, so a second `stoke .` writes
  * nothing. `manualProjectPatch` also un-hides it: naming a folder you once
@@ -908,7 +944,11 @@ function acceptLaunch(req: StokeCliRequest): void {
       if (folder) {
         const problem = await launchFolderProblem(folder)
         if (problem) checked = folderProblem(folder, problem)
-        else rememberLaunchFolder(folder)
+        else {
+          const real = await realpathFolder(folder)
+          checked = withFolder(req, real)
+          rememberLaunchFolder(real)
+        }
       }
       if (launchReady && win) send(CH.cliRequest, checked)
       else launchQueue.push(checked)
@@ -1832,7 +1872,11 @@ function registerIpc(): void {
       properties: ['openDirectory', 'createDirectory']
     })
     if (res.canceled || !res.filePaths[0]) return null
-    const dir = res.filePaths[0]
+    // Through symlinks, same as `projectsAdd` below (gotcha 91) — a scan
+    // root's children inherit whichever path the root itself was stored
+    // under, so a symlinked root would otherwise duplicate every project
+    // under it against Claude's own, already-resolved history entries.
+    const dir = await realpathFolder(res.filePaths[0])
     const s = getSettings()
     if (!s.projectRoots.includes(dir)) {
       setSettings({ projectRoots: [...s.projectRoots, dir] })
@@ -1852,8 +1896,17 @@ function registerIpc(): void {
       title: 'Open a project folder',
       properties: ['openDirectory', 'createDirectory']
     })
-    const dir = res.canceled ? null : (res.filePaths[0] ?? null)
-    if (!dir) return null
+    const picked = res.canceled ? null : (res.filePaths[0] ?? null)
+    if (!picked) return null
+    /*
+     * Through symlinks before it is ever stored (gotcha 91): the dialog can
+     * hand back a symlinked path (an iCloud-synced folder, a symlinked
+     * dev directory, `/tmp` on macOS), and Claude's own history for the same
+     * folder is keyed by `process.cwd()`'s OS-resolved one — without this,
+     * opening a folder by dialog and by `stoke`/a session both opening it
+     * created two sidebar rows for one place.
+     */
+    const dir = await realpathFolder(picked)
     const rules = pathRulesFor(process.platform)
     setSettings(manualProjectPatch(getSettings(), dir, rules))
     sendWatchStates()

@@ -167,3 +167,33 @@ scale box and typing shrank the whole UI to 0.8 on the first keypress.
 > by a second pass. The entry above is the original text; where the two disagree, the code
 > has moved on. Line numbers drift; search for the names.
 > - It still does, and it is still reachable. `clampUiScale('')` returns 0.8 today (src/shared/ui.ts:9-13, evaluated under node strip-types): the function was never changed. The fix is only a `trim() !== ''` guard in the Interface scale field's `onChange` (src/renderer/src/components/SettingsSheet.tsx:487). Its `onBlur` (:492) passes an emptied `scaleDraft` straight to `clampUiScale`, so clearing the box and tabbing away still sets `uiScale` to the 0.8 floor.
+
+## 91. A folder reached through a symlink stored one path while `claude` recorded another
+
+`stoke .`/`--open`/the Open-folder dialog used to remember whatever string the shim or the dialog
+handed back — `/tmp/foo` on macOS, where `/tmp` is a symlink to `/private/tmp`. The `claude` that
+Stoke then spawned in that cwd reports its OWN cwd through `getcwd(2)`, which the OS resolves
+through symlinks, so its transcript and `pty.ts`'s `realCwd` both say `/private/tmp/foo`. Two
+different strings for one folder means two different sidebar rows once `listProjects` merges
+opened folders with transcript-derived ones — one carrying the live session, one permanently
+empty — for every symlinked path anyone opens: `/tmp`, `/var`, an iCloud-synced folder, a
+symlinked dev directory.
+
+Fixed at every place a folder enters, not at the merge: `realpathFolder` (`index.ts`) resolves
+`acceptLaunch`'s folder and both `dialog.showOpenDialog` handlers (project roots and manual add)
+before the path is ever remembered, stored, or sent to the renderer — `withFolder` (`stokeArgs.ts`)
+rewrites the checked `StokeCliRequest` in place so the renderer sees the resolved path too. A
+project stored under the OLD, unresolved path before this shipped — or one written into
+`~/.claude.json` by hand — still needs to collapse onto the same row: `listProjects` (`projects.ts`)
+now resolves every scan-root and `projectMeta` key through `realpathOf`/`realpathMap` before using
+it as a dedupe key, merging two keys that resolve to the same folder with `addedManually` surviving
+if EITHER side set it (losing that would silently un-list a folder nobody removed).
+
+Both resolvers fall back to the typed path, under the same deadline `pathExists` uses (gotcha 40),
+when `realpath` cannot answer in time or the folder does not exist — a folder that is gone still
+needs a stable key, and a slow volume must not delay the whole launch or the whole project list.
+
+Proven without a live `claude`: `scripts/verify-folders.mts` adds a real symlink under a
+(`realpathSync`-resolved, since macOS's own `$TMPDIR` is itself symlinked) tmp dir, gives the two
+paths it resolves to different `projectMeta` fields, and asserts `listProjects` returns exactly one
+row, keyed by the real path, carrying both sides' fields.

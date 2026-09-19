@@ -1,7 +1,7 @@
-import { access, readdir, readFile, stat } from 'node:fs/promises'
+import { access, readdir, readFile, realpath, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
-import type { Project, SessionMeta, Settings } from '@shared/types'
+import type { Project, ProjectMeta, SessionMeta, Settings } from '@shared/types'
 import { normalizePath, pathRulesFor } from '../shared/paths.ts'
 import { applyProjectMeta } from './projectMeta.ts'
 import {
@@ -69,6 +69,46 @@ async function pathExists(path: string): Promise<boolean> {
 async function existsMap(paths: Iterable<string>): Promise<Map<string, boolean>> {
   const unique = [...new Set(paths)]
   const answers = await Promise.all(unique.map(pathExists))
+  return new Map(unique.map((p, i) => [p, answers[i]]))
+}
+
+/**
+ * A path's realpath, or the path unchanged when it cannot be resolved in
+ * time (same deadline `pathExists` uses, for the same reason: one asleep
+ * volume must not delay the whole list) or does not exist. A folder that is
+ * gone still needs SOME dedupe key, and falling back to the typed string is
+ * what lets a stale, deleted, manually-added entry keep showing as missing
+ * (gotcha 40's stance) rather than vanish or crash the whole merge.
+ *
+ * This is the other half of gotcha 91 (`src/main/index.ts`'s launch-time
+ * realpath is the first half): `stoke`/the Open dialog resolve a folder
+ * BEFORE it is ever stored, but a project added before that fix shipped, or
+ * one added straight into `~/.claude.json` by hand, still has the typed
+ * (symlinked) path sitting in `settings.projectMeta` or `projectRoots` — this
+ * is what collapses that onto the same entry Claude's own history already
+ * resolved through symlinks.
+ */
+async function realpathOf(path: string): Promise<string> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      realpath(path),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error('timed out')), EXISTS_DEADLINE_MS)
+        timer.unref?.()
+      })
+    ])
+  } catch {
+    return path
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+/** `realpathOf` for a whole set of paths at once, deduplicated, in parallel. */
+async function realpathMap(paths: Iterable<string>): Promise<Map<string, string>> {
+  const unique = [...new Set(paths)]
+  const answers = await Promise.all(unique.map(realpathOf))
   return new Map(unique.map((p, i) => [p, answers[i]]))
 }
 
@@ -289,10 +329,20 @@ export async function listProjects(settings: Settings): Promise<Project[]> {
       })
   )
 
-  // 3. Folders discovered under user-configured scan roots, even with no history.
+  const rules = pathRulesFor(process.platform)
+
+  /*
+   * 3. Folders discovered under user-configured scan roots, even with no
+   *    history. Resolved through symlinks first (gotcha 91): a root itself
+   *    can be a symlink (macOS's /tmp is the everyday case), and without this
+   *    every child folder under it merges as a path Claude's own,
+   *    already-resolved history entry for the same folder never matches.
+   */
+  const rootReal = await realpathMap(rootDirs)
   for (const path of rootDirs) {
-    const encoded = encodePath(normalize(path)).toLowerCase()
-    put(path, byDir.get(encoded) ?? null)
+    const real = rootReal.get(path) ?? path
+    const encoded = encodePath(normalize(real)).toLowerCase()
+    put(real, byDir.get(encoded) ?? null)
   }
 
   /*
@@ -300,7 +350,32 @@ export async function listProjects(settings: Settings): Promise<Project[]> {
    *    any folder. Appended BEFORE the hidden filter, so an added folder can
    *    still be hidden — the two settings mean different things and neither
    *    overrides the other.
+   *
+   * Every stored key is resolved through symlinks before it is used as a
+   * dedupe key or handed to `applyProjectMeta`, and not only for a folder
+   * added after this fix shipped: `stoke DIR`/the Open dialog now store the
+   * realpath (`src/main/index.ts`), but a project added before that, or one
+   * written into `~/.claude.json` by hand, still has the SYMLINKED path
+   * sitting in `projectMeta` — this is what collapses that stale entry onto
+   * the one Claude's own history already resolved, rather than leaving both
+   * rows in the sidebar forever. Two stored keys that resolve to the same
+   * folder merge into one record, the later one's fields winning except that
+   * `addedManually` survives if EITHER said so — losing that would silently
+   * un-list a folder nobody removed.
    */
+  const metaEntries = Object.entries(settings.projectMeta ?? {})
+  const metaReal = await realpathMap(metaEntries.map(([raw]) => normalizePath(raw, rules)))
+  const meta: Record<string, ProjectMeta> = {}
+  for (const [raw, value] of metaEntries) {
+    const key = metaReal.get(normalizePath(raw, rules)) ?? normalizePath(raw, rules)
+    const prior = meta[key]
+    meta[key] = {
+      ...prior,
+      ...value,
+      addedManually: prior?.addedManually === true || value?.addedManually === true || undefined
+    }
+  }
+
   /*
    * Every folder whose existence anyone is about to ask about, asked once, in
    * parallel, off the main thread.
@@ -308,18 +383,18 @@ export async function listProjects(settings: Settings): Promise<Project[]> {
    * `applyProjectMeta` is pure and takes a synchronous predicate — that is what
    * makes it testable without a filesystem, and `verify:folders` depends on it —
    * so the answers are gathered here and handed to it as a lookup rather than
-   * the contract being made async. The manually-added paths are normalised the
-   * same way `applyProjectMeta` normalises them before it asks, or the lookup
-   * would miss and every added folder would be reported as gone.
+   * the contract being made async. The manually-added paths are already
+   * resolved and normalised the same way `applyProjectMeta` normalises them
+   * before it asks, or the lookup would miss and every added folder would be
+   * reported as gone.
    */
-  const rules = pathRulesFor(process.platform)
-  const addedPaths = Object.entries(settings.projectMeta ?? {})
+  const addedPaths = Object.entries(meta)
     .filter(([, value]) => value?.addedManually === true)
-    .map(([raw]) => normalizePath(raw, rules))
+    .map(([path]) => path)
   const found = await existsMap([...[...merged.values()].map((p) => p.path), ...addedPaths])
   for (const project of merged.values()) project.exists = found.get(project.path) ?? false
 
-  const withMeta = applyProjectMeta([...merged.values()], settings.projectMeta ?? {}, {
+  const withMeta = applyProjectMeta([...merged.values()], meta, {
     rules,
     pinned: settings.pinnedProjects ?? [],
     exists: (path) => found.get(path) ?? false

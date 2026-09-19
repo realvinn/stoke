@@ -145,6 +145,10 @@ rule file named on the group line.
   per tick) and `flushSettings()` on quit and window `closed`; flush sheet drafts on unmount.
   `clampUiScale("")` returns the 0.8 floor (`Number("")` is 0) and the Interface-scale `onBlur`
   still passes it — open.
+- **91.** Realpath a folder (`realpathFolder`/`realpathOf`, under the 40 deadline) before it is ever
+  remembered — `acceptLaunch`, both Open-folder dialogs, and `listProjects`'s scan roots and
+  `projectMeta` keys — or a symlinked path (macOS's `/tmp`) and `claude`'s own resolved cwd become
+  two sidebar rows for one folder.
 
 **Terminal** — `.claude/rules/terminal.md`
 - **5.** Never read the terminal from the DOM: WebGL paints a canvas, so `.xterm-rows` is empty.

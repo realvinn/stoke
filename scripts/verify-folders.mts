@@ -15,7 +15,7 @@
  *
  *   node scripts/verify-folders.mts
  */
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Project, ProjectMeta, Settings } from '../src/shared/types.ts'
@@ -399,7 +399,15 @@ function listSettings(patch: Partial<Settings>): Settings {
   } as Settings
 }
 
-const tmp = mkdtempSync(join(tmpdir(), 'stoke-folders-'))
+/*
+ * Resolved through symlinks right away, deliberately — `tmpdir()` on macOS
+ * sits under `/var`, itself a symlink to `/private/var`, and `listProjects`
+ * now resolves every manually-added or scan-root path through `realpath`
+ * before it becomes a dedupe key (gotcha 91). Without this the fixture would
+ * silently exercise the OLD, unresolved behaviour on exactly the platform
+ * where the bug this suite is meant to catch is easiest to reproduce.
+ */
+const tmp = realpathSync(mkdtempSync(join(tmpdir(), 'stoke-folders-')))
 const added = join(tmp, 'added-by-hand')
 mkdirSync(added)
 try {
@@ -480,6 +488,33 @@ try {
     [plainHit?.emoji, plainHit?.label, plainHit?.addedManually],
     [null, null, false]
   )
+
+  /*
+   * gotcha 91: a folder reached through a symlink used to become a second,
+   * session-less project — one row for the typed path, one for Claude's own
+   * resolved cwd. Reproduced here without Claude at all: two `projectMeta`
+   * keys that resolve to the SAME real folder (one straight, one through a
+   * symlink) must collapse to one row, keeping whichever fields either side
+   * set.
+   */
+  const real = join(tmp, 'symlink-target')
+  mkdirSync(real)
+  const link = join(tmp, 'symlink-alias')
+  symlinkSync(real, link)
+  const deduped = await listProjects(
+    listSettings({
+      projectMeta: {
+        [real]: { addedManually: true, emoji: '🔗' },
+        [link]: { addedManually: true, label: 'Via the symlink' }
+      }
+    })
+  )
+  const dupeRows = deduped.filter((x) => x.path === real || x.path === link)
+  check('a folder reached two ways through a symlink is exactly one row', dupeRows.length, 1)
+  check('the surviving row is keyed by the resolved path', dupeRows[0]?.path, real)
+  check('it keeps the emoji either side set', dupeRows[0]?.emoji, '🔗')
+  check('and the label the symlinked entry set', dupeRows[0]?.label, 'Via the symlink')
+  check('and stays addedManually', dupeRows[0]?.addedManually, true)
 } finally {
   rmSync(tmp, { recursive: true, force: true })
 }
