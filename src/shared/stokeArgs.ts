@@ -343,6 +343,23 @@ export function folderOf(req: StokeCliRequest): string | null {
   return req.kind === 'session' || req.kind === 'open' ? req.cwd : null
 }
 
+/**
+ * `req` with its folder replaced, or `req` unchanged for a kind `folderOf`
+ * does not read.
+ *
+ * Main calls this once it has resolved the typed folder through symlinks
+ * (gotcha 91: `stoke .` from `/tmp`, a symlink to `/private/tmp` on macOS,
+ * used to store the typed path while the `claude` it spawned recorded the
+ * OS-resolved one, so the sidebar showed two rows for one folder). Kept here
+ * rather than inlined at the call site so the request's shape stays known in
+ * one place.
+ */
+export function withFolder(req: StokeCliRequest, path: string): StokeCliRequest {
+  if (req.kind === 'session') return { ...req, cwd: path }
+  if (req.kind === 'open') return { ...req, cwd: path }
+  return req
+}
+
 /** Why a folder a request named cannot be used, as the sentence the banner shows. */
 export type FolderProblem = 'missing' | 'not-a-folder' | 'unreachable' | 'denied'
 

@@ -129,9 +129,13 @@ type RelaunchOffer = Extract<RelaunchPlan, { kind: 'offer' }>
 
 /**
  * The "a prompt is running" question, and what it is about: one tab's relaunch
- * onto a newer CLI, or Stoke restarting to install its own update.
+ * onto a newer CLI, Stoke restarting to install its own update, or closing a
+ * tab whose session is mid-turn (gotcha 90).
  */
-type BusyPrompt = { kind: 'relaunch'; tabId: string } | { kind: 'restart'; tabIds: string[] }
+type BusyPrompt =
+  | { kind: 'relaunch'; tabId: string }
+  | { kind: 'restart'; tabIds: string[] }
+  | { kind: 'close'; tabId: string }
 
 /**
  * How long a relaunch waits for the old `claude` to exit before starting the
@@ -2033,6 +2037,41 @@ export function App(): React.JSX.Element {
   )
 
   /**
+   * The one guarded door to `closeTab` — Cmd+W, every tab's × button, and the
+   * paused/exited-tab "Close tab" buttons all call this, never `closeTab`
+   * directly, so none of them can bypass the check (gotcha 90).
+   *
+   * `closeTab` sends `pty.kill`, which is the same SIGHUP a relaunch sends
+   * (gotcha 82), and mid-turn that loses the turn exactly the same way: no
+   * `Stop` hook fires, the reply being streamed is never persisted, and a
+   * later Resume opens on "Interrupted". Only a STATED busy/shell/waiting
+   * (`live[...].busy === true`, the same threshold `relaunchPlan` reads) asks
+   * first — an idle or exited tab, a paused one (no process to kill), and a
+   * tab with no registry reading at all close at once, as they always did.
+   * "No reading" covers a non-Claude CLI (the registry is Claude Code's own
+   * file, gotcha 80; `registryTargets` never lists another CLI's pty) and the
+   * half-second before Claude's first write — asking about every non-Claude
+   * tab forever would be a worse cost than the rare miss, and matches what
+   * the relaunch pill already does with an unknown reading.
+   */
+  const requestCloseTab = useCallback(
+    (id: string): void => {
+      const tab = tabsRef.current.find((t) => t.id === id)
+      if (!tab) return
+      if (
+        tab.kind === 'session' &&
+        tab.status === 'running' &&
+        liveRef.current[tab.ptyId]?.busy === true
+      ) {
+        setBusyPrompt({ kind: 'close', tabId: id })
+        return
+      }
+      closeTab(id)
+    },
+    [closeTab]
+  )
+
+  /**
    * "Start again", on the bar a session leaves behind when it exits.
    *
    * Three things were wrong with this, and the first one made the button
@@ -2406,6 +2445,13 @@ export function App(): React.JSX.Element {
         }
         return
       }
+      if (prompt.kind === 'close') {
+        // No Wait here (only 'force' or the 'cancel' handled above): closing
+        // has nowhere to come back to the way a relaunch or a restart does,
+        // and the session stays on the sidebar to resume later regardless.
+        if (answer === 'force') closeTab(prompt.tabId)
+        return
+      }
       const tab = tabsRef.current.find((t) => t.id === prompt.tabId)
       if (!tab) return
       if (answer === 'force') {
@@ -2417,7 +2463,7 @@ export function App(): React.JSX.Element {
       pendingRef.current.set(tab.id, 'user')
       syncPending()
     },
-    [installSelfUpdateNow, relaunchTab, syncPending]
+    [installSelfUpdateNow, relaunchTab, syncPending, closeTab]
   )
 
   /* --------------------------------------------------------------- browser */
@@ -2672,7 +2718,7 @@ export function App(): React.JSX.Element {
           openNewTab()
           break
         case 'closeTab':
-          if (activeTabId) closeTab(activeTabId)
+          if (activeTabId) requestCloseTab(activeTabId)
           break
         case 'toggleBrowser':
           setBrowserOpen((v) => !v)
@@ -2723,7 +2769,7 @@ export function App(): React.JSX.Element {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [isMac, tabs, activeTabId, closeTab, openNewTab])
+  }, [isMac, tabs, activeTabId, requestCloseTab, openNewTab])
 
   /* ------------------------------------------------- first-run campfire */
 
@@ -2958,6 +3004,31 @@ export function App(): React.JSX.Element {
         </BusyDialog>
       )
     }
+    if (busyPrompt.kind === 'close') {
+      const tab = tabs.find((t) => t.id === busyPrompt.tabId)
+      const st = tab ? live[tab.ptyId] : undefined
+      const doing =
+        st?.status === 'waiting'
+          ? `Claude is waiting for your answer${st.waitingFor ? ` (${st.waitingFor})` : ''}, in the middle of a turn.`
+          : st?.status === 'shell'
+            ? 'A shell command Claude started is still running.'
+            : 'Claude is working on a reply.'
+      return (
+        <BusyDialog
+          title={`A prompt is running in ${quote(tab)}`}
+          forceLabel="Close anyway"
+          onForce={() => answerBusy('force')}
+          onCancel={() => answerBusy('cancel')}
+        >
+          <p>{doing}</p>
+          <p>
+            Closing this tab now stops it, and <strong>the turn in flight is lost</strong>: the reply
+            so far is not saved. The session itself is not deleted — it stays on the sidebar to
+            resume later.
+          </p>
+        </BusyDialog>
+      )
+    }
     const busyTabs = busyPrompt.tabIds
       .map((id) => tabs.find((t) => t.id === id))
       .filter((t): t is Tab => !!t)
@@ -3011,7 +3082,7 @@ export function App(): React.JSX.Element {
         sidebarOpen={sidebarOpen}
         browserOpen={browserOpen}
         onSelectTab={setActiveTabId}
-        onCloseTab={closeTab}
+        onCloseTab={requestCloseTab}
         onNewTab={openNewTab}
         onReorderTab={reorderTab}
         onToggleSidebar={() => setSidebarOpen((v) => !v)}
@@ -3287,7 +3358,7 @@ export function App(): React.JSX.Element {
                   screen={restoredScreens[tab.id] ?? ''}
                   onResume={resumeTabFor(tab)}
                   resuming={starting.includes(tab.id)}
-                  onClose={closeTab}
+                  onClose={requestCloseTab}
                 />
               ) : (
                 <TerminalView
@@ -3302,7 +3373,7 @@ export function App(): React.JSX.Element {
                   alpha={termAlpha}
                   onOpenUrl={openUrl}
                   onRestart={restartTab}
-                  onClose={closeTab}
+                  onClose={requestCloseTab}
                 />
               )
             )}

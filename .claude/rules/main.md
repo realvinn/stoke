@@ -171,3 +171,49 @@ scale box and typing shrank the whole UI to 0.8 on the first keypress.
 > **Checked against the code on 2026-09-19** — fixed. The `onBlur` handler now reverts empty or
 > non-numeric drafts to the current `settings.uiScale` instead of passing them to `clampUiScale`.
 > An empty field followed by blur leaves the scale unchanged (src/renderer/src/components/SettingsSheet.tsx:547-557).
+
+## 91. A folder reached through a symlink stored one path while `claude` recorded another
+
+`stoke .`/`--open`/the Open-folder dialog used to remember whatever string the shim or the dialog
+handed back — `/tmp/foo` on macOS, where `/tmp` is a symlink to `/private/tmp`. The `claude` that
+Stoke then spawned in that cwd reports its OWN cwd through `getcwd(2)`, which the OS resolves
+through symlinks, so its transcript and `pty.ts`'s `realCwd` both say `/private/tmp/foo`. Two
+different strings for one folder means two different sidebar rows once `listProjects` merges
+opened folders with transcript-derived ones — one carrying the live session, one permanently
+empty — for every symlinked path anyone opens: `/tmp`, `/var`, an iCloud-synced folder, a
+symlinked dev directory.
+
+Fixed at every place a folder enters, not at the merge: `realpathFolder` (`index.ts`) resolves
+`acceptLaunch`'s folder and both `dialog.showOpenDialog` handlers (project roots and manual add)
+before the path is ever remembered, stored, or sent to the renderer — `withFolder` (`stokeArgs.ts`)
+rewrites the checked `StokeCliRequest` in place so the renderer sees the resolved path too. A
+project stored under the OLD, unresolved path before this shipped — or one written into
+`~/.claude.json` by hand — still needs to collapse onto the same row: `listProjects` (`projects.ts`)
+now resolves every scan-root and `projectMeta` key through `realpathOf`/`realpathMap` before using
+it as a dedupe key, merging two keys that resolve to the same folder with `addedManually` surviving
+if EITHER side set it (losing that would silently un-list a folder nobody removed).
+
+Both resolvers fall back to the typed path, under the same deadline `pathExists` uses (gotcha 40),
+when `realpath` cannot answer in time or the folder does not exist — a folder that is gone still
+needs a stable key, and a slow volume must not delay the whole launch or the whole project list.
+
+Proven without a live `claude`: `scripts/verify-folders.mts` adds a real symlink under a
+(`realpathSync`-resolved, since macOS's own `$TMPDIR` is itself symlinked) tmp dir, gives the two
+paths it resolves to different `projectMeta` fields, and asserts `listProjects` returns exactly one
+row, keyed by the real path, carrying both sides' fields.
+
+> **Checked against the code on 2026-09-19.** The merge above is a VIEW, and three things still
+> read or wrote the UNRESOLVED string underneath it, all confirmed live with a planted stale key:
+> `projectMetaPatch` (Remove, "No icon") only ever replaces the exact key matching the path the
+> renderer sent — the row's realpath — so the stale symlinked key it can never reach re-merged its
+> old fields back in on every list, making Remove and clearing the emoji no-ops and "No icon" write
+> a second key. `pinnedProjects`/`hiddenProjects` were compared against the unresolved string even
+> after this fix shipped, so a pin or hide saved under a symlinked path matched nothing — a pinned
+> folder lost its pin, a hidden one came back. And `CH.workspaceDefault` (the launcher's "Start
+> here" and the default New-tab folder) was never realpath'd, only `acceptLaunch`'s `req.cwd` was
+> — so a launcher tab and a `stoke DIR` in the same symlinked folder disagreed on `pathKey` and
+> `handleLaunch` started a second `claude` beside the first. Fixed by `migrateSymlinkedProjectKeys`
+> (`projects.ts`), a one-time boot-time rewrite of every stored `projectMeta`/`projectRoots`/
+> `pinnedProjects`/`hiddenProjects` key still under a symlinked path onto its real one, plus
+> realpathing `pinnedProjects`/`hiddenProjects` in `listProjects` for a project added mid-session,
+> plus realpathing `CH.workspaceDefault`'s result the same way `acceptLaunch` already did.

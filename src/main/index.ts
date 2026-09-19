@@ -1,4 +1,4 @@
-import { access, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { access, mkdir, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises'
 import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, net, protocol, shell, systemPreferences } from 'electron'
 import { pathToFileURL } from 'node:url'
 import { homedir } from 'node:os'
@@ -27,7 +27,13 @@ import { clearWallpaper, mimeFor, storeWallpaper, WALLPAPER_SCHEME, wallpaperFil
 import { detectCodingClis, forgetIdentities, forgetLoginPath, loginShellPathValue, probeClaude, resumeOrMint } from './cli.ts'
 import { scanSkills } from './skillsScan.ts'
 import { ContextWatcher } from './context.ts'
-import { findSessionFile, listProjects, listSessions, projectsRoot } from './projects.ts'
+import {
+  findSessionFile,
+  listProjects,
+  listSessions,
+  migrateSymlinkedProjectKeys,
+  projectsRoot
+} from './projects.ts'
 import { indexSessions } from './sessionIndex.ts'
 import { IDLE_GAP_MS, readActivity, type ActivitySessionInput } from './activity.ts'
 import { commitSubjects } from './activityGit.ts'
@@ -38,6 +44,7 @@ import {
   folderProblem,
   parseStokeArgs,
   requestFrom,
+  withFolder,
   type FolderProblem,
   type StokeCliRequest
 } from '../shared/stokeArgs.ts'
@@ -877,6 +884,41 @@ async function launchFolderProblem(path: string): Promise<FolderProblem | null> 
 }
 
 /**
+ * `path` through symlinks, or `path` unchanged when it cannot be resolved
+ * inside the same deadline `launchFolderProblem` gives the stat before this
+ * (gotcha 40) — a folder that just answered `stat` a moment ago failing THIS
+ * call is rare enough that falling back to the typed string, rather than
+ * failing the whole launch, is the right trade.
+ *
+ * This is the fix for gotcha 91: `stoke .` from `/tmp` (a symlink to
+ * `/private/tmp` on macOS) used to store the typed path while the `claude` it
+ * spawned recorded `process.cwd()`'s OS-resolved one (`pty.ts`'s `realCwd`),
+ * so the sidebar carried two rows for the same folder — one live, one not.
+ * Resolving here, before the folder is ever remembered or handed to the
+ * renderer, means every later consumer (the sidebar, the launcher, the pty
+ * itself) agrees on one path from the start.
+ */
+async function realpathFolder(path: string): Promise<string> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      realpath(path),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' })),
+          LAUNCH_FOLDER_DEADLINE_MS
+        )
+        timer.unref?.()
+      })
+    ])
+  } catch {
+    return path
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+/**
  * Put a folder `stoke` named into the sidebar, as Open a Folder does — but
  * only when it is not already there by hand, so a second `stoke .` writes
  * nothing. `manualProjectPatch` also un-hides it: naming a folder you once
@@ -908,7 +950,11 @@ function acceptLaunch(req: StokeCliRequest): void {
       if (folder) {
         const problem = await launchFolderProblem(folder)
         if (problem) checked = folderProblem(folder, problem)
-        else rememberLaunchFolder(folder)
+        else {
+          const real = await realpathFolder(folder)
+          checked = withFolder(req, real)
+          rememberLaunchFolder(real)
+        }
       }
       if (launchReady && win) send(CH.cliRequest, checked)
       else launchQueue.push(checked)
@@ -1832,7 +1878,11 @@ function registerIpc(): void {
       properties: ['openDirectory', 'createDirectory']
     })
     if (res.canceled || !res.filePaths[0]) return null
-    const dir = res.filePaths[0]
+    // Through symlinks, same as `projectsAdd` below (gotcha 91) — a scan
+    // root's children inherit whichever path the root itself was stored
+    // under, so a symlinked root would otherwise duplicate every project
+    // under it against Claude's own, already-resolved history entries.
+    const dir = await realpathFolder(res.filePaths[0])
     const s = getSettings()
     if (!s.projectRoots.includes(dir)) {
       setSettings({ projectRoots: [...s.projectRoots, dir] })
@@ -1852,8 +1902,17 @@ function registerIpc(): void {
       title: 'Open a project folder',
       properties: ['openDirectory', 'createDirectory']
     })
-    const dir = res.canceled ? null : (res.filePaths[0] ?? null)
-    if (!dir) return null
+    const picked = res.canceled ? null : (res.filePaths[0] ?? null)
+    if (!picked) return null
+    /*
+     * Through symlinks before it is ever stored (gotcha 91): the dialog can
+     * hand back a symlinked path (an iCloud-synced folder, a symlinked
+     * dev directory, `/tmp` on macOS), and Claude's own history for the same
+     * folder is keyed by `process.cwd()`'s OS-resolved one — without this,
+     * opening a folder by dialog and by `stoke`/a session both opening it
+     * created two sidebar rows for one place.
+     */
+    const dir = await realpathFolder(picked)
     const rules = pathRulesFor(process.platform)
     setSettings(manualProjectPatch(getSettings(), dir, rules))
     sendWatchStates()
@@ -1870,7 +1929,19 @@ function registerIpc(): void {
   })
 
   /* ------------------------------------------------------------- workspaces */
-  ipcMain.handle(CH.workspaceDefault, () => resolveDefaultCwd(getSettings().defaultCwd))
+  /*
+   * Through symlinks, same as every other folder gotcha 91 resolves before it
+   * is stored or handed to the renderer — this one was missed. `stoke DIR`'s
+   * `req.cwd` is realpath'd in `acceptLaunch`, but a launcher "Start here" or
+   * the default New-tab folder used the typed candidate straight from
+   * `resolveDefaultCwd` (`~/Developer` etc., or a symlinked explicit setting).
+   * Confirmed live: a launcher tab opened on the typed spelling, then `stoke
+   * .` from the SAME, symlinked folder found no running-tab match in
+   * `App.tsx`'s `handleLaunch` (`pathKey(t.cwd) !== pathKey(req.cwd)`) and
+   * started a second `claude` beside it — the twin-claude failure
+   * `launchClaims` exists to prevent, just reached through the other door.
+   */
+  ipcMain.handle(CH.workspaceDefault, () => realpathFolder(resolveDefaultCwd(getSettings().defaultCwd)))
   ipcMain.handle(CH.workspaceScratch, () => createScratchDir())
 
   ipcMain.handle(CH.projectsHide, (_e, path: string, hidden: boolean) => {
@@ -2795,6 +2866,25 @@ protocol.registerSchemesAsPrivileged([
  */
 const launchRequest = parseStokeArgs(process.argv, { home: homedir(), platform: process.platform })
 
+/*
+ * A COLD double launch (no Stoke running yet, two `stoke` invocations racing
+ * within the same few milliseconds) can still leave two live primaries, or
+ * silently drop one launch's request — reproduced directly: two independent,
+ * fully-booted Electron mains, each with its own renderer/GPU children, both
+ * bound to the same userData dir, with `process_singleton_posix.cc` logging
+ * `Failed to create .../SingletonSocket: File exists` / `Failed to create
+ * symlinks` on the loser. That is Chromium's `ProcessSingleton::Create()`
+ * race on POSIX, not electron/electron#52020 (`additionalData` overflowing
+ * into a SIGKILL) — that issue is CLOSED as COMPLETED
+ * (2026-07-27, fixed by #52025), and its signature
+ * (`additional_data_size exceeds payload length`) never appeared in any
+ * reproduction here. WARM double launches (one Stoke already running) are
+ * reliable, because only a cold launch races to CREATE the lock file at all.
+ * No fix shipped: the only real mitigation is Stoke owning its own
+ * mkdir-based pre-lock and a launch-request relay ahead of this call, which is
+ * boot-lifecycle surgery on the scale of gotchas 35/73/74, not a
+ * `requestSingleInstanceLock` one-liner.
+ */
 if (!app.requestSingleInstanceLock(launchRequest ? { stokeCli: launchRequest } : undefined)) {
   app.quit()
 } else {
@@ -2842,6 +2932,25 @@ if (!app.requestSingleInstanceLock(launchRequest ? { stokeCli: launchRequest } :
      * preserved, because createWindow starts no session by itself.
      */
     sweepStaleSessionFiles()
+    /*
+     * One-time, off the main thread: rewrite any `projectMeta`/`projectRoots`/
+     * `pinnedProjects`/`hiddenProjects` entry still stored under a symlinked
+     * path from before gotcha 91's launch-time realpath shipped (or written
+     * into `~/.claude.json` by hand) onto its real path. `listProjects`
+     * already merges these live for display, but a merge is a VIEW — Remove
+     * and clearing an emoji patch the EXACT key the renderer sent, which is
+     * the realpath, and never touch the stale one sitting underneath, so
+     * neither ever took effect on a folder added before this shipped. Skips
+     * the write (and the `settingsChanged` broadcast) when nothing was stale.
+     */
+    migrateSymlinkedProjectKeys(getSettings())
+      .then((patch) => {
+        if (!patch) return
+        const next = setSettings(patch)
+        send(CH.settingsChanged, next)
+        sendWatchStates()
+      })
+      .catch((err) => console.error('[stoke] could not migrate symlinked project keys', err))
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()
     })

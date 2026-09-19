@@ -216,3 +216,43 @@ beside the ones it had just restored. Measured on the first drive: two restored 
 processes. The veto is `restoredSessions` now — whether the restore HAD any session tab — read from a
 ref set before `restoreSettled` flips. The general form: a guard on a count that another path is
 busy decrementing is a race with that path; guard on the event, not the residue.
+
+## 90. Closing a tab had none of the relaunch pill's busy check, and killed the same way
+
+`closeTab` calls `pty.kill`, the same SIGHUP gotcha 82 documents for the relaunch pill: mid-turn it
+fires no `Stop` hook, the reply being streamed is never persisted, and a later Resume opens on
+"Interrupted". Cmd+W, every tab's × button and TitleBar's own close button all called `closeTab`
+directly, so none of them had the check `requestRelaunch` already does — measured live, a prompt
+that was still visibly generating was gone from `ps` immediately after Cmd+W, with no dialog at
+all.
+
+`requestCloseTab` is now the one guarded door: it reads the same registry status (gotcha 80,
+`live[tab.ptyId].busy`) `relaunchPlan` reads, and only a STATED busy/shell/waiting asks first,
+reusing `BusyDialog` with a new `kind: 'close'` prompt — "Close anyway" or Cancel. Idle, exited,
+paused (no process to kill) and — deliberately — a tab with **no registry reading at all** close at
+once, unchanged: the registry is Claude Code's own file (gotcha 80), so a non-Claude CLI's pty is
+never listed in it, and asking about every non-Claude tab forever (or the half-second before
+Claude's first write) would be a worse cost than the rare miss, matching what the relaunch pill
+already accepts for an unknown reading.
+
+`BusyDialog` gained an optional `onWait`/`waitLabel`/`waitHint`: a close has nowhere to come back
+to the way a relaunch or a restart does, so there is nothing to wait FOR, and the dialog falls back
+to focusing Cancel instead of a Wait button that would not exist.
+
+**Not covered, on purpose:** closing the whole window (the titlebar's red/× button, Cmd+Q, the Dock
+menu) still kills every tab's session unconditionally, via `win.on('closed')` → `ptys.killAll()`.
+That handler fires only after the window is already destroyed — an Electron `'closed'` cannot be
+cancelled, so gating it would mean adding a NEW, cancelable `'close'` listener plus an async
+main→renderer→main round trip before the app is allowed to quit, on top of the flush ordering
+gotcha 35 already documents as fragile at exactly this moment. CLAUDE.md's own standing convention
+("Quit properly so before-quit runs `ptys.killAll()`") already treats quitting the whole app as a
+deliberate, coarser action than closing one tab. Left as a risk for whoever owns app-quit
+lifecycle, not silently — this note is that flag.
+
+> **Checked against the code on 2026-09-19.** Adding `onWait` introduced a focus regression:
+> the relaunch and restart callers both pass an inline `onWait={() => answerBusy('wait')}`, and
+> `BusyDialog`'s focus effect depended on `[onWait]`, so a fresh callback identity on every App
+> re-render re-ran it and pulled focus back to Wait even after the user had tabbed to Cancel —
+> measured live, focus Cancel, cause any unrelated re-render, and Enter fired Wait instead. The
+> close dialog was never affected (`onWait` is always undefined there). Fixed by depending on
+> `!!onWait` with an empty effect-deps array, so the effect can only ever run once, on mount.

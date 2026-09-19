@@ -145,6 +145,10 @@ rule file named on the group line.
   per tick) and `flushSettings()` on quit and window `closed`; flush sheet drafts on unmount.
   Never patch on empty Interface-scale blur: `clampUiScale('')` returns 0.8, not the current
   value, so skip the patch and just clear the draft to revert the display.
+- **91.** Realpath a folder (`realpathFolder`/`realpathOf`, under the 40 deadline) before it is ever
+  remembered — `acceptLaunch`, both Open-folder dialogs, and `listProjects`'s scan roots and
+  `projectMeta` keys — or a symlinked path (macOS's `/tmp`) and `claude`'s own resolved cwd become
+  two sidebar rows for one folder.
 
 **Terminal** — `.claude/rules/terminal.md`
 - **5.** Never read the terminal from the DOM: WebGL paints a canvas, so `.xterm-rows` is empty.
@@ -370,6 +374,9 @@ rule file named on the group line.
   are busy), and never auto-relaunch on `idle` alone: a draft leaves it idle (`typedSinceSubmit`).
 - **83.** Veto `startOnLaunch` on whether the restore HAD sessions (`restoredSessions`), not on how
   many are still paused — the update-restart resume empties that count before `cli` answers.
+- **90.** Route every tab-close path (Cmd+W, ×, TitleBar) through `requestCloseTab`, which asks via
+  `BusyDialog` on the same busy/shell/waiting reading (82) `closeTab` itself never checked; a
+  no-reading tab (a non-Claude CLI) still closes at once, and window-quit's own kill is unguarded.
 
 **Packaging and signing** — `.claude/rules/release.md`
 - **7.** Pick architectures with the `--x64`/`--arm64` CLI flags and never add an `arch:` list to
