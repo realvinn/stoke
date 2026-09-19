@@ -11,11 +11,13 @@ import type {
   CliUpdateState,
   ContextSnapshot,
   LaunchOptions,
+  LiveSessionState,
   Project,
   ProjectMeta,
   Rect,
   SessionEvent,
   SessionIndexEntry,
+  SessionRebind,
   SessionMeta,
   Settings,
   StatusLineSnapshot,
@@ -378,6 +380,11 @@ export interface StokeApi {
     write(ptyId: string, data: string): void
     resize(ptyId: string, cols: number, rows: number): void
     kill(ptyId: string): void
+    /**
+     * Kill, then resolve once the process has actually exited — or after
+     * `capMs` (at most 10s), whichever is first. True when it exited in time.
+     */
+    stop(ptyId: string, capMs?: number): Promise<boolean>
     onData(cb: (ptyId: string, data: string) => void): () => void
     onExit(cb: (ptyId: string, code: number, signal?: number) => void): () => void
   }
@@ -412,6 +419,17 @@ export interface StokeApi {
    */
   session: {
     onEvent(cb: (event: SessionEvent) => void): () => void
+    /**
+     * A live pty is on a different session id now. The tab has to follow it,
+     * or relaunch, Resume, tab restore and the sidebar's de-dupe all go on
+     * naming the conversation it left (a `/clear` leaves an id with no
+     * transcript, and `--resume` on it exits 1).
+     */
+    onRebind(cb: (rebind: SessionRebind) => void): () => void
+    /** One pty's reading from the CLI's own session registry changed. */
+    onState(cb: (state: LiveSessionState) => void): () => void
+    /** Every live reading now, for a renderer that has just (re)loaded. */
+    states(): Promise<LiveSessionState[]>
   }
 
   browser: {

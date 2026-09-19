@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { EffortLevel, PermissionMode, StoredTab, StoredTabs } from '../shared/types.ts'
 import { cliIdOf } from '../shared/codingClis.ts'
@@ -100,6 +100,9 @@ function tabOf(v: unknown): StoredTab | null {
     permissionMode: permissionModeOf(v.permissionMode),
     model: str(v.model),
     effort: effortOf(v.effort),
+    // Strictly true: a file written before this field existed, or edited by
+    // hand, restores without it rather than with a truthy leftover.
+    ultracode: v.ultracode === true,
     hostId: nullableStr(v.hostId),
     selectedPath: nullableStr(v.selectedPath),
     expandedPath: nullableStr(v.expandedPath),
@@ -176,4 +179,88 @@ export function writeTabState(file: string, state: StoredTabs): void {
   } catch (err) {
     console.error('[stoke] failed to persist the open tabs', err)
   }
+}
+
+/* ------------------------------------------------------ update restart */
+
+/**
+ * "The quit that is about to happen is Stoke installing its own update."
+ *
+ * A sibling file rather than a field in `tabs.json`, because `tabs.json` has
+ * one writer — the renderer's `tabs:save` push, rewritten on every change
+ * (gotcha 35) — and a flag main wrote into it would be erased by the next
+ * debounce. Written by main immediately before `quitAndInstall`, read and
+ * deleted by the next boot's `tabs:restore`: then, and only then, the restored
+ * tabs come back resumed rather than paused. An ordinary quit never writes it,
+ * so an ordinary launch is unchanged — including the silent install
+ * `autoInstallOnAppQuit` performs on a normal quit, which the user did not ask
+ * to have their sessions resumed for.
+ */
+export const UPDATE_RESTART_FILENAME = 'update-restart.json'
+
+/**
+ * How long the marker is honoured. An update restart relaunches within
+ * seconds; a marker older than this is a restart that did not happen (the
+ * installer failed to quit, say), and resuming every tab on some unrelated
+ * launch hours later is exactly the surprise the marker exists to avoid.
+ */
+export const UPDATE_RESTART_MAX_AGE_MS = 10 * 60 * 1000
+
+export interface UpdateRestartMarker {
+  at: number
+  from: string
+  to: string | null
+}
+
+export function updateRestartFile(userDataDir: string): string {
+  return join(userDataDir, UPDATE_RESTART_FILENAME)
+}
+
+/** Written synchronously: the very next call quits the process. Never throws. */
+export function writeUpdateRestart(file: string, marker: UpdateRestartMarker): void {
+  try {
+    mkdirSync(dirname(file), { recursive: true })
+    const tmp = `${file}.tmp`
+    writeFileSync(tmp, JSON.stringify(marker), 'utf8')
+    renameSync(tmp, file)
+  } catch (err) {
+    console.error('[stoke] failed to record the update restart', err)
+  }
+}
+
+/**
+ * Whether a marker's text says "resume the tabs", as of `now`. Pure, so the
+ * suite holds the rule: a number `at`, not in the future (a clock skew is not
+ * a licence), and no older than `UPDATE_RESTART_MAX_AGE_MS`.
+ */
+export function updateRestartHonoured(text: string, now: number): boolean {
+  let raw: unknown
+  try {
+    raw = JSON.parse(text)
+  } catch {
+    return false
+  }
+  if (!isRecord(raw) || typeof raw.at !== 'number' || !Number.isFinite(raw.at)) return false
+  const age = now - raw.at
+  return age >= 0 && age <= UPDATE_RESTART_MAX_AGE_MS
+}
+
+/**
+ * Read the marker and delete it, whatever it said: one marker, one boot. A
+ * marker that could not be deleted is not honoured either, or it would resume
+ * the tabs on every launch for the next ten minutes.
+ */
+export function consumeUpdateRestart(file: string, now = Date.now()): boolean {
+  let text: string
+  try {
+    text = readFileSync(file, 'utf8')
+  } catch {
+    return false
+  }
+  try {
+    rmSync(file, { force: true })
+  } catch {
+    return false
+  }
+  return updateRestartHonoured(text, now)
 }

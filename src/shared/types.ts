@@ -334,6 +334,41 @@ export interface SessionEvent {
 }
 
 /**
+ * What the CLI's own session registry says about one live local pty.
+ *
+ * Keyed by `ptyId`, not by session id, because the session id is the thing
+ * that moves: `/clear` and the in-TUI `/resume` put the same process on a
+ * different conversation. See `src/shared/claudeRegistry.ts` for what each
+ * field is and how it was measured.
+ */
+export interface LiveSessionState {
+  ptyId: string
+  /** The session the process is on now, or null if the file named none. */
+  sessionId: string | null
+  status: 'busy' | 'shell' | 'idle' | 'waiting' | null
+  /**
+   * `busy`, `shell` and `waiting` are busy; `idle` is not; a missing status is
+   * null, which every caller treats as "do not act on this".
+   */
+  busy: boolean | null
+  /** What a `waiting` session is waiting for, when the file says. */
+  waitingFor: string | null
+  /** The version of the binary this process is running. */
+  version: string | null
+}
+
+/**
+ * A live pty's `claude` is now on a different session than the one Stoke
+ * launched it with — a `/clear`, an in-TUI `/resume`, or the id a `--continue`
+ * was given after launch. `previous` is '' for that last case.
+ */
+export interface SessionRebind {
+  ptyId: string
+  sessionId: string
+  previous: string
+}
+
+/**
  * When a finished turn or a permission prompt raises an OS notification.
  *
  * `background` is the default and the useful one: a notification for the tab
@@ -341,6 +376,9 @@ export interface SessionEvent {
  * behind another app — is the whole point.
  */
 export type NotificationMode = 'off' | 'background' | 'always'
+
+/** See `Settings.cliRelaunch`. */
+export type CliRelaunchMode = 'ask' | 'auto'
 
 /* ------------------------------------------------------------------ themes */
 
@@ -968,6 +1006,30 @@ export interface Settings {
    * and nothing else.
    */
   cliAutoUpdate: boolean
+  /**
+   * What happens to open sessions once a newer `claude` is installed under them.
+   *
+   * `ask` (the default) only lights the relaunch pill. `auto` also relaunches
+   * every session that is idle and NOT the tab in front, and queues a busy one
+   * until it goes idle. The tab in front is never relaunched unasked — someone
+   * may be typing into it — and neither is one with keystrokes typed since its
+   * last submitted prompt, because `idle` does not prove the prompt box is
+   * empty.
+   *
+   * Default `ask`, because a relaunch ends the process: anything it was running
+   * outside the transcript (a background shell, an MCP server's state) goes
+   * with it, and that has to be asked for rather than arrive.
+   */
+  cliRelaunch: CliRelaunchMode
+  /**
+   * Download Stoke's own updates in the background as soon as one is found.
+   *
+   * Default on. It still installs only on a quit or a "Restart and install" —
+   * `autoInstallOnAppQuit` — so this changes when the bytes arrive, not when
+   * the app is replaced. With it off, 0.9.6 sat found-but-not-downloaded on a
+   * machine for six days.
+   */
+  selfUpdateAuto: boolean
   sidebarWidth: number
   /** Explicit path to the claude executable; null means auto-detect. */
   claudePath: string | null
@@ -1245,6 +1307,12 @@ export interface StoredTab {
   permissionMode: PermissionMode
   model: string
   effort: EffortLevel
+  /**
+   * Whether the session was launched with ultracode. Strictly `true` on read:
+   * a restore that inherited today's global instead would bring a session back
+   * at a different effort than the one it was running.
+   */
+  ultracode: boolean
   /** `SshHost.id` when the session ran on another machine. */
   hostId: string | null
   selectedPath: string | null
@@ -1261,6 +1329,12 @@ export interface StoredTabs {
   /** Index into `tabs` of the tab that was selected. Clamped on read. */
   activeIndex: number
   tabs: StoredTab[]
+  /**
+   * Set only on the way OUT of `tabs:restore`, never written by the renderer:
+   * the last quit was Stoke installing its own update, so the tabs come back
+   * resumed rather than paused. See `tabStore.ts`'s update-restart marker.
+   */
+  afterUpdate?: boolean
 }
 
 /**

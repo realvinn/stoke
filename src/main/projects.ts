@@ -397,8 +397,10 @@ export async function listSessions(projectPath: string): Promise<SessionMeta[]> 
  * across history directories is unambiguous — and it keeps the context meter
  * working even if the session was started in a directory we mis-encoded.
  */
-export async function findSessionFile(sessionId: string): Promise<string | null> {
-  const root = projectsRoot()
+export async function findSessionFile(
+  sessionId: string,
+  root: string = projectsRoot()
+): Promise<string | null> {
   let dirs: string[]
   try {
     dirs = (await readdir(root, { withFileTypes: true }))

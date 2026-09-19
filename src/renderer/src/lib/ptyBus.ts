@@ -11,6 +11,8 @@
  * makes the terminal component safe to unmount and rebuild at will.
  */
 
+import { looksTyped } from './tabs'
+
 type Sink = (data: string) => void
 
 /** Retained bytes per process. Roughly a few thousand lines of output. */
@@ -86,4 +88,34 @@ export function attachExit(
 /** Release a closed tab's retained output. */
 export function forgetPty(ptyId: string): void {
   entries.delete(ptyId)
+  typed.delete(ptyId)
+}
+
+/* ------------------------------------------------- typed since submitted */
+
+/**
+ * Ptys that have had text typed into them since their last submitted prompt.
+ *
+ * Exists because the CLI's own registry says `idle` while a draft sits unsent
+ * in the prompt box (measured: typing leaves the status untouched), so "idle"
+ * alone cannot license killing a session the user is not looking at — the
+ * automatic relaunch reads this before it acts. Set on any input that
+ * `looksTyped`; cleared when the registry reports the session busy (something
+ * was submitted — a prompt, or a slash command like `/clear`), and when the pty
+ * is forgotten. Module state rather than React state: nothing renders it, and a
+ * keystroke must not cost a render.
+ */
+const typed = new Set<string>()
+
+/** Record what was just written to a pty from the keyboard or a paste. */
+export function noteInput(ptyId: string, data: string): void {
+  if (ptyId && looksTyped(data)) typed.add(ptyId)
+}
+
+export function typedSinceSubmit(ptyId: string): boolean {
+  return typed.has(ptyId)
+}
+
+export function clearTyped(ptyId: string): void {
+  typed.delete(ptyId)
 }

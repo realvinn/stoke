@@ -35,6 +35,7 @@ export function toStored(
       permissionMode: t.permissionMode,
       model: t.model,
       effort: t.effort,
+      ultracode: t.ultracode,
       hostId: t.hostId,
       selectedPath: t.selectedPath,
       expandedPath: t.expandedPath,
@@ -70,6 +71,7 @@ export function fromStored(state: StoredTabs): { tabs: Tab[]; activeId: string |
     permissionMode: s.permissionMode,
     model: s.model,
     effort: s.effort,
+    ultracode: s.ultracode,
     /*
      * Only a session tab is paused. A New tab has no session to resume, so
      * marking it paused would put a Resume card over a launcher.

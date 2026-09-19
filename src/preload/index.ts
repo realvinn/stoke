@@ -73,6 +73,7 @@ const api: StokeApi = {
     resize: (ptyId: string, cols: number, rows: number) =>
       ipcRenderer.send(CH.ptyResize, ptyId, cols, rows),
     kill: (ptyId: string) => ipcRenderer.send(CH.ptyKill, ptyId),
+    stop: (ptyId: string, capMs?: number) => ipcRenderer.invoke(CH.ptyStop, ptyId, capMs),
     onData: (cb) => on<[string, string]>(CH.ptyData, cb),
     onExit: (cb) => on<[string, number, number | undefined]>(CH.ptyExit, cb)
   },
@@ -89,7 +90,10 @@ const api: StokeApi = {
   },
 
   session: {
-    onEvent: (cb) => on<[Parameters<typeof cb>[0]]>(CH.sessionEvent, cb)
+    onEvent: (cb) => on<[Parameters<typeof cb>[0]]>(CH.sessionEvent, cb),
+    onRebind: (cb) => on<[Parameters<typeof cb>[0]]>(CH.sessionRebind, cb),
+    onState: (cb) => on<[Parameters<typeof cb>[0]]>(CH.sessionState, cb),
+    states: () => ipcRenderer.invoke(CH.sessionState)
   },
 
   wallpaper: {

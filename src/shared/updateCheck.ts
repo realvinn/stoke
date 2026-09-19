@@ -177,3 +177,35 @@ export function cliUpToDate(
   const when = checkedLabel(info.checkedAt, now)
   return { badge: `Up to date`, checked: when.text, title: when.title }
 }
+
+/**
+ * Whether a check that just finished should go on to download.
+ *
+ * Refused for a build that cannot install what it fetches (`blocked` — an
+ * ad-hoc or foreign-signed macOS copy, gotcha 24): ~120MB spent to arrive at a
+ * refusal is the one outcome worse than not updating. Refused when the check
+ * itself failed, since `availableVersion` may then be left over from an
+ * earlier one. Here rather than in `selfUpdate.ts`, which imports electron, so
+ * `verify:updates` can hold it.
+ */
+export function shouldAutoDownload(
+  s: {
+    supported: boolean
+    availableVersion: string | null
+    downloaded: boolean
+    downloading: boolean
+    blocked: string | null
+    error: string | null
+  },
+  enabled: boolean
+): boolean {
+  return (
+    enabled &&
+    s.supported &&
+    !!s.availableVersion &&
+    !s.downloaded &&
+    !s.downloading &&
+    s.blocked === null &&
+    s.error === null
+  )
+}

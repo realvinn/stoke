@@ -31,6 +31,7 @@ export function newTab(
     permissionMode: 'default',
     model: '',
     effort: 'default',
+    ultracode: false,
     status: 'running',
     exitCode: null,
     hostId: null,

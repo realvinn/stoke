@@ -21,7 +21,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import type { UpdateInfo } from '../src/shared/api.ts'
-import { checkedLabel, cliUpToDate, selfUpToDate } from '../src/shared/updateCheck.ts'
+import { checkedLabel, cliUpToDate, selfUpToDate, shouldAutoDownload } from '../src/shared/updateCheck.ts'
 import { leafAuthority, signatureBlocker } from '../src/main/codesign.ts'
 import {
   AUTO_RETRY_MS,
@@ -929,6 +929,35 @@ console.log('\nthe quiet state: a badge and when it was last looked at')
     cliUpToDate(cli({ behindLatest: { channel: 'stable', latest: '2.1.251', behind: 22 } as never }), NOW),
     null
   )
+}
+
+/*
+ * Stoke's own update downloading in the background (`Settings.selfUpdateAuto`).
+ * 0.9.6 sat found-but-not-downloaded on a machine for six days because the
+ * download was manual-only. The refusals are the point: a build that cannot
+ * install what it fetches (gotcha 24) must never spend ~120 MB finding out.
+ */
+console.log('\nthe background download of Stoke itself')
+{
+  const found = {
+    supported: true,
+    availableVersion: '0.9.6',
+    downloaded: false,
+    downloading: false,
+    blocked: null as string | null,
+    error: null as string | null
+  }
+  check('an update that was found is downloaded', shouldAutoDownload(found, true), true)
+  check('not with the setting off', shouldAutoDownload(found, false), false)
+  check('not when nothing was found', shouldAutoDownload({ ...found, availableVersion: null }, true), false)
+  check('not twice', [shouldAutoDownload({ ...found, downloading: true }, true), shouldAutoDownload({ ...found, downloaded: true }, true)], [false, false])
+  check(
+    'not by a build that could never install it — the swap is refused only after the whole download',
+    shouldAutoDownload({ ...found, blocked: 'signed by a different identity' }, true),
+    false
+  )
+  check('not off a check that failed', shouldAutoDownload({ ...found, error: 'Could not reach GitHub.' }, true), false)
+  check('not from source, where there is nothing to replace', shouldAutoDownload({ ...found, supported: false }, true), false)
 }
 
 console.log(`\n${failures === 0 ? 'All checks passed.' : `${failures} check(s) FAILED.`}`)

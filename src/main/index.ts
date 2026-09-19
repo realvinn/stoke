@@ -1,4 +1,4 @@
-import { access, mkdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { access, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, net, protocol, shell, systemPreferences } from 'electron'
 import { pathToFileURL } from 'node:url'
 import { homedir } from 'node:os'
@@ -13,6 +13,8 @@ import type {
   Settings,
   SshHost,
   StatusLineSnapshot,
+  LiveSessionState,
+  SessionRebind,
   StoredTabs,
   Theme,
   UsageReadReason,
@@ -22,10 +24,10 @@ import type {
 } from '@shared/types'
 import { EmbeddedBrowser } from './browser.ts'
 import { clearWallpaper, mimeFor, storeWallpaper, WALLPAPER_SCHEME, wallpaperFileFor } from './wallpaper.ts'
-import { detectCodingClis, forgetIdentities, forgetLoginPath, loginShellPathValue, probeClaude } from './cli.ts'
+import { detectCodingClis, forgetIdentities, forgetLoginPath, loginShellPathValue, probeClaude, resumeOrMint } from './cli.ts'
 import { scanSkills } from './skillsScan.ts'
 import { ContextWatcher } from './context.ts'
-import { findSessionFile, listProjects, listSessions } from './projects.ts'
+import { findSessionFile, listProjects, listSessions, projectsRoot } from './projects.ts'
 import { indexSessions } from './sessionIndex.ts'
 import { IDLE_GAP_MS, readActivity, type ActivitySessionInput } from './activity.ts'
 import { commitSubjects } from './activityGit.ts'
@@ -51,7 +53,15 @@ import { claudeVoiceEnabled, isMicAccess, type MicAccess } from '../shared/voice
 import { transcribe } from './stt.ts'
 import { createProfile, planProfile } from './profiles.ts'
 import { readSshConfigHosts } from './ssh.ts'
-import { readTabState, tabStateFile, writeTabState } from './tabStore.ts'
+import {
+  consumeUpdateRestart,
+  readTabState,
+  tabStateFile,
+  updateRestartFile,
+  writeTabState,
+  writeUpdateRestart
+} from './tabStore.ts'
+import { RegistryPoller } from './sessionRegistry.ts'
 import { getWorklogQueue } from './worklog/queue.ts'
 import {
   applyProposal,
@@ -105,7 +115,7 @@ import {
   releaseHeldLocks,
   writeGlobalConfigKey
 } from './claudeGlobalConfig.ts'
-import { claudeGlobalConfigPath } from './claudePaths.ts'
+import { claudeConfigDir, claudeGlobalConfigPath } from './claudePaths.ts'
 import {
   CLAUDE_SETTINGS,
   WORKFLOW_SIZE_KEY,
@@ -129,6 +139,13 @@ let win: BrowserWindow | null = null
 let browser: EmbeddedBrowser | null = null
 let ptys: PtyManager | null = null
 let watcher: ContextWatcher | null = null
+let registry: RegistryPoller | null = null
+/**
+ * How often the registry is read. A second is the ceiling on how late a
+ * rebind or an idle can be noticed — well under the time it takes to reach
+ * for the relaunch pill after a `/clear`.
+ */
+const REGISTRY_POLL_MS = 1000
 let autoscan: AutoScanner | null = null
 let mcp: BrowserMcpServer | null = null
 /** Path of the generated --mcp-config file; null until the server is up. */
@@ -308,7 +325,9 @@ const statusLineSeen = new Map<string, number>()
  * same `receivedAt` sent twice.
  */
 function pushStatusLine(sessionId: string): void {
-  const snap = readStatusLine(sessionId)
+  // Through the launch key: a rebound session's files are named after the id
+  // it was LAUNCHED with, not the one it is on now. See `payloadKeyFor`.
+  const snap = readStatusLine(payloadKeyFor(sessionId))
   if (!snap) return
   if (statusLineSeen.get(sessionId) === snap.receivedAt) return
   statusLineSeen.set(sessionId, snap.receivedAt)
@@ -319,6 +338,20 @@ function pushStatusLine(sessionId: string): void {
   // first render after an API response. See `keepUsage`.
   lastStatusLine = keepUsage(lastStatusLine, snap)
   send(CH.statusLineUpdate, snap)
+}
+
+/**
+ * The name a session's statusLine files go by.
+ *
+ * The launch key, which is the session id for every session until it is
+ * rebound — `/clear`, an in-TUI `/resume`, or a `--continue`'s real id arriving
+ * (see sessionRegistry.ts). After that the id and the file name differ, and a
+ * reader keyed on the id alone would find nothing: no payload, so no version
+ * for the relaunch pill and no stated window for the meter. Falls back to the
+ * id itself for a session with no live pty.
+ */
+function payloadKeyFor(sessionId: string): string {
+  return ptys?.statusKeyFor(sessionId) ?? sessionId
 }
 
 /**
@@ -482,10 +515,37 @@ async function httpUrlMcpFile(): Promise<string | null> {
   }
 }
 
+/**
+ * Whether a transcript exists for this session id, on this machine.
+ *
+ * Both roots, because `projectsRoot()` is `~/.claude/projects` and a
+ * `CLAUDE_CONFIG_DIR` moves the CLI's own. Answering "no transcript" wrongly is
+ * the expensive direction — `resumeOrMint` would then pass `--session-id` for a
+ * conversation that exists and the CLI refuses it — so a hit in EITHER root
+ * counts.
+ */
+async function transcriptExists(sessionId: string): Promise<boolean> {
+  const roots = [...new Set([projectsRoot(), join(claudeConfigDir(process.env, homedir()), 'projects')])]
+  const found = await Promise.all(roots.map((r) => findSessionFile(sessionId, r)))
+  return found.some((f) => f !== null)
+}
+
 /** Starting a session, shared by the renderer's IPC and the remote server. */
-async function launchSession(opts: LaunchOptions): Promise<StartResult> {
+async function launchSession(requested: LaunchOptions): Promise<StartResult> {
   if (!ptys) throw new Error('Window is not ready')
   const settings = getSettings()
+  /*
+   * `--resume` or `--session-id`, decided here, against the disk, right before
+   * the spawn — not by the renderer, whose idea of "has a transcript" is a
+   * context reading that may not have ticked yet. A relaunch of a session
+   * nobody has typed into, a `/clear`ed id, and a restored tab whose
+   * conversation was never written all name an id with no transcript, and
+   * `--resume` on one exits 1. See `resumeOrMint`.
+   */
+  const opts =
+    !requested.host && isClaudeCode(cliIdOf(requested.cli)) && requested.sessionId && !requested.continueLast
+      ? resumeOrMint(requested, await transcriptExists(requested.sessionId))
+      : requested
   // `statusKey` is what the files are named after, not necessarily a session
   // id: a --continue session has no id until the CLI picks one. See pty.ts.
   /*
@@ -556,6 +616,12 @@ async function launchSession(opts: LaunchOptions): Promise<StartResult> {
    * disk is always a state some pass could actually have observed. One write
    * per session start is a handful a day; this is not a hot path.
    */
+  persistSessionState()
+  return result
+}
+
+/** Write the session address book the worklog reads. See `launchSession`. */
+function persistSessionState(): void {
   writeSessionState(
     sessionStateFile(app.getPath('userData')),
     [...sessionCwds.entries()].map(([sessionId, dir]) => ({
@@ -564,11 +630,42 @@ async function launchSession(opts: LaunchOptions): Promise<StartResult> {
       hostId: sessionHosts.get(sessionId)?.id ?? null,
       // Falls back to now only for a key that could not have reached
       // sessionCwds without also reaching sessionAts (both are set together,
-      // here and in the boot-restore loop) — defensive, not expected to fire.
+      // here, in `rebindSession` and in the boot-restore loop) — defensive,
+      // not expected to fire.
       at: sessionAts.get(sessionId) ?? Date.now()
     }))
   )
-  return result
+}
+
+/**
+ * A live pty's `claude` is on a different session now. Everything main keys by
+ * session id follows it, then the renderer is told.
+ *
+ * The context watcher moves to the new id — which is what finally gives a
+ * `--continue` tab a ring (gotcha 26): its id was '' and `watch('')` is a no-op,
+ * so until now nothing was ever polled for it. The address book gains the new
+ * id and KEEPS the old one: the conversation a `/clear` left is still a real
+ * transcript the worklog may want to place. The statusLine files do not move —
+ * they belong to the launch (gotcha 73) and `payloadKeyFor` finds them.
+ */
+function rebindSession(ptyId: string, sessionId: string, previous: string): void {
+  if (!ptys) return
+  const was = ptys.rebind(ptyId, sessionId)
+  if (was === null) return
+  if (previous) {
+    watcher?.unwatch(previous)
+    statusLineSeen.delete(previous)
+  }
+  watcher?.watch(sessionId)
+  const cwd = ptys.list().find((s) => s.ptyId === ptyId)?.cwd
+  if (cwd) {
+    sessionCwds.set(sessionId, cwd)
+    sessionAts.set(sessionId, Date.now())
+    persistSessionState()
+  }
+  const msg: SessionRebind = { ptyId, sessionId, previous }
+  send(CH.sessionRebind, msg)
+  sendWatchStates()
 }
 
 /**
@@ -1344,6 +1441,12 @@ function createWindow(): void {
    */
   initSelfUpdate((s) => send(CH.selfState, s))
   timers.push(setTimeout(() => void checkSelfUpdate(), 8000))
+  /*
+   * And again on the CLI's cadence. With the background download on, a check
+   * is what starts it — and a Stoke left open for a week used to check exactly
+   * once, eight seconds after it launched.
+   */
+  timers.push(setInterval(() => void checkSelfUpdate(), AUTO_CHECK_MS))
 
   // The CLI's own version, on the same "not during startup" principle. Offset
   // from the self-update check so the two are not spawning subprocesses and
@@ -1375,6 +1478,28 @@ function createWindow(): void {
       if (sessionId) statusLineSeen.delete(sessionId)
     }
   )
+  /*
+   * Claude Code's own session registry, read once a second for every live
+   * local Claude pty — and not at all while there is none. Two facts nothing
+   * else states: which session each process is on NOW (so a `/clear` or an
+   * in-TUI `/resume` does not leave the tab naming a conversation it has left),
+   * and whether a turn is running (so a relaunch can ask first). See
+   * sessionRegistry.ts.
+   *
+   * `CLAUDE_CONFIG_DIR` is honoured through `claudeConfigDir`, read per pass so
+   * it is never a stale copy of the environment.
+   */
+  registry = new RegistryPoller(
+    () => join(claudeConfigDir(process.env, homedir()), 'sessions'),
+    { readFile: (f) => readFile(f, 'utf8'), readdir: (d) => readdir(d) },
+    () => ptys?.registryTargets() ?? [],
+    {
+      rebind: (ptyId, sessionId, previous) => rebindSession(ptyId, sessionId, previous),
+      state: (st: LiveSessionState) => send(CH.sessionState, st)
+    }
+  )
+  timers.push(setInterval(() => void registry?.pass(), REGISTRY_POLL_MS))
+
   /*
    * The worklog's automatic trigger.
    *
@@ -1475,7 +1600,7 @@ function createWindow(): void {
       // the real first reading then blows straight past.
       if (snap.ready) autoscan?.observe(snap.sessionId, snap.messageCount, snap.updatedAt)
     },
-    (sessionId) => windowFor(sessionId, ptys?.bannerWindowFor(sessionId) ?? null),
+    (sessionId) => windowFor(payloadKeyFor(sessionId), ptys?.bannerWindowFor(sessionId) ?? null),
     {
       /*
        * One poller, both kinds of session.
@@ -1559,6 +1684,7 @@ function createWindow(): void {
     browser = null
     ptys = null
     watcher = null
+    registry = null
     mcp = null
     mcpConfigPath = null
     launchReady = false
@@ -1789,6 +1915,24 @@ function registerIpc(): void {
       statusLineSeen.delete(sessionId)
     }
   })
+  /*
+   * The relaunch's kill: the same cleanup as `pty:kill`, then resolve once the
+   * process has really gone, capped. The cap is clamped here rather than
+   * trusted, because a renderer bug that passed an hour would otherwise hang a
+   * relaunch for an hour.
+   */
+  ipcMain.handle(CH.ptyStop, async (_e, ptyId: string, capMs?: number) => {
+    if (!ptys) return true
+    const sessionId = ptys.sessionIdFor(ptyId)
+    const cap = Math.min(Math.max(typeof capMs === 'number' && Number.isFinite(capMs) ? capMs : 3000, 0), 10_000)
+    const stopped = ptys.stop(ptyId, cap)
+    if (sessionId) {
+      watcher?.unwatch(sessionId)
+      statusLineSeen.delete(sessionId)
+    }
+    return await stopped
+  })
+  ipcMain.handle(CH.sessionState, () => registry?.states() ?? [])
 
   /* --------------------------------------------------------------- context */
   ipcMain.on(CH.ctxWatch, (_e, sessionId: string) => watcher?.watch(sessionId))
@@ -2103,8 +2247,22 @@ function registerIpc(): void {
   ipcMain.handle(CH.selfCheck, () => checkSelfUpdate())
   ipcMain.handle(CH.selfDownload, () => downloadSelfUpdate())
   ipcMain.handle(CH.selfInstall, () => {
-    installSelfUpdate()
-    return true
+    /*
+     * Recorded BEFORE the quit, synchronously, because the next statement ends
+     * the process. `installSelfUpdate` returns false without quitting when there
+     * is nothing downloaded, and then the marker is taken straight back out so
+     * it cannot resume the tabs on some later, ordinary launch.
+     */
+    const file = updateRestartFile(app.getPath('userData'))
+    const st = selfUpdateState()
+    writeUpdateRestart(file, { at: Date.now(), from: st.currentVersion, to: st.availableVersion })
+    // Before quitAndInstall, not after: the tab snapshot the next boot resumes
+    // from is this one.
+    if (lastTabState) writeTabState(tabStateFile(app.getPath('userData')), lastTabState)
+    flushSettings()
+    const started = installSelfUpdate()
+    if (!started) consumeUpdateRestart(file)
+    return started
   })
 
   /* --------------------------------------------------------------- updates */
@@ -2265,7 +2423,17 @@ function registerIpc(): void {
     writeTabState(tabStateFile(app.getPath('userData')), state)
   })
 
-  ipcMain.handle(CH.tabsRestore, () => readTabState(tabStateFile(app.getPath('userData'))))
+  /*
+   * `afterUpdate` rides out on the restore and nowhere else: it is true only
+   * when the last quit was Stoke installing its own update ("Restart and
+   * install"), and the marker is consumed here, so a second restore in the same
+   * run — a renderer reload — reads false. See `writeUpdateRestart`.
+   */
+  ipcMain.handle(CH.tabsRestore, (): StoredTabs => {
+    const userData = app.getPath('userData')
+    const state = readTabState(tabStateFile(userData))
+    return consumeUpdateRestart(updateRestartFile(userData)) ? { ...state, afterUpdate: true } : state
+  })
 
   /* --------------------------------------------------------------- worklog */
   /*

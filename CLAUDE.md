@@ -37,7 +37,7 @@ A `dist:*` exists per target and each MUST run on that target's own platform and
 
 Every suite runs alone as `npm run verify:<name>`: context, statusline, unicode, usage,
 profiles, settings, providers, claude-config, folders, search, color, theme-gen, activity,
-worklog-gate, tabs,
+worklog-gate, tabs, registry,
 restore, shortcuts, drop, browser-url, voice, agents, campfire, cli, stoke-args, updates, targets, manifests, worklog-runner,
 worklog-retry, worklog-recall, worklog-autoscan, ssh, remote, installer-art, install, welcome,
 selection — the `check` chain — plus extract and security, which
@@ -216,10 +216,8 @@ rule file named on the group line.
   `[1m]`); put all keys in one `--settings` file, as a second discards the first; payloads are
   filed by launch `statusKey`, not session id. Keep `windowFromBanner`/`contextLimitFor` as the
   fallback — an SSH tab gets no payload.
-- **26.** Treat the blank ring on a `--continue` tab as a known gap: its id is `''`, so
-  `ContextWatcher.watch` no-ops. The real id already reaches the renderer (payload,
-  `session:event`); what is missing is the launch `statusKey`/ptyId tying it to the tab, not a new
-  channel.
+- **26.** A `--continue` tab starts with id `''` (`ContextWatcher.watch` no-ops on it) and gets
+  its real id from the registry rebind (gotcha 80) — never guess it from the folder's newest session.
 - **49.** Republish from `ContextWatcher` when the stated window changes, not just the transcript
   mtime: a resumed session's payload lands seconds late and the meter would stick at 200k.
 - **61.** On win32 add the leading `&` to the statusLine/hook command only when `gitBashPath()`, a
@@ -230,6 +228,8 @@ rule file named on the group line.
 - **73.** Release a session's statusLine files BY OWNER (`claimSessionFiles`/`releaseSessionFiles`,
   claimed before the write): a relaunch reuses the status key, so the outgoing PTY's late
   `proc.onExit` would delete the incoming session's `--settings` file and `claude` refuses to start.
+- **80.** Follow the session a pty is on NOW via the CLI's registry (`RegistryPoller`,
+  `rebindSession`): `/clear` and `/resume` move it; its files stay on the launch key (`payloadKeyFor`).
 
 **Usage chip** — `.claude/rules/usage.md`
 - **21.** Treat a missing `rate_limits` or either missing window as unknown, never 0% (none arrive
@@ -256,6 +256,8 @@ rule file named on the group line.
 - **52.** Keep `shimDirs()` (mise/asdf/fnm) ahead of the system dirs in `extraSearchDirs()`, keep
   `-i` in the probe's `-ilc`, and let a failed probe stand only `PROBE_RETRY_MS`: a Finder
   launch's PATH has no version-manager dir.
+- **81.** Let main pick `--resume` vs `--session-id` against the disk (`resumeOrMint`) right before
+  the spawn: `--resume` on an id with no transcript exits 1, `--session-id` on one with a transcript is refused.
 
 **Worklog** — `.claude/rules/worklog.md`
 - **15.** Keep the worklog scan `--safe-mode` and read boards in `recall.ts`'s own run: safe mode
@@ -356,15 +358,18 @@ rule file named on the group line.
   app. A `useEffect` window listener reads `settings` via `settingsRef`, not its deps.
 - **35.** Rely on the synchronous `writeTabState` on every `tabs:save` push for tab restore —
   `before-quit` is only a retry, and on macOS closing the last window never fires it.
-- **48.** Read a session's version from its payload `cliVersion`, never a launch stamp, and
-  compare to `CliInfo.version` (`X (Claude Code)`) only through `versionNumber`; never offer
-  relaunch on a `--continue` or SSH tab.
+- **48.** Read a session's version from the registry, else its payload `cliVersion`, never a launch
+  stamp; compare to `CliInfo.version` only through `versionNumber`; never offer relaunch on SSH.
 - **51.** Guard slow kill-and-restart actions with a ref claimed before the irreversible step plus
   a busy state released in `.finally` — a second click makes `replaceOrAppend` append a duplicate
   `claude`.
 - **57.** Give every value exactly one writer — derive the launcher's
   `mode`/`model`/`effort`/`ultracode` from `settings.defaults`, never a `useState` copy, or the
   other writer leaves it stale until restart.
+- **82.** Never kill a busy session unasked (`requestRelaunch` → BusyDialog; `busy`/`shell`/`waiting`
+  are busy), and never auto-relaunch on `idle` alone: a draft leaves it idle (`typedSinceSubmit`).
+- **83.** Veto `startOnLaunch` on whether the restore HAD sessions (`restoredSessions`), not on how
+  many are still paused — the update-restart resume empties that count before `cli` answers.
 
 **Packaging and signing** — `.claude/rules/release.md`
 - **7.** Pick architectures with the `--x64`/`--arm64` CLI flags and never add an `arch:` list to

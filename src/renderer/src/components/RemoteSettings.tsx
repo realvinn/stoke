@@ -15,7 +15,7 @@ import { useDraft } from '../lib/useDraft'
 import { FieldHint } from './FieldHint'
 import { IconCopy } from './Icons'
 import { CloudflareSetup } from './CloudflareSetup'
-import type { CliUpdateState, Settings } from '@shared/types'
+import type { CliRelaunchMode, CliUpdateState, Settings } from '@shared/types'
 
 interface Props {
   settings: Settings
@@ -24,6 +24,20 @@ interface Props {
 
 /** Mirrors the store default; an emptied box falls back here rather than to ''. */
 const DEFAULT_STT_URL = 'http://127.0.0.1:17890'
+
+/** The two answers to "what happens to open sessions after the CLI updates". */
+const RELAUNCH_MODES: { id: CliRelaunchMode; label: string; hint: string }[] = [
+  {
+    id: 'ask',
+    label: 'Offer to relaunch',
+    hint: 'The status bar offers "relaunch on <version>" and nothing happens until you press it'
+  },
+  {
+    id: 'auto',
+    label: 'Relaunch idle sessions in the background',
+    hint: 'Sessions not in front are moved onto the new version as soon as they are idle'
+  }
+]
 
 /** How the segmented control names each way a phone can reach this machine. */
 const REACH_LABEL: Record<RemoteReach, string> = {
@@ -598,10 +612,17 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
 /** Stoke updating itself from GitHub releases. */
 export function SelfUpdateSettings({
   betaUpdates,
-  onChangeBeta
+  onChangeBeta,
+  autoDownload,
+  onChangeAutoDownload,
+  onInstall
 }: {
   betaUpdates: boolean
   onChangeBeta: (v: boolean) => void
+  autoDownload: boolean
+  onChangeAutoDownload: (v: boolean) => void
+  /** App's `requestSelfRestart`, which asks first when a turn is running. */
+  onInstall: () => void
 }): React.JSX.Element {
   const [state, setState] = useState<SelfUpdateState | null>(null)
   const [busy, setBusy] = useState(false)
@@ -707,13 +728,43 @@ export function SelfUpdateSettings({
             <button
               className="btn"
               data-variant="primary"
-              onClick={() => void window.stoke.self.install()}
-              title="Stoke restarts and any running sessions end"
+              onClick={onInstall}
+              title="Stoke restarts, and your tabs come back resumed. A prompt still running is asked about first."
             >
               Restart and install
             </button>
           )}
         </div>
+      )}
+
+      {state.supported && (
+        <label className="check-row">
+          <input
+            type="checkbox"
+            checked={autoDownload}
+            onChange={(e) => onChangeAutoDownload(e.target.checked)}
+          />
+          <span>
+            <span className="field-label">Download updates in the background</span>
+            {/*
+              Says what it does NOT do, because "automatic update" reads as
+              "restarts on its own", and that is the one thing it never does.
+            */}
+            <FieldHint
+              more={
+                <>
+                  Checked a few seconds after launch and every six hours after that. The download
+                  never restarts anything: it installs when you quit Stoke, or when you press
+                  Restart and install — which asks first if a prompt is still running, and brings
+                  your tabs back resumed afterwards. A build that could not install what it
+                  downloads (an unsigned copy, say) never starts the download.
+                </>
+              }
+            >
+              Fetches a new version when one is found; installs only when you restart.
+            </FieldHint>
+          </span>
+        </label>
       )}
 
       {state.supported && (
@@ -896,10 +947,14 @@ export function StokeCommandSettings(): React.JSX.Element {
 /** Version, update availability, automatic updates, and `claude doctor` health. */
 export function UpdatesSettings({
   autoUpdate,
-  onChangeAuto
+  onChangeAuto,
+  relaunch,
+  onChangeRelaunch
 }: {
   autoUpdate: boolean
   onChangeAuto: (v: boolean) => void
+  relaunch: CliRelaunchMode
+  onChangeRelaunch: (v: CliRelaunchMode) => void
 }): React.JSX.Element {
   const [info, setInfo] = useState<UpdateInfo | null>(null)
   const [note, setNote] = useState<string | null>(null)
@@ -1190,6 +1245,41 @@ export function UpdatesSettings({
           </FieldHint>
         </span>
       </label>
+
+      {/*
+        What happens to the sessions already open once a newer CLI is on disk.
+        They keep running the old binary until they are relaunched — there is
+        no swapping it underneath a live process — so this is a real choice,
+        not a detail of the update above.
+      */}
+      <div className="field">
+        <span className="field-label">After the CLI updates</span>
+        <div className="segmented" role="group" aria-label="After the CLI updates">
+          {RELAUNCH_MODES.map((m) => (
+            <button
+              key={m.id}
+              aria-pressed={relaunch === m.id}
+              title={m.hint}
+              onClick={() => onChangeRelaunch(m.id)}
+            >
+              {m.label}
+            </button>
+          ))}
+        </div>
+        <FieldHint
+          more={
+            <>
+              A relaunch resumes the same conversation on the new version. In the background it only
+              ever touches a session that is idle, not the tab in front, and not one with anything
+              typed and unsent; a busy one is relaunched the moment its turn ends. Anything the
+              session was running outside the conversation — a background shell, an MCP server’s
+              state — ends with the old process, which is why this is off unless you ask for it.
+            </>
+          }
+        >
+          Open sessions keep the version they started on until they are relaunched.
+        </FieldHint>
+      </div>
 
       {output && (
         <pre

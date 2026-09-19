@@ -28,11 +28,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   PROBE_RETRY_MS,
+  buildArgs,
   extraSearchDirs,
   findClaude,
   loginPathProbeFailed,
   notFoundError,
   probeClaude,
+  resumeOrMint,
   shouldReprobe
 } from '../src/main/cli.ts'
 import {
@@ -339,6 +341,51 @@ check('it names the right product instead', /Install Codex CLI/.test(notFoundErr
 check(
   'the probe-failed branch keeps gotcha 52 distinction for another CLI too',
   /login shell/.test(notFoundError(true, 'codex')) && /`codex`/.test(notFoundError(true, 'codex')),
+  true
+)
+
+/*
+ * `--resume` or `--session-id`, by whether the id has a transcript. Measured
+ * against 2.1.278: `--resume U` with no transcript exits 1 ("No conversation
+ * found"), and `--session-id U` once U has one is refused ("already in use").
+ * A relaunch of a session nobody has typed into, a `/clear`ed id, and a
+ * restored tab whose conversation was never written all name an id with no
+ * transcript — so the flag is decided against the disk, not assumed.
+ */
+console.log('\nresuming an id that has no transcript starts it afresh under the same id')
+const U = '6b80feb4-1111-4222-8333-444455556666'
+const argsFor = (o: Parameters<typeof resumeOrMint>[0], has: boolean): string[] =>
+  buildArgs(resumeOrMint(o, has)).slice(0, 2)
+check('a resume with a transcript stays a resume', argsFor({ cwd: '/w', sessionId: U, resume: true }, true), ['--resume', U])
+check(
+  'a resume with NO transcript becomes --session-id with the same id',
+  argsFor({ cwd: '/w', sessionId: U, resume: true }, false),
+  ['--session-id', U]
+)
+check(
+  'and never --resume together with --session-id, which the CLI refuses without --fork-session',
+  buildArgs(resumeOrMint({ cwd: '/w', sessionId: U, resume: true }, false)).filter((a) => a === '--resume' || a === '--session-id'),
+  ['--session-id']
+)
+check(
+  'a fork of an id with no transcript is not a fork of anything',
+  buildArgs(resumeOrMint({ cwd: '/w', sessionId: U, resume: true, forkSession: true }, false)).includes('--fork-session'),
+  false
+)
+check(
+  'a --session-id for an id that HAS a transcript becomes a resume, since the CLI would refuse it',
+  argsFor({ cwd: '/w', sessionId: U }, true),
+  ['--resume', U]
+)
+check('a fresh mint stays a mint', argsFor({ cwd: '/w', sessionId: U }, false), ['--session-id', U])
+check(
+  'a --continue is left alone: it names no id',
+  buildArgs(resumeOrMint({ cwd: '/w', continueLast: true }, false))[0],
+  '--continue'
+)
+check(
+  'an SSH launch is left alone: its transcript is on the far machine',
+  resumeOrMint({ cwd: '/w', sessionId: U, resume: true, host: { id: 'h', alias: 'vps', label: '', command: '' } as never }, false).resume,
   true
 )
 

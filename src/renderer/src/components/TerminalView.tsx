@@ -9,7 +9,7 @@ import type { TerminalSettings, Theme } from '@shared/types'
 import { dropText } from '@shared/drop'
 import { createRecorder, voiceSupported, type Recorder } from '@shared/voice'
 import { CLI_OWNS_SPACE, dictationKeyAction, microphoneError, spaceOwner } from '@shared/voiceRoute'
-import { attachSink } from '../lib/ptyBus'
+import { attachSink, noteInput } from '../lib/ptyBus'
 import { isButtonlessMotionReport } from '../lib/mouseReport'
 import { matchShortcut } from '../lib/shortcuts'
 import { registerTerm, screenOf, unregisterTerm } from '../lib/termRegistry'
@@ -381,7 +381,12 @@ export function TerminalView({
       if (data.includes('\x1b[?2031l')) themeNotifyRef.current = false
       term.write(data)
     })
-    const onInput = term.onData((data) => window.stoke.pty.write(tab.ptyId, data))
+    const onInput = term.onData((data) => {
+      // Noted before the write: an automatic relaunch must not kill a session
+      // with a draft in its prompt box, and the registry cannot see one.
+      noteInput(tab.ptyId, data)
+      window.stoke.pty.write(tab.ptyId, data)
+    })
 
     // Keep the OS clipboard shortcuts working; everything else goes to the PTY.
     term.attachCustomKeyEventHandler((e) => {

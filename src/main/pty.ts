@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { access } from 'node:fs/promises'
+import { access, realpath } from 'node:fs/promises'
 import * as nodePty from '@lydell/node-pty'
 import type { IPty } from '@lydell/node-pty'
 import type { LaunchOptions } from '@shared/types'
@@ -23,6 +23,7 @@ import {
 import { windowFromBanner } from './sessionFile.ts'
 import { buildSshArgs, sshExecutable } from './ssh.ts'
 import { claimSessionFiles, releaseSessionFiles } from './statusLine.ts'
+import type { RegistryTarget } from '../shared/claudeRegistry.ts'
 
 export interface StartResult {
   ptyId: string
@@ -33,6 +34,13 @@ export interface StartResult {
 
 interface Session {
   ptyId: string
+  /**
+   * The Claude session the process is on NOW — not necessarily the one it was
+   * launched with. `/clear` and the in-TUI `/resume` move it, and a
+   * `--continue` starts at '' and learns its id late; `rebind` is how the
+   * registry poller (`sessionRegistry.ts`) keeps this true. `statusKey` never
+   * moves, because the statusLine files are owned by launch (gotcha 73).
+   */
   sessionId: string
   /**
    * What this session's statusLine files are named after, or '' when it has
@@ -47,7 +55,16 @@ interface Session {
   statusKey: string
   proc: IPty
   cwd: string
+  /**
+   * `cwd` through symlinks, once resolved (`/tmp` is `/private/tmp` on macOS,
+   * and the CLI records the resolved one). Only the registry fallback reads it.
+   */
+  realCwd: string
+  /** A local Claude Code session: the only kind with a registry file to read. */
+  instrumented: boolean
   exited: boolean
+  /** Settles when the process has actually exited. */
+  exitedPromise: Promise<void>
   /** Retained output so a client joining late can replay the session. */
   chunks: string[]
   length: number
@@ -389,13 +406,19 @@ export class PtyManager {
       throw err
     }
 
+    let markExited: () => void = () => {}
     const session: Session = {
       ptyId,
       sessionId,
       statusKey,
       proc,
       cwd,
+      realCwd: cwd,
+      instrumented,
       exited: false,
+      exitedPromise: new Promise<void>((resolve) => {
+        markExited = resolve
+      }),
       chunks: [],
       length: 0,
       bannerWindow: null,
@@ -405,6 +428,16 @@ export class PtyManager {
       rows: Math.max(5, opts.rows || 30)
     }
     this.sessions.set(ptyId, session)
+    // Off the spawn path: nothing waits on it, and the fallback that reads it
+    // is not consulted until the session is seconds old.
+    if (instrumented) {
+      void realpath(opts.cwd).then(
+        (p) => {
+          session.realCwd = p
+        },
+        () => {}
+      )
+    }
 
     proc.onData((data) => {
       session.chunks.push(data)
@@ -430,6 +463,10 @@ export class PtyManager {
 
     proc.onExit(({ exitCode, signal }) => {
       session.exited = true
+      markExited()
+      // Only this session's own entry. `stop()` below has already removed it,
+      // and deleting by id unconditionally is still right: ids are uuids and
+      // never reused.
       this.sessions.delete(ptyId)
       // The payload, the pass-through command and the settings file are all
       // per-session temp files, named after the launch key rather than the
@@ -501,6 +538,94 @@ export class PtyManager {
      * gotcha 73 and the owner argument here.
      */
     releaseSessionFiles(s.statusKey, s.ptyId)
+  }
+
+  /**
+   * Kill, then wait for the process to actually exit — at most `capMs`.
+   *
+   * For a relaunch, which used to start the replacement straight after a
+   * fire-and-forget `kill`. `claude` takes ~0.8-0.95s to exit after SIGHUP
+   * (exit 129), so for that long two processes held one conversation, and two
+   * concurrent writers can fork a transcript. Waiting closes that window.
+   *
+   * The file ownership of gotcha 73 still stands on its own and is not what
+   * this is for: the cap means a replacement CAN still start before a
+   * predecessor that will not die, and `releaseSessionFiles` is what keeps
+   * that late exit from deleting the successor's files. Resolves true when the
+   * exit landed inside the cap.
+   */
+  async stop(ptyId: string, capMs: number): Promise<boolean> {
+    const s = this.sessions.get(ptyId)
+    if (!s) return true
+    const exited = s.exitedPromise.then(() => true)
+    this.kill(ptyId)
+    let timer: NodeJS.Timeout | null = null
+    const capped = new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => resolve(false), Math.max(0, capMs))
+    })
+    try {
+      return await Promise.race([exited, capped])
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
+  }
+
+  /**
+   * Move a live session onto the id its `claude` is actually on now.
+   *
+   * `statusKey` is deliberately left alone: the statusLine files are named
+   * after the launch and owned by it (gotcha 73), and the payload inside them
+   * states its own `session_id`, so readers find it through `statusKeyFor`.
+   */
+  rebind(ptyId: string, sessionId: string): string | null {
+    const s = this.sessions.get(ptyId)
+    if (!s || s.exited) return null
+    const previous = s.sessionId
+    s.sessionId = sessionId
+    return previous
+  }
+
+  /**
+   * The statusLine key of the live session now on `sessionId`, or null.
+   *
+   * The payload, the events file and the settings file are named after the
+   * LAUNCH, so once a session has been rebound (`/clear`, `/resume`, a
+   * `--continue`'s real id) its files are no longer named after its id. Every
+   * reader that holds a session id goes through this.
+   */
+  statusKeyFor(sessionId: string): string | null {
+    if (!sessionId) return null
+    for (const s of this.sessions.values()) {
+      if (s.sessionId === sessionId && s.statusKey) return s.statusKey
+    }
+    return null
+  }
+
+  /** The pty child's pid, or null when there is no such live session. */
+  pidFor(ptyId: string): number | null {
+    const s = this.sessions.get(ptyId)
+    return s && !s.exited && typeof s.proc.pid === 'number' ? s.proc.pid : null
+  }
+
+  /**
+   * Every live LOCAL Claude session, as the registry poller wants it.
+   *
+   * An SSH tab has no local registry file — its `claude` is on the far machine
+   * (gotcha 18) — and another CLI writes none at all, so both are left out.
+   */
+  registryTargets(): RegistryTarget[] {
+    const out: RegistryTarget[] = []
+    for (const s of this.sessions.values()) {
+      if (s.exited || !s.instrumented) continue
+      out.push({
+        ptyId: s.ptyId,
+        pid: typeof s.proc.pid === 'number' ? s.proc.pid : null,
+        sessionId: s.sessionId,
+        cwd: s.realCwd,
+        startedAt: s.startedAt
+      })
+    }
+    return out
   }
 
   /**

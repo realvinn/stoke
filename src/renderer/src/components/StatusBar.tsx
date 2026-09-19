@@ -33,6 +33,22 @@ interface Props {
   relaunchBusy: boolean
   onRelaunch: () => void
   /**
+   * The tab in front will be relaunched the moment its running turn ends
+   * ("Wait" in the busy dialog, or an automatic relaunch queued for it). The
+   * pill says so and a press cancels it — a relaunch that fires later with
+   * nothing on screen saying it was coming would read as a crash.
+   */
+  relaunchPending: boolean
+  onCancelRelaunch: () => void
+  /** Stoke restarts to install its own update once every session is idle. */
+  selfRestartPending: boolean
+  onCancelSelfRestart: () => void
+  /**
+   * The running binary's version from the CLI's own registry, when it has
+   * said. Preferred over the payload's: it is stated from the first second.
+   */
+  liveVersion: string | null
+  /**
    * The profile the sidebar is filtered to, or null for All.
    *
    * Named, not merely coloured, and here rather than only on the sidebar chip:
@@ -57,6 +73,11 @@ export function StatusBar({
   relaunch,
   relaunchBusy,
   onRelaunch,
+  relaunchPending,
+  onCancelRelaunch,
+  selfRestartPending,
+  onCancelSelfRestart,
+  liveVersion,
   profileLabel,
   onRevealProject,
   onOpenSettings
@@ -92,18 +113,45 @@ export function StatusBar({
         relaunching…
       </span>
     </button>
+  ) : relaunchPending ? (
+    <button
+      className="status-btn"
+      onClick={onCancelRelaunch}
+      title="Relaunching as soon as the prompt that is running finishes. Click to cancel."
+    >
+      <span className="pill" data-tone="accent">
+        relaunch when idle… <span aria-hidden="true">×</span>
+        <span className="sr-only">cancel</span>
+      </span>
+    </button>
   ) : relaunch.kind === 'offer' ? (
     <button
       className="status-btn"
       onClick={onRelaunch}
       title={
         `This session is running ${relaunch.running}; ${relaunch.installed} is installed. ` +
-        'Relaunching resumes the same conversation on the new version. ' +
-        'Anything mid-reply, or typed and not sent, is lost.'
+        (relaunch.fresh
+          ? 'Nothing has been said in it yet, so it starts again empty on the new version. '
+          : 'Relaunching resumes the same conversation on the new version. ') +
+        (relaunch.busy
+          ? 'A prompt is running — you will be asked whether to wait for it.'
+          : 'Anything typed and not sent is lost.')
       }
     >
       <span className="pill" data-tone="accent">
         relaunch on {relaunch.installed}
+      </span>
+    </button>
+  ) : null
+  const selfRestartPill = selfRestartPending ? (
+    <button
+      className="status-btn"
+      onClick={onCancelSelfRestart}
+      title="Stoke restarts to install its update once every session is idle. Click to cancel."
+    >
+      <span className="pill" data-tone="accent">
+        update when idle… <span aria-hidden="true">×</span>
+        <span className="sr-only">cancel</span>
       </span>
     </button>
   ) : null
@@ -157,7 +205,9 @@ export function StatusBar({
   const installTab = !!tab?.installing?.length
   const claudeTab = !installTab && isClaudeCode(cliIdOf(tab?.cliId))
   const shownVersion = claudeTab
-    ? (versionNumber(line?.cliVersion ?? null) ?? versionNumber(cli?.version ?? null))
+    ? (versionNumber(liveVersion) ??
+      versionNumber(line?.cliVersion ?? null) ??
+      versionNumber(cli?.version ?? null))
     : null
   const versionItem = shownVersion ? (
     <button
@@ -166,7 +216,7 @@ export function StatusBar({
       title={
         relaunch.kind === 'offer'
           ? `This session runs ${relaunch.running}; ${relaunch.installed} is installed`
-          : line?.cliVersion
+          : liveVersion || line?.cliVersion
             ? 'Claude Code version this session is running'
             : 'Claude Code version installed'
       }
@@ -189,6 +239,7 @@ export function StatusBar({
             all. Without this the "relaunching…" pill would blink out on the
             one path that reaches this branch. */}
         {relaunchPill}
+        {selfRestartPill}
         {updatePill}
         {versionItem}
       </footer>
@@ -292,6 +343,8 @@ export function StatusBar({
       {versionItem}
 
       {relaunchPill}
+
+      {selfRestartPill}
 
       {updatePill}
 

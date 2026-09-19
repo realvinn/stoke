@@ -70,6 +70,11 @@ export const CH = {
   ptyWrite: 'pty:write',
   ptyResize: 'pty:resize',
   ptyKill: 'pty:kill',
+  /**
+   * Kill and WAIT for the exit, capped. A relaunch starts its replacement only
+   * after this resolves, so two `claude` processes never write one transcript.
+   */
+  ptyStop: 'pty:stop',
   ptyData: 'pty:data',
   ptyExit: 'pty:exit',
 
@@ -83,6 +88,10 @@ export const CH = {
   statusLineLast: 'statusline:last',
   /** A hook event: a prompt went in, the assistant stopped, or the CLI asked for attention. */
   sessionEvent: 'session:event',
+  /** A live pty's `claude` moved to another session id (`/clear`, `/resume`, a `--continue`'s real id). */
+  sessionRebind: 'session:rebind',
+  /** Push: one pty's registry reading changed. Invoke: every live reading, for a renderer that reloaded. */
+  sessionState: 'session:state',
 
   // embedded browser
   browserSetBounds: 'browser:setBounds',

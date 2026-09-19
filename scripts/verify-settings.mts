@@ -425,5 +425,23 @@ check(
   { ...DEFAULT_SETTINGS.remote, reach: 'lan', port: 9000, hostname: 'x.example.com' }
 )
 
+/*
+ * What happens to open sessions after the CLI updates, and whether Stoke's own
+ * update downloads by itself. `cliRelaunch: 'auto'` kills and restarts
+ * processes unasked, so only the literal switches it on; `selfUpdateAuto`
+ * moves when bytes arrive and never when the app is replaced, so a file from
+ * before the key existed reads as on.
+ */
+console.log('\nafter an update')
+check('a machine that has never said is offered the relaunch, not given it', hydrateSettings({}).cliRelaunch, 'ask')
+check('auto is kept', hydrateSettings({ cliRelaunch: 'auto' }).cliRelaunch, 'auto')
+check('a truthy leftover is not auto', hydrateSettings({ cliRelaunch: true as never }).cliRelaunch, 'ask')
+check('nor is a typo', hydrateSettings({ cliRelaunch: 'Auto' as never }).cliRelaunch, 'ask')
+check('the default is in DEFAULT_SETTINGS too', DEFAULT_SETTINGS.cliRelaunch, 'ask')
+check('Stoke downloads its own update in the background by default', hydrateSettings({}).selfUpdateAuto, true)
+check('off stays off', hydrateSettings({ selfUpdateAuto: false }).selfUpdateAuto, false)
+check('junk reads as the default', hydrateSettings({ selfUpdateAuto: 'no' as never }).selfUpdateAuto, true)
+check('and DEFAULT_SETTINGS agrees', DEFAULT_SETTINGS.selfUpdateAuto, true)
+
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
 process.exitCode = failures ? 1 : 0

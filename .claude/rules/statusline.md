@@ -8,6 +8,9 @@ paths:
   - "scripts/verify-context.mts"
   - "scripts/verify-statusline.mts"
   - "src/shared/contextLevel.ts"
+  - "src/main/sessionRegistry.ts"
+  - "src/shared/claudeRegistry.ts"
+  - "scripts/verify-registry.mts"
 ---
 
 # statusLine payload and context meter
@@ -76,6 +79,14 @@ reads every live `statusKey` directly and a payload's rate limits are account-wi
 > - That expression is now src/main/pty.ts:193-194.
 > - The early return (`if (!sessionId || this.watches.has(sessionId)) return`) is now src/main/context.ts:112-113. Lines 102-103 are now `snapshot()`.
 > - `session:event` (CH.sessionEvent, added in 2c43c3a on 2026-09-02, after this entry was written) now reaches the renderer with the real id. `pollSessionEvents` reads every `ptys.statusKeys()`, which includes a `--continue`'s random launch key (src/main/index.ts:1556-1561), and `parseHookEvent` sets `sessionId` from the payload's real `session_id` (src/main/statusLine.ts:597). The event carries no launch key or ptyId, though, and the tab stores `sessionId: res.sessionId` (`''`, App.tsx:972), so App.tsx:511's `t.sessionId === ev.sessionId` can never match it to the tab. What is missing is a way to match the id to the tab, not a channel.
+
+> **Checked against the code on 2026-09-19 — closed.** The match is by ptyId now, from the CLI's own
+> session registry (gotcha 80): `RegistryPoller` reads `<config dir>/sessions/<pid>.json` for the pty,
+> `rebindTo('', entry)` names the real id, and `rebindSession` (index.ts) watches it and pushes
+> `session:rebind { ptyId, sessionId }`, which moves the tab. Driven against the built app: a
+> `--continue` tab launched as `claude --continue` in a throwaway folder came up with `sessionId: ''`
+> in `tabs.json`, and within two seconds held `194346ac-…` (the registry's id), with its ring reading
+> `68k/200k · 34%` and the relaunch pill offered — both refused for that tab before.
 
 ## 49. `ContextWatcher` published only when the *transcript* mtime moved, so a window that became known afterwards never reached the meter
 
@@ -197,9 +208,60 @@ protects you from a second caller arriving; it does nothing about a FIRST caller
 Any resource named after something stable (a session id, a project path, a host alias) rather than
 per-launch needs an owner, or a dying predecessor will clean up its successor.
 
+> **Checked on 2026-09-19.** `relaunchTab` now awaits the old process's exit (`pty:stop`,
+> `PtyManager.stop`, capped at 3s) before starting the replacement, to close the ~0.9s in which two
+> `claude` processes held one transcript. That does NOT retire ownership: the cap means a replacement
+> can still start beside a predecessor that will not die, which is exactly the late exit
+> `releaseSessionFiles` exists for. Keep both.
+
 > **Checked on 2026-09-13, after the fix.** An adversarial pass that was asked to refute this could
 > not refute the mechanism, but it did refute the ATTRIBUTION: the original note recorded "the
 > installed app's sessionS", plural, in one event, and a late `proc.onExit` can only ever touch the
 > one key being relaunched. A directory-wide deleter was needed to explain that, and there is one —
 > gotcha 74. Ownership does not help there: `sweepStaleSessionFiles` goes straight to `rmSync`
 > without consulting `fileOwners`, by design, since its whole job is files whose owner is gone.
+
+## 80. A tab's session id moves while its process runs, and only the CLI's own registry says so
+
+**Stoke learned a tab's session id once, from `pty:start`, and never again — but the id is not fixed
+for the life of the process.** Measured against 2.1.278 on 2026-09-19: `/clear` mints a NEW id, the
+in-TUI `/resume` switches to another, `/compact` keeps it, and a `--continue` has none until after
+launch. A live tab here had been launched with `--session-id 6b80feb4…`, and its process, its
+statusLine payload and every hook event all said `39db23cb…`, while `tabs.json` still stored
+`6b80feb4`. So the relaunch pill, Resume, tab restore and the sidebar's "already open" de-dupe all
+named the conversation the process had left: `claude --resume <old id>` reopened the pre-`/clear`
+conversation, or — when the old id never got a transcript — exited 1 with `No conversation found
+with session ID: …`. Hook events and payloads carry the new id, so after a drift they matched no tab
+either; gotcha 26 was the `--continue` special case of the same thing.
+
+**The CLI already writes the answer: `<CLAUDE_CONFIG_DIR or ~/.claude>/sessions/<pid>.json`.** It is
+undocumented, so `parseRegistry` (src/shared/claudeRegistry.ts) treats every field as optional and a
+reading that does not parse as none. It holds the CURRENT `sessionId`, `status` (`busy`, `shell`,
+`idle`, `waiting` — the binary's own four, `waitingFor` beside `waiting`), `version` and `cwd`.
+Measured transitions: a prompt goes `busy` within ~0.1s; Esc goes `idle` with no `Stop` hook at all;
+a permission dialog is `waiting`; `/clear` goes busy on the OLD id, then names the new id ~0.05s
+later, then idle; `--resume <id>` names that id from its first write (no transient id, so no
+debounce); the file appears 1.3-2.5s after the spawn, the `status` key ~0.5s after that, and SIGHUP
+removes the file ~0.37s later. The pid in the name is the pty child's on macOS — `claude` itself, or
+a shim that `exec`s it (the test shim did, and matched).
+
+`RegistryPoller` (src/main/sessionRegistry.ts) reads it once a second for every live local Claude
+pty and nothing else (an SSH tab has no local file; another CLI writes none), async and one pass at a
+time (gotchas 40, 20). A changed id is a rebind: `PtyManager.rebind`, the context watcher moves,
+`sessionCwds` gains the new id and keeps the old, and `session:rebind` moves the tab and the
+session-keyed maps that describe the PROCESS (version line, activity) — not `contexts`, which
+describes the conversation left behind. Driven against the built app: a prompt, then `/clear`, took
+the tab from `afccf3e1…` to `60481cbf…` in `tabs.json`, matching the registry file.
+
+Three things that are easy to get wrong:
+
+- **The statusLine files do not move.** They are named after the launch and owned by it (gotcha 73),
+  so after a rebind the session id and the file name differ, and `readStatusLine(sessionId)` finds
+  nothing: no payload, so no version for the pill and no stated window for the meter. Every reader
+  holding an id goes through `payloadKeyFor` → `PtyManager.statusKeyFor`.
+- **A registry id becomes a `--resume` argument**, and a `.cmd` install runs through `cmd.exe /c`
+  (gotcha 13), so `isSafeRegistryId` whitelists it exactly as `SAFE_ID` does for ssh.
+- **Matching by anything but the pid is a fallback for a layout this machine cannot produce** — a
+  Windows `.cmd` install, whose pty pid is cmd.exe's. `pickEntry` then takes the ONE entry holding the
+  id Stoke already has, else the ONE unclaimed entry in the same folder that started after the spawn,
+  and refuses ambiguity either way. Unverified on Windows.

@@ -238,3 +238,33 @@ change cannot silently make it a lie.
 > - The update/doctor miss is now in `runCli` at src/main/updates.ts:339-341. Line 246 is a comment inside `checkForUpdate`. agent.ts:389 is still correct (`if (!exe) {`, with the throw at :390).
 > - Boot is now src/renderer/src/App.tsx:627 (`void window.stoke.cli.info().then(setCli)`). The `updates.onState` handler that re-reads CliInfo is at App.tsx:594-597, with the `cli.info()` call at :596.
 > - The 12s `setTimeout(() => void refreshCliUpdate(), 12_000)` is now at src/main/index.ts:1116, and the six-hour `setInterval(..., AUTO_CHECK_MS)` is at :1117. `refreshCliUpdate` (index.ts:190-249) sends CH.updateState.
+
+## 81. `--resume` and `--session-id` fail in opposite cases, so the flag is decided against the disk
+
+**Which of the two flags works depends on one fact — whether the id has a transcript — and nothing
+the renderer holds states it reliably.** Measured against 2.1.278 on 2026-09-19:
+
+```
+--resume U       U has no transcript   -> exit 1: "No conversation found with session ID: U"
+--session-id U   U has a transcript    -> refused: "Session ID U is already in use"
+--resume U --session-id U              -> refused: --session-id with --resume needs --fork-session
+--session-id U   U has none, and the previous process on U is still dying -> ACCEPTED
+```
+
+A session has no transcript until something is written to it, yet its statusLine payload — and so
+the relaunch pill — arrives before the first prompt. So relaunching a session nobody had typed into
+ran `--resume` on nothing and the tab came back dead; the same happened to a restored tab whose
+conversation was never written (gotcha 35's "resumes to nothing"). What writes a transcript is
+machine-dependent, too: here `/clear` writes one for its new id at once, because the user's own
+`SessionStart` hooks produce output the CLI records — on a machine without such hooks it would not.
+
+`resumeOrMint` (cli.ts) is the one decision: an id with a transcript is resumed, one without is
+started afresh under the SAME id with `--session-id`, which keeps the tab's identity and the meter's
+key. `launchSession` (index.ts) calls it right before the spawn, against both `~/.claude/projects`
+and `CLAUDE_CONFIG_DIR/projects` — `projectsRoot()` ignores `CLAUDE_CONFIG_DIR`, and a wrong "no
+transcript" is the expensive direction, since the CLI then refuses a conversation that exists. The
+renderer's `relaunchPlan` still says `fresh` (from `contexts[id].ready`), but only as what it asks
+for and what the tooltip says; main has the last word. `verify:cli` holds the table. Driven against
+the built app: a never-prompted session relaunched as `--session-id b4adba2f…` and came up on the
+banner; the counterfactual, `--resume` on an id with no transcript, exited 1 with "No conversation
+found" in a probe run beside it.
