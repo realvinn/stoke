@@ -10,6 +10,7 @@ import {
   binNamesFor,
   cliFor,
   CODING_CLIS,
+  type CodingCli,
   type CodingCliId,
   type CodingCliDetection
 } from '../shared/codingClis.ts'
@@ -187,8 +188,12 @@ export function extraSearchDirs(): string[] {
       ...shimDirs(),
       join(process.env.LOCALAPPDATA ?? join(home, 'AppData', 'Local'), 'Programs', 'claude'),
       join(process.env.APPDATA ?? join(home, 'AppData', 'Roaming'), 'npm'),
-      // Grok Build's install.ps1 puts grok.exe here and nowhere on PATH.
-      join(home, '.grok', 'bin')
+      // Where the vendors' own install.ps1 scripts put their binaries, which
+      // reach PATH only through a profile edit this process has not re-read.
+      join(home, '.grok', 'bin'),
+      join(home, '.kimi-code', 'bin'),
+      join(home, '.amp', 'bin'),
+      join(process.env.LOCALAPPDATA ?? join(home, 'AppData', 'Local'), 'cursor-agent')
     ]
   }
   return [
@@ -205,6 +210,8 @@ export function extraSearchDirs(): string[] {
      */
     join(home, '.opencode', 'bin'),
     join(home, '.grok', 'bin'),
+    join(home, '.kimi-code', 'bin'),
+    join(home, '.amp', 'bin'),
     ...shimDirs(),
     '/opt/homebrew/bin',
     '/usr/local/bin',
@@ -248,6 +255,65 @@ export async function findTool(names: readonly string[]): Promise<string | null>
   return null
 }
 
+/** Every match for these names on the search PATH, in PATH order. */
+async function findAllTools(names: readonly string[]): Promise<string[]> {
+  const searchPath = await buildEnvPath()
+  const out: string[] = []
+  for (const dir of searchPath.split(delimiter)) {
+    if (!dir) continue
+    for (const name of names) {
+      const full = join(dir, name)
+      if (isFile(full) && !out.includes(full)) out.push(full)
+    }
+  }
+  return out
+}
+
+/*
+ * Whether a binary on PATH is the agent it is named after.
+ *
+ * Two agent names are also the names of unrelated Homebrew formulae — `grok` is
+ * a regex tool (jordansissel/grok) and `amp` a text editor (amp.rs) — so a
+ * filename match alone would tick "installed" in the picker and open the
+ * editor in a tab. For a CLI with an `identify` pattern, `--version` has to
+ * match it. The answer per path is cached for the life of the process: a
+ * binary does not change identity, and a launch should not pay a spawn.
+ */
+const identityCache = new Map<string, boolean>()
+
+async function isAgent(path: string, pattern: RegExp): Promise<boolean> {
+  const cached = identityCache.get(path)
+  if (cached !== undefined) return cached
+  let yes = false
+  try {
+    const spec = spawnSpec(path, ['--version'])
+    const { stdout, stderr } = await execFileAsync(spec.file, spec.args, {
+      timeout: 4000,
+      encoding: 'utf8',
+      env: { ...process.env, PATH: await buildEnvPath() }
+    })
+    yes = pattern.test(`${stdout}\n${stderr}`)
+  } catch {
+    yes = false
+  }
+  identityCache.set(path, yes)
+  return yes
+}
+
+/**
+ * The agent's binary, and — when the first file by that name is some other
+ * program — where that program is, so the UI can say so instead of "not
+ * installed".
+ */
+async function locateAgent(cli: CodingCli): Promise<{ path: string | null; conflict: string | null }> {
+  const found = await findAllTools(binNamesFor(cli, process.platform))
+  if (!cli.identify) return { path: found[0] ?? null, conflict: null }
+  for (const candidate of found) {
+    if (await isAgent(candidate, cli.identify)) return { path: candidate, conflict: null }
+  }
+  return { path: null, conflict: found[0] ?? null }
+}
+
 /** Find the claude executable, honouring an explicit user override first. */
 export async function findClaude(override: string | null): Promise<string | null> {
   if (override && isFile(override)) return override
@@ -265,7 +331,7 @@ export async function findClaude(override: string | null): Promise<string | null
 export async function findCli(id: CodingCliId, override: string | null = null): Promise<string | null> {
   if (id === 'claude') return findClaude(override)
   if (override && isFile(override)) return override
-  return findTool(binNamesFor(cliFor(id), process.platform))
+  return (await locateAgent(cliFor(id))).path
 }
 
 /**
@@ -279,10 +345,10 @@ export async function findCli(id: CodingCliId, override: string | null = null): 
  */
 export async function detectCodingClis(): Promise<CodingCliDetection> {
   const clis = await Promise.all(
-    CODING_CLIS.map(async (cli) => ({
-      id: cli.id,
-      path: await findTool(binNamesFor(cli, process.platform))
-    }))
+    CODING_CLIS.map(async (cli) => {
+      const { path, conflict } = await locateAgent(cli)
+      return conflict ? { id: cli.id, path, conflict } : { id: cli.id, path }
+    })
   )
   // Read after the lookups, which are what run the probe.
   return { clis, probeFailed: loginPathProbeFailed() }

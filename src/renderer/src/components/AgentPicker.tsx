@@ -40,6 +40,8 @@ export function AgentPicker({
     [detection]
   )
   const pathOf = (id: CodingCliId): string | null => detection?.clis.find((c) => c.id === id)?.path ?? null
+  const conflictOf = (id: CodingCliId): string | null =>
+    detection?.clis.find((c) => c.id === id)?.conflict ?? null
 
   const [picked, setPicked] = useState<Set<CodingCliId>>(() => new Set(chosen ?? []))
   const seeded = useRef(chosen !== null)
@@ -144,6 +146,12 @@ export function AgentPicker({
                     </span>
                   </span>
                   <span className="agent-row-blurb">{c.blurb}</span>
+                  {!have && conflictOf(c.id) && (
+                    <span className="agent-row-cmd">
+                      A different program named {c.bins.posix[0]} is at{' '}
+                      <code className="mono">{conflictOf(c.id)}</code>; this is not it.
+                    </span>
+                  )}
                   {on && !have && detection && (
                     <span className="agent-row-cmd">
                       {step ? (

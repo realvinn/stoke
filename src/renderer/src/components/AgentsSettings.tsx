@@ -103,6 +103,7 @@ export function AgentsSettings({
             key={c.id}
             cli={c}
             path={detection?.clis.find((s) => s.id === c.id)?.path ?? null}
+            conflict={detection?.clis.find((s) => s.id === c.id)?.conflict ?? null}
             checking={detection === null}
             shown={shown(c.id)}
             onShown={(on) => setShown(c.id, on)}
@@ -121,6 +122,7 @@ export function AgentsSettings({
 function AgentRow({
   cli,
   path,
+  conflict,
   checking,
   shown,
   onShown,
@@ -132,6 +134,7 @@ function AgentRow({
 }: {
   cli: CodingCli
   path: string | null
+  conflict: string | null
   checking: boolean
   shown: boolean
   onShown: (on: boolean) => void
@@ -186,6 +189,13 @@ function AgentRow({
       <span className="field-hint">
         {cli.vendor} · {cli.blurb}
       </span>
+      {!path && conflict && (
+        <span className="field-hint" data-tone="warning">
+          A different program named {cli.bins.posix[0]} is at{' '}
+          <span className="mono">{conflict}</span> — its --version is not {cli.label}’s, so Stoke
+          will not launch it.
+        </span>
+      )}
       {path ? (
         <span className="field-hint mono" style={{ overflowWrap: 'anywhere' }}>
           {path}

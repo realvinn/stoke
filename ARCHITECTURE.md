@@ -559,7 +559,11 @@ carries a shorter copy; this is the full one.
 src/main/         Electron main process
   index.ts          lifecycle, window, every IPC handler
   pty.ts            PTY sessions, env sanitising, scrollback, fan-out
-  cli.ts            locating claude, building its argv
+  cli.ts            locating claude and every other agent, building claude's argv. An agent
+                    whose name an unrelated program also uses (Homebrew's `grok` is a regex
+                    tool, its `amp` a text editor) must match its `identify` pattern on
+                    `--version`, or detection reports the impostor as a conflict and a tab
+                    never launches it
   projects.ts       project + session discovery from Claude's own files
   projectMeta.ts    per-folder emoji/label/added-by-hand, and the one pair of caps
   context.ts        live context-window watcher (polls transcripts). Publishes on a

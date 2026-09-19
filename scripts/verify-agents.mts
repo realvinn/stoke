@@ -213,6 +213,67 @@ console.log('\npi: --provider openrouter, and a Stoke-owned extension for anythi
   )
 }
 
+console.log('\nqwen, kimi, copilot: environment only, and every key in it')
+{
+  const q = plan('qwen', or('qwen/qwen3-coder'))
+  check('qwen: --auth-type on the command line, the key in env', planOk(q), {
+    args: ['--auth-type', 'openai', '-m', 'qwen/qwen3-coder'],
+    env: { OPENAI_BASE_URL: OPENROUTER_OPENAI_BASE_URL, OPENAI_API_KEY: KEY }
+  })
+  keysOnlyInEnv('qwen', q)
+  const k = plan('kimi', or('moonshotai/kimi-k3'))
+  check('kimi: a provider synthesised from four variables, typed openai (the default is kimi)', planOk(k), {
+    args: [],
+    env: {
+      KIMI_MODEL_NAME: 'moonshotai/kimi-k3',
+      KIMI_MODEL_API_KEY: KEY,
+      KIMI_MODEL_PROVIDER_TYPE: 'openai',
+      KIMI_MODEL_BASE_URL: OPENROUTER_OPENAI_BASE_URL
+    }
+  })
+  const c = plan('copilot', custom())
+  check('copilot: its own BYO-provider variables, model included', planOk(c), {
+    args: [],
+    env: {
+      COPILOT_PROVIDER_BASE_URL: 'http://127.0.0.1:11434/v1',
+      COPILOT_PROVIDER_API_KEY: CUSTOM_KEY,
+      COPILOT_MODEL: 'qwen3-coder'
+    }
+  })
+  ok('gemini refuses OpenRouter rather than silently using its own sign-in', !plan('gemini', or()).ok)
+  ok('and so do cursor and amp', !plan('cursor', or()).ok && !plan('amp', custom()).ok)
+}
+
+console.log('\nkilo reads OpenCode’s inline config under its own name; aider takes LiteLLM prefixes')
+{
+  const k = planOk(plan('kilo', custom(), { mcp: MCP }))
+  ok('kilo: KILO_CONFIG_CONTENT, not OpenCode’s variable', !!k.env.KILO_CONFIG_CONTENT && !('OPENCODE_CONFIG_CONTENT' in k.env))
+  check('kilo: the same provider and MCP shape', Object.keys(JSON.parse(k.env.KILO_CONFIG_CONTENT ?? '{}')).sort(), ['mcp', 'provider'])
+  check('aider: openrouter/<model> with OPENROUTER_API_KEY', planOk(plan('aider', or('deepseek/deepseek-v4'))), {
+    args: ['--model', 'openrouter/deepseek/deepseek-v4'],
+    env: { OPENROUTER_API_KEY: KEY }
+  })
+  check('aider: openai/<model> at OPENAI_API_BASE for a custom endpoint', planOk(plan('aider', custom())), {
+    args: ['--model', 'openai/qwen3-coder'],
+    env: { OPENAI_API_BASE: 'http://127.0.0.1:11434/v1', OPENAI_API_KEY: CUSTOM_KEY }
+  })
+  check('aider continues by restoring the folder’s chat', planOk(plan('aider', undefined, { continueLast: true })).args, ['--restore-chat-history'])
+  ok('crush, droid and cline refuse an endpoint rather than ignore it', ['crush', 'droid', 'cline'].every((id) => !plan(id as CodingCliId, or()).ok))
+}
+
+console.log('\nidentity: a file named after the agent is not always the agent')
+{
+  const byId = (id: CodingCliId) => CODING_CLIS.find((c) => c.id === id)!
+  const grok = byId('grok').identify!
+  const amp = byId('amp').identify!
+  ok('Grok Build’s own version line is Grok Build', grok.test('grok 1.0.34 (3736acbc8658)'))
+  ok('the community grok-cli’s bare version is not', !grok.test('1.1.7'))
+  ok('nor is Homebrew’s regex tool', !grok.test('grok v0.1.0'))
+  ok('Amp’s version is Amp', amp.test('0.0.1789790452-gad4023'))
+  ok('Homebrew’s amp editor is not', !amp.test('amp 0.7.1'))
+  ok('cursor looks for cursor-agent, never the bare `agent` Grok also installs', !byId('cursor').bins.posix.includes('agent'))
+}
+
 console.log('\nevery agent: a continue flag only where CLI_CAPS says there is one')
 for (const c of CODING_CLIS) {
   if (c.id === 'claude') continue
@@ -245,8 +306,8 @@ console.log('\ninstalling')
       const cmd = c.install[plat]
       if (!cmd) continue
       ok(
-        `${c.id}/${plat}: an https source, and no single quote to break the printf`,
-        /https:\/\/|^npm install -g /.test(cmd) && !cmd.includes("'"),
+        `${c.id}/${plat}: an https source or a package manager, and no single quote to break the printf`,
+        /https:\/\/|^npm install -g |^winget install /.test(cmd) && !cmd.includes("'"),
         cmd
       )
     }

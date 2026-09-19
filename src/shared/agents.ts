@@ -254,7 +254,11 @@ export function agentLaunchPlan(input: LaunchPlanInput): LaunchPlanResult {
       }
       break
     }
+    // Kilo is built on OpenCode and reads the same inline config under its own
+    // name — endpoint and MCP both seen working through KILO_CONFIG_CONTENT.
+    case 'kilo':
     case 'opencode': {
+      const configVar = id === 'kilo' ? 'KILO_CONFIG_CONTENT' : 'OPENCODE_CONFIG_CONTENT'
       const config: Record<string, unknown> = {}
       if (ep.mode === 'openrouter') {
         env.OPENROUTER_API_KEY = openrouterKey
@@ -279,7 +283,20 @@ export function agentLaunchPlan(input: LaunchPlanInput): LaunchPlanResult {
           stoke: { type: 'remote', url: mcp.url, headers: { Authorization: `Bearer ${mcp.token}` }, enabled: true }
         }
       }
-      if (Object.keys(config).length) env.OPENCODE_CONFIG_CONTENT = JSON.stringify(config)
+      if (Object.keys(config).length) env[configVar] = JSON.stringify(config)
+      break
+    }
+    case 'aider': {
+      // LiteLLM model prefixes: `openrouter/<model>` reads OPENROUTER_API_KEY,
+      // `openai/<model>` reads OPENAI_API_BASE and OPENAI_API_KEY.
+      if (ep.mode === 'openrouter') {
+        env.OPENROUTER_API_KEY = openrouterKey
+        args.push('--model', `openrouter/${ep.model}`)
+      } else if (ep.mode === 'custom') {
+        env.OPENAI_API_BASE = ep.baseUrl
+        env.OPENAI_API_KEY = customKey
+        args.push('--model', `openai/${ep.model}`)
+      }
       break
     }
     case 'grok': {
@@ -312,6 +329,40 @@ export function agentLaunchPlan(input: LaunchPlanInput): LaunchPlanResult {
         env[ENV_CUSTOM_KEY] = customKey
         env[ENV_CUSTOM_MODEL] = ep.model
         args.push('-e', piExtensionPath, '--provider', PROVIDER_CUSTOM, '--model', ep.model)
+      }
+      break
+    }
+    case 'qwen': {
+      // Key in the environment; `--openai-api-key` would put it in argv. The
+      // flag for the auth type, because `OPENROUTER_API_KEY` alone is not read
+      // ("Missing API key for OpenAI-compatible auth").
+      if (ep.mode !== 'default') {
+        env.OPENAI_BASE_URL = ep.mode === 'openrouter' ? OPENROUTER_OPENAI_BASE_URL : ep.baseUrl
+        env.OPENAI_API_KEY = ep.mode === 'openrouter' ? openrouterKey : customKey
+        args.push('--auth-type', 'openai', '-m', ep.model)
+      }
+      break
+    }
+    case 'kimi': {
+      // Kimi Code "synthesizes a temporary provider in memory" from these and
+      // writes no config.toml — checked. The type defaults to `kimi`, so it is
+      // set to `openai` explicitly.
+      if (ep.mode !== 'default') {
+        env.KIMI_MODEL_NAME = ep.model
+        env.KIMI_MODEL_API_KEY = ep.mode === 'openrouter' ? openrouterKey : customKey
+        env.KIMI_MODEL_PROVIDER_TYPE = 'openai'
+        env.KIMI_MODEL_BASE_URL = ep.mode === 'openrouter' ? OPENROUTER_OPENAI_BASE_URL : ep.baseUrl
+      }
+      break
+    }
+    case 'copilot': {
+      // Copilot's own bring-your-own-provider variables (`copilot help
+      // providers`); with them set it needs no GitHub sign-in, and a model is
+      // required.
+      if (ep.mode !== 'default') {
+        env.COPILOT_PROVIDER_BASE_URL = ep.mode === 'openrouter' ? OPENROUTER_OPENAI_BASE_URL : ep.baseUrl
+        env.COPILOT_PROVIDER_API_KEY = ep.mode === 'openrouter' ? openrouterKey : customKey
+        env.COPILOT_MODEL = ep.model
       }
       break
     }
