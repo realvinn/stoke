@@ -94,9 +94,12 @@ export function PhonePopover({ onOpenSettings, settingsOpen }: Props): React.JSX
         aria-expanded={open}
         data-attached={attached > 0 || undefined}
         onClick={() => setOpen((v) => !v)}
+        data-error={(!running && Boolean(state?.server.error)) || undefined}
         title={
           !running
-            ? 'Open on phone'
+            ? state?.server.error
+              ? 'Phone access could not start'
+              : 'Open on phone'
             : attached > 0
               ? `Phone access on · ${attached} connected`
               : 'Phone access on — show the code'
@@ -110,7 +113,29 @@ export function PhonePopover({ onOpenSettings, settingsOpen }: Props): React.JSX
         <>
           <div className="popover-backdrop" onClick={() => setOpen(false)} />
           <div className="popover phone-panel" role="dialog" aria-label="Phone access" ref={panelRef}>
-            {!running && (
+            {/*
+              A server that failed to start used to show the plain off-state,
+              as if nothing had been tried: the busy-port error lived only in
+              Settings. Said here, with the way to fix it.
+            */}
+            {!running && state?.server.error && (
+              <>
+                <p className="popover-title">Phone access could not start</p>
+                <p className="popover-text" data-tone="danger">
+                  {state.server.error}
+                </p>
+                <div className="popover-actions">
+                  <button className="btn" data-variant="primary" onClick={() => { setOpen(false); onOpenSettings() }}>
+                    Change port
+                  </button>
+                  <button className="btn" data-variant="ghost" disabled={busy} onClick={() => void act(window.stoke.remote.stop)}>
+                    Turn off
+                  </button>
+                </div>
+              </>
+            )}
+
+            {!running && !state?.server.error && (
               <>
                 <p className="popover-title">Your sessions, on your phone</p>
                 <p className="popover-text">

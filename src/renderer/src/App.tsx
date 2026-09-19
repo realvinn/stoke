@@ -70,6 +70,7 @@ import {
   rebindTabs,
   relaunchPlan,
   replaceOrAppend,
+  adoptRemoteTab,
   restartPlan,
   type PendingOrigin,
   type RelaunchPlan
@@ -900,8 +901,16 @@ export function App(): React.JSX.Element {
      * never by calling `pty.start` again. Phone contract point 10 / PX-9 / F3.
      */
     const offRemoteStart = window.stoke.remote.onSessionStarted((info) => {
+      /*
+       * In place of an ended or paused tab on the same session id, never
+       * beside it (`adoptRemoteTab`): a phone's Resume used to leave two tabs
+       * on one id, and closing the ended twin wiped the live one's context
+       * meter through `dropSessionState`. Selection follows the tab it
+       * replaced; read from the ref so the updater below stays pure.
+       */
+      const replacing = adoptRemoteTab(tabsRef.current, { id: info.ptyId, ptyId: info.ptyId, sessionId: info.sessionId } as Tab).replacedId
+      if (replacing) setActiveTabId((cur) => (cur === replacing ? info.ptyId : cur))
       setTabs((list) => {
-        if (list.some((t) => t.ptyId === info.ptyId)) return list
         const tab: Tab = {
           id: info.ptyId,
           kind: 'session',
@@ -921,7 +930,7 @@ export function App(): React.JSX.Element {
           selectedPath: null,
           expandedPath: null
         }
-        return replaceOrAppend(list, tab)
+        return adoptRemoteTab(list, tab).list
       })
     })
 

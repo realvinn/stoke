@@ -4257,6 +4257,10 @@ mark.hit {
   color: var(--warning);
 }
 
+.popover-text[data-tone='danger'] {
+  color: var(--danger);
+}
+
 .popover-actions {
   display: flex;
   flex-wrap: wrap;
@@ -4281,6 +4285,19 @@ mark.hit {
   height: 0.375rem;
   border-radius: var(--r-full);
   background: var(--accent-ink);
+}
+
+/* Phone access is on but failed to start (a busy port): the same badge in the
+   danger colour, so the failure is visible without opening Settings. */
+.phone-wrap .icon-btn[data-error]::after {
+  content: '';
+  position: absolute;
+  top: var(--space-4);
+  right: var(--space-4);
+  width: 0.375rem;
+  height: 0.375rem;
+  border-radius: var(--r-full);
+  background: var(--danger);
 }
 
 .phone-panel {

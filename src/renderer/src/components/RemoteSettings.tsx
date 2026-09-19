@@ -338,6 +338,34 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
             {state.server.error}
           </span>
         )}
+        {/*
+          PX-26(b), finished: the busy-port error says "pick a different port",
+          and the inline Port field was drawn only while the server ran with no
+          error, which is exactly never in this state. It is here beside the
+          error now, and main retries the server as soon as the port changes
+          while Phone access is on (`shouldRestartRemote`).
+        */}
+        {state?.server.error && !running && remote.enabled && (
+          <label
+            className="field-hint"
+            style={{ display: 'flex', gap: 'var(--space-4)', alignItems: 'center' }}
+          >
+            Port
+            <input
+              className="input"
+              type="number"
+              min={1024}
+              max={65535}
+              aria-label="Port for phone access"
+              value={portField.draft}
+              onChange={(e) => portField.setDraft(e.target.value)}
+              onBlur={portField.onBlur}
+              onKeyDown={portField.onKeyDown}
+              style={{ width: '6rem' }}
+            />
+            Stoke tries again as soon as you change it.
+          </label>
+        )}
 
         {/*
           What the hostname itself answers, said beside the code that encodes
