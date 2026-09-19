@@ -941,7 +941,16 @@ async function showTerminal(session: SessionRow): Promise<void> {
       return
     }
 
-    write(`${value}\r`)
+    /*
+     * {type:'submit'}, not `write(value + '\r')` as one frame — CLAUDE.md
+     * gotcha 85 / audit PX-1. Claude Code's own input box reads a fast
+     * multi-byte write as a paste, so the `\r` landed as a newline INSIDE the
+     * box for anything past ~80 characters, and only a second Enter actually
+     * submitted. The server now sends the text and the Enter as two writes,
+     * timed apart, bracketed as a paste when the pty has DECSET 2004 on.
+     */
+    if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'submit', text: value }))
+    else toast('Reconnecting — try again in a moment')
     input.value = ''
     input.style.height = 'auto'
     term.scrollToBottom()
