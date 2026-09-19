@@ -257,6 +257,7 @@ export interface LauncherKeyEvent {
  *   /               Open the folder switcher
  *   Cmd/Ctrl+O      Open a folder (the system dialog)
  *   1–9             Resume the Nth listed conversation
+ *   Enter (filter)  Resume the top match
  *   ↓ / ↑           Move between Start and the conversation list
  *   a printable key Type into the conversation filter
  *   Esc             Clear the filter
@@ -273,6 +274,9 @@ export function launcherKey(e: LauncherKeyEvent, ctx: { inField: boolean }): Lau
     if (e.repeat) return { type: 'swallow' }
     if (mod && !e.altKey) return { type: 'continue' }
     if (e.altKey && !mod) return { type: 'agents' }
+    // Typed a filter, pressed Enter: the top match is what was meant. The
+    // input has no Enter of its own, so without this it did nothing at all.
+    if (ctx.inField && !e.shiftKey) return { type: 'resume', index: 0 }
     return null
   }
   if (e.key === 'Escape') return { type: 'escape' }

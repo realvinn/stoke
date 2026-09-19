@@ -309,6 +309,7 @@ const inField = { inField: true }
 check('plain Enter is left to the focused button', launcherKey(k('Enter'), out), null)
 check('a HELD Enter is swallowed, so its repeats cannot start a session (QA L1)', launcherKey(k('Enter', { repeat: true }), out), { type: 'swallow' })
 check('…in the filter too', launcherKey(k('Enter', { repeat: true }), inField), { type: 'swallow' })
+check('Enter in the filter resumes the top match', launcherKey(k('Enter'), inField), { type: 'resume', index: 0 })
 check('Cmd+Enter continues', launcherKey(k('Enter', { metaKey: true }), out), { type: 'continue' })
 check('Ctrl+Enter continues', launcherKey(k('Enter', { ctrlKey: true }), out), { type: 'continue' })
 check('Alt+Enter opens the agent menu', launcherKey(k('Enter', { altKey: true }), out), { type: 'agents' })

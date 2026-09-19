@@ -2554,6 +2554,9 @@ mark.hit {
   display: flex;
   flex-direction: column;
   gap: 1px;
+  /* Eight models or seven modes run past the bottom of a 700px window. */
+  max-height: min(22rem, 45vh);
+  overflow-y: auto;
 }
 
 .chip-option {

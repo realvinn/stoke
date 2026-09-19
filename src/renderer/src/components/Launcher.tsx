@@ -212,6 +212,18 @@ export function Launcher(props: Props): React.JSX.Element {
   }
 
   const agentMenu = otherClis.length > 0 || !!props.onAddAgents
+  /*
+   * A chip pick applies to this launch and closes the popover, with focus on
+   * Start: a one-off model is chip, pick, Enter. Left open, Enter pressed the
+   * focused option again instead of starting. "Make default" is in the same
+   * popover when it is reopened, and the chip's dot says a value is changed.
+   */
+  const picked = (patch: LaunchOverride): void => {
+    props.onLaunchChange(patch)
+    setPop(null)
+    requestAnimationFrame(focusPrimary)
+  }
+
 
   return (
     <div className="launcher">
@@ -395,7 +407,7 @@ export function Launcher(props: Props): React.JSX.Element {
                 hint: m.hint,
                 danger: m.danger
               }))}
-              onPick={(id) => props.onLaunchChange({ permissionMode: id as PermissionMode })}
+              onPick={(id) => picked({ permissionMode: id as PermissionMode })}
             />
             <ChipFoot
               source={sourceText(launch.permissionMode.source, claude.from.permissionMode)}
@@ -418,7 +430,7 @@ export function Launcher(props: Props): React.JSX.Element {
                 id: m.id,
                 label: m.id === '' ? `Claude Code default · ${claude.model ? modelLabel(claude.model) : 'its own'}` : m.label
               }))}
-              onPick={(id) => props.onLaunchChange({ model: id })}
+              onPick={(id) => picked({ model: id })}
             />
             <ChipFoot
               source={sourceText(launch.model.source, claude.from.model)}
@@ -449,7 +461,7 @@ export function Launcher(props: Props): React.JSX.Element {
                     ? `Claude Code default · ${launch.effort.settingsValue ? EFFORT_LABELS[launch.effort.settingsValue] : 'its own'}`
                     : e.label
               }))}
-              onPick={(id) => props.onLaunchChange({ effort: id as EffortLevel })}
+              onPick={(id) => picked({ effort: id as EffortLevel })}
             />
             {launch.ultracode.choice && (
               <p className="popover-text">Ultracode runs this session at Extra high; the pick comes back when it is off.</p>
@@ -476,7 +488,7 @@ export function Launcher(props: Props): React.JSX.Element {
                 { id: 'off', label: 'Off' },
                 { id: 'on', label: 'On — Extra high effort plus workflows' }
               ]}
-              onPick={(id) => props.onLaunchChange({ ultracode: id === 'on' })}
+              onPick={(id) => picked({ ultracode: id === 'on' })}
             />
             <p className="popover-text">{ULTRACODE_HINT}</p>
             <ChipFoot
