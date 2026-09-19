@@ -892,6 +892,38 @@ export function App(): React.JSX.Element {
     void window.stoke.worklog.queue().then(setWorklog)
     const offWatch = window.stoke.worklog.onWatchChanged(setWorklogWatch)
     void window.stoke.worklog.watch().then(setWorklogWatch)
+    /*
+     * A session started from the phone is a real pty already running, with
+     * nothing on the desktop showing it — the tab strip stayed at "No active
+     * session" while it billed tokens. Adopted here the same way a restored
+     * tab is adopted: appended straight from what main already launched,
+     * never by calling `pty.start` again. Phone contract point 10 / PX-9 / F3.
+     */
+    const offRemoteStart = window.stoke.remote.onSessionStarted((info) => {
+      setTabs((list) => {
+        if (list.some((t) => t.ptyId === info.ptyId)) return list
+        const tab: Tab = {
+          id: info.ptyId,
+          kind: 'session',
+          cliId: info.cli,
+          ptyId: info.ptyId,
+          sessionId: info.sessionId,
+          cwd: info.cwd,
+          projectName: info.name,
+          title: info.name,
+          permissionMode: info.permissionMode,
+          model: info.model,
+          effort: info.effort,
+          ultracode: false,
+          status: 'running',
+          exitCode: null,
+          hostId: null,
+          selectedPath: null,
+          expandedPath: null
+        }
+        return replaceOrAppend(list, tab)
+      })
+    })
 
     void (async () => {
       const s = await window.stoke.settings.get()
@@ -925,6 +957,7 @@ export function App(): React.JSX.Element {
       offWorklog()
       offProposed()
       offWatch()
+      offRemoteStart()
     }
   }, [refreshProjects])
 
@@ -3023,6 +3056,7 @@ export function App(): React.JSX.Element {
         onOpenPalette={() => setPaletteOpen(true)}
         onOpenSettings={() => openSettings()}
         onOpenPhoneSettings={() => openSettings('remote')}
+        settingsOpen={settingsOpen}
       />
 
       <div className="body-row">
