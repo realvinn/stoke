@@ -127,6 +127,14 @@ export const CH = {
   remoteOpenOnPhone: 'remote:openOnPhone',
   /** Pushed whenever the server, the tunnel or the attached clients change. */
   remoteChanged: 'remote:changed',
+  /**
+   * A session started from the phone (`POST /api/sessions`) is a real pty
+   * running right now; this is what tells the desktop it exists at all.
+   * Phone contract point 10 / audit PX-9 / F3 — `App.tsx` adopts it as a tab
+   * the same way boot restore adopts one, rather than the desktop showing "No
+   * active session" while a phone-started `claude` runs unseen.
+   */
+  remoteSessionStarted: 'remote:sessionStarted',
   tunnelStart: 'tunnel:start',
   tunnelStop: 'tunnel:stop',
   /** Look for cloudflared again, after the user has installed it. */
