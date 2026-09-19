@@ -523,10 +523,11 @@ export function SettingsSheet({
                     happened at every intermediate state a number field reports as
                     empty (a lone "1." among them).
 
-                    The draft is only what is displayed. The commit still goes
-                    through the same clamp, on blur or Enter, so a pasted 99 is
-                    still bounded — the browser's own min/max are advisory inside
-                    onChange and cannot be relied on.
+                    The draft is only what is displayed. onChange applies every
+                    non-empty value live; onBlur commits valid values through the
+                    clamp and reverts invalid or empty ones by clearing the draft.
+                    A pasted 99 is still bounded — the browser's own min/max are
+                    advisory inside onChange and cannot be relied on.
                   */}
                   <input
                     className="input"
@@ -545,7 +546,14 @@ export function SettingsSheet({
                       }
                     }}
                     onBlur={() => {
-                      if (scaleDraft !== null) onPatch({ uiScale: clampUiScale(scaleDraft) })
+                      if (scaleDraft !== null) {
+                        // Only patch if the draft is a valid number; otherwise just
+                        // revert the display by clearing the draft state. onChange
+                        // has already applied every non-empty value live.
+                        if (scaleDraft.trim() !== '' && Number.isFinite(Number(scaleDraft))) {
+                          onPatch({ uiScale: clampUiScale(scaleDraft) })
+                        }
+                      }
                       setScaleDraft(null)
                     }}
                     onKeyDown={(e) => {
