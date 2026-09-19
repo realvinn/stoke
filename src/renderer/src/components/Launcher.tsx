@@ -71,6 +71,8 @@ interface Props {
    */
   otherClis?: CodingCli[]
   onStartCli?: (id: CodingCliId) => void
+  /** Open the agent picker, to choose or install more. */
+  onAddAgents?: () => void
 }
 
 export function Launcher({
@@ -98,6 +100,7 @@ export function Launcher({
   onStartDefault,
   otherClis = [],
   onStartCli,
+  onAddAgents,
   onStartScratch
 }: Props): React.JSX.Element {
   const startRef = useRef<HTMLButtonElement>(null)
@@ -317,27 +320,24 @@ export function Launcher({
         )}
 
         {/*
-          The other coding CLIs, when any are installed.
-
-          Separate from "Continue last" and from the primary Start, and worded
-          so the trade is visible BEFORE the click rather than discovered as an
+          The other coding agents: the ones chosen in the picker that are
+          installed. Separate from "Continue last" and the primary Start, and
+          worded so the trade is visible BEFORE the click rather than found as an
           empty status bar afterwards. Not gated on `cliBroken`: that flag is
           about a missing `claude`, which has nothing to do with whether `codex`
           runs.
 
-          Detection-only entries are omitted rather than shown disabled — a
-          greyed button for a tool you have never installed is noise, and
-          Settings › Providers already lists what was and was not found, with
-          gotcha 52's distinction between "not installed" and "Stoke could not
-          read your PATH".
+          Always drawn when there is somewhere to add from, even with no agents
+          yet, because "Add…" is how anyone finds out the others exist.
         */}
-        {otherClis.length > 0 && (
+        {(otherClis.length > 0 || onAddAgents) && (
           <div className="launcher-row">
             <span className="launcher-row-label">
-              <b>Other CLIs</b>
+              <b>Other agents</b>
               <span>
-                Opens that CLI in this folder, with Stoke&rsquo;s terminal around it. No context
-                ring, no resume, no worklog — those all read Claude Code&rsquo;s own files.
+                Opens that agent in this folder, with Stoke&rsquo;s terminal around it. Resuming
+                continues its latest session here; the context ring and the worklog read Claude
+                Code&rsquo;s files only.
               </span>
             </span>
             <div style={{ display: 'flex', gap: 'var(--space-8)', flexWrap: 'wrap' }}>
@@ -351,6 +351,11 @@ export function Launcher({
                   {c.label}
                 </button>
               ))}
+              {onAddAgents && (
+                <button className="btn" data-variant="ghost" onClick={onAddAgents}>
+                  {otherClis.length ? 'Add…' : 'Add agents…'}
+                </button>
+              )}
             </div>
           </div>
         )}

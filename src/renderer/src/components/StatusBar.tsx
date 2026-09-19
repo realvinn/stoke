@@ -316,12 +316,18 @@ export function StatusBar({
          * The user would watch a status bar that never resolves and reasonably
          * conclude the meter was broken.
          */
-        <span
-          className="status-item"
-          title="Stoke reads context usage from Claude Code's own status line, which this CLI does not write."
-        >
-          {cliFor(cliIdOf(tab.cliId)).label} — no context reading
-        </span>
+        tab.installing?.length ? (
+          <span className="status-item">
+            Installing {tab.installing.map((id) => cliFor(id).label).join(', ')}
+          </span>
+        ) : (
+          <span
+            className="status-item"
+            title="Stoke reads context usage from Claude Code's own status line, which this CLI does not write."
+          >
+            {cliFor(cliIdOf(tab.cliId)).label} — no context reading
+          </span>
+        )
       )}
     </footer>
   )

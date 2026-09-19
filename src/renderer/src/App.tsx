@@ -1,6 +1,7 @@
-import { capsFor, CODING_CLIS, DEFAULT_CLI } from '@shared/codingClis'
-import type { CodingCli } from '@shared/codingClis'
-import type { CodingCliId } from '@shared/codingClis'
+import { capsFor, cliFor, DEFAULT_CLI, isClaudeCode } from '@shared/codingClis'
+import type { CodingCliDetection, CodingCliId } from '@shared/codingClis'
+import { visibleAgents } from '@shared/agents'
+import { AgentPicker } from './components/AgentPicker'
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
   BrowserState,
@@ -126,6 +127,25 @@ export function App(): React.JSX.Element {
   const [cli, setCli] = useState<CliInfo | null>(null)
   /** The first-run campfire, or null on every launch that is not one. */
   const [welcome, setWelcome] = useState<WelcomeScreen | null>(null)
+
+  /*
+   * Which coding agents are on this machine, and whether the PATH could be read
+   * (gotcha 52). One copy for the launcher row, the picker and Settings, read
+   * on mount and again after an install tab exits — `fresh` re-reads the login
+   * shell, since the installer has just added its bin directory to the rc.
+   * `null` is "still looking", which the picker shows as such.
+   */
+  const [agentDetection, setAgentDetection] = useState<CodingCliDetection | null>(null)
+  const refreshAgents = useCallback((fresh = false): void => {
+    void window.stoke.cli
+      .detect({ fresh })
+      .then(setAgentDetection)
+      .catch(() => {
+        /* Detection is a convenience; a failure leaves the last answer standing. */
+      })
+  }, [])
+  /** The agent picker: opened by hand, or once on a launch that has never answered it. */
+  const [agentPickerOpen, setAgentPickerOpen] = useState(false)
 
   const [projects, setProjects] = useState<Project[]>([])
   const [projectsLoading, setProjectsLoading] = useState(true)
@@ -967,16 +987,18 @@ export function App(): React.JSX.Element {
     const offs = tabs
       .filter((t) => t.kind === 'session' && t.status === 'running')
       .map((t) =>
-        attachExit(t.ptyId, (code) =>
+        attachExit(t.ptyId, (code) => {
           setTabs((list) =>
             list.map((x) =>
               x.ptyId === t.ptyId ? { ...x, status: 'exited' as const, exitCode: code } : x
             )
           )
-        )
+          // An install tab has just changed what is on this machine.
+          if (t.installing?.length) refreshAgents(true)
+        })
       )
     return () => offs.forEach((off) => off())
-  }, [tabs])
+  }, [tabs, refreshAgents])
 
   /*
    * Adopt Claude's own generated title, and keep the permission mode live.
@@ -1079,6 +1101,8 @@ export function App(): React.JSX.Element {
        * every existing caller means and what every tab was before this existed.
        */
       cli?: CodingCliId
+      /** Install these agents in this tab instead of running one (agents.ts). */
+      install?: CodingCliId[]
     }): Promise<boolean> => {
       setError(null)
       const launchCli = opts.cli ?? DEFAULT_CLI
@@ -1101,7 +1125,18 @@ export function App(): React.JSX.Element {
            */
           sessionId: caps.resume === 'mintedId' ? opts.sessionId : undefined,
           resume: caps.resume === 'mintedId' ? opts.resume : undefined,
-          continueLast: caps.resume === 'mintedId' ? opts.continueLast : undefined,
+          /*
+           * A CLI that can only continue "the latest session in this folder"
+           * turns a resume into that: it is the same session unless another
+           * was started here since, and the paused card says so.
+           */
+          continueLast:
+            caps.resume === 'mintedId'
+              ? opts.continueLast
+              : caps.resume === 'continue'
+                ? opts.continueLast === true || opts.resume === true
+                : undefined,
+          install: opts.install,
           permissionMode,
           model: sessionModel,
           effort: sessionEffort,
@@ -1116,6 +1151,7 @@ export function App(): React.JSX.Element {
           id: res.ptyId,
           kind: 'session',
           cliId: launchCli,
+          ...(opts.install?.length ? { installing: opts.install } : {}),
           ptyId: res.ptyId,
           sessionId: res.sessionId,
           cwd: opts.cwd,
@@ -1692,6 +1728,18 @@ export function App(): React.JSX.Element {
         return
       }
 
+      if (plan.kind === 'install') {
+        void startSession({
+          cwd: defaultCwd,
+          name: tab.projectName,
+          title: tab.title,
+          cli: plan.ids[0],
+          install: plan.ids,
+          replaceTabId: tab.id
+        }).finally(() => releaseStart(tab.id))
+        return
+      }
+
       void startSession({
         cwd: plan.cwd,
         // From the plan, not from the tab, so there is one decision and one
@@ -1704,7 +1752,7 @@ export function App(): React.JSX.Element {
         effort: tab.effort
       }).finally(() => releaseStart(tab.id))
     },
-    [settings, startSession, startHostSession, claimStart, releaseStart]
+    [settings, startSession, startHostSession, claimStart, releaseStart, defaultCwd]
   )
 
   /**
@@ -1780,35 +1828,55 @@ export function App(): React.JSX.Element {
 
   /* --------------------------------------------------------------- browser */
 
-  const overlayOpen = paletteOpen || settingsOpen
+  const overlayOpen = paletteOpen || settingsOpen || agentPickerOpen
   const seededBrowser = useRef(false)
 
-  /*
-   * Which other coding CLIs are on this machine.
-   *
-   * Read once on mount rather than per launcher render: it is a PATH walk
-   * behind an IPC round trip, and installing a CLI mid-session is rare enough
-   * that a restart is a fair price for noticing it. Claude Code is filtered out
-   * here rather than in the component — it is not an "other CLI", it is the one
-   * every other control on the launcher already means.
-   */
-  const [otherClis, setOtherClis] = useState<CodingCli[]>([])
   useEffect(() => {
-    let alive = true
-    void window.stoke.cli
-      .detect()
-      .then((found) => {
-        if (!alive) return
-        const installed = new Set(found.filter((f) => f.path).map((f) => f.id))
-        setOtherClis(CODING_CLIS.filter((c) => c.id !== 'claude' && installed.has(c.id)))
+    refreshAgents()
+  }, [refreshAgents])
+
+  /*
+   * The launcher's agent row: what the picker chose, installed, and not Claude
+   * — Claude Code is not an "other agent", it is what every other control on
+   * the launcher already means. Before the picker has been answered, every
+   * installed agent, which is exactly what the row showed before it existed.
+   */
+  const otherClis = useMemo(() => {
+    const installed = new Set(agentDetection?.clis.filter((c) => c.path).map((c) => c.id) ?? [])
+    return visibleAgents(settings?.agents.chosen ?? null, installed)
+      .filter((id) => !isClaudeCode(id))
+      .map((id) => cliFor(id))
+  }, [agentDetection, settings?.agents.chosen])
+
+  /*
+   * Ask once. A launch whose settings have never answered the picker opens it
+   * as soon as the campfire is out of the way and detection has landed — after,
+   * so the picker can pre-tick what is installed rather than flash empty. The
+   * ref makes it once per launch even if the user closes it without choosing.
+   */
+  const pickerAsked = useRef(false)
+  useEffect(() => {
+    if (pickerAsked.current || !settings || welcome || !agentDetection) return
+    if (settings.agents.chosen !== null) return
+    pickerAsked.current = true
+    setAgentPickerOpen(true)
+  }, [settings, welcome, agentDetection])
+
+  /** Open a tab that installs these agents, from the vendors' own commands. */
+  const installAgents = useCallback(
+    (ids: CodingCliId[]): void => {
+      if (!ids.length) return
+      const labels = ids.map((id) => cliFor(id).label).join(', ')
+      void startSession({
+        cwd: defaultCwd,
+        name: 'Install agents',
+        title: `Installing ${labels}`,
+        cli: ids[0],
+        install: ids
       })
-      .catch(() => {
-        /* Detection is a convenience; a failure just means no extra buttons. */
-      })
-    return () => {
-      alive = false
-    }
-  }, [])
+    },
+    [startSession, defaultCwd]
+  )
 
   // The WebContentsView paints above the DOM, so it must be detached while a
   // palette or settings sheet is open or it would cover them.
@@ -2583,6 +2651,7 @@ export function App(): React.JSX.Element {
               }
               cli={cli}
               otherClis={otherClis}
+              onAddAgents={() => setAgentPickerOpen(true)}
               onStartCli={(id) => {
                 const target = selectedProject?.path ?? defaultCwd
                 if (!target) return
@@ -2701,6 +2770,15 @@ export function App(): React.JSX.Element {
           onProfileCreated={refreshProjects}
           onPreviewTheme={setPreviewTheme}
           initialSection={settingsSection}
+          agents={{
+            detection: agentDetection,
+            onRefresh: () => refreshAgents(true),
+            onOpenPicker: () => setAgentPickerOpen(true),
+            onInstall: (ids) => {
+              setSettingsOpen(false)
+              installAgents(ids)
+            }
+          }}
           onClose={() => {
             // Drop any live preview with the sheet. Closing settings mid-edit
             // is a cancel by any other name, and leaving the preview applied
@@ -2719,6 +2797,32 @@ export function App(): React.JSX.Element {
         kilobytes off the local disk, and a spinner that flashes for one frame
         before a welcome screen is worse than one frame of nothing.
       */}
+      {agentPickerOpen && settings && (
+        <AgentPicker
+          detection={agentDetection}
+          chosen={settings.agents.chosen}
+          platform={platform}
+          onDone={(chosen, install) => {
+            setAgentPickerOpen(false)
+            void patchSettings({ agents: { ...settings.agents, chosen } })
+            installAgents(install)
+          }}
+          onClose={() => {
+            setAgentPickerOpen(false)
+            /*
+             * Closing a first-run picker without choosing records the agents
+             * that are installed, which is what the launcher was showing anyway.
+             * Leaving it null would re-open the picker on every launch until
+             * the user gave in.
+             */
+            if (settings.agents.chosen === null && agentDetection) {
+              const installed = agentDetection.clis.filter((c) => c.path).map((c) => c.id)
+              void patchSettings({ agents: { ...settings.agents, chosen: installed } })
+            }
+          }}
+        />
+      )}
+
       {welcome && (
         <Suspense fallback={null}>
           <Campfire

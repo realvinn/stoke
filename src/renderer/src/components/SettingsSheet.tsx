@@ -40,6 +40,8 @@ import { ProvidersSettings } from './ProvidersSettings'
 import { ThemeEditor } from './ThemeEditor'
 import { RemoteSettings, SelfUpdateSettings, UpdatesSettings } from './RemoteSettings'
 import { VoiceSettings } from './VoiceSettings'
+import { AgentsSettings } from './AgentsSettings'
+import type { CodingCliDetection, CodingCliId } from '@shared/codingClis'
 import { WorklogSettings } from './WorklogSettings'
 import {
   EFFORT_LEVELS,
@@ -107,6 +109,7 @@ export type SectionId =
   | 'profiles'
   | 'sessions'
   | 'claude'
+  | 'agents'
   | 'providers'
   | 'voice'
   | 'projects'
@@ -142,7 +145,12 @@ const GROUPS: { title: string; sections: Section[] }[] = [
     sections: [
       { id: 'sessions', label: 'Sessions', hint: 'What a new session starts with' },
       { id: 'claude', label: 'Claude Code', hint: "Claude Code's own configuration" },
-      { id: 'providers', label: 'Providers', hint: 'API keys: Anthropic, OpenRouter, OpenAI/Codex, xAI/Grok' },
+      {
+        id: 'agents',
+        label: 'Coding agents',
+        hint: 'Codex, OpenCode, Grok, Pi and the rest: which show, installing them, their endpoints'
+      },
+      { id: 'providers', label: 'Providers', hint: 'Claude Code’s API keys and gateway, and the shared OpenRouter key' },
       { id: 'voice', label: 'Voice', hint: 'The microphone, Claude Code’s /voice, and Stoke’s dictation' },
       { id: 'projects', label: 'Projects', hint: 'Which folders the sidebar scans' },
       { id: 'hosts', label: 'SSH hosts', hint: 'Remote machines to open sessions on' }
@@ -205,6 +213,17 @@ interface Props {
    */
   onPreviewTheme: (theme: Theme | null) => void
   /**
+   * The coding-agent detection App already holds, and the three things the
+   * Coding agents section can ask App to do. App owns them because the picker,
+   * the launcher row and an install tab all read the same detection.
+   */
+  agents: {
+    detection: CodingCliDetection | null
+    onRefresh: () => void
+    onOpenPicker: () => void
+    onInstall: (ids: CodingCliId[]) => void
+  }
+  /**
    * Which section to open on. Three other panels say "open Settings" and used
    * to land on Appearance regardless of what they were talking about.
    */
@@ -229,6 +248,7 @@ export function SettingsSheet({
   onProfileCreated,
   onPreviewTheme,
   initialSection,
+  agents,
   onClose
 }: Props): React.JSX.Element {
   const themes: Theme[] = [...BUILT_IN_THEMES, ...settings.customThemes]
@@ -898,6 +918,17 @@ export function SettingsSheet({
             )}
 
             {section === 'remote' && <RemoteSettings settings={settings} onPatch={onPatch} />}
+
+            {section === 'agents' && (
+              <AgentsSettings
+                settings={settings}
+                onPatch={onPatch}
+                detection={agents.detection}
+                onRefresh={agents.onRefresh}
+                onOpenPicker={agents.onOpenPicker}
+                onInstall={agents.onInstall}
+              />
+            )}
 
             {section === 'voice' && (
               <VoiceSettings settings={settings} onOpenSection={(id) => setSection(id)} />

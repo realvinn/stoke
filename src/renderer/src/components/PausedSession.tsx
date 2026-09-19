@@ -1,3 +1,4 @@
+import { capsFor, cliFor } from '@shared/codingClis'
 import type { Tab } from '../types'
 
 interface Props {
@@ -40,6 +41,8 @@ export function PausedSession({
   resuming,
   onClose
 }: Props): React.JSX.Element {
+  // What this tab's CLI can do about coming back — see CLI_CAPS.resume.
+  const caps = capsFor(tab.cliId)
   return (
     <div className="term-pane" hidden={!active}>
       <pre className="paused-screen" aria-hidden="true">
@@ -51,9 +54,13 @@ export function PausedSession({
           {onResume
             ? tab.hostId
               ? 'Paused when Stoke quit. Resuming reconnects to this host.'
-              : tab.sessionId
-                ? 'Paused when Stoke quit.'
-                : 'Paused when Stoke quit. Resuming opens the most recent session in this folder.'
+              : caps.resume === 'continue'
+                ? `Paused when Stoke quit. ${cliFor(tab.cliId).label} continues its most recent session in this folder — this one, unless another was started here since.`
+                : caps.resume === 'none'
+                  ? `Paused when Stoke quit. ${cliFor(tab.cliId).label} cannot be pointed back at a session, so this starts a new one here.`
+                  : tab.sessionId
+                    ? 'Paused when Stoke quit.'
+                    : 'Paused when Stoke quit. Resuming opens the most recent session in this folder.'
             : 'This host is no longer in Settings, so there is nothing to reconnect to.'}
         </span>
         <div className="paused-actions">
@@ -64,7 +71,13 @@ export function PausedSession({
               onClick={onResume}
               disabled={resuming}
             >
-              {resuming ? 'Resuming…' : 'Resume session'}
+              {resuming
+                ? 'Resuming…'
+                : !tab.hostId && caps.resume === 'continue'
+                  ? 'Continue latest session'
+                  : !tab.hostId && caps.resume === 'none'
+                    ? 'Start again'
+                    : 'Resume session'}
             </button>
           )}
           <button className="btn" data-variant="ghost" onClick={() => onClose(tab.id)}>

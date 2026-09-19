@@ -152,6 +152,15 @@ export class BrowserMcpServer {
     return this.configPath()
   }
 
+  /**
+   * Where the server listens and the bearer it wants, for a CLI that takes its
+   * MCP servers as launch flags rather than a config file (Codex's `-c
+   * mcp_servers.*`, OpenCode's inline config). Null until it is listening.
+   */
+  endpoint(): { url: string; token: string } | null {
+    return this.http && this.port ? { url: `http://127.0.0.1:${this.port}/mcp`, token: this.token } : null
+  }
+
   stop(): void {
     this.http?.close()
     this.http = null

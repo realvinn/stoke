@@ -359,12 +359,20 @@ export function paneOrder<T extends { id: string; kind: string }>(list: readonly
 export type RestartPlan =
   | { kind: 'host'; hostId: string }
   | { kind: 'local'; cwd: string; cli: CodingCliId }
+  /** An install tab runs its installs again, never the first agent in its list. */
+  | { kind: 'install'; ids: CodingCliId[] }
   | { kind: 'impossible'; reason: string }
 
 export function restartPlan(
-  tab: { cwd: string; hostId?: string | null; cliId?: CodingCliId },
+  tab: { cwd: string; hostId?: string | null; cliId?: CodingCliId; installing?: CodingCliId[] },
   hostIds: string[]
 ): RestartPlan {
+  /*
+   * First, because an install tab also carries a `cliId` (its first agent) and
+   * a local cwd: read as a session it would "start again" by launching an agent
+   * the install may just have failed to put on the machine.
+   */
+  if (tab.installing?.length) return { kind: 'install', ids: [...tab.installing] }
   if (tab.hostId) {
     return hostIds.includes(tab.hostId)
       ? { kind: 'host', hostId: tab.hostId }

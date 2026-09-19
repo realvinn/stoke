@@ -424,8 +424,8 @@ Linux arm64 is deliberately not built (`NOT_BUILT` in `scripts/targets.mjs`).
 
 ## Testing
 
-Verification lives in `scripts/`, one `verify-*` suite per subject — thirty-seven of them now.
-Thirty-five are in `npm run check`, between the typecheck and the full build; `check` is the
+Verification lives in `scripts/`, one `verify-*` suite per subject — thirty-eight of them now.
+Thirty-six are in `npm run check`, between the typecheck and the full build; `check` is the
 gate, and it is what "done" means here. They are `.mts` run straight through node's
 type-stripping with no build step, except `verify:selection`, which opens a real Electron window
 and so needs a display. Each runs alone:
@@ -461,6 +461,10 @@ npm run verify:drop           # what a dropped file types: quoting per platform,
 npm run verify:browser-url    # what the docked browser will load: file://, javascript:,
                               # data: refused to a tool call, file:// kept for the address
                               # bar, and localhost:3000 not mistaken for a scheme
+npm run verify:agents         # the coding agents: what is stored, what the launcher shows,
+                              # each CLI's exact launch plan (endpoint, MCP, continue) with
+                              # every key in env and none in argv, and the install script —
+                              # only table ids survive into a command
 npm run verify:voice          # who owns a held Space: Claude Code's /voice or Stoke's
                               # dictation, and that dictation swallows the REPEATS too;
                               # what a refused microphone is called; and the wire from
@@ -669,6 +673,12 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
   url.ts            what the docked browser may load, and what the address bar makes of
                     `localhost:3000`. `browser_open` is refused file://, javascript: and
                     data: outright — `browser_read` would hand a local file to the model
+  agents.ts         the coding agents the user chose, where each non-Claude one sends its
+                    requests, and what installs one. Every override is applied AT LAUNCH —
+                    flags and env for one process, keys only in env — and never written
+                    into the agent's own config, gotcha 38's rule for tools that rewrite
+                    their files. `installScript` builds a tab's shell script from the table
+                    and ids it validates, so the renderer can never contribute command text
   voiceRoute.ts     who owns a held Space bar in a tab — Claude Code's /voice or Stoke's
                     dictation — and the words for a refused microphone. On macOS a CLI in a
                     Stoke pty records AS Stoke (TCC's responsible process), so Stoke's one

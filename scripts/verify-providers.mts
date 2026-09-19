@@ -264,21 +264,36 @@ console.log('\nthe coding CLIs Stoke knows about')
 {
   const ids = CODING_CLIS.map((c) => c.id)
   check('claude is first, because findClaude reads its names from this list', ids[0], 'claude')
-  check('and the other three are the ones asked for', ids.slice(1).sort(), ['codex', 'grok', 'opencode'])
+  ok('the agents the picker offers are all here', ['codex', 'grok', 'opencode', 'pi'].every((id) => ids.includes(id as never)))
   ok('every id is unique', new Set(ids).size === ids.length)
+  /*
+   * The binary is NOT always the id (Cursor's is `cursor-agent`), so the names
+   * are checked for their shape rather than for equalling the id: bare names on
+   * posix, and on Windows an .exe and a .cmd for the first of them — an npm
+   * install is a .cmd shim and a bare name finds neither — with the bare name
+   * last so a real .exe wins.
+   */
   for (const c of CODING_CLIS) {
     const win = binNamesFor(c, 'win32')
     const posix = binNamesFor(c, 'darwin')
-    check(`${c.id}: one bare name on posix`, posix, [c.id])
     ok(
-      `${c.id}: windows tries .exe, .cmd and .bat as well as the bare name`,
-      ['.exe', '.cmd', '.bat'].every((ext) => win.includes(`${c.id}${ext}`)) && win.includes(c.id),
+      `${c.id}: posix names are bare names`,
+      posix.length > 0 && posix.every((n) => !/[\\/]/.test(n) && !/\.(exe|cmd|bat)$/i.test(n)),
+      JSON.stringify(posix)
+    )
+    ok(
+      `${c.id}: windows tries .exe and .cmd for ${posix[0]}`,
+      win.includes(`${posix[0]}.exe`) && win.includes(`${posix[0]}.cmd`),
       JSON.stringify(win)
     )
-    ok(`${c.id}: the bare name is last on windows, so a real .exe wins`, win[win.length - 1] === c.id)
+    ok(`${c.id}: the bare name is last on windows, so a real .exe wins`, win[win.length - 1] === posix[0])
     ok(`${c.id}: links somewhere over https`, c.home.startsWith('https://'))
   }
-  check('linux gets the posix names, not the windows ones', binNamesFor(CODING_CLIS[1], 'linux'), ['codex'])
+  check(
+    'linux gets the posix names, not the windows ones',
+    binNamesFor(CODING_CLIS.find((c) => c.id === 'codex')!, 'linux'),
+    ['codex']
+  )
 
   /*
    * The wording, which is the part that can be wrong in a way that costs
@@ -286,7 +301,7 @@ console.log('\nthe coding CLIs Stoke knows about')
    * installed" is a statement about Stoke's PATH rather than about the machine
    * (gotcha 52), and following it means reinstalling something already there.
    */
-  const codex = CODING_CLIS[1]
+  const codex = CODING_CLIS.find((c) => c.id === 'codex')!
   check('a found CLI shows its path', cliStatusLine(codex, { id: 'codex', path: '/usr/bin/codex' }, false), '/usr/bin/codex')
   check('a missing one says so plainly', cliStatusLine(codex, { id: 'codex', path: null }, false), 'Not installed.')
   ok(

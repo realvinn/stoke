@@ -6,8 +6,6 @@ import {
   providersSummary,
   validateClaudeAuth
 } from '@shared/providers'
-import { CODING_CLIS } from '@shared/codingClis'
-import type { CodingCliStatus } from '@shared/codingClis'
 import { FieldHint } from './FieldHint'
 
 interface Props {
@@ -48,30 +46,6 @@ export function ProvidersSettings({ providers, onChange }: Props): React.JSX.Ele
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [reveal, setReveal] = useState<Record<string, boolean>>({})
 
-  /*
-   * Asked for once, when the panel mounts. Each lookup walks the same PATH a
-   * session would get — including a login-shell probe (gotcha 52) — so it is
-   * not free, and nothing about which binaries exist changes while a settings
-   * sheet is open. `null` is "still looking", which is a different thing from
-   * an empty array and is shown as such.
-   */
-  const [clis, setClis] = useState<CodingCliStatus[] | null>(null)
-  useEffect(() => {
-    let alive = true
-    void window.stoke.cli.detect().then((found) => {
-      if (alive) setClis(found)
-    })
-    return () => {
-      alive = false
-    }
-  }, [])
-
-  const openHome = (url: string) => (e: React.MouseEvent) => {
-    // Anchors in the renderer must never navigate — `createWindow`'s
-    // will-navigate refusal is the backstop, but this is the intent.
-    e.preventDefault()
-    window.stoke.openExternal(url)
-  }
 
   // Drop drafts when the saved value changes from outside (e.g. reset).
   useEffect(() => {
@@ -274,59 +248,17 @@ export function ProvidersSettings({ providers, onChange }: Props): React.JSX.Ele
         </span>
       )}
 
-      <div className="cc-group" style={{ marginTop: '0.75rem' }}>
-        <span className="cc-group-title">Other coding CLIs</span>
-        {/*
-          This used to be two API-key fields, for OpenAI and xAI, and they are
-          gone rather than moved. Both were injected into every session and
-          neither did anything to it — Claude Code speaks neither wire format —
-          so the only thing they could ever reach was a separate CLI the user
-          would run inside the session, which reads its own config anyway.
-          Keeping somebody's OpenAI and xAI keys on disk to set environment
-          variables nothing consumes is a liability with no feature attached.
-
-          What is actually useful about those tools is whether they are here,
-          so that is what this reports. It does NOT offer to switch to one:
-          everything Stoke wraps around a session — the context ring, resume,
-          the worklog, the plan-limit chip — is fed by Claude Code's own
-          transcript format and its statusLine hook, and a picker that records
-          a preference nothing reads would be a lie in a settings sheet.
-        */}
-        <span className="field-hint">
-          Stoke runs Claude Code. These are detected only, so you can see what this machine has —
-          launching them from Stoke is not built yet. To drive Claude Code with another model, use
-          OpenRouter or a Custom gateway above.
-        </span>
-        <div className="cc-rows">
-          {CODING_CLIS.filter((c) => c.id !== 'claude').map((c) => {
-            const found = clis?.find((s) => s.id === c.id)
-            return (
-              <div className="cc-row" key={c.id}>
-                <span className="field-label">
-                  {c.label}{' '}
-                  <span className="pill" data-tone={found?.path ? 'success' : undefined}>
-                    {clis === null ? 'checking…' : found?.path ? 'installed' : 'not found'}
-                  </span>
-                </span>
-                <span className="field-hint">
-                  {c.vendor} ·{' '}
-                  {clis === null ? (
-                    'Looking on your PATH…'
-                  ) : found?.path ? (
-                    <span className="mono" style={{ overflowWrap: 'anywhere' }}>
-                      {found.path}
-                    </span>
-                  ) : (
-                    <a href={c.home} onClick={openHome(c.home)}>
-                      {c.home}
-                    </a>
-                  )}
-                </span>
-              </div>
-            )
-          })}
-        </div>
-      </div>
+      {/*
+        The other coding CLIs used to be listed here, detection only, under a
+        comment explaining why Stoke could not launch them. It can now, and
+        they have their own section — installing them, which show in the
+        launcher, and where each sends its requests. The OpenRouter key above
+        is the one they share.
+      */}
+      <span className="field-hint" style={{ marginTop: '0.75rem' }}>
+        Codex, OpenCode, Grok Build, Pi and the other agents are in Settings › Coding agents. The
+        OpenRouter key above is shared with them.
+      </span>
 
       {/*
         Shown once the user has actually LEFT default, not while they are still

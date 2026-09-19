@@ -1,4 +1,4 @@
-import { access } from 'node:fs/promises'
+import { access, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, net, protocol, shell, systemPreferences } from 'electron'
 import { pathToFileURL } from 'node:url'
 import { homedir } from 'node:os'
@@ -22,7 +22,7 @@ import type {
 } from '@shared/types'
 import { EmbeddedBrowser } from './browser.ts'
 import { clearWallpaper, mimeFor, storeWallpaper, WALLPAPER_SCHEME, wallpaperFileFor } from './wallpaper.ts'
-import { detectCodingClis, probeClaude } from './cli.ts'
+import { detectCodingClis, forgetLoginPath, probeClaude } from './cli.ts'
 import { ContextWatcher } from './context.ts'
 import { findSessionFile, listProjects, listSessions } from './projects.ts'
 import { indexSessions } from './sessionIndex.ts'
@@ -36,6 +36,7 @@ import { fetchRemoteTranscript } from './sshTranscript.ts'
 import { PtyManager, type StartResult } from './pty.ts'
 import { checkMicrophone } from './audio/defaultDevice.ts'
 import { cliIdOf, isClaudeCode } from '../shared/codingClis.ts'
+import { agentLaunchPlan, PI_PROVIDER_EXTENSION, type LaunchPlan } from '../shared/agents.ts'
 import { claudeVoiceEnabled, isMicAccess, type MicAccess } from '../shared/voiceRoute.ts'
 import { transcribe } from './stt.ts'
 import { createProfile, planProfile } from './profiles.ts'
@@ -428,12 +429,54 @@ async function transcriptFor(sessionId: string): Promise<string | null> {
   return fetched?.file ?? null
 }
 
+/**
+ * Pi's provider extension for a custom endpoint, written under Stoke's own
+ * userData — never into `~/.pi`. Constant text (agents.ts), so it is rewritten
+ * only when missing or different, and holds no secret: the endpoint and key
+ * reach Pi through the environment. Null if it cannot be written, which the
+ * launch plan turns into a sentence rather than a Pi that ignores the setting.
+ */
+async function piExtensionFile(): Promise<string | null> {
+  const file = join(app.getPath('userData'), 'agents', 'pi-provider.ts')
+  try {
+    const current = await readFile(file, 'utf8').catch(() => null)
+    if (current !== PI_PROVIDER_EXTENSION) {
+      await mkdir(dirname(file), { recursive: true })
+      await writeFile(file, PI_PROVIDER_EXTENSION, 'utf8')
+    }
+    return file
+  } catch {
+    return null
+  }
+}
+
 /** Starting a session, shared by the renderer's IPC and the remote server. */
 async function launchSession(opts: LaunchOptions): Promise<StartResult> {
   if (!ptys) throw new Error('Window is not ready')
   const settings = getSettings()
   // `statusKey` is what the files are named after, not necessarily a session
   // id: a --continue session has no id until the CLI picks one. See pty.ts.
+  /*
+   * A non-Claude CLI's launch plan: its endpoint, Stoke's browser tools as an
+   * MCP server where the CLI takes one per launch, and its own continue flag.
+   * Built from settings here in main — the renderer never sends keys — and
+   * refused with the plan's own sentence when a field it needs is empty.
+   */
+  const cliId = cliIdOf(opts.cli)
+  let agentPlan: LaunchPlan | null = null
+  if (!opts.host && !opts.install?.length && !isClaudeCode(cliId)) {
+    const endpoint = settings.agents.endpoints[cliId]
+    const planned = agentLaunchPlan({
+      id: cliId,
+      endpoint,
+      openrouterKey: settings.providers.openrouterApiKey,
+      continueLast: opts.continueLast === true,
+      mcp: mcp?.endpoint() ?? null,
+      piExtensionPath: cliId === 'pi' && endpoint?.mode === 'custom' ? await piExtensionFile() : null
+    })
+    if (!planned.ok) throw new Error(planned.message)
+    agentPlan = planned.plan
+  }
   const result = await ptys.start(
     opts,
     settings.claudePath,
@@ -447,7 +490,8 @@ async function launchSession(opts: LaunchOptions): Promise<StartResult> {
         // they can edit it between one session and the next.
         passthroughCommand: settings.hideStatusLine ? '' : userStatusLineCommand()
       }),
-    settings.providers
+    settings.providers,
+    agentPlan
   )
   /*
    * Everything below reads a Claude Code transcript — the context watcher, the
@@ -457,7 +501,7 @@ async function launchSession(opts: LaunchOptions): Promise<StartResult> {
    * put it on the worklog's watch list. An SSH tab is always `claude`
    * (`startHostSession`), so it is still tracked.
    */
-  if (!isClaudeCode(cliIdOf(opts.cli))) return result
+  if (opts.install?.length || !isClaudeCode(cliId)) return result
   // Empty for a --continue, and `watch('')` is a no-op by design (context.ts:99).
   // Such a session has never had a context meter; see this task's header for
   // why closing that gap belongs to a later change and not to this one.
@@ -1411,7 +1455,10 @@ function registerIpc(): void {
 
   /* ------------------------------------------------------------------- cli */
   ipcMain.handle(CH.cliInfo, () => probeClaude(getSettings().claudePath))
-  ipcMain.handle(CH.cliDetect, () => detectCodingClis())
+  ipcMain.handle(CH.cliDetect, (_e, opts?: { fresh?: boolean }) => {
+    if (opts?.fresh === true) forgetLoginPath()
+    return detectCodingClis()
+  })
 
   /* ---------------------------------------------------------- plan limits */
   /*

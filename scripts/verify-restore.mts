@@ -269,6 +269,31 @@ console.log('\nconverting between the tab list and the snapshot')
   check('restored ids are unique', new Set(back.tabs.map((t) => t.id)).size, back.tabs.length)
 }
 {
+  /*
+   * An install tab is not a session. Saved, it would come back as a paused tab
+   * of its first agent and "resume" by launching that agent — which the
+   * install may just have failed to put on the machine.
+   */
+  const live: Tab[] = [
+    {
+      id: 'p1', kind: 'session', cliId: 'claude', ptyId: 'p1', sessionId: 'sess-a', cwd: '/w/stoke',
+      projectName: 'stoke', title: 'live one', permissionMode: 'default', model: '',
+      effort: 'default', status: 'running', exitCode: null, hostId: null,
+      selectedPath: null, expandedPath: null
+    },
+    {
+      id: 'inst', kind: 'session', cliId: 'codex', installing: ['codex', 'pi'], ptyId: 'inst',
+      sessionId: 'opaque', cwd: '/Users/x', projectName: 'Install agents', title: 'Installing Codex CLI, Pi',
+      permissionMode: 'default', model: '', effort: 'default', status: 'running', exitCode: null,
+      hostId: null, selectedPath: null, expandedPath: null
+    }
+  ]
+  const snap = toStored(live, 'p1', {}, (t) => t.id, NOW)
+  check('an install tab is never saved for restore', snap.tabs.map((t) => t.sessionId), ['sess-a'])
+  check('and the active index still names the tab that was active', snap.activeIndex, 0)
+  check('an install tab that was active falls back to the first tab', toStored(live, 'inst', {}, (t) => t.id, NOW).activeIndex, 0)
+}
+{
   const back = fromStored({ version: 1, savedAt: NOW, activeIndex: 0, tabs: [] })
   check('an empty snapshot restores nothing and selects nothing', [back.tabs.length, back.activeId], [0, null])
 }

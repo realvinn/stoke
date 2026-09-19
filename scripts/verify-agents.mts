@@ -1,0 +1,257 @@
+/*
+ * The coding agents: what is stored, what is shown, what each launch is handed,
+ * and what an install runs.
+ *
+ * The launch plans are the part worth the most care, for two reasons that fail
+ * silently. A plan that forgets a model sends Grok Build to the FIRST model an
+ * endpoint lists (measured: an obscure 27B model on OpenRouter), and one that
+ * leaves a key in argv puts it in the process table where anything on the
+ * machine can read it. Neither throws. So every plan is asserted exactly, and
+ * every key is asserted to be in `env` and nowhere in `args`.
+ *
+ * The install script is the other: it is built from a table and run in a
+ * shell, so the suite checks that nothing the renderer sends can become part of
+ * a command — only ids that name a table entry survive.
+ *
+ *   node scripts/verify-agents.mts
+ */
+import {
+  agentLaunchPlan,
+  DEFAULT_ENDPOINT,
+  endpointProblem,
+  ENV_CUSTOM_BASE_URL,
+  ENV_CUSTOM_KEY,
+  ENV_CUSTOM_MODEL,
+  ENV_MCP_TOKEN,
+  ENV_OPENROUTER_KEY,
+  hydrateAgents,
+  hydrateEndpoint,
+  installScript,
+  installSteps,
+  isEndpointUrl,
+  NO_KEY,
+  OPENROUTER_OPENAI_BASE_URL,
+  PI_PROVIDER_EXTENSION,
+  tomlString,
+  visibleAgents,
+  type AgentEndpoint,
+  type LaunchPlanInput
+} from '../src/shared/agents.ts'
+import { CLI_CAPS, CODING_CLIS, type CodingCliId } from '../src/shared/codingClis.ts'
+
+let failures = 0
+
+function check(name: string, got: unknown, want: unknown): void {
+  const ok = JSON.stringify(got) === JSON.stringify(want)
+  if (!ok) failures++
+  console.log(
+    `  ${ok ? 'PASS' : 'FAIL'}  ${name}` +
+      (ok ? '' : `\n        got ${JSON.stringify(got)}, want ${JSON.stringify(want)}`)
+  )
+}
+
+function ok(name: string, cond: boolean, detail = ''): void {
+  if (!cond) failures++
+  console.log(`  ${cond ? 'PASS' : 'FAIL'}  ${name}${cond || !detail ? '' : `\n        ${detail}`}`)
+}
+
+const KEY = 'sk-or-v1-secret'
+const CUSTOM_KEY = 'sk-custom-secret'
+const MCP = { url: 'http://127.0.0.1:50465/mcp', token: 'mcp-token-secret' }
+const or = (model = 'anthropic/claude-sonnet-5'): AgentEndpoint => ({ ...DEFAULT_ENDPOINT, mode: 'openrouter', model })
+const custom = (over: Partial<AgentEndpoint> = {}): AgentEndpoint => ({
+  mode: 'custom',
+  model: 'qwen3-coder',
+  baseUrl: 'http://127.0.0.1:11434/v1',
+  apiKey: CUSTOM_KEY,
+  ...over
+})
+const plan = (id: CodingCliId, endpoint: AgentEndpoint | undefined, over: Partial<LaunchPlanInput> = {}) =>
+  agentLaunchPlan({
+    id,
+    endpoint,
+    openrouterKey: KEY,
+    continueLast: false,
+    mcp: null,
+    piExtensionPath: '/Users/u/Library/Application Support/Stoke/agents/pi-provider.ts',
+    ...over
+  })
+const planOk = (r: ReturnType<typeof plan>) => (r.ok ? r.plan : { args: ['<refused>'], env: {} as Record<string, string> })
+
+/** No secret may appear in argv: `ps` shows every argument of every process. */
+function keysOnlyInEnv(name: string, r: ReturnType<typeof plan>): void {
+  const p = planOk(r)
+  const argv = p.args.join('\u0000')
+  ok(`${name}: no key in argv`, ![KEY, CUSTOM_KEY, MCP.token].some((k) => argv.includes(k)), JSON.stringify(p.args))
+}
+
+console.log('\nwhat is stored')
+check('nothing stored is never asked', hydrateAgents(undefined), { chosen: null, endpoints: {} })
+check('junk is never asked, not "nothing chosen"', hydrateAgents({ chosen: 'codex' }).chosen, null)
+check('an empty choice is kept — it means "show none"', hydrateAgents({ chosen: [] }).chosen, [])
+check(
+  'unknown ids are dropped and duplicates collapse',
+  hydrateAgents({ chosen: ['codex', 'banana', 'codex', 'pi'] }).chosen,
+  ['codex', 'pi']
+)
+check(
+  'an endpoint is rebuilt from named keys, trimmed, with no trailing slash',
+  hydrateEndpoint({ mode: 'custom', model: ' m ', baseUrl: 'http://h/v1///', apiKey: ' k ', extra: 1 }),
+  { mode: 'custom', model: 'm', baseUrl: 'http://h/v1', apiKey: 'k' }
+)
+check('an unknown mode is the default sign-in', hydrateEndpoint({ mode: 'magic' }).mode, 'default')
+check(
+  "Claude's endpoint is Settings › Providers, never here (one writer, gotcha 57)",
+  hydrateAgents({ endpoints: { claude: or(), codex: or() } }).endpoints,
+  { codex: or() }
+)
+check(
+  'an untouched default endpoint is not stored at all',
+  hydrateAgents({ endpoints: { codex: DEFAULT_ENDPOINT } }).endpoints,
+  {}
+)
+
+console.log('\nwhat the launcher shows')
+{
+  const installed = new Set<CodingCliId>(['claude', 'codex', 'opencode'])
+  check('before the picker is answered: everything installed', visibleAgents(null, installed), ['claude', 'codex', 'opencode'])
+  check('after: what was chosen AND is installed', visibleAgents(['codex', 'pi'], installed), ['codex'])
+  check('in table order, not click order', visibleAgents(['opencode', 'codex'], installed), ['codex', 'opencode'])
+}
+
+console.log('\nrefusing a launch that would not work')
+check('the default needs nothing', endpointProblem('codex', DEFAULT_ENDPOINT, ''), null)
+ok('OpenRouter with no key says where the key goes', /Settings › Providers/.test(endpointProblem('codex', or(), '') ?? ''))
+ok('OpenRouter with no model says so', /no model/.test(endpointProblem('grok', or(''), KEY) ?? ''))
+ok('a custom endpoint needs an http(s) URL', /http\(s\)/.test(endpointProblem('opencode', custom({ baseUrl: 'ftp://h' }), KEY) ?? ''))
+check('a custom endpoint with no key is allowed — local servers take none', endpointProblem('opencode', custom({ apiKey: '' }), KEY), null)
+check('isEndpointUrl refuses a bare word', isEndpointUrl('localhost'), false)
+check('and accepts a LAN address', isEndpointUrl('http://192.168.1.4:8080/v1'), true)
+{
+  const r = plan('codex', or(''))
+  ok('the refusal reaches the launch rather than a CLI on its own sign-in', !r.ok && /model/.test(r.ok ? '' : r.message))
+}
+
+console.log('\ncodex: -c overrides, Responses API, nothing written to config.toml')
+{
+  const r = plan('codex', or())
+  check('OpenRouter', planOk(r), {
+    args: [
+      '-c', 'model_provider="stoke_openrouter"',
+      '-c', 'model_providers.stoke_openrouter.name="OpenRouter"',
+      '-c', `model_providers.stoke_openrouter.base_url="${OPENROUTER_OPENAI_BASE_URL}"`,
+      '-c', `model_providers.stoke_openrouter.env_key="${ENV_OPENROUTER_KEY}"`,
+      '-m', 'anthropic/claude-sonnet-5'
+    ],
+    env: { [ENV_OPENROUTER_KEY]: KEY }
+  })
+  keysOnlyInEnv('codex openrouter', r)
+  const c = plan('codex', custom({ apiKey: '' }))
+  check('a custom endpoint with no key gets the placeholder, not an empty var', planOk(c).env[ENV_CUSTOM_KEY], NO_KEY)
+  const m = plan('codex', undefined, { mcp: MCP })
+  check('Stoke’s browser tools ride in as an MCP server, token by env var name', planOk(m), {
+    args: [
+      '-c', `mcp_servers.stoke.url="${MCP.url}"`,
+      '-c', `mcp_servers.stoke.bearer_token_env_var="${ENV_MCP_TOKEN}"`
+    ],
+    env: { [ENV_MCP_TOKEN]: MCP.token }
+  })
+  keysOnlyInEnv('codex mcp', m)
+  check('continue is its resume subcommand, after the global flags', planOk(plan('codex', or(), { continueLast: true })).args.slice(-2), ['resume', '--last'])
+  check('a TOML string escapes a quote', tomlString('a"b'), '"a\\"b"')
+}
+
+console.log('\nopencode: built-in OpenRouter, everything else in OPENCODE_CONFIG_CONTENT')
+{
+  const r = plan('opencode', or('z-ai/glm-5'))
+  check('OpenRouter', planOk(r), { args: ['-m', 'openrouter/z-ai/glm-5'], env: { OPENROUTER_API_KEY: KEY } })
+  const c = planOk(plan('opencode', custom(), { mcp: MCP }))
+  const cfg = JSON.parse(c.env.OPENCODE_CONFIG_CONTENT ?? '{}')
+  check('custom: the model is addressed through Stoke’s provider', c.args, ['-m', 'stoke_custom/qwen3-coder'])
+  check('custom: an openai-compatible provider at the base URL', cfg.provider?.stoke_custom?.options?.baseURL, 'http://127.0.0.1:11434/v1')
+  check('custom: the key by reference, not by value', cfg.provider?.stoke_custom?.options?.apiKey, `{env:${ENV_CUSTOM_KEY}}`)
+  check('custom: the value in the environment', c.env[ENV_CUSTOM_KEY], CUSTOM_KEY)
+  check('mcp: a remote server at Stoke’s URL', cfg.mcp?.stoke?.url, MCP.url)
+  check('the default sign-in with no MCP sets nothing at all', planOk(plan('opencode', undefined)), { args: [], env: {} })
+  check('continue', planOk(plan('opencode', undefined, { continueLast: true })).args, ['--continue'])
+}
+
+console.log('\ngrok build: GROK_MODELS_BASE_URL, and -m is not optional')
+{
+  const r = plan('grok', or('x-ai/grok-5'))
+  check('OpenRouter: the xAI base moves too, or a key that is not xAI’s reads as "Not signed in"', planOk(r), {
+    args: ['-m', 'x-ai/grok-5'],
+    env: {
+      GROK_MODELS_BASE_URL: OPENROUTER_OPENAI_BASE_URL,
+      GROK_XAI_API_BASE_URL: OPENROUTER_OPENAI_BASE_URL,
+      XAI_API_KEY: KEY
+    }
+  })
+  keysOnlyInEnv('grok', r)
+  check('custom', planOk(plan('grok', custom())).env.GROK_MODELS_BASE_URL, 'http://127.0.0.1:11434/v1')
+}
+
+console.log('\npi: --provider openrouter, and a Stoke-owned extension for anything else')
+{
+  check('OpenRouter', planOk(plan('pi', or())), {
+    args: ['--provider', 'openrouter', '--model', 'anthropic/claude-sonnet-5'],
+    env: { OPENROUTER_API_KEY: KEY }
+  })
+  const c = plan('pi', custom())
+  check('custom: the extension, then the provider it registers', planOk(c).args.slice(0, 4), [
+    '-e', '/Users/u/Library/Application Support/Stoke/agents/pi-provider.ts', '--provider', 'stoke_custom'
+  ])
+  check('custom: endpoint, key and model all through the environment', Object.keys(planOk(c).env).sort(), [
+    ENV_CUSTOM_BASE_URL, ENV_CUSTOM_KEY, ENV_CUSTOM_MODEL
+  ].sort())
+  keysOnlyInEnv('pi custom', c)
+  ok('with no extension file the launch is refused, not silently on Pi’s default', !plan('pi', custom(), { piExtensionPath: null }).ok)
+  ok(
+    'the extension holds no secret — only the names of the variables',
+    [ENV_CUSTOM_BASE_URL, ENV_CUSTOM_KEY, ENV_CUSTOM_MODEL].every((v) => PI_PROVIDER_EXTENSION.includes(v)) &&
+      !PI_PROVIDER_EXTENSION.includes('sk-')
+  )
+}
+
+console.log('\nevery agent: a continue flag only where CLI_CAPS says there is one')
+for (const c of CODING_CLIS) {
+  if (c.id === 'claude') continue
+  const args = planOk(plan(c.id, undefined, { continueLast: true })).args
+  ok(
+    `${c.id}: continuing ${CLI_CAPS[c.id].resume === 'continue' ? 'appends its flag' : 'appends nothing'}`,
+    CLI_CAPS[c.id].resume === 'continue' ? args.join(' ').endsWith((c.continueArgs ?? []).join(' ')) : args.length === 0,
+    JSON.stringify(args)
+  )
+}
+check('claude is never planned here — its launch is buildArgs', planOk(plan('claude', or())), { args: [], env: {} })
+
+console.log('\ninstalling')
+{
+  check('only ids from the table survive', installSteps(['codex', '$(rm -rf ~)', 'banana'], 'darwin').map((s) => s.id), ['codex'])
+  check('in table order', installSteps(['pi', 'codex'], 'linux').map((s) => s.id), ['codex', 'pi'])
+  const mac = installScript(['codex', 'pi'], 'darwin') ?? ''
+  ok(
+    'the script runs each vendor command verbatim — codex told not to stop and ask',
+    mac.includes('( curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh )')
+  )
+  ok('and says what each needs first', /needs %s\\n' 'Node\.js 22\.19 or newer'/.test(mac), mac)
+  ok('a failure is recorded and the rest still run', (mac.match(/\|\| failed=/g) ?? []).length === 2)
+  ok('and the script exits non-zero if any failed, which the exit card reads', /exit 1; fi/.test(mac))
+  const win = installScript(['codex'], 'win32') ?? ''
+  ok('windows gets PowerShell', win.includes('irm https://chatgpt.com/codex/install.ps1 | iex') && win.includes('$failed'))
+  check('nothing to install is no script at all', installScript(['banana'], 'darwin'), null)
+  for (const c of CODING_CLIS) {
+    for (const plat of ['darwin', 'linux', 'win32'] as const) {
+      const cmd = c.install[plat]
+      if (!cmd) continue
+      ok(
+        `${c.id}/${plat}: an https source, and no single quote to break the printf`,
+        /https:\/\/|^npm install -g /.test(cmd) && !cmd.includes("'"),
+        cmd
+      )
+    }
+  }
+}
+
+console.log(failures ? `\n${failures} FAILED` : '\nall pass')
+process.exitCode = failures ? 1 : 0

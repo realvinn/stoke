@@ -289,10 +289,26 @@ check('claude is the fully instrumented one', CLI_CAPS.claude, {
   usage: 'anthropic',
   launchFlags: { permissionMode: true, effort: true, model: true }
 })
-for (const id of ['codex', 'grok', 'opencode'] as const) {
+/*
+ * Driven by the table rather than a list of three, so an agent added later is
+ * inside the fence the moment it exists — the old hardcoded loop let a new
+ * entry claim anything and pass.
+ *
+ * `resume` is the one field above the floor, and only as far as a real flag
+ * carries it: `continue` exactly when the CLI has `continueArgs` (its own
+ * "latest session in this folder" flag, read from its --help), and never
+ * `mintedId`, which means Stoke chose the session id before launch — something
+ * only Claude Code's `--session-id` does here.
+ */
+for (const cli of CODING_CLIS.filter((c) => !isClaudeCode(c.id))) {
+  const id = cli.id
   const caps = CLI_CAPS[id]
   check(`${id} draws no context ring`, caps.ring, 'none')
-  check(`${id} offers no resume, so no --session-id is minted for it`, caps.resume, 'none')
+  check(
+    `${id} resumes only as far as its own continue flag goes`,
+    caps.resume,
+    cli.continueArgs ? 'continue' : 'none'
+  )
   check(`${id} is not reviewed by the worklog, which shells out to claude -p`, caps.worklog, false)
   check(`${id} claims no plan usage — that endpoint is Anthropic's`, caps.usage, 'none')
   check(

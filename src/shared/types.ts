@@ -4,6 +4,7 @@
  */
 import type { CodingCliId } from './codingClis.ts'
 import type { ProviderSettings } from './providers.ts'
+import type { AgentSettings } from './agents.ts'
 import type { RemoteReachPreference, ZoomTarget } from './ui.ts'
 
 /* ------------------------------------------------------------------ launch */
@@ -35,6 +36,14 @@ export interface LaunchOptions {
    * showing Claude's context ring, plan chip and version.
    */
   cli?: CodingCliId
+  /**
+   * Install these agents instead of running one: the pty runs the vendors' own
+   * install commands (agents.ts `installScript`) in a shell, so the user sees
+   * every line and can answer a prompt. Only ids cross this boundary — the
+   * command text is looked up in main from the shared table, so nothing the
+   * renderer sends can become part of a command.
+   */
+  install?: CodingCliId[]
   /** Explicit session id. New sessions get one generated so we can find the JSONL. */
   sessionId?: string
   /** Resume an existing session id (`--resume`). */
@@ -993,6 +1002,12 @@ export interface Settings {
    * See providers.ts. Keys stay in settings.json on this machine.
    */
   providers: ProviderSettings
+  /**
+   * Which coding agents the user said they use, and how each non-Claude one is
+   * pointed at a model. See agents.ts; every override is applied at launch and
+   * never written into the agent's own config.
+   */
+  agents: AgentSettings
   /**
    * The Stoke version whose first-run campfire has already been watched, or
    * null on a machine that has never seen one.

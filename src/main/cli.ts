@@ -11,7 +11,7 @@ import {
   cliFor,
   CODING_CLIS,
   type CodingCliId,
-  type CodingCliStatus
+  type CodingCliDetection
 } from '../shared/codingClis.ts'
 
 const execFileAsync = promisify(execFile)
@@ -118,6 +118,18 @@ function loginShellPath(): Promise<string | null> {
 }
 
 /**
+ * Drop a SUCCESSFUL probe's memo, so the next caller reads the login shell
+ * again. For after an install: every vendor's POSIX installer appends its bin
+ * directory to the user's shell rc (opencode's `~/.opencode/bin`, grok's
+ * `~/.grok/bin`), and a PATH read before that stays stale for the life of the
+ * process — the CLI would sit installed and "not found" until Stoke restarted.
+ * A failure's memo is left alone: its retry rule is gotcha 52's.
+ */
+export function forgetLoginPath(): void {
+  if (probeFailedAt === 0) loginPathProbe = null
+}
+
+/**
  * Whether the most recent login-shell probe failed. Read only to explain a
  * miss, never to decide one.
  */
@@ -174,7 +186,9 @@ export function extraSearchDirs(): string[] {
       join(home, '.claude', 'local'),
       ...shimDirs(),
       join(process.env.LOCALAPPDATA ?? join(home, 'AppData', 'Local'), 'Programs', 'claude'),
-      join(process.env.APPDATA ?? join(home, 'AppData', 'Roaming'), 'npm')
+      join(process.env.APPDATA ?? join(home, 'AppData', 'Roaming'), 'npm'),
+      // Grok Build's install.ps1 puts grok.exe here and nowhere on PATH.
+      join(home, '.grok', 'bin')
     ]
   }
   return [
@@ -182,6 +196,15 @@ export function extraSearchDirs(): string[] {
     join(home, '.claude', 'local'),
     join(home, '.bun', 'bin'),
     join(home, '.volta', 'bin'),
+    /*
+     * Where two vendors' own installers put their binary — `~/.opencode/bin`
+     * (opencode.ai/install) and `~/.grok/bin` (x.ai/cli/install.sh) — reaching
+     * PATH only through a line they append to the shell rc. Listed so that a CLI
+     * installed from Stoke is found in this run, before any shell has re-read
+     * that rc, and so a Finder launch whose login probe failed still finds it.
+     */
+    join(home, '.opencode', 'bin'),
+    join(home, '.grok', 'bin'),
     ...shimDirs(),
     '/opt/homebrew/bin',
     '/usr/local/bin',
@@ -254,13 +277,15 @@ export async function findCli(id: CodingCliId, override: string | null = null): 
  * and its statusLine hook. What each other CLI may honestly show is in
  * `CLI_CAPS`, not assumed here.
  */
-export async function detectCodingClis(): Promise<CodingCliStatus[]> {
-  return Promise.all(
+export async function detectCodingClis(): Promise<CodingCliDetection> {
+  const clis = await Promise.all(
     CODING_CLIS.map(async (cli) => ({
       id: cli.id,
       path: await findTool(binNamesFor(cli, process.platform))
     }))
   )
+  // Read after the lookups, which are what run the probe.
+  return { clis, probeFailed: loginPathProbeFailed() }
 }
 
 /**

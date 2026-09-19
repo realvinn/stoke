@@ -4,6 +4,8 @@ import * as nodePty from '@lydell/node-pty'
 import type { IPty } from '@lydell/node-pty'
 import type { LaunchOptions } from '@shared/types'
 import { cliIdOf, isClaudeCode } from '../shared/codingClis.ts'
+import { installScript, type LaunchPlan } from '../shared/agents.ts'
+import { homedir } from 'node:os'
 import {
   applyProviderEnv,
   validateClaudeAuth,
@@ -157,7 +159,13 @@ export class PtyManager {
     claudePathOverride: string | null,
     mcpConfigPath?: string | null,
     sessionSettings: (statusKey: string) => string | null = () => null,
-    providers: ProviderSettings = DEFAULT_PROVIDERS
+    providers: ProviderSettings = DEFAULT_PROVIDERS,
+    /**
+     * A non-Claude CLI's arguments and environment for this launch — its
+     * endpoint, its MCP servers, its continue flag — built by `agentLaunchPlan`
+     * in main from settings. Ignored for Claude Code, SSH and installs.
+     */
+    agentPlan: LaunchPlan | null = null
   ): Promise<StartResult> {
     /*
      * A remote session is the same machinery with a different argv: ssh instead
@@ -184,10 +192,27 @@ export class PtyManager {
      */
     const cliId = cliIdOf(opts.cli)
     const remote = !!opts.host
-    const instrumented = !remote && isClaudeCode(cliId)
+    /*
+     * An install tab runs the vendors' own install commands in a shell instead
+     * of a CLI. The script is built here, in main, from the shared table and
+     * ids it validates — `opts.install` carries ids, never command text.
+     */
+    const script = !remote && opts.install?.length ? installScript(opts.install, process.platform) : null
+    if (!remote && opts.install?.length && !script) {
+      throw new Error('Stoke has no install command for those agents on this platform. Their websites say how.')
+    }
+    const installing = script !== null
+    const instrumented = !remote && !installing && isClaudeCode(cliId)
 
-    const exe = remote ? sshExecutable() : await findCli(cliId, isClaudeCode(cliId) ? claudePathOverride : null)
+    const exe = remote
+      ? sshExecutable()
+      : installing
+        ? await installerShell()
+        : await findCli(cliId, isClaudeCode(cliId) ? claudePathOverride : null)
     if (!exe) throw new Error(notFoundError(loginPathProbeFailed(), cliId))
+    // An install has no project; it runs from home so a vendor script that
+    // writes relative to the cwd lands somewhere harmless.
+    const cwd = installing ? homedir() : opts.cwd
 
     /*
      * The folder has to exist, and node-pty will not tell us if it does not.
@@ -205,10 +230,10 @@ export class PtyManager {
      */
     if (!remote) {
       try {
-        await access(opts.cwd)
+        await access(cwd)
       } catch {
         throw new Error(
-          `That folder is not there any more: ${opts.cwd}. It may have been moved or deleted, or it may live on a drive that is not connected.`
+          `That folder is not there any more: ${cwd}. It may have been moved or deleted, or it may live on a drive that is not connected.`
         )
       }
     }
@@ -263,9 +288,11 @@ export class PtyManager {
      */
     const args = remote
       ? buildSshArgs(opts.host!)
-      : instrumented
-        ? buildArgs({ ...opts, sessionId }, settingsFile)
-        : []
+      : installing
+        ? installerArgs(script)
+        : instrumented
+          ? buildArgs({ ...opts, sessionId }, settingsFile)
+          : [...(agentPlan?.args ?? [])]
 
     // Hand the session Stoke's own browser tools. A file path rather than an
     // inline JSON string: quoting JSON through a shell differs per platform and
@@ -344,13 +371,16 @@ export class PtyManager {
         const check = validateClaudeAuth(providers)
         if (!check.ok) throw new Error(check.message)
         applyProviderEnv(env, providers)
+      } else if (!remote && !installing && agentPlan) {
+        // Last, so a key the plan sets wins over one inherited from a shell.
+        Object.assign(env, agentPlan.env)
       }
 
       proc = nodePty.spawn(spec.file, spec.args, {
         name: 'xterm-256color',
         cols: Math.max(20, opts.cols || 120),
         rows: Math.max(5, opts.rows || 30),
-        cwd: opts.cwd,
+        cwd,
         env,
         useConpty: process.platform === 'win32' ? true : undefined
       })
@@ -364,7 +394,7 @@ export class PtyManager {
       sessionId,
       statusKey,
       proc,
-      cwd: opts.cwd,
+      cwd,
       exited: false,
       chunks: [],
       length: 0,
@@ -541,4 +571,38 @@ export class PtyManager {
   killAll(): void {
     for (const id of [...this.sessions.keys()]) this.kill(id)
   }
+}
+
+/**
+ * The shell an install tab runs in. bash where there is one, because every
+ * vendor's POSIX installer is written for `| bash` or `| sh` and several use
+ * bash-only syntax; `sh` otherwise. Checked with async `access`, never
+ * `existsSync` (gotcha 40).
+ */
+async function installerShell(): Promise<string> {
+  if (process.platform === 'win32') return 'powershell.exe'
+  for (const candidate of ['/bin/bash', '/usr/bin/bash', '/bin/sh']) {
+    try {
+      await access(candidate)
+      return candidate
+    } catch {
+      // try the next one
+    }
+  }
+  return '/bin/sh'
+}
+
+/**
+ * How the script reaches that shell.
+ *
+ * PowerShell gets `-EncodedCommand`: base64 of UTF-16LE, which is PowerShell's
+ * own format for exactly this. A multi-line script handed over as `-Command`
+ * text has to survive Windows' command-line quoting, and node-pty's conpty
+ * joins argv into one string — the same class of mangling gotcha 13 is about.
+ */
+function installerArgs(script: string): string[] {
+  if (process.platform === 'win32') {
+    return ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')]
+  }
+  return ['-c', script]
 }

@@ -21,7 +21,9 @@ export function toStored(
   screenOf: (tab: Tab) => string,
   now = Date.now()
 ): StoredTabs {
-  const stored: StoredTab[] = tabs.map((t) => {
+  // An install tab is not a session and cannot come back as one.
+  const kept = tabs.filter((t) => !t.installing?.length)
+  const stored: StoredTab[] = kept.map((t) => {
     const snap = t.sessionId ? contexts[t.sessionId] : undefined
     return {
       kind: t.kind,
@@ -49,7 +51,7 @@ export function toStored(
       screen: screenOf(t)
     }
   })
-  const at = tabs.findIndex((t) => t.id === activeTabId)
+  const at = kept.findIndex((t) => t.id === activeTabId)
   return { version: 1, savedAt: now, activeIndex: at < 0 ? 0 : at, tabs: stored }
 }
 

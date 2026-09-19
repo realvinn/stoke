@@ -2868,6 +2868,158 @@ mark.hit {
   padding-top: calc(var(--space-8) + 1px);
 }
 
+/*
+ * The agent picker. Centred like the palette, but a column with a scrolling
+ * middle: the list can outgrow a small window, and the head and the two
+ * buttons must never scroll away from it. `min-height: 0` on the list is what
+ * lets it shrink inside the flex column at all (gotcha 47).
+ */
+.agent-picker {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  translate: -50% -50%;
+  z-index: var(--z-modal);
+  width: min(40rem, 94vw);
+  max-height: min(44rem, 88vh);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-xl);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+  animation: fade var(--dur) var(--ease);
+}
+
+.agent-picker-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  padding: var(--space-16) var(--space-16) var(--space-12);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.agent-picker-head h2 {
+  margin: 0;
+  font-size: var(--fs-lg);
+}
+
+.agent-picker-head p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+.agent-picker-all {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-8);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.agent-picker-list {
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-8);
+}
+
+.agent-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-12);
+  padding: var(--space-8) var(--space-12);
+  border: 1px solid transparent;
+  border-radius: var(--r-lg);
+  background: transparent;
+  cursor: default;
+}
+
+.agent-row:hover {
+  background: var(--accent-soft);
+}
+
+.agent-row[data-checked] {
+  border-color: var(--border-subtle);
+}
+
+.agent-row input {
+  margin-top: 0.2rem;
+}
+
+.agent-row-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.agent-row-title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-8);
+  flex-wrap: wrap;
+}
+
+.agent-row-vendor,
+.agent-row-blurb,
+.agent-row-cmd {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+
+.agent-row-blurb {
+  line-height: 1.4;
+}
+
+.agent-row-cmd code {
+  overflow-wrap: anywhere;
+  color: var(--text);
+}
+
+.agent-picker-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  padding: var(--space-12) var(--space-16);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.agent-picker-count {
+  margin-right: auto;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+
+/*
+ * Settings › Coding agents. One agent per block, stacked: its name and state,
+ * then what it is, where it is, and its endpoint underneath. `.cc-row` is a
+ * label-beside-control row and squeezed all five of those into columns.
+ */
+.agent-settings {
+  display: flex;
+  flex-direction: column;
+}
+
+.agent-setting {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+  padding: var(--space-12) 0;
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* An agent's endpoint: the mode, then only the fields that mode reads. */
+.agent-endpoint {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-8);
+  max-width: 28rem;
+}
+
 .palette {
   position: fixed;
   top: 12vh;

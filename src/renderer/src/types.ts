@@ -33,6 +33,13 @@ export interface Tab {
    * numbers. Never optional: a tab always knows what it is.
    */
   cliId: CodingCliId
+  /**
+   * Set on a tab that is installing these agents rather than running one. It is
+   * never saved for restore (`toStored` drops it) — an install cannot be
+   * resumed, and a restored one would come back as a paused session of the
+   * first agent in the list.
+   */
+  installing?: CodingCliId[]
   /** Empty string on a `new` tab, which has no process. */
   ptyId: string
   /** Claude Code session id — the key the context meter watches. Empty on `new`. */

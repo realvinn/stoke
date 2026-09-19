@@ -1,6 +1,6 @@
 import type { MicAccess } from './voiceRoute'
 import type { CreateProfileInput, ProfilePlan } from './profiles'
-import type { CodingCliStatus } from './codingClis'
+import type { CodingCliDetection } from './codingClis'
 import type {
   ActivityReport,
   BrowserState,
@@ -292,13 +292,12 @@ export interface StokeApi {
   cli: {
     info(): Promise<CliInfo>
     /**
-     * Which of the coding CLIs Stoke knows about are installed, and where.
-     *
-     * Reports only. Stoke can launch `claude` and nothing else yet — the
-     * context ring, resume and the worklog are all fed by Claude Code's own
-     * transcript format — so this answers "have I got it?" and stops there.
+     * Which of the coding CLIs Stoke knows about are installed, and where, and
+     * whether the login-shell PATH could be read at all (gotcha 52). `fresh`
+     * re-reads that PATH first — for after an install, whose installer has just
+     * added its bin directory to the shell rc.
      */
-    detect(): Promise<CodingCliStatus[]>
+    detect(opts?: { fresh?: boolean }): Promise<CodingCliDetection>
   }
 
   usage: {

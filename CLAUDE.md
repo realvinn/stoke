@@ -38,7 +38,7 @@ A `dist:*` exists per target and each MUST run on that target's own platform and
 Every suite runs alone as `npm run verify:<name>`: context, statusline, unicode, usage,
 profiles, settings, providers, claude-config, folders, search, color, theme-gen, activity,
 worklog-gate, tabs,
-restore, shortcuts, drop, browser-url, voice, campfire, cli, updates, targets, manifests, worklog-runner,
+restore, shortcuts, drop, browser-url, voice, agents, campfire, cli, updates, targets, manifests, worklog-runner,
 worklog-retry, worklog-recall, worklog-autoscan, ssh, remote, installer-art, install, welcome,
 selection — the `check` chain — plus extract and security, which
 need a live instance (`verify:security <url> <token> --access`). `verify:selection` opens a real
@@ -80,7 +80,7 @@ src/remote/          mobile web UI, built separately to out/remote
 src/shared/          compiled by BOTH tsconfigs, so no `node:` imports (browser-only voice.ts is
                      excluded from the node project by name). types, ipc.ts, themes,
                      ladder/themeGen/accent/notation/color, paths, drop, claudeConfig, worklog,
-                     statusLine, usageView, providers, codingClis, updateCheck, sshAuth, ui.ts. A new terminal or wallpaper field needs its default
+                     statusLine, usageView, providers, codingClis, agents, updateCheck, sshAuth, ui.ts. A new terminal or wallpaper field needs its default
                      in TERMINAL_DEFAULTS/WALLPAPER_DEFAULTS AND a line in clampTerminal/
                      clampWallpaper (all in ui.ts) in the same change: the clamps rebuild the
                      object from named keys, so a field they miss hydrates as undefined

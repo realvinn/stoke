@@ -15,7 +15,10 @@
  * Pure, and compiled by both tsconfigs, so no `node:` import (gotcha 27).
  */
 
-export type CodingCliId = 'claude' | 'codex' | 'grok' | 'opencode'
+export type CodingCliId = 'claude' | 'codex' | 'grok' | 'opencode' | 'pi'
+
+/** The three platforms a recipe can name. */
+export type InstallPlatform = 'darwin' | 'linux' | 'win32'
 
 export interface CodingCli {
   id: CodingCliId
@@ -23,16 +26,46 @@ export interface CodingCli {
   label: string
   /** Who makes it, for the one-line description. */
   vendor: string
+  /** One line for someone choosing between them in the agent picker. */
+  blurb: string
   /**
    * Executable names to look for, in order of preference.
    *
    * Windows needs the variants spelled out: an npm-installed CLI is a `.cmd`
    * shim, not an `.exe`, and `spawnSpec` runs those through `cmd.exe` (gotcha
-   * 13). A bare name would find neither.
+   * 13). A bare name would find neither. The name is NOT always the id.
    */
   bins: { posix: readonly string[]; win32: readonly string[] }
   /** Where to get it, shown when it is not installed. */
   home: string
+  /**
+   * The vendor's own install command, per platform — the exact text Stoke runs
+   * in a terminal tab, so what the user reads before pressing Install is what
+   * runs. POSIX entries run under bash, win32 ones under PowerShell. A missing
+   * platform means Stoke offers the `home` link instead of running anything.
+   *
+   * Only first-party routes: each is the one the vendor's own README or docs
+   * list first, checked on 2026-09-19. A community mirror is exactly the thing
+   * a user cannot evaluate from a button.
+   */
+  install: Partial<Record<InstallPlatform, string>>
+  /** What the install command needs already present, said before it runs. */
+  installNeeds?: string
+  /** A side effect of the install worth knowing before pressing the button. */
+  installNote?: string
+  /**
+   * Arguments that continue the most recent session in the working folder,
+   * appended after any endpoint flags. Absent when the CLI has no such thing.
+   */
+  continueArgs?: readonly string[]
+  /**
+   * Which endpoint overrides Stoke can apply to this CLI AT LAUNCH — flags and
+   * environment only, never a write to the CLI's own config file (the same
+   * discipline gotcha 38 demands for `~/.claude.json`). `custom` names the wire
+   * protocol a custom endpoint must speak, because that is the thing a user has
+   * to know before pointing it anywhere.
+   */
+  endpoints: { openrouter: boolean; custom: string | null }
 }
 
 export const CODING_CLIS: readonly CodingCli[] = [
@@ -40,32 +73,85 @@ export const CODING_CLIS: readonly CodingCli[] = [
     id: 'claude',
     label: 'Claude Code',
     vendor: 'Anthropic',
+    blurb: 'Anthropic’s agent. The one Stoke is built around: context ring, resume, plan limits, worklog.',
     bins: { posix: ['claude'], win32: ['claude.exe', 'claude.cmd', 'claude.bat', 'claude'] },
-    home: 'https://claude.com/claude-code'
+    home: 'https://claude.com/claude-code',
+    install: {
+      darwin: 'curl -fsSL https://claude.ai/install.sh | bash',
+      linux: 'curl -fsSL https://claude.ai/install.sh | bash',
+      win32: 'irm https://claude.ai/install.ps1 | iex'
+    },
+    // Claude's endpoints live in Settings › Providers (an Anthropic-compatible
+    // gateway), and its resume is Stoke's own minted session id.
+    endpoints: { openrouter: false, custom: null }
   },
   {
     id: 'codex',
     label: 'Codex CLI',
     vendor: 'OpenAI',
+    blurb: 'OpenAI’s agent. Sign in with ChatGPT, or point it at OpenRouter or any Responses-API endpoint.',
     bins: { posix: ['codex'], win32: ['codex.exe', 'codex.cmd', 'codex.bat', 'codex'] },
-    home: 'https://github.com/openai/codex'
+    home: 'https://github.com/openai/codex',
+    install: {
+      // CODEX_NON_INTERACTIVE: the script otherwise stops to ask on /dev/tty
+      // whether to remove an npm, brew or bun copy it finds — checked in
+      // install.sh, 2026-09-19. Set, it keeps the old copy and carries on.
+      darwin: 'curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh',
+      linux: 'curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh',
+      win32: 'irm https://chatgpt.com/codex/install.ps1 | iex'
+    },
+    // `resume` is a subcommand and filters by the working folder unless `--all`.
+    continueArgs: ['resume', '--last'],
+    endpoints: { openrouter: true, custom: 'OpenAI Responses API' }
   },
   {
     id: 'grok',
-    label: 'Grok CLI',
+    label: 'Grok Build',
     vendor: 'xAI',
+    blurb: 'xAI’s official agent, the grok command. Sign in with X, or bring an OpenRouter key.',
     bins: { posix: ['grok'], win32: ['grok.exe', 'grok.cmd', 'grok.bat', 'grok'] },
-    home: 'https://github.com/superagent-ai/grok-cli'
+    home: 'https://x.ai/cli',
+    install: {
+      darwin: 'curl -fsSL https://x.ai/cli/install.sh | bash',
+      linux: 'curl -fsSL https://x.ai/cli/install.sh | bash',
+      win32: 'irm https://x.ai/cli/install.ps1 | iex'
+    },
+    installNote: 'Also adds an agent command, the same program under a second name.',
+    continueArgs: ['--continue'],
+    endpoints: { openrouter: true, custom: 'OpenAI Chat Completions' }
   },
   {
     id: 'opencode',
     label: 'OpenCode',
-    vendor: 'opencode.ai',
+    vendor: 'Anomaly',
+    blurb: 'Open-source agent for any provider — OpenRouter, a local model, or your own endpoint.',
     bins: { posix: ['opencode'], win32: ['opencode.exe', 'opencode.cmd', 'opencode.bat', 'opencode'] },
-    home: 'https://opencode.ai'
+    home: 'https://opencode.ai',
+    install: {
+      darwin: 'curl -fsSL https://opencode.ai/install | bash',
+      linux: 'curl -fsSL https://opencode.ai/install | bash',
+      win32: 'npm install -g opencode-ai'
+    },
+    continueArgs: ['--continue'],
+    endpoints: { openrouter: true, custom: 'OpenAI Chat Completions' }
+  },
+  {
+    id: 'pi',
+    label: 'Pi',
+    vendor: 'Earendil Works',
+    blurb: 'A small, extensible agent that runs on almost any provider, OpenRouter included.',
+    bins: { posix: ['pi'], win32: ['pi.cmd', 'pi.exe', 'pi.bat', 'pi'] },
+    home: 'https://pi.dev',
+    install: {
+      darwin: 'npm install -g --ignore-scripts @earendil-works/pi-coding-agent',
+      linux: 'npm install -g --ignore-scripts @earendil-works/pi-coding-agent',
+      win32: 'npm install -g --ignore-scripts @earendil-works/pi-coding-agent'
+    },
+    installNeeds: 'Node.js 22.19 or newer',
+    continueArgs: ['--continue'],
+    endpoints: { openrouter: true, custom: 'OpenAI Chat Completions' }
   }
 ]
-
 
 /**
  * What Stoke may honestly draw beside a session, per CLI.
@@ -92,14 +178,34 @@ export const CODING_CLIS: readonly CodingCli[] = [
 export interface CliCaps {
   /** Where a context reading could come from, or `'none'` for no ring at all. */
   ring: 'statusline' | 'transcript' | 'none'
-  /** Whether Stoke can name the session to resume it. */
-  resume: 'mintedId' | 'none'
+  /**
+   * How a paused tab of this CLI comes back.
+   *
+   * `mintedId` names the exact session (Claude Code's `--session-id`, which Stoke
+   * mints before launch). `continue` can only say "the most recent session in
+   * this folder" — the CLI's own `continueArgs` — which is the same session
+   * unless another one was started in that folder since, and the UI says so
+   * rather than calling it a resume. `none` starts it fresh.
+   */
+  resume: 'mintedId' | 'continue' | 'none'
   /** Whether the worklog runner can review this session's work. */
   worklog: boolean
   /** Whose plan the usage chip would be describing. */
   usage: 'anthropic' | 'none'
   /** Which launcher pills mean anything. Claude's flags are Claude's. */
   launchFlags: { permissionMode: boolean; effort: boolean; model: boolean }
+}
+
+/**
+ * The floor every non-Claude CLI starts from. Raising a field above it needs a
+ * real source behind it, named where the raise is made.
+ */
+const FLOOR: CliCaps = {
+  ring: 'none',
+  resume: 'none',
+  worklog: false,
+  usage: 'none',
+  launchFlags: { permissionMode: false, effort: false, model: false }
 }
 
 export const CLI_CAPS: Record<CodingCliId, CliCaps> = {
@@ -110,27 +216,17 @@ export const CLI_CAPS: Record<CodingCliId, CliCaps> = {
     usage: 'anthropic',
     launchFlags: { permissionMode: true, effort: true, model: true }
   },
-  codex: {
-    ring: 'none',
-    resume: 'none',
-    worklog: false,
-    usage: 'none',
-    launchFlags: { permissionMode: false, effort: false, model: false }
-  },
-  grok: {
-    ring: 'none',
-    resume: 'none',
-    worklog: false,
-    usage: 'none',
-    launchFlags: { permissionMode: false, effort: false, model: false }
-  },
-  opencode: {
-    ring: 'none',
-    resume: 'none',
-    worklog: false,
-    usage: 'none',
-    launchFlags: { permissionMode: false, effort: false, model: false }
-  }
+  /*
+   * `continue` for the four below is each CLI's own flag, read from its --help
+   * on 2026-09-19: `codex resume --last` (filtered to the cwd unless --all),
+   * `grok --continue`, `opencode --continue`, `pi --continue`. None of them can
+   * be handed a session id Stoke chose before launch the way Claude Code can,
+   * so none is `mintedId`.
+   */
+  codex: { ...FLOOR, resume: 'continue' },
+  grok: { ...FLOOR, resume: 'continue' },
+  opencode: { ...FLOOR, resume: 'continue' },
+  pi: { ...FLOOR, resume: 'continue' }
 }
 
 /**
@@ -191,6 +287,17 @@ export interface CodingCliStatus {
   id: CodingCliId
   /** The resolved path, or null when nothing was found. */
   path: string | null
+}
+
+/**
+ * One detection pass. `probeFailed` travels with it because a miss means two
+ * different things (gotcha 52): not installed, or Stoke could not read the
+ * login shell's PATH — and a picker that cannot tell them apart offers to
+ * reinstall a CLI the user already has.
+ */
+export interface CodingCliDetection {
+  clis: CodingCliStatus[]
+  probeFailed: boolean
 }
 
 /**

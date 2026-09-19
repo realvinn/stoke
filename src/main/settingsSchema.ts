@@ -8,6 +8,7 @@
  */
 import type { ProfileConfig, ProjectMeta, Settings, SshHost, Theme, WorklogBoards } from '@shared/types'
 import { DEFAULT_PROVIDERS, hydrateProviders } from '../shared/providers.ts'
+import { hydrateAgents } from '../shared/agents.ts'
 import { tidy } from './projectMeta.ts'
 import { DEFAULT_LIGHT_THEME_ID, DEFAULT_THEME_ID, validateTheme } from '../shared/themes.ts'
 import { DEFAULT_WORKLOG_BOARDS, WORKLOG_TARGETS } from '../shared/worklog.ts'
@@ -124,6 +125,9 @@ export const DEFAULT_SETTINGS: Settings = {
   // tab behind another — or a window behind another app — is the point.
   notifications: 'background',
   providers: { ...DEFAULT_PROVIDERS },
+  // Never asked: the first launch shows the agent picker, and until it is
+  // answered the launcher offers every agent that is installed, as it always has.
+  agents: { chosen: null, endpoints: {} },
   // Never seen. Every existing settings file also has no such key and therefore
   // reads as this, which is right: the first launch after an upgrade is exactly
   // one of the two moments the campfire is for.
@@ -341,6 +345,7 @@ export function hydrateSettings(raw: unknown): Settings {
     terminal: clampTerminal(r.terminal),
     wallpaper: clampWallpaper(r.wallpaper),
     zoomTarget: clampZoomTarget(r.zoomTarget),
-    providers: hydrateProviders(r.providers)
+    providers: hydrateProviders(r.providers),
+    agents: hydrateAgents(r.agents)
   }
 }

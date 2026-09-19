@@ -41,7 +41,7 @@ const api: StokeApi = {
 
   cli: {
     info: () => ipcRenderer.invoke(CH.cliInfo),
-    detect: () => ipcRenderer.invoke(CH.cliDetect)
+    detect: (opts?: { fresh?: boolean }) => ipcRenderer.invoke(CH.cliDetect, opts)
   },
 
   usage: {

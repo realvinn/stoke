@@ -1321,7 +1321,28 @@ export function TerminalView({
           </span>
         </div>
       )}
-      {tab.status === 'exited' && (
+      {tab.status === 'exited' && tab.installing?.length ? (
+        /*
+         * An install tab's exit is the install's result, not a session ending.
+         * The script exits non-zero when any agent failed (agents.ts), so a
+         * zero is a real "installed", and the launcher has already re-detected.
+         */
+        <div className="term-exit" role="status">
+          <span>
+            {tab.exitCode === 0
+              ? 'Installed. The launcher offers it now.'
+              : `Not everything installed${tab.exitCode !== null ? ` (exit ${tab.exitCode})` : ''} — the reason is above.`}
+          </span>
+          {tab.exitCode !== 0 && (
+            <button className="btn" data-variant="primary" onClick={() => onRestart(tab)}>
+              Try again
+            </button>
+          )}
+          <button className="btn" data-variant={tab.exitCode === 0 ? 'primary' : 'ghost'} onClick={() => onClose(tab.id)}>
+            Close tab
+          </button>
+        </div>
+      ) : tab.status === 'exited' && (
         <div className="term-exit" role="status">
           <span>
             Session ended

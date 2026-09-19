@@ -157,6 +157,11 @@ check(
   { kind: 'local', cwd: '/tmp/x', cli: 'codex' }
 )
 check(
+  'an install tab runs its installs again — never the first agent in its list, which may have just failed to install',
+  restartPlan({ cwd: '/Users/x', hostId: null, cliId: 'codex', installing: ['codex', 'pi'] }, []),
+  { kind: 'install', ids: ['codex', 'pi'] }
+)
+check(
   'a corrupted cli id restarts as Claude Code rather than spawning it',
   restartPlan({ cwd: '/tmp/x', hostId: null, cliId: 'banana' as never }, []),
   { kind: 'local', cwd: '/tmp/x', cli: 'claude' }

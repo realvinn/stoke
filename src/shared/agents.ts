@@ -1,0 +1,416 @@
+/*
+ * The coding agents a user has chosen, how each one is pointed at a model, and
+ * what Stoke runs to install one.
+ *
+ * Every override here happens AT LAUNCH — arguments and environment for one
+ * process — and never as a write to the CLI's own config file. That is the same
+ * rule gotcha 38 makes for `~/.claude.json`, for the same reason: those files
+ * belong to tools that rewrite them, and a Stoke setting that lived there would
+ * outlive Stoke and surprise the user the next time they ran the tool alone.
+ * Each mechanism below was checked against the real CLI on 2026-09-19:
+ *
+ *   codex     `-c model_provider=… -c model_providers.<id>.{name,base_url,
+ *             env_key}` and `-m`. `codex doctor` reported the provider and its
+ *             key env var as present, and probed the route (HTTP 200). Codex
+ *             speaks only the Responses API (`wire_api` has one value left).
+ *             MCP likewise: `-c mcp_servers.<id>.{url,bearer_token_env_var}`,
+ *             listed by `codex mcp get` with nothing written to config.toml.
+ *   opencode  OpenRouter is built in and wants `OPENROUTER_API_KEY` plus
+ *             `-m openrouter/<model>`. Anything else rides in
+ *             `OPENCODE_CONFIG_CONTENT`, an inline config the CLI layers on top
+ *             of the user's own — providers and MCP servers alike.
+ *   grok      `GROK_MODELS_BASE_URL` + `XAI_API_KEY` switch Grok Build to API-key
+ *             auth against that endpoint; `-m` is REQUIRED there, because without
+ *             it the default became the first model OpenRouter listed.
+ *   pi        `--provider openrouter --model <m>` with `OPENROUTER_API_KEY`. A
+ *             custom endpoint needs a provider registered by an extension file,
+ *             loaded with `-e`; Stoke writes that file under its own userData
+ *             and the endpoint itself arrives through the environment.
+ *
+ * Keys only ever travel in the environment, never in argv, where any other
+ * process on the machine could read them from the process table.
+ *
+ * Pure, and compiled by both tsconfigs, so no `node:` import (gotcha 27);
+ * `scripts/verify-agents.mts` runs it under strip-types, so shared imports are
+ * relative with `.ts` (gotcha 78).
+ */
+import {
+  CODING_CLIS,
+  cliFor,
+  isClaudeCode,
+  isCodingCliId,
+  type CodingCliId,
+  type InstallPlatform
+} from './codingClis.ts'
+
+export const OPENROUTER_OPENAI_BASE_URL = 'https://openrouter.ai/api/v1'
+
+export type EndpointMode = 'default' | 'openrouter' | 'custom'
+
+export interface AgentEndpoint {
+  mode: EndpointMode
+  /**
+   * The model to ask for. Required off `default`: Grok Build picks the FIRST
+   * model an endpoint lists when it is not told, which on OpenRouter was an
+   * obscure 27B model, and the others refuse to start without one.
+   */
+  model: string
+  /** A custom endpoint's base URL — the `/v1` root of an OpenAI-style API. */
+  baseUrl: string
+  /**
+   * A custom endpoint's key. OpenRouter uses the one key in Settings ›
+   * Providers, shared with Claude Code, rather than a copy per agent.
+   */
+  apiKey: string
+}
+
+export interface AgentSettings {
+  /**
+   * The agents the user said they use. `null` until the picker has been
+   * answered once, which is what shows it — on a fresh install AND on the first
+   * launch after an update that introduced it, since both are "never asked".
+   */
+  chosen: CodingCliId[] | null
+  /** Per-agent endpoint. An absent entry is `default`: the CLI's own sign-in. */
+  endpoints: Partial<Record<CodingCliId, AgentEndpoint>>
+}
+
+export const DEFAULT_AGENTS: AgentSettings = { chosen: null, endpoints: {} }
+
+export const DEFAULT_ENDPOINT: AgentEndpoint = { mode: 'default', model: '', baseUrl: '', apiKey: '' }
+
+function isEndpointMode(v: unknown): v is EndpointMode {
+  return v === 'default' || v === 'openrouter' || v === 'custom'
+}
+
+const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : '')
+
+/**
+ * Repair a stored endpoint. Rebuilt from named keys, like `hydrateProviders`
+ * and the ui.ts clamps: a field this does not name does not survive, so a new
+ * field needs a line here in the same change.
+ */
+export function hydrateEndpoint(raw: unknown): AgentEndpoint {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ...DEFAULT_ENDPOINT }
+  const r = raw as Partial<AgentEndpoint>
+  return {
+    mode: isEndpointMode(r.mode) ? r.mode : 'default',
+    model: str(r.model),
+    baseUrl: str(r.baseUrl).replace(/\/+$/, ''),
+    apiKey: str(r.apiKey)
+  }
+}
+
+export function hydrateAgents(raw: unknown): AgentSettings {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { chosen: null, endpoints: {} }
+  const r = raw as { chosen?: unknown; endpoints?: unknown }
+  // An array, deduplicated and filtered to ids this build knows. Anything else
+  // — a string, an object, junk — is "never asked", which re-shows the picker
+  // rather than hiding every agent on the strength of a bad value.
+  const chosen = Array.isArray(r.chosen)
+    ? [...new Set(r.chosen.filter(isCodingCliId))]
+    : null
+  const endpoints: Partial<Record<CodingCliId, AgentEndpoint>> = {}
+  if (r.endpoints && typeof r.endpoints === 'object' && !Array.isArray(r.endpoints)) {
+    for (const [id, ep] of Object.entries(r.endpoints)) {
+      // Claude's endpoint is Settings › Providers; an entry here would be a
+      // second writer for the same thing (gotcha 57).
+      if (!isCodingCliId(id) || isClaudeCode(id)) continue
+      const h = hydrateEndpoint(ep)
+      if (h.mode !== 'default' || h.model || h.baseUrl || h.apiKey) endpoints[id] = h
+    }
+  }
+  return { chosen, endpoints }
+}
+
+/**
+ * Who shows in the launcher: what was chosen, in table order. Before the
+ * picker has been answered, everything installed — the behaviour this setting
+ * replaced, so an update changes nothing until the user makes a choice.
+ */
+export function visibleAgents(chosen: CodingCliId[] | null, installed: ReadonlySet<CodingCliId>): CodingCliId[] {
+  return CODING_CLIS.map((c) => c.id).filter((id) =>
+    chosen === null ? installed.has(id) : chosen.includes(id) && installed.has(id)
+  )
+}
+
+/* ------------------------------------------------------------ launching */
+
+export interface LaunchPlan {
+  /** Appended to the CLI's argv. */
+  args: string[]
+  /** Merged over the inherited environment. Where every key travels. */
+  env: Record<string, string>
+}
+
+export type LaunchPlanResult = { ok: true; plan: LaunchPlan } | { ok: false; message: string }
+
+export interface LaunchPlanInput {
+  id: CodingCliId
+  endpoint: AgentEndpoint | undefined
+  /** Settings › Providers' OpenRouter key, shared with Claude Code. */
+  openrouterKey: string
+  /** Continue the latest session in the folder, where the CLI can. */
+  continueLast: boolean
+  /** Stoke's browser MCP server, when it is up, for the CLIs that take one per launch. */
+  mcp: { url: string; token: string } | null
+  /** Where Stoke keeps Pi's provider extension, for a custom endpoint. */
+  piExtensionPath: string | null
+}
+
+/**
+ * A TOML basic string for a `codex -c key=value`. Codex parses the value as
+ * TOML and falls back to the raw text, so an unquoted URL would silently be a
+ * string anyway — but a value with a `#` or a `=` in it would not. JSON's
+ * string escapes are a subset of TOML's basic-string escapes.
+ */
+export function tomlString(s: string): string {
+  return JSON.stringify(s)
+}
+
+/** A custom endpoint's URL must be http(s) and have a host; nothing else is sent anywhere. */
+export function isEndpointUrl(s: string): boolean {
+  try {
+    const u = new URL(s)
+    return (u.protocol === 'http:' || u.protocol === 'https:') && !!u.hostname
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Local servers (Ollama, LM Studio, llama.cpp) take no key, and several CLIs
+ * refuse to start with an EMPTY key variable. They ignore the value; this is
+ * what they receive.
+ */
+export const NO_KEY = 'none'
+
+/** Stoke's own names, so nothing it sets can collide with the user's config. */
+const PROVIDER_OPENROUTER = 'stoke_openrouter'
+const PROVIDER_CUSTOM = 'stoke_custom'
+export const ENV_OPENROUTER_KEY = 'STOKE_OPENROUTER_API_KEY'
+export const ENV_CUSTOM_KEY = 'STOKE_CUSTOM_API_KEY'
+export const ENV_CUSTOM_BASE_URL = 'STOKE_CUSTOM_BASE_URL'
+export const ENV_CUSTOM_MODEL = 'STOKE_CUSTOM_MODEL'
+export const ENV_MCP_TOKEN = 'STOKE_MCP_TOKEN'
+
+/** What is wrong with an endpoint before anything is spawned, or null. */
+export function endpointProblem(id: CodingCliId, ep: AgentEndpoint, openrouterKey: string): string | null {
+  const cli = cliFor(id)
+  if (ep.mode === 'default') return null
+  if (ep.mode === 'openrouter') {
+    if (!cli.endpoints.openrouter) return `${cli.label} cannot be pointed at OpenRouter from Stoke.`
+    if (!openrouterKey) return `${cli.label} is set to use OpenRouter, but there is no OpenRouter key. Add one in Settings › Providers.`
+    if (!ep.model) return `${cli.label} is set to use OpenRouter, but no model is chosen. Set one in Settings › Coding agents.`
+    return null
+  }
+  if (!cli.endpoints.custom) return `${cli.label} cannot be pointed at a custom endpoint from Stoke.`
+  if (!isEndpointUrl(ep.baseUrl)) return `${cli.label}’s custom endpoint needs an http(s) base URL. Set it in Settings › Coding agents.`
+  if (!ep.model) return `${cli.label}’s custom endpoint needs a model. Set it in Settings › Coding agents.`
+  return null
+}
+
+/**
+ * The arguments and environment one launch of a non-Claude CLI gets.
+ *
+ * Refuses rather than guesses: a launch that would 401 on its first turn, or
+ * silently fall back to the CLI's own sign-in while the user believes it is on
+ * OpenRouter, is worse than a message saying which field is empty.
+ */
+export function agentLaunchPlan(input: LaunchPlanInput): LaunchPlanResult {
+  const { id, openrouterKey, continueLast, mcp, piExtensionPath } = input
+  const cli = cliFor(id)
+  const ep = input.endpoint ?? DEFAULT_ENDPOINT
+  if (isClaudeCode(id)) return { ok: true, plan: { args: [], env: {} } }
+
+  const problem = endpointProblem(id, ep, openrouterKey)
+  if (problem) return { ok: false, message: problem }
+
+  const args: string[] = []
+  const env: Record<string, string> = {}
+  const customKey = ep.apiKey || NO_KEY
+
+  switch (id) {
+    case 'codex': {
+      if (ep.mode !== 'default') {
+        const pid = ep.mode === 'openrouter' ? PROVIDER_OPENROUTER : PROVIDER_CUSTOM
+        const base = ep.mode === 'openrouter' ? OPENROUTER_OPENAI_BASE_URL : ep.baseUrl
+        const keyVar = ep.mode === 'openrouter' ? ENV_OPENROUTER_KEY : ENV_CUSTOM_KEY
+        args.push(
+          '-c', `model_provider=${tomlString(pid)}`,
+          '-c', `model_providers.${pid}.name=${tomlString(ep.mode === 'openrouter' ? 'OpenRouter' : 'Custom endpoint')}`,
+          '-c', `model_providers.${pid}.base_url=${tomlString(base)}`,
+          '-c', `model_providers.${pid}.env_key=${tomlString(keyVar)}`,
+          '-m', ep.model
+        )
+        env[keyVar] = ep.mode === 'openrouter' ? openrouterKey : customKey
+      }
+      if (mcp) {
+        args.push(
+          '-c', `mcp_servers.stoke.url=${tomlString(mcp.url)}`,
+          '-c', `mcp_servers.stoke.bearer_token_env_var=${tomlString(ENV_MCP_TOKEN)}`
+        )
+        env[ENV_MCP_TOKEN] = mcp.token
+      }
+      break
+    }
+    case 'opencode': {
+      const config: Record<string, unknown> = {}
+      if (ep.mode === 'openrouter') {
+        env.OPENROUTER_API_KEY = openrouterKey
+        args.push('-m', `openrouter/${ep.model}`)
+      } else if (ep.mode === 'custom') {
+        config.provider = {
+          [PROVIDER_CUSTOM]: {
+            npm: '@ai-sdk/openai-compatible',
+            name: 'Custom endpoint',
+            options: { baseURL: ep.baseUrl, apiKey: `{env:${ENV_CUSTOM_KEY}}` },
+            models: { [ep.model]: { name: ep.model } }
+          }
+        }
+        env[ENV_CUSTOM_KEY] = customKey
+        args.push('-m', `${PROVIDER_CUSTOM}/${ep.model}`)
+      }
+      if (mcp) {
+        // The token inline rather than as `{env:…}`: substitution inside MCP
+        // headers was the one part of this path nobody saw work, and the value
+        // is already confined to this process's environment either way.
+        config.mcp = {
+          stoke: { type: 'remote', url: mcp.url, headers: { Authorization: `Bearer ${mcp.token}` }, enabled: true }
+        }
+      }
+      if (Object.keys(config).length) env.OPENCODE_CONFIG_CONTENT = JSON.stringify(config)
+      break
+    }
+    case 'grok': {
+      if (ep.mode !== 'default') {
+        const base = ep.mode === 'openrouter' ? OPENROUTER_OPENAI_BASE_URL : ep.baseUrl
+        /*
+         * Three variables, not two. With only the models URL and the key, Grok
+         * Build probes the key against `{xai_api_base_url}/api-key` — api.x.ai —
+         * which answers 400 to a non-xAI key, so the key is treated as unusable
+         * and anyone not signed in to grok.com gets "Not signed in" (measured by
+         * the fact-check pass, and read in api_key_probe.rs). Pointing the xAI
+         * base at the same endpoint turns that probe into a 404, which it treats
+         * as "unknown" and lets through. It also sends Grok's other first-party
+         * calls there, which is the price of choosing an endpoint by env.
+         */
+        env.GROK_MODELS_BASE_URL = base
+        env.GROK_XAI_API_BASE_URL = base
+        env.XAI_API_KEY = ep.mode === 'openrouter' ? openrouterKey : customKey
+        args.push('-m', ep.model)
+      }
+      break
+    }
+    case 'pi': {
+      if (ep.mode === 'openrouter') {
+        env.OPENROUTER_API_KEY = openrouterKey
+        args.push('--provider', 'openrouter', '--model', ep.model)
+      } else if (ep.mode === 'custom') {
+        if (!piExtensionPath) return { ok: false, message: 'Stoke could not write Pi’s provider file, so a custom endpoint cannot be used.' }
+        env[ENV_CUSTOM_BASE_URL] = ep.baseUrl
+        env[ENV_CUSTOM_KEY] = customKey
+        env[ENV_CUSTOM_MODEL] = ep.model
+        args.push('-e', piExtensionPath, '--provider', PROVIDER_CUSTOM, '--model', ep.model)
+      }
+      break
+    }
+  }
+
+  if (continueLast && cli.continueArgs) args.push(...cli.continueArgs)
+  return { ok: true, plan: { args, env } }
+}
+
+/**
+ * Pi's provider extension for a custom endpoint. Constant text — the endpoint,
+ * model and key all arrive through the environment — so writing it once is
+ * enough and nothing secret is ever on disk. Shape proven against Pi 0.85.1:
+ * `pi -e <this> --list-models` listed the registered model.
+ */
+export const PI_PROVIDER_EXTENSION = [
+  '// Written by Stoke. Registers the custom endpoint chosen in Stoke’s settings;',
+  '// the URL, model and key come from the environment Stoke launches Pi with.',
+  'export default function (pi: any) {',
+  `  const model = process.env.${ENV_CUSTOM_MODEL}`,
+  `  const baseUrl = process.env.${ENV_CUSTOM_BASE_URL}`,
+  '  if (!model || !baseUrl) return',
+  `  pi.registerProvider('${PROVIDER_CUSTOM}', {`,
+  '    baseUrl,',
+  `    apiKey: '$${ENV_CUSTOM_KEY}',`,
+  "    api: 'openai-completions',",
+  '    models: [{ id: model, name: model, reasoning: false, input: [\'text\'],',
+  '      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 8192 }]',
+  '  })',
+  '}',
+  ''
+].join('\n')
+
+/* ------------------------------------------------------------ installing */
+
+export interface InstallStep {
+  id: CodingCliId
+  label: string
+  command: string
+  needs?: string
+  note?: string
+}
+
+/** What installing these would run on this platform, in table order. Unknown or unscripted ids are left out. */
+export function installSteps(ids: readonly string[], platform: string): InstallStep[] {
+  const want = new Set(ids.filter(isCodingCliId))
+  const plat = platform as InstallPlatform
+  return CODING_CLIS.filter((c) => want.has(c.id) && c.install[plat]).map((c) => ({
+    id: c.id,
+    label: c.label,
+    command: c.install[plat] as string,
+    needs: c.installNeeds,
+    note: c.installNote
+  }))
+}
+
+/**
+ * One script that installs each chosen agent in turn, for a terminal tab.
+ *
+ * In turn, not in parallel: two npm installs racing on the global prefix fail
+ * with ENOTEMPTY, and a person watching the tab can follow one at a time. A
+ * failure does not stop the rest — each step's status is kept and printed at
+ * the end, and the script exits non-zero if any failed, which is what the tab's
+ * exit card reads.
+ *
+ * Built only from the table above and ids it validates, so nothing the
+ * renderer sends can become part of a command.
+ */
+export function installScript(ids: readonly string[], platform: string): string | null {
+  const steps = installSteps(ids, platform)
+  if (!steps.length) return null
+  if (platform === 'win32') {
+    const lines = ['$failed = @()']
+    for (const s of steps) {
+      lines.push(`Write-Host ''`, `Write-Host '==> Installing ${s.label}' -ForegroundColor Cyan`)
+      if (s.needs) lines.push(`Write-Host '    needs ${s.needs}'`)
+      lines.push(`Write-Host '    ${s.command.replace(/'/g, "''")}'`)
+      lines.push(`try { ${s.command}; if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) { $failed += '${s.label}' } } catch { Write-Host $_ -ForegroundColor Red; $failed += '${s.label}' }`)
+    }
+    lines.push(
+      `Write-Host ''`,
+      `if ($failed.Count) { Write-Host ('Did not install: ' + ($failed -join ', ')) -ForegroundColor Red; exit 1 }`,
+      `Write-Host 'Done. Close this tab, or start one of them from the launcher.' -ForegroundColor Green`
+    )
+    return lines.join('\n')
+  }
+  const q = (t: string): string => `'${t.replace(/'/g, `'\\''`)}'`
+  const lines = ['failed=""']
+  for (const s of steps) {
+    lines.push(`printf '\\n\\033[1m==> Installing %s\\033[0m\\n' ${q(s.label)}`)
+    if (s.needs) lines.push(`printf '    needs %s\\n' ${q(s.needs)}`)
+    if (s.note) lines.push(`printf '    %s\\n' ${q(s.note)}`)
+    lines.push(`printf '    %s\\n\\n' ${q(s.command)}`)
+    lines.push(`( ${s.command} ) || failed="$failed, ${s.label}"`)
+  }
+  lines.push(
+    `printf '\\n'`,
+    'if [ -n "$failed" ]; then printf \'\\033[31mDid not install:%s\\033[0m\\n\' "${failed#,}"; exit 1; fi',
+    `printf '\\033[32mDone.\\033[0m Close this tab, or start one of them from the launcher.\\n'`
+  )
+  return lines.join('\n')
+}
