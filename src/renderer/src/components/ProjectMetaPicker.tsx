@@ -198,7 +198,15 @@ export function ProjectMetaPicker({
         }}
         /* The row above is a role="button" that acts on Enter and Space, so
            without this every key that opens the picker also starts a session. */
-        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') e.stopPropagation() }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.stopPropagation()
+          } else if (e.key === 'Escape' && open) {
+            e.stopPropagation()
+            returnFocusToTrigger()
+            onOpenChange(false)
+          }
+        }}
       >
         {project.emoji ? (
           <span className="project-emoji-glyph" aria-hidden="true">

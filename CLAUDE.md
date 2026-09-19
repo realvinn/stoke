@@ -143,8 +143,8 @@ rule file named on the group line.
   Stoke's own writes fire it.
 - **63.** Keep `store.ts`'s write coalescing (`persist` is a sync whole-file write; sliders fire
   per tick) and `flushSettings()` on quit and window `closed`; flush sheet drafts on unmount.
-  An empty or non-numeric Interface-scale field reverts to the current value on blur instead
-  of clamping to the 0.8 floor.
+  Never patch on empty Interface-scale blur: `clampUiScale('')` returns 0.8, not the current
+  value, so skip the patch and just clear the draft to revert the display.
 
 **Terminal** — `.claude/rules/terminal.md`
 - **5.** Never read the terminal from the DOM: WebGL paints a canvas, so `.xterm-rows` is empty.

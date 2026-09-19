@@ -96,7 +96,7 @@ export function CommandPalette({ projects, onPick, onClose }: Props): React.JSX.
               <span className="palette-item-path truncate">
                 <Highlight text={p.path} ranges={nameRanges.length ? [] : pathRanges} />
               </span>
-              <span className="palette-item-path">{relativeTime(p.lastModified)}</span>
+              <span className="palette-item-time">{relativeTime(p.lastModified)}</span>
             </button>
           ))}
         </div>
