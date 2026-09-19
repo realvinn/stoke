@@ -34,7 +34,7 @@ import {
 } from '@shared/phoneUi'
 import type { PhoneSessionStatus } from '@shared/remotePhone'
 import { createRecorder, postTranscription, voiceSupported } from '@shared/voice'
-import { api, folderName, host, machineName, theme, wsUrl, type SessionRow } from './api'
+import { folderName, host, machineName, resumeSession, theme, wsUrl, type SessionRow } from './api'
 import { confirmSheet, el, explain, icon, iconButton, openSheet, toast } from './dom'
 import { rowTitle, screenLines, sendAnswer } from './list'
 import { store } from './store'
@@ -124,6 +124,10 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
   const pending = pendingMeta.get(ptyId)
   let status: PhoneSessionStatus = row?.status ?? 'unknown'
   let waitingFor: string | null = row?.waitingFor ?? null
+  /** The prompt the tray answers; the server refuses any other (`answerVerdict`). */
+  let promptId: string | null = row?.promptId ?? null
+  /** What the answer tray last drew, so an unchanged screen does not redraw it. */
+  let lastTraySig = ''
   let ended = false
   let endReason: string | null = null
   let exitCode: number | null = null
@@ -225,11 +229,14 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
     modeKey.textContent = modeFromScreen(screenLines(term)) ?? (mode ? (MODE_LABEL[mode] ?? mode) : 'mode')
   }
 
-  const setStatus = (next: PhoneSessionStatus, why: string | null): void => {
+  const setStatus = (next: PhoneSessionStatus, why: string | null, prompt: string | null = null): void => {
     if (ended) next = 'ended'
-    const changed = next !== status || why !== waitingFor
+    const changed = next !== status || why !== waitingFor || prompt !== promptId
     status = next
     waitingFor = why
+    promptId = prompt
+    // A new prompt is drawn afresh even when its options read the same.
+    if (changed) lastTraySig = ''
     paintHeader()
     if (changed) refreshTray()
   }
@@ -238,7 +245,9 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
     const next = store.row(ptyId)
     if (next) {
       row = next
-      if (next.status !== status || next.waitingFor !== waitingFor) setStatus(next.status, next.waitingFor)
+      if (next.status !== status || next.waitingFor !== waitingFor || next.promptId !== promptId) {
+        setStatus(next.status, next.waitingFor, next.promptId)
+      }
       else paintHeader()
     }
   }) as unknown as EventListener)
@@ -455,6 +464,7 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
     desktopRows?: number
     status?: PhoneSessionStatus
     waitingFor?: string | null
+    promptId?: string | null
     code?: number | null
     reason?: string
   }
@@ -486,19 +496,19 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
       for (const text of flushed.flush) ws?.send(JSON.stringify({ type: 'submit', text }))
       if (flushed.flush.length) toast(flushed.flush.length === 1 ? 'Sent your queued message.' : `Sent ${flushed.flush.length} queued messages.`)
       paintQueued()
-      if (msg.status) setStatus(msg.status, msg.waitingFor ?? null)
+      if (msg.status) setStatus(msg.status, msg.waitingFor ?? null, msg.promptId ?? null)
     } else if (msg.type === 'data' && msg.data) {
       term.write(msg.data, () => {
         stickToBottom()
         scheduleTray()
       })
     } else if (msg.type === 'status' && msg.status) {
-      setStatus(msg.status, msg.waitingFor ?? null)
+      setStatus(msg.status, msg.waitingFor ?? null, msg.promptId ?? null)
     } else if (msg.type === 'exit') {
       ended = true
       exitCode = typeof msg.code === 'number' ? msg.code : null
       endReason = msg.reason ?? null
-      setStatus('ended', null)
+      setStatus('ended', null, null)
       showEnded()
     }
   }
@@ -515,7 +525,6 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
     }, 150)
   }
 
-  let lastTraySig = ''
   const refreshTray = (): void => {
     if (status !== 'waiting' || ended) {
       tray.hidden = true
@@ -559,7 +568,7 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
   const answer = async (key: string): Promise<void> => {
     for (const b of tray.querySelectorAll('button')) b.disabled = true
     let ok: boolean
-    if (key === 'esc' || Number(key) <= 3) ok = await sendAnswer(ptyId, key)
+    if (key === 'esc' || Number(key) <= 3) ok = await sendAnswer(ptyId, key, promptId)
     else {
       ok = ws?.readyState === WebSocket.OPEN
       if (ok) ws!.send(JSON.stringify({ type: 'input', data: key }))
@@ -885,12 +894,10 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
     resume.addEventListener('click', () => {
       resume.disabled = true
       resume.textContent = 'Resuming…'
-      void api<{ ptyId: string }>('/api/sessions', {
-        method: 'POST',
-        body: JSON.stringify({ cwd, sessionId, resume: true })
-      })
+      void resumeSession(cwd!, sessionId!)
         .then((started) => {
-          pendingMeta.set(started.ptyId, { cwd: cwd!, project: row?.project ?? folderName(cwd!) })
+          if (started.alreadyOpen) toast('That conversation is already open. Showing it.')
+          else pendingMeta.set(started.ptyId, { cwd: cwd!, project: row?.project ?? folderName(cwd!) })
           location.hash = `#/s/${encodeURIComponent(started.ptyId)}`
         })
         .catch((err: Error) => {

@@ -31,6 +31,8 @@ export interface SessionRow {
   context: ContextInfo | null
   status: PhoneSessionStatus
   waitingFor: string | null
+  /** The prompt a waiting session shows; the answer route requires it back. */
+  promptId: string | null
   lastActivityAt: number | null
   cli: string
   agentName: string
@@ -94,6 +96,33 @@ export function setAuthFailureHandler(fn: () => void): void {
 /** Set once any request has succeeded here: tells "never connected" from "key replaced". */
 export const CONNECTED_KEY = 'stoke.connected'
 
+/** A non-2xx answer: its status, and its JSON body when it had one. */
+export type ApiError = Error & { status?: number; body?: unknown }
+
+/**
+ * Resume a past conversation, or open it where it already runs.
+ *
+ * The server refuses a Resume on a session some pty is already running (409
+ * `{live, ptyId}`): a second `claude --resume` on one transcript left the
+ * desktop with twin tabs, and closing the ended twin wiped the live one's
+ * context meter. That refusal is not an error to the person tapping Resume;
+ * they get the running session.
+ */
+export async function resumeSession(cwd: string, sessionId: string): Promise<{ ptyId: string; alreadyOpen: boolean }> {
+  try {
+    const started = await api<{ ptyId: string }>('/api/sessions', {
+      method: 'POST',
+      body: JSON.stringify({ cwd, sessionId, resume: true })
+    })
+    return { ptyId: started.ptyId, alreadyOpen: false }
+  } catch (err) {
+    const e = err as ApiError
+    const ptyId = (e.body as { ptyId?: unknown } | null | undefined)?.ptyId
+    if (e.status === 409 && typeof ptyId === 'string') return { ptyId, alreadyOpen: true }
+    throw err
+  }
+}
+
 export async function api<T>(path: string, init?: RequestInit & { key?: string }): Promise<T> {
   const headers: Record<string, string> = { 'content-type': 'application/json' }
   if (init?.key) headers.authorization = `Bearer ${init.key}`
@@ -110,8 +139,9 @@ export async function api<T>(path: string, init?: RequestInit & { key?: string }
   }
   if (!res.ok) {
     const message = (body as { error?: string } | null)?.error
-    const err = new Error(message || `Stoke answered ${res.status}.`) as Error & { status?: number }
+    const err = new Error(message || `Stoke answered ${res.status}.`) as ApiError
     err.status = res.status
+    err.body = body
     throw err
   }
   try {

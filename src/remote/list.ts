@@ -19,7 +19,7 @@ import {
   type AnswerOption,
   type ParsedPrompt
 } from '@shared/phoneUi'
-import { api, folderName, wsUrl, type SessionRow } from './api'
+import { api, folderName, wsUrl, type ApiError, type SessionRow } from './api'
 import { el, toast } from './dom'
 
 export function compact(n: number): string {
@@ -65,7 +65,14 @@ function activity(r: SessionRow, now: number): string {
 
 /* -------------------------------------------------------- reading a prompt */
 
+/**
+ * Keyed by pty AND prompt (`promptKey`): prompt B arriving within one poll of
+ * prompt A used to keep showing A's question and labels, cached per pty until
+ * the row stopped being `waiting` — and a tap then answered B while showing A.
+ */
 const prompts = new Map<string, Promise<ParsedPrompt | null>>()
+
+const promptKey = (r: Pick<SessionRow, 'ptyId' | 'promptId'>): string => `${r.ptyId}\u0000${r.promptId ?? ''}`
 
 /**
  * The options a waiting session is offering, read off its screen.
@@ -76,11 +83,12 @@ const prompts = new Map<string, Promise<ParsedPrompt | null>>()
  * prompt costs one replay however many pushes arrive.
  */
 function peekPrompt(r: SessionRow): Promise<ParsedPrompt | null> {
-  const cached = prompts.get(r.ptyId)
+  const cached = prompts.get(promptKey(r))
   if (cached) return cached
   const job = new Promise<ParsedPrompt | null>((resolve) => {
     let done = false
-    const socket = new WebSocket(wsUrl(`/ws?ptyId=${encodeURIComponent(r.ptyId)}`))
+    // `peek=1`: one replay and a close, never counted as a phone attached.
+    const socket = new WebSocket(wsUrl(`/ws?ptyId=${encodeURIComponent(r.ptyId)}&peek=1`))
     const finish = (value: ParsedPrompt | null): void => {
       if (done) return
       done = true
@@ -103,7 +111,7 @@ function peekPrompt(r: SessionRow): Promise<ParsedPrompt | null> {
     socket.addEventListener('close', () => finish(null))
     socket.addEventListener('error', () => finish(null))
   })
-  prompts.set(r.ptyId, job)
+  prompts.set(promptKey(r), job)
   return job
 }
 
@@ -118,17 +126,31 @@ export function screenLines(term: Terminal): string[] {
   return lines
 }
 
-/** POST one answer; true when it landed. 409 means somebody already answered. */
-export async function sendAnswer(ptyId: string, key: string): Promise<boolean> {
+/**
+ * POST one answer to the prompt `promptId` names; true when it landed.
+ *
+ * 409 is the server refusing a tap that could land somewhere unintended: the
+ * session is no longer waiting, or the prompt on screen is not the one this
+ * phone was shown, or someone typed into it since (`answerVerdict`).
+ */
+export async function sendAnswer(ptyId: string, key: string, promptId: string | null): Promise<boolean> {
   try {
     await api(`/api/sessions/${encodeURIComponent(ptyId)}/answer`, {
       method: 'POST',
-      body: JSON.stringify({ key })
+      body: JSON.stringify({ key, promptId })
     })
     return true
   } catch (err) {
-    const status = (err as { status?: number }).status
-    toast(status === 409 ? 'That prompt was already answered.' : (err as Error).message, 'error')
+    const e = err as ApiError
+    const why = (e.body as { error?: unknown } | null | undefined)?.error
+    toast(
+      e.status !== 409
+        ? e.message
+        : why === 'stale'
+          ? 'That prompt changed or was answered on the computer. Check the new one before you tap.'
+          : 'That prompt was already answered.',
+      'error'
+    )
     return false
   }
 }
@@ -242,9 +264,9 @@ export function mountSessionList(
     const answer = async (btn: HTMLButtonElement, key: string): Promise<void> => {
       for (const b of chips.querySelectorAll('button')) b.disabled = true
       btn.dataset.sending = 'true'
-      const ok = await sendAnswer(r.ptyId, key)
+      const ok = await sendAnswer(r.ptyId, key, r.promptId)
       if (ok) {
-        prompts.delete(r.ptyId)
+        prompts.delete(promptKey(r))
         box.dataset.answered = 'true'
       } else {
         for (const b of chips.querySelectorAll('button')) b.disabled = false
@@ -264,6 +286,7 @@ export function mountSessionList(
     JSON.stringify([
       r.status,
       r.waitingFor,
+      r.promptId,
       r.project,
       r.title,
       r.context?.title,
@@ -302,12 +325,13 @@ export function mountSessionList(
         m.node.remove()
         mounted.delete(id)
       }
-      const row = rows.find((r) => r.ptyId === id)
-      if (!row || row.status !== 'waiting') prompts.delete(id)
     }
+    // Drop every cached prompt that is no longer the one its row shows.
+    const current = new Set(rows.filter((r) => r.status === 'waiting').map(promptKey))
+    for (const k of [...prompts.keys()]) if (!current.has(k)) prompts.delete(k)
     // Reorder only when the order actually changed, so focus is not disturbed.
-    const current = [...list.children]
-    if (current.length !== ordered.length || current.some((n, i) => n !== ordered[i])) {
+    const children = [...list.children]
+    if (children.length !== ordered.length || children.some((n, i) => n !== ordered[i])) {
       list.replaceChildren(...ordered)
     }
   }

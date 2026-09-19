@@ -8,7 +8,7 @@
  * The read-back opens at the newest message and folds tool-only turns (PX-15).
  */
 import { collapseTurns, middleTruncate, plural, relativeTime, splitMarkdown } from '@shared/phoneUi'
-import { api, folderName, type HistoryRow, type ProjectRow, type TurnRow } from './api'
+import { api, folderName, resumeSession, type HistoryRow, type ProjectRow, type TurnRow } from './api'
 import { confirmSheet, el, failure, humanError, icon, iconButton, skeleton, toast } from './dom'
 import { meterMini } from './list'
 import { pathRoom } from './newSession'
@@ -198,11 +198,9 @@ export function mountTranscript(id: string, cwd: string): Page {
       action.disabled = true
       action.textContent = 'Resuming…'
       try {
-        const started = await api<{ ptyId: string }>('/api/sessions', {
-          method: 'POST',
-          body: JSON.stringify({ cwd: m.projectPath, sessionId: m.id, resume: true })
-        })
-        pendingMeta.set(started.ptyId, { cwd: m.projectPath, project: folderName(m.projectPath) })
+        const started = await resumeSession(m.projectPath, m.id)
+        if (started.alreadyOpen) toast('That conversation is already open. Showing it.')
+        else pendingMeta.set(started.ptyId, { cwd: m.projectPath, project: folderName(m.projectPath) })
         location.hash = `#/s/${encodeURIComponent(started.ptyId)}`
       } catch (err) {
         action.disabled = false
