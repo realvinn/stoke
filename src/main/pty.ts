@@ -24,7 +24,13 @@ import { windowFromBanner } from './sessionFile.ts'
 import { buildSshArgs, sshExecutable } from './ssh.ts'
 import { claimSessionFiles, releaseSessionFiles } from './statusLine.ts'
 import type { RegistryTarget } from '../shared/claudeRegistry.ts'
-import { ENDED_RETENTION_MS, submitFrames, trackBracketedPaste } from '../shared/remotePhone.ts'
+import {
+  isEndedExpired,
+  isTerminalReport,
+  SubmitQueue,
+  submitFrames,
+  trackBracketedPaste
+} from '../shared/remotePhone.ts'
 
 /**
  * How long after `submit()` writes the last chunk of text before it writes the
@@ -39,6 +45,13 @@ const SUBMIT_ENTER_DELAY_MS = 80
  * Code 2.1.278; one 1287-character write was read as a paste.
  */
 const SUBMIT_CHUNK_GAP_MS = 10
+
+/**
+ * After one submit's Enter, before the next queued submit starts typing
+ * (`SubmitQueue`). The same margin as the Enter delay: Claude Code has to take
+ * the `\r` and clear its box before the next message's first chunk lands.
+ */
+const SUBMIT_AFTER_ENTER_MS = 80
 
 export interface StartResult {
   ptyId: string
@@ -119,6 +132,19 @@ interface Session {
    * brackets — see `submitFrames` and CLAUDE.md gotcha 85 / audit PX-1.
    */
   bracketedPaste: boolean
+  /**
+   * This session's phone submits, one at a time (`SubmitQueue`). Two submits
+   * used to type interleaved into one garbled turn.
+   */
+  submits: SubmitQueue
+  /**
+   * The last time anything a person (or the phone) typed was written to the
+   * pty, epoch ms, or null. Automatic terminal replies are not typing
+   * (`isTerminalReport`). The phone's one-tap answer refuses a prompt that
+   * has had input since it appeared (`answerVerdict`): whoever typed may have
+   * answered it already.
+   */
+  lastInputAt: number | null
 }
 
 /** Summary of a live session, used by the remote UI's session list. */
@@ -479,7 +505,13 @@ export class PtyManager {
       cols: Math.max(20, opts.cols || 120),
       rows: Math.max(5, opts.rows || 30),
       cli: cliId,
-      bracketedPaste: false
+      bracketedPaste: false,
+      submits: new SubmitQueue({
+        chunkGapMs: SUBMIT_CHUNK_GAP_MS,
+        enterDelayMs: SUBMIT_ENTER_DELAY_MS,
+        afterEnterMs: SUBMIT_AFTER_ENTER_MS
+      }),
+      lastInputAt: null
     }
     this.sessions.set(ptyId, session)
     // Off the spawn path: nothing waits on it, and the fallback that reads it
@@ -561,9 +593,26 @@ export class PtyManager {
     if (!s || s.exited) return
     try {
       s.proc.write(data)
+      if (data && !isTerminalReport(data)) s.lastInputAt = Date.now()
     } catch {
       /* process died between the renderer's keystroke and here */
     }
+  }
+
+  /** When input last reached this pty (`Session.lastInputAt`), or null. */
+  lastInputAt(ptyId: string): number | null {
+    return this.sessions.get(ptyId)?.lastInputAt ?? null
+  }
+
+  /**
+   * The ptyId of a RUNNING session on `sessionId`, or null. For refusing a
+   * second `claude` on a transcript that is already open (the phone's Resume
+   * on a session a desktop tab or another phone is running).
+   */
+  liveFor(sessionId: string): string | null {
+    if (!sessionId) return null
+    for (const s of this.sessions.values()) if (!s.exited && s.sessionId === sessionId) return s.ptyId
+    return null
   }
 
   /**
@@ -574,33 +623,33 @@ export class PtyManager {
    * records a bracketed paste as `<pasted_content>` and the model will not act
    * on it), and the bare `\r` that submits follows on its own after
    * `SUBMIT_ENTER_DELAY_MS`. Folding the `\r` into the text is the original
-   * PX-1 bug: it lands as a newline inside the box.
+   * PX-1 bug: it lands as a newline inside the box. Submits to one session
+   * run one at a time (`SubmitQueue`); this returns as soon as it is queued.
    */
   submit(ptyId: string, text: string): boolean {
     const s = this.sessions.get(ptyId)
     if (!s || s.exited) return false
-    const { chunks, enter } = submitFrames(text, {
+    const frames = submitFrames(text, {
       bracketedPaste: s.bracketedPaste,
       claude: isClaudeCode(cliIdOf(s.cli))
     })
-    const alive = (): Session | null => {
+    /*
+     * Queued behind this session's previous submit, never started beside it:
+     * two chains of timed writes interleave (review of PX-3's queued flush,
+     * which sends several submits back to back). Each write re-checks the
+     * session, so a job queued behind an `/exit` stops at its first write.
+     */
+    void s.submits.push(frames, (data) => {
       const cur = this.sessions.get(ptyId)
-      return cur && !cur.exited ? cur : null
-    }
-    // Each write re-checks the session: the gaps give a fast `/exit` time to land.
-    const writeAt = (i: number): void => {
-      const cur = alive()
-      if (!cur) return
+      if (!cur || cur.exited) return false
       try {
-        cur.proc.write(i < chunks.length ? chunks[i] : enter)
+        cur.proc.write(data)
+        cur.lastInputAt = Date.now()
+        return true
       } catch {
-        return
+        return false
       }
-      if (i < chunks.length - 1) setTimeout(() => writeAt(i + 1), SUBMIT_CHUNK_GAP_MS)
-      else if (i === chunks.length - 1) setTimeout(() => writeAt(chunks.length), SUBMIT_ENTER_DELAY_MS)
-    }
-    if (chunks.length === 0) return true
-    writeAt(0)
+    })
     return true
   }
 
@@ -711,8 +760,11 @@ export class PtyManager {
    */
   statusKeyFor(sessionId: string): string | null {
     if (!sessionId) return null
+    // Past exit too: an exited session stays in the map for the phone's ring
+    // (gotcha 84), its files already released, and Map order puts it FIRST —
+    // after a /clear then a Resume on the new id it would shadow the live key.
     for (const s of this.sessions.values()) {
-      if (s.sessionId === sessionId && s.statusKey) return s.statusKey
+      if (!s.exited && s.sessionId === sessionId && s.statusKey) return s.statusKey
     }
     return null
   }
@@ -751,7 +803,7 @@ export class PtyManager {
    */
   bannerWindowFor(sessionId: string): number | null {
     for (const s of this.sessions.values()) {
-      if (s.sessionId === sessionId && s.bannerWindow) return s.bannerWindow
+      if (!s.exited && s.sessionId === sessionId && s.bannerWindow) return s.bannerWindow
     }
     return null
   }
@@ -771,7 +823,8 @@ export class PtyManager {
    */
   statusKeys(): string[] {
     const keys: string[] = []
-    for (const s of this.sessions.values()) if (s.statusKey) keys.push(s.statusKey)
+    // Live only: an exited session in the phone's ring has released its files.
+    for (const s of this.sessions.values()) if (!s.exited && s.statusKey) keys.push(s.statusKey)
     return keys
   }
 
@@ -818,7 +871,7 @@ export class PtyManager {
   /** Drop an exited session once it has sat in the ring past `ENDED_RETENTION_MS`. */
   private pruneEnded(now: number = Date.now()): void {
     for (const [id, s] of this.sessions) {
-      if (s.exited && s.endedAt !== null && now - s.endedAt > ENDED_RETENTION_MS) {
+      if (s.exited && isEndedExpired(s.endedAt, now)) {
         this.sessions.delete(id)
       }
     }
