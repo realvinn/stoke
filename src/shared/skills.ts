@@ -5,9 +5,10 @@
  * `SKILL.md` with `name`/`description` frontmatter — so there is nothing to
  * translate. What differs is WHERE each one looks, and that is the whole
  * problem: a skill in `~/.claude/skills` is invisible to Codex, and one copied
- * into `~/.codex/skills` drifts from its original on the next edit. Measured on
- * the machine this was written on (2026-09-18): 69 skills Claude Code could see
- * that Codex could not, and 14 physical duplicates between the two.
+ * into `~/.codex/skills` to reach Codex drifts from its original on the next
+ * edit. Measured on the machine this was written on (2026-09-18): dozens of
+ * skills Claude Code could see that Codex could not, and 14 physical copies
+ * between the two.
  *
  * `~/.agents/skills` is the folder nearly all of them share. So the answer this
  * module gives is a REPORT — who sees what, and where to put a skill so everyone
@@ -27,7 +28,10 @@ export const SHARED_SKILLS_DIR = '~/.agents/skills'
 
 export const SKILL_DIRS: Record<CodingCliId, readonly string[]> = {
   claude: ['~/.claude/skills'],
-  codex: ['~/.agents/skills'],
+  // `~/.codex/skills` first: Codex's own first user root. An earlier version
+  // of this table left it out on the word of the docs; running
+  // `codex debug prompt-input` against a throwaway home listed it as `r0`.
+  codex: ['~/.codex/skills', '~/.agents/skills'],
   grok: ['~/.grok/skills', '~/.agents/skills', '~/.claude/skills', '~/.cursor/skills'],
   opencode: ['~/.config/opencode/skills', '~/.agents/skills', '~/.claude/skills'],
   pi: ['~/.pi/agent/skills', '~/.agents/skills'],

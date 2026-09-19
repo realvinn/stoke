@@ -67,6 +67,10 @@ check('explicitly off', claudeVoiceEnabled({ voiceEnabled: false, voice: { enabl
 check('a string "true" is not a switch', claudeVoiceEnabled({ voiceEnabled: 'true' }), false)
 check('no settings file at all', claudeVoiceEnabled(null), false)
 check('voice set to null does not throw', claudeVoiceEnabled({ voice: null }), false)
+// The CLI's own precedence, read from the 2.1.278 bundle: the nested key wins.
+check('nested off outranks a top-level true', claudeVoiceEnabled({ voiceEnabled: true, voice: { enabled: false } }), false)
+check('nested on outranks a top-level false', claudeVoiceEnabled({ voiceEnabled: false, voice: { enabled: true } }), true)
+check('a nested object without `enabled` falls back to the top-level key', claudeVoiceEnabled({ voiceEnabled: true, voice: { mode: 'hold' } }), true)
 
 console.log('\nwho owns Space in a tab')
 check('a local Claude tab with /voice on: Claude Code', spaceOwner({ cliId: 'claude', hostId: null }, true), 'cli')

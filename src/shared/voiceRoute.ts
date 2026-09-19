@@ -68,20 +68,25 @@ export function isMicAccess(v: unknown): v is MicAccess {
 }
 
 /**
- * Whether Claude Code's own voice mode is switched on.
+ * Whether Claude Code's own voice mode is switched on — by the CLI's own rule.
  *
- * `/voice` writes BOTH shapes — `voiceEnabled: true` and `voice: { enabled,
- * mode }` — read out of the 2.1.278 bundle, where the toggle calls
- * `updateSettings("userSettings", { voiceEnabled: true, voice: { ...voice,
- * enabled: true, mode } })`. Either being true counts; a `false` in the nested
- * object does not cancel a top-level `true`, because nothing here can tell which
- * one the CLI would honour and the cost of guessing wrong is only a hint.
+ * `/voice` writes both shapes, `voiceEnabled` and `voice: { enabled, mode }`,
+ * and the 2.1.278 bundle reads them as `(e.voice?.enabled ?? e.voiceEnabled)
+ * === true`: the NESTED key wins and the top-level one is only its fallback.
+ *
+ * This used to take either as enough, under a comment claiming the precedence
+ * could not be known and a wrong guess would cost only a hint. Both halves were
+ * wrong (found by review, by reading the bundle): the answer decides whether
+ * Stoke's dictation is REFUSED on the tab, and with the keys disagreeing
+ * (`voiceEnabled: true, voice.enabled: false`, reachable by hand-editing) the
+ * refusal told the user to run `/voice` to turn it off — which, the CLI reading
+ * it as off already, turned it on.
  */
 export function claudeVoiceEnabled(values: Record<string, unknown> | null | undefined): boolean {
   if (!values) return false
-  if (values.voiceEnabled === true) return true
   const voice = values.voice
-  return typeof voice === 'object' && voice !== null && (voice as { enabled?: unknown }).enabled === true
+  const nested = typeof voice === 'object' && voice !== null ? (voice as { enabled?: unknown }).enabled : undefined
+  return (nested ?? values.voiceEnabled) === true
 }
 
 export interface DictationTab {

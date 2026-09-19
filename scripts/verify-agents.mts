@@ -404,16 +404,16 @@ console.log('\nskills: who can see what, from a fake home (never the real one �
     check('a link counts in the folder it sits in', names('~/.claude/skills'), ['claude-only', 'copied', 'shared-one'])
     const r = skillReport(scans, ['claude', 'codex', 'cursor', 'aider'])
     check('three distinct skills', r.total, 3)
-    check('per agent', r.perAgent, [
+    check('per agent — Codex sees its own ~/.codex/skills too', r.perAgent, [
       { id: 'claude', visible: 3 },
-      { id: 'codex', visible: 1 },
+      { id: 'codex', visible: 2 },
       { id: 'cursor', visible: 3 },
       { id: 'aider', visible: 0 }
     ])
     check(
-      'the Claude-only skills are the ones Codex misses — and Aider, which has no skills, misses nothing',
+      'the Claude-only skill is the one Codex misses — and Aider, which has no skills, misses nothing',
       r.partial.map((x) => [x.name, x.missing]),
-      [['claude-only', ['codex']], ['copied', ['codex']]]
+      [['claude-only', ['codex']]]
     )
     check('a link is one skill, not a copy; two real folders are', r.duplicated.map((x) => x.name), ['copied'])
   } finally {
