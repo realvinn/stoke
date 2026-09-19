@@ -7,7 +7,7 @@
  * (PX-10: Resume on a live session forked it with a second `claude --resume`).
  * The read-back opens at the newest message and folds tool-only turns (PX-15).
  */
-import { collapseTurns, middleTruncate, plural, relativeTime, splitMarkdown } from '@shared/phoneUi'
+import { collapseTurns, middleTruncate, plural, relativeTime, splitMarkdown, toolsLabel } from '@shared/phoneUi'
 import { api, folderName, resumeSession, type HistoryRow, type ProjectRow, type TurnRow } from './api'
 import { confirmSheet, el, failure, humanError, icon, iconButton, skeleton, toast } from './dom'
 import { meterMini } from './list'
@@ -235,22 +235,33 @@ export function mountTranscript(id: string, cwd: string): Page {
             nodes.push(
               el(
                 'div',
-                { class: 'turn-tools' },
+                {
+                  class: 'turn-tools',
+                  'data-state': item.declined + item.failed === item.count ? (item.failed ? 'failed' : 'declined') : undefined
+                },
                 icon('terminal', 14),
-                el('span', {}, `Ran ${plural(item.count, 'tool')}`),
+                el('span', {}, toolsLabel(item.count, item.declined, item.failed)),
                 el('span', { class: 'turn-tools-list' }, item.summary)
               )
             )
             continue
           }
           const t = item.turn
+          if (t.note) {
+            // An interruption the CLI filed as a user message: not the user's speech.
+            nodes.push(el('p', { class: 'turn-note' }, t.note))
+            continue
+          }
+          const toolNames = t.tools.map((name, i) =>
+            t.toolStates?.[i] && t.toolStates[i] !== 'ran' ? `${name} (${t.toolStates[i]})` : name
+          )
           nodes.push(
             el(
               'article',
               { class: 'turn', 'data-role': t.role },
               el('div', { class: 'turn-head' }, el('span', {}, t.role === 'user' ? 'You' : 'Claude'), el('span', {}, relativeTime(t.at, now))),
               t.text ? renderText(t.text) : null,
-              t.tools.length ? el('div', { class: 'turn-tools inline' }, icon('terminal', 14), el('span', {}, t.tools.join(', '))) : null
+              t.tools.length ? el('div', { class: 'turn-tools inline' }, icon('terminal', 14), el('span', {}, toolNames.join(', '))) : null
             )
           )
         }

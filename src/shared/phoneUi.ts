@@ -474,16 +474,67 @@ export function parseConnectInput(input: string, origin: string): ConnectInput {
 
 /* ---------------------------------------------------------- transcript */
 
+/**
+ * How a tool call ended, from its `tool_result`: `declined` when the user
+ * rejected it at the permission prompt, `failed` for any other error, `ran`
+ * otherwise. The Apple transcript's rejected Write read "Ran 1 tool · Write",
+ * the same chip as the ones that ran (phone QA).
+ */
+export type ToolOutcome = 'ran' | 'declined' | 'failed'
+
+/** The text the CLI writes into a rejected tool's result (measured on 2.1.x transcripts). */
+const DECLINED = /^The user doesn['’]t want to proceed with this tool use|^User rejected/i
+
+export function toolOutcome(isError: unknown, content: unknown): ToolOutcome {
+  if (isError !== true) return 'ran'
+  const text =
+    typeof content === 'string'
+      ? content
+      : Array.isArray(content)
+        ? content
+            .map((b) => (b && typeof b === 'object' && typeof (b as { text?: unknown }).text === 'string' ? (b as { text: string }).text : ''))
+            .join('')
+        : ''
+  return DECLINED.test(text.trim()) ? 'declined' : 'failed'
+}
+
+/**
+ * The CLI's interruption markers, which it files as USER messages: they are
+ * not something the user said, and the transcript view drew them as a "You"
+ * bubble. A short system note instead, or null for real text.
+ */
+export function interruptionNote(text: string): string | null {
+  const t = text.trim()
+  if (t === '[Request interrupted by user for tool use]') return 'Stopped — tool declined'
+  if (t === '[Request interrupted by user]') return 'Stopped by you'
+  return null
+}
+
 export interface TurnLike {
   role: 'user' | 'assistant'
   text: string
   tools: string[]
   at: number | null
+  /** Per tool, in `tools` order, when the results were read. */
+  toolStates?: ToolOutcome[]
+  /** A system note (an interruption), drawn instead of a speaker's bubble. */
+  note?: string
 }
 
 export type TranscriptItem<T extends TurnLike> =
   | { kind: 'turn'; turn: T }
-  | { kind: 'tools'; count: number; summary: string; at: number | null }
+  | { kind: 'tools'; count: number; summary: string; at: number | null; declined: number; failed: number }
+
+/** A collapsed tool run's words: "Ran 2 tools · 1 declined", "Declined 1 tool". */
+export function toolsLabel(count: number, declined: number, failed: number): string {
+  const ran = count - declined - failed
+  const tool = (n: number): string => `${n} tool${n === 1 ? '' : 's'}`
+  const parts: string[] = []
+  if (ran > 0) parts.push(`Ran ${tool(ran)}`)
+  if (declined > 0) parts.push(ran > 0 ? `${declined} declined` : `Declined ${tool(declined)}`)
+  if (failed > 0) parts.push(ran > 0 || declined > 0 ? `${failed} failed` : `${tool(failed)} failed`)
+  return parts.join(' · ') || `Ran ${tool(count)}`
+}
 
 /**
  * Collapse runs of tool-only assistant turns into one line — audit PX-15.
@@ -493,28 +544,32 @@ export type TranscriptItem<T extends TurnLike> =
  */
 export function collapseTurns<T extends TurnLike>(turns: readonly T[]): TranscriptItem<T>[] {
   const out: TranscriptItem<T>[] = []
-  let run: { counts: Map<string, number>; total: number; at: number | null } | null = null
+  let run: { counts: Map<string, number>; total: number; at: number | null; declined: number; failed: number } | null = null
   const close = (): void => {
     if (!run) return
     const summary = [...run.counts]
       .sort((a, b) => b[1] - a[1])
       .map(([name, n]) => (n > 1 ? `${name} ×${n}` : name))
       .join(', ')
-    out.push({ kind: 'tools', count: run.total, summary, at: run.at })
+    out.push({ kind: 'tools', count: run.total, summary, at: run.at, declined: run.declined, failed: run.failed })
     run = null
   }
   for (const turn of turns) {
     const toolOnly = turn.role === 'assistant' && !turn.text.trim() && turn.tools.length > 0
     if (!toolOnly) {
       close()
-      if (turn.text.trim() || turn.tools.length) out.push({ kind: 'turn', turn })
+      if (turn.text.trim() || turn.tools.length || turn.note) out.push({ kind: 'turn', turn })
       continue
     }
-    run ??= { counts: new Map(), total: 0, at: turn.at }
-    for (const t of turn.tools) {
+    run ??= { counts: new Map(), total: 0, at: turn.at, declined: 0, failed: 0 }
+    turn.tools.forEach((t, i) => {
+      if (!run) return
       run.counts.set(t, (run.counts.get(t) ?? 0) + 1)
       run.total++
-    }
+      const state = turn.toolStates?.[i]
+      if (state === 'declined') run.declined++
+      else if (state === 'failed') run.failed++
+    })
     run.at = turn.at ?? run.at
   }
   close()
