@@ -167,3 +167,7 @@ scale box and typing shrank the whole UI to 0.8 on the first keypress.
 > by a second pass. The entry above is the original text; where the two disagree, the code
 > has moved on. Line numbers drift; search for the names.
 > - It still does, and it is still reachable. `clampUiScale('')` returns 0.8 today (src/shared/ui.ts:9-13, evaluated under node strip-types): the function was never changed. The fix is only a `trim() !== ''` guard in the Interface scale field's `onChange` (src/renderer/src/components/SettingsSheet.tsx:487). Its `onBlur` (:492) passes an emptied `scaleDraft` straight to `clampUiScale`, so clearing the box and tabbing away still sets `uiScale` to the 0.8 floor.
+
+> **Checked against the code on 2026-09-19** — fixed. The `onBlur` handler now reverts empty or
+> non-numeric drafts to the current `settings.uiScale` instead of passing them to `clampUiScale`.
+> An empty field followed by blur leaves the scale unchanged (src/renderer/src/components/SettingsSheet.tsx:547-557).

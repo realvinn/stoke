@@ -545,7 +545,15 @@ export function SettingsSheet({
                       }
                     }}
                     onBlur={() => {
-                      if (scaleDraft !== null) onPatch({ uiScale: clampUiScale(scaleDraft) })
+                      if (scaleDraft !== null) {
+                        // If the draft is empty or non-numeric, revert to the current value
+                        // instead of clamping the empty string to the floor.
+                        if (scaleDraft.trim() === '' || !Number.isFinite(Number(scaleDraft))) {
+                          onPatch({ uiScale: settings.uiScale })
+                        } else {
+                          onPatch({ uiScale: clampUiScale(scaleDraft) })
+                        }
+                      }
                       setScaleDraft(null)
                     }}
                     onKeyDown={(e) => {
