@@ -154,6 +154,16 @@ export interface LaunchPlanInput {
   continueLast: boolean
   /** Stoke's browser MCP server, when it is up, for the CLIs that take one per launch. */
   mcp: { url: string; token: string } | null
+  /**
+   * The same server as config FILES, for the CLIs that take a path rather than
+   * flags or an env var — so the bearer token never lands in argv. `claude` is
+   * Stoke's existing `mcp-browser.json` (Claude Code's own format, which Copilot
+   * accepts unchanged); `httpUrl` is the Gemini-family form Qwen needs, where a
+   * plain `url` means SSE and never connects. Both checked against a server
+   * that logged every request: Copilot and Qwen each sent initialize and
+   * tools/list with the bearer.
+   */
+  mcpFiles?: { claude: string | null; httpUrl: string | null }
   /** Where Stoke keeps Pi's provider extension, for a custom endpoint. */
   piExtensionPath: string | null
 }
@@ -341,6 +351,7 @@ export function agentLaunchPlan(input: LaunchPlanInput): LaunchPlanResult {
         env.OPENAI_API_KEY = ep.mode === 'openrouter' ? openrouterKey : customKey
         args.push('--auth-type', 'openai', '-m', ep.model)
       }
+      if (input.mcpFiles?.httpUrl) args.push('--mcp-config', input.mcpFiles.httpUrl)
       break
     }
     case 'kimi': {
@@ -364,12 +375,26 @@ export function agentLaunchPlan(input: LaunchPlanInput): LaunchPlanResult {
         env.COPILOT_PROVIDER_API_KEY = ep.mode === 'openrouter' ? openrouterKey : customKey
         env.COPILOT_MODEL = ep.model
       }
+      if (input.mcpFiles?.claude) args.push('--additional-mcp-config', `@${input.mcpFiles.claude}`)
       break
     }
   }
 
   if (continueLast && cli.continueArgs) args.push(...cli.continueArgs)
   return { ok: true, plan: { args, env } }
+}
+
+/**
+ * Stoke's browser MCP server in the Gemini-family config shape, for Qwen's
+ * `--mcp-config <path>`: `httpUrl` is streamable HTTP there, and a bare `url`
+ * would be read as SSE (measured: a GET and a HEAD, then "failed to start").
+ */
+export function httpUrlMcpConfig(mcp: { url: string; token: string }): string {
+  return JSON.stringify(
+    { mcpServers: { stoke: { httpUrl: mcp.url, headers: { Authorization: `Bearer ${mcp.token}` } } } },
+    null,
+    2
+  )
 }
 
 /**

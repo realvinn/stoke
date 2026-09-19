@@ -81,7 +81,7 @@ export function AgentsSettings({
           Each agent runs in its own terminal tab. The launcher offers the ones ticked here. Claude
           Code gets the whole of Stoke around it; the others get the terminal, their own sign-in or
           an endpoint below, and Stoke’s browser tools where they accept an MCP server at launch
-          (Codex, OpenCode).
+          (Codex, OpenCode, Kilo, Copilot, Qwen).
         </span>
         <div style={{ display: 'flex', gap: 'var(--space-8)', flexWrap: 'wrap' }}>
           <button className="btn" onClick={onOpenPicker}>

@@ -26,6 +26,7 @@ import {
   ENV_OPENROUTER_KEY,
   hydrateAgents,
   hydrateEndpoint,
+  httpUrlMcpConfig,
   installScript,
   installSteps,
   isEndpointUrl,
@@ -245,6 +246,22 @@ console.log('\nqwen, kimi, copilot: environment only, and every key in it')
       COPILOT_MODEL: 'qwen3-coder'
     }
   })
+  const files = { claude: '/u/Stoke/mcp-browser.json', httpUrl: '/u/Stoke/agents/mcp-httpurl.json' }
+  check(
+    'copilot: Stoke’s own MCP file, by path, so the token is not in argv',
+    planOk(plan('copilot', undefined, { mcpFiles: files })).args,
+    ['--additional-mcp-config', '@/u/Stoke/mcp-browser.json']
+  )
+  check(
+    'qwen: the httpUrl-shaped file — a plain url is SSE there and never connects',
+    planOk(plan('qwen', undefined, { mcpFiles: files })).args,
+    ['--mcp-config', '/u/Stoke/agents/mcp-httpurl.json']
+  )
+  check(
+    'the httpUrl file carries the bearer as a header',
+    JSON.parse(httpUrlMcpConfig(MCP)).mcpServers.stoke,
+    { httpUrl: MCP.url, headers: { Authorization: `Bearer ${MCP.token}` } }
+  )
   ok('gemini refuses OpenRouter rather than silently using its own sign-in', !plan('gemini', or()).ok)
   ok('and so do cursor and amp', !plan('cursor', or()).ok && !plan('amp', custom()).ok)
 }

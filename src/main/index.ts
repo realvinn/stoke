@@ -37,7 +37,7 @@ import { fetchRemoteTranscript } from './sshTranscript.ts'
 import { PtyManager, type StartResult } from './pty.ts'
 import { checkMicrophone } from './audio/defaultDevice.ts'
 import { cliIdOf, isClaudeCode } from '../shared/codingClis.ts'
-import { agentLaunchPlan, PI_PROVIDER_EXTENSION, type LaunchPlan } from '../shared/agents.ts'
+import { agentLaunchPlan, httpUrlMcpConfig, PI_PROVIDER_EXTENSION, type LaunchPlan } from '../shared/agents.ts'
 import { claudeVoiceEnabled, isMicAccess, type MicAccess } from '../shared/voiceRoute.ts'
 import { transcribe } from './stt.ts'
 import { createProfile, planProfile } from './profiles.ts'
@@ -451,6 +451,28 @@ async function piExtensionFile(): Promise<string | null> {
   }
 }
 
+/**
+ * Stoke's browser MCP server in the `httpUrl` shape Qwen reads, beside the
+ * Claude-shaped `mcp-browser.json`. Holds the bearer token, like that file, so
+ * it is written owner-only; rewritten only when the server's port or token has
+ * changed, which is once per Stoke run. Null when the server is not up.
+ */
+async function httpUrlMcpFile(): Promise<string | null> {
+  const endpoint = mcp?.endpoint()
+  if (!endpoint) return null
+  const file = join(app.getPath('userData'), 'agents', 'mcp-httpurl.json')
+  const body = httpUrlMcpConfig(endpoint)
+  try {
+    if ((await readFile(file, 'utf8').catch(() => null)) !== body) {
+      await mkdir(dirname(file), { recursive: true })
+      await writeFile(file, body, { encoding: 'utf8', mode: 0o600 })
+    }
+    return file
+  } catch {
+    return null
+  }
+}
+
 /** Starting a session, shared by the renderer's IPC and the remote server. */
 async function launchSession(opts: LaunchOptions): Promise<StartResult> {
   if (!ptys) throw new Error('Window is not ready')
@@ -473,7 +495,11 @@ async function launchSession(opts: LaunchOptions): Promise<StartResult> {
       openrouterKey: settings.providers.openrouterApiKey,
       continueLast: opts.continueLast === true,
       mcp: mcp?.endpoint() ?? null,
-      piExtensionPath: cliId === 'pi' && endpoint?.mode === 'custom' ? await piExtensionFile() : null
+      piExtensionPath: cliId === 'pi' && endpoint?.mode === 'custom' ? await piExtensionFile() : null,
+      mcpFiles: {
+        claude: mcpConfigPath,
+        httpUrl: cliId === 'qwen' ? await httpUrlMcpFile() : null
+      }
     })
     if (!planned.ok) throw new Error(planned.message)
     agentPlan = planned.plan
