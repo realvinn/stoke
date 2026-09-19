@@ -2866,6 +2866,25 @@ protocol.registerSchemesAsPrivileged([
  */
 const launchRequest = parseStokeArgs(process.argv, { home: homedir(), platform: process.platform })
 
+/*
+ * A COLD double launch (no Stoke running yet, two `stoke` invocations racing
+ * within the same few milliseconds) can still leave two live primaries, or
+ * silently drop one launch's request — reproduced directly: two independent,
+ * fully-booted Electron mains, each with its own renderer/GPU children, both
+ * bound to the same userData dir, with `process_singleton_posix.cc` logging
+ * `Failed to create .../SingletonSocket: File exists` / `Failed to create
+ * symlinks` on the loser. That is Chromium's `ProcessSingleton::Create()`
+ * race on POSIX, not electron/electron#52020 (`additionalData` overflowing
+ * into a SIGKILL) — that issue is CLOSED as COMPLETED
+ * (2026-07-27, fixed by #52025), and its signature
+ * (`additional_data_size exceeds payload length`) never appeared in any
+ * reproduction here. WARM double launches (one Stoke already running) are
+ * reliable, because only a cold launch races to CREATE the lock file at all.
+ * No fix shipped: the only real mitigation is Stoke owning its own
+ * mkdir-based pre-lock and a launch-request relay ahead of this call, which is
+ * boot-lifecycle surgery on the scale of gotchas 35/73/74, not a
+ * `requestSingleInstanceLock` one-liner.
+ */
 if (!app.requestSingleInstanceLock(launchRequest ? { stokeCli: launchRequest } : undefined)) {
   app.quit()
 } else {
