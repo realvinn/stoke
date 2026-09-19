@@ -25,7 +25,7 @@ import {
   manualProjectPatch,
   projectMetaPatch
 } from '../src/main/projectMeta.ts'
-import { listProjects } from '../src/main/projects.ts'
+import { listProjects, migrateSymlinkedProjectKeys } from '../src/main/projects.ts'
 import { defaultCwdCandidates, resolveDefaultCwd } from '../src/main/workspaceRoots.ts'
 
 let failures = 0
@@ -515,6 +515,82 @@ try {
   check('it keeps the emoji either side set', dupeRows[0]?.emoji, '🔗')
   check('and the label the symlinked entry set', dupeRows[0]?.label, 'Via the symlink')
   check('and stays addedManually', dupeRows[0]?.addedManually, true)
+
+  /*
+   * gotcha 91 correction (2026-09-19): the collapse above is a VIEW —
+   * `listProjects` merges on every read, but `settings.projectMeta` still
+   * holds the stale `link` key untouched underneath it. `projectMetaPatch`
+   * (the handler behind Remove and "No icon") only ever replaces the key
+   * whose `pathKey` equals the path the renderer sent, which is the row's
+   * `path`, i.e. `real` — so it can never reach `link`, and clicking Remove
+   * left the stale key sitting there forever, re-merged on the very next
+   * list. Confirmed live in the sandbox: Remove and clearing the emoji both
+   * did nothing, and "No icon" wrote a SECOND key rather than replacing the
+   * first. `migrateSymlinkedProjectKeys` is the one-time rewrite that fixes
+   * this at the source instead of re-deriving a merge on every read; it also
+   * carries `pinnedProjects`/`hiddenProjects` through the same realpath, since
+   * both were still compared against the unresolved string.
+   */
+  const nativeRules = pathRulesFor(process.platform)
+  const staleMeta = {
+    projectMeta: {
+      [real]: { addedManually: true, emoji: '🔗' },
+      [link]: { addedManually: true, label: 'Via the symlink' }
+    },
+    pinnedProjects: [link],
+    hiddenProjects: [link]
+  }
+  const migrated = await migrateSymlinkedProjectKeys(listSettings(staleMeta))
+  check('migration finds something to rewrite', migrated !== null, true)
+  check(
+    'migration collapses the symlinked projectMeta key onto the real one',
+    Object.keys(migrated?.projectMeta ?? {}),
+    [real]
+  )
+  check('the merged record keeps the real side’s emoji', migrated?.projectMeta?.[real]?.emoji, '🔗')
+  check(
+    'and the label only the symlinked side set',
+    migrated?.projectMeta?.[real]?.label,
+    'Via the symlink'
+  )
+  check('and stays addedManually after the merge', migrated?.projectMeta?.[real]?.addedManually, true)
+  check('a pin stored under the symlinked path moves to the real one', migrated?.pinnedProjects, [real])
+  check('a hide stored under the symlinked path moves to the real one', migrated?.hiddenProjects, [real])
+
+  /*
+   * A `projectRoots` entry gets the same rewrite, checked on its own settings
+   * object so it cannot leave `real` registered as a scan root (whose
+   * CHILDREN would then be what the remove/re-list check below sees, rather
+   * than `real` itself) by the time that check runs.
+   */
+  const rootMigrated = await migrateSymlinkedProjectKeys(
+    listSettings({ projectRoots: [real, link] })
+  )
+  check('a duplicate scan root collapses to the real path, once', rootMigrated?.projectRoots, [real])
+
+  /*
+   * Once migrated, Remove (`projectMetaPatch(..., null)`) on the CANONICAL
+   * path — the only path `listProjects` will ever echo back to the renderer
+   * — must clear the record for good. Before `migrateSymlinkedProjectKeys`
+   * ran, this same Remove left the untouched `link` key to re-merge
+   * `addedManually`/the emoji straight back in on the next list, which is
+   * the "Remove does nothing" defect.
+   */
+  // Only `projectMeta`, deliberately: `migrated` also carries the pin/hide
+  // rewrite checked above, and folding `hiddenProjects: [real]` in here would
+  // make the row vanish from the next list for the wrong reason.
+  const migratedSettings = listSettings({ projectMeta: migrated?.projectMeta })
+  const afterRemove = projectMetaPatch(migratedSettings, real, null, nativeRules)
+  check('Remove after migration drops the record entirely', afterRemove.projectMeta, {})
+  const listedAfterRemove = await listProjects(
+    listSettings({ ...migratedSettings, ...afterRemove })
+  )
+  const removedRow = listedAfterRemove.find((x) => x.path === real)
+  check(
+    'and the row is gone, not merged back in from a surviving stale key',
+    removedRow,
+    undefined
+  )
 } finally {
   rmSync(tmp, { recursive: true, force: true })
 }

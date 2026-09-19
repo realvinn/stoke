@@ -27,7 +27,13 @@ import { clearWallpaper, mimeFor, storeWallpaper, WALLPAPER_SCHEME, wallpaperFil
 import { detectCodingClis, forgetIdentities, forgetLoginPath, loginShellPathValue, probeClaude, resumeOrMint } from './cli.ts'
 import { scanSkills } from './skillsScan.ts'
 import { ContextWatcher } from './context.ts'
-import { findSessionFile, listProjects, listSessions, projectsRoot } from './projects.ts'
+import {
+  findSessionFile,
+  listProjects,
+  listSessions,
+  migrateSymlinkedProjectKeys,
+  projectsRoot
+} from './projects.ts'
 import { indexSessions } from './sessionIndex.ts'
 import { IDLE_GAP_MS, readActivity, type ActivitySessionInput } from './activity.ts'
 import { commitSubjects } from './activityGit.ts'
@@ -1923,7 +1929,19 @@ function registerIpc(): void {
   })
 
   /* ------------------------------------------------------------- workspaces */
-  ipcMain.handle(CH.workspaceDefault, () => resolveDefaultCwd(getSettings().defaultCwd))
+  /*
+   * Through symlinks, same as every other folder gotcha 91 resolves before it
+   * is stored or handed to the renderer — this one was missed. `stoke DIR`'s
+   * `req.cwd` is realpath'd in `acceptLaunch`, but a launcher "Start here" or
+   * the default New-tab folder used the typed candidate straight from
+   * `resolveDefaultCwd` (`~/Developer` etc., or a symlinked explicit setting).
+   * Confirmed live: a launcher tab opened on the typed spelling, then `stoke
+   * .` from the SAME, symlinked folder found no running-tab match in
+   * `App.tsx`'s `handleLaunch` (`pathKey(t.cwd) !== pathKey(req.cwd)`) and
+   * started a second `claude` beside it — the twin-claude failure
+   * `launchClaims` exists to prevent, just reached through the other door.
+   */
+  ipcMain.handle(CH.workspaceDefault, () => realpathFolder(resolveDefaultCwd(getSettings().defaultCwd)))
   ipcMain.handle(CH.workspaceScratch, () => createScratchDir())
 
   ipcMain.handle(CH.projectsHide, (_e, path: string, hidden: boolean) => {
@@ -2895,6 +2913,25 @@ if (!app.requestSingleInstanceLock(launchRequest ? { stokeCli: launchRequest } :
      * preserved, because createWindow starts no session by itself.
      */
     sweepStaleSessionFiles()
+    /*
+     * One-time, off the main thread: rewrite any `projectMeta`/`projectRoots`/
+     * `pinnedProjects`/`hiddenProjects` entry still stored under a symlinked
+     * path from before gotcha 91's launch-time realpath shipped (or written
+     * into `~/.claude.json` by hand) onto its real path. `listProjects`
+     * already merges these live for display, but a merge is a VIEW — Remove
+     * and clearing an emoji patch the EXACT key the renderer sent, which is
+     * the realpath, and never touch the stale one sitting underneath, so
+     * neither ever took effect on a folder added before this shipped. Skips
+     * the write (and the `settingsChanged` broadcast) when nothing was stale.
+     */
+    migrateSymlinkedProjectKeys(getSettings())
+      .then((patch) => {
+        if (!patch) return
+        const next = setSettings(patch)
+        send(CH.settingsChanged, next)
+        sendWatchStates()
+      })
+      .catch((err) => console.error('[stoke] could not migrate symlinked project keys', err))
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()
     })

@@ -258,6 +258,7 @@ async function scanRoots(roots: string[]): Promise<string[]> {
 }
 
 export async function listProjects(settings: Settings): Promise<Project[]> {
+  const rules = pathRulesFor(process.platform)
   const [config, dirs, rootDirs] = await Promise.all([
     readClaudeConfig(),
     scanHistoryDirs(),
@@ -266,6 +267,33 @@ export async function listProjects(settings: Settings): Promise<Project[]> {
 
   const byDir = new Map<string, DirInfo>()
   for (const d of dirs) byDir.set(d.dir.toLowerCase(), d)
+
+  /*
+   * Every path that will need its realpath — scan-root children, projectMeta
+   * keys, and now `pinnedProjects`/`hiddenProjects` too — resolved in ONE
+   * pass rather than three sequential deadline-bound stages (each up to
+   * `EXISTS_DEADLINE_MS`). `pinnedProjects`/`hiddenProjects` used to be
+   * compared against the UNRESOLVED string even after gotcha 91 rewrote
+   * scan-root and `projectMeta` keys to the realpath: a pin or a hide saved
+   * under the typed, symlinked path (from before that fix, or from
+   * `~/.claude.json` written by hand) then matched nothing, so a pinned
+   * folder lost its pin and a hidden one came back — both confirmed live.
+   */
+  const metaEntries = Object.entries(settings.projectMeta ?? {})
+  const realOf = await realpathMap([
+    ...rootDirs,
+    ...metaEntries.map(([raw]) => normalizePath(raw, rules)),
+    ...settings.pinnedProjects.map((p) => normalizePath(p, rules)),
+    ...settings.hiddenProjects.map((p) => normalizePath(p, rules))
+  ])
+  const resolvedOf = (raw: string): string => {
+    const n = normalizePath(raw, rules)
+    return realOf.get(n) ?? n
+  }
+  const pinnedRealPaths = settings.pinnedProjects.map(resolvedOf)
+  const hiddenRealPaths = settings.hiddenProjects.map(resolvedOf)
+  const pinnedKeys = new Set(pinnedRealPaths.map(dedupeKey))
+  const hiddenKeys = new Set(hiddenRealPaths.map(dedupeKey))
 
   const merged = new Map<string, Project>()
   const claimedDirs = new Set<string>()
@@ -290,7 +318,7 @@ export async function listProjects(settings: Settings): Promise<Project[]> {
       // main thread. `put` is synchronous and must stay that way — it is called
       // from three places and merges duplicates — so it cannot do the asking.
       exists: false,
-      pinned: settings.pinnedProjects.some((p) => dedupeKey(p) === key),
+      pinned: pinnedKeys.has(key),
       emoji: null,
       label: null,
       addedManually: false
@@ -329,8 +357,6 @@ export async function listProjects(settings: Settings): Promise<Project[]> {
       })
   )
 
-  const rules = pathRulesFor(process.platform)
-
   /*
    * 3. Folders discovered under user-configured scan roots, even with no
    *    history. Resolved through symlinks first (gotcha 91): a root itself
@@ -338,9 +364,8 @@ export async function listProjects(settings: Settings): Promise<Project[]> {
    *    every child folder under it merges as a path Claude's own,
    *    already-resolved history entry for the same folder never matches.
    */
-  const rootReal = await realpathMap(rootDirs)
   for (const path of rootDirs) {
-    const real = rootReal.get(path) ?? path
+    const real = realOf.get(path) ?? path
     const encoded = encodePath(normalize(real)).toLowerCase()
     put(real, byDir.get(encoded) ?? null)
   }
@@ -363,11 +388,9 @@ export async function listProjects(settings: Settings): Promise<Project[]> {
    * `addedManually` survives if EITHER said so — losing that would silently
    * un-list a folder nobody removed.
    */
-  const metaEntries = Object.entries(settings.projectMeta ?? {})
-  const metaReal = await realpathMap(metaEntries.map(([raw]) => normalizePath(raw, rules)))
   const meta: Record<string, ProjectMeta> = {}
   for (const [raw, value] of metaEntries) {
-    const key = metaReal.get(normalizePath(raw, rules)) ?? normalizePath(raw, rules)
+    const key = resolvedOf(raw)
     const prior = meta[key]
     meta[key] = {
       ...prior,
@@ -396,17 +419,104 @@ export async function listProjects(settings: Settings): Promise<Project[]> {
 
   const withMeta = applyProjectMeta([...merged.values()], meta, {
     rules,
-    pinned: settings.pinnedProjects ?? [],
+    pinned: pinnedRealPaths,
     exists: (path) => found.get(path) ?? false
   })
 
-  const hidden = new Set((settings.hiddenProjects ?? []).map(dedupeKey))
   return withMeta
-    .filter((p) => !hidden.has(dedupeKey(p.path)))
+    .filter((p) => !hiddenKeys.has(dedupeKey(p.path)))
     .sort((a, b) => {
       if (a.pinned !== b.pinned) return a.pinned ? -1 : 1
       return (b.lastModified ?? 0) - (a.lastModified ?? 0)
     })
+}
+
+/**
+ * One-time rewrite of every stored key `listProjects` merges on the fly
+ * (gotcha 91): a `projectMeta` key, a `projectRoots`, `pinnedProjects` or
+ * `hiddenProjects` entry saved under a symlinked path before that fix, or
+ * written into `~/.claude.json` by hand.
+ *
+ * The merge in `listProjects` makes the sidebar show one row, but the row is
+ * a VIEW: the settings keys underneath are untouched, so `projectMetaPatch`'s
+ * exact-key `split` (`projectMeta.ts`) can only ever touch the realpath side
+ * — the renderer's `Project.path` — and the stale, symlinked key it never
+ * matches sits there forever. Confirmed live: Remove and clearing the emoji
+ * on a folder added before this fix both left the stale key in place, and
+ * "No icon" wrote a SECOND key rather than replacing the first.
+ *
+ * Run once after boot (same deadline `pathExists` uses, so one asleep volume
+ * cannot hang it) rather than threading an extra "also drop this alias" path
+ * through every one of `projectMetaPatch`/`manualProjectPatch`/the
+ * pin/hide handlers — those stay exact-key operations, correct once this has
+ * run, and the merge in `listProjects` is left as-is because a project added
+ * mid-session, before the NEXT boot's migration, still needs it.
+ *
+ * Returns only the settings keys that actually changed, or null when every
+ * key was already canonical — so a caller can skip the write (and the
+ * `settingsChanged` broadcast) on every ordinary boot.
+ */
+export async function migrateSymlinkedProjectKeys(
+  settings: Settings
+): Promise<Partial<Settings> | null> {
+  const rules = pathRulesFor(process.platform)
+  const metaEntries = Object.entries(settings.projectMeta ?? {})
+  const real = await realpathMap([
+    ...settings.projectRoots.map((p) => normalizePath(p, rules)),
+    ...metaEntries.map(([raw]) => normalizePath(raw, rules)),
+    ...settings.pinnedProjects.map((p) => normalizePath(p, rules)),
+    ...settings.hiddenProjects.map((p) => normalizePath(p, rules))
+  ])
+  const resolvedOf = (raw: string): string => {
+    const n = normalizePath(raw, rules)
+    return real.get(n) ?? n
+  }
+
+  const patch: Partial<Settings> = {}
+
+  let metaChanged = false
+  const meta: Record<string, ProjectMeta> = {}
+  for (const [raw, value] of metaEntries) {
+    const key = resolvedOf(raw)
+    if (key !== raw) metaChanged = true
+    const prior = meta[key]
+    meta[key] = prior
+      ? {
+          ...prior,
+          ...value,
+          addedManually: prior.addedManually === true || value.addedManually === true || undefined
+        }
+      : value
+  }
+  if (metaChanged) patch.projectMeta = meta
+
+  /** Resolve, then drop duplicates that collapse onto the same real folder. */
+  const dedupeList = (paths: string[]): { list: string[]; changed: boolean } => {
+    const seen = new Set<string>()
+    const out: string[] = []
+    let changed = false
+    for (const raw of paths) {
+      const key = resolvedOf(raw)
+      if (key !== raw) changed = true
+      const dedupe = dedupeKey(key)
+      if (seen.has(dedupe)) {
+        changed = true
+        continue
+      }
+      seen.add(dedupe)
+      out.push(key)
+    }
+    return { list: out, changed }
+  }
+
+  const roots = dedupeList(settings.projectRoots)
+  if (roots.changed) patch.projectRoots = roots.list
+  const pinned = dedupeList(settings.pinnedProjects)
+  if (pinned.changed) patch.pinnedProjects = pinned.list
+  const hidden = dedupeList(settings.hiddenProjects)
+  if (hidden.changed) patch.hiddenProjects = hidden.list
+
+  return Object.keys(patch).length ? patch : null
 }
 
 /** Directory holding a project's transcripts, or null when it has no history. */
