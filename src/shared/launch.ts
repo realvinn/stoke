@@ -163,8 +163,8 @@ const EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max'])
  * `layers` runs lowest precedence first (user, then project, then local), so a
  * later layer overrides an earlier one key by key — the CLI's own merge. The
  * permission mode lives at `permissions.defaultMode`; `model` and
- * `effortLevel` are top-level. `ANTHROPIC_MODEL` beats every file for the
- * model, as it does in the CLI.
+ * `effortLevel` are top-level. `ANTHROPIC_MODEL` — inherited, or from a file's
+ * `env` block — beats every file's `model`, as it does in the CLI.
  *
  * An effort outside the CLI's list is ignored rather than shown: the CLI drops
  * it silently (gotcha 39 — `effortLevel: max` in settings.json is dropped), so
@@ -181,6 +181,8 @@ export function resolveClaudeDefaults(
     modelEffort: {},
     from: { permissionMode: null, model: null, effort: null, modelEffort: null }
   }
+  let settingsEnvModel: string | null = null
+  let settingsEnvFrom: string | null = null
   for (const layer of layers) {
     const v = layer.values
     if (!v) continue
@@ -200,6 +202,14 @@ export function resolveClaudeDefaults(
       out.effort = v.effortLevel
       out.from.effort = layer.name
     }
+    const envBlock = v.env
+    if (envBlock && typeof envBlock === 'object' && !Array.isArray(envBlock)) {
+      const m = (envBlock as Record<string, unknown>).ANTHROPIC_MODEL
+      if (typeof m === 'string' && m.trim()) {
+        settingsEnvModel = m.trim()
+        settingsEnvFrom = `${layer.name} (env.ANTHROPIC_MODEL)`
+      }
+    }
     const per = v.modelSettings
     if (per && typeof per === 'object' && !Array.isArray(per)) {
       for (const [id, entry] of Object.entries(per as Record<string, unknown>)) {
@@ -211,10 +221,17 @@ export function resolveClaudeDefaults(
       }
     }
   }
-  const envModel = env.ANTHROPIC_MODEL?.trim()
+  /*
+   * `ANTHROPIC_MODEL` outranks `model` in every file. The CLI copies a settings
+   * file's `env` block into its own environment at startup, so one set there
+   * counts as well, and — being applied over what it inherited — beats the
+   * variable Stoke's own environment carries. The chip ignored the `env` block,
+   * and named the file's `model` for a session that ran another.
+   */
+  const envModel = settingsEnvModel ?? env.ANTHROPIC_MODEL?.trim()
   if (envModel) {
     out.model = envModel
-    out.from.model = 'ANTHROPIC_MODEL'
+    out.from.model = settingsEnvModel ? settingsEnvFrom : 'ANTHROPIC_MODEL'
   }
   return out
 }

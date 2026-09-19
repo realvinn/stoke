@@ -19,6 +19,7 @@ import {
   pruneOverride,
   resolveClaudeDefaults,
   resolveLaunch,
+  sessionMode,
   type LaunchChoice
 } from '../src/shared/launch.ts'
 import {
@@ -77,6 +78,24 @@ check(
   'ANTHROPIC_MODEL beats every file for the model',
   resolveClaudeDefaults([user], { ANTHROPIC_MODEL: 'haiku' }).model,
   'haiku'
+)
+check(
+  "a file's env.ANTHROPIC_MODEL beats every file's model",
+  [
+    resolveClaudeDefaults([user, { name: '.claude/settings.json', values: { env: { ANTHROPIC_MODEL: 'haiku' } } }]).model,
+    resolveClaudeDefaults([{ name: 'u', values: { model: 'opus', env: { ANTHROPIC_MODEL: 'fable' } } }, project]).model
+  ],
+  ['haiku', 'fable']
+)
+check(
+  '…and the inherited variable, since the CLI applies the block over what it inherited',
+  resolveClaudeDefaults([{ name: 'u', values: { env: { ANTHROPIC_MODEL: 'sonnet' } } }], { ANTHROPIC_MODEL: 'haiku' }).from.model,
+  'u (env.ANTHROPIC_MODEL)'
+)
+check(
+  'an empty or non-string env value is ignored',
+  resolveClaudeDefaults([{ name: 'u', values: { model: 'opus', env: { ANTHROPIC_MODEL: '  ' } } }, { name: 'p', values: { env: { ANTHROPIC_MODEL: 3 } } }]).model,
+  'opus'
 )
 check(
   'effortLevel max is dropped, as the CLI drops it (gotcha 39)',
