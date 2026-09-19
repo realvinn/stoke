@@ -103,10 +103,17 @@ export function Campfire({ reason, version, onDismiss }: CampfireProps): React.J
      * `swallow` rule once it has gone.
      */
     const onKey = (e: KeyboardEvent): void => {
-      e.preventDefault()
       e.stopPropagation()
-      if (e.repeat || e.metaKey || e.ctrlKey || e.altKey) return
-      if (MODIFIER_KEYS.has(e.key)) return
+      /*
+       * A chord keeps its default. The menu's accelerators (Cmd+Q, Cmd+W,
+       * Cmd+R — Electron's default menu) are handed the keys the page did NOT
+       * cancel, so a `preventDefault` here made Quit do nothing for the few
+       * seconds the splash is up. `stopPropagation` still keeps a chord from
+       * App's own shortcut handler, and the shell behind is inert.
+       */
+      if (e.metaKey || e.ctrlKey || e.altKey) return
+      e.preventDefault()
+      if (e.repeat || MODIFIER_KEYS.has(e.key)) return
       onDismiss()
     }
     window.addEventListener('keydown', onKey, true)
