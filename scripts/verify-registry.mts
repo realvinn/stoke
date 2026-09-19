@@ -19,7 +19,9 @@
  *   node scripts/verify-registry.mts
  */
 import {
+  descendsFrom,
   isBusyStatus,
+  parseProcessTable,
   isSafeRegistryId,
   parseRegistry,
   pickEntry,
@@ -155,19 +157,23 @@ check(
   pickEntry(target(), null, [entry({ pid: 7, sessionId: A }), entry({ pid: 8, sessionId: A })], new Set()),
   null
 )
+// pty 100 -> cmd.exe-ish 101 -> claude 7; 8 and 9 are strangers (a terminal `claude`).
+const TREE = new Map<number, number>([[101, 100], [7, 101], [8, 50], [9, 1]])
+const ours = (pid: number): boolean => descendsFrom(pid, 100, TREE)
 check(
-  'a --continue (no id yet): the one entry in our folder that started after us',
+  'a --continue (no id yet): the one entry in our folder, started after us, under our pty',
   pickEntry(
     target({ sessionId: '' }),
     null,
     [entry({ pid: 7, sessionId: B, cwd: '/private/tmp/w', startedAt: 1_000_500 }), entry({ pid: 8, sessionId: C, cwd: '/elsewhere' })],
-    new Set()
+    new Set(),
+    ours
   )?.sessionId,
   B
 )
 check(
   'but not one that started long before we spawned — that is somebody else\'s session in the same folder',
-  pickEntry(target({ sessionId: '' }), null, [entry({ pid: 7, sessionId: B, cwd: '/private/tmp/w', startedAt: 1 })], new Set()),
+  pickEntry(target({ sessionId: '' }), null, [entry({ pid: 7, sessionId: B, cwd: '/private/tmp/w', startedAt: 1 })], new Set(), ours),
   null
 )
 check(
@@ -175,15 +181,40 @@ check(
   pickEntry(
     target({ sessionId: '' }),
     null,
-    [entry({ pid: 7, sessionId: B, cwd: '/private/tmp/w' }), entry({ pid: 8, sessionId: C, cwd: '/private/tmp/w' })],
-    new Set()
+    [entry({ pid: 7, sessionId: B, cwd: '/private/tmp/w' }), entry({ pid: 101, sessionId: C, cwd: '/private/tmp/w' })],
+    new Set(),
+    ours
   ),
   null
 )
 check(
   'and never one another pty has provably claimed by pid',
-  pickEntry(target({ sessionId: '' }), null, [entry({ pid: 7, sessionId: B, cwd: '/private/tmp/w' })], new Set([B])),
+  pickEntry(target({ sessionId: '' }), null, [entry({ pid: 7, sessionId: B, cwd: '/private/tmp/w' })], new Set([B]), ours),
   null
+)
+check(
+  'gotcha 92: a stranger in the same folder, started after us, is NOT ours — it is not under our pty',
+  pickEntry(
+    target({ sessionId: '' }),
+    null,
+    [entry({ pid: 8, sessionId: B, cwd: '/private/tmp/w', startedAt: 1_000_500 })],
+    new Set(),
+    ours
+  ),
+  null
+)
+check(
+  'and with no process table to prove descent, the folder fallback answers nothing',
+  pickEntry(target({ sessionId: '' }), null, [entry({ pid: 7, sessionId: B, cwd: '/private/tmp/w', startedAt: 1_000_500 })], new Set()),
+  null
+)
+check('descent: a grandchild descends from the pty', descendsFrom(7, 100, TREE), true)
+check('descent: a stranger does not', [descendsFrom(8, 100, TREE), descendsFrom(9, 100, TREE)], [false, false])
+check('descent: a cycle in the table (pid reuse) ends, false', descendsFrom(3, 100, new Map([[3, 4], [4, 3]])), false)
+check(
+  'ps -A -o pid=,ppid= output parses, padding and junk lines tolerated',
+  [...parseProcessTable('    1     0\n  101   100\r\nPID PPID\n\n 7 101\n')],
+  [[1, 0], [101, 100], [7, 101]]
 )
 check('a trailing separator is the same folder', samePath('/a/b/', '/a/b'), true)
 check('Windows folders compare without case', samePath('C:\\Users\\V\\code', 'c:/users/v/CODE'), true)
@@ -288,6 +319,23 @@ async function scenario(): Promise<void> {
   await poller.pass(NOW)
   check('a file that vanishes (the process is dying) keeps the last reading rather than inventing one', states.length, before)
   check('and states() still answers with it', poller.states().map((s) => s.sessionId), [B])
+
+  /*
+   * Gotcha 92, the regression: the dying pty's own file is gone, and a
+   * STRANGER — a terminal `claude`, a second Stoke — is running in the same
+   * folder, started after this pty. Old enough for the fallback, the poller
+   * used to hand the dying tab that stranger's session, and the ended row's
+   * Resume then named an id with no transcript.
+   */
+  ptys.set('p1', { ...(ptys.get('p1') as RegistryTarget), startedAt: NOW - REGISTRY_FALLBACK_AFTER_MS - 10_000 })
+  reg.put(777, { sessionId: C, cwd: '/w', startedAt: NOW - 3000, status: 'busy' })
+  const rebindsBefore = rebinds.length
+  const listsBefore = reg.lists
+  await poller.pass(NOW)
+  check('gotcha 92: a pid-matched pty whose file vanished keeps its id beside a stranger in the same folder', rebinds.length, rebindsBefore)
+  check('and its reading is still its own', poller.states().map((s) => s.sessionId), [B])
+  check('and it does not even list the directory looking for one', reg.lists, listsBefore)
+  reg.files.delete(join(DIR, '777.json'))
 
   ptys.delete('p1')
   await poller.pass(NOW)

@@ -79,6 +79,10 @@ export interface TurnRow {
   text: string
   tools: string[]
   at: number | null
+  /** How each tool ended: ran, declined (rejected at the prompt) or failed. */
+  toolStates?: ('ran' | 'declined' | 'failed')[]
+  /** An interruption marker, drawn as a system note rather than a "You" bubble. */
+  note?: string
 }
 
 /** The key was refused: the Connect screen takes over. */

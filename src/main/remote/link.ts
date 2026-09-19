@@ -172,9 +172,17 @@ export function connectTarget(opts: {
    * no tunnel is running" is a sentence a user can act on, and silently
    * substituting the LAN is not.
    */
+  /*
+   * ...but never as a link the socket is not listening on. A LAN address is
+   * served only with `bindLan` (0.0.0.0), a tailnet one with either bind. A
+   * stale `reach: 'lan'` beside `bindLan: false` (an older or hand-edited
+   * settings file; the panel sets both together) drew a QR for
+   * 192.168.x:<port> while the server was on 127.0.0.1 alone, a code no phone
+   * could open. That is loopback, and gotcha 53 draws no QR for loopback.
+   */
   if (prefer === 'tunnel') return tunnelHost() ?? loopback
-  if (prefer === 'tailnet') return viaTailnet() ?? loopback
-  if (prefer === 'lan') return viaLan() ?? loopback
+  if (prefer === 'tailnet') return opts.bindLan || opts.bindTailscale ? (viaTailnet() ?? loopback) : loopback
+  if (prefer === 'lan') return opts.bindLan ? (viaLan() ?? loopback) : loopback
 
   /*
    * `auto`: what the socket is actually bound to, in narrowest-first order.

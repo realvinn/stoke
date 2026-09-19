@@ -32,6 +32,9 @@ import {
   launchAim,
   launcherKey,
   newestConversation,
+  isDeliberateInput,
+  launcherHoldsFocus,
+  launcherPressAllowed,
   nextBurst,
   pickerSections,
   pressAllowed,
@@ -422,6 +425,56 @@ check(
   replay([{ at: 1000 + PRESS_ARM_MS }, { at: 1000 + PRESS_ARM_MS + 150 }], 1000),
   [1000 + PRESS_ARM_MS, 1000 + PRESS_ARM_MS + 150]
 )
+/*
+ * Gotcha 92: the QA's second run. Trusted Enters 500ms apart from boot — a
+ * person tapping through the intro, not mashing. Each tap is its own "burst",
+ * so the burst rule passes every one of them after the first 300ms: one
+ * answered the picker, the next started claude 1.1s after boot.
+ */
+function replayLauncher(
+  presses: { at: number; repeat?: boolean }[],
+  armedAt: number | null,
+  deliberate: number[] = []
+): number[] {
+  let b = NO_BURST
+  const passed: number[] = []
+  for (const p of presses) {
+    b = nextBurst(b, p.at, p.repeat ?? false)
+    const deliberateAt = Math.max(-Infinity, ...deliberate.filter((d) => d <= p.at))
+    if (armedAt === null || p.at >= armedAt) {
+      if (launcherPressAllowed(b, armedAt, deliberateAt)) passed.push(p.at)
+    }
+  }
+  return passed
+}
+const every500 = Array.from({ length: 8 }, (_, i) => ({ at: 38 + 500 * i }))
+check(
+  'the burst rule alone lets a 500ms tap through (the regression, stated): the next tap after arming passes',
+  replay(every500, 564).length > 0,
+  true
+)
+check('gotcha 93: no 500ms Enter tap presses the launcher armed when the picker closed', replayLauncher(every500, 564), [])
+check(
+  'a click (pointer) after arming lets the next Enter start',
+  replayLauncher([...every500, { at: 6000 }], 564, [5500]),
+  [6000]
+)
+check(
+  'Tab to Start (a non-activation key) after arming does too',
+  replayLauncher([{ at: 2000 }], 564, [1500]),
+  [2000]
+)
+check('a deliberate input BEFORE the launcher armed does not count', replayLauncher([{ at: 2000 }], 564, [100]), [])
+check('no first run this launch (armedAt null): every Enter counts, as before', replayLauncher([{ at: 10 }, { at: 510 }], null), [10, 510])
+check('a pointer press is deliberate', isDeliberateInput({ type: 'pointerdown' }), true)
+check(
+  'Tab, arrows and Escape are deliberate; Enter, Space and a lone modifier are not',
+  ['Tab', 'ArrowDown', 'Escape', 'Enter', ' ', 'Shift', 'Meta'].map((key) => isDeliberateInput({ type: 'keydown', key })),
+  [true, true, true, false, false, false, false]
+)
+check('focus waits on the card while armed with nothing deliberate since', launcherHoldsFocus(564, -Infinity), true)
+check('and goes to Start once something deliberate has happened', launcherHoldsFocus(564, 900), false)
+check('and always, when there was no first run', launcherHoldsFocus(null, -Infinity), false)
 check(
   "a held key's repeats continue its burst even after a long initial delay",
   replay([{ at: 900 }, { at: 1600, repeat: true }, { at: 1650, repeat: true }], 1000),

@@ -1,7 +1,10 @@
+import { execFile } from 'node:child_process'
 import { join } from 'node:path'
 import type { LiveSessionState } from '../shared/types.ts'
 import {
+  descendsFrom,
   isBusyStatus,
+  parseProcessTable,
   parseRegistry,
   pickEntry,
   REGISTRY_FALLBACK_AFTER_MS,
@@ -40,6 +43,13 @@ export interface RegistryFs {
   readFile(path: string): Promise<string>
   /** Names in the directory; rejects when it cannot be listed. */
   readdir(dir: string): Promise<string[]>
+  /**
+   * Every process's parent, pid -> ppid, or null when it cannot be read. Only
+   * asked for when a pty needs the folder fallback (`pickEntry`), which answers
+   * nothing without it. Optional so a caller with no process table simply
+   * never takes that fallback.
+   */
+  processTable?(): Promise<ReadonlyMap<number, number> | null>
 }
 
 export interface RegistryEvents {
@@ -53,6 +63,35 @@ export interface RegistryEvents {
    * change `state` would report.
    */
   passed?(at: number): void
+}
+
+/**
+ * This machine's pid -> parent pid table, for `pickEntry`'s folder fallback, or
+ * null when it cannot be read in time. `ps` on macOS and Linux; on Windows (the
+ * only layout the fallback exists for, and UNVERIFIED there) the CIM process
+ * list. A generous `maxBuffer` (gotcha 13) and a deadline, because this runs in
+ * main's poll.
+ */
+export function readProcessTable(platform: NodeJS.Platform = process.platform): Promise<Map<number, number> | null> {
+  const [cmd, args] =
+    platform === 'win32'
+      ? [
+          'powershell.exe',
+          [
+            '-NoProfile',
+            '-NonInteractive',
+            '-Command',
+            'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.ParentProcessId)" }'
+          ]
+        ]
+      : ['ps', ['-A', '-o', 'pid=,ppid=']]
+  return new Promise((resolve) => {
+    execFile(cmd, args, { timeout: 5000, maxBuffer: 16 * 1024 * 1024, windowsHide: true }, (err, stdout) => {
+      if (err) return resolve(null)
+      const table = parseProcessTable(String(stdout))
+      resolve(table.size ? table : null)
+    })
+  })
 }
 
 function sameState(a: LiveSessionState | undefined, b: LiveSessionState): boolean {
@@ -71,6 +110,13 @@ export class RegistryPoller {
   private readonly targets: () => RegistryTarget[]
   private readonly events: RegistryEvents
   private readonly last = new Map<string, LiveSessionState>()
+  /**
+   * Every pty whose own `<pid>.json` has been read at least once. Its file going
+   * away later means the process is dying (SIGHUP removes it ~0.37s before the
+   * exit), never "look elsewhere" — gotcha 92: a dying tab fell through to the
+   * folder fallback and was rebound to a stranger's `claude` in the same repo.
+   */
+  private readonly everMatched = new Set<string>()
   private running = false
 
   // Explicit fields, not TS parameter properties: node's strip-only mode
@@ -95,6 +141,14 @@ export class RegistryPoller {
   private async read(file: string): Promise<RegistryEntry | null> {
     try {
       return parseRegistry(await this.fs.readFile(file))
+    } catch {
+      return null
+    }
+  }
+
+  private async processTable(): Promise<ReadonlyMap<number, number> | null> {
+    try {
+      return (await this.fs.processTable?.()) ?? null
     } catch {
       return null
     }
@@ -125,6 +179,7 @@ export class RegistryPoller {
       const targets = this.targets()
       const live = new Set(targets.map((t) => t.ptyId))
       for (const id of [...this.last.keys()]) if (!live.has(id)) this.last.delete(id)
+      for (const id of [...this.everMatched]) if (!live.has(id)) this.everMatched.delete(id)
       if (!targets.length) return
 
       const dir = this.dir()
@@ -146,10 +201,12 @@ export class RegistryPoller {
         const e = byPid.get(t.ptyId)
         return !!e && (e.pid === null || e.pid === t.pid)
       }
-      const needAll = targets.some(
-        (t) => !pidMatched(t) && now - t.startedAt >= REGISTRY_FALLBACK_AFTER_MS
-      )
+      for (const t of targets) if (pidMatched(t)) this.everMatched.add(t.ptyId)
+      const fallsBack = (t: RegistryTarget): boolean =>
+        !pidMatched(t) && !this.everMatched.has(t.ptyId) && now - t.startedAt >= REGISTRY_FALLBACK_AFTER_MS
+      const needAll = targets.some(fallsBack)
       const all = needAll ? await this.readAll(dir) : null
+      const parents = needAll && this.fs.processTable ? await this.processTable() : null
 
       // Sessions some target has provably by pid: a fallback may not take them.
       const claimed = new Set<string>()
@@ -159,15 +216,19 @@ export class RegistryPoller {
       }
 
       for (const t of targets) {
+        const descends =
+          parents && t.pid !== null ? (pid: number): boolean => descendsFrom(pid, t.pid as number, parents) : null
         const entry = pidMatched(t)
           ? (byPid.get(t.ptyId) ?? null)
-          : now - t.startedAt >= REGISTRY_FALLBACK_AFTER_MS
-            ? pickEntry(t, null, all, claimed)
+          : fallsBack(t)
+            ? pickEntry(t, null, all, claimed, descends)
             : null
         /*
          * No reading keeps the last one rather than clearing it. The file goes
          * away ~0.37s after a SIGHUP, i.e. while the process is dying — and the
-         * pty's own exit is what ends the target, one tick later.
+         * pty's own exit is what ends the target, one tick later. A pty that
+         * was ever matched by pid never falls back (`everMatched`), so that
+         * second cannot rebind it to another process in the same folder.
          */
         if (!entry) continue
         const moved = rebindTo(t.sessionId, entry)

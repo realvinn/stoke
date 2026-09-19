@@ -60,7 +60,18 @@ export type PillTone = 'waiting' | 'busy' | 'idle' | 'ended' | 'unknown'
  * word when it is recognisable and otherwise the pill says "Needs you", never
  * the raw string, which can be up to 200 characters.
  */
-export function statusPill(status: PhoneSessionStatus, waitingFor: string | null): { label: string; tone: PillTone } {
+export function statusPill(
+  status: PhoneSessionStatus,
+  waitingFor: string | null,
+  /**
+   * The session's socket is down and reconnecting. The last status is then a
+   * reading from before the drop — an "Idle" pill sat under "Reconnecting…"
+   * with two messages queued (phone QA) — so it says Offline until the next
+   * `attached` frame brings a current one. An ended session stays Ended.
+   */
+  linkDown = false
+): { label: string; tone: PillTone } {
+  if (linkDown && status !== 'ended') return { label: 'Offline', tone: 'unknown' }
   switch (status) {
     case 'waiting': {
       const w = (waitingFor ?? '').toLowerCase()
@@ -392,6 +403,61 @@ export function fontToFit(width: number, cols: number, ratio: number, min: numbe
   return Math.max(min, Math.min(max, Math.floor(exact * 2) / 2))
 }
 
+/**
+ * The font "Desktop size" shows the desktop's grid at on a phone.
+ *
+ * It used to shrink to fit the whole width, down to a 7px floor: at 390x844 a
+ * 100-column grid drew at ~4.2px per column, unreadable, and used 285 of 679px
+ * of height. The floor is 10px now (or the user's own Text size, if they chose
+ * smaller) and the wrap scrolls sideways past it, opened at the cursor
+ * (`scrollToColumn`). A laptop-width phone in landscape still fits whole.
+ */
+export const DESKTOP_MIN_FONT = 10
+
+export function desktopFont(width: number, cols: number, ratio: number, userFont: number): number {
+  return fontToFit(width, cols, ratio, Math.min(DESKTOP_MIN_FONT, userFont), userFont)
+}
+
+/**
+ * The `scrollLeft` that brings a column into a sideways-scrolling view, or the
+ * current one when it is already in it. `columnPx` is where the column starts,
+ * `cellPx` its width; a margin of a few cells is kept so the cursor is not on
+ * the edge.
+ */
+export function scrollToColumn(columnPx: number, cellPx: number, viewPx: number, current: number): number {
+  const margin = cellPx * 4
+  if (columnPx - margin >= current && columnPx + cellPx + margin <= current + viewPx) return current
+  return Math.max(0, Math.round(columnPx + cellPx / 2 - viewPx / 2))
+}
+
+/**
+ * The Connect page's heading and sentence.
+ *
+ * Only a browser that had connected before used to hear that its key was
+ * replaced; a fresh one opening `/?k=<stale key>` (a link from an old message,
+ * a QR scanned before the key was renewed) got the generic "Connect to your
+ * computer" with nothing saying the link's key was refused (phone QA). The
+ * URL is scrubbed at boot, so `linkKey` is whether it HAD a `?k=`.
+ */
+export function connectCopy(opts: { linkKey: boolean; connectedBefore: boolean }): { title: string; text: string } {
+  if (opts.linkKey) {
+    return {
+      title: 'This link’s key isn’t current',
+      text: 'The key may have been replaced in Stoke. Scan the new code, or paste the new link here.'
+    }
+  }
+  if (opts.connectedBefore) {
+    return {
+      title: 'Your key was replaced',
+      text: 'The link this phone had no longer works — a new key was made on your computer. Scan the new code, or paste the new link here.'
+    }
+  }
+  return {
+    title: 'Connect to your computer',
+    text: 'This page drives Claude Code on your computer, so it needs the key Stoke made for it.'
+  }
+}
+
 /* ------------------------------------------- sending while disconnected */
 
 export interface QueuedSend {
@@ -474,16 +540,67 @@ export function parseConnectInput(input: string, origin: string): ConnectInput {
 
 /* ---------------------------------------------------------- transcript */
 
+/**
+ * How a tool call ended, from its `tool_result`: `declined` when the user
+ * rejected it at the permission prompt, `failed` for any other error, `ran`
+ * otherwise. The Apple transcript's rejected Write read "Ran 1 tool · Write",
+ * the same chip as the ones that ran (phone QA).
+ */
+export type ToolOutcome = 'ran' | 'declined' | 'failed'
+
+/** The text the CLI writes into a rejected tool's result (measured on 2.1.x transcripts). */
+const DECLINED = /^The user doesn['’]t want to proceed with this tool use|^User rejected/i
+
+export function toolOutcome(isError: unknown, content: unknown): ToolOutcome {
+  if (isError !== true) return 'ran'
+  const text =
+    typeof content === 'string'
+      ? content
+      : Array.isArray(content)
+        ? content
+            .map((b) => (b && typeof b === 'object' && typeof (b as { text?: unknown }).text === 'string' ? (b as { text: string }).text : ''))
+            .join('')
+        : ''
+  return DECLINED.test(text.trim()) ? 'declined' : 'failed'
+}
+
+/**
+ * The CLI's interruption markers, which it files as USER messages: they are
+ * not something the user said, and the transcript view drew them as a "You"
+ * bubble. A short system note instead, or null for real text.
+ */
+export function interruptionNote(text: string): string | null {
+  const t = text.trim()
+  if (t === '[Request interrupted by user for tool use]') return 'Stopped — tool declined'
+  if (t === '[Request interrupted by user]') return 'Stopped by you'
+  return null
+}
+
 export interface TurnLike {
   role: 'user' | 'assistant'
   text: string
   tools: string[]
   at: number | null
+  /** Per tool, in `tools` order, when the results were read. */
+  toolStates?: ToolOutcome[]
+  /** A system note (an interruption), drawn instead of a speaker's bubble. */
+  note?: string
 }
 
 export type TranscriptItem<T extends TurnLike> =
   | { kind: 'turn'; turn: T }
-  | { kind: 'tools'; count: number; summary: string; at: number | null }
+  | { kind: 'tools'; count: number; summary: string; at: number | null; declined: number; failed: number }
+
+/** A collapsed tool run's words: "Ran 2 tools · 1 declined", "Declined 1 tool". */
+export function toolsLabel(count: number, declined: number, failed: number): string {
+  const ran = count - declined - failed
+  const tool = (n: number): string => `${n} tool${n === 1 ? '' : 's'}`
+  const parts: string[] = []
+  if (ran > 0) parts.push(`Ran ${tool(ran)}`)
+  if (declined > 0) parts.push(ran > 0 ? `${declined} declined` : `Declined ${tool(declined)}`)
+  if (failed > 0) parts.push(ran > 0 || declined > 0 ? `${failed} failed` : `${tool(failed)} failed`)
+  return parts.join(' · ') || `Ran ${tool(count)}`
+}
 
 /**
  * Collapse runs of tool-only assistant turns into one line — audit PX-15.
@@ -493,28 +610,32 @@ export type TranscriptItem<T extends TurnLike> =
  */
 export function collapseTurns<T extends TurnLike>(turns: readonly T[]): TranscriptItem<T>[] {
   const out: TranscriptItem<T>[] = []
-  let run: { counts: Map<string, number>; total: number; at: number | null } | null = null
+  let run: { counts: Map<string, number>; total: number; at: number | null; declined: number; failed: number } | null = null
   const close = (): void => {
     if (!run) return
     const summary = [...run.counts]
       .sort((a, b) => b[1] - a[1])
       .map(([name, n]) => (n > 1 ? `${name} ×${n}` : name))
       .join(', ')
-    out.push({ kind: 'tools', count: run.total, summary, at: run.at })
+    out.push({ kind: 'tools', count: run.total, summary, at: run.at, declined: run.declined, failed: run.failed })
     run = null
   }
   for (const turn of turns) {
     const toolOnly = turn.role === 'assistant' && !turn.text.trim() && turn.tools.length > 0
     if (!toolOnly) {
       close()
-      if (turn.text.trim() || turn.tools.length) out.push({ kind: 'turn', turn })
+      if (turn.text.trim() || turn.tools.length || turn.note) out.push({ kind: 'turn', turn })
       continue
     }
-    run ??= { counts: new Map(), total: 0, at: turn.at }
-    for (const t of turn.tools) {
+    run ??= { counts: new Map(), total: 0, at: turn.at, declined: 0, failed: 0 }
+    turn.tools.forEach((t, i) => {
+      if (!run) return
       run.counts.set(t, (run.counts.get(t) ?? 0) + 1)
       run.total++
-    }
+      const state = turn.toolStates?.[i]
+      if (state === 'declined') run.declined++
+      else if (state === 'failed') run.failed++
+    })
     run.at = turn.at ?? run.at
   }
   close()

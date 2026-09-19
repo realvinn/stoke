@@ -29,6 +29,7 @@ import {
   mayStoreKeyCookie,
   phoneStatusFor,
   PROMPT_SETTLE_MS,
+  resumeVerdict,
   shouldRestartRemote,
   sortSessionRows,
   stripLocalHostnameSuffix,
@@ -143,7 +144,7 @@ console.log('\nan explicit choice is honoured, and is the thing that can be swap
  * take. Each preference is asserted BOTH ways: honoured when it can be served,
  * and falling to loopback rather than silently substituting another transport.
  */
-const configured = { ...base, hostname: 'code.example.com', lan: ['192.168.1.20'], tailnet: '100.64.0.9' }
+const configured = { ...base, hostname: 'code.example.com', bindLan: true, lan: ['192.168.1.20'], tailnet: '100.64.0.9' }
 check(
   'tunnel chosen uses the hostname even with a LAN address to hand',
   connectTarget({ ...configured, reach: 'tunnel' }).url,
@@ -159,10 +160,25 @@ check(
   connectTarget({ ...configured, reach: 'tailnet' }).address,
   '100.64.0.9'
 )
+/*
+ * This used to assert 'lan' — "a choice needs no bind flag" — which pinned the
+ * phone QA's bug as correct: a stale reach 'lan' with bindLan false drew a QR
+ * for 192.168.x:7941 while the server listened on 127.0.0.1 only.
+ */
 check(
-  'a choice needs no bind flag: the preference is the choice',
+  'a LAN choice the socket is not bound for is loopback (no QR), not a link nothing serves',
   connectTarget({ ...configured, reach: 'lan', bindLan: false }).reach,
-  'lan'
+  'loopback'
+)
+check(
+  'a tailnet choice with neither bind is loopback too',
+  connectTarget({ ...configured, reach: 'tailnet', bindLan: false, bindTailscale: false }).reach,
+  'loopback'
+)
+check(
+  'and with the tailnet listener alone it is the tailnet',
+  connectTarget({ ...configured, reach: 'tailnet', bindLan: false, bindTailscale: true }).reach,
+  'tailnet'
 )
 check(
   'tunnel chosen with no hostname is loopback, so the panel can say why',
@@ -551,6 +567,26 @@ check('a digit is typing', isTerminalReport('2'), false)
 check('a wrong ?k is never stored as the cookie', mayStoreKeyCookie('WRONGKEY', false), false)
 check('the right one is', mayStoreKeyCookie('RIGHTKEY', true), true)
 check('no ?k: nothing to store', mayStoreKeyCookie(null, true), false)
+
+// Gotcha 92: "Resume conversation" must never quietly become a new one.
+{
+  const id = '98de4ade-5c86-433a-ad9c-0491efdfbde3'
+  check('a Claude resume of an id with no transcript is refused, 404, before anything spawns', (() => {
+    const v = resumeVerdict({ resume: true, sessionId: id, livePty: null, hasTranscript: false })
+    return v.ok ? 'started' : v.status
+  })(), 404)
+  check('one with a transcript starts', resumeVerdict({ resume: true, sessionId: id, livePty: null, hasTranscript: true }).ok, true)
+  check('one already running in a pty is the 409 that opens it instead', (() => {
+    const v = resumeVerdict({ resume: true, sessionId: id, livePty: 'pty-1', hasTranscript: true })
+    return v.ok ? 'started' : [v.status, v.ptyId]
+  })(), [409, 'pty-1'])
+  check('resume naming no valid id is a 400, not a spawn with --resume and nothing after it', (() => {
+    const v = resumeVerdict({ resume: true, sessionId: null, livePty: null, hasTranscript: null })
+    return v.ok ? 'started' : v.status
+  })(), 400)
+  check('an agent whose transcripts Stoke cannot look up is not checked', resumeVerdict({ resume: true, sessionId: id, livePty: null, hasTranscript: null }).ok, true)
+  check('a new session (no resume) is never refused on transcripts', resumeVerdict({ resume: false, sessionId: id, livePty: null, hasTranscript: false }).ok, true)
+}
 
 console.log(failures ? `\n${failures} FAILED` : '\nall pass')
 process.exitCode = failures ? 1 : 0

@@ -1,5 +1,6 @@
 import { open, readFile, stat } from 'node:fs/promises'
 import type { PermissionMode } from '@shared/types'
+import { interruptionNote, toolOutcome, type ToolOutcome } from '../shared/phoneUi.ts'
 
 /**
  * Helpers for reading Claude Code's session transcripts
@@ -253,6 +254,10 @@ export interface TranscriptTurn {
   /** Names of tools called in this turn, for turns that are mostly tool work. */
   tools: string[]
   at: number | null
+  /** How each of `tools` ended, from its tool_result: ran, declined or failed. */
+  toolStates?: ToolOutcome[]
+  /** An interruption marker the CLI filed as a user message, as a system note. */
+  note?: string
 }
 
 export interface Transcript {
@@ -276,6 +281,8 @@ export interface Transcript {
 export async function readTranscript(file: string, limit = 400): Promise<Transcript> {
   const { lines, exact } = await readLines(file)
   const turns: TranscriptTurn[] = []
+  // tool_use id -> the turn that called it, and which of its tools it is.
+  const calls = new Map<string, { turn: TranscriptTurn; index: number }>()
 
   for (const line of lines) {
     const rec = safeParse(line)
@@ -285,31 +292,51 @@ export async function readTranscript(file: string, limit = 400): Promise<Transcr
 
     const content = (rec.message as { content?: unknown } | undefined)?.content
     const blocks = Array.isArray(content) ? content : []
-    const isToolResult = blocks.some(
+    const results = blocks.filter(
       (b) => b && typeof b === 'object' && (b as { type?: string }).type === 'tool_result'
-    )
-    if (isToolResult) continue
+    ) as { tool_use_id?: unknown; is_error?: unknown; content?: unknown }[]
+    if (results.length) {
+      // A result is not a turn; it says how the call it answers ended.
+      for (const r of results) {
+        const call = typeof r.tool_use_id === 'string' ? calls.get(r.tool_use_id) : undefined
+        if (!call) continue
+        call.turn.toolStates ??= call.turn.tools.map(() => 'ran')
+        call.turn.toolStates[call.index] = toolOutcome(r.is_error, r.content)
+      }
+      continue
+    }
 
     const tools: string[] = []
+    const ids: (string | null)[] = []
     for (const b of blocks) {
       if (b && typeof b === 'object' && (b as { type?: string }).type === 'tool_use') {
         const name = (b as { name?: unknown }).name
-        if (typeof name === 'string') tools.push(name)
+        const id = (b as { id?: unknown }).id
+        if (typeof name === 'string') {
+          tools.push(name)
+          ids.push(typeof id === 'string' ? id : null)
+        }
       }
     }
 
     const raw = textOf(content)
     const text = raw ? raw.trim() : ''
     if (!text && !tools.length) continue
+    const stamp = typeof rec.timestamp === 'string' ? Date.parse(rec.timestamp) : NaN
+    const at = Number.isNaN(stamp) ? null : stamp
+    // "[Request interrupted by user…]" is the CLI's, not the user's speech.
+    const note = rec.type === 'user' && !tools.length ? interruptionNote(text) : null
+    if (note) {
+      turns.push({ role: 'user', text: '', tools: [], at, note })
+      continue
+    }
     if (rec.type === 'user' && text && !isUsefulPrompt(text)) continue
 
-    const stamp = typeof rec.timestamp === 'string' ? Date.parse(rec.timestamp) : NaN
-    turns.push({
-      role: rec.type,
-      text,
-      tools,
-      at: Number.isNaN(stamp) ? null : stamp
+    const turn: TranscriptTurn = { role: rec.type, text, tools, at }
+    ids.forEach((id, index) => {
+      if (id) calls.set(id, { turn, index })
     })
+    turns.push(turn)
   }
 
   // Keep the end of a long conversation: the recent part is what someone

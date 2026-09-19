@@ -19,7 +19,9 @@ import {
   INITIAL_SEND_STATE,
   cancelQueued,
   decideResize,
+  desktopFont,
   fontToFit,
+  scrollToColumn,
   isTerminalReport,
   modeFromScreen,
   parseAnswerOptions,
@@ -207,7 +209,7 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
     const agent = row && row.cli !== 'claude' ? row.agentName : null
     subtitle.textContent = [agent, row?.host ? `ssh ${row.host}` : null, t].filter(Boolean).join(' · ')
     document.title = `${name} · Stoke`
-    const p = statusPill(status, waitingFor)
+    const p = statusPill(status, waitingFor, !linkStrip.hidden)
     pillSlot.replaceChildren(el('span', { class: 'pill', 'data-tone': p.tone }, el('i', { 'aria-hidden': 'true' }), p.label))
     const ctx = row?.context
     if (ctx?.ready && ctx.contextLimit > 0) {
@@ -323,13 +325,14 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
     const mode = layout()
     const b = box()
     // The desktop layout shrinks the font to show the desktop's columns, down
-    // to a floor, and scrolls sideways past it. Fit and native use the user's.
+    // to a readable floor (`desktopFont`), and scrolls sideways past it. Fit
+    // and native use the user's.
     // A laptop shows the pty's own grid whole when it can: shrink toward 10px
     // to fit its width and its height rather than scroll a tall desktop grid.
     const byHeight = Math.floor((b.height / (pty.rows * 1.22)) * 2) / 2
     const font =
       mode === 'desktop'
-        ? fontToFit(b.width, desktop.cols, ratio, 7, userFont)
+        ? desktopFont(b.width, desktop.cols, ratio, userFont)
         : mode === 'native'
           ? Math.max(10, Math.min(fontToFit(b.width, pty.cols, ratio, 10, userFont), byHeight))
           : userFont
@@ -362,6 +365,11 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
     wrap.dataset.layout = mode
     showLayoutBanner()
     stickToBottom()
+    // Wider than the screen: open where the cursor is, not at column 0.
+    if (mode === 'desktop' && (reason === 'attach' || reason === 'toggle') && c) {
+      const x = term.buffer.active.cursorX * c.width
+      wrap.scrollLeft = scrollToColumn(x, c.width, b.width, wrap.scrollLeft)
+    }
   }
 
   let observeTimer: ReturnType<typeof setTimeout> | null = null
@@ -461,6 +469,7 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
       // (phone contract point 5): never reconnect to a finished process.
       if (leaving || ended || (ev.code === 1000 && ended)) return
       linkStrip.hidden = false
+      paintHeader()
       retry = setTimeout(connect, backoff)
       backoff = Math.min(backoff * 2, 10_000)
     })
@@ -485,6 +494,7 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
     if (msg.type === 'attached') {
       backoff = 1000
       linkStrip.hidden = true
+      paintHeader()
       desktop = { cols: msg.desktopCols ?? msg.cols ?? desktop.cols, rows: msg.desktopRows ?? msg.rows ?? desktop.rows }
       pty = { cols: msg.cols ?? pty.cols, rows: msg.rows ?? pty.rows }
       // A phone that fitted before a reconnect is still the one that resized.
@@ -688,7 +698,11 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
   input.value = sessionStorage.getItem(DRAFT) ?? ''
   const grow = (): void => {
     input.style.height = 'auto'
-    input.style.height = `${Math.min(input.scrollHeight, 132)}px`
+    // border-box: the height carries the border, which scrollHeight leaves out,
+    // so a bare scrollHeight sat 2px short and clipped the last line. Nothing
+    // to measure while detached (scrollHeight 0): the CSS min-height stands.
+    const border = input.offsetHeight - input.clientHeight
+    if (input.scrollHeight > 0) input.style.height = `${Math.min(input.scrollHeight + border, 132)}px`
     send.disabled = !input.value.trim()
   }
   input.addEventListener(
@@ -780,6 +794,9 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
   }
   send.addEventListener('click', submit, { signal })
   grow()
+  // Once more when the view is in the document, so the first paint has the
+  // content height (a restored draft, the laptop's smaller --tap).
+  requestAnimationFrame(grow)
 
   /* ---------------------------------------------------------------- voice */
 

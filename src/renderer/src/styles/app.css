@@ -2218,6 +2218,11 @@ mark.hit {
   flex-direction: column;
   gap: var(--space-16);
 }
+/* Focus rests on the card itself after the first run (gotcha 93): no ring for
+   a container nobody tabbed to. */
+.launcher-card:focus {
+  outline: none;
+}
 
 .launcher-head {
   display: flex;

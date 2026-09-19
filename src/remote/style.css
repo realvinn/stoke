@@ -1435,7 +1435,9 @@ a {
 
 .seg-btn {
   flex: 1 1 auto;
-  min-height: 40px;
+  /* A whole touch target (44px on touch, 36px under pointer: fine); 40px was
+     short of it on every New session row (phone QA). */
+  min-height: var(--tap);
   padding: 0 12px;
   border-radius: 9px;
   border: none;
@@ -1478,7 +1480,9 @@ a {
 .search {
   flex: 1;
   min-width: 0;
-  height: 42px;
+  /* The wrap is a <label>, so its whole 44px (--tap, border included) is the
+     target; the field fills it inside the 1px border. It was a fixed 42px. */
+  height: calc(var(--tap) - 2px);
   border: none;
   background: transparent;
   color: var(--text);
@@ -1766,6 +1770,25 @@ a {
   font-size: 13px;
 }
 
+/* Every call in the run was declined or failed: say so in the chip's colour. */
+.turn-tools[data-state='declined'] {
+  color: var(--warning);
+}
+
+.turn-tools[data-state='failed'] {
+  color: var(--danger);
+}
+
+/* "[Request interrupted by user…]": the CLI's marker, not the user's words. */
+.turn-note {
+  align-self: center;
+  margin: 0;
+  padding: 2px 10px;
+  color: var(--text-faint);
+  font-size: 12px;
+  font-style: italic;
+}
+
 .turn-tools.inline {
   align-self: flex-start;
   margin-top: 4px;
@@ -1913,6 +1936,11 @@ a {
   }
   .key {
     height: 32px;
+  }
+  /* 36px = 20px line + 7px + 7px padding + 2px border. The touch padding
+     (11px) needed 44px and clipped the placeholder in a 36px box. */
+  .composer-input {
+    padding: 7px 14px;
   }
 }
 
@@ -2183,6 +2211,63 @@ a {
   }
   .term-wrap {
     padding: 14px 16px;
+  }
+}
+
+/*
+ * Short landscape (phone QA: 844x390 showed the path and the Agent row, and cut
+ * Permission mode in half, between the header and the sticky Start footer). The
+ * sheet takes the whole height with a slimmer header, and the New session form
+ * goes two columns: Agent | Permission mode, the mode's hint under it, then
+ * Model | Effort. After the tablet block, which it overrides.
+ */
+@media (orientation: landscape) and (max-height: 500px) {
+  .sheet,
+  .sheet[data-size='full'] {
+    top: 0;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    width: auto;
+    height: 100dvh;
+    max-height: 100dvh;
+    min-height: 0;
+    border: none;
+    border-radius: 0;
+    transform: translateY(100%);
+    opacity: 1;
+  }
+  .sheet-layer.open .sheet {
+    transform: translateY(0);
+  }
+  .sheet-grip {
+    display: none;
+  }
+  .sheet-head {
+    padding-top: 2px;
+    padding-bottom: 2px;
+  }
+  .sheet-title {
+    font-size: 15px;
+  }
+  .confirm {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 12px 20px;
+  }
+  .confirm-where {
+    grid-column: 1 / -1;
+  }
+  /* Under Permission mode, its own column, not across under Agent too. */
+  .confirm .field-hint {
+    grid-column: 2;
+  }
+  .confirm .claude-only:not([hidden]) {
+    display: contents;
+  }
+  .sheet-footer {
+    padding-top: 8px;
+    padding-bottom: calc(8px + var(--safe-bottom));
   }
 }
 

@@ -9,6 +9,10 @@
  *
  *   node scripts/verify-phone-ui.mts
  */
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { readTranscript } from '../src/main/sessionFile.ts'
 import {
   GENERIC_ANSWERS,
   INITIAL_SEND_STATE,
@@ -16,8 +20,14 @@ import {
   answerChoices,
   cancelQueued,
   collapseTurns,
+  interruptionNote,
+  toolOutcome,
+  toolsLabel,
   decideResize,
+  connectCopy,
+  desktopFont,
   fontToFit,
+  scrollToColumn,
   groupProjects,
   groupSessionRows,
   isTerminalReport,
@@ -76,6 +86,16 @@ check(
 )
 check('an empty list has no sections, not four empty headings', groupSessionRows([]), [])
 check('a permission wait reads as Permission', statusPill('waiting', 'permission prompt'), { label: 'Permission', tone: 'waiting' })
+check(
+  'a fresh browser opened with a refused ?k= is told the link key is not current (phone QA)',
+  connectCopy({ linkKey: true, connectedBefore: false }).title,
+  'This link’s key isn’t current'
+)
+check('one that connected before and has no ?k= hears it was replaced', connectCopy({ linkKey: false, connectedBefore: true }).title, 'Your key was replaced')
+check('a plain first visit is the plain Connect page', connectCopy({ linkKey: false, connectedBefore: false }).title, 'Connect to your computer')
+check('while the socket is reconnecting, a stale Idle reads Offline', statusPill('idle', null, true), { label: 'Offline', tone: 'unknown' })
+check('and a stale Working too', statusPill('busy', null, true).label, 'Offline')
+check('an ended session stays Ended through a drop', statusPill('ended', null, true).label, 'Ended')
 check(
   'an unrecognised wait says Needs you, never the raw 200-char string',
   statusPill('waiting', 'x'.repeat(200)).label,
@@ -278,6 +298,13 @@ check(
 )
 check('100 columns into 382px at 0.6 is a 6px font: clamped up to the 7px floor', fontToFit(382, 100, 0.6, 7, 12), 7)
 check('100 columns into 800px fits at 13px', fontToFit(800, 100, 0.6, 7, 14), 13)
+// Phone QA: "Desktop size" at 390x844 drew 100 columns at ~4.2px per column.
+check('Desktop size on a 390px phone floors at a readable 10px and scrolls sideways', desktopFont(382, 100, 0.6, 12), 10)
+check('in landscape (722px) it still fits the grid whole', desktopFont(722, 100, 0.6, 12), 12)
+check('a user who chose a smaller Text size keeps it', desktopFont(382, 100, 0.6, 9), 9)
+check('the cursor already in view does not move the scroll', scrollToColumn(100, 6, 382, 0), 0)
+check('a cursor past the right edge is brought to the middle', scrollToColumn(540, 6, 382, 0), 352)
+check('never a negative scroll', scrollToColumn(0, 6, 382, 200), 0)
 
 /* ------------------------------------------------------------------ */
 console.log('\na send while disconnected is queued, never lost (PX-3)')
@@ -336,6 +363,28 @@ check(
   ['user:go', 'tools:4:Bash ×3, Read:9', 'assistant:done']
 )
 check('a turn with text keeps its own block', collapseTurns([t('assistant', 'hi', ['Bash'])]).length, 1)
+// Phone QA: a rejected Write read "Ran 1 tool · Write" like the ones that ran,
+// and "[Request interrupted by user for tool use]" was a YOU bubble.
+const REJECTED =
+  "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file)."
+check('a rejected tool_result is declined', toolOutcome(true, REJECTED), 'declined')
+check('as an array of text blocks too', toolOutcome(true, [{ type: 'text', text: REJECTED }]), 'declined')
+check('any other error is failed', toolOutcome(true, 'Error: ENOENT'), 'failed')
+check('no error is ran', toolOutcome(undefined, 'ok'), 'ran')
+check(
+  'a run with one declined tool says so',
+  (() => {
+    const i = collapseTurns([{ ...t('assistant', '', ['Write']), toolStates: ['declined' as const] }])[0]
+    return i.kind === 'tools' ? toolsLabel(i.count, i.declined, i.failed) : null
+  })(),
+  'Declined 1 tool'
+)
+check('mixed: "Ran 2 tools · 1 declined"', toolsLabel(3, 1, 0), 'Ran 2 tools · 1 declined')
+check('all failed', toolsLabel(2, 0, 2), '2 tools failed')
+check('the tool-use interruption marker is a note', interruptionNote('[Request interrupted by user for tool use]'), 'Stopped — tool declined')
+check('the plain one too', interruptionNote('[Request interrupted by user]'), 'Stopped by you')
+check('real speech is not', interruptionNote('[Request] please'), null)
+check('a note turn survives collapsing', collapseTurns([{ ...t('user', ''), note: 'Stopped by you' }]).length, 1)
 check('an empty turn is dropped', collapseTurns([t('assistant', '  ')]).length, 0)
 check(
   'fences and inline code, everything else literal',
@@ -428,6 +477,35 @@ check('a stronger desktop choice is kept', phoneTermContrast(7), 7)
 check('nothing sent (an older desktop): the floor', phoneTermContrast(undefined), PHONE_MIN_CONTRAST)
 check('garbage is not a ratio', phoneTermContrast('4.5'), PHONE_MIN_CONTRAST)
 check('never past 21:1', phoneTermContrast(99), 21)
+
+/*
+ * The same, end to end through readTranscript, on a file this suite writes in
+ * its own temp folder (gotcha 74: synthetic input, synthetic path).
+ */
+{
+  const dir = await mkdtemp(join(tmpdir(), 'stoke-phone-ui-'))
+  const file = join(dir, 'fixture.jsonl')
+  const rec = (o: Record<string, unknown>) => JSON.stringify({ timestamp: '2026-09-19T10:00:00Z', ...o })
+  await writeFile(
+    file,
+    [
+      rec({ type: 'user', message: { role: 'user', content: 'write three files' } }),
+      rec({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Write', input: {} }] } }),
+      rec({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'File created' }] } }),
+      rec({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 't2', name: 'Write', input: {} }] } }),
+      rec({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't2', is_error: true, content: REJECTED }] } }),
+      rec({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user for tool use]' }] } })
+    ].join('\n') + '\n'
+  )
+  const tr = await readTranscript(file)
+  const items = collapseTurns(tr.turns)
+  check(
+    'readTranscript: the declined Write is counted as declined, and the marker is a note, not a YOU turn',
+    items.map((i) => (i.kind === 'tools' ? toolsLabel(i.count, i.declined, i.failed) : i.turn.note ?? `${i.turn.role}:${i.turn.text}`)),
+    ['user:write three files', 'Ran 1 tool · 1 declined', 'Stopped — tool declined']
+  )
+  await rm(dir, { recursive: true, force: true })
+}
 
 console.log(failures ? `\n${failures} FAILED` : '\nall pass')
 process.exitCode = failures ? 1 : 0

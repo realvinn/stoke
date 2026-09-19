@@ -323,3 +323,28 @@ lifecycle, not silently — this note is that flag.
 > measured live, focus Cancel, cause any unrelated re-render, and Enter fired Wait instead. The
 > close dialog was never affected (`onWait` is always undefined there). Fixed by depending on
 > `!!onWait` with an empty effect-deps array, so the effect can only ever run once, on mount.
+
+## 93. No cadence separates "tapping Enter through the intro" from a deliberate Enter, so the launcher waits for a different kind of input
+
+**Gotcha 88's burst rule stopped a held or mashed Enter, and a person tapping Enter every 500ms
+still started `claude`.** Measured by the QA against c67897c (2026-09-19): trusted Enter pairs
+500ms apart from launch — one answered the agent picker at 564ms, focus moved to Start, and the
+next tap started a real `claude` at 1103ms, in whatever folder the fallback aim had picked (on a
+real machine, the user's most recent real repo). `pressAllowed` treats any press more than
+`PRESS_QUIET_MS` after the previous one as a fresh burst, so each tap was "deliberate" by that
+rule. Any quiet period short enough not to annoy is one a slow tapper clears.
+
+So after the first run (the launcher's `armedAt`, set when the splash or picker goes away) the
+launcher asks for a different KIND of input before an Enter/Space can press anything:
+`isDeliberateInput` — a pointer press, or any key that is not an activation key or a lone modifier
+(Tab, an arrow, Escape) — recorded window-wide in `lib/pressBurst.ts` (`deliberateAt`, trusted
+events only). `launcherPressAllowed` needs the burst rule AND a deliberate input since arming, and
+`launcherHoldsFocus` keeps focus on the card (tabIndex -1) instead of Start until then, with a
+visible "Click Start, or Tab to it, to begin". Tapping Enter never produces a deliberate input, at
+any speed. Launches with no first run (`armedAt` null) are unchanged: Start is focused and Enter
+starts. The picker keeps only the burst rule — its Continue installs nothing unticked, and Enter
+answering it is the flow.
+
+Proven in a fresh sandbox profile with the QA's own script (8 Enters, 500ms apart, from launch):
+the picker was answered, focus rested on the card with the hint, and the claude shim's launch log
+held only `--version` probes.

@@ -75,7 +75,7 @@ import {
   writeTabState,
   writeUpdateRestart
 } from './tabStore.ts'
-import { RegistryPoller } from './sessionRegistry.ts'
+import { readProcessTable, RegistryPoller } from './sessionRegistry.ts'
 import { getWorklogQueue } from './worklog/queue.ts'
 import {
   applyProposal,
@@ -859,6 +859,7 @@ function remoteDeps(): RemoteDeps {
       const file = await findSessionFile(sessionId)
       return file ? readTranscript(file) : null
     },
+    transcriptExists: (sessionId) => transcriptExists(sessionId),
     hostFor: (sessionId) => {
       const host = hostForSession(sessionId)
       return host ? host.label || host.alias : null
@@ -1609,7 +1610,7 @@ function createWindow(): void {
    */
   registry = new RegistryPoller(
     () => join(claudeConfigDir(process.env, homedir()), 'sessions'),
-    { readFile: (f) => readFile(f, 'utf8'), readdir: (d) => readdir(d) },
+    { readFile: (f) => readFile(f, 'utf8'), readdir: (d) => readdir(d), processTable: () => readProcessTable() },
     () => ptys?.registryTargets() ?? [],
     {
       rebind: (ptyId, sessionId, previous) => rebindSession(ptyId, sessionId, previous),
