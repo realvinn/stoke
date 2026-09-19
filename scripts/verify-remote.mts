@@ -20,6 +20,17 @@ import {
   parseTunnelList
 } from '../src/main/remote/cloudflare.ts'
 import { clampPort, clampRemoteReach, REMOTE_REACH_PREFERENCES } from '../src/shared/ui.ts'
+import {
+  ENDED_RETENTION_MS,
+  isGatedRemotePath,
+  phoneStatusFor,
+  pruneEnded,
+  sortSessionRows,
+  stripLocalHostnameSuffix,
+  submitFrames,
+  trackBracketedPaste,
+  type EndedRecord
+} from '../src/shared/remotePhone.ts'
 
 let failures = 0
 
@@ -305,6 +316,92 @@ check('a privileged port is refused', clampPort(80), 7878)
 check('so is one past the top', clampPort(65536), 7878)
 check('a string from an input box is read', clampPort('9000'), 9000)
 check('a fraction is refused', clampPort(8080.5), 7878)
+
+console.log('\nthe phone contract\'s pure pieces (server.ts / phone contract)')
+/*
+ * PX-2: the list used to show no status at all. `shell` counts as busy —
+ * the CLI's own name for "a command is running" — and a non-Claude CLI, which
+ * writes no registry file, can never be more precise than 'unknown'.
+ */
+check('waiting outranks everything', phoneStatusFor({ exited: false, instrumented: true, registryStatus: 'waiting' }), 'waiting')
+check('shell counts as busy', phoneStatusFor({ exited: false, instrumented: true, registryStatus: 'shell' }), 'busy')
+check('busy is busy', phoneStatusFor({ exited: false, instrumented: true, registryStatus: 'busy' }), 'busy')
+check('idle is idle', phoneStatusFor({ exited: false, instrumented: true, registryStatus: 'idle' }), 'idle')
+check('no reading yet is unknown, not idle', phoneStatusFor({ exited: false, instrumented: true, registryStatus: null }), 'unknown')
+check('another CLI writes no registry file, so it is always unknown', phoneStatusFor({ exited: false, instrumented: false, registryStatus: 'busy' }), 'unknown')
+check('exited outranks a stale busy reading', phoneStatusFor({ exited: true, instrumented: true, registryStatus: 'busy' }), 'ended')
+
+check(
+  'rows sort waiting, busy, idle, unknown, ended, most recent first within a bucket',
+  sortSessionRows([
+    { id: 'a', status: 'idle', lastActivityAt: 1000 },
+    { id: 'b', status: 'waiting', lastActivityAt: 500 },
+    { id: 'c', status: 'ended', lastActivityAt: 2000 },
+    { id: 'd', status: 'busy', lastActivityAt: 100 },
+    { id: 'e', status: 'idle', lastActivityAt: 3000 },
+    { id: 'f', status: 'unknown', lastActivityAt: 400 }
+  ]).map((r) => r.id),
+  ['b', 'd', 'e', 'a', 'f', 'c']
+)
+check('a null lastActivityAt sorts as never', sortSessionRows([
+  { id: 'a', status: 'idle', lastActivityAt: null },
+  { id: 'b', status: 'idle', lastActivityAt: 1 }
+]).map((r) => r.id), ['b', 'a'])
+
+/*
+ * F1: a session that exits on its own used to vanish from the map at once,
+ * so the phone could never learn a real crash happened. Kept for
+ * ENDED_RETENTION_MS, on a fake clock over an explicit map (gotcha 74 — never
+ * the real shared directory).
+ */
+{
+  const ring = new Map<string, EndedRecord<{ id: string }>>()
+  ring.set('a', { info: { id: 'a' }, endedAt: 0 })
+  ring.set('b', { info: { id: 'b' }, endedAt: ENDED_RETENTION_MS - 1000 })
+  pruneEnded(ring, ENDED_RETENTION_MS + 1)
+  check('an entry past the retention window is dropped', ring.has('a'), false)
+  check('one still inside it survives', ring.has('b'), true)
+  check('the retention window is ten minutes', ENDED_RETENTION_MS, 10 * 60 * 1000)
+}
+
+/*
+ * PX-1: the composer used to send the text and Enter as one chunk, which
+ * Claude Code's own input box reads as a paste — the `\r` inside it becomes a
+ * newline, and the NEXT lone `\r` is what actually submits. The fix is two
+ * writes: the (optionally bracketed) text, then a bare `\r` on its own, after
+ * a delay `server.ts` measures at runtime.
+ */
+check(
+  'bracketed paste wraps the text and keeps enter separate',
+  submitFrames('hello', true),
+  { body: '\u001b[200~hello\u001b[201~', enter: '\r' }
+)
+check(
+  'plain mode sends the text bare',
+  submitFrames('hello', false),
+  { body: 'hello', enter: '\r' }
+)
+check(
+  'a multi-line prompt keeps its newlines inside the bracket',
+  submitFrames('line one\nline two', true).body,
+  '\u001b[200~line one\nline two\u001b[201~'
+)
+
+check('DECSET 2004 on is read from the stream', trackBracketedPaste('\u001b[?2004h', false), true)
+check('and off turns it back off', trackBracketedPaste('\u001b[?2004l', true), false)
+check('the last one in a chunk wins', trackBracketedPaste('\u001b[?2004h text \u001b[?2004l', true), false)
+check('a chunk with neither leaves it alone', trackBracketedPaste('just output', true), true)
+
+check('/api/* stays gated', isGatedRemotePath('/api/sessions'), true)
+check('the shell is public', isGatedRemotePath('/'), false)
+check('assets are public', isGatedRemotePath('/assets/app.js'), false)
+check('the manifest is public', isGatedRemotePath('/manifest.webmanifest'), false)
+check('an unmatched path falls to the public SPA shell, not to a 401', isGatedRemotePath('/session/abc'), false)
+
+check('a .local suffix is stripped', stripLocalHostnameSuffix('macbookpro.local'), 'macbookpro')
+check('so is .localdomain', stripLocalHostnameSuffix('desktop.localdomain'), 'desktop')
+check('a bare hostname is untouched', stripLocalHostnameSuffix('macbookpro'), 'macbookpro')
+check('only a trailing suffix counts', stripLocalHostnameSuffix('local.example'), 'local.example')
 
 console.log(failures ? `\n${failures} FAILED` : '\nall pass')
 process.exitCode = failures ? 1 : 0

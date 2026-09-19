@@ -1,17 +1,36 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
-import { readFile } from 'node:fs/promises'
+import { readFile, realpath } from 'node:fs/promises'
 import { hostname } from 'node:os'
 import { extname, join, normalize, sep } from 'node:path'
 import type { Duplex } from 'node:stream'
 import { app } from 'electron'
 import { WebSocketServer, type WebSocket } from 'ws'
-import type { ContextSnapshot, LaunchOptions, Project, SessionMeta, Theme } from '@shared/types'
+import type {
+  ContextSnapshot,
+  EffortLevel,
+  LaunchOptions,
+  PermissionMode,
+  Project,
+  SessionMeta,
+  Theme
+} from '@shared/types'
+import type { LiveSessionState } from '@shared/types'
 import type { ContextWatcher } from '../context.ts'
 import type { PtyManager, StartResult } from '../pty.ts'
 import type { Transcript } from '../sessionFile.ts'
 import { MAX_AUDIO_BYTES, transcribe } from '../stt.ts'
+import { CODING_CLIS } from '../../shared/codingClis.ts'
 import { isTailnetAddress, tailnetAddress } from './link.ts'
+import {
+  answerBytes,
+  isGatedRemotePath,
+  phoneStatusFor,
+  sortSessionRows,
+  stripLocalHostnameSuffix,
+  type AnswerKey,
+  type PhoneSessionStatus
+} from '../../shared/remotePhone.ts'
 
 /*
  * `connectUrl` is deliberately absent: it returned `connectTarget(...).url` and
@@ -30,6 +49,47 @@ export type { ConnectTarget, Reach } from './link.ts'
  * below is deliberately kept as well: if the tunnel is up and the Access policy
  * is misconfigured or removed, a token is all that stands between the internet
  * and a shell on this machine.
+ *
+ * ---------------------------------------------------------------------------
+ * THE PHONE CONTRACT — what this file promises `src/remote` (the mobile UI).
+ * Names here are load-bearing: the client is built against them.
+ * ---------------------------------------------------------------------------
+ *
+ * 1. Public shell: `index.html` (served for `/` and any non-`/api`,
+ *    non-WebSocket path — the SPA fallback), `/assets/*`, `/manifest.webmanifest`
+ *    and the icons are served WITHOUT the bearer key; none of it embeds data.
+ *    Every `/api/*` route and every WebSocket upgrade stays gated exactly as
+ *    before (`isGatedRemotePath`). `/?k=<key>` still sets the HttpOnly cookie.
+ * 2. `GET /api/host` adds `stt` ('ready'|'down'|'off'), `agents`
+ *    (`[{id,name}]`, installed + chosen, Claude first), `defaults`
+ *    (`{permissionMode,model,effort}` — bypass is never offered), and a
+ *    hostname with no `.local`/`.localdomain` suffix.
+ * 3. `GET /api/sessions` rows add `status`, `waitingFor`, `lastActivityAt`,
+ *    `cli`, `agentName`, `project`, `title`, `endedAt`, `exitCode`. A session
+ *    that exits on its own stays listed for `ENDED_RETENTION_MS` as `'ended'`
+ *    (CLAUDE.md gotcha 84); one killed by closing its desktop tab disappears
+ *    at once, unchanged.
+ * 4. `GET /ws/events` (gated like the pty socket): `{type:'sessions', rows}`
+ *    on connect and again whenever the rows change (debounced ~250ms). The
+ *    client falls back to polling `/api/sessions` every 5s when it cannot open.
+ * 5. The pty socket's `attached` frame adds `desktopCols`/`desktopRows`
+ *    (what "desktop layout" must show), `status`, `waitingFor`. A
+ *    `{type:'status', status, waitingFor}` frame follows whenever those
+ *    change. After `exit` the server closes the socket with code 1000.
+ *    `perMessageDeflate` is on.
+ * 6. `{type:'submit', text}`: the server writes the text — bracketed-paste
+ *    wrapped when the pty has DECSET 2004 on — then a bare `\r` after a short
+ *    delay (CLAUDE.md gotcha 85 / PX-1). `{type:'input', data}` is unchanged.
+ * 7. `POST /api/sessions/:ptyId/answer {key}`: writes only while that pty's
+ *    status is `'waiting'`, else 409 `{error:'not waiting'}`.
+ * 8. `POST /api/sessions` accepts `{cwd, cli?, permissionMode?, model?,
+ *    effort?}`; `cli` must be an installed agent; bypass stays 403;
+ *    `knownCwd` compares realpaths on both sides (F6).
+ * 9. `GET /api/history` rows add `live` and `ptyId` (when that session is
+ *    running in a pty now, PX-10), and take `contextLimit` from the live
+ *    snapshot or the last recorded one, else `null` (PX-19, gotcha 2).
+ * 10. A session started from the phone pushes `CH.remoteSessionStarted`, so
+ *     `App.tsx` adopts it as a desktop tab (PX-9/F3).
  */
 
 export interface RemoteDeps {
@@ -55,6 +115,39 @@ export interface RemoteDeps {
    * every time the desktop's moved (gotcha 43); serving it is the fix.
    */
   theme: () => { theme: Theme; fontFamily: string }
+  /** Every live local Claude session's registry reading, from `RegistryPoller`. */
+  registryStates: () => LiveSessionState[]
+  /** The last context window recorded for a session, even after it ended. */
+  recordedContextLimit: (sessionId: string) => number | null
+  /** Installed + chosen agents, Claude first, in picker order. */
+  agents: () => Promise<{ id: string; name: string }[]>
+  /** `settings.defaults`, with `bypassPermissions` never offered to the phone. */
+  defaults: () => { permissionMode: PermissionMode; model: string; effort: EffortLevel }
+  sttStatus: () => Promise<'ready' | 'down' | 'off'>
+}
+
+/** One `/api/sessions` (and `/ws/events`) row. */
+export interface RemoteSessionRow {
+  ptyId: string
+  sessionId: string
+  cwd: string
+  name: string
+  host: string | null
+  /** True once the process has ended; kept in the ring for `ENDED_RETENTION_MS`. */
+  exited: boolean
+  startedAt: number
+  cols: number
+  rows: number
+  context: ContextSnapshot | null
+  status: PhoneSessionStatus
+  waitingFor: string | null
+  lastActivityAt: number | null
+  cli: string
+  agentName: string
+  project: string
+  title: string | null
+  endedAt: number | null
+  exitCode: number | null
 }
 
 /** Session ids are UUIDs, and they are joined onto filesystem paths. */
@@ -89,6 +182,9 @@ const MAX_WS_FRAME = 256 * 1024
  * that, by design, also reflows the desktop's own terminal.
  */
 const MAX_TERM_DIM = 1000
+
+/** Ping interval for `attachKeepalive`, shared by the pty socket and `/ws/events`. */
+const KEEPALIVE_MS = 30_000
 
 export interface RemoteConfig {
   port: number
@@ -163,6 +259,21 @@ export function generateToken(): string {
   return randomBytes(24).toString('base64url')
 }
 
+/**
+ * A `listen()` failure as something a person can act on.
+ *
+ * Node's own `EADDRINUSE: address already in use 127.0.0.1:7878` names the
+ * problem but not the likely cause or the fix, and it is what the Settings
+ * panel used to print verbatim in red. PX-8 / F5.
+ */
+function friendlyListenError(err: unknown, port: number): string {
+  const code = (err as NodeJS.ErrnoException)?.code
+  if (code === 'EADDRINUSE') {
+    return `Port ${port} is already in use — maybe by another Stoke. Pick a different port in Advanced.`
+  }
+  return err instanceof Error ? err.message : String(err)
+}
+
 function safeEqual(a: string, b: string): boolean {
   const ab = Buffer.from(a)
   const bb = Buffer.from(b)
@@ -188,6 +299,13 @@ export class RemoteServer {
    * sitting at it, and nothing used to undo that.
    */
   private desktopSize = new Map<string, { cols: number; rows: number }>()
+  /** Sockets on `/ws/events` — phone contract point 4. */
+  private eventsClients = new Set<WebSocket>()
+  /** The last `{type:'sessions',...}` payload sent, so an unchanged poll sends nothing. */
+  private lastEventsPayload: string | null = null
+  private eventsDebounce: NodeJS.Timeout | null = null
+  /** The last `{status,waitingFor}` sent per pty, so `onRegistryState` sends only real changes. */
+  private lastPtyStatus = new Map<string, { status: PhoneSessionStatus; waitingFor: string | null }>()
 
   private readonly deps: RemoteDeps
   /** Told whenever a client attaches or leaves, so the desktop can say so. */
@@ -217,7 +335,9 @@ export class RemoteServer {
     this.config = config
 
     try {
-      const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_WS_FRAME })
+      // Phone contract point 5: on, for both the pty socket and /ws/events —
+      // a reconnect replays up to MAX_HISTORY of scrollback (audit PX-22).
+      const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_WS_FRAME, perMessageDeflate: true })
       wss.on('connection', (ws, req) => this.handleSocket(ws, req))
 
       const listen = async (host: string): Promise<void> => {
@@ -230,6 +350,18 @@ export class RemoteServer {
         this.servers.push(server)
         this.bound.push(host)
       }
+
+      /*
+       * Probe loopback before trusting the LAN bind. `bindLan` means the real
+       * listener is 0.0.0.0, and macOS/libuv lets that succeed right next to
+       * another process already holding 127.0.0.1:port — so a second Stoke (or
+       * anything else) on the loopback port produced `running:true, error:null`
+       * with no sign anything was wrong, and a tunnel pointed at 127.0.0.1
+       * would silently reach the OTHER app. The plain 127.0.0.1 bind below
+       * gets EADDRINUSE for free; 0.0.0.0 does not, so it is checked by hand
+       * first. Audit finding PX-8.
+       */
+      if (config.bindLan) await this.probeLoopback(config.port)
 
       /*
        * cloudflared runs on this machine and dials 127.0.0.1, so loopback must
@@ -267,16 +399,55 @@ export class RemoteServer {
       if (ptys) {
         this.offData = ptys.subscribe((ptyId, data) => {
           this.broadcast(ptyId, { type: 'data', ptyId, data })
+          this.notifySessionsChanged()
         })
         this.offExit = ptys.subscribeExit((ptyId, code) => {
           this.broadcast(ptyId, { type: 'exit', ptyId, code })
+          /*
+           * Phone contract point 5: the socket closes with a NORMAL code
+           * right after the exit frame, so the client can tell "the process
+           * ended" apart from "the network dropped" and knows not to
+           * reconnect. It used to stay open forever after an exit it had
+           * already reported, so a later write from that client (audit F1/
+           * PX-13's dead composer) went nowhere with no error either.
+           */
+          const set = this.attached.get(ptyId)
+          if (set) for (const ws of set) if (ws.readyState === 1) ws.close(1000, 'exit')
+          this.notifySessionsChanged()
         })
       }
     } catch (err) {
-      this.error = err instanceof Error ? err.message : String(err)
+      this.error = friendlyListenError(err, config.port)
     }
 
     return this.status()
+  }
+
+  /**
+   * Try binding 127.0.0.1:port, then release it at once.
+   *
+   * A throwaway listener rather than a `net.connect` probe: connecting only
+   * proves SOMETHING answers there, which is true of Stoke's own server once
+   * it is up — a restart would then refuse to rebind its own port. Listening
+   * and closing proves the port is actually free, the same fact `listen`
+   * itself would use.
+   */
+  private async probeLoopback(port: number): Promise<void> {
+    const probe = createServer()
+    try {
+      await new Promise<void>((resolve, reject) => {
+        probe.once('error', reject)
+        probe.listen(port, '127.0.0.1', () => resolve())
+      })
+    } finally {
+      // Closing a server that never got to listen (the error path) is a
+      // harmless no-op; only the callback's own possible error is swallowed.
+      try {
+        await new Promise<void>((resolve) => probe.close(() => resolve()))
+      } catch {
+        /* already gone */
+      }
+    }
   }
 
   async stop(): Promise<void> {
@@ -288,6 +459,12 @@ export class RemoteServer {
     for (const ws of this.clients) ws.close()
     this.clients.clear()
     this.attached.clear()
+    this.eventsClients.clear()
+    if (this.eventsDebounce) {
+      clearTimeout(this.eventsDebounce)
+      this.eventsDebounce = null
+    }
+    this.lastEventsPayload = null
 
     this.wss?.close()
     this.wss = null
@@ -307,6 +484,79 @@ export class RemoteServer {
     for (const ws of set) {
       if (ws.readyState === 1) ws.send(text)
     }
+  }
+
+  /*
+   * Something that could change `/api/sessions`'s answer just happened
+   * (output, an exit, a new session, a registry state change). Debounced
+   * ~250ms — pty output alone can fire this many times a second — and a
+   * no-op when nobody is on `/ws/events` at all. Phone contract point 4.
+   */
+  notifySessionsChanged(): void {
+    if (this.eventsClients.size === 0 || this.eventsDebounce) return
+    this.eventsDebounce = setTimeout(() => {
+      this.eventsDebounce = null
+      void this.pushSessionsToEvents()
+    }, 250)
+  }
+
+  private async pushSessionsToEvents(): Promise<void> {
+    if (this.eventsClients.size === 0) return
+    const rows = await this.sessionList()
+    const text = JSON.stringify({ type: 'sessions', rows })
+    // Compared serialised, so a poll where nothing actually changed (most of
+    // them, on an idle machine) sends nothing.
+    if (text === this.lastEventsPayload) return
+    this.lastEventsPayload = text
+    for (const ws of this.eventsClients) if (ws.readyState === 1) ws.send(text)
+  }
+
+  /**
+   * A registry reading changed for `ptyId` — called from main's
+   * `RegistryPoller` callback. Re-pushes `/ws/events` (debounced, above) and,
+   * if a phone is attached to this pty directly, sends it a `{type:'status'}`
+   * frame without waiting for the debounce — phone contract point 5. `only`
+   * once the status actually changed, using the last value it saw, since a
+   * registry pass can wake for a session whose reading did not move.
+   */
+  onRegistryState(ptyId: string): void {
+    this.notifySessionsChanged()
+    const set = this.attached.get(ptyId)
+    if (!set || set.size === 0) return
+    const next = this.statusFor(ptyId)
+    if (!next) return
+    const prev = this.lastPtyStatus.get(ptyId)
+    if (prev && prev.status === next.status && prev.waitingFor === next.waitingFor) return
+    this.lastPtyStatus.set(ptyId, next)
+    const text = JSON.stringify({ type: 'status', status: next.status, waitingFor: next.waitingFor })
+    for (const ws of set) if (ws.readyState === 1) ws.send(text)
+  }
+
+  /**
+   * A ping/pong heartbeat, shared by the pty socket and `/ws/events` — the
+   * one keepalive the phone contract's point 4 and 5 both refer to. Neither
+   * socket had one before this: a connection a NAT or a phone's OS silently
+   * dropped could sit in `this.attached`/`this.eventsClients` indefinitely,
+   * counted as a live phone that was actually gone.
+   */
+  private attachKeepalive(ws: WebSocket): void {
+    let alive = true
+    ws.on('pong', () => {
+      alive = true
+    })
+    const timer = setInterval(() => {
+      if (!alive) {
+        ws.terminate()
+        return
+      }
+      alive = false
+      try {
+        ws.ping()
+      } catch {
+        /* socket already closing */
+      }
+    }, KEEPALIVE_MS)
+    ws.once('close', () => clearInterval(timer))
   }
 
   /* --------------------------------------------------------------- auth */
@@ -355,15 +605,29 @@ export class RemoteServer {
    * `cwd` came straight from the request body into spawn, so any path on the
    * machine could be used as a working directory for a new agent. Sessions may
    * only start where a project already exists.
+   *
+   * F6: both sides are resolved through symlinks before comparing. macOS's
+   * `/tmp` is a symlink to `/private/tmp`, so a client that had the
+   * unresolved spelling of an already-known project (a bookmarked cwd, one
+   * typed by hand) was refused outright even though `/api/projects` lists
+   * the resolved path as that exact project. `realpath` needs the path to
+   * exist, so a failure falls back to the plain normalised compare rather
+   * than refusing a folder that simply is not there yet — `pty.ts`'s own
+   * `access` check is what actually enforces existence.
    */
   private async knownCwd(cwd: string): Promise<boolean> {
     if (!cwd || typeof cwd !== 'string') return false
     if (cwd === this.deps.defaultCwd()) return true
-    const normalised = normalize(cwd).replace(/[\\/]+$/, '').toLowerCase()
+    const norm = (p: string): string => normalize(p).replace(/[\\/]+$/, '').toLowerCase()
+    const real = await realpath(cwd).then(norm, () => norm(cwd))
     const projects = await this.deps.listProjects()
-    return projects.some(
-      (p) => normalize(p.path).replace(/[\\/]+$/, '').toLowerCase() === normalised
-    )
+    for (const p of projects) {
+      const projectNorm = norm(p.path)
+      if (projectNorm === norm(cwd)) return true
+      const projectReal = await realpath(p.path).then(norm, () => projectNorm)
+      if (projectReal === real) return true
+    }
+    return false
   }
 
   /**
@@ -431,7 +695,14 @@ export class RemoteServer {
   private async handleHttp(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? '/', 'http://localhost')
 
-    if (!this.authorized(req)) {
+    /*
+     * Phone contract point 1: only `/api/*` is gated. The shell — this
+     * fallback included — embeds no data, and a phone has to be able to load
+     * SOMETHING before it has a key to send: the previous behaviour 401'd the
+     * bare page with a plain-text body and no viewport meta (audit PX-14),
+     * which is what an installed PWA opened to on iOS's separate cookie jar.
+     */
+    if (isGatedRemotePath(url.pathname) && !this.authorized(req)) {
       res.writeHead(401, { 'content-type': 'text/plain; charset=utf-8' })
       res.end('Unauthorized. Open the link from Stoke, which carries the key.')
       return
@@ -474,12 +745,26 @@ export class RemoteServer {
         return this.json(res, await this.sessionList(), setCookie)
       }
       /*
-       * Which machine this is. With one desktop it is noise; with a laptop and
-       * a desktop behind the same bookmarks, two tabs are indistinguishable and
-       * it is entirely possible to start work on the wrong computer.
+       * Which machine this is, and what it can offer. With one desktop the
+       * machine name is noise; with a laptop and a desktop behind the same
+       * bookmarks, two tabs are indistinguishable and it is entirely possible
+       * to start work on the wrong computer. `stt`/`agents`/`defaults` are
+       * phone contract point 2 — the New Session sheet needs an agent list
+       * and a set of defaults before it can offer either.
        */
       if (url.pathname === '/api/host' && req.method === 'GET') {
-        return this.json(res, { machine: hostname(), platform: process.platform }, setCookie)
+        const [agents, stt] = await Promise.all([this.deps.agents(), this.deps.sttStatus()])
+        return this.json(
+          res,
+          {
+            machine: stripLocalHostnameSuffix(hostname()),
+            platform: process.platform,
+            stt,
+            agents,
+            defaults: this.deps.defaults()
+          },
+          setCookie
+        )
       }
       /*
        * The colours this window is painting, so the phone paints the same
@@ -498,15 +783,31 @@ export class RemoteServer {
 
       if (url.pathname === '/api/projects' && req.method === 'GET') {
         const projects = await this.deps.listProjects()
+        /*
+         * Deduped by realpath — audit finding: `/tmp/…/proj-a` and
+         * `/private/tmp/…/proj-a` (macOS's `/tmp` symlink) listed as two
+         * separate cards for one project. The first occurrence wins; ties in
+         * `listProjects()`'s own order are broken there, not here.
+         */
+        const seen = new Set<string>()
+        const deduped: Project[] = []
+        for (const p of projects) {
+          const real = await realpath(p.path).catch(() => normalize(p.path))
+          if (seen.has(real)) continue
+          seen.add(real)
+          deduped.push(p)
+        }
         return this.json(
           res,
           {
             defaultCwd: this.deps.defaultCwd(),
-            projects: projects.slice(0, 60).map((p) => ({
+            projects: deduped.slice(0, 60).map((p) => ({
               path: p.path,
               name: p.name,
               sessionCount: p.sessionCount,
-              lastModified: p.lastModified
+              lastActivityAt: p.lastModified,
+              pinned: p.pinned,
+              exists: p.exists
             }))
           },
           setCookie
@@ -522,7 +823,27 @@ export class RemoteServer {
         const cwd = url.searchParams.get('cwd')
         if (!cwd) return this.json(res, { error: 'cwd is required' }, setCookie, 400)
         const sessions = await this.deps.listSessions(cwd)
-        return this.json(res, { cwd, sessions: sessions.slice(0, 100) }, setCookie)
+        /*
+         * `live`/`ptyId` (PX-10): a history row for a session running right
+         * now used to offer a primary Resume button, and pressing it forked
+         * the conversation with a second `claude --resume` on the same id.
+         *
+         * `contextLimit` (PX-19 / gotcha 2): the transcript's own model id
+         * drops the `[1m]` tier, so a 1M-context session's history row showed
+         * 95k/200k — orange — while the live list correctly read 9%. The live
+         * watcher's own snapshot wins when the session is live; otherwise the
+         * last window `ContextWatcher` ever recorded for it stands in; a
+         * session neither live nor ever recorded gets `null`, which the
+         * client shows as tokens with no percentage rather than a wrong one.
+         */
+        const watcher = this.deps.watcher()
+        const live = this.deps.ptys()?.list() ?? []
+        const rows = sessions.slice(0, 100).map((s) => {
+          const pty = live.find((p) => p.sessionId === s.id && !p.exited)
+          const contextLimit = watcher?.snapshot(s.id)?.contextLimit ?? this.deps.recordedContextLimit(s.id)
+          return { ...s, live: pty !== undefined, ptyId: pty?.ptyId ?? null, contextLimit: contextLimit ?? null }
+        })
+        return this.json(res, { cwd, sessions: rows }, setCookie)
       }
 
       if (url.pathname === '/api/transcript' && req.method === 'GET') {
@@ -605,8 +926,24 @@ export class RemoteServer {
           return this.json(res, { error: 'Unknown project directory.' }, setCookie, 400)
         }
 
+        /*
+         * Phone contract point 8: `cli` must name an agent the picker already
+         * offers (installed and chosen) — never an arbitrary string handed
+         * straight to the CLI lookup, and never an agent the user has not
+         * said they use.
+         */
+        let cli: string | undefined
+        if (typeof body?.cli === 'string' && body.cli.length > 0) {
+          const agents = await this.deps.agents()
+          if (!agents.some((a) => a.id === body.cli)) {
+            return this.json(res, { error: 'That agent is not installed.' }, setCookie, 400)
+          }
+          cli = body.cli
+        }
+
         const started = await this.deps.startSession({
           cwd,
+          cli: cli as LaunchOptions['cli'],
           // Resuming needs both flags: the id says which transcript, and
           // resume turns it into --resume rather than --session-id, which
           // would instead try to create a session that already exists.
@@ -621,6 +958,31 @@ export class RemoteServer {
           rows: 30
         })
         return this.json(res, started, setCookie)
+      }
+
+      /*
+       * Phone contract point 7: one tap answers a permission prompt. Writes
+       * only while the CLI's own registry says this pty is `waiting` right
+       * now — answering blind would send a stray digit into whatever the
+       * session is doing by the time the tap lands.
+       */
+      const answerMatch = /^\/api\/sessions\/([^/]+)\/answer$/.exec(url.pathname)
+      if (answerMatch && req.method === 'POST') {
+        const ptyId = answerMatch[1]
+        const parsed = await this.readJson(req)
+        if (parsed === BAD_JSON) return this.json(res, { error: 'Malformed JSON body.' }, setCookie, 400)
+        const key = (parsed as { key?: unknown } | null)?.key
+        if (key !== '1' && key !== '2' && key !== '3' && key !== 'esc' && key !== 'enter') {
+          return this.json(res, { error: "key must be '1', '2', '3', 'esc' or 'enter'." }, setCookie, 400)
+        }
+        const status = this.statusFor(ptyId)
+        if (status?.status !== 'waiting') {
+          return this.json(res, { error: 'not waiting' }, setCookie, 409)
+        }
+        const manager = this.deps.ptys()
+        const ok = manager ? this.answer(manager, ptyId, key) : false
+        if (!ok) return this.json(res, { error: 'That session is no longer running.' }, setCookie, 404)
+        return this.json(res, { ok: true }, setCookie)
       }
 
       /*
@@ -644,42 +1006,68 @@ export class RemoteServer {
     }
   }
 
-  private async sessionList(): Promise<
-    {
-      ptyId: string
-      sessionId: string
-      cwd: string
-      name: string
-      /** The SSH host label when the session runs elsewhere, else null. */
-      host: string | null
-      /** True once the process has ended; the phone draws it as ended, not idle. */
-      exited: boolean
-      startedAt: number
-      cols: number
-      rows: number
-      context: ContextSnapshot | null
-    }[]
-  > {
+  /**
+   * `status`/`waitingFor` for one pty, from the CLI's own registry via
+   * `RegistryPoller` — phone contract point 3. Null when the pty does not
+   * exist at all (as opposed to existing but unreadable, which is
+   * `'unknown'`).
+   */
+  private statusFor(ptyId: string): { status: PhoneSessionStatus; waitingFor: string | null } | null {
+    const info = this.deps.ptys()?.list().find((s) => s.ptyId === ptyId)
+    if (!info) return null
+    const reg = this.deps.registryStates().find((s) => s.ptyId === ptyId) ?? null
+    return {
+      status: phoneStatusFor({
+        exited: info.exited,
+        instrumented: info.instrumented,
+        registryStatus: reg?.status ?? null
+      }),
+      waitingFor: reg?.waitingFor ?? null
+    }
+  }
+
+  /** `POST /api/sessions/:ptyId/answer`'s write, once the 'waiting' gate has passed. */
+  private answer(manager: PtyManager, ptyId: string, key: AnswerKey): boolean {
+    if (!manager.list().some((s) => s.ptyId === ptyId && !s.exited)) return false
+    manager.write(ptyId, answerBytes(key))
+    return true
+  }
+
+  private async sessionList(): Promise<RemoteSessionRow[]> {
     const ptys = this.deps.ptys()
     const watcher = this.deps.watcher()
     if (!ptys) return []
-    return ptys.list().map((s) => {
+    const registry = this.deps.registryStates()
+    const rows = ptys.list().map((s): RemoteSessionRow => {
       const host = this.deps.hostFor(s.sessionId)
+      const reg = registry.find((r) => r.ptyId === s.ptyId) ?? null
+      const context = watcher?.snapshot(s.sessionId) ?? null
+      // An SSH session's cwd is a local folder that has nothing to do with
+      // where it runs (gotcha 18), so the host is the honest name.
+      const projectName = s.cwd.split(/[\\/]/).filter(Boolean).pop() ?? s.cwd
       return {
         ptyId: s.ptyId,
         sessionId: s.sessionId,
         cwd: s.cwd,
-        // An SSH session's cwd is a local folder that has nothing to do with
-        // where it runs (gotcha 18), so the host is the honest name.
-        name: host ?? (s.cwd.split(/[\\/]/).filter(Boolean).pop() ?? s.cwd),
+        name: host ?? projectName,
         host,
         exited: s.exited,
         startedAt: s.startedAt,
         cols: s.cols,
         rows: s.rows,
-        context: watcher?.snapshot(s.sessionId) ?? null
+        context,
+        status: phoneStatusFor({ exited: s.exited, instrumented: s.instrumented, registryStatus: reg?.status ?? null }),
+        waitingFor: reg?.waitingFor ?? null,
+        lastActivityAt: s.lastActivityAt,
+        cli: s.cli,
+        agentName: CODING_CLIS.find((c) => c.id === s.cli)?.label ?? s.cli,
+        project: host ?? projectName,
+        title: context?.title ?? null,
+        endedAt: s.endedAt,
+        exitCode: s.exitCode
       }
     })
+    return sortSessionRows(rows)
   }
 
   private json(
@@ -791,8 +1179,37 @@ export class RemoteServer {
   }
 
   private handleSocket(ws: WebSocket, req: IncomingMessage): void {
-    this.clients.add(ws)
     const url = new URL(req.url ?? '/', 'http://localhost')
+    /*
+     * Phone contract point 4: a second kind of socket, gated the same way as
+     * the pty one in `handleUpgrade` (this method only ever runs after that
+     * check passes) but carrying no ptyId — it pushes the whole list, not one
+     * session's bytes.
+     */
+    if (url.pathname === '/ws/events') {
+      this.handleEventsSocket(ws)
+      return
+    }
+    this.handlePtySocket(ws, req, url)
+  }
+
+  private handleEventsSocket(ws: WebSocket): void {
+    this.clients.add(ws)
+    this.eventsClients.add(ws)
+    this.attachKeepalive(ws)
+    void this.sessionList().then((rows) => {
+      if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'sessions', rows }))
+    })
+    const drop = (): void => {
+      this.eventsClients.delete(ws)
+      this.clients.delete(ws)
+    }
+    ws.on('close', drop)
+    ws.on('error', drop)
+  }
+
+  private handlePtySocket(ws: WebSocket, req: IncomingMessage, url: URL): void {
+    this.clients.add(ws)
     const ptyId = url.searchParams.get('ptyId')
     const ptys = this.deps.ptys()
 
@@ -815,6 +1232,8 @@ export class RemoteServer {
       return
     }
 
+    this.attachKeepalive(ws)
+
     let set = this.attached.get(ptyId)
     if (!set) {
       set = new Set()
@@ -824,12 +1243,29 @@ export class RemoteServer {
     this.onClientsChanged()
 
     const info = ptys.list().find((s) => s.ptyId === ptyId)
+    /*
+     * `desktopCols`/`desktopRows` (phone contract point 5 / audit F2): the
+     * size the desktop actually has, which is NOT `info.cols`/`info.rows`
+     * once any phone has resized the pty — those now hold whatever the phone
+     * asked for, and the client's own "desktop layout" toggle used to resize
+     * its local terminal against that stale, phone-sized cache instead of
+     * the real desktop size, landing on a blank viewport. `this.desktopSize`
+     * already tracks the real one (set the first time a phone resizes), so
+     * this is that when it exists and the live size otherwise — before any
+     * phone has touched it, the two are the same number anyway.
+     */
+    const desktop = this.desktopSize.get(ptyId) ?? { cols: info?.cols ?? 100, rows: info?.rows ?? 30 }
+    const status = this.statusFor(ptyId)
     ws.send(
       JSON.stringify({
         type: 'attached',
         ptyId,
         cols: info?.cols ?? 100,
         rows: info?.rows ?? 30,
+        desktopCols: desktop.cols,
+        desktopRows: desktop.rows,
+        status: status?.status ?? 'unknown',
+        waitingFor: status?.waitingFor ?? null,
         history: ptys.historyFor(ptyId)
       })
     )
@@ -841,10 +1277,21 @@ export class RemoteServer {
      */
     if (info?.exited) {
       ws.send(JSON.stringify({ type: 'exit', ptyId, code: null, reason: 'That session has ended.' }))
+      // Phone contract point 5: close right after, same as a live exit does
+      // in the `subscribeExit` handler in `start()` — a client that attaches
+      // to an already-ended session must not sit on an open socket forever.
+      ws.close(1000, 'exit')
     }
 
     ws.on('message', (raw) => {
-      let msg: { type?: string; data?: string; cols?: number; rows?: number; force?: boolean }
+      let msg: {
+        type?: string
+        data?: string
+        text?: string
+        cols?: number
+        rows?: number
+        force?: boolean
+      }
       try {
         msg = JSON.parse(String(raw))
       } catch {
@@ -859,6 +1306,9 @@ export class RemoteServer {
 
       if (msg.type === 'input' && typeof msg.data === 'string') {
         manager.write(ptyId, msg.data)
+      } else if (msg.type === 'submit' && typeof msg.text === 'string') {
+        // CLAUDE.md gotcha 85 / audit PX-1: two writes, timed apart, not one.
+        manager.submit(ptyId, msg.text)
       } else if (msg.type === 'resize' && msg.force && dim(msg.cols) && dim(msg.rows)) {
         /*
          * Only on explicit request: a phone resizing the PTY reflows the
@@ -891,6 +1341,7 @@ export class RemoteServer {
          * nothing the status could see.
          */
         if (this.attached.get(ptyId) === set) this.attached.delete(ptyId)
+        this.lastPtyStatus.delete(ptyId)
         const saved = this.desktopSize.get(ptyId)
         if (saved) {
           this.desktopSize.delete(ptyId)
