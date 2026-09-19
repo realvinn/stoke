@@ -633,6 +633,25 @@ export class EmbeddedBrowser {
   }
 
   destroy(): void {
+    /*
+     * `win.on('closed')` calls this to close every tab's real WebContents
+     * rather than merely dropping the reference (each open tab is a whole
+     * Chromium renderer, still holding the shared `persist:stoke-browser`
+     * session) — but `'closed'` fires AFTER `win` itself is destroyed, and
+     * `closeTab`'s `this.win.contentView.removeChildView` throws on a
+     * destroyed window. Uncaught, that throw surfaces as Electron's own
+     * uncaught-exception `NSAlert`, which blocks `app.quit()` on `runModal`
+     * until dismissed by hand — measured: `sample` during a hung quit with
+     * the docked browser open showed `_finishClosingWindow` -> this callback
+     * -> `-[NSAlert runModal]`, and a control run with no browser tab open
+     * quit on one `SIGTERM`. `closeTab`'s OTHER work (dropping the tab,
+     * closing its `webContents`) is still exactly what a destroyed window
+     * needs, so this only skips the one call that assumes `win` is alive.
+     */
+    if (this.win.isDestroyed()) {
+      for (const tab of this.tabs.splice(0)) tab.view.webContents.close()
+      return
+    }
     for (const tab of [...this.tabs]) this.closeTab(tab.id)
   }
 }
