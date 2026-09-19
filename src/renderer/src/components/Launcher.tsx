@@ -25,7 +25,7 @@ import { ContextBar } from './ContextMeter'
 import { FolderSwitcher } from './FolderSwitcher'
 import { IconChevron } from './Icons'
 import { compactTokens, relativeTime } from '../lib/format'
-import { activationAllowed } from '../lib/pressBurst'
+import { launcherActivationAllowed, launcherHoldingFocus, onDeliberate } from '../lib/pressBurst'
 import { EFFORT_LEVELS, PERMISSION_MODES, ULTRACODE_HINT } from '../lib/permissions'
 
 /** Where the next session runs. */
@@ -73,7 +73,8 @@ interface Props {
   /**
    * When the splash or the agent picker last went away (`pressClock()`), or
    * null. Enter and Space press nothing here while they are the tail of a
-   * burst that was already going then (gotcha 88).
+   * burst that was already going then (gotcha 88), nor until a click or a
+   * non-activation key has landed since (gotcha 93).
    */
   armedAt?: number | null
   otherClis: CodingCli[]
@@ -114,6 +115,22 @@ export function Launcher(props: Props): React.JSX.Element {
   const [showAll, setShowAll] = useState(false)
   const [showEmpty, setShowEmpty] = useState(false)
   const [primaryFocused, setPrimaryFocused] = useState(false)
+  const cardRef = useRef<HTMLDivElement>(null)
+  /*
+   * Gotcha 92: after the first-run splash or agent picker, focus waits on the
+   * card rather than on Start until something deliberate happens — a click, or
+   * any key but Enter/Space. Enters tapped to get through the intro screens,
+   * however slowly, then land on no button at all.
+   */
+  const armedAt = props.armedAt ?? null
+  const [holding, setHolding] = useState(() => launcherHoldingFocus(armedAt))
+  useEffect(() => {
+    setHolding(launcherHoldingFocus(armedAt))
+    if (!launcherHoldingFocus(armedAt)) return
+    return onDeliberate(() => setHolding(false))
+  }, [armedAt])
+  const holdingRef = useRef(holding)
+  holdingRef.current = holding
 
   const cliBroken = !!cli && !cli.ok
   const missing = !!target && !target.exists
@@ -139,10 +156,16 @@ export function Launcher(props: Props): React.JSX.Element {
     const el = missing ? locateRef.current : cliBroken ? retryRef.current : startRef.current
     el?.focus()
   }
+  /*
+   * `holding` is read through its ref and is deliberately NOT a dependency: it
+   * flips false on the very keydown (Tab, say) whose own default then moves
+   * focus, and refocusing Start in that render would fight it.
+   */
   useEffect(() => {
     if (overlayOpen || pop) return
-    focusPrimary()
-  }, [target?.path, overlayOpen, missing, cliBroken, !!target])
+    if (holdingRef.current && launcherHoldingFocus(armedAt)) cardRef.current?.focus()
+    else focusPrimary()
+  }, [target?.path, overlayOpen, missing, cliBroken, !!target, armedAt])
 
   const view = useMemo(
     () => sessionView(sessions, { query, showEmpty, all: showAll, limit: ROWS }),
@@ -161,7 +184,7 @@ export function Launcher(props: Props): React.JSX.Element {
      * recent real project. `activationAllowed` holds the burst; this card's
      * handler runs before the focused button's own Enter/Space default.
      */
-    if (props.armedAt != null && isActivationKey(e.key) && !activationAllowed(props.armedAt)) {
+    if (isActivationKey(e.key) && !launcherActivationAllowed(armedAt)) {
       e.preventDefault()
       e.stopPropagation()
       return
@@ -248,7 +271,7 @@ export function Launcher(props: Props): React.JSX.Element {
 
   return (
     <div className="launcher">
-      <div className="launcher-card" onKeyDown={onKeyDown}>
+      <div className="launcher-card" ref={cardRef} tabIndex={-1} onKeyDown={onKeyDown}>
         {/* Row A: where it runs. */}
         <div className="launcher-head">
           <FolderSwitcher
@@ -400,9 +423,14 @@ export function Launcher(props: Props): React.JSX.Element {
             )
           )}
 
-          {canStart && primaryFocused && (
+          {canStart && primaryFocused && !holding && (
             <span className="launcher-hint" aria-hidden="true">
               <span className="kbd">Enter</span> to start
+            </span>
+          )}
+          {canStart && holding && (
+            <span className="launcher-hint" data-held="">
+              Click Start, or <span className="kbd">Tab</span> to it, to begin
             </span>
           )}
         </div>

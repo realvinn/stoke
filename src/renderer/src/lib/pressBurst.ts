@@ -1,4 +1,13 @@
-import { NO_BURST, isActivationKey, nextBurst, pressAllowed, type PressBurst } from '@shared/launcher'
+import {
+  NO_BURST,
+  isActivationKey,
+  isDeliberateInput,
+  launcherHoldsFocus,
+  launcherPressAllowed,
+  nextBurst,
+  pressAllowed,
+  type PressBurst
+} from '@shared/launcher'
 
 /*
  * One record of the activation-key burst in progress, for the whole window
@@ -13,13 +22,37 @@ import { NO_BURST, isActivationKey, nextBurst, pressAllowed, type PressBurst } f
  */
 let burst: PressBurst = NO_BURST
 
+/** When the latest deliberate input landed (`isDeliberateInput`, gotcha 93). */
+let deliberateAt = -Infinity
+const listeners = new Set<() => void>()
+
 window.addEventListener(
   'keydown',
   (e) => {
     if (isActivationKey(e.key)) burst = nextBurst(burst, performance.now(), e.repeat)
+    else if (e.isTrusted && isDeliberateInput(e)) markDeliberate()
   },
   true
 )
+window.addEventListener(
+  'pointerdown',
+  (e) => {
+    if (e.isTrusted && isDeliberateInput(e)) markDeliberate()
+  },
+  true
+)
+
+function markDeliberate(): void {
+  const first = deliberateAt === -Infinity
+  deliberateAt = performance.now()
+  if (first || listeners.size) for (const fn of listeners) fn()
+}
+
+/** Called on every deliberate input; returns the unsubscribe. */
+export function onDeliberate(fn: () => void): () => void {
+  listeners.add(fn)
+  return () => listeners.delete(fn)
+}
 
 /** The clock `armedAt` must be read from. */
 export function pressClock(): number {
@@ -32,4 +65,18 @@ export function pressClock(): number {
  */
 export function activationAllowed(armedAt: number): boolean {
   return pressAllowed(burst, armedAt)
+}
+
+/**
+ * The launcher's stricter check: the burst rule plus a deliberate input since
+ * it armed (`launcherPressAllowed`, gotcha 93). Call only from inside a
+ * keydown handler for Enter/Space.
+ */
+export function launcherActivationAllowed(armedAt: number | null): boolean {
+  return launcherPressAllowed(burst, armedAt, deliberateAt)
+}
+
+/** Whether the launcher holds focus off Start right now (`launcherHoldsFocus`). */
+export function launcherHoldingFocus(armedAt: number | null): boolean {
+  return launcherHoldsFocus(armedAt, deliberateAt)
 }

@@ -388,6 +388,52 @@ export function pressAllowed(burst: PressBurst, armedAt: number): boolean {
   return burst.startedAt - armedAt >= PRESS_ARM_MS
 }
 
+/**
+ * Whether an input event is a DELIBERATE act on the page — something other than
+ * the Enter/Space being tapped to get past the first run (gotcha 93).
+ *
+ * `pressAllowed` only holds a burst: presses under `PRESS_QUIET_MS` apart. A
+ * human tapping Enter every 500ms to get through the intro screens is a new
+ * "burst" on every tap, so one tap answered the agent picker and the next one,
+ * half a second later, pressed the Start it had focused — a real `claude` 1.1s
+ * after boot, measured, in whatever folder the fallback aim had picked. No
+ * cadence separates that tapping from a deliberate Enter, so after the first
+ * run the launcher waits for a different KIND of input instead: a pointer press
+ * (a click on Start is one), or any key that is not an activation key and not a
+ * lone modifier (Tab to Start, an arrow, Escape). Tapping Enter never produces
+ * one.
+ */
+export function isDeliberateInput(e: { type: string; key?: string }): boolean {
+  if (e.type === 'pointerdown' || e.type === 'mousedown') return true
+  if (e.type !== 'keydown' || typeof e.key !== 'string') return false
+  if (isActivationKey(e.key)) return false
+  return !['Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'Fn', 'Unidentified', 'Process', 'Dead'].includes(e.key)
+}
+
+/**
+ * Whether the launcher, armed at `armedAt` by the splash or the agent picker
+ * going away, may take an Enter/Space now: the burst rule (`pressAllowed`) AND
+ * a deliberate input (`isDeliberateInput`) since it armed. `null` armedAt (no
+ * first run this launch) takes every press.
+ */
+export function launcherPressAllowed(
+  burst: PressBurst,
+  armedAt: number | null,
+  deliberateAt: number
+): boolean {
+  if (armedAt === null) return true
+  return pressAllowed(burst, armedAt) && deliberateAt > armedAt
+}
+
+/**
+ * Whether the launcher should put focus on Start (one keystroke from a live
+ * session) or hold it on the card: held while it is armed and nothing
+ * deliberate has happened since, so an Enter-tap lands on no button at all.
+ */
+export function launcherHoldsFocus(armedAt: number | null, deliberateAt: number): boolean {
+  return armedAt !== null && !(deliberateAt > armedAt)
+}
+
 /* ------------------------------------------------------ first-run picker */
 
 /**

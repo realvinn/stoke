@@ -386,6 +386,8 @@ rule file named on the group line.
   are busy), and never auto-relaunch on `idle` alone: a draft leaves it idle (`typedSinceSubmit`).
 - **83.** Veto `startOnLaunch` on whether the restore HAD sessions (`restoredSessions`), not on how
   many are still paused — the update-restart resume empties that count before `cli` answers.
+- **93.** After the first run, let Enter press the launcher only after a click or a non-activation key
+  (`launcherPressAllowed`, `isDeliberateInput`): no tapping cadence is distinguishable from intent.
 - **88.** Make the shell `inert` (in a LAYOUT effect) while any overlay, the splash or a pending
   first-run picker is up (`firstRunPending`): an Enter for the splash started `claude` behind it.
 - **90.** Route every tab-close path (Cmd+W, ×, TitleBar) through `requestCloseTab`, which asks via
