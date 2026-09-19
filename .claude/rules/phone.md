@@ -7,6 +7,9 @@ paths:
   - "src/renderer/src/components/RemoteSettings.tsx"
   - "scripts/verify-remote.mts"
   - "scripts/verify-remote-security.mjs"
+  - "scripts/verify-phone-ui.mts"
+  - "src/shared/remotePhone.ts"
+  - "src/shared/phoneUi.ts"
 ---
 
 # Phone access and cloudflared
@@ -132,3 +135,62 @@ rather than the launch-time agent id.
 > isolation; proving the fix against a REAL `claude` (a 200-char prompt starting a turn on the first
 > submit, per the phone contract) is a manual/CDP check, not a suite — Ink's own paste threshold is
 > not something this repo can assert without spawning the binary.
+
+> **Corrected on 2026-09-19 by gotcha 86** — the bracketed-paste half of this entry was wrong for
+> Claude Code. Two writes (text, then `\r` on its own) is right and stays; wrapping the text in
+> `ESC[200~ … ESC[201~` is not: Claude Code records every bracketed paste as `<pasted_content>`
+> and the model declines to act on it. `submitFrames` now brackets only another agent's
+> multi-line text. Read 86 before touching `submitFrames` or `PtyManager.submit`.
+
+## 86. Bracketed paste made every phone message a `<pasted_content>` block that Claude would not act on
+
+**Measured 2026-09-19 against Claude Code 2.1.278, from the phone UI in a throwaway folder.** With
+gotcha 85's first fix live, a 125-character "create a file named hello.txt …" sent from the
+composer started a turn on the first tap — and Claude answered "Your message is entirely pasted
+text with nothing you typed around it, so I haven't acted on it yet." The transcript shows why:
+the user record's content was `\n\n<pasted_content id="0bbb">\n…\n</pasted_content id="0bbb">\n`.
+Claude Code files a bracketed paste as pasted content, and the model treats pasted content with
+nothing typed around it as material, not instructions. Every phone message was a paste, so the
+phone could start turns that did nothing.
+
+What was measured, each through the phone socket's raw `{type:'input'}` into the same session:
+
+- one unbracketed write of 68 characters, then `\r` 150ms later: recorded as typed, acted on;
+- one unbracketed write of 203 characters, then `\r`: typed, acted on — so PX-1 was only ever the
+  `\r` sharing a chunk with the text, never the text's length;
+- one unbracketed write of 1287 characters, then `\r`: `<pasted_content>` again (a length
+  heuristic, no brackets needed), and refused;
+- the same 1287 characters as 64-character writes 10ms apart, then `\r`: typed, acted on;
+- `line one ESC CR line two ESC CR line three` in one write, then `\r`: one turn, recorded with
+  real `\n`s — `ESC CR` (meta-Enter) is Claude Code's in-box line break.
+
+So `submitFrames` (`src/shared/remotePhone.ts`) TYPES a phone message to Claude Code: newlines as
+`ESC CR`, `typingChunks` of at most `SUBMIT_CHUNK` (64) never splitting an `ESC CR` pair (half of
+it is a bare Escape, which cancels) or a surrogate pair, written `SUBMIT_CHUNK_GAP_MS` apart by
+`PtyManager.submit`, then the bare `\r` after `SUBMIT_ENTER_DELAY_MS`. Only another agent's
+multi-line text still goes inside bracketed paste (when DECSET 2004 is on), because a shell has no
+meta-Enter and needs the bracket to keep its newlines. `verify:remote` holds the framing; only a
+real `claude` can hold the paste heuristics, so re-measure them when Claude Code's input box
+changes.
+
+## 87. The phone's terminal: pad the box, not xterm's parent, and resize the pty only on a width change
+
+Two audit findings with one cause each. **PX-7**: `.term-wrap` carried `padding: 6px 4px` under
+`box-sizing: border-box` and was xterm's own parent, and `FitAddon.proposeDimensions` reads the
+parent's computed height, padding included — so it always fitted one row too many and Claude's
+mode line was half hidden (clientHeight 673 vs scrollHeight 687 at 390×844). Now the padding is on
+`.term-wrap` and xterm opens on the unpadded `.term-inner`; `session.ts` sizes from the wrap's
+content box and xterm's cell size, and at rest `scrollHeight === clientHeight` (measured 679 = 679
+at 390×844, 288 = 288 at 844×390).
+
+**PX-5**: a ResizeObserver refitted and sent `{type:'resize', force:true}` on EVERY size change of
+the terminal's box — the composer growing a line, the send clearing it, the soft keyboard — each a
+SIGWINCH to Claude and a reflow of the desktop's terminal. `decideResize`
+(`src/shared/phoneUi.ts`, `verify:phone-ui`) is now the only thing that decides: nothing resizes
+unless the user chose **Fit to phone**; then only a width change of at least one cell does
+(rotation), never while the composer has focus (deferred to its blur), with rows measured at that
+moment and left alone; leaving fit sends the desktop's own size back (`attached.desktopCols/Rows`,
+F2) once. A laptop browser (`native`, ≥1024px) never resizes the pty at all. Measured over CDP:
+growing the composer to four lines and shrinking the viewport to 500px while focused sent nothing;
+one rotation sent exactly one resize. Do not reintroduce a resize on height — the keyboard IS a
+height change.

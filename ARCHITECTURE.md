@@ -541,6 +541,8 @@ npm run verify:worklog-autoscan # when a session is scanned without being asked
 npm run verify:ssh            # ssh argv, ~/.ssh/config parsing, the remote transcript fetch
 npm run verify:remote         # phone access: where the link points and how it says it gets
                               # there, the LAN interface ranking, what a dead tunnel reports
+npm run verify:phone-ui       # the phone UI's decisions: list sections, answer options read
+                              # off the screen, the resize policy, queued sends, connect input
 npm run verify:installer-art  # the committed installer bitmaps: BMP3 headers decoded by hand,
                               # exact dimensions, that neither the bitmaps nor the dmg PNGs are a
                               # well-formed blank, that the generator, electron-builder.yml and
@@ -746,8 +748,25 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     label/name/path, session title and first prompt, ranked by tier then
                     recency, with highlight ranges. No runtime imports, so verify:search
                     imports it directly
-src/remote/       mobile web UI, built separately to out/remote
+src/remote/       mobile web UI, built separately to out/remote. Vanilla TS on one `el()`
+                  builder, hash-routed; below 1024px one screen at a time, from 1024px a
+                  340px session rail beside the session (never a stretched phone)
+  main.ts           boot (key scrub, live theme), the router and the rail/pane layout
+  api.ts            the phone contract's shapes, the fetch wrapper (a 401 is the Connect
+                    screen), /api/theme -> :root including derived accent-ink and meters
+  store.ts          the one session list: /ws/events pushes, a 5s poll while it is down
+  list.ts           Needs you / Working / Idle / Ended rows, answerable from the list; reads
+                    a waiting prompt's options by replaying the pty into an unopened xterm
+  session.ts        terminal, status pill, answer tray, keys, composer (queued sends),
+                    Fit to phone via decideResize (gotcha 87), ended banner
+  newSession.ts, history.ts, connect.ts, dom.ts   the new-session sheet, history and
+                    read-back, the paste-your-link screen, the builder/icons/sheets
 src/shared/       types, IPC channel names, themes, profiles, colour maths
+  remotePhone.ts    the phone contract's pure pieces: status mapping and sort, the ended
+                    ring, `submitFrames` (typed, never bracketed for Claude: gotcha 86)
+  phoneUi.ts        the phone UI's decisions: sections, answer-option parsing, the resize
+                    policy, the queued-send state, connect input, transcript folding.
+                    verify:phone-ui
   paths.ts          cwd -> project group. Pure, platform passed in, no node imports,
                     so the renderer runs the identical rule for the profile chip
   ladder.ts         the 12-step ladder every built-in theme is generated from. Fixed
