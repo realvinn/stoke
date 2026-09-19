@@ -398,14 +398,53 @@ export function restartPlan(
  * a condition on a side effect inside a click handler, which is the shape no
  * suite can otherwise reach.
  *
- * `running` comes from the session's own statusLine payload (`version`), never
- * from a version stamped on the tab at launch. The two differ precisely when it
- * matters — a stamp records what Stoke *believed* was installed at spawn time,
- * and the whole premise here is that that belief goes stale.
+ * The running version comes from the process itself — the CLI's session
+ * registry, else its statusLine payload (`version`) — never from a version
+ * stamped on the tab at launch. The two differ precisely when it matters — a
+ * stamp records what Stoke *believed* was installed at spawn time, and the
+ * whole premise here is that that belief goes stale.
+ *
+ * An offer is not permission to act. `busy` says whether a turn is running,
+ * and `requestRelaunch` (App.tsx) asks before killing one; `sessionId` is the
+ * session to bring back, which after a `/clear` is not the one the tab was
+ * launched with.
  */
 export type RelaunchPlan =
-  | { kind: 'offer'; running: string; installed: string; sessionId: string }
+  | {
+      kind: 'offer'
+      running: string
+      installed: string
+      /**
+       * The session to bring back: the one the process is on NOW, from the
+       * CLI's own registry when it has said, else the tab's. See `live` below.
+       */
+      sessionId: string
+      /**
+       * Nothing has been written for this session yet, so a relaunch starts the
+       * same id afresh (`--session-id`) rather than resuming one. Main decides
+       * the flag against the disk in the end (`resumeOrMint`); this is what the
+       * renderer asks for and what the dialog can say.
+       */
+      fresh: boolean
+      /**
+       * A turn in flight: true, idle: false, cannot say: null. Only a stated
+       * `false` may relaunch without asking — killing the process mid-turn
+       * loses the turn (SIGHUP fires no `Stop`, the streaming reply is never
+       * persisted, and the resumed session opens on "Interrupted").
+       */
+      busy: boolean | null
+    }
   | { kind: 'none'; reason: string }
+
+/**
+ * What the CLI's own session registry says about the tab's process — the
+ * fields of `LiveSessionState` the plan reads. See `src/shared/claudeRegistry.ts`.
+ */
+export interface LiveReading {
+  sessionId: string | null
+  busy: boolean | null
+  version: string | null
+}
 
 /**
  * The version number inside whatever the source happened to say.
@@ -451,11 +490,32 @@ export function relaunchPlan(input: {
    * not a parsed number.
    */
   installed: string | null
+  /**
+   * The CLI's own registry reading for this tab's process, when there is one.
+   *
+   * It wins on the two things it states, and both wins are corrections, not
+   * preferences. Its `sessionId` is the session the process is on NOW: a
+   * `/clear` or an in-TUI `/resume` moves it, and a tab that has not heard the
+   * rebind yet still holds the old id — relaunching that one resumes the
+   * pre-`/clear` conversation, or, when the old id never got a transcript,
+   * exits 1 with "No conversation found". And its `version` is the running
+   * binary, stated from the first second, where the payload's arrives only
+   * once the TUI renders (gotcha 48 is about reading the right one of those).
+   */
+  live?: LiveReading | null
+  /**
+   * Whether a transcript exists for a session id: true, false, or null when
+   * nothing has said. `contexts[id].ready` is the renderer's answer — the
+   * context watcher found the file.
+   */
+  hasTranscript?: (sessionId: string) => boolean | null
 }): RelaunchPlan {
   const { tab } = input
+  const live = input.live ?? null
   // Normalised at the door, so nothing below can accidentally compare or
-  // display a raw `--version` line.
-  const running = versionNumber(input.running)
+  // display a raw `--version` line. The registry's version first: it is the
+  // binary the process is running, stated before the payload says anything.
+  const running = versionNumber(live?.version ?? null) ?? versionNumber(input.running)
   const installed = versionNumber(input.installed)
   if (!tab || tab.kind !== 'session') return { kind: 'none', reason: 'No session in front.' }
 
@@ -500,16 +560,16 @@ export function relaunchPlan(input: {
 
   /*
    * No id, no resume. A `--continue` session's id is chosen by the CLI after
-   * launch, so Stoke never learns it (gotcha 26) and `--resume` has nothing to
-   * name. The payload does state the real id, so this is closable — but it
-   * needs the launch key plumbed back to the renderer to match a payload to a
-   * tab, and quietly relaunching into the WRONG conversation is a far worse
-   * failure than not offering.
+   * launch; the registry names it within a second or two (and the tab is
+   * rebound to it), so this refusal now only covers that first second — and a
+   * machine where the registry cannot be read at all. Quietly relaunching into
+   * the WRONG conversation is a far worse failure than not offering.
    */
-  if (!tab.sessionId) {
+  const sessionId = live?.sessionId || tab.sessionId
+  if (!sessionId) {
     return {
       kind: 'none',
-      reason: 'This session was continued rather than started, so Stoke does not know its id.'
+      reason: 'This session was continued rather than started, and has not said its id yet.'
     }
   }
 
@@ -520,7 +580,151 @@ export function relaunchPlan(input: {
   // Both are normalised, so this compares numbers rather than sentences.
   if (running === installed) return { kind: 'none', reason: 'Already running the installed version.' }
 
-  return { kind: 'offer', running, installed, sessionId: tab.sessionId }
+  return {
+    kind: 'offer',
+    running,
+    installed,
+    sessionId,
+    fresh: input.hasTranscript?.(sessionId) === false,
+    busy: live?.busy ?? null
+  }
+}
+
+/** Who asked for a relaunch that is waiting for its session to go idle. */
+export type PendingOrigin = 'user' | 'auto'
+
+/**
+ * What a relaunch waiting for idle should do right now: fire, keep waiting, or
+ * be dropped.
+ *
+ * Dropped when the plan stops being an offer — the tab exited or closed, was
+ * relaunched some other way, or the versions agree now — because a pending
+ * relaunch that outlives its reason would fire later on a session nobody asked
+ * to have killed. Only a stated idle (`busy === false`) fires; `null` waits,
+ * like `true`, because "cannot say" is not permission.
+ *
+ * An AUTOMATIC one is also dropped, back to the pill, the moment its tab is in
+ * front or has been typed into since its last submitted prompt — the two cases
+ * where "idle" can be hiding someone mid-sentence, since typing a draft leaves
+ * the registry saying `idle` (measured). One the USER asked for with Wait fires
+ * regardless: they chose it, looking at the tab.
+ */
+export function pendingRelaunchStep(input: {
+  origin: PendingOrigin
+  plan: RelaunchPlan
+  inFront: boolean
+  typedSinceSubmit: boolean
+}): 'fire' | 'wait' | 'drop' {
+  const { plan } = input
+  if (plan.kind !== 'offer') return 'drop'
+  if (input.origin === 'auto' && (input.inFront || input.typedSinceSubmit)) return 'drop'
+  if (plan.busy !== false) return 'wait'
+  return 'fire'
+}
+
+/**
+ * Whether a tab should be relaunched onto a newly installed CLI without being
+ * asked (`Settings.cliRelaunch === 'auto'`): now, once it goes idle, or not.
+ *
+ * Never the tab in front — someone may be typing into it; it keeps the pill.
+ * Never one typed into since its last submitted prompt, for the same reason
+ * one tab over. Never twice for the same session and target version
+ * (`alreadyTried`, keyed by `autoRelaunchKey`): if a relaunch comes back on the
+ * old version — a `claude` on PATH that is not the one `claude --version`
+ * answered for — a level-triggered rule would otherwise kill and restart that
+ * session once a second, forever.
+ */
+export function autoRelaunchStep(input: {
+  mode: 'ask' | 'auto'
+  plan: RelaunchPlan
+  inFront: boolean
+  alreadyTried: boolean
+  pending: boolean
+  relaunching: boolean
+  typedSinceSubmit: boolean
+}): 'relaunch' | 'queue' | 'skip' {
+  const { plan } = input
+  if (input.mode !== 'auto' || plan.kind !== 'offer') return 'skip'
+  if (input.inFront || input.alreadyTried || input.pending || input.relaunching) return 'skip'
+  if (input.typedSinceSubmit) return 'skip'
+  return plan.busy === false ? 'relaunch' : 'queue'
+}
+
+/** One automatic attempt per session per target version. See `autoRelaunchStep`. */
+export function autoRelaunchKey(plan: { sessionId: string; installed: string }): string {
+  return `${plan.sessionId}@${plan.installed}`
+}
+
+/**
+ * The running tabs whose process says a turn is in flight — what a restart of
+ * the whole app would interrupt. A tab with no reading (SSH, another CLI, a
+ * registry that could not be read) is not counted: nothing can say, and the
+ * dialog would otherwise ask about every SSH tab forever.
+ */
+export function busyTabIds(
+  tabs: readonly { id: string; kind: string; status: string; ptyId: string }[],
+  live: Readonly<Record<string, { busy: boolean | null } | undefined>>
+): string[] {
+  return tabs
+    .filter((t) => t.kind === 'session' && t.status === 'running' && live[t.ptyId]?.busy === true)
+    .map((t) => t.id)
+}
+
+/**
+ * The tab list with the tab on `ptyId` moved onto `sessionId`, or the same
+ * array when nothing changed (so a no-op rebind costs no render).
+ */
+export function rebindTabs<T extends { ptyId: string; sessionId: string }>(
+  list: T[],
+  ptyId: string,
+  sessionId: string
+): T[] {
+  if (!ptyId || !sessionId) return list
+  let changed = false
+  const next = list.map((t) => {
+    if (t.ptyId !== ptyId || t.sessionId === sessionId) return t
+    changed = true
+    return { ...t, sessionId }
+  })
+  return changed ? next : list
+}
+
+/**
+ * A session-keyed map with `from`'s entry moved to `to` — unless `to` already
+ * has one, which is newer by construction and wins. The same object when
+ * there is nothing to move.
+ */
+export function moveKey<V>(map: Record<string, V>, from: string, to: string): Record<string, V> {
+  if (!from || from === to || !(from in map)) return map
+  const next = { ...map }
+  if (!(to in next)) next[to] = next[from]
+  delete next[from]
+  return next
+}
+
+/**
+ * Whether bytes written to a pty were typing — text that could now be sitting
+ * unsent in the prompt box — rather than keys and terminal chatter.
+ *
+ * xterm writes a great deal the user never typed: focus reports (`ESC [ I`),
+ * mouse reports, answers to colour queries (OSC 11) and device attributes. All
+ * of that is escape sequences; so are arrows and function keys. Strip them and
+ * any printable character left over is typing, a paste included (its bracket
+ * markers are escapes, its body is not). A bare Enter or Backspace is not.
+ * Errs towards true, which only ever costs an automatic relaunch — the pill
+ * stays.
+ */
+export function looksTyped(data: string): boolean {
+  const rest = data
+    // OSC … BEL or ST
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+    // CSI, including SGR mouse and bracketed-paste markers
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+    // SS3 — application-mode arrows and F1-F4 are three bytes, `ESC O <final>`
+    .replace(/\x1bO[\s\S]?/g, '')
+    // Any other escape: Alt+key arrives as ESC and one character
+    .replace(/\x1b[\s\S]?/g, '')
+  return /[^\x00-\x1f\x7f]/.test(rest)
 }
 
 /**

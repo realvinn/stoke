@@ -12,6 +12,8 @@ paths:
   - "src/renderer/src/lib/restore.ts"
   - "src/renderer/src/lib/shortcuts.ts"
   - "src/renderer/src/lib/tabs.ts"
+  - "src/renderer/src/lib/ptyBus.ts"
+  - "src/renderer/src/components/BusyDialog.tsx"
 ---
 
 # React state traps
@@ -70,6 +72,17 @@ the trust prompt, quit. No transcript is ever written, so the id Stoke persisted
 nothing. The design spec claimed the tab would stay paused; it does not, and that claim is
 corrected in place.
 
+> **Checked against the code on 2026-09-19.** Such a tab now comes back as a live, empty
+> session under the same id: main decides `--resume` or `--session-id` against the disk right
+> before the spawn (`resumeOrMint`, gotcha 81). And a quit that was Stoke installing its OWN
+> update ("Restart and install") now brings the tabs back RESUMED — main writes
+> `update-restart.json` beside `tabs.json` just before `quitAndInstall`, the next boot's
+> `tabs:restore` consumes it (once, and only within ten minutes) and returns `afterUpdate`, and
+> the renderer resumes each paused tab in turn through `resumeTabFor`. Every other quit — the
+> silent install-on-quit included — restores paused, as before. Driven: with the marker, three
+> restored tabs came back as three `claude` processes (`--resume` for the two with transcripts,
+> `--session-id` for the one without); without it, two stayed paused and none started.
+
 ## 48. A session is stuck on the `claude` it spawned with, and nothing on screen used to say so
 
 **A session is stuck on the `claude` it spawned with, and nothing on screen used to say
@@ -103,6 +116,13 @@ folder* is usually this one and occasionally is not. Silently continuing the wro
 is a far worse failure than no button. An SSH tab is refused too — its `claude` is on the far
 machine, so the local version is not its version.
 
+> **Checked against the code on 2026-09-19.** The running version now comes from the CLI's own
+> session registry first (`LiveSessionState.version`, gotcha 80) and the payload's `cliVersion`
+> second: the registry states it from the process's first second, the payload only once the TUI
+> renders. Still normalised through `versionNumber`. And a `--continue` tab is offered once the
+> registry names its id — the refusal above now covers only the first second or two, or a
+> machine where the registry cannot be read.
+
 > **Checked against the code on 2026-09-11** — an automated review, each point re-verified
 > by a second pass. The entry above is the original text; where the two disagree, the code
 > has moved on. Line numbers drift; search for the names.
@@ -128,6 +148,10 @@ act, not the await after it), because state has not re-rendered the disabled but
 looking ignored. Released in `.finally`, because `startSession` catches its own errors and
 resolves `false` — releasing only on success would strand the pill on a session already killed.
 
+> **Checked against the code on 2026-09-19.** The guard is per TAB now (`relaunchingRef` is a
+> Set): the automatic relaunch (`cliRelaunch: 'auto'`) can move a background tab while the pill in
+> front is pressed. Same two halves, same reason.
+
 One placement detail that is easy to get backwards: the busy check has to come **before** the
 plan, not be folded into it as a `disabled` prop. Mid-relaunch the old process is dead and the
 replacement has not landed, so `relaunchPlan` legitimately reads `none` for a frame or two —
@@ -147,3 +171,48 @@ handlers do nothing but patch.
 The general form, which has now cost time three times in this file (gotchas 31, 45, and here):
 **a value that exists in two places has to have exactly one writer, or the second one is a
 cache with no invalidation.** The tell is a bug that "fixes itself" on restart.
+
+## 82. The relaunch pill killed turns mid-reply, and "idle" does not mean nothing would be lost
+
+**A relaunch is SIGHUP and a fresh `claude --resume`, and SIGHUP in the middle of a turn loses the
+turn.** No `Stop` fires, the reply being streamed is never persisted, and the resumed session opens
+on `Interrupted · What should Claude do instead?`. The pill had no busy check at all. The CLI's own
+registry now says whether a turn is running (gotcha 80): `busy`, `shell` and `waiting` (a permission
+dialog is the middle of a turn) count as busy, a missing status is "cannot say", and only a stated
+`idle` is idle. `requestRelaunch` asks when busy — **Force restart** (the turn is lost, and the
+dialog says so), **Wait** (relaunch the moment it goes idle), Cancel — and relaunches unasked only on
+idle or unknown, as it always did. Driven against the built app: a 300-line reply in flight, the
+pill pressed, the dialog up (screenshot), Wait chosen, the pill read `relaunch when idle… ×`, and the
+relaunch fired when the turn ended — the transcript holds the complete reply and no "Interrupted".
+
+Three things carry beyond the dialog:
+
+- **`idle` does not prove the prompt box is empty.** Typing a draft leaves the registry `idle`
+  (measured), so the automatic relaunch (`cliRelaunch: 'auto'`) would throw away unsent text in a
+  background tab. `noteInput`/`typedSinceSubmit` (ptyBus.ts) track "typed since the last submit" —
+  set by anything `looksTyped` (escape sequences stripped: focus reports, mouse reports and colour
+  answers are xterm talking, not the user), cleared when the registry goes busy or a prompt hook
+  fires. An automatic relaunch refuses such a tab and never takes the tab in front; Wait, which the
+  user chose looking at the tab, does not. Whether this catches every draft — a draft restored by
+  the CLI's own history, say — is unverified; it errs towards leaving the pill.
+- **Level-triggered automation needs a one-shot key.** The automatic relaunch acts on "this tab's
+  plan is an offer", not on "the version just changed", so a CLI updated by hand, by the checker, or
+  before the setting was switched on are all one case. But a relaunch that comes back on the OLD
+  version (a `claude` on PATH that is not the one `claude --version` answered for — exactly what the
+  test shim is) would then be relaunched again every second. `autoRelaunchKey` (session@version) is
+  tried once. Driven: a background tab relaunched once and was left alone for the next 18 seconds
+  while the pill stayed lit.
+- **The pending relaunch is a ref claimed before anything async, dropped when the tab exits or
+  closes** (`pendingRelaunchStep` → `drop` on a plan that is no longer an offer). A relaunch that
+  outlives its reason would later kill a session nobody asked to have killed.
+
+## 83. A veto that counts what is still pending lapses the moment something else clears it
+
+**`startOnLaunch` was vetoed by `restoreCount > 0` — the number of tabs STILL paused.** That was
+right while only the user resumed tabs. The update-restart resume (gotcha 35's note) resumes them
+itself within a second of boot, before `cli.info()` has answered, so by the time the auto-start
+effect was allowed to run the count had fallen to 0 and it opened a session in the default folder
+beside the ones it had just restored. Measured on the first drive: two restored tabs, three `claude`
+processes. The veto is `restoredSessions` now — whether the restore HAD any session tab — read from a
+ref set before `restoreSettled` flips. The general form: a guard on a count that another path is
+busy decrementing is a race with that path; guard on the event, not the residue.

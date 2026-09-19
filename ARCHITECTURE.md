@@ -66,6 +66,21 @@ phone over HTTP/WebSocket.
 maps to `--dangerously-skip-permissions`**, not `--permission-mode bypassPermissions`: the
 latter requires the mode to already be enabled for the workspace.
 
+**A session's id is not fixed for the life of its process.** `/clear` mints a new one, the
+in-TUI `/resume` switches to another, and a `--continue` learns its id only after launch. The
+CLI's own registry, `<config dir>/sessions/<pid>.json`, states the id the process is on now,
+whether a turn is running (`busy`/`shell`/`waiting`/`idle`) and the binary's version.
+`sessionRegistry.ts` reads it once a second for every live local Claude pty; a changed id is
+a rebind (`rebindSession` in index.ts moves the context watcher and the worklog's address book
+to it, and `session:rebind` moves the tab), and a changed state is pushed as `session:state`.
+The statusLine files do NOT move: they belong to the launch (gotcha 73), so a reader holding a
+session id finds them through `payloadKeyFor`. Gotcha 80.
+
+Relaunching a session (the pill, onto a newer CLI) asks first when a turn is running — Force
+restart, Wait, Cancel — waits for the old process to exit before starting the new one, and lets
+main pick `--resume` or `--session-id` against the disk (`resumeOrMint`), because `--resume` on
+an id with no transcript exits 1. Gotchas 81 and 82.
+
 Finding the executable matters more than it looks. On macOS a GUI app launched from Finder
 does **not** inherit the login shell's PATH, so `cli.ts` asks the login shell for it once
 (`$SHELL -ilc 'printf %s "$PATH"'`) and caches the result.
@@ -424,8 +439,8 @@ Linux arm64 is deliberately not built (`NOT_BUILT` in `scripts/targets.mjs`).
 
 ## Testing
 
-Verification lives in `scripts/`, one `verify-*` suite per subject — thirty-seven of them now.
-Thirty-five are in `npm run check`, between the typecheck and the full build; `check` is the
+Verification lives in `scripts/`, one `verify-*` suite per subject — thirty-eight of them now.
+Thirty-six are in `npm run check`, between the typecheck and the full build; `check` is the
 gate, and it is what "done" means here. They are `.mts` run straight through node's
 type-stripping with no build step, except `verify:selection`, which opens a real Electron window
 and so needs a display. Each runs alone:
@@ -453,7 +468,14 @@ npm run verify:cli            # finding the `claude` binary: the version-manager
 npm run verify:tabs           # which tab is selected after one is closed, where the
                               # next/previous chord lands, and the tab drag's maths: that its
                               # preview is exactly the reorder it commits, and that no
-                              # reorder moves a terminal pane
+                              # reorder moves a terminal pane. And the relaunch: the plan
+                              # (the registry's id and version over the tab's, busy, fresh),
+                              # Wait and the automatic relaunch, and what counts as a draft
+npm run verify:registry       # Claude Code's session registry: parsing junk, missing fields and
+                              # every status; matching a pty to its file (pid, then the unique
+                              # id, then the unique folder); and the poller against a directory
+                              # that exists only in memory — rebind on /clear, once, and never a
+                              # path outside the directory it was handed (gotcha 74)
 npm run verify:shortcuts      # app chords vs the keys the terminal owns, the zoom maths, and
                               # that Ctrl+Tab and the bare brackets still reach the CLI
 npm run verify:drop           # what a dropped file types: quoting per platform, and the
@@ -554,7 +576,13 @@ carries a shorter copy; this is the full one.
 ```
 src/main/         Electron main process
   index.ts          lifecycle, window, every IPC handler
-  pty.ts            PTY sessions, env sanitising, scrollback, fan-out
+  pty.ts            PTY sessions, env sanitising, scrollback, fan-out. A session's
+                    `sessionId` is where it is NOW (`rebind`); its `statusKey` is where its
+                    files are, and never moves. `stop()` kills and waits for the exit, capped
+  sessionRegistry.ts  reads Claude Code's own `<config dir>/sessions/<pid>.json` for every
+                    live local Claude pty: the session it is on now (a `/clear` moves it) and
+                    whether a turn is running. No electron import and the fs is injected, so
+                    verify:registry runs it against a directory in memory. Gotcha 80
   cli.ts            locating claude, building its argv
   projects.ts       project + session discovery from Claude's own files
   projectMeta.ts    per-folder emoji/label/added-by-hand, and the one pair of caps
@@ -595,7 +623,10 @@ src/main/         Electron main process
   store.ts          settings persistence
   settingsSchema.ts defaults + hydrate, with no electron import so a suite can run it
   tabStore.ts       the tabs that were open at quit. Restoring is a relaunch
-                    (`claude --resume`), never a reattach: a CLI child cannot outlive the app
+                    (`claude --resume`), never a reattach: a CLI child cannot outlive the app.
+                    Also the update-restart marker: written by main just before
+                    `quitAndInstall`, consumed by the next boot's `tabs:restore`, and the
+                    only thing that makes restored tabs come back resumed rather than paused
   activity.ts       what was worked on, from Claude Code's own transcripts. Pure and
                     electron-free so verify:activity can run it
   activityGit.ts    commit subjects to put names to the activity numbers. Corroboration,
@@ -605,7 +636,10 @@ src/main/         Electron main process
                     rather than assuming `latest`, because those are different numbers
                     (gotcha 46). The gate is pure and separate from the six-hour timer
                     that calls it, for gotcha 31's reason
-  selfUpdate.ts     Stoke's own updates (electron-updater)
+  selfUpdate.ts     Stoke's own updates (electron-updater). Downloads in the background when
+                    `selfUpdateAuto` is on and the build could install what it fetched
+                    (`shouldAutoDownload`); installs only on a quit or "Restart and install",
+                    which App asks about first when a turn is running
   codesign.ts       whether this copy's signature could ever accept a downloaded update.
                     No electron import, so verify:updates can run the rule. Gotcha 24
   profiles.ts       plans and creates a profile's folder + scan root
@@ -654,6 +688,13 @@ src/main/         Electron main process
                       a live API call. Gotcha 58
 src/preload/      contextBridge -> window.stoke
 src/renderer/     desktop React UI (all colour via CSS custom properties)
+  src/components/BusyDialog.tsx  "a prompt is running — Force restart / Wait / Cancel", asked
+                    before the relaunch pill or "Restart and install" kills a turn in flight.
+                    Wait is the focused button. In `overlayOpen`, so the docked browser comes
+                    off the window while it is up (gotcha 14). Gotcha 82
+  src/lib/tabs.ts   besides the tab arithmetic, every relaunch decision as a pure function:
+                    `relaunchPlan`, `pendingRelaunchStep` (Wait), `autoRelaunchStep`
+                    (`cliRelaunch: 'auto'`) and `looksTyped` (what counts as a draft)
   src/lib/projectSearch.ts  the one matcher the sidebar search and the Cmd+K palette share:
                     label/name/path, session title and first prompt, ranked by tier then
                     recency, with highlight ranges. No runtime imports, so verify:search
@@ -725,7 +766,14 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     Codex tab shows nothing there rather than Claude's numbers
   updateCheck.ts    "Up to date, checked at 14:32" for both update panels, and every
                     state that must NOT show a green badge — an error, a download in
-                    flight, a version that could not be read, a channel behind latest
+                    flight, a version that could not be read, a channel behind latest.
+                    And `shouldAutoDownload`, the background-download gate
+  claudeRegistry.ts the CLI's session registry as data: `parseRegistry` (every field
+                    optional — the file is undocumented, and a wrong reading is worse than
+                    none), which statuses are busy, and `pickEntry`, which matches a pty to
+                    its file by pid, then by the one entry holding its id, then by the one
+                    unclaimed entry in its folder. The two fallbacks are for a Windows
+                    `.cmd` install, whose pty pid is cmd.exe's — unverified. Gotcha 80
   sshAuth.ts        recognising that a remote is asking for a PASSWORD rather than for a
                     key passphrase or a sudo password, and whether to offer to enroll a
                     key. The tail anchor is the load-bearing rule; gotcha 75

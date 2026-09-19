@@ -2797,6 +2797,72 @@ mark.hit {
 }
 
 /*
+ * The "a prompt is running" question (BusyDialog). One step above
+ * `--z-modal`, scrim and all, because it is also asked from INSIDE the Settings
+ * sheet ("Restart and install"), and a second `.backdrop` at `--z-backdrop`
+ * would sit under that sheet rather than over it. Centred the way the sheet is
+ * (inset + auto margins, not a translate), so it can share `modal-in` with it
+ * (gotcha 47). Reduced motion: both keyframes animate FROM a hidden state to
+ * the resting style, so the global 1ms override leaves it simply shown.
+ */
+.confirm-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: calc(var(--z-modal) + 1);
+  background: var(--scrim);
+  animation: fade var(--dur) var(--ease);
+}
+
+.confirm-modal {
+  position: fixed;
+  inset: 0;
+  margin: auto;
+  z-index: calc(var(--z-modal) + 2);
+  width: min(30rem, 92vw);
+  height: fit-content;
+  max-height: 86vh;
+  overflow: auto;
+  display: grid;
+  gap: var(--space-16);
+  padding: var(--space-24);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-lg);
+  animation: modal-in var(--dur) var(--ease);
+}
+
+.confirm-modal h2 {
+  margin: 0;
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.confirm-body {
+  display: grid;
+  gap: var(--space-8);
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.confirm-body p {
+  margin: 0;
+}
+
+.confirm-body strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.confirm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-8);
+}
+
+/*
  * Right-click menu for the terminal. Drawn here rather than with Electron's
  * native Menu so it picks up the theme like everything else.
  */

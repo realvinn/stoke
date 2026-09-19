@@ -374,6 +374,34 @@ export function ultracodeSettingsFile(): string {
 }
 
 /**
+ * `--resume <id>` or `--session-id <id>`, decided by whether `<id>` has a
+ * transcript on disk — the one fact the CLI itself decides it on.
+ *
+ * Measured against 2.1.278, the two flags fail in opposite cases, and both
+ * failures end the process before the TUI draws:
+ *
+ *   --resume U      with no transcript for U  -> exit 1, "No conversation found
+ *                                                with session ID: U"
+ *   --session-id U  once U has a transcript   -> "Session ID U is already in use"
+ *   --resume U --session-id U                 -> refused: --session-id with
+ *                                                --resume needs --fork-session
+ *
+ * A session has no transcript until its first prompt, yet its statusLine
+ * payload — and so the relaunch pill — arrives before one; and `/clear` puts a
+ * live process on a fresh id that has none either. So a relaunch or a Resume
+ * cannot assume `--resume`. An id with no transcript is started again under
+ * the SAME id with `--session-id`, which the CLI accepts (also measured, with
+ * the old process still dying), so the tab keeps its identity and the context
+ * meter its key. Pure, so `verify:cli` holds the table.
+ */
+export function resumeOrMint(opts: LaunchOptions, hasTranscript: boolean): LaunchOptions {
+  if (opts.continueLast || !opts.sessionId || opts.host) return opts
+  if (opts.resume && !hasTranscript) return { ...opts, resume: false, forkSession: false }
+  if (!opts.resume && hasTranscript) return { ...opts, resume: true }
+  return opts
+}
+
+/**
  * Translate Stoke's launch options into claude CLI arguments.
  *
  * Note `bypassPermissions` maps to `--dangerously-skip-permissions` rather than

@@ -56,6 +56,13 @@ export interface Tab {
   model: string
   effort: EffortLevel
   /**
+   * Whether this session was launched with ultracode. Kept on the tab, like
+   * `model` and `effort`, so a relaunch or a Resume brings back the session
+   * that was there — it used to fall back to whatever the launcher's global
+   * default said at the moment of the relaunch.
+   */
+  ultracode: boolean
+  /**
    * `paused` is a tab restored from the last run: it has a session to resume but
    * no process yet, so `ptyId` is ''. It is not `exited` — that means the
    * process ended, this means it has not started.

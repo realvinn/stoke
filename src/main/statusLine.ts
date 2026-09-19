@@ -927,21 +927,17 @@ export function sweepStaleSessionFiles(
  * because this ordering is the whole point of the statusLine channel, and a
  * lambda in a constructor call is the one shape no suite here can reach.
  *
- * `sessionId` is safe to use as the payload key here, though the two are not
- * the same thing in general. This is only ever called from the context
- * watcher, and there are exactly three kinds of session it watches:
- *
- *  - a local session Stoke minted an id for, whose statusLine key IS that id;
- *  - a remote session, which has no key and no payload at all — its `claude`
- *    runs on the far machine — so this falls through to the banner for it,
- *    exactly as it did before the payload existed;
- *  - and not a `--continue`, whose files are named after a launch key: it is
- *    never watched, because context.ts:99 no-ops on the empty id it has.
- *
- * So no caller can reach here holding a key that names somebody else's file.
+ * `key` is the statusLine KEY, which is not the session id in general: the
+ * files belong to the launch (gotcha 73), and a session can move to another id
+ * while its process runs — `/clear`, the in-TUI `/resume`, a `--continue`
+ * learning its id (gotcha 80). The one caller, the context watcher's window
+ * callback in index.ts, resolves the watched id through `payloadKeyFor` first.
+ * A remote session has no key and no payload at all — its `claude` runs on the
+ * far machine — so this falls through to the banner for it, exactly as it did
+ * before the payload existed.
  */
-export function windowFor(sessionId: string, bannerWindow: number | null): number | null {
-  return readStatusLine(sessionId)?.contextWindowSize ?? bannerWindow ?? null
+export function windowFor(key: string, bannerWindow: number | null): number | null {
+  return readStatusLine(key)?.contextWindowSize ?? bannerWindow ?? null
 }
 
 /**

@@ -98,6 +98,11 @@ export const DEFAULT_SETTINGS: Settings = {
   // On: the CLI already updates itself, so this makes an existing behaviour
   // visible and switchable rather than introducing a new one. See the type.
   cliAutoUpdate: true,
+  // Offer, do not act: a relaunch ends the process, and whatever it held outside
+  // the transcript goes with it. See the type.
+  cliRelaunch: 'ask',
+  // On: this moves when the bytes arrive, never when the app is replaced.
+  selfUpdateAuto: true,
   sidebarWidth: 260,
   claudePath: null,
   projectMeta: {},
@@ -311,6 +316,11 @@ export function hydrateSettings(raw: unknown): Settings {
     // `!== false`, not `=== true`: a settings file written before this key
     // existed must read as the default, which is on.
     cliAutoUpdate: r.cliAutoUpdate !== false,
+    // A whitelist: `auto` kills and restarts processes unasked, so only the
+    // literal turns it on — a typo, a `true`, anything else reads as `ask`.
+    cliRelaunch: r.cliRelaunch === 'auto' ? 'auto' : 'ask',
+    // `!== false`: a file from before this key existed reads as the default.
+    selfUpdateAuto: r.selfUpdateAuto !== false,
     projectRoots: Array.isArray(r.projectRoots) ? r.projectRoots : [],
     pinnedProjects: Array.isArray(r.pinnedProjects) ? r.pinnedProjects : [],
     hiddenProjects: Array.isArray(r.hiddenProjects) ? r.hiddenProjects : [],

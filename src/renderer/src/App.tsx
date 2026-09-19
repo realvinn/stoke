@@ -7,6 +7,7 @@ import type {
   CliInfo,
   ContextSnapshot,
   EffortLevel,
+  LiveSessionState,
   PermissionMode,
   Project,
   SessionEvent,
@@ -23,6 +24,7 @@ import { foldGroup, profileFor, resolveProfiles, visibleProfiles } from '@shared
 import { activeThemeId, resolveTheme } from '@shared/themes'
 import { worklogButtonState } from '@shared/worklog'
 import { BrowserPanel } from './components/BrowserPanel'
+import { BusyDialog } from './components/BusyDialog'
 import { CommandPalette } from './components/CommandPalette'
 import { IconClose } from './components/Icons'
 import { Launcher } from './components/Launcher'
@@ -36,7 +38,14 @@ import { TitleBar } from './components/TitleBar'
 import { ActivityPanel } from './components/ActivityPanel'
 import { WorklogPrompt } from './components/WorklogPrompt'
 import { baseName, ipcErrorMessage } from './lib/format'
-import { attachExit, forgetPty, initPtyBus } from './lib/ptyBus'
+import {
+  attachExit,
+  clearTyped,
+  forgetPty,
+  initPtyBus,
+  noteInput,
+  typedSinceSubmit
+} from './lib/ptyBus'
 import { TERMINAL_DEFAULTS, zoomStep } from '@shared/ui'
 import { welcomePlan, type WelcomeReason } from '@shared/welcome'
 import { matchShortcut, typeThroughKey } from './lib/shortcuts'
@@ -45,14 +54,22 @@ import { profileIdForCwd } from './lib/projectProfile'
 import { fromStored, screensFrom, toStored } from './lib/restore'
 import { focusTerm, screenOf } from './lib/termRegistry'
 import {
+  autoRelaunchKey,
+  autoRelaunchStep,
+  busyTabIds,
   cycleTab,
   focusAfterStart,
+  moveKey,
   moveTab,
   neighbourOf,
   paneOrder,
+  pendingRelaunchStep,
+  rebindTabs,
   relaunchPlan,
   replaceOrAppend,
-  restartPlan
+  restartPlan,
+  type PendingOrigin,
+  type RelaunchPlan
 } from './lib/tabs'
 import { applyAppearance, applyTypography, applyWallpaper } from './lib/theme'
 import type { SessionActivity, Tab } from './types'
@@ -103,6 +120,22 @@ interface WelcomeScreen {
   version: string
   record: string | null
 }
+
+/** A relaunch the plan has cleared to happen. */
+type RelaunchOffer = Extract<RelaunchPlan, { kind: 'offer' }>
+
+/**
+ * The "a prompt is running" question, and what it is about: one tab's relaunch
+ * onto a newer CLI, or Stoke restarting to install its own update.
+ */
+type BusyPrompt = { kind: 'relaunch'; tabId: string } | { kind: 'restart'; tabIds: string[] }
+
+/**
+ * How long a relaunch waits for the old `claude` to exit before starting the
+ * new one anyway. It takes ~0.8-0.95s after SIGHUP (measured); the cap is for a
+ * process that will not die, and gotcha 73's file ownership covers that case.
+ */
+const RELAUNCH_EXIT_CAP_MS = 3000
 
 const EMPTY_BROWSER: BrowserState = {
   url: '',
@@ -251,6 +284,16 @@ export function App(): React.JSX.Element {
    * has resolved.
    */
   const restored = useRef(false)
+  /**
+   * Whether the boot restore brought back any session tab — the startOnLaunch
+   * veto. Not `restoreCount`, which counts tabs STILL paused: after an update
+   * restart the restored tabs resume themselves within a second, the count
+   * falls to 0 before `cli` has answered, and the auto-start then opened an
+   * extra session beside them (measured: three `claude` processes for two
+   * restored tabs). What vetoes it is that the restore had anything, not that
+   * it still does.
+   */
+  const restoredSessions = useRef(false)
 
   /*
    * The visible selection: the active New tab's own target when there is one,
@@ -396,8 +439,51 @@ export function App(): React.JSX.Element {
    * the relaunch takes a couple of seconds during which nothing visibly
    * happens, which is exactly what invites the second click.
    */
-  const relaunchingRef = useRef(false)
-  const [relaunching, setRelaunching] = useState(false)
+  /*
+   * Per TAB now, not one flag: an automatic relaunch (`cliRelaunch: 'auto'`)
+   * can be moving a background tab while the pill in front is pressed, and one
+   * shared flag would refuse the second for the wrong reason. The ref is still
+   * the correctness half, the state still the honest half — gotcha 51.
+   */
+  const relaunchingRef = useRef<Set<string>>(new Set())
+  const [relaunching, setRelaunching] = useState<readonly string[]>([])
+
+  /*
+   * Relaunches waiting for a running turn to end, by tab id, and who asked:
+   * the user (Wait, in the busy dialog) or the automatic relaunch. Same split
+   * as above — the ref is claimed synchronously so a second Wait, or the
+   * automatic pass, cannot queue the same tab twice; the state is what lets
+   * the pill say "relaunch when idle…".
+   */
+  const pendingRef = useRef<Map<string, PendingOrigin>>(new Map())
+  const [pending, setPending] = useState<Readonly<Record<string, PendingOrigin>>>({})
+  const syncPending = useCallback((): void => {
+    setPending(Object.fromEntries(pendingRef.current))
+  }, [])
+
+  /** The busy dialog, when it is up. */
+  const [busyPrompt, setBusyPrompt] = useState<BusyPrompt | null>(null)
+  const busyPromptRef = useRef<BusyPrompt | null>(null)
+  busyPromptRef.current = busyPrompt
+
+  /*
+   * Stoke's own "Restart and install", deferred until no session is mid-turn.
+   * A ref claimed before the install call so the effect that fires it cannot
+   * fire it twice across two renders.
+   */
+  const selfRestartPendingRef = useRef(false)
+  const [selfRestartPending, setSelfRestartPending] = useState(false)
+
+  /*
+   * What the CLI's own session registry says about each live local pty, keyed
+   * by ptyId: the session it is on now, whether a turn is running, and the
+   * version it runs. See src/shared/claudeRegistry.ts. The ref is written in
+   * the listener as well as on render, so two pushes in one tick each see the
+   * one before (gotcha 56's shape).
+   */
+  const [live, setLive] = useState<Record<string, LiveSessionState>>({})
+  const liveRef = useRef<Record<string, LiveSessionState>>(live)
+  liveRef.current = live
 
   /*
    * The same claim, per tab, for Resume and Start again.
@@ -608,6 +694,8 @@ export function App(): React.JSX.Element {
     const offEvents = window.stoke.session.onEvent((ev: SessionEvent) => {
       const tab = tabsRef.current.find((t) => t.sessionId === ev.sessionId)
       if (ev.kind === 'prompt') {
+        // Submitted: whatever was typed has left the prompt box.
+        if (tab) clearTyped(tab.ptyId)
         setActivity((prev) => ({
           ...prev,
           [ev.sessionId]: { state: 'working', at: ev.at, message: null }
@@ -653,6 +741,64 @@ export function App(): React.JSX.Element {
       } catch {
         /* the platform refused; the dot in the strip still says it */
       }
+    })
+    /*
+     * The CLI's own session registry, per live local pty (main's
+     * sessionRegistry.ts): which session it is on now, whether a turn is
+     * running, which binary it runs.
+     */
+    const offState = window.stoke.session.onState((st) => {
+      const before = liveRef.current[st.ptyId]
+      liveRef.current = { ...liveRef.current, [st.ptyId]: st }
+      setLive((prev) => ({ ...prev, [st.ptyId]: st }))
+      // Busy means something was submitted, so the prompt box is empty again.
+      if (st.busy === true) clearTyped(st.ptyId)
+      /*
+       * A turn that ended without a `Stop` hook — Esc, or an API error — left
+       * the activity dot saying "working" until the next prompt. The registry
+       * sees the process go idle either way, so a working dot is settled here.
+       * Only on the transition, and only from `working`: a `Stop` that
+       * arrives a moment later still writes its own message over this.
+       */
+      if (st.busy === false && before?.busy === true && st.sessionId) {
+        const id = st.sessionId
+        setActivity((prev) => {
+          const cur = prev[id]
+          if (!cur || cur.state !== 'working') return prev
+          return { ...prev, [id]: { state: 'done', at: Date.now(), message: null } }
+        })
+      }
+    })
+    void window.stoke.session.states().then((list) =>
+      setLive((prev) => {
+        const next = { ...prev }
+        // A push that has already landed is newer than this snapshot.
+        for (const st of list) if (!(st.ptyId in next)) next[st.ptyId] = st
+        liveRef.current = next
+        return next
+      })
+    )
+    /*
+     * A live pty's `claude` moved to another session: `/clear`, the in-TUI
+     * `/resume`, or a `--continue` learning its id. The tab follows, and so
+     * does everything keyed by session id that describes the PROCESS — its
+     * version line and its activity dot. The context reading does not: that
+     * describes the conversation left behind, and the watcher publishes the
+     * new one's (empty until its first prompt). Nothing moves off an id another
+     * tab still holds.
+     */
+    const offRebind = window.stoke.session.onRebind(({ ptyId, sessionId, previous }) => {
+      const shared = tabsRef.current.some((t) => t.ptyId !== ptyId && t.sessionId === previous)
+      setTabs((list) => rebindTabs(list, ptyId, sessionId))
+      if (!previous || shared) return
+      setSessionLine((m) => moveKey(m, previous, sessionId))
+      setActivity((m) => moveKey(m, previous, sessionId))
+      setContexts((m) => {
+        if (!(previous in m)) return m
+        const next = { ...m }
+        delete next[previous]
+        return next
+      })
     })
     /*
      * Per-session CLI versions. Cheap: these pushes already happen for the
@@ -737,6 +883,8 @@ export function App(): React.JSX.Element {
     return () => {
       offCtx()
       offEvents()
+      offState()
+      offRebind()
       offLine()
       offUpdates()
       offBrowser()
@@ -967,13 +1115,20 @@ export function App(): React.JSX.Element {
     const offs = tabs
       .filter((t) => t.kind === 'session' && t.status === 'running')
       .map((t) =>
-        attachExit(t.ptyId, (code) =>
+        attachExit(t.ptyId, (code) => {
+          /*
+           * A relaunch kills this process on purpose and replaces the tab in
+           * place once the new one is up. Its exit arrives in between, and
+           * marking the tab "Session ended" for that second would flash the
+           * exit card over a session that is merely being moved.
+           */
+          if (relaunchingRef.current.has(t.id)) return
           setTabs((list) =>
             list.map((x) =>
               x.ptyId === t.ptyId ? { ...x, status: 'exited' as const, exitCode: code } : x
             )
           )
-        )
+        })
       )
     return () => offs.forEach((off) => off())
   }, [tabs])
@@ -1124,6 +1279,9 @@ export function App(): React.JSX.Element {
           permissionMode,
           model: sessionModel,
           effort: sessionEffort,
+          // What this session was launched with, so a relaunch or a Resume can
+          // bring back the same one rather than today's global.
+          ultracode: sessionUltracode,
           status: 'running',
           exitCode: null,
           hostId: null,
@@ -1268,6 +1426,9 @@ export function App(): React.JSX.Element {
           permissionMode,
           model: sessionModel,
           effort: sessionEffort,
+          // Ultracode reaches `claude` through a local `--settings` file, which
+          // an SSH session's far-side `claude` never sees.
+          ultracode: false,
           status: 'running',
           exitCode: null,
           hostId: host.id,
@@ -1318,13 +1479,16 @@ export function App(): React.JSX.Element {
    * `focus` is passed through to the start: a single Resume takes you to the
    * tab you just resumed, and `Resume all` does not, because there the tab that
    * would win is decided by whichever PTY happens to come up last.
+   *
+   * The function it returns resolves once that start has settled, so the
+   * update-restart resume below can bring tabs back one at a time.
    */
   const resumeTabFor = useCallback(
-    (tab: Tab, focus = true): (() => void) | null => {
+    (tab: Tab, focus = true): (() => Promise<void>) | null => {
       if (tab.hostId) {
         const host = settings?.hosts.find((h) => h.id === tab.hostId)
         if (!host) return null
-        return () => {
+        return async () => {
           if (!claimStart(tab.id)) return
           // Dropped only on success. `startHostSession`'s catch leaves this
           // tab paused and just sets `error` — pruning the screen unconditionally,
@@ -1336,7 +1500,7 @@ export function App(): React.JSX.Element {
           // actually resume in bypass, and a card displaying `default` must
           // not silently inherit a global that has since been switched to
           // bypass. See CLAUDE.md's tab-restore finding on this exact bug.
-          void startHostSession(host, tab.id, {
+          await startHostSession(host, tab.id, {
             permissionMode: tab.permissionMode,
             model: tab.model,
             effort: tab.effort,
@@ -1348,9 +1512,9 @@ export function App(): React.JSX.Element {
             .finally(() => releaseStart(tab.id))
         }
       }
-      return () => {
+      return async () => {
         if (!claimStart(tab.id)) return
-        void startSession({
+        await startSession({
           cwd: tab.cwd,
           name: tab.projectName,
           title: tab.title,
@@ -1374,6 +1538,7 @@ export function App(): React.JSX.Element {
           permissionMode: tab.permissionMode,
           model: tab.model,
           effort: tab.effort,
+          ultracode: tab.ultracode,
           focus
         })
           .then((ok) => {
@@ -1384,6 +1549,8 @@ export function App(): React.JSX.Element {
     },
     [settings, startSession, startHostSession, dropRestoredScreen, claimStart, releaseStart]
   )
+  const resumeTabForRef = useRef(resumeTabFor)
+  resumeTabForRef.current = resumeTabFor
 
   /** Quick start with no project: run in the configured default folder. */
   const startDefault = useCallback((): void => {
@@ -1427,9 +1594,21 @@ export function App(): React.JSX.Element {
       .then((state) => {
         if (!state.tabs.length) return
         const { tabs: back, activeId } = fromStored(state)
+        // Before `restoreSettled` flips in the `.finally` below, so the
+        // startOnLaunch effect reads it on the very pass that is allowed to run.
+        restoredSessions.current = back.some((t) => t.status === 'paused')
         setRestoredScreens(screensFrom(state, back))
         setTabs(back)
         setActiveTabId(activeId)
+        /*
+         * The last quit was Stoke installing its own update — pressed by the
+         * user, from a dialog that already asked about running turns — so the
+         * tabs come back running, not paused. Any other quit, the silent
+         * install-on-quit included, restores them paused exactly as before.
+         */
+        if (state.afterUpdate) {
+          setAutoResume(back.filter((t) => t.status === 'paused').map((t) => t.id))
+        }
         // No setRestoreCount here: `pausedTabCount` derives from `tabs` above,
         // so the `setTabs(back)` on the line above already gives it its
         // opening value once this render commits.
@@ -1498,6 +1677,31 @@ export function App(): React.JSX.Element {
       .finally(() => setRestoreSettled(true))
   }, [])
 
+  /*
+   * Resume the restored tabs after an update restart — one at a time, each
+   * through the same `resumeTabFor` (and so the same `claimStart` guard) a
+   * press of Resume uses, so a click landing mid-way cannot start a second
+   * `claude` for a tab this is already starting. Sequential rather than all at
+   * once: every one is a `claude --resume` loading a transcript and its MCP
+   * servers, and a dozen at once is a stampede on the machine that has just
+   * restarted. Waits for settings, which an SSH tab needs to find its host.
+   * The ref keeps it to one run, StrictMode included.
+   */
+  const [autoResume, setAutoResume] = useState<string[] | null>(null)
+  const autoResumed = useRef(false)
+  useEffect(() => {
+    if (!autoResume || autoResumed.current || !settings) return
+    autoResumed.current = true
+    void (async () => {
+      for (const id of autoResume) {
+        const tab = tabsRef.current.find((t) => t.id === id && t.status === 'paused')
+        if (!tab) continue
+        const go = resumeTabForRef.current(tab, false)
+        if (go) await go()
+      }
+    })()
+  }, [autoResume, settings])
+
   // Optional "open straight into a session" behaviour. The ref keeps it to a
   // single attempt, including under StrictMode's double-invoked effects.
   const autoStarted = useRef(false)
@@ -1520,8 +1724,9 @@ export function App(): React.JSX.Element {
     if (!restoreSettled) return
     if (!settings?.startOnLaunch || !defaultCwd || !cli?.ok) return
     // Restored tabs are what the user had; opening a session on top of them is
-    // an extra nobody asked for.
-    if (restoreCount > 0) return
+    // an extra nobody asked for — whether they are still paused or have been
+    // resumed already (see `restoredSessions`).
+    if (restoreCount > 0 || restoredSessions.current) return
     autoStarted.current = true
     startDefault()
   }, [restoreSettled, settings?.startOnLaunch, defaultCwd, cli, startDefault, restoreCount])
@@ -1612,6 +1817,18 @@ export function App(): React.JSX.Element {
        * out of reach of the tab-shaped cleanup that already existed.
        */
       if (tab.sessionId) dropSessionState(tab.sessionId)
+      // Keyed by pty rather than session, so pruned here rather than there. A
+      // relaunch waiting on this tab goes with it — it has nothing to relaunch.
+      if (tab.ptyId) {
+        const ptyId = tab.ptyId
+        setLive((cur) => {
+          if (!(ptyId in cur)) return cur
+          const next = { ...cur }
+          delete next[ptyId]
+          return next
+        })
+      }
+      if (pendingRef.current.delete(id)) syncPending()
       // Never leave the strip empty: closing the last tab lands on a fresh New
       // Project tab, which is where the app starts anyway.
       const next = list.filter((t) => t.id !== id)
@@ -1624,7 +1841,7 @@ export function App(): React.JSX.Element {
         setActiveTabId(nextId)
       }
     },
-    [dropRestoredScreen, dropSessionState]
+    [dropRestoredScreen, dropSessionState, syncPending]
   )
 
   /**
@@ -1701,7 +1918,8 @@ export function App(): React.JSX.Element {
         replaceTabId: tab.id,
         permissionMode: tab.permissionMode,
         model: tab.model,
-        effort: tab.effort
+        effort: tab.effort,
+        ultracode: tab.ultracode
       }).finally(() => releaseStart(tab.id))
     },
     [settings, startSession, startHostSession, claimStart, releaseStart]
@@ -1717,26 +1935,42 @@ export function App(): React.JSX.Element {
    * `--resume` replays it, which is why this reads as a refresh rather than a
    * restart from the user's side.
    *
+   * The id is the PLAN's, which is the session the process is on now (the
+   * CLI's registry) — not necessarily the one the tab was launched with. A
+   * `/clear` moves it; relaunching the launch id resumed the pre-`/clear`
+   * conversation, or exited 1 when that id had no transcript. And the old
+   * process is WAITED for, capped, before the new one starts: `claude` takes
+   * ~0.9s to die after SIGHUP, and for that long two processes held one
+   * transcript. Gotcha 73's file ownership still covers a process that outlives
+   * the cap.
+   *
    * `forgetPty` before the kill, not after, and never `closeTab`: the exit that
    * follows must not reach the tab, or the strip would show "Session ended"
-   * for the instant between the two calls. That is the same reason
-   * `restartTab` above releases the pty by hand rather than closing the tab.
+   * for the instant between the two calls (the exit sink also checks
+   * `relaunchingRef`, for an effect that re-attaches in between). That is the
+   * same reason `restartTab` above releases the pty by hand rather than closing
+   * the tab.
    *
-   * The tab's own stored mode/model/effort, not the toolbar's current globals,
-   * for the reason the paused-resume path gives: what comes back has to be the
-   * session that was there, not one wearing whatever is selected right now.
+   * The tab's own stored mode/model/effort/ultracode, not the toolbar's
+   * current globals, for the reason the paused-resume path gives: what comes
+   * back has to be the session that was there, not one wearing whatever is
+   * selected right now. Ultracode used to be missing from this list, so a
+   * relaunch fell back to the global.
+   *
+   * No busy check here: that is `requestRelaunch`'s job, and this is what it
+   * calls once the question is settled.
    */
   const relaunchTab = useCallback(
-    (tab: Tab, sessionId: string): void => {
+    (tab: Tab, plan: RelaunchOffer): Promise<boolean> => {
       // Claimed before anything irreversible, which is the half of gotcha 20
       // that is easy to get wrong: the kill below cannot be taken back, so the
       // guard has to be in place before it, not after the await that follows.
-      if (relaunchingRef.current) return
-      relaunchingRef.current = true
-      setRelaunching(true)
+      if (relaunchingRef.current.has(tab.id)) return Promise.resolve(false)
+      relaunchingRef.current.add(tab.id)
+      setRelaunching([...relaunchingRef.current])
 
-      forgetPty(tab.ptyId)
-      window.stoke.pty.kill(tab.ptyId)
+      const oldPty = tab.ptyId
+      forgetPty(oldPty)
       /*
        * Forget the version this session reported, because the session that
        * reported it is the one being killed.
@@ -1747,40 +1981,250 @@ export function App(): React.JSX.Element {
        * new process had just been started on. It cleared itself seconds later
        * when the first statusLine payload arrived, which made it look like a
        * flicker rather than a wrong answer. Cleared, `relaunchPlan` returns
-       * "has not reported its version yet", which is both true and quiet.
+       * "has not reported its version yet", which is both true and quiet. The
+       * registry reading is keyed by the OLD pty, so it cannot be mistaken for
+       * the new process's; it is dropped all the same.
        */
       setSessionLine((cur) => {
-        if (!(sessionId in cur)) return cur
+        if (!(plan.sessionId in cur)) return cur
         const next = { ...cur }
-        delete next[sessionId]
+        delete next[plan.sessionId]
         return next
       })
-      void startSession({
-        cwd: tab.cwd,
-        name: tab.projectName,
-        title: tab.title,
-        sessionId,
-        resume: true,
-        replaceTabId: tab.id,
-        permissionMode: tab.permissionMode,
-        model: tab.model,
-        effort: tab.effort
+      setLive((cur) => {
+        if (!(oldPty in cur)) return cur
+        const next = { ...cur }
+        delete next[oldPty]
+        return next
       })
+      return (async (): Promise<boolean> => {
+        try {
+          await window.stoke.pty.stop(oldPty, RELAUNCH_EXIT_CAP_MS)
+        } catch {
+          /* the process is gone either way; start the replacement */
+        }
+        // Its exit re-created the entry `forgetPty` released.
+        forgetPty(oldPty)
+        return startSession({
+          cwd: tab.cwd,
+          cli: tab.cliId,
+          name: tab.projectName,
+          title: tab.title,
+          sessionId: plan.sessionId,
+          // What the renderer believes; main checks the disk and has the last
+          // word (`resumeOrMint`), because `--resume` on an id with no
+          // transcript exits 1 and `--session-id` on one with a transcript is
+          // refused.
+          resume: !plan.fresh,
+          replaceTabId: tab.id,
+          permissionMode: tab.permissionMode,
+          model: tab.model,
+          effort: tab.effort,
+          ultracode: tab.ultracode,
+          // Follows only if this tab was the one in front: a background
+          // relaunch must not pull the selection away from what you are doing.
+          focus: false
+        })
+      })()
         // Released on failure as well as success. `startSession` catches its
         // own errors and resolves false, so a refused launch would otherwise
         // leave the pill saying "relaunching…" for the rest of the run with no
         // way back — and the session it killed is already gone.
         .finally(() => {
-          relaunchingRef.current = false
-          setRelaunching(false)
+          relaunchingRef.current.delete(tab.id)
+          setRelaunching([...relaunchingRef.current])
         })
     },
     [startSession]
   )
 
+  /**
+   * The relaunch plan for any tab — not only the one in front, because the
+   * automatic relaunch and a pending Wait both act on background tabs.
+   */
+  const planFor = useCallback(
+    (tab: Tab | null): RelaunchPlan =>
+      relaunchPlan({
+        tab: tab && tab.kind === 'session' ? tab : null,
+        running: tab ? (sessionLine[tab.sessionId]?.cliVersion ?? null) : null,
+        installed: cli?.version ?? null,
+        live: tab ? (live[tab.ptyId] ?? null) : null,
+        // The context watcher found a file, or published its empty "not yet"
+        // snapshot; no reading at all is "cannot say".
+        hasTranscript: (id) => (contexts[id] ? contexts[id].ready : null)
+      }),
+    [sessionLine, cli, live, contexts]
+  )
+  const planForRef = useRef(planFor)
+  planForRef.current = planFor
+
+  /**
+   * What the relaunch pill does: relaunch now, or ask first when a turn is
+   * running.
+   *
+   * A relaunch kills the process, and killing it mid-turn loses the turn —
+   * SIGHUP fires no `Stop`, the reply being streamed is never written, and the
+   * resumed session opens on "Interrupted · What should Claude do instead?".
+   * Measured: that is exactly what the pill did before this, with no check at
+   * all. Only a stated busy asks; an unknown (no registry reading) relaunches
+   * as it always has.
+   */
+  const requestRelaunch = useCallback(
+    (tab: Tab): void => {
+      const plan = planForRef.current(tab)
+      if (plan.kind !== 'offer') return
+      if (pendingRef.current.has(tab.id) || relaunchingRef.current.has(tab.id)) return
+      if (plan.busy === true) {
+        setBusyPrompt({ kind: 'relaunch', tabId: tab.id })
+        return
+      }
+      void relaunchTab(tab, plan)
+    },
+    [relaunchTab]
+  )
+
+  /** Drop a relaunch that was waiting for idle. */
+  const cancelPendingRelaunch = useCallback(
+    (tabId: string): void => {
+      if (pendingRef.current.delete(tabId)) syncPending()
+    },
+    [syncPending]
+  )
+
+  /*
+   * Relaunches waiting for idle, fired the moment their turn ends.
+   *
+   * Re-evaluated whenever a registry reading, the tab list or the selection
+   * moves. `pendingRelaunchStep` decides; the entry is taken out of the ref
+   * BEFORE `relaunchTab` is called, so a re-render in between cannot fire it
+   * twice (gotcha 51). A tab that exited or closed is dropped, not kept for
+   * later: a relaunch that outlives its reason would kill a session nobody
+   * asked to have killed.
+   */
+  useEffect(() => {
+    if (!pendingRef.current.size) return
+    let changed = false
+    for (const [tabId, origin] of [...pendingRef.current]) {
+      const tab = tabs.find((t) => t.id === tabId) ?? null
+      const plan = planFor(tab)
+      const step = pendingRelaunchStep({
+        origin,
+        plan,
+        inFront: tabId === activeTabId,
+        typedSinceSubmit: tab ? typedSinceSubmit(tab.ptyId) : false
+      })
+      if (step === 'wait') continue
+      pendingRef.current.delete(tabId)
+      changed = true
+      if (step === 'fire' && tab && plan.kind === 'offer') void relaunchTab(tab, plan)
+    }
+    if (changed) syncPending()
+  }, [tabs, activeTabId, planFor, relaunchTab, syncPending])
+
+  /*
+   * `Settings.cliRelaunch: 'auto'`: once a newer `claude` is installed, move
+   * the background sessions onto it without being asked — now if idle, queued
+   * until idle if not. Level-triggered off the plan rather than edge-triggered
+   * off a version change, so a CLI updated by hand, by the six-hourly checker,
+   * or before the setting was switched on are all the same case; the
+   * one-attempt-per-session-per-version key is what stops a relaunch that comes
+   * back on the old version from looping. `autoRelaunchStep` holds the rules.
+   */
+  const autoTriedRef = useRef<Set<string>>(new Set())
+  const relaunchMode = settings?.cliRelaunch ?? 'ask'
+  useEffect(() => {
+    if (relaunchMode !== 'auto') return
+    let queued = false
+    for (const tab of tabs) {
+      if (tab.kind !== 'session' || tab.status !== 'running') continue
+      const plan = planFor(tab)
+      const step = autoRelaunchStep({
+        mode: relaunchMode,
+        plan,
+        inFront: tab.id === activeTabId,
+        alreadyTried: plan.kind === 'offer' && autoTriedRef.current.has(autoRelaunchKey(plan)),
+        pending: pendingRef.current.has(tab.id),
+        relaunching: relaunchingRef.current.has(tab.id),
+        typedSinceSubmit: typedSinceSubmit(tab.ptyId)
+      })
+      if (step === 'skip' || plan.kind !== 'offer') continue
+      autoTriedRef.current.add(autoRelaunchKey(plan))
+      if (step === 'relaunch') {
+        void relaunchTab(tab, plan)
+      } else {
+        pendingRef.current.set(tab.id, 'auto')
+        queued = true
+      }
+    }
+    if (queued) syncPending()
+  }, [relaunchMode, tabs, activeTabId, planFor, relaunchTab, syncPending])
+
+  /*
+   * Stoke's own "Restart and install", asked the same question.
+   *
+   * Restarting ends every session, so a turn running anywhere is lost the same
+   * way a relaunch loses one. The tabs come back resumed afterwards (main
+   * records the update restart; see `afterUpdate` above), so the only thing at
+   * stake is what is mid-flight.
+   */
+  const installSelfUpdateNow = useCallback((): void => {
+    // Claimed first: the effect below must not fire it a second time.
+    selfRestartPendingRef.current = false
+    setSelfRestartPending(false)
+    void window.stoke.self.install().then((started) => {
+      if (!started) setError('The update is not ready to install yet — try again once it has downloaded.')
+    })
+  }, [])
+
+  const requestSelfRestart = useCallback((): void => {
+    const busy = busyTabIds(tabsRef.current, liveRef.current)
+    if (!busy.length) {
+      installSelfUpdateNow()
+      return
+    }
+    setBusyPrompt({ kind: 'restart', tabIds: busy })
+  }, [installSelfUpdateNow])
+
+  useEffect(() => {
+    if (!selfRestartPendingRef.current) return
+    if (busyTabIds(tabs, live).length) return
+    installSelfUpdateNow()
+  }, [tabs, live, installSelfUpdateNow])
+
+  /** The busy dialog's three answers. */
+  const answerBusy = useCallback(
+    (answer: 'force' | 'wait' | 'cancel'): void => {
+      const prompt = busyPromptRef.current
+      setBusyPrompt(null)
+      if (!prompt || answer === 'cancel') return
+      if (prompt.kind === 'restart') {
+        if (answer === 'force') {
+          installSelfUpdateNow()
+        } else {
+          selfRestartPendingRef.current = true
+          setSelfRestartPending(true)
+        }
+        return
+      }
+      const tab = tabsRef.current.find((t) => t.id === prompt.tabId)
+      if (!tab) return
+      if (answer === 'force') {
+        const plan = planForRef.current(tab)
+        if (plan.kind === 'offer') void relaunchTab(tab, plan)
+        return
+      }
+      if (pendingRef.current.has(tab.id)) return
+      pendingRef.current.set(tab.id, 'user')
+      syncPending()
+    },
+    [installSelfUpdateNow, relaunchTab, syncPending]
+  )
+
   /* --------------------------------------------------------------- browser */
 
-  const overlayOpen = paletteOpen || settingsOpen
+  // The busy dialog is an overlay like the other two: the docked browser has to
+  // come off the window while it is up, or it paints over it (gotcha 14).
+  const overlayOpen = paletteOpen || settingsOpen || busyPrompt !== null
   const seededBrowser = useRef(false)
 
   /*
@@ -1873,10 +2317,11 @@ export function App(): React.JSX.Element {
         return
       }
       const label = title ? `"${title}" (${url})` : url
-      window.stoke.pty.write(
-        target.ptyId,
-        `Using the stoke browser tools, look at the page open in the browser — ${label} — and `
-      )
+      const line = `Using the stoke browser tools, look at the page open in the browser — ${label} — and `
+      // Deliberately unsent, so it IS a draft: noted, so an automatic relaunch
+      // leaves this tab alone until it is submitted.
+      noteInput(target.ptyId, line)
+      window.stoke.pty.write(target.ptyId, line)
       setActiveTabId(target.id)
     },
     [tabs, activeTabId]
@@ -1910,15 +2355,7 @@ export function App(): React.JSX.Element {
    * the status bar can explain itself on hover instead of simply not being
    * there — which is what "why is there no button" looks like from outside.
    */
-  const relaunch = useMemo(
-    () =>
-      relaunchPlan({
-        tab: activeTab && activeTab.kind === 'session' ? activeTab : null,
-        running: activeTab ? (sessionLine[activeTab.sessionId]?.cliVersion ?? null) : null,
-        installed: cli?.version ?? null
-      }),
-    [activeTab, sessionLine, cli]
-  )
+  const relaunch = useMemo(() => planFor(activeTab), [activeTab, planFor])
 
   /*
    * What the launcher offers when nothing is selected: pinned folders first,
@@ -2000,6 +2437,7 @@ export function App(): React.JSX.Element {
         )
         if (send === null || ptyId === null) return
         e.preventDefault()
+        noteInput(ptyId, send)
         window.stoke.pty.write(ptyId, send)
         focusTerm(ptyId)
         return
@@ -2119,6 +2557,9 @@ export function App(): React.JSX.Element {
   useEffect(() => {
     if (!settingsOpen) return
     const onKey = (e: KeyboardEvent): void => {
+      // The busy dialog can sit over the sheet ("Restart and install"), and
+      // then Escape is its Cancel — not a second, unasked close of the sheet.
+      if (busyPromptRef.current) return
       if (e.key === 'Escape') setSettingsOpen(false)
     }
     window.addEventListener('keydown', onKey)
@@ -2255,6 +2696,78 @@ export function App(): React.JSX.Element {
     },
     [projects, startSession, activeNewTabId]
   )
+
+  /*
+   * The busy dialog's words. Built here rather than inside BusyDialog so the
+   * component stays a plain question with three answers, and everything it
+   * says about a tab is read from the same live state the decision was made on.
+   */
+  const busyDialog = ((): React.JSX.Element | null => {
+    if (!busyPrompt) return null
+    const quote = (t: Tab | undefined): string => `“${t?.title || t?.projectName || 'this tab'}”`
+    if (busyPrompt.kind === 'relaunch') {
+      const tab = tabs.find((t) => t.id === busyPrompt.tabId)
+      const st = tab ? live[tab.ptyId] : undefined
+      const plan = planFor(tab ?? null)
+      const target = plan.kind === 'offer' ? plan.installed : 'the installed version'
+      const doing =
+        st?.status === 'waiting'
+          ? `Claude is waiting for your answer${st.waitingFor ? ` (${st.waitingFor})` : ''}, in the middle of a turn.`
+          : st?.status === 'shell'
+            ? 'A shell command Claude started is still running.'
+            : 'Claude is working on a reply.'
+      return (
+        <BusyDialog
+          title={`A prompt is running in ${quote(tab)}`}
+          forceLabel="Force restart"
+          waitLabel="Wait"
+          waitHint={`Relaunch on ${target} the moment this turn ends`}
+          onForce={() => answerBusy('force')}
+          onWait={() => answerBusy('wait')}
+          onCancel={() => answerBusy('cancel')}
+        >
+          <p>{doing}</p>
+          <p>
+            Relaunching now stops it, and <strong>the turn in flight is lost</strong>: the reply so far
+            is not saved, and the conversation comes back as it was after the last finished reply.
+          </p>
+          <p>
+            <strong>Wait</strong> relaunches it on {target} the moment it goes idle.
+          </p>
+        </BusyDialog>
+      )
+    }
+    const busyTabs = busyPrompt.tabIds
+      .map((id) => tabs.find((t) => t.id === id))
+      .filter((t): t is Tab => !!t)
+    return (
+      <BusyDialog
+        title={
+          busyTabs.length === 1
+            ? `A prompt is running in ${quote(busyTabs[0])}`
+            : `Prompts are running in ${busyTabs.length} tabs`
+        }
+        forceLabel="Force restart"
+        waitLabel="Wait"
+        waitHint="Restart and install the moment every session is idle"
+        onForce={() => answerBusy('force')}
+        onWait={() => answerBusy('wait')}
+        onCancel={() => answerBusy('cancel')}
+      >
+        <p>
+          Restarting Stoke to install its update ends every session.{' '}
+          {busyTabs.length > 1 && <>Still working: {busyTabs.map((t) => quote(t)).join(', ')}.</>}
+        </p>
+        <p>
+          Restarting now loses <strong>the turns in flight</strong>. Every tab comes back resumed once
+          Stoke is up again.
+        </p>
+        <p>
+          <strong>Wait</strong> restarts the moment every session is idle.
+        </p>
+      </BusyDialog>
+    )
+  })()
 
   const worklogPending = worklog.filter((p) => p.status === 'pending').length
   const worklogState = useMemo(
@@ -2670,10 +3183,20 @@ export function App(): React.JSX.Element {
         cli={cli}
         updateAvailable={update?.updateAvailable ? update.latest : null}
         relaunch={relaunch}
-        relaunchBusy={relaunching}
+        relaunchBusy={activeTab ? relaunching.includes(activeTab.id) : false}
         onRelaunch={() => {
-          if (relaunch.kind === 'offer' && activeTab) relaunchTab(activeTab, relaunch.sessionId)
+          if (activeTab) requestRelaunch(activeTab)
         }}
+        relaunchPending={activeTab ? activeTab.id in pending : false}
+        onCancelRelaunch={() => {
+          if (activeTab) cancelPendingRelaunch(activeTab.id)
+        }}
+        selfRestartPending={selfRestartPending}
+        onCancelSelfRestart={() => {
+          selfRestartPendingRef.current = false
+          setSelfRestartPending(false)
+        }}
+        liveVersion={activeTab ? (live[activeTab.ptyId]?.version ?? null) : null}
         profileLabel={activeProfile?.label ?? null}
         onRevealProject={(p) => void window.stoke.projects.reveal(p)}
         onOpenSettings={() => openSettings('updates')}
@@ -2701,6 +3224,7 @@ export function App(): React.JSX.Element {
           onProfileCreated={refreshProjects}
           onPreviewTheme={setPreviewTheme}
           initialSection={settingsSection}
+          onRestartToUpdate={requestSelfRestart}
           onClose={() => {
             // Drop any live preview with the sheet. Closing settings mid-edit
             // is a cancel by any other name, and leaving the preview applied
@@ -2712,6 +3236,8 @@ export function App(): React.JSX.Element {
           }}
         />
       )}
+
+      {busyDialog}
 
       {/*
         Last in the tree and highest in z, so it sits over whatever the launch

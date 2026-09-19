@@ -209,6 +209,12 @@ interface Props {
    * to land on Appearance regardless of what they were talking about.
    */
   initialSection?: SectionId
+  /**
+   * "Restart and install" for Stoke's own update. App's, not a direct IPC call,
+   * because only App knows whether a turn is running anywhere — and restarting
+   * over one loses it, so App asks first.
+   */
+  onRestartToUpdate: () => void
   onClose: () => void
 }
 
@@ -229,6 +235,7 @@ export function SettingsSheet({
   onProfileCreated,
   onPreviewTheme,
   initialSection,
+  onRestartToUpdate,
   onClose
 }: Props): React.JSX.Element {
   const themes: Theme[] = [...BUILT_IN_THEMES, ...settings.customThemes]
@@ -855,10 +862,15 @@ export function SettingsSheet({
                 <SelfUpdateSettings
                   betaUpdates={settings.betaUpdates}
                   onChangeBeta={(betaUpdates) => onPatch({ betaUpdates })}
+                  autoDownload={settings.selfUpdateAuto}
+                  onChangeAutoDownload={(selfUpdateAuto) => onPatch({ selfUpdateAuto })}
+                  onInstall={onRestartToUpdate}
                 />
                 <UpdatesSettings
                   autoUpdate={settings.cliAutoUpdate}
                   onChangeAuto={(cliAutoUpdate) => onPatch({ cliAutoUpdate })}
+                  relaunch={settings.cliRelaunch}
+                  onChangeRelaunch={(cliRelaunch) => onPatch({ cliRelaunch })}
                 />
                 <ClaudePathField settings={settings} cli={cli} onPatch={onPatch} />
               </>

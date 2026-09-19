@@ -4,18 +4,23 @@
  *
  *   node scripts/verify-restore.mts
  */
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   MAX_SCREEN_BYTES,
   MAX_STORED_TABS,
   STORED_TAB_MAX_AGE_MS,
+  UPDATE_RESTART_MAX_AGE_MS,
+  consumeUpdateRestart,
   normaliseTabs,
   readTabState,
   tabStateFile,
   trimScreen,
-  writeTabState
+  updateRestartFile,
+  updateRestartHonoured,
+  writeTabState,
+  writeUpdateRestart
 } from '../src/main/tabStore.ts'
 import type { ContextSnapshot, StoredTab, StoredTabs } from '../src/shared/types.ts'
 import { fromStored, screensFrom, toStored } from '../src/renderer/src/lib/restore.ts'
@@ -45,6 +50,7 @@ function tab(over: Partial<StoredTab> = {}): StoredTab {
     permissionMode: 'default',
     model: '',
     effort: 'default',
+    ultracode: false,
     hostId: null,
     selectedPath: null,
     expandedPath: null,
@@ -225,13 +231,13 @@ console.log('\nconverting between the tab list and the snapshot')
     {
       id: 'p1', kind: 'session', ptyId: 'p1', sessionId: 'sess-a', cwd: '/w/stoke',
       projectName: 'stoke', title: 'live one', permissionMode: 'default', model: '',
-      effort: 'default', status: 'running', exitCode: null, hostId: null,
+      effort: 'default', ultracode: true, status: 'running', exitCode: null, hostId: null,
       selectedPath: null, expandedPath: null
     },
     {
       id: 'new-1', kind: 'new', ptyId: '', sessionId: '', cwd: '', projectName: '',
       title: 'New session', permissionMode: 'default', model: '', effort: 'default',
-      status: 'running', exitCode: null, hostId: null,
+      ultracode: false, status: 'running', exitCode: null, hostId: null,
       selectedPath: '/w/other', expandedPath: null
     }
   ]
@@ -257,6 +263,14 @@ console.log('\nconverting between the tab list and the snapshot')
   check('the active tab is recorded by index', snap.activeIndex, 1)
   check('a live tab is resolved through its own id, not another tab\'s', snap.tabs.find((t) => t.sessionId === 'sess-a')?.screen, 'p1')
   check('and its context reading', snap.tabs.find((t) => t.sessionId === 'sess-a')?.context, { tokens: 10, limit: 200 })
+  /*
+   * Ultracode travels with the tab, like model and effort: a restore — and a
+   * relaunch, which reads the same field — used to fall back to whatever the
+   * launcher's global said at that moment, bringing a session back at a
+   * different effort from the one it was running.
+   */
+  check('a session launched with ultracode is saved with it', snap.tabs.find((t) => t.sessionId === 'sess-a')?.ultracode, true)
+  check('and restored with it', fromStored(snap).tabs.find((t) => t.sessionId === 'sess-a')?.ultracode, true)
   check('a New tab is resolved through its own id, not another tab\'s', snap.tabs.find((t) => t.kind === 'new')?.screen, 'new-1')
   check('a New tab keeps its selection', snap.tabs.find((t) => t.kind === 'new')?.selectedPath, '/w/other')
   check('a New tab with no session has no context snapshot', snap.tabs.find((t) => t.kind === 'new')?.context, null)
@@ -309,6 +323,45 @@ console.log('\nscreensFrom keys the screen map by position, not by content')
     [shortTabs[0]!.id]: 'screen-a',
     [shortTabs[1]!.id]: 'screen-b'
   })
+}
+
+console.log('\nultracode off disk')
+{
+  const u = (raw: unknown): unknown =>
+    normaliseTabs({ version: 1, savedAt: NOW, activeIndex: 0, tabs: [{ ...tab(), ultracode: raw }] }, NOW).tabs[0].ultracode
+  check('true is true', u(true), true)
+  check('a file from before the field existed restores without it', u(undefined), false)
+  check('a truthy leftover is not ultracode', u('yes'), false)
+}
+
+/*
+ * "The last quit was Stoke installing its own update." Written by main just
+ * before quitAndInstall, consumed by the next boot's tabs:restore: then the
+ * tabs come back resumed. One marker, one boot, and only a fresh one — a
+ * marker left by an install that never quit must not resume every tab on some
+ * unrelated launch hours later.
+ */
+console.log('\nthe update-restart marker')
+{
+  check('a fresh marker is honoured', updateRestartHonoured(JSON.stringify({ at: NOW - 30_000, from: '0.9.5', to: '0.9.6' }), NOW), true)
+  check('one at the limit still is', updateRestartHonoured(JSON.stringify({ at: NOW - UPDATE_RESTART_MAX_AGE_MS, from: 'x', to: null }), NOW), true)
+  check('an old one is not', updateRestartHonoured(JSON.stringify({ at: NOW - UPDATE_RESTART_MAX_AGE_MS - 1, from: 'x', to: null }), NOW), false)
+  check('one from the future is not — a clock skew is not a licence', updateRestartHonoured(JSON.stringify({ at: NOW + 5_000 }), NOW), false)
+  check('junk is not', [updateRestartHonoured('nope', NOW), updateRestartHonoured('{"at":"now"}', NOW), updateRestartHonoured('[]', NOW)], [false, false, false])
+
+  const dir = mkdtempSync(join(tmpdir(), 'stoke-update-restart-'))
+  const file = updateRestartFile(dir)
+  // A bystander in the same directory: consuming the marker must touch nothing else (gotcha 74).
+  writeFileSync(join(dir, 'tabs.json'), 'bystander')
+  check('no marker means an ordinary launch', consumeUpdateRestart(file, NOW), false)
+  writeUpdateRestart(file, { at: NOW, from: '0.9.5', to: '0.9.6' })
+  check('a marker written just now is honoured on the next boot', consumeUpdateRestart(file, NOW + 5_000), true)
+  check('and only once: a renderer reload in the same run restores paused', consumeUpdateRestart(file, NOW + 6_000), false)
+  writeUpdateRestart(file, { at: NOW, from: '0.9.5', to: '0.9.6' })
+  check('a stale marker is not honoured', consumeUpdateRestart(file, NOW + UPDATE_RESTART_MAX_AGE_MS + 1), false)
+  check('but is still cleared, so it cannot resurface', consumeUpdateRestart(file, NOW), false)
+  check('and nothing else in the directory was touched', readFileSync(join(dir, 'tabs.json'), 'utf8'), 'bystander')
+  rmSync(dir, { recursive: true, force: true })
 }
 
 console.log(failures ? `\n${failures} failed` : '\nall pass')

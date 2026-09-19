@@ -24,7 +24,14 @@ import {
   revealDelta,
   stillOver,
   replaceOrAppend,
-  restartPlan
+  restartPlan,
+  autoRelaunchKey,
+  autoRelaunchStep,
+  busyTabIds,
+  looksTyped,
+  moveKey,
+  pendingRelaunchStep,
+  rebindTabs
 } from '../src/renderer/src/lib/tabs.ts'
 
 let failures = 0
@@ -255,7 +262,7 @@ const live = (over: Partial<Parameters<typeof relaunchPlan>[0]['tab'] & object> 
 check(
   'a running local session on an older binary is offered the swap',
   relaunchPlan({ tab: live(), running: '2.1.237', installed: '2.1.251' }),
-  { kind: 'offer', running: '2.1.237', installed: '2.1.251', sessionId: 'sess-1' }
+  { kind: 'offer', running: '2.1.237', installed: '2.1.251', sessionId: 'sess-1', fresh: false, busy: null }
 )
 check(
   'and it is not offered when the two already match',
@@ -284,12 +291,12 @@ check(
 check(
   'and a real difference still shows through the same noise',
   relaunchPlan({ tab: live(), running: '2.1.237', installed: '2.1.251 (Claude Code)' }),
-  { kind: 'offer', running: '2.1.237', installed: '2.1.251', sessionId: 'sess-1' }
+  { kind: 'offer', running: '2.1.237', installed: '2.1.251', sessionId: 'sess-1', fresh: false, busy: null }
 )
 check(
   'the offer carries numbers, not sentences — the pill renders `installed` verbatim',
   relaunchPlan({ tab: live(), running: '2.1.237 (Claude Code)', installed: '2.1.251 (Claude Code)' }),
-  { kind: 'offer', running: '2.1.237', installed: '2.1.251', sessionId: 'sess-1' }
+  { kind: 'offer', running: '2.1.237', installed: '2.1.251', sessionId: 'sess-1', fresh: false, busy: null }
 )
 /*
  * A prerelease tail is part of the version, not noise to strip. Two builds
@@ -387,6 +394,198 @@ check(
   'none'
 )
 check('and neither does no tab at all', relaunchPlan({ tab: null, running: '2.1.237', installed: '2.1.251' }).kind, 'none')
+
+/*
+ * The CLI's own registry (`~/.claude/sessions/<pid>.json`) states two things
+ * the plan used to guess at: which session the process is on NOW, and whether
+ * a turn is running. Both were measured wrong in the running app before this:
+ * a tab launched as 6b80feb4 whose process, registry, payload and every hook
+ * said 39db23cb after a `/clear`, and a relaunch that killed a turn mid-reply.
+ */
+console.log('\nthe relaunch follows the session the process is on now, and knows when it is busy')
+const reading = (over: Partial<{ sessionId: string | null; busy: boolean | null; version: string | null }> = {}) => ({
+  sessionId: 'sess-1',
+  busy: false as boolean | null,
+  version: '2.1.237' as string | null,
+  ...over
+})
+check(
+  'a drifted id: after a /clear the registry names the new session, and that is what comes back',
+  (() => {
+    const p = relaunchPlan({ tab: live(), running: '2.1.237', installed: '2.1.251', live: reading({ sessionId: 'after-clear' }) })
+    return p.kind === 'offer' ? p.sessionId : p.reason
+  })(),
+  'after-clear'
+)
+check(
+  'a --continue tab (no id of its own) is offered once the registry names its session — gotcha 26',
+  (() => {
+    const p = relaunchPlan({ tab: live({ sessionId: '' }), running: null, installed: '2.1.251', live: reading({ sessionId: 'real-id' }) })
+    return p.kind === 'offer' ? p.sessionId : p.reason
+  })(),
+  'real-id'
+)
+check(
+  "the registry's version is the running binary, stated before any payload",
+  relaunchPlan({ tab: live(), running: null, installed: '2.1.251', live: reading() }).kind,
+  'offer'
+)
+check(
+  'and it outranks a payload that says otherwise — they differ exactly when the payload is stale',
+  relaunchPlan({ tab: live(), running: '2.1.237', installed: '2.1.251', live: reading({ version: '2.1.251' }) }).kind,
+  'none'
+)
+check(
+  'a registry reading with no version falls back to the payload',
+  relaunchPlan({ tab: live(), running: '2.1.237', installed: '2.1.251', live: reading({ version: null }) }).kind,
+  'offer'
+)
+check(
+  'a turn in flight is carried on the offer, so the pill can ask instead of killing it',
+  (() => {
+    const p = relaunchPlan({ tab: live(), running: null, installed: '2.1.251', live: reading({ busy: true }) })
+    return p.kind === 'offer' && p.busy
+  })(),
+  true
+)
+check(
+  'no registry reading is "cannot say", never idle',
+  (() => {
+    const p = relaunchPlan({ tab: live(), running: '2.1.237', installed: '2.1.251' })
+    return p.kind === 'offer' ? p.busy : 'none'
+  })(),
+  null
+)
+check(
+  'no transcript yet: the offer is fresh — the same id starts again rather than --resume, which would exit 1',
+  (() => {
+    const p = relaunchPlan({ tab: live(), running: '2.1.237', installed: '2.1.251', hasTranscript: () => false })
+    return p.kind === 'offer' && p.fresh
+  })(),
+  true
+)
+check(
+  'the transcript is asked about for the id that will be relaunched, not the id the tab was launched with',
+  (() => {
+    const asked: string[] = []
+    relaunchPlan({
+      tab: live(),
+      running: '2.1.237',
+      installed: '2.1.251',
+      live: reading({ sessionId: 'after-clear' }),
+      hasTranscript: (id) => (asked.push(id), false)
+    })
+    return asked
+  })(),
+  ['after-clear']
+)
+check(
+  'an unknown transcript is not "fresh": only a stated absence is',
+  (() => {
+    const p = relaunchPlan({ tab: live(), running: '2.1.237', installed: '2.1.251', hasTranscript: () => null })
+    return p.kind === 'offer' && p.fresh
+  })(),
+  false
+)
+
+console.log('\na relaunch waiting for its turn to end')
+const offer = (busy: boolean | null) =>
+  relaunchPlan({ tab: live(), running: '2.1.237', installed: '2.1.251', live: reading({ busy }) })
+const none = relaunchPlan({ tab: null, running: null, installed: null })
+check('busy: keep waiting', pendingRelaunchStep({ origin: 'user', plan: offer(true), inFront: true, typedSinceSubmit: false }), 'wait')
+check('cannot say: keep waiting — unknown is not permission', pendingRelaunchStep({ origin: 'user', plan: offer(null), inFront: false, typedSinceSubmit: false }), 'wait')
+check('idle: fire', pendingRelaunchStep({ origin: 'user', plan: offer(false), inFront: false, typedSinceSubmit: false }), 'fire')
+check(
+  'Wait, chosen by the user, fires even on the tab in front and with a draft — they chose it looking at it',
+  pendingRelaunchStep({ origin: 'user', plan: offer(false), inFront: true, typedSinceSubmit: true }),
+  'fire'
+)
+check(
+  'the tab exited or closed while waiting: dropped, never fired later on something else',
+  pendingRelaunchStep({ origin: 'user', plan: none, inFront: false, typedSinceSubmit: false }),
+  'drop'
+)
+check(
+  'an automatic one hands back to the pill the moment its tab is in front',
+  pendingRelaunchStep({ origin: 'auto', plan: offer(false), inFront: true, typedSinceSubmit: false }),
+  'drop'
+)
+check(
+  'or once something has been typed and not sent — idle does not prove the prompt box is empty',
+  pendingRelaunchStep({ origin: 'auto', plan: offer(false), inFront: false, typedSinceSubmit: true }),
+  'drop'
+)
+
+console.log('\nthe automatic relaunch (Settings: relaunch idle sessions in the background)')
+const auto = (over: Partial<Parameters<typeof autoRelaunchStep>[0]> = {}) =>
+  autoRelaunchStep({
+    mode: 'auto',
+    plan: offer(false),
+    inFront: false,
+    alreadyTried: false,
+    pending: false,
+    relaunching: false,
+    typedSinceSubmit: false,
+    ...over
+  })
+check('an idle background session is relaunched', auto(), 'relaunch')
+check('a busy one is queued until idle', auto({ plan: offer(true) }), 'queue')
+check('one that cannot say is queued too, never relaunched blind', auto({ plan: offer(null) }), 'queue')
+check('never with the setting on ask', auto({ mode: 'ask' }), 'skip')
+check('never the tab in front — someone may be typing into it', auto({ inFront: true }), 'skip')
+check('never a tab with a draft in its prompt box', auto({ typedSinceSubmit: true }), 'skip')
+check(
+  'never twice for one session and version — a relaunch that comes back on the old binary must not loop',
+  auto({ alreadyTried: true }),
+  'skip'
+)
+check('never one already queued or mid-relaunch', [auto({ pending: true }), auto({ relaunching: true })], ['skip', 'skip'])
+check('nothing to offer, nothing to do', auto({ plan: none }), 'skip')
+check(
+  'the one-attempt key is the session and the version it was sent to',
+  autoRelaunchKey({ sessionId: 's', installed: '2.1.251' }) === autoRelaunchKey({ sessionId: 's', installed: '2.1.252' }),
+  false
+)
+
+console.log('\nwhich tabs a restart would interrupt')
+const liveTabs = [
+  { id: 't1', kind: 'session', status: 'running', ptyId: 'p1' },
+  { id: 't2', kind: 'session', status: 'running', ptyId: 'p2' },
+  { id: 't3', kind: 'session', status: 'running', ptyId: 'p3' },
+  { id: 't4', kind: 'session', status: 'exited', ptyId: 'p4' },
+  { id: 't5', kind: 'new', status: 'running', ptyId: '' }
+]
+check(
+  'only a stated busy counts; idle, unknown, exited and new tabs do not',
+  busyTabIds(liveTabs, { p1: { busy: true }, p2: { busy: false }, p3: { busy: null }, p4: { busy: true } }),
+  ['t1']
+)
+
+console.log('\na rebind moves the tab, and only the tab, onto the new id')
+const strip = [
+  { id: 'a', ptyId: 'p1', sessionId: 'old' },
+  { id: 'b', ptyId: 'p2', sessionId: 'other' }
+]
+check('the tab on that pty takes the new id', rebindTabs(strip, 'p1', 'new').map((t) => t.sessionId), ['new', 'other'])
+check('an unknown pty changes nothing, and returns the same list', rebindTabs(strip, 'p9', 'new') === strip, true)
+check('the same id changes nothing', rebindTabs(strip, 'p1', 'old') === strip, true)
+check('per-session state moves to the new key', moveKey({ old: 1, x: 2 }, 'old', 'new'), { x: 2, new: 1 })
+check('but never over a newer entry already there', moveKey({ old: 1, new: 9 }, 'old', 'new'), { new: 9 })
+const same = { x: 1 }
+check('nothing to move is the same object', moveKey(same, 'old', 'new') === same, true)
+
+console.log('\nwhat counts as typing into the prompt box')
+check('letters are typing', looksTyped('hello'), true)
+check('a paste is typing — its bracket markers are escapes, its body is not', looksTyped('\x1b[200~fix the bug\x1b[201~'), true)
+check('Enter alone is not', looksTyped('\r'), false)
+check('backspace is not', looksTyped('\x7f'), false)
+check('focus reports are not — xterm sends them on every tab switch', looksTyped('\x1b[I\x1b[O'), false)
+check('an SGR mouse report is not', looksTyped('\x1b[<0;12;7M\x1b[<0;12;7m'), false)
+check('an answer to a colour query is not', looksTyped('\x1b]11;rgb:1818/1717/1616\x1b\\'), false)
+check('arrows in application mode are not', looksTyped('\x1bOA\x1bOB'), false)
+check('a device-attributes reply is not', looksTyped('\x1b[?1;2c'), false)
+check('Alt+b (word back) is not — ESC and one character', looksTyped('\x1bb'), false)
+check('but text after an escape still is', looksTyped('\x1b[Dfix'), true)
 
 console.log('\ncycling the strip wraps rather than stopping')
 check('next from the middle', cycleTab(five, 'c', 1), 'd')

@@ -4,6 +4,7 @@ import { app } from 'electron'
 import type { AppUpdater } from 'electron-updater'
 import { signatureBlocker } from './codesign.ts'
 import { getSettings } from './store.ts'
+import { shouldAutoDownload } from '../shared/updateCheck.ts'
 
 const execFileAsync = promisify(execFile)
 
@@ -11,9 +12,16 @@ const execFileAsync = promisify(execFile)
  * Stoke updating itself.
  *
  * electron-updater reads the `publish` block in electron-builder.yml, so a
- * release published to GitHub is enough to make installed copies notice. The
- * download is deliberately not automatic: pulling ~100MB in the background
- * without asking is rude, and a session may be mid-turn.
+ * release published to GitHub is enough to make installed copies notice.
+ *
+ * The download is automatic when `Settings.selfUpdateAuto` is on (the default)
+ * and this build could actually install what it fetched. It used to be
+ * manual-only, on the reasoning that ~100MB unasked is rude and a session may be
+ * mid-turn — but a download touches no session, and the cost of asking was
+ * measured on this machine: 0.9.6 sat found-and-not-downloaded for six days.
+ * The INSTALL is still never unasked: it happens on a quit
+ * (`autoInstallOnAppQuit`) or a "Restart and install", and the latter checks
+ * for running turns first (App.tsx `requestSelfRestart`).
  *
  * Nothing here runs in development — there is no installed app to replace, and
  * electron-updater throws rather than no-oping.
@@ -249,8 +257,10 @@ export async function checkSelfUpdate(): Promise<SelfUpdateState> {
     // No published release yet is the common case; report it without alarm.
     state.error = friendlyError(err)
   }
+  if (shouldAutoDownload(state, getSettings().selfUpdateAuto)) void downloadSelfUpdate()
   return selfUpdateState()
 }
+
 
 export async function downloadSelfUpdate(): Promise<SelfUpdateState> {
   if (!app.isPackaged || !state.availableVersion) return selfUpdateState()
@@ -275,10 +285,24 @@ export async function downloadSelfUpdate(): Promise<SelfUpdateState> {
   return selfUpdateState()
 }
 
-/** Quit and install now. Callers should warn that running sessions will end. */
-export function installSelfUpdate(): void {
-  if (!state.downloaded) return
-  // isSilent = false so the installer's progress is visible; isForceRunAfter so
-  // Stoke comes back up afterwards.
-  updater().quitAndInstall(false, true)
+/**
+ * Quit and install now. Callers should warn that running sessions will end —
+ * the renderer's `requestSelfRestart` asks first when a turn is running.
+ *
+ * True when the install was started. False when there was nothing downloaded
+ * to install, or electron-updater threw before quitting; the caller uses that
+ * to take back the update-restart marker it wrote in anticipation.
+ */
+export function installSelfUpdate(): boolean {
+  if (!state.downloaded) return false
+  try {
+    // isSilent = false so the installer's progress is visible; isForceRunAfter
+    // so Stoke comes back up afterwards.
+    updater().quitAndInstall(false, true)
+    return true
+  } catch (err) {
+    state.error = friendlyError(err)
+    push()
+    return false
+  }
 }
