@@ -11,3 +11,8 @@
 *.node binary
 *.dll binary
 *.exe binary
+
+# Batch files are the exception, and not for tidiness: cmd.exe's GOTO and CALL
+# scan for a label by byte offset, and an LF-only .cmd can miss a label that
+# sits across a 512-byte boundary. build/bin/stoke.cmd jumps to three.
+*.cmd text eol=crlf

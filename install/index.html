@@ -143,8 +143,32 @@
         <li>On Windows, closes Stoke the same way and runs the installer silently, in the place
           your existing copy is already in. No administrator rights unless you already had an
           all-users install.</li>
-        <li>On Linux, puts the AppImage at <code>~/.local/bin/stoke</code> with a desktop entry.</li>
+        <li>On Linux, puts the AppImage at <code>~/.local/bin/stoke.AppImage</code>, a small
+          <code>stoke</code> launcher beside it, and a desktop entry.</li>
       </ul>
+
+      <h2>Then, from any terminal</h2>
+      <pre><span class="prompt">$ </span>stoke .</pre>
+      <p>
+        opens the folder you are in as a session in Stoke — or brings forward the tab already
+        running there. <code>stoke --new</code> always opens another tab, <code>stoke --cli
+        codex</code> starts a different coding CLI, <code>stoke --open</code> only adds the
+        folder to the sidebar, and <code>stoke --help</code> lists the rest. A running Stoke takes
+        the request; one that is not running starts.
+      </p>
+      <p>
+        The command is a link in <code>~/.local/bin</code> on macOS, made by the installer (or by
+        <code>stoke install-cli</code>, or Settings › Updates › Command line in the app), and the
+        launcher itself on Linux. On Windows, Settings › Updates › Command line puts it on your
+        PATH — that part has not yet been run on Windows. If <code>~/.local/bin</code> is not on
+        your PATH, the installer prints the line to add.
+      </p>
+      <p>
+        One thing the installer will not do is run inside Stoke's own terminal on a Mac:
+        replacing the app means quitting it, which would end the session running the installer.
+        It says so and stops before downloading anything. Update from Settings › Updates there, or
+        run the line from any other terminal.
+      </p>
 
       <h2>Read it first</h2>
       <p>
@@ -181,8 +205,8 @@
         That is convenient and it is exactly why it is worth reading the script first.
       </p>
       <p>
-        Linux has an AppImage from the next release onwards, and no Stoke build has ever been run
-        on Linux. Treat it as experimental — the installer says so too.
+        Linux has had an AppImage since 0.9.5, but no Stoke build has been run on Linux yet. Treat
+        it as experimental.
       </p>
 
       <footer>

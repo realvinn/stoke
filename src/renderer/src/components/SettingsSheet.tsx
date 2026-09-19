@@ -38,7 +38,7 @@ import { ProfilesSettings } from './ProfilesSettings'
 import { ClaudeCodeSettings } from './ClaudeCodeSettings'
 import { ProvidersSettings } from './ProvidersSettings'
 import { ThemeEditor } from './ThemeEditor'
-import { RemoteSettings, SelfUpdateSettings, UpdatesSettings } from './RemoteSettings'
+import { RemoteSettings, SelfUpdateSettings, StokeCommandSettings, UpdatesSettings } from './RemoteSettings'
 import { VoiceSettings } from './VoiceSettings'
 import { AgentsSettings } from './AgentsSettings'
 import type { CodingCliDetection, CodingCliId } from '@shared/codingClis'
@@ -876,6 +876,7 @@ export function SettingsSheet({
                   betaUpdates={settings.betaUpdates}
                   onChangeBeta={(betaUpdates) => onPatch({ betaUpdates })}
                 />
+                <StokeCommandSettings />
                 <UpdatesSettings
                   autoUpdate={settings.cliAutoUpdate}
                   onChangeAuto={(cliAutoUpdate) => onPatch({ cliAutoUpdate })}

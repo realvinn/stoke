@@ -1,4 +1,4 @@
-import { access, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { access, mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, net, protocol, shell, systemPreferences } from 'electron'
 import { pathToFileURL } from 'node:url'
 import { homedir } from 'node:os'
@@ -22,7 +22,7 @@ import type {
 } from '@shared/types'
 import { EmbeddedBrowser } from './browser.ts'
 import { clearWallpaper, mimeFor, storeWallpaper, WALLPAPER_SCHEME, wallpaperFileFor } from './wallpaper.ts'
-import { detectCodingClis, forgetIdentities, forgetLoginPath, probeClaude } from './cli.ts'
+import { detectCodingClis, forgetIdentities, forgetLoginPath, loginShellPathValue, probeClaude } from './cli.ts'
 import { scanSkills } from './skillsScan.ts'
 import { ContextWatcher } from './context.ts'
 import { findSessionFile, listProjects, listSessions } from './projects.ts'
@@ -30,7 +30,16 @@ import { indexSessions } from './sessionIndex.ts'
 import { IDLE_GAP_MS, readActivity, type ActivitySessionInput } from './activity.ts'
 import { commitSubjects } from './activityGit.ts'
 import { manualProjectPatch, projectMetaPatch } from './projectMeta.ts'
-import { normalizePath, pathRulesFor } from '../shared/paths.ts'
+import { normalizePath, pathKey, pathRulesFor } from '../shared/paths.ts'
+import {
+  folderOf,
+  folderProblem,
+  parseStokeArgs,
+  requestFrom,
+  type FolderProblem,
+  type StokeCliRequest
+} from '../shared/stokeArgs.ts'
+import { installCommand, readCommandState, removeCommand, type CommandEnv } from './stokeCommand.ts'
 import { keepUsage } from '../shared/statusLine.ts'
 import { parseSession, readTranscript } from './sessionFile.ts'
 import { fetchRemoteTranscript } from './sshTranscript.ts'
@@ -58,7 +67,7 @@ import { autoScanStateFile, readAutoScanState, writeAutoScanState } from './work
 import { readSessionState, sessionStateFile, writeSessionState } from './worklog/sessionStore.ts'
 import { invalidateRecall, recall, scanOutcomeFor } from './worklog/recall.ts'
 import type { CreateProfileInput } from '@shared/profiles'
-import type { CliRunResult, RemoteState, VoiceState } from '@shared/api'
+import type { CliRunResult, RemoteState, StokeCommandState, VoiceState } from '@shared/api'
 import { flushSettings, getSettings, onSettingsChanged, setSettings } from './store.ts'
 import {
   readSessionEvents,
@@ -722,6 +731,136 @@ function send(channel: string, ...args: unknown[]): void {
   }
 }
 
+/* ------------------------------------------- `stoke …` from a terminal */
+/*
+ * The request arrives in one of two ways — this process's own argv on a cold
+ * start, or `second-instance` when Stoke was already running — and either way
+ * before the renderer can necessarily take it. So it is checked here, queued,
+ * and handed over when the renderer asks (`CH.cliPending`), which it does once,
+ * after tab restore has settled. Parsing is `src/shared/stokeArgs.ts`; nothing
+ * here decides what the words mean.
+ */
+
+/** Checked requests the renderer has not taken yet. */
+const launchQueue: StokeCliRequest[] = []
+/** True once this window's renderer has asked for the queue; pushes go straight to it after that. */
+let launchReady = false
+/**
+ * One request at a time, in the order they came. Each may wait on a disk that
+ * is asleep, and two `stoke` presses must not overtake each other on the way
+ * to the renderer.
+ */
+let launchChain: Promise<void> = Promise.resolve()
+/** The same deadline `projects.ts` gives a folder check, for the same reason (gotcha 40). */
+const LAUNCH_FOLDER_DEADLINE_MS = 1500
+
+/** Why `path` cannot be opened as a folder, or null when it can. Async, with a deadline. */
+async function launchFolderProblem(path: string): Promise<FolderProblem | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    const st = await Promise.race([
+      stat(path),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' })),
+          LAUNCH_FOLDER_DEADLINE_MS
+        )
+        timer.unref?.()
+      })
+    ])
+    return st.isDirectory() ? null : 'not-a-folder'
+  } catch (e) {
+    const code = (e as { code?: string }).code
+    if (code === 'ENOENT' || code === 'ENOTDIR') return 'missing'
+    if (code === 'EACCES' || code === 'EPERM') return 'denied'
+    return 'unreachable'
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+/**
+ * Put a folder `stoke` named into the sidebar, as Open a Folder does — but
+ * only when it is not already there by hand, so a second `stoke .` writes
+ * nothing. `manualProjectPatch` also un-hides it: naming a folder you once
+ * hid is asking to see it.
+ */
+function rememberLaunchFolder(path: string): void {
+  const rules = pathRulesFor(process.platform)
+  const key = pathKey(path, rules)
+  const s = getSettings()
+  const added = Object.entries(s.projectMeta ?? {}).some(
+    ([p, m]) => pathKey(p, rules) === key && m.addedManually === true
+  )
+  const hidden = (s.hiddenProjects ?? []).some((p) => pathKey(p, rules) === key)
+  if (added && !hidden) return
+  const next = setSettings(manualProjectPatch(s, path, rules))
+  send(CH.settingsChanged, next)
+  sendWatchStates()
+}
+
+/** Check a request, then hand it over or queue it. Never throws. */
+function acceptLaunch(req: StokeCliRequest): void {
+  // `stoke` on its own asks for the window and nothing else; the caller has
+  // already brought it forward.
+  if (req.kind === 'focus') return
+  launchChain = launchChain
+    .then(async () => {
+      let checked: StokeCliRequest = req
+      const folder = folderOf(req)
+      if (folder) {
+        const problem = await launchFolderProblem(folder)
+        if (problem) checked = folderProblem(folder, problem)
+        else rememberLaunchFolder(folder)
+      }
+      if (launchReady && win) send(CH.cliRequest, checked)
+      else launchQueue.push(checked)
+    })
+    .catch((err) => console.error('[stoke] could not deliver a stoke request', err))
+}
+
+/**
+ * The window to the front — and a window at all, on macOS, where closing the
+ * last one leaves the app running without one (gotcha 35).
+ *
+ * `steal` because the app asking is a terminal, not Stoke: without it macOS
+ * treats a background app's focus() as a request to bounce in the Dock.
+ */
+function bringForward(): void {
+  if (!win) {
+    if (app.isReady()) createWindow()
+    return
+  }
+  if (win.isMinimized()) win.restore()
+  // Before ready-to-show there is nothing painted to show; that handler shows it.
+  if (!win.isVisible()) return
+  if (isMac) app.focus({ steal: true })
+  win.focus()
+}
+
+/** What `src/main/stokeCommand.ts` needs to know about this process. */
+function commandEnv(): CommandEnv {
+  return {
+    platform: process.platform,
+    home: homedir(),
+    resourcesPath: process.resourcesPath,
+    packaged: app.isPackaged,
+    loginPath: loginShellPathValue
+  }
+}
+
+/**
+ * Install and Remove, one at a time (gotcha 66): each reads the link, decides,
+ * then writes, and two presses interleaved could each decide on a state the
+ * other has already changed.
+ */
+let commandChain: Promise<unknown> = Promise.resolve()
+function serialCommand(fn: () => Promise<StokeCommandState>): Promise<StokeCommandState> {
+  const run = commandChain.then(fn, fn)
+  commandChain = run.catch(() => {})
+  return run
+}
+
 /* --------------------------------------------------------------- worklog */
 
 /** The process-wide review queue. */
@@ -1365,6 +1504,15 @@ function createWindow(): void {
    */
   const offSettings = onSettingsChanged(() => sendWatchStates())
   win.webContents.on('did-finish-load', () => sendWatchStates())
+  /*
+   * A reload is a new renderer that has not asked for the launch queue yet, so
+   * anything that arrives meanwhile has to wait in it rather than be pushed at
+   * a page that is tearing down. It asks again once its own restore settles.
+   */
+  launchReady = false
+  win.webContents.on('did-start-navigation', (details) => {
+    if (details.isMainFrame && !details.isSameDocument) launchReady = false
+  })
 
   const devUrl = process.env.ELECTRON_RENDERER_URL
   if (!app.isPackaged && devUrl) {
@@ -1413,6 +1561,7 @@ function createWindow(): void {
     watcher = null
     mcp = null
     mcpConfigPath = null
+    launchReady = false
     win = null
   })
 }
@@ -2382,6 +2531,22 @@ function registerIpc(): void {
     if (typeof text === 'string' && text) clipboard.writeText(text)
   })
 
+  /* ------------------------------------------------------ stoke from a shell */
+  /*
+   * The renderer's one ask, after its tab restore has settled. Everything
+   * queued so far goes over in one answer, and every later request is pushed.
+   * Only the app's own window may take them: a docked-browser page has no
+   * preload, but the check costs nothing and the queue can name folders.
+   */
+  ipcMain.handle(CH.cliPending, (e) => {
+    if (!win || e.sender !== win.webContents) return []
+    launchReady = true
+    return launchQueue.splice(0)
+  })
+  ipcMain.handle(CH.commandState, () => readCommandState(commandEnv()))
+  ipcMain.handle(CH.commandInstall, () => serialCommand(() => installCommand(commandEnv())))
+  ipcMain.handle(CH.commandRemove, () => serialCommand(() => removeCommand(commandEnv())))
+
   /* ------------------------------------------------------------------ misc */
   ipcMain.on(CH.openExternal, (_e, url: string) => {
     if (/^https?:/i.test(url)) void shell.openExternal(url)
@@ -2449,13 +2614,35 @@ protocol.registerSchemesAsPrivileged([
   { scheme: WALLPAPER_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true } }
 ])
 
-if (!app.requestSingleInstanceLock()) {
+/*
+ * `stoke …` from a terminal, parsed from this process's OWN argv, before the
+ * lock — because when another Stoke is already running, this process is about
+ * to quit, and the request has to travel to that one as the lock's
+ * `additionalData`. Electron says of the `argv` a `second-instance` handler
+ * receives that it "will not be exactly the same list of arguments as those
+ * passed to the second instance" (Chromium moves every switch ahead of every
+ * positional), so the parsed request is sent rather than trusting the receiver
+ * to re-parse a reordered one. Null for every argv without the `--stoke-cli`
+ * marker — a Finder launch, a test's `--user-data-dir`, an updater relaunch.
+ */
+const launchRequest = parseStokeArgs(process.argv, { home: homedir(), platform: process.platform })
+
+if (!app.requestSingleInstanceLock(launchRequest ? { stokeCli: launchRequest } : undefined)) {
   app.quit()
 } else {
-  app.on('second-instance', () => {
-    if (!win) return
-    if (win.isMinimized()) win.restore()
-    win.focus()
+  app.on('second-instance', (_event, argv, _workingDirectory, additionalData) => {
+    /*
+     * The forwarded request first, re-validated field by field: it crossed a
+     * process boundary and may come from another build. The argv is only a
+     * fallback, for a second instance that sent nothing — see stokeArgs.ts for
+     * why the transport's `--` keeps even a reordered argv readable.
+     */
+    const data = additionalData as { stokeCli?: unknown } | null | undefined
+    const req =
+      requestFrom(data?.stokeCli, process.platform) ??
+      parseStokeArgs(argv, { home: homedir(), platform: process.platform })
+    bringForward()
+    if (req) acceptLaunch(req)
   })
 
   app.whenReady().then(() => {
@@ -2466,6 +2653,8 @@ if (!app.requestSingleInstanceLock()) {
     })
     registerIpc()
     createWindow()
+    // A cold start's own request, queued until the renderer asks for it.
+    if (launchRequest) acceptLaunch(launchRequest)
     /*
      * The only sweep for statusLine files that a crash, a SIGKILL or a failed
      * launch left behind on a previous run — see statusLine.ts for why it is

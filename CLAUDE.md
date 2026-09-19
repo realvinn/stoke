@@ -38,7 +38,7 @@ A `dist:*` exists per target and each MUST run on that target's own platform and
 Every suite runs alone as `npm run verify:<name>`: context, statusline, unicode, usage,
 profiles, settings, providers, claude-config, folders, search, color, theme-gen, activity,
 worklog-gate, tabs,
-restore, shortcuts, drop, browser-url, voice, agents, campfire, cli, updates, targets, manifests, worklog-runner,
+restore, shortcuts, drop, browser-url, voice, agents, campfire, cli, stoke-args, updates, targets, manifests, worklog-runner,
 worklog-retry, worklog-recall, worklog-autoscan, ssh, remote, installer-art, install, welcome,
 selection — the `check` chain — plus extract and security, which
 need a live instance (`verify:security <url> <token> --access`). `verify:selection` opens a real
@@ -89,6 +89,9 @@ scripts/             verify-*.mts suites, ci-verify.mjs, gen-themes.mts, cdp-eva
 install/             the one-line installer: install.sh (macOS/Linux), install.ps1 (Windows,
                      never run on one) and index.html. Each script's whole body is inside a
                      function called on the LAST line, because a piped `sh` executes as it reads
+build/bin/           the `stoke` command shipped inside the app: `stoke` (macOS sh, linked as
+                     ~/.local/bin/stoke) and `stoke.cmd` (Windows). src/shared/stokeArgs.ts reads
+                     what they send; only an argv carrying `--stoke-cli` is ever a request
 worker/              the Cloudflare Worker at stoke.vinn.dev: route.ts decides which of the
                      three bodies a request gets (pure, so verify:install holds the matrix) and
                      index.ts serves it from install/, embedded at deploy time

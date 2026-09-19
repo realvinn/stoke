@@ -2,6 +2,7 @@ import type { SkillDirScan } from './skills'
 import type { MicAccess } from './voiceRoute'
 import type { CreateProfileInput, ProfilePlan } from './profiles'
 import type { CodingCliDetection } from './codingClis'
+import type { StokeCliRequest } from './stokeArgs'
 import type {
   ActivityReport,
   BrowserState,
@@ -260,6 +261,36 @@ export interface CliRunResult {
   from: string | null
   /** CLI version after. Equal to `from` when nothing was installed. */
   to: string | null
+}
+
+/**
+ * Settings > Updates > Command line: whether `stoke` works from a new terminal,
+ * and what the buttons would do about it. Built in `src/main/stokeCommand.ts`
+ * from the pure rules in `src/shared/stokeCommand.ts`.
+ */
+export interface StokeCommandState {
+  platform: 'darwin' | 'linux' | 'win32' | 'other'
+  /**
+   * Why this build cannot manage the command at all — a development run, an
+   * app running from its disk image — or null when it can. Shown instead of
+   * the buttons, never as an error.
+   */
+  unavailable: string | null
+  /** `~/.local/bin/stoke` on macOS and Linux; the folder added to PATH on Windows. */
+  commandPath: string | null
+  /** This build's own shim, which the link points at when installed. */
+  shimPath: string | null
+  status: 'installed' | 'repairable' | 'foreign' | 'missing'
+  /** One sentence about `status`, for the hint line. */
+  detail: string
+  /** Whether a new terminal's PATH reaches `commandPath`'s folder; null when that could not be read. */
+  onPath: boolean | null
+  /** What to add to a shell profile when it does not, or null. */
+  pathLine: string | null
+  /** What the last Install or Remove could not do, or null. */
+  error: string | null
+  canInstall: boolean
+  canRemove: boolean
 }
 
 /** The surface exposed to the renderer as `window.stoke`. */
@@ -599,6 +630,28 @@ export interface StokeApi {
      */
     readSync(): ClipboardPeek
     writeText(text: string): void
+  }
+
+  /**
+   * `stoke …` typed in a terminal, delivered to this window.
+   *
+   * `pending` hands over whatever main queued before this renderer was ready —
+   * a cold start's own request, most often — and marks it ready, so every
+   * later request is pushed through `onRequest` instead. Call it ONCE, after tab
+   * restore has settled, or a restore landing afterwards replaces the tab a
+   * request just opened.
+   */
+  launch: {
+    pending(): Promise<StokeCliRequest[]>
+    onRequest(cb: (request: StokeCliRequest) => void): () => void
+  }
+
+  /** Settings > Updates > Command line. */
+  command: {
+    state(): Promise<StokeCommandState>
+    /** Link it / put it on PATH. Never replaces anything that is not Stoke's. */
+    install(): Promise<StokeCommandState>
+    remove(): Promise<StokeCommandState>
   }
 
   openExternal(url: string): void

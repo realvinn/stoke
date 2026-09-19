@@ -1,0 +1,247 @@
+#!/bin/sh
+# stoke: open a folder in Stoke from a terminal.
+#
+# This file ships inside the app, at Stoke.app/Contents/Resources/bin/stoke,
+# and reaches PATH as a symlink: ~/.local/bin/stoke, made by `stoke
+# install-cli`, by the one-line installer, or by Settings > Updates > Command
+# line. Following that symlink back is how it finds the bundle it belongs to,
+# so it keeps working wherever Stoke.app lives and whichever copy is newest.
+#
+# It answers --help, --version, install-cli and uninstall-cli itself, without
+# starting anything. Everything else becomes
+#
+#     open -n -a Stoke.app --args --stoke-cli --stoke-cwd=$PWD -- <your args>
+#
+# and src/shared/stokeArgs.ts in the app reads it. Three details there are
+# load-bearing:
+#
+#   -n      A running app is only ACTIVATED by `open -a`, and its arguments
+#           are dropped. -n starts a second process, which either becomes the
+#           app (nothing was running) or hands the request to the running one
+#           through Electron's single-instance lock and quits.
+#   cwd     An app started by `open` starts in `/`, so the shell's folder has
+#           to travel as an argument or `stoke .` would mean the disk root.
+#   --      Chromium parses the same argv. Without the terminator anything you
+#           type that looks like a switch (`--remote-debugging-port=…`) would
+#           configure the browser instead of reaching the parser.
+#
+# macOS only. On Linux the command is the launcher install.sh writes to
+# ~/.local/bin/stoke; on Windows it is stoke.cmd beside this file.
+#
+# STOKE_OPEN overrides the launcher (default /usr/bin/open). It exists so
+# `npm run verify:stoke-args` can record what would be launched without
+# launching anything; nothing in the app sets it.
+set -eu
+
+stoke_help() {
+  cat <<'HELP'
+Usage: stoke [options] [DIR]
+
+  stoke                   bring Stoke forward, or start it
+  stoke DIR               a session in DIR (stoke . for here), or the tab already running there
+  stoke --new [DIR]       a new tab even when one is already running there
+  stoke --cli ID [DIR]    a session with another coding agent, by id:
+                          claude, codex, grok, opencode, pi, gemini, qwen, kimi,
+                          copilot, cursor, amp, kilo, aider, crush, droid, cline,
+                          auggie, vibe
+  stoke --continue [DIR]  pick up the last Claude Code conversation in DIR
+  stoke --open [DIR]      add DIR to the sidebar and select it; starts nothing
+  stoke update            open Settings, Updates and check for a new Stoke; installs nothing
+  stoke --version         the installed version
+  stoke --help            this
+
+  stoke install-cli       link this command into ~/.local/bin
+  stoke uninstall-cli     remove that link
+
+DIR defaults to the current folder when an option is given.
+A folder named update, or starting with -, is stoke ./update or stoke -- -name.
+HELP
+}
+
+say() { printf '%s\n' "$*"; }
+
+die() {
+  printf 'stoke: %s\n' "$@" >&2
+  exit 1
+}
+
+# --help needs nothing else, not even a bundle, so it is answered first.
+case "${1:-}" in
+  --help | -h)
+    stoke_help
+    exit 0
+    ;;
+esac
+
+# Where this script really is: through every symlink, to the file in the
+# bundle. `$0` is the path the kernel was given, which for a PATH lookup is the
+# symlink in ~/.local/bin, not this file.
+stoke_self=$0
+case $stoke_self in
+  */*) : ;;
+  # `sh stoke` from the folder it is in, or a shell that searched PATH for it.
+  *)
+    if [ -e "$stoke_self" ]; then
+      stoke_self=./$stoke_self
+    else
+      stoke_self=$(command -v "$stoke_self" 2>/dev/null || printf '%s' "$stoke_self")
+    fi
+    ;;
+esac
+stoke_hops=0
+while [ -L "$stoke_self" ]; do
+  stoke_hops=$((stoke_hops + 1))
+  if [ "$stoke_hops" -gt 40 ]; then die "too many symlinks resolving $0"; fi
+  stoke_link=$(readlink "$stoke_self")
+  case $stoke_link in
+    /*) stoke_self=$stoke_link ;;
+    *) stoke_self=$(dirname "$stoke_self")/$stoke_link ;;
+  esac
+done
+STOKE_BIN_DIR=$(cd "$(dirname "$stoke_self")" && pwd -P)
+STOKE_SHIM=$STOKE_BIN_DIR/$(basename "$stoke_self")
+# bin -> Resources -> Contents -> Stoke.app
+STOKE_APP=$(dirname "$(dirname "$(dirname "$STOKE_BIN_DIR")")")
+
+# The one rule for "is this link Stoke's", shared with the installer and with
+# src/shared/stokeCommand.ts (isStokeShimTarget). A link to ANY Stoke bundle's
+# copy of this file is Stoke's to re-point; anything else is somebody else's.
+stoke_is_ours() {
+  case $1 in
+    *.app/Contents/Resources/bin/stoke) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+in_bundle() {
+  stoke_is_ours "$STOKE_SHIM" && [ -f "$STOKE_APP/Contents/Info.plist" ]
+}
+
+stoke_version() {
+  plist=$STOKE_APP/Contents/Info.plist
+  [ -f "$plist" ] || die "cannot tell the version: $plist is not there." \
+    "This copy of the command is not inside Stoke.app."
+  v=''
+  if [ -x /usr/libexec/PlistBuddy ]; then
+    v=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist" 2>/dev/null || true)
+  fi
+  # electron-builder writes an XML plist, so this reads it anywhere PlistBuddy
+  # is not (a Linux CI runner asking the suite's questions).
+  if [ -z "$v" ]; then
+    v=$(sed -n '/<key>CFBundleShortVersionString<\/key>/{n;s/.*<string>\(.*\)<\/string>.*/\1/p;}' "$plist" 2>/dev/null || true)
+  fi
+  [ -n "$v" ] || die "cannot read CFBundleShortVersionString from $plist."
+  say "Stoke $v"
+}
+
+# Why a bundle cannot be linked to: it will not be there after a restart. The
+# same two cases src/shared/stokeCommand.ts's macBundleProblem names.
+bundle_problem() {
+  case $STOKE_APP in
+    */AppTranslocation/*)
+      say 'macOS is running this Stoke from a temporary copy (App Translocation), which'
+      say 'disappears on restart. Move Stoke.app into /Applications and open it from there.'
+      return 0
+      ;;
+    /Volumes/*/*/*) return 1 ;;
+    /Volumes/*)
+      say 'This Stoke is running from its disk image, which will be ejected. Drag it'
+      say 'into /Applications and run this again from there.'
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+path_note() {
+  case ":${PATH:-}:" in
+    *":$HOME/.local/bin:"* | *":$HOME/.local/bin/:"*) : ;;
+    *)
+      say ''
+      say '~/.local/bin is not on your PATH, so a new shell will not find stoke yet.'
+      say 'Add this to your shell profile (~/.zshrc for zsh):'
+      say ''
+      # shellcheck disable=SC2016 # printed for the user to paste, unexpanded
+      say '    export PATH="$HOME/.local/bin:$PATH"'
+      ;;
+  esac
+}
+
+install_cli() {
+  [ "$(uname -s)" = Darwin ] || die 'install-cli is for macOS. On Linux, the installer already put the command at ~/.local/bin/stoke.'
+  in_bundle || die "this copy is not inside Stoke.app (it is $STOKE_SHIM), so there is nothing to link to."
+  if why=$(bundle_problem); then die "$why"; fi
+  dest_dir=$HOME/.local/bin
+  dest=$dest_dir/stoke
+  if [ -L "$dest" ]; then
+    cur=$(readlink "$dest")
+    if [ "$cur" = "$STOKE_SHIM" ]; then
+      say "$dest already points at this Stoke."
+      path_note
+      return 0
+    fi
+    stoke_is_ours "$cur" || die "$dest is a link to $cur, which is not Stoke's. Leaving it alone."
+    # A link to a directory would make the rename below move INTO it.
+    [ ! -d "$dest" ] || die "$dest points at a directory. Leaving it alone."
+    verb='re-pointed'
+  elif [ -e "$dest" ]; then
+    die "$dest already exists and is not a link Stoke made. Leaving it alone."
+  else
+    verb='linked'
+  fi
+  mkdir -p "$dest_dir"
+  # Made beside the destination and renamed over it, so there is never a
+  # moment with no command and never a half-written one.
+  stage=$dest_dir/.stoke.link.$$
+  rm -f "$stage"
+  if ! ln -s "$STOKE_SHIM" "$stage" || ! mv -f "$stage" "$dest"; then
+    rm -f "$stage" 2>/dev/null || true
+    die "could not write $dest (its own error is above)."
+  fi
+  say "$verb $dest -> $STOKE_SHIM"
+  path_note
+}
+
+uninstall_cli() {
+  dest=$HOME/.local/bin/stoke
+  if [ -L "$dest" ]; then
+    cur=$(readlink "$dest")
+    stoke_is_ours "$cur" || die "$dest is a link to $cur, which is not Stoke's. Leaving it alone."
+    rm -f "$dest"
+    say "removed $dest"
+  elif [ -e "$dest" ]; then
+    die "$dest is not a link Stoke made. Leaving it alone."
+  else
+    say "$dest is not there; nothing to remove."
+  fi
+}
+
+case "${1:-}" in
+  --version | -v)
+    stoke_version
+    exit 0
+    ;;
+  install-cli)
+    [ $# -eq 1 ] || die 'install-cli takes nothing after it.'
+    install_cli
+    exit 0
+    ;;
+  uninstall-cli)
+    [ $# -eq 1 ] || die 'uninstall-cli takes nothing after it.'
+    uninstall_cli
+    exit 0
+    ;;
+esac
+
+[ "$(uname -s)" = Darwin ] || die 'this command is the macOS one. On Linux, run the stoke the installer put in ~/.local/bin.'
+in_bundle || die "this copy is not inside Stoke.app (it is $STOKE_SHIM)."
+
+# Never hand the GUI a Node runtime flag (gotcha 1): an inherited
+# ELECTRON_RUN_AS_NODE starts Electron as plain node, with no window at all.
+# `open` does not pass the shell's environment anyway; this is for the day it does.
+unset ELECTRON_RUN_AS_NODE
+
+stoke_cwd=${PWD:-}
+[ -n "$stoke_cwd" ] || stoke_cwd=$(pwd)
+
+exec "${STOKE_OPEN:-/usr/bin/open}" -n -a "$STOKE_APP" --args --stoke-cli "--stoke-cwd=$stoke_cwd" -- "$@"

@@ -372,6 +372,23 @@ function Install-Stoke {
     return
   }
 
+  # Inside Stoke's own terminal, the close below (which installing has to do)
+  # ends every session Stoke is running -- including the one running this, so
+  # the install would stop halfway. Said before anything is downloaded. A dry
+  # run closes nothing, so it may carry on.
+  if ($env:TERM_PROGRAM -eq 'Stoke' -and -not $env:STOKE_DRY_RUN) {
+    Write-Host ''
+    Write-Host '  This terminal is inside Stoke, so this installer cannot replace it.'
+    Write-Host ''
+    Write-Host '  Installing closes Stoke so the new copy can go in, and closing Stoke ends'
+    Write-Host '  every session it is running - this one included.'
+    Write-Host ''
+    Write-Host '  Use Settings > Updates in Stoke instead, or run the same line from a'
+    Write-Host '  PowerShell window outside Stoke.'
+    Write-Host ''
+    return
+  }
+
   $arch = 'x64'
   if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64' -or $env:PROCESSOR_ARCHITEW6432 -eq 'ARM64') {
     $arch = 'arm64'
@@ -493,7 +510,10 @@ function Install-Stoke {
     }
 
     $after = Get-InstalledStoke
-    if ($after.Location) { Write-Row 'installed' $after.Location }
+    if ($after.Location) {
+      Write-Row 'installed' $after.Location
+      Add-StokeToPath (Join-Path $after.Location 'resources\bin')
+    }
 
     Write-Host ''
     Write-Host "  Stoke $($release.Version) is installed."
@@ -633,6 +653,49 @@ function Stop-StokeGracefully {
     if (@(Get-Process -Name 'Stoke' -ErrorAction SilentlyContinue).Count -eq 0) { return }
   }
   throw 'Stoke is still running after 30 seconds and would not close. Close it yourself and run this again - killing it would strand the claude processes its sessions are running.'
+}
+
+# --- the stoke command -----------------------------------------------------
+
+# <install>\resources\bin\stoke.cmd, on the per-user PATH. The same edit as
+# Settings > Updates > Command line in the app (src/main/stokeCommand.ts).
+#
+# Read RAW and written back as REG_EXPAND_SZ: the obvious
+# [Environment]::GetEnvironmentVariable / SetEnvironmentVariable round trip
+# returns the value expanded and writes a plain REG_SZ, which freezes
+# %USERPROFILE%\AppData\Local\Microsoft\WindowsApps -- the entry Windows puts
+# there itself -- and every other %VAR% entry into a literal, for good. The
+# change is then announced by setting and clearing a throwaway variable
+# through [Environment], which broadcasts WM_SETTINGCHANGE; a raw registry
+# write does not. Never setx, which truncates the value at 1024 characters.
+#
+# Never fatal: Stoke is installed whether or not this lands.
+function Add-StokeToPath([string]$Dir) {
+  if (-not (Test-Path -LiteralPath (Join-Path $Dir 'stoke.cmd'))) {
+    Write-Row 'command' 'this release has no stoke command yet'
+    return
+  }
+  try {
+    $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
+    try {
+      $raw = [string]$key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+      $parts = @($raw -split ';' | Where-Object { $_ -ne '' })
+      $want = $Dir.TrimEnd('\').ToLowerInvariant()
+      $have = @($parts | Where-Object { ([Environment]::ExpandEnvironmentVariables($_)).TrimEnd('\').ToLowerInvariant() -eq $want })
+      if ($have.Count -gt 0) {
+        Write-Row 'command' 'stoke (its folder is already on your PATH)'
+        return
+      }
+      $key.SetValue('Path', (($parts + $Dir) -join ';'), [Microsoft.Win32.RegistryValueKind]::ExpandString)
+    } finally {
+      $key.Close()
+    }
+    [Environment]::SetEnvironmentVariable('STOKE_PATH_CHANGED', '1', 'User')
+    [Environment]::SetEnvironmentVariable('STOKE_PATH_CHANGED', $null, 'User')
+    Write-Row 'command' 'stoke - on your PATH now; open a new terminal to use it'
+  } catch {
+    Write-Row 'command' "not added to PATH: $($_.Exception.Message)"
+  }
 }
 
 # --- digests ---------------------------------------------------------------

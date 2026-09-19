@@ -175,3 +175,42 @@ export function contentTypeFor(body: InstallerBody): string {
  * body is a few KB of embedded string.
  */
 export const CACHE_CONTROL = 'private, max-age=300, must-revalidate'
+
+/**
+ * Where a plain-HTTP request should be sent instead, or null to serve it.
+ *
+ * Measured before this existed: `curl -D - http://stoke.vinn.dev/` answered
+ * **200 and the whole installer**, over plain HTTP. The one-liners on the page
+ * say https, but anything that drops the `s` — a hand-typed URL, a stale
+ * bookmark, a proxy that downgrades — was handed a shell script that anyone on
+ * the path could have rewritten in flight, to be piped straight into `sh`.
+ * Nothing about that body can be verified after the fact; the only safe
+ * answer to plain HTTP is to serve no script at all.
+ *
+ * The URL's own scheme is the signal (a Worker sees the scheme the visitor
+ * used), with Cloudflare's `cf-visitor: {"scheme":"http"}` as a second reading
+ * of the same fact. Loopback is exempt so `wrangler dev --local`, which only
+ * speaks http, still answers the matrix.
+ *
+ * Path and query survive, so `http://stoke.vinn.dev/?sh` lands on `?sh`.
+ */
+export function httpsRedirect(url: string, headers: RouteHeaders = {}): string | null {
+  const parsed = new URL(url)
+  const host = parsed.hostname
+  if (host === 'localhost' || host === '127.0.0.1' || host === '[::1]') return null
+  const visitor = headers['cf-visitor'] ?? ''
+  const plain = parsed.protocol === 'http:' || /"scheme"\s*:\s*"http"/.test(visitor)
+  if (!plain) return null
+  parsed.protocol = 'https:'
+  return parsed.toString()
+}
+
+/**
+ * The redirect's body. A shell comment, because `curl -fsS http://… | sh`
+ * without `-L` does not follow the 301 and pipes THIS into sh — which must then
+ * do nothing at all. `#` is a comment to PowerShell too, and plain text to a
+ * browser that shows it.
+ */
+export function redirectBody(to: string): string {
+  return `# Moved permanently to ${to} -- the installer is served over https only.\n`
+}

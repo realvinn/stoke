@@ -29,6 +29,8 @@
 #     sh install.sh --fire-frames <tier>      the twelve frames, painted
 #     sh install.sh --sha512 <file>           the manifest's own digest form
 #     sh install.sh --print-wrapper            the Linux launcher, as installed
+#     sh install.sh --link-cli <shim>          link the `stoke` command, as a
+#                                              macOS install does after copying
 # ---------------------------------------------------------------------------
 set -eu
 
@@ -398,6 +400,9 @@ stoke installer
                       downloads nothing, writes nothing.
   --sha512 FILE       a file's sha512 in the base64 form the release manifests
                       use, so a download can be checked against one by hand.
+  --link-cli SHIM     run SHIM's own `install-cli`, exactly as a macOS install
+                      does after copying the app: ~/.local/bin/stoke, never
+                      replacing anything that is not Stoke's.
 
 The scripts are readable before you run them:
   https://stoke.vinn.dev/install.sh   https://stoke.vinn.dev/install.ps1
@@ -929,6 +934,59 @@ version_cmp() {
 
 # --- installing ----------------------------------------------------------
 
+# How many copies of /Applications/Stoke.app are running, and their pids, in
+# STOKE_RUNNING and STOKE_PIDS. The pattern is the main executable's own path;
+# helpers live under Contents/Frameworks and do not match it.
+stoke_running() {
+  set -- $(pgrep -f '/Applications/Stoke.app/Contents/MacOS/Stoke' 2>/dev/null || true)
+  STOKE_RUNNING=$#
+  STOKE_PIDS="$*"
+}
+
+# Why a macOS install has to stop before it starts, in MAC_REFUSAL, or empty.
+# One function for --preflight and main, so what the suite asserts is what runs.
+#
+# inside-stoke: this shell is in a Stoke terminal. Installing quits Stoke (it
+#   has to, to replace the bundle), and quitting Stoke ends every session in
+#   it -- including the one running this script, which then dies halfway with
+#   the old app renamed aside. TERM_PROGRAM=Stoke is what every Stoke pty sets.
+# several-running: `quit app "Stoke"` asks ONE of them. The rest keep the wait
+#   below spinning for thirty seconds before it gives up, which is the worst
+#   way to find out.
+mac_refusal() {
+  MAC_REFUSAL=''
+  if [ "${TERM_PROGRAM:-}" = Stoke ]; then
+    MAC_REFUSAL=inside-stoke
+    return 0
+  fi
+  stoke_running
+  if [ "$STOKE_RUNNING" -gt 1 ]; then MAC_REFUSAL=several-running; fi
+}
+
+refuse_mac() {
+  case $MAC_REFUSAL in
+    inside-stoke)
+      die 'This terminal is inside Stoke, so this installer cannot replace it.' \
+        '' \
+        'Installing quits Stoke so the new copy can go in, and quitting Stoke ends' \
+        'every session it is running -- this one included, so the install would' \
+        'stop halfway with your app moved aside.' \
+        '' \
+        'Use Settings > Updates in Stoke instead, or run the same line from' \
+        'Terminal or any other terminal app:' \
+        '' \
+        "    curl -fsSL https://stoke.vinn.dev | sh"
+      ;;
+    several-running)
+      die "$STOKE_RUNNING copies of /Applications/Stoke.app are running (pids $STOKE_PIDS)." \
+        'This installer can ask only one of them to quit, so it would wait for the' \
+        'rest and then give up. Quit each of them yourself (Cmd-Q, not kill: a' \
+        'killed Stoke strands the claude sessions it was running), then run this' \
+        'again.'
+      ;;
+  esac
+}
+
 # Ask a running Stoke to quit, and wait for it.
 #
 # NEVER kill it. Stoke's PTYs die with it but the `claude` processes underneath
@@ -1052,7 +1110,31 @@ install_macos() {
 
   clear_pending "$HOME/Library/Caches/stoke-updater/pending"
   note 'installed' '/Applications/Stoke.app'
+  mac_link_cli /Applications/Stoke.app/Contents/Resources/bin/stoke
 }
+
+# The `stoke` command, from the copy that just landed. The shim's own
+# `install-cli` does the linking, so this script, the command and Settings >
+# Updates share one rule for what may be replaced: a link into some Stoke.app
+# is re-pointed, anything else at ~/.local/bin/stoke is left alone. Never
+# fatal -- the app is installed either way, and the shim says what it did.
+mac_link_cli() {
+  mlc_shim=$1
+  if [ ! -x "$mlc_shim" ]; then
+    note 'command' 'this release has no stoke command yet'
+    return 0
+  fi
+  if mlc_out=$("$mlc_shim" install-cli 2>&1); then
+    MAC_LINKED=1
+    note 'command' 'stoke'
+  else
+    note 'command' 'not linked'
+  fi
+  printf '%s\n' "$mlc_out" | while IFS= read -r mlc_line; do
+    printf '              %s\n' "$mlc_line"
+  done
+}
+MAC_LINKED=0
 
 # The launcher that goes on PATH, printed rather than written so that
 # `--print-wrapper` and `install_linux` can never disagree about it: the suite
@@ -1069,13 +1151,53 @@ linux_wrapper() {
 # This file is on PATH; the AppImage is beside it, keeping a version-free name
 # so electron-updater overwrites it in place. The updater reads \$APPIMAGE and
 # never PATH, so it cannot see this script.
+#
+# It answers --help and --version itself, and turns anything else you type into
+# the request src/shared/stokeArgs.ts reads:
+#     --stoke-cli --stoke-cwd=<this folder> -- <what you typed>
+# The -- is Chromium's: without it a switch-shaped argument would configure the
+# browser instead of reaching Stoke. A running Stoke gets the request through
+# its single-instance lock and this second copy exits at once.
 STOKE_APPIMAGE='$1'
+
+case "\${1:-}" in
+  --help | -h)
+    cat <<'HELP'
+$(stoke_help_linux)
+HELP
+    exit 0
+    ;;
+  --version | -v)
+    if [ -f "\$HOME/.local/share/stoke/installed-version" ]; then
+      printf 'Stoke %s\n' "\$(cat "\$HOME/.local/share/stoke/installed-version")"
+      exit 0
+    fi
+    printf '%s\n' 'stoke: no installed version is recorded. Re-run the installer.' >&2
+    exit 1
+    ;;
+  install-cli | uninstall-cli)
+    printf '%s\n' 'stoke: on Linux this launcher is the command, and the installer manages it.' \\
+      'Re-run it to repair: curl -fsSL https://stoke.vinn.dev | sh'
+    exit 0
+    ;;
+esac
 
 if [ ! -x "\$STOKE_APPIMAGE" ]; then
   printf '%s\n' \\
     "stoke: \$STOKE_APPIMAGE is missing or not executable." \\
     'Re-run the installer: curl -fsSL https://stoke.vinn.dev | sh' >&2
   exit 127
+fi
+
+# The AppImage runtime reads its own --appimage-* options from the FIRST
+# argument only, so those go through untouched and in the foreground: they are
+# commands (extract, print the offset) as often as launches.
+case "\${1:-}" in
+  --appimage-*) exec "\$STOKE_APPIMAGE" "\$@" ;;
+esac
+
+if [ \$# -gt 0 ]; then
+  set -- --stoke-cli "--stoke-cwd=\${PWD:-\$(pwd)}" -- "\$@"
 fi
 
 # Electron aborts as root unless the sandbox is off (crbug.com/638180), inside
@@ -1086,11 +1208,70 @@ if [ "\$(id -u)" = 0 ]; then
   printf '%s\n' \\
     'stoke: running as root, so Chromium sandbox is off. Stoke can reach every' \\
     'stoke: file on this machine. A normal user account is recommended.' >&2
-  exec "\$STOKE_APPIMAGE" --no-sandbox "\$@"
+  set -- --no-sandbox "\$@"
 fi
 
-exec "\$STOKE_APPIMAGE" "\$@"
+# Never hand the GUI a Node runtime flag: ELECTRON_RUN_AS_NODE starts Electron
+# as plain node, with no window at all.
+unset ELECTRON_RUN_AS_NODE
+
+# Detached, so closing this terminal cannot take Stoke and its sessions down:
+# setsid gives it a session with no controlling terminal, so the hangup never
+# reaches it. nohup is only the fallback where setsid is missing: an ignored
+# SIGHUP lasts only until the process installs a handler of its own. Watched
+# for a moment first, so a copy that cannot start at all -- a missing
+# libfuse2 -- still says why here instead of vanishing.
+stoke_log=\$(mktemp "\${TMPDIR:-/tmp}/stoke-launch.XXXXXX" 2>/dev/null || true)
+[ -n "\$stoke_log" ] || stoke_log=/dev/null
+if command -v setsid >/dev/null 2>&1; then
+  setsid "\$STOKE_APPIMAGE" "\$@" </dev/null >"\$stoke_log" 2>&1 &
+else
+  nohup "\$STOKE_APPIMAGE" "\$@" </dev/null >"\$stoke_log" 2>&1 &
+fi
+stoke_pid=\$!
+if sleep 0.1 2>/dev/null; then stoke_tick=0.1 stoke_ticks=10; else stoke_tick=1 stoke_ticks=1; fi
+stoke_n=0
+while [ "\$stoke_n" -lt "\$stoke_ticks" ] && kill -0 "\$stoke_pid" 2>/dev/null; do
+  sleep "\$stoke_tick"
+  stoke_n=\$((stoke_n + 1))
+done
+stoke_status=0
+if ! kill -0 "\$stoke_pid" 2>/dev/null; then
+  # Gone already: a second copy that handed its request to the running one
+  # exits 0, and a copy that could not start does not.
+  wait "\$stoke_pid" || stoke_status=\$?
+  if [ "\$stoke_status" != 0 ] && [ "\$stoke_log" != /dev/null ]; then cat "\$stoke_log" >&2; fi
+fi
+if [ "\$stoke_log" != /dev/null ]; then rm -f "\$stoke_log"; fi
+exit "\$stoke_status"
 WRAPPER
+}
+
+# The help text the Linux launcher prints: stokeHelp('linux') in
+# src/shared/stokeArgs.ts, which verify:install compares this against by
+# running the launcher. It sits inside the launcher's quoted heredoc, and that
+# launcher is itself emitted through an UNQUOTED one, so it may hold no $, no
+# backtick and no backslash -- which stokeHelp already promises.
+stoke_help_linux() {
+  cat <<'HELP'
+Usage: stoke [options] [DIR]
+
+  stoke                   bring Stoke forward, or start it
+  stoke DIR               a session in DIR (stoke . for here), or the tab already running there
+  stoke --new [DIR]       a new tab even when one is already running there
+  stoke --cli ID [DIR]    a session with another coding agent, by id:
+                          claude, codex, grok, opencode, pi, gemini, qwen, kimi,
+                          copilot, cursor, amp, kilo, aider, crush, droid, cline,
+                          auggie, vibe
+  stoke --continue [DIR]  pick up the last Claude Code conversation in DIR
+  stoke --open [DIR]      add DIR to the sidebar and select it; starts nothing
+  stoke update            open Settings, Updates and check for a new Stoke; installs nothing
+  stoke --version         the installed version
+  stoke --help            this
+
+DIR defaults to the current folder when an option is given.
+A folder named update, or starting with -, is stoke ./update or stoke -- -name.
+HELP
 }
 
 install_linux() {
@@ -1257,8 +1438,17 @@ do_preflight() {
   else
     pf_warn=no
   fi
+  # And whether a macOS install would refuse to start, and why -- the two
+  # checks main makes before downloading anything. Linux never quits Stoke
+  # (its replace is a rename), so it never refuses.
+  MAC_REFUSAL=''
+  STOKE_RUNNING=0
+  if [ "$pf_platform" = mac ]; then mac_refusal; fi
+  if [ "${TERM_PROGRAM:-}" = Stoke ]; then pf_inside=yes; else pf_inside=no; fi
   say "arch=$pf_arch"
+  say "inside_stoke=$pf_inside"
   say "platform=$pf_platform"
+  say "refusal=${MAC_REFUSAL:-none}"
   say "root=$pf_root"
   say "root_warning=$pf_warn"
 }
@@ -1311,6 +1501,13 @@ main() {
       printf '\n'
       return 0
       ;;
+    --link-cli)
+      # What a macOS install does after the copy, against a shim the caller
+      # names -- so verify:install runs this script's step, not a copy of it.
+      if [ -z "${2:-}" ]; then die 'usage: --link-cli <path to a bundle shim>'; fi
+      mac_link_cli "$2"
+      return 0
+      ;;
     '') : ;;
     *) die "Unknown option: $1" 'Run with --help to see what this understands.' ;;
   esac
@@ -1361,6 +1558,13 @@ main() {
   # Before the download, not after: 120 MB is a long time to spend on a copy
   # that cannot start, and this is the last moment interrupting is free.
   if [ "$PLATFORM" = linux ] && is_root; then root_warning; fi
+
+  # And before anything at all on a Mac, the two ways the quit below would end
+  # badly. Not for a dry run, which quits nothing.
+  if [ "$PLATFORM" = mac ] && [ -z "${STOKE_DRY_RUN:-}" ]; then
+    mac_refusal
+    refuse_mac
+  fi
 
   if [ -t 1 ]; then fire_plan tty; else fire_plan pipe; fi
   # The frame interval comes from the art block (FIRE_MS), so the shell and
@@ -1516,9 +1720,13 @@ main() {
   blank
   if [ "$PLATFORM" = mac ]; then
     say "  Stoke $REL_VERSION is installed. Opening it now."
+    if [ "$MAC_LINKED" = 1 ]; then
+      say "  From a terminal, 'stoke .' opens a folder in it; 'stoke --help' says the rest."
+    fi
     open /Applications/Stoke.app || true
   else
-    say "  Stoke $REL_VERSION is installed. Run 'stoke' to start it."
+    say "  Stoke $REL_VERSION is installed. Run 'stoke' to start it, or 'stoke .' to"
+    say "  open this folder in it; 'stoke --help' says the rest."
     say '  If it refuses to start with a FUSE error, run it as'
     say '  `stoke --appimage-extract-and-run` or install libfuse2.'
     # Said out loud because the replacement is a rename and a rename is silent:
