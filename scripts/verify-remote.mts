@@ -144,7 +144,7 @@ console.log('\nan explicit choice is honoured, and is the thing that can be swap
  * take. Each preference is asserted BOTH ways: honoured when it can be served,
  * and falling to loopback rather than silently substituting another transport.
  */
-const configured = { ...base, hostname: 'code.example.com', lan: ['192.168.1.20'], tailnet: '100.64.0.9' }
+const configured = { ...base, hostname: 'code.example.com', bindLan: true, lan: ['192.168.1.20'], tailnet: '100.64.0.9' }
 check(
   'tunnel chosen uses the hostname even with a LAN address to hand',
   connectTarget({ ...configured, reach: 'tunnel' }).url,
@@ -160,10 +160,25 @@ check(
   connectTarget({ ...configured, reach: 'tailnet' }).address,
   '100.64.0.9'
 )
+/*
+ * This used to assert 'lan' — "a choice needs no bind flag" — which pinned the
+ * phone QA's bug as correct: a stale reach 'lan' with bindLan false drew a QR
+ * for 192.168.x:7941 while the server listened on 127.0.0.1 only.
+ */
 check(
-  'a choice needs no bind flag: the preference is the choice',
+  'a LAN choice the socket is not bound for is loopback (no QR), not a link nothing serves',
   connectTarget({ ...configured, reach: 'lan', bindLan: false }).reach,
-  'lan'
+  'loopback'
+)
+check(
+  'a tailnet choice with neither bind is loopback too',
+  connectTarget({ ...configured, reach: 'tailnet', bindLan: false, bindTailscale: false }).reach,
+  'loopback'
+)
+check(
+  'and with the tailnet listener alone it is the tailnet',
+  connectTarget({ ...configured, reach: 'tailnet', bindLan: false, bindTailscale: true }).reach,
+  'tailnet'
 )
 check(
   'tunnel chosen with no hostname is loopback, so the panel can say why',
