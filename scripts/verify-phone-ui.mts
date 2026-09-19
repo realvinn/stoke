@@ -24,7 +24,10 @@ import {
   toolOutcome,
   toolsLabel,
   decideResize,
+  connectCopy,
+  desktopFont,
   fontToFit,
+  scrollToColumn,
   groupProjects,
   groupSessionRows,
   isTerminalReport,
@@ -83,6 +86,16 @@ check(
 )
 check('an empty list has no sections, not four empty headings', groupSessionRows([]), [])
 check('a permission wait reads as Permission', statusPill('waiting', 'permission prompt'), { label: 'Permission', tone: 'waiting' })
+check(
+  'a fresh browser opened with a refused ?k= is told the link key is not current (phone QA)',
+  connectCopy({ linkKey: true, connectedBefore: false }).title,
+  'This link’s key isn’t current'
+)
+check('one that connected before and has no ?k= hears it was replaced', connectCopy({ linkKey: false, connectedBefore: true }).title, 'Your key was replaced')
+check('a plain first visit is the plain Connect page', connectCopy({ linkKey: false, connectedBefore: false }).title, 'Connect to your computer')
+check('while the socket is reconnecting, a stale Idle reads Offline', statusPill('idle', null, true), { label: 'Offline', tone: 'unknown' })
+check('and a stale Working too', statusPill('busy', null, true).label, 'Offline')
+check('an ended session stays Ended through a drop', statusPill('ended', null, true).label, 'Ended')
 check(
   'an unrecognised wait says Needs you, never the raw 200-char string',
   statusPill('waiting', 'x'.repeat(200)).label,
@@ -285,6 +298,13 @@ check(
 )
 check('100 columns into 382px at 0.6 is a 6px font: clamped up to the 7px floor', fontToFit(382, 100, 0.6, 7, 12), 7)
 check('100 columns into 800px fits at 13px', fontToFit(800, 100, 0.6, 7, 14), 13)
+// Phone QA: "Desktop size" at 390x844 drew 100 columns at ~4.2px per column.
+check('Desktop size on a 390px phone floors at a readable 10px and scrolls sideways', desktopFont(382, 100, 0.6, 12), 10)
+check('in landscape (722px) it still fits the grid whole', desktopFont(722, 100, 0.6, 12), 12)
+check('a user who chose a smaller Text size keeps it', desktopFont(382, 100, 0.6, 9), 9)
+check('the cursor already in view does not move the scroll', scrollToColumn(100, 6, 382, 0), 0)
+check('a cursor past the right edge is brought to the middle', scrollToColumn(540, 6, 382, 0), 352)
+check('never a negative scroll', scrollToColumn(0, 6, 382, 200), 0)
 
 /* ------------------------------------------------------------------ */
 console.log('\na send while disconnected is queued, never lost (PX-3)')

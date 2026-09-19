@@ -7,17 +7,19 @@
  * whole link or the bare key. It is also what an iOS home-screen app opens to
  * on first launch, since it gets a cookie jar of its own.
  */
-import { parseConnectInput } from '@shared/phoneUi'
+import { connectCopy, parseConnectInput } from '@shared/phoneUi'
 import { api, AuthError, CONNECTED_KEY } from './api'
 import { el, icon } from './dom'
 
-export function mountConnect(): HTMLElement {
+/** `linkKey`: the page was opened with a `?k=` that the server then refused. */
+export function mountConnect(opts: { linkKey?: boolean } = {}): HTMLElement {
   let replaced = false
   try {
     replaced = localStorage.getItem(CONNECTED_KEY) === '1'
   } catch {
     /* private mode */
   }
+  const copy = connectCopy({ linkKey: opts.linkKey === true, connectedBefore: replaced })
   const field = el('input', {
     type: 'text',
     class: 'connect-input',
@@ -78,14 +80,8 @@ export function mountConnect(): HTMLElement {
       'div',
       { class: 'connect-card' },
       el('div', { class: 'connect-mark', 'aria-hidden': 'true' }, icon('link', 26)),
-      el('h1', { class: 'connect-title' }, replaced ? 'Your key was replaced' : 'Connect to your computer'),
-      el(
-        'p',
-        { class: 'connect-text' },
-        replaced
-          ? 'The link this phone had no longer works — a new key was made on your computer. Scan the new code, or paste the new link here.'
-          : 'This page drives Claude Code on your computer, so it needs the key Stoke made for it.'
-      ),
+      el('h1', { class: 'connect-title' }, copy.title),
+      el('p', { class: 'connect-text' }, copy.text),
       form,
       el(
         'ol',

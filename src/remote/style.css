@@ -1937,6 +1937,11 @@ a {
   .key {
     height: 32px;
   }
+  /* 36px = 20px line + 7px + 7px padding + 2px border. The touch padding
+     (11px) needed 44px and clipped the placeholder in a 36px box. */
+  .composer-input {
+    padding: 7px 14px;
+  }
 }
 
 /* Small phones: nothing may overflow 320px. */

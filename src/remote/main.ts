@@ -240,7 +240,7 @@ function showConnect(): void {
   store.stop()
   teardown()
   document.title = 'Connect · Stoke'
-  app.replaceChildren(mountConnect())
+  app.replaceChildren(mountConnect({ linkKey: openedWithKey }))
 }
 
 /*
@@ -254,9 +254,13 @@ function showConnect(): void {
  * Then the theme, awaited, so the first paint is already the desktop's palette.
  * A 401 anywhere shows Connect instead of a dead screen.
  */
+/** The page was opened with `?k=` (scrubbed at boot): a refusal then means that key. */
+let openedWithKey = false
+
 async function boot(): Promise<void> {
   const here = new URL(window.location.href)
   if (here.searchParams.has('k')) {
+    openedWithKey = true
     here.searchParams.delete('k')
     window.history.replaceState(null, '', `${here.pathname}${here.search}${here.hash}`)
   }

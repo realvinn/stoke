@@ -60,7 +60,18 @@ export type PillTone = 'waiting' | 'busy' | 'idle' | 'ended' | 'unknown'
  * word when it is recognisable and otherwise the pill says "Needs you", never
  * the raw string, which can be up to 200 characters.
  */
-export function statusPill(status: PhoneSessionStatus, waitingFor: string | null): { label: string; tone: PillTone } {
+export function statusPill(
+  status: PhoneSessionStatus,
+  waitingFor: string | null,
+  /**
+   * The session's socket is down and reconnecting. The last status is then a
+   * reading from before the drop — an "Idle" pill sat under "Reconnecting…"
+   * with two messages queued (phone QA) — so it says Offline until the next
+   * `attached` frame brings a current one. An ended session stays Ended.
+   */
+  linkDown = false
+): { label: string; tone: PillTone } {
+  if (linkDown && status !== 'ended') return { label: 'Offline', tone: 'unknown' }
   switch (status) {
     case 'waiting': {
       const w = (waitingFor ?? '').toLowerCase()
@@ -390,6 +401,61 @@ export function fontToFit(width: number, cols: number, ratio: number, min: numbe
   if (width <= 0 || cols <= 0 || ratio <= 0) return max
   const exact = width / (cols * ratio)
   return Math.max(min, Math.min(max, Math.floor(exact * 2) / 2))
+}
+
+/**
+ * The font "Desktop size" shows the desktop's grid at on a phone.
+ *
+ * It used to shrink to fit the whole width, down to a 7px floor: at 390x844 a
+ * 100-column grid drew at ~4.2px per column, unreadable, and used 285 of 679px
+ * of height. The floor is 10px now (or the user's own Text size, if they chose
+ * smaller) and the wrap scrolls sideways past it, opened at the cursor
+ * (`scrollToColumn`). A laptop-width phone in landscape still fits whole.
+ */
+export const DESKTOP_MIN_FONT = 10
+
+export function desktopFont(width: number, cols: number, ratio: number, userFont: number): number {
+  return fontToFit(width, cols, ratio, Math.min(DESKTOP_MIN_FONT, userFont), userFont)
+}
+
+/**
+ * The `scrollLeft` that brings a column into a sideways-scrolling view, or the
+ * current one when it is already in it. `columnPx` is where the column starts,
+ * `cellPx` its width; a margin of a few cells is kept so the cursor is not on
+ * the edge.
+ */
+export function scrollToColumn(columnPx: number, cellPx: number, viewPx: number, current: number): number {
+  const margin = cellPx * 4
+  if (columnPx - margin >= current && columnPx + cellPx + margin <= current + viewPx) return current
+  return Math.max(0, Math.round(columnPx + cellPx / 2 - viewPx / 2))
+}
+
+/**
+ * The Connect page's heading and sentence.
+ *
+ * Only a browser that had connected before used to hear that its key was
+ * replaced; a fresh one opening `/?k=<stale key>` (a link from an old message,
+ * a QR scanned before the key was renewed) got the generic "Connect to your
+ * computer" with nothing saying the link's key was refused (phone QA). The
+ * URL is scrubbed at boot, so `linkKey` is whether it HAD a `?k=`.
+ */
+export function connectCopy(opts: { linkKey: boolean; connectedBefore: boolean }): { title: string; text: string } {
+  if (opts.linkKey) {
+    return {
+      title: 'This link’s key isn’t current',
+      text: 'The key may have been replaced in Stoke. Scan the new code, or paste the new link here.'
+    }
+  }
+  if (opts.connectedBefore) {
+    return {
+      title: 'Your key was replaced',
+      text: 'The link this phone had no longer works — a new key was made on your computer. Scan the new code, or paste the new link here.'
+    }
+  }
+  return {
+    title: 'Connect to your computer',
+    text: 'This page drives Claude Code on your computer, so it needs the key Stoke made for it.'
+  }
 }
 
 /* ------------------------------------------- sending while disconnected */
