@@ -370,6 +370,9 @@ rule file named on the group line.
   are busy), and never auto-relaunch on `idle` alone: a draft leaves it idle (`typedSinceSubmit`).
 - **83.** Veto `startOnLaunch` on whether the restore HAD sessions (`restoredSessions`), not on how
   many are still paused — the update-restart resume empties that count before `cli` answers.
+- **90.** Route every tab-close path (Cmd+W, ×, TitleBar) through `requestCloseTab`, which asks via
+  `BusyDialog` on the same busy/shell/waiting reading (82) `closeTab` itself never checked; a
+  no-reading tab (a non-Claude CLI) still closes at once, and window-quit's own kill is unguarded.
 
 **Packaging and signing** — `.claude/rules/release.md`
 - **7.** Pick architectures with the `--x64`/`--arm64` CLI flags and never add an `arch:` list to
