@@ -67,6 +67,26 @@ check('a request with no key is refused', 401, await status('/api/projects'))
 check('a request with the key is served', 200, await status(`/api/projects?k=${key}`))
 check('a wrong key of the same length is refused', 401, await status(`/api/projects?k=${'x'.repeat(key.length)}`))
 
+/*
+ * Phone contract point 1: the shell embeds no data, so it is served with no
+ * key at all — a phone has to be able to load SOMETHING before it has one to
+ * send. Every /api/* route stays exactly as gated as it was.
+ */
+console.log('\nthe shell is public; every API and socket stays gated')
+check('the app shell needs no key', 200, await status('/'))
+check('an unknown non-api path still falls to the shell, not a 401', 200, await status('/session/does-not-exist'))
+check('the manifest needs no key', 200, await status('/manifest.webmanifest'))
+check('/api/sessions is still gated', 401, await status('/api/sessions'))
+check('/api/host is still gated', 401, await status('/api/host'))
+check('/api/theme is still gated', 401, await status('/api/theme'))
+{
+  // No key at all, not even a bad one — the shell must carry no session data
+  // for anyone who merely loads the page without ever authenticating.
+  const res = await fetch(`${base}/`, { headers: ACCESS, signal: AbortSignal.timeout(20_000) })
+  const body = await res.text()
+  check('the public shell names no project path', false, /\/(Users|home)\//i.test(body))
+}
+
 console.log('\nthe phone cannot start an unsandboxed agent')
 check(
   'bypassPermissions is refused',
@@ -114,6 +134,24 @@ try {
 }
 
 /*
+ * Once the shell went public, the cookie was built from ANY ?k: a stranger
+ * could navigate the phone to /?k=garbage and overwrite its working 90-day
+ * cookie, logging it out. Only a key that authorised the request is stored.
+ */
+console.log('\na wrong key is never stored')
+try {
+  const res = await fetch(`${base}/?k=${'x'.repeat(key.length)}`, {
+    headers: ACCESS,
+    signal: AbortSignal.timeout(20_000)
+  })
+  check('the shell still loads for a wrong key', 200, res.status)
+  check('with no set-cookie', null, res.headers.get('set-cookie'))
+} catch (e) {
+  console.log(`  FAIL  could not fetch the shell — ${e.message}`)
+  fail++
+}
+
+/*
  * Raw socket rather than fetch: Connection and Upgrade are forbidden header
  * names, so fetch throws a TypeError before the request leaves the process and
  * the check silently never runs.
@@ -153,6 +191,42 @@ check(
   await handshakeStatus('https://evil.example')
 )
 check('a handshake with no origin still authenticates', 101, await handshakeStatus(null))
+
+/*
+ * /ws/events (phone contract point 4) is gated exactly like the pty socket —
+ * same `handleUpgrade`, no path-based exemption — so the same two checks
+ * apply to it.
+ */
+async function eventsHandshakeStatus(withKey) {
+  const { connect } = await import('node:net')
+  const { hostname, port } = new URL(base)
+  return new Promise((resolve) => {
+    const socket = connect({ host: hostname, port: Number(port) }, () => {
+      socket.write(
+        `GET /ws/events${withKey ? `?k=${key}` : ''} HTTP/1.1\r\n` +
+          `Host: ${hostname}:${port}\r\n` +
+          'Connection: Upgrade\r\nUpgrade: websocket\r\n' +
+          'Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n' +
+          (withAccess ? 'Cf-Access-Authenticated-User-Email: verify@localhost\r\n' : '') +
+          '\r\n'
+      )
+    })
+    const done = (v) => {
+      socket.destroy()
+      resolve(v)
+    }
+    socket.setTimeout(15_000, () => done('timeout'))
+    socket.once('error', (e) => done(`error:${e.code}`))
+    socket.once('data', (buf) => {
+      const status = /^HTTP\/1\.1 (\d+)/.exec(buf.toString('latin1'))
+      done(status ? Number(status[1]) : 'unparseable')
+    })
+  })
+}
+
+console.log('\n/ws/events is gated like the pty socket')
+check('no key is refused', 401, await eventsHandshakeStatus(false))
+check('the key authenticates', 101, await eventsHandshakeStatus(true))
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exitCode = fail ? 1 : 0

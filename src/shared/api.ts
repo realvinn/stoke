@@ -1,7 +1,7 @@
 import type { SkillDirScan } from './skills'
 import type { MicAccess } from './voiceRoute'
 import type { CreateProfileInput, ProfilePlan } from './profiles'
-import type { CodingCliDetection } from './codingClis'
+import type { CodingCliDetection, CodingCliId } from './codingClis'
 import type { StokeCliRequest } from './stokeArgs'
 import type { ClaudeLaunchDefaults } from './launch'
 import type {
@@ -11,8 +11,10 @@ import type {
   CliUpdateInfo,
   CliUpdateState,
   ContextSnapshot,
+  EffortLevel,
   LaunchOptions,
   LiveSessionState,
+  PermissionMode,
   Project,
   ProjectMeta,
   Rect,
@@ -201,6 +203,22 @@ export interface RemoteState {
   setup: string[]
   /** Whether the speech sidecar answers at `remote.sttUrl`. Probed at most every 15s. */
   stt: 'up' | 'down' | 'unknown'
+}
+
+/**
+ * A session `POST /api/sessions` just started, pushed to the desktop so
+ * `App.tsx` can adopt it as a tab — phone contract point 10 / PX-9 / F3.
+ */
+export interface RemoteSessionStarted {
+  ptyId: string
+  sessionId: string
+  cwd: string
+  /** Display name for the tab, the folder's basename. */
+  name: string
+  cli: CodingCliId
+  permissionMode: PermissionMode
+  model: string
+  effort: EffortLevel
 }
 
 export interface SelfUpdateState {
@@ -479,6 +497,12 @@ export interface StokeApi {
      * it there, so it can take minutes; the others are seconds.
      */
     cloudflareStep(step: CloudflareStep, opts?: { overwriteDns?: boolean }): Promise<StepResult>
+    /**
+     * A session the phone started is a real pty already running; this is how
+     * the desktop learns it exists at all, so `App.tsx` can adopt it as a tab.
+     * Phone contract point 10 / PX-9 / F3.
+     */
+    onSessionStarted(cb: (info: RemoteSessionStarted) => void): () => void
   }
 
   updates: {

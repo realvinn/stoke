@@ -82,6 +82,7 @@ import {
   rebindTabs,
   relaunchPlan,
   replaceOrAppend,
+  adoptRemoteTab,
   restartPlan,
   tabLabel,
   type PendingOrigin,
@@ -967,6 +968,46 @@ export function App(): React.JSX.Element {
     void window.stoke.worklog.queue().then(setWorklog)
     const offWatch = window.stoke.worklog.onWatchChanged(setWorklogWatch)
     void window.stoke.worklog.watch().then(setWorklogWatch)
+    /*
+     * A session started from the phone is a real pty already running, with
+     * nothing on the desktop showing it — the tab strip stayed at "No active
+     * session" while it billed tokens. Adopted here the same way a restored
+     * tab is adopted: appended straight from what main already launched,
+     * never by calling `pty.start` again. Phone contract point 10 / PX-9 / F3.
+     */
+    const offRemoteStart = window.stoke.remote.onSessionStarted((info) => {
+      /*
+       * In place of an ended or paused tab on the same session id, never
+       * beside it (`adoptRemoteTab`): a phone's Resume used to leave two tabs
+       * on one id, and closing the ended twin wiped the live one's context
+       * meter through `dropSessionState`. Selection follows the tab it
+       * replaced; read from the ref so the updater below stays pure.
+       */
+      const replacing = adoptRemoteTab(tabsRef.current, { id: info.ptyId, ptyId: info.ptyId, sessionId: info.sessionId } as Tab).replacedId
+      if (replacing) setActiveTabId((cur) => (cur === replacing ? info.ptyId : cur))
+      setTabs((list) => {
+        const tab: Tab = {
+          id: info.ptyId,
+          kind: 'session',
+          cliId: info.cli,
+          ptyId: info.ptyId,
+          sessionId: info.sessionId,
+          cwd: info.cwd,
+          projectName: info.name,
+          title: info.name,
+          permissionMode: info.permissionMode,
+          model: info.model,
+          effort: info.effort,
+          ultracode: false,
+          status: 'running',
+          exitCode: null,
+          hostId: null,
+          selectedPath: null,
+          expandedPath: null
+        }
+        return adoptRemoteTab(list, tab).list
+      })
+    })
 
     void (async () => {
       const s = await window.stoke.settings.get()
@@ -1001,6 +1042,7 @@ export function App(): React.JSX.Element {
       offWorklog()
       offProposed()
       offWatch()
+      offRemoteStart()
     }
   }, [refreshProjects])
 
@@ -3590,6 +3632,7 @@ export function App(): React.JSX.Element {
           const aimed = at ? projects.find((p) => p.path === at) : null
           return tabLabel(t, at ? (aimed ? (aimed.label ?? aimed.name) : baseName(at)) : null)
         }}
+        settingsOpen={settingsOpen}
       />
 
       <div className="body-row">

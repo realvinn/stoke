@@ -50,12 +50,19 @@ import {
 } from '../shared/stokeArgs.ts'
 import { installCommand, readCommandState, removeCommand, type CommandEnv } from './stokeCommand.ts'
 import { keepUsage } from '../shared/statusLine.ts'
+import { shouldRestartRemote } from '../shared/remotePhone.ts'
 import { parseSession, readTranscript } from './sessionFile.ts'
 import { fetchRemoteTranscript } from './sshTranscript.ts'
 import { PtyManager, type StartResult } from './pty.ts'
 import { checkMicrophone } from './audio/defaultDevice.ts'
-import { cliIdOf, isClaudeCode } from '../shared/codingClis.ts'
-import { agentLaunchPlan, httpUrlMcpConfig, PI_PROVIDER_EXTENSION, type LaunchPlan } from '../shared/agents.ts'
+import { CODING_CLIS, cliIdOf, isClaudeCode } from '../shared/codingClis.ts'
+import {
+  agentLaunchPlan,
+  httpUrlMcpConfig,
+  PI_PROVIDER_EXTENSION,
+  visibleAgents,
+  type LaunchPlan
+} from '../shared/agents.ts'
 import { claudeVoiceEnabled, isMicAccess, type MicAccess } from '../shared/voiceRoute.ts'
 import { transcribe } from './stt.ts'
 import { createProfile, planProfile } from './profiles.ts'
@@ -398,6 +405,13 @@ const tunnel = new TunnelManager()
 const sessionCwds = new Map<string, string>()
 
 /**
+ * The last context window a session was seen reading, kept for the life of
+ * this run even after the session ends. See the comment where it is written,
+ * in the `ContextWatcher` constructor below.
+ */
+const lastContextLimit = new Map<string, number>()
+
+/**
  * Which sessions are running on another machine, and on which host.
  *
  * An SSH session spawns `ssh -t <alias> <command>`, so `claude` runs over there
@@ -537,8 +551,20 @@ async function transcriptExists(sessionId: string): Promise<boolean> {
   return found.some((f) => f !== null)
 }
 
-/** Starting a session, shared by the renderer's IPC and the remote server. */
-async function launchSession(requested: LaunchOptions): Promise<StartResult> {
+/**
+ * Starting a session, shared by the renderer's IPC and the remote server.
+ *
+ * `origin` is 'remote' for exactly one caller: `RemoteDeps.startSession`,
+ * which is what `POST /api/sessions` calls. That is the only path that needs
+ * `CH.remoteSessionStarted` pushed afterward — the desktop's own `ptyStart`
+ * IPC handler already turns its own return value into a tab in `App.tsx`, so
+ * pushing the event there too would create the tab twice. Phone contract
+ * point 10 / audit PX-9 / F3.
+ */
+async function launchSession(
+  requested: LaunchOptions,
+  origin: 'desktop' | 'remote' = 'desktop'
+): Promise<StartResult> {
   if (!ptys) throw new Error('Window is not ready')
   const settings = getSettings()
   /*
@@ -596,6 +622,21 @@ async function launchSession(requested: LaunchOptions): Promise<StartResult> {
     settings.providers,
     agentPlan
   )
+  // A brand-new row for /ws/events, whichever side started it — a phone
+  // watching the list should see a desktop-started session appear too.
+  remote?.notifySessionsChanged()
+  if (origin === 'remote') {
+    send(CH.remoteSessionStarted, {
+      ptyId: result.ptyId,
+      sessionId: result.sessionId,
+      cwd: opts.cwd,
+      name: opts.cwd.split(/[\\/]/).filter(Boolean).pop() ?? opts.cwd,
+      cli: cliId,
+      permissionMode: opts.permissionMode ?? 'default',
+      model: opts.model ?? '',
+      effort: opts.effort ?? 'default'
+    })
+  }
   /*
    * Everything below reads a Claude Code transcript — the context watcher, the
    * worklog's session → folder map and its on-disk copy. Another CLI's launch
@@ -811,7 +852,7 @@ function remoteDeps(): RemoteDeps {
     ptys: () => ptys,
     watcher: () => watcher,
     listProjects: () => listProjects(getSettings()),
-    startSession: (opts) => launchSession(opts),
+    startSession: (opts) => launchSession(opts, 'remote'),
     defaultCwd: () => resolveDefaultCwd(getSettings().defaultCwd),
     listSessions: (projectPath) => listSessions(projectPath),
     readTranscript: async (sessionId) => {
@@ -824,7 +865,38 @@ function remoteDeps(): RemoteDeps {
     },
     theme: () => {
       const s = getSettings()
-      return { theme: effectiveTheme(s), fontFamily: s.fontFamily }
+      return { theme: effectiveTheme(s), fontFamily: s.fontFamily, contrastBoost: s.terminal.contrastBoost }
+    },
+    registryStates: () => registry?.states() ?? [],
+    recordedContextLimit: (sessionId) => lastContextLimit.get(sessionId) ?? null,
+    /**
+     * The picker's own list, filtered to installed + chosen — the same
+     * `visibleAgents` the launcher's "other agents" row already uses, so the
+     * phone offers exactly what the desktop would.
+     */
+    agents: async () => {
+      const detection = await detectCodingClis()
+      const installed = new Set(detection.clis.filter((c) => c.path).map((c) => c.id))
+      const chosen = getSettings().agents.chosen
+      return visibleAgents(chosen, installed).map((id) => ({
+        id,
+        name: CODING_CLIS.find((c) => c.id === id)?.label ?? id
+      }))
+    },
+    /** bypassPermissions is never offered to the phone — see /api/host's doc comment. */
+    defaults: () => {
+      const d = getSettings().defaults
+      return {
+        permissionMode: d.permissionMode === 'bypassPermissions' ? 'default' : d.permissionMode,
+        model: d.model,
+        effort: d.effort
+      }
+    },
+    sttStatus: async () => {
+      const url = getSettings().remote.sttUrl
+      if (!url.trim()) return 'off'
+      const result = await probeStt(url)
+      return result === 'up' ? 'ready' : 'down'
     }
   }
 }
@@ -1541,7 +1613,20 @@ function createWindow(): void {
     () => ptys?.registryTargets() ?? [],
     {
       rebind: (ptyId, sessionId, previous) => rebindSession(ptyId, sessionId, previous),
-      state: (st: LiveSessionState) => send(CH.sessionState, st)
+      state: (st: LiveSessionState) => {
+        // A status change (a permission dialog appearing) is activity even
+        // with no bytes written, and the phone's `lastActivityAt` (phone
+        // contract point 3) needs it as much as pty output does.
+        ptys?.touch(st.ptyId)
+        send(CH.sessionState, st)
+        // Tells /ws/events to re-push the list and pushes a {type:'status'}
+        // frame to any phone attached to this pty directly (phone contract
+        // point 5).
+        remote?.onRegistryState(st.ptyId)
+      },
+      // The phone's prompt identity can move on a pass that changed nothing
+      // the renderer cares about (`trackPrompt`'s re-confirmation).
+      passed: () => remote?.onRegistryPass()
     }
   )
   timers.push(setInterval(() => void registry?.pass(), REGISTRY_POLL_MS))
@@ -1640,6 +1725,12 @@ function createWindow(): void {
   watcher = new ContextWatcher(
     (snap) => {
       send(CH.ctxUpdate, snap)
+      // The last window this session was ever seen reading, kept after it
+      // stops being live — /api/history's `contextLimit` (phone contract
+      // point 9 / PX-19) needs this for a session that just ended, since the
+      // statusLine payload file itself is deleted at exit (gotcha 73) and the
+      // transcript's own model id drops the `[1m]` tier (gotcha 2).
+      if (snap.ready && snap.contextLimit) lastContextLimit.set(snap.sessionId, snap.contextLimit)
       pushStatusLine(snap.sessionId)
       // `ready` is false for the placeholder emitted while a brand-new session
       // has no transcript yet; its counts are zeroes and would set a baseline
@@ -1799,6 +1890,7 @@ function registerIpc(): void {
     // The renderer repaints itself from the push above; this is the half it
     // cannot reach — the window's own background and the Windows overlay.
     paintWindowChrome(effectiveTheme(s), null)
+    remote?.onThemeChanged()
   })
 
   /* ------------------------------------------------------------------- cli */
@@ -2410,8 +2502,13 @@ function registerIpc(): void {
      * and nothing said so. Restart it here when a field it binds or checks
      * moves; `start()` stops the old listeners first.
      */
-    const bindKeys = ['port', 'bindLan', 'bindTailscale', 'requireAccessHeader', 'hostname', 'token'] as const
-    if (remote?.status().running && bindKeys.some((k) => prev.remote[k] !== next.remote[k])) {
+    /*
+     * A server that FAILED to bind (a busy port) is retried too, while Phone
+     * access is still on: its error tells the user to pick another port, and
+     * doing so used to change nothing until they turned it off and on
+     * (`shouldRestartRemote`, review of PX-8).
+     */
+    if (remote && shouldRestartRemote(prev.remote, next.remote, remote.status())) {
       await remote.start(next.remote)
       pushRemote()
     } else if (prev.remote.sttUrl !== next.remote.sttUrl) {
@@ -2435,6 +2532,8 @@ function registerIpc(): void {
     const prevTheme = effectiveTheme(prev)
     applyNativeTheme(next)
     paintWindowChrome(effectiveTheme(next), prevTheme.colors.bg)
+    // A phone paints this theme too; it re-fetches only if it moved (audit PX-21).
+    remote?.onThemeChanged()
     /*
      * Load-bearing, not merely correct in advance.
      *

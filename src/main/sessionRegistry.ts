@@ -47,6 +47,12 @@ export interface RegistryEvents {
   rebind(ptyId: string, sessionId: string, previous: string): void
   /** The reading for this pty changed. */
   state(state: LiveSessionState): void
+  /**
+   * A pass finished, changed or not — the phone's prompt identity re-confirms
+   * a prompt from a reading taken after input (`trackPrompt`), which is not a
+   * change `state` would report.
+   */
+  passed?(at: number): void
 }
 
 function sameState(a: LiveSessionState | undefined, b: LiveSessionState): boolean {
@@ -172,13 +178,16 @@ export class RegistryPoller {
           status: entry.status,
           busy: isBusyStatus(entry.status),
           waitingFor: entry.waitingFor,
-          version: entry.version
+          version: entry.version,
+          statusUpdatedAt: entry.statusUpdatedAt,
+          readAt: now
         }
-        if (!sameState(this.last.get(t.ptyId), next)) {
-          this.last.set(t.ptyId, next)
-          this.events.state(next)
-        }
+        // Stored every pass (the stamps move), reported only on a real change.
+        const changed = !sameState(this.last.get(t.ptyId), next)
+        this.last.set(t.ptyId, next)
+        if (changed) this.events.state(next)
       }
+      this.events.passed?.(now)
     } finally {
       this.running = false
     }

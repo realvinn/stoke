@@ -7,6 +7,9 @@ paths:
   - "src/renderer/src/components/RemoteSettings.tsx"
   - "scripts/verify-remote.mts"
   - "scripts/verify-remote-security.mjs"
+  - "scripts/verify-phone-ui.mts"
+  - "src/shared/remotePhone.ts"
+  - "src/shared/phoneUi.ts"
 ---
 
 # Phone access and cloudflared
@@ -101,3 +104,110 @@ status object ships to the renderer.
 > by a second pass. The entry above is the original text; where the two disagree, the code
 > has moved on. Line numbers drift; search for the names.
 > - The code now probes the hostname over HTTP and sets the route step from the answer. `checkHostname` (src/main/remote/cloudflare.ts:213-228) fetches `https://<host>/` with `redirect: 'manual'`. `classifyHostname` (:176-189) maps HTTP 530 or an 'error 1033' body to `tunnel-not-found`, meaning the record points at a different tunnel. It maps a redirect to cloudflareaccess.com to `access`, and a 401 or any 2xx/3xx to `ok`. `routeStep` (:348-360) turns those into failed, unknown (access/other), done and todo (dns). scripts/verify-remote.mts:266-286 asserts the mapping. Only the DNS record itself is still unreadable (`routeIsUndetectable`, :150). The file's own comment at :142-144 still calls an HTTP probe useless, which contradicts `checkHostname` in the same file.
+
+## 85. A phone's text and its Enter key were one pty write, and Claude Code read the whole thing as a paste
+
+**The composer sent a prompt and the trailing `\r` as a single WebSocket frame, and `PtyManager.write`
+forwarded that as one write to the pty.** Claude Code's own input box treats a fast multi-byte chunk
+as a paste — that is a property of the TUI, not of Stoke's socket — so the `\r` *inside* the chunk
+becomes a literal newline in the box instead of submitting, and the NEXT lone `\r` (a real Enter
+key, or a second tap of Send) is what actually starts the turn. Audit finding PX-1: short prompts
+(a bare digit, 29 characters) submitted fine, because they fit under whatever threshold Claude's
+paste detector uses; 80, 83 and 97-character prompts landed in the box and sat there. A raw
+WebSocket client confirmed it on the wire: one frame `{type:'input', data:'…\r'}`, and the first
+lone `\r` sent afterward changed nothing — only the second one submitted.
+
+The fix is two separate pty writes, timed apart, for a NEW `{type:'submit', text}` message (`{type:
+'input', data}` is unchanged and still raw keystrokes). `submitFrames` (`src/shared/remotePhone.ts`)
+decides the text: wrapped in `ESC[200~ … ESC[201~` when the pty currently has DECSET 2004 (bracketed
+paste) on — tracked from the pty's own output stream by `trackBracketedPaste`, never assumed — so a
+multi-line prompt's embedded newlines stay newlines rather than each submitting early. `submit()` in
+`pty.ts` writes that body, then writes a bare `\r` on its own after a short delay (started ~80ms;
+adjust from what a real `claude` measures — Ink's paste-vs-keystroke window is not documented). A
+session with bracketed paste off (a raw shell, `shell` status) gets the plain text with no brackets.
+
+**Do not fold the two writes back into one "for efficiency"**: that is the exact bug. And do not
+key the bracket only on `isClaudeCode(cli)` — an `agentPlan`-launched CLI can turn bracketed paste on
+or off itself mid-session (a mode switch, a sub-shell), which is why this reads the live stream
+rather than the launch-time agent id.
+
+> Recorded 2026-09-19. `scripts/verify-remote.mts` covers `submitFrames` and `trackBracketedPaste` in
+> isolation; proving the fix against a REAL `claude` (a 200-char prompt starting a turn on the first
+> submit, per the phone contract) is a manual/CDP check, not a suite — Ink's own paste threshold is
+> not something this repo can assert without spawning the binary.
+
+> **Corrected on 2026-09-19 by gotcha 86** — the bracketed-paste half of this entry was wrong for
+> Claude Code. Two writes (text, then `\r` on its own) is right and stays; wrapping the text in
+> `ESC[200~ … ESC[201~` is not: Claude Code records every bracketed paste as `<pasted_content>`
+> and the model declines to act on it. `submitFrames` now brackets only another agent's
+> multi-line text. Read 86 before touching `submitFrames` or `PtyManager.submit`.
+
+## 86. Bracketed paste made every phone message a `<pasted_content>` block that Claude would not act on
+
+**Measured 2026-09-19 against Claude Code 2.1.278, from the phone UI in a throwaway folder.** With
+gotcha 85's first fix live, a 125-character "create a file named hello.txt …" sent from the
+composer started a turn on the first tap — and Claude answered "Your message is entirely pasted
+text with nothing you typed around it, so I haven't acted on it yet." The transcript shows why:
+the user record's content was `\n\n<pasted_content id="0bbb">\n…\n</pasted_content id="0bbb">\n`.
+Claude Code files a bracketed paste as pasted content, and the model treats pasted content with
+nothing typed around it as material, not instructions. Every phone message was a paste, so the
+phone could start turns that did nothing.
+
+What was measured, each through the phone socket's raw `{type:'input'}` into the same session:
+
+- one unbracketed write of 68 characters, then `\r` 150ms later: recorded as typed, acted on;
+- one unbracketed write of 203 characters, then `\r`: typed, acted on — so PX-1 was only ever the
+  `\r` sharing a chunk with the text, never the text's length;
+- one unbracketed write of 1287 characters, then `\r`: `<pasted_content>` again (a length
+  heuristic, no brackets needed), and refused;
+- the same 1287 characters as 64-character writes 10ms apart, then `\r`: typed, acted on;
+- `line one ESC CR line two ESC CR line three` in one write, then `\r`: one turn, recorded with
+  real `\n`s — `ESC CR` (meta-Enter) is Claude Code's in-box line break.
+
+So `submitFrames` (`src/shared/remotePhone.ts`) TYPES a phone message to Claude Code: newlines as
+`ESC CR`, `typingChunks` of at most `SUBMIT_CHUNK` (64) never splitting an `ESC CR` pair (half of
+it is a bare Escape, which cancels) or a surrogate pair, written `SUBMIT_CHUNK_GAP_MS` apart by
+`PtyManager.submit`, then the bare `\r` after `SUBMIT_ENTER_DELAY_MS`. Only another agent's
+multi-line text still goes inside bracketed paste (when DECSET 2004 is on), because a shell has no
+meta-Enter and needs the bracket to keep its newlines. `verify:remote` holds the framing; only a
+real `claude` can hold the paste heuristics, so re-measure them when Claude Code's input box
+changes.
+
+> **Checked against the code on 2026-09-19** (review of qa/phone). Typing takes real time — 10ms a
+> chunk plus 80ms before the Enter — and `submit()` started one timer chain per call with nothing
+> between calls, so two submits sent together were written interleaved: a 228-character "apple"
+> prompt and a 32-character "banana" one landed as ONE user turn, spliced. The phone's queued-send
+> flush (PX-3) always sends several back to back. Each session now has a `SubmitQueue`
+> (`remotePhone.ts`): a submit starts typing only after the previous one's Enter, plus
+> `SUBMIT_AFTER_ENTER_MS`. `verify:remote` asserts the order with real short timers and fails
+> when the chain is removed. Raw `{type:'input'}` keys are NOT queued, on purpose: Esc and ctrl-c
+> must interrupt.
+
+## 87. The phone's terminal: pad the box, not xterm's parent, and resize the pty only on a width change
+
+Two audit findings with one cause each. **PX-7**: `.term-wrap` carried `padding: 6px 4px` under
+`box-sizing: border-box` and was xterm's own parent, and `FitAddon.proposeDimensions` reads the
+parent's computed height, padding included — so it always fitted one row too many and Claude's
+mode line was half hidden (clientHeight 673 vs scrollHeight 687 at 390×844). Now the padding is on
+`.term-wrap` and xterm opens on the unpadded `.term-inner`; `session.ts` sizes from the wrap's
+content box and xterm's cell size, and at rest `scrollHeight === clientHeight` (measured 679 = 679
+at 390×844, 288 = 288 at 844×390).
+
+**PX-5**: a ResizeObserver refitted and sent `{type:'resize', force:true}` on EVERY size change of
+the terminal's box — the composer growing a line, the send clearing it, the soft keyboard — each a
+SIGWINCH to Claude and a reflow of the desktop's terminal. `decideResize`
+(`src/shared/phoneUi.ts`, `verify:phone-ui`) is now the only thing that decides: nothing resizes
+unless the user chose **Fit to phone**; then only a width change of at least one cell does
+(rotation), never while the composer has focus (deferred to its blur), with rows measured at that
+moment and left alone; leaving fit sends the desktop's own size back (`attached.desktopCols/Rows`,
+F2) once. A laptop browser (`native`, ≥1024px) never resizes the pty at all. Measured over CDP:
+growing the composer to four lines and shrinking the viewport to 500px while focused sent nothing;
+one rotation sent exactly one resize. Do not reintroduce a resize on height — the keyboard IS a
+height change.
+
+> **Checked against the code on 2026-09-19** (second review of qa/phone). A view learned the pty's
+> size only from `attached`, so a laptop kept the old grid after the desktop or another phone
+> resized it. The server now sends `{type:'size', cols, rows, desktopCols, desktopRows}` once a
+> registry pass to each attached socket not yet told the current size (`pushSizes`); the client
+> re-runs `relayout('observe')`, which still never sends a resize on its own. Measured: an open
+> 1440 view went from 30 to 25 rows when a second socket fitted the pty to 90x25.

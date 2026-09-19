@@ -51,6 +51,30 @@ export function replaceOrAppend<T extends { id: string }>(
 }
 
 /**
+ * Where a session started from the phone lands in the tab strip: in place of
+ * a NOT-running tab on the same session id, else appended; unchanged when a
+ * tab already shows that pty. `replacedId` is the tab it took the place of.
+ *
+ * A phone's "Resume conversation" on a session that had ended used to append
+ * a second tab on the same id beside the ended one. The two were not
+ * independent: `closeTab` prunes the session-keyed maps with
+ * `dropSessionState(tab.sessionId)`, so closing the ended twin wiped the live
+ * tab's context meter (measured: "98k/1.00M · 10%" became "waiting for first
+ * turn…"), and its Restart would have started a second `claude` on the same
+ * transcript. The same hazard `resumeSession` already guards on the desktop.
+ */
+export function adoptRemoteTab<T extends { id: string; ptyId?: string | null; sessionId?: string | null; kind?: string; status?: string }>(
+  list: T[],
+  tab: T
+): { list: T[]; replacedId: string | null } {
+  if (list.some((t) => t.ptyId === tab.ptyId)) return { list, replacedId: null }
+  const twin = tab.sessionId
+    ? list.find((t) => t.kind === 'session' && t.sessionId === tab.sessionId && t.status !== 'running')
+    : undefined
+  return { list: replaceOrAppend(list, tab, twin?.id), replacedId: twin?.id ?? null }
+}
+
+/**
  * The tab `delta` places along from `activeId`, wrapping at both ends.
  *
  * Wrapping rather than stopping: the strip is a ring in every editor that has

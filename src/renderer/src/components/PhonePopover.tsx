@@ -6,6 +6,14 @@ import { reachLine } from './RemoteSettings'
 interface Props {
   /** Open Settings at the Phone access section. */
   onOpenSettings: () => void
+  /**
+   * The Settings sheet is open right now — from any route, not only this
+   * popover's own "Settings"/"Open settings" buttons (which already close it
+   * themselves). PX-26(c): without this, opening Settings some
+   * other way (a shortcut, the gear icon) left the popover painted above the
+   * sheet.
+   */
+  settingsOpen: boolean
 }
 
 /**
@@ -18,12 +26,17 @@ interface Props {
  * code to scan — or, when the server is off, the single button that turns it
  * on and picks a route a phone can actually use.
  */
-export function PhonePopover({ onOpenSettings }: Props): React.JSX.Element {
+export function PhonePopover({ onOpenSettings, settingsOpen }: Props): React.JSX.Element {
   const [state, setState] = useState<RemoteState | null>(null)
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [copied, setCopied] = useState(false)
   const panelRef = useRef<HTMLDivElement>(null)
+
+  // Close on any route into Settings, not only this popover's own buttons.
+  useEffect(() => {
+    if (settingsOpen) setOpen(false)
+  }, [settingsOpen])
 
   const refresh = useCallback(async (): Promise<void> => {
     setState(await window.stoke.remote.status())
@@ -81,9 +94,12 @@ export function PhonePopover({ onOpenSettings }: Props): React.JSX.Element {
         aria-expanded={open}
         data-attached={attached > 0 || undefined}
         onClick={() => setOpen((v) => !v)}
+        data-error={(!running && Boolean(state?.server.error)) || undefined}
         title={
           !running
-            ? 'Open on phone'
+            ? state?.server.error
+              ? 'Phone access could not start'
+              : 'Open on phone'
             : attached > 0
               ? `Phone access on · ${attached} connected`
               : 'Phone access on — show the code'
@@ -97,7 +113,29 @@ export function PhonePopover({ onOpenSettings }: Props): React.JSX.Element {
         <>
           <div className="popover-backdrop" onClick={() => setOpen(false)} />
           <div className="popover phone-panel" role="dialog" aria-label="Phone access" ref={panelRef}>
-            {!running && (
+            {/*
+              A server that failed to start used to show the plain off-state,
+              as if nothing had been tried: the busy-port error lived only in
+              Settings. Said here, with the way to fix it.
+            */}
+            {!running && state?.server.error && (
+              <>
+                <p className="popover-title">Phone access could not start</p>
+                <p className="popover-text" data-tone="danger">
+                  {state.server.error}
+                </p>
+                <div className="popover-actions">
+                  <button className="btn" data-variant="primary" onClick={() => { setOpen(false); onOpenSettings() }}>
+                    Change port
+                  </button>
+                  <button className="btn" data-variant="ghost" disabled={busy} onClick={() => void act(window.stoke.remote.stop)}>
+                    Turn off
+                  </button>
+                </div>
+              </>
+            )}
+
+            {!running && !state?.server.error && (
               <>
                 <p className="popover-title">Your sessions, on your phone</p>
                 <p className="popover-text">

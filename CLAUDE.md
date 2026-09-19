@@ -39,7 +39,7 @@ Every suite runs alone as `npm run verify:<name>`: context, statusline, unicode,
 profiles, settings, providers, claude-config, folders, search, color, theme-gen, activity,
 worklog-gate, tabs, launcher, registry,
 restore, shortcuts, drop, browser-url, voice, agents, campfire, cli, stoke-args, updates, targets, manifests, worklog-runner,
-worklog-retry, worklog-recall, worklog-autoscan, ssh, remote, installer-art, install, welcome,
+worklog-retry, worklog-recall, worklog-autoscan, ssh, remote, phone-ui, installer-art, install, welcome,
 selection — the `check` chain — plus extract and security, which
 need a live instance (`verify:security <url> <token> --access`). `verify:selection` opens a real
 Electron window and needs a display; `verify:context` reads this machine's real transcripts on
@@ -262,6 +262,8 @@ rule file named on the group line.
   launch's PATH has no version-manager dir.
 - **81.** Let main pick `--resume` vs `--session-id` against the disk (`resumeOrMint`) right before
   the spawn: `--resume` on an id with no transcript exits 1, `--session-id` on one with a transcript is refused.
+- **84.** Keep an exited pty in `PtyManager`'s map for `ENDED_RETENTION_MS` (the phone lists it as
+  ended); only an explicit close (`kill`/`stop`) deletes at once.
 
 **Worklog** — `.claude/rules/worklog.md`
 - **15.** Keep the worklog scan `--safe-mode` and read boards in `recall.ts`'s own run: safe mode
@@ -298,6 +300,12 @@ rule file named on the group line.
 - **58.** Judge `cloudflared` by payload, not exit code or stderr: `tunnel list` exits 0 printing
   `null` for none, stderr warns every run, `create`'s `already exists` is success. Check
   `cert.pem` first; a failed lookup is `unknown`.
+- **85.** Send a phone's text and its `\r` as separate pty writes (`PtyManager.submit`): in one
+  chunk the `\r` lands as a newline in Claude Code's box. Its bracketed-paste half is wrong (86).
+- **86.** Type a phone message to Claude Code, never bracket it (`submitFrames`): a paste — or one
+  write past ~1 KB — is filed as `<pasted_content>` the model will not act on. Newlines are `ESC CR`.
+- **87.** Pad the phone terminal's box, not xterm's parent, and let only `decideResize` resize the
+  pty: Fit to phone only, on a width change only, never while the composer has focus.
 
 **Claude Code's own config** — `.claude/rules/claude-config.md`
 - **37.** Turn Claude Code's Remote Control off with `remoteControlAtStartup: false` in

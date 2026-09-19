@@ -24,6 +24,7 @@ import {
   revealDelta,
   stillOver,
   replaceOrAppend,
+  adoptRemoteTab,
   restartPlan,
   autoRelaunchKey,
   autoRelaunchStep,
@@ -57,6 +58,32 @@ check('closing the last selects the one before it', neighbourOf(five, 'e'), 'd')
 check('closing the only tab leaves nothing selected', neighbourOf(['a'], 'a'), null)
 check('closing a tab that is not there changes nothing', neighbourOf(five, 'zz'), null)
 check('an empty list has no neighbour', neighbourOf([], 'a'), null)
+
+console.log('\nadoptRemoteTab: a phone Resume takes the ended twin\'s place')
+{
+  type T = { id: string; kind: string; ptyId: string | null; sessionId: string; status: string }
+  const ended: T = { id: 'old', kind: 'session', ptyId: 'p-old', sessionId: 'S', status: 'exited' }
+  const other: T = { id: 'o', kind: 'session', ptyId: 'p-o', sessionId: 'X', status: 'running' }
+  const live: T = { id: 'p-new', kind: 'session', ptyId: 'p-new', sessionId: 'S', status: 'running' }
+  const adopted = adoptRemoteTab([ended, other], live)
+  check('replaces the exited tab on the same id, in place', adopted.list.map((t) => t.id), ['p-new', 'o'])
+  check('and names the tab it replaced, so selection can follow', adopted.replacedId, 'old')
+  check(
+    'one tab per session id afterwards',
+    adopted.list.filter((t) => t.sessionId === 'S').length,
+    1
+  )
+  const paused = { ...ended, status: 'paused' }
+  check('a paused (restored, never started) twin is replaced too', adoptRemoteTab([paused], live).list.map((t) => t.id), ['p-new'])
+  const running = { ...ended, status: 'running' }
+  check(
+    'a RUNNING tab on that id is never replaced (the server refuses that resume anyway)',
+    adoptRemoteTab([running], live).list.map((t) => t.id),
+    ['old', 'p-new']
+  )
+  check('a new session with no twin is appended', adoptRemoteTab([other], live).list.map((t) => t.id), ['o', 'p-new'])
+  check('the same pty twice is a no-op', adoptRemoteTab([live], live).list.length, 1)
+}
 
 console.log('\nreplaceOrAppend: a launch consumes the New Project tab it started from')
 const abc = [{ id: 'a' }, { id: 'b' }, { id: 'c' }]
