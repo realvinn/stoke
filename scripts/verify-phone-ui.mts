@@ -12,6 +12,8 @@
 import {
   GENERIC_ANSWERS,
   INITIAL_SEND_STATE,
+  PHONE_MIN_CONTRAST,
+  answerChoices,
   cancelQueued,
   collapseTurns,
   decideResize,
@@ -23,6 +25,7 @@ import {
   modeFromScreen,
   parseAnswerOptions,
   parseConnectInput,
+  phoneTermContrast,
   plural,
   relativeTime,
   sendLost,
@@ -379,6 +382,52 @@ check(
   groupProjects(projects, 'CHAR', now).flatMap((g) => g.rows.map((p) => p.name)),
   ['charlie']
 )
+
+/*
+ * Review of PX-12: the list drew tappable numbers before its read of the
+ * screen had finished, and for good when that read failed — a tap on a
+ * question nobody on the phone had seen.
+ */
+console.log('\nlist answers wait for the question')
+{
+  const reading = answerChoices(null, 'reading')
+  check('while reading: numbers drawn but held', [reading.enabled, reading.options.map((o) => o.key)], [false, ['1', '2', '3']])
+  check('and it says why', reading.note !== null, true)
+  const plan = {
+    question: 'Would you like to proceed?',
+    options: [
+      { key: '1', label: 'Yes, and use auto mode', selected: true },
+      { key: '2', label: 'Yes, manually approve edits', selected: false },
+      { key: '3', label: 'Tell Claude what to change', selected: false },
+      { key: '4', label: 'Keep planning', selected: false }
+    ]
+  }
+  const read = answerChoices(plan, 'read')
+  check('read: the real labels, up to 3, tappable, no note', [read.enabled, read.options.map((o) => o.label), read.note], [
+    true,
+    ['Yes, and use auto mode', 'Yes, manually approve edits', 'Tell Claude what to change'],
+    null
+  ])
+  const failed = answerChoices(null, 'failed')
+  check('read failed: bare numbers offered, with a note saying so', [failed.enabled, failed.options.map((o) => o.label), failed.note !== null], [
+    true,
+    ['1', '2', '3'],
+    true
+  ])
+  check('the generic labels claim no meaning', GENERIC_ANSWERS.every((o) => o.label === o.key), true)
+}
+
+/*
+ * PX-21: history replayed onto a phone can carry colours picked for another
+ * background; the phone's terminal never drops under its contrast floor, and
+ * keeps a stronger desktop choice.
+ */
+console.log('\nphone terminal contrast')
+check('the desktop default (1) is lifted to the floor', phoneTermContrast(1), PHONE_MIN_CONTRAST)
+check('a stronger desktop choice is kept', phoneTermContrast(7), 7)
+check('nothing sent (an older desktop): the floor', phoneTermContrast(undefined), PHONE_MIN_CONTRAST)
+check('garbage is not a ratio', phoneTermContrast('4.5'), PHONE_MIN_CONTRAST)
+check('never past 21:1', phoneTermContrast(99), 21)
 
 console.log(failures ? `\n${failures} FAILED` : '\nall pass')
 process.exitCode = failures ? 1 : 0

@@ -11,13 +11,14 @@
 import { Terminal } from '@xterm/xterm'
 import { contextLevel, contextPercent } from '@shared/contextLevel'
 import {
-  GENERIC_ANSWERS,
+  answerChoices,
   groupSessionRows,
   parseAnswerOptions,
   relativeTime,
   statusPill,
   type AnswerOption,
-  type ParsedPrompt
+  type ParsedPrompt,
+  type PeekState
 } from '@shared/phoneUi'
 import { api, folderName, wsUrl, type ApiError, type SessionRow } from './api'
 import { el, toast } from './dom'
@@ -227,11 +228,15 @@ export function mountSessionList(
   const answers = (r: SessionRow): HTMLElement => {
     const box = el('div', { class: 'srow-answers' })
     const question = el('div', { class: 'srow-question' })
+    const note = el('div', { class: 'srow-note', role: 'status' })
     const chips = el('div', { class: 'chips', role: 'group', 'aria-label': 'Answer' })
-    const draw = (prompt: ParsedPrompt | null): void => {
-      const options = (prompt?.options ?? GENERIC_ANSWERS).filter((o) => Number(o.key) <= 3)
+    // Numbered taps are held until the question has been read (`answerChoices`).
+    const draw = (prompt: ParsedPrompt | null, state: PeekState): void => {
+      const { options, enabled, note: why } = answerChoices(prompt, state)
       question.textContent = prompt?.question ?? ''
       question.hidden = !prompt?.question
+      note.textContent = why ?? ''
+      note.hidden = !why
       // Real labels are sentences: stack them, one full-width answer a row.
       chips.dataset.long = String(options.some((o) => o.label.length > 12))
       chips.replaceChildren(
@@ -243,6 +248,7 @@ export function mountSessionList(
               class: 'answer',
               'data-variant': i === 0 ? 'primary' : undefined,
               'aria-label': `Answer ${o.key}: ${o.label}`,
+              disabled: enabled ? undefined : true,
               onclick: (e: Event) => void answer(e.currentTarget as HTMLButtonElement, o.key)
             },
             answerLabel(o)
@@ -273,11 +279,11 @@ export function mountSessionList(
         delete btn.dataset.sending
       }
     }
-    draw(null)
+    draw(null, 'reading')
     void peekPrompt(r).then((p) => {
-      if (p && box.isConnected && !box.dataset.answered) draw(p)
+      if (box.isConnected && !box.dataset.answered) draw(p, p ? 'read' : 'failed')
     })
-    box.append(question, chips)
+    box.append(question, note, chips)
     return box
   }
 

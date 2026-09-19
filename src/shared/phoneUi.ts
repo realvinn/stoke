@@ -201,6 +201,63 @@ export const GENERIC_ANSWERS: AnswerOption[] = [
   { key: '3', label: '3', selected: false }
 ]
 
+/** Where the list's read of a waiting row's screen stands (`peekPrompt`). */
+export type PeekState = 'reading' | 'read' | 'failed'
+
+export interface AnswerChoices {
+  /** The taps to draw: one-tap answers only go up to 3 (the answer route's keys). */
+  options: AnswerOption[]
+  /** False while the question is still being read: a tap would be blind. */
+  enabled: boolean
+  /** What to say in place of the question, or null when the question itself shows. */
+  note: string | null
+}
+
+/**
+ * What a waiting row in the list offers, from its read of the screen.
+ *
+ * Review of PX-12: the list drew tappable generic numbers the moment a row
+ * appeared, before the peek had read the question, and kept them for good when
+ * the 6s peek failed. A tap there answers a question nobody on the phone has
+ * seen. Now the numbers are drawn but held while the read is in flight (it
+ * takes one replay, well under a second on a healthy link); once it has
+ * settled without options, they are offered with a note that says so, because
+ * a session nobody can read must still be answerable from the list.
+ */
+export function answerChoices(prompt: ParsedPrompt | null, state: PeekState): AnswerChoices {
+  const upTo3 = (list: readonly AnswerOption[]): AnswerOption[] => list.filter((o) => Number(o.key) <= 3)
+  if (state === 'reading') return { options: upTo3(GENERIC_ANSWERS), enabled: false, note: 'Reading the question…' }
+  if (prompt && prompt.options.length > 0) return { options: upTo3(prompt.options), enabled: true, note: null }
+  return {
+    options: upTo3(GENERIC_ANSWERS),
+    enabled: true,
+    note: 'Could not read the options. Open the session to see the question.'
+  }
+}
+
+/* ---------------------------------------------------- terminal colours */
+
+/**
+ * The floor under the phone terminal's `minimumContrastRatio` (xterm), audit
+ * PX-21.
+ *
+ * Claude Code picks its colours for the background it was told about (gotcha
+ * 42), and the phone replays the pty's raw history: after the desktop switched
+ * theme, the replay mixes lines coloured for the OLD background with the new
+ * one, and on a light theme the old white glyphs (diff text, bullets) vanished.
+ * The desktop leaves the CLI's palette alone unless the user asks
+ * (`contrastBoost`, 1 by default), because it is a choice there; on the phone
+ * the mismatch is structural, so the phone never goes under 3:1 — enough to
+ * bring back a white glyph on a light page, while leaving colours that already
+ * read alone. A higher desktop choice is kept.
+ */
+export const PHONE_MIN_CONTRAST = 3
+
+export function phoneTermContrast(deskBoost: unknown): number {
+  const desk = typeof deskBoost === 'number' && Number.isFinite(deskBoost) ? Math.min(21, deskBoost) : 1
+  return Math.max(PHONE_MIN_CONTRAST, desk)
+}
+
 /**
  * The permission mode Claude Code's footer says is on ("⏵⏵ auto mode on",
  * "⏸ plan mode on", "accept edits on", "manual mode on"), as the key row's
