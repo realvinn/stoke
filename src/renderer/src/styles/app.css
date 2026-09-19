@@ -2377,6 +2377,12 @@ mark.hit {
   background: var(--accent-soft);
 }
 
+/* Scratch while Claude Code is not runnable: listed, so it is not a mystery
+   where it went, but visibly not a thing to pick. */
+.switcher-item[aria-disabled='true'] {
+  color: var(--text-faint);
+}
+
 .switcher-item-main {
   flex: 1 1 0%;
   min-width: 0;

@@ -247,6 +247,7 @@ export function Launcher(props: Props): React.JSX.Element {
               requestAnimationFrame(focusPrimary)
             }}
             triggerRef={switcherRef}
+            scratchBlocked={cliBroken}
           />
           <span className="launcher-path mono">{target?.path ?? ' '}</span>
           {props.profileNote && (

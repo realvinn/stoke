@@ -3478,8 +3478,9 @@ export function App(): React.JSX.Element {
           // The tab in front names what its launcher is aimed at, fallback
           // included; one behind names its own selection, if it has one.
           if (t.id === activeTabId) return tabLabel(t, launchTarget?.label ?? null)
-          const aim = t.selectedPath ? projects.find((p) => p.path === t.selectedPath) : null
-          return tabLabel(t, t.selectedPath ? (aim ? (aim.label ?? aim.name) : baseName(t.selectedPath)) : null)
+          const at = t.selectedPath ?? aimPins[t.id] ?? null
+          const aimed = at ? projects.find((p) => p.path === at) : null
+          return tabLabel(t, at ? (aimed ? (aimed.label ?? aimed.name) : baseName(at)) : null)
         }}
       />
 
@@ -3802,6 +3803,7 @@ export function App(): React.JSX.Element {
               onRetryCli={reprobeCli}
               onSetCliPath={() => openSettings('updates')}
               overlayOpen={shellInert}
+              armedAt={launcherArmedAt}
               otherClis={otherClis}
               onAddAgents={() => setAgentPickerOpen(true)}
               onStartCli={(id) => {

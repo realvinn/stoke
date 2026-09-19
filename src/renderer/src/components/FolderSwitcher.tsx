@@ -38,7 +38,8 @@ export function FolderSwitcher({
   open,
   onOpenChange,
   onChoose,
-  triggerRef
+  triggerRef,
+  scratchBlocked = false
 }: {
   /** The target's name; empty while nothing has resolved yet. */
   label: string
@@ -54,6 +55,12 @@ export function FolderSwitcher({
   onOpenChange: (open: boolean) => void
   onChoose: (choice: FolderChoice) => void
   triggerRef: React.RefObject<HTMLButtonElement | null>
+  /**
+   * Claude Code is not runnable. Scratch starts it at once, so its row is
+   * disabled like Start is; picking a folder or a host still works (a host
+   * runs its own `claude`).
+   */
+  scratchBlocked?: boolean
 }): React.JSX.Element {
   const [query, setQuery] = useState('')
   const [active, setActive] = useState(0)
@@ -92,6 +99,7 @@ export function FolderSwitcher({
 
   const choose = (c: FolderChoice | undefined): void => {
     if (!c) return
+    if (c.kind === 'scratch' && scratchBlocked) return
     onOpenChange(false)
     onChoose(c)
   }
@@ -162,6 +170,7 @@ export function FolderSwitcher({
                   {g.items.map((c) => {
                     index += 1
                     const i = index
+                    const blocked = c.kind === 'scratch' && scratchBlocked
                     return (
                       <div
                         key={choiceKey(c)}
@@ -169,12 +178,13 @@ export function FolderSwitcher({
                         data-index={i}
                         role="option"
                         aria-selected={i === active}
+                        aria-disabled={blocked || undefined}
                         className="switcher-item"
                         data-kind={c.kind}
                         onMouseMove={() => setActive(i)}
                         onClick={() => choose(c)}
                       >
-                        <ChoiceBody choice={c} />
+                        <ChoiceBody choice={c} blocked={blocked} />
                       </div>
                     )
                   })}
@@ -188,7 +198,7 @@ export function FolderSwitcher({
   )
 }
 
-function ChoiceBody({ choice: c }: { choice: FolderChoice }): React.JSX.Element {
+function ChoiceBody({ choice: c, blocked }: { choice: FolderChoice; blocked: boolean }): React.JSX.Element {
   switch (c.kind) {
     case 'project':
       return (
@@ -219,7 +229,9 @@ function ChoiceBody({ choice: c }: { choice: FolderChoice }): React.JSX.Element 
             <IconPlus />
             <span>{c.label}</span>
           </span>
-          <span className="switcher-item-side">new dated folder, starts now</span>
+          <span className="switcher-item-side">
+            {blocked ? "Claude Code isn't runnable" : 'new dated folder, starts now'}
+          </span>
         </>
       )
     case 'host':
