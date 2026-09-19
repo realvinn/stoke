@@ -1,5 +1,6 @@
 import type { CodingCliId } from '@shared/codingClis'
 import type { EffortLevel, PermissionMode } from '@shared/types'
+import type { LaunchOverride } from '@shared/launch'
 
 /**
  * Where a session is right now, from its hook events.
@@ -91,4 +92,12 @@ export interface Tab {
   selectedPath: string | null
   /** The project row expanded in this tab's launcher, or null. */
   expandedPath: string | null
+  /**
+   * A New tab's launch chips moved for THIS launch only (QA L10). Absent means
+   * every value is the Stoke default. They used to patch `settings.defaults`,
+   * so trying Sonnet once changed every later launch — the sidebar's +, the
+   * palette, `stoke DIR` and restored tabs. "Make default" is the explicit
+   * route to that now. Never persisted: `toStored` names its fields.
+   */
+  launch?: LaunchOverride
 }

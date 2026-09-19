@@ -84,6 +84,11 @@ interface Props {
   /** Id of the profile whose projects are shown; null shows everything. */
   activeProfile: string | null
   onSelectProfile: (id: string | null) => void
+  /**
+   * The parent folder that tells a project apart from another with the same
+   * name, keyed by path (QA L14). Absent for a name no other project shares.
+   */
+  projectHints?: Record<string, string>
 }
 
 export function Sidebar({
@@ -112,7 +117,8 @@ export function Sidebar({
   onStartScratch,
   profiles,
   activeProfile,
-  onSelectProfile
+  onSelectProfile,
+  projectHints = {}
 }: Props): React.JSX.Element {
   /* One picker open at a time, keyed by path — two open popovers in a scrolling
      list is a way to change the wrong folder without noticing. */
@@ -421,6 +427,11 @@ export function Sidebar({
               row's title attribute still carries the real path. */}
           <span className={row.nameWhole ? 'project-name hit-whole' : 'project-name'}>
             {row.name}
+            {/* Two "Laro" rows with the same meta line could not be told
+                apart except by hovering for the title (QA L14). */}
+            {projectHints[project.path] && (
+              <span className="project-hint"> {projectHints[project.path]}</span>
+            )}
           </span>
 
           {/* A session is open in this folder right now. Placed
@@ -434,7 +445,14 @@ export function Sidebar({
 
           {/* Hover-revealed, like the pin. Double-click already
               starts a session and is undiscoverable; the row's own
-              title says so and nobody reads a title attribute. */}
+              title says so and nobody reads a title attribute.
+
+              Both sit in one absolutely positioned group, so at rest the
+              name has the whole row: while they were in the flex flow at
+              opacity 0 they kept their 48px, and "ai26-p2-prolog-realvinn"
+              truncated at 98 of its 150px with the space beside it empty
+              (QA L15). The row makes room for them only on hover or focus. */}
+          <span className="project-actions">
           <button
             className="icon-btn project-start"
             onClick={(e) => {
@@ -459,6 +477,7 @@ export function Sidebar({
             <IconPin />
             <span className="sr-only">{project.pinned ? 'Unpin' : 'Pin'}</span>
           </button>
+          </span>
         </div>
 
         <div className="project-meta">{row.meta}</div>

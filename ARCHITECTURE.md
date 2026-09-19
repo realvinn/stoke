@@ -499,6 +499,12 @@ npm run verify:tabs           # which tab is selected after one is closed, where
                               # reorder moves a terminal pane. And the relaunch: the plan
                               # (the registry's id and version over the tab's, busy, fresh),
                               # Wait and the automatic relaunch, and what counts as a draft
+npm run verify:launcher       # the new-session page: each launch value resolved through
+                              # tab, Stoke and Claude Code's files (the machine the QA ran
+                              # on, modelSettings included, reads what the banner said),
+                              # same-name projects told apart, the switcher's groups, the
+                              # conversation list, every key, and the picker's Select all
+                              # never reaching an uninstalled agent
 npm run verify:registry       # Claude Code's session registry: parsing junk, missing fields and
                               # every status; matching a pty to its file (pid, then the unique
                               # id, then the unique folder); and the poller against a directory
@@ -739,9 +745,23 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     before the relaunch pill or "Restart and install" kills a turn in flight.
                     Wait is the focused button. In `overlayOpen`, so the docked browser comes
                     off the window while it is up (gotcha 14). Gotcha 82
+  src/components/Launcher.tsx  a New tab's page, one top-aligned column: where it runs
+                    (FolderSwitcher), Start split with the other agents, the launch chips
+                    (resolved, THIS launch only, "Make default"), the conversation list.
+                    Top-aligned so nothing above a row moves when a row below loads. Its
+                    keys come from `launcherKey` (shared/launcher.ts). Gotcha 88
+  src/components/FolderSwitcher.tsx  the launcher's title as a combobox: recent projects
+                    (profile-scoped, same names told apart), the default folder, scratch,
+                    remote machines, Open folder…. Replaced the separate "Start a session"
+                    page, which could not be reached again once a project was clicked
   src/lib/tabs.ts   besides the tab arithmetic, every relaunch decision as a pure function:
                     `relaunchPlan`, `pendingRelaunchStep` (Wait), `autoRelaunchStep`
-                    (`cliRelaunch: 'auto'`) and `looksTyped` (what counts as a draft)
+                    (`cliRelaunch: 'auto'`) and `looksTyped` (what counts as a draft); and
+                    the launcher's: `continuePlan` (Continue resumes by id, never a twin),
+                    `newTabToReuse`, `tabLabel`
+  src/lib/pressBurst.ts  the window's one record of the Enter/Space burst in progress,
+                    registered first from main.tsx; the agent picker and a launcher armed by
+                    the splash or picker closing ask it `activationAllowed`. Gotcha 88
   src/lib/projectSearch.ts  the one matcher the sidebar search and the Cmd+K palette share:
                     label/name/path, session title and first prompt, ranked by tier then
                     recency, with highlight ranges. No runtime imports, so verify:search
@@ -781,6 +801,16 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     Nothing in the app imports it — the installers do, through
                     gen-installer-art.mts. No imports at all, no RNG, no clock. Gotcha 70
                     gen-installer-art.mts. No imports at all, no RNG, no clock. Gotcha 67
+  launch.ts         what a launch runs with and where each value came from: this tab's
+                    override, Stoke's default, then Claude Code's own settings files
+                    (user < project < local, `modelSettings` per model beating the top-level
+                    `effortLevel`). The model alias list, `[1m]` included, read from the
+                    CLI. Main reads the files (`readLaunchDefaults`), the chips draw this.
+                    Gotcha 89
+  launcher.ts       the new-session page's pure half: same-name disambiguation, the
+                    folder switcher's groups, which conversations list, the keyboard map,
+                    the pinned launch aim (`launchAim`), the activation-key burst rule
+                    (`pressAllowed`), and the agent picker's sections and scoped Select all
   welcome.ts        whether the first-run campfire plays, from two strings: the version whose
                     splash was last watched and the version running now. A semver comparison
                     and the clamp that repairs the stored value, together in one file because

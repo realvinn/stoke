@@ -14,6 +14,11 @@ paths:
   - "src/renderer/src/lib/tabs.ts"
   - "src/renderer/src/lib/ptyBus.ts"
   - "src/renderer/src/components/BusyDialog.tsx"
+  - "src/renderer/src/components/AgentPicker.tsx"
+  - "src/renderer/src/components/Campfire.tsx"
+  - "src/renderer/src/components/FolderSwitcher.tsx"
+  - "src/shared/launcher.ts"
+  - "scripts/verify-launcher.mts"
 ---
 
 # React state traps
@@ -216,6 +221,68 @@ beside the ones it had just restored. Measured on the first drive: two restored 
 processes. The veto is `restoredSessions` now — whether the restore HAD any session tab — read from a
 ref set before `restoreSettled` flips. The general form: a guard on a count that another path is
 busy decrementing is a race with that path; guard on the event, not the residue.
+
+## 88. An overlay that does not make the page behind it inert is a keyboard shortcut to whatever has focus there
+
+**The first-run splash said "Click anywhere, or press Escape" over a launcher whose Start button
+already had focus, and handled only Escape.** An Enter pressed to get past it — the reflex, and
+what the QA did — went to that button and started `claude` in the default folder (`~/dev` on the
+machine it was found on), under the splash and then the agent picker, where nobody saw it
+happen. Found twice, once from a stray keystroke three seconds after boot. Tab from the agent
+picker's Continue likewise walked out of its `aria-modal` dialog onto "Toggle sidebar" behind it.
+
+Three locks now, because each covers a hole the others leave:
+
+- **`inert` on the shell's three rows** (`.titlebar`, `.body-row`, `.statusbar` — the overlays are
+  their siblings) whenever `overlayOpen || welcome`. Set in a **`useLayoutEffect`**, and that is
+  load-bearing: React runs a child's passive effects BEFORE its parent's, so with a plain
+  `useEffect` the launcher's "overlay gone, focus Start" ran while the button was still inert, the
+  `focus()` silently did nothing, and focus sat on `<body>` — measured, it is the bug the first
+  version of this fix shipped with.
+- **The splash swallows every key** (capture on `window`, `preventDefault` + `stopPropagation`) and
+  any plain key dismisses it. A held key's repeats are swallowed by `launcherKey`'s `swallow` rule
+  once the splash is gone, and by the picker's own capture listener, so they cannot press the
+  button that takes focus next.
+- **The launcher focuses its primary only while nothing is over it**, and again when the last
+  overlay closes (`overlayOpen` is in the effect's deps), rather than once on mount.
+
+And two races that only showed while driving it:
+
+- The agent picker waited for `welcome` to be null — which it is both BEFORE the async splash
+  decision and after it declines. On a fast machine detection landed first, the picker opened,
+  the splash then drew over it, and the Enter meant for the splash also answered a picker nobody
+  had seen. It waits on `welcomeSettled` now.
+- Between the splash going and the picker opening there was a gap: measured, the splash went at
+  1161ms and the picker came at 1419ms, and for those 258ms Start had focus and the shell was
+  live, so the dismissing Enter tapped twice started `claude` under the picker. `firstRunPending`
+  keeps the shell inert from boot until the splash decision is made and, on a launch that will
+  ask, until the picker has opened — released early if detection throws or takes longer than
+  `FIRST_RUN_WAIT_MS`, since an inert shell with no picker coming is a window nothing can be
+  typed into.
+
+Measured on a fresh profile against a `claude` shim that logs every launch (2026-09-19): splash
+at 654ms with focus on `<body>` and the shell inert; Enter held (one press, three repeats) plus
+two fresh Enters 150ms apart. The shell stayed inert through the gap, the picker opened with
+Continue focused and the second fresh Enter pressed it (which installs nothing: only installed
+agents are ticked), focus landed on Start Claude Code, and the shim's log held only `--version`
+probes.
+
+> **Checked against the code on 2026-09-19 (review round).** The three locks above did not cover
+> the picker itself: a fresh Enter every 40ms from boot answered it before it painted (it opens
+> with Continue focused), and the next Enter started `claude` in the user's most recent REAL
+> project, since the fallback aim is that project. A fourth lock now: `pressAllowed`
+> (shared/launcher.ts) over the window's one burst record (`lib/pressBurst.ts`, registered first
+> from main.tsx so every other capture listener sees the press already folded in). Presses under
+> `PRESS_QUIET_MS` apart are one burst, repeats always continue one, and a surface ARMED at time T
+> takes an Enter/Space only from a burst that began at least `PRESS_ARM_MS` after T. The picker
+> arms when it mounts; the launcher is armed (`armedAt`) when the splash is dismissed or the
+> picker closes, and never by the palette or Settings, whose Enter-then-Enter is a real flow.
+> Measured with the launch-logging shim on a fresh profile: 66 fresh Enters at 40ms from boot left
+> the picker up and the shim with only `--version` probes; after a 1.2s pause one Enter answered
+> it; 34 more Enters at 40ms straight after did not press Start; after another pause one Enter
+> started it. The splash also stopped cancelling chords: `preventDefault` on Cmd+Q/W/R kept the
+> default menu's accelerators from ever seeing them (not drivable over CDP: synthetic key events
+> carry no native event for the menu).
 
 ## 90. Closing a tab had none of the relaunch pill's busy check, and killed the same way
 

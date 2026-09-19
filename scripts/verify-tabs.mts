@@ -31,7 +31,10 @@ import {
   looksTyped,
   moveKey,
   pendingRelaunchStep,
-  rebindTabs
+  rebindTabs,
+  continuePlan,
+  newTabToReuse,
+  tabLabel
 } from '../src/renderer/src/lib/tabs.ts'
 
 let failures = 0
@@ -923,6 +926,104 @@ console.log('\nreordering the strip never moves a terminal pane')
     want
   )
 }
+
+console.log('\ncontinuePlan: the launcher\'s Continue never starts a twin (QA L2)')
+{
+  const same = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase()
+  const running = {
+    id: 't1',
+    kind: 'session',
+    status: 'running',
+    sessionId: 's-new',
+    cwd: '/p/proj-a',
+    cliId: 'claude' as const,
+    hostId: null
+  }
+  check(
+    'with the list loaded, Continue resumes the newest conversation BY ID',
+    continuePlan({ sessions: [{ id: 's-new' }, { id: 's-old' }], loading: false, tabs: [running], cwd: '/p/proj-a', cli: 'claude', samePath: same }),
+    { kind: 'resume', sessionId: 's-new' }
+  )
+  check(
+    'still loading, a running tab of that agent in that folder is focused, not twinned',
+    continuePlan({ sessions: [], loading: true, tabs: [running], cwd: '/P/proj-a', cli: 'claude', samePath: same }),
+    { kind: 'focus', tabId: 't1' }
+  )
+  check(
+    'still loading, a Codex tab in the folder does not stop a Claude --continue',
+    continuePlan({ sessions: [], loading: true, tabs: [{ ...running, cliId: 'codex' }], cwd: '/p/proj-a', cli: 'claude', samePath: same }),
+    { kind: 'continue' }
+  )
+  check(
+    'still loading, an exited tab is not focused',
+    continuePlan({ sessions: [], loading: true, tabs: [{ ...running, status: 'exited' }], cwd: '/p/proj-a', cli: 'claude', samePath: same }),
+    { kind: 'continue' }
+  )
+  check(
+    'still loading, an SSH tab whose alias equals the folder is not focused (gotcha 18)',
+    continuePlan({ sessions: [], loading: true, tabs: [{ ...running, hostId: 'h1' }], cwd: '/p/proj-a', cli: 'claude', samePath: same }),
+    { kind: 'continue' }
+  )
+  check(
+    'loaded and empty, there is nothing to continue',
+    continuePlan({ sessions: [], loading: false, tabs: [], cwd: '/p/proj-a', cli: 'claude', samePath: same }),
+    { kind: 'none' }
+  )
+}
+
+console.log('\nnewTabToReuse: a palette pick reuses a New tab (QA L17)')
+check('the active New tab first', newTabToReuse([{ id: 'n1', kind: 'new' }, { id: 'n2', kind: 'new' }], 'n2'), 'n2')
+check(
+  'with a session in front, the first idle New tab in the strip',
+  newTabToReuse([{ id: 's1', kind: 'session' }, { id: 'n1', kind: 'new' }], 's1'),
+  'n1'
+)
+check('with no New tab anywhere, null (append one)', newTabToReuse([{ id: 's1', kind: 'session' }], 's1'), null)
+check(
+  'a background New tab with staged choices (Bypass) is not reused for another folder',
+  newTabToReuse(
+    [{ id: 's1', kind: 'session' }, { id: 'n1', kind: 'new', launch: { permissionMode: 'bypassPermissions' } }, { id: 'n2', kind: 'new' }],
+    's1'
+  ),
+  'n2'
+)
+check(
+  '…and with only that one, a fresh tab is appended',
+  newTabToReuse([{ id: 's1', kind: 'session' }, { id: 'n1', kind: 'new', launch: { model: 'sonnet' } }], 's1'),
+  null
+)
+check(
+  'the New tab in front is reused whatever it has staged: its chips are on screen',
+  newTabToReuse([{ id: 'n1', kind: 'new', launch: { model: 'sonnet' } }], 'n1'),
+  'n1'
+)
+
+console.log('\ntabLabel: tabs say which project and which agent (QA L16)')
+check(
+  'a New tab aimed at a project names it',
+  tabLabel({ kind: 'new', title: 'New session', cliId: 'claude' }, 'stoke'),
+  { text: 'New · stoke', agentTag: null }
+)
+check(
+  'a New tab aimed nowhere keeps its title',
+  tabLabel({ kind: 'new', title: 'New session', cliId: 'claude' }, null),
+  { text: 'New session', agentTag: null }
+)
+check(
+  'a Codex tab is tagged codex',
+  tabLabel({ kind: 'session', title: 'proj-a', cliId: 'codex' }, null),
+  { text: 'proj-a', agentTag: 'codex' }
+)
+check(
+  'a Claude tab carries no tag',
+  tabLabel({ kind: 'session', title: 'proj-a', cliId: 'claude' }, null),
+  { text: 'proj-a', agentTag: null }
+)
+check(
+  'an install tab is not tagged as the agent it installs',
+  tabLabel({ kind: 'session', title: 'Installing Codex CLI', cliId: 'codex', installing: ['codex'] }, null),
+  { text: 'Installing Codex CLI', agentTag: null }
+)
 
 /*
  * The tally is the LAST thing in this file, and it has to stay that way.

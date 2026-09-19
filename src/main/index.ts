@@ -116,7 +116,7 @@ import {
   type UpdateInfo
 } from './updates.ts'
 import { fetchUsage, keepLastGood, nextBackoff, type UsageSnapshot } from './usage.ts'
-import { patchClaudeSetting, readClaudeSettings, untouchedKeys } from './claudeSettings.ts'
+import { patchClaudeSetting, readClaudeSettings, readLaunchDefaults, untouchedKeys } from './claudeSettings.ts'
 import {
   readGlobalConfigKey,
   releaseHeldLocks,
@@ -2125,6 +2125,10 @@ function registerIpc(): void {
   }
 
   ipcMain.handle(CH.claudeConfigRead, () => claudeConfigState())
+
+  ipcMain.handle(CH.claudeLaunchDefaults, (_e, cwd: unknown) =>
+    readLaunchDefaults(typeof cwd === 'string' && cwd ? cwd : null)
+  )
 
   ipcMain.handle(CH.claudeConfigSet, async (_e, key: string, value: ClaudeSettingValue) => {
     const result = await patchClaudeSetting(key, value)

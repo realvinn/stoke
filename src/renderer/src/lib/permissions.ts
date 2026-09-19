@@ -1,4 +1,5 @@
 import type { EffortLevel, PermissionMode } from '@shared/types'
+import { ULTRACODE_EFFORT } from '@shared/launch'
 
 export interface ModeOption {
   id: PermissionMode
@@ -13,10 +14,17 @@ export interface ModeOption {
  * quick switcher but remain valid in the type.
  */
 export const PERMISSION_MODES: ModeOption[] = [
+  /*
+   * Not "Ask". This sends no --permission-mode at all, so the session runs in
+   * whatever `permissions.defaultMode` the user's own settings name — `auto` on
+   * the machine the QA ran on, while this button said "Ask" and its hint said
+   * "Claude asks before each tool use" (QA L11). The launcher shows the resolved
+   * mode beside it; this label only has to stop claiming one.
+   */
   {
     id: 'default',
-    label: 'Ask',
-    hint: 'Claude asks before each tool use. The standard Claude Code behaviour.'
+    label: 'Default',
+    hint: "Sends no flag: Claude Code's own default mode applies (your settings.json's permissions.defaultMode, else it asks)."
   },
   {
     id: 'plan',
@@ -68,7 +76,7 @@ export function effortLabel(id: EffortLevel): string {
  * boolean the CLI reads out of its settings, which is why Stoke passes it through
  * `--settings` at launch (see main/cli.ts) rather than as a flag.
  */
-export const ULTRACODE_EFFORT: EffortLevel = 'xhigh'
+export { ULTRACODE_EFFORT }
 
 export const ULTRACODE_HINT =
   'Extra-high effort plus standing dynamic-workflow orchestration. Needs workflows enabled and a model that can run at extra-high effort.'
@@ -84,11 +92,5 @@ export function effectiveEffort(effort: EffortLevel, ultracode: boolean): Effort
   return ultracode ? ULTRACODE_EFFORT : effort
 }
 
-/** Model aliases the CLI accepts. An empty id means "whatever is configured". */
-export const MODEL_OPTIONS: { id: string; label: string }[] = [
-  { id: '', label: 'Default' },
-  { id: 'opus', label: 'Opus' },
-  { id: 'sonnet', label: 'Sonnet' },
-  { id: 'haiku', label: 'Haiku' },
-  { id: 'fable', label: 'Fable' }
-]
+/** Model aliases the CLI accepts; the list lives in shared/launch.ts with its provenance. */
+export { MODEL_OPTIONS } from '@shared/launch'

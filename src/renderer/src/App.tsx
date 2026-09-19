@@ -2,7 +2,7 @@ import { capsFor, cliFor, DEFAULT_CLI, isClaudeCode } from '@shared/codingClis'
 import type { CodingCliDetection, CodingCliId } from '@shared/codingClis'
 import { visibleAgents } from '@shared/agents'
 import { AgentPicker } from './components/AgentPicker'
-import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type {
   BrowserState,
   CliInfo,
@@ -23,6 +23,16 @@ import type {
 import type { UpdateInfo } from '@shared/api'
 import { foldGroup, profileFor, resolveProfiles, visibleProfiles } from '@shared/profiles'
 import { pathKey, pathRulesFor } from '@shared/paths'
+import {
+  NO_CLAUDE_DEFAULTS,
+  pruneOverride,
+  resolveLaunch,
+  type ClaudeLaunchDefaults,
+  type LaunchChoice,
+  type LaunchOverride
+} from '@shared/launch'
+import { disambiguate, launchAim, type FolderChoice } from '@shared/launcher'
+import { pressClock } from './lib/pressBurst'
 import type { StokeCliRequest } from '@shared/stokeArgs'
 import { activeThemeId, resolveTheme } from '@shared/themes'
 import { worklogButtonState } from '@shared/worklog'
@@ -30,7 +40,7 @@ import { BrowserPanel } from './components/BrowserPanel'
 import { BusyDialog } from './components/BusyDialog'
 import { CommandPalette } from './components/CommandPalette'
 import { IconClose } from './components/Icons'
-import { Launcher } from './components/Launcher'
+import { Launcher, type LaunchTarget } from './components/Launcher'
 import { PausedSession } from './components/PausedSession'
 import { Resizer } from './components/Resizer'
 import { SettingsSheet, type SectionId } from './components/SettingsSheet'
@@ -60,17 +70,20 @@ import {
   autoRelaunchKey,
   autoRelaunchStep,
   busyTabIds,
+  continuePlan,
   cycleTab,
   focusAfterStart,
   moveKey,
   moveTab,
   neighbourOf,
+  newTabToReuse,
   paneOrder,
   pendingRelaunchStep,
   rebindTabs,
   relaunchPlan,
   replaceOrAppend,
   restartPlan,
+  tabLabel,
   type PendingOrigin,
   type RelaunchPlan
 } from './lib/tabs'
@@ -144,6 +157,9 @@ type BusyPrompt =
  */
 const RELAUNCH_EXIT_CAP_MS = 3000
 
+/** How long a first run keeps the shell inert waiting for agent detection to open the picker. */
+const FIRST_RUN_WAIT_MS = 5000
+
 const EMPTY_BROWSER: BrowserState = {
   url: '',
   title: '',
@@ -166,6 +182,20 @@ export function App(): React.JSX.Element {
   const [cli, setCli] = useState<CliInfo | null>(null)
   /** The first-run campfire, or null on every launch that is not one. */
   const [welcome, setWelcome] = useState<WelcomeScreen | null>(null)
+  /**
+   * Whether the splash decision has been MADE — played or not. The first-run
+   * agent picker waits on it: `welcome` is null both before the async decision
+   * and after it declines, and the picker used to open in that first window,
+   * under a splash that then appeared over it, so the Enter meant for the
+   * splash also answered a picker nobody had seen (measured).
+   */
+  const [welcomeSettled, setWelcomeSettled] = useState(false)
+  /*
+   * When the splash or the agent picker last went away. The launcher takes no
+   * Enter or Space that is the tail of a burst already going then — the Enters
+   * someone presses to get past the first run (gotcha 88, `pressAllowed`).
+   */
+  const [launcherArmedAt, setLauncherArmedAt] = useState<number | null>(null)
 
   /*
    * Which coding agents are on this machine, and whether the PATH could be read
@@ -181,8 +211,11 @@ export function App(): React.JSX.Element {
       .then(setAgentDetection)
       .catch(() => {
         /* Detection is a convenience; a failure leaves the last answer standing. */
+        setAgentDetectFailed(true)
       })
   }, [])
+  /** Detection threw: no first-run picker is coming, so nothing waits for one. */
+  const [agentDetectFailed, setAgentDetectFailed] = useState(false)
   /** The agent picker: opened by hand, or once on a launch that has never answered it. */
   const [agentPickerOpen, setAgentPickerOpen] = useState(false)
 
@@ -632,6 +665,32 @@ export function App(): React.JSX.Element {
   }, [])
 
   /*
+   * Re-probe `claude` (QA L3). It was probed at boot and on an updater push
+   * only, so the launcher kept whatever it first saw: disabled for the rest of
+   * the run after the path was fixed in Settings, enabled after it was broken.
+   * Now on a claudePath change, on window focus while broken, and on the
+   * banner's Retry. The ref is claimed before the await (gotcha 20) so a
+   * second press inside one probe does not start a second `claude --version`.
+   * `probeClaude` re-runs `findClaude` each call, so a Retry is a real retry.
+   */
+  const [cliChecking, setCliChecking] = useState(false)
+  const cliProbing = useRef(false)
+  const reprobeCli = useCallback((): void => {
+    if (cliProbing.current) return
+    cliProbing.current = true
+    setCliChecking(true)
+    void window.stoke.cli
+      .info()
+      .then(setCli, () => {})
+      .finally(() => {
+        cliProbing.current = false
+        setCliChecking(false)
+      })
+  }, [])
+  const cliRef = useRef<CliInfo | null>(cli)
+  cliRef.current = cli
+
+  /*
    * (Re)fetch the session index. Cheap to call again — main re-reads only the
    * transcripts whose mtime or size moved — so it is simply called whenever
    * the answer might have changed while someone is searching.
@@ -715,9 +774,21 @@ export function App(): React.JSX.Element {
   useEffect(() => {
     initPtyBus()
 
-    const offCtx = window.stoke.context.onUpdate((snap) =>
+    /*
+     * A session's transcript appearing is the moment its folder becomes a
+     * project, or becomes the most recent one — and the sidebar's Recent and
+     * the launcher's fallback target read exactly that. They used to wait for a
+     * window focus to notice (QA L5). Once per session id; main's list is
+     * mtime-cached, so this is cheap.
+     */
+    const readySeen = new Set<string>()
+    const offCtx = window.stoke.context.onUpdate((snap) => {
       setContexts((prev) => ({ ...prev, [snap.sessionId]: snap }))
-    )
+      if (snap.ready && !readySeen.has(snap.sessionId)) {
+        readySeen.add(snap.sessionId)
+        void refreshProjects()
+      }
+    })
     /*
      * Hook events. A prompt starts a turn; a stop ends it; a notification is
      * the CLI asking for something. The transition to `done` or `attention`
@@ -902,7 +973,8 @@ export function App(): React.JSX.Element {
       setSettings(s)
       setSidebarWidth(s.sidebarWidth)
       setBrowserWidth(s.browser.width)
-      void window.stoke.cli.info().then(setCli)
+      // `cli` is probed by the claudePath effect below, which runs as soon as
+      // these settings land — once, rather than here and there both.
       void window.stoke.workspace.defaultCwd().then(setDefaultCwd)
       // Quiet check; surfaces as a status-bar pill only when something is newer.
       void window.stoke.updates.check().then(setUpdate)
@@ -939,16 +1011,34 @@ export function App(): React.JSX.Element {
     void window.stoke.workspace.defaultCwd().then(setDefaultCwd)
   }, [settings?.defaultCwd, settings])
 
+  // The path the CLI is found at decides whether it runs; re-probe when it
+  // moves, including the first time settings arrive (QA L3).
+  const claudePathKey = settings ? (settings.claudePath ?? '') : null
+  useEffect(() => {
+    if (claudePathKey === null) return
+    reprobeCli()
+  }, [claudePathKey, reprobeCli])
+
+  /*
+   * Bumped on window focus, so things read from files other programs edit —
+   * Claude Code's own settings, for the launcher's resolved defaults — are
+   * re-read when the user comes back from editing them.
+   */
+  const [focusTick, setFocusTick] = useState(0)
+
   // Project timestamps go stale while the window is in the background — and so
   // do session titles, which Claude rewrites as a conversation goes on.
   useEffect(() => {
     const onFocus = (): void => {
       void refreshProjects()
       if (searchingRef.current) loadSessionIndex()
+      // A broken CLI may have been installed or fixed meanwhile (QA L3).
+      if (cliRef.current && !cliRef.current.ok) reprobeCli()
+      setFocusTick((n) => n + 1)
     }
     window.addEventListener('focus', onFocus)
     return () => window.removeEventListener('focus', onFocus)
-  }, [refreshProjects, loadSessionIndex])
+  }, [refreshProjects, loadSessionIndex, reprobeCli])
 
   /*
    * Looking at a tab clears its `done` / `attention`, because the dot means
@@ -1079,22 +1169,151 @@ export function App(): React.JSX.Element {
     if (settings) applyTypography(settings.fontFamily, settings.fontSize, settings.uiScale, settings.terminal)
   }, [settings])
 
-  /* -------------------------------------------------------------- sessions */
+  /* -------------------------------------------------------------- launcher */
 
+  /*
+   * The projects the active profile shows — the sidebar's own scoping, so the
+   * launcher's switcher and its fallback target never offer a folder the
+   * sidebar has just hidden (QA L18).
+   */
+  const scopedProjects = useMemo(() => {
+    if (!activeProfile) return projects
+    const groups = new Set(activeProfile.groups.map(foldGroup))
+    return projects.filter((p) => groups.has(foldGroup(p.group)))
+  }, [projects, activeProfile])
+
+  /*
+   * Same-name projects, told apart by their parent folders (QA L14) — among
+   * the projects on screen: the profile's list while browsing, every project
+   * while searching (search reaches across profiles). A `proj-a` hidden by the
+   * profile is no reason to suffix the one that shows.
+   */
+  const projectHints = useMemo(
+    () => disambiguate(scopedProjects.map((p) => ({ path: p.path, label: p.label ?? p.name }))),
+    [scopedProjects]
+  )
+  const allProjectHints = useMemo(
+    () => disambiguate(projects.map((p) => ({ path: p.path, label: p.label ?? p.name }))),
+    [projects]
+  )
+
+  const activeIsNew = tabs.some((t) => t.id === activeTabId && t.kind === 'new')
+
+  /*
+   * Where the active New tab's launcher is aimed: its own selection, else the
+   * most recent project the profile shows, else the default folder. There is no
+   * "nothing selected" page any more (QA L6): it could not be reached again once
+   * any project had been clicked, and the default folder and scratch are one
+   * pick away in the folder switcher instead. Null only while the project list
+   * is still loading with nothing selected — the header shows a skeleton rather
+   * than flashing the default folder and then jumping.
+   *
+   * The fallback is pinned per tab the first time it resolves (`launchAim`):
+   * recomputed on every project refresh, it re-aimed a launcher under the
+   * user's focused Start button whenever another project's transcript moved.
+   * A pin is not a selection — the sidebar does not highlight it — so it lives
+   * beside the tabs rather than in `selectedPath`.
+   */
+  const [aimPins, setAimPins] = useState<Record<string, string>>({})
+  const aim = useMemo(
+    () =>
+      activeIsNew && activeTabId
+        ? launchAim({
+            selected: selectedPath,
+            pinned: aimPins[activeTabId] ?? null,
+            projects: scopedProjects,
+            loading: projectsLoading,
+            defaultCwd
+          })
+        : null,
+    [activeIsNew, activeTabId, selectedPath, aimPins, scopedProjects, projectsLoading, defaultCwd]
+  )
+  const launchPath = aim?.path ?? null
   useEffect(() => {
-    const path = selectedPath
-    if (!path) return
-    let cancelled = false
-    setSessionsLoadingPath(path)
-    void window.stoke.projects.sessions(path).then((list) => {
-      if (cancelled) return
-      setSessionsByPath((prev) => ({ ...prev, [path]: list }))
-      setSessionsLoadingPath((cur) => (cur === path ? null : cur))
+    const pin = aim?.pin
+    if (!pin || !activeTabId || aimPins[activeTabId] === pin) return
+    setAimPins((cur) => {
+      // Pins of tabs that are gone are dropped on the way.
+      const next: Record<string, string> = {}
+      for (const t of tabsRef.current) if (t.kind === 'new' && cur[t.id]) next[t.id] = cur[t.id]
+      next[activeTabId] = pin
+      return next
     })
+  }, [aim, activeTabId, aimPins])
+
+  const launchTarget = useMemo((): LaunchTarget | null => {
+    if (!launchPath) return null
+    const project = projects.find((p) => p.path === launchPath) ?? null
+    return {
+      path: launchPath,
+      label: project ? (project.label ?? project.name) : baseName(launchPath),
+      hint:
+        (scopedProjects.some((p) => p.path === launchPath) ? projectHints : allProjectHints)[launchPath] ?? '',
+      project,
+      exists: project ? project.exists : true
+    }
+  }, [launchPath, projects, scopedProjects, projectHints, allProjectHints])
+
+  /*
+   * What `claude` would launch with in that folder when Stoke sends no flag,
+   * from its own settings files (QA L11). Re-read when the target moves and on
+   * window focus, since those files are edited outside Stoke.
+   */
+  const [claudeDefaults, setClaudeDefaults] = useState<ClaudeLaunchDefaults>(NO_CLAUDE_DEFAULTS)
+  /*
+   * The same answers kept per folder, for the status bar. One shared value
+   * showed the PREVIOUS folder's defaultMode on the pill for as long as the
+   * IPC took, whenever the tab in front changed to a folder whose project
+   * file says otherwise. The pill reads only the answer for its own folder,
+   * and shows nothing until it has one: a blank is not a claim.
+   */
+  const [claudeDefaultsByPath, setClaudeDefaultsByPath] = useState<Record<string, ClaudeLaunchDefaults>>({})
+  // A session tab in front reads its own folder's files, for the status bar's
+  // mode pill; an SSH tab's cwd is a host alias (gotcha 18), so it reads none.
+  const activeLocalCwd = tabs.find((t) => t.id === activeTabId && t.kind === 'session' && !t.hostId)?.cwd ?? null
+  const defaultsPath = activeIsNew ? launchPath : activeLocalCwd
+  useEffect(() => {
+    let cancelled = false
+    window.stoke.claudeConfig.launchDefaults(defaultsPath).then(
+      (d) => {
+        if (cancelled) return
+        setClaudeDefaults(d)
+        if (defaultsPath) setClaudeDefaultsByPath((cur) => ({ ...cur, [defaultsPath]: d }))
+      },
+      () => {}
+    )
     return () => {
       cancelled = true
     }
-  }, [selectedPath])
+  }, [defaultsPath, focusTick])
+
+  /* -------------------------------------------------------------- sessions */
+
+  /*
+   * Refetch a project's sessions when its list could have changed: a new
+   * selection, or the project's own count or mtime moving after a
+   * `refreshProjects` — which is how a session started from this very launcher
+   * shows up in its list without re-selecting the folder.
+   */
+  const sessionsPath = selectedPath ?? launchPath
+  const sessionsProject = projects.find((p) => p.path === sessionsPath)
+  const sessionsStamp = sessionsProject ? `${sessionsProject.sessionCount}:${sessionsProject.lastModified}` : ''
+  useEffect(() => {
+    const path = sessionsPath
+    if (!path) return
+    let cancelled = false
+    setSessionsLoadingPath(path)
+    const settle = (list: SessionMeta[] | null): void => {
+      if (cancelled) return
+      // A failed read keeps whatever was cached, and ends the skeleton either way.
+      setSessionsByPath((prev) => (list ? { ...prev, [path]: list } : path in prev ? prev : { ...prev, [path]: [] }))
+      setSessionsLoadingPath((cur) => (cur === path ? null : cur))
+    }
+    window.stoke.projects.sessions(path).then(settle, () => settle(null))
+    return () => {
+      cancelled = true
+    }
+  }, [sessionsPath, sessionsStamp])
 
   /*
    * What the sidebar and the launcher read.
@@ -1111,7 +1330,17 @@ export function App(): React.JSX.Element {
    * projects' lists at once, which the single `sessions` array it replaced
    * could not.
    */
-  const sessions = selectedPath ? (sessionsByPath[selectedPath] ?? []) : []
+  const launchSessions = useMemo(
+    () => (launchPath ? (sessionsByPath[launchPath] ?? []) : []),
+    [launchPath, sessionsByPath]
+  )
+  /*
+   * "Not fetched yet" counts as loading, not as empty. Otherwise the first
+   * frame after a selection drew the project as having no conversations — no
+   * Continue, no list, an empty-state line — and then redrew it (QA L9).
+   */
+  const launchSessionsLoading =
+    !!launchPath && (sessionsLoadingPath === launchPath || !(launchPath in sessionsByPath))
 
   /*
    * When search reads the index: the moment a query appears — the first one,
@@ -1164,10 +1393,13 @@ export function App(): React.JSX.Element {
           )
           // An install tab has just changed what is on this machine.
           if (t.installing?.length) refreshAgents(true)
+          // And a session that ended has just written its last transcript
+          // line, which moves its project in Recent (QA L5).
+          void refreshProjects()
         })
       )
     return () => offs.forEach((off) => off())
-  }, [tabs, refreshAgents])
+  }, [tabs, refreshAgents, refreshProjects])
 
   /*
    * Adopt Claude's own generated title, and keep the permission mode live.
@@ -1613,13 +1845,14 @@ export function App(): React.JSX.Element {
   }, [defaultCwd, startSession, activeNewTabId])
 
   /** Quick start in a fresh throwaway folder. */
-  const startScratch = useCallback(async (): Promise<void> => {
+  const startScratch = useCallback(async (launch?: LaunchChoice): Promise<void> => {
     try {
       const dir = await window.stoke.workspace.createScratch()
       await startSession({
         cwd: dir,
         name: `Scratch ${baseName(dir)}`,
-        replaceTabId: activeNewTabId ?? undefined
+        replaceTabId: activeNewTabId ?? undefined,
+        ...(launch ?? {})
       })
       // The new folder becomes a real project once Claude writes a transcript.
       await refreshProjects()
@@ -1713,7 +1946,14 @@ export function App(): React.JSX.Element {
                 title: s.title || null,
                 updatedAt: s.lastActiveAt,
                 ready: true,
-                permissionMode: s.permissionMode
+                /*
+                 * Not a report: `default` stored on a tab means it resumes
+                 * with no flag, so the folder's settings decide its mode, and
+                 * seeding it as the transcript's own word made the status bar
+                 * say Ask for it (`sessionMode`). Any other value is a flag
+                 * the resume passes again.
+                 */
+                permissionMode: s.permissionMode === 'default' ? null : s.permissionMode
               }
             }
           })
@@ -1784,9 +2024,11 @@ export function App(): React.JSX.Element {
        * so two `stoke --open` in one tick would each append a New tab; this way
        * the second finds the one the first made, and selects in it.
        */
-      const cur = tabsRef.current.find((t) => t.id === activeTabIdRef.current)
-      let tabId = cur?.kind === 'new' ? cur.id : null
-      if (!tabId) {
+      let tabId = newTabToReuse(tabsRef.current, activeTabIdRef.current)
+      if (tabId) {
+        activeTabIdRef.current = tabId
+        setActiveTabId(tabId)
+      } else {
         const t = newTab(cwd)
         tabsRef.current = [...tabsRef.current, t]
         activeTabIdRef.current = t.id
@@ -1935,7 +2177,9 @@ export function App(): React.JSX.Element {
     const tab = newTab(browsePath, browseExpanded)
     setTabs((list) => [...list, tab])
     setActiveTabId(tab.id)
-  }, [browsePath, browseExpanded])
+    // What a New tab offers is the project list; make it the current one (QA L5).
+    void refreshProjects()
+  }, [browsePath, browseExpanded, refreshProjects])
 
   const reorderTab = useCallback((dragId: string, overId: string): void => {
     // Once per drag, on release (`useTabDrag`). Only the strip's own nodes
@@ -2474,6 +2718,80 @@ export function App(): React.JSX.Element {
   const overlayOpen = paletteOpen || settingsOpen || agentPickerOpen || busyPrompt !== null
   const seededBrowser = useRef(false)
 
+  /*
+   * Ask once. A launch whose settings have never answered the picker opens it
+   * as soon as the campfire is out of the way and detection has landed — after,
+   * so the picker can pre-tick what is installed rather than flash empty. The
+   * ref makes it once per launch even if the user closes it without choosing.
+   */
+  const pickerAsked = useRef(false)
+  const [pickerAskedState, setPickerAskedState] = useState(false)
+  useEffect(() => {
+    if (pickerAsked.current || !settings || !welcomeSettled || welcome || !agentDetection) return
+    if (settings.agents.chosen !== null) return
+    pickerAsked.current = true
+    setPickerAskedState(true)
+    setAgentPickerOpen(true)
+  }, [settings, welcomeSettled, welcome, agentDetection])
+
+  /*
+   * The gap between the splash and the picker it is about to open (QA L1).
+   * Measured on a fresh profile: the splash went at 1161ms, the picker came at
+   * 1419ms, and for those 258ms the launcher's Start had focus and the shell
+   * was live — a second Enter, the one that dismissed the splash tapped twice,
+   * started `claude` under the picker. So the shell stays inert from boot until
+   * the splash decision is made and, on a launch that will ask, until the
+   * picker has opened. Detection that fails, or has not answered in
+   * FIRST_RUN_WAIT_MS, lets go: an inert shell with no picker coming would
+   * be a window nothing can be typed into.
+   */
+  const [firstRunWaitOver, setFirstRunWaitOver] = useState(false)
+  const firstRunAsking = !!settings && settings.agents.chosen === null && !pickerAskedState
+  useEffect(() => {
+    if (!firstRunAsking || firstRunWaitOver) return
+    const t = window.setTimeout(() => setFirstRunWaitOver(true), FIRST_RUN_WAIT_MS)
+    return () => window.clearTimeout(t)
+  }, [firstRunAsking, firstRunWaitOver])
+  const firstRunPending =
+    !!settings && (!welcomeSettled || (firstRunAsking && !firstRunWaitOver && !agentDetectFailed))
+
+  /*
+   * Everything behind a modal is inert while it is up — the title bar, the body
+   * row and the status bar, which are the shell's three rows; the overlays are
+   * their siblings and stay live (QA L1). The welcome splash counts: it said
+   * "Click anywhere, or press Escape" over a focused Start button, so an Enter
+   * meant for the splash started `claude` in the default folder behind it, and
+   * Tab from the agent picker walked out of its dialog into the title bar (L7).
+   * `inert` also blurs whatever held focus back there, so no key reaches it.
+   */
+  const shellInert = overlayOpen || welcome !== null || firstRunPending
+  const appRef = useRef<HTMLDivElement>(null)
+  // A LAYOUT effect: it must land before the children's passive effects run,
+  // or the launcher's "focus Start now the overlay is gone" hits an element
+  // that is still inert, and the focus silently falls to <body> (measured).
+  useLayoutEffect(() => {
+    const root = appRef.current
+    if (!root) return
+    for (const el of root.querySelectorAll(':scope > .titlebar, :scope > .body-row, :scope > .statusbar')) {
+      el.toggleAttribute('inert', shellInert)
+    }
+  }, [shellInert])
+
+  /*
+   * And when the last overlay goes, the keyboard goes back to what is in front:
+   * the running terminal, or — through its own `overlayOpen` prop — the
+   * launcher's primary button. It used to fall to <body>, where "Enter to
+   * start" did nothing (QA L7).
+   */
+  const wasInert = useRef(false)
+  useEffect(() => {
+    const was = wasInert.current
+    wasInert.current = shellInert
+    if (!was || shellInert) return
+    const tab = tabsRef.current.find((t) => t.id === activeTabIdRef.current)
+    if (tab?.kind === 'session' && tab.status === 'running') focusTerm(tab.ptyId)
+  }, [shellInert])
+
   useEffect(() => {
     refreshAgents()
   }, [refreshAgents])
@@ -2491,19 +2809,6 @@ export function App(): React.JSX.Element {
       .map((id) => cliFor(id))
   }, [agentDetection, settings?.agents.chosen])
 
-  /*
-   * Ask once. A launch whose settings have never answered the picker opens it
-   * as soon as the campfire is out of the way and detection has landed — after,
-   * so the picker can pre-tick what is installed rather than flash empty. The
-   * ref makes it once per launch even if the user closes it without choosing.
-   */
-  const pickerAsked = useRef(false)
-  useEffect(() => {
-    if (pickerAsked.current || !settings || welcome || !agentDetection) return
-    if (settings.agents.chosen !== null) return
-    pickerAsked.current = true
-    setAgentPickerOpen(true)
-  }, [settings, welcome, agentDetection])
 
   /** Open a tab that installs these agents, from the vendors' own commands. */
   const installAgents = useCallback(
@@ -2624,24 +2929,22 @@ export function App(): React.JSX.Element {
    */
   const relaunch = useMemo(() => planFor(activeTab), [activeTab, planFor])
 
-  /*
-   * What the launcher offers when nothing is selected: pinned folders first,
-   * then the ones used most recently. Six, because the point is to get back to
-   * something you were in the middle of, not to duplicate the sidebar.
-   */
-  const recentProjects = useMemo(
-    () =>
-      [...projects]
-        .sort(
-          (a, b) =>
-            Number(b.pinned) - Number(a.pinned) || (b.lastModified ?? 0) - (a.lastModified ?? 0)
-        )
-        .slice(0, 6),
-    [projects]
-  )
-
   /* Memoised: a fresh array each render would rebuild the Sidebar's Set on every tick. */
   const openSessionIds = useMemo(() => tabs.map((t) => t.sessionId), [tabs])
+  /*
+   * The launcher's "Open" pill reads RUNNING session tabs only: a paused tab has
+   * a Resume of its own, and resumeSession starts a process for it rather than
+   * bringing it forward.
+   */
+  const runningSessionIds = useMemo(
+    () =>
+      new Set(
+        tabs
+          .filter((t) => t.kind === 'session' && t.status === 'running' && t.sessionId)
+          .map((t) => t.sessionId)
+      ),
+    [tabs]
+  )
 
   /*
    * The terminal panes, in an order a strip reorder cannot change.
@@ -2669,7 +2972,6 @@ export function App(): React.JSX.Element {
         .map((t) => t.cwd),
     [tabs]
   )
-  const selectedProject = projects.find((p) => p.path === selectedPath) ?? null
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
@@ -2793,12 +3095,16 @@ export function App(): React.JSX.Element {
        * update check and touches no network. package.json's version is what an
        * unpackaged run reports, which is what makes this testable at all.
        */
-      const version = (await window.stoke.self.state()).currentVersion
-      const plan = welcomePlan(settings.welcomeSeenVersion, version)
-      if (!plan.play) return
-      const screen = { reason: plan.reason, version, record: plan.record }
-      welcomeRef.current = screen
-      setWelcome(screen)
+      try {
+        const version = (await window.stoke.self.state()).currentVersion
+        const plan = welcomePlan(settings.welcomeSeenVersion, version)
+        if (!plan.play) return
+        const screen = { reason: plan.reason, version, record: plan.record }
+        welcomeRef.current = screen
+        setWelcome(screen)
+      } finally {
+        setWelcomeSettled(true)
+      }
     })()
   }, [settings])
 
@@ -2813,6 +3119,7 @@ export function App(): React.JSX.Element {
     if (!welcomeRef.current) return
     welcomeRef.current = null
     setWelcome(null)
+    setLauncherArmedAt(pressClock())
     // Written on dismissal rather than on mount: a splash recorded as seen
     // before it finished would, if the app went away mid-animation, be a
     // screen nobody watched that can never be shown again. `store.ts` writes a
@@ -2850,16 +3157,24 @@ export function App(): React.JSX.Element {
    */
   const selectInNewTab = useCallback(
     (path: string): void => {
-      let tabId = activeNewTabId
+      /*
+       * Any New tab already in the strip is reused before one is appended —
+       * the active one first. Appending whenever a session was in front left
+       * idle "New session" tabs piling up (QA L17). Read through the refs, so a
+       * second pick in the same tick finds the tab the first one chose.
+       */
+      let tabId = newTabToReuse(tabsRef.current, activeTabIdRef.current)
       if (!tabId) {
         const t = newTab(path)
+        tabsRef.current = [...tabsRef.current, t]
         setTabs((list) => [...list, t])
-        setActiveTabId(t.id)
         tabId = t.id
       }
+      activeTabIdRef.current = tabId
+      setActiveTabId(tabId)
       selectProject(path, tabId)
     },
-    [activeNewTabId, selectProject]
+    [selectProject]
   )
 
   const openFolder = useCallback(async (): Promise<void> => {
@@ -2887,36 +3202,50 @@ export function App(): React.JSX.Element {
   }, [refreshProjects])
 
   /*
-   * One writer each. The settings patch is the whole change now — there is no
-   * local copy left to keep in step, which is what let the Sessions pane and
-   * the launcher disagree about the same four values.
+   * The launcher's chips change THIS launch only (QA L10): the override lives
+   * on the New tab (`Tab.launch`), and settings.defaults — which the sidebar's +,
+   * the palette, `stoke DIR` and restored tabs all read — moves only through
+   * "Make default". Still one writer per value (gotcha 57): the tab owns its
+   * override, settings own the default, and neither is a copy of the other.
    */
-  const changeMode = useCallback(
-    (m: PermissionMode): void => {
-      if (settings) void patchSettings({ defaults: { ...settings.defaults, permissionMode: m } })
-    },
-    [settings, patchSettings]
+  const stokeDefaults = useMemo(
+    (): LaunchChoice => ({ permissionMode: mode, model, effort, ultracode }),
+    [mode, model, effort, ultracode]
   )
 
-  const changeModel = useCallback(
-    (m: string): void => {
-      if (settings) void patchSettings({ defaults: { ...settings.defaults, model: m } })
+  const changeLaunch = useCallback(
+    (patch: LaunchOverride): void => {
+      const id = activeTabIdRef.current
+      setTabs((list) =>
+        list.map((t) =>
+          t.id === id && t.kind === 'new'
+            ? { ...t, launch: pruneOverride({ ...t.launch, ...patch }, stokeDefaults) }
+            : t
+        )
+      )
     },
-    [settings, patchSettings]
+    [stokeDefaults]
   )
 
-  const changeEffort = useCallback(
-    (v: EffortLevel): void => {
-      if (settings) void patchSettings({ defaults: { ...settings.defaults, effort: v } })
+  const makeDefault = useCallback(
+    (key: keyof LaunchChoice): void => {
+      const s = settingsRef.current
+      const id = activeTabIdRef.current
+      const tab = tabsRef.current.find((t) => t.id === id)
+      const value = tab?.launch?.[key]
+      if (!s || value === undefined) return
+      void patchSettings({ defaults: { ...s.defaults, [key]: value } })
+      // It IS the default now, so it is no longer this launch's override.
+      setTabs((list) =>
+        list.map((t) => {
+          if (t.id !== id || !t.launch) return t
+          const next = { ...t.launch }
+          delete next[key]
+          return { ...t, launch: Object.keys(next).length ? next : undefined }
+        })
+      )
     },
-    [settings, patchSettings]
-  )
-
-  const changeUltracode = useCallback(
-    (v: boolean): void => {
-      if (settings) void patchSettings({ defaults: { ...settings.defaults, ultracode: v } })
-    },
-    [settings, patchSettings]
+    [patchSettings]
   )
 
   /*
@@ -2925,7 +3254,19 @@ export function App(): React.JSX.Element {
    * reading the same four fields, so the two cannot start different sessions.
    */
   const resumeSession = useCallback(
-    (s: SessionIndexEntry): void => {
+    (
+      s: SessionIndexEntry,
+      opts?: {
+        /**
+         * The New tab the resume was asked from. When the conversation is
+         * already open elsewhere that tab is closed as its tab comes forward,
+         * rather than left behind as an idle launcher (QA L17).
+         */
+        fromTabId?: string | null
+        /** This launch's own choices (the launcher's chips); omitted means the defaults. */
+        launch?: LaunchChoice
+      }
+    ): void => {
       /*
        * A conversation already open is focused, not started again.
        *
@@ -2948,7 +3289,32 @@ export function App(): React.JSX.Element {
         (t) => t.kind === 'session' && t.sessionId === s.id && t.status === 'running'
       )
       if (open) {
+        const from = opts?.fromTabId
+        // Moved first, so closeTab sees a selection that is not the tab it closes.
+        activeTabIdRef.current = open.id
         setActiveTabId(open.id)
+        if (from && tabsRef.current.some((t) => t.id === from && t.kind === 'new')) closeTab(from)
+        return
+      }
+      /*
+       * A PAUSED tab on the same id is resumed where it is, not beside it.
+       * Starting a second tab left the paused card behind with its own
+       * Resume, and pressing that later put two `claude` processes on one
+       * transcript — the twin the running check above exists to prevent
+       * (review of QA L2). The asking New tab closes, as for a running one;
+       * the launcher's own choices, when it passed any, replace the card's.
+       * Local only: a paused SSH card resumes by host, not by id (gotcha 19).
+       */
+      const paused = tabsRef.current.find(
+        (t) => t.kind === 'session' && t.sessionId === s.id && t.status === 'paused' && !t.hostId
+      )
+      if (paused) {
+        const from = opts?.fromTabId
+        activeTabIdRef.current = paused.id
+        setActiveTabId(paused.id)
+        if (from && tabsRef.current.some((t) => t.id === from && t.kind === 'new')) closeTab(from)
+        const run = resumeTabFor(opts?.launch ? { ...paused, ...opts.launch } : paused)
+        if (run) void run()
         return
       }
       const project = projects.find((p) => p.path === s.projectPath)
@@ -2958,11 +3324,132 @@ export function App(): React.JSX.Element {
         title: s.title ?? s.firstPrompt ?? undefined,
         sessionId: s.id,
         resume: true,
-        replaceTabId: activeNewTabId ?? undefined
+        replaceTabId: activeNewTabId ?? undefined,
+        ...(opts?.launch ?? {})
       })
     },
-    [projects, startSession, activeNewTabId]
+    [projects, startSession, activeNewTabId, closeTab, resumeTabFor]
   )
+
+  /* ------------------------------------------------------------ launcher */
+
+  const activeLaunch = tabs.find((t) => t.id === activeTabId && t.kind === 'new')?.launch
+  const launchNow = useMemo(
+    () => resolveLaunch({ override: activeLaunch, stoke: stokeDefaults, claude: claudeDefaults }),
+    [activeLaunch, stokeDefaults, claudeDefaults]
+  )
+
+  /**
+   * A pick in the launcher's folder switcher. A project or the default folder
+   * aims the launcher (Start then starts); scratch and a remote machine start
+   * at once, as their old buttons did — there is nothing else to choose first.
+   */
+  const chooseFolder = useCallback(
+    (c: FolderChoice): void => {
+      switch (c.kind) {
+        case 'project':
+          selectProject(c.path)
+          return
+        case 'default':
+          selectProject(c.path)
+          return
+        case 'open':
+          void openFolder()
+          return
+        case 'scratch':
+          // Scratch starts `claude` at once, so it needs what Start needs; the
+          // switcher shows the row disabled, and this is the backstop.
+          if (cli && !cli.ok) return
+          void startScratch(launchNow.choice)
+          return
+        case 'host': {
+          const host = settingsRef.current?.hosts.find((h) => h.id === c.id)
+          if (host) {
+            void startHostSession(host, activeNewTabId ?? undefined, {
+              permissionMode: launchNow.choice.permissionMode,
+              model: launchNow.choice.model,
+              effort: launchNow.choice.effort
+            })
+          }
+          return
+        }
+      }
+    },
+    [selectProject, openFolder, startScratch, startHostSession, activeNewTabId, launchNow, cli]
+  )
+
+  /**
+   * The launcher's Continue (QA L2): resume the named conversation by id, which
+   * brings a running tab forward instead of starting a second `claude` on its
+   * transcript; `--continue` only while the list has not loaded, and then not
+   * over a running tab of Claude in that folder. See `continuePlan`.
+   */
+  const continueHere = useCallback(
+    (session: SessionMeta | null): void => {
+      if (!launchTarget) return
+      const rules = pathRulesFor(platform)
+      const plan = continuePlan({
+        sessions: session ? [session] : launchSessions,
+        loading: launchSessionsLoading,
+        tabs: tabsRef.current,
+        cwd: launchTarget.path,
+        cli: DEFAULT_CLI,
+        samePath: (a, b) => pathKey(a, rules) === pathKey(b, rules)
+      })
+      const from = activeNewTabId
+      switch (plan.kind) {
+        case 'resume': {
+          const s = session ?? launchSessions.find((x) => x.id === plan.sessionId)
+          if (s) resumeSession(s, { fromTabId: from, launch: launchNow.choice })
+          return
+        }
+        case 'focus':
+          activeTabIdRef.current = plan.tabId
+          setActiveTabId(plan.tabId)
+          if (from) closeTab(from)
+          return
+        case 'continue':
+          void startSession({
+            cwd: launchTarget.path,
+            name: launchTarget.label,
+            continueLast: true,
+            replaceTabId: from ?? undefined,
+            ...launchNow.choice
+          })
+          return
+        case 'none':
+          return
+      }
+    },
+    [
+      launchTarget,
+      launchSessions,
+      launchSessionsLoading,
+      platform,
+      activeNewTabId,
+      resumeSession,
+      closeTab,
+      startSession,
+      launchNow
+    ]
+  )
+
+  /*
+   * The launcher aimed at a project the active profile hides — it keeps the
+   * selection (the user picked it) but says so, and offers the profile that
+   * owns it, rather than silently re-tinting the Start button (QA L18).
+   */
+  const profileNote = useMemo(() => {
+    const target = launchTarget?.project
+    if (!target || !activeProfile || !settings) return null
+    if (scopedProjects.some((p) => p.path === target.path)) return null
+    const owner = profileIdForCwd(target.path, projects, settings.projectRoots, availableProfiles, platform)
+    const found = owner ? availableProfiles.find((p) => foldGroup(p.id) === foldGroup(owner)) : null
+    return {
+      outside: activeProfile.label,
+      switchTo: found ? { id: found.id, label: found.label } : null
+    }
+  }, [launchTarget, activeProfile, settings, scopedProjects, projects, availableProfiles, platform])
 
   /*
    * The busy dialog's words. Built here rather than inside BusyDialog so the
@@ -3068,7 +3555,7 @@ export function App(): React.JSX.Element {
   )
 
   return (
-    <div className="app">
+    <div className="app" ref={appRef}>
       <TitleBar
         platform={platform}
         showBrand={settings?.showBrand !== false}
@@ -3094,6 +3581,15 @@ export function App(): React.JSX.Element {
         onOpenPalette={() => setPaletteOpen(true)}
         onOpenSettings={() => openSettings()}
         onOpenPhoneSettings={() => openSettings('remote')}
+        labelFor={(t) => {
+          if (t.kind !== 'new') return tabLabel(t, null)
+          // The tab in front names what its launcher is aimed at, fallback
+          // included; one behind names its own selection, if it has one.
+          if (t.id === activeTabId) return tabLabel(t, launchTarget?.label ?? null)
+          const at = t.selectedPath ?? aimPins[t.id] ?? null
+          const aimed = at ? projects.find((p) => p.path === at) : null
+          return tabLabel(t, at ? (aimed ? (aimed.label ?? aimed.name) : baseName(at)) : null)
+        }}
       />
 
       <div className="body-row">
@@ -3164,6 +3660,7 @@ export function App(): React.JSX.Element {
                 profiles={availableProfiles}
                 activeProfile={activeProfile?.id ?? null}
                 onSelectProfile={(id) => void patchSettings({ activeProfile: id })}
+                projectHints={query.trim() ? allProjectHints : projectHints}
               />
             </div>
             <Resizer
@@ -3388,64 +3885,55 @@ export function App(): React.JSX.Element {
           {activeTab?.kind === 'new' && (
             <Launcher
               key={activeTab.id}
-              project={selectedProject}
-              defaultCwd={defaultCwd}
-              permissionMode={mode}
-              model={model}
-              effort={effort}
-              ultracode={ultracode}
-              sessions={sessions}
-              recentProjects={recentProjects}
-              onPickProject={(p) => selectProject(p.path)}
-              onStartProject={(p) =>
-                void startSession({
-                  cwd: p.path,
-                  name: p.label ?? p.name,
-                  replaceTabId: activeNewTabId ?? undefined
+              target={launchTarget}
+              switcher={{ projects: scopedProjects, defaultCwd, hosts: settings?.hosts ?? [] }}
+              onChoose={chooseFolder}
+              onOpenFolder={() => void openFolder()}
+              onHide={(path) => {
+                void window.stoke.projects.hide(path, true).then(async (s) => {
+                  setSettings(s)
+                  selectProject(null)
+                  await refreshProjects()
                 })
-              }
+              }}
+              profileNote={profileNote}
+              onSwitchProfile={(id) => void patchSettings({ activeProfile: id })}
+              launch={launchNow}
+              claude={claudeDefaults}
+              onLaunchChange={changeLaunch}
+              onMakeDefault={makeDefault}
+              sessions={launchSessions}
+              sessionsLoading={launchSessionsLoading}
+              openSessionIds={runningSessionIds}
+              liveLimit={(id) => contexts[id]?.contextLimit ?? null}
               cli={cli}
+              cliChecking={cliChecking}
+              onRetryCli={reprobeCli}
+              onSetCliPath={() => openSettings('updates')}
+              overlayOpen={shellInert}
+              armedAt={launcherArmedAt}
               otherClis={otherClis}
               onAddAgents={() => setAgentPickerOpen(true)}
               onStartCli={(id) => {
-                const target = selectedProject?.path ?? defaultCwd
-                if (!target) return
+                if (!launchTarget) return
                 void startSession({
-                  cwd: target,
+                  cwd: launchTarget.path,
                   cli: id,
-                  name: selectedProject?.label ?? selectedProject?.name ?? baseName(target),
+                  name: launchTarget.label,
                   replaceTabId: activeNewTabId ?? undefined
                 })
               }}
-              onChangeMode={changeMode}
-              onChangeModel={changeModel}
-              onChangeEffort={changeEffort}
-              onChangeUltracode={changeUltracode}
               onStart={() => {
-                if (selectedProject) {
-                  void startSession({
-                    cwd: selectedProject.path,
-                    name: selectedProject.label ?? selectedProject.name,
-                    replaceTabId: activeNewTabId ?? undefined
-                  })
-                }
+                if (!launchTarget) return
+                void startSession({
+                  cwd: launchTarget.path,
+                  name: launchTarget.label,
+                  replaceTabId: activeNewTabId ?? undefined,
+                  ...launchNow.choice
+                })
               }}
-              onContinueLast={() => {
-                if (selectedProject) {
-                  void startSession({
-                    cwd: selectedProject.path,
-                    name: selectedProject.label ?? selectedProject.name,
-                    continueLast: true,
-                    replaceTabId: activeNewTabId ?? undefined
-                  })
-                }
-              }}
-              onResume={resumeSession}
-              onOpenFolder={() => void openFolder()}
-              onStartDefault={startDefault}
-              hosts={settings?.hosts ?? []}
-              onConnectHost={(h) => void startHostSession(h)}
-              onStartScratch={() => void startScratch()}
+              onContinue={continueHere}
+              onResume={(s) => resumeSession(s, { fromTabId: activeNewTabId, launch: launchNow.choice })}
             />
           )}
         </div>
@@ -3488,6 +3976,13 @@ export function App(): React.JSX.Element {
 
       <StatusBar
         tab={activeTab}
+        claudeDefaultMode={
+          activeTab?.hostId || !activeLocalCwd
+            ? null
+            : activeLocalCwd in claudeDefaultsByPath
+              ? claudeDefaultsByPath[activeLocalCwd].permissionMode
+              : undefined
+        }
         context={activeTab ? (contexts[activeTab.sessionId] ?? null) : null}
         activity={activeTab ? (activity[activeTab.sessionId] ?? null) : null}
         line={activeTab ? (sessionLine[activeTab.sessionId] ?? null) : null}
@@ -3573,11 +4068,13 @@ export function App(): React.JSX.Element {
           platform={platform}
           onDone={(chosen, install) => {
             setAgentPickerOpen(false)
+            setLauncherArmedAt(pressClock())
             void patchSettings({ agents: { ...settings.agents, chosen } })
             installAgents(install)
           }}
           onClose={() => {
             setAgentPickerOpen(false)
+            setLauncherArmedAt(pressClock())
             /*
              * Closing a first-run picker without choosing records the agents
              * that are installed, which is what the launcher was showing anyway.

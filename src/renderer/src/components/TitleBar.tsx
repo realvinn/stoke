@@ -60,6 +60,11 @@ interface Props {
   onOpenSettings: () => void
   /** Settings, opened straight at Phone access. */
   onOpenPhoneSettings: () => void
+  /**
+   * What a tab says: `New · stoke` for a New tab aimed at a project, and the
+   * agent a non-Claude tab runs (QA L16). Omitted means the tab's own title.
+   */
+  labelFor?: (tab: Tab) => { text: string; agentTag: string | null }
 }
 
 export function TitleBar({
@@ -86,7 +91,8 @@ export function TitleBar({
   onToggleWorklog,
   onOpenPalette,
   onOpenSettings,
-  onOpenPhoneSettings
+  onOpenPhoneSettings,
+  labelFor
 }: Props): React.JSX.Element {
   const isMac = platform === 'darwin'
   const listRef = useRef<HTMLDivElement>(null)
@@ -153,6 +159,7 @@ export function TitleBar({
           {tabs.map((tab) => {
             const ctx = contexts[tab.sessionId]
             const act = tab.kind === 'session' ? activity[tab.sessionId] : undefined
+            const label = labelFor?.(tab) ?? { text: tab.title, agentTag: null }
             return (
               <div
                 key={tab.id}
@@ -208,8 +215,8 @@ export function TitleBar({
                 }}
                 title={
                   tab.kind === 'new'
-                    ? 'New session — pick a project, or start in the default folder'
-                    : `${tab.title}\n${tab.cwd}`
+                    ? `${label.text} — press Enter on the page to start, or pick another folder`
+                    : `${tab.title}${label.agentTag ? ` · ${label.agentTag}` : ''}\n${tab.cwd}`
                 }
               >
                 <TabIndicator
@@ -219,7 +226,12 @@ export function TitleBar({
                   permissionMode={tab.permissionMode}
                   watched={watchedSessions.has(tab.sessionId)}
                 />
-                <span className="tab-label">{tab.title}</span>
+                <span className="tab-label">{label.text}</span>
+                {label.agentTag && (
+                  <span className="tab-agent" title={`Running ${label.agentTag}, not Claude Code`}>
+                    {label.agentTag}
+                  </span>
+                )}
                 {/*
                   What happened here since you last looked. Working pulses,
                   done is a solid accent dot, attention is the warning colour.

@@ -3,6 +3,7 @@ import type { CliInfo, ContextSnapshot } from '@shared/types'
 import { ContextBar } from './ContextMeter'
 import { modelLabel, shortPath } from '../lib/format'
 import { PERMISSION_LABELS } from '../lib/permissions'
+import { MODE_LABELS, sessionMode } from '@shared/launch'
 import { versionNumber, type RelaunchPlan } from '../lib/tabs'
 import type { SessionActivity, Tab } from '../types'
 
@@ -61,6 +62,12 @@ interface Props {
   profileLabel: string | null
   onRevealProject: (path: string) => void
   onOpenSettings: () => void
+  /**
+   * The mode Claude Code's own settings name (`permissions.defaultMode`) for
+   * the tab's folder, for a tab launched with no `--permission-mode`. Null when
+   * no file sets one; undefined while that folder's answer has not arrived.
+   */
+  claudeDefaultMode?: string | null
 }
 
 export function StatusBar({
@@ -80,7 +87,8 @@ export function StatusBar({
   liveVersion,
   profileLabel,
   onRevealProject,
-  onOpenSettings
+  onOpenSettings,
+  claudeDefaultMode
 }: Props): React.JSX.Element {
   /*
    * Named for what it does to the conversation, not to the process. "Restart"
@@ -246,7 +254,18 @@ export function StatusBar({
     )
   }
 
-  const bypass = tab.permissionMode === 'bypassPermissions'
+  /*
+   * The mode it is actually in (`sessionMode`): the transcript's word once
+   * there is one, else the flag, else — for a no-flag tab — the settings
+   * default. The danger tone reads the same value, so a no-flag tab running
+   * as bypassPermissions from settings is marked as one.
+   */
+  const mode = sessionMode({
+    reported: context?.permissionMode ?? null,
+    launched: tab.permissionMode,
+    claudeDefault: claudeDefaultMode
+  })
+  const bypass = mode === 'bypassPermissions'
   const caps = capsFor(cliIdOf(tab.cliId))
   /*
    * The payload's model first: it carries the tier suffix (`claude-opus-5[1m]`)
@@ -294,9 +313,13 @@ export function StatusBar({
         that session handles tool use. `capsFor` is the same table that decided
         not to pass the flags, so the display cannot drift from the launch.
       */}
-      {!installTab && caps.launchFlags.permissionMode && (
+      {!installTab && caps.launchFlags.permissionMode && mode && (
         <span className="pill" data-tone={bypass ? 'danger' : undefined}>
-          {PERMISSION_LABELS[tab.permissionMode]}
+          {/* A tab launched with no flag runs in whatever mode the user's
+              settings name: the pill said "Ask" while the TUI beside it said
+              "auto mode on" (QA L11), until the first turn wrote the real one
+              into the transcript. */}
+          {PERMISSION_LABELS[mode as keyof typeof PERMISSION_LABELS] ?? MODE_LABELS[mode] ?? mode}
         </span>
       )}
 
