@@ -77,9 +77,11 @@ export type { ConnectTarget, Reach } from './link.ts'
  *    `{type:'status', status, waitingFor}` frame follows whenever those
  *    change. After `exit` the server closes the socket with code 1000.
  *    `perMessageDeflate` is on.
- * 6. `{type:'submit', text}`: the server writes the text — bracketed-paste
- *    wrapped when the pty has DECSET 2004 on — then a bare `\r` after a short
- *    delay (CLAUDE.md gotcha 85 / PX-1). `{type:'input', data}` is unchanged.
+ * 6. `{type:'submit', text}`: the server TYPES the text — in short chunks,
+ *    never bracketed for Claude Code, newlines as ESC CR — then a bare `\r`
+ *    after a short delay (CLAUDE.md gotchas 85, 86 / PX-1). Bracketed paste
+ *    made Claude file every phone message as `<pasted_content>` and refuse to
+ *    act on it. `{type:'input', data}` is unchanged.
  * 7. `POST /api/sessions/:ptyId/answer {key}`: writes only while that pty's
  *    status is `'waiting'`, else 409 `{error:'not waiting'}`.
  * 8. `POST /api/sessions` accepts `{cwd, cli?, permissionMode?, model?,
@@ -1307,7 +1309,7 @@ export class RemoteServer {
       if (msg.type === 'input' && typeof msg.data === 'string') {
         manager.write(ptyId, msg.data)
       } else if (msg.type === 'submit' && typeof msg.text === 'string') {
-        // CLAUDE.md gotcha 85 / audit PX-1: two writes, timed apart, not one.
+        // CLAUDE.md gotchas 85, 86 / audit PX-1: typed chunks, then Enter on its own.
         manager.submit(ptyId, msg.text)
       } else if (msg.type === 'resize' && msg.force && dim(msg.cols) && dim(msg.rows)) {
         /*

@@ -109,27 +109,64 @@ export function pruneEnded<T>(ring: Map<string, EndedRecord<T>>, now: number): v
 
 /**
  * How the server frames a phone's `{type:'submit', text}` before writing it
- * to the pty — phone contract point 6 / audit PX-1.
+ * to the pty — phone contract point 6 / audit PX-1, CLAUDE.md gotchas 85, 86.
  *
- * The composer used to send the text and a trailing `\r` as ONE write. Claude
- * Code's own input box treats a fast multi-byte chunk as a paste, so the `\r`
- * inside it becomes a literal newline in the box rather than submitting, and
- * the NEXT lone `\r` (a real Enter key, or the second tap) is what actually
- * fires the turn — so short prompts (which fit in the box's own paste
- * threshold) worked and anything past roughly 80 characters silently did not.
+ * The composer used to send the text and a trailing `\r` as ONE write, and
+ * the `\r` inside that chunk landed as a newline in Claude Code's input box
+ * rather than submitting. The first fix wrapped the text in bracketed-paste
+ * markers — and Claude Code then records every phone message as
+ * `<pasted_content>` with "nothing you typed around it", and the model
+ * declines to act on it (measured 2026-09-19 against 2.1.278: "Your message
+ * is entirely pasted text … so I haven't acted on it yet"). So for Claude:
  *
- * The fix is two separate pty writes: the text — wrapped in bracketed-paste
- * markers when the pty has DECSET 2004 on, so embedded newlines in a
- * multi-line prompt stay newlines rather than each submitting early — and a
- * bare `\r` after a short delay, timed by the caller (the delay itself is not
- * pure: it is a real setTimeout in `server.ts`, started ~80ms and adjustable
- * from what a real `claude` measures).
+ * - no brackets, ever: the text is TYPED, not pasted;
+ * - in chunks of at most `SUBMIT_CHUNK` characters, written a few ms apart
+ *   (a single 1287-character write was read as a paste by length alone and
+ *   wrapped the same way; 64-character chunks 10ms apart were not);
+ * - a newline is `ESC CR` (meta-Enter), which Claude Code's box takes as a
+ *   line break — a bare `\n`/`\r` there would submit early;
+ * - the `\r` that submits is its own write, after a delay (`pty.ts`).
+ *
+ * Another agent's CLI gets the same typed chunks for one line; a multi-line
+ * text goes to it inside bracketed paste when the pty has DECSET 2004 on (a
+ * shell's own way to keep newlines), plain otherwise.
  */
-export function submitFrames(text: string, bracketedPaste: boolean): { body: string; enter: string } {
-  return {
-    body: bracketedPaste ? `\u001b[200~${text}\u001b[201~` : text,
-    enter: '\r'
+export const SUBMIT_CHUNK = 64
+
+export function submitFrames(
+  text: string,
+  opts: { bracketedPaste: boolean; claude: boolean }
+): { chunks: string[]; enter: string } {
+  const multiline = /[\r\n]/.test(text)
+  if (opts.claude) {
+    return { chunks: typingChunks(text.replace(/\r\n|\r|\n/g, '\u001b\r'), SUBMIT_CHUNK), enter: '\r' }
   }
+  if (multiline && opts.bracketedPaste) {
+    return { chunks: [`\u001b[200~${text}\u001b[201~`], enter: '\r' }
+  }
+  return { chunks: typingChunks(text, SUBMIT_CHUNK), enter: '\r' }
+}
+
+/**
+ * Split text into writes of at most `size` UTF-16 units, never between an
+ * `ESC CR` pair (half of one is a bare Escape — which cancels) and never
+ * inside a surrogate pair (half an emoji is two replacement characters).
+ */
+export function typingChunks(text: string, size: number): string[] {
+  const chunks: string[] = []
+  let at = 0
+  while (at < text.length) {
+    let end = Math.min(text.length, at + size)
+    if (end < text.length) {
+      const code = text.charCodeAt(end - 1)
+      if (code >= 0xd800 && code <= 0xdbff) end--
+      else if (text[end - 1] === '\u001b' && text[end] === '\r') end--
+      if (end <= at) end = Math.min(text.length, at + 2)
+    }
+    chunks.push(text.slice(at, end))
+    at = end
+  }
+  return chunks
 }
 
 /** DECSET 2004 (bracketed paste mode) escape sequences, as they appear in pty output. */

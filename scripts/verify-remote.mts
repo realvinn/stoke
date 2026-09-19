@@ -27,8 +27,10 @@ import {
   pruneEnded,
   sortSessionRows,
   stripLocalHostnameSuffix,
+  SUBMIT_CHUNK,
   submitFrames,
   trackBracketedPaste,
+  typingChunks,
   type EndedRecord
 } from '../src/shared/remotePhone.ts'
 
@@ -365,26 +367,56 @@ check('a null lastActivityAt sorts as never', sortSessionRows([
 }
 
 /*
- * PX-1: the composer used to send the text and Enter as one chunk, which
- * Claude Code's own input box reads as a paste — the `\r` inside it becomes a
- * newline, and the NEXT lone `\r` is what actually submits. The fix is two
- * writes: the (optionally bracketed) text, then a bare `\r` on its own, after
- * a delay `server.ts` measures at runtime.
+ * PX-1 and gotcha 86. The composer used to send the text and Enter as one
+ * chunk: the `\r` inside it became a newline in Claude Code's box. The first
+ * fix bracketed the text as a paste — and Claude Code then filed every phone
+ * message as `<pasted_content>` that the model would not act on. Now: typed
+ * chunks, no brackets for Claude, newlines as ESC CR, Enter on its own.
  */
 check(
-  'bracketed paste wraps the text and keeps enter separate',
-  submitFrames('hello', true),
-  { body: '\u001b[200~hello\u001b[201~', enter: '\r' }
+  'Claude: a short line is one typed chunk, no paste brackets, Enter separate',
+  submitFrames('hello', { bracketedPaste: true, claude: true }),
+  { chunks: ['hello'], enter: '\r' }
 )
 check(
-  'plain mode sends the text bare',
-  submitFrames('hello', false),
-  { body: 'hello', enter: '\r' }
+  'Claude: never bracketed, even with DECSET 2004 on (the <pasted_content> refusal)',
+  submitFrames('x'.repeat(200), { bracketedPaste: true, claude: true }).chunks.some((c) => c.includes('\u001b[200~')),
+  false
 )
 check(
-  'a multi-line prompt keeps its newlines inside the bracket',
-  submitFrames('line one\nline two', true).body,
-  '\u001b[200~line one\nline two\u001b[201~'
+  'Claude: a long line is typed in chunks of at most SUBMIT_CHUNK',
+  submitFrames('y'.repeat(150), { bracketedPaste: true, claude: true }).chunks.map((c) => c.length),
+  [SUBMIT_CHUNK, SUBMIT_CHUNK, 150 - 2 * SUBMIT_CHUNK]
+)
+check(
+  'Claude: newlines become ESC CR (meta-Enter), so they break the line instead of submitting',
+  submitFrames('line one\nline two\r\nthree', { bracketedPaste: true, claude: true }).chunks.join(''),
+  'line one\u001b\rline two\u001b\rthree'
+)
+check(
+  'a chunk boundary never splits ESC from its CR (half of it is a bare Escape)',
+  typingChunks('abc\u001b\rdef', 4),
+  ['abc', '\u001b\rde', 'f']
+)
+check(
+  'a chunk boundary never splits a surrogate pair',
+  typingChunks('ab\u{1F600}cd', 3),
+  ['ab', '\u{1F600}c', 'd']
+)
+check(
+  'another agent: one line is typed plainly',
+  submitFrames('hello', { bracketedPaste: true, claude: false }),
+  { chunks: ['hello'], enter: '\r' }
+)
+check(
+  'another agent: several lines go inside bracketed paste when the pty has it on',
+  submitFrames('a\nb', { bracketedPaste: true, claude: false }).chunks,
+  ['\u001b[200~a\nb\u001b[201~']
+)
+check(
+  'another agent with bracketed paste off: plain',
+  submitFrames('a\nb', { bracketedPaste: false, claude: false }).chunks,
+  ['a\nb']
 )
 
 check('DECSET 2004 on is read from the stream', trackBracketedPaste('\u001b[?2004h', false), true)

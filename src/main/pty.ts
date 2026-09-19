@@ -27,11 +27,18 @@ import type { RegistryTarget } from '../shared/claudeRegistry.ts'
 import { ENDED_RETENTION_MS, submitFrames, trackBracketedPaste } from '../shared/remotePhone.ts'
 
 /**
- * How long after `submit()` writes the (optionally bracketed) text before it
- * writes the bare `\r` that submits it — see CLAUDE.md gotcha 85. Started at
+ * How long after `submit()` writes the last chunk of text before it writes the
+ * bare `\r` that submits it — see CLAUDE.md gotchas 85 and 86. Started at
  * the audit's own measurement; adjust here if a real `claude` needs longer.
  */
 const SUBMIT_ENTER_DELAY_MS = 80
+
+/**
+ * The gap between two typed chunks of a phone's submit (`submitFrames`,
+ * gotcha 86): 64-character chunks 10ms apart were read as typing by Claude
+ * Code 2.1.278; one 1287-character write was read as a paste.
+ */
+const SUBMIT_CHUNK_GAP_MS = 10
 
 export interface StartResult {
   ptyId: string
@@ -560,34 +567,40 @@ export class PtyManager {
   }
 
   /**
-   * A phone's `{type:'submit', text}` — CLAUDE.md gotcha 85 / audit PX-1.
+   * A phone's `{type:'submit', text}` — CLAUDE.md gotchas 85 and 86 / audit PX-1.
    *
-   * Two pty writes, not one: Claude Code's own input box reads a fast
-   * multi-byte chunk as a paste, so a text-plus-`\r` write in one go lands
-   * the `\r` as a newline INSIDE the box rather than submitting it. The text
-   * (bracketed when the pty currently has DECSET 2004 on) goes now; the bare
-   * `\r` that actually submits follows after `SUBMIT_ENTER_DELAY_MS`, and is
-   * itself checked against the session still being alive, since the delay
-   * gives a fast `/exit` time to land first.
+   * Typed, not pasted: the text goes as `submitFrames`' chunks
+   * `SUBMIT_CHUNK_GAP_MS` apart (no bracketed paste for Claude Code — its box
+   * records a bracketed paste as `<pasted_content>` and the model will not act
+   * on it), and the bare `\r` that submits follows on its own after
+   * `SUBMIT_ENTER_DELAY_MS`. Folding the `\r` into the text is the original
+   * PX-1 bug: it lands as a newline inside the box.
    */
   submit(ptyId: string, text: string): boolean {
     const s = this.sessions.get(ptyId)
     if (!s || s.exited) return false
-    const { body, enter } = submitFrames(text, s.bracketedPaste)
-    try {
-      s.proc.write(body)
-    } catch {
-      return false
-    }
-    setTimeout(() => {
+    const { chunks, enter } = submitFrames(text, {
+      bracketedPaste: s.bracketedPaste,
+      claude: isClaudeCode(cliIdOf(s.cli))
+    })
+    const alive = (): Session | null => {
       const cur = this.sessions.get(ptyId)
-      if (!cur || cur.exited) return
+      return cur && !cur.exited ? cur : null
+    }
+    // Each write re-checks the session: the gaps give a fast `/exit` time to land.
+    const writeAt = (i: number): void => {
+      const cur = alive()
+      if (!cur) return
       try {
-        cur.proc.write(enter)
+        cur.proc.write(i < chunks.length ? chunks[i] : enter)
       } catch {
-        /* process died in the gap between the two writes */
+        return
       }
-    }, SUBMIT_ENTER_DELAY_MS)
+      if (i < chunks.length - 1) setTimeout(() => writeAt(i + 1), SUBMIT_CHUNK_GAP_MS)
+      else if (i === chunks.length - 1) setTimeout(() => writeAt(chunks.length), SUBMIT_ENTER_DELAY_MS)
+    }
+    if (chunks.length === 0) return true
+    writeAt(0)
     return true
   }
 
