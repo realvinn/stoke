@@ -369,6 +369,35 @@ export function pruneOverride(o: LaunchOverride, stoke: LaunchChoice): LaunchOve
   return any ? out : undefined
 }
 
+/**
+ * The permission mode a RUNNING session is in, for the status bar's pill, or
+ * null when Stoke cannot know yet (show nothing: a blank is not a claim).
+ *
+ *   reported      the latest `permission-mode` record in its transcript, or
+ *                 null while none has been seen. The session's own word, so
+ *                 it wins — including `default`, which is what Shift+Tab to
+ *                 Ask writes.
+ *   launched      what Stoke passed; `default` means no flag was sent.
+ *   claudeDefault the folder's `permissions.defaultMode` from Claude Code's
+ *                 settings files: a mode, null when no file sets one, or
+ *                 undefined while that answer has not arrived.
+ *
+ * The pill substituted the settings default whenever the TAB said `default`,
+ * which cannot tell "launched with no flag, nothing reported yet" from "the
+ * transcript reported default": a session switched to Ask read "Auto" (review
+ * of QA L11). The settings default applies only to the first.
+ */
+export function sessionMode(input: {
+  reported: string | null
+  launched: PermissionMode
+  claudeDefault: string | null | undefined
+}): string | null {
+  if (input.reported) return input.reported
+  if (input.launched !== 'default') return input.launched
+  if (input.claudeDefault === undefined) return null
+  return input.claudeDefault ?? 'default'
+}
+
 /** Plain words for a source, for the chip tooltip. */
 export function sourceText(source: LaunchSource, file: string | null): string {
   switch (source) {

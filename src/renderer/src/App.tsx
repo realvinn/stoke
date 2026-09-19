@@ -1223,6 +1223,14 @@ export function App(): React.JSX.Element {
    * window focus, since those files are edited outside Stoke.
    */
   const [claudeDefaults, setClaudeDefaults] = useState<ClaudeLaunchDefaults>(NO_CLAUDE_DEFAULTS)
+  /*
+   * The same answers kept per folder, for the status bar. One shared value
+   * showed the PREVIOUS folder's defaultMode on the pill for as long as the
+   * IPC took, whenever the tab in front changed to a folder whose project
+   * file says otherwise. The pill reads only the answer for its own folder,
+   * and shows nothing until it has one: a blank is not a claim.
+   */
+  const [claudeDefaultsByPath, setClaudeDefaultsByPath] = useState<Record<string, ClaudeLaunchDefaults>>({})
   // A session tab in front reads its own folder's files, for the status bar's
   // mode pill; an SSH tab's cwd is a host alias (gotcha 18), so it reads none.
   const activeLocalCwd = tabs.find((t) => t.id === activeTabId && t.kind === 'session' && !t.hostId)?.cwd ?? null
@@ -1231,7 +1239,9 @@ export function App(): React.JSX.Element {
     let cancelled = false
     window.stoke.claudeConfig.launchDefaults(defaultsPath).then(
       (d) => {
-        if (!cancelled) setClaudeDefaults(d)
+        if (cancelled) return
+        setClaudeDefaults(d)
+        if (defaultsPath) setClaudeDefaultsByPath((cur) => ({ ...cur, [defaultsPath]: d }))
       },
       () => {}
     )
@@ -1899,7 +1909,14 @@ export function App(): React.JSX.Element {
                 title: s.title || null,
                 updatedAt: s.lastActiveAt,
                 ready: true,
-                permissionMode: s.permissionMode
+                /*
+                 * Not a report: `default` stored on a tab means it resumes
+                 * with no flag, so the folder's settings decide its mode, and
+                 * seeding it as the transcript's own word made the status bar
+                 * say Ask for it (`sessionMode`). Any other value is a flag
+                 * the resume passes again.
+                 */
+                permissionMode: s.permissionMode === 'default' ? null : s.permissionMode
               }
             }
           })
@@ -3828,7 +3845,13 @@ export function App(): React.JSX.Element {
 
       <StatusBar
         tab={activeTab}
-        claudeDefaultMode={activeTab?.hostId ? null : claudeDefaults.permissionMode}
+        claudeDefaultMode={
+          activeTab?.hostId || !activeLocalCwd
+            ? null
+            : activeLocalCwd in claudeDefaultsByPath
+              ? claudeDefaultsByPath[activeLocalCwd].permissionMode
+              : undefined
+        }
         context={activeTab ? (contexts[activeTab.sessionId] ?? null) : null}
         activity={activeTab ? (activity[activeTab.sessionId] ?? null) : null}
         line={activeTab ? (sessionLine[activeTab.sessionId] ?? null) : null}
