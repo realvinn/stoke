@@ -7,7 +7,7 @@
  * cannot disagree. Its connection state drives the global "Reconnecting…"
  * strip.
  */
-import { api, AuthError, wsUrl, type SessionRow } from './api'
+import { api, AuthError, loadTheme, wsUrl, type SessionRow } from './api'
 
 export type LinkState = 'connecting' | 'live' | 'polling' | 'down'
 
@@ -99,6 +99,10 @@ class SessionStore {
           this.rows = msg.rows
           this.error = null
           this.emit()
+        } else if (msg.type === 'theme') {
+          // The desktop switched theme (audit PX-21): paint the new one now,
+          // not the next time the page is reopened.
+          void loadTheme().catch(() => {})
         }
       } catch {
         /* a frame this version does not know */

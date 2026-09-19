@@ -1073,6 +1073,26 @@ a {
   display: flex;
 }
 
+/*
+ * A key row that scrolls sideways (landscape, a laptop) fades the end that has
+ * more keys past it, instead of cutting the edge key in half. A mask reads
+ * only alpha, so the opaque stop is any opaque token.
+ */
+.keys[data-more-end='true'] {
+  -webkit-mask-image: linear-gradient(to right, var(--text) calc(100% - 32px), transparent);
+  mask-image: linear-gradient(to right, var(--text) calc(100% - 32px), transparent);
+}
+
+.keys[data-more-start='true'] {
+  -webkit-mask-image: linear-gradient(to right, transparent, var(--text) 32px);
+  mask-image: linear-gradient(to right, transparent, var(--text) 32px);
+}
+
+.keys[data-more-start='true'][data-more-end='true'] {
+  -webkit-mask-image: linear-gradient(to right, transparent, var(--text) 32px, var(--text) calc(100% - 32px), transparent);
+  mask-image: linear-gradient(to right, transparent, var(--text) 32px, var(--text) calc(100% - 32px), transparent);
+}
+
 .key {
   flex: 1 1 0;
   min-width: var(--tap);

@@ -84,11 +84,15 @@ export type { ConnectTarget, Reach } from './link.ts'
  * 4. `GET /ws/events` (gated like the pty socket): `{type:'sessions', rows}`
  *    on connect and again whenever the rows change (debounced ~250ms). The
  *    client falls back to polling `/api/sessions` every 5s when it cannot open.
+ *    `{type:'theme'}` says `/api/theme` would answer differently now: fetch it
+ *    again (PX-21).
  * 5. The pty socket's `attached` frame adds `desktopCols`/`desktopRows`
  *    (what "desktop layout" must show), `status`, `waitingFor`. A
  *    `{type:'status', status, waitingFor}` frame follows whenever those
  *    change. After `exit` the server closes the socket with code 1000.
- *    `perMessageDeflate` is on.
+ *    `perMessageDeflate` is on. `{type:'size', cols, rows, desktopCols,
+ *    desktopRows}` follows (within a registry pass) whenever the pty's grid
+ *    changed under an attached phone.
  * 6. `{type:'submit', text}`: the server TYPES the text — in short chunks,
  *    never bracketed for Claude Code, newlines as ESC CR — then a bare `\r`
  *    after a short delay (CLAUDE.md gotchas 85, 86 / PX-1). Bracketed paste
@@ -133,7 +137,7 @@ export interface RemoteDeps {
    * The mobile bundle used to carry a hand copy of one palette that drifted
    * every time the desktop's moved (gotcha 43); serving it is the fix.
    */
-  theme: () => { theme: Theme; fontFamily: string }
+  theme: () => { theme: Theme; fontFamily: string; contrastBoost?: number }
   /** Every live local Claude session's registry reading, from `RegistryPoller`. */
   registryStates: () => LiveSessionState[]
   /** The last context window recorded for a session, even after it ended. */
@@ -340,6 +344,10 @@ export class RemoteServer {
   private lastPtyStatus = new Map<string, PtyStatus>()
   /** The prompt each waiting pty is showing — see `trackPrompt`. */
   private prompts = new Map<string, PromptTrack>()
+  /** What `/api/theme` answered last, serialised, so `onThemeChanged` pushes only a real change. */
+  private themeSig: string | null = null
+  /** The pty size each attached socket was last told, `cols x rows` (`pushSizes`). */
+  private toldSize = new WeakMap<WebSocket, string>()
 
   private readonly deps: RemoteDeps
   /** Told whenever a client attaches or leaves, so the desktop can say so. */
@@ -367,6 +375,8 @@ export class RemoteServer {
     await this.stop()
     this.error = null
     this.config = config
+    // Every phone that connects from here on fetches the theme it is given now.
+    this.themeSig = this.themeSignature()
 
     try {
       // Phone contract point 5: on, for both the pty socket and /ws/events —
@@ -570,7 +580,63 @@ export class RemoteServer {
     const live = new Set(this.deps.ptys()?.list().map((s) => s.ptyId) ?? [])
     for (const id of [...this.prompts.keys()]) if (!live.has(id)) this.prompts.delete(id)
     for (const ptyId of this.attached.keys()) this.pushStatus(ptyId)
+    this.pushSizes()
     if (this.eventsClients.size) this.notifySessionsChanged()
+  }
+
+  /**
+   * The desktop's theme may have moved (a settings write, the OS switching
+   * appearance while Stoke follows it). Tells every phone on `/ws/events` to
+   * fetch `/api/theme` again when what it would answer changed — audit PX-21:
+   * a phone loaded the palette once, so after the desktop switched theme its
+   * page and terminal kept the old colours over output coloured for the new.
+   */
+  onThemeChanged(): void {
+    const sig = this.themeSignature()
+    if (sig === this.themeSig) return
+    this.themeSig = sig
+    const text = JSON.stringify({ type: 'theme' })
+    for (const ws of this.eventsClients) if (ws.readyState === 1) ws.send(text)
+  }
+
+  private themeSignature(): string {
+    const { theme, fontFamily, contrastBoost } = this.deps.theme()
+    return JSON.stringify([theme.appearance, theme.colors, theme.terminal, fontFamily, contrastBoost ?? 1])
+  }
+
+  /**
+   * Tell each attached phone when its pty's grid changed size under it — the
+   * desktop's pane resized, or another phone fitted it. A laptop browser learns
+   * the size only from `attached`, so it kept drawing the old grid over output
+   * laid out for the new one until it reconnected. Once a registry pass; the
+   * frame is `{type:'size', cols, rows, desktopCols, desktopRows}`, the same
+   * fields `attached` carries.
+   */
+  private pushSizes(): void {
+    const manager = this.deps.ptys()
+    if (!manager || this.attached.size === 0) return
+    const infos = new Map(manager.list().map((s) => [s.ptyId, s]))
+    for (const [ptyId, set] of this.attached) {
+      const info = infos.get(ptyId)
+      if (!info || info.exited || set.size === 0) continue
+      const sig = `${info.cols}x${info.rows}`
+      // Per socket: two phones attached at different sizes are each told
+      // exactly what they have not heard yet.
+      const behind = [...set].filter((ws) => ws.readyState === 1 && this.toldSize.get(ws) !== sig)
+      if (behind.length === 0) continue
+      const desktop = this.desktopSize.get(ptyId) ?? { cols: info.cols, rows: info.rows }
+      const text = JSON.stringify({
+        type: 'size',
+        cols: info.cols,
+        rows: info.rows,
+        desktopCols: desktop.cols,
+        desktopRows: desktop.rows
+      })
+      for (const ws of behind) {
+        this.toldSize.set(ws, sig)
+        ws.send(text)
+      }
+    }
   }
 
   private pushStatus(ptyId: string): void {
@@ -836,10 +902,12 @@ export class RemoteServer {
        * phone's terminal was a different black from its own page.
        */
       if (url.pathname === '/api/theme' && req.method === 'GET') {
-        const { theme, fontFamily } = this.deps.theme()
+        const { theme, fontFamily, contrastBoost } = this.deps.theme()
         return this.json(
           res,
-          { appearance: theme.appearance, colors: theme.colors, terminal: theme.terminal, fontFamily },
+          // `contrastBoost`: the phone's terminal keeps at least its own floor
+          // over it (`phoneTermContrast`, audit PX-21).
+          { appearance: theme.appearance, colors: theme.colors, terminal: theme.terminal, fontFamily, contrastBoost: contrastBoost ?? 1 },
           setCookie
         )
       }
@@ -1407,6 +1475,7 @@ export class RemoteServer {
      */
     const desktop = this.desktopSize.get(ptyId) ?? { cols: info?.cols ?? 100, rows: info?.rows ?? 30 }
     const status = this.statusFor(ptyId)
+    if (info) this.toldSize.set(ws, `${info.cols}x${info.rows}`)
     ws.send(
       JSON.stringify({
         type: 'attached',

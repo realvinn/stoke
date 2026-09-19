@@ -159,9 +159,14 @@ interface RemoteTheme {
   colors: Record<string, string>
   terminal: Record<string, string>
   fontFamily: string
+  /** The desktop terminal's `minimumContrastRatio` choice (`phoneTermContrast`). */
+  contrastBoost?: number
 }
 
 export let theme: RemoteTheme | null = null
+
+/** Fired on `window` after `loadTheme` painted a theme: an open terminal repaints from `theme`. */
+export const THEME_EVENT = 'stoke-theme'
 
 /**
  * Paint the desktop's own theme: every colour token onto :root with the same
@@ -196,6 +201,7 @@ export async function loadTheme(): Promise<RemoteTheme | null> {
   root.dataset.appearance = theme.appearance
   const meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')
   if (meta) meta.content = theme.colors.bg
+  window.dispatchEvent(new Event(THEME_EVENT))
   return theme
 }
 

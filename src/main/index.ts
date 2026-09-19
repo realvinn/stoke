@@ -858,7 +858,7 @@ function remoteDeps(): RemoteDeps {
     },
     theme: () => {
       const s = getSettings()
-      return { theme: effectiveTheme(s), fontFamily: s.fontFamily }
+      return { theme: effectiveTheme(s), fontFamily: s.fontFamily, contrastBoost: s.terminal.contrastBoost }
     },
     registryStates: () => registry?.states() ?? [],
     recordedContextLimit: (sessionId) => lastContextLimit.get(sessionId) ?? null,
@@ -1844,6 +1844,7 @@ function registerIpc(): void {
     // The renderer repaints itself from the push above; this is the half it
     // cannot reach — the window's own background and the Windows overlay.
     paintWindowChrome(effectiveTheme(s), null)
+    remote?.onThemeChanged()
   })
 
   /* ------------------------------------------------------------------- cli */
@@ -2456,6 +2457,8 @@ function registerIpc(): void {
     const prevTheme = effectiveTheme(prev)
     applyNativeTheme(next)
     paintWindowChrome(effectiveTheme(next), prevTheme.colors.bg)
+    // A phone paints this theme too; it re-fetches only if it moved (audit PX-21).
+    remote?.onThemeChanged()
     /*
      * Load-bearing, not merely correct in advance.
      *

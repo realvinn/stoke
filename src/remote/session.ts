@@ -23,6 +23,7 @@ import {
   isTerminalReport,
   modeFromScreen,
   parseAnswerOptions,
+  phoneTermContrast,
   sendLost,
   sendReady,
   statusPill,
@@ -34,7 +35,7 @@ import {
 } from '@shared/phoneUi'
 import type { PhoneSessionStatus } from '@shared/remotePhone'
 import { createRecorder, postTranscription, voiceSupported } from '@shared/voice'
-import { folderName, host, machineName, resumeSession, theme, wsUrl, type SessionRow } from './api'
+import { folderName, host, machineName, resumeSession, theme, THEME_EVENT, wsUrl, type SessionRow } from './api'
 import { confirmSheet, el, explain, icon, iconButton, openSheet, toast } from './dom'
 import { rowTitle, screenLines, sendAnswer } from './list'
 import { store } from './store'
@@ -265,9 +266,20 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
     scrollback: 5000,
     convertEol: false,
     allowProposedApi: true,
-    theme: theme?.terminal ?? {}
+    theme: theme?.terminal ?? {},
+    // Replayed history can carry colours chosen for another background (PX-21).
+    minimumContrastRatio: phoneTermContrast(theme?.contrastBoost)
   })
   term.open(inner)
+  // The desktop switched theme while this was open: repaint in place.
+  window.addEventListener(
+    THEME_EVENT,
+    () => {
+      term.options.theme = theme?.terminal ?? {}
+      term.options.minimumContrastRatio = phoneTermContrast(theme?.contrastBoost)
+    },
+    { signal }
+  )
 
   /*
    * Keys typed into the terminal itself go straight through — the laptop
@@ -502,6 +514,17 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
         stickToBottom()
         scheduleTray()
       })
+    } else if (msg.type === 'size' && typeof msg.cols === 'number' && typeof msg.rows === 'number') {
+      /*
+       * The grid changed under this view (the desktop's pane resized, or
+       * another phone fitted it). A laptop used to keep drawing the old grid
+       * until it reconnected. Same bookkeeping as `attached`, then the usual
+       * layout pass, which never sends a resize for this reason alone.
+       */
+      desktop = { cols: msg.desktopCols ?? msg.cols, rows: msg.desktopRows ?? msg.rows }
+      pty = { cols: msg.cols, rows: msg.rows }
+      resized = pty.cols !== desktop.cols || pty.rows !== desktop.rows ? resized : false
+      relayout('observe')
     } else if (msg.type === 'status' && msg.status) {
       setStatus(msg.status, msg.waitingFor ?? null, msg.promptId ?? null)
     } else if (msg.type === 'exit') {
@@ -642,6 +665,22 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
     keys.dataset.more = String(open)
   })
   keys.append(el('div', { class: 'keys-main' }, ...PRIMARY_KEYS.map(keyButton), moreToggle), moreKeys)
+
+  /*
+   * A landscape phone (PX-17) lays every key on one row that scrolls sideways
+   * beside the composer, and the key at the edge was simply cut in half, which
+   * read as a clipping bug (review, 844x390). Say which ends have more keys
+   * past them; the stylesheet fades those ends.
+   */
+  const markKeyOverflow = (): void => {
+    const hidden = keys.scrollWidth - keys.clientWidth > 1
+    keys.dataset.moreStart = String(hidden && keys.scrollLeft > 1)
+    keys.dataset.moreEnd = String(hidden && keys.scrollLeft + keys.clientWidth < keys.scrollWidth - 1)
+  }
+  keys.addEventListener('scroll', markKeyOverflow, { passive: true, signal })
+  const keysObserver = new ResizeObserver(markKeyOverflow)
+  keysObserver.observe(keys)
+  signal.addEventListener('abort', () => keysObserver.disconnect())
 
   /* ------------------------------------------------------------- composer */
 
