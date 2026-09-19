@@ -54,6 +54,9 @@ const SPARKS: ReadonlyArray<{ x: number; y: number; delay: string }> = [
   { x: 101, y: 236, delay: '1680ms' }
 ]
 
+/** Keys that are only ever half of a chord; pressing one alone dismisses nothing. */
+const MODIFIER_KEYS = new Set(['Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'Fn', 'OS'])
+
 export interface CampfireProps {
   /** Why it is playing. Decides the one line of copy, nothing else. */
   reason: WelcomeReason
@@ -81,19 +84,30 @@ export function Campfire({ reason, version, onDismiss }: CampfireProps): React.J
    * exit is a gesture is a splash that can be left on screen by someone who
    * walked away, in front of the session Stoke has just restored.
    *
-   * Escape is bound on `window` rather than on the overlay because nothing here
-   * takes focus — grabbing it would fight the terminal that is mounting behind
-   * this at the same moment. `keydown` with `capture` so it runs before App's
-   * own chord handler, which has no Escape case today but would be the natural
-   * place for one.
+   * The keys are bound on `window` rather than on the overlay because nothing
+   * here takes focus — grabbing it would fight the terminal that is mounting
+   * behind this at the same moment. `keydown` with `capture` so it runs before
+   * App's own chord handler and before any element behind the splash.
    */
   useEffect(() => {
     const timer = window.setTimeout(onDismiss, WELCOME_DISMISS_MS)
+    /*
+     * EVERY key stops here while the splash is up (QA L1). It only handled
+     * Escape, so an Enter pressed to get past it — the natural reflex, and
+     * what the audit did — reached the launcher's focused Start button behind
+     * it and started `claude` in the default folder, unseen, under the splash
+     * and then the agent picker. Any plain key now dismisses it (a modifier on
+     * its own, or a chord, does not), and nothing is let through: the shell behind is `inert` as well (App), so
+     * this is the second of two locks, not the only one. The repeats of a held
+     * key are swallowed here while it lasts, and by the launcher's own
+     * `swallow` rule once it has gone.
+     */
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') {
-        e.stopPropagation()
-        onDismiss()
-      }
+      e.preventDefault()
+      e.stopPropagation()
+      if (e.repeat || e.metaKey || e.ctrlKey || e.altKey) return
+      if (MODIFIER_KEYS.has(e.key)) return
+      onDismiss()
     }
     window.addEventListener('keydown', onKey, true)
     return () => {
@@ -161,7 +175,7 @@ export function Campfire({ reason, version, onDismiss }: CampfireProps): React.J
 
         <h1 className="campfire-title">{title}</h1>
         <p className="campfire-sub">{sub}</p>
-        <p className="campfire-hint">Click anywhere, or press Escape.</p>
+        <p className="campfire-hint">Click anywhere, or press any key.</p>
       </div>
     </div>
   )
