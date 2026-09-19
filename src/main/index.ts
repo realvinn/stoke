@@ -35,6 +35,7 @@ import { parseSession, readTranscript } from './sessionFile.ts'
 import { fetchRemoteTranscript } from './sshTranscript.ts'
 import { PtyManager, type StartResult } from './pty.ts'
 import { checkMicrophone } from './audio/defaultDevice.ts'
+import { cliIdOf, isClaudeCode } from '../shared/codingClis.ts'
 import { claudeVoiceEnabled, isMicAccess, type MicAccess } from '../shared/voiceRoute.ts'
 import { transcribe } from './stt.ts'
 import { createProfile, planProfile } from './profiles.ts'
@@ -448,6 +449,15 @@ async function launchSession(opts: LaunchOptions): Promise<StartResult> {
       }),
     settings.providers
   )
+  /*
+   * Everything below reads a Claude Code transcript — the context watcher, the
+   * worklog's session → folder map and its on-disk copy. Another CLI's launch
+   * gets an opaque key from pty.ts, not a Claude session id, and tracking it
+   * polled for a transcript named after that key, which can never appear, and
+   * put it on the worklog's watch list. An SSH tab is always `claude`
+   * (`startHostSession`), so it is still tracked.
+   */
+  if (!isClaudeCode(cliIdOf(opts.cli))) return result
   // Empty for a --continue, and `watch('')` is a no-op by design (context.ts:99).
   // Such a session has never had a context meter; see this task's header for
   // why closing that gap belongs to a later change and not to this one.

@@ -1354,6 +1354,15 @@ export function App(): React.JSX.Element {
           cwd: tab.cwd,
           name: tab.projectName,
           title: tab.title,
+          /*
+           * The tab's own CLI. Without it `startSession` fell back to
+           * DEFAULT_CLI, so resuming a restored Codex tab ran `claude --resume
+           * <the id Stoke had minted for the Codex launch>` and relabelled the
+           * tab Claude. `startSession` drops the id and the resume flags for a
+           * CLI whose caps cannot name a session, so this starts that CLI again
+           * in the same folder.
+           */
+          cli: tab.cliId,
           sessionId: tab.sessionId || undefined,
           // No id means a --continue session, which never learned its own
           // (gotcha 26). Continue in the same folder instead.
