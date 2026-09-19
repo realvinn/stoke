@@ -5,6 +5,7 @@ import type {
   RemoteReach,
   RemoteState,
   SelfUpdateState,
+  StokeCommandState,
   UpdateInfo
 } from '@shared/api'
 import { clampPort, REMOTE_PORT_DEFAULT } from '@shared/ui'
@@ -746,6 +747,147 @@ export function SelfUpdateSettings({
             </FieldHint>
           </span>
         </label>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Settings > Updates > Command line: the `stoke` command.
+ *
+ * Says three things and offers at most two buttons: whether the command is
+ * there, whether a NEW terminal will find it (read from the login shell's PATH,
+ * not Stoke's own), and what is in the way when neither. The work is in main
+ * (`src/main/stokeCommand.ts`); nothing here decides anything.
+ */
+export function StokeCommandSettings(): React.JSX.Element {
+  const [state, setState] = useState<StokeCommandState | null>(null)
+  const [busy, setBusy] = useState<'install' | 'remove' | null>(null)
+  const [copied, setCopied] = useState(false)
+  // Claimed before the IPC call (gotcha 51): a second press before the
+  // disabled button has rendered would otherwise run the same write twice.
+  const busyRef = useRef(false)
+
+  useEffect(() => {
+    let live = true
+    void window.stoke.command.state().then((s) => {
+      if (live) setState(s)
+    })
+    return () => {
+      live = false
+    }
+  }, [])
+
+  const act = (kind: 'install' | 'remove'): void => {
+    if (busyRef.current) return
+    busyRef.current = true
+    setBusy(kind)
+    void (kind === 'install' ? window.stoke.command.install() : window.stoke.command.remove())
+      .then(setState)
+      .catch((e: unknown) =>
+        setState((cur) => (cur ? { ...cur, error: e instanceof Error ? e.message : String(e) } : cur))
+      )
+      .finally(() => {
+        busyRef.current = false
+        setBusy(null)
+      })
+  }
+
+  if (!state) return <></>
+
+  const pill =
+    state.unavailable === null && state.status === 'installed' ? (
+      <span className="pill" data-tone="success">
+        installed
+      </span>
+    ) : state.unavailable === null && state.status === 'repairable' ? (
+      <span className="pill" data-tone="accent">
+        needs repair
+      </span>
+    ) : null
+
+  return (
+    <div className="field">
+      <span className="field-label">Command line {pill}</span>
+      <span className="field-hint">
+        <span className="mono">stoke .</span> in a terminal opens that folder here;{' '}
+        <span className="mono">stoke --help</span> lists the rest.
+      </span>
+
+      {state.unavailable ? (
+        <span className="field-hint">{state.unavailable}</span>
+      ) : (
+        <>
+          <span className="field-hint">{state.detail}</span>
+
+          {state.onPath === false && state.pathLine && (
+            <div
+              className="field-hint"
+              data-tone="warning"
+              style={{ display: 'grid', gap: 'var(--space-8)', justifyItems: 'start' }}
+            >
+              <span>
+                {state.platform === 'win32'
+                  ? 'That folder is not on PATH yet.'
+                  : '~/.local/bin is not on your PATH, so a new terminal will not find stoke yet. Add this to your shell profile (~/.zshrc for zsh):'}
+              </span>
+              <span className="mono">{state.pathLine}</span>
+              <button
+                className="btn"
+                onClick={() => {
+                  window.stoke.clipboard.writeText(state.pathLine ?? '')
+                  setCopied(true)
+                }}
+              >
+                <IconCopy />
+                {copied ? 'Copied' : 'Copy line'}
+              </button>
+            </div>
+          )}
+          {state.onPath === null && state.status === 'installed' && state.platform !== 'win32' && (
+            <span className="field-hint">
+              Stoke could not read your login shell&rsquo;s PATH, so it cannot tell whether a new
+              terminal will find <span className="mono">~/.local/bin</span>.
+            </span>
+          )}
+
+          {(state.canInstall || state.canRemove) && (
+            <div style={{ display: 'flex', gap: 'var(--space-8)', flexWrap: 'wrap' }}>
+              {state.canInstall && (
+                <button
+                  className="btn"
+                  data-variant="primary"
+                  disabled={busy !== null}
+                  onClick={() => act('install')}
+                >
+                  {busy === 'install'
+                    ? 'Working…'
+                    : state.status === 'repairable'
+                      ? 'Repair'
+                      : 'Install'}
+                </button>
+              )}
+              {state.canRemove && (
+                <button className="btn" disabled={busy !== null} onClick={() => act('remove')}>
+                  {busy === 'remove' ? 'Removing…' : 'Remove'}
+                </button>
+              )}
+            </div>
+          )}
+
+          {state.platform === 'win32' && (
+            <span className="field-hint" data-tone="warning">
+              Not yet verified on Windows: this edits your user PATH through PowerShell, and nobody
+              has watched it run there. A terminal opened before the change will not see it.
+            </span>
+          )}
+        </>
+      )}
+
+      {state.error && (
+        <span className="field-hint" data-tone="danger">
+          {state.error}
+        </span>
       )}
     </div>
   )

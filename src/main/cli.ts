@@ -125,6 +125,17 @@ export function loginPathProbeFailed(): boolean {
   return probeFailedAt !== 0
 }
 
+/**
+ * The login shell's own PATH — what a NEW terminal will have — or null when the
+ * probe failed or there is no such thing (Windows). Not `buildEnvPath`, which
+ * unions in Stoke's own and the fallback dirs: Settings > Updates > Command
+ * line asks whether a terminal will find `stoke`, and a directory Stoke added
+ * for itself is no evidence of that.
+ */
+export function loginShellPathValue(): Promise<string | null> {
+  return loginShellPath()
+}
+
 /** PATH to hand to spawned processes: login-shell PATH unioned with our own. */
 export async function buildEnvPath(): Promise<string> {
   const parts = new Set<string>()

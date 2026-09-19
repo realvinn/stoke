@@ -29,6 +29,12 @@ win:
   target:
     - target: nsis
   artifactName: ${productName}-${version}-${arch}-setup.${ext}
+  # The `stoke` command for cmd and PowerShell, at <install>\resources\bin,
+  # which is the folder Settings > Updates > Command line puts on PATH. Its
+  # path to Stoke.exe (`%~dp0..\..`) depends on landing exactly here.
+  extraResources:
+    - from: build/bin/stoke.cmd
+      to: bin/stoke.cmd
 nsis:
   oneClick: false
   perMachine: false
@@ -88,6 +94,15 @@ mac:
     - target: zip
   category: public.app-category.developer-tools
   artifactName: ${productName}-${version}-${arch}.${ext}
+  # The `stoke` command: Contents/Resources/bin/stoke, a POSIX sh script that
+  # ~/.local/bin/stoke links to. A script in Resources is sealed as a resource
+  # by the signature rather than signed as code, so `codesign --verify --strict
+  # --deep` still covers it. Mac and Windows only: on Linux the command is the
+  # launcher the installer writes, since a link into an AppImage's mount would
+  # point at /tmp.
+  extraResources:
+    - from: build/bin/stoke
+      to: bin/stoke
   # A PTY spawns child processes; the JIT/unsigned-memory entitlements keep
   # hardened runtime from killing them.
   #

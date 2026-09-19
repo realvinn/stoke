@@ -215,6 +215,17 @@ const api: StokeApi = {
     writeText: (text: string) => ipcRenderer.send(CH.clipboardWrite, text)
   },
 
+  launch: {
+    pending: () => ipcRenderer.invoke(CH.cliPending),
+    onRequest: (cb) => on<[Parameters<typeof cb>[0]]>(CH.cliRequest, cb)
+  },
+
+  command: {
+    state: () => ipcRenderer.invoke(CH.commandState),
+    install: () => ipcRenderer.invoke(CH.commandInstall),
+    remove: () => ipcRenderer.invoke(CH.commandRemove)
+  },
+
   openExternal: (url: string) => ipcRenderer.send(CH.openExternal, url),
 
   pickFolder: () => ipcRenderer.invoke(CH.pickFolder),

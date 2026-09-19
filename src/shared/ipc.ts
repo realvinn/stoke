@@ -224,6 +224,22 @@ export const CH = {
   wallpaperPick: 'wallpaper:pick',
   wallpaperClear: 'wallpaper:clear',
 
+  /*
+   * `stoke …` from a terminal (src/shared/stokeArgs.ts). Main parses the argv —
+   * its own on a cold start, a second instance's on `second-instance` — checks
+   * the folder, and QUEUES the request until the renderer asks for the queue:
+   * a cold start has a request before the window has even loaded, and a push
+   * then would land on nothing. `cliPending` is that ask, made once, after tab
+   * restore has settled (gotcha 35: a request must not race the restore that
+   * would replace the tab list under it). From then on `cliRequest` pushes.
+   */
+  cliRequest: 'launch:request',
+  cliPending: 'launch:pending',
+  /** Settings > Updates > Command line: is `stoke` on PATH, and put it there / take it off. */
+  commandState: 'command:state',
+  commandInstall: 'command:install',
+  commandRemove: 'command:remove',
+
   // misc
   openExternal: 'shell:openExternal',
   pickFolder: 'dialog:pickFolder'

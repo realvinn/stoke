@@ -20,6 +20,8 @@ import type {
 } from '@shared/types'
 import type { UpdateInfo } from '@shared/api'
 import { foldGroup, profileFor, resolveProfiles, visibleProfiles } from '@shared/profiles'
+import { pathKey, pathRulesFor } from '@shared/paths'
+import type { StokeCliRequest } from '@shared/stokeArgs'
 import { activeThemeId, resolveTheme } from '@shared/themes'
 import { worklogButtonState } from '@shared/worklog'
 import { BrowserPanel } from './components/BrowserPanel'
@@ -355,8 +357,16 @@ export function App(): React.JSX.Element {
   const [settingsOpen, setSettingsOpen] = useState(false)
   /** Where the sheet opens. Set by whoever asked for it, cleared with the sheet. */
   const [settingsSection, setSettingsSection] = useState<SectionId | undefined>(undefined)
+  /*
+   * Remounts the sheet on every open. The sheet reads `initialSection` once,
+   * into its own state, so an open that arrives while it is already showing —
+   * `stoke update` from a terminal while Appearance is up — would otherwise
+   * leave it where it was.
+   */
+  const [settingsKey, setSettingsKey] = useState(0)
   const openSettings = useCallback((section?: SectionId): void => {
     setSettingsSection(section)
+    setSettingsKey((k) => k + 1)
     setSettingsOpen(true)
   }, [])
   const [maximized, setMaximized] = useState(false)
@@ -1498,6 +1508,146 @@ export function App(): React.JSX.Element {
       .finally(() => setRestoreSettled(true))
   }, [])
 
+  /* ------------------------------------------------- `stoke …` from a shell */
+
+  /*
+   * A (cli, folder) a `stoke` request is starting a session in, claimed before
+   * the first await and held until that session's TAB is in the list — not
+   * merely until `startSession` resolves. Gotcha 51's shape one step further
+   * on: `startSession` puts the tab into state, and `tabsRef` only sees it on
+   * the next render, so a second `stoke .` landing in between would find no
+   * running tab, find no claim, and start a twin `claude` in the same folder.
+   * The effect below lets a claim go once its tab shows up.
+   */
+  const launchClaims = useRef<Set<string>>(new Set())
+  const launchKey = useCallback(
+    (cli: CodingCliId, cwd: string): string => `${cli}\n${pathKey(cwd, pathRulesFor(platform))}`,
+    [platform]
+  )
+  useEffect(() => {
+    if (!launchClaims.current.size) return
+    for (const t of tabs) {
+      if (t.kind === 'session' && t.status === 'running' && !t.hostId) {
+        launchClaims.current.delete(launchKey(t.cliId, t.cwd))
+      }
+    }
+  }, [tabs, launchKey])
+
+  /**
+   * One request from `stoke`, already checked by main (the folder exists; the
+   * words parsed). Rebuilt every render and called through `launchRef`, because
+   * the listener that calls it is bound once (gotcha 31).
+   */
+  const handleLaunch = async (req: StokeCliRequest): Promise<void> => {
+    if (req.kind === 'focus') return
+    if (req.kind === 'error') {
+      setError(req.message)
+      return
+    }
+    if (req.kind === 'update') {
+      // Brings the panel up and asks; installing stays the button's job.
+      openSettings('updates')
+      void window.stoke.self.check()
+      return
+    }
+    const rules = pathRulesFor(platform)
+    const key = pathKey(req.cwd, rules)
+    // The sidebar's own spelling of the folder when it has one: on APFS
+    // `~/Dev/foo` and `~/dev/foo` are one folder, and the launcher selects
+    // by the path string it listed.
+    const project = projects.find((p) => pathKey(p.path, rules) === key)
+    const cwd = project?.path ?? req.cwd
+
+    if (req.kind === 'open') {
+      /*
+       * `selectInNewTab`, with the tab list read through the refs and written
+       * back to them at once. Its closure's `activeNewTabId` is a render old,
+       * so two `stoke --open` in one tick would each append a New tab; this way
+       * the second finds the one the first made, and selects in it.
+       */
+      const cur = tabsRef.current.find((t) => t.id === activeTabIdRef.current)
+      let tabId = cur?.kind === 'new' ? cur.id : null
+      if (!tabId) {
+        const t = newTab(cwd)
+        tabsRef.current = [...tabsRef.current, t]
+        activeTabIdRef.current = t.id
+        setTabs((list) => [...list, t])
+        setActiveTabId(t.id)
+        tabId = t.id
+      }
+      selectProject(cwd, tabId)
+      void refreshProjects()
+      return
+    }
+
+    const claim = launchKey(req.cli, cwd)
+    if (req.launch !== 'new') {
+      // RUNNING only, as `resumeSession` decides: a paused or ended tab in the
+      // same folder has its own Resume, and focusing it would look like a
+      // press that did nothing.
+      const open = tabsRef.current.find(
+        (t) =>
+          t.kind === 'session' &&
+          t.status === 'running' &&
+          !t.hostId &&
+          t.cliId === req.cli &&
+          pathKey(t.cwd, rules) === key
+      )
+      if (open) {
+        activeTabIdRef.current = open.id
+        setActiveTabId(open.id)
+        return
+      }
+      if (launchClaims.current.has(claim)) return
+      launchClaims.current.add(claim)
+    }
+    // A New tab in front is consumed, as every launcher start consumes it.
+    const front = tabsRef.current.find((t) => t.id === activeTabIdRef.current)
+    const ok = await startSession({
+      cwd,
+      cli: req.cli,
+      name: project?.label ?? project?.name ?? baseName(cwd),
+      continueLast: req.launch === 'continue',
+      replaceTabId: front?.kind === 'new' ? front.id : undefined
+    })
+    // `startSession` has set the error already; the claim must not outlive it.
+    if (!ok) launchClaims.current.delete(claim)
+    void refreshProjects()
+  }
+  const launchRef = useRef(handleLaunch)
+  launchRef.current = handleLaunch
+
+  // Bound once, from the start: main pushes only after `pending()` below has
+  // told it this renderer is ready, so nothing can arrive early.
+  useEffect(() => window.stoke.launch.onRequest((req) => void launchRef.current(req)), [])
+
+  /*
+   * The queue main held while this window loaded — on a cold start from
+   * `stoke .`, the reason the window exists at all. Asked for ONCE, and only
+   * after the tab restore has settled (gotcha 35): the restore replaces the
+   * whole tab list, so a session started before it lands would be wiped out
+   * from under the request that opened it. Settings too, because a session
+   * launches with the saved defaults.
+   */
+  const [launchSettled, setLaunchSettled] = useState(false)
+  const launchAsked = useRef(false)
+  useEffect(() => {
+    if (!restoreSettled || !settings || launchAsked.current) return
+    launchAsked.current = true
+    window.stoke.launch
+      .pending()
+      .then(
+        (reqs) => {
+          // A launch that came with a folder is not one for "start a session on
+          // launch" to add a second session to.
+          if (reqs.some((r) => r.kind === 'session' || r.kind === 'open')) autoStarted.current = true
+          for (const r of reqs) void launchRef.current(r)
+        },
+        () => {}
+      )
+      .finally(() => setLaunchSettled(true))
+  }, [restoreSettled, settings])
+
   // Optional "open straight into a session" behaviour. The ref keeps it to a
   // single attempt, including under StrictMode's double-invoked effects.
   const autoStarted = useRef(false)
@@ -1518,13 +1668,15 @@ export function App(): React.JSX.Element {
     // restore has resolved (with or without tabs) or rejected, by which point
     // `restoreCount` already carries its final value.
     if (!restoreSettled) return
+    // And after the `stoke` queue has been read, which may veto it the same way.
+    if (!launchSettled) return
     if (!settings?.startOnLaunch || !defaultCwd || !cli?.ok) return
     // Restored tabs are what the user had; opening a session on top of them is
     // an extra nobody asked for.
     if (restoreCount > 0) return
     autoStarted.current = true
     startDefault()
-  }, [restoreSettled, settings?.startOnLaunch, defaultCwd, cli, startDefault, restoreCount])
+  }, [restoreSettled, launchSettled, settings?.startOnLaunch, defaultCwd, cli, startDefault, restoreCount])
 
   /**
    * Append a New Project tab and select it.
@@ -2692,6 +2844,7 @@ export function App(): React.JSX.Element {
 
       {settingsOpen && settings && (
         <SettingsSheet
+          key={settingsKey}
           settings={settings}
           profiles={availableProfiles}
           defaultCwd={defaultCwd}
