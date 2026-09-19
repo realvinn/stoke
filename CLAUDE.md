@@ -37,7 +37,7 @@ A `dist:*` exists per target and each MUST run on that target's own platform and
 
 Every suite runs alone as `npm run verify:<name>`: context, statusline, unicode, usage,
 profiles, settings, providers, claude-config, folders, search, color, theme-gen, activity,
-worklog-gate, tabs, registry,
+worklog-gate, tabs, launcher, registry,
 restore, shortcuts, drop, browser-url, voice, agents, campfire, cli, stoke-args, updates, targets, manifests, worklog-runner,
 worklog-retry, worklog-recall, worklog-autoscan, ssh, remote, installer-art, install, welcome,
 selection — the `check` chain — plus extract and security, which
@@ -305,6 +305,8 @@ rule file named on the group line.
 - **39.** Write `workflowSizeGuideline` only to `~/.claude.json` (in `settings.json` it hides
   `/config`'s row); never offer `effortLevel: max` (silently dropped); every key Stoke's
   `--settings` file overrides goes on `NEVER_OFFERED`.
+- **89.** Resolve a launch label through `modelSettings.<id>.effortLevel` before the top-level
+  `effortLevel`, and user < project < local (`resolveLaunch`): the chip said High, the CLI ran medium.
 - **66.** Serialise an awaiting read-modify-write (`patchClaudeSetting`'s promise chain) and claim
   a guard before the first `await` (`claimStart`, `cliRefreshing`): a second press drops a key,
   appends a tab or reruns `claude update`.
@@ -370,6 +372,8 @@ rule file named on the group line.
   are busy), and never auto-relaunch on `idle` alone: a draft leaves it idle (`typedSinceSubmit`).
 - **83.** Veto `startOnLaunch` on whether the restore HAD sessions (`restoredSessions`), not on how
   many are still paused — the update-restart resume empties that count before `cli` answers.
+- **88.** Make the shell `inert` (in a LAYOUT effect) while any overlay, the splash or a pending
+  first-run picker is up (`firstRunPending`): an Enter for the splash started `claude` behind it.
 
 **Packaging and signing** — `.claude/rules/release.md`
 - **7.** Pick architectures with the `--x64`/`--arm64` CLI flags and never add an `arch:` list to

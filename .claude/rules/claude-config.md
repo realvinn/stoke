@@ -7,6 +7,8 @@ paths:
   - "src/shared/claudeConfig.ts"
   - "src/renderer/src/components/ClaudeCodeSettings.tsx"
   - "scripts/verify-claude-config.mts"
+  - "src/shared/launch.ts"
+  - "scripts/verify-launcher.mts"
 ---
 
 # Writing Claude Code's own config
@@ -112,3 +114,24 @@ in flight, after which each `pty.start` found its `replaceTabId` gone and **appe
 tabs came back with live processes the close had never killed, because a paused tab has no PTY
 to kill. And the manual "Update now" shared no lock with the six-hourly `refreshCliUpdate`, so
 it could run a second `claude update` against the same install.
+
+## 89. The effort Claude Code runs at is per model version, and the top-level key is only the fallback
+
+**The launcher resolved "Default effort" from `~/.claude/settings.json`'s `effortLevel: "high"` and
+said High, and the session banner said `Opus 5 (1M context) with medium effort`.** The same file
+also held `modelSettings: { "claude-opus-5": { "effortLevel": "medium" } }` — the CLI's own
+`/effort` writes there, keyed by the canonical model id, and that table OUTRANKS the top-level key
+for its model. Confirmed in the CLI's settings schema (`modelSettings` … `effortLevel`, "Persisted
+effort level for this model") and by the banner, on 2.1.278.
+
+So `resolveLaunch` resolves effort as: a Stoke flag (or ultracode's xhigh), else the per-model
+entry for the model THIS launch runs — which can be a chip override, so picking Sonnet for one
+launch falls back to the top-level High, and the banner agreed (`Sonnet 5 with high effort`) —
+else the top-level key. An alias (`opus[1m]`) is matched to entries of its family; when two
+versions of that family disagree, Stoke cannot know which version the alias resolves to, so the
+chip names no level rather than guessing.
+
+The general form: a label that describes "what happens with no flag" has to resolve through every
+layer the CLI reads, in the CLI's order — user < project < local file, `ANTHROPIC_MODEL` over the
+files for the model, per-model over top-level for effort — or it is a second opinion, not a
+reading. Managed (policy) settings are the one layer `readLaunchDefaults` does not read.
