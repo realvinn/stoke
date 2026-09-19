@@ -48,6 +48,7 @@ echo(stoke: "%STOKE_EXE%" is not there. Reinstall Stoke. 1>&2
 exit /b 127
 
 :version
+if not exist "%STOKE_EXE%" goto missing
 powershell -NoProfile -NonInteractive -Command "Write-Output ('Stoke ' + (Get-Item -LiteralPath $env:STOKE_EXE).VersionInfo.ProductVersion)"
 exit /b %ERRORLEVEL%
 
