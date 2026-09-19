@@ -60,6 +60,16 @@ interface Props {
   onOpenSettings: () => void
   /** Settings, opened straight at Phone access. */
   onOpenPhoneSettings: () => void
+  /**
+   * The Settings sheet is open right now.
+   *
+   * PX-26(c): opening Settings by any route OTHER than the phone
+   * popover's own buttons (a shortcut, the gear icon) used to leave the
+   * popover painted above the sheet, since only its own buttons ever called
+   * `setOpen(false)`. Passed through so `PhonePopover` can close itself the
+   * moment the sheet appears, however it got opened.
+   */
+  settingsOpen: boolean
 }
 
 export function TitleBar({
@@ -86,7 +96,8 @@ export function TitleBar({
   onToggleWorklog,
   onOpenPalette,
   onOpenSettings,
-  onOpenPhoneSettings
+  onOpenPhoneSettings,
+  settingsOpen
 }: Props): React.JSX.Element {
   const isMac = platform === 'darwin'
   const listRef = useRef<HTMLDivElement>(null)
@@ -323,7 +334,7 @@ export function TitleBar({
           <IconPin />
           <span className="sr-only">Toggle worklog review</span>
         </button>
-        <PhonePopover onOpenSettings={onOpenPhoneSettings} />
+        <PhonePopover onOpenSettings={onOpenPhoneSettings} settingsOpen={settingsOpen} />
         <UsageChip />
 
         <button

@@ -6,6 +6,14 @@ import { reachLine } from './RemoteSettings'
 interface Props {
   /** Open Settings at the Phone access section. */
   onOpenSettings: () => void
+  /**
+   * The Settings sheet is open right now — from any route, not only this
+   * popover's own "Settings"/"Open settings" buttons (which already close it
+   * themselves). PX-26(c): without this, opening Settings some
+   * other way (a shortcut, the gear icon) left the popover painted above the
+   * sheet.
+   */
+  settingsOpen: boolean
 }
 
 /**
@@ -18,12 +26,17 @@ interface Props {
  * code to scan — or, when the server is off, the single button that turns it
  * on and picks a route a phone can actually use.
  */
-export function PhonePopover({ onOpenSettings }: Props): React.JSX.Element {
+export function PhonePopover({ onOpenSettings, settingsOpen }: Props): React.JSX.Element {
   const [state, setState] = useState<RemoteState | null>(null)
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [copied, setCopied] = useState(false)
   const panelRef = useRef<HTMLDivElement>(null)
+
+  // Close on any route into Settings, not only this popover's own buttons.
+  useEffect(() => {
+    if (settingsOpen) setOpen(false)
+  }, [settingsOpen])
 
   const refresh = useCallback(async (): Promise<void> => {
     setState(await window.stoke.remote.status())

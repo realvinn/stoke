@@ -8,7 +8,7 @@ import type {
   StokeCommandState,
   UpdateInfo
 } from '@shared/api'
-import { clampPort, REMOTE_PORT_DEFAULT } from '@shared/ui'
+import { clampPort, REMOTE_PORT_DEFAULT, type RemoteReachPreference } from '@shared/ui'
 import { channelLagNotice, updateButton, updateVerdict } from '../lib/updateVerdict'
 import { cliUpToDate, selfUpToDate } from '@shared/updateCheck'
 import { useDraft } from '../lib/useDraft'
@@ -58,6 +58,20 @@ export function reachLine(state: RemoteState): string {
 }
 
 /**
+ * What "Open on phone" is about to do, before it is pressed.
+ *
+ * PX-26(a): this used to guess from whether Tailscale happens to be running,
+ * ignoring a reach the user had already chosen — so with "Same Wi-Fi" picked
+ * it still read "Picks Tailscale unless you choose below". A stored
+ * preference (`remote.reach !== 'auto'`) always wins; only the untouched
+ * default falls back to the old guess.
+ */
+export function openOnPhoneHint(reach: RemoteReachPreference, tailnetAvailable: boolean): string {
+  if (reach !== 'auto') return `Uses ${REACH_LABEL[reach]}`
+  return `Picks ${tailnetAvailable ? 'Tailscale' : 'your Wi-Fi'}`
+}
+
+/**
  * Phone access.
  *
  * Ordered around the one question a person opening this panel has: "how do I
@@ -72,7 +86,14 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
   const [busy, setBusy] = useState(false)
   const [copied, setCopied] = useState(false)
   const [confirmKey, setConfirmKey] = useState(false)
-  const [tunnelOpen, setTunnelOpen] = useState(false)
+  /*
+   * F4: open only when the user asked — by pressing the Tunnel segment, which
+   * sets this true, or because Tunnel was already the stored reach when this
+   * sheet mounted. `settings.remote.reach` (not `state`, which is not fetched
+   * yet on the very first render) is what makes the seed a real answer rather
+   * than "unknown".
+   */
+  const [tunnelOpen, setTunnelOpen] = useState(() => settings.remote.reach === 'tunnel')
   /**
    * What the public hostname answered, from the setup steps below.
    *
@@ -194,14 +215,21 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
               {busy ? 'Starting…' : 'Open on phone'}
             </button>
             <span className="field-hint">
-              Picks {state?.tailnet ? 'Tailscale' : 'your Wi-Fi'} unless you choose below, then shows a code to scan.
+              {openOnPhoneHint(remote.reach, Boolean(state?.tailnet))} unless you choose below, then
+              shows a code to scan.
             </span>
           </div>
         )}
 
         {running && state && (
           <>
-            {state.url && reach !== 'loopback' && state.qr && (
+            {/*
+              PX-8: a busy port used to report `running:true, error:null` on the
+              LAN bind, or draw a QR beside an error the user had to scroll down
+              to notice. `server.error` is now the gate for the code itself —
+              a link nobody's phone can actually reach is worse than none.
+            */}
+            {state.url && reach !== 'loopback' && state.qr && !state.server.error && (
               <div className="phone-link">
                 <img
                   className="phone-qr"
@@ -212,7 +240,7 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
                 />
                 <div className="phone-link-text">
                   <span className="mono field-hint phone-url">{state.url}</span>
-                  <div style={{ display: 'flex', gap: 'var(--space-8)', flexWrap: 'wrap' }}>
+                  <div style={{ display: 'flex', gap: 'var(--space-8)', flexWrap: 'wrap', alignItems: 'center' }}>
                     <button className="btn" onClick={copyLink}>
                       <IconCopy />
                       {copied ? 'Copied' : 'Copy link'}
@@ -225,6 +253,31 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
                     >
                       Turn off
                     </button>
+                    {/*
+                      PX-26(b): the port used to live only under Advanced, two
+                      scrolls away from the link it changes. A tunnel has no
+                      port to show the phone (it dials the hostname), so this
+                      is withheld there.
+                    */}
+                    {reach !== 'tunnel' && (
+                      <label
+                        className="field-hint"
+                        style={{ display: 'flex', gap: 'var(--space-4)', alignItems: 'center' }}
+                      >
+                        Port
+                        <input
+                          className="input"
+                          type="number"
+                          min={1024}
+                          max={65535}
+                          value={portField.draft}
+                          onChange={(e) => portField.setDraft(e.target.value)}
+                          onBlur={portField.onBlur}
+                          onKeyDown={portField.onKeyDown}
+                          style={{ width: '6rem' }}
+                        />
+                      </label>
+                    )}
                   </div>
                   <span className="field-hint">
                     The link carries the key. Treat it like a password — anyone with it can drive a
@@ -381,7 +434,15 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
 
       <details
         className="field-detail"
-        open={tunnelOpen || undefined}
+        /*
+         * F4: `tunnelOpen || undefined` handed the DOM the attribute exactly
+         * when it was false — `undefined` means "React does not manage this",
+         * so whatever the element's own open/closed state already was (a
+         * browser default, a prior toggle) kept showing rather than being
+         * forced shut. Always controlled now: `open` is `tunnelOpen`, full
+         * stop, so a closed state actually closes it.
+         */
+        open={tunnelOpen}
         onToggle={(e) => setTunnelOpen((e.target as HTMLDetailsElement).open)}
       >
         <summary>
@@ -430,15 +491,25 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
             that only make sense once they are done. It probes on open and on
             every change to either field, so "no tunnel named X" cannot linger
             after X is renamed.
+
+            PX-26(d): a closed `<details>` still mounts its children — the
+            browser only hides them — so this used to run `cloudflared tunnel
+            list` and an HTTP probe on every visit to this panel, even for a
+            Wi-Fi-only user who never touched Cloudflare. Mounted only once
+            the disclosure is genuinely open (the Tunnel segment was chosen,
+            or the user opened it themselves) — the same condition `tunnelOpen`
+            already gates the `<details>` on.
           */}
-          <CloudflareSetup
-            tunnelName={remote.tunnelName}
-            hostname={remote.hostname}
-            running={tunnel?.running ?? false}
-            busy={busy}
-            onRun={() => void act(() => window.stoke.remote.tunnelStart('named'))}
-            onVerdict={setVerdict}
-          />
+          {tunnelOpen && (
+            <CloudflareSetup
+              tunnelName={remote.tunnelName}
+              hostname={remote.hostname}
+              running={tunnel?.running ?? false}
+              busy={busy}
+              onRun={() => void act(() => window.stoke.remote.tunnelStart('named'))}
+              onVerdict={setVerdict}
+            />
+          )}
 
           <label className="check-row">
             <input
