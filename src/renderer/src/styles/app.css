@@ -718,6 +718,17 @@ body {
   background: var(--bg);
 }
 
+/* The agent a non-Claude tab runs, so `proj-a` and `proj-a` are not one label twice (QA L16). */
+.tab-agent {
+  flex-shrink: 0;
+  padding: 0 var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
 .tab-label {
   font-size: var(--fs-md);
   /*
@@ -1420,15 +1431,18 @@ body {
  */
 .project-start {
   opacity: 0;
+  pointer-events: none;
 }
 
 .project:hover .project-start,
 .project:focus-within .project-start {
   opacity: 1;
+  pointer-events: auto;
 }
 
 .project-pin {
   opacity: 0;
+  pointer-events: none;
   transition: opacity var(--dur-fast) var(--ease);
 }
 
@@ -1436,6 +1450,47 @@ body {
 .project:focus-within .project-pin,
 .project-pin[aria-pressed='true'] {
   opacity: 1;
+  pointer-events: auto;
+}
+
+/*
+ * The two hover buttons, out of the flow (QA L15). At opacity 0 in the flex
+ * row they still took 48px, and the name truncated beside empty space. Now the
+ * name has the whole row at rest, and the row makes room — by padding, so the
+ * name re-ellipsises rather than being painted over — only while the buttons
+ * show. A pinned row keeps room for its pin, which always shows. Invisible
+ * buttons also ignore the pointer, so a click on the end of a name is a click
+ * on the name, not on an unseen "+" that starts a session.
+ */
+.project-top {
+  position: relative;
+  --project-actions-w: calc(var(--control-h) + 1.25rem + var(--space-8));
+}
+
+.project-actions {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  translate: 0 -50%;
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.project-top:has(.project-pin[aria-pressed='true']) {
+  padding-right: calc(1.25rem + var(--space-4));
+}
+
+.project:hover .project-top,
+.project:focus-within .project-top {
+  padding-right: var(--project-actions-w);
+}
+
+/* The parent folder that tells two same-name projects apart (QA L14). */
+.project-hint {
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+  font-weight: 400;
 }
 
 /* --------------------------------------------------- project icon + name */
