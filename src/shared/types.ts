@@ -355,6 +355,14 @@ export interface LiveSessionState {
   waitingFor: string | null
   /** The version of the binary this process is running. */
   version: string | null
+  /**
+   * The file's own `statusUpdatedAt` (epoch ms), when it states one. Not part
+   * of "did the reading change" (`sameState`): the phone's prompt identity
+   * reads it (`trackPrompt`), nothing else does.
+   */
+  statusUpdatedAt?: number | null
+  /** When the pass that produced this reading started, epoch ms. */
+  readAt?: number
 }
 
 /**

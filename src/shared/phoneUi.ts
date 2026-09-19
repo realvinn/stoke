@@ -188,16 +188,17 @@ export function parseAnswerOptions(lines: readonly string[], cols?: number): Par
 }
 
 /**
- * Labels for a waiting row the list has not read the screen of. Deliberately
- * only the two meanings that hold across every Claude Code permission dialog
- * measured (1 accepts, the last choice declines); option 2's meaning varies
- * ("don't ask again", "switch to accept edits", "manually approve"), so it is
- * offered by number alone rather than guessed at.
+ * Labels for a waiting row whose screen has not been read (yet, or ever: the
+ * peek can fail). Numbers only, with no meaning attached. The first version
+ * said "1 Yes / 2 / 3 No", and "3 declines" is false: in the plan-approval
+ * dialog 3 is "Tell Claude what to change", and a two-option dialog has no 3
+ * at all. A label that guesses wrong is worse than a bare number beside the
+ * question (review of PX-12).
  */
 export const GENERIC_ANSWERS: AnswerOption[] = [
-  { key: '1', label: 'Yes', selected: false },
+  { key: '1', label: '1', selected: false },
   { key: '2', label: '2', selected: false },
-  { key: '3', label: 'No', selected: false }
+  { key: '3', label: '3', selected: false }
 ]
 
 /**
@@ -221,30 +222,9 @@ export function modeFromScreen(lines: readonly string[]): string | null {
   return null
 }
 
-/**
- * Is this xterm `onData` an automatic REPLY the phone's terminal generated,
- * rather than a key somebody pressed?
- *
- * Every attach replays the pty's history into the phone's xterm, and xterm
- * answers every query in it as if it were live: device attributes
- * (`ESC[?1;2c`), the background colour (`ESC]11;rgb:…`), cursor position,
- * mode reports, focus in/out. The old client forwarded all of `onData` to the
- * pty, so opening a session on a phone typed stale answers into Claude — one
- * of them telling it the page's background colour, which Claude Code uses to
- * pick its palette. The desktop's own terminal already answers the live
- * queries; the phone must never answer any.
- */
-export function isTerminalReport(data: string): boolean {
-  return (
-    /^\u001b\[[?>=]?[\d;]*c$/.test(data) || // primary/secondary/tertiary device attributes
-    /^\u001b\][^\u0007\u001b]*(\u0007|\u001b\\)$/.test(data) || // OSC replies (colours, clipboard)
-    /^\u001b\[\??\d+;\d+R$/.test(data) || // cursor position report
-    /^\u001b\[\??[\d;]*\$y$/.test(data) || // DECRPM mode report
-    /^\u001b\[[IO]$/.test(data) || // focus in/out
-    /^\u001b\[\d+;\d+;\d+t$/.test(data) || // window size reports
-    /^\u001bP[\s\S]*\u001b\\$/.test(data) // DCS replies (XTVERSION, DECRQSS)
-  )
-}
+// `isTerminalReport` lives in remotePhone.ts now: `PtyManager` needs the same
+// test, to keep automatic replies from counting as someone answering a prompt.
+export { isTerminalReport } from './remotePhone.ts'
 
 /* ------------------------------------------------------ resize policy */
 

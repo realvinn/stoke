@@ -95,16 +95,14 @@ export function sortSessionRows<T extends { status: PhoneSessionStatus; lastActi
  */
 export const ENDED_RETENTION_MS = 10 * 60 * 1000
 
-export interface EndedRecord<T> {
-  info: T
-  endedAt: number
-}
-
-/** Remove ring entries older than `ENDED_RETENTION_MS`, in place. */
-export function pruneEnded<T>(ring: Map<string, EndedRecord<T>>, now: number): void {
-  for (const [id, rec] of ring) {
-    if (now - rec.endedAt > ENDED_RETENTION_MS) ring.delete(id)
-  }
+/**
+ * Whether an exited session has sat in `PtyManager`'s ring past
+ * `ENDED_RETENTION_MS` and is due to be dropped. `endedAt` null is a session
+ * still running, which never expires. The one rule `PtyManager.pruneEnded`
+ * applies, kept here so `verify:remote` tests the predicate production calls.
+ */
+export function isEndedExpired(endedAt: number | null, now: number): boolean {
+  return endedAt !== null && now - endedAt > ENDED_RETENTION_MS
 }
 
 /**
@@ -169,6 +167,65 @@ export function typingChunks(text: string, size: number): string[] {
   return chunks
 }
 
+/** Waits `ms`; injected so a suite can drive `SubmitQueue` without real time. */
+export type Sleep = (ms: number) => Promise<void>
+
+export const realSleep: Sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+export interface SubmitTiming {
+  /** Between two typed chunks of one submit. */
+  chunkGapMs: number
+  /** After the last chunk, before the bare `\r` that submits it. */
+  enterDelayMs: number
+  /** After that `\r`, before the NEXT queued submit starts typing. */
+  afterEnterMs: number
+}
+
+/**
+ * One pty's submits, strictly one after another.
+ *
+ * `PtyManager.submit` types a message as `submitFrames`' chunks a few ms apart
+ * and then its Enter, which takes real time — about 10ms a chunk plus 80ms.
+ * It used to start its own `setTimeout` chain per call with nothing between
+ * one call and the next, so two submits sent close together (the phone's
+ * queued-message flush sends them back to back; so does a double-tap on Send,
+ * or End session while a long message is still typing) were written
+ * INTERLEAVED: Claude got one garbled turn that was half of each. Measured by
+ * the review of qa/phone: a 228-character "apple" prompt and a 32-character
+ * "banana" one arrived as a single user turn with the second spliced into the
+ * first. Each job here starts only after the previous one's Enter is written.
+ *
+ * `write` returns false once the session is gone; a job stops there and the
+ * queue moves on (every later job then stops at its first write too).
+ */
+export class SubmitQueue {
+  private tail: Promise<void> = Promise.resolve()
+  private readonly timing: SubmitTiming
+  private readonly sleep: Sleep
+
+  constructor(timing: SubmitTiming, sleep: Sleep = realSleep) {
+    this.timing = timing
+    this.sleep = sleep
+  }
+
+  /** Queue one submit; settles once its Enter is written, or it was abandoned. */
+  push(frames: { chunks: string[]; enter: string }, write: (data: string) => boolean): Promise<void> {
+    const run = async (): Promise<void> => {
+      if (frames.chunks.length === 0) return
+      for (let i = 0; i < frames.chunks.length; i++) {
+        if (i > 0) await this.sleep(this.timing.chunkGapMs)
+        if (!write(frames.chunks[i])) return
+      }
+      await this.sleep(this.timing.enterDelayMs)
+      if (!write(frames.enter)) return
+      await this.sleep(this.timing.afterEnterMs)
+    }
+    const job = this.tail.then(run, run)
+    this.tail = job.catch(() => {})
+    return job
+  }
+}
+
 /** DECSET 2004 (bracketed paste mode) escape sequences, as they appear in pty output. */
 const BRACKETED_PASTE_ON = '\u001b[?2004h'
 const BRACKETED_PASTE_OFF = '\u001b[?2004l'
@@ -219,6 +276,177 @@ const ANSWER_BYTES: Record<AnswerKey, string> = {
 
 export function answerBytes(key: AnswerKey): string {
   return ANSWER_BYTES[key]
+}
+
+/**
+ * Is this xterm `onData` an automatic REPLY the phone's terminal generated,
+ * rather than a key somebody pressed?
+ *
+ * Every attach replays the pty's history into the phone's xterm, and xterm
+ * answers every query in it as if it were live: device attributes
+ * (`ESC[?1;2c`), the background colour (`ESC]11;rgb:…`), cursor position,
+ * mode reports, focus in/out. The old client forwarded all of `onData` to the
+ * pty, so opening a session on a phone typed stale answers into Claude — one
+ * of them telling it the page's background colour, which Claude Code uses to
+ * pick its palette. The desktop's own terminal already answers the live
+ * queries; the phone must never answer any.
+ *
+ * `PtyManager.write` uses it too: a reply is not somebody typing, so it must
+ * not make a permission prompt look answered (`answerVerdict`). The desktop's
+ * xterm sends focus reports and colour-scheme reports on its own.
+ */
+export function isTerminalReport(data: string): boolean {
+  return (
+    /^\u001b\[[?>=]?[\d;]*c$/.test(data) || // primary/secondary/tertiary device attributes
+    /^\u001b\][^\u0007\u001b]*(\u0007|\u001b\\)$/.test(data) || // OSC replies (colours, clipboard)
+    /^\u001b\[\??\d+;\d+R$/.test(data) || // cursor position report
+    /^\u001b\[\??[\d;]*\$y$/.test(data) || // DECRPM mode report
+    /^\u001b\[[IO]$/.test(data) || // focus in/out
+    /^\u001b\[\??[\d;]*n$/.test(data) || // DSR replies, incl. the colour-scheme report (gotcha 42)
+    /^\u001b\[\d+;\d+;\d+t$/.test(data) || // window size reports
+    /^\u001bP[\s\S]*\u001b\\$/.test(data) // DCS replies (XTVERSION, DECRQSS)
+  )
+}
+
+/* ------------------------------------------------------ prompt identity */
+
+/**
+ * One permission prompt, as far as the phone's one-tap answer knows it —
+ * review finding "stale tap" on PX-12.
+ *
+ * The answer route used to gate on the registry's `waiting` alone, and the
+ * registry is polled once a second: a prompt answered at the desk still read
+ * `waiting` for up to a second, so a tap from the list in that window returned
+ * 200 and wrote a stray digit into whatever came next (measured: a `2` written
+ * 150ms after a desk `1`, status turned busy 46ms after that). The request also
+ * named no prompt, so prompt B arriving within one poll of prompt A was
+ * answered from a list still showing A's question.
+ *
+ * `id` is what the phone sends back. `since` is when this prompt was known to
+ * be on screen with nothing typed after it: the registry's own
+ * `statusUpdatedAt` for a new prompt, or the reading's time when a later pass
+ * re-confirms it after some input (below).
+ */
+export interface PromptTrack {
+  id: string
+  since: number
+  waitingFor: string | null
+  statusUpdatedAt: number | null
+}
+
+/**
+ * How long after the last pty input a registry reading must have been taken
+ * before it can re-confirm a prompt. The file follows the TUI within ~0.1s
+ * (claudeRegistry.ts); half a second is margin, not measurement.
+ */
+export const PROMPT_SETTLE_MS = 500
+
+export interface PromptReading {
+  waiting: boolean
+  waitingFor: string | null
+  statusUpdatedAt: number | null
+  /** When the pass that produced this reading started (conservative: the file was read after). */
+  readAt: number
+}
+
+/**
+ * The prompt a pty is showing now, from the last one and a fresh reading.
+ *
+ * - not waiting: none.
+ * - a new waiting state (none before, or `waitingFor`/`statusUpdatedAt`
+ *   moved): a new prompt, `since` its own `statusUpdatedAt`.
+ * - the same waiting state, but input reached the pty after `since`: whoever
+ *   typed may have answered it, so `answerVerdict` refuses it. Once a reading
+ *   taken `PROMPT_SETTLE_MS` after that input STILL says waiting, the prompt
+ *   on screen is re-confirmed under a new id — otherwise an arrow key pressed
+ *   at the desk would leave the phone unable to answer for good.
+ */
+export function trackPrompt(
+  prev: PromptTrack | null,
+  reading: PromptReading,
+  lastInputAt: number | null
+): PromptTrack | null {
+  if (!reading.waiting) return null
+  const fresh =
+    !prev || prev.waitingFor !== reading.waitingFor || prev.statusUpdatedAt !== reading.statusUpdatedAt
+  let since: number
+  if (fresh) since = reading.statusUpdatedAt ?? reading.readAt
+  else if (lastInputAt !== null && lastInputAt >= prev.since && reading.readAt >= lastInputAt + PROMPT_SETTLE_MS) {
+    since = reading.readAt
+  } else return prev
+  // Never reuse the previous id: a phone holding it must not match the new one.
+  if (prev && since <= prev.since) since = Math.max(reading.readAt, prev.since + 1)
+  return {
+    id: String(since),
+    since,
+    waitingFor: reading.waitingFor,
+    statusUpdatedAt: reading.statusUpdatedAt
+  }
+}
+
+export type AnswerVerdict = 'ok' | 'not waiting' | 'stale'
+
+/**
+ * Whether `POST /api/sessions/:ptyId/answer` may write. `stale` (409) when the
+ * phone named another prompt, named none, or anything was typed into the pty
+ * since this prompt was known — including the phone's own previous answer, so
+ * a double tap writes one digit, not two.
+ */
+export function answerVerdict(
+  track: PromptTrack | null,
+  promptId: unknown,
+  lastInputAt: number | null
+): AnswerVerdict {
+  if (!track) return 'not waiting'
+  if (typeof promptId !== 'string' || promptId !== track.id) return 'stale'
+  if (lastInputAt !== null && lastInputAt >= track.since) return 'stale'
+  return 'ok'
+}
+
+/* ------------------------------------------------------- server decisions */
+
+/**
+ * Whether the remote server should be (re)started for a settings write —
+ * review finding on PX-8.
+ *
+ * The busy-port error says "Pick a different port", and the settings handler
+ * restarted only a RUNNING server when a bound field moved. A server that
+ * failed to bind is not running, so changing the port as advised did nothing
+ * until Phone access was turned off and on. A failed server with Phone access
+ * still on is retried too; one the user turned off is left off.
+ */
+export interface RemoteBindFields {
+  enabled: boolean
+  port: number
+  bindLan: boolean
+  bindTailscale: boolean
+  requireAccessHeader: boolean
+  hostname: string
+  token: string
+}
+
+/** What the server binds or checks: moving one needs a restart to take effect. */
+const REMOTE_BIND_KEYS = ['port', 'bindLan', 'bindTailscale', 'requireAccessHeader', 'hostname', 'token'] as const
+
+export function shouldRestartRemote(
+  prev: RemoteBindFields,
+  next: RemoteBindFields,
+  server: { running: boolean; error: string | null } | null
+): boolean {
+  if (!server) return false
+  if (!REMOTE_BIND_KEYS.some((k) => prev[k] !== next[k])) return false
+  return server.running || (next.enabled && server.error !== null)
+}
+
+/**
+ * Whether a phone's `?k=` may be stored as the key cookie — review finding on
+ * PX-14. Once the shell went public the cookie was built from ANY `k`, so a
+ * link with a wrong key (or any page navigating the phone to one) overwrote a
+ * working 90-day cookie and logged the phone out. Only the key the request
+ * was actually authorised with is stored.
+ */
+export function mayStoreKeyCookie(queryKey: string | null, authorized: boolean): boolean {
+  return queryKey !== null && queryKey !== '' && authorized
 }
 
 /**

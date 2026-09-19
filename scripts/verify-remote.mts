@@ -21,17 +21,24 @@ import {
 } from '../src/main/remote/cloudflare.ts'
 import { clampPort, clampRemoteReach, REMOTE_REACH_PREFERENCES } from '../src/shared/ui.ts'
 import {
+  answerVerdict,
   ENDED_RETENTION_MS,
+  isEndedExpired,
   isGatedRemotePath,
+  isTerminalReport,
+  mayStoreKeyCookie,
   phoneStatusFor,
-  pruneEnded,
+  PROMPT_SETTLE_MS,
+  shouldRestartRemote,
   sortSessionRows,
   stripLocalHostnameSuffix,
   SUBMIT_CHUNK,
+  SubmitQueue,
   submitFrames,
   trackBracketedPaste,
+  trackPrompt,
   typingChunks,
-  type EndedRecord
+  type PromptTrack
 } from '../src/shared/remotePhone.ts'
 
 let failures = 0
@@ -353,16 +360,15 @@ check('a null lastActivityAt sorts as never', sortSessionRows([
 /*
  * F1: a session that exits on its own used to vanish from the map at once,
  * so the phone could never learn a real crash happened. Kept for
- * ENDED_RETENTION_MS, on a fake clock over an explicit map (gotcha 74 — never
- * the real shared directory).
+ * ENDED_RETENTION_MS. `isEndedExpired` is the predicate `PtyManager.pruneEnded`
+ * itself calls (the earlier shared `pruneEnded` was tested here and called by
+ * nothing), on a fake clock (gotcha 74).
  */
 {
-  const ring = new Map<string, EndedRecord<{ id: string }>>()
-  ring.set('a', { info: { id: 'a' }, endedAt: 0 })
-  ring.set('b', { info: { id: 'b' }, endedAt: ENDED_RETENTION_MS - 1000 })
-  pruneEnded(ring, ENDED_RETENTION_MS + 1)
-  check('an entry past the retention window is dropped', ring.has('a'), false)
-  check('one still inside it survives', ring.has('b'), true)
+  const now = ENDED_RETENTION_MS + 1
+  check('an entry past the retention window is dropped', isEndedExpired(0, now), true)
+  check('one still inside it survives', isEndedExpired(ENDED_RETENTION_MS - 1000, now), false)
+  check('a running session (no endedAt) never expires', isEndedExpired(null, Number.MAX_SAFE_INTEGER), false)
   check('the retention window is ten minutes', ENDED_RETENTION_MS, 10 * 60 * 1000)
 }
 
@@ -434,6 +440,117 @@ check('a .local suffix is stripped', stripLocalHostnameSuffix('macbookpro.local'
 check('so is .localdomain', stripLocalHostnameSuffix('desktop.localdomain'), 'desktop')
 check('a bare hostname is untouched', stripLocalHostnameSuffix('macbookpro'), 'macbookpro')
 check('only a trailing suffix counts', stripLocalHostnameSuffix('local.example'), 'local.example')
+
+/*
+ * Review of PX-3: `PtyManager.submit` ran one timer chain per call, so two
+ * submits sent together (the queued flush, a double-tap) typed INTERLEAVED
+ * and Claude got one garbled turn ("apple … banana.padding …"). `SubmitQueue`
+ * finishes one submit's Enter before the next one's first chunk. Real timers
+ * with short gaps, so a regression to parallel chains interleaves here too.
+ */
+{
+  const log: string[] = []
+  const q = new SubmitQueue({ chunkGapMs: 3, enterDelayMs: 8, afterEnterMs: 2 })
+  const sink = (d: string): boolean => {
+    log.push(d)
+    return true
+  }
+  const a = q.push(submitFrames('A'.repeat(SUBMIT_CHUNK * 3), { bracketedPaste: false, claude: true }), sink)
+  const b = q.push(submitFrames('B'.repeat(SUBMIT_CHUNK + 5), { bracketedPaste: false, claude: true }), sink)
+  const c = q.push(submitFrames('/exit', { bracketedPaste: false, claude: true }), sink)
+  await Promise.all([a, b, c])
+  const shape = log.map((d) => (d === '\r' ? 'enter' : d[0]))
+  check(
+    'two submits type strictly in order: A chunks, A enter, B chunks, B enter, then /exit',
+    shape,
+    ['A', 'A', 'A', 'enter', 'B', 'B', 'enter', '/', 'enter']
+  )
+  const dead: string[] = []
+  let alive = true
+  const q2 = new SubmitQueue({ chunkGapMs: 1, enterDelayMs: 1, afterEnterMs: 1 })
+  const sink2 = (d: string): boolean => {
+    if (!alive) return false
+    dead.push(d)
+    if (d === '\r') alive = false
+    return true
+  }
+  await Promise.all([
+    q2.push(submitFrames('/exit', { bracketedPaste: false, claude: true }), sink2),
+    q2.push(submitFrames('after exit', { bracketedPaste: false, claude: true }), sink2)
+  ])
+  check('a submit queued behind a session that ended writes nothing', dead, ['/exit', '\r'])
+  const empty: string[] = []
+  await new SubmitQueue({ chunkGapMs: 1, enterDelayMs: 1, afterEnterMs: 1 }).push(
+    submitFrames('', { bracketedPaste: false, claude: true }),
+    (d) => (empty.push(d), true)
+  )
+  check('an empty submit writes nothing, not a bare Enter', empty, [])
+}
+
+/*
+ * Review of PX-12, "stale tap": the answer route gated on the 1s registry
+ * poll alone, so a digit tapped 150ms after the prompt was answered at the
+ * desk was written and got 200. A prompt now has an id and a `since`; any
+ * input after `since`, or another id, is refused.
+ */
+{
+  const reading = (over: Partial<{ waiting: boolean; waitingFor: string | null; statusUpdatedAt: number | null; readAt: number }>) => ({
+    waiting: true,
+    waitingFor: 'permission prompt',
+    statusUpdatedAt: 1000,
+    readAt: 1500,
+    ...over
+  })
+  const a = trackPrompt(null, reading({}), null) as PromptTrack
+  check('a new prompt starts at the registry\'s own statusUpdatedAt', [a.since, a.id], [1000, '1000'])
+  check('the next reading of the same prompt keeps its id', trackPrompt(a, reading({ readAt: 2500 }), null), a)
+  check('not waiting: no prompt', trackPrompt(a, reading({ waiting: false }), null), null)
+  check('an untouched prompt with its own id is answerable', answerVerdict(a, a.id, 900), 'ok')
+  check('the desk answered it (input after since): refused', answerVerdict(a, a.id, 1150), 'stale')
+  check('the phone\'s own first answer makes a double tap stale', answerVerdict(a, a.id, 1000), 'stale')
+  check('another prompt\'s id: refused', answerVerdict(a, '999', null), 'stale')
+  check('no id at all: refused', answerVerdict(a, undefined, null), 'stale')
+  check('no prompt: not waiting', answerVerdict(null, a.id, null), 'not waiting')
+  const b = trackPrompt(a, reading({ statusUpdatedAt: 1800, readAt: 2500 }), 1150) as PromptTrack
+  check('prompt B (new statusUpdatedAt) gets a new id', b.id !== a.id && b.since === 1800, true)
+  check('and B is answerable although A had input', answerVerdict(b, b.id, 1150), 'ok')
+  const w = trackPrompt(a, reading({ waitingFor: 'something else' }), null) as PromptTrack
+  check('a different waitingFor is a different prompt, never the same id', w.id !== a.id, true)
+  check(
+    'input, then a reading taken too soon after it: the prompt stays unconfirmed',
+    trackPrompt(a, reading({ readAt: 1150 + PROMPT_SETTLE_MS - 1 }), 1150),
+    a
+  )
+  const r = trackPrompt(a, reading({ readAt: 1150 + PROMPT_SETTLE_MS }), 1150) as PromptTrack
+  check('a reading well after the input that STILL says waiting re-confirms it under a new id', [r.id !== a.id, r.since], [true, 1650])
+  check('so an arrow key at the desk does not lock the phone out for good', answerVerdict(r, r.id, 1150), 'ok')
+  check('and the old id is refused', answerVerdict(r, a.id, 1150), 'stale')
+  check('no statusUpdatedAt: the reading time stands in', trackPrompt(null, reading({ statusUpdatedAt: null }), null)?.since, 1500)
+}
+
+check('a focus report is not typing', isTerminalReport('\u001b[I'), true)
+check('nor a colour-scheme report (gotcha 42)', isTerminalReport('\u001b[?997;1n'), true)
+check('a digit is typing', isTerminalReport('2'), false)
+
+/*
+ * Review of PX-8: the busy-port error says "pick a different port", and a
+ * FAILED server was never restarted when the port changed.
+ */
+{
+  const base = { enabled: true, port: 7921, bindLan: false, bindTailscale: false, requireAccessHeader: false, hostname: '', token: 't' }
+  const moved = { ...base, port: 7922 }
+  check('a running server restarts when the port moves', shouldRestartRemote(base, moved, { running: true, error: null }), true)
+  check('a FAILED server with Phone access on is retried', shouldRestartRemote(base, moved, { running: false, error: 'Port 7921 is already in use' }), true)
+  check('one the user turned off stays off', shouldRestartRemote(base, { ...moved, enabled: false }, { running: false, error: 'busy' }), false)
+  check('an off server with no error is not started by a port edit', shouldRestartRemote(base, moved, { running: false, error: null }), false)
+  check('nothing bound moved: no restart', shouldRestartRemote(base, { ...base }, { running: true, error: null }), false)
+  check('no server object yet: nothing to restart', shouldRestartRemote(base, moved, null), false)
+}
+
+// Review of PX-14: /?k=<anything> used to set the cookie with no check.
+check('a wrong ?k is never stored as the cookie', mayStoreKeyCookie('WRONGKEY', false), false)
+check('the right one is', mayStoreKeyCookie('RIGHTKEY', true), true)
+check('no ?k: nothing to store', mayStoreKeyCookie(null, true), false)
 
 console.log(failures ? `\n${failures} FAILED` : '\nall pass')
 process.exitCode = failures ? 1 : 0

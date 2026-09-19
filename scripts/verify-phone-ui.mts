@@ -175,9 +175,9 @@ check('a numbered list in prose that skips a number is not a prompt', parseAnswe
 check('one option is not a choice', parseAnswerOptions(['Continue?', '❯ 1. Yes']), null)
 check('nothing numbered: null, so the tray falls back to generic keys', parseAnswerOptions(['hello', 'world']), null)
 check(
-  'the generic fallback names only what holds for every dialog: 1 accepts, 3 declines',
+  'the generic fallback is numbers with no meaning: 3 is "tell Claude what to change" in a plan dialog and absent in a two-option one',
   GENERIC_ANSWERS.map((a) => a.label),
-  ['Yes', '2', 'No']
+  ['1', '2', '3']
 )
 
 check(
