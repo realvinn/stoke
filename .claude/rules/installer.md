@@ -514,7 +514,12 @@ which stays a deliberate, manual act (the Worker serves what was embedded at the
 > PC, `PROCESSOR_ARCHITECTURE` describes the process that set it, and powershell.exe inherited
 > `AMD64` through the handoff; install.ps1 printed `machine windows x64` and every check passed,
 > none of which asked what the installed Stoke.exe was built for. An emulated x64 Stoke works, but
-> slowly, and its updater then follows `process.arch` and stays x64 for good. install.ps1 now reads
-> the machine's value from `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment`
-> first (the same in a process of any architecture), and the workflow's one-liner check reads
-> Stoke.exe's PE machine field (0x8664 x64, 0xAA64 arm64) against the runner's arch.
+> slowly, and its updater then follows `process.arch` and stays x64 for good. The workflow's
+> one-liner check now reads Stoke.exe's PE machine field (0x8664 x64, 0xAA64 arm64) against the
+> runner's arch. **The first fix did not work:** reading `PROCESSOR_ARCHITECTURE` from
+> `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment` first still installed x64
+> from Git Bash (run 35567028737 — caught by the new PE check). install.ps1 now asks WMI
+> (`Win32_Processor.Architecture`, 12 = ARM64), answered by a native service, and falls back to
+> the environment only when WMI does not answer; `scripts/windows-arch-probe.ps1` prints what every
+> source — env, registry, WMI, `IsWow64Process2`, `RuntimeInformation` — says from Git Bash, so
+> the next run shows which ones lie under emulation rather than leaving it to a guess.

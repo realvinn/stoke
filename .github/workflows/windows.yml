@@ -140,6 +140,14 @@ jobs:
       # notices Windows and hands over to the PowerShell installer. The handoff
       # is this branch's; the ps1 it fetches is the DEPLOYED one at
       # stoke.vinn.dev/install.ps1, because the handoff URL is fixed.
+      # What a PowerShell started from Git Bash is told about the machine, by
+      # every source there is — the chain install.sh's handoff uses, where
+      # PROCESSOR_ARCHITECTURE and then the registry both said x64 on arm64.
+      - name: What PowerShell, started from Git Bash, can tell about the machine
+        if: matrix.shell == 'bash'
+        shell: bash
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows-arch-probe.ps1
+
       - name: Install from Git Bash (the mac/linux line)
         if: matrix.shell == 'bash'
         shell: bash

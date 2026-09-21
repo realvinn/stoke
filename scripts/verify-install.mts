@@ -303,13 +303,15 @@ ok(
     /if \(\$cmp -eq 0 -and \$empty\) \{/.test(ps1Code) &&
     ps1Code.indexOf('$cmp -eq 0 -and $empty') < ps1Code.indexOf('is already installed. Nothing to do.')
 )
-// The architecture comes from the MACHINE (the registry), not only from this
-// process's PROCESSOR_ARCHITECTURE: Git Bash on an arm64 PC is emulated x64,
-// and its handoff installed the x64 build on windows-11-arm.
+// The architecture comes from the MACHINE, not from this process's
+// PROCESSOR_ARCHITECTURE: Git Bash on an arm64 PC is emulated x64, and its
+// handoff installed the x64 build on windows-11-arm — twice, the second time
+// with the registry's value consulted too.
 ok(
-  'install.ps1 reads the machine\'s architecture from Session Manager\'s Environment, not only its own process\'s',
-  /Get-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment' -Name PROCESSOR_ARCHITECTURE/.test(ps1Code) &&
-    /if \(\$machineArch -eq 'ARM64' -or/.test(ps1Code)
+  'install.ps1 asks WMI for the processor (a native service), and trusts its own process\'s PROCESSOR_ARCHITECTURE only when WMI does not answer',
+  /Get-CimInstance -ClassName Win32_Processor/.test(ps1Code) &&
+    /if \(\$cpu -eq 12\) \{/.test(ps1Code) &&
+    /elseif \(\$null -eq \$cpu -and \(\$env:PROCESSOR_ARCHITECTURE -eq 'ARM64'/.test(ps1Code)
 )
 ok(
   'and after installing, an exit 0 with no Stoke.exe is an error that names the portable zip, not "installed"',

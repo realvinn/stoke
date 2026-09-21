@@ -393,19 +393,23 @@ function Install-Stoke {
     return
   }
 
-  # The MACHINE's architecture, from the registry, before this process's own:
-  # PROCESSOR_ARCHITECTURE describes the process that set it, and PowerShell
-  # inherits it from whatever started it. Git Bash on an arm64 PC is an x64
-  # program running emulated, so the handoff from install.sh arrived saying
-  # AMD64 and installed the x64 build (measured on GitHub's windows-11-arm).
-  # The system's own value under Session Manager is the machine's, in every
-  # process of every architecture.
-  $machineArch = $null
+  # The MACHINE's architecture, not this process's. PROCESSOR_ARCHITECTURE
+  # describes the process, and PowerShell inherits it from whatever started it:
+  # Git Bash on an arm64 PC is an x64 program running emulated, and the
+  # handoff from install.sh arrived saying AMD64 and installed the x64 build
+  # (measured on GitHub's windows-11-arm). Reading Session Manager's registry
+  # value first did not correct it either (scripts/windows-arch-probe.ps1
+  # records what each source says there). Win32_Processor is answered by the
+  # WMI service, a native process: 12 is ARM64. The environment is the
+  # fallback for a machine whose WMI does not answer.
+  $cpu = $null
   try {
-    $machineArch = (Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' -Name PROCESSOR_ARCHITECTURE -ErrorAction Stop).PROCESSOR_ARCHITECTURE
+    $cpu = (Get-CimInstance -ClassName Win32_Processor -ErrorAction Stop | Select-Object -First 1).Architecture
   } catch { }
   $arch = 'x64'
-  if ($machineArch -eq 'ARM64' -or $env:PROCESSOR_ARCHITECTURE -eq 'ARM64' -or $env:PROCESSOR_ARCHITEW6432 -eq 'ARM64') {
+  if ($cpu -eq 12) {
+    $arch = 'arm64'
+  } elseif ($null -eq $cpu -and ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64' -or $env:PROCESSOR_ARCHITEW6432 -eq 'ARM64')) {
     $arch = 'arm64'
   }
 
