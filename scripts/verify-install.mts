@@ -1000,10 +1000,17 @@ console.log('\nthe mac/linux line typed into a Windows shell')
       check(
         `${shell}: hands over with exactly this command, stdin cut off from the pipe, the MSYS guard set and STOKE_DRY_RUN carried`,
         [r.status, r.argv],
-        [0, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', 'irm https://stoke.vinn.dev/install.ps1 | iex', 'stdin=', 'conv=*', 'dry=1']]
+        [0, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', 'Remove-Item Env:MSYS2_ARG_CONV_EXCL -ErrorAction SilentlyContinue; irm https://stoke.vinn.dev/install.ps1 | iex', 'stdin=', 'conv=*', 'dry=1']]
       )
     }
     ok('and says what it is doing before it does it', /handing over to the Windows installer, in powershell\.exe/.test(run('/bin/sh').out))
+    /*
+     * The guard is for the argv only. install.ps1 ends by starting Stoke, which
+     * inherits PowerShell's environment — so the variable is removed before
+     * anything is fetched, or every Claude Code session's Git Bash would run
+     * with MSYS path conversion off (found by review).
+     */
+    ok('PowerShell drops MSYS2_ARG_CONV_EXCL before it fetches anything, so the Stoke it starts never inherits it', /^Remove-Item Env:MSYS2_ARG_CONV_EXCL -ErrorAction SilentlyContinue; irm /.test(run('/bin/sh').argv?.[4] ?? ''))
     shim('powershell.exe', recorder(3))
     check('a failed Windows install fails the line: the exit code comes back', run('/bin/sh').status, 3)
     /*

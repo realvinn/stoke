@@ -1427,12 +1427,15 @@ windows_powershell() {
 # pipe, and PowerShell reading it would swallow the rest of this file.
 # MSYS2_ARG_CONV_EXCL keeps MSYS2's argument rewriting away from the command
 # text; it already leaves anything with `://` alone, and this makes that a
-# guarantee rather than a heuristic.
+# guarantee rather than a heuristic. And PowerShell's FIRST act is to drop it
+# again: install.ps1 ends by starting Stoke, which would inherit it, and every
+# Claude Code session's Git Bash would then run with MSYS path conversion
+# switched off (found by review).
 windows_handoff() {
   if ps=$(windows_powershell); then
     blank
     note 'windows' "handing over to the Windows installer, in $ps"
-    if MSYS2_ARG_CONV_EXCL='*' "$ps" -NoProfile -ExecutionPolicy Bypass -Command "irm $STOKE_PS1_URL | iex" </dev/null; then
+    if MSYS2_ARG_CONV_EXCL='*' "$ps" -NoProfile -ExecutionPolicy Bypass -Command "Remove-Item Env:MSYS2_ARG_CONV_EXCL -ErrorAction SilentlyContinue; irm $STOKE_PS1_URL | iex" </dev/null; then
       exit 0
     else
       exit $?

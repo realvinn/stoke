@@ -142,32 +142,43 @@
 ; powershell.exe cannot start at all (AppLocker) gets the Retry/Cancel box even
 ; with Stoke closed, where the stock step fell back to tasklist; under
 ; Constrained Language Mode CloseMainWindow is refused, so the box asks the
-; user to close Stoke by hand, and Retry then succeeds. And the interactive
-; installer closes a running Stoke without the stock step's "Click OK to close
-; it" first -- the same thing that step did next, minus the kill.
+; user to close Stoke by hand, and Retry then succeeds.
 ;
-; UNVERIFIED, all of it. No round of work in this repo has run on Windows.
-; What IS checked: makensis compiles it -- electron-builder passes -WX, so a
-; warning here fails the build, and a real `electron-builder --win nsis zip`
-; from macOS on 2026-09-21 built both the installer and the uninstaller with
-; it. That compile is not vacuous: in a standalone makensis run, one `$` left
-; single fails with warning 6000 ("unknown variable/constant") and a bad
-; instruction in the body fails with "Error in macro customCheckAppRunning".
-; verify:welcome holds its shape. What is
-; NOT: that the CIM query sees a running Stoke, that CloseMainWindow reaches
-; Electron's window and Stoke quits inside the minute, that the parent-pid
-; exclusion matches an in-place uninstaller, and that winget really reports
-; exit code 2. Read from app-builder-lib's templates and the NSIS and .NET
-; documentation, not watched.
+; VERIFIED on Windows (x64, GitHub's windows-latest, workflow run 35559817481,
+; 2026-09-21): a silent install over a RUNNING Stoke closed it -- Stoke's own
+; exit code was 0, not a kill's -- and completed; a windowless process running
+; out of the install folder made the silent install exit non-zero and was still
+; running afterwards. makensis compiles it (electron-builder passes -WX, so a
+; single `$` fails the build with warning 6000). NOT yet watched: the
+; interactive "is running, click OK" question, the in-place uninstaller's
+; parent-pid exclusion, and winget reporting exit 32 as "package in use".
 !macro customCheckAppRunning
   Push $R0
   System::Call 'Kernel32::SetEnvironmentVariable(t "STOKE_INSTDIR", t "$INSTDIR")'
+  ; An interactive run asks first, as the stock step did: closing Stoke ends
+  ; its sessions, and a person at the wizard may not want that yet. Silent
+  ; runs (winget, the one-liner, install-on-quit) go straight to the close.
+  ; The find-only script exits 3 when something is running, 0 when nothing
+  ; is, and anything else when it could not tell -- which skips the question
+  ; and lets the close step below give its own answer.
+  IfSilent stoke_check_running
+    nsExec::Exec `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$ErrorActionPreference='Stop';$$d=$$env:STOKE_INSTDIR;if(!$$d){exit 1};$$d=$$d.TrimEnd([char]92)+[char]92;$$me=(Get-CimInstance Win32_Process -Filter ('ProcessId='+$$PID)).ParentProcessId;$$f={@(Get-CimInstance Win32_Process|?{$$_.ProcessId -ne $$me -and $$_.ExecutablePath -and $$_.ExecutablePath.StartsWith($$d,[StringComparison]::OrdinalIgnoreCase)})};if(@(&$$f).Count){exit 3};exit 0"`
+    Pop $R0
+    StrCmp $R0 "3" 0 stoke_check_running
+    MessageBox MB_OKCANCEL|MB_ICONEXCLAMATION "$(appRunning)" /SD IDOK IDOK stoke_check_running
+    ; 1223 is ERROR_CANCELLED: the person chose not to close Stoke.
+    SetErrorLevel 1223
+    Quit
   stoke_check_running:
     nsExec::Exec `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$ErrorActionPreference='Stop';$$d=$$env:STOKE_INSTDIR;if(!$$d){exit 1};$$d=$$d.TrimEnd([char]92)+[char]92;$$me=(Get-CimInstance Win32_Process -Filter ('ProcessId='+$$PID)).ParentProcessId;$$f={@(Get-CimInstance Win32_Process|?{$$_.ProcessId -ne $$me -and $$_.ExecutablePath -and $$_.ExecutablePath.StartsWith($$d,[StringComparison]::OrdinalIgnoreCase)})};if(!@(&$$f).Count){exit 0};foreach($$x in @(&$$f)){$$g=Get-Process -Id $$x.ProcessId -EA 0;if($$g -and $$g.MainWindowHandle -ne 0){try{[void]$$g.CloseMainWindow()}catch{}}};for($$i=0;$$i -lt 120;$$i++){Start-Sleep -Milliseconds 500;if(!@(&$$f).Count){exit 0}};exit 1"`
     Pop $R0
     StrCmp $R0 "0" stoke_not_running
     MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$(appCannotBeClosed)" /SD IDCANCEL IDRETRY stoke_check_running
-    SetErrorLevel 2
+    ; 32 is ERROR_SHARING_VIOLATION -- files in use -- and the one code this
+    ; macro exits with, distinct from the 2 electron-builder's own
+    ; uninstallOldVersion uses, so winget's manifest can map it to
+    ; "packageInUse" (scripts/winget.mjs) instead of a bare failure code.
+    SetErrorLevel 32
     Quit
   stoke_not_running:
   Pop $R0

@@ -396,9 +396,31 @@ ok(
   /System::Call\s+'Kernel32::SetEnvironmentVariable\(t "STOKE_INSTDIR", t "\$INSTDIR"\)'/.test(RUNNING)
 )
 
-const EXEC = /nsExec::Exec\s+`"\$SYSDIR\\WindowsPowerShell\\v1\.0\\powershell\.exe"([^`]*?)-Command "([^"`]*)"`\s*$/m.exec(RUNNING)
+/*
+ * Two scripts now, and the CLOSE one is the one everything below holds: an
+ * interactive run first asks (a find-only script, then "is running, click
+ * OK"), silent runs go straight to the close. Picked by what they do, not by
+ * order, so moving one above the other cannot swap which one is checked.
+ */
+const EXECS = [...RUNNING.matchAll(/nsExec::Exec\s+`"\$SYSDIR\\WindowsPowerShell\\v1\.0\\powershell\.exe"([^`]*?)-Command "([^"`]*)"`\s*$/gm)]
+const EXEC = EXECS.find((m) => m[2].includes('CloseMainWindow')) ?? null
+const FIND = EXECS.find((m) => !m[2].includes('CloseMainWindow')) ?? null
 const PS_FLAGS = EXEC?.[1] ?? ''
 const PS_TEXT = EXEC?.[2] ?? ''
+const FIND_TEXT = FIND?.[2] ?? ''
+check('exactly two PowerShell steps: one that only looks, one that closes', [EXECS.length, !!FIND, !!EXEC], [2, true, true])
+const detection = (t: string) => t.slice(0, t.indexOf('$$f={') >= 0 ? t.indexOf('};', t.indexOf('$$f={')) + 2 : 0)
+ok('both find running processes the same way (identical detection prefix)', detection(FIND_TEXT).length > 0 && detection(FIND_TEXT) === detection(PS_TEXT))
+ok('the looking step never closes anything, and says 3 when something runs', !/CloseMainWindow|Stop-Process|Kill/i.test(FIND_TEXT) && /if\(@\(&\$\$f\)\.Count\)\{exit 3\};exit 0$/.test(FIND_TEXT))
+const closeExecAt = EXEC ? RUNNING.indexOf(EXEC[0]) : -1
+const SILENT_SKIP = /^\s*IfSilent\s+(\w+)\s*$/m.exec(RUNNING)
+ok(
+  'a silent run skips the question and goes straight to the close step',
+  SILENT_SKIP !== null && new RegExp(`^\\s*${SILENT_SKIP[1]}:\\s*$`, 'm').test(RUNNING) && RUNNING.indexOf(`${SILENT_SKIP[1]}:`) < closeExecAt
+)
+const ASK = /MessageBox\s+MB_OKCANCEL\|MB_ICONEXCLAMATION\s+"\$\(appRunning\)"\s+\/SD IDOK\s+IDOK\s+(\w+)/.exec(RUNNING)
+ok('an interactive run asks "is running, click OK" first, and OK goes to the close', ASK !== null && SILENT_SKIP !== null && ASK[1] === SILENT_SKIP[1])
+ok('and Cancel there ends the install as cancelled (1223), not as a success', /IDOK\s+\w+\s*\n(?:\s*;[^\n]*\n)*\s*SetErrorLevel 1223\s*\n\s*Quit/.test(RUNNING))
 ok(
   'it runs $SYSDIR\'s powershell.exe through nsExec, with the whole -Command inside one "…" and no " in it',
   EXEC !== null,
@@ -446,13 +468,20 @@ ok("and an unexpected error ends it non-zero rather than reading as 'nothing run
 const RETRY = /MessageBox\s+MB_RETRYCANCEL\|MB_ICONEXCLAMATION\s+"\$\(appCannotBeClosed\)"\s+\/SD IDCANCEL\s+IDRETRY\s+(\w+)/.exec(RUNNING)
 ok('a failure asks Retry/Cancel, and a silent install takes Cancel', RETRY !== null)
 ok(
-  'Retry goes back to the check itself',
-  RETRY !== null && new RegExp(`^\\s*${RETRY[1]}:\\s*$`, 'm').test(RUNNING.slice(0, RUNNING.indexOf('nsExec::Exec')))
+  'Retry goes back to the close step itself',
+  RETRY !== null && closeExecAt > 0 && new RegExp(`^\\s*${RETRY[1]}:\\s*$`, 'm').test(RUNNING.slice(0, closeExecAt))
 )
-const errorAt = RUNNING.search(/SetErrorLevel\s+2\b/)
-const quitAt = RUNNING.search(/^\s*Quit\s*$/m)
-ok('Cancel sets exit code 2', errorAt !== -1)
-ok('before it quits — Quit first would exit 0 and read as a successful install', errorAt !== -1 && quitAt !== -1 && errorAt < quitAt)
+/*
+ * 32 is ERROR_SHARING_VIOLATION (files in use): the one code this macro exits
+ * with when it cannot close Stoke, distinct from electron-builder's own 2, so
+ * winget's manifest can map it to packageInUse (verify:winget holds that side).
+ */
+ok('Cancel on "cannot be closed" sets exit code 32', /IDRETRY\s+\w+\s*\n(?:\s*;[^\n]*\n)*\s*SetErrorLevel 32\s*\n\s*Quit/.test(RUNNING))
+const quits = [...RUNNING.matchAll(/^\s*Quit\s*$/gm)]
+ok(
+  'every Quit comes straight after a SetErrorLevel — a bare Quit exits 0 and reads as a successful install',
+  quits.length >= 2 && quits.every((q) => /SetErrorLevel \d+\s*$/.test(RUNNING.slice(0, q.index).trimEnd()))
+)
 ok('and the exit code is read off nsExec before anything else', /nsExec::Exec[^\n]*\n\s*Pop \$R0\s*\n\s*StrCmp \$R0 "0"/.test(RUNNING))
 
 /*

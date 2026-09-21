@@ -144,6 +144,11 @@ Scope: user
 InstallerSwitches:
   Custom: /currentuser
   Upgrade: '--updated'
+ExpectedReturnCodes:
+- InstallerReturnCode: 32
+  ReturnResponse: packageInUse
+- InstallerReturnCode: 1223
+  ReturnResponse: cancelledByUser
 UpgradeBehavior: install
 ProductCode: 27e02fae-12b6-525c-aa7f-c00dfad6e928
 ReleaseDate: 2026-09-21
@@ -437,6 +442,22 @@ const usage = run(['--version', VERSION])
 check('and a missing argument is a usage error, exit 2', usage.status, 2)
 
 rmSync(work, { recursive: true, force: true })
+
+console.log('\nthe installer\'s own exit codes, named for winget')
+/*
+ * build/installer.nsh never kills a running Stoke: it exits 32 when Stoke
+ * would not close and 1223 when a person at the wizard declined. nullsoft gets
+ * no default mapping in winget, so without these a user reads "Installer failed
+ * with exit code: 32". Held against the .nsh itself, so a new exit code there
+ * cannot ship unnamed.
+ */
+{
+  const nsh = readFileSync(fileURLToPath(new URL('../build/installer.nsh', import.meta.url)), 'utf8')
+  const codes = [...nsh.matchAll(/^\s*SetErrorLevel (\d+)\s*$/gm)].map((m) => Number(m[1])).sort((a, b) => a - b)
+  const mapped = [...files[FILE_NAMES.installer].matchAll(/- InstallerReturnCode: (\d+)\n  ReturnResponse: (\w+)/g)].map((m) => [Number(m[1]), m[2]] as [number, string])
+  check('every exit code build/installer.nsh can end with is mapped in the manifest', mapped.map((m) => m[0]).sort((a, b) => a - b), codes)
+  check('32 (would not close) is packageInUse, 1223 (declined) is cancelledByUser', mapped, [[32, 'packageInUse'], [1223, 'cancelledByUser']])
+}
 
 console.log(failures ? `\n${failures} FAILED` : '\nall pass')
 process.exitCode = failures ? 1 : 0

@@ -186,6 +186,16 @@ export function wingetManifests({ version, releaseDate, installers, targets = TA
     'InstallerSwitches:\n' +
     `  Custom: ${formatScalar('/currentuser')}\n` +
     `  Upgrade: ${formatScalar('--updated')}\n` +
+    // build/installer.nsh's customCheckAppRunning never kills a running Stoke:
+    // it exits 32 (ERROR_SHARING_VIOLATION) when Stoke would not close, and
+    // 1223 (ERROR_CANCELLED) when a person at the wizard said no. Mapped so
+    // winget says why instead of "Installer failed with exit code: 32" —
+    // nullsoft gets no default mapping (ManifestCommon.cpp, GetDefaultKnownReturnCodes).
+    'ExpectedReturnCodes:\n' +
+    '- InstallerReturnCode: 32\n' +
+    '  ReturnResponse: packageInUse\n' +
+    '- InstallerReturnCode: 1223\n' +
+    '  ReturnResponse: cancelledByUser\n' +
     line('UpgradeBehavior', 'install') +
     line('ProductCode', PRODUCT_CODE) +
     // Plain, as every winget-pkgs manifest writes it; validated above, so it
