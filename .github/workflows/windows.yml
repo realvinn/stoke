@@ -71,14 +71,11 @@ env:
 jobs:
   one-liner:
     name: One-liner · ${{ matrix.shell }} · ${{ matrix.arch }}
-    # The one-liner installs the PUBLISHED release, and every published arm64
-    # installer up to v0.9.9 exits 0 and installs nothing (gotcha 102: its
-    # payload uses a 7z filter its own extractor predates). install.ps1 now says
-    # so instead of printing "installed", so these legs fail honestly until a
-    # release built with the fix is out. Allowed to fail meanwhile — the build
-    # job below is what proves the fix — and to be made strict again after the
-    # next release.
-    continue-on-error: ${{ matrix.arch == 'arm64' }}
+    # The one-liner installs the PUBLISHED release. Every published arm64
+    # installer up to v0.9.9 exited 0 and installed nothing (gotcha 102), so the
+    # arm64 legs were allowed to fail until v0.9.91, the first release built with
+    # the fix (its arm64 payload is BCJ LZMA2, read back with 7-Zip). Strict
+    # again: an arm64 leg failing now is a real regression.
     strategy:
       fail-fast: false
       matrix:
