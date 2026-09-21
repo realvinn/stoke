@@ -130,7 +130,9 @@ settings file, the wrapper and the payloads all live under the system temp direc
 
 `ContextWatcher` polls rather than using `fs.watch`: transcripts are appended constantly,
 append semantics differ across macOS and Windows, and only the handful of sessions with an
-open tab are ever tracked.
+open tab are ever tracked. A poll reads only what was appended since the last one: parsing a
+whole 16-22 MB transcript on every changed tick held the main process 40-130 ms at a time, and
+every pty byte and keystroke waited behind it (gotcha 103).
 
 **One launch path gets no context ring at all: `--continue`.** The watcher depends on knowing
 the session id before the process starts, which is why a new session is handed a `--session-id`
@@ -488,7 +490,9 @@ type-stripping with no build step, except `verify:selection`, which opens a real
 and so needs a display. Each runs alone:
 
 ```bash
-npm run verify:context        # context meter against the real transcripts on this machine
+npm run verify:context        # context meter against the real transcripts on this machine,
+                              # and that folding them in pieces at random cut points equals
+                              # one pass (gotcha 103)
 npm run verify:statusline     # the statusLine wrapper: payload, suppression, pass-through,
                               # the context meter's four tiers at every boundary, and that
                               # no bypass bead is drawn where the ring's arc would touch it
@@ -499,7 +503,11 @@ npm run verify:settings       # settings hydration: repair, clamps, what it drop
 npm run verify:claude-config  # writing Claude Code's OWN config: the allowlist, the refusals,
                               # and the ~/.claude.json lock. Runs against real files in a temp
                               # CLAUDE_CONFIG_DIR, never the user's (gotchas 38, 39)
-npm run verify:folders        # folder metadata: trimming, caps, added folders, hide/pin
+npm run verify:folders        # folder metadata: trimming, caps, added folders, hide/pin; and
+                              # transcripts read in pieces on synthetic files - incremental
+                              # == one pass at every cut, a split UTF-8 character, resets on
+                              # truncate/rename/rewrite, the watcher end to end, and
+                              # listSessions re-parsing only what changed (gotcha 103)
 npm run verify:search         # sidebar + palette search: tiers, recency, highlight ranges on
                               # accented text, the label in both surfaces; and the session
                               # index against real files in a temp dir - a 40 MB transcript
@@ -530,7 +538,8 @@ npm run verify:registry       # Claude Code's session registry: parsing junk, mi
                               # every status; matching a pty to its file (pid, then the unique
                               # id, then the unique folder); and the poller against a directory
                               # that exists only in memory — rebind on /clear, once, and never a
-                              # path outside the directory it was handed (gotcha 74)
+                              # path outside the directory it was handed (gotcha 74); and
+                              # activityView's whole table beside the hooks (gotcha 104)
 npm run verify:shortcuts      # app chords vs the keys the terminal owns, the zoom maths, and
                               # that Ctrl+Tab and the bare brackets still reach the CLI
 npm run verify:drop           # what a dropped file types: quoting per platform, and the
@@ -660,22 +669,33 @@ src/main/         Electron main process
                     back (Linux, never written from here: an AppImage mount is under /tmp),
                     the user PATH through PowerShell (Windows, unverified). Replaces nothing
                     that is not a link into some Stoke.app. No electron import
-  projects.ts       project + session discovery from Claude's own files
+  projects.ts       project + session discovery from Claude's own files. `listSessions`
+                    caches each transcript's parse on path+mtime+size, 8 at a time, so a
+                    focus re-fetch parses only the one that moved (gotcha 103)
   projectMeta.ts    per-folder emoji/label/added-by-hand, and the one pair of caps
   context.ts        live context-window watcher (polls transcripts). Publishes on a
-                    changed transcript OR a newly-stated window, for gotcha 49's reason
+                    changed transcript OR a newly-stated window, for gotcha 49's reason.
+                    Incremental: each watch keeps a `TranscriptCursor`, so a tick reads
+                    only the bytes appended since the last (an SSH copy, rewritten in
+                    place, is read whole each time). No 32 MB sampling (gotcha 103)
   sessionFile.ts    transcript parsing and the context maths. `promptOf`/`titleOf` are the
-                    one definition of a session's first prompt and title
+                    one definition of a session's first prompt and title, and the fold
+                    (`createFold`/`foldLine`/`finishFold`) the one rule every reader
+                    shares. `foldFrom` streams 1 MB reads, one chunk's fold per
+                    event-loop turn across the process, so no parse blocks the main
+                    thread for long (gotcha 103)
   sessionIndex.ts   every session's title + first prompt, for search: one 256 KB chunk
                     from each end of a transcript, cached on mtime+size, top-level
                     `*.jsonl` only (never `<id>/subagents/`). Never `listSessions`, which
-                    parses every file whole
+                    parses every file whole on a miss
   statusLine.ts     Stoke's statusLine wrapper: context window + plan limits, and the SAME
                     shim run as a hook. The session's --settings file carries Stop,
                     Notification and UserPromptSubmit hooks that append one JSON line each
                     to <key>.events.jsonl; index.ts polls that every second and pushes
                     `session:event`, which the tab strip's activity dot, the status bar's
-                    "Claude is working…" line and the OS notifications all read. Measured:
+                    "Claude is working…" line and the OS notifications all read, beside the
+                    registry, through shared/activityView.ts. A Stop carries the background
+                    work still running and a prompt who put it in (gotcha 104). Measured:
                     hooks in a --settings file fire and MERGE with the user's own (a project
                     hook and the flag-file hook both ran on one prompt), and a hook that
                     prints is shown in the TUI (Stop) or fed to the model (UserPromptSubmit),
@@ -924,6 +944,13 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     its file by pid, then by the one entry holding its id, then by the one
                     unclaimed entry in its folder. The two fallbacks are for a Windows
                     `.cmd` install, whose pty pid is cmd.exe's — unverified. Gotcha 80
+  activityView.ts   what a tab's activity dot and status line show, from the hooks and the
+                    registry together: working, background (the turn ended, its workflow or
+                    subagent runs on), waiting (level-triggered, never cleared by looking),
+                    done. Whether a Stop raises "Finished", what looking clears, and which
+                    prompts and registry edges empty the prompt box (gotcha 82's guard).
+                    Derived at render, never stored. verify:registry holds the table.
+                    Gotcha 104
   sshAuth.ts        recognising that a remote is asking for a PASSWORD rather than for a
                     key passphrase or a sudo password, and whether to offer to enroll a
                     key. The tail anchor is the load-bearing rule; gotcha 75

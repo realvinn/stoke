@@ -312,7 +312,12 @@ export interface StatusLineSnapshot {
  * Three events, because three states matter to someone with several tabs
  * open: a prompt went in (Claude is working), the assistant stopped (done,
  * waiting for you), and the CLI asked for attention (a permission prompt, or
- * an idle nudge). The transcript watcher cannot say any of this promptly —
+ * an idle nudge). What the tab strip finally SHOWS is decided with the CLI's
+ * session registry beside these, in `src/shared/activityView.ts`: a Stop can
+ * end a turn while a workflow keeps the session busy, and a permission prompt
+ * is answered with no hook at all.
+ *
+ * The transcript watcher cannot say any of this promptly —
  * it polls a file that is appended mid-turn — and the PTY bytes could only
  * say it by parsing a TUI. A hook is the CLI stating it in so many words.
  */
@@ -331,7 +336,41 @@ export interface SessionEvent {
   /** Notification only, e.g. `permission_prompt` or `idle_prompt`. */
   notificationType: string | null
   cwd: string | null
+  /**
+   * Stop only: the background work still running or pending when the turn
+   * ended — a workflow, a subagent, a background shell. Empty for every other
+   * event, and for a Stop with nothing in flight. A turn that ends while a
+   * workflow runs is not finished in any sense the user means, and the Stop is
+   * the only hook that says so (gotcha 104).
+   */
+  background: SessionBackgroundTask[]
+  /** Prompt only: who put this prompt in. Null for every other event. */
+  promptOrigin: PromptOrigin | null
 }
+
+/**
+ * One entry of a Stop hook's `background_tasks`, as far as Stoke shows it.
+ *
+ * `type` is the CLI's own friendly label (`workflow`, `subagent`, `shell`,
+ * `monitor`, `MCP task`, `teammate`, …; the raw discriminant for a kind it
+ * has no label for). `name` is the best one-line name the entry carried — a
+ * workflow's name, else its description, a subagent's type, a shell's
+ * command — sanitised and clipped, since the file is not ours. Only entries
+ * whose status was `running` or `pending` are kept.
+ */
+export interface SessionBackgroundTask {
+  type: string
+  name: string | null
+}
+
+/**
+ * Who submitted a prompt. `user` typed it into the composer; a
+ * `task-notification` is the CLI waking the session because a background task
+ * finished; `system` is any other machine-injected turn (a teammate's message,
+ * a scheduled wake-up). Only a `user` prompt empties the prompt box, which is
+ * what gotcha 82's typed-draft guard needs to know.
+ */
+export type PromptOrigin = 'user' | 'task-notification' | 'system'
 
 /**
  * What the CLI's own session registry says about one live local pty.

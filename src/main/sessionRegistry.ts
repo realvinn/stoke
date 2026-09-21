@@ -94,13 +94,24 @@ export function readProcessTable(platform: NodeJS.Platform = process.platform): 
   })
 }
 
+/**
+ * Whether a reading says nothing the last one did not. `statusUpdatedAt` is
+ * part of that: a status that went away and came back between two passes
+ * (a prompt, then Esc, inside one second) reads the same status with a newer
+ * stamp, and `activityView` weighs that stamp against the hooks — unreported,
+ * a prompt hook read in between kept the dot pulsing until the next hook
+ * (gotcha 104). No churn: the CLI moves the stamp only when it writes a
+ * status or `waitingFor` (2.1.278's writer is an effect on those two), unlike
+ * `updatedAt` and our own `readAt`, which are left out.
+ */
 function sameState(a: LiveSessionState | undefined, b: LiveSessionState): boolean {
   return (
     !!a &&
     a.sessionId === b.sessionId &&
     a.status === b.status &&
     a.waitingFor === b.waitingFor &&
-    a.version === b.version
+    a.version === b.version &&
+    a.statusUpdatedAt === b.statusUpdatedAt
   )
 }
 

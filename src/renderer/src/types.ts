@@ -1,22 +1,23 @@
 import type { CodingCliId } from '@shared/codingClis'
 import type { EffortLevel, PermissionMode } from '@shared/types'
 import type { LaunchOverride } from '@shared/launch'
+import type { HookActivity } from '@shared/activityView'
 
 /**
  * Where a session is right now, from its hook events.
  *
  * `working` from the moment a prompt goes in until the assistant stops;
- * `done` from then until the tab is looked at; `attention` when the CLI has
- * asked for something (a permission prompt, an idle nudge). Absent means
- * idle-and-seen, which is what a tab you are looking at should read as.
+ * `done` from then on; `attention` when the CLI has asked for something (a
+ * permission prompt). Looking at the tab marks a `done` or `attention` `seen`
+ * rather than removing it (`afterLooking`), so it still weighs against a
+ * lagging registry `busy`; absent means nothing has been heard. A `done` also
+ * keeps the background work its Stop listed (`background`).
+ *
+ * This is the HOOK half only. What a tab actually shows is `activityView`
+ * (src/shared/activityView.ts), which reads this beside the CLI's registry —
+ * a Stop can end a turn while a workflow keeps the session busy.
  */
-export interface SessionActivity {
-  state: 'working' | 'done' | 'attention'
-  /** Epoch ms of the event that put it in this state. */
-  at: number
-  /** The last reply, or the CLI's message, clipped. */
-  message: string | null
-}
+export type SessionActivity = HookActivity
 
 /** A New Project tab has no PTY yet; every session tab does. */
 export type TabKind = 'session' | 'new'

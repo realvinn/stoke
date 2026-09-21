@@ -100,10 +100,15 @@ export function forgetPty(ptyId: string): void {
  * in the prompt box (measured: typing leaves the status untouched), so "idle"
  * alone cannot license killing a session the user is not looking at — the
  * automatic relaunch reads this before it acts. Set on any input that
- * `looksTyped`; cleared when the registry reports the session busy (something
- * was submitted — a prompt, or a slash command like `/clear`), and when the pty
- * is forgotten. Module state rather than React state: nothing renders it, and a
- * keystroke must not cost a render.
+ * `looksTyped`; cleared by a prompt hook the user typed, or by a registry
+ * idle -> busy edge that no machine-injected prompt (a task's notification, a
+ * teammate's message, a wake-up) claims — a slash command like `/clear` fires
+ * no hook, so the edge is all it leaves — and when the pty is forgotten. Keys
+ * typed while the registry says `waiting` answer the dialog, so the edge out
+ * of it puts back what the flag held going in. App drives all of that through
+ * `draftOnRegistry`/`draftOnPrompt` (src/shared/activityView.ts, gotcha 104)
+ * and writes the answer back with `setTyped`. Module state rather than React
+ * state: nothing renders it, and a keystroke must not cost a render.
  */
 const typed = new Set<string>()
 
@@ -118,4 +123,15 @@ export function typedSinceSubmit(ptyId: string): boolean {
 
 export function clearTyped(ptyId: string): void {
   typed.delete(ptyId)
+}
+
+/**
+ * Put the flag where the draft-guard bookkeeping decided: set again when an
+ * edge it cleared turns out to be the CLI's own turn, or when a dialog closes
+ * over a draft typed before it opened.
+ */
+export function setTyped(ptyId: string, value: boolean): void {
+  if (!ptyId) return
+  if (value) typed.add(ptyId)
+  else typed.delete(ptyId)
 }

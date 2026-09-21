@@ -13,6 +13,8 @@ import { open, stat } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type {
+  PromptOrigin,
+  SessionBackgroundTask,
   SessionEvent,
   StatusLinePayload,
   StatusLineRateLimit,
@@ -579,6 +581,11 @@ export async function readSessionEvents(
  * an idle nudge). `session_id` in the payload wins over the key for the same
  * reason it does in `toSnapshot`: a `--continue` session's file is named after
  * a launch key, and only the payload knows the real id.
+ *
+ * A Stop also carries what is still running in the background, and a prompt
+ * who put it in: a Stop that ends a turn while a workflow runs is not
+ * "finished", and a prompt the CLI injected because a background task ended
+ * was not typed (gotcha 104).
  */
 export function parseHookEvent(line: string, key: string): SessionEvent | null {
   const trimmed = line.trim()
@@ -612,8 +619,122 @@ export function parseHookEvent(line: string, key: string): SessionEvent | null {
     // Bounded: a Stop carries the whole last reply, which can be pages.
     message: message ? message.slice(0, 400) : null,
     notificationType: kind === 'notification' ? text(raw.notification_type) : null,
-    cwd: text(raw.cwd)
+    cwd: text(raw.cwd),
+    background: kind === 'stop' ? backgroundTasks(raw.background_tasks) : [],
+    promptOrigin: kind === 'prompt' ? promptOrigin(raw.source, raw.prompt) : null
   }
+}
+
+/**
+ * Invisible and layout-breaking characters: C0/C1 controls (ESC included),
+ * zero-width marks, line/paragraph separators, and the bidi overrides and
+ * isolates that can make a clipped name read as something else.
+ */
+const UNSAFE_CHARS = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/g
+
+/** Half a surrogate pair: a high one not followed by a low one, or a low one not preceded by a high one. */
+const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g
+
+/**
+ * A string from a file that is not ours, made fit for one line of UI: unsafe
+ * characters become spaces, runs of whitespace collapse, and anything past
+ * `max` characters is clipped with an ellipsis. Null for a non-string or for
+ * nothing left once cleaned.
+ */
+function oneLine(v: unknown, max: number): string | null {
+  if (typeof v !== 'string') return null
+  // Clip before cleaning too: the CLI caps a description at 1000 characters,
+  // but nothing stops a newer one sending more, and this runs per event. That
+  // cut is in UTF-16 units and can halve a surrogate pair; the half is a lone
+  // surrogate, which LONE_SURROGATE turns into a space like any other
+  // character that cannot be drawn (as it does one the file itself held).
+  const cleaned = v
+    .slice(0, max * 4)
+    .replace(UNSAFE_CHARS, ' ')
+    .replace(LONE_SURROGATE, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!cleaned) return null
+  // The visible clip counts code points, so it never splits an emoji either.
+  const chars = Array.from(cleaned)
+  return chars.length > max ? `${chars.slice(0, max - 1).join('').trimEnd()}…` : cleaned
+}
+
+/** Enough to name what is running; more would not fit a status bar anyway. */
+const MAX_BACKGROUND_TASKS = 8
+/** How many raw entries are looked at, so a runaway array costs nothing. */
+const MAX_BACKGROUND_SCANNED = 64
+
+/**
+ * The running and pending entries of a Stop's `background_tasks`.
+ *
+ * Measured against 2.1.278: the field is `[]` when nothing is in flight, and
+ * otherwise one object per task — `{ id, type, status, description, … }`
+ * with `name` on a workflow, `agent_type` on a subagent, `command` on a
+ * shell. The CLI's own schema says the list is "running/pending +
+ * backgrounded"; anything else (a finished entry, a task with no type) is
+ * dropped here rather than shown. Every field is treated as optional, since
+ * the file is not ours (the same stance `parseRegistry` takes).
+ */
+function backgroundTasks(v: unknown): SessionBackgroundTask[] {
+  if (!Array.isArray(v)) return []
+  const out: SessionBackgroundTask[] = []
+  for (const entry of v.slice(0, MAX_BACKGROUND_SCANNED)) {
+    if (out.length >= MAX_BACKGROUND_TASKS) break
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue
+    const t = entry as Record<string, unknown>
+    if (t.status !== 'running' && t.status !== 'pending') continue
+    const type = oneLine(t.type, 32)
+    if (!type) continue
+    const name =
+      oneLine(t.name, 80) ??
+      oneLine(t.description, 80) ??
+      oneLine(t.agent_type, 80) ??
+      oneLine(t.command, 80)
+    out.push({ type, name })
+  }
+  return out
+}
+
+/**
+ * Openings of the prompts the CLI writes itself when a `/loop` with no prompt
+ * of its own (an autonomous loop) wakes the session, read out of 2.1.278's
+ * bundle: the preamble on the first tick (`loopAutonomousPreamble*.md`, both
+ * variants), then `# Autonomous loop tick` — `(dynamic pacing)` for a
+ * ScheduleWakeup tick — or `# /loop tick — …` when a loop.md drives it.
+ */
+const WAKEUP_OPENINGS = ['# Autonomous loop check', '# Autonomous loop tick', '# /loop tick ']
+
+/**
+ * Who put a prompt in.
+ *
+ * The CLI's schema carries `source` (`user`, `sdk`, `system`, `loop_wakeup`,
+ * `schedule_wakeup`, `poll_event`), and 2.1.278 computes it — but builds the
+ * UserPromptSubmit input with `...!1` where the field would be spread, so no
+ * 2.1.278 prompt carries it (read out of the bundle, and absent from every
+ * prompt captured here). A stated `source` wins, for the version that sends
+ * it; without one, the prompt's own opening decides: every turn the CLI starts
+ * because a background task finished opens with `<task-notification>`, a
+ * teammate's message with `<agent-message `, and an autonomous `/loop` tick
+ * with one of `WAKEUP_OPENINGS`.
+ *
+ * Anything else is taken as typed. That is not the cautious direction for
+ * gotcha 82's guard — a typed prompt clears it — but it is the only workable
+ * one: nearly every prompt IS typed, and a prompt read as injected keeps the
+ * guard up until the next one. It is also what 2.1.278 leaves unrecognisable:
+ * a `/loop 5m <prompt>` or a CronCreate task fires the user's own prompt text,
+ * marked only by the `source` it does not send (gotcha 104).
+ */
+function promptOrigin(source: unknown, prompt: unknown): PromptOrigin {
+  const body = typeof prompt === 'string' ? prompt.trimStart() : ''
+  if (body.startsWith('<task-notification>')) {
+    // A stated `user` outranks the tag: the CLI knows who typed it.
+    return source === 'user' ? 'user' : 'task-notification'
+  }
+  if (typeof source === 'string' && source.trim()) return source === 'user' ? 'user' : 'system'
+  if (body.startsWith('<agent-message ')) return 'system'
+  if (WAKEUP_OPENINGS.some((o) => body.startsWith(o))) return 'system'
+  return 'user'
 }
 
 function settingsFileFor(sessionId: string): string {

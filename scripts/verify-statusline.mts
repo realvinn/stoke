@@ -462,6 +462,22 @@ try {
     '{"session_id":"f3a527a8-6718-4397-9756-e2d56178939c","transcript_path":"/tmp/x.jsonl","cwd":"/private/tmp/stoke-hooktest","prompt_id":"9a807c6d-6bf7-4bb8-8712-ea722a89af5c","permission_mode":"default","hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"pong","background_tasks":[],"session_crons":[]}'
   const PROMPT_EVENT =
     '{"session_id":"f3a527a8-6718-4397-9756-e2d56178939c","transcript_path":"/tmp/x.jsonl","cwd":"/private/tmp/stoke-hooktest","prompt_id":"9a807c6d-6bf7-4bb8-8712-ea722a89af5c","permission_mode":"default","hook_event_name":"UserPromptSubmit","prompt":"Reply with exactly the word: pong"}'
+  /*
+   * A Stop that ended a turn while a WORKFLOW it started was still running,
+   * captured from a Stoke events file on 2026-09-21 (claude 2.1.278; paths and
+   * the reply shortened, background_tasks verbatim). The registry stayed
+   * `busy` for the whole workflow; this Stop is the only thing that names what
+   * is running, and before gotcha 104 it was read as "Finished".
+   */
+  const WORKFLOW_STOP_EVENT =
+    '{"session_id":"ac008fd7-5709-42c8-9258-e34c1ad89acd","transcript_path":"/tmp/x.jsonl","cwd":"/private/tmp/stoke-hooktest","prompt_id":"eea0d7ba-2afc-43fb-8ecc-37fe7562d9c2","permission_mode":"bypassPermissions","effort":{"level":"xhigh"},"hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"The Windows run showed the ARM/Git Bash test had never been running this branch","background_tasks":[{"id":"wq4ac1p33","type":"workflow","status":"running","description":"Map Stoke activity indicators, what Claude Code reports during workflows/waiting, and find causes of terminal freezes","name":"stoke-indicators-and-freeze"},{"id":"b7uduh0sw","type":"shell","status":"running","description":"Run the full check chain","command":"STOKE_PWSH=/tmp/pwsh/pwsh npm run check > /tmp/check4.out 2>&1; code=$?; echo \\"exit=$code\\" >> /tmp/check4.out; exit $code"}],"session_crons":[]}'
+  /*
+   * The turn the CLI starts when a background task finishes, captured from the
+   * same file (output path shortened). 2.1.278 sends no `source` on it; the
+   * opening tag is the only mark that nobody typed it.
+   */
+  const TASK_NOTIFICATION_EVENT =
+    '{"session_id":"ac008fd7-5709-42c8-9258-e34c1ad89acd","transcript_path":"/tmp/x.jsonl","cwd":"/private/tmp/stoke-hooktest","prompt_id":"0c1d3a4e-7d52-4f4e-9d0b-6a1f0b8e2c11","permission_mode":"bypassPermissions","hook_event_name":"UserPromptSubmit","prompt":"<task-notification>\\n<task-id>b5qcvxnb6</task-id>\\n<tool-use-id>toolu_01FKtH1JEXb2Ba9ny37BgwAm</tool-use-id>\\n<output-file>/tmp/tasks/b5qcvxnb6.output</output-file>\\n<status>completed</status>\\n<summary>Background command \\"Parse install.ps1 with PowerShell 7 in docker\\" completed (exit code 0)</summary>\\n</task-notification>"}'
   /** Run the hook command the way the CLI runs it, event on stdin. */
   const runHook = (sessionId: string, input: string): string =>
     execFileSync(shell, [shellFlag, hookCommand(sessionId)], { input, encoding: 'utf8' })
@@ -508,6 +524,23 @@ try {
       3
     )
     check('a missing file reads as no events at offset zero', (await readSessionEvents('stoke-verify-no-events', 5)).offset, 0)
+
+    // Through the real wrapper and reader, not only the parser: the wrapper
+    // folds a multi-line payload onto one line, and the prompt's own `\n`
+    // escapes must survive that.
+    runHook(hooked, WORKFLOW_STOP_EVENT)
+    runHook(hooked, TASK_NOTIFICATION_EVENT)
+    const fourth = await readSessionEvents(hooked, third.offset)
+    check('a running-workflow Stop and a task notification read back in order', fourth.events.map((e) => e.kind), ['stop', 'prompt'])
+    check(
+      'the Stop carries what is still running, workflow named by its name, shell by its description',
+      fourth.events[0]?.background,
+      [
+        { type: 'workflow', name: 'stoke-indicators-and-freeze' },
+        { type: 'shell', name: 'Run the full check chain' }
+      ]
+    )
+    check('the task notification is marked as the CLI\'s, not the user\'s', fourth.events[1]?.promptOrigin, 'task-notification')
     clearSessionFiles(hooked)
     check('clearSessionFiles removes the events file too', existsSync(sessionEventsFile(hooked)), false)
   } finally {
@@ -526,6 +559,114 @@ try {
   check('with no session_id the key stands in', notified?.sessionId, 'launch-key')
   const long = parseHookEvent(JSON.stringify({ hook_event_name: 'Stop', last_assistant_message: 'x'.repeat(2000) }), 'k')
   check('a long reply is clipped, since it can be pages', long?.message?.length, 400)
+
+  console.log('\nbackground tasks and prompt origins (gotcha 104)')
+  const stopWith = (tasks: unknown): unknown =>
+    parseHookEvent(JSON.stringify({ hook_event_name: 'Stop', background_tasks: tasks }), 'k')?.background
+  check('a Stop with nothing in flight carries no background', parseHookEvent(STOP_EVENT, 'k')?.background, [])
+  check(
+    'the captured running-workflow Stop, parsed on its own',
+    parseHookEvent(WORKFLOW_STOP_EVENT, 'k')?.background,
+    [
+      { type: 'workflow', name: 'stoke-indicators-and-freeze' },
+      { type: 'shell', name: 'Run the full check chain' }
+    ]
+  )
+  check(
+    'only running and pending entries are kept; a finished or statusless one is not background work',
+    stopWith([
+      { type: 'subagent', status: 'pending', description: 'Explore the registry', agent_type: 'Explore' },
+      { type: 'shell', status: 'completed', description: 'done already' },
+      { type: 'monitor', description: 'no status at all' }
+    ]),
+    [{ type: 'subagent', name: 'Explore the registry' }]
+  )
+  check(
+    'a subagent with no description is named by its type; an entry naming nothing keeps its type alone',
+    stopWith([
+      { type: 'subagent', status: 'running', agent_type: 'general-purpose' },
+      { type: 'shell', status: 'running', command: 'npm run dev' },
+      { type: 'MCP task', status: 'running' }
+    ]),
+    [
+      { type: 'subagent', name: 'general-purpose' },
+      { type: 'shell', name: 'npm run dev' },
+      { type: 'MCP task', name: null }
+    ]
+  )
+  check('background_tasks that is not an array is none', stopWith({ type: 'workflow', status: 'running' }), [])
+  check('an absent background_tasks is none (a CLI older than the field)', stopWith(undefined), [])
+  check(
+    'entries that are not objects, or name no type, are dropped rather than guessed',
+    stopWith([null, 'workflow', 42, ['x'], { status: 'running', name: 'typeless' }, { type: '   ', status: 'running' }]),
+    []
+  )
+  check(
+    'names from the file are made one safe line: controls, bidi overrides and newlines become spaces',
+    stopWith([{ type: 'work\u0007flow', status: 'running', name: 'a\u001b[31m\nb\u202e\u2066c\u0000' }]),
+    [{ type: 'work flow', name: 'a [31m b c' }]
+  )
+  const longName = stopWith([{ type: 'workflow', status: 'running', name: 'n'.repeat(5000) }]) as { name: string }[]
+  check('a long name is clipped to 80 characters with an ellipsis', [longName[0].name.length, longName[0].name.endsWith('…')], [80, true])
+  /** Half a surrogate pair anywhere: what a UTF-16 cut leaves, and what draws as a box or a U+FFFD. */
+  const loneSurrogate = (x: string): boolean => /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(x)
+  const nameOf = (name: string): string | null =>
+    (stopWith([{ type: 'workflow', status: 'running', name }]) as { name: string | null }[])[0]?.name ?? null
+  const atEdge = nameOf('x'.repeat(78) + '\u{1F600}' + 'yyy')
+  check(
+    'the clip counts code points: an emoji straddling the cut stays whole, never half a surrogate pair before the ellipsis',
+    [atEdge, loneSurrogate(atEdge ?? '')],
+    ['x'.repeat(78) + '\u{1F600}…', false]
+  )
+  const emojiRun = nameOf('\u{1F680}'.repeat(200)) ?? ''
+  check('a run of emoji clips to 80 code points, all of them whole', [Array.from(emojiRun).length, loneSurrogate(emojiRun)], [80, false])
+  // The pre-clip (max * 4 = 320 UTF-16 units) cuts this emoji in half; the
+  // spaces then collapse, so without care the lone half would be all that is left.
+  const preClipped = nameOf('ab' + ' '.repeat(317) + '\u{1F600}')
+  check('the pre-clip halving an emoji leaves no lone surrogate behind', [preClipped, loneSurrogate(preClipped ?? '')], ['ab', false])
+  check(
+    'a lone surrogate the file itself held is dropped like any undrawable character',
+    [nameOf('a\ud83d b'), nameOf('\ude00'), nameOf('ok \u{1F600}')],
+    ['a b', null, 'ok \u{1F600}']
+  )
+  check(
+    'a runaway list is capped at eight entries',
+    (stopWith(Array.from({ length: 500 }, (_, i) => ({ type: 'shell', status: 'running', name: `s${i}` }))) as unknown[]).length,
+    8
+  )
+  check('a notification carries no background and no prompt origin', [notified?.background, notified?.promptOrigin], [[], null])
+  check('a Stop carries no prompt origin', parseHookEvent(STOP_EVENT, 'k')?.promptOrigin, null)
+  const origin = (o: Record<string, unknown>): unknown =>
+    parseHookEvent(JSON.stringify({ hook_event_name: 'UserPromptSubmit', ...o }), 'k')?.promptOrigin
+  check('a typed prompt is the user\'s', parseHookEvent(PROMPT_EVENT, 'k')?.promptOrigin, 'user')
+  check('the captured task notification is the CLI\'s', parseHookEvent(TASK_NOTIFICATION_EVENT, 'k')?.promptOrigin, 'task-notification')
+  check('a teammate\'s message is machine-injected', origin({ prompt: '<agent-message from="ad4175bcc11de4ba4">\nFYI' }), 'system')
+  check('a stated source wins: system', origin({ prompt: 'run the nightly check', source: 'schedule_wakeup' }), 'system')
+  check('a stated source wins: user, even over the tag', origin({ prompt: '<task-notification>pasted', source: 'user' }), 'user')
+  check('a stated non-user source on a task notification keeps the finer name', origin({ prompt: '<task-notification>x', source: 'system' }), 'task-notification')
+  check('the tag is only a tag at the start: a prompt quoting one is typed', origin({ prompt: 'why does <task-notification> appear?' }), 'user')
+  check('a prompt with no text is typed (the old behaviour)', origin({}), 'user')
+  /*
+   * The prompts 2.1.278 writes itself when an autonomous `/loop` wakes the
+   * session (read out of the bundle — see WAKEUP_OPENINGS). It sends no
+   * `source` on them either, so the opening is the only mark.
+   */
+  check(
+    'an autonomous /loop tick is the CLI\'s: the first-tick preamble, a cron tick, a ScheduleWakeup tick, a loop.md tick',
+    [
+      origin({ prompt: "# Autonomous loop check\n\nYou're being invoked on a timer while the user is away or occupied." }),
+      origin({ prompt: '# Autonomous loop tick\n\nRun the autonomous check using the loop instructions established earlier in this conversation.' }),
+      origin({ prompt: '# Autonomous loop tick (dynamic pacing)\n\nRun the autonomous check' }),
+      origin({ prompt: '# /loop tick \u2014 tasks from /repo/.claude/loop.md\n\nThe user configured a loop-tasks file.' })
+    ],
+    ['system', 'system', 'system', 'system']
+  )
+  check(
+    'a /loop or scheduled task that fires the user\'s own prompt carries no mark in 2.1.278: typed',
+    origin({ prompt: 'check the deploy and report back' }),
+    'user'
+  )
+  check('a heading that only resembles one is typed', origin({ prompt: '# Autonomous loops: a design note' }), 'user')
 
   console.log('\na slow or runaway status line cannot wedge the terminal')
   /*

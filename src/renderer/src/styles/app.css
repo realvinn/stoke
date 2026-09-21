@@ -97,7 +97,7 @@ button {
   --tab-dot-worklog: var(--danger);
   /* Bypass mode's mark: beads in place of the ring's track, in the theme's slate.
      A standing SETTING, not an alarm, so it stays out of --warning, which is
-     for live alerts (the attention dot, the status line, the usage chip).
+     for live alerts (the waiting dot, the status line, the usage chip).
      The mix reconstructs ladder step 9 -- the mid-grey between --border-strong
      (step 8) and --text-faint (step 10) that `neutralLadder` computes and maps
      to no token -- so it follows every theme's hue with no new ThemeColors key
@@ -874,15 +874,18 @@ body {
 }
 
 /*
- * What happened in this tab since you last looked, from the CLI's own hooks.
+ * Where this session is, from the CLI's hooks and its session registry
+ * together (src/shared/activityView.ts, gotcha 104).
  *
  * A dot after the label rather than a change to the ring: the ring already
  * means context used, and red in the strip already says two things (a ring
  * past 60%, and the worklog dot in its centre), so this gets its own slot and
  * never uses red.
- * Working pulses so a long turn is visibly alive; done is the accent, solid;
- * attention is the warning colour, because a permission prompt is the one
- * state that stops the session until you act.
+ * Working pulses grey so a long turn is visibly alive, and so does a finished
+ * turn whose workflow or subagent is still running (`background`); done is the
+ * accent, solid. Waiting is the warning colour with a ripple of its own —
+ * a question on screen is the one state that stops the session until you act,
+ * and it stays until it is answered, in front or not.
  */
 .tab-activity {
   flex: none;
@@ -892,13 +895,22 @@ body {
   background: var(--accent-ink);
 }
 
-.tab-activity[data-state='working'] {
+.tab-activity[data-state='working'],
+.tab-activity[data-state='background'] {
   background: var(--text-faint);
   animation: activity-pulse 1.6s var(--ease) infinite;
 }
 
-.tab-activity[data-state='attention'] {
+/*
+ * The resting style is the reduced-motion answer (gotcha 72): the global block
+ * cuts every animation to one 1ms run, so what paints is this rule — a solid
+ * warning dot inside a still halo, which reads as "waiting" without the motion
+ * and is unlike every other state's bare dot.
+ */
+.tab-activity[data-state='waiting'] {
   background: var(--warning);
+  box-shadow: 0 0 0 0.125rem color-mix(in srgb, var(--warning) 30%, transparent);
+  animation: waiting-pulse 1.2s ease-out infinite;
 }
 
 @keyframes activity-pulse {
@@ -907,8 +919,27 @@ body {
   }
 }
 
+/* A ripple out of a solid dot: the dot never dims, so the colour always reads. */
+@keyframes waiting-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--warning) 70%, transparent);
+  }
+  70%,
+  100% {
+    box-shadow: 0 0 0 0.3125rem transparent;
+  }
+}
+
+/*
+ * A reduced-motion rule repeats the selectors of the rules it stills and sits
+ * after them: same specificity, so the later one wins. The status bar's dot
+ * has its own block below its rules for that reason; a looser
+ * `.status-activity .status-activity-dot` here was (0,2,0) and lost to them.
+ */
 @media (prefers-reduced-motion: reduce) {
-  .tab-activity[data-state='working'] {
+  .tab-activity[data-state='working'],
+  .tab-activity[data-state='background'],
+  .tab-activity[data-state='waiting'] {
     animation: none;
   }
 }
@@ -3142,9 +3173,14 @@ mark.hit {
   line-height: var(--status-h);
 }
 
-/* The dot has to stay beside its text, which a block box would drop below. */
+/*
+ * The dot has to stay beside its text, which a block box would drop below.
+ * Not clipped itself: the label span ellipsises on its own (below), and the
+ * waiting dot's ripple must be free to spill into the gap beside it.
+ */
 .status-activity.status-shrink {
   display: flex;
+  overflow: visible;
 }
 
 .status-activity.status-shrink > :not(.status-activity-dot) {
@@ -3171,24 +3207,27 @@ mark.hit {
   color: var(--text);
 }
 
-/* Whose move it is, beside the model. Same three states and colours as the
-   tab strip's dot, so the two never disagree about the same session. */
+/* Whose move it is, beside the model. Same states and colours as the tab
+   strip's dot — both are drawn from one activityView — so the two never
+   disagree about the same session. */
 .status-activity[data-state='done'] {
   color: var(--text);
 }
 
-.status-activity[data-state='attention'] {
+.status-activity[data-state='waiting'] {
   color: var(--warning);
 }
 
 .status-activity-dot {
+  flex: none;
   width: 0.375rem;
   height: 0.375rem;
   border-radius: var(--r-full);
   background: var(--text-faint);
 }
 
-.status-activity[data-state='working'] .status-activity-dot {
+.status-activity[data-state='working'] .status-activity-dot,
+.status-activity[data-state='background'] .status-activity-dot {
   animation: activity-pulse 1.6s var(--ease) infinite;
 }
 
@@ -3196,8 +3235,20 @@ mark.hit {
   background: var(--accent-ink);
 }
 
-.status-activity[data-state='attention'] .status-activity-dot {
+/* Same ripple and same still halo as the tab strip's waiting dot. */
+.status-activity[data-state='waiting'] .status-activity-dot {
   background: var(--warning);
+  box-shadow: 0 0 0 0.125rem color-mix(in srgb, var(--warning) 30%, transparent);
+  animation: waiting-pulse 1.2s ease-out infinite;
+}
+
+/* Stilled with the same (0,3,0) selectors as the rules above, after them. */
+@media (prefers-reduced-motion: reduce) {
+  .status-activity[data-state='working'] .status-activity-dot,
+  .status-activity[data-state='background'] .status-activity-dot,
+  .status-activity[data-state='waiting'] .status-activity-dot {
+    animation: none;
+  }
 }
 
 /* ------------------------------------------------------- overlay surfaces */

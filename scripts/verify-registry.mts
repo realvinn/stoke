@@ -34,6 +34,24 @@ import {
 import { basename, dirname, join, sep } from 'node:path'
 import { RegistryPoller } from '../src/main/sessionRegistry.ts'
 import type { LiveSessionState } from '../src/shared/types.ts'
+import {
+  activityView,
+  afterLooking,
+  agentWork,
+  backgroundLabel,
+  DRAFT_EDGE_WINDOW_MS,
+  draftOnPrompt,
+  draftOnRegistry,
+  NO_DRAFT_TRACK,
+  promptClearsDraft,
+  registryClearsDraft,
+  stopNotifies,
+  waitingAlerts,
+  waitingLabel,
+  type ActivityInput,
+  type DraftTrack
+} from '../src/shared/activityView.ts'
+import type { PromptOrigin } from '../src/shared/types.ts'
 
 let failures = 0
 
@@ -302,6 +320,32 @@ async function scenario(): Promise<void> {
   await poller.pass(NOW)
   check('idle arrives once, and an unchanged file is not re-sent', states.map((s) => s.busy), [null, false])
 
+  /*
+   * Gotcha 104: a busy blip shorter than one pass — a prompt, then Esc inside
+   * the second — reads the same `idle` with a newer statusUpdatedAt. That
+   * stamp is what tells activityView the turn is over; unreported, the prompt
+   * hook read meanwhile kept the dot pulsing until the next hook.
+   */
+  reg.put(100, { sessionId: A, version: '2.1.278', status: 'idle', statusUpdatedAt: NOW - 5000, updatedAt: NOW - 5000 })
+  await poller.pass(NOW)
+  const beforeBlip = states.length
+  reg.put(100, { sessionId: A, version: '2.1.278', status: 'idle', statusUpdatedAt: NOW - 200, updatedAt: NOW - 200 })
+  await poller.pass(NOW)
+  check(
+    'a blip between passes (same status, newer statusUpdatedAt) is reported, with the new stamp',
+    [states.length - beforeBlip, states[states.length - 1]?.status, states[states.length - 1]?.statusUpdatedAt],
+    [1, 'idle', NOW - 200]
+  )
+  check(
+    '…which settles a prompt read during the blip: the dot is done, not working',
+    activityView({ hook: { state: 'working', at: NOW - 600, message: null }, live: states[states.length - 1] ?? null, running: true }).dot,
+    'done'
+  )
+  reg.put(100, { sessionId: A, version: '2.1.278', status: 'idle', statusUpdatedAt: NOW - 200, updatedAt: NOW })
+  await poller.pass(NOW)
+  await poller.pass(NOW)
+  check('an unchanged stamp is still not re-sent, whatever updatedAt does', states.length - beforeBlip, 1)
+
   reg.put(100, { sessionId: A, version: '2.1.278', status: 'busy' })
   await poller.pass(NOW)
   check('a prompt turns it busy', states[states.length - 1]?.busy, true)
@@ -389,6 +433,339 @@ async function scenario(): Promise<void> {
 }
 
 await scenario()
+
+/*
+ * What a tab's activity indicator shows (src/shared/activityView.ts, gotcha
+ * 104): the hooks and this registry, decided in one pure function. The
+ * full table, because every row is a state a real session reaches — measured
+ * against 2.1.278 — and the old hook-only reading got four of them wrong: a
+ * turn ending while a workflow runs read "Finished" (and notified), a
+ * permission prompt vanished once the tab was looked at, an answered one left
+ * no dot for the rest of the turn, and a pty that died mid-turn pulsed forever.
+ */
+function activityTable(): void {
+  console.log('\nactivity view: the registry beside the hooks')
+  const T0 = 1_800_000_000_000
+  type Hook = NonNullable<ActivityInput['hook']>
+  const working: Hook = { state: 'working', at: T0, message: null }
+  const done: Hook = { state: 'done', at: T0, message: 'pong', background: [] }
+  // The captured Stop in verify-statusline.mts, as parseHookEvent reads it.
+  const workflow: Hook = {
+    state: 'done',
+    at: T0,
+    message: 'The investigation workflow is running',
+    background: [
+      { type: 'shell', name: 'Run the full check chain' },
+      { type: 'workflow', name: 'stoke-indicators-and-freeze' }
+    ]
+  }
+  const subagent: Hook = { state: 'done', at: T0, message: 'Started it', background: [{ type: 'subagent', name: 'Explore the registry' }] }
+  const devServer: Hook = { state: 'done', at: T0, message: 'Server is up', background: [{ type: 'shell', name: 'npm run dev' }] }
+  const teammate: Hook = { state: 'done', at: T0, message: 'Asked them', background: [{ type: 'teammate', name: 'reviewer' }] }
+  const attention: Hook = { state: 'attention', at: T0, message: 'Claude needs your permission to use Bash' }
+  /** A registry reading; by default stated BEFORE the hook was read. */
+  const reg = (
+    status: LiveSessionState['status'],
+    waitingFor: string | null = null,
+    statusUpdatedAt: number | null = T0 - 500
+  ): ActivityInput['live'] => ({ status, waitingFor, statusUpdatedAt })
+  const after = T0 + 500
+  const at = (hook: Hook | null, live: ActivityInput['live'], running = true): ActivityInput => ({ hook, live, running })
+  const show = (input: ActivityInput): [string | null, string] => {
+    const v = activityView(input)
+    return [v.dot, v.label]
+  }
+  const dot = (input: ActivityInput): string | null => activityView(input).dot
+  /** The tab in front, window focused: App's `seenActive`, which is `afterLooking`. */
+  const looked = (input: ActivityInput): ActivityInput =>
+    input.hook ? { ...input, hook: afterLooking(input.hook, activityView(input)) } : input
+
+  // A turn ended while a workflow it started runs on: the registry stays busy.
+  check(
+    'busy after a Stop listing a running workflow keeps pulsing, and names it (agents first)',
+    show(at(workflow, reg('busy'))),
+    ['background', 'Running in the background: workflow “stoke-indicators-and-freeze”, shell “Run the full check chain”']
+  )
+  check('and that Stop does NOT raise "Finished"', activityView(at(workflow, reg('busy'))).notify, false)
+  check('and looking at the tab does not clear it — it is still running', dot(looked(at(workflow, reg('busy')))), 'background')
+  check('a background subagent the same', [dot(at(subagent, reg('busy'))), activityView(at(subagent, reg('busy'))).notify], ['background', false])
+  check(
+    'even a busy stated after the Stop stays "background" while the Stop named agent work (a waiting -> busy inside the workflow)',
+    dot(at(workflow, reg('busy', null, after))),
+    'background'
+  )
+  check('the workflow ends and the registry goes idle: done, and looking clears it', [dot(at(workflow, reg('idle', null, after))), dot(looked(at(workflow, reg('idle', null, after))))], ['done', null])
+  check('the notification turn (a task-notification prompt) is plain working', show(at(working, reg('busy'))), ['working', 'Claude is working…'])
+
+  // What notifies.
+  check('a Stop with nothing in flight notifies', activityView(at(done, reg('idle'))).notify, true)
+  check('a Stop whose only background is a shell notifies — a dev server can run forever', activityView(at(devServer, reg('shell'))).notify, true)
+  check('a teammate does not hold back "Finished" (it may idle for an hour)', activityView(at(teammate, reg('busy'))).notify, true)
+  check('the same Stop with no registry reading still does not notify', activityView(at(workflow, null)).notify, false)
+  check('nothing but a Stop ever notifies', [activityView(at(working, reg('busy'))).notify, activityView(at(attention, null)).notify, activityView(at(null, null)).notify], [false, false, false])
+  check('stopNotifies is the rule itself', [stopNotifies([]), stopNotifies(undefined), stopNotifies([{ type: 'workflow', name: null }]), stopNotifies([{ type: 'subagent', name: null }]), stopNotifies([{ type: 'shell', name: null }])], [true, true, false, false, true])
+
+  // Busy with a finished Stop and no agent work: the two polls race.
+  check('busy stated before the Stop was read is the registry lagging: done', show(at(done, reg('busy'))), ['done', 'Finished — your move'])
+  check('busy stated AFTER the Stop was read is a new busy period (a prompt not yet read, /compact): working', dot(at(done, reg('busy', null, after))), 'working')
+  check('busy with no statusUpdatedAt trusts the Stop', dot(at(done, reg('busy', null, null))), 'done')
+  check('busy with nothing heard yet is working', dot(at(null, reg('busy'))), 'working')
+
+  /*
+   * Looking at a finished tab while the registry still says busy. A Stop is
+   * usually read before the idle push, so this is the order almost every turn
+   * ends in, on the tab in front. `seenActive` used to DELETE the entry, which
+   * left the stale busy nothing to be weighed against: the tab read "Claude is
+   * working…" and pulsed for up to a second.
+   */
+  const seenDone: Hook = { ...done, seen: true }
+  check(
+    'looking at a done tab while the registry still says busy (stamped before the Stop) is NOT working',
+    show(looked(at(done, reg('busy')))),
+    [null, '']
+  )
+  check('looking marks the Stop seen rather than dropping it', afterLooking(done, activityView(at(done, reg('busy')))), seenDone)
+  check('looking again changes nothing — the same object, so seenActive renders nothing', afterLooking(seenDone, activityView(at(seenDone, reg('busy')))) === seenDone, true)
+  check(
+    'a seen Stop: the registry catching up (idle) shows nothing, a new turn (busy stated after it) is working',
+    [dot(at(seenDone, reg('idle', null, after))), dot(at(seenDone, reg('busy', null, after)))],
+    [null, 'working']
+  )
+  check('a seen Stop naming a running workflow still reads background while busy', dot(at({ ...workflow, seen: true }, reg('busy'))), 'background')
+  check('a seen Stop on an exited tab, or with no reading, is nothing', [dot(at(seenDone, reg('busy'), false)), dot(at(seenDone, null))], [null, null])
+  check(
+    'a seen attention draws no hook-only dot; a registry waiting still shows',
+    [dot(at({ ...attention, seen: true }, null)), dot(at({ ...attention, seen: true }, reg('waiting', 'permission prompt')))],
+    [null, 'waiting']
+  )
+  check('looking drops a working entry, as before (a shell-only reading shows nothing either way)', afterLooking(working, activityView(at(working, reg('shell')))), null)
+  check('looking leaves what is still running alone', afterLooking(workflow, activityView(at(workflow, reg('busy')))) === workflow, true)
+
+  // Waiting: level-triggered, from the registry, never cleared by looking.
+  check(
+    'waiting for a permission prompt shows waiting, with the hook\'s message as detail',
+    (() => {
+      const v = activityView(at(attention, reg('waiting', 'permission prompt')))
+      return [v.dot, v.label, v.detail]
+    })(),
+    ['waiting', 'Waiting for you — permission', 'Claude needs your permission to use Bash']
+  )
+  check('…and still shows it on the FRONT tab once looked at', show(looked(at(attention, reg('waiting', 'permission prompt')))), ['waiting', 'Waiting for you — permission'])
+  check('waiting for input (AskUserQuestion, MCP elicitation) on the FRONT tab', show(looked(at(working, reg('waiting', 'input needed')))), ['waiting', 'Waiting for you — question'])
+  check('a waiting with no hook heard at all still shows', dot(at(null, reg('waiting', 'permission prompt'))), 'waiting')
+  check(
+    'a LATER wait in the same turn does not borrow an answered prompt\'s message (the attention hook outlives its dialog)',
+    (() => {
+      const v = activityView(at({ ...attention, seen: true }, reg('waiting', 'input needed', T0 + 10_000)))
+      return [v.dot, v.label, v.detail]
+    })(),
+    ['waiting', 'Waiting for you — question', null]
+  )
+  check(
+    '…while the prompt\'s own message, read just after its wait was stated, is kept — seen or not',
+    [activityView(at({ ...attention, seen: true }, reg('waiting', 'permission prompt'))).detail, activityView(at(attention, reg('waiting', 'permission prompt', null))).detail],
+    ['Claude needs your permission to use Bash', 'Claude needs your permission to use Bash']
+  )
+  check('the other reasons the CLI states', [waitingLabel('sandbox request'), waitingLabel('worker request'), waitingLabel('goal proposal'), waitingLabel(null), waitingLabel('something new')], ['Waiting for you — sandbox access', 'Waiting for you — worker request', 'Waiting for you — goal proposal', 'Waiting for you', 'Waiting for you — something new'])
+  check('a dialog the user opened is not an alert: mid-turn it stays working', dot(at(working, reg('waiting', 'dialog open'))), 'working')
+  check('…idle it shows nothing new', [dot(at(null, reg('waiting', 'dialog open'))), dot(at(done, reg('waiting', 'dialog open')))], [null, 'done'])
+  check('waitingAlerts: only dialog open is exempt', [waitingAlerts('dialog open'), waitingAlerts('permission prompt'), waitingAlerts(null)], [false, true, true])
+  check(
+    'answered (waiting -> busy, no hook): back to working, whether the tab was looked at while waiting or not',
+    [
+      dot(at(attention, reg('busy'))),
+      dot({ ...looked(at(attention, reg('waiting', 'permission prompt'))), live: reg('busy') })
+    ],
+    ['working', 'working']
+  )
+  check('dismissed with Esc (waiting -> idle, no Stop): the stale attention shows nothing', dot(at(attention, reg('idle'))), null)
+
+  // Shell: a background shell can run forever, so it never pulses.
+  check('a shell never pulses: a prompt the registry has not caught up with shows nothing', dot(at(working, reg('shell'))), null)
+  check('…and a turn that ended since (Esc, with a dev server up) is done', show(at(working, reg('shell', null, after))), ['done', 'Finished — your move · a shell is still running'])
+  check('a Stop with a dev server running says so', show(at(devServer, reg('shell'))), ['done', 'Finished — your move · shell “npm run dev” still running'])
+  check('a shell with nothing heard is nothing', dot(at(null, reg('shell'))), null)
+
+  // Idle.
+  check('idle stated before the prompt was read is the registry lagging: still working', dot(at(working, reg('idle'))), 'working')
+  check('idle stated after it: the turn ended with no Stop (Esc, an API error)', dot(at(working, reg('idle', null, after))), 'done')
+  check('idle after a Stop is done; nothing heard is nothing', [dot(at(done, reg('idle'))), dot(at(null, reg('idle')))], ['done', null])
+
+  // A tab whose process is not running never pulses.
+  check(
+    'an exited tab never pulses: a turn it died in, a registry reading left busy or waiting, no reading',
+    [dot(at(working, reg('busy'), false)), dot(at(attention, reg('waiting', 'permission prompt'), false)), dot(at(null, reg('busy'), false)), dot(at(working, null, false))],
+    [null, null, null, null]
+  )
+  check(
+    '…and a turn that finished before it exited reads done, still, even with its workflow listed',
+    [dot(at(done, reg('busy'), false)), dot(at(workflow, reg('busy'), false))],
+    ['done', 'done']
+  )
+
+  // No registry reading: the hooks alone, exactly as before.
+  check('no reading, prompt: working', show(at(working, null)), ['working', 'Claude is working…'])
+  check('no reading, Stop: done', show(at(done, null)), ['done', 'Finished — your move'])
+  check('no reading, Stop with a running workflow: still done, as before (nothing could say when it ends)', dot(at(workflow, null)), 'done')
+  check('no reading, permission prompt: the warning dot, labelled with the CLI\'s message', show(at(attention, null)), ['waiting', 'Claude needs your permission to use Bash'])
+  check('no reading, attention with no message', show(at({ state: 'attention', at: T0, message: null }, null)), ['waiting', 'Needs your attention'])
+  check('no reading, nothing heard: nothing', show(at(null, null)), [null, ''])
+  check(
+    'no reading, looking clears done and attention and keeps working (the old seenActive rule)',
+    [dot(looked(at(done, null))), dot(looked(at(attention, null))), dot(looked(at(working, null)))],
+    [null, null, 'working']
+  )
+
+  // Labels.
+  check(
+    'the background label: agents first, two named, the rest counted',
+    backgroundLabel([
+      { type: 'shell', name: 'npm run dev' },
+      { type: 'monitor', name: null },
+      { type: 'subagent', name: 'Explore' },
+      { type: 'workflow', name: 'nightly' }
+    ]),
+    'Running in the background: subagent “Explore”, workflow “nightly”, and 2 more'
+  )
+  check('agentWork is workflows and subagents only', agentWork([{ type: 'teammate', name: null }, { type: 'workflow', name: 'w' }, { type: 'cloud session', name: null }]), [{ type: 'workflow', name: 'w' }])
+
+  // Gotcha 82's typed-draft guard.
+  console.log('\nthe typed-draft guard (gotcha 82) and who submitted what')
+  check('a typed prompt clears the draft guard', promptClearsDraft('user'), true)
+  check('a task-notification prompt does NOT clear it — nobody typed anything', promptClearsDraft('task-notification'), false)
+  check('nor does any other machine-injected prompt', promptClearsDraft('system'), false)
+  check('an event with no origin keeps the old behaviour', promptClearsDraft(null), true)
+  const s = (status: LiveSessionState['status']): Pick<LiveSessionState, 'status'> => ({ status })
+  check(
+    'the registry clears it only when a session goes busy from idle (or from no reading)',
+    [registryClearsDraft(s('idle'), s('busy')), registryClearsDraft(undefined, s('busy')), registryClearsDraft(s(null), s('busy'))],
+    [true, true, true]
+  )
+  check(
+    '…not on busy -> busy (a workflow), shell -> busy, waiting -> busy (a permission answered), busy -> shell or idle -> waiting',
+    [
+      registryClearsDraft(s('busy'), s('busy')),
+      registryClearsDraft(s('shell'), s('busy')),
+      registryClearsDraft(s('waiting'), s('busy')),
+      registryClearsDraft(s('busy'), s('shell')),
+      registryClearsDraft(s('idle'), s('waiting'))
+    ],
+    [false, false, false, false, false]
+  )
+
+  /*
+   * The same guard end to end, the way App drives it: one pty's flag through
+   * `draftOnRegistry` on every registry push and `draftOnPrompt` on every
+   * prompt hook, on one clock. The idle -> busy edge clears provisionally,
+   * because the CLI starts turns of its own on an idle session.
+   */
+  console.log('\nthe typed-draft guard across registry edges and prompt hooks')
+  const W = DRAFT_EDGE_WINDOW_MS
+  const pty = (typed: boolean) => {
+    let track: DraftTrack = NO_DRAFT_TRACK
+    let flag = typed
+    let last: LiveSessionState['status'] | undefined
+    return {
+      registry(status: LiveSessionState['status'], now: number): boolean {
+        const step = draftOnRegistry(track, last === undefined ? undefined : { status: last }, { status }, flag, now)
+        track = step.track
+        flag = step.typed
+        last = status
+        return flag
+      },
+      prompt(origin: PromptOrigin | null, now: number): boolean {
+        const step = draftOnPrompt(track, origin, flag, now)
+        track = step.track
+        flag = step.typed
+        return flag
+      },
+      type(): boolean {
+        flag = true
+        return flag
+      }
+    }
+  }
+  {
+    const p = pty(true)
+    p.registry('idle', 0)
+    const edge = p.registry('busy', 1000)
+    const notified = p.prompt('task-notification', 1800)
+    check('idle -> busy clears provisionally; its task-notification prompt, read after, puts the draft guard back', [edge, notified], [false, true])
+    p.registry('idle', 30_000)
+    check('the typed draft is still guarded once that turn ends', p.registry('idle', 31_000), true)
+    p.registry('busy', 40_000)
+    const typed = p.prompt('user', 40_600)
+    check('then a typed prompt clears it, and a machine prompt read just after cannot bring it back', [typed, p.prompt('task-notification', 41_000)], [false, false])
+  }
+  {
+    const p = pty(true)
+    p.registry('idle', 0)
+    const first = p.prompt('task-notification', 1000)
+    check('a task-notification read BEFORE its edge: the edge clears nothing', [first, p.registry('busy', 1700)], [true, true])
+    p.registry('idle', 20_000)
+    check('that claim is spent on its own edge: a later slash command (no hook) clears', p.registry('busy', 21_000), false)
+  }
+  {
+    const p = pty(true)
+    p.registry('idle', 0)
+    const slash = p.registry('busy', 1000)
+    check('an edge no prompt claims inside the window (a slash command, which fires none) clears', [slash, p.prompt('task-notification', 1000 + W + 1)], [false, false])
+    const q = pty(true)
+    q.registry('idle', 0)
+    q.prompt('system', 1000)
+    check('a machine prompt read too long before an edge is not its turn: the edge clears', q.registry('busy', 1000 + W + 1), false)
+  }
+  {
+    const p = pty(false)
+    p.registry('idle', 0)
+    p.registry('busy', 1000)
+    const typedAfter = p.type()
+    check('keys typed after the edge stay set through the restore', [typedAfter, p.prompt('system', 1500)], [true, true])
+    const q = pty(false)
+    q.registry('idle', 0)
+    q.registry('busy', 1000)
+    check('a restore of nothing stays nothing', q.prompt('task-notification', 1500), false)
+    const r = pty(true)
+    r.registry('idle', 0)
+    r.registry('busy', 1000)
+    check('a wake-up or a teammate (origin system) restores like a task notification', r.prompt('system', 2200), true)
+    const o = pty(true)
+    o.registry('idle', 0)
+    o.registry('busy', 1000)
+    check('an event with no origin (an older build) is typed: the clear stands', o.prompt(null, 1400), false)
+  }
+  {
+    // A permission prompt mid-turn, answered with keys: they go to the dialog.
+    const p = pty(true)
+    p.registry('idle', 0)
+    p.registry('busy', 1000)
+    p.prompt('user', 1300)
+    p.registry('waiting', 5000)
+    p.type()
+    check('keys that answer a dialog do not count as a draft: waiting -> busy puts back what it went in with', p.registry('busy', 6000), false)
+    // A draft typed while Claude worked, then a dialog, answered.
+    const q = pty(false)
+    q.registry('idle', 0)
+    q.registry('busy', 1000)
+    q.type()
+    q.registry('waiting', 5000)
+    q.type()
+    check('…and a draft typed before the dialog survives it', q.registry('busy', 6000), true)
+    const r = pty(false)
+    r.registry('busy', 0)
+    r.registry('waiting', 1000)
+    r.type()
+    check('dismissed with Esc (waiting -> idle): the same', r.registry('idle', 2000), false)
+    const s2 = pty(false)
+    s2.registry('busy', 0)
+    s2.registry('waiting', 1000)
+    s2.type()
+    s2.registry('waiting', 1500)
+    check('a second push inside the same waiting does not re-snapshot the answer keys', s2.registry('busy', 2000), false)
+  }
+}
+
+activityTable()
 
 // The tally is the last statement in the file, and must stay that way: anything
 // after it is unfalsifiable (gotcha 50).

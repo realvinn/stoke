@@ -5,13 +5,18 @@ import { modelLabel, shortPath } from '../lib/format'
 import { PERMISSION_LABELS } from '../lib/permissions'
 import { MODE_LABELS, sessionMode } from '@shared/launch'
 import { versionNumber, type RelaunchPlan } from '../lib/tabs'
-import type { SessionActivity, Tab } from '../types'
+import type { ActivityView } from '@shared/activityView'
+import type { Tab } from '../types'
 
 interface Props {
   tab: Tab | null
   context: ContextSnapshot | null
-  /** Working / done / attention for the tab in front, or null when idle. */
-  activity: SessionActivity | null
+  /**
+   * What the tab in front's activity line says — working, background work,
+   * waiting for you, done — decided by `activityView`, the same reading the
+   * tab strip's dot is drawn from. Null for a tab with no session.
+   */
+  activity: ActivityView | null
   /**
    * The tab in front's own statusLine payload: the version it runs and the
    * model it is on, with the tier suffix the transcript drops (gotcha 21).
@@ -336,20 +341,20 @@ export function StatusBar({
 
       {/*
         The one line that says whether it is your move. From the CLI's own
-        hooks, so it is right the moment the turn ends rather than a poll
-        later; `working` carries a pulse so a long turn does not read as hung.
+        hooks and its session registry together (activityView), so it is right
+        the moment a turn ends, stays working while a workflow the turn
+        started runs on, and says "Waiting for you" for exactly as long as a
+        question is on screen. Working and waiting pulse, so neither a long
+        turn nor an unanswered prompt reads as hung.
       */}
-      {activity && tab.status === 'running' && (
+      {activity?.dot && tab.status === 'running' && (
         <span
           className="status-item status-activity status-shrink"
-          data-state={activity.state}
+          data-state={activity.dot}
+          title={activity.detail ? `${activity.label}: ${activity.detail}` : activity.label}
         >
           <span className="status-activity-dot" aria-hidden="true" />
-          {activity.state === 'working'
-            ? 'Claude is working…'
-            : activity.state === 'done'
-              ? 'Finished — your move'
-              : (activity.message ?? 'Needs your attention')}
+          <span>{activity.label}</span>
         </span>
       )}
 

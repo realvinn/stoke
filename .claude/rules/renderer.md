@@ -19,6 +19,8 @@ paths:
   - "src/renderer/src/components/FolderSwitcher.tsx"
   - "src/shared/launcher.ts"
   - "scripts/verify-launcher.mts"
+  - "src/shared/activityView.ts"
+  - "src/renderer/src/components/TitleBar.tsx"
 ---
 
 # React state traps
@@ -211,6 +213,12 @@ Three things carry beyond the dialog:
   closes** (`pendingRelaunchStep` → `drop` on a plan that is no longer an offer). A relaunch that
   outlives its reason would later kill a session nobody asked to have killed.
 
+> **Checked against the code on 2026-09-21.** "Cleared when the registry goes busy or a prompt hook
+> fires" was too broad in both halves: a `<task-notification>` prompt is the CLI's, not a submit, and
+> most pushes that read busy (`busy -> shell`, `waiting -> busy`, a workflow) submit nothing. Now only
+> a typed prompt (`promptClearsDraft`) and the registry's edge into `busy` from `idle` or no reading
+> (`registryClearsDraft`) clear it — gotcha 104.
+
 ## 83. A veto that counts what is still pending lapses the moment something else clears it
 
 **`startOnLaunch` was vetoed by `restoreCount > 0` — the number of tabs STILL paused.** That was
@@ -348,3 +356,111 @@ answering it is the flow.
 Proven in a fresh sandbox profile with the QA's own script (8 Enters, 500ms apart, from launch):
 the picker was answered, focus rested on the card with the hint, and the claude shim's launch log
 held only `--version` probes.
+
+## 104. A Stop is the end of a TURN, not of the work, and a permission prompt is answered with no hook
+
+**The activity dot and the "Finished" notification were driven by hooks alone, and two things the
+hooks cannot say were read as things they did.** Measured against claude 2.1.278 (2026-09-21):
+
+- **A Stop fires at the end of every turn, including one that ends while a workflow or a background
+  subagent it started is still running.** Its input carries `background_tasks` (the CLI's own
+  friendly `type` — `workflow`, `subagent`, `shell`, `monitor`, `MCP task`, `teammate`, … — plus
+  `status`, `description`, and `name`/`agent_type`/`command` per kind). A real one from a Stoke events
+  file: `[{type:"workflow",status:"running",name:"stoke-indicators-and-freeze"},{type:"shell",…}]`.
+  `parseHookEvent` dropped it. Meanwhile the registry (gotcha 80) stays `busy` for the whole
+  workflow — the binary's rule is busy = loading OR any live `local_agent`/`local_workflow`/
+  non-idle `in_process_teammate`/non-long-running `remote_agent` — while a background Bash alone
+  reads `shell` (a dev server: forever) and a Monitor alone reads `idle`. So the dot went `done`
+  (or vanished, in front) and the OS said "Finished" with the workflow still running.
+- **Each finished background task starts a turn** with a `UserPromptSubmit` whose prompt opens
+  `<task-notification>` (a teammate's message opens `<agent-message `). The schema has a `source`
+  field for this (`user`, `system`, `schedule_wakeup`, …) and 2.1.278 sends it on no prompt captured
+  here. App called `clearTyped` on every prompt hook, so gotcha 82's typed-draft guard was dropped
+  for a tab nobody had submitted anything in — and on every registry push reading busy, which
+  includes `busy -> shell`, `waiting -> busy` and a workflow holding `busy` for an hour.
+- **`waiting` is level-triggered and the hook is not.** The registry says `waiting` with a
+  `waitingFor` (`permission prompt`; `input needed` for AskUserQuestion and MCP elicitation;
+  `dialog open` for a panel; `sandbox request`, `worker request`, `goal proposal`) until it is
+  answered. The `permission_prompt` Notification fires once and nothing says it was answered. The
+  hook's `attention` entry was deleted the moment the tab was in front and focused, so the one tab
+  whose prompt you were looking at had no dot, and after answering (`waiting -> busy`, no hook)
+  there was no dot for the rest of the turn.
+- **A pty that died mid-turn kept pulsing**: no Stop ever came, the registry keeps its last reading
+  (the file goes before the pty does), and TitleBar never read `tab.status`.
+
+**One pure function decides now: `activityView` (src/shared/activityView.ts)**, fed the hook entry for
+the tab's CURRENT session id and the registry reading for its ptyId (gotcha 80), and derived at render
+(gotcha 57 — `activity` already had five writers; the Stop's `background` is one more field on the
+existing writer, not a sixth). The table, all of it asserted in `verify:registry`:
+
+| running | registry | hook | dot |
+| --- | --- | --- | --- |
+| no | any | done / anything else | `done` / none — never a pulse |
+| yes | `waiting`, not `dialog open` | any | `waiting` (not cleared by looking) |
+| yes | none, or `waiting` + `dialog open` | any | the hooks alone, exactly as before |
+| yes | `busy` | Stop listing a running workflow/subagent | `background`, labelled with it |
+| yes | `busy` | Stop, nothing agent-like | `done`, or `working` if busy was stated after it |
+| yes | `busy` | prompt / attention / none | `working` |
+| yes | `idle` | prompt | `working`, or `done` if idle was stated after it |
+| yes | `shell` | prompt | none, or `done` if shell was stated after it |
+| yes | `idle`/`shell` | Stop / attention / none | `done` / none / none |
+
+A Stop notifies only when it lists no running workflow or subagent (`stopNotifies`); looking clears
+an entry only when its view is not `working`/`background` (`clearedByLooking`, re-run when `live`
+moves); a prompt clears the draft guard only when typed (`promptClearsDraft` over
+`SessionEvent.promptOrigin`), and the registry only on the edge into `busy` from `idle` or no reading
+(`registryClearsDraft`). BusyDialog says "Background work is running" for a `background` tab — no
+reply is in flight, the workflow is what a kill loses.
+
+Trade-offs that are deliberate, so nobody "fixes" them back:
+
+- **Not "registry busy always wins".** Both polls run once a second on their own phase, so a Stop is
+  routinely read before the registry says idle. `statusUpdatedAt` (the CLI's clock) against the
+  hook's read time breaks the tie; unknown trusts the hook.
+- **`shell` never pulses**, at the cost of a blank dot for up to a second after a prompt typed while
+  a dev server runs, until the registry says `busy`.
+- **Only workflows and subagents hold back "Finished".** A teammate is busy only while not idle and
+  a cloud session not at all when long-running; the hook cannot tell, and a notification that never
+  comes is worse than an early one.
+- **`dialog open` is never an alert**, per the design — though the binary's table also uses it for
+  dialogs the CLI raises itself (plugin hints, a managed-settings review).
+- **No registry reading means the hooks alone, exactly**: a workflow Stop still draws `done` there,
+  since nothing could say when the workflow ends (the notification is still held back).
+- **A `/clear` typed while the registry says `shell` leaves the draft guard set** (no prompt hook, and
+  not an edge from idle). That errs the way gotcha 82 already chose: the automatic relaunch leaves
+  such a tab alone.
+
+Not proven by any suite (gotcha 31): the wire from a real `session:event`/`session:state` to the
+painted dot, `seenActive` re-running on `live`, the notification being withheld, and what reduced
+motion paints. Drive the built app over CDP to prove them.
+
+> **Checked against the code on 2026-09-21** — review of the change above; four rules moved.
+> - **Looking marks, it does not delete** (`afterLooking`). A Stop is usually read before the
+>   registry's idle push, so deleting the `done` entry of the tab in front left a lagging `busy` with
+>   nothing to weigh it against: "Claude is working…" and a pulse for up to a second after almost
+>   every turn. A `done`/`attention` is now kept with `seen: true` — no dot of its own, but still the
+>   Stop that outweighs a busy stated before it, and still the list of what a `background` turn runs.
+>   A `working` entry is dropped as before. The table's rows hold for an unseen entry; a seen one
+>   draws nothing wherever the row says `done` or the hooks-alone attention dot.
+> - **The idle -> busy clear is provisional** (`draftOnRegistry`/`draftOnPrompt`, per-pty
+>   `DraftTrack` in App, flag written back with ptyBus's `setTyped`). The CLI starts turns of its own
+>   on an idle session — a task's notification, a teammate's message, a wake-up — and those go idle
+>   -> busy too. A machine-injected prompt hook read within `DRAFT_EDGE_WINDOW_MS` (2 s) after the
+>   edge restores what it cleared (OR keys typed since); read before it, the edge clears nothing. A
+>   typed prompt, or no prompt hook in the window (a slash command fires none), lets it stand.
+> - **Keys typed at a dialog answer the dialog.** The flag is snapshotted on the edge INTO `waiting`
+>   and put back on the edge out (to anything), so answering a permission prompt no longer made the
+>   automatic relaunch skip the tab until the next prompt. Accepted: a slash command that opens a
+>   panel (`idle -> waiting`, `dialog open`) was typed, so the guard stays up after it closes.
+> - **2.1.278 never sends `source`**: its UserPromptSubmit input spreads `...!1` where the field
+>   would go (read out of the bundle; it computes `loop_wakeup`/`schedule_wakeup` and drops them).
+>   An autonomous `/loop` tick is recognisable by the CLI's own opening (`# Autonomous loop check`,
+>   `# Autonomous loop tick`, `# /loop tick —`, `WAKEUP_OPENINGS` in statusLine.ts) and is `system`.
+>   A `/loop 5m <prompt>` or CronCreate task fires the user's own text and still reads as typed —
+>   it clears the guard, the unavoidable error while nearly every prompt is typed.
+>
+> Also: `sameState` (sessionRegistry.ts) compares `statusUpdatedAt`, so a busy blip inside one pass
+> (a prompt, then Esc) reaches the renderer as a newer idle stamp and settles the dot; the CLI moves
+> that stamp only when it writes a status or `waitingFor`. The status bar dot's reduced-motion rule
+> lost on specificity to the rules it stilled and has its own block after them now. All asserted in
+> `verify:registry` and `verify:statusline`; the painted result is still gotcha 31's to prove.

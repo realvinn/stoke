@@ -19,7 +19,8 @@ import {
 } from './Icons'
 import { chordLabel } from '../lib/shortcuts'
 import { useTabDrag } from '../lib/useTabDrag'
-import type { SessionActivity, Tab } from '../types'
+import type { ActivityView } from '@shared/activityView'
+import type { Tab } from '../types'
 
 interface Props {
   platform: string
@@ -34,8 +35,11 @@ interface Props {
   tabs: Tab[]
   activeTabId: string | null
   contexts: Record<string, ContextSnapshot>
-  /** Working / done / needs-attention per session id, from the CLI's hooks. */
-  activity: Record<string, SessionActivity>
+  /**
+   * What each session tab's activity dot shows, keyed by TAB id — decided by
+   * `activityView` from the CLI's hooks and its session registry together.
+   */
+  activity: Record<string, ActivityView>
   /** Session ids the worklog agent is watching. Drives the red dot in the ring. */
   watchedSessions: Set<string>
   sidebarOpen: boolean
@@ -169,7 +173,8 @@ export function TitleBar({
         <div className="tablist" role="tablist" aria-label="Sessions" ref={listRef}>
           {tabs.map((tab) => {
             const ctx = contexts[tab.sessionId]
-            const act = tab.kind === 'session' ? activity[tab.sessionId] : undefined
+            const act = tab.kind === 'session' ? activity[tab.id] : undefined
+            const dot = act?.dot ?? null
             const label = labelFor?.(tab) ?? { text: tab.title, agentTag: null }
             return (
               <div
@@ -177,7 +182,7 @@ export function TitleBar({
                 className="tab"
                 role="tab"
                 aria-selected={tab.id === activeTabId}
-                data-activity={act?.state}
+                data-activity={dot ?? undefined}
                 /*
                  * What `useTabDrag` finds tabs by. It also writes
                  * `data-dragging` and an inline transform onto this node while
@@ -244,30 +249,20 @@ export function TitleBar({
                   </span>
                 )}
                 {/*
-                  What happened here since you last looked. Working pulses,
-                  done is a solid accent dot, attention is the warning colour.
-                  Not red: red in the strip already says two things, a ring
-                  past 60% and the worklog dot in its centre.
+                  Where this session is. Working (and a turn whose workflow
+                  runs on in the background) pulses grey; waiting for you pulses
+                  in the warning colour until it is answered, whether or not the
+                  tab is in front; done is a solid accent dot, since you last
+                  looked. Not red: red in the strip already says two things, a
+                  ring past 60% and the worklog dot in its centre.
                 */}
-                {act && (
+                {act && dot && (
                   <span
                     className="tab-activity"
-                    data-state={act.state}
-                    title={
-                      act.state === 'working'
-                        ? 'Claude is working'
-                        : act.state === 'done'
-                          ? `Finished${act.message ? `: ${act.message}` : ''}`
-                          : `Needs your attention${act.message ? `: ${act.message}` : ''}`
-                    }
+                    data-state={dot}
+                    title={act.detail ? `${act.label}: ${act.detail}` : act.label}
                   >
-                    <span className="sr-only">
-                      {act.state === 'working'
-                        ? 'Claude is working. '
-                        : act.state === 'done'
-                          ? 'Finished since you last looked. '
-                          : 'Needs your attention. '}
-                    </span>
+                    <span className="sr-only">{`${act.label.replace(/…$/, '')}. `}</span>
                   </span>
                 )}
                 <button

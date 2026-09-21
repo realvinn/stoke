@@ -32,6 +32,17 @@ import {
   type LaunchOverride
 } from '@shared/launch'
 import { disambiguate, launchAim, type FolderChoice } from '@shared/launcher'
+import {
+  activityView,
+  afterLooking,
+  agentWork,
+  draftOnPrompt,
+  draftOnRegistry,
+  NO_DRAFT_TRACK,
+  type ActivityView,
+  type DraftStep,
+  type DraftTrack
+} from '@shared/activityView'
 import { pressClock } from './lib/pressBurst'
 import type { StokeCliRequest } from '@shared/stokeArgs'
 import { activeThemeId, resolveTheme } from '@shared/themes'
@@ -53,10 +64,10 @@ import { WorklogPrompt } from './components/WorklogPrompt'
 import { baseName, ipcErrorMessage } from './lib/format'
 import {
   attachExit,
-  clearTyped,
   forgetPty,
   initPtyBus,
   noteInput,
+  setTyped,
   typedSinceSubmit
 } from './lib/ptyBus'
 import { TERMINAL_DEFAULTS, zoomStep } from '@shared/ui'
@@ -408,13 +419,19 @@ export function App(): React.JSX.Element {
 
   /*
    * Where each session is — working, done, or asking for attention — keyed by
-   * session id, from the CLI's own hooks (see SessionEvent). This is what the
-   * tab strip's activity dot and the status bar's "Claude is working…" read,
-   * and what decides whether a finished turn raises an OS notification.
+   * session id, from the CLI's own hooks (see SessionEvent). The tab strip's
+   * activity dot and the status bar's line read it through `activityView`,
+   * beside the registry reading in `live` (gotcha 104): a Stop can end
+   * a turn while a workflow keeps the session busy, and a permission prompt is
+   * answered with no hook at all. It also decides whether a finished turn
+   * raises an OS notification.
    *
-   * A `done` or `attention` entry is cleared when its tab is looked at, so the
-   * dot means "something happened here since you last looked" and nothing
-   * else. `working` is never cleared by looking; it ends when the turn does.
+   * A `done` or `attention` entry is marked `seen` when its tab is looked at,
+   * so the dot means "something happened here since you last looked" and
+   * nothing else — marked, not deleted, because it is still the newest thing
+   * the hooks said, and without it a lagging registry `busy` read as a new
+   * turn (`afterLooking`). What is still running (`working`, or a turn whose
+   * workflow runs on) is never cleared by looking; it ends when the work does.
    */
   const [activity, setActivity] = useState<Record<string, SessionActivity>>({})
 
@@ -552,6 +569,16 @@ export function App(): React.JSX.Element {
   const [live, setLive] = useState<Record<string, LiveSessionState>>({})
   const liveRef = useRef<Record<string, LiveSessionState>>(live)
   liveRef.current = live
+
+  /*
+   * Gotcha 82's typed-draft guard, per ptyId: what `draftOnRegistry` and
+   * `draftOnPrompt` remember between the registry's pushes and the prompt
+   * hooks (gotcha 104) — the last idle -> busy edge and what it cleared, a
+   * machine-injected prompt no edge has claimed, and the flag as a dialog
+   * opened. The flag itself stays in ptyBus; this is only the bookkeeping, so
+   * a ref: nothing renders it.
+   */
+  const draftTracksRef = useRef<Map<string, DraftTrack>>(new Map())
 
   /*
    * The same claim, per tab, for Resume and Start again.
@@ -791,6 +818,23 @@ export function App(): React.JSX.Element {
       }
     })
     /*
+     * Gotcha 82's typed-draft guard: store what `draftOnRegistry`/
+     * `draftOnPrompt` decided and write the flag back. Tracks are dropped for
+     * ptys no tab holds any more (a relaunch's old pty, a closed tab) whenever
+     * the map outgrows the tab list.
+     */
+    const applyDraft = (ptyId: string, step: DraftStep): void => {
+      const tracks = draftTracksRef.current
+      tracks.set(ptyId, step.track)
+      if (tracks.size > tabsRef.current.length) {
+        const held = new Set(tabsRef.current.map((t) => t.ptyId))
+        for (const id of [...tracks.keys()]) if (!held.has(id)) tracks.delete(id)
+      }
+      if (step.typed !== typedSinceSubmit(ptyId)) setTyped(ptyId, step.typed)
+    }
+    const draftTrack = (ptyId: string): DraftTrack => draftTracksRef.current.get(ptyId) ?? NO_DRAFT_TRACK
+
+    /*
      * Hook events. A prompt starts a turn; a stop ends it; a notification is
      * the CLI asking for something. The transition to `done` or `attention`
      * is also the moment an OS notification may be raised, and whether it is
@@ -800,8 +844,21 @@ export function App(): React.JSX.Element {
     const offEvents = window.stoke.session.onEvent((ev: SessionEvent) => {
       const tab = tabsRef.current.find((t) => t.sessionId === ev.sessionId)
       if (ev.kind === 'prompt') {
-        // Submitted: whatever was typed has left the prompt box.
-        if (tab) clearTyped(tab.ptyId)
+        /*
+         * Submitted: whatever was typed has left the prompt box — unless the
+         * CLI put this prompt in itself. A background task finishing starts a
+         * turn with a `<task-notification>` prompt while a draft can sit
+         * untouched in the box, and clearing on it dropped gotcha 82's guard
+         * for a tab nobody had submitted anything in; such a prompt also hands
+         * back what the registry's idle -> busy edge for its turn cleared
+         * (gotcha 104).
+         */
+        if (tab?.ptyId) {
+          applyDraft(
+            tab.ptyId,
+            draftOnPrompt(draftTrack(tab.ptyId), ev.promptOrigin, typedSinceSubmit(tab.ptyId), Date.now())
+          )
+        }
         setActivity((prev) => ({
           ...prev,
           [ev.sessionId]: { state: 'working', at: ev.at, message: null }
@@ -824,10 +881,25 @@ export function App(): React.JSX.Element {
        * flashes a dot for it — and stays if the window is behind another app,
        * which is when the dot earns its keep.
        */
-      setActivity((prev) => ({
-        ...prev,
-        [ev.sessionId]: { state, at: ev.at, message: ev.message }
-      }))
+      const entry: SessionActivity = {
+        state,
+        at: ev.at,
+        message: ev.message,
+        background: ev.background ?? []
+      }
+      setActivity((prev) => ({ ...prev, [ev.sessionId]: entry }))
+
+      /*
+       * A turn that ends while a workflow or subagent it started is still
+       * running is not "Finished": the session stays busy, and the turn that
+       * answers the task's notification raises its own Stop when it is done.
+       */
+      const view = activityView({
+        hook: entry,
+        live: tab ? (liveRef.current[tab.ptyId] ?? null) : null,
+        running: true
+      })
+      if (ev.kind === 'stop' && !view.notify) return
 
       const mode = settingsRef.current?.notifications ?? 'background'
       const background = !document.hasFocus() || !inFront
@@ -857,8 +929,24 @@ export function App(): React.JSX.Element {
       const before = liveRef.current[st.ptyId]
       liveRef.current = { ...liveRef.current, [st.ptyId]: st }
       setLive((prev) => ({ ...prev, [st.ptyId]: st }))
-      // Busy means something was submitted, so the prompt box is empty again.
-      if (st.busy === true) clearTyped(st.ptyId)
+      /*
+       * Going busy from idle usually means something was submitted — a
+       * prompt, or a slash command like `/clear` that fires no prompt hook —
+       * so the prompt box is empty again. Only that edge: `busy -> shell`, an
+       * answered permission prompt (`waiting -> busy`) and a workflow keeping
+       * the session busy submit nothing, and clearing on every busy push
+       * dropped a draft typed meanwhile. And only provisionally: a turn the CLI
+       * started itself (a task's notification, a wake-up) goes idle -> busy
+       * too, and its prompt hook, read within a couple of seconds either side,
+       * takes the clear back. Keys typed at a dialog answer the dialog, so the
+       * edge out of `waiting` restores the flag it went in with (gotcha 104).
+       */
+      if (tabsRef.current.some((t) => t.ptyId === st.ptyId)) {
+        applyDraft(
+          st.ptyId,
+          draftOnRegistry(draftTrack(st.ptyId), before, st, typedSinceSubmit(st.ptyId), Date.now())
+        )
+      }
       /*
        * A turn that ended without a `Stop` hook — Esc, or an API error — left
        * the activity dot saying "working" until the next prompt. The registry
@@ -1085,8 +1173,19 @@ export function App(): React.JSX.Element {
   /*
    * Looking at a tab clears its `done` / `attention`, because the dot means
    * "since you last looked". Both selecting the tab and the window regaining
-   * focus count as looking; a `working` entry is left alone, since it ends
-   * when the turn does rather than when anyone looks.
+   * focus count as looking. What is still running is left alone — a turn, or
+   * a Stop whose workflow still runs — since it ends when the work does rather
+   * than when anyone looks. Decided by the same `activityView` the dot draws
+   * from, so the two cannot disagree; and re-run when the registry moves, so a
+   * workflow that ends while its tab is in front is cleared then. A registry
+   * `waiting` is not an entry here at all, so looking never clears it.
+   *
+   * "Clears" is `afterLooking`: a `done` or `attention` is marked `seen`, not
+   * deleted. Deleted, the Stop no longer outweighed a registry `busy` that had
+   * not caught up with it yet, so the tab you were looking at read "Claude is
+   * working…" and pulsed for up to a second after almost every turn
+   * (gotcha 104). Returns `prev` untouched once nothing changes, since this
+   * runs on every `activity` change.
    */
   const seenActive = useCallback((): void => {
     if (!document.hasFocus()) return
@@ -1094,15 +1193,27 @@ export function App(): React.JSX.Element {
     if (!tab?.sessionId) return
     setActivity((prev) => {
       const cur = prev[tab.sessionId]
-      if (!cur || cur.state === 'working') return prev
+      if (!cur) return prev
+      const view = activityView({
+        hook: cur,
+        live: liveRef.current[tab.ptyId] ?? null,
+        running: tab.status === 'running'
+      })
+      const kept = afterLooking(cur, view)
+      if (kept === cur) return prev
       const next = { ...prev }
-      delete next[tab.sessionId]
+      if (kept) next[tab.sessionId] = kept
+      else delete next[tab.sessionId]
       return next
     })
   }, [])
-  useEffect(() => {
+  // A LAYOUT effect: its state update re-renders before the browser paints, so
+  // a done/attention for the tab in front never reaches the screen. As a plain
+  // effect it painted for one frame — measured over CDP, a `done` dot existed
+  // for ~3 ms after a Stop and showed in an animation frame in 2 of 5 turns.
+  useLayoutEffect(() => {
     seenActive()
-  }, [activeTabId, activity, seenActive])
+  }, [activeTabId, activity, live, seenActive])
   useEffect(() => {
     window.addEventListener('focus', seenActive)
     return () => window.removeEventListener('focus', seenActive)
@@ -2977,6 +3088,27 @@ export function App(): React.JSX.Element {
    */
   const relaunch = useMemo(() => planFor(activeTab), [activeTab, planFor])
 
+  /*
+   * What each session tab's activity indicator shows, keyed by TAB id.
+   * Derived here, never stored (gotcha 57): the hook entry is keyed by the
+   * tab's CURRENT session id, which follows `/clear` and `/resume` (gotcha
+   * 80), and the registry reading by its ptyId, which is what the registry is
+   * matched on. A paused tab has no pty and a New tab no session; neither
+   * gets a view.
+   */
+  const activityViews = useMemo(() => {
+    const out: Record<string, ActivityView> = {}
+    for (const t of tabs) {
+      if (t.kind !== 'session') continue
+      out[t.id] = activityView({
+        hook: t.sessionId ? (activity[t.sessionId] ?? null) : null,
+        live: t.ptyId ? (live[t.ptyId] ?? null) : null,
+        running: t.status === 'running'
+      })
+    }
+    return out
+  }, [tabs, activity, live])
+
   /* Memoised: a fresh array each render would rebuild the Sidebar's Set on every tick. */
   const openSessionIds = useMemo(() => tabs.map((t) => t.sessionId), [tabs])
   /*
@@ -3507,32 +3639,64 @@ export function App(): React.JSX.Element {
   const busyDialog = ((): React.JSX.Element | null => {
     if (!busyPrompt) return null
     const quote = (t: Tab | undefined): string => `“${t?.title || t?.projectName || 'this tab'}”`
+    /*
+     * The turn ended but the session is still busy with a workflow or subagent
+     * it started (gotcha 104): no reply is in flight, the background
+     * work is what a kill would lose. Named from the last Stop's own list,
+     * through the same view the tab's dot is drawn from.
+     */
+    const backgroundOf = (t: Tab | undefined): string | null => {
+      if (!t || activityViews[t.id]?.dot !== 'background') return null
+      const work = agentWork(activity[t.sessionId]?.background)
+      if (work.length === 1) {
+        const one = work[0].name ? `the ${work[0].type} “${work[0].name}”` : `a ${work[0].type}`
+        return `${one} it started is still running`
+      }
+      return `${work.length} background agents it started are still running`
+    }
     if (busyPrompt.kind === 'relaunch') {
       const tab = tabs.find((t) => t.id === busyPrompt.tabId)
       const st = tab ? live[tab.ptyId] : undefined
       const plan = planFor(tab ?? null)
       const target = plan.kind === 'offer' ? plan.installed : 'the installed version'
-      const doing =
-        st?.status === 'waiting'
+      const background = backgroundOf(tab)
+      const doing = background
+        ? `Claude's last reply is finished, but ${background} in the background.`
+        : st?.status === 'waiting'
           ? `Claude is waiting for your answer${st.waitingFor ? ` (${st.waitingFor})` : ''}, in the middle of a turn.`
           : st?.status === 'shell'
             ? 'A shell command Claude started is still running.'
             : 'Claude is working on a reply.'
       return (
         <BusyDialog
-          title={`A prompt is running in ${quote(tab)}`}
+          title={
+            background
+              ? `Background work is running in ${quote(tab)}`
+              : `A prompt is running in ${quote(tab)}`
+          }
           forceLabel="Force restart"
           waitLabel="Wait"
-          waitHint={`Relaunch on ${target} the moment this turn ends`}
+          waitHint={
+            background
+              ? `Relaunch on ${target} once the background work and Claude's answer to it are done`
+              : `Relaunch on ${target} the moment this turn ends`
+          }
           onForce={() => answerBusy('force')}
           onWait={() => answerBusy('wait')}
           onCancel={() => answerBusy('cancel')}
         >
           <p>{doing}</p>
-          <p>
-            Relaunching now stops it, and <strong>the turn in flight is lost</strong>: the reply so far
-            is not saved, and the conversation comes back as it was after the last finished reply.
-          </p>
+          {background ? (
+            <p>
+              Relaunching now stops it, and <strong>the background work is lost</strong>: its results
+              never reach the conversation, which comes back as it was after the last finished reply.
+            </p>
+          ) : (
+            <p>
+              Relaunching now stops it, and <strong>the turn in flight is lost</strong>: the reply so far
+              is not saved, and the conversation comes back as it was after the last finished reply.
+            </p>
+          )}
           <p>
             <strong>Wait</strong> relaunches it on {target} the moment it goes idle.
           </p>
@@ -3542,25 +3706,39 @@ export function App(): React.JSX.Element {
     if (busyPrompt.kind === 'close') {
       const tab = tabs.find((t) => t.id === busyPrompt.tabId)
       const st = tab ? live[tab.ptyId] : undefined
-      const doing =
-        st?.status === 'waiting'
+      const background = backgroundOf(tab)
+      const doing = background
+        ? `Claude's last reply is finished, but ${background} in the background.`
+        : st?.status === 'waiting'
           ? `Claude is waiting for your answer${st.waitingFor ? ` (${st.waitingFor})` : ''}, in the middle of a turn.`
           : st?.status === 'shell'
             ? 'A shell command Claude started is still running.'
             : 'Claude is working on a reply.'
       return (
         <BusyDialog
-          title={`A prompt is running in ${quote(tab)}`}
+          title={
+            background
+              ? `Background work is running in ${quote(tab)}`
+              : `A prompt is running in ${quote(tab)}`
+          }
           forceLabel="Close anyway"
           onForce={() => answerBusy('force')}
           onCancel={() => answerBusy('cancel')}
         >
           <p>{doing}</p>
-          <p>
-            Closing this tab now stops it, and <strong>the turn in flight is lost</strong>: the reply
-            so far is not saved. The session itself is not deleted — it stays on the sidebar to
-            resume later.
-          </p>
+          {background ? (
+            <p>
+              Closing this tab now stops it, and <strong>the background work is lost</strong>: its
+              results never reach the conversation. The session itself is not deleted — it stays on
+              the sidebar to resume later.
+            </p>
+          ) : (
+            <p>
+              Closing this tab now stops it, and <strong>the turn in flight is lost</strong>: the reply
+              so far is not saved. The session itself is not deleted — it stays on the sidebar to
+              resume later.
+            </p>
+          )}
         </BusyDialog>
       )
     }
@@ -3612,7 +3790,7 @@ export function App(): React.JSX.Element {
         tabs={tabs}
         activeTabId={activeTabId}
         contexts={contexts}
-        activity={activity}
+        activity={activityViews}
         watchedSessions={watchedSessions}
         sidebarOpen={sidebarOpen}
         browserOpen={browserOpen}
@@ -4033,7 +4211,7 @@ export function App(): React.JSX.Element {
               : undefined
         }
         context={activeTab ? (contexts[activeTab.sessionId] ?? null) : null}
-        activity={activeTab ? (activity[activeTab.sessionId] ?? null) : null}
+        activity={activeTab ? (activityViews[activeTab.id] ?? null) : null}
         line={activeTab ? (sessionLine[activeTab.sessionId] ?? null) : null}
         cli={cli}
         updateAvailable={update?.updateAvailable ? update.latest : null}
