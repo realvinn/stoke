@@ -1,3 +1,4 @@
+import type { InstallKind } from './installKind'
 import type { SkillDirScan } from './skills'
 import type { MicAccess } from './voiceRoute'
 import type { CreateProfileInput, ProfilePlan } from './profiles'
@@ -241,8 +242,19 @@ export interface SelfUpdateState {
    * is an ad-hoc signed macOS build: Squirrel.Mac verifies the downloaded app
    * against the running one's designated requirement, and an ad-hoc requirement
    * pins the exact binary hash, so no other build can ever satisfy it.
+   *
+   * On Windows it also carries a copy that must not update itself: one a
+   * package manager owns (Scoop, a winget portable install) or one in a folder
+   * it cannot write beside — see `installKind` for which, and what to do.
    */
   blocked: string | null
+  /**
+   * How this copy got here and so how it updates (src/shared/installKind.ts):
+   * the installer's folder (electron-updater), a portable folder (Stoke's own
+   * swap), a package manager's (its command), or none of those. Null until the
+   * startup probe has answered — a disk read, so never on the boot path.
+   */
+  installKind: InstallKind | null
 }
 
 /**

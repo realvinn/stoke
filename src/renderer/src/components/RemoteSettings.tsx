@@ -725,6 +725,7 @@ export function SelfUpdateSettings({
 }): React.JSX.Element {
   const [state, setState] = useState<SelfUpdateState | null>(null)
   const [busy, setBusy] = useState(false)
+  const [copiedCommand, setCopiedCommand] = useState(false)
 
   useEffect(() => {
     void window.stoke.self.state().then(setState)
@@ -735,6 +736,12 @@ export function SelfUpdateSettings({
 
   // Same reasoning as the CLI badge above: derived during render, not ticked.
   const selfOk = selfUpToDate(state, Date.now())
+  // How this copy updates (src/shared/installKind.ts). A package manager's copy
+  // gets its own line and command instead of the generic `blocked` reason, and
+  // no releases-page button: downloading by hand would put a copy outside the
+  // manager's record, which is the thing that line exists to prevent.
+  const kind = state.installKind
+  const managed = kind?.kind === 'managed' ? kind : null
 
   return (
     <div className="field">
@@ -774,13 +781,40 @@ export function SelfUpdateSettings({
               ? `Downloading… ${state.progress}%`
               : state.error
                 ? state.error
-                : state.blocked
+                : state.blocked && !managed
                   ? state.blocked
                   : state.availableVersion
                     ? 'An update is available.'
                     : ''}
           {selfOk && selfOk.checked && <span className="field-stamp">{selfOk.checked}</span>}
         </span>
+      )}
+
+      {/* A portable folder: say that it updates itself, and how. */}
+      {state.supported && kind?.kind === 'portable' && kind.note && (
+        <span className="field-hint">{kind.note}</span>
+      )}
+
+      {/* A package manager's copy: its own command, copyable. */}
+      {state.supported && managed && (
+        <div className="field-hint" style={{ display: 'grid', gap: 'var(--space-8)', justifyItems: 'start' }}>
+          <span>{managed.note}</span>
+          {managed.command && (
+            <>
+              <span className="mono">{managed.command}</span>
+              <button
+                className="btn"
+                onClick={() => {
+                  window.stoke.clipboard.writeText(managed.command ?? '')
+                  setCopiedCommand(true)
+                }}
+              >
+                <IconCopy />
+                {copiedCommand ? 'Copied' : 'Copy command'}
+              </button>
+            </>
+          )}
+        </div>
       )}
 
       {state.supported && (
@@ -798,7 +832,7 @@ export function SelfUpdateSettings({
           >
             Check for updates
           </button>
-          {state.availableVersion && !state.downloaded && (
+          {state.availableVersion && !state.downloaded && !managed && (
             <button
               className="btn"
               data-variant="primary"
@@ -813,7 +847,7 @@ export function SelfUpdateSettings({
               Download
             </button>
           )}
-          {state.blocked !== null && state.availableVersion && (
+          {state.blocked !== null && state.availableVersion && !managed && (
             <button
               className="btn"
               onClick={() =>

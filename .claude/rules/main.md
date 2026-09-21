@@ -217,3 +217,20 @@ row, keyed by the real path, carrying both sides' fields.
 > `pinnedProjects`/`hiddenProjects` key still under a symlinked path onto its real one, plus
 > realpathing `pinnedProjects`/`hiddenProjects` in `listProjects` for a project added mid-session,
 > plus realpathing `CH.workspaceDefault`'s result the same way `acceptLaunch` already did.
+
+## 101. PowerShell has five single quotes, so a path spliced into a `'…'` literal is not safe
+
+**PowerShell's tokenizer treats U+2018, U+2019, U+201A and U+201B as single quotes too**
+(`CharTraits.cs`), so the familiar "double every `'`" escape is not an escape: a profile folder
+like `C:\Users\O’Brien` — a curly apostrophe, which autocorrecting keyboards and some account
+setups produce — ends the literal early and turns the rest of the path into code. Measured with
+pwsh 7.6.6: `$x = 'C:\Users\O’Brien\Stoke'` is a ParserError, "The string is missing the
+terminator". Anything Stoke
+hands PowerShell must carry its variable parts as DATA, never as code: `portableSwap.ts`'s
+helper is a constant ASCII script that reads its paths from a UTF-8 JSON plan (`-File` with
+`-Plan`); `build/installer.nsh` passes `$INSTDIR` in the environment; `extractZip`'s fallback
+passes both paths through `STOKE_ZIP`/`STOKE_DEST`. Two related traps the same code avoids:
+Windows PowerShell 5.1 reads a BOM-less script file as the ANSI code page, so a script written to
+disk must be pure ASCII (`verify:portable` pins it), and `-EncodedCommand` — which the picker's
+install tab uses for its fixed, table-built text — is a stock Defender/ASR heuristic, so an
+unattended helper uses `-File` instead.
