@@ -47,6 +47,23 @@ import { spawnSync } from 'node:child_process'
 import { pathToFileURL } from 'node:url'
 
 /**
+ * Environment a Windows arm64 build needs, whatever runs it. The installer's
+ * payload is 7z, extracted at install time by NSIS's nsis7z plugin (19.00),
+ * which predates the ARM64 branch filter 7-Zip 23+ picks by itself for ARM64
+ * executables — so an arm64 installer built without this exits 0 and installs
+ * nothing (the v0.9.9 one did; gotcha 102). BCJ is lossless and nsis7z reads
+ * it. x64 needs nothing: its default, BCJ2, is one nsis7z reads. The release
+ * workflow sets the same on its Windows build step, and
+ * scripts/assert-nsis-payload.mjs reads the built installer back.
+ */
+export const WINDOWS_ARM64_BUILD_ENV = { ELECTRON_BUILDER_7Z_FILTER: 'BCJ' }
+
+/** The environment `--build` adds for a target. */
+export function buildEnvFor(target) {
+  return target.platform === 'win32' && target.arch === 'arm64' ? WINDOWS_ARM64_BUILD_ENV : {}
+}
+
+/**
  * @typedef {object} Target
  * @property {string} key       stable id; the artifact name and the dist script both use it
  * @property {string} name      the GitHub Actions job name
@@ -190,7 +207,8 @@ function main(argv) {
     const extra = argv.slice(buildAt + 2)
     const args = [...target.args, ...extra]
     console.log(`electron-builder ${args.join(' ')}`)
-    const run = spawnSync('npx', ['electron-builder', ...args], { stdio: 'inherit', shell: process.platform === 'win32' })
+    const env = { ...process.env, ...buildEnvFor(target) }
+    const run = spawnSync('npx', ['electron-builder', ...args], { stdio: 'inherit', shell: process.platform === 'win32', env })
     // A spawn that never started has `status: null` and its reason only in
     // `error`, so `run.status ?? 1` alone exits 1 having printed nothing at
     // all — the shape this repo keeps meeting (gotchas 46, 52): never make the

@@ -319,6 +319,21 @@ jobs:
           # certificate is exported into the environment in a macOS-only step
           # above rather than set on the job.
           CSC_IDENTITY_AUTO_DISCOVERY: false
+          # The installer's payload must be decodable by the extractor INSIDE
+          # the installer. 7-Zip 23+ compresses an ARM64 executable with its
+          # ARM64 branch filter by default, and NSIS's nsis7z plugin (19.00)
+          # predates that filter — so the v0.9.9 arm64 installer exited 0 and
+          # put no files down (measured on windows-11-arm; gotcha 102). BCJ is
+          # lossless on any input and nsis7z decodes it. arm64 only: the x64
+          # payload's default (BCJ2) is one nsis7z reads, and every x64 release
+          # has installed; an empty value is no filter at all. targets.mjs
+          # carries the same for `npm run dist:*`, and the step below reads the
+          # built installer to prove it held.
+          ELECTRON_BUILDER_7Z_FILTER: ${{ matrix.arch == 'arm64' && 'BCJ' || '' }}
+
+      - name: Assert the installer's payload is one its own extractor can read
+        if: runner.os == 'Windows'
+        run: node scripts/assert-nsis-payload.mjs release
 
       # $MAC_SIGN_ARGS comes from whichever of the two signing steps above ran.
       - name: Build installers (macOS)

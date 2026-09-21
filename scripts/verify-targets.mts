@@ -23,7 +23,7 @@ import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 
-import { TARGETS, NOT_BUILT, matrixJson, ptyPackageFor, targetFor } from './targets.mjs'
+import { TARGETS, NOT_BUILT, buildEnvFor, matrixJson, ptyPackageFor, targetFor } from './targets.mjs'
 import { auditPty, findPtyDirs } from './assert-packaged-pty.mjs'
 
 const require = createRequire(import.meta.url)
@@ -39,6 +39,9 @@ function check(name: string, got: unknown, want: unknown): void {
     `  ${ok ? 'PASS' : 'FAIL'}  ${name}` +
       (ok ? '' : `\n        got  ${JSON.stringify(got)}\n        want ${JSON.stringify(want)}`)
   )
+}
+function ok(name: string, cond: boolean): void {
+  check(name, cond, true)
 }
 
 const pkg = JSON.parse(read('package.json'))
@@ -520,6 +523,28 @@ check(
   findPtyDirs('release', { readdir: fakeReaddir as never, stat: fakeStat as never }).map((h) => h.packages),
   [['node-pty-win32-arm64']]
 )
+
+console.log('\nan arm64 installer its own extractor can read (gotcha 102)')
+/*
+ * NSIS's nsis7z (19.00) cannot decode 7-Zip's ARM64 branch filter, which 7-Zip
+ * 23+ picks by itself for ARM64 executables: the v0.9.9 arm64 installer exited
+ * 0 and installed nothing. Every route that builds win-arm64 must pass
+ * ELECTRON_BUILDER_7Z_FILTER=BCJ, and every Windows build job must read the
+ * installer back — the assertion is what makes a regression a red job.
+ */
+{
+  check('npm run dist:win:arm64 builds with the BCJ filter', buildEnvFor(targetFor('win-arm64')), { ELECTRON_BUILDER_7Z_FILTER: 'BCJ' })
+  check('and x64 with nothing extra (its default, BCJ2, installs)', buildEnvFor(targetFor('win-x64')), {})
+  check('mac and linux builds are untouched', TARGETS.filter((t) => t.platform !== 'win32').map((t) => buildEnvFor(t)), TARGETS.filter((t) => t.platform !== 'win32').map(() => ({})))
+  const winStep = /- name: Build installers \(Windows\)[\s\S]*?(?=\n      - name: )/.exec(workflow)?.[0] ?? ''
+  ok('the release workflow\'s Windows build sets the filter for arm64', winStep.includes("ELECTRON_BUILDER_7Z_FILTER: ${{ matrix.arch == 'arm64' && 'BCJ' || '' }}"))
+  const buildAt = workflow.indexOf('- name: Build installers (Windows)')
+  const assertAt = workflow.indexOf('node scripts/assert-nsis-payload.mjs release')
+  const uploadAt = workflow.indexOf('- name: Upload installers')
+  ok('and reads the built installer back, after building and before uploading', buildAt >= 0 && assertAt > buildAt && uploadAt > assertAt)
+  const winWorkflow = read('.github/workflows/windows.yml')
+  ok('the Windows workflow builds the same way and asserts the same', winWorkflow.includes("ELECTRON_BUILDER_7Z_FILTER: ${{ matrix.arch == 'arm64' && 'BCJ' || '' }}") && winWorkflow.includes('node scripts/assert-nsis-payload.mjs release'))
+}
 
 console.log(failures ? `\n${failures} FAILED` : '\nall pass')
 process.exitCode = failures ? 1 : 0

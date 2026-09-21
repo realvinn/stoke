@@ -23,15 +23,15 @@
 # and `Invoke-RestMethod` throws on a truncated stream before `iex` sees it at
 # all. This shape makes both of those true rather than relying on the second.
 #
-# NOT VERIFIED ON WINDOWS. Nobody has run this file. There is no PowerShell on
-# the machine it was written on, so it has never been parsed by a PowerShell of
-# any version, and the NSIS silent-install flags below are read out of
-# app-builder-lib's own templates rather than observed. `npm run verify:install`
-# checks what can be checked from a Mac — that the art block matches the
-# generator byte for byte, that the last line is the call, that the download
-# does not go through Invoke-WebRequest, and that the upgrade-detection GUID is
-# still the one electron-builder derives from this project's appId — and that is
-# genuinely less than running it once.
+# RUN ON WINDOWS for the first time on 2026-09-21, by .github/workflows/
+# windows.yml on GitHub's x64 runner: the documented line from cmd.exe, the
+# short form from Windows PowerShell 5.1, both against the deployed endpoint,
+# both installed Stoke. That workflow also runs this branch's copy from cmd,
+# Windows PowerShell, PowerShell 7 and Git Bash on x64 and arm64, and asserts
+# the registry, the version, the uninstaller and the stoke command's PATH entry
+# afterwards. `npm run verify:install` still checks what can be checked from a
+# Mac — the art block, the last line being the call, no Invoke-WebRequest, the
+# upgrade-detection GUID — and PowerShell 7 parses this file clean.
 # ---------------------------------------------------------------------------
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -514,6 +514,14 @@ function Install-Stoke {
     }
 
     $after = Get-InstalledStoke
+    # An exit code of 0 is not an install. The v0.9.9 arm64 installer exits 0,
+    # writes its registry keys and puts NO files down: its payload was
+    # compressed with 7-Zip's ARM64 branch filter, which the extractor inside
+    # every NSIS installer predates (measured on GitHub's arm64 runner). Check
+    # for the thing a person is about to run, and say so if it is not there.
+    if ($after.Location -and -not (Test-Path -LiteralPath (Join-Path $after.Location 'Stoke.exe'))) {
+      throw "The installer finished without an error but put no Stoke.exe in $($after.Location). This build's installer is broken on this machine; the portable zip on $StokeReleases works instead."
+    }
     if ($after.Location) {
       Write-Row 'installed' $after.Location
       Add-StokeToPath (Join-Path $after.Location 'resources\bin')
