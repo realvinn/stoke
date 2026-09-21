@@ -43,10 +43,10 @@ import {
 import { CLI_CAPS, CODING_CLIS, type CodingCliId } from '../src/shared/codingClis.ts'
 import { SHARED_SKILLS_DIR, SKILL_DIRS, skillReport } from '../src/shared/skills.ts'
 import { scanSkills } from '../src/main/skillsScan.ts'
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { delimiter, join } from 'node:path'
 
 let failures = 0
 
@@ -361,9 +361,90 @@ console.log('\ninstalling')
   const encoded = [...win.matchAll(/-EncodedCommand (\S+)/g)].map((m) => decode(m[1]))
   ok(
     'windows: each step in its OWN PowerShell, so a vendor script’s `exit` ends only its step and its exit code is its own',
-    encoded.length === 2 && encoded[1] === 'winget install GitHub.Copilot',
+    encoded.length === 2 &&
+      encoded[1] ===
+        'winget install --id GitHub.Copilot -e --source winget --accept-source-agreements --accept-package-agreements; if (@(-1978335189, -1978335135) -contains $LASTEXITCODE) { exit 0 }; exit $LASTEXITCODE',
     JSON.stringify(encoded)
   )
+  ok(
+    'a winget step counts "already installed" (0x8A15002B / 0x8A150061) as installed, and only a winget step does',
+    encoded[1].includes('-1978335189') && !encoded[0].includes('-1978335189')
+  )
+  ok('every winget command in the table is non-interactive and exact', CODING_CLIS.every((c) => !c.install.win32?.startsWith('winget ') || /--id \S+ -e --source winget --accept-source-agreements --accept-package-agreements$/.test(c.install.win32)))
+
+  /*
+   * A fresh Windows has no Node.js, and every `npm install -g` agent needs it.
+   * The script installs it first (winget's Node LTS), re-reads PATH so the npm
+   * steps can see it, and marks those steps failed — never runs them into a
+   * wall — when it cannot. PATH is re-read before EVERY step, deduplicated.
+   */
+  const npmWin = installScript(['claude', 'gemini'], 'win32') ?? ''
+  const plainWin = installScript(['claude', 'codex'], 'win32') ?? ''
+  ok('a script with an npm agent installs Node first, when npm is missing', /if \(-not \(Get-Command npm[\s\S]*winget install --id OpenJS\.NodeJS\.LTS -e --source winget/.test(npmWin))
+  ok('naming who needs it', npmWin.includes("Installing Node.js, needed by Gemini CLI'"))
+  ok('and with no winget, says where to get Node rather than failing obscurely', /no winget to install it with\. Get it from https:\/\/nodejs\.org/.test(npmWin))
+  ok('the npm step is skipped and marked failed when Node is still missing', npmWin.includes("if ($nodeMissing) { $failed += 'Gemini CLI' } else {"))
+  ok('a script with no npm agent carries no Node step at all', !plainWin.includes('OpenJS.NodeJS.LTS') && !plainWin.includes('$nodeMissing'))
+  ok('PATH is re-read from the registry before every step', (npmWin.match(/^Update-StokePath$/gm) ?? []).length === 3)
+  ok('and deduplicated, or eighteen steps could pass the 32,767-character limit', /ContainsKey\(\$p\.ToLowerInvariant\(\)\)/.test(npmWin))
+  /*
+   * pty.ts hands the whole script to powershell.exe as ONE -EncodedCommand
+   * argument (installerArgs), and a Windows command line is capped at 32,767
+   * characters. Every agent at once — "select all" in the picker — measured
+   * 25,024 encoded on 2026-09-21. Held under 30,000 so a new agent that would
+   * push it over fails here, not as a tab that dies on CreateProcess.
+   */
+  {
+    const everyWin = installScript(CODING_CLIS.filter((c) => c.install.win32).map((c) => c.id), 'win32') ?? ''
+    const encodedLength = powershellEncode(everyWin).length
+    ok(`every Windows agent at once fits one command line: ${encodedLength} encoded characters, under 30,000 of Windows' 32,767`, encodedLength < 30_000)
+  }
+
+  /*
+   * Run through a real PowerShell where there is one (CI's ubuntu runner ships
+   * pwsh). Every generated Windows script must PARSE — a syntax slip here is a
+   * red card on every Windows machine and nothing else would see it — and a
+   * synthetic one is EXECUTED, with `powershell.exe` stood in for by a
+   * function. Synthetic steps only, never a table command (the rule above).
+   */
+  const pwsh = [process.env.STOKE_PWSH, ...(process.env.PATH ?? '').split(delimiter).map((d) => d && join(d, 'pwsh'))].find(
+    (p): p is string => !!p && existsSync(p)
+  )
+  if (!pwsh) {
+    console.log('  NOTE  no PowerShell here (set STOKE_PWSH to one): the Windows scripts are read above, not parsed or run. CI runs them.')
+  } else {
+    const parseErrors = (script: string): string[] => {
+      const r = spawnSync(
+        pwsh,
+        ['-NoProfile', '-NonInteractive', '-Command', '$e = $null; [void][System.Management.Automation.Language.Parser]::ParseInput([Console]::In.ReadToEnd(), [ref]$null, [ref]$e); $e | ForEach-Object { $_.Message }'],
+        { input: script, encoding: 'utf8', timeout: 60_000 }
+      )
+      return r.stdout.split('\n').map((l) => l.trim()).filter(Boolean)
+    }
+    const every = installScript(CODING_CLIS.map((c) => c.id), 'win32') ?? ''
+    check('the Windows script for EVERY agent parses in PowerShell', parseErrors(every), [])
+    const synthetic = scriptFor(
+      [
+        { id: 'claude', label: 'Works', command: 'Write-Output step-one-ran' },
+        { id: 'codex', label: 'Breaks', command: 'exit 3' },
+        { id: 'grok', label: 'After', command: 'Write-Output step-three-ran' }
+      ],
+      'win32'
+    ) ?? ''
+    // A file and -File, not stdin: `-Command -` reads line by line like a
+    // prompt, so a multi-line function and `exit` do not behave as in a script.
+    const shim = `function powershell.exe { & '${pwsh.replace(/'/g, "''")}' @args }\n`
+    const dir = mkdtempSync(join(tmpdir(), 'stoke-winscript-'))
+    const file = join(dir, 'install.ps1')
+    writeFileSync(file, shim + synthetic + '\n')
+    const run = spawnSync(pwsh, ['-NoProfile', '-NonInteractive', '-File', file], { encoding: 'utf8', timeout: 120_000, cwd: dir })
+    rmSync(dir, { recursive: true, force: true })
+    ok(
+      'windows, run: a failing step is named, the steps after it still run, and the script exits 1',
+      run.status === 1 && /step-one-ran/.test(run.stdout) && /step-three-ran/.test(run.stdout) && /Did not install: Breaks/.test(run.stdout),
+      `status ${run.status}: ${JSON.stringify((run.stdout + run.stderr).slice(-400))}`
+    )
+  }
   ok('codex on windows is told not to stop and ask, too', encoded[0]?.startsWith('$env:CODEX_NON_INTERACTIVE="1";') === true, encoded[0])
   check('powershellEncode survives non-ASCII', decode(powershellEncode('Write-Host "héllo — ✓"')), 'Write-Host "héllo — ✓"')
   ok('a failed step is recorded and the script exits 1 on any', win.includes("$failed += 'Copilot CLI'") && /exit 1 }/.test(win))

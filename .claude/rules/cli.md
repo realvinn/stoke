@@ -9,6 +9,10 @@ paths:
   - "scripts/verify-cli.mts"
   - "scripts/verify-updates.mts"
   - "scripts/verify-worklog-runner.mts"
+  - "src/shared/agents.ts"
+  - "src/shared/codingClis.ts"
+  - "scripts/verify-agents.mts"
+  - "scripts/probe-clis.mts"
 ---
 
 # Finding and running `claude`
@@ -304,3 +308,35 @@ sessions, so this changes nothing about what the registry poller watches.
 >   resumed on its new id S2, had `payloadKeyFor(S2)` answer K, whose files were released at exit,
 >   for up to ten minutes. All three skip `exited` now; any new by-session-id lookup on
 >   `this.sessions` must too.
+
+## 99. On Windows a terminal got TWO PATH variables, and the stale one came first
+
+**`pty.ts` copied `process.env` and then set `env.PATH = await buildEnvPath()`.** On Windows the
+variable is spelled `Path`, and `Object.entries(process.env)` keeps that spelling — so the object
+carried `Path` (inherited, stale) AND `PATH` (Stoke's, with every vendor install folder). The
+line meant to repair it, `if (process.platform !== 'win32') env.Path = env.PATH`, was on the
+wrong side of its condition: a meaningless `Path` everywhere except the one platform where it
+matters. node-pty builds the Windows environment block in insertion order and a
+case-insensitive lookup takes the first, so the child very likely saw the stale one. `agent.ts`
+had the same shape and got away with it only because Node's own `child_process` sorts keys and
+`PATH` sorts before `Path`. `setPathKey` (cli.ts) deletes every other spelling first, so exactly
+one survives; `verify:cli` holds it and the old two-key counterfactual.
+
+**And on Windows the PATH was never re-read at all.** `loginShellPath()` returned null there, so
+a Stoke started before an install kept the PATH it was born with: an agent installed from its
+own picker — or Node.js, which every `npm install -g` agent needs — sat "not found" until Stoke
+restarted. The win32 branch now reads what a NEW process gets: the registry's machine then user
+`Path` (`reg.exe query`, by absolute path, under the probe timeout), `%VAR%`-expanded
+case-insensitively, memoised and forgotten after installs like the POSIX probe — but never
+reported as a login-shell failure, whose wording would be false there. The picker's Windows
+script does the same between steps (`Update-StokePath`, deduplicated: eighteen steps appending
+unchecked could pass the 32,767-character limit), installs Node LTS through winget first when an
+npm agent is chosen and npm is missing, and treats winget's "already installed" exits
+(0x8A15002B, 0x8A150061) as installed. `findClaude` passes over `WindowsApps` without running
+anything there: that folder holds Store aliases (Claude Desktop's can answer to `claude.exe`, and
+it precedes `~\.local\bin`, which the native installer never puts on PATH), and asking it
+`--version` could open a window. Claude Code is never installed there by any route.
+
+Unverified until `.github/workflows/windows.yml` runs: the two-key block's actual effect inside a
+conpty, `reg.exe`'s output shape on a real machine, and the Node install on a runner stripped of
+Node (its `fresh-node` job).

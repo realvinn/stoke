@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process'
 import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { buildEnvPath, findClaude, loginPathProbeFailed, notFoundError, spawnSpec } from './cli.ts'
+import { buildEnvPath, findClaude, loginPathProbeFailed, notFoundError, setPathKey, spawnSpec } from './cli.ts'
 import { applyProviderEnv, DEFAULT_PROVIDERS, validateClaudeAuth } from '../shared/providers.ts'
 import type { ProviderSettings } from '../shared/providers.ts'
 
@@ -416,7 +416,9 @@ export async function runHeadless(opts: HeadlessOptions): Promise<HeadlessResult
     if (STRIP_ENV.includes(k)) continue
     env[k] = v
   }
-  env.PATH = await buildEnvPath()
+  // One key (cli.ts setPathKey). Node's child_process happens to pick `PATH`
+  // over `Path` because it sorts, but that is luck, not a rule.
+  setPathKey(env, await buildEnvPath())
   /*
    * Fail closed exactly as pty.ts:298-300 does, and only when a provider block
    * was actually supplied.

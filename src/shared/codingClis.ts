@@ -250,7 +250,7 @@ export const CODING_CLIS: readonly CodingCli[] = [
     install: {
       darwin: 'curl -fsSL https://gh.io/copilot-install | bash',
       linux: 'curl -fsSL https://gh.io/copilot-install | bash',
-      win32: 'winget install GitHub.Copilot'
+      win32: 'winget install --id GitHub.Copilot -e --source winget --accept-source-agreements --accept-package-agreements'
     },
     continueArgs: ['--continue'],
     endpoints: { openrouter: true, custom: 'OpenAI Chat Completions' }
@@ -339,7 +339,7 @@ export const CODING_CLIS: readonly CodingCli[] = [
     install: {
       darwin: 'npm install -g @charmland/crush',
       linux: 'npm install -g @charmland/crush',
-      win32: 'winget install charmbracelet.crush'
+      win32: 'winget install --id charmbracelet.crush -e --source winget --accept-source-agreements --accept-package-agreements'
     },
     installNeeds: 'Node.js (Windows uses winget)',
     endpoints: { openrouter: false, custom: null }

@@ -34,7 +34,11 @@ import {
   loginPathProbeFailed,
   notFoundError,
   probeClaude,
+  expandWinEnv,
+  isWindowsAppsAlias,
+  parseRegPath,
   resumeOrMint,
+  setPathKey,
   shouldReprobe
 } from '../src/main/cli.ts'
 import {
@@ -390,6 +394,57 @@ check(
 )
 
 rmSync(sandbox, { recursive: true, force: true })
+
+console.log('\nWindows PATH: the registry, and one key')
+/*
+ * On Windows there is no login shell, so a Stoke started before an install
+ * kept the PATH it was born with and an agent installed from its own picker
+ * sat "not found" until a restart. The registry holds what a NEW process gets;
+ * `reg query` prints it unexpanded. Pure halves asserted here; the reg.exe
+ * call itself is the Windows workflow's to prove (probe-clis.mts).
+ */
+{
+  const machine = [
+    '',
+    'HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment',
+    '    Path    REG_EXPAND_SZ    %SystemRoot%\\system32;%SystemRoot%;C:\\Program Files\\nodejs\\',
+    ''
+  ].join('\r\n')
+  check('parseRegPath reads a REG_EXPAND_SZ value, spaces in it and all', parseRegPath(machine), '%SystemRoot%\\system32;%SystemRoot%;C:\\Program Files\\nodejs\\')
+  check('and a plain REG_SZ', parseRegPath('    Path    REG_SZ    C:\\x;C:\\y\r\n'), 'C:\\x;C:\\y')
+  check('no Path value is null (reg exits 1 and prints nothing useful)', parseRegPath('ERROR: The system was unable to find the specified registry key or value.'), null)
+  check('a value named PathExt is not Path', parseRegPath('    PATHEXT    REG_SZ    .COM;.EXE'), null)
+  check(
+    'expandWinEnv expands case-insensitively, as Windows does',
+    expandWinEnv('%SystemRoot%\\system32;%userprofile%\\.local\\bin', { SYSTEMROOT: 'C:\\Windows', USERPROFILE: 'C:\\Users\\Ada' }),
+    'C:\\Windows\\system32;C:\\Users\\Ada\\.local\\bin'
+  )
+  check('an unknown %NAME% stays exactly as written', expandWinEnv('%NOPE%\\bin;100%', {}), '%NOPE%\\bin;100%')
+
+  // The key bug: an env copied from process.env on Windows holds `Path`, and
+  // `env.PATH = …` added a SECOND entry that lost to the stale one.
+  const winEnv: Record<string, string> = { Path: 'C:\\stale', TERM: 'x', pAtH: 'C:\\odd' }
+  setPathKey(winEnv, 'C:\\fresh', 'win32')
+  check('on Windows every other spelling of PATH is removed, leaving exactly one', Object.keys(winEnv).filter((k) => k.toUpperCase() === 'PATH'), ['PATH'])
+  check('and it is the fresh value', winEnv.PATH, 'C:\\fresh')
+  const unix: Record<string, string> = { PATH: '/old', Path: 'kept' }
+  setPathKey(unix, '/new', 'darwin')
+  check('elsewhere only PATH is set; a variable that merely looks like it is left alone (POSIX is case-sensitive)', [unix.PATH, unix.Path], ['/new', 'kept'])
+  check(
+    'a WindowsApps alias (Claude Desktop\'s, say) is recognised as one, and nothing else is',
+    [
+      'C:\\Users\\Ada\\AppData\\Local\\Microsoft\\WindowsApps\\claude.exe',
+      'c:/users/ada/appdata/local/microsoft/windowsapps/Claude.exe',
+      'C:\\Users\\Ada\\.local\\bin\\claude.exe',
+      'C:\\Users\\Ada\\AppData\\Local\\Microsoft\\WinGet\\Links\\claude.exe'
+    ].map(isWindowsAppsAlias),
+    [true, true, false, false]
+  )
+  // The counterfactual: what pty.ts did before, on Windows.
+  const old: Record<string, string> = { Path: 'C:\\stale' }
+  old.PATH = 'C:\\fresh'
+  check('(the old code left two keys, the stale one first in insertion order)', Object.keys(old), ['Path', 'PATH'])
+}
 
 // The tally is the last statement in the file, and must stay that way: anything
 // after it is unfalsifiable (gotcha 50).

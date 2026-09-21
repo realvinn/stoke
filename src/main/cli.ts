@@ -89,8 +89,98 @@ export function shouldReprobe(failedAt: number, now: number): boolean {
   return failedAt === 0 || now - failedAt >= PROBE_RETRY_MS
 }
 
+/*
+ * Windows has no login shell to ask, but it has the same question and a better
+ * place to answer it: the registry holds the PATH every NEW process is given —
+ * the machine value, then the user's — and it is where every installer writes.
+ * `winget install`, Node's MSI, Codex's and Grok's install.ps1 and winget's own
+ * portable fallback folders all land there and nowhere else, and a Stoke started
+ * before them kept the PATH it was born with, so an agent installed from Stoke's
+ * own picker sat "not found" until Stoke restarted.
+ *
+ * `reg.exe` by absolute path, under the probe's own timeout; a failure is
+ * remembered for PROBE_RETRY_MS like the POSIX probe's, but never reported as a
+ * login-shell failure — the words `notFoundError` uses for that would be false
+ * here.
+ */
+let winPathProbe: Promise<string | null> | null = null
+let winPathFailedAt = 0
+
+/** The `Path` value out of `reg query <key> /v Path`, or null when it has none. */
+export function parseRegPath(stdout: string): string | null {
+  for (const line of stdout.split(/\r?\n/)) {
+    const m = /^\s+Path\s+REG_(?:EXPAND_)?SZ\s+(.*)$/i.exec(line)
+    if (m) return m[1].trim() || null
+  }
+  return null
+}
+
+/**
+ * `%NAME%` expanded the way Windows does it — case-insensitively, and a name it
+ * does not know left exactly as written. REG_EXPAND_SZ values are stored
+ * unexpanded; `%USERPROFILE%\.local\bin` means nothing to a directory walk.
+ */
+export function expandWinEnv(value: string, env: NodeJS.ProcessEnv): string {
+  const lower = new Map(Object.entries(env).map(([k, v]) => [k.toLowerCase(), v]))
+  return value.replace(/%([^%;]+)%/g, (whole, name: string) => lower.get(name.toLowerCase()) ?? whole)
+}
+
+function windowsRegistryPath(): Promise<string | null> {
+  if (winPathProbe) return winPathProbe
+  if (!shouldReprobe(winPathFailedAt, Date.now())) return Promise.resolve(null)
+  winPathProbe = (async () => {
+    const reg = join(process.env.SystemRoot ?? process.env.SYSTEMROOT ?? 'C:\\Windows', 'System32', 'reg.exe')
+    const read = async (key: string): Promise<string | null> => {
+      try {
+        const { stdout } = await execFileAsync(reg, ['query', key, '/v', 'Path'], {
+          timeout: PROBE_TIMEOUT_MS,
+          encoding: 'utf8',
+          windowsHide: true
+        })
+        return parseRegPath(stdout)
+      } catch {
+        // No such value (a user with no PATH of their own exits 1), or no reg.
+        return null
+      }
+    }
+    const [machine, user] = await Promise.all([
+      read('HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment'),
+      read('HKCU\\Environment')
+    ])
+    if (machine === null && user === null) {
+      winPathFailedAt = Date.now()
+      winPathProbe = null
+      return null
+    }
+    winPathFailedAt = 0
+    return [machine, user]
+      .filter((v): v is string => v !== null)
+      .map((v) => expandWinEnv(v, process.env))
+      .join(delimiter)
+  })()
+  return winPathProbe
+}
+
+/**
+ * Set PATH in an environment object that will become a child's, as ONE key.
+ *
+ * On Windows the variable is spelled `Path`, and `Object.entries(process.env)`
+ * keeps that spelling — so an env copied from it and then given `env.PATH = …`
+ * carries TWO entries. node-pty hands the object to CreateProcess in insertion
+ * order, and a case-insensitive lookup takes the first: the STALE inherited
+ * `Path`, not the one Stoke built. (pty.ts had `if (platform !== 'win32')
+ * env.Path = env.PATH`, the right repair on the wrong side of the condition.)
+ * Every other spelling is removed first, so exactly one survives.
+ */
+export function setPathKey(env: Record<string, string>, value: string, platform: string = process.platform): void {
+  if (platform === 'win32') {
+    for (const k of Object.keys(env)) if (k.toUpperCase() === 'PATH') delete env[k]
+  }
+  env.PATH = value
+}
+
 function loginShellPath(): Promise<string | null> {
-  if (isWin) return Promise.resolve(null)
+  if (isWin) return windowsRegistryPath()
   if (loginPathProbe) return loginPathProbe
   // Inside the cooldown from a failure: answer instantly rather than pay the
   // timeout again. Outside it, fall through and probe once more.
@@ -128,6 +218,8 @@ function loginShellPath(): Promise<string | null> {
  */
 export function forgetLoginPath(): void {
   if (probeFailedAt === 0) loginPathProbe = null
+  // Windows' equivalent: an installer just wrote the registry PATH.
+  if (winPathFailedAt === 0) winPathProbe = null
 }
 
 /**
@@ -349,10 +441,30 @@ async function locateAgent(cli: CodingCli): Promise<{ path: string | null; confl
   return { path: null, conflict: found[0] ?? null }
 }
 
-/** Find the claude executable, honouring an explicit user override first. */
+/**
+ * Whether a path is inside `%LOCALAPPDATA%\Microsoft\WindowsApps` — the folder
+ * of Store app execution aliases, which is on every Windows PATH.
+ */
+export function isWindowsAppsAlias(p: string): boolean {
+  return /[\\/]Microsoft[\\/]WindowsApps[\\/]/i.test(p)
+}
+
+/**
+ * Find the claude executable, honouring an explicit user override first.
+ *
+ * On Windows a `claude.exe` in WindowsApps is passed over, without being run:
+ * that folder holds Store app aliases, Claude Desktop's among them, and Claude
+ * Code is never installed there by any route (native → ~\.local\bin, npm →
+ * %APPDATA%\npm, winget → WinGet\Links). Windows compares names without case,
+ * so `Claude.exe` answers to `claude.exe` — and it comes before ~\.local\bin on
+ * PATH, which the native installer never adds itself. Running it to ask
+ * `--version` could open the desktop app's window, so it is not asked. A person
+ * whose Claude Code really is there sets the path in Settings, which wins above.
+ */
 export async function findClaude(override: string | null): Promise<string | null> {
   if (override && isFile(override)) return override
-  return findTool(candidateNames())
+  if (!isWin) return findTool(candidateNames())
+  return (await findAllTools(candidateNames())).find((p) => !isWindowsAppsAlias(p)) ?? null
 }
 
 /**

@@ -18,6 +18,7 @@ import {
   findCli,
   loginPathProbeFailed,
   notFoundError,
+  setPathKey,
   spawnSpec
 } from './cli.ts'
 import { windowFromBanner } from './sessionFile.ts'
@@ -419,8 +420,9 @@ export class PtyManager {
     // ever runs from an exit handler this session never gets to register.
     let proc: IPty
     try {
-      env.PATH = await buildEnvPath()
-      if (process.platform !== 'win32') env.Path = env.PATH
+      // One PATH key, not two: on Windows the copied env already holds `Path`,
+      // and a second `PATH` beside it lost to the stale one (cli.ts setPathKey).
+      setPathKey(env, await buildEnvPath())
       env.TERM = 'xterm-256color'
       env.COLORTERM = 'truecolor'
       // Tell Claude Code it is inside a wrapper, in case that ever matters to it.

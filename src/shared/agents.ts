@@ -483,12 +483,65 @@ export function installScript(ids: readonly string[], platform: string): string 
 export function scriptFor(steps: readonly InstallStep[], platform: string): string | null {
   if (!steps.length) return null
   if (platform === 'win32') {
-    const lines = ['$failed = @()']
+    const lines = [
+      '$failed = @()',
+      /*
+       * The PATH a NEW process would get, re-read before every step. An
+       * installer writes the registry, never this session's $env:Path, so
+       * without this a Node.js installed by the step above is invisible to the
+       * `npm install -g` below it ("npm is not recognized"), and so is every
+       * agent a vendor script just put on PATH. Machine first, then user, as
+       * Windows builds it; this session's own entries kept after them.
+       */
+      // Deduplicated, case-insensitively as Windows compares paths: appended
+      // once per step across eighteen agents, an undeduplicated PATH would pass
+      // the 32,767-character limit on an environment variable.
+      'function Update-StokePath {',
+      '  $seen = @{}',
+      "  $all = @([Environment]::GetEnvironmentVariable('Path', 'Machine'), [Environment]::GetEnvironmentVariable('Path', 'User'), $env:Path) -join ';'",
+      "  $env:Path = @(foreach ($p in ($all -split ';')) { if ($p -and -not $seen.ContainsKey($p.ToLowerInvariant())) { $seen[$p.ToLowerInvariant()] = $true; $p } }) -join ';'",
+      '}'
+    ]
+    const npmSteps = steps.filter((s) => s.command.startsWith('npm '))
+    if (npmSteps.length) {
+      /*
+       * A fresh Windows has no Node.js, and every `npm install -g` agent needs
+       * it — so a first-time user picking Gemini CLI got "npm is not
+       * recognized" and a red card. Installed here first, once, when missing:
+       * winget's Node LTS (an MSI, so Windows asks for permission once — this
+       * is an interactive tab, so the person is there to say yes), then PATH
+       * re-read so the steps below can see it. Without winget there is no
+       * route this script can take on its own, so it says where to get Node
+       * and those steps are marked failed rather than run into a wall.
+       */
+      const who = npmSteps.map((s) => s.label.replace(/'/g, "''")).join(', ')
+      lines.push(
+        'Update-StokePath',
+        '$nodeMissing = $false',
+        'if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {',
+        `  Write-Host ''`,
+        `  Write-Host '==> Installing Node.js, needed by ${who}' -ForegroundColor Cyan`,
+        '  if (Get-Command winget -ErrorAction SilentlyContinue) {',
+        `    Write-Host '    winget install --id OpenJS.NodeJS.LTS -e --source winget'`,
+        '    winget install --id OpenJS.NodeJS.LTS -e --source winget --accept-source-agreements --accept-package-agreements',
+        '    Update-StokePath',
+        '  }',
+        '  if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {',
+        `    Write-Host '    Node.js is not installed, and this machine has no winget to install it with. Get it from https://nodejs.org, then run this again.' -ForegroundColor Red`,
+        '    $nodeMissing = $true',
+        '  }',
+        '}'
+      )
+    }
     for (const s of steps) {
       lines.push(`Write-Host ''`, `Write-Host '==> Installing ${s.label}' -ForegroundColor Cyan`)
       if (s.needs) lines.push(`Write-Host '    needs ${s.needs}'`)
       if (s.note) lines.push(`Write-Host '    ${s.note.replace(/'/g, "''")}'`)
       lines.push(`Write-Host '    ${s.command.replace(/'/g, "''")}'`)
+      lines.push('Update-StokePath')
+      if (s.command.startsWith('npm ')) {
+        lines.push(`if ($nodeMissing) { $failed += '${s.label}' } else {`)
+      }
       /*
        * Each step in its own PowerShell, found by review twice over. In one
        * shared session a vendor script's `exit` inside `irm | iex` ends the
@@ -498,10 +551,21 @@ export function scriptFor(steps: readonly InstallStep[], platform: string): stri
        * its step's and nobody else's. `-EncodedCommand` for the same quoting
        * reason as the outer script (pty.ts installerArgs).
        */
+      /*
+       * A winget install of something already there exits
+       * UPDATE_NOT_APPLICABLE (0x8A15002B) — or PACKAGE_ALREADY_INSTALLED
+       * (0x8A150061) with --no-upgrade — and that is "installed", not a red
+       * card. Decided inside the step, because the child PowerShell's own exit
+       * code is only 0 or 1 unless the step says `exit` itself.
+       */
+      const body = s.command.startsWith('winget ')
+        ? `${s.command}; if (@(-1978335189, -1978335135) -contains $LASTEXITCODE) { exit 0 }; exit $LASTEXITCODE`
+        : s.command
       lines.push(
-        `& powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${powershellEncode(s.command)}`,
+        `& powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${powershellEncode(body)}`,
         `if ($LASTEXITCODE -ne 0) { $failed += '${s.label}' }`
       )
+      if (s.command.startsWith('npm ')) lines.push('}')
     }
     lines.push(
       `Write-Host ''`,
