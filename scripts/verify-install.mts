@@ -304,15 +304,21 @@ ok(
     ps1Code.indexOf('$cmp -eq 0 -and $empty') < ps1Code.indexOf('is already installed. Nothing to do.')
 )
 // The architecture comes from the MACHINE, not from this process's
-// PROCESSOR_ARCHITECTURE: Git Bash on an arm64 PC is emulated x64, and its
-// handoff installed the x64 build on windows-11-arm — twice, the second time
-// with the registry's value consulted too.
-ok(
-  'install.ps1 asks WMI for the processor (a native service), and trusts its own process\'s PROCESSOR_ARCHITECTURE only when WMI does not answer',
-  /Get-CimInstance -ClassName Win32_Processor/.test(ps1Code) &&
-    /if \(\$cpu -eq 12\) \{/.test(ps1Code) &&
-    /elseif \(\$null -eq \$cpu -and \(\$env:PROCESSOR_ARCHITECTURE -eq 'ARM64'/.test(ps1Code)
-)
+// PROCESSOR_ARCHITECTURE: Git Bash on an arm64 PC is emulated x64, its
+// handoff arrived saying AMD64, and the x64 build was installed. Measured on
+// windows-11-arm: the registry and WMI answer ARM64 there, the environment
+// and RuntimeInformation do not.
+{
+  const at = (needle: string): number => ps1Code.indexOf(needle)
+  ok(
+    'install.ps1 reads the machine\'s architecture from Session Manager\'s registry value first, then WMI, and its own process\'s last',
+    at("-Name PROCESSOR_ARCHITECTURE") > -1 &&
+      at('Get-CimInstance -ClassName Win32_Processor') > at("-Name PROCESSOR_ARCHITECTURE") &&
+      at('$env:PROCESSOR_ARCHITEW6432) {') > at('Get-CimInstance -ClassName Win32_Processor') &&
+      /\$arch = if \(\$machineArch -eq 'ARM64'\) \{ 'arm64' \} else \{ 'x64' \}/.test(ps1Code)
+  )
+  ok('and never RuntimeInformation.OSArchitecture, which said X64 on arm64 under emulation', !ps1Code.includes('OSArchitecture'))
+}
 ok(
   'and after installing, an exit 0 with no Stoke.exe is an error that names the portable zip, not "installed"',
   /Join-Path \$after\.Location 'Stoke\.exe'\)\)\) \{\s*throw "[^"]*portable zip/.test(ps1Code)

@@ -516,10 +516,17 @@ which stays a deliberate, manual act (the Worker serves what was embedded at the
 > none of which asked what the installed Stoke.exe was built for. An emulated x64 Stoke works, but
 > slowly, and its updater then follows `process.arch` and stays x64 for good. The workflow's
 > one-liner check now reads Stoke.exe's PE machine field (0x8664 x64, 0xAA64 arm64) against the
-> runner's arch. **The first fix did not work:** reading `PROCESSOR_ARCHITECTURE` from
-> `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment` first still installed x64
-> from Git Bash (run 35567028737 — caught by the new PE check). install.ps1 now asks WMI
-> (`Win32_Processor.Architecture`, 12 = ARM64), answered by a native service, and falls back to
-> the environment only when WMI does not answer; `scripts/windows-arch-probe.ps1` prints what every
-> source — env, registry, WMI, `IsWow64Process2`, `RuntimeInformation` — says from Git Bash, so
-> the next run shows which ones lie under emulation rather than leaving it to a guess.
+> runner's arch. install.ps1 reads the MACHINE's value instead — Session Manager's registry
+> `PROCESSOR_ARCHITECTURE`, then WMI's `Win32_Processor.Architecture` (12 = ARM64), its own
+> process's value last. Measured from a Windows PowerShell started by Git Bash on
+> `windows-11-arm` (`scripts/windows-arch-probe.ps1`, run 35568658784): env `AMD64` and .NET
+> `RuntimeInformation.OSArchitecture` `X64` are wrong; the registry `ARM64`, WMI `12` and
+> `IsWow64Process2`'s native `0xAA64` are right.
+>
+> **And the Git Bash leg had never tested this branch's install.ps1 at all.** install.sh's handoff
+> fetches a hard-coded `STOKE_PS1_URL` (https://stoke.vinn.dev/install.ps1), so the leg ran the
+> DEPLOYED script whatever the branch said — which is why the registry fix looked like it "did not
+> work" there (it was never run) and the second attempt was written against a false reading.
+> `scripts/serve-install.mjs` now rewrites that one assignment to point at itself and refuses to
+> start if the line is gone. Every Git Bash user on arm64 still gets the x64 build until
+> `npm run deploy:install`.

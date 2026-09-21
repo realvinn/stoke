@@ -395,23 +395,27 @@ function Install-Stoke {
 
   # The MACHINE's architecture, not this process's. PROCESSOR_ARCHITECTURE
   # describes the process, and PowerShell inherits it from whatever started it:
-  # Git Bash on an arm64 PC is an x64 program running emulated, and the
-  # handoff from install.sh arrived saying AMD64 and installed the x64 build
-  # (measured on GitHub's windows-11-arm). Reading Session Manager's registry
-  # value first did not correct it either (scripts/windows-arch-probe.ps1
-  # records what each source says there). Win32_Processor is answered by the
-  # WMI service, a native process: 12 is ARM64. The environment is the
-  # fallback for a machine whose WMI does not answer.
-  $cpu = $null
+  # Git Bash on an arm64 PC is an x64 program running emulated, and its handoff
+  # arrived saying AMD64 and installed the x64 build. Measured on GitHub's
+  # windows-11-arm from a Windows PowerShell started by Git Bash
+  # (scripts/windows-arch-probe.ps1): the environment said AMD64 and .NET's
+  # RuntimeInformation X64 (both wrong); Session Manager's registry value said
+  # ARM64, WMI's Win32_Processor 12 and IsWow64Process2 0xAA64 (all right). So:
+  # the registry, then WMI, and this process's own value only if neither answers.
+  $machineArch = $null
   try {
-    $cpu = (Get-CimInstance -ClassName Win32_Processor -ErrorAction Stop | Select-Object -First 1).Architecture
+    $machineArch = (Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' -Name PROCESSOR_ARCHITECTURE -ErrorAction Stop).PROCESSOR_ARCHITECTURE
   } catch { }
-  $arch = 'x64'
-  if ($cpu -eq 12) {
-    $arch = 'arm64'
-  } elseif ($null -eq $cpu -and ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64' -or $env:PROCESSOR_ARCHITEW6432 -eq 'ARM64')) {
-    $arch = 'arm64'
+  if (-not $machineArch) {
+    try {
+      $cpu = (Get-CimInstance -ClassName Win32_Processor -ErrorAction Stop | Select-Object -First 1).Architecture
+      if ($cpu -eq 12) { $machineArch = 'ARM64' } elseif ($null -ne $cpu) { $machineArch = 'AMD64' }
+    } catch { }
   }
+  if (-not $machineArch) {
+    $machineArch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+  }
+  $arch = if ($machineArch -eq 'ARM64') { 'arm64' } else { 'x64' }
 
   $plan = Get-FirePlan
   $tmp = Join-Path ([IO.Path]::GetTempPath()) ("stoke-install-" + [Guid]::NewGuid().ToString('N'))
