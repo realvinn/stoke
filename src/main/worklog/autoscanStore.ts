@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import type { AutoScanSnapshot, StoredActivity } from './autoscan.ts'
+import { UNVERSIONED_COUNT, type AutoScanSnapshot, type StoredActivity } from './autoscan.ts'
 
 /**
  * Where the auto-scanner's baselines live between runs.
@@ -40,7 +40,11 @@ function activity(v: unknown): StoredActivity | null {
     sessionId,
     scannedMessages,
     lastScanAt: num(v.lastScanAt) ?? 0,
-    mutedUntil: num(v.mutedUntil) ?? 0
+    mutedUntil: num(v.mutedUntil) ?? 0,
+    // Absent means an earlier build wrote it, which counted another way
+    // (gotcha 103). Kept rather than dropped: `observe` re-takes the count on
+    // first sight but still wants the record's cooldown and mute.
+    countVersion: num(v.countVersion) ?? UNVERSIONED_COUNT
   }
 }
 

@@ -8,9 +8,11 @@ import {
   CHUNK,
   contextLimitFor,
   contextUsed,
+  mapLimit,
   parseSession,
   readRange,
-  safeParse
+  safeParse,
+  type ParsedSession
 } from './sessionFile.ts'
 
 const isWin = process.platform === 'win32'
@@ -520,22 +522,90 @@ export async function migrateSymlinkedProjectKeys(
 }
 
 /** Directory holding a project's transcripts, or null when it has no history. */
-export async function historyDirFor(projectPath: string): Promise<string | null> {
+export async function historyDirFor(
+  projectPath: string,
+  root: string = projectsRoot()
+): Promise<string | null> {
   const encoded = encodePath(normalize(projectPath))
-  const direct = join(projectsRoot(), encoded)
+  const direct = join(root, encoded)
   if (await pathExists(direct)) return direct
   // Windows history dirs may differ in case from the encoded path.
   try {
-    const entries = await readdir(projectsRoot(), { withFileTypes: true })
+    const entries = await readdir(root, { withFileTypes: true })
     const hit = entries.find((e) => e.isDirectory() && e.name.toLowerCase() === encoded.toLowerCase())
-    return hit ? join(projectsRoot(), hit.name) : null
+    return hit ? join(root, hit.name) : null
   } catch {
     return null
   }
 }
 
-export async function listSessions(projectPath: string): Promise<SessionMeta[]> {
-  const dir = await historyDirFor(projectPath)
+/**
+ * How many transcripts `listSessions` stats and parses at once. Parsing is CPU
+ * on the one main thread, so more in flight buys nothing but open handles and
+ * memory; `sessionIndex.ts` settled on the same number for the same reason.
+ */
+const LIST_CONCURRENCY = 8
+/**
+ * Transcripts `listSessions` remembers a parse for. Each entry is a few hundred
+ * bytes, so this bounds a pathological history, not an ordinary one: 76
+ * transcripts across every project on the machine this was written on.
+ */
+const LIST_CACHE_MAX = 2000
+
+interface ListCached {
+  /** The history directory the file was listed from, for pruning. */
+  dir: string
+  mtimeMs: number
+  size: number
+  /**
+   * The parse, as a promise set before anything is awaited, so two overlapping
+   * lists (the focus re-fetch landing during a project switch) share one parse
+   * of a file rather than both running it (gotcha 20's shape).
+   */
+  parsed: Promise<ParsedSession | null>
+}
+
+/** Transcript path -> its parse, and the mtime and size it was parsed at. */
+export type SessionListCache = Map<string, ListCached>
+
+export function createSessionListCache(): SessionListCache {
+  return new Map()
+}
+
+/** The process's own. A suite passes its own so runs cannot see each other. */
+const sharedListCache = createSessionListCache()
+
+/** Counters a suite reads to prove only a changed transcript is parsed again. */
+export interface SessionListStats {
+  parses: number
+  cacheHits: number
+}
+
+export interface SessionListOptions {
+  /** The directory holding the per-project history folders. `~/.claude/projects` by default. */
+  root?: string
+  cache?: SessionListCache
+  stats?: SessionListStats
+}
+
+/**
+ * Every session of one project, newest first, with what the expanded sidebar
+ * list shows: title, first prompt, message count, context reading.
+ *
+ * Cached per transcript on (path, mtime, size), bounded to `LIST_CONCURRENCY`
+ * at once, and a miss is `parseSession`'s streamed pass (gotcha 103). This ran
+ * `parseSession` over every transcript of the project under an unbounded
+ * `Promise.all` on every call, and the renderer calls it on every window focus
+ * while the browsed project has a live session: 24 transcripts, 119 MB, ~300
+ * ms and main-process blocks of 40-80 ms on each focus, with the terminal
+ * frozen behind them. Now a focus parses only the transcript that moved.
+ */
+export async function listSessions(
+  projectPath: string,
+  opts: SessionListOptions = {}
+): Promise<SessionMeta[]> {
+  const cache = opts.cache ?? sharedListCache
+  const dir = await historyDirFor(projectPath, opts.root)
   if (!dir) return []
 
   let files: string[]
@@ -545,32 +615,65 @@ export async function listSessions(projectPath: string): Promise<SessionMeta[]> 
     return []
   }
 
-  const metas = await Promise.all(
-    files.map(async (f): Promise<SessionMeta | null> => {
-      const full = join(dir, f)
-      try {
-        const st = await stat(full)
-        const parsed = await parseSession(full)
-        const used = contextUsed(parsed)
-        return {
-          id: f.replace(/\.jsonl$/, ''),
-          file: full,
-          projectPath,
-          title: parsed.title,
-          firstPrompt: parsed.firstPrompt,
-          modified: st.mtimeMs,
-          sizeBytes: st.size,
-          messageCount: parsed.messageCount,
-          model: parsed.model,
-          contextTokens: used,
-          contextLimit: contextLimitFor(parsed.model, used),
-          gitBranch: parsed.gitBranch
+  const metas = await mapLimit(files, LIST_CONCURRENCY, async (f): Promise<SessionMeta | null> => {
+    const full = join(dir, f)
+    try {
+      const st = await stat(full)
+      // A directory that happens to end in `.jsonl` is not a transcript.
+      if (!st.isFile()) return null
+      let entry = cache.get(full)
+      if (entry && entry.mtimeMs === st.mtimeMs && entry.size === st.size) {
+        if (opts.stats) opts.stats.cacheHits++
+        // Re-inserted, so the bound below evicts the least recently listed.
+        cache.delete(full)
+        cache.set(full, entry)
+      } else {
+        if (opts.stats) opts.stats.parses++
+        const fresh: ListCached = {
+          dir,
+          mtimeMs: st.mtimeMs,
+          size: st.size,
+          parsed: parseSession(full).catch(() => null)
         }
-      } catch {
-        return null
+        cache.delete(full)
+        cache.set(full, fresh)
+        // A failed read is not remembered: the next list tries the file again.
+        void fresh.parsed.then((r) => {
+          if (r === null && cache.get(full) === fresh) cache.delete(full)
+        })
+        entry = fresh
       }
-    })
-  )
+      const parsed = await entry.parsed
+      if (!parsed) return null
+      const used = contextUsed(parsed)
+      return {
+        id: f.replace(/\.jsonl$/, ''),
+        file: full,
+        projectPath,
+        title: parsed.title,
+        firstPrompt: parsed.firstPrompt,
+        modified: st.mtimeMs,
+        sizeBytes: st.size,
+        messageCount: parsed.messageCount,
+        model: parsed.model,
+        contextTokens: used,
+        contextLimit: contextLimitFor(parsed.model, used),
+        gitBranch: parsed.gitBranch
+      }
+    } catch {
+      return null
+    }
+  })
+
+  // Forget this directory's transcripts that are gone, then hold the bound.
+  const present = new Set(files.map((f) => join(dir, f)))
+  for (const [file, cached] of cache) {
+    if (cached.dir === dir && !present.has(file)) cache.delete(file)
+  }
+  for (const file of cache.keys()) {
+    if (cache.size <= LIST_CACHE_MAX) break
+    cache.delete(file)
+  }
 
   return metas
     .filter((m): m is SessionMeta => m !== null)

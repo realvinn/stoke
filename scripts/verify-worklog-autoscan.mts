@@ -25,6 +25,8 @@ import {
   DEFAULT_AUTOSCAN,
   HOUR_MS,
   MAX_TRACKED,
+  MESSAGE_COUNT_VERSION,
+  UNVERSIONED_COUNT,
   autoScanVerdict,
   type AutoScanConfig,
   type AutoScanSnapshot,
@@ -459,11 +461,27 @@ console.log('\nthe file the state survives in')
   const dir = mkdtempSync(join(tmpdir(), 'stoke-autoscan-'))
   const file = autoScanStateFile(dir)
   const written: AutoScanSnapshot = {
-    sessions: [{ sessionId: 's1', scannedMessages: 7, lastScanAt: 3, mutedUntil: 4 }],
+    sessions: [
+      { sessionId: 's1', scannedMessages: 7, lastScanAt: 3, mutedUntil: 4, countVersion: MESSAGE_COUNT_VERSION }
+    ],
     recentScans: [1, 2]
   }
   writeAutoScanState(file, written)
   check('it round-trips', readAutoScanState(file), written)
+  // Byte for byte what a build before the count version wrote (gotcha 103).
+  writeFileSync(
+    file,
+    JSON.stringify({
+      sessions: [{ sessionId: 's1', scannedMessages: 87, lastScanAt: 3, mutedUntil: 4 }],
+      recentScans: []
+    }),
+    'utf8'
+  )
+  check(
+    "an earlier build's record, which has no count version, reads back as that earlier version",
+    readAutoScanState(file).sessions,
+    [{ sessionId: 's1', scannedMessages: 87, lastScanAt: 3, mutedUntil: 4, countVersion: UNVERSIONED_COUNT }]
+  )
   check('a missing file is an empty state, not a crash', readAutoScanState(join(dir, 'nope.json')), {
     sessions: [],
     recentScans: []
@@ -531,7 +549,13 @@ console.log('\nwhat survives a restart')
      would make the verdict below 'cooldown' and prove nothing about baselines. */
   const restored: AutoScanSnapshot = {
     sessions: [
-      { sessionId: 's1', scannedMessages: 100, lastScanAt: NOW - cfg.cooldownMs - 1, mutedUntil: 0 }
+      {
+        sessionId: 's1',
+        scannedMessages: 100,
+        lastScanAt: NOW - cfg.cooldownMs - 1,
+        mutedUntil: 0,
+        countVersion: MESSAGE_COUNT_VERSION
+      }
     ],
     recentScans: [NOW - 1000]
   }
@@ -562,6 +586,109 @@ console.log('\nwhat survives a restart')
   scanner.observe('s2', 12, NOW - cfg.idleMs - 1)
   check('a session nobody stored still baselines on first sight', scanner.state('s2')?.scannedMessages, 12)
   scanner.dispose()
+}
+
+console.log('\na baseline an earlier build counted another way is re-taken, never scanned')
+{
+  /*
+   * Gotcha 103. Builds before it sampled a transcript past 32 MB, so a 38 MB
+   * session holding 2,154 messages was counted — and its baseline saved — as
+   * 87. The exact count this build reads makes that 2,067 messages of "new
+   * work", and every other rule passes for a quiet session: one automatic,
+   * PAID scan on the first tick after upgrading, for work nobody did.
+   *
+   * The file is written as that build wrote it and read back through the real
+   * store, so what is proven is the upgrade path, not a hand-built record.
+   */
+  const dir = mkdtempSync(join(tmpdir(), 'stoke-autoscan-version-'))
+  const file = autoScanStateFile(dir)
+  try {
+    const cooled = NOW - cfg.cooldownMs - 1
+    writeFileSync(
+      file,
+      JSON.stringify({
+        sessions: [
+          { sessionId: 'sampled', scannedMessages: 87, lastScanAt: cooled, mutedUntil: 0 },
+          { sessionId: 'unopened', scannedMessages: 87, lastScanAt: cooled, mutedUntil: 0 },
+          {
+            sessionId: 'future',
+            scannedMessages: 87,
+            lastScanAt: cooled,
+            mutedUntil: 0,
+            countVersion: MESSAGE_COUNT_VERSION + 1
+          }
+        ],
+        recentScans: []
+      }),
+      'utf8'
+    )
+    const scans: string[] = []
+    const writes: AutoScanSnapshot[] = []
+    const scanner = new AutoScanner({
+      enabled: () => true,
+      watched: () => true,
+      scan: async (id) => {
+        scans.push(id)
+        return 0
+      },
+      now: () => NOW,
+      restore: () => readAutoScanState(file),
+      persist: (s) => writes.push(s)
+    })
+    const quiet = NOW - cfg.idleMs - 1
+    scanner.observe('sampled', 2154, quiet)
+    check(
+      "an earlier build's baseline is re-taken at the current count",
+      scanner.state('sampled')?.scannedMessages,
+      2154
+    )
+    check(
+      'so a small stored count under a large current one is NOT a scan',
+      autoScanVerdict(scanner.state('sampled')!, NOW, [], cfg),
+      { scan: false, reason: 'too-little-work' }
+    )
+    check('its last scan time still comes back: a time is a time', scanner.state('sampled')?.lastScanAt, cooled)
+
+    scanner.observe('future', 2154, quiet)
+    check(
+      'a count version this build does not know is re-taken too',
+      scanner.state('future')?.scannedMessages,
+      2154
+    )
+
+    await scanner.evaluate()
+    await new Promise((r) => setTimeout(r, 0))
+    check('and a full pass starts no paid run for either', scans, [])
+
+    // Not a permanent block: the next real work block is scanned as always.
+    scanner.observe('sampled', 2154 + cfg.minNewMessages, quiet)
+    check(
+      'work after the re-baseline still counts',
+      autoScanVerdict(scanner.state('sampled')!, NOW, [], cfg),
+      { scan: true }
+    )
+    await scanner.evaluate()
+    await new Promise((r) => setTimeout(r, 0))
+    check('and is scanned', scans, ['sampled'])
+
+    const saved = writes.at(-1)?.sessions ?? []
+    const byId = (id: string) => saved.find((s) => s.sessionId === id)
+    check(
+      'a re-taken baseline is written back at the current count version',
+      [byId('sampled')?.scannedMessages, byId('sampled')?.countVersion],
+      [2154 + cfg.minNewMessages, MESSAGE_COUNT_VERSION]
+    )
+    /* A session whose tab never reopened was never re-counted. Stamping it
+       current on the way out would make the next launch trust the 87. */
+    check(
+      'one never re-observed goes back out with the version it came in with',
+      [byId('unopened')?.scannedMessages, byId('unopened')?.countVersion],
+      [87, UNVERSIONED_COUNT]
+    )
+    scanner.dispose()
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 }
 
 console.log('\nand when it is written down')

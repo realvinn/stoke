@@ -2,7 +2,7 @@ import { open, readdir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { Project, SessionIndexEntry } from '@shared/types'
 import { projectsRoot } from './projects.ts'
-import { CHUNK, promptOf, safeParse, titleOf } from './sessionFile.ts'
+import { CHUNK, mapLimit, promptOf, safeParse, titleOf } from './sessionFile.ts'
 
 /**
  * What search needs to know about every session on the machine — its title and
@@ -10,9 +10,11 @@ import { CHUNK, promptOf, safeParse, titleOf } from './sessionFile.ts'
  *
  * `listSessions` answers a different question and pays for it: it parses every
  * transcript of ONE project end to end, because the expanded list shows the
- * context meter and the message count. Run for every project on a keystroke it
- * would read everything under `~/.claude/projects` — 297 MB across 95
- * transcripts on the machine this was written on, one of them 38 MB.
+ * context meter and the message count. It streams and caches per file now
+ * (gotcha 103), but a first listing still reads all of it, and run for every
+ * project on a keystroke it would read everything under `~/.claude/projects` —
+ * 297 MB across 95 transcripts on the machine this was written on, one of them
+ * 38 MB.
  *
  * Neither field needs that. The first prompt is near the head of a transcript,
  * and the newest `ai-title` near its tail (measured: always inside the last
@@ -324,22 +326,4 @@ function promptFromCutLine(line: string): string | null {
     return null
   }
   return typeof text === 'string' ? promptOf({ type: 'user', message: { content: text } }) : null
-}
-
-/** `Promise.all` over `items`, with at most `limit` of `fn` in flight. Order is kept. */
-async function mapLimit<T, R>(
-  items: readonly T[],
-  limit: number,
-  fn: (item: T) => Promise<R>
-): Promise<R[]> {
-  const out = new Array<R>(items.length)
-  let next = 0
-  const worker = async (): Promise<void> => {
-    while (next < items.length) {
-      const i = next++
-      out[i] = await fn(items[i])
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
-  return out
 }

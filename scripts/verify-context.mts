@@ -5,12 +5,20 @@
  * (Node strips the type annotations natively; there is no build step.)
  */
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
-import { mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdtemp, open, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { ContextWatcher } from '../src/main/context.ts'
 import { findSessionFile } from '../src/main/projects.ts'
-import { contextLimitFor, contextUsed, parseSession } from '../src/main/sessionFile.ts'
+import {
+  contextLimitFor,
+  contextUsed,
+  createFold,
+  finishFold,
+  foldFrom,
+  foldLines,
+  parseSession
+} from '../src/main/sessionFile.ts'
 import { readStatusLine, statusLinePayloadFile, windowFor } from '../src/main/statusLine.ts'
 import type { ContextSnapshot } from '../src/shared/types.ts'
 
@@ -341,6 +349,120 @@ check(
 )
 
 await rm(fixtureDir, { recursive: true, force: true })
+
+/* ------------------------------------------------------------------------
+   Reading a real transcript in pieces (gotcha 103).
+
+   The watcher folds a transcript once and then only what is appended, and
+   `parseSession` streams it a chunk at a time; both must answer exactly what
+   one fold of the whole text answers. `verify:folders` holds that on synthetic
+   transcripts in CI; this holds it on the largest real ones here, which carry
+   what no fixture thought of — megabyte lines, pasted images, every record
+   type the CLI has ever written.
+
+   Everything is bounded to the size stat'd at the start: these are live files,
+   and the one this suite runs from is being appended to while it runs.
+   ------------------------------------------------------------------------ */
+{
+  const sameFold = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b)
+  // A fixed sequence per file, so a failing cut point is printed and reproduces.
+  const lcg = (seed: number) => () => {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0
+    return seed / 4294967296
+  }
+  /*
+   * Up to LINE_CUTS cuts just after a newline, then up to BYTE_CUTS anywhere
+   * strictly inside the file (mid-line, mid-character).
+   *
+   * Both loops are bounded by what the file can offer AND by attempts. A set
+   * holds no more distinct cuts than there are newlines, or bytes, to cut at,
+   * and the largest transcript on a fresh machine can be a few lines long: the
+   * unbounded `while (cuts.size < 9)` this replaces never returned there, and
+   * `npm run check` hung on it rather than failing.
+   */
+  const LINE_CUTS = 6
+  const BYTE_CUTS = 3
+  const pickCuts = (newlines: readonly number[], size: number, rnd: () => number): Set<number> => {
+    const cuts = new Set<number>()
+    const lineTarget = Math.min(LINE_CUTS, newlines.length)
+    for (let tries = 0; cuts.size < lineTarget && tries < 100 * LINE_CUTS; tries++) {
+      cuts.add(newlines[Math.floor(rnd() * newlines.length)])
+    }
+    // 1..size-1 is size-1 positions; some may already be newline cuts, which
+    // the attempt cap, not the target, then settles.
+    const byteTarget = cuts.size + Math.min(BYTE_CUTS, Math.max(0, size - 1))
+    for (let tries = 0; cuts.size < byteTarget && tries < 100 * BYTE_CUTS; tries++) {
+      cuts.add(1 + Math.floor(rnd() * (size - 1)))
+    }
+    return cuts
+  }
+  // The shapes a fresh machine can hand it, run here because this machine's
+  // own largest transcripts never will. Each must return, and stay in range.
+  for (const [what, newlines, size, want] of [
+    ['an empty file', [], 0, 0],
+    ['one byte, no newline', [], 1, 0],
+    ['two bytes, one newline at the end', [2], 2, 2],
+    ['"\\n\\n\\n": every inner byte is already a newline cut', [1, 2, 3], 3, 3],
+    ['two short lines', [3, 6], 6, 5],
+    ['a large file', Array.from({ length: 50 }, (_, i) => (i + 1) * 100), 5000, LINE_CUTS + BYTE_CUTS]
+  ] as const) {
+    const cuts = pickCuts(newlines, size, lcg(size + 1))
+    check(
+      `cut points for ${what}: ${want} picked, all within the file`,
+      cuts.size === want && [...cuts].every((c) => c >= 1 && c <= size),
+      [...cuts].sort((a, b) => a - b).join(', ') || 'none'
+    )
+  }
+
+  for (const f of sample.slice(0, 3)) {
+    const name = f.path.split(/[\\/]/).pop()
+    const fh = await open(f.path, 'r')
+    try {
+      const size = (await fh.stat()).size
+      const one = { fold: createFold(), offset: 0 }
+      await foldFrom(fh, one, size)
+      const text = Buffer.alloc(one.offset)
+      await fh.read(text, 0, one.offset, 0)
+      const whole = createFold()
+      foldLines(whole, text.toString('utf8'))
+      check(
+        `${name}: a streamed pass equals the whole-text fold`,
+        sameFold(finishFold(one.fold), finishFold(whole)),
+        `${fmt(one.offset)} bytes, ${one.fold.messageCount} messages`
+      )
+
+      const newlines: number[] = []
+      for (let i = text.indexOf(0x0a); i >= 0; i = text.indexOf(0x0a, i + 1)) newlines.push(i + 1)
+      const cuts = pickCuts(newlines, size, lcg(size))
+      if (cuts.size === 0) {
+        console.log(`SKIP  ${name}: ${fmt(size)} bytes, nothing to cut, so no cut-point check`)
+        continue
+      }
+      if (cuts.size < LINE_CUTS + BYTE_CUTS) {
+        console.log(
+          `NOTE  ${name}: ${newlines.length} line(s) in ${fmt(size)} bytes, so ${cuts.size} of ` +
+            `${LINE_CUTS + BYTE_CUTS} cut points`
+        )
+      }
+      const wrong: number[] = []
+      for (const cut of cuts) {
+        const piecewise = { fold: createFold(), offset: 0 }
+        await foldFrom(fh, piecewise, cut)
+        await foldFrom(fh, piecewise, size)
+        if (!sameFold(finishFold(piecewise.fold), finishFold(one.fold)) || piecewise.offset !== one.offset) {
+          wrong.push(cut)
+        }
+      }
+      check(
+        `${name}: folding up to a cut and then the rest equals one pass, at ${cuts.size} cut points`,
+        wrong.length === 0,
+        wrong.length ? `wrong at ${wrong.join(', ')}` : [...cuts].sort((a, b) => a - b).join(', ')
+      )
+    } finally {
+      await fh.close()
+    }
+  }
+}
 
 console.log(`\n${failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} FAILED: ${failures.join(', ')}`}`)
 process.exit(failures.length === 0 ? 0 : 1)

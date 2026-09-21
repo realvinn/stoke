@@ -1,7 +1,13 @@
 import { stat } from 'node:fs/promises'
 import type { ContextSnapshot } from '@shared/types'
 import { findSessionFile } from './projects.ts'
-import { contextLimitFor, contextUsed, parseSession } from './sessionFile.ts'
+import {
+  advanceCursor,
+  contextLimitFor,
+  contextUsed,
+  finishFold,
+  type TranscriptCursor
+} from './sessionFile.ts'
 
 /**
  * Watches the transcripts of live sessions and publishes context-window
@@ -10,6 +16,19 @@ import { contextLimitFor, contextUsed, parseSession } from './sessionFile.ts'
  * Polling beats fs.watch here: transcripts are appended to constantly, watch
  * semantics for appends differ across macOS and Windows, and we only ever track
  * the handful of sessions that have an open tab.
+ *
+ * Incremental, not a re-parse (gotcha 103). A tick whose transcript moved used to
+ * run `parseSession` over the whole file — 40-130 ms of blocked main process per
+ * tick for a 16-22 MB transcript, several times a minute per busy tab, and every
+ * pty byte and keystroke waited behind it. Each `Watch` now keeps a
+ * `TranscriptCursor`: the first tick streams the file once (yielding between
+ * 1 MB chunks), and every later one reads only the bytes appended since.
+ *
+ * No `FULL_READ_LIMIT` sampling here, deliberately. Sampling existed to bound a
+ * whole-file read's time and memory; a streamed pass bounds both on its own, and
+ * after it the cost is the append. Sampling cost the meter an exact message
+ * count (a 38 MB transcript read as 87 messages) and could miss the newest
+ * usage record — both worse than one streamed first pass of a huge file.
  */
 
 const POLL_MS = 1500
@@ -30,7 +49,18 @@ interface Watch {
    * initial publish would be skipped.
    */
   lastWindow?: number | null
+  /**
+   * How far into `file` this watch has folded, or null before the first read
+   * and after anything that invalidates it (a new file, a vanished one). Per
+   * watch rather than per path on purpose: it is only trustworthy while the
+   * watch that built it is the one checking the file is still the same.
+   */
+  cursor: TranscriptCursor | null
   timer: NodeJS.Timeout | null
+  /** A tick is in flight. Claimed before its first await (gotcha 20). */
+  busy: boolean
+  /** `refresh()` arrived while `busy`: tick again as soon as this one ends. */
+  again: boolean
   disposed: boolean
 }
 
@@ -116,7 +146,10 @@ export class ContextWatcher {
       file: null,
       lastMtime: 0,
       lastWindow: undefined,
+      cursor: null,
       timer: null,
+      busy: false,
+      again: false,
       disposed: false
     }
     this.watches.set(sessionId, w)
@@ -135,11 +168,23 @@ export class ContextWatcher {
     for (const id of [...this.watches.keys()]) this.unwatch(id)
   }
 
-  /** Force an immediate re-read, e.g. right after a tab is focused. */
+  /**
+   * Force an immediate publish, e.g. right after a tab is focused. The cursor
+   * is kept: nothing already folded is read again.
+   */
   refresh(sessionId: string): void {
     const w = this.watches.get(sessionId)
     if (!w) return
     w.lastMtime = 0
+    /*
+     * Never a second tick beside one in flight. Two passes advancing one cursor
+     * would fold the same appended lines twice, and each would schedule its own
+     * timer, leaving two polling chains for the life of the watch.
+     */
+    if (w.busy) {
+      w.again = true
+      return
+    }
     if (w.timer) clearTimeout(w.timer)
     void this.tick(w)
   }
@@ -150,7 +195,26 @@ export class ContextWatcher {
   }
 
   private async tick(w: Watch): Promise<void> {
-    if (w.disposed) return
+    if (w.disposed || w.busy) return
+    w.busy = true
+    let next: number
+    try {
+      next = await this.pass(w)
+    } catch {
+      next = this.interval(w.sessionId)
+    } finally {
+      w.busy = false
+    }
+    if (w.again) {
+      w.again = false
+      next = 0
+    }
+    this.schedule(w, next)
+  }
+
+  /** One poll of one session. Returns the delay before the next. */
+  private async pass(w: Watch): Promise<number> {
+    const volatile = this.volatile(w.sessionId)
 
     /*
      * A volatile source is re-resolved every tick, not just once.
@@ -161,17 +225,20 @@ export class ContextWatcher {
      * while the session carries on — a stale reading that looks exactly like a
      * working one.
      */
-    if (!w.file || this.volatile(w.sessionId)) {
+    if (!w.file || volatile) {
       const found = await this.resolve(w.sessionId)
+      if (w.disposed) return 0
       // A refetch that failed keeps the last copy rather than blanking a meter
       // that was working: a remote machine is allowed to be briefly unreachable.
-      if (found) w.file = found
+      if (found && found !== w.file) {
+        w.file = found
+        w.cursor = null
+      }
       if (!w.file) {
         // Claude has not written the transcript yet — report an empty meter so
         // the tab renders something instead of staying blank.
         this.publish(emptySnapshot(w.sessionId))
-        this.schedule(w, Math.max(DISCOVER_MS, this.interval(w.sessionId)))
-        return
+        return Math.max(DISCOVER_MS, this.interval(w.sessionId))
       }
     }
 
@@ -198,7 +265,22 @@ export class ContextWatcher {
       if (st.mtimeMs !== w.lastMtime || window !== w.lastWindow) {
         w.lastMtime = st.mtimeMs
         w.lastWindow = window
-        const parsed = await parseSession(w.file)
+        /*
+         * A volatile source always starts from byte 0. An SSH session's copy is
+         * the remote file's last 4 MB (`MAX_REMOTE_TRANSCRIPT_BYTES`), rewritten
+         * in place on every fetch: once the remote transcript outgrows the cap
+         * the window slides, same inode and much the same size, so an offset
+         * into the old copy means nothing in the new one. It is at most 4 MB,
+         * streamed like any first pass.
+         */
+        const { cursor } = await advanceCursor(volatile ? null : w.cursor, w.file, {
+          cancelled: () => w.disposed
+        })
+        // An unwatched session publishes nothing, and a cancelled pass's fold
+        // is only part of the file.
+        if (w.disposed) return 0
+        w.cursor = cursor
+        const parsed = finishFold(cursor.fold)
         const used = contextUsed(parsed)
         this.publish({
           sessionId: w.sessionId,
@@ -221,9 +303,10 @@ export class ContextWatcher {
       // to discovery rather than giving up on this session for good.
       w.file = null
       w.lastMtime = 0
+      w.cursor = null
     }
 
-    this.schedule(w, this.interval(w.sessionId))
+    return this.interval(w.sessionId)
   }
 }
 

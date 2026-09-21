@@ -15,18 +15,50 @@
  *
  *   node scripts/verify-folders.mts
  */
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
+import {
+  appendFileSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync
+} from 'node:fs'
+import { open } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { Project, ProjectMeta, Settings } from '../src/shared/types.ts'
+import type { ContextSnapshot, Project, ProjectMeta, SessionMeta, Settings } from '../src/shared/types.ts'
 import { pathRulesFor } from '../src/shared/paths.ts'
 import {
   applyProjectMeta,
   manualProjectPatch,
   projectMetaPatch
 } from '../src/main/projectMeta.ts'
-import { listProjects, migrateSymlinkedProjectKeys } from '../src/main/projects.ts'
+import {
+  createSessionListCache,
+  encodePath,
+  listProjects,
+  listSessions,
+  migrateSymlinkedProjectKeys
+} from '../src/main/projects.ts'
 import { defaultCwdCandidates, resolveDefaultCwd } from '../src/main/workspaceRoots.ts'
+import { ContextWatcher } from '../src/main/context.ts'
+import {
+  advanceCursor,
+  contextLimitFor,
+  contextUsed,
+  createFold,
+  finishFold,
+  foldFrom,
+  foldLines,
+  mapLimit,
+  parseSession,
+  type ParsedSession,
+  type TranscriptCursor
+} from '../src/main/sessionFile.ts'
 
 let failures = 0
 
@@ -660,6 +692,621 @@ try {
   )
 } finally {
   rmSync(home, { recursive: true, force: true })
+}
+
+/* ---------------------------------------------------------------------------
+   Transcripts read in pieces, never in one blocking parse (gotcha 103).
+
+   The context watcher folds only what was appended since its last tick
+   (`advanceCursor`), `parseSession` streams a file a chunk at a time
+   (`foldFrom`), and `listSessions` caches a parse per transcript. Each is only
+   worth having if it answers exactly what one whole-file parse answers, so
+   every case below is held to `foldWhole` — the fold over the whole text at
+   once, which is what `parseSession` did before it streamed.
+
+   Synthetic transcripts in this suite's own tmp dir, so CI runs all of it:
+   `verify:context` repeats the cut-point check against this machine's real
+   transcripts, and CI skips that suite.
+   --------------------------------------------------------------------------- */
+console.log('\ntranscripts read in pieces (gotcha 103)')
+
+/** mulberry32: a fixed sequence, so a failing cut point reproduces. */
+function rng(seed: number): () => number {
+  let a = seed >>> 0
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0
+    let t = a
+    t = Math.imul(t ^ (t >>> 15), t | 1)
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+/**
+ * A transcript that reaches every branch of the fold, with 2-, 3- and 4-byte
+ * UTF-8 in every kind of record, so a cut point can land inside a character as
+ * well as inside a line. Every user record carries 🔥, and nothing else does.
+ */
+function synthTranscript(n: number, seed: number): string {
+  const rnd = rng(seed)
+  const lines = [JSON.stringify({ type: 'permission-mode', permissionMode: 'default' })]
+  for (let i = 0; i < n; i++) {
+    const r = rnd()
+    if (r < 0.34) {
+      lines.push(
+        JSON.stringify({
+          type: 'user',
+          cwd: `/work/café-${i % 3}`,
+          gitBranch: `feat/日本-${i % 4}`,
+          message: {
+            content:
+              i % 2
+                ? `prompt ${i} 🔥 naïve 日本語`
+                : [{ type: 'text', text: `turn ${i} 🔥 — ✓ ${'ß'.repeat(i % 7)}` }]
+          }
+        })
+      )
+    } else if (r < 0.68) {
+      lines.push(
+        JSON.stringify({
+          type: 'assistant',
+          message: {
+            model: i % 5 ? 'claude-opus-5' : 'claude-fable-5',
+            usage: {
+              input_tokens: i,
+              cache_read_input_tokens: i * 10,
+              cache_creation_input_tokens: i * 3,
+              output_tokens: i % 11
+            },
+            content: [{ type: 'text', text: `réponse ${i} ${'€'.repeat(i % 5)} 🎉` }]
+          }
+        })
+      )
+    } else if (r < 0.76) {
+      lines.push(JSON.stringify({ type: 'ai-title', aiTitle: `Title ${i} ☕ 🧪` }))
+    } else if (r < 0.82) {
+      const mode = ['plan', 'acceptEdits', 'nonsense', 'bypassPermissions'][i % 4]
+      lines.push(JSON.stringify({ type: 'permission-mode', permissionMode: mode }))
+    } else if (r < 0.87) {
+      lines.push('not json at all ✗')
+    } else if (r < 0.9) {
+      lines.push('')
+    } else {
+      lines.push(JSON.stringify({ type: 'system', content: 'x'.repeat((i * 131) % 3000) }))
+    }
+  }
+  return lines.join('\n') + '\n'
+}
+
+/** The whole text folded at once: the answer every piecewise reader must match. */
+function foldWhole(text: string): ParsedSession {
+  const fold = createFold()
+  foldLines(fold, text)
+  return finishFold(fold)
+}
+
+const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b)
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+
+async function until(pred: () => boolean, ms = 4000): Promise<boolean> {
+  const end = Date.now() + ms
+  while (Date.now() < end) {
+    if (pred()) return true
+    await sleep(10)
+  }
+  return pred()
+}
+
+/*
+ * Every write below that a poller must notice also moves the mtime to a value
+ * of its own, so no assertion leans on the filesystem's timestamp resolution.
+ */
+let stamp = Math.floor(Date.now() / 1000) + 100
+function touch(file: string): void {
+  stamp += 5
+  utimesSync(file, stamp, stamp)
+}
+
+const tx = realpathSync(mkdtempSync(join(tmpdir(), 'stoke-transcripts-')))
+try {
+  const text = synthTranscript(400, 7)
+  const bytes = Buffer.from(text, 'utf8')
+  const whole = foldWhole(text)
+  const file = join(tx, 'whole.jsonl')
+  writeFileSync(file, bytes)
+
+  check(
+    'the synthetic transcript reaches every branch of the fold',
+    [
+      whole.messageCount > 100,
+      whole.title !== null,
+      whole.model !== null,
+      whole.inputTokens > 0,
+      whole.permissionMode !== null && whole.permissionMode !== ('nonsense' as string),
+      whole.firstPrompt?.includes('🔥') ?? false
+    ],
+    [true, true, true, true, true, true]
+  )
+  check('parseSession, streamed, answers what one whole-text fold answers', await parseSession(file), whole)
+
+  for (const chunk of [5, 13, 64, 4096]) {
+    const fh = await open(file, 'r')
+    const target = { fold: createFold(), offset: 0 }
+    const rest = await foldFrom(fh, target, Infinity, { chunk })
+    await fh.close()
+    check(
+      `a pass in ${chunk}-byte reads folds the same, and consumes every byte`,
+      [finishFold(target.fold), target.offset, rest.length],
+      [whole, bytes.length, 0]
+    )
+  }
+
+  // Incremental equals one pass, wherever the first read stopped: random bytes
+  // (mid-line, mid-character) and newlines alike.
+  {
+    const rnd = rng(42)
+    const cuts = new Set<number>()
+    while (cuts.size < 40) cuts.add(1 + Math.floor(rnd() * (bytes.length - 1)))
+    for (let i = 0, n = 0; i < bytes.length && n < 10; i++) {
+      if (bytes[i] === 0x0a && rnd() < 0.03) {
+        cuts.add(i + 1)
+        n++
+      }
+    }
+    const grow = join(tx, 'grow.jsonl')
+    const wrong: number[] = []
+    let resets = 0
+    let overRead = 0
+    for (const cut of cuts) {
+      writeFileSync(grow, bytes.subarray(0, cut))
+      const first = await advanceCursor(null, grow)
+      const firstOffset = first.cursor.offset
+      appendFileSync(grow, bytes.subarray(cut))
+      const second = await advanceCursor(first.cursor, grow)
+      if (!same(finishFold(second.cursor.fold), whole)) wrong.push(cut)
+      if (second.reset) resets++
+      // The bytes after the first cursor, plus the one newline it checks.
+      if (second.bytesRead !== bytes.length - firstOffset + (firstOffset > 0 ? 1 : 0)) overRead++
+    }
+    check(`incremental equals one pass at ${cuts.size} cut points`, wrong, [])
+    check('and no append was mistaken for a rewrite', resets, 0)
+    check('and each advance read only what was appended, plus the newline it checks', overRead, 0)
+  }
+
+  // Many appends of random sizes, the cursor advanced after each.
+  {
+    const steps = join(tx, 'steps.jsonl')
+    writeFileSync(steps, '')
+    let cursor: TranscriptCursor | null = null
+    let written = 0
+    let bad = 0
+    let count = 0
+    const rnd = rng(9)
+    while (written < bytes.length) {
+      const next = Math.min(bytes.length, written + 1 + Math.floor(rnd() * 9000))
+      appendFileSync(steps, bytes.subarray(written, next))
+      written = next
+      cursor = (await advanceCursor(cursor, steps)).cursor
+      const lastNewline = bytes.lastIndexOf(0x0a, written - 1)
+      const expected = foldWhole(bytes.subarray(0, lastNewline + 1).toString('utf8'))
+      if (!same(finishFold(cursor.fold), expected) || cursor.offset !== lastNewline + 1) bad++
+      count++
+    }
+    check(`after each of ${count} appends, the fold is exactly the lines whose newline has arrived`, bad, 0)
+  }
+
+  // A cut inside a four-byte character, both ways a reader can meet one.
+  {
+    const at = bytes.indexOf(Buffer.from('🔥'))
+    const cut = at + 2
+    const fh = await open(file, 'r')
+    const target = { fold: createFold(), offset: 0 }
+    await foldFrom(fh, target, Infinity, { chunk: cut })
+    await fh.close()
+    const viaReads = finishFold(target.fold)
+    check(
+      'a read that ends inside a four-byte character still folds the line whole',
+      [viaReads.firstPrompt, viaReads.firstPrompt?.includes('�') ?? true],
+      [whole.firstPrompt, false]
+    )
+
+    const midchar = join(tx, 'midchar.jsonl')
+    writeFileSync(midchar, bytes.subarray(0, cut))
+    const early = await advanceCursor(null, midchar)
+    check(
+      'a file that ends inside a character folds nothing past its last newline',
+      [early.cursor.fold.firstPrompt, early.cursor.offset],
+      [null, bytes.lastIndexOf(0x0a, cut - 1) + 1]
+    )
+    appendFileSync(midchar, bytes.subarray(cut))
+    const late = await advanceCursor(early.cursor, midchar)
+    check(
+      'and once the rest lands the prompt is whole, with no replacement character',
+      [late.cursor.fold.firstPrompt, late.cursor.fold.firstPrompt?.includes('�') ?? true, late.reset],
+      [whole.firstPrompt, false, false]
+    )
+  }
+
+  // A last line is folded when its newline arrives, never before.
+  {
+    const base = synthTranscript(30, 3)
+    const partial = join(tx, 'partial.jsonl')
+    writeFileSync(partial, base)
+    const start = await advanceCursor(null, partial)
+    const count0 = start.cursor.fold.messageCount
+    const line = JSON.stringify({
+      type: 'assistant',
+      message: {
+        model: 'claude-opus-5',
+        usage: { input_tokens: 123456, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 1 }
+      }
+    })
+    const half = Math.floor(line.length / 2)
+    appendFileSync(partial, line.slice(0, half))
+    const a = await advanceCursor(start.cursor, partial)
+    const afterHalf = [a.cursor.fold.messageCount, a.cursor.fold.inputTokens === 123456, a.cursor.offset]
+    appendFileSync(partial, line.slice(half))
+    const b = await advanceCursor(a.cursor, partial)
+    const afterWhole = [b.cursor.fold.messageCount, b.cursor.fold.inputTokens === 123456, b.cursor.offset]
+    /*
+     * parseSession is the other reader and keeps the rule it always had: the
+     * text after the last newline is folded if it parses, as `split` folded it.
+     * Only the watcher waits for the newline, because it will read those bytes
+     * again next tick and a fold cannot be taken back.
+     */
+    check(
+      'parseSession still folds a final record with no newline, as the whole-text split did',
+      [(await parseSession(partial)).messageCount, await parseSession(partial)],
+      [count0 + 1, foldWhole(base + line)]
+    )
+    appendFileSync(partial, '\n')
+    const c = await advanceCursor(b.cursor, partial)
+    check('half a record is not folded', afterHalf, [count0, false, Buffer.byteLength(base)])
+    check('nor is a whole record whose newline has not arrived', afterWhole, [count0, false, Buffer.byteLength(base)])
+    check(
+      'its newline folds it, once, with no reset',
+      [c.cursor.fold.messageCount, c.cursor.fold.inputTokens, c.reset],
+      [count0 + 1, 123456, false]
+    )
+    check('and the result is the whole file’s parse', finishFold(c.cursor.fold), await parseSession(partial))
+  }
+
+  // Anything but an append starts the cursor over.
+  {
+    const rewrite = join(tx, 'rewrite.jsonl')
+    const long = synthTranscript(200, 11)
+    const short = synthTranscript(40, 12)
+    writeFileSync(rewrite, long)
+    const c0 = (await advanceCursor(null, rewrite)).cursor
+    writeFileSync(rewrite, short) // truncated in place: same inode, smaller
+    const shrunk = await advanceCursor(c0, rewrite)
+    check(
+      'a transcript truncated under the cursor starts over',
+      [shrunk.reset, finishFold(shrunk.cursor.fold)],
+      [true, foldWhole(short)]
+    )
+
+    // Replaced by a rename, with the old content as its prefix: the size and
+    // the newline before the offset both still pass, so only the inode can say.
+    const grown = short + synthTranscript(60, 13)
+    const swap = join(tx, 'swap.tmp')
+    writeFileSync(swap, grown)
+    const inoBefore = statSync(rewrite).ino
+    renameSync(swap, rewrite)
+    const swapped = await advanceCursor(shrunk.cursor, rewrite)
+    check(
+      'a transcript replaced by a rename starts over, even when it only grew',
+      [statSync(rewrite).ino !== inoBefore, swapped.reset, finishFold(swapped.cursor.fold)],
+      [true, true, foldWhole(grown)]
+    )
+
+    // Rewritten in place, same inode and no smaller, but the byte before the
+    // offset is no longer the newline that was there.
+    const offset = swapped.cursor.offset
+    let seed = 14
+    let other = synthTranscript(400, seed)
+    while (Buffer.byteLength(other) < offset || Buffer.from(other)[offset - 1] === 0x0a) {
+      other = synthTranscript(400, ++seed)
+    }
+    const inoKept = statSync(rewrite).ino
+    writeFileSync(rewrite, other)
+    const inPlace = await advanceCursor(swapped.cursor, rewrite)
+    check(
+      'a transcript rewritten in place starts over when its newline moved',
+      [statSync(rewrite).ino === inoKept, inPlace.reset, finishFold(inPlace.cursor.fold)],
+      [true, true, foldWhole(other)]
+    )
+  }
+
+  /*
+   * The watcher itself, on a local file: the same readings as a whole parse,
+   * through appends, a window stated late (gotcha 49) and a replaced file.
+   */
+  {
+    const local = join(tx, 'local.jsonl')
+    writeFileSync(local, synthTranscript(120, 21))
+    touch(local)
+    let window: number | null = null
+    const snaps: ContextSnapshot[] = []
+    const watcher = new ContextWatcher(
+      (snap) => {
+        if (snap.ready) snaps.push(snap)
+      },
+      () => window,
+      { resolve: async () => local, pollMs: () => 20 }
+    )
+    const fields = (s: ContextSnapshot | undefined): unknown =>
+      s && [s.contextTokens, s.contextLimit, s.inputTokens, s.cacheReadTokens, s.cacheCreationTokens,
+        s.outputTokens, s.model, s.messageCount, s.title, s.permissionMode]
+    const expect = async (w: number | null): Promise<unknown> => {
+      const p = await parseSession(local)
+      const used = contextUsed(p)
+      return [used, contextLimitFor(p.model, used, w), p.inputTokens, p.cacheReadTokens,
+        p.cacheCreationTokens, p.outputTokens, p.model, p.messageCount, p.title, p.permissionMode]
+    }
+    try {
+      watcher.watch('local-session')
+      await until(() => snaps.length >= 1)
+      check('the watcher’s first reading is the whole parse', fields(snaps.at(-1)), await expect(null))
+
+      appendFileSync(local, synthTranscript(50, 22))
+      touch(local)
+      const n1 = snaps.length
+      await until(() => snaps.length > n1)
+      check('after an append it is still exactly the whole parse', fields(snaps.at(-1)), await expect(null))
+
+      // Nothing written, only the window stated: it must still republish.
+      window = 1_000_000
+      const n2 = snaps.length
+      await until(() => snaps.length > n2)
+      check(
+        'a window stated after the transcript went quiet still reaches the meter',
+        [snaps.at(-1)?.contextLimit, fields(snaps.at(-1))],
+        [1_000_000, await expect(1_000_000)]
+      )
+
+      const replacement = join(tx, 'local.tmp')
+      writeFileSync(replacement, synthTranscript(90, 23))
+      renameSync(replacement, local)
+      touch(local)
+      const n3 = snaps.length
+      await until(() => snaps.length > n3)
+      check('a replaced transcript is read afresh, not appended to', fields(snaps.at(-1)), await expect(1_000_000))
+    } finally {
+      watcher.disposeAll()
+    }
+  }
+
+  /*
+   * `refresh()` while a tick is in flight. Two ticks advancing one cursor would
+   * fold the same appended lines twice, and each would keep its own timer, so
+   * the count would run ahead of the file for the rest of the watch.
+   */
+  {
+    const busy = join(tx, 'busy.jsonl')
+    writeFileSync(busy, synthTranscript(200, 41))
+    touch(busy)
+    const snaps: ContextSnapshot[] = []
+    const watcher = new ContextWatcher(
+      (snap) => {
+        if (snap.ready) snaps.push(snap)
+      },
+      () => null,
+      { resolve: async () => busy, pollMs: () => 3 }
+    )
+    try {
+      watcher.watch('busy-session')
+      watcher.refresh('busy-session') // lands while the first tick awaits its resolve
+      for (let i = 0; i < 20; i++) {
+        await sleep(4)
+        appendFileSync(busy, synthTranscript(8, 50 + i))
+        touch(busy)
+        watcher.refresh('busy-session')
+      }
+      await sleep(150)
+      const p = await parseSession(busy)
+      check(
+        'refreshes interleaved with appends still read exactly the file',
+        [snaps.at(-1)?.messageCount, snaps.at(-1)?.inputTokens],
+        [p.messageCount, p.inputTokens]
+      )
+    } finally {
+      watcher.disposeAll()
+    }
+
+    /*
+     * The same guard, counted: every refresh that lands mid-tick used to start
+     * a tick of its own, and each of those scheduled its own timer. A slow
+     * resolve holds the first tick open while three refreshes arrive; one
+     * chain at 30 ms plus a 15 ms resolve cannot tick more than ~11 times in
+     * 450 ms, and four chains tick ~40. A loaded machine only ticks fewer.
+     */
+    let resolves = 0
+    const chains = new ContextWatcher(
+      () => {},
+      () => null,
+      {
+        resolve: async () => {
+          resolves++
+          await sleep(15)
+          return busy
+        },
+        volatile: () => true,
+        pollMs: () => 30
+      }
+    )
+    try {
+      chains.watch('chain-session')
+      await sleep(5)
+      chains.refresh('chain-session')
+      chains.refresh('chain-session')
+      chains.refresh('chain-session')
+      await sleep(100)
+      const before = resolves
+      await sleep(450)
+      const ticks = resolves - before
+      check(`refreshes during a tick leave one polling chain (${ticks} ticks in 450 ms)`, ticks <= 14, true)
+    } finally {
+      chains.disposeAll()
+    }
+  }
+
+  /*
+   * The watcher on a volatile source: an SSH session's local copy is the remote
+   * file's last 4 MB, rewritten in place. Every record here is the same length,
+   * so sliding the window keeps the inode, the size and every newline where it
+   * was — a rewrite no cursor check can see — and only starting over each time
+   * reads the new records.
+   */
+  {
+    const fixed = (i: number): string => {
+      const rec = {
+        type: 'assistant',
+        message: {
+          model: 'claude-opus-5',
+          usage: { input_tokens: 1000 + i, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 1 }
+        },
+        pad: ''
+      }
+      const bare = JSON.stringify(rec).length
+      rec.pad = 'p'.repeat(200 - bare)
+      return JSON.stringify(rec)
+    }
+    const remote = Array.from({ length: 60 }, (_, i) => fixed(i))
+    const windowA = remote.slice(0, 50).join('\n') + '\n'
+    const windowB = remote.slice(10, 60).join('\n') + '\n'
+    const copy = join(tx, 'remote-copy.jsonl')
+    writeFileSync(copy, windowA)
+    touch(copy)
+    const inoA = statSync(copy).ino
+    const snaps: ContextSnapshot[] = []
+    const watcher = new ContextWatcher(
+      (snap) => {
+        if (snap.ready) snaps.push(snap)
+      },
+      () => null,
+      { resolve: async () => copy, volatile: () => true, pollMs: () => 20 }
+    )
+    try {
+      watcher.watch('remote-session')
+      await until(() => snaps.length >= 1)
+      const firstInput = snaps.at(-1)?.inputTokens
+      writeFileSync(copy, windowB) // in place, as fetchRemoteTranscript writes it
+      touch(copy)
+      check(
+        'premise: the slid window kept the inode, the size and every newline',
+        [statSync(copy).ino === inoA, statSync(copy).size, windowA.indexOf('\n') === windowB.indexOf('\n')],
+        [true, Buffer.byteLength(windowA), true]
+      )
+      await until(() => snaps.at(-1)?.inputTokens !== firstInput)
+      check(
+        'a volatile copy is read afresh on every change, so the slid window is read',
+        [firstInput, snaps.at(-1)?.inputTokens, snaps.at(-1)?.messageCount],
+        [1049, 1059, 50]
+      )
+    } finally {
+      watcher.disposeAll()
+    }
+  }
+
+  /*
+   * listSessions: the same answer as parsing every transcript, from a cache
+   * that re-parses only the transcript that moved. A hermetic root, so it
+   * never reads (or races) this machine's real history.
+   */
+  {
+    const root = join(tx, 'projects-root')
+    const project = join(tx, 'some-project')
+    const hist = join(root, encodePath(project))
+    mkdirSync(join(hist, 'aaaa', 'subagents'), { recursive: true })
+    const name = (id: string): string => join(hist, `${id}.jsonl`)
+    writeFileSync(name('aaaa'), synthTranscript(50, 31))
+    writeFileSync(name('bbbb'), synthTranscript(80, 32))
+    writeFileSync(name('cccc'), synthTranscript(20, 33))
+    for (const id of ['aaaa', 'bbbb', 'cccc']) touch(name(id))
+    mkdirSync(name('dddd')) // a directory called .jsonl is not a transcript
+    writeFileSync(join(hist, 'aaaa', 'subagents', 'agent.jsonl'), synthTranscript(5, 34))
+
+    /** What listSessions returned before it cached anything: a parse of every transcript. */
+    const reference = async (): Promise<SessionMeta[]> => {
+      const out: SessionMeta[] = []
+      for (const id of ['aaaa', 'bbbb', 'cccc']) {
+        let st
+        try {
+          st = statSync(name(id))
+        } catch {
+          continue
+        }
+        const p = await parseSession(name(id))
+        const used = contextUsed(p)
+        out.push({
+          id,
+          file: name(id),
+          projectPath: project,
+          title: p.title,
+          firstPrompt: p.firstPrompt,
+          modified: st.mtimeMs,
+          sizeBytes: st.size,
+          messageCount: p.messageCount,
+          model: p.model,
+          contextTokens: used,
+          contextLimit: contextLimitFor(p.model, used),
+          gitBranch: p.gitBranch
+        })
+      }
+      return out.sort((a, b) => b.modified - a.modified)
+    }
+
+    const cache = createSessionListCache()
+    const stats = { parses: 0, cacheHits: 0 }
+    const opts = { root, cache, stats }
+    const cold = await listSessions(project, opts)
+    check('listSessions answers what parsing every transcript answers', cold, await reference())
+    check('a cold list parses each transcript once', [stats.parses, stats.cacheHits], [3, 0])
+    const warm = await listSessions(project, opts)
+    check('a warm list is identical and parses nothing', [same(warm, cold), stats.parses, stats.cacheHits], [true, 3, 3])
+
+    appendFileSync(name('bbbb'), synthTranscript(10, 35))
+    touch(name('bbbb'))
+    const moved = await listSessions(project, opts)
+    check('after one transcript changes, only it is parsed again', [stats.parses, stats.cacheHits], [4, 5])
+    check('and the list is still exactly the uncached answer', moved, await reference())
+
+    rmSync(name('cccc'))
+    const shrunk = await listSessions(project, opts)
+    check(
+      'a deleted transcript leaves the list and the cache',
+      [shrunk.map((s) => s.id).sort(), cache.size],
+      [['aaaa', 'bbbb'], 2]
+    )
+
+    appendFileSync(name('aaaa'), synthTranscript(10, 36))
+    touch(name('aaaa'))
+    const parsesBefore = stats.parses
+    const [x, y] = await Promise.all([listSessions(project, opts), listSessions(project, opts)])
+    check(
+      'two overlapping lists share one parse of the changed transcript',
+      [stats.parses - parsesBefore, same(x, y)],
+      [1, true]
+    )
+  }
+
+  // The concurrency cap both readers share.
+  {
+    let inFlight = 0
+    let peak = 0
+    const items = Array.from({ length: 20 }, (_, i) => i)
+    const out = await mapLimit(items, 3, async (i) => {
+      inFlight++
+      peak = Math.max(peak, inFlight)
+      await sleep(2)
+      inFlight--
+      return i * 2
+    })
+    check('mapLimit holds its limit in flight and keeps the order', [peak, out], [3, items.map((i) => i * 2)])
+  }
+} finally {
+  rmSync(tx, { recursive: true, force: true })
 }
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)

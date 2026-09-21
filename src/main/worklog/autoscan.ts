@@ -119,6 +119,30 @@ export function autoScanVerdict(
 }
 
 /**
+ * How the `messageCount` a stored baseline was compared against was counted.
+ *
+ * A baseline only means something against a count taken the same way, and the
+ * count changed under it once (CLAUDE.md gotcha 103): before, `ContextWatcher`
+ * sampled the head and tail of a transcript past 32 MB, so a 38 MB session with
+ * 2,154 messages read as 87. Its baseline was saved as 87; the exact watcher
+ * then reads 2,154, and the session looks like it has 2,067 messages of new
+ * work — one automatic, PAID scan nobody asked for, on the first quiet tick
+ * after upgrading.
+ *
+ *  - 1: every record written before the field existed (it is read as 1 when
+ *    absent). Sampled past 32 MB, so not comparable.
+ *  - 2: exact, streamed.
+ *
+ * `observe` trusts a restored baseline only at exactly this version. Bump it
+ * whenever what `messageCount` counts changes again; a record at any other
+ * version, older or newer, is re-baselined on first sight.
+ */
+export const MESSAGE_COUNT_VERSION = 2
+
+/** What a stored record with no `countVersion` was: an earlier build's. */
+export const UNVERSIONED_COUNT = 1
+
+/**
  * The part of a session's activity worth keeping across a restart.
  *
  * Note what is NOT here: `messageCount`, `updatedAt` and `scanning`.
@@ -134,6 +158,13 @@ export interface StoredActivity {
   scannedMessages: number
   lastScanAt: number
   mutedUntil: number
+  /**
+   * The MESSAGE_COUNT_VERSION `scannedMessages` was counted under. Per record,
+   * not per file: a record restored but never re-observed is written back as
+   * it came in (`snapshot`), and a file-wide stamp would promote it to current
+   * on the first save without its count ever having been re-taken.
+   */
+  countVersion: number
 }
 
 export interface AutoScanSnapshot {
@@ -241,14 +272,21 @@ export class AutoScanner {
        * restart became invisible to the scanner and was never logged by
        * anything. The rule "a resumed session's history is not new work" still
        * holds for a session this install has genuinely never seen.
+       *
+       * Unless the baseline was counted some other way (MESSAGE_COUNT_VERSION):
+       * then it is re-taken here, exactly as for a session never seen. That
+       * forgets any work done just before the upgrade's restart; the other way
+       * round is a paid scan of a session's whole history, unasked. The cooldown
+       * and the mute are times, not counts, so they carry over either way.
        */
       const prior = this.restored.get(sessionId)
       this.restored.delete(sessionId)
+      const comparable = prior?.countVersion === MESSAGE_COUNT_VERSION
       this.sessions.set(sessionId, {
         sessionId,
         messageCount,
         updatedAt,
-        scannedMessages: prior ? Math.min(prior.scannedMessages, messageCount) : messageCount,
+        scannedMessages: prior && comparable ? Math.min(prior.scannedMessages, messageCount) : messageCount,
         lastScanAt: prior?.lastScanAt ?? 0,
         scanning: false,
         mutedUntil: prior?.mutedUntil ?? 0
@@ -298,11 +336,14 @@ export class AutoScanner {
    */
   snapshot(): AutoScanSnapshot {
     const now = this.now()
+    // Every live baseline was taken, or re-taken, by `observe` against this
+    // build's count, so it is current whatever version it was restored at.
     const live = [...this.sessions.values()].map((s) => ({
       sessionId: s.sessionId,
       scannedMessages: s.scannedMessages,
       lastScanAt: s.lastScanAt,
-      mutedUntil: s.mutedUntil
+      mutedUntil: s.mutedUntil,
+      countVersion: MESSAGE_COUNT_VERSION
     }))
     /*
      * `this.sessions` alone is not the whole of "what is worth writing down".
@@ -315,7 +356,9 @@ export class AutoScanner {
      *
      * `this.sessions` and `this.restored` never share a key — the first-sight
      * branch deletes from one before it sets the other — so this is a plain
-     * concatenation, not a merge that needs to resolve conflicts.
+     * concatenation, not a merge that needs to resolve conflicts. A restored
+     * record goes back out with the `countVersion` it came in with: its count
+     * has not been re-taken, so an earlier build's stays untrusted next launch.
      */
     const stillRestored = [...this.restored.values()]
     return {

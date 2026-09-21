@@ -1,4 +1,4 @@
-import { open, readFile, stat } from 'node:fs/promises'
+import { open, readFile, stat, type FileHandle } from 'node:fs/promises'
 import type { PermissionMode } from '@shared/types'
 import { interruptionNote, toolOutcome, type ToolOutcome } from '../shared/phoneUi.ts'
 
@@ -12,12 +12,23 @@ import { interruptionNote, toolOutcome, type ToolOutcome } from '../shared/phone
  */
 
 /**
- * Above this size we stop reading whole files and sample head + tail instead.
- * Parsing measures at roughly 3ms/MB, so a full read stays imperceptible well
- * past any realistic transcript; sampling is a guard against pathological files
- * only, and it costs an accurate message count when it kicks in.
+ * Above this size `parseSession` stops reading whole files and samples head +
+ * tail instead. It is a guard against pathological files only, and it costs an
+ * accurate message count when it kicks in.
+ *
+ * Parsing measures 2.2-3.2 ms/MB on an Apple M1, which is NOT imperceptible
+ * when it is one synchronous block: a 22 MB transcript held the main process
+ * for 40-70 ms, and no pty byte reached a terminal meanwhile (gotcha 103). So
+ * the whole-file read is streamed now (`foldFrom`), and the live context watcher
+ * does not use this limit at all — it reads every byte once and then only what
+ * is appended (`advanceCursor`), so a big transcript's message count stays exact.
  */
 const FULL_READ_LIMIT = 32 * 1024 * 1024
+/**
+ * Bytes per read of a streamed pass. Each chunk is one read completion, so the
+ * event loop runs between chunks, and its complete lines cost ~3 ms to fold.
+ */
+export const STREAM_CHUNK = 1024 * 1024
 /**
  * How much of a transcript either end of `readLines` takes.
  *
@@ -38,7 +49,7 @@ export interface ParsedSession {
   /** Newest `permission-mode` record in the transcript, or null when none. */
   permissionMode: PermissionMode | null
   messageCount: number
-  /** -1 when the file was sampled rather than read in full. */
+  /** False when the file was sampled rather than read in full. */
   exactCount: boolean
   inputTokens: number
   cacheReadTokens: number
@@ -149,8 +160,26 @@ const PERMISSION_MODES = new Set<string>([
   'bypassPermissions'
 ])
 
-export async function parseSession(file: string): Promise<ParsedSession> {
-  const out: ParsedSession = {
+/**
+ * What `parseSession` knows part-way through a transcript. The same shape as its
+ * result, and every field a primitive, so `finishFold`'s shallow copy is a
+ * snapshot later lines cannot change.
+ */
+export type SessionFold = ParsedSession
+
+/*
+ * The one rule for what a transcript says about its session, in three parts:
+ * `createFold`, `foldLine`/`foldLines`, `finishFold`. Exported as an accumulator
+ * rather than kept inside `parseSession` because two readers need it and they
+ * read differently: `parseSession` streams a file start to finish, and the
+ * context watcher folds only the bytes appended since its last tick
+ * (`advanceCursor`). Two copies of the loop would be two rules, and the meter
+ * and the session list would drift apart on the first edit to one of them.
+ */
+
+/** An empty accumulator: what a transcript with no records says. */
+export function createFold(): SessionFold {
+  return {
     title: null,
     firstPrompt: null,
     gitBranch: null,
@@ -164,58 +193,311 @@ export async function parseSession(file: string): Promise<ParsedSession> {
     cacheCreationTokens: 0,
     outputTokens: 0
   }
+}
 
-  const { lines, exact } = await readLines(file)
-  out.exactCount = exact
+/** Fold one transcript line. Anything that is not a JSON object is skipped. */
+export function foldLine(out: SessionFold, line: string): void {
+  const rec = safeParse(line)
+  if (!rec) return
+  const type = rec.type
 
-  for (const line of lines) {
-    const rec = safeParse(line)
-    if (!rec) continue
-    const type = rec.type
-
-    if (type === 'ai-title') {
-      // Later records win — Claude retitles a session as it evolves.
-      const t = titleOf(rec)
-      if (t) out.title = t
-      continue
-    }
-
-    if (type === 'permission-mode') {
-      // Later records win: the mode is toggled with Shift+Tab mid-session and
-      // every toggle appends another record.
-      const m = rec.permissionMode
-      if (typeof m === 'string' && PERMISSION_MODES.has(m)) {
-        out.permissionMode = m as PermissionMode
-      }
-      continue
-    }
-
-    if (type === 'user') {
-      out.messageCount++
-      if (typeof rec.cwd === 'string') out.cwd = rec.cwd
-      if (typeof rec.gitBranch === 'string') out.gitBranch = rec.gitBranch
-      if (!out.firstPrompt) out.firstPrompt = promptOf(rec)
-      continue
-    }
-
-    if (type === 'assistant') {
-      out.messageCount++
-      const msg = rec.message as
-        | { model?: unknown; usage?: Record<string, unknown> }
-        | undefined
-      if (typeof msg?.model === 'string') out.model = msg.model
-      const u = msg?.usage
-      if (u) {
-        // Overwrite rather than accumulate: each turn's usage already reports the
-        // full context being resent, so the last turn is the current occupancy.
-        out.inputTokens = num(u.input_tokens)
-        out.cacheReadTokens = num(u.cache_read_input_tokens)
-        out.cacheCreationTokens = num(u.cache_creation_input_tokens)
-        out.outputTokens = num(u.output_tokens)
-      }
-    }
+  if (type === 'ai-title') {
+    // Later records win — Claude retitles a session as it evolves.
+    const t = titleOf(rec)
+    if (t) out.title = t
+    return
   }
 
+  if (type === 'permission-mode') {
+    // Later records win: the mode is toggled with Shift+Tab mid-session and
+    // every toggle appends another record.
+    const m = rec.permissionMode
+    if (typeof m === 'string' && PERMISSION_MODES.has(m)) {
+      out.permissionMode = m as PermissionMode
+    }
+    return
+  }
+
+  if (type === 'user') {
+    out.messageCount++
+    if (typeof rec.cwd === 'string') out.cwd = rec.cwd
+    if (typeof rec.gitBranch === 'string') out.gitBranch = rec.gitBranch
+    if (!out.firstPrompt) out.firstPrompt = promptOf(rec)
+    return
+  }
+
+  if (type === 'assistant') {
+    out.messageCount++
+    const msg = rec.message as
+      | { model?: unknown; usage?: Record<string, unknown> }
+      | undefined
+    if (typeof msg?.model === 'string') out.model = msg.model
+    const u = msg?.usage
+    if (u) {
+      // Overwrite rather than accumulate: each turn's usage already reports the
+      // full context being resent, so the last turn is the current occupancy.
+      out.inputTokens = num(u.input_tokens)
+      out.cacheReadTokens = num(u.cache_read_input_tokens)
+      out.cacheCreationTokens = num(u.cache_creation_input_tokens)
+      out.outputTokens = num(u.output_tokens)
+    }
+  }
+}
+
+/**
+ * Fold every `\n`-separated line of `text`. Which text is complete is the
+ * caller's decision: a streamed reader hands over only whole lines, and holds a
+ * partial last line back until its newline arrives.
+ */
+export function foldLines(out: SessionFold, text: string): void {
+  for (const line of text.split('\n')) foldLine(out, line)
+}
+
+/** The fold's answer so far, as a value later folding cannot change. */
+export function finishFold(fold: SessionFold): ParsedSession {
+  return { ...fold }
+}
+
+/** Where a streamed pass has got to: every byte before `offset` is in `fold`. */
+export interface FoldTarget {
+  fold: SessionFold
+  offset: number
+}
+
+export interface FoldOptions {
+  /** Bytes per read. `STREAM_CHUNK` by default; a suite passes tiny ones. */
+  chunk?: number
+  /** Checked after every read; true stops the pass where it is, consistently. */
+  cancelled?: () => boolean
+}
+
+const NEWLINE = 0x0a
+const NO_BYTES = Buffer.alloc(0)
+
+/*
+ * One chunk folded per event-loop turn, across every pass in the process.
+ *
+ * Yielding between one pass's chunks is not enough on its own: `listSessions`
+ * runs eight passes at once, and when several reads complete in the same poll
+ * phase their folds run back to back — measured at 21-31 ms of blocked loop
+ * for a cold list of the stoke project, eight 3 ms folds end to end. Each fold
+ * waits for the previous one's turn plus a `setImmediate`, and an immediate
+ * queued from inside the check phase runs on the NEXT iteration, so pty output,
+ * IPC and timers get a turn between any two folds. Idle, a turn costs
+ * microseconds.
+ */
+let foldQueue: Promise<void> = Promise.resolve()
+/** Below this many bytes a fold is ~0.2 ms, and waits for no turn. */
+const FOLD_NOW_BYTES = 64 * 1024
+function foldTurn(): Promise<void> {
+  const turn = foldQueue.then(() => new Promise<void>((resolve) => setImmediate(resolve)))
+  foldQueue = turn
+  return turn
+}
+
+/**
+ * Fold bytes `[target.offset, to)` of an open transcript into `target.fold`,
+ * a chunk at a time, and return the bytes after the last newline — a partial
+ * line, which is NOT folded. `to` may be `Infinity`, meaning end of file.
+ *
+ * Why this and not `readFile` + `split`: the fold is ~3 ms per MB of CPU, and
+ * done in one go it is one block of the main process's event loop, 40-70 ms for
+ * a 22 MB transcript, during which no pty byte reaches a terminal and no
+ * keystroke reaches a pty (gotcha 103). Every chunk here is its own read
+ * completion, so the loop runs between chunks.
+ *
+ * `FileHandle.read` rather than `createReadStream`: a Readable's async iterator
+ * can hand over a chunk it already buffered in a microtask, without the loop
+ * running at all, whereas a read here always completes through libuv. It also
+ * gives exact byte positions, one reused buffer, and a bounded end.
+ *
+ * Bytes are cut at a newline BEFORE they are decoded. A read can end inside a
+ * multi-byte UTF-8 character; 0x0A never occurs inside one, so a cut there
+ * never splits a character, while decoding first and cutting after would turn
+ * the split character into two U+FFFDs and corrupt the line.
+ *
+ * `target.offset` moves after each chunk's lines are folded, so a pass that is
+ * cancelled or throws part-way leaves the fold and the offset agreeing.
+ */
+export async function foldFrom(
+  fh: FileHandle,
+  target: FoldTarget,
+  to: number,
+  opts: FoldOptions = {}
+): Promise<Buffer> {
+  const chunk = Math.max(1, opts.chunk ?? STREAM_CHUNK)
+  const span = to - target.offset
+  if (!(span > 0)) return NO_BYTES
+  const buf = Buffer.allocUnsafe(Math.min(chunk, span))
+  // Bytes after the last newline so far. Kept as pieces and joined once, so a
+  // line many chunks long is copied once rather than once per chunk.
+  let carry: Buffer[] = []
+  let carryLen = 0
+  let pos = target.offset
+  while (pos < to) {
+    const want = Math.min(buf.length, to - pos)
+    const { bytesRead } = await fh.read(buf, 0, want, pos)
+    if (bytesRead === 0) break
+    pos += bytesRead
+    const nl = buf.lastIndexOf(NEWLINE, bytesRead - 1)
+    if (nl < 0) {
+      carry.push(Buffer.from(buf.subarray(0, bytesRead))) // `buf` is reused
+      carryLen += bytesRead
+    } else {
+      // A watcher tick's few-KB append folds at once; only real chunks queue,
+      // and they queue before decoding, which is part of the cost.
+      if (carryLen + nl > FOLD_NOW_BYTES) await foldTurn()
+      const text = carryLen
+        ? Buffer.concat([...carry, buf.subarray(0, nl)], carryLen + nl).toString('utf8')
+        : buf.toString('utf8', 0, nl)
+      foldLines(target.fold, text)
+      target.offset = pos - bytesRead + nl + 1
+      carryLen = bytesRead - nl - 1
+      carry = carryLen ? [Buffer.from(buf.subarray(nl + 1, bytesRead))] : []
+    }
+    if (opts.cancelled?.()) break
+  }
+  return carryLen ? Buffer.concat(carry, carryLen) : NO_BYTES
+}
+
+/**
+ * What a transcript says about its session: title, first prompt, branch, cwd,
+ * model, permission mode, message count and the newest turn's usage.
+ *
+ * Streamed (`foldFrom`) up to `FULL_READ_LIMIT`, head + tail beyond it. Callers
+ * that ask again and again cache it (`listSessions`) or do not call it at all
+ * (`ContextWatcher`, which keeps a `TranscriptCursor` instead).
+ */
+export async function parseSession(file: string): Promise<ParsedSession> {
+  const fold = createFold()
+  const fh = await open(file, 'r')
+  try {
+    const { size } = await fh.stat()
+    if (size > FULL_READ_LIMIT) {
+      fold.exactCount = false
+      const head = await readAt(fh, 0, CHUNK)
+      const tail = await readAt(fh, Math.max(0, size - CHUNK), CHUNK)
+      // Drop the first/last fragments — they are almost certainly partial lines.
+      for (const line of head.split('\n').slice(0, -1)) foldLine(fold, line)
+      for (const line of tail.split('\n').slice(1)) foldLine(fold, line)
+    } else {
+      // To end of file, not to `size`, exactly as the `readFile` this replaced
+      // read: a transcript written to meanwhile is read as it now stands. The
+      // buffer is sized to the file, so a small one does not allocate a whole
+      // `STREAM_CHUNK`.
+      const chunk = Math.min(STREAM_CHUNK, Math.max(64 * 1024, size + 1))
+      const rest = await foldFrom(fh, { fold, offset: 0 }, Infinity, { chunk })
+      // A final line with no newline yet is folded here, as `split` would have
+      // folded it: a record that parses counts, a half-written one does not.
+      if (rest.length) foldLine(fold, rest.toString('utf8'))
+    }
+  } finally {
+    await fh.close()
+  }
+  return finishFold(fold)
+}
+
+/**
+ * The live context watcher's position in one transcript: everything before
+ * `offset` is folded into `fold`, and nothing after it.
+ *
+ * Owned by the caller (`ContextWatcher`'s per-session `Watch`), never cached
+ * here: a module-level cache keyed by path would outlive the watch that knows
+ * whether the file it describes is still the same one.
+ */
+export interface TranscriptCursor extends FoldTarget {
+  file: string
+  dev: number
+  ino: number
+}
+
+export interface AdvanceResult {
+  cursor: TranscriptCursor
+  /** True when the cursor was (re)started from byte 0. */
+  reset: boolean
+  /** Bytes read this call, for a suite to prove only the appended ones were. */
+  bytesRead: number
+}
+
+/**
+ * Bring a cursor up to date with its transcript, reading only the bytes
+ * appended since it last moved, and folding only lines whose newline has
+ * arrived.
+ *
+ * Starts over from byte 0 — a new cursor, the same streamed pass — when the file
+ * is not provably the one the cursor read: a different path, a different
+ * device/inode (replaced by a rename), a size below the offset (truncated), or a
+ * byte before the offset that is no longer the newline that was there (rewritten
+ * in place). Claude Code only ever appends to a transcript; each of those is
+ * something else having written it, and a fold cannot be un-folded.
+ *
+ * Takes no stat from the caller: the file is opened first and stat'd through
+ * the handle, so the identity and size checked are those of the bytes read.
+ * A cursor still valid is advanced IN PLACE and returned; hold only the one
+ * returned, and never advance one cursor from two passes at once.
+ */
+export async function advanceCursor(
+  prev: TranscriptCursor | null,
+  file: string,
+  opts: FoldOptions = {}
+): Promise<AdvanceResult> {
+  const fh = await open(file, 'r')
+  try {
+    const st = await fh.stat()
+    let cursor =
+      prev &&
+      prev.file === file &&
+      prev.dev === st.dev &&
+      prev.ino === st.ino &&
+      st.size >= prev.offset
+        ? prev
+        : null
+    let bytesRead = 0
+    if (cursor && cursor.offset > 0) {
+      const one = Buffer.alloc(1)
+      const got = await fh.read(one, 0, 1, cursor.offset - 1)
+      bytesRead += got.bytesRead
+      if (got.bytesRead !== 1 || one[0] !== NEWLINE) cursor = null
+    }
+    const reset = cursor === null
+    if (!cursor) cursor = { file, dev: st.dev, ino: st.ino, offset: 0, fold: createFold() }
+    const from = cursor.offset
+    if (st.size > from) {
+      const rest = await foldFrom(fh, cursor, st.size, opts)
+      bytesRead += cursor.offset - from + rest.length
+    }
+    return { cursor, reset, bytesRead }
+  } finally {
+    await fh.close()
+  }
+}
+
+/** Up to `length` bytes at `start`, through a handle that is already open. */
+async function readAt(fh: FileHandle, start: number, length: number): Promise<string> {
+  const buf = Buffer.alloc(length)
+  const { bytesRead } = await fh.read(buf, 0, length, start)
+  return buf.subarray(0, bytesRead).toString('utf8')
+}
+
+/**
+ * `Promise.all` over `items` with at most `limit` of `fn` in flight, order kept.
+ * Shared by `sessionIndex.ts` and `listSessions`, which both walk every
+ * transcript in a directory and must not open them all at once.
+ */
+export async function mapLimit<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>
+): Promise<R[]> {
+  const out = new Array<R>(items.length)
+  let next = 0
+  const worker = async (): Promise<void> => {
+    while (next < items.length) {
+      const i = next++
+      out[i] = await fn(items[i])
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(Math.max(1, limit), items.length) }, worker))
   return out
 }
 

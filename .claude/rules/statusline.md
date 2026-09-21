@@ -4,6 +4,7 @@ paths:
   - "src/main/pty.ts"
   - "src/main/context.ts"
   - "src/main/sessionFile.ts"
+  - "src/main/projects.ts"
   - "src/shared/statusLine.ts"
   - "scripts/verify-context.mts"
   - "scripts/verify-statusline.mts"
@@ -294,3 +295,90 @@ Three locks:
 - **`resumeVerdict`** (remotePhone.ts): `POST /api/sessions` with `resume: true` is a 404 for a
   Claude id with no transcript and a 400 with no valid id, before anything spawns. A Resume must
   never silently become a new conversation.
+
+## 103. A whole-transcript parse is one block of the main process, and two pollers ran it on every change
+
+**`parseSession` folded a whole transcript in one synchronous block, and two callers ran it over
+and over.** The fold costs 2.2-3.2 ms per MB on an Apple M1, and while it runs nothing else in main
+does: no pty byte reaches the renderer (`send(CH.ptyData)`) and no keystroke reaches the pty, so a
+Claude terminal visibly froze. `ContextWatcher` re-ran it in full on every 1.5 s tick whose
+transcript mtime had moved, for every open Claude tab — several times a minute in a busy session.
+`listSessions` ran it over EVERY transcript of the project under an unbounded `Promise.all`, with
+no cache, and the renderer re-fetches that list on every window focus while the browsed project
+has a live session.
+
+Measured on 2026-09-21, 1 ms `setInterval` gap probe, min / median / max of 7 runs (the machine
+was loaded: 1.5 s of idle showed gaps up to 96 ms, so the watcher was driven with `refresh()` to
+keep its window short, and an idle window of the same length recorded beside each):
+
+| what | before | after |
+| --- | --- | --- |
+| watcher tick after a ~3 KB append, 21.6 MB transcript | 42 ms median, 70 max | 1.6 ms, 2.0 max |
+| same, 16.5 MB | 48 ms median, 132 max | 1.6 ms, 1.8 max |
+| watcher first pass, 21.6 MB | 38 / 40 / 57 ms | 2.6 / 2.9 / 5.4 ms (wall 50 ms) |
+| watcher first pass, 38.1 MB | 2 ms, sampled: **87 messages** | 3.6 / 4.6 / 5.5 ms, **2,154 messages** |
+| `listSessions`, stoke project (24 files, 119 MB), cold | 43 / 45 / 62 ms, 300 ms wall, RSS +272 MB | 4.6 / 5.4 / 6.4 ms, 243 ms wall, +112 MB |
+| same, warm | 41 / 43 / 58 ms, 278 ms wall | 1.2 / 1.6 / 2.0 ms, 1 ms wall |
+| same, warm after an append to the 16.5 MB one | as above | 3.4-3.9 ms, 45 ms wall |
+
+A gap includes the 1 ms interval itself (idle windows read 1.2 ms). The fix, in the order it bites:
+
+- **One rule.** The per-line fold is exported as `createFold`/`foldLine`/`foldLines`/`finishFold`,
+  and `parseSession`, the watcher and both suites use it. Two copies of the loop would be two
+  answers for one transcript.
+- **Stream, and cut bytes at a newline before decoding.** `foldFrom` reads 1 MB at a time with
+  `FileHandle.read` (a Readable's async iterator can hand over a buffered chunk without the loop
+  running), carries the partial last line as BYTES, and decodes only up to the last 0x0A. A read
+  can end inside a multi-byte UTF-8 character and 0x0A never occurs inside one; decoding first
+  turns the split character into U+FFFD for good.
+- **One fold per event-loop turn, process-wide** (`foldTurn`). Yielding between one pass's chunks
+  was not enough: eight concurrent `listSessions` passes whose reads completed in the same poll
+  phase ran their folds back to back, 21-31 ms. Each chunk over 64 KB now waits for the previous
+  fold plus a `setImmediate`, which from inside the check phase runs on the next iteration.
+- **The watcher follows the file.** Each `Watch` holds a `TranscriptCursor` (`file`, `dev`, `ino`,
+  `offset`, `fold`) — per watch, never a module cache — and `advanceCursor` reads only
+  `[offset, size)`. It starts over on a new path, a new dev/inode, a size below the offset, or a
+  byte before the offset that is no longer `\n`. A line is folded only once its newline has
+  arrived; `parseSession` still folds an unterminated last record as `split` did, and every one of
+  the 76 transcripts on this machine ends in `\n`, so the two agree on any settled file.
+  `refresh()` during a tick sets `again` instead of starting a second one (gotcha 20): two ticks
+  would fold one append twice and leave two timer chains (measured 36 ticks in 450 ms, not 10).
+- **An SSH copy is read whole every time.** `fetchRemoteTranscript` writes the remote file's last
+  4 MB (`MAX_REMOTE_TRANSCRIPT_BYTES`) in place: once the remote outgrows that the window SLIDES,
+  same inode, same size, and — with equal-length records — every newline where it was. No cursor
+  check can see that, so a `volatile` source is never given one. `verify:folders` builds exactly
+  that file.
+- **No 32 MB sampling in the watcher**, deliberately. Sampling bounded a whole-file read's time and
+  memory, which a streamed pass bounds by itself, and it cost the status bar and the auto-scan an
+  exact message count (87 for a transcript holding 2,154, dropping the moment a file crossed
+  32 MB) and could miss the newest usage record. `parseSession` keeps it, so `listSessions` is
+  unchanged and re-listing the 38 MB active transcript costs 2 ms, not a 100 ms stream.
+- **`listSessions` caches per transcript** on path + mtime + size (`SessionListCache`), the parse
+  claimed as a promise before any await so overlapping lists share it, pruned per directory,
+  capped at 2000, 8 at a time (`mapLimit`, now shared with `sessionIndex.ts`).
+
+Known floors: one record is parsed in one go, and the largest line here is 1.36 MB (~5 ms). An
+in-place rewrite that grows the file and happens to leave `\n` before the offset is invisible to
+the cursor; Claude Code only appends, and the one source that rewrites never keeps a cursor.
+`npm run check` sees none of this — every value was already right; only the blocks were wrong —
+so it is held by `verify:folders` (incremental == one pass at 46 cut points, a split 4-byte
+character, the three resets, the watcher end to end, re-parse counts) and `verify:context` (the
+same cut-point check on the three largest real transcripts).
+
+> **Checked against the code on 2026-09-21** — review of the change above, two follow-ups.
+> - **The exact count invalidated every auto-scan baseline an earlier build saved.** Those were
+>   taken against the sampled count (87 for the 2,154-message transcript), so after upgrading the
+>   first quiet tick read 2,067 messages of new work and started one automatic, PAID worklog scan
+>   nobody asked for. Each `StoredActivity` now carries `countVersion` (`MESSAGE_COUNT_VERSION`,
+>   `worklog/autoscan.ts`; a record without one reads as `UNVERSIONED_COUNT`, `autoscanStore.ts`),
+>   and `observe` re-takes a baseline at any other version on first sight, keeping its `lastScanAt`
+>   and `mutedUntil`: work done just before the upgrade's restart goes unlogged, the same trade a
+>   never-seen session gets. The version is per record, not per file, because `snapshot` writes a
+>   restored-but-never-observed record back as it came in. Bump `MESSAGE_COUNT_VERSION` whenever
+>   what `messageCount` counts changes again. `verify:worklog-autoscan` holds it ("a baseline an
+>   earlier build counted another way is re-taken, never scanned", from a file written as that
+>   build wrote it).
+> - **`verify:context`'s cut-point loops never returned on a small transcript**: `while (cuts.size
+>   < 6)` over fewer than six newlines, and `< 9` over a file under ~10 bytes, so `npm run check`
+>   hung on a fresh machine. `pickCuts` bounds both by what the file holds and by attempts, prints
+>   a NOTE/SKIP when a file offers fewer, and is asserted on those shapes directly.
