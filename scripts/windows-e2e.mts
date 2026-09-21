@@ -6,6 +6,9 @@
  *       Writes the portable-update helper and its plan into <dir> exactly as
  *       selfUpdate.ts `startSwap` does (writeSwapFilesSync), and prints the
  *       powershell.exe argv, one argument per line, for the caller to start.
+ *       Also writes the staged-copy marker `stagePortable` leaves once a copy
+ *       passed its checks, because the caller unpacked <staged> by hand and the
+ *       helper refuses a copy without one.
  *
  *   node scripts/windows-e2e.mts wait-result <file> <seconds>
  *       Waits for the helper's result.json and prints it; exits 1 if it never
@@ -34,7 +37,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { backupDirFor, swapArgs } from '../src/main/portableSwap.ts'
-import { gatherInstallFacts, writeSwapFilesSync } from '../src/main/portableUpdate.ts'
+import { gatherInstallFacts, writeStagedMarkerSync, writeSwapFilesSync } from '../src/main/portableUpdate.ts'
 import { classifyInstall } from '../src/shared/installKind.ts'
 
 const [cmd, ...rest] = process.argv.slice(2)
@@ -51,6 +54,7 @@ if (cmd === 'swap-files') {
     pid: Number(pid),
     appDir,
     staged,
+    stagedMarker: join(dir, 'staged.json'),
     backup: backupDirFor(appDir, from),
     resultFile: join(dir, 'result.json'),
     startedFile: join(dir, 'started.json'),
@@ -59,8 +63,10 @@ if (cmd === 'swap-files') {
     relaunch: relaunch === '1',
     exeName: 'Stoke.exe',
     waitSeconds: 120,
-    renameTries: 40
+    renameTries: 40,
+    createdAt: Date.now()
   }
+  writeStagedMarkerSync(plan.stagedMarker, staged, to)
   const { scriptPath, planPath } = writeSwapFilesSync(dir, plan)
   for (const a of swapArgs(scriptPath, planPath)) console.log(a)
 } else if (cmd === 'wait-result') {

@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { access, readdir, rm } from 'node:fs/promises'
+import { readdir, rm } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 import { app, net } from 'electron'
@@ -8,20 +8,27 @@ import { signatureBlocker } from './codesign.ts'
 import { getSettings } from './store.ts'
 import { shouldAutoDownload } from '../shared/updateCheck.ts'
 import type { SelfUpdateState } from '../shared/api.ts'
-import { RELEASES_URL, classifyInstall, portableAssetFor, usesInstallerRoute, type InstallKind } from '../shared/installKind.ts'
+import { RELEASES_URL, classifyInstall, isVolumeRoot, portableAssetFor, sharedFolderNote, usesInstallerRoute, type InstallKind } from '../shared/installKind.ts'
 import { backupDirFor, stagedDirFor } from './portableSwap.ts'
 import {
   asarVersion,
   entriesNotIn,
   gatherInstallFacts,
+  helperVerdict,
   launchSwap,
+  listBuild,
+  readPlanAt,
+  readRefusal,
   readStarted,
   readSwapResult,
+  refusalStands,
+  removeTree,
   stagePortable,
   sweepLeftovers,
   swapWouldCarryAway,
   useRemover,
   windowsTools,
+  writeRefusalSync,
   writeSwapFilesSync
 } from './portableUpdate.ts'
 
@@ -101,6 +108,14 @@ let staged: { dir: string; version: string } | null = null
 let portableBusy = false
 /** Set once the helper has been started, so the quit handler never starts a second. */
 let swapStarted = false
+/**
+ * Set when the LAST quit's helper is still waiting, or may still be starting
+ * (housekeeping's `helperVerdict`). Its plan names a staged copy, and this
+ * session must not delete and re-extract that folder under it — which the +8 s
+ * automatic download did — nor start a second helper (found by review). Beside
+ * `swapStarted`, and refused on by the same two places.
+ */
+let helperPending = false
 /** The folder this copy runs from, once the probe has resolved it. */
 let appDirResolved: string | null = null
 /**
@@ -125,15 +140,15 @@ function swapResultFile(): string {
 function swapStartedFile(): string {
   return join(portableDir(), 'started.json')
 }
-
-/** Whether the last run started the helper: its plan is written only then. */
-async function planWasWritten(): Promise<boolean> {
-  try {
-    await access(join(portableDir(), 'plan.json'))
-    return true
-  } catch {
-    return false
-  }
+/** Written only when the helper is started, so its presence says one was. */
+function planFile(): string {
+  return join(portableDir(), 'plan.json')
+}
+function stagedMarkerFile(): string {
+  return join(portableDir(), 'staged.json')
+}
+function refusalFile(): string {
+  return join(portableDir(), 'refused.json')
 }
 
 let wired = false
@@ -249,12 +264,13 @@ function detectInstallKind(): Promise<InstallKind> {
       execPath: process.execPath,
       env: process.env
     })
-    appDirResolved = dirname(facts.execPath)
     const kind = classifyInstall(facts)
     // An answer a probe could not settle (a deadline passed) is never kept:
     // the next caller asks again. The boot-time probe is the one that races the
     // rest of startup for the thread pool; the +8s check usually settles it.
+    // Nor is its folder: a timed-out realpath leaves `execPath` unresolved.
     if (!kind.settled) kindProbe = null
+    else appDirResolved = dirname(facts.execPath)
     return kind
   })()
   return kindProbe
@@ -290,6 +306,7 @@ function wire(): void {
     // copy is now the wrong version, and installing it would be a downgrade
     // from what the panel says is available.
     if (staged && staged.version !== info.version && !swapStarted) {
+      void removeTree(staged.dir).catch(() => {})
       staged = null
       state.downloaded = false
     }
@@ -336,64 +353,104 @@ export function initSelfUpdate(onChange: (s: SelfUpdateState) => void): void {
   // Every remove of an unpacked copy goes through the UNPATCHED fs: Electron's
   // own treats app.asar as a folder and a recursive rm would walk into it.
   useRemover((path, opts) => (require('original-fs') as typeof import('node:fs')).promises.rm(path, opts))
-  void detectInstallKind().then(async (kind) => {
+  void detectInstallKind().then((kind) => {
     state.installKind = kind
     state.blocked = state.blocked ?? blockedByKind(kind)
     push()
-    if (kind.kind !== 'portable' || !appDirResolved) return
-    const appDir = appDirResolved
-    // What the last swap said. A failure is shown in Settings › Updates; a
-    // success needs no words — the version line already says it.
-    const result = await readSwapResult(swapResultFile())
-    if (result && !result.ok) {
-      swapNote = `The last update did not install: ${result.message}`
-      state.error = swapNote
-      push()
-    }
-    const launched = await planWasWritten()
-    const started = await readStarted(swapStartedFile())
-    if (launched && !result && started?.alive) {
-      // The helper is STILL waiting — this Stoke was opened again inside its
-      // wait. Leave its plan and its staged copy alone; it gives up on its own
-      // (this Stoke is running out of the folder it wants to rename) and says
-      // so in a result the next launch reads.
-      return
-    }
-    if (launched) {
-      await rm(join(portableDir(), 'plan.json'), { force: true })
-      await rm(swapStartedFile(), { force: true })
-    }
-    // An unpacked copy nothing is waiting to install — a swap that never ran,
-    // or a download from before a restart — is swept now; it would only be
-    // downloaded again. So is any zip a quit left mid-download. The OLD copy
-    // from a finished swap is kept a minute longer, until this new version has
-    // shown it starts and stays up: a release that crashes on launch still
-    // leaves the one that worked.
-    await sweepLeftovers(appDir, ['update'])
-    try {
-      for (const f of await readdir(portableDir())) {
-        if (f.toLowerCase().endsWith('.zip')) await rm(join(portableDir(), f), { force: true })
-      }
-    } catch {
-      // No folder yet: nothing to sweep.
-    }
-    if (launched && !result && !started) {
-      // A plan, no result and no started marker: the helper was handed to
-      // PowerShell and never ran a line. `-ExecutionPolicy Bypass` sets the
-      // Process scope only, and a Group Policy allowing signed scripts alone
-      // overrides it — so for this session the route is blocked outright,
-      // rather than offering a download the policy will refuse again.
-      refusePortable(
-        `The last update was handed to PowerShell to install, and PowerShell never ran it — a Group Policy that allows only signed scripts does exactly that. Updates for this copy have to be downloaded by hand from ${RELEASES_URL}.`
-      )
-      push()
-    } else if (launched && !result && started && !started.alive) {
-      swapNote = 'The last update was started but the helper stopped without saying how it went. It will be offered again.'
-      state.error = swapNote
-      push()
-    }
-    setTimeout(() => void sweepLeftovers(appDir, ['old']), 60_000).unref?.()
+    void housekeep(kind)
   })
+}
+
+/*
+ * What the last portable swap left behind, dealt with ONCE per session, the
+ * first time any caller has a settled kind — the boot probe, or the +8 s check
+ * when the boot probe timed out. It used to run only off the boot probe, so an
+ * unsettled boot skipped it for the whole session (found by review). Memoised
+ * as a promise like the probes above: `checkSelfUpdate` awaits it before the
+ * automatic download can fire, and `downloadPortable` awaits it too, because it
+ * deletes zips and `.update` folders — the very things a download writes.
+ */
+let housekeeping: Promise<void> | null = null
+
+function housekeep(kind: InstallKind): Promise<void> {
+  if (housekeeping) return housekeeping
+  if (!kind.settled || !appDirResolved) return Promise.resolve()
+  housekeeping = runHousekeeping(kind, appDirResolved).catch(() => {
+    // Best-effort throughout: a leftover that cannot go now goes next launch.
+  })
+  return housekeeping
+}
+
+async function runHousekeeping(kind: InstallKind, appDir: string): Promise<void> {
+  /*
+   * A `manual` copy is swept too, not only a `portable` one: a swap refused at
+   * the last moment (something dropped into the folder) leaves its unpacked
+   * ~300 MB copy beside the app, and from the next launch on the classifier
+   * calls that folder manual — so a portable-only sweep left it for good (found
+   * by review). Safe for any folder: `sweepLeftovers` touches only
+   * leftover-NAMED siblings whose contents are all Stoke's. Not a drive root,
+   * which has no folder around Stoke, nor the installer's or a package
+   * manager's folder, which this machinery never writes beside.
+   */
+  if ((kind.kind !== 'portable' && kind.kind !== 'manual') || isVolumeRoot(appDir)) return
+  const portable = kind.kind === 'portable'
+  const result = await readSwapResult(swapResultFile())
+  const verdict = helperVerdict({
+    planAt: await readPlanAt(planFile()),
+    now: Date.now(),
+    hasResult: result !== null,
+    started: await readStarted(swapStartedFile())
+  })
+  if (verdict === 'pending') {
+    // This Stoke was opened again while the helper waits, or before it has
+    // even started. Leave its plan and staged copy alone; it gives up on its
+    // own (this Stoke runs out of the folder it wants to rename) and says so
+    // in a result the next launch reads.
+    helperPending = true
+    swapNote = 'The update from when Stoke last closed is still waiting to install, and cannot while Stoke is open. Quit Stoke to let it finish; if it gives up instead, the update is offered again next time.'
+    state.error = swapNote
+    push()
+    return
+  }
+  // What the last swap said. A failure is shown in Settings › Updates; a
+  // success needs no words — the version line already says it.
+  if (portable && result && !result.ok) {
+    swapNote = `The last update did not install: ${result.message}`
+    state.error = swapNote
+    push()
+  }
+  for (const f of [planFile(), swapStartedFile(), stagedMarkerFile()]) await rm(f, { force: true })
+  // An unpacked copy nothing is waiting to install — a swap that never ran,
+  // or a download from before a restart — is swept now; it would only be
+  // downloaded again. So is any zip a quit left mid-download. The OLD copy
+  // from a finished swap is kept a minute longer, until this new version has
+  // shown it starts and stays up: a release that crashes on launch still
+  // leaves the one that worked.
+  await sweepLeftovers(appDir, ['update'])
+  try {
+    for (const f of await readdir(portableDir())) {
+      if (f.toLowerCase().endsWith('.zip')) await rm(join(portableDir(), f), { force: true })
+    }
+  } catch {
+    // No folder yet: nothing to sweep.
+  }
+  if (portable && verdict === 'never-ran') {
+    // A plan, no result and no started marker long after it was written: the
+    // helper was handed to PowerShell and never ran a line.
+    // `-ExecutionPolicy Bypass` sets the Process scope only, and a Group Policy
+    // allowing signed scripts alone overrides it — so for this session the
+    // route is blocked outright, rather than offering a download the policy
+    // will refuse again.
+    refusePortable(
+      `The last update was handed to PowerShell to install, and PowerShell never ran it — a Group Policy that allows only signed scripts does exactly that. Updates for this copy have to be downloaded by hand from ${RELEASES_URL}.`
+    )
+    push()
+  } else if (portable && verdict === 'stopped') {
+    swapNote = 'The last update was started but the helper stopped without saying how it went. It will be offered again.'
+    state.error = swapNote
+    push()
+  }
+  setTimeout(() => void sweepLeftovers(appDir, ['old']), 60_000).unref?.()
 }
 
 export function selfUpdateState(): SelfUpdateState {
@@ -412,13 +469,19 @@ export async function checkSelfUpdate(): Promise<SelfUpdateState> {
   // probe has not landed yet but Settings is already open.
   const kind = await detectInstallKind()
   state.installKind = kind
-  state.blocked = (await detectBlocker()) ?? blockedByKind(kind)
+  // Before anything can download: the leftovers it sweeps are what a download
+  // writes, and it is what finds a helper still waiting from the last quit.
+  await housekeep(kind)
+  // Housekeeping may have refused the portable route (PowerShell never ran the
+  // last helper); that answer is the kind from here on.
+  const settledKind = state.installKind ?? kind
+  state.blocked = (await detectBlocker()) ?? blockedByKind(settledKind)
   wire()
   // electron-updater installs what IT downloaded when Stoke quits. Only the
   // installer's own folder may take that route: anywhere else it would install
   // a second copy under %LOCALAPPDATA%\Programs (src/shared/installKind.ts).
   // The portable route has its own quit handler (armSwapOnQuit).
-  updater().autoInstallOnAppQuit = usesInstallerRoute(kind.kind)
+  updater().autoInstallOnAppQuit = usesInstallerRoute(settledKind.kind)
   /*
    * Read on every check rather than wired once.
    *
@@ -451,15 +514,30 @@ async function downloadPortable(): Promise<SelfUpdateState> {
   // Claimed before the first await (gotcha 20): a second press, or the
   // automatic download racing a manual one, must not start a second fetch into
   // the same folder.
-  if (portableBusy || swapStarted) return selfUpdateState()
+  if (portableBusy || swapStarted || helperPending) return selfUpdateState()
   portableBusy = true
   try {
+    // Never while the launch housekeeping is still sweeping zips and `.update`
+    // folders — the things this is about to write (found by review) — and
+    // never once it has found the last quit's helper still waiting.
+    await housekeeping
+    if (helperPending || state.installKind?.kind !== 'portable') return selfUpdateState()
     const version = state.availableVersion
     const appDir = appDirResolved
     if (!version || !appDir || !lastInfo || lastInfo.version !== version) return selfUpdateState()
     if (staged?.version === version) {
       state.downloaded = true
       return selfUpdateState()
+    }
+    // Refused before for this folder and version, and the reason is still in
+    // the folder: say so again rather than download ~100 MB to refuse again.
+    const prior = await readRefusal(refusalFile())
+    if (prior) {
+      if (await refusalStands(prior, appDir, version)) {
+        refusePortable(prior.message)
+        return selfUpdateState()
+      }
+      await rm(refusalFile(), { force: true })
     }
     const asset = portableAssetFor(lastInfo.files, process.arch)
     if (!asset) {
@@ -475,6 +553,7 @@ async function downloadPortable(): Promise<SelfUpdateState> {
     const dir = stagedDirFor(appDir, version)
     await stagePortable({
       zip: join(portableDir(), `${asset.url.replace(/[\\/:*?"<>|]/g, '_')}`),
+      marker: stagedMarkerFile(),
       // electron-builder's GitHub provider tags releases `v<version>` and
       // names files relative to that tag's downloads.
       url: `${RELEASE_DOWNLOAD}/v${version}/${encodeURIComponent(asset.url)}`,
@@ -497,19 +576,20 @@ async function downloadPortable(): Promise<SelfUpdateState> {
     // put the older one in place under a panel naming the newer (found by
     // review). Thrown away; the newer one is fetched on the next pass.
     if (state.availableVersion !== version) {
-      await rm(dir, { recursive: true, force: true }).catch(() => {})
+      await removeTree(dir).catch(() => {})
+      await rm(stagedMarkerFile(), { force: true })
       state.downloading = false
       return selfUpdateState()
     }
-    // The last guard before a swap is armed: nothing may be in this folder that
-    // the new copy lacks, because the swap carries the whole folder away.
-    const carried = entriesNotIn(await readdir(appDir), await readdir(dir))
+    // The last guard before a swap is armed: nothing that is not Stoke's may be
+    // in this folder unless the new copy has it too, because the swap carries
+    // the whole folder away.
+    const carried = entriesNotIn(await listBuild(appDir), await listBuild(dir))
     if (carried.length) {
-      await sweepLeftovers(appDir, ['update'])
+      await removeTree(dir).catch(() => {})
+      await rm(stagedMarkerFile(), { force: true })
       state.downloading = false
-      refusePortable(
-        `Stoke shares its folder, ${appDir}, with other things (${carried.slice(0, 3).join(', ')}${carried.length > 3 ? ', …' : ''}). Updating itself would mean replacing that whole folder, so it does not. Move Stoke into a folder of its own, or download updates by hand from ${RELEASES_URL}.`
-      )
+      refuseShared(appDir, version, carried)
       return selfUpdateState()
     }
     staged = { dir, version }
@@ -532,17 +612,39 @@ async function downloadPortable(): Promise<SelfUpdateState> {
  * the helper could not be written — in which case nothing has changed and the
  * caller must not quit on its account.
  */
+/**
+ * Refuse the portable route because the folder holds something that is not
+ * Stoke's, and remember it (portableUpdate.ts `Refusal`) so the next pass does
+ * not download the same release only to refuse it again. Synchronous: this is
+ * also the quit path's refusal.
+ */
+function refuseShared(appDir: string, version: string, carried: string[]): void {
+  const message = sharedFolderNote(appDir, carried)
+  refusePortable(message)
+  try {
+    writeRefusalSync(refusalFile(), { dir: appDir, version, entries: carried, message })
+  } catch {
+    // Unwritten, the next pass downloads and refuses once more: slower, not wrong.
+  }
+}
+
 function startSwap(relaunch: boolean): boolean {
   if (swapStarted) return true
-  if (!staged || !appDirResolved) return false
+  if (helperPending || !staged || !appDirResolved) return false
   // Checked again at the last moment, synchronously (this can run from a quit
   // handler): something put into the folder since the download is still
   // something the swap would carry away.
   const carried = swapWouldCarryAway(appDirResolved, staged.dir)
   if (carried.length) {
-    refusePortable(
-      `Stoke shares its folder, ${appDirResolved}, with other things (${carried.slice(0, 3).join(', ')}). Updating itself would mean replacing that whole folder, so it does not. Move Stoke into a folder of its own, or download updates by hand from ${RELEASES_URL}.`
-    )
+    refuseShared(appDirResolved, staged.version, carried)
+    // The unpacked copy will never be swapped in now; it went nowhere before
+    // and sat beside the app for good (found by review). Started in the
+    // background — this may be the quit path, and a delete cut short by the
+    // exit is finished by the next launch's sweep.
+    const dir = staged.dir
+    staged = null
+    void removeTree(dir).catch(() => {})
+    void rm(stagedMarkerFile(), { force: true }).catch(() => {})
     state.downloaded = false
     push()
     return false
@@ -552,6 +654,7 @@ function startSwap(relaunch: boolean): boolean {
     pid: process.pid,
     appDir: appDirResolved,
     staged: staged.dir,
+    stagedMarker: stagedMarkerFile(),
     backup: backupDirFor(appDirResolved, state.currentVersion),
     resultFile: swapResultFile(),
     startedFile: swapStartedFile(),
@@ -560,7 +663,8 @@ function startSwap(relaunch: boolean): boolean {
     relaunch,
     exeName: EXE_NAME,
     waitSeconds: 120,
-    renameTries: 40
+    renameTries: 40,
+    createdAt: Date.now()
   }
   swapStarted = true
   /*

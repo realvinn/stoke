@@ -493,6 +493,37 @@ file. `verify:portable` runs the helper under a real PowerShell where there is o
 > and a drive root, an inherited `PORTABLE_EXECUTABLE_FILE` and a junctioned manager root are
 > each classified correctly. `verify:portable` holds every one.
 
+> **Corrected after the second review, 2026-09-21.** Ten more holes, all in the portable route,
+> each held by `verify:portable`:
+> - **The helper requires a marker, not just Stoke.exe.** `stagePortable` deletes
+>   `portable-update\staged.json` (userData, never inside the copy — that becomes the app folder)
+>   before it touches the staged folder and writes it, naming the folder and version, only after
+>   `stagedProblem` passes. Stoke.exe is also there halfway through an unpack.
+> - **A helper still waiting — or maybe still starting — owns its staged copy.** Housekeeping's
+>   `helperVerdict` reads the plan's `createdAt` (else its mtime), `started.json` and the result:
+>   no readable started marker inside `HELPER_START_ALLOWANCE_MS` (30 s) is `pending`, not "never
+>   ran". While pending, `helperPending` makes `downloadPortable` and `startSwap` refuse — the
+>   same session's +8 s automatic download had deleted and re-extracted into that folder.
+> - **`entriesNotIn` ignores Stoke-shaped names** (`isStokeBuildPath`): a DLL the new build
+>   dropped leaves with the old version. Refusing it, while the classifier (same shapes) kept
+>   saying portable, re-downloaded ~100 MB on every launch. Every name it refuses on is one
+>   `foreignEntries` also names, so a refused folder is manual from the next launch; the refusal
+>   is also remembered (`refused.json`, standing only while a name it gave is still there).
+> - **Every guard looks one level down** into `resources` and `locales` (`listBuild`,
+>   `isStokeInnerEntry`), where a file of the user's passed a top-level look and was swept.
+>   `resources` is an exact list — a new `extraResources` target must be added to it in the same
+>   change, or the next build's own folder reads as shared (the suite reads the yml to hold that).
+> - **The helper deletes nothing.** A taken backup name gets `-2`, `-3`… (`isLeftover` accepts
+>   it); it used to `Remove-Item` the existing folder — the very kind the sweep guard keeps.
+> - **A realpath past its deadline nulls every probe** (unsettled, asked again) instead of falling
+>   back to the unresolved path; the classifier now tests "could not tell" before the drive-root
+>   rule. A realpath that fails outright is an answer: the path as started.
+> - **Housekeeping is memoised and runs the first time any caller has a settled kind**, for
+>   `manual` copies too (a swap refused at quit makes the folder manual next launch, and its
+>   ~300 MB staged copy stayed for good); `checkSelfUpdate` and `downloadPortable` await it, so no
+>   download races the sweep of zips and `.update` folders. A refusal in `startSwap` deletes the
+>   staged copy itself.
+
 ## 97. Komac rewrites what it submits, and silently drops a manifest it cannot parse — exit 0
 
 **`komac submit <dir>` parses every file into typed structs and writes them back** (a
@@ -522,6 +553,11 @@ in `portableUpdate.ts` goes through an injected remover (`useRemover`), which `s
 points at `require('original-fs').promises.rm`; a suite runs under plain node, where the default
 already is the unpatched one. Reading into an asar and deleting one need opposite fs modules —
 keep them apart.
+
+> **2026-09-21:** selfUpdate.ts had its own `rm` for a staged copy it discards (a newer
+> release announced mid-download, a refused swap) — Electron's patched one, which failed part-way
+> and left half a folder. It uses `portableUpdate.ts`'s exported `removeTree` now, which goes
+> through the injected remover like everything else.
 
 ## 102. Every published arm64 Windows installer exited 0 and installed nothing
 

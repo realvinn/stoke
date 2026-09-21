@@ -29,13 +29,18 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
-import { delimiter, join } from 'node:path'
+import { delimiter, dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   classifyInstall,
   foreignEntries,
+  isStokeBuildPath,
+  isStokeInnerEntry,
   isVolumeRoot,
+  sharedFolderNote,
   portableAssetFor,
   usesInstallerRoute,
   wingetIdFromFolder,
@@ -44,17 +49,28 @@ import {
   winPathKey,
   type InstallFacts
 } from '../src/shared/installKind.ts'
-import { SWAP_SCRIPT, backupDirFor, isLeftover, planJson, stagedDirFor, swapArgs, type SwapPlan } from '../src/main/portableSwap.ts'
+import { SWAP_SCRIPT, backupDirFor, isLeftover, planJson, stagedDirFor, stagedMarkerJson, swapArgs, type SwapPlan } from '../src/main/portableSwap.ts'
 import {
+  HELPER_START_ALLOWANCE_MS,
   downloadVerified,
   entriesNotIn,
   extractZip,
+  gatherInstallFacts,
+  helperVerdict,
+  listBuild,
+  readPlanAt,
+  readRefusal,
   readStarted,
   readSwapResult,
+  refusalStands,
+  removeTree,
   stagedProblem,
   stagePortable,
   sweepLeftovers,
   swapWouldCarryAway,
+  useRemover,
+  writeRefusalSync,
+  writeStagedMarkerSync,
   writeSwapFilesSync
 } from '../src/main/portableUpdate.ts'
 
@@ -86,7 +102,8 @@ console.log('\nwhich kind of copy this is')
     canWriteBeside: true,
     writeError: null,
     // The real top level of a Windows build (release/win-unpacked).
-    entries: ['locales', 'resources', 'chrome_100_percent.pak', 'chrome_200_percent.pak', 'd3dcompiler_47.dll', 'dxcompiler.dll', 'dxil.dll', 'ffmpeg.dll', 'icudtl.dat', 'libEGL.dll', 'libGLESv2.dll', 'LICENSE.electron.txt', 'LICENSES.chromium.html', 'resources.pak', 'snapshot_blob.bin', 'Stoke.exe', 'v8_context_snapshot.bin', 'vk_swiftshader.dll', 'vk_swiftshader_icd.json', 'vulkan-1.dll']
+    // One level down in resources and locales as listBuild names it.
+    entries: ['locales', 'resources', 'chrome_100_percent.pak', 'chrome_200_percent.pak', 'd3dcompiler_47.dll', 'dxcompiler.dll', 'dxil.dll', 'ffmpeg.dll', 'icudtl.dat', 'libEGL.dll', 'libGLESv2.dll', 'LICENSE.electron.txt', 'LICENSES.chromium.html', 'resources.pak', 'snapshot_blob.bin', 'Stoke.exe', 'v8_context_snapshot.bin', 'vk_swiftshader.dll', 'vk_swiftshader_icd.json', 'vulkan-1.dll', 'resources\\app.asar', 'resources\\app.asar.unpacked', 'resources\\app-update.yml', 'resources\\elevate.exe', 'resources\\bin', 'locales\\en-US.pak', 'locales\\zh-TW.pak']
   }
   const kind = (over: Partial<InstallFacts>) => classifyInstall({ ...base, ...over, env: { ...base.env, ...(over.env ?? {}) } })
 
@@ -120,6 +137,34 @@ console.log('\nwhich kind of copy this is')
   check('foreignEntries sees exactly the strangers', foreignEntries(['Stoke.exe', 'ffmpeg.dll', 'locales', 'photos', 'a.pdf', 'LICENSE.electron.txt']), ['photos', 'a.pdf'])
 
   /*
+   * The review's low finding: every guard looked at top-level names only, so a
+   * file of the user's inside resources or locales passed all three and the
+   * sweep deleted it with the old copy.
+   */
+  const inRes = kind({ entries: [...(base.entries ?? []), 'resources\\my-notes.txt'] })
+  check('a file of the user\'s inside resources makes the folder manual, and is named', [inRes.kind, /resources\\my-notes\.txt/.test(inRes.note ?? '')], ['manual', true])
+  check('and inside locales', kind({ entries: [...(base.entries ?? []), 'locales\\readme.txt'] }).kind, 'manual')
+  check(
+    'what a build keeps one level down',
+    [['locales', 'en-US.pak'], ['Locales', 'desktop.ini'], ['locales', 'x.txt'], ['resources', 'app.asar'], ['RESOURCES', 'App.Asar.Unpacked'], ['resources', 'bin'], ['resources', 'app.asar.bak'], ['elsewhere', 'app.asar']].map(([f, n]) => isStokeInnerEntry(f, n)),
+    [true, true, false, true, true, true, false, false]
+  )
+  check('isStokeBuildPath reads either slash', [isStokeBuildPath('resources/app.asar'), isStokeBuildPath('resources\\app.asar'), isStokeBuildPath('Stoke.exe'), isStokeBuildPath('photos\\a.jpg')], [true, true, true, false])
+  /*
+   * A new extraResources target lands in resources\ of every build — so it must
+   * be one isStokeInnerEntry accepts, or the NEXT build's own folder reads as
+   * "shared" and every portable copy stops updating. Read from the yml, so
+   * adding a target without adding its name fails here.
+   */
+  {
+    const yml = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'electron-builder.yml'), 'utf8')
+    const tos = [...yml.matchAll(/^\s+to:\s*['"]?([^'"\s#]+)/gm)].map((m) => m[1].split(/[\\/]/)[0])
+    ok('electron-builder.yml has extraResources targets to check', tos.length > 0)
+    check('every extraResources target is a name a build may keep in resources', tos.filter((t) => !isStokeInnerEntry('resources', t)), [])
+  }
+  check('the shared-folder note names what is foreign and the way out', /with other things \(a\.pdf, b, c, and 1 more\)/.test(sharedFolderNote('C:\\x', ['a.pdf', 'b', 'c', 'd'])), true)
+
+  /*
    * The review's high finding: a probe that times out must never produce the
    * destructive route. `false` for "no uninstaller" routed an INSTALLED copy
    * into the swap, which would have deleted its uninstaller.
@@ -137,6 +182,9 @@ console.log('\nwhich kind of copy this is')
 
   const root = kind({ execPath: 'E:\\Stoke.exe' })
   check('a drive root has no folder to swap: manual', [root.kind, root.dir], ['manual', 'E:'])
+  // A timed-out realpath leaves execPath unresolved and every probe null: no
+  // SETTLED answer may be read off that path, a drive root's included.
+  check('a drive root whose probes did not answer is unsettled, never a settled guess', [kind({ execPath: 'E:\\Stoke.exe', hasUninstaller: null, canWriteBeside: null, entries: null }).settled], [false])
   check('isVolumeRoot', ['E:', 'E:\\', '\\\\srv\\share', '\\\\srv\\share\\Stoke', 'E:\\Tools'].map(isVolumeRoot), [true, true, true, false, false])
 
   const scoop = kind({ execPath: 'C:\\Users\\Ada\\scoop\\apps\\stoke\\current\\Stoke.exe', hasUninstaller: true })
@@ -197,6 +245,34 @@ console.log('\nthe zip a release offers each architecture')
   check('an installer is never mistaken for the portable build', portableAssetFor(files.slice(0, 2), 'x64'), null)
 }
 
+console.log('\nthe facts, gathered')
+{
+  // A real folder shaped like a portable copy, one level down included.
+  const app = join(scratch, 'facts', 'Stoke')
+  mkdirSync(join(app, 'resources', 'bin'), { recursive: true })
+  mkdirSync(join(app, 'locales'), { recursive: true })
+  for (const f of ['Stoke.exe', 'ffmpeg.dll', join('resources', 'app.asar'), join('locales', 'en-US.pak')]) writeFileSync(join(app, f), '')
+  const exe = join(app, 'Stoke.exe')
+  const probe = { platform: 'win32', packaged: true, execPath: exe, env: {} }
+  const facts = await gatherInstallFacts(probe)
+  check('the listing goes one level down into resources and locales', [...(facts.entries ?? [])].sort(), ['Stoke.exe', 'ffmpeg.dll', 'locales', 'locales\\en-US.pak', 'resources', 'resources\\app.asar', 'resources\\bin'])
+  check('and a folder of Stoke\'s own classifies as portable from it', classifyInstall(facts).kind, 'portable')
+  writeFileSync(join(app, 'resources', 'notes.txt'), '')
+  check('a file dropped into resources is seen and makes it manual', classifyInstall(await gatherInstallFacts(probe)).kind, 'manual')
+  rmSync(join(app, 'resources', 'notes.txt'))
+  /*
+   * The review's low finding: a realpath past its deadline fell back to the
+   * UNRESOLVED path — a guess — so a junctioned portable folder could settle on
+   * the junction and the swap would rename the junction.
+   */
+  const hung = await gatherInstallFacts({ ...probe, resolve: () => new Promise<string>(() => {}), deadlineMs: 50 })
+  check('a realpath that times out nulls every probe', [hung.hasUninstaller, hung.canWriteBeside, hung.entries], [null, null, null])
+  const hk = classifyInstall(hung)
+  check('so the answer is the unsettled manual, asked again — never portable off an unresolved path', [hk.kind, hk.settled], ['manual', false])
+  const failed = await gatherInstallFacts({ ...probe, resolve: () => Promise.reject(new Error('EISDIR: virtual drive')), deadlineMs: 2000 })
+  check('a realpath that FAILS is an answer: the path as started, and the probes run there', [failed.execPath, classifyInstall(failed).kind], [exe, 'portable'])
+}
+
 console.log('\nthe swap helper, read')
 {
   ok('the script is pure ASCII: Windows PowerShell 5.1 reads a BOM-less file as the ANSI code page', /^[\x00-\x7F]*$/.test(SWAP_SCRIPT))
@@ -204,7 +280,11 @@ console.log('\nthe swap helper, read')
   const code = SWAP_SCRIPT.split('\r\n').filter((l) => !l.trimStart().startsWith('#')).join('\n')
   ok('it never kills: no Stop-Process, taskkill, .Kill() or -Force on a process', !/Stop-Process|taskkill|\.Kill\(/i.test(code))
   ok('it waits on everything running out of the folder, not only the pid', /Get-Inside/.test(code) && /ExecutablePath/.test(code))
-  ok('and keeps the old copy for the new one to sweep once it has started', !/Remove-Item -LiteralPath \$p\.backup -Recurse -Force\s*\}\s*\)\s*$/m.test(code) && /The old folder stays/.test(SWAP_SCRIPT))
+  ok('and keeps the old copy for the new one to sweep once it has started', /The old folder stays/.test(SWAP_SCRIPT))
+  // The review's low finding: it cleared an existing backup with an unguarded
+  // recursive Remove-Item — exactly the kind of folder the sweep guard keeps.
+  ok('it deletes NOTHING, ever: no Remove-Item at all, an existing backup name is skipped instead', !/Remove-Item|\.Delete\(/i.test(code) && /Test-Path -LiteralPath \$backup; \$n\+\+/.test(code))
+  ok('it requires the staged-copy marker, not merely a Stoke.exe', /\$p\.stagedMarker/.test(code) && /\$ready\.version -ne \[string\]\$p\.to/.test(code))
   ok('the result is written without a BOM', /UTF8Encoding\(\$false\)/.test(code))
   const args = swapArgs('C:\\x\\swap.ps1', 'C:\\x\\plan.json')
   check('the argv: -File with -Plan, never -EncodedCommand or -Command', [args.includes('-File'), args.includes('-EncodedCommand'), args.includes('-Command'), args.slice(-4)], [true, false, false, ['-File', 'C:\\x\\swap.ps1', '-Plan', 'C:\\x\\plan.json']])
@@ -212,10 +292,10 @@ console.log('\nthe swap helper, read')
   check('the sibling names', [stagedDirFor('C:\\T\\Stoke\\', '1.0.0'), backupDirFor('C:\\T\\Stoke', '0.9.9')], ['C:\\T\\Stoke.update-1.0.0', 'C:\\T\\Stoke.old-0.9.9'])
   check(
     'leftovers are recognised by exact name and version shape only',
-    ['Stoke.old-0.9.9', 'Stoke.update-1.0.0-beta.2', 'stoke.OLD-1.2.3', 'Stoke.old-notes', 'Stoke.old-0.9.9.txt', 'Other.old-0.9.9', 'Stoke'].map((n) => isLeftover('Stoke', n)),
-    ['old', 'update', 'old', null, null, null, null]
+    ['Stoke.old-0.9.9', 'Stoke.update-1.0.0-beta.2', 'stoke.OLD-1.2.3', 'Stoke.old-0.9.9-2', 'Stoke.old-notes', 'Stoke.old-0.9.9.txt', 'Other.old-0.9.9', 'Stoke'].map((n) => isLeftover('Stoke', n)),
+    ['old', 'update', 'old', 'old', null, null, null, null]
   )
-  const plan: SwapPlan = { pid: 1, appDir: 'C:\\Users\\O\u2019Brien\\Stoke', staged: 's', backup: 'b', resultFile: 'r', startedFile: 'st', from: '0.9.9', to: '1.0.0', relaunch: true, exeName: 'Stoke.exe', waitSeconds: 120, renameTries: 40 }
+  const plan: SwapPlan = { pid: 1, appDir: 'C:\\Users\\O\u2019Brien\\Stoke', staged: 's', stagedMarker: 'm', backup: 'b', resultFile: 'r', startedFile: 'st', from: '0.9.9', to: '1.0.0', relaunch: true, exeName: 'Stoke.exe', waitSeconds: 120, renameTries: 40, createdAt: 5 }
   check('the plan round-trips a curly quote untouched (it is data, never code)', JSON.parse(planJson(plan)).appDir, 'C:\\Users\\O\u2019Brien\\Stoke')
 }
 
@@ -244,7 +324,9 @@ if (!pwsh) {
   // A folder name with an apostrophe AND a right single quotation mark, which
   // PowerShell also treats as a quote: both must arrive intact.
   const root = join(scratch, "swap it's O\u2019Brien")
-  const run = (plan: SwapPlan) => {
+  // The staged-copy marker is written as stagePortable writes it, for the
+  // plan's own folder and version, unless a case says otherwise.
+  const run = (plan: SwapPlan, marker: 'write' | 'none' | { dir: string; version: string } = 'write') => {
     const dir = join(scratch, 'helper')
     mkdirSync(dir, { recursive: true })
     const scriptPath = join(dir, 'swap.ps1')
@@ -252,6 +334,9 @@ if (!pwsh) {
     writeFileSync(scriptPath, SWAP_SCRIPT, 'ascii')
     writeFileSync(planPath, planJson(plan), 'utf8')
     rmSync(plan.resultFile, { force: true })
+    rmSync(plan.stagedMarker, { force: true })
+    if (marker === 'write') writeStagedMarkerSync(plan.stagedMarker, plan.staged, plan.to)
+    else if (marker !== 'none') writeStagedMarkerSync(plan.stagedMarker, marker.dir, marker.version)
     const r = spawnSync(pwsh, ['-NoProfile', '-NonInteractive', '-File', scriptPath, '-Plan', planPath], { encoding: 'utf8', timeout: 90_000 })
     const result = existsSync(plan.resultFile) ? JSON.parse(readFileSync(plan.resultFile, 'utf8')) : null
     return { status: r.status, result, stderr: r.stderr }
@@ -269,6 +354,7 @@ if (!pwsh) {
     pid: 2147483000, // a pid nothing has
     appDir: join(base, 'Stoke'),
     staged: join(base, 'Stoke.update-1.0.0'),
+    stagedMarker: join(base, 'staged.json'),
     backup: join(base, 'Stoke.old-0.9.9'),
     resultFile: join(base, 'result.json'),
     startedFile: join(base, 'started.json'),
@@ -278,6 +364,7 @@ if (!pwsh) {
     exeName: 'Stoke.exe',
     waitSeconds: 3,
     renameTries: 4,
+    createdAt: Date.now(),
     ...over
   })
 
@@ -343,6 +430,32 @@ if (!pwsh) {
     rmSync(join(base, 'Stoke.update-1.0.0'), { recursive: true })
     const r = run(planFor(base))
     check('a staged copy that vanished changes nothing', [r.status, r.result?.step, readFileSync(join(base, 'Stoke', 'Stoke.exe'), 'utf8')], [1, 'staged', 'old'])
+  }
+  {
+    // The review's medium finding: the helper checked only for Stoke.exe, which
+    // is also there halfway through an unpack — and the same session's
+    // automatic download deletes and re-extracts into that very folder.
+    const base = layout('unmarked')
+    const r = run(planFor(base), 'none')
+    check('a staged copy with no marker — mid-unpack, or unchecked — changes nothing', [r.status, r.result?.step, readFileSync(join(base, 'Stoke', 'Stoke.exe'), 'utf8'), existsSync(join(base, 'Stoke.update-1.0.0', 'Stoke.exe'))], [1, 'staged', 'old', true])
+    const other = layout('other-version')
+    const r2 = run(planFor(other), { dir: join(other, 'Stoke.update-1.0.0'), version: '0.9.0' })
+    check('nor does a marker left by a different version', [r2.status, r2.result?.step, readFileSync(join(other, 'Stoke', 'Stoke.exe'), 'utf8')], [1, 'staged', 'old'])
+    const elsewhere = layout('other-dir')
+    const r3 = run(planFor(elsewhere), { dir: join(elsewhere, 'Stoke.update-9.9.9'), version: '1.0.0' })
+    check('nor one naming a different folder', [r3.status, r3.result?.step], [1, 'staged'])
+  }
+  {
+    // The review's low finding: an existing backup was Remove-Item'd to make
+    // room — and the sweep keeps exactly those folders when they hold the
+    // user's files. Now the helper takes the next free name and deletes nothing.
+    const base = layout('backup-taken')
+    mkdirSync(join(base, 'Stoke.old-0.9.9'))
+    writeFileSync(join(base, 'Stoke.old-0.9.9', 'taxes.pdf'), 'precious')
+    const r = run(planFor(base))
+    check('with the backup name taken, the swap still happens', [r.status, r.result?.ok, readFileSync(join(base, 'Stoke', 'Stoke.exe'), 'utf8')], [0, true, 'new']); if (r.status !== 0) console.log('        helper said:', JSON.stringify(r.result), r.stderr)
+    check('the folder that had the name is untouched', readFileSync(join(base, 'Stoke.old-0.9.9', 'taxes.pdf'), 'utf8'), 'precious')
+    check('and the old copy went to the next free name, which the sweep recognises', [readFileSync(join(base, 'Stoke.old-0.9.9-2', 'Stoke.exe'), 'utf8'), isLeftover('Stoke', 'Stoke.old-0.9.9-2')], ['old', 'old'])
   }
   if (!isRoot && process.platform !== 'win32') {
     // The second rename fails (its source sits in a read-only folder) after the
@@ -465,10 +578,12 @@ console.log('\ndownload, verify, unpack, check')
     const appDir = join(scratch, 'apps', 'Stoke')
     const staged = stagedDirFor(appDir, '1.0.0')
     mkdirSync(appDir, { recursive: true })
+    const markerAt = join(scratch, 'userData', 'portable-update', 'staged.json')
     const stage = async (sha512: string, version = '1.0.0') => {
       try {
         await stagePortable({
           zip: join(scratch, 'userData', 'portable-update', 'Stoke-1.0.0-x64-win.zip'),
+          marker: markerAt,
           url: `http://127.0.0.1:${zport}/z`,
           sha512,
           size: bytes.length,
@@ -488,12 +603,39 @@ console.log('\ndownload, verify, unpack, check')
     const zipAt = join(scratch, 'userData', 'portable-update', 'Stoke-1.0.0-x64-win.zip')
     check('stagePortable end to end: a complete copy beside the app folder, and no zip left behind', [await stage(zsha), readFileSync(join(staged, 'Stoke.exe'), 'utf8'), existsSync(zipAt)], ['ok', 'exe', false])
     check('and the zip went to userData, never beside the app', existsSync(`${staged}.zip`), false)
-    check('a bad checksum leaves NOTHING staged', [/checksum/.test(await stage(hex)), existsSync(staged), existsSync(zipAt)], [true, false, false])
-    check('a version mismatch leaves nothing staged either', [/says it is 1\.0\.0, not the 2\.0\.0/.test(await stage(zsha, '2.0.0')), existsSync(staged)], [true, false])
+    check('the marker the helper requires is written once the copy passed its checks, naming it', existsSync(markerAt) && JSON.parse(readFileSync(markerAt, 'utf8')), JSON.parse(stagedMarkerJson(staged, '1.0.0')))
+    ok('and it is in userData, never inside the copy that becomes the app folder', !readdirSync(staged).some((n) => /staged|marker/i.test(n)))
+    check('a bad checksum leaves NOTHING staged, and no marker', [/checksum/.test(await stage(hex)), existsSync(staged), existsSync(zipAt), existsSync(markerAt)], [true, false, false, false])
+    check('a version mismatch leaves nothing staged either', [/says it is 1\.0\.0, not the 2\.0\.0/.test(await stage(zsha, '2.0.0')), existsSync(staged), existsSync(markerAt)], [true, false, false])
     zipServer.close()
   } else {
     console.log('  NOTE  no bsdtar and zip here, so stagePortable end to end is left to the Windows workflow.')
   }
+  // Everywhere, tar or not: the marker goes BEFORE the folder is touched, so a
+  // helper that starts while a re-stage is under way finds none.
+  {
+    const marker = join(scratch, 'm', 'staged.json')
+    const stagedDir = join(scratch, 'm', 'Stoke.update-1.0.0')
+    writeStagedMarkerSync(marker, stagedDir, '1.0.0')
+    mkdirSync(stagedDir, { recursive: true })
+    const failed = await stagePortable({
+      zip: join(scratch, 'm', 'z.zip'),
+      marker,
+      url: 'http://127.0.0.1:9/never',
+      sha512: 'x',
+      staged: stagedDir,
+      version: '1.0.0',
+      exeName: 'Stoke.exe',
+      fetchImpl: async () => new Response(null, { status: 404 }),
+      tools: { tar: null, powershell: null },
+      readVersion: async () => '1.0.0'
+    }).then(
+      () => 'ok',
+      (e) => (e as Error).message
+    )
+    check('a stale marker from an earlier stage is gone the moment a new one starts, even when it then fails', [/HTTP 404/.test(failed), existsSync(marker), existsSync(stagedDir)], [true, false, false])
+  }
+
   // extractZip refuses cleanly when it has no way to unpack.
   const noTools = await extractZip(join(scratch, 'nope.zip'), join(scratch, 'nope'), { tar: null, powershell: null }).then(
     () => 'ok',
@@ -505,7 +647,7 @@ console.log('\ndownload, verify, unpack, check')
 console.log('\nthe helper\'s files, its result, and what is swept')
 {
   const ud = join(scratch, 'userData', 'portable-update')
-  const plan: SwapPlan = { pid: 1, appDir: 'a', staged: 's', backup: 'b', resultFile: join(ud, 'result.json'), startedFile: join(ud, 'started.json'), from: '1', to: '2', relaunch: false, exeName: 'Stoke.exe', waitSeconds: 1, renameTries: 1 }
+  const plan: SwapPlan = { pid: 1, appDir: 'a', staged: 's', stagedMarker: join(ud, 'staged.json'), backup: 'b', resultFile: join(ud, 'result.json'), startedFile: join(ud, 'started.json'), from: '1', to: '2', relaunch: false, exeName: 'Stoke.exe', waitSeconds: 1, renameTries: 1, createdAt: 1_700_000_000_000 }
   mkdirSync(ud, { recursive: true })
   writeFileSync(plan.resultFile, '{"stale":true}')
   writeFileSync(plan.startedFile, '{"pid":1}')
@@ -547,7 +689,39 @@ console.log('\nthe helper\'s files, its result, and what is swept')
   const guarded = await sweepLeftovers(join(parent, 'Stoke'), ['old'])
   check('a leftover-named folder with the user\'s files in it survives the sweep; a real old copy does not', [existsSync(join(parent, 'Stoke.old-0.9.7', 'taxes.pdf')), guarded.map((p) => p.slice(parent.length + 1))], [true, ['Stoke.old-0.9.6']])
 
+  // One level down: an old copy whose resources hold a file of the user's is
+  // kept; one whose resources and locales are all Stoke's goes.
+  mkdirSync(join(parent, 'Stoke.old-0.9.5', 'resources'), { recursive: true })
+  writeFileSync(join(parent, 'Stoke.old-0.9.5', 'Stoke.exe'), '')
+  writeFileSync(join(parent, 'Stoke.old-0.9.5', 'resources', 'app.asar'), '')
+  writeFileSync(join(parent, 'Stoke.old-0.9.5', 'resources', 'my-notes.txt'), 'precious')
+  mkdirSync(join(parent, 'Stoke.old-0.9.4', 'resources'), { recursive: true })
+  mkdirSync(join(parent, 'Stoke.old-0.9.4', 'locales'), { recursive: true })
+  writeFileSync(join(parent, 'Stoke.old-0.9.4', 'Stoke.exe'), '')
+  writeFileSync(join(parent, 'Stoke.old-0.9.4', 'resources', 'app.asar'), '')
+  writeFileSync(join(parent, 'Stoke.old-0.9.4', 'locales', 'en-US.pak'), '')
+  const deep = await sweepLeftovers(join(parent, 'Stoke'), ['old'])
+  check('a user\'s file inside resources keeps an old copy from the sweep; a clean one still goes', [existsSync(join(parent, 'Stoke.old-0.9.5', 'resources', 'my-notes.txt')), deep.map((p) => p.slice(parent.length + 1)).sort()], [true, ['Stoke.old-0.9.4']])
+  check('listBuild names one level down with a backslash, whatever the platform', (await listBuild(join(parent, 'Stoke.old-0.9.5'))).sort(), ['Stoke.exe', 'resources', 'resources\\app.asar', 'resources\\my-notes.txt'])
+
   check('entriesNotIn: what the swap would carry away', entriesNotIn(['Stoke.exe', 'photos', 'desktop.ini', 'FFMPEG.DLL'], ['stoke.exe', 'ffmpeg.dll', 'locales']), ['photos'])
+  /*
+   * The review's medium finding: a Stoke file the NEW build no longer ships (an
+   * Electron upgrade dropping a DLL) was refused as "shared", while the
+   * classifier — judging by the same shapes — kept calling the folder portable,
+   * so every launch downloaded ~100 MB and refused again.
+   */
+  check('Stoke\'s own files that the new build dropped are not refused: they leave with the old version', entriesNotIn(['Stoke.exe', 'dxil.dll', 'old_percent.pak', 'LICENSE.old.txt', 'resources', 'resources\\elevate.exe', 'locales', 'locales\\xx.pak'], ['Stoke.exe', 'resources', 'locales']), [])
+  check('but a stranger is, one level down too', entriesNotIn(['Stoke.exe', 'resources', 'resources\\notes.txt', 'photos'], ['Stoke.exe', 'resources', 'resources\\app.asar']), ['resources\\notes.txt', 'photos'])
+  {
+    // Every name a refusal gives is one the classifier also calls foreign — so
+    // a refused folder is manual from the next launch on, and the loop is gone
+    // by construction.
+    const appNames = ['Stoke.exe', 'dxil.dll', 'photos', 'resources', 'resources\\notes.txt', 'resources\\app.asar', 'locales', 'locales\\readme.md', 'desktop.ini']
+    const refused = entriesNotIn(appNames, ['Stoke.exe', 'resources', 'resources\\app.asar', 'locales'])
+    const foreign = foreignEntries(appNames)
+    ok('whatever the swap refuses on, the classifier refuses on too', refused.length > 0 && refused.every((n) => foreign.includes(n)), `${JSON.stringify(refused)} vs ${JSON.stringify(foreign)}`)
+  }
   const app = join(scratch, 'carry', 'Stoke')
   const next = join(scratch, 'carry', 'Stoke.update-1.0.0')
   mkdirSync(app, { recursive: true })
@@ -557,7 +731,36 @@ console.log('\nthe helper\'s files, its result, and what is swept')
   check('swapWouldCarryAway: nothing, for a folder of Stoke\'s own', swapWouldCarryAway(app, next), [])
   writeFileSync(join(app, 'my-notes.txt'), '')
   check('and names a file dropped in since the download', swapWouldCarryAway(app, next), ['my-notes.txt'])
+  rmSync(join(app, 'my-notes.txt'))
+  mkdirSync(join(app, 'resources'))
+  mkdirSync(join(next, 'resources'))
+  writeFileSync(join(app, 'resources', 'my-notes.txt'), '')
+  check('and one dropped into resources', swapWouldCarryAway(app, next), ['resources\\my-notes.txt'])
   ok('an unreadable folder is unknown, and unknown refuses', swapWouldCarryAway(join(scratch, 'never-created-folder'), next).length === 1)
+
+  // A refusal remembered, so the next pass does not download the same release
+  // only to refuse it again — standing only while a name it gave is still there.
+  const refusedAt = join(ud, 'refused.json')
+  writeRefusalSync(refusedAt, { dir: app, version: '1.0.0', entries: ['resources\\my-notes.txt'], message: 'm' })
+  const back = await readRefusal(refusedAt)
+  check('a refusal round-trips', [back?.dir, back?.version, back?.entries, back?.message], [app, '1.0.0', ['resources\\my-notes.txt'], 'm'])
+  check('it stands for that folder and version while the stranger is there', await refusalStands(back!, app, '1.0.0'), true)
+  check('not for another version, nor another folder', [await refusalStands(back!, app, '1.0.1'), await refusalStands(back!, next, '1.0.0')], [false, false])
+  rmSync(join(app, 'resources', 'my-notes.txt'))
+  check('and moving the stranger out lifts it at once, with nothing to clear by hand', await refusalStands(back!, app, '1.0.0'), false)
+  writeFileSync(refusedAt, '{"dir":1}')
+  check('a garbled refusal is no refusal', await readRefusal(refusedAt), null)
+
+  // Every recursive delete of an unpacked copy goes through the injected
+  // remover (original-fs in Stoke, gotcha 98) — removeTree included, which is
+  // what selfUpdate.ts uses for a discarded staged copy.
+  const calls: unknown[] = []
+  useRemover(async (path, opts) => {
+    calls.push([path, opts])
+  })
+  await removeTree(join(scratch, 'x'))
+  useRemover(rm)
+  check('removeTree goes through the injected remover, recursively', calls, [[join(scratch, 'x'), { recursive: true, force: true }]])
 
   const st = join(ud, 'started.json')
   writeFileSync(st, JSON.stringify({ pid: process.pid }))
@@ -565,6 +768,45 @@ console.log('\nthe helper\'s files, its result, and what is swept')
   writeFileSync(st, JSON.stringify({ pid: 2147483000 }))
   check('and one whose pid is gone is not', (await readStarted(st))?.alive, false)
   check('no marker is null — PowerShell never ran it', await readStarted(join(ud, 'nope.json')), null)
+  writeFileSync(st, '{"pi')
+  check('a marker caught mid-write is there but unreadable, not a dead helper', await readStarted(st), { pid: 0, alive: false, readable: false })
+
+  // When the plan was written: its createdAt, else the file's mtime.
+  const planAtFile = join(ud, 'plan-at.json')
+  writeFileSync(planAtFile, planJson(plan))
+  check('readPlanAt reads the plan\'s createdAt', await readPlanAt(planAtFile), 1_700_000_000_000)
+  writeFileSync(planAtFile, '{"cut sh')
+  const mt = await readPlanAt(planAtFile)
+  ok('a plan cut short falls back to its mtime', typeof mt === 'number' && Math.abs(mt - Date.now()) < 60_000)
+  check('no plan is null: no helper was started', await readPlanAt(join(ud, 'no-plan.json')), null)
+
+  /*
+   * The review's low finding: "PowerShell never ran it" was decided on the
+   * started marker alone, so a Stoke reopened before a slow helper wrote it was
+   * told so, and the staged copy was swept out from under the helper.
+   */
+  const now = 1_700_000_100_000
+  const young = now - 5_000
+  const old = now - HELPER_START_ALLOWANCE_MS - 1
+  const alive = { pid: 5, alive: true, readable: true }
+  const dead = { pid: 5, alive: false, readable: true }
+  const garbled = { pid: 0, alive: false, readable: false }
+  const verdicts = [
+    helperVerdict({ planAt: null, now, hasResult: false, started: null }),
+    helperVerdict({ planAt: old, now, hasResult: true, started: null }),
+    helperVerdict({ planAt: old, now, hasResult: false, started: alive }),
+    helperVerdict({ planAt: young, now, hasResult: false, started: null }),
+    helperVerdict({ planAt: young, now, hasResult: false, started: garbled }),
+    helperVerdict({ planAt: old, now, hasResult: false, started: null }),
+    helperVerdict({ planAt: old, now, hasResult: false, started: garbled }),
+    helperVerdict({ planAt: old, now, hasResult: false, started: dead }),
+    helperVerdict({ planAt: young, now, hasResult: false, started: dead })
+  ]
+  check(
+    'helperVerdict: no plan idle; a result finished; a live helper pending; no marker YET pending; long silence never-ran; a dead helper stopped',
+    verdicts,
+    ['idle', 'finished', 'pending', 'pending', 'pending', 'never-ran', 'stopped', 'stopped', 'stopped']
+  )
 }
 
 rmSync(scratch, { recursive: true, force: true })

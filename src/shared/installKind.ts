@@ -109,9 +109,13 @@ export interface InstallFacts {
   /** Why that test failed (the errno code, e.g. `EACCES`, `EROFS`), or null. */
   writeError?: string | null
   /**
-   * The names at the top of the folder Stoke.exe runs from, or null when they
-   * could not be read in time. Anything that is not part of a Stoke build means
-   * the folder is shared, and a swap would carry it away.
+   * The names at the top of the folder Stoke.exe runs from, and one level down
+   * in its `resources` and `locales` folders as `resources\<name>` (portableUpdate.ts
+   * `listBuild`) — or null when any of that could not be read in time. Anything
+   * that is not part of a Stoke build means the folder is shared, and a swap
+   * would carry it away. One level down because those two are real folders a
+   * person can drop a file into, and a top-level-only look passed them (found
+   * by review).
    */
   entries: readonly string[] | null
 }
@@ -189,9 +193,44 @@ export function isStokeFolderEntry(name: string): boolean {
   return false
 }
 
-/** The names at the top of a folder that are not part of a Stoke build. */
+/**
+ * What a Stoke build keeps one level down in its two top-level folders,
+ * measured from the same `release/win-unpacked`: `locales` holds nothing but
+ * `.pak` files; `resources` holds app.asar, app.asar.unpacked, app-update.yml,
+ * elevate.exe and `bin` (electron-builder.yml's extraResources — a new
+ * extraResources target must be added here in the same change, and
+ * verify:portable reads the yml to hold that). Exact names in `resources`
+ * rather than shapes: nothing in there varies with an Electron upgrade.
+ */
+export function isStokeInnerEntry(folder: string, name: string): boolean {
+  const f = folder.toLowerCase()
+  const n = name.toLowerCase()
+  if (OS_LITTER.has(n)) return true
+  if (f === 'locales') return n.endsWith('.pak')
+  if (f === 'resources') return ['app.asar', 'app.asar.unpacked', 'app-update.yml', 'elevate.exe', 'bin'].includes(n)
+  return false
+}
+
+/** A name out of a build listing — top level (`Stoke.exe`) or one level down (`resources\app.asar`). */
+export function isStokeBuildPath(rel: string): boolean {
+  const at = rel.search(/[\\/]/)
+  return at < 0 ? isStokeFolderEntry(rel) : isStokeInnerEntry(rel.slice(0, at), rel.slice(at + 1))
+}
+
+/** The names in a build listing that are not part of a Stoke build. */
 export function foreignEntries(entries: readonly string[]): string[] {
-  return entries.filter((e) => !isStokeFolderEntry(e))
+  return entries.filter((e) => !isStokeBuildPath(e))
+}
+
+/**
+ * Why a folder holding something else is not updated in place. One wording for
+ * the classifier and for the swap's own last-moment checks (selfUpdate.ts), so
+ * it only ever claims the folder is shared when a name in `foreign` is not
+ * Stoke's.
+ */
+export function sharedFolderNote(dir: string, foreign: readonly string[]): string {
+  const shown = foreign.slice(0, 3).join(', ') + (foreign.length > 3 ? `, and ${foreign.length - 3} more` : '')
+  return `Stoke shares its folder, ${dir}, with other things (${shown}). Updating itself would mean replacing that whole folder, so it does not. Move Stoke into a folder of its own to let it update itself, or download updates by hand from ${RELEASES_URL}.`
 }
 
 function none(kind: InstallKindId): InstallKind {
@@ -289,25 +328,22 @@ export function classifyInstall(f: InstallFacts): InstallKind {
   // 5. The NSIS installer's folder, from the website, the one-liner or winget.
   if (f.hasUninstaller === true) return none('installer')
 
-  // 6. A drive or share root has no folder around Stoke to swap.
-  if (isVolumeRoot(dir)) {
-    return manual(dir, `Stoke is running from the top of ${dir}, so there is no folder of its own to replace. Move it into a folder of its own to let it update itself, or download updates by hand from ${RELEASES_URL}.`)
-  }
-
-  // 7. Anything a probe could not answer: never guess towards the swap.
+  // 6. Anything a probe could not answer: never guess towards the swap. Before
+  //    the drive-root test, because a realpath that timed out leaves `dir` as
+  //    the UNRESOLVED folder (portableUpdate.ts nulls every probe then), and no
+  //    settled answer may be read off a path that was never resolved.
   if (f.hasUninstaller === null || f.canWriteBeside === null || f.entries === null) {
     return manual(dir, 'Stoke could not yet tell how this copy was installed (the disk was busy), so it will not update itself until the next check can.', false)
   }
 
+  // 7. A drive or share root has no folder around Stoke to swap.
+  if (isVolumeRoot(dir)) {
+    return manual(dir, `Stoke is running from the top of ${dir}, so there is no folder of its own to replace. Move it into a folder of its own to let it update itself, or download updates by hand from ${RELEASES_URL}.`)
+  }
+
   // 8. A folder shared with anything else: the swap would carry it away.
   const foreign = foreignEntries(f.entries)
-  if (foreign.length) {
-    const shown = foreign.slice(0, 3).join(', ') + (foreign.length > 3 ? `, and ${foreign.length - 3} more` : '')
-    return manual(
-      dir,
-      `Stoke shares its folder, ${dir}, with other things (${shown}). Updating itself would mean replacing that whole folder, so it does not. Move Stoke into a folder of its own to let it update itself, or download updates by hand from ${RELEASES_URL}.`
-    )
-  }
+  if (foreign.length) return manual(dir, sharedFolderNote(dir, foreign))
 
   // 9. A folder Stoke cannot create files beside. Administrator rights are
   //    named only where they are the likely answer; a read-only stick or share

@@ -23,13 +23,13 @@
 import { execFile, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { createWriteStream, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
-import { access, mkdir, mkdtemp, readdir, readFile, realpath, rm, rmdir, stat } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, readdir, readFile, realpath, rm, rmdir, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import { Readable, Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { promisify } from 'node:util'
-import { UNINSTALLER_NAME, isStokeFolderEntry, type InstallFacts } from '../shared/installKind.ts'
-import { SWAP_SCRIPT, isLeftover, planJson, swapArgs, type SwapPlan } from './portableSwap.ts'
+import { UNINSTALLER_NAME, isStokeBuildPath, winPathKey, type InstallFacts } from '../shared/installKind.ts'
+import { SWAP_SCRIPT, isLeftover, planJson, stagedMarkerJson, swapArgs, type SwapPlan } from './portableSwap.ts'
 
 const execFileAsync = promisify(execFile)
 
@@ -45,6 +45,46 @@ type Remover = (path: string, opts: { recursive?: boolean; force?: boolean }) =>
 let remove: Remover = rm
 export function useRemover(fn: Remover): void {
   remove = fn
+}
+
+/**
+ * Delete a folder tree through the injected remover — for selfUpdate.ts, whose
+ * own `rm` is Electron's patched one and fails part-way through an unpacked
+ * copy's app.asar (gotcha 98), leaving half a folder behind (found by review).
+ */
+export function removeTree(path: string): Promise<void> {
+  return remove(path, { recursive: true, force: true })
+}
+
+/** The two build folders a person can drop a file into, and so the two listed one level down. */
+const INNER_FOLDERS = ['resources', 'locales']
+
+/**
+ * A folder's names as `InstallFacts.entries` wants them: the top level, and one
+ * level down in `resources` and `locales` as `resources\<name>` (always a
+ * backslash — these are identifiers compared as Windows compares names, never
+ * paths handed to fs). Throws when any of it cannot be read; every caller turns
+ * that into "unknown", and unknown never swaps or deletes.
+ */
+export async function listBuild(dir: string): Promise<string[]> {
+  const top = await readdir(dir)
+  const out = [...top]
+  for (const name of top) {
+    if (!INNER_FOLDERS.includes(name.toLowerCase())) continue
+    for (const inner of await readdir(join(dir, name))) out.push(`${name}\\${inner}`)
+  }
+  return out
+}
+
+/** The same listing, synchronously — for the quit path, where an await could lose the race. */
+export function listBuildSync(dir: string): string[] {
+  const top = readdirSync(dir)
+  const out = [...top]
+  for (const name of top) {
+    if (!INNER_FOLDERS.includes(name.toLowerCase())) continue
+    for (const inner of readdirSync(join(dir, name))) out.push(`${name}\\${inner}`)
+  }
+  return out
 }
 
 /** A promise that gives up after `ms`, resolving to `fallback` (gotcha 40: never bet boot on a disk). */
@@ -96,6 +136,10 @@ export interface ProbeEnv {
   packaged: boolean
   execPath: string
   env: NodeJS.ProcessEnv
+  /** `realpath`, replaceable so a suite can make it hang or fail. */
+  resolve?: (p: string) => Promise<string>
+  /** Each probe's deadline; 3 s unless a suite shortens it. */
+  deadlineMs?: number
 }
 
 /**
@@ -124,12 +168,27 @@ export async function gatherInstallFacts(e: ProbeEnv): Promise<InstallFacts> {
   if (e.platform !== 'win32' || !e.packaged) {
     return { platform: e.platform, packaged: e.packaged, execPath: e.execPath, env, hasUninstaller: null, canWriteBeside: null, entries: null }
   }
-  const execPath = await within(3000, realpath(e.execPath), e.execPath)
+  const ms = e.deadlineMs ?? 3000
+  /*
+   * A realpath that times out answers null like every other probe: falling back
+   * to the unresolved path was a guess, and a junctioned portable folder would
+   * then settle on the junction's path and the swap would rename the junction
+   * (found by review). Every other probe is skipped too — they would be judged
+   * at a place that is not where Stoke is — so the classifier's "could not tell
+   * yet" answer is the one given. A realpath that FAILS is an answer, though:
+   * this path cannot be resolved (some virtual and RAM drives refuse the call
+   * `fs.realpath` makes), so the path as started is the only one there is.
+   */
+  const resolved = await within(ms, (e.resolve ?? realpath)(e.execPath).catch(() => e.execPath), null as string | null)
+  if (resolved === null) {
+    return { platform: e.platform, packaged: e.packaged, execPath: e.execPath, execPathRaw: e.execPath, env, hasUninstaller: null, canWriteBeside: null, writeError: null, entries: null }
+  }
+  const execPath = resolved
   const dir = dirname(execPath)
   const [hasUninstaller, write, entries] = await Promise.all([
-    within(3000, exists(join(dir, UNINSTALLER_NAME)), null as boolean | null),
-    within(3000, probeWriteBeside(dir), null as { ok: boolean; code: string | null } | null),
-    within(3000, readdir(dir), null as string[] | null)
+    within(ms, exists(join(dir, UNINSTALLER_NAME)), null as boolean | null),
+    within(ms, probeWriteBeside(dir), null as { ok: boolean; code: string | null } | null),
+    within(ms, listBuild(dir), null as string[] | null)
   ])
   return {
     platform: e.platform,
@@ -305,6 +364,12 @@ export interface StageInput {
    * somebody's Desktop for good (found by review).
    */
   zip: string
+  /**
+   * The helper's proof that `staged` is finished and checked (`SwapPlan.stagedMarker`),
+   * in userData beside the zip — never inside the copy, which becomes the app
+   * folder and must hold nothing but Stoke.
+   */
+  marker: string
   version: string
   exeName: string
   fetchImpl: (url: string) => Promise<Response>
@@ -315,11 +380,15 @@ export interface StageInput {
 
 /**
  * Download, verify, unpack and check, leaving a complete new copy at
- * `staged` — or nothing at all. The zip is deleted once unpacked.
+ * `staged` and its marker — or nothing at all. The zip is deleted once
+ * unpacked. The marker goes FIRST, before the folder is touched, and comes back
+ * only after every check has passed: a helper that starts in between finds no
+ * marker and changes nothing.
  */
 export async function stagePortable(s: StageInput): Promise<void> {
   const zip = s.zip
   await mkdir(dirname(zip), { recursive: true })
+  await remove(s.marker, { force: true })
   await remove(s.staged, { recursive: true, force: true })
   await remove(zip, { force: true })
   try {
@@ -327,7 +396,9 @@ export async function stagePortable(s: StageInput): Promise<void> {
     await extractZip(zip, s.staged, s.tools)
     const problem = await stagedProblem(s.staged, s.exeName, s.version, s.readVersion)
     if (problem) throw new Error(problem)
+    await writeFile(s.marker, stagedMarkerJson(s.staged, s.version), 'utf8')
   } catch (err) {
+    await remove(s.marker, { force: true })
     await remove(s.staged, { recursive: true, force: true })
     throw err
   } finally {
@@ -335,22 +406,42 @@ export async function stagePortable(s: StageInput): Promise<void> {
   }
 }
 
+/** The staged-copy marker, written synchronously — for the Windows workflow, which stages a copy by hand. */
+export function writeStagedMarkerSync(marker: string, staged: string, version: string): void {
+  mkdirSync(dirname(marker), { recursive: true })
+  writeFileSync(marker, stagedMarkerJson(staged, version), 'utf8')
+}
+
+/** A build-listing name as Windows compares it. */
+function nameKey(n: string): string {
+  return n.replace(/\//g, '\\').toLowerCase()
+}
+
 /**
- * What the swap would carry away: top-level names in the app folder that the
- * new copy does not have (operating-system litter aside). The swap renames the
- * WHOLE folder, so anything listed here would leave with the old copy — and the
- * old copy is deleted a minute into the next launch. Checked after staging and
- * again right before the helper starts; a non-empty answer refuses the swap.
+ * What the swap would carry away that is not Stoke's: names in the app folder's
+ * build listing (`listBuild`) that the new copy does not have AND that are not
+ * part of a Stoke build (`isStokeBuildPath`). The swap renames the WHOLE folder,
+ * so anything listed here would leave with the old copy — and the old copy is
+ * deleted a minute into the next launch. Checked after staging and again right
+ * before the helper starts; a non-empty answer refuses the swap.
+ *
+ * Stoke's own names that the new build no longer ships (an Electron upgrade
+ * dropping a DLL) are NOT listed: they are the old version's files and leave
+ * with it. Listing them refused the swap, while the classifier — which judges
+ * by the same shapes — kept calling the folder portable, so every launch
+ * downloaded ~100 MB and refused again (found by review). Every name listed
+ * here is one the classifier also calls foreign, so a refusal is always the
+ * classifier's answer at the next launch too.
  */
 export function entriesNotIn(appDirEntries: readonly string[], stagedEntries: readonly string[]): string[] {
-  const next = new Set(stagedEntries.map((n) => n.toLowerCase()))
-  return appDirEntries.filter((n) => !next.has(n.toLowerCase()) && !['desktop.ini', 'thumbs.db', '.ds_store'].includes(n.toLowerCase()))
+  const next = new Set(stagedEntries.map(nameKey))
+  return appDirEntries.filter((n) => !next.has(nameKey(n)) && !isStokeBuildPath(n))
 }
 
 /** The same check, read from disk synchronously — for the quit path, where an await could lose the race. */
 export function swapWouldCarryAway(appDir: string, staged: string): string[] {
   try {
-    return entriesNotIn(readdirSync(appDir), readdirSync(staged))
+    return entriesNotIn(listBuildSync(appDir), listBuildSync(staged))
   } catch (err) {
     // Unreadable means unknown, and unknown refuses.
     return [`(could not list the folder: ${(err as Error).message})`]
@@ -459,12 +550,13 @@ export async function sweepLeftovers(appDir: string, kinds: readonly ('old' | 'u
     if (keep.some((k) => k.toLowerCase() === full.toLowerCase())) continue
     try {
       if (!(await stat(full)).isDirectory()) continue
-      // Only a folder that is visibly a Stoke build is ever deleted. The swap
-      // refuses a shared folder, but this is the one irreversible step, so it
-      // checks for itself: a leftover-shaped name holding anything else is left
-      // alone, whatever put it there.
-      const inside = await readdir(full)
-      if (!inside.every(isStokeFolderEntry)) continue
+      // Only a folder that is visibly a Stoke build is ever deleted — down into
+      // its resources and locales too, where a file of the user's passed a
+      // top-level look. The swap refuses a shared folder, but this is the one
+      // irreversible step, so it checks for itself: a leftover-shaped name
+      // holding anything else is left alone, whatever put it there.
+      const inside = await listBuild(full)
+      if (!inside.every(isStokeBuildPath)) continue
       await remove(full, { recursive: true, force: true })
       removed.push(full)
     } catch {
@@ -482,7 +574,17 @@ export async function sweepLeftovers(appDir: string, kinds: readonly ('old' | 'u
  * used to be reported as a Group Policy block while the helper's staged copy
  * was swept out from under it (found by review).
  */
-export async function readStarted(file: string): Promise<{ pid: number; alive: boolean } | null> {
+export interface StartedMarker {
+  pid: number
+  alive: boolean
+  /**
+   * False when the file is there but holds no pid \u2014 which is also what a read
+   * lands on while the helper's WriteAllText is still writing it.
+   */
+  readable: boolean
+}
+
+export async function readStarted(file: string): Promise<StartedMarker | null> {
   let raw: string
   try {
     raw = await readFile(file, 'utf8')
@@ -491,7 +593,7 @@ export async function readStarted(file: string): Promise<{ pid: number; alive: b
   }
   try {
     const pid = Number((JSON.parse(raw.replace(/^\uFEFF/, '')) as { pid?: unknown }).pid)
-    if (!Number.isInteger(pid) || pid <= 0) return { pid: 0, alive: false }
+    if (!Number.isInteger(pid) || pid <= 0) return { pid: 0, alive: false, readable: false }
     let alive = false
     try {
       process.kill(pid, 0)
@@ -500,8 +602,107 @@ export async function readStarted(file: string): Promise<{ pid: number; alive: b
       // EPERM means it exists and is someone else's to signal: alive.
       alive = (err as { code?: string }).code === 'EPERM'
     }
-    return { pid, alive }
+    return { pid, alive, readable: true }
   } catch {
-    return { pid: 0, alive: false }
+    return { pid: 0, alive: false, readable: false }
   }
+}
+
+/**
+ * When the last swap's plan was written (its `createdAt`, else the file's
+ * mtime), or null when there is no plan \u2014 meaning no helper was started.
+ */
+export async function readPlanAt(file: string): Promise<number | null> {
+  let raw: string
+  try {
+    raw = await readFile(file, 'utf8')
+  } catch {
+    return null
+  }
+  try {
+    const at = Number((JSON.parse(raw.replace(/^\uFEFF/, '')) as { createdAt?: unknown }).createdAt)
+    if (Number.isFinite(at) && at > 0) return at
+  } catch {
+    // A plan cut short by the quit: its mtime is when it was written.
+  }
+  try {
+    return (await stat(file)).mtimeMs
+  } catch {
+    return null
+  }
+}
+
+/**
+ * How long a started helper may take to write its started marker before its
+ * silence means PowerShell never ran it. A cold Windows PowerShell 5.1 behind a
+ * busy disk and Defender's first scan of a new script is seconds, not tens.
+ */
+export const HELPER_START_ALLOWANCE_MS = 30_000
+
+/**
+ * What the last quit's helper is doing, from the files it and Stoke leave:
+ *
+ *   idle       no helper was started.
+ *   finished   it wrote a result.
+ *   pending    it is still waiting (its pid is alive), or may still be starting
+ *              (no readable started marker yet, and the plan is younger than
+ *              the allowance) \u2014 its plan and staged copy must be left alone.
+ *   never-ran  a plan, no result, no started marker, well past the allowance:
+ *              PowerShell never ran a line (an AllSigned Group Policy).
+ *   stopped    it started and went away without a result.
+ *
+ * "Never ran" used to be decided on the started marker alone, so a Stoke opened
+ * again before a slow helper wrote it was told PowerShell never ran it, and its
+ * staged copy was swept out from under the helper (found by review).
+ */
+export type HelperVerdict = 'idle' | 'finished' | 'pending' | 'never-ran' | 'stopped'
+
+export function helperVerdict(i: { planAt: number | null; now: number; hasResult: boolean; started: StartedMarker | null }): HelperVerdict {
+  if (i.hasResult) return 'finished'
+  if (i.planAt === null) return 'idle'
+  if (i.started?.alive) return 'pending'
+  const young = Math.abs(i.now - i.planAt) < HELPER_START_ALLOWANCE_MS
+  if ((!i.started || !i.started.readable) && young) return 'pending'
+  return i.started ? 'stopped' : 'never-ran'
+}
+
+/**
+ * A swap refused because the folder holds something that is not Stoke's,
+ * remembered in userData so the next pass does not download ~100 MB only to
+ * refuse again. It stands only while one of the names it gave is still there:
+ * moving the stranger out lifts it at once, with nothing to clear by hand.
+ */
+export interface Refusal {
+  dir: string
+  version: string
+  entries: string[]
+  message: string
+}
+
+export function writeRefusalSync(file: string, r: Refusal): void {
+  mkdirSync(dirname(file), { recursive: true })
+  writeFileSync(file, JSON.stringify(r), 'utf8')
+}
+
+export async function readRefusal(file: string): Promise<Refusal | null> {
+  try {
+    const r = JSON.parse(await readFile(file, 'utf8')) as Partial<Refusal>
+    if (typeof r.dir !== 'string' || typeof r.version !== 'string' || typeof r.message !== 'string' || !Array.isArray(r.entries)) return null
+    return { dir: r.dir, version: r.version, entries: r.entries.map(String), message: r.message }
+  } catch {
+    return null
+  }
+}
+
+/** Whether a remembered refusal still applies to this folder and version. A folder that cannot be listed keeps it standing. */
+export async function refusalStands(r: Refusal, appDir: string, version: string): Promise<boolean> {
+  if (winPathKey(r.dir) !== winPathKey(appDir) || r.version !== version) return false
+  let now: string[]
+  try {
+    now = await listBuild(appDir)
+  } catch {
+    return true
+  }
+  const here = new Set(now.map(nameKey))
+  return r.entries.some((e) => here.has(nameKey(e)))
 }

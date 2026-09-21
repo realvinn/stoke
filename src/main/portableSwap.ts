@@ -63,7 +63,17 @@ export interface SwapPlan {
   appDir: string
   /** The new copy, already unpacked and checked, beside `appDir`. */
   staged: string
-  /** Where the old copy is moved to. */
+  /**
+   * The file `stagePortable` writes (in userData) only once `staged` passed
+   * every check, naming that folder and version — and deletes before it touches
+   * the folder again. The helper requires it rather than just Stoke.exe, which
+   * is also there halfway through an unpack (found by review).
+   */
+  stagedMarker: string
+  /**
+   * Where the old copy is moved to. If that name is taken the helper appends
+   * `-2`, `-3`… — it never deletes an existing folder to make room.
+   */
   backup: string
   /** The JSON outcome, read by the next launch. */
   resultFile: string
@@ -83,6 +93,17 @@ export interface SwapPlan {
   waitSeconds: number
   /** Attempts per rename, half a second apart. */
   renameTries: number
+  /**
+   * When Stoke wrote this plan and started the helper (epoch ms). The next
+   * launch reads it: a plan with no started marker yet is only "PowerShell
+   * never ran it" once it is older than a slow start could explain.
+   */
+  createdAt: number
+}
+
+/** The staged-copy marker's contents (see `SwapPlan.stagedMarker`). */
+export function stagedMarkerJson(staged: string, version: string): string {
+  return JSON.stringify({ dir: staged, version })
 }
 
 /**
@@ -176,16 +197,23 @@ export const SWAP_SCRIPT = [
   '  exit 1',
   '}',
   '',
-  'if (-not (Test-Path -LiteralPath (Join-Path $p.staged $p.exeName))) {',
-  "  Write-Result $false 'staged' ('The downloaded update is not at ' + $p.staged + ' any more, so nothing was changed.')",
+  '# The new copy must be one Stoke finished unpacking AND checked: its marker is',
+  '# written only after every check passed, and deleted before the folder is',
+  '# touched again. Stoke.exe alone is also there halfway through an unpack.',
+  '$ready = $null',
+  'try { $ready = Get-Content -LiteralPath $p.stagedMarker -Raw -Encoding UTF8 | ConvertFrom-Json } catch { }',
+  'if ((-not $ready) -or ([string]$ready.dir -ne [string]$p.staged) -or ([string]$ready.version -ne [string]$p.to) -or (-not (Test-Path -LiteralPath (Join-Path $p.staged $p.exeName)))) {',
+  "  Write-Result $false 'staged' ('The downloaded update at ' + $p.staged + ' is not a complete, checked copy any more, so nothing was changed.')",
   '  [void](Start-Stoke $p.appDir)',
   '  exit 1',
   '}',
   '',
-  '# 2. Move the old copy aside. A leftover backup is cleared first, because',
-  '#    Directory.Move refuses an existing destination.',
-  'if (Test-Path -LiteralPath $p.backup) { Remove-Item -LiteralPath $p.backup -Recurse -Force -ErrorAction SilentlyContinue }',
-  'if (-not (Invoke-Retried { [System.IO.Directory]::Move($p.appDir, $p.backup) })) {',
+  '# 2. Move the old copy aside, under a name nothing has yet. An existing folder',
+  '#    of that name is NEVER deleted to make room: it may be a copy the sweep',
+  '#    refused to delete because it holds something that is not Stoke.',
+  '$backup = [string]$p.backup',
+  "for ($n = 2; Test-Path -LiteralPath $backup; $n++) { $backup = [string]$p.backup + '-' + $n }",
+  'if (-not (Invoke-Retried { [System.IO.Directory]::Move($p.appDir, $backup) })) {',
   "  Write-Result $false 'move-old' ('Could not move ' + $p.appDir + ' aside: ' + $script:lastError + ' Nothing was changed.')",
   '  [void](Start-Stoke $p.appDir)',
   '  exit 1',
@@ -194,11 +222,11 @@ export const SWAP_SCRIPT = [
   '# 3. Move the new copy in. If that fails, put the old one back.',
   'if (-not (Invoke-Retried { [System.IO.Directory]::Move($p.staged, $p.appDir) })) {',
   '  $why = $script:lastError',
-  '  if (Invoke-Retried { [System.IO.Directory]::Move($p.backup, $p.appDir) }) {',
+  '  if (Invoke-Retried { [System.IO.Directory]::Move($backup, $p.appDir) }) {',
   "    Write-Result $false 'move-new' ('Could not move the new version into place: ' + $why + ' The old version was put back.')",
   '    [void](Start-Stoke $p.appDir)',
   '  } else {',
-  "    Write-Result $false 'rollback' ('Could not move the new version into place (' + $why + '), nor put the old one back (' + $script:lastError + '). The old version is at ' + $p.backup + ' and the new one at ' + $p.staged + '.')",
+  "    Write-Result $false 'rollback' ('Could not move the new version into place (' + $why + '), nor put the old one back (' + $script:lastError + '). The old version is at ' + $backup + ' and the new one at ' + $p.staged + '.')",
   '  }',
   '  exit 1',
   '}',
@@ -240,8 +268,11 @@ export function stagedDirFor(appDir: string, to: string): string {
 
 /**
  * Which siblings of the app folder are leftovers this machinery made:
- * `<name>.old-<version>` and `<name>.update-<version>`. Anything else beside
- * the folder — the user's own files — is never matched, whatever it is called.
+ * `<name>.old-<version>` and `<name>.update-<version>`, plus the helper's
+ * `<name>.old-<version>-<n>` when the first backup name was taken (the `-n`
+ * reads as a prerelease tag, which the pattern already allows). Anything else
+ * beside the folder — the user's own files — is never matched, whatever it is
+ * called.
  */
 export function isLeftover(appDirName: string, sibling: string): 'old' | 'update' | null {
   const esc = appDirName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
