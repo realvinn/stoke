@@ -234,3 +234,9 @@ Windows PowerShell 5.1 reads a BOM-less script file as the ANSI code page, so a 
 disk must be pure ASCII (`verify:portable` pins it), and `-EncodedCommand` — which the picker's
 install tab uses for its fixed, table-built text — is a stock Defender/ASR heuristic, so an
 unattended helper uses `-File` instead.
+
+> **2026-09-21:** the install tab's `-EncodedCommand` is now a short FIXED stub that reads the
+> script from a file (`windowsInstallerArgs`, path in `STOKE_INSTALL_SCRIPT`) — a script file run
+> with `-File` is subject to execution policy, which an AllSigned Group Policy enforces over the
+> command line's `Bypass`, while a script block built from text is not. The portable-update helper
+> still uses `-File`; under AllSigned it never starts, and the next launch says so.

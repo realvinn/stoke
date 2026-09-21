@@ -443,7 +443,14 @@ function Install-Stoke {
 
     if ($installed.Version -and -not $env:STOKE_FORCE) {
       $cmp = Compare-StokeVersion $installed.Version $release.Version
-      if ($cmp -eq 0) {
+      # Registered at this version but with no Stoke.exe on disk is not
+      # "installed": every arm64 installer up to 0.9.9 left exactly that (gotcha
+      # 102). Install again; if this release's installer is the broken one, the
+      # check after it says so and points at the portable zip.
+      $empty = $installed.Location -and -not (Test-Path -LiteralPath (Join-Path $installed.Location 'Stoke.exe'))
+      if ($cmp -eq 0 -and $empty) {
+        Write-Row 'note' "Stoke $($installed.Version) is registered, but $($installed.Location) holds no Stoke.exe - installing it again"
+      } elseif ($cmp -eq 0) {
         if (-not $env:STOKE_DRY_RUN) {
           Write-Host ''
           Write-Host "  Stoke $($release.Version) is already installed. Nothing to do."

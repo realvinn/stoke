@@ -294,6 +294,19 @@ ok('install.ps1 defines Install-Stoke as a function', /^function Install-Stoke\s
 ok('install.sh sets -eu', /^set -eu$/m.test(shText))
 ok("install.ps1 sets ErrorActionPreference to 'Stop'", /^\$ErrorActionPreference = 'Stop'$/m.test(ps1Text))
 ok('and Set-StrictMode', /^Set-StrictMode -Version Latest$/m.test(ps1Text))
+// Gotcha 102: every arm64 installer up to 0.9.9 exited 0 and put no files
+// down, leaving a REGISTERED install with no Stoke.exe. Read out of the code,
+// since the branch needs a real registry to reach.
+ok(
+  'install.ps1 never calls a same-version install "already installed" when its folder has no Stoke.exe',
+  /\$empty = \$installed\.Location -and -not \(Test-Path -LiteralPath \(Join-Path \$installed\.Location 'Stoke\.exe'\)\)/.test(ps1Code) &&
+    /if \(\$cmp -eq 0 -and \$empty\) \{/.test(ps1Code) &&
+    ps1Code.indexOf('$cmp -eq 0 -and $empty') < ps1Code.indexOf('is already installed. Nothing to do.')
+)
+ok(
+  'and after installing, an exit 0 with no Stoke.exe is an error that names the portable zip, not "installed"',
+  /Join-Path \$after\.Location 'Stoke\.exe'\)\)\) \{\s*throw "[^"]*portable zip/.test(ps1Code)
+)
 
 console.log('\n  and the bytes the endpoint will serve')
 /*

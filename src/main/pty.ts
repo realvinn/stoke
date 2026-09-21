@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
+import { rmSync } from 'node:fs'
 import { access, realpath, rm, writeFile } from 'node:fs/promises'
 import * as nodePty from '@lydell/node-pty'
 import type { IPty } from '@lydell/node-pty'
 import type { LaunchOptions } from '@shared/types'
 import { cliIdOf, isClaudeCode } from '../shared/codingClis.ts'
-import { installScript, type LaunchPlan } from '../shared/agents.ts'
+import { INSTALL_SCRIPT_ENV, installScript, windowsInstallerArgs, type LaunchPlan } from '../shared/agents.ts'
 import { homedir, tmpdir } from 'node:os'
 import {
   applyProviderEnv,
@@ -107,6 +108,8 @@ interface Session {
   exitCode: number | null
   /** Settles when the process has actually exited. */
   exitedPromise: Promise<void>
+  /** The Windows install tab's temp script, removed on exit AND in kill(). */
+  installFile: string | null
   /** Retained output so a client joining late can replay the session. */
   chunks: string[]
   length: number
@@ -470,6 +473,9 @@ export class PtyManager {
       } else if (!remote && !installing && agentPlan) {
         // Last, so a key the plan sets wins over one inherited from a shell.
         Object.assign(env, agentPlan.env)
+      } else if (installFile) {
+        // Where windowsInstallerArgs' stub reads the script from.
+        env[INSTALL_SCRIPT_ENV] = installFile
       }
 
       proc = nodePty.spawn(spec.file, spec.args, {
@@ -503,6 +509,7 @@ export class PtyManager {
       exitedPromise: new Promise<void>((resolve) => {
         markExited = resolve
       }),
+      installFile,
       chunks: [],
       length: 0,
       bannerWindow: null,
@@ -710,6 +717,16 @@ export class PtyManager {
      * gotcha 73 and the owner argument here.
      */
     releaseSessionFiles(s.statusKey, s.ptyId)
+    // Same race for the install tab's script. The child may still hold it open
+    // for a moment on Windows; a leftover is only a small temp file, so a
+    // failure here is ignored rather than retried.
+    if (s.installFile) {
+      try {
+        rmSync(s.installFile, { force: true })
+      } catch {
+        /* still open, or already gone */
+      }
+    }
   }
 
   /**
@@ -911,7 +928,7 @@ async function installerShell(): Promise<string> {
 /**
  * How the script reaches that shell.
  *
- * On Windows, as a FILE (`-File`), never as command-line text. Handed over as
+ * On Windows, from a FILE, never as command-line text. Handed over as
  * `-Command` it would have to survive Windows' argv quoting, which node-pty's
  * conpty joins into one string (gotcha 13's class of mangling); handed over as
  * `-EncodedCommand` — which this was — it has to fit in one command line, and
@@ -920,11 +937,11 @@ async function installerShell(): Promise<string> {
  * measured 25,024 characters of Windows' 32,767, and two small robustness fixes
  * (the winget guard, the Node.js step) took it to 29,640: the next agent would
  * have made "select all" a tab that dies on CreateProcess. A file has no limit.
+ * It is read by a fixed stub rather than run with `-File`, which execution
+ * policy governs — see `windowsInstallerArgs`.
  */
 function installerArgs(script: string, file: string | null): string[] {
-  if (process.platform === 'win32' && file) {
-    return ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', file]
-  }
+  if (process.platform === 'win32' && file) return windowsInstallerArgs()
   return ['-c', script]
 }
 

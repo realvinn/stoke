@@ -239,14 +239,14 @@ jobs:
       - name: Write the script Stoke's picker runs, for every agent it offers on Windows
         shell: pwsh
         run: |
-          node --input-type=module -e "const a = await import('./src/shared/agents.ts'); const c = await import('./src/shared/codingClis.ts'); const ids = c.CODING_CLIS.filter((x) => x.install.win32).map((x) => x.id); const fs = await import('node:fs'); fs.writeFileSync(process.env.RUNNER_TEMP + '/install-agents.ps1', a.installScript(ids, 'win32')); fs.writeFileSync(process.env.RUNNER_TEMP + '/agent-ids.txt', ids.join(','))"
+          node --input-type=module -e "const a = await import('./src/shared/agents.ts'); const c = await import('./src/shared/codingClis.ts'); const ids = c.CODING_CLIS.filter((x) => x.install.win32).map((x) => x.id); const fs = await import('node:fs'); fs.writeFileSync(process.env.RUNNER_TEMP + '/install-agents.ps1', a.installScript(ids, 'win32')); fs.writeFileSync(process.env.RUNNER_TEMP + '/agent-ids.txt', ids.join(',')); fs.writeFileSync(process.env.RUNNER_TEMP + '/installer-args.txt', a.windowsInstallerArgs().join('\n'))"
           Get-Content (Join-Path $env:RUNNER_TEMP 'agent-ids.txt')
 
-      # Exactly as pty.ts `installerArgs` does it: the script in a UTF-8 file
-      # WITH a byte-order mark (Windows PowerShell 5.1 reads a BOM-less file as
-      # ANSI), run with -File. Windows PowerShell 5.1, not 7 — it is what Stoke
-      # starts, and one vendor script (Cursor's) uses Get-WmiObject, which 7
-      # does not have.
+      # Exactly as pty.ts does it: the script in a UTF-8 file WITH a
+      # byte-order mark (Windows PowerShell 5.1 reads a BOM-less file as ANSI),
+      # its path in STOKE_INSTALL_SCRIPT, started with windowsInstallerArgs()'s
+      # fixed stub. Windows PowerShell 5.1, not 7 — it is what Stoke starts, and
+      # one vendor script (Cursor's) uses Get-WmiObject, which 7 does not have.
       - name: Run it the way Stoke does
         id: install
         shell: pwsh
@@ -255,8 +255,12 @@ jobs:
           $src = Join-Path $env:RUNNER_TEMP 'install-agents.ps1'
           $file = Join-Path $env:RUNNER_TEMP 'stoke-install.ps1'
           [System.IO.File]::WriteAllText($file, (Get-Content -Raw $src), (New-Object System.Text.UTF8Encoding($true)))
-          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $file 2>&1 | Tee-Object -FilePath (Join-Path $env:RUNNER_TEMP 'install.log')
-          "exit $LASTEXITCODE"
+          $argv = @(Get-Content (Join-Path $env:RUNNER_TEMP 'installer-args.txt'))
+          $env:STOKE_INSTALL_SCRIPT = $file
+          & powershell.exe @argv 2>&1 | Tee-Object -FilePath (Join-Path $env:RUNNER_TEMP 'install.log')
+          $code = $LASTEXITCODE
+          "$code" | Out-File -Encoding ascii (Join-Path $env:RUNNER_TEMP 'install-exit.txt')
+          "exit $code"
 
       # Three outcomes per agent, and only one of them is Stoke's fault:
       #   found by Stoke's locator (PATH from before the install) and runs -> ok
@@ -274,6 +278,12 @@ jobs:
           $failed = @()
           if ($failedLine) { $failed = @(($failedLine -replace '^Did not install: ', '').Trim() -split ', ') }
           "the script reported as not installed: $($failed -join ', ')"
+          # A non-zero exit with no "Did not install:" line means the script
+          # itself died (or never started) rather than reporting — nothing
+          # below would otherwise notice, since it only reads that line.
+          $exitFile = Join-Path $env:RUNNER_TEMP 'install-exit.txt'
+          $exit = if (Test-Path $exitFile) { (Get-Content $exitFile).Trim() } else { 'none recorded' }
+          if ($exit -ne '0' -and -not $failedLine) { throw "the install script exited $exit without reporting what it did not install — it died, or never ran" }
           $meta = node --input-type=module -e "const c = await import('./src/shared/codingClis.ts'); console.log(JSON.stringify({ byLabel: Object.fromEntries(c.CODING_CLIS.map((x) => [x.label, x.id])), bins: Object.fromEntries(c.CODING_CLIS.map((x) => [x.id, x.bins.win32])) }))" | ConvertFrom-Json
           $ids = (Get-Content (Join-Path $env:RUNNER_TEMP 'agent-ids.txt')).Split(',')
           $failedIds = @($failed | ForEach-Object { $meta.byLabel.$_ })
@@ -304,7 +314,12 @@ jobs:
           $ours = @($failed | Where-Object { ($haveNpm -and $commands.$_ -like 'npm *') -or ($haveWinget -and $commands.$_ -like 'winget *') })
           foreach ($f in @($failed | Where-Object { $ours -notcontains $_ })) { "::warning::$f's vendor installer failed on ${{ matrix.arch }} — see the install log" }
           if ($ours.Count) { throw "Stoke's own install command failed where its tool exists: $($ours -join ', ')" }
-          if ($expect.Count -lt [Math]::Ceiling($ids.Count / 2)) { throw "only $($expect.Count) of $($ids.Count) agents installed" }
+          # Counted from what is actually FOUND: the script's own failure list
+          # and a vendor's silent no-op both shrink it, so a run where nothing
+          # installed cannot pass on warnings alone.
+          $found = $expect.Count - $vendorMisses.Count
+          if ($found -lt [Math]::Ceiling($ids.Count / 2)) { throw "only $found of $($ids.Count) agents are actually installed and found" }
+          "$found of $($ids.Count) agents installed and found"
           "every agent that installed is found by Stoke, without a restart, and starts"
 
       - uses: actions/upload-artifact@v4
@@ -425,7 +440,7 @@ jobs:
       - name: Write the picker's script for three npm agents
         shell: pwsh
         run: |
-          & $env:JOB_NODE --input-type=module -e "const a = await import('./src/shared/agents.ts'); (await import('node:fs')).writeFileSync(process.env.RUNNER_TEMP + '/install.ps1', a.installScript(['gemini', 'opencode', 'cline'], 'win32'))"
+          & $env:JOB_NODE --input-type=module -e "const a = await import('./src/shared/agents.ts'); const fs = await import('node:fs'); fs.writeFileSync(process.env.RUNNER_TEMP + '/install.ps1', a.installScript(['gemini', 'opencode', 'cline'], 'win32')); fs.writeFileSync(process.env.RUNNER_TEMP + '/installer-args.txt', a.windowsInstallerArgs().join('\n'))"
       - name: Run it as Stoke does, with no Node anywhere on PATH
         shell: pwsh
         run: |
@@ -435,7 +450,9 @@ jobs:
           Remove-Item Env:npm_config_prefix -ErrorAction SilentlyContinue
           $file = Join-Path $env:RUNNER_TEMP 'stoke-install.ps1'
           [System.IO.File]::WriteAllText($file, (Get-Content -Raw (Join-Path $env:RUNNER_TEMP 'install.ps1')), (New-Object System.Text.UTF8Encoding($true)))
-          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $file 2>&1 | Tee-Object -FilePath (Join-Path $env:RUNNER_TEMP 'install.log')
+          $argv = @(Get-Content (Join-Path $env:RUNNER_TEMP 'installer-args.txt'))
+          $env:STOKE_INSTALL_SCRIPT = $file
+          & powershell.exe @argv 2>&1 | Tee-Object -FilePath (Join-Path $env:RUNNER_TEMP 'install.log')
           if ($LASTEXITCODE -ne 0) { throw "the install exited $LASTEXITCODE" }
       - name: Node came first, and Stoke finds all three
         shell: pwsh
@@ -713,10 +730,22 @@ jobs:
           # user clicks "More info -> Run anyway" once; signing the installer is
           # what removes it. Switched off here so the rest of the winget flow can
           # be proven.
+          #
+          # And with SmartScreen off, the third run stalled on the OLDER prompt
+          # instead: Attachment Manager's "Open File - Security Warning — The
+          # publisher could not be verified" for the same marked, unsigned file
+          # (screenshot in run 35564109862). So the zone check is off too:
+          # SEE_MASK_NOZONECHECKS in winget's environment, and .exe as a
+          # low-risk type for this user. Either prompt is what an unsigned
+          # installer costs a winget user; only signing removes both.
           Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer' -Name SmartScreenEnabled -Value 'Off' -Type String
           New-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' -Force | Out-Null
           Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' -Name EnableSmartScreen -Value 0 -Type DWord
-          "::notice title=SmartScreen::Real machines show 'Windows protected your PC' for Stoke's unsigned installer when winget starts it; this runner has SmartScreen off to test past it."
+          New-Item -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Associations' -Force | Out-Null
+          Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Associations' -Name LowRiskFileTypes -Value '.exe' -Type String
+          $env:SEE_MASK_NOZONECHECKS = '1'
+          [Environment]::SetEnvironmentVariable('SEE_MASK_NOZONECHECKS', '1', 'User')
+          "::notice title=Unsigned installer::When winget starts Stoke's unsigned installer, Windows asks first — SmartScreen's 'Windows protected your PC', or with SmartScreen off 'The publisher could not be verified'. This runner has both off to test past them; signing removes them."
           winget settings --enable LocalManifestFiles
           $wingetArgs = @('install', '--manifest', $env:MANIFEST_DIR, '--accept-package-agreements', '--accept-source-agreements', '--disable-interactivity', '--silent')
           $p = Start-Process -FilePath winget -ArgumentList $wingetArgs -PassThru -NoNewWindow
@@ -729,10 +758,15 @@ jobs:
             $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
             [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Left, $b.Top, 0, 0, $bmp.Size)
             $bmp.Save((Join-Path $env:RUNNER_TEMP 'winget-stall.png'))
+            "reason=stall" >> $env:GITHUB_OUTPUT
             throw 'winget install stalled — see the window list and winget-stall.png'
           }
           "winget exited $($p.ExitCode)"
-          if ($p.ExitCode -ne 0) { throw "winget install failed ($($p.ExitCode))" }
+          if ($p.ExitCode -ne 0) {
+            "reason=exit-$($p.ExitCode)" >> $env:GITHUB_OUTPUT
+            throw "winget install failed ($($p.ExitCode))"
+          }
+          "reason=checks" >> $env:GITHUB_OUTPUT
           $key = Get-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$env:STOKE_GUID"
           "installed through winget: Stoke $($key.DisplayVersion)"
           if ($key.DisplayVersion -ne $env:VERSION) { throw "winget installed $($key.DisplayVersion), not $env:VERSION" }
@@ -743,9 +777,10 @@ jobs:
       # The same installer, with exactly the switches the manifest gives winget
       # (/S from nullsoft's defaults, /currentuser from Custom), run directly —
       # which separates "the installer hangs with these switches" from "winget's
-      # way of starting it hangs".
+      # way of starting it hangs". Only after a STALL: a non-zero exit or a
+      # failed check after install says something else, and is its own error.
       - name: The same installer with winget's switches, run directly
-        if: steps.wingetinstall.outcome == 'failure'
+        if: steps.wingetinstall.outcome == 'failure' && steps.wingetinstall.outputs.reason == 'stall'
         shell: pwsh
         timeout-minutes: 6
         run: |

@@ -105,8 +105,8 @@ export function shouldReprobe(failedAt: number, now: number): boolean {
  * installer after Stoke started would stay literal. PowerShell hands over every
  * value raw (DoNotExpandEnvironmentNames) as UTF-8 JSON, and `pathFromRegistry`
  * expands them the way Windows builds a new process's environment. It costs
- * what the macOS login-shell probe does (a few hundred ms, once, memoised,
- * never on the boot path). A failure is remembered for PROBE_RETRY_MS like the
+ * one Windows PowerShell start — seconds when cold, see WIN_PROBE_TIMEOUT_MS —
+ * once, memoised, never on the boot path. A failure is remembered for PROBE_RETRY_MS like the
  * POSIX probe's, but never reported as a login-shell failure — the words
  * `notFoundError` uses for that would be false here.
  */
@@ -132,24 +132,51 @@ export function expandWinEnv(value: string, env: Record<string, string | undefin
 }
 
 /**
- * The PATH a new process gets, from the two registry Environment keys: the
- * machine Path, then the user's, each expanded against the environment Windows
- * would build — this process's (for what comes from the profile, like
- * USERPROFILE), then the machine's variables, then the user's, later winning.
+ * Variables Windows takes from the logged-on user's profile, never from the
+ * machine key. HKLM's Environment carries `USERNAME=SYSTEM` — CreateEnvironmentBlock
+ * overrides it with the real user — so layering the machine key over this
+ * process's env unfiltered turned `%USERNAME%` into `SYSTEM`.
+ */
+const PROFILE_VARS = new Set([
+  'username', 'userdomain', 'userdomain_roamingprofile', 'userprofile', 'appdata', 'localappdata',
+  'homedrive', 'homepath', 'homeshare', 'logonserver'
+])
+
+/**
+ * The PATH a new process gets, from the two registry Environment keys, built
+ * the way Windows builds a new process's environment: this process's env (for
+ * what comes from the profile, like USERPROFILE), then each machine variable
+ * but the profile ones, then each user variable — every value expanded against
+ * the scope built so far, plain values before `%…%` ones, so a variable that
+ * names another (`%JAVA_HOME%\bin` beside `JAVA_HOME=%ProgramFiles%\Java`)
+ * arrives expanded. Only then are the machine Path and the user's expanded
+ * against that scope and joined, machine first.
  */
 export function pathFromRegistry(
   reg: { machine?: Record<string, string>; user?: Record<string, string> },
   env: Record<string, string | undefined>
 ): string | null {
+  const isPath = (k: string): boolean => k.toLowerCase() === 'path'
   const pathOf = (vars: Record<string, string> | undefined): string | null => {
     if (!vars) return null
-    const key = Object.keys(vars).find((k) => k.toLowerCase() === 'path')
+    const key = Object.keys(vars).find(isPath)
     return key && vars[key] ? vars[key] : null
   }
   const machine = pathOf(reg.machine)
   const user = pathOf(reg.user)
   if (machine === null && user === null) return null
-  const scope = { ...env, ...(reg.machine ?? {}), ...(reg.user ?? {}) }
+  // Keyed case-insensitively, as Windows' own environment is.
+  const scope: Record<string, string | undefined> = {}
+  for (const [k, v] of Object.entries(env)) scope[k.toLowerCase()] = v
+  const layer = (vars: Record<string, string> | undefined, skip: (k: string) => boolean): void => {
+    const entries = Object.entries(vars ?? {}).filter(([k]) => !isPath(k) && !skip(k.toLowerCase()))
+    const plain = entries.filter(([, v]) => !v.includes('%'))
+    const refs = entries.filter(([, v]) => v.includes('%'))
+    for (const [k, v] of plain) scope[k.toLowerCase()] = v
+    for (const [k, v] of refs) scope[k.toLowerCase()] = expandWinEnv(v, scope)
+  }
+  layer(reg.machine, (k) => PROFILE_VARS.has(k))
+  layer(reg.user, () => false)
   return [machine, user]
     .filter((v): v is string => v !== null)
     .map((v) => expandWinEnv(v, scope))
@@ -157,29 +184,60 @@ export function pathFromRegistry(
     .join(';')
 }
 
+/*
+ * Its own timeout, well above the login shell's: measured on GitHub's
+ * windows-latest, the same probe answered in one run and came back empty in the
+ * next under PROBE_TIMEOUT_MS (5 s) — a cold Windows PowerShell 5.1, which
+ * loads .NET and its modules before running a line, on a busy machine. The
+ * probe is memoised and never on the boot path, so waiting longer costs nothing
+ * when it succeeds, and a failure here means an agent installed a minute ago is
+ * reported missing.
+ */
+const WIN_PROBE_TIMEOUT_MS = 20_000
+let winPathError: string | null = null
+
 function windowsRegistryPath(): Promise<string | null> {
   if (winPathProbe) return winPathProbe
   if (!shouldReprobe(winPathFailedAt, Date.now())) return Promise.resolve(null)
   winPathProbe = (async () => {
     const ps = join(process.env.SystemRoot ?? process.env.SYSTEMROOT ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+    const started = Date.now()
     try {
-      const { stdout } = await execFileAsync(ps, ['-NoProfile', '-NonInteractive', '-Command', WIN_ENV_SCRIPT], {
-        timeout: PROBE_TIMEOUT_MS,
+      const run = execFileAsync(ps, ['-NoProfile', '-NonInteractive', '-Command', WIN_ENV_SCRIPT], {
+        timeout: WIN_PROBE_TIMEOUT_MS,
         encoding: 'utf8',
         windowsHide: true,
         maxBuffer: 4 * 1024 * 1024
       })
+      // execFile hands the child an open stdin pipe, and Windows PowerShell can
+      // sit waiting on it; nothing is ever written, so close it at once.
+      run.child.stdin?.end()
+      const { stdout } = await run
       const path = pathFromRegistry(JSON.parse(stdout.replace(/^\uFEFF/, '').trim()), process.env)
       if (!path) throw new Error('the registry holds no Path')
       winPathFailedAt = 0
+      winPathError = null
       return path
-    } catch {
+    } catch (err) {
+      const e = err as { killed?: boolean; signal?: string | null; code?: string | number; message?: string; stderr?: string }
+      winPathError = e.killed || e.signal
+        ? `powershell.exe did not answer within ${WIN_PROBE_TIMEOUT_MS / 1000}s`
+        : `${e.message ?? String(err)}${e.stderr ? ` — ${e.stderr.trim().slice(0, 400)}` : ''}`
+      winPathError += ` (after ${Date.now() - started} ms)`
       winPathFailedAt = Date.now()
       winPathProbe = null
       return null
     }
   })()
   return winPathProbe
+}
+
+/**
+ * Why the last Windows registry PATH read failed, or null. Read only to explain
+ * a miss — the Windows workflow prints it — never to decide one.
+ */
+export function windowsPathProbeError(): string | null {
+  return winPathError
 }
 
 /**
@@ -253,7 +311,7 @@ export function loginPathProbeFailed(): boolean {
 
 /**
  * The login shell's own PATH — what a NEW terminal will have — or null when the
- * probe failed or there is no such thing (Windows). Not `buildEnvPath`, which
+ * probe failed. On Windows, the registry's PATH (`windowsRegistryPath`). Not `buildEnvPath`, which
  * unions in Stoke's own and the fallback dirs: Settings > Updates > Command
  * line asks whether a terminal will find `stoke`, and a directory Stoke added
  * for itself is no evidence of that.
@@ -265,7 +323,13 @@ export function loginShellPathValue(): Promise<string | null> {
 /** PATH to hand to spawned processes: login-shell PATH unioned with our own. */
 export async function buildEnvPath(): Promise<string> {
   const parts = new Set<string>()
-  const login = await loginShellPath()
+  // A session start waits on this, so on Windows it waits no longer than the
+  // login-shell probe would; a slower registry read carries on in the
+  // background, memoised, and the next caller gets it. Without it the answer
+  // is still this process's PATH plus the known install folders below.
+  const login = isWin
+    ? await Promise.race([loginShellPath(), new Promise<null>((r) => setTimeout(() => r(null), PROBE_TIMEOUT_MS).unref())])
+    : await loginShellPath()
   if (login) for (const p of login.split(delimiter)) if (p) parts.add(p)
   for (const p of (process.env.PATH ?? '').split(delimiter)) if (p) parts.add(p)
   for (const p of extraSearchDirs()) parts.add(p)

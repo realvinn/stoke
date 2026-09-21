@@ -444,6 +444,38 @@ export function powershellEncode(script: string): string {
   return btoa(bin)
 }
 
+/** The environment variable naming the install tab's script file on Windows. */
+export const INSTALL_SCRIPT_ENV = 'STOKE_INSTALL_SCRIPT'
+
+/**
+ * powershell.exe's argv for the install tab on Windows: a short, FIXED
+ * `-EncodedCommand` that reads the script from the file `INSTALL_SCRIPT_ENV`
+ * names and runs it as a script block.
+ *
+ * Not `-File`: a script file is subject to execution policy, and where Group
+ * Policy enforces AllSigned the command-line `-ExecutionPolicy Bypass` is
+ * overridden, so the tab would die on an unsigned temp file. A script block
+ * built from text is not governed by execution policy. And not the whole
+ * script encoded, which is what this was before: every step inside is itself
+ * encoded, and "select all" measured 29,640 of Windows' 32,767 command-line
+ * characters. The file carries the length; the stub carries no path (the path
+ * travels as data, gotcha 101) and never changes.
+ *
+ * Measured under pwsh 7.6.6: the script's own `exit 3` — at top level or in a
+ * function — is the process's exit code, a normal finish is 0, and a `throw` is
+ * 1, which is what `-File` gave. The variable is removed before the script
+ * runs, so no vendor installer inherits it.
+ */
+export function windowsInstallerArgs(): string[] {
+  const stub = [
+    `$f = $env:${INSTALL_SCRIPT_ENV}`,
+    `Remove-Item Env:${INSTALL_SCRIPT_ENV}`,
+    '& ([scriptblock]::Create([IO.File]::ReadAllText($f, [Text.Encoding]::UTF8)))',
+    'exit 0'
+  ].join('; ')
+  return ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', powershellEncode(stub)]
+}
+
 /** What installing these would run on this platform, in table order. Unknown or unscripted ids are left out. */
 export function installSteps(ids: readonly string[], platform: string): InstallStep[] {
   const want = new Set(ids.filter(isCodingCliId))

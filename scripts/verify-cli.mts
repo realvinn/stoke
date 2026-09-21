@@ -399,9 +399,9 @@ console.log('\nWindows PATH: the registry, and one key')
 /*
  * On Windows there is no login shell, so a Stoke started before an install
  * kept the PATH it was born with and an agent installed from its own picker
- * sat "not found" until a restart. The registry holds what a NEW process gets;
- * `reg query` prints it unexpanded. Pure halves asserted here; the reg.exe
- * call itself is the Windows workflow's to prove (probe-clis.mts).
+ * sat "not found" until a restart. The registry holds what a NEW process gets,
+ * unexpanded. Pure halves asserted here; the PowerShell read itself is the
+ * Windows workflow's to prove (windows-e2e.mts registry-path).
  */
 {
   // What WIN_ENV_SCRIPT prints: every value of both Environment keys, raw.
@@ -416,6 +416,28 @@ console.log('\nWindows PATH: the registry, and one key')
   )
   check('a user with no Path of their own gets the machine\'s alone', pathFromRegistry({ machine: { PATH: 'C:\\x' }, user: {} }, {}), 'C:\\x')
   check('no Path anywhere is null — a failed probe, not an empty PATH', pathFromRegistry({ machine: {}, user: {} }, {}), null)
+  // HKLM's Environment really does carry USERNAME=SYSTEM; Windows overrides it
+  // with the logged-on user. Layered over process.env unfiltered, it won.
+  check(
+    'the machine key\'s USERNAME=SYSTEM never replaces the real user in an expansion',
+    pathFromRegistry({ machine: { Path: 'C:\\Tools\\%USERNAME%', USERNAME: 'SYSTEM' }, user: {} }, { USERNAME: 'ada' }),
+    'C:\\Tools\\ada'
+  )
+  check(
+    'nor do the machine key\'s profile folders replace this user\'s',
+    pathFromRegistry({ machine: { Path: '%LOCALAPPDATA%\\x', LOCALAPPDATA: 'C:\\Windows\\system32\\config\\systemprofile\\AppData\\Local' }, user: {} }, { LOCALAPPDATA: 'C:\\Users\\Ada\\AppData\\Local' }),
+    'C:\\Users\\Ada\\AppData\\Local\\x'
+  )
+  check(
+    'a registry variable that names another arrives expanded (JAVA_HOME=%ProgramFiles%\\Java, Path has %JAVA_HOME%\\bin)',
+    pathFromRegistry({ machine: { Path: '%JAVA_HOME%\\bin', JAVA_HOME: '%ProgramFiles%\\Java', ProgramFiles: 'C:\\Program Files' }, user: {} }, {}),
+    'C:\\Program Files\\Java\\bin'
+  )
+  check(
+    'a variable changed in the registry after Stoke started wins over the stale value this process inherited',
+    pathFromRegistry({ machine: {}, user: { Path: '%PNPM_HOME%', PNPM_HOME: 'D:\\pnpm' } }, { PNPM_HOME: 'C:\\old\\pnpm' }),
+    'D:\\pnpm'
+  )
   check(
     'expandWinEnv expands case-insensitively, as Windows does',
     expandWinEnv('%SystemRoot%\\system32;%userprofile%\\.local\\bin', { SYSTEMROOT: 'C:\\Windows', USERPROFILE: 'C:\\Users\\Ada' }),

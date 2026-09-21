@@ -27,6 +27,7 @@ import {
   hydrateAgents,
   hydrateEndpoint,
   httpUrlMcpConfig,
+  INSTALL_SCRIPT_ENV,
   installScript,
   installSteps,
   powershellEncode,
@@ -37,6 +38,7 @@ import {
   PI_PROVIDER_EXTENSION,
   tomlString,
   visibleAgents,
+  windowsInstallerArgs,
   type AgentEndpoint,
   type LaunchPlanInput
 } from '../src/shared/agents.ts'
@@ -391,8 +393,14 @@ console.log('\ninstalling')
   ok('a script with no npm agent carries no Node step at all', !plainWin.includes('OpenJS.NodeJS.LTS') && !plainWin.includes('$nodeMissing'))
   ok('PATH is re-read from the registry before every step', (npmWin.match(/^Update-StokePath$/gm) ?? []).length === 3)
   ok('and deduplicated, or eighteen steps could pass the 32,767-character limit', /ContainsKey\(\$p\.ToLowerInvariant\(\)\)/.test(npmWin))
+  {
+    const argv = windowsInstallerArgs()
+    const stub = decode(argv[argv.indexOf('-EncodedCommand') + 1] ?? '')
+    ok('the install tab\'s Windows argv is a fixed stub, not -File (execution policy governs a script file; AllSigned would kill the tab)', !argv.includes('-File') && argv.includes('-EncodedCommand'), argv.join(' '))
+    ok('the stub reads the script path from the environment, as data (gotcha 101), and removes the variable before running it', stub.includes(`$env:${INSTALL_SCRIPT_ENV}`) && stub.includes(`Remove-Item Env:${INSTALL_SCRIPT_ENV}`) && stub.includes('[scriptblock]::Create'), stub)
+  }
   /*
-   * pty.ts runs the Windows script from a FILE now (-File): as one
+   * pty.ts runs the Windows script from a FILE now: as one
    * -EncodedCommand it had to fit Windows' 32,767-character command line, and
    * with every step itself encoded inside it, "select all" measured 29,640 on
    * 2026-09-21. What still travels on a command line is each STEP's own encoded
@@ -434,30 +442,38 @@ console.log('\ninstalling')
       ],
       'win32'
     ) ?? ''
-    // A file and -File, not stdin: `-Command -` reads line by line like a
-    // prompt, so a multi-line function and `exit` do not behave as in a script.
+    // Exactly as pty.ts starts it: the script in a UTF-8 file with a BOM, read
+    // and run by windowsInstallerArgs' stub, the path in INSTALL_SCRIPT_ENV.
+    // (Not stdin: `-Command -` reads line by line like a prompt, so a
+    // multi-line function and `exit` do not behave as in a script.)
     const shim = `function powershell.exe { & '${pwsh.replace(/'/g, "''")}' @args }\n`
-    const dir = mkdtempSync(join(tmpdir(), 'stoke-winscript-'))
-    const file = join(dir, 'install.ps1')
-    writeFileSync(file, shim + synthetic + '\n')
-    const run = spawnSync(pwsh, ['-NoProfile', '-NonInteractive', '-File', file], { encoding: 'utf8', timeout: 120_000, cwd: dir })
-    rmSync(dir, { recursive: true, force: true })
+    const runAsStoke = (script: string, env: NodeJS.ProcessEnv = process.env): ReturnType<typeof spawnSync> => {
+      const dir = mkdtempSync(join(tmpdir(), 'stoke-winscript-'))
+      const file = join(dir, 'install.ps1')
+      writeFileSync(file, '\uFEFF' + shim + script + '\n')
+      const r = spawnSync(pwsh, ['-NonInteractive', ...windowsInstallerArgs()], { encoding: 'utf8', timeout: 120_000, cwd: dir, env: { ...env, [INSTALL_SCRIPT_ENV]: file } })
+      rmSync(dir, { recursive: true, force: true })
+      return r
+    }
+    const run = runAsStoke(synthetic)
     const noWinget = scriptFor([{ id: 'copilot', label: 'NoWinget', command: 'winget install --id Nope.Nope -e --source winget --accept-source-agreements --accept-package-agreements' }], 'win32') ?? ''
-    const dir2 = mkdtempSync(join(tmpdir(), 'stoke-winscript-'))
-    const file2 = join(dir2, 'install.ps1')
-    writeFileSync(file2, shim + noWinget + '\n')
     // PATH without winget, which no machine running this suite has anyway.
-    const run2 = spawnSync(pwsh, ['-NoProfile', '-NonInteractive', '-File', file2], { encoding: 'utf8', timeout: 120_000, cwd: dir2, env: { ...process.env, PATH: dirname(pwsh) } })
-    rmSync(dir2, { recursive: true, force: true })
+    const run2 = runAsStoke(noWinget, { ...process.env, PATH: dirname(pwsh) })
+    const clean = runAsStoke(scriptFor([{ id: 'claude', label: 'Fine', command: 'Write-Output fine-ran' }], 'win32') ?? '')
+    ok(
+      'windows, run: a script whose steps all succeed exits 0 through the stub',
+      clean.status === 0 && /fine-ran/.test(String(clean.stdout)) && /Done\./.test(String(clean.stdout)),
+      `status ${clean.status}: ${JSON.stringify((String(clean.stdout) + String(clean.stderr)).slice(-400))}`
+    )
     ok(
       'windows, run: a winget step on a machine with NO winget is a failure that says why, not a silent "installed"',
-      run2.status === 1 && /Did not install: NoWinget/.test(run2.stdout) && /has no winget/.test(run2.stdout),
-      `status ${run2.status}: ${JSON.stringify((run2.stdout + run2.stderr).slice(-400))}`
+      run2.status === 1 && /Did not install: NoWinget/.test(String(run2.stdout)) && /has no winget/.test(String(run2.stdout)),
+      `status ${run2.status}: ${JSON.stringify((String(run2.stdout) + String(run2.stderr)).slice(-400))}`
     )
     ok(
       'windows, run: a failing step is named, the steps after it still run, and the script exits 1',
-      run.status === 1 && /step-one-ran/.test(run.stdout) && /step-three-ran/.test(run.stdout) && /Did not install: Breaks/.test(run.stdout),
-      `status ${run.status}: ${JSON.stringify((run.stdout + run.stderr).slice(-400))}`
+      run.status === 1 && /step-one-ran/.test(String(run.stdout)) && /step-three-ran/.test(String(run.stdout)) && /Did not install: Breaks/.test(String(run.stdout)),
+      `status ${run.status}: ${JSON.stringify((String(run.stdout) + String(run.stderr)).slice(-400))}`
     )
   }
   ok('codex on windows is told not to stop and ask, too', encoded[0]?.startsWith('$env:CODEX_NON_INTERACTIVE="1";') === true, encoded[0])

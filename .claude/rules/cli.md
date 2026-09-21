@@ -356,3 +356,24 @@ Node (its `fresh-node` job).
 > proves the registry re-read (a tool only on the user PATH in the registry, found by a process
 > whose PATH predates it) and runs `cmd /c echo %PATH%` through the real node-pty with the old
 > two-key env and the new one.
+
+> **Checked on 2026-09-21, after a second review and a third Windows run.** Three corrections.
+> - The registry read came back EMPTY on windows-latest in one run (35564109862) and fine in the
+>   run before, same commit shape: a cold Windows PowerShell 5.1 does not reliably answer inside the
+>   login shell's 5 s. `windowsRegistryPath` now has its own `WIN_PROBE_TIMEOUT_MS` (20 s), closes
+>   the child's stdin at once (execFile leaves a pipe open and nothing is written), and records why a
+>   read failed (`windowsPathProbeError`), which `windows-e2e.mts registry-path` prints over three
+>   fresh reads so a flake cannot hide either way. A session start does not pay the 20 s:
+>   `buildEnvPath` races the read against `PROBE_TIMEOUT_MS` on Windows and the read carries on,
+>   memoised, for the next caller.
+> - `pathFromRegistry` layered the machine key over this process's env unfiltered, and HKLM's
+>   Environment carries `USERNAME=SYSTEM`, so `%USERNAME%` expanded to `SYSTEM`; values that named
+>   other values (`JAVA_HOME=%ProgramFiles%\Java`) stayed half-expanded. It now builds the scope as
+>   CreateEnvironmentBlock does — profile variables (`PROFILE_VARS`) never from the machine key, each
+>   value expanded against the scope so far — and `verify:cli` holds both cases.
+> - The install tab no longer runs its script with `-File`: a script FILE is governed by execution
+>   policy, and where Group Policy enforces AllSigned the command-line `Bypass` is overridden. It is a
+>   fixed `-EncodedCommand` stub (`windowsInstallerArgs`, agents.ts) that reads the file named by
+>   `STOKE_INSTALL_SCRIPT` into a script block, which execution policy does not govern; measured
+>   under pwsh, the script's own `exit N` and a `throw` (1) still reach the process exit code. The
+>   file is also removed in `kill()`, not only from `proc.onExit`, which a quit does not reliably run.

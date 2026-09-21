@@ -85,10 +85,21 @@ if (cmd === 'swap-files') {
 } else if (cmd === 'registry-path') {
   const [dir, file] = rest
   if (!dir || !file) fail('usage: registry-path <dir> <file>')
-  const { findTool, loginShellPathValue } = await import('../src/main/cli.ts')
+  const { findTool, forgetLoginPath, loginShellPathValue, windowsPathProbeError } = await import('../src/main/cli.ts')
   const own = (process.env.PATH ?? process.env.Path ?? '').toLowerCase()
   if (own.includes(dir.toLowerCase())) fail(`${dir} is already on this process's own PATH, so this would test nothing`)
-  const registryPath = (await loginShellPathValue()) ?? ''
+  // Three fresh reads, each a new powershell.exe: one run of this step passed
+  // and the next read NOTHING, so a single attempt can hide a flake either way.
+  // Each prints its time and, on failure, the probe's own reason.
+  let registryPath = ''
+  for (let i = 1; i <= 3; i++) {
+    forgetLoginPath()
+    const t = Date.now()
+    const got = await loginShellPathValue()
+    console.log(`read ${i}: ${got ? `${got.split(';').length} entries` : `NOTHING — ${windowsPathProbeError() ?? 'no reason recorded'}`} in ${Date.now() - t} ms`)
+    if (!got) fail('the registry PATH read failed; the reason is above')
+    registryPath = got
+  }
   const seen = registryPath.toLowerCase().split(';').some((p) => p.replace(/\\+$/, '') === dir.toLowerCase().replace(/\\+$/, ''))
   console.log(`registry PATH read: ${registryPath ? `${registryPath.split(';').length} entries` : 'NOTHING'}; names ${dir}: ${seen}`)
   const found = await findTool([file])
