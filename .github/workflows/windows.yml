@@ -494,6 +494,7 @@ jobs:
       # node-pty and conpty — and what the old two-key env did, for the record.
       - name: A terminal sees the PATH Stoke built (one key, not two)
         shell: pwsh
+        timeout-minutes: 3
         run: |
           node scripts/windows-e2e.mts pty-path
           if ($LASTEXITCODE -ne 0) { throw 'the child did not see the PATH Stoke built' }
@@ -703,6 +704,19 @@ jobs:
         timeout-minutes: 12
         continue-on-error: true
         run: |
+          # SmartScreen OFF, on this throwaway runner only. Measured on the first
+          # two runs: winget marks what it downloads as from the internet, and
+          # Defender SmartScreen then holds the UNSIGNED installer at "Windows
+          # protected your PC" — screenshot and process list in run 35563143241
+          # (smartscreen.exe + CHXSmartScreen.exe), while the same file run
+          # directly with the same switches installs in seconds. A real winget
+          # user clicks "More info -> Run anyway" once; signing the installer is
+          # what removes it. Switched off here so the rest of the winget flow can
+          # be proven.
+          Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer' -Name SmartScreenEnabled -Value 'Off' -Type String
+          New-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' -Force | Out-Null
+          Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' -Name EnableSmartScreen -Value 0 -Type DWord
+          "::notice title=SmartScreen::Real machines show 'Windows protected your PC' for Stoke's unsigned installer when winget starts it; this runner has SmartScreen off to test past it."
           winget settings --enable LocalManifestFiles
           $wingetArgs = @('install', '--manifest', $env:MANIFEST_DIR, '--accept-package-agreements', '--accept-source-agreements', '--disable-interactivity', '--silent')
           $p = Start-Process -FilePath winget -ArgumentList $wingetArgs -PassThru -NoNewWindow

@@ -103,12 +103,29 @@ if (cmd === 'swap-files') {
   const base: Record<string, string> = {}
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined) base[k] = v
   const inherited = base.Path ?? base.PATH ?? ''
+  // Each spawn gets 20 s: under plain node, conpty's exit can lag or not be
+  // reported at all once the child has printed and gone (measured: the first
+  // version of this step hung its job), and the answer is in the output anyway.
   const see = (env: Record<string, string>): Promise<string> =>
     new Promise((resolve) => {
       let out = ''
+      let settled = false
+      const done = (): void => {
+        if (settled) return
+        settled = true
+        resolve(out)
+      }
       const p = pty.spawn('cmd.exe', ['/d', '/c', 'echo PATH=%PATH%'], { name: 'xterm-256color', cols: 400, rows: 50, cwd: process.cwd(), env, useConpty: true })
       p.onData((d) => (out += d))
-      p.onExit(() => resolve(out))
+      p.onExit(done)
+      setTimeout(() => {
+        try {
+          p.kill()
+        } catch {
+          // gone already
+        }
+        done()
+      }, 20_000).unref()
     })
   // The old pty.ts: a copy of process.env (key `Path`), then `env.PATH = …`.
   const old: Record<string, string> = { ...base }
@@ -120,6 +137,9 @@ if (cmd === 'swap-files') {
   console.log(`old env keys: ${Object.keys(old).filter((k) => k.toUpperCase() === 'PATH').join(', ')} -> child saw the fresh PATH: ${oldOut.includes(marker)}`)
   console.log(`fixed env keys: ${Object.keys(fixed).filter((k) => k.toUpperCase() === 'PATH').join(', ')} -> child saw the fresh PATH: ${fixedOut.includes(marker)}`)
   if (!fixedOut.includes(marker)) fail('with setPathKey the child still did not see the PATH Stoke built')
+  // node-pty keeps a handle open under plain node after its children exit, so
+  // the process would otherwise never end.
+  process.exit(0)
 } else {
   fail('usage: node scripts/windows-e2e.mts swap-files|wait-result|classify|registry-path|pty-path …')
 }
