@@ -34,20 +34,27 @@ import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import {
   classifyInstall,
+  foreignEntries,
+  isVolumeRoot,
   portableAssetFor,
   usesInstallerRoute,
+  wingetIdFromFolder,
   winDirname,
   winIsUnder,
+  winPathKey,
   type InstallFacts
 } from '../src/shared/installKind.ts'
 import { SWAP_SCRIPT, backupDirFor, isLeftover, planJson, stagedDirFor, swapArgs, type SwapPlan } from '../src/main/portableSwap.ts'
 import {
   downloadVerified,
+  entriesNotIn,
   extractZip,
+  readStarted,
   readSwapResult,
   stagedProblem,
   stagePortable,
   sweepLeftovers,
+  swapWouldCarryAway,
   writeSwapFilesSync
 } from '../src/main/portableUpdate.ts'
 
@@ -76,7 +83,10 @@ console.log('\nwhich kind of copy this is')
       ProgramData: 'C:\\ProgramData'
     },
     hasUninstaller: false,
-    canWriteBeside: true
+    canWriteBeside: true,
+    writeError: null,
+    // The real top level of a Windows build (release/win-unpacked).
+    entries: ['locales', 'resources', 'chrome_100_percent.pak', 'chrome_200_percent.pak', 'd3dcompiler_47.dll', 'dxcompiler.dll', 'dxil.dll', 'ffmpeg.dll', 'icudtl.dat', 'libEGL.dll', 'libGLESv2.dll', 'LICENSE.electron.txt', 'LICENSES.chromium.html', 'resources.pak', 'snapshot_blob.bin', 'Stoke.exe', 'v8_context_snapshot.bin', 'vk_swiftshader.dll', 'vk_swiftshader_icd.json', 'vulkan-1.dll']
   }
   const kind = (over: Partial<InstallFacts>) => classifyInstall({ ...base, ...over, env: { ...base.env, ...(over.env ?? {}) } })
 
@@ -91,10 +101,43 @@ console.log('\nwhich kind of copy this is')
   const port = kind({})
   check('an unzipped folder is portable, and says where', [port.kind, port.dir], ['portable', 'C:\\Users\\Ada\\Desktop\\Stoke'])
   ok('and its note says the swap happens on restart or quit', /swapped in when Stoke restarts or quits/.test(port.note ?? ''), port.note ?? '')
-  const ro = kind({ execPath: 'C:\\Program Files\\Stoke\\Stoke.exe', canWriteBeside: false })
+  const ro = kind({ execPath: 'C:\\Program Files\\Stoke\\Stoke.exe', canWriteBeside: false, writeError: 'EPERM' })
   check('a folder it cannot write beside is manual, not a doomed download', ro.kind, 'manual')
   ok('naming the folder and both ways out', /Program Files\\Stoke/.test(ro.note ?? '') && /releases/.test(ro.note ?? ''), ro.note ?? '')
-  check('an unknown write answer is not a refusal: let it try', kind({ canWriteBeside: null }).kind, 'portable')
+  ok('administrator rights are named under Program Files', /administrator rights/.test(ro.note ?? ''))
+  const stick = kind({ execPath: 'E:\\Apps\\Stoke\\Stoke.exe', canWriteBeside: false, writeError: 'EROFS' })
+  ok('and NOT for a read-only stick, where they would not help — the errno is named instead', !/administrator/.test(stick.note ?? '') && /EROFS/.test(stick.note ?? ''), stick.note ?? '')
+
+  /*
+   * The review's critical finding: the swap renames the WHOLE folder, so a
+   * folder shared with anything else must never be portable. 7-Zip's "Extract
+   * Here" in Downloads makes Downloads the folder.
+   */
+  const shared = kind({ execPath: 'C:\\Users\\Ada\\Downloads\\Stoke.exe', entries: [...(base.entries ?? []), 'taxes-2025.pdf', 'photos', 'setup.msi', 'notes.txt'] })
+  check('a folder shared with the user\'s own files is manual — never swapped', shared.kind, 'manual')
+  ok('and the note names what is there, and the way out', /taxes-2025\.pdf/.test(shared.note ?? '') && /folder of its own/.test(shared.note ?? ''), shared.note ?? '')
+  check('operating-system litter does not make a folder shared', kind({ entries: [...(base.entries ?? []), 'desktop.ini', 'Thumbs.db'] }).kind, 'portable')
+  check('foreignEntries sees exactly the strangers', foreignEntries(['Stoke.exe', 'ffmpeg.dll', 'locales', 'photos', 'a.pdf', 'LICENSE.electron.txt']), ['photos', 'a.pdf'])
+
+  /*
+   * The review's high finding: a probe that times out must never produce the
+   * destructive route. `false` for "no uninstaller" routed an INSTALLED copy
+   * into the swap, which would have deleted its uninstaller.
+   */
+  for (const [what, over] of [
+    ['the uninstaller check', { hasUninstaller: null }],
+    ['the write test', { canWriteBeside: null }],
+    ['the folder listing', { entries: null }]
+  ] as const) {
+    const k = kind(over as Partial<InstallFacts>)
+    check(`${what} timing out is a cautious, UNSETTLED manual — never portable`, [k.kind, k.settled], ['manual', false])
+  }
+  check('an installed copy whose probe timed out still takes the installer route once the uninstaller is seen', kind({ hasUninstaller: true, canWriteBeside: null, entries: null }).kind, 'installer')
+  check('every definite answer is settled', [kind({}).settled, ro.settled, shared.settled], [true, true, true])
+
+  const root = kind({ execPath: 'E:\\Stoke.exe' })
+  check('a drive root has no folder to swap: manual', [root.kind, root.dir], ['manual', 'E:'])
+  check('isVolumeRoot', ['E:', 'E:\\', '\\\\srv\\share', '\\\\srv\\share\\Stoke', 'E:\\Tools'].map(isVolumeRoot), [true, true, true, false, false])
 
   const scoop = kind({ execPath: 'C:\\Users\\Ada\\scoop\\apps\\stoke\\current\\Stoke.exe', hasUninstaller: true })
   check('Scoop under the profile is managed, with its own command — even with an uninstaller in it', [scoop.kind, scoop.manager, scoop.command], ['managed', 'scoop', 'scoop update stoke'])
@@ -113,8 +156,22 @@ console.log('\nwhich kind of copy this is')
     'managed'
   )
   check('a folder merely NAMED like scoop is not Scoop', kind({ execPath: 'C:\\Users\\Ada\\scoopapps\\Stoke\\Stoke.exe' }).kind, 'portable')
-  const pexe = kind({ env: { PORTABLE_EXECUTABLE_FILE: 'C:\\Users\\Ada\\Downloads\\Stoke.exe' }, execPath: 'C:\\Users\\Ada\\AppData\\Local\\Temp\\2abc\\Stoke.exe' })
+  const temp = 'C:\\Users\\Ada\\AppData\\Local\\Temp'
+  const pexe = kind({ env: { PORTABLE_EXECUTABLE_FILE: 'C:\\Users\\Ada\\Downloads\\Stoke.exe', TEMP: temp }, execPath: `${temp}\\2abc\\Stoke.exe` })
   check('electron-builder\'s single-file portable exe is manual: it cannot replace itself', [pexe.kind, pexe.dir], ['manual', 'C:\\Users\\Ada\\Downloads'])
+  check(
+    'but the variable is INHERITED: a normal install started from inside another portable app is not one',
+    kind({ env: { PORTABLE_EXECUTABLE_FILE: 'D:\\Tabby\\Tabby.exe', TEMP: temp }, execPath: 'C:\\Users\\Ada\\AppData\\Local\\Programs\\Stoke\\Stoke.exe', hasUninstaller: true }).kind,
+    'installer'
+  )
+  check('a manager root with a trailing separator still matches (SCOOP=D:\\scoop\\)', kind({ execPath: 'D:\\scoop\\apps\\stoke\\current\\Stoke.exe', env: { SCOOP: 'D:\\scoop\\' } }).kind, 'managed')
+  check(
+    'a manager\'s folder behind a junction is recognised from the path the process was started with',
+    kind({ execPath: 'D:\\elsewhere\\stoke\\1.0.0\\Stoke.exe', execPathRaw: 'C:\\Users\\Ada\\scoop\\apps\\stoke\\current\\Stoke.exe' }).kind,
+    'managed'
+  )
+  check('winget ids keep their underscores', [wingetIdFromFolder('Some_Org.Stoke_Microsoft.Winget.Source_8wekyb3d8bbwe'), wingetIdFromFolder('realvinn.Stoke_Microsoft.Winget.Source_8wekyb3d8bbwe')], ['Some_Org.Stoke', 'realvinn.Stoke'])
+  check('winPathKey collapses repeated separators, keeps a UNC prefix', [winPathKey('D:\\scoop\\\\apps\\'), winPathKey('\\\\srv\\share\\x')], ['d:\\scoop\\apps', '\\\\srv\\share\\x'])
 
   check('only the installer takes the NSIS route', ['installer', 'portable', 'managed', 'manual', 'source'].map((k) => usesInstallerRoute(k as never)), [true, false, false, false, false])
   check('winDirname', [winDirname('C:\\a\\b\\Stoke.exe'), winDirname('C:/a/b/'), winDirname('Stoke.exe')], ['C:\\a\\b', 'C:\\a', 'Stoke.exe'])
@@ -158,7 +215,7 @@ console.log('\nthe swap helper, read')
     ['Stoke.old-0.9.9', 'Stoke.update-1.0.0-beta.2', 'stoke.OLD-1.2.3', 'Stoke.old-notes', 'Stoke.old-0.9.9.txt', 'Other.old-0.9.9', 'Stoke'].map((n) => isLeftover('Stoke', n)),
     ['old', 'update', 'old', null, null, null, null]
   )
-  const plan: SwapPlan = { pid: 1, appDir: 'C:\\Users\\O\u2019Brien\\Stoke', staged: 's', backup: 'b', resultFile: 'r', from: '0.9.9', to: '1.0.0', relaunch: true, exeName: 'Stoke.exe', waitSeconds: 120, renameTries: 40 }
+  const plan: SwapPlan = { pid: 1, appDir: 'C:\\Users\\O\u2019Brien\\Stoke', staged: 's', backup: 'b', resultFile: 'r', startedFile: 'st', from: '0.9.9', to: '1.0.0', relaunch: true, exeName: 'Stoke.exe', waitSeconds: 120, renameTries: 40 }
   check('the plan round-trips a curly quote untouched (it is data, never code)', JSON.parse(planJson(plan)).appDir, 'C:\\Users\\O\u2019Brien\\Stoke')
 }
 
@@ -214,6 +271,7 @@ if (!pwsh) {
     staged: join(base, 'Stoke.update-1.0.0'),
     backup: join(base, 'Stoke.old-0.9.9'),
     resultFile: join(base, 'result.json'),
+    startedFile: join(base, 'started.json'),
     from: '0.9.9',
     to: '1.0.0',
     relaunch: false,
@@ -240,6 +298,8 @@ if (!pwsh) {
     check('the old copy is kept beside it for the new Stoke to sweep', readFileSync(join(base, 'Stoke.old-0.9.9', 'Stoke.exe'), 'utf8'), 'old')
     check('and the staged folder is gone (it IS the app folder now)', existsSync(join(base, 'Stoke.update-1.0.0')), false)
     check('the result names the folder with both quotes intact', r.result?.dir, join(base, 'Stoke'))
+    const started = existsSync(join(base, 'started.json')) ? JSON.parse(readFileSync(join(base, 'started.json'), 'utf8')) : null
+    ok('the helper said it was running, with its own pid, before it waited', typeof started?.pid === 'number' && started.pid > 0)
   }
   {
     const base = layout('busy')
@@ -264,11 +324,16 @@ if (!pwsh) {
       const inside = join(base, 'Stoke', 'lingering')
       writeFileSync(inside, readFileSync(sleepBin))
       chmodSync(inside, 0o755)
+      const marker = join(base, 'relaunched')
+      writeFileSync(join(base, 'Stoke', 'Stoke.exe'), `#!/bin/sh\ntouch "${marker}"\n`)
+      chmodSync(join(base, 'Stoke', 'Stoke.exe'), 0o755)
       const lingering = spawn(inside, ['30'], { stdio: 'ignore' })
-      const r = run(planFor(base, { waitSeconds: 2 }))
+      const r = run(planFor(base, { waitSeconds: 2, relaunch: true }))
       lingering.kill('SIGTERM')
       check('a process running out of the folder blocks the swap too, and is named', [r.status, r.result?.step, /lingering/.test(r.result?.message ?? '')], [1, 'wait', true])
-      check('and nothing moved', readFileSync(join(base, 'Stoke', 'Stoke.exe'), 'utf8'), 'old')
+      check('and nothing moved', existsSync(join(base, 'Stoke.update-1.0.0', 'Stoke.exe')), true)
+      for (let i = 0; i < 50 && !existsSync(marker); i++) spawnSync('sleep', ['0.1'])
+      ok('and "Restart and install" still restarts the OLD copy: never no Stoke at all', existsSync(marker))
     } else {
       console.log('  NOTE  "something else runs out of the folder" needs Linux (/proc paths); CI runs it.')
     }
@@ -347,6 +412,17 @@ console.log('\ndownload, verify, unpack, check')
   // the size check, before the hash is even compared.
   const sized = await tryDl('/ok', sha, payload.length + 1)
   check('a whole body of the wrong size is refused by size, and deleted', [sized.ok, sized.kept, /bytes, not the/.test(sized.message ?? '')], [false, false, true])
+  // A destination that cannot be written — a folder that is gone, a full disk —
+  // must REJECT, never throw uncaught and leave the download pending forever
+  // (found by review: the hand-written loop had no 'error' listener on the file).
+  const unwritable = await Promise.race([
+    downloadVerified({ url: url('/ok'), sha512: sha, size: payload.length, dest: join(scratch, 'no', 'such', 'dir', 'x.bin'), fetchImpl: (u) => fetch(u) }).then(
+      () => 'resolved',
+      (e) => `rejected: ${(e as { code?: string }).code ?? (e as Error).message}`
+    ),
+    new Promise<string>((r) => setTimeout(() => r('HUNG'), 10_000))
+  ])
+  check('an unwritable destination rejects the download instead of hanging it', unwritable, 'rejected: ENOENT')
   const missing = await tryDl('/missing', sha, payload.length)
   check('a 404 is refused with the status in the message', [missing.ok, /HTTP 404/.test(missing.message ?? '')], [false, true])
   server.close()
@@ -392,6 +468,7 @@ console.log('\ndownload, verify, unpack, check')
     const stage = async (sha512: string, version = '1.0.0') => {
       try {
         await stagePortable({
+          zip: join(scratch, 'userData', 'portable-update', 'Stoke-1.0.0-x64-win.zip'),
           url: `http://127.0.0.1:${zport}/z`,
           sha512,
           size: bytes.length,
@@ -408,8 +485,10 @@ console.log('\ndownload, verify, unpack, check')
       }
     }
     const zsha = createHash('sha512').update(bytes).digest('base64')
-    check('stagePortable end to end: a complete copy beside the app folder, and no zip left behind', [await stage(zsha), readFileSync(join(staged, 'Stoke.exe'), 'utf8'), existsSync(`${staged}.zip`)], ['ok', 'exe', false])
-    check('a bad checksum leaves NOTHING staged', [/checksum/.test(await stage(hex)), existsSync(staged), existsSync(`${staged}.zip`)], [true, false, false])
+    const zipAt = join(scratch, 'userData', 'portable-update', 'Stoke-1.0.0-x64-win.zip')
+    check('stagePortable end to end: a complete copy beside the app folder, and no zip left behind', [await stage(zsha), readFileSync(join(staged, 'Stoke.exe'), 'utf8'), existsSync(zipAt)], ['ok', 'exe', false])
+    check('and the zip went to userData, never beside the app', existsSync(`${staged}.zip`), false)
+    check('a bad checksum leaves NOTHING staged', [/checksum/.test(await stage(hex)), existsSync(staged), existsSync(zipAt)], [true, false, false])
     check('a version mismatch leaves nothing staged either', [/says it is 1\.0\.0, not the 2\.0\.0/.test(await stage(zsha, '2.0.0')), existsSync(staged)], [true, false])
     zipServer.close()
   } else {
@@ -426,12 +505,14 @@ console.log('\ndownload, verify, unpack, check')
 console.log('\nthe helper\'s files, its result, and what is swept')
 {
   const ud = join(scratch, 'userData', 'portable-update')
-  const plan: SwapPlan = { pid: 1, appDir: 'a', staged: 's', backup: 'b', resultFile: join(ud, 'result.json'), from: '1', to: '2', relaunch: false, exeName: 'Stoke.exe', waitSeconds: 1, renameTries: 1 }
+  const plan: SwapPlan = { pid: 1, appDir: 'a', staged: 's', backup: 'b', resultFile: join(ud, 'result.json'), startedFile: join(ud, 'started.json'), from: '1', to: '2', relaunch: false, exeName: 'Stoke.exe', waitSeconds: 1, renameTries: 1 }
   mkdirSync(ud, { recursive: true })
   writeFileSync(plan.resultFile, '{"stale":true}')
+  writeFileSync(plan.startedFile, '{"pid":1}')
   const { scriptPath, planPath } = writeSwapFilesSync(ud, plan)
   check('writeSwapFilesSync writes the constant script byte for byte, and the plan', [readFileSync(scriptPath, 'ascii') === SWAP_SCRIPT, JSON.parse(readFileSync(planPath, 'utf8')).to], [true, '2'])
   check('and clears a stale result, so the next launch cannot read an old outcome as this one\'s', existsSync(plan.resultFile), false)
+  check('and a stale started marker', existsSync(plan.startedFile), false)
 
   writeFileSync(plan.resultFile, '\uFEFF{"ok":false,"step":"wait","message":"m","from":"1","to":"2","dir":"d","at":5}')
   const r = await readSwapResult(plan.resultFile)
@@ -455,6 +536,35 @@ console.log('\nthe helper\'s files, its result, and what is swept')
     ['Photos', 'Stoke', 'Stoke.old-1.0.0', 'Stoke.old-notes', 'Stoke.update-1.0.1']
   )
   check('only the kinds asked for', (await sweepLeftovers(join(parent, 'Stoke'), ['old'])).length, 0)
+
+  // The one irreversible step checks for itself: a leftover-NAMED folder
+  // holding anything but a Stoke build is never deleted, whatever put it there.
+  mkdirSync(join(parent, 'Stoke.old-0.9.7', 'photos'), { recursive: true })
+  writeFileSync(join(parent, 'Stoke.old-0.9.7', 'Stoke.exe'), '')
+  writeFileSync(join(parent, 'Stoke.old-0.9.7', 'taxes.pdf'), 'precious')
+  mkdirSync(join(parent, 'Stoke.old-0.9.6', 'locales'), { recursive: true })
+  writeFileSync(join(parent, 'Stoke.old-0.9.6', 'Stoke.exe'), '')
+  const guarded = await sweepLeftovers(join(parent, 'Stoke'), ['old'])
+  check('a leftover-named folder with the user\'s files in it survives the sweep; a real old copy does not', [existsSync(join(parent, 'Stoke.old-0.9.7', 'taxes.pdf')), guarded.map((p) => p.slice(parent.length + 1))], [true, ['Stoke.old-0.9.6']])
+
+  check('entriesNotIn: what the swap would carry away', entriesNotIn(['Stoke.exe', 'photos', 'desktop.ini', 'FFMPEG.DLL'], ['stoke.exe', 'ffmpeg.dll', 'locales']), ['photos'])
+  const app = join(scratch, 'carry', 'Stoke')
+  const next = join(scratch, 'carry', 'Stoke.update-1.0.0')
+  mkdirSync(app, { recursive: true })
+  mkdirSync(next, { recursive: true })
+  writeFileSync(join(app, 'Stoke.exe'), '')
+  writeFileSync(join(next, 'Stoke.exe'), '')
+  check('swapWouldCarryAway: nothing, for a folder of Stoke\'s own', swapWouldCarryAway(app, next), [])
+  writeFileSync(join(app, 'my-notes.txt'), '')
+  check('and names a file dropped in since the download', swapWouldCarryAway(app, next), ['my-notes.txt'])
+  ok('an unreadable folder is unknown, and unknown refuses', swapWouldCarryAway(join(scratch, 'never-created-folder'), next).length === 1)
+
+  const st = join(ud, 'started.json')
+  writeFileSync(st, JSON.stringify({ pid: process.pid }))
+  check('readStarted: a helper whose pid is alive is still waiting', (await readStarted(st))?.alive, true)
+  writeFileSync(st, JSON.stringify({ pid: 2147483000 }))
+  check('and one whose pid is gone is not', (await readStarted(st))?.alive, false)
+  check('no marker is null — PowerShell never ran it', await readStarted(join(ud, 'nope.json')), null)
 }
 
 rmSync(scratch, { recursive: true, force: true })

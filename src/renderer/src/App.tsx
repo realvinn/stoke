@@ -2696,8 +2696,14 @@ export function App(): React.JSX.Element {
     // Claimed first: the effect below must not fire it a second time.
     selfRestartPendingRef.current = false
     setSelfRestartPending(false)
-    void window.stoke.self.install().then((started) => {
-      if (!started) setError('The update is not ready to install yet — try again once it has downloaded.')
+    void window.stoke.self.install().then(async (started) => {
+      if (started) return
+      // Not started is two different things, and saying "not ready yet" for
+      // both was false whenever the download had finished and the install
+      // itself was refused (a portable copy's helper could not be written, or
+      // its folder turned out to hold other things): the updater states why.
+      const s = await window.stoke.self.state()
+      setError(s.error ?? s.blocked ?? 'The update is not ready to install yet — try again once it has downloaded.')
     })
   }, [])
 

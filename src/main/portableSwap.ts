@@ -67,6 +67,11 @@ export interface SwapPlan {
   backup: string
   /** The JSON outcome, read by the next launch. */
   resultFile: string
+  /**
+   * Written by the helper before it waits (its own pid), so the next launch can
+   * tell a helper still waiting from one PowerShell never ran.
+   */
+  startedFile: string
   /** Versions, for the outcome's wording. */
   from: string
   to: string
@@ -92,6 +97,8 @@ export const SWAP_SCRIPT = [
   "$ProgressPreference = 'SilentlyContinue'",
   '$p = Get-Content -LiteralPath $Plan -Raw -Encoding UTF8 | ConvertFrom-Json',
   "$script:lastError = ''",
+  '# First, before any wait: say that the helper is running, and as which pid.',
+  "try { [System.IO.File]::WriteAllText($p.startedFile, ('{\"pid\":' + $PID + '}'), (New-Object System.Text.UTF8Encoding($false))) } catch { }",
   '',
   '# UTF-8 without a BOM: Windows PowerShell 5.1 writes one with -Encoding utf8,',
   '# and JSON.parse on the other end refuses it.',
@@ -163,6 +170,9 @@ export const SWAP_SCRIPT = [
   '}',
   'if ($left.Count -gt 0) {',
   "  Write-Result $false 'wait' ('Something is still running from ' + $p.appDir + ': ' + ($left -join ', ') + '. The update was not applied; it will be offered again.')",
+  '  # Stoke itself is gone and nothing has moved, so "Restart and install" must',
+  '  # still restart it: the worst outcome is the version you had, never none.',
+  '  [void](Start-Stoke $p.appDir)',
   '  exit 1',
   '}',
   '',

@@ -16,14 +16,23 @@
  * So the kind is decided first, and each kind gets an honest route:
  *
  *   installer  the NSIS installer's folder — electron-updater, unchanged.
- *   portable   any other folder Stoke can write beside — Stoke downloads the
- *              portable zip, unpacks it next to itself and swaps the folder
- *              when it quits (src/main/portableUpdate.ts).
+ *   portable   a folder of Stoke's own that Stoke can write beside — Stoke
+ *              downloads the portable zip, unpacks it next to itself and swaps
+ *              the folder when it quits (src/main/portableUpdate.ts).
  *   managed    a package manager's own folder — its update command, shown,
  *              never run behind its back.
- *   manual     a copy that cannot replace itself (a read-only folder, the
- *              single-file portable exe) — the releases page, and why.
+ *   manual     a copy that must not replace itself — a folder it shares with
+ *              other files, a read-only folder, a drive root, the single-file
+ *              portable exe, or a probe that could not answer — the releases
+ *              page, and why.
  *   source     a development run: nothing installed to replace.
+ *
+ * The portable swap renames the WHOLE folder Stoke.exe sits in, so "portable"
+ * is only ever the answer for a folder that holds nothing but Stoke: 7-Zip's
+ * "Extract Here" into Downloads would otherwise have made Downloads the thing
+ * renamed aside and, a minute later, deleted (found by review, reproduced with
+ * the real helper). And a probe that timed out never produces the destructive
+ * route: its answer is `manual`, unsettled, and it is asked again.
  *
  * Pure and dependency-free — no `node:` import, because src/shared is compiled
  * for the renderer too (gotcha 27) — so the whole decision is a function of the
@@ -46,15 +55,27 @@ export interface InstallKind {
    * what that panel already says (the installer, macOS, Linux).
    */
   note: string | null
+  /**
+   * False when a probe could not answer (it timed out behind a busy disk or
+   * thread pool), so the answer is a cautious `manual` and must not be
+   * remembered: the next check asks again. True for every definite answer.
+   */
+  settled: boolean
 }
 
-/** What main knows about this process, gathered in src/main/selfUpdate.ts. */
+/** What main knows about this process, gathered in src/main/portableUpdate.ts. */
 export interface InstallFacts {
   platform: string
   /** `app.isPackaged`. */
   packaged: boolean
-  /** `process.execPath` — Stoke.exe itself. */
+  /** Stoke.exe, resolved through junctions and symlinks — where a swap would act. */
   execPath: string
+  /**
+   * `process.execPath` as the process was started, before `realpath`. A package
+   * manager's root is compared against both: its folder may sit behind a
+   * junction that resolves somewhere its environment variable does not name.
+   */
+  execPathRaw?: string
   /** The handful of environment variables the classification reads. */
   env: {
     PORTABLE_EXECUTABLE_FILE?: string
@@ -64,21 +85,35 @@ export interface InstallFacts {
     SCOOP_GLOBAL?: string
     ProgramData?: string
     ChocolateyInstall?: string
+    TEMP?: string
+    TMP?: string
   }
   /**
-   * Whether `Uninstall Stoke.exe` sits beside Stoke.exe. The NSIS installer
-   * writes it into $INSTDIR and nothing else does — not the portable zip, not a
-   * copied folder, not 7-Zip unpacking the installer — so it is the one fact
-   * that separates "the installer put this here" from everything else without
-   * trusting a registry key that may name a different copy.
+   * Whether `Uninstall Stoke.exe` sits beside Stoke.exe — the NSIS installer
+   * writes it into $INSTDIR, and the portable zip carries none. Null when the
+   * probe could not answer in time, which must never be read as "no".
+   *
+   * (A copy of an installed folder carries the uninstaller too, and so takes
+   * the installer route — which updates the ORIGINAL folder. That is how every
+   * copy behaved before the portable route existed; copying an installed
+   * program's folder is rare, and the registry that could tell the two apart is
+   * not read here.)
    */
-  hasUninstaller: boolean
+  hasUninstaller: boolean | null
   /**
-   * Whether Stoke can create a folder beside its own, which is what the portable
-   * swap needs (the new copy is unpacked next to the old one, on the same
-   * volume, so the swap is two renames). Null when it could not be tested.
+   * Whether Stoke can create a folder beside its own, which the portable swap
+   * needs (the new copy is unpacked next to the old one, on the same volume, so
+   * the swap is two renames). Null when it could not be tested in time.
    */
   canWriteBeside: boolean | null
+  /** Why that test failed (the errno code, e.g. `EACCES`, `EROFS`), or null. */
+  writeError?: string | null
+  /**
+   * The names at the top of the folder Stoke.exe runs from, or null when they
+   * could not be read in time. Anything that is not part of a Stoke build means
+   * the folder is shared, and a swap would carry it away.
+   */
+  entries: readonly string[] | null
 }
 
 /** The electron-builder `productName`; its uninstaller is `Uninstall ${productName}.exe`. */
@@ -86,9 +121,16 @@ export const PRODUCT_NAME = 'Stoke'
 export const UNINSTALLER_NAME = `Uninstall ${PRODUCT_NAME}.exe`
 export const RELEASES_URL = 'https://github.com/realvinn/stoke/releases/latest'
 
-/** A path as Windows compares it: one kind of slash, no trailing one, one case. */
+/**
+ * A path as Windows compares it: one kind of slash, no repeated or trailing
+ * one (a hand-set `SCOOP=D:\scoop\` plus `\apps` would otherwise never match),
+ * one case. A UNC path keeps its leading `\\`.
+ */
 export function winPathKey(p: string): string {
-  return p.replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase()
+  const s = p.replace(/\//g, '\\')
+  const unc = s.startsWith('\\\\')
+  const body = s.replace(/\\{2,}/g, '\\').replace(/\\+$/, '')
+  return ((unc ? '\\' : '') + body).toLowerCase()
 }
 
 /** The folder a Windows path is in. Not node:path — this file is shared with the renderer. */
@@ -105,15 +147,59 @@ export function winIsUnder(child: string, parent: string): boolean {
   return p.length > 0 && (c === p || c.startsWith(p + '\\'))
 }
 
+/** A drive root (`E:`, `E:\`) or a bare share (`\\server\share`), which has no folder to swap. */
+export function isVolumeRoot(dir: string): boolean {
+  const s = dir.replace(/\//g, '\\').replace(/\\+$/, '')
+  return /^[A-Za-z]:$/.test(s) || /^\\\\[^\\]+\\[^\\]+$/.test(s)
+}
+
 /**
  * The first path segment below `root` on the way to `child`, in its original
  * case — `scoop\apps\<name>\current\Stoke.exe` gives `<name>`.
  */
 function segmentBelow(child: string, root: string): string | null {
-  const c = child.replace(/\//g, '\\')
-  const rest = c.slice(winPathKey(root).length).replace(/^\\+/, '')
+  const c = winPathKey(child)
+  const r = winPathKey(root)
+  if (!c.startsWith(r)) return null
+  // Offsets are identical in the key and in the separator-normalised original.
+  const original = child.replace(/\//g, '\\').replace(/\\{2,}/g, '\\')
+  const rest = original.slice(r.length).replace(/^\\+/, '')
   const seg = rest.split('\\')[0]
   return seg ? seg : null
+}
+
+/** Names an operating system drops into any folder, which a Stoke folder may hold. */
+const OS_LITTER = new Set(['desktop.ini', 'thumbs.db', '.ds_store'])
+
+/**
+ * Whether a top-level name belongs to a Stoke build. The Windows build's top
+ * level, measured from `release/win-unpacked` (electron-builder 26.15.3,
+ * Electron 43): Stoke.exe, `locales`, `resources`, `.pak`/`.dll`/`.dat`/`.bin`
+ * files, `LICENSE.electron.txt`, `LICENSES.chromium.html`,
+ * `vk_swiftshader_icd.json`. Shapes rather than a fixed list, so an Electron
+ * upgrade that adds a DLL does not make every portable copy "shared".
+ */
+export function isStokeFolderEntry(name: string): boolean {
+  const n = name.toLowerCase()
+  if (OS_LITTER.has(n)) return true
+  if (n === 'stoke.exe' || n === 'locales' || n === 'resources') return true
+  if (/\.(pak|dll|dat|bin)$/.test(n)) return true
+  if (/^licen[cs]es?(\.[\w-]+)*\.(txt|html)$/.test(n)) return true
+  if (n === 'vk_swiftshader_icd.json') return true
+  return false
+}
+
+/** The names at the top of a folder that are not part of a Stoke build. */
+export function foreignEntries(entries: readonly string[]): string[] {
+  return entries.filter((e) => !isStokeFolderEntry(e))
+}
+
+function none(kind: InstallKindId): InstallKind {
+  return { kind, dir: null, manager: null, command: null, note: null, settled: true }
+}
+
+function manual(dir: string | null, note: string, settled = true): InstallKind {
+  return { kind: 'manual', dir, manager: null, command: null, note, settled }
 }
 
 function managed(manager: 'scoop' | 'winget' | 'chocolatey', command: string, who: string): InstallKind {
@@ -122,36 +208,49 @@ function managed(manager: 'scoop' | 'winget' | 'chocolatey', command: string, wh
     dir: null,
     manager,
     command,
-    note: `Installed by ${who}, which keeps its own record of what version is here, so Stoke leaves updating to it. Run: ${command}`
+    note: `Installed by ${who}, which keeps its own record of what version is here, so Stoke leaves updating to it. Run: ${command}`,
+    settled: true
   }
+}
+
+/** A winget package folder is `<PackageIdentifier>_<SourceName>_<PublisherHash>`; identifiers may hold `_`. */
+export function wingetIdFromFolder(folder: string): string {
+  const known = folder.replace(/_Microsoft\.Winget\.Source_8wekyb3d8bbwe$/i, '')
+  if (known !== folder && known) return known
+  const parts = folder.split('_')
+  const id = parts.length >= 3 ? parts.slice(0, -2).join('_') : parts[0]
+  return id.includes('.') ? id : 'realvinn.Stoke'
+}
+
+function trimRoot(root: string | undefined): string | undefined {
+  return root ? root.replace(/[\\/]+$/, '') : undefined
 }
 
 /**
  * The classification. Order matters and each step says why it is where it is.
  */
 export function classifyInstall(f: InstallFacts): InstallKind {
-  const none = { dir: null, manager: null, command: null, note: null }
-  if (!f.packaged) return { kind: 'source', ...none }
+  if (!f.packaged) return none('source')
   // macOS and Linux have one route each and electron-updater already takes it:
   // Squirrel swaps the .app wherever it is, AppImageUpdater replaces $APPIMAGE.
-  if (f.platform !== 'win32') return { kind: 'installer', ...none }
+  if (f.platform !== 'win32') return none('installer')
 
   const dir = winDirname(f.execPath)
+  const dirs = [dir, winDirname(f.execPathRaw ?? f.execPath)]
   const env = f.env
 
   // 1. electron-builder's single-file `portable` target. It unpacks itself into
   //    %TEMP% on every launch (templates/nsis/portable.nsi) and holds its own exe
   //    open while the app runs, so there is no folder to swap and no file that can
-  //    be replaced from inside. Stoke does not ship one; a copy somebody built is
-  //    told the truth rather than handed an installer it never asked for.
-  if (env.PORTABLE_EXECUTABLE_FILE) {
-    return {
-      kind: 'manual',
-      dir: winDirname(env.PORTABLE_EXECUTABLE_FILE),
-      manager: null,
-      command: null,
-      note: `This is a single-file portable build, which cannot replace itself while it runs. Download the new version from ${RELEASES_URL}.`
-    }
+  //    be replaced from inside. Its variable is INHERITED by every child, so it
+  //    only counts when this Stoke really runs from the temp folder — a Stoke
+  //    started from inside some other portable app must not believe it is one.
+  const temps = [env.TEMP, env.TMP].filter((t): t is string => !!t)
+  if (env.PORTABLE_EXECUTABLE_FILE && temps.some((t) => dirs.some((d) => winIsUnder(d, t)))) {
+    return manual(
+      winDirname(env.PORTABLE_EXECUTABLE_FILE),
+      `This is a single-file portable build, which cannot replace itself while it runs, so updates have to be downloaded by hand from ${RELEASES_URL}.`
+    )
   }
 
   // 2-4. A package manager's OWN folder, before the installer test, because a
@@ -163,50 +262,72 @@ export function classifyInstall(f: InstallFacts): InstallKind {
   //      wraps the .exe) puts Stoke in the installer's folder, not its own, and
   //      lands on `installer` below — which is right: the installer rewrites
   //      the Apps & Features entry those managers read the version from.
-  const scoopRoots = [env.SCOOP, env.USERPROFILE ? `${env.USERPROFILE}\\scoop` : undefined, env.SCOOP_GLOBAL, env.ProgramData ? `${env.ProgramData}\\scoop` : undefined]
-  for (const root of scoopRoots) {
+  //      Tested against the folder both as started and as resolved.
+  const scoopRoots = [env.SCOOP, env.USERPROFILE ? `${trimRoot(env.USERPROFILE)}\\scoop` : undefined, env.SCOOP_GLOBAL, env.ProgramData ? `${trimRoot(env.ProgramData)}\\scoop` : undefined]
+  for (const root of scoopRoots.map(trimRoot)) {
     if (!root) continue
     const apps = `${root}\\apps`
-    if (winIsUnder(dir, apps)) return managed('scoop', `scoop update ${segmentBelow(dir, apps) ?? 'stoke'}`, 'Scoop')
+    const hit = dirs.find((d) => winIsUnder(d, apps))
+    if (hit) return managed('scoop', `scoop update ${segmentBelow(hit, apps) ?? 'stoke'}`, 'Scoop')
   }
   if (env.LOCALAPPDATA) {
     // winget's own portable/zip installs. Stoke's winget package uses the NSIS
     // installer instead, which lands as `installer` below and updates itself;
     // this is for a manifest somebody else writes with InstallerType: zip.
-    const packages = `${env.LOCALAPPDATA}\\Microsoft\\WinGet\\Packages`
-    if (winIsUnder(dir, packages)) {
-      const folder = segmentBelow(dir, packages) ?? ''
-      // `<PackageIdentifier>_<SourceName>_<hash>`; identifiers never contain `_`.
-      const id = folder.split('_')[0] || 'realvinn.Stoke'
-      return managed('winget', `winget upgrade --id ${id}`, 'winget')
-    }
+    const packages = `${trimRoot(env.LOCALAPPDATA)}\\Microsoft\\WinGet\\Packages`
+    const hit = dirs.find((d) => winIsUnder(d, packages))
+    if (hit) return managed('winget', `winget upgrade --id ${wingetIdFromFolder(segmentBelow(hit, packages) ?? '')}`, 'winget')
   }
-  const chocoRoots = [env.ChocolateyInstall, env.ProgramData ? `${env.ProgramData}\\chocolatey` : undefined]
-  for (const root of chocoRoots) {
+  const chocoRoots = [env.ChocolateyInstall, env.ProgramData ? `${trimRoot(env.ProgramData)}\\chocolatey` : undefined]
+  for (const root of chocoRoots.map(trimRoot)) {
     if (!root) continue
     const lib = `${root}\\lib`
-    if (winIsUnder(dir, lib)) return managed('chocolatey', `choco upgrade ${segmentBelow(dir, lib) ?? 'stoke'}`, 'Chocolatey')
+    const hit = dirs.find((d) => winIsUnder(d, lib))
+    if (hit) return managed('chocolatey', `choco upgrade ${segmentBelow(hit, lib) ?? 'stoke'}`, 'Chocolatey')
   }
 
   // 5. The NSIS installer's folder, from the website, the one-liner or winget.
-  if (f.hasUninstaller) return { kind: 'installer', ...none }
+  if (f.hasUninstaller === true) return none('installer')
 
-  // 6. Anything else is a folder somebody put there: the portable zip, or a copy.
-  if (f.canWriteBeside === false) {
-    return {
-      kind: 'manual',
-      dir,
-      manager: null,
-      command: null,
-      note: `Stoke is running from ${dir}, and it cannot create files beside that folder without administrator rights, so it cannot replace itself. Move the folder somewhere you own, or download the new version from ${RELEASES_URL}.`
-    }
+  // 6. A drive or share root has no folder around Stoke to swap.
+  if (isVolumeRoot(dir)) {
+    return manual(dir, `Stoke is running from the top of ${dir}, so there is no folder of its own to replace. Move it into a folder of its own to let it update itself, or download updates by hand from ${RELEASES_URL}.`)
   }
+
+  // 7. Anything a probe could not answer: never guess towards the swap.
+  if (f.hasUninstaller === null || f.canWriteBeside === null || f.entries === null) {
+    return manual(dir, 'Stoke could not yet tell how this copy was installed (the disk was busy), so it will not update itself until the next check can.', false)
+  }
+
+  // 8. A folder shared with anything else: the swap would carry it away.
+  const foreign = foreignEntries(f.entries)
+  if (foreign.length) {
+    const shown = foreign.slice(0, 3).join(', ') + (foreign.length > 3 ? `, and ${foreign.length - 3} more` : '')
+    return manual(
+      dir,
+      `Stoke shares its folder, ${dir}, with other things (${shown}). Updating itself would mean replacing that whole folder, so it does not. Move Stoke into a folder of its own to let it update itself, or download updates by hand from ${RELEASES_URL}.`
+    )
+  }
+
+  // 9. A folder Stoke cannot create files beside. Administrator rights are
+  //    named only where they are the likely answer; a read-only stick or share
+  //    is not fixed by them (never print a diagnosis the tool can disprove).
+  if (f.canWriteBeside === false) {
+    const needsAdmin = (f.writeError === 'EACCES' || f.writeError === 'EPERM') && /\\program files( \(x86\))?(\\|$)/i.test(dir)
+    const why = needsAdmin ? 'without administrator rights' : f.writeError ? `(${f.writeError})` : ''
+    return manual(
+      dir,
+      `Stoke cannot create files beside ${dir}${why ? ` ${why}` : ''}, which updating itself needs. Move Stoke into a folder you own to let it update itself, or download updates by hand from ${RELEASES_URL}.`
+    )
+  }
+
   return {
     kind: 'portable',
     dir,
     manager: null,
     command: null,
-    note: `Portable copy in ${dir}. An update is unpacked beside it and swapped in when Stoke restarts or quits; your settings and sessions live elsewhere and are not touched.`
+    note: `Portable copy in ${dir}. An update is unpacked beside it and swapped in when Stoke restarts or quits; your settings and sessions live elsewhere and are not touched.`,
+    settled: true
   }
 }
 

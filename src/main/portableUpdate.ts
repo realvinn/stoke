@@ -22,11 +22,13 @@
  */
 import { execFile, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { createWriteStream, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { createWriteStream, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { access, mkdir, mkdtemp, readdir, readFile, realpath, rm, rmdir, stat } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
+import { Readable, Transform } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 import { promisify } from 'node:util'
-import { UNINSTALLER_NAME, type InstallFacts } from '../shared/installKind.ts'
+import { UNINSTALLER_NAME, isStokeFolderEntry, type InstallFacts } from '../shared/installKind.ts'
 import { SWAP_SCRIPT, isLeftover, planJson, swapArgs, type SwapPlan } from './portableSwap.ts'
 
 const execFileAsync = promisify(execFile)
@@ -72,18 +74,20 @@ async function exists(p: string): Promise<boolean> {
 }
 
 /**
- * Whether a folder can be made beside `dir`. `fs.access(W_OK)` cannot answer
- * this on Windows — it "does not check the ACL" (Node's own docs) — so a real
- * folder is made and removed, in the PARENT, which is where the portable swap
- * needs rights: the new copy is unpacked there and both renames happen there.
+ * Whether a folder can be made beside `dir`, and if not, why. `fs.access(W_OK)`
+ * cannot answer this on Windows — it "does not check the ACL" (Node's own docs)
+ * — so a real folder is made and removed, in the PARENT, which is where the
+ * portable swap needs rights: the new copy is unpacked there and both renames
+ * happen there. The errno is kept so the panel can name the reason instead of
+ * guessing one (a read-only stick is not fixed by administrator rights).
  */
-export async function canWriteBeside(dir: string): Promise<boolean> {
+export async function probeWriteBeside(dir: string): Promise<{ ok: boolean; code: string | null }> {
   try {
     const probe = await mkdtemp(join(dirname(dir), '.stoke-write-probe-'))
     await rmdir(probe)
-    return true
-  } catch {
-    return false
+    return { ok: true, code: null }
+  } catch (err) {
+    return { ok: false, code: String((err as { code?: unknown }).code ?? 'unknown') }
   }
 }
 
@@ -98,6 +102,12 @@ export interface ProbeEnv {
  * The facts `classifyInstall` decides on. On Windows the exe's folder is
  * resolved through `realpath` first: a copy reached through a junction or a
  * winget `Links` symlink must be judged, and later swapped, where it really is.
+ *
+ * Every probe runs under a deadline (gotcha 40), and a deadline answers NULL —
+ * "could not tell" — never a guess. The first version answered `false` for a
+ * slow uninstaller check, and "no uninstaller" is exactly the fact that routes
+ * an INSTALLED copy into the portable swap, which would then delete its
+ * uninstaller (found by review: six queued thread-pool jobs were enough).
  */
 export async function gatherInstallFacts(e: ProbeEnv): Promise<InstallFacts> {
   const env = {
@@ -107,18 +117,31 @@ export async function gatherInstallFacts(e: ProbeEnv): Promise<InstallFacts> {
     SCOOP: e.env.SCOOP,
     SCOOP_GLOBAL: e.env.SCOOP_GLOBAL,
     ProgramData: e.env.ProgramData ?? e.env.PROGRAMDATA,
-    ChocolateyInstall: e.env.ChocolateyInstall
+    ChocolateyInstall: e.env.ChocolateyInstall,
+    TEMP: e.env.TEMP,
+    TMP: e.env.TMP
   }
   if (e.platform !== 'win32' || !e.packaged) {
-    return { platform: e.platform, packaged: e.packaged, execPath: e.execPath, env, hasUninstaller: false, canWriteBeside: null }
+    return { platform: e.platform, packaged: e.packaged, execPath: e.execPath, env, hasUninstaller: null, canWriteBeside: null, entries: null }
   }
   const execPath = await within(3000, realpath(e.execPath), e.execPath)
   const dir = dirname(execPath)
-  const [hasUninstaller, writable] = await Promise.all([
-    within(3000, exists(join(dir, UNINSTALLER_NAME)), false),
-    within(3000, canWriteBeside(dir), null as boolean | null)
+  const [hasUninstaller, write, entries] = await Promise.all([
+    within(3000, exists(join(dir, UNINSTALLER_NAME)), null as boolean | null),
+    within(3000, probeWriteBeside(dir), null as { ok: boolean; code: string | null } | null),
+    within(3000, readdir(dir), null as string[] | null)
   ])
-  return { platform: e.platform, packaged: e.packaged, execPath, env, hasUninstaller, canWriteBeside: writable }
+  return {
+    platform: e.platform,
+    packaged: e.packaged,
+    execPath,
+    execPathRaw: e.execPath,
+    env,
+    hasUninstaller,
+    canWriteBeside: write ? write.ok : null,
+    writeError: write ? write.code : null,
+    entries
+  }
 }
 
 export interface DownloadInput {
@@ -135,23 +158,24 @@ export interface DownloadInput {
  * Stream the file to `dest`, hashing as it goes; delete it and throw on any
  * mismatch. The hash is compared as base64, never hex: latest.yml's sha512 is
  * base64, and a hex comparison can never match (gotcha 71).
+ *
+ * Through `stream.pipeline`, so a failure on EITHER side — the network, or the
+ * disk filling up mid-write — rejects here and reaches the cleanup. A
+ * hand-written read/write loop had no 'error' listener on the file while it
+ * ran, so ENOSPC was an uncaught exception in the main process and the
+ * download never settled (found by review; reproduced with `ulimit -f`).
  */
 export async function downloadVerified(i: DownloadInput): Promise<void> {
   const res = await i.fetchImpl(i.url)
   if (!res.ok || !res.body) throw new Error(`The download failed: HTTP ${res.status} for ${i.url}`)
   const total = Number(res.headers.get('content-length')) || i.size || 0
   const hash = createHash('sha512')
-  const out = createWriteStream(i.dest)
   let done = 0
   let lastPct = -1
-  try {
-    const reader = res.body.getReader()
-    for (;;) {
-      const { done: finished, value } = await reader.read()
-      if (finished) break
-      hash.update(value)
-      done += value.byteLength
-      if (!out.write(value)) await new Promise<void>((r) => out.once('drain', () => r()))
+  const meter = new Transform({
+    transform(chunk: Buffer, _enc, cb) {
+      hash.update(chunk)
+      done += chunk.length
       if (total > 0 && i.onProgress) {
         const pct = Math.min(99, Math.floor((done / total) * 100))
         if (pct !== lastPct) {
@@ -159,13 +183,12 @@ export async function downloadVerified(i: DownloadInput): Promise<void> {
           i.onProgress(pct)
         }
       }
+      cb(null, chunk)
     }
-    await new Promise<void>((resolve, reject) => {
-      out.once('error', reject)
-      out.end(() => resolve())
-    })
+  })
+  try {
+    await pipeline(Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0]), meter, createWriteStream(i.dest))
   } catch (err) {
-    out.destroy()
     await remove(i.dest, { force: true })
     throw err
   }
@@ -275,6 +298,13 @@ export interface StageInput {
   sha512: string
   size?: number
   staged: string
+  /**
+   * Where the zip itself is downloaded to — userData, not beside the app. Only
+   * the unpacked folder has to be on the app's volume (the swap is a rename); a
+   * zip left by a quit mid-download beside the app would otherwise sit on
+   * somebody's Desktop for good (found by review).
+   */
+  zip: string
   version: string
   exeName: string
   fetchImpl: (url: string) => Promise<Response>
@@ -285,12 +315,11 @@ export interface StageInput {
 
 /**
  * Download, verify, unpack and check, leaving a complete new copy at
- * `staged` — or nothing at all. The zip itself is downloaded beside the
- * staged folder (same volume as the app, which the swap needs anyway) and
- * deleted once unpacked.
+ * `staged` — or nothing at all. The zip is deleted once unpacked.
  */
 export async function stagePortable(s: StageInput): Promise<void> {
-  const zip = `${s.staged}.zip`
+  const zip = s.zip
+  await mkdir(dirname(zip), { recursive: true })
   await remove(s.staged, { recursive: true, force: true })
   await remove(zip, { force: true })
   try {
@@ -303,6 +332,28 @@ export async function stagePortable(s: StageInput): Promise<void> {
     throw err
   } finally {
     await remove(zip, { force: true })
+  }
+}
+
+/**
+ * What the swap would carry away: top-level names in the app folder that the
+ * new copy does not have (operating-system litter aside). The swap renames the
+ * WHOLE folder, so anything listed here would leave with the old copy — and the
+ * old copy is deleted a minute into the next launch. Checked after staging and
+ * again right before the helper starts; a non-empty answer refuses the swap.
+ */
+export function entriesNotIn(appDirEntries: readonly string[], stagedEntries: readonly string[]): string[] {
+  const next = new Set(stagedEntries.map((n) => n.toLowerCase()))
+  return appDirEntries.filter((n) => !next.has(n.toLowerCase()) && !['desktop.ini', 'thumbs.db', '.ds_store'].includes(n.toLowerCase()))
+}
+
+/** The same check, read from disk synchronously — for the quit path, where an await could lose the race. */
+export function swapWouldCarryAway(appDir: string, staged: string): string[] {
+  try {
+    return entriesNotIn(readdirSync(appDir), readdirSync(staged))
+  } catch (err) {
+    // Unreadable means unknown, and unknown refuses.
+    return [`(could not list the folder: ${(err as Error).message})`]
   }
 }
 
@@ -323,8 +374,9 @@ export function writeSwapFilesSync(dir: string, plan: SwapPlan): { scriptPath: s
   // ASCII script, no BOM; UTF-8 plan, no BOM (Get-Content -Encoding UTF8 reads
   // it either way; JSON.parse on our side would not).
   writeFileSync(scriptPath, SWAP_SCRIPT, 'ascii')
-  writeFileSync(planPath, planJson(plan), 'utf8')
   rmSync(plan.resultFile, { force: true })
+  rmSync(plan.startedFile, { force: true })
+  writeFileSync(planPath, planJson(plan), 'utf8')
   return { scriptPath, planPath }
 }
 
@@ -407,6 +459,12 @@ export async function sweepLeftovers(appDir: string, kinds: readonly ('old' | 'u
     if (keep.some((k) => k.toLowerCase() === full.toLowerCase())) continue
     try {
       if (!(await stat(full)).isDirectory()) continue
+      // Only a folder that is visibly a Stoke build is ever deleted. The swap
+      // refuses a shared folder, but this is the one irreversible step, so it
+      // checks for itself: a leftover-shaped name holding anything else is left
+      // alone, whatever put it there.
+      const inside = await readdir(full)
+      if (!inside.every(isStokeFolderEntry)) continue
       await remove(full, { recursive: true, force: true })
       removed.push(full)
     } catch {
@@ -414,4 +472,36 @@ export async function sweepLeftovers(appDir: string, kinds: readonly ('old' | 'u
     }
   }
   return removed
+}
+
+/**
+ * The helper's "I am running" marker: its own pid, written before it waits.
+ * With it the next launch can tell "PowerShell never ran the helper" (no
+ * marker) from "the helper is STILL waiting" (marker, pid alive) — the second
+ * happens whenever somebody quits and reopens Stoke within the wait, and it
+ * used to be reported as a Group Policy block while the helper's staged copy
+ * was swept out from under it (found by review).
+ */
+export async function readStarted(file: string): Promise<{ pid: number; alive: boolean } | null> {
+  let raw: string
+  try {
+    raw = await readFile(file, 'utf8')
+  } catch {
+    return null
+  }
+  try {
+    const pid = Number((JSON.parse(raw.replace(/^\uFEFF/, '')) as { pid?: unknown }).pid)
+    if (!Number.isInteger(pid) || pid <= 0) return { pid: 0, alive: false }
+    let alive = false
+    try {
+      process.kill(pid, 0)
+      alive = true
+    } catch (err) {
+      // EPERM means it exists and is someone else's to signal: alive.
+      alive = (err as { code?: string }).code === 'EPERM'
+    }
+    return { pid, alive }
+  } catch {
+    return { pid: 0, alive: false }
+  }
 }
