@@ -363,7 +363,10 @@ Node (its `fresh-node` job).
 >   login shell's 5 s. `windowsRegistryPath` now has its own `WIN_PROBE_TIMEOUT_MS` (20 s), closes
 >   the child's stdin at once (execFile leaves a pipe open and nothing is written), and records why a
 >   read failed (`windowsPathProbeError`), which `windows-e2e.mts registry-path` prints over three
->   fresh reads so a flake cannot hide either way. A session start does not pay the 20 s:
+>   fresh reads so a flake cannot hide either way. Measured in run 35566018076: the first, cold
+>   read took 3,092 ms on x64 and 4,281 ms on arm64, the next two ~300 ms each — the old 5 s sat
+>   just above the cold start, which is the flake. (The same run's conpty check: with the old
+>   two-key env the child saw the STALE `Path`; with `setPathKey`, the fresh one.) A session start does not pay the 20 s:
 >   `buildEnvPath` races the read against `PROBE_TIMEOUT_MS` on Windows and the read carries on,
 >   memoised, for the next caller.
 > - `pathFromRegistry` layered the machine key over this process's env unfiltered, and HKLM's

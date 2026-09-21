@@ -507,3 +507,14 @@ which stays a deliberate, manual act (the Worker serves what was embedded at the
 > every Claude Code session's Git Bash ran with MSYS path conversion off; PowerShell's first act
 > is now `Remove-Item Env:MSYS2_ARG_CONV_EXCL`. And install.ps1 no longer calls an install with no
 > Stoke.exe a success — the published arm64 installer exits 0 and installs nothing (gotcha 102).
+
+> **Checked on Windows on 2026-09-21** (workflow run 35566018076): the Git Bash leg on
+> `windows-11-arm` PASSED while the cmd, 5.1 and pwsh legs failed on the empty arm64 installer —
+> because it installed the **x64** build. Git Bash is an x64 program running emulated on an arm64
+> PC, `PROCESSOR_ARCHITECTURE` describes the process that set it, and powershell.exe inherited
+> `AMD64` through the handoff; install.ps1 printed `machine windows x64` and every check passed,
+> none of which asked what the installed Stoke.exe was built for. An emulated x64 Stoke works, but
+> slowly, and its updater then follows `process.arch` and stays x64 for good. install.ps1 now reads
+> the machine's value from `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment`
+> first (the same in a process of any architecture), and the workflow's one-liner check reads
+> Stoke.exe's PE machine field (0x8664 x64, 0xAA64 arm64) against the runner's arch.

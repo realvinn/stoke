@@ -393,8 +393,19 @@ function Install-Stoke {
     return
   }
 
+  # The MACHINE's architecture, from the registry, before this process's own:
+  # PROCESSOR_ARCHITECTURE describes the process that set it, and PowerShell
+  # inherits it from whatever started it. Git Bash on an arm64 PC is an x64
+  # program running emulated, so the handoff from install.sh arrived saying
+  # AMD64 and installed the x64 build (measured on GitHub's windows-11-arm).
+  # The system's own value under Session Manager is the machine's, in every
+  # process of every architecture.
+  $machineArch = $null
+  try {
+    $machineArch = (Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' -Name PROCESSOR_ARCHITECTURE -ErrorAction Stop).PROCESSOR_ARCHITECTURE
+  } catch { }
   $arch = 'x64'
-  if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64' -or $env:PROCESSOR_ARCHITEW6432 -eq 'ARM64') {
+  if ($machineArch -eq 'ARM64' -or $env:PROCESSOR_ARCHITECTURE -eq 'ARM64' -or $env:PROCESSOR_ARCHITEW6432 -eq 'ARM64') {
     $arch = 'arm64'
   }
 

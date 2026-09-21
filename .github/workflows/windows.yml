@@ -165,6 +165,15 @@ jobs:
           if ($key.DisplayVersion -ne $want) { throw "installed $($key.DisplayVersion), latest is $want" }
           if (-not (Test-Path (Join-Path $loc 'Stoke.exe'))) { throw "no Stoke.exe in $loc" }
           if (-not (Test-Path (Join-Path $loc 'Uninstall Stoke.exe'))) { throw 'no uninstaller: the install kind would read as portable' }
+          # The build for THIS machine: Stoke.exe's PE machine field. Git Bash on
+          # arm64 is emulated x64, and its handoff once installed the x64 build
+          # there with every check above passing.
+          $bytes = [System.IO.File]::ReadAllBytes((Join-Path $loc 'Stoke.exe'))
+          $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+          $machine = [BitConverter]::ToUInt16($bytes, $pe + 4)
+          $built = @{ 0x8664 = 'x64'; 0xAA64 = 'arm64' }[[int]$machine]
+          "Stoke.exe is    $built (PE machine 0x$('{0:X4}' -f $machine))"
+          if ($built -ne '${{ matrix.arch }}') { throw "installed the $built build on a ${{ matrix.arch }} machine" }
           $cmdShim = Join-Path $loc 'resources\bin\stoke.cmd'
           if (Test-Path $cmdShim) {
             $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
