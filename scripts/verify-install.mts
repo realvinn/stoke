@@ -755,10 +755,24 @@ check(`install.ps1's upgrade-detection GUID is the one electron-builder derives 
  * nobody can reproduce.
  */
 const SH_LINE = 'curl -fsSL https://stoke.vinn.dev | sh'
-const PS1_LINE = 'irm https://stoke.vinn.dev | iex'
+/*
+ * The Windows line is the long form, not `irm … | iex`: `irm` is a PowerShell
+ * alias, and cmd.exe — where a Windows user who opened "a terminal" usually is
+ * — answers it with `'irm' is not recognized`. `powershell -c "…"` is the same
+ * install from cmd, Windows PowerShell and PowerShell 7 alike.
+ */
+const PS1_LINE = 'powershell -ExecutionPolicy Bypass -c "irm https://stoke.vinn.dev | iex"'
+const PS1_SHORT = 'irm https://stoke.vinn.dev | iex'
 const readmeText = readFileSync(join(root, 'README.md'), 'utf8')
 ok('the landing page shows the sh one-liner', htmlText.includes(SH_LINE))
-ok('and the ps1 one', htmlText.includes(PS1_LINE))
+ok('and the Windows one, in the form cmd.exe can run', htmlText.includes(PS1_LINE))
+ok('the page still offers the short form, for somebody already in PowerShell', htmlText.includes(PS1_SHORT))
+/*
+ * The page and README must never offer the short form as THE Windows line —
+ * that is the exact instruction that failed in cmd.exe. It may appear only in
+ * prose, inside a <code>, never as the <pre> a reader copies.
+ */
+ok('and never as the line to copy', !/<pre>[^<]*<span class="prompt">[^<]*<\/span>irm /.test(htmlText))
 ok('install.sh sends a Windows user to exactly that ps1 line', shText.includes(`STOKE_PS1_LINE='${PS1_LINE}'`))
 ok('install.ps1 sends a macOS user to exactly that sh line', ps1Text.includes(`$StokeShLine = '${SH_LINE}'`))
 /*
@@ -769,7 +783,8 @@ ok('install.ps1 sends a macOS user to exactly that sh line', ps1Text.includes(`$
  * value with no assertion over it.
  */
 ok('README shows the same sh one-liner', readmeText.includes(SH_LINE))
-ok('and the same ps1 one', readmeText.includes(PS1_LINE))
+ok('and the same Windows one', readmeText.includes(PS1_LINE))
+ok('install.ps1 names the same line in its header', ps1Text.includes(`#     ${PS1_LINE}`))
 /*
  * And no documented command may leave a glob character unquoted in a URL.
  * `curl -fsSL https://stoke.vinn.dev?sh | sh` is the override the landing page
@@ -854,7 +869,7 @@ console.log('\nwhat the script makes of a machine it is not running on')
     check(
       'a normal user on x86-64 Linux gets the linux x64 build and no warning',
       preflight('Linux', 'x86_64', '1000'),
-      { arch: 'x64', inside_stoke: 'no', platform: 'linux', refusal: 'none', root: 'no', root_warning: 'no' }
+      { arch: 'x64', handoff: 'none', inside_stoke: 'no', platform: 'linux', refusal: 'none', root: 'no', root_warning: 'no' }
     )
     check(
       'ROOT on Linux is warned: Electron aborts there and the app cannot catch it',
@@ -864,7 +879,7 @@ console.log('\nwhat the script makes of a machine it is not running on')
     check(
       'root on macOS is NOT warned — crbug.com/638180 is a Linux-only refusal',
       preflight('Darwin', 'arm64', '0'),
-      { arch: 'arm64', inside_stoke: 'no', platform: 'mac', refusal: 'none', root: 'yes', root_warning: 'no' }
+      { arch: 'arm64', handoff: 'none', inside_stoke: 'no', platform: 'mac', refusal: 'none', root: 'yes', root_warning: 'no' }
     )
     check('aarch64 Linux resolves arm64', preflight('Linux', 'aarch64', '1000').arch, 'arm64')
     check('amd64 is x64', preflight('Linux', 'amd64', '1000').arch, 'x64')
@@ -930,6 +945,77 @@ console.log('\nwhat the script makes of a machine it is not running on')
     check('a dry run inside Stoke is let through, and reaches the network', dry.fetched, true)
   } finally {
     rmSync(shimDir, { recursive: true, force: true })
+  }
+}
+
+console.log('\nthe mac/linux line typed into a Windows shell')
+/*
+ * Git Bash, MSYS2 and Cygwin can run install.sh — curl.exe sends `curl/8.x`, so
+ * stoke.vinn.dev hands it the sh body — and it used to answer "run this in
+ * PowerShell instead" and exit 1. It hands over now: the PowerShell installer,
+ * run for them, their environment carried along.
+ *
+ * Run, not read, against a recording `powershell.exe`, with PATH holding
+ * NOTHING but the shim directory. That isolation is load-bearing rather than
+ * tidy: GitHub's ubuntu runners ship `/usr/bin/pwsh`, so any PATH that includes
+ * the host's would find a real PowerShell there and the "no PowerShell at all"
+ * branch could never be reached in CI. Everything the Windows branch calls
+ * before handing over is either a builtin or one of these shims.
+ */
+{
+  const dir = mkdtempSync(join(tmpdir(), 'stoke-handoff-'))
+  const shim = (name: string, body: string): void => writeFileSync(join(dir, name), body, { mode: 0o755 })
+  const argvFile = join(dir, 'argv')
+  shim('uname', '#!/bin/sh\ncase "$1" in\n  -m) echo x86_64 ;;\n  *) echo MINGW64_NT-10.0-26100 ;;\nesac\n')
+  shim('id', '#!/bin/sh\necho 1000\n')
+  // One argument per line, then what it could read from stdin, then the two
+  // environment variables that have to arrive: the MSYS guard and a knob the
+  // user set.
+  const recorder = (code: number) =>
+    `#!/bin/sh\nfor a in "$@"; do printf '%s\\n' "$a"; done > '${argvFile}'\n` +
+    `printf 'stdin=%s\\n' "$(cat)" >> '${argvFile}'\n` +
+    `printf 'conv=%s\\n' "\${MSYS2_ARG_CONV_EXCL:-}" >> '${argvFile}'\n` +
+    `printf 'dry=%s\\n' "\${STOKE_DRY_RUN:-}" >> '${argvFile}'\n` +
+    `exit ${code}\n`
+  const run = (shell: string, env: Record<string, string> = {}) => {
+    rmSync(argvFile, { force: true })
+    const r = spawnSync(shell, [SH], { encoding: 'utf8', input: 'REST OF THE PIPE\n', env: { PATH: dir, HOME: dir, ...env } })
+    return { status: r.status, out: r.stdout, err: r.stderr, argv: existsSync(argvFile) ? readFileSync(argvFile, 'utf8').trim().split('\n') : null }
+  }
+  const pf = (): Record<string, string> => {
+    const out = spawnSync('/bin/sh', [SH, '--preflight'], { encoding: 'utf8', env: { PATH: dir } }).stdout
+    return Object.fromEntries(out.split('\n').filter((l) => l.includes('=')).map((l) => l.split('=', 2) as [string, string]))
+  }
+  try {
+    check('with no PowerShell anywhere, preflight says it would only print the line', [pf().platform, pf().handoff], ['windows', 'message'])
+    const bare = run('/bin/sh')
+    check('and main does exactly that: exit 1, nothing handed over', [bare.status, bare.argv], [1, null])
+    ok('naming the line that works in cmd AND PowerShell', bare.err.includes(PS1_LINE), bare.err)
+
+    shim('powershell.exe', recorder(0))
+    check('with powershell.exe on PATH, preflight says it would hand over', pf().handoff, 'powershell')
+    for (const shell of SHELLS) {
+      if (!existsSync(shell)) continue
+      const r = run(shell, { STOKE_DRY_RUN: '1' })
+      check(
+        `${shell}: hands over with exactly this command, stdin cut off from the pipe, the MSYS guard set and STOKE_DRY_RUN carried`,
+        [r.status, r.argv],
+        [0, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', 'irm https://stoke.vinn.dev/install.ps1 | iex', 'stdin=', 'conv=*', 'dry=1']]
+      )
+    }
+    ok('and says what it is doing before it does it', /handing over to the Windows installer, in powershell\.exe/.test(run('/bin/sh').out))
+    shim('powershell.exe', recorder(3))
+    check('a failed Windows install fails the line: the exit code comes back', run('/bin/sh').status, 3)
+    /*
+     * `OS=Windows_NT` alone counts, which is what Cygwin and a bare MSYS
+     * runtime leave in the environment when `uname` says something else.
+     */
+    shim('uname', '#!/bin/sh\necho Linux\n')
+    check('OS=Windows_NT is Windows even when uname is not', run('/bin/sh', { OS: 'Windows_NT' }).status, 3)
+    const handoffUrl = /^STOKE_PS1_URL='([^']+)'$/m.exec(shText)?.[1] ?? ''
+    check('the URL it hands over to is the readable ps1 path, which no User-Agent guess can turn into the page', routeFor(handoffUrl, { 'user-agent': 'curl/8.7.1' }).body, 'ps1')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
   }
 }
 

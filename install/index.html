@@ -126,7 +126,14 @@
       <pre><span class="prompt">$ </span>curl -fsSL https://stoke.vinn.dev | sh</pre>
 
       <h2>Windows</h2>
-      <pre><span class="prompt">&gt; </span>irm https://stoke.vinn.dev | iex</pre>
+      <pre><span class="prompt">&gt; </span>powershell -ExecutionPolicy Bypass -c "irm https://stoke.vinn.dev | iex"</pre>
+      <p>
+        Type it into Command Prompt, Windows PowerShell or PowerShell 7 — it works in all three.
+        Already in PowerShell, <code>irm https://stoke.vinn.dev | iex</code> is the short form;
+        <code>irm</code> is a PowerShell word, so on its own in Command Prompt it only gets
+        <code>'irm' is not recognized</code>. In Git Bash the macOS and Linux line works too: it
+        sees Windows and hands over to this one.
+      </p>
 
       <h2>What it does</h2>
       <ul>

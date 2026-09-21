@@ -11,6 +11,7 @@ paths:
   - "worker/route.ts"
   - "wrangler.jsonc"
   - "scripts/verify-install.mts"
+  - "scripts/serve-install.mjs"
 ---
 
 # The one-line installer
@@ -466,3 +467,35 @@ and assert all six branches from a Mac, including the two Linux ones that no mac
 reach. Breaking the root condition turns exactly one assertion red (measured). The rule from
 gotcha 74 applies to shell as well as to TypeScript: code that reads the real environment needs a
 way to be asked about a different one, or five of its six branches are untestable everywhere.
+
+## 100. `irm … | iex` is PowerShell, and a Windows user who opened "a terminal" is usually in cmd.exe
+
+**The landing page's Windows line was `irm https://stoke.vinn.dev | iex`, and in Command Prompt
+that is `'irm' is not recognized as an internal or external command`** — `irm` is a PowerShell
+alias, and cmd.exe is what Windows opens for "Command Prompt", what many people call "the
+terminal", and what a user reported the one-liner failing in (2026-09-21). The documented line is
+now `powershell -ExecutionPolicy Bypass -c "irm https://stoke.vinn.dev | iex"`, which runs the
+same install from cmd, Windows PowerShell 5.1 and PowerShell 7 alike (PowerShell's User-Agent
+still routes it to the ps1 body); the short form stays on the page as prose for somebody already
+in PowerShell, never as the `<pre>` a reader copies. `verify:install` holds all five places the
+line is written (page, README, install.sh, install.ps1's header, the suite) and that the short
+form is never the copyable one.
+
+**The macOS/Linux line typed into Git Bash, MSYS2 or Cygwin now works too.** curl.exe sends
+`curl/8.x`, so the Worker hands it install.sh; that used to print "run this in PowerShell
+instead" and exit 1. `windows_handoff` runs the PowerShell installer itself: `powershell.exe`
+first (it ships in every Windows 10/11), `-Command "irm https://stoke.vinn.dev/install.ps1 |
+iex"` — the explicit path, so no User-Agent guess can turn it into the page — with stdin from
+`/dev/null` (install.sh is still being read from curl's pipe, and PowerShell reading it would
+swallow the rest of the file), `MSYS2_ARG_CONV_EXCL='*'` so MSYS2's argv rewriting keeps its
+hands off the command, and the exit code passed back. `--preflight` reports `handoff=` so the
+branch is assertable from a Mac, and verify:install RUNS it under sh, bash, dash and zsh against a
+recording `powershell.exe`, with PATH holding nothing but the shims — GitHub's ubuntu runners ship
+`/usr/bin/pwsh`, so any PATH including the host's would make the "no PowerShell" branch
+unreachable in CI.
+
+`scripts/serve-install.mjs` serves install/ through the Worker's own `routeFor`, so
+`irm http://127.0.0.1:8787 | iex` exercises this branch's scripts rather than the deploy;
+`.github/workflows/windows.yml` runs the line from cmd, Windows PowerShell, PowerShell 7 and Git
+Bash on x64 and arm64. **The page change reaches users only after `npm run deploy:install`**,
+which stays a deliberate, manual act (the Worker serves what was embedded at the last deploy).

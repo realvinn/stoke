@@ -1,6 +1,10 @@
-# Stoke, in one line:
+# Stoke, in one line, from Command Prompt, Windows PowerShell or PowerShell 7:
 #
-#     irm https://stoke.vinn.dev | iex
+#     powershell -ExecutionPolicy Bypass -c "irm https://stoke.vinn.dev | iex"
+#
+# or, already inside PowerShell, just `irm https://stoke.vinn.dev | iex`. The
+# long form exists because `irm` means nothing to cmd.exe, which is where a
+# Windows user who opened "a terminal" usually is.
 #
 # Installs or upgrades Stoke on Windows, under Windows PowerShell 5.1 (the one
 # that ships in Windows) and PowerShell 7 alike. macOS and Linux are install.sh;
