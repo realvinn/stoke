@@ -521,13 +521,23 @@ export function scriptFor(steps: readonly InstallStep[], platform: string): stri
         'if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {',
         `  Write-Host ''`,
         `  Write-Host '==> Installing Node.js, needed by ${who}' -ForegroundColor Cyan`,
-        '  if (Get-Command winget -ErrorAction SilentlyContinue) {',
+        // Which of two things went wrong is said, never guessed: no winget at
+        // all, or winget ran and the Node install did not finish (a declined
+        // permission prompt, say). The first version said "no winget" for both.
+        '  $hadWinget = [bool](Get-Command winget -ErrorAction SilentlyContinue)',
+        '  $nodeCode = $null',
+        '  if ($hadWinget) {',
         `    Write-Host '    winget install --id OpenJS.NodeJS.LTS -e --source winget'`,
         '    winget install --id OpenJS.NodeJS.LTS -e --source winget --accept-source-agreements --accept-package-agreements',
+        '    $nodeCode = $LASTEXITCODE',
         '    Update-StokePath',
         '  }',
         '  if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {',
-        `    Write-Host '    Node.js is not installed, and this machine has no winget to install it with. Get it from https://nodejs.org, then run this again.' -ForegroundColor Red`,
+        '    if ($hadWinget) {',
+        `      Write-Host ('    The Node.js install did not finish (winget exit code ' + $nodeCode + '). Get it from https://nodejs.org, then run this again.') -ForegroundColor Red`,
+        '    } else {',
+        `      Write-Host '    Node.js is not installed, and this machine has no winget to install it with. Get it from https://nodejs.org, then run this again.' -ForegroundColor Red`,
+        '    }',
         '    $nodeMissing = $true',
         '  }',
         '}'
@@ -557,9 +567,23 @@ export function scriptFor(steps: readonly InstallStep[], platform: string): stri
        * (0x8A150061) with --no-upgrade — and that is "installed", not a red
        * card. Decided inside the step, because the child PowerShell's own exit
        * code is only 0 or 1 unless the step says `exit` itself.
+       *
+       * And a machine with NO winget must fail the step, loudly. The first
+       * version of this ended `exit $LASTEXITCODE`, which is `exit $null` —
+       * exit 0 — when the command was never found, so on GitHub's arm64
+       * runner (no winget) Copilot and Crush were reported installed and were
+       * not (measured, windows workflow run 35559817481). The old bare
+       * command had at least failed.
        */
       const body = s.command.startsWith('winget ')
-        ? `${s.command}; if (@(-1978335189, -1978335135) -contains $LASTEXITCODE) { exit 0 }; exit $LASTEXITCODE`
+        ? [
+            "if (-not (Get-Command winget -ErrorAction SilentlyContinue)) { Write-Host '    This machine has no winget. It comes with App Installer from the Microsoft Store; install that, then run this again.' -ForegroundColor Red; exit 1 }",
+            s.command,
+            '$code = $LASTEXITCODE',
+            'if ($null -eq $code) { exit 1 }',
+            'if (@(-1978335189, -1978335135) -contains $code) { exit 0 }',
+            'exit $code'
+          ].join('; ')
         : s.command
       lines.push(
         `& powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${powershellEncode(body)}`,

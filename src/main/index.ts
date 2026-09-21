@@ -24,7 +24,7 @@ import type {
 } from '@shared/types'
 import { EmbeddedBrowser } from './browser.ts'
 import { clearWallpaper, mimeFor, storeWallpaper, WALLPAPER_SCHEME, wallpaperFileFor } from './wallpaper.ts'
-import { detectCodingClis, forgetIdentities, forgetLoginPath, loginShellPathValue, probeClaude, resumeOrMint } from './cli.ts'
+import { buildEnvPath, detectCodingClis, forgetIdentities, forgetLoginPath, loginShellPathValue, probeClaude, resumeOrMint } from './cli.ts'
 import { scanSkills } from './skillsScan.ts'
 import { ContextWatcher } from './context.ts'
 import {
@@ -94,6 +94,7 @@ import type { CreateProfileInput } from '@shared/profiles'
 import type { CliRunResult, RemoteState, StokeCommandState, VoiceState } from '@shared/api'
 import { flushSettings, getSettings, onSettingsChanged, setSettings } from './store.ts'
 import {
+  gitBashPath,
   readSessionEvents,
   readStatusLine,
   sweepStaleSessionFiles,
@@ -606,6 +607,10 @@ async function launchSession(
     if (!planned.ok) throw new Error(planned.message)
     agentPlan = planned.plan
   }
+  // Which shell the CLI will run the statusLine and hooks under is decided from
+  // the PATH the child is given, which on Windows now leads with the registry's
+  // (gotcha 99) — Stoke's own inherited PATH can predate a Git install.
+  const hasGitBash = process.platform === 'win32' ? gitBashPath({ ...process.env, PATH: await buildEnvPath() }) !== null : undefined
   const result = await ptys.start(
     opts,
     settings.claudePath,
@@ -613,6 +618,7 @@ async function launchSession(
     (statusKey) =>
       writeSessionSettingsFile({
         sessionId: statusKey,
+        hasGitBash,
         ultracode: opts.ultracode === true,
         hideStatusLine: settings.hideStatusLine,
         // Read now rather than cached: it is the user's own settings.json and

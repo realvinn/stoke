@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto'
-import { access, realpath } from 'node:fs/promises'
+import { join } from 'node:path'
+import { access, realpath, rm, writeFile } from 'node:fs/promises'
 import * as nodePty from '@lydell/node-pty'
 import type { IPty } from '@lydell/node-pty'
 import type { LaunchOptions } from '@shared/types'
 import { cliIdOf, isClaudeCode } from '../shared/codingClis.ts'
 import { installScript, type LaunchPlan } from '../shared/agents.ts'
-import { homedir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import {
   applyProviderEnv,
   validateClaudeAuth,
@@ -378,10 +379,12 @@ export class PtyManager {
      * EXITS on a flag it does not recognise, so the failure is not a flag
      * being ignored, it is a session that never starts.
      */
+    const installFile = installing && process.platform === 'win32' ? join(tmpdir(), `stoke-install-${ptyId}.ps1`) : null
+    if (installFile && script) await writeInstallerFile(installFile, script)
     const args = remote
       ? buildSshArgs(opts.host!)
       : installing
-        ? installerArgs(script)
+        ? installerArgs(script, installFile)
         : instrumented
           ? buildArgs({ ...opts, sessionId }, settingsFile)
           : [...(agentPlan?.args ?? [])]
@@ -479,8 +482,10 @@ export class PtyManager {
       })
     } catch (err) {
       releaseSessionFiles(statusKey, ptyId)
+      if (installFile) void rm(installFile, { force: true })
       throw err
     }
+    if (installFile) proc.onExit(() => void rm(installFile, { force: true }))
 
     let markExited: () => void = () => {}
     const now = Date.now()
@@ -906,14 +911,29 @@ async function installerShell(): Promise<string> {
 /**
  * How the script reaches that shell.
  *
- * PowerShell gets `-EncodedCommand`: base64 of UTF-16LE, which is PowerShell's
- * own format for exactly this. A multi-line script handed over as `-Command`
- * text has to survive Windows' command-line quoting, and node-pty's conpty
- * joins argv into one string — the same class of mangling gotcha 13 is about.
+ * On Windows, as a FILE (`-File`), never as command-line text. Handed over as
+ * `-Command` it would have to survive Windows' argv quoting, which node-pty's
+ * conpty joins into one string (gotcha 13's class of mangling); handed over as
+ * `-EncodedCommand` — which this was — it has to fit in one command line, and
+ * every step inside is ITSELF an encoded command, so each step's text is
+ * encoded twice and costs about seven times its length. Every agent at once
+ * measured 25,024 characters of Windows' 32,767, and two small robustness fixes
+ * (the winget guard, the Node.js step) took it to 29,640: the next agent would
+ * have made "select all" a tab that dies on CreateProcess. A file has no limit.
  */
-function installerArgs(script: string): string[] {
-  if (process.platform === 'win32') {
-    return ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')]
+function installerArgs(script: string, file: string | null): string[] {
+  if (process.platform === 'win32' && file) {
+    return ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', file]
   }
   return ['-c', script]
+}
+
+/**
+ * The install script, written for Windows PowerShell 5.1 to read: UTF-8 WITH a
+ * byte-order mark, because 5.1 reads a BOM-less script as the ANSI code page and
+ * the table's notes carry em dashes. The file is the tab's own (named after its
+ * pty id) and is removed when the tab's process exits.
+ */
+async function writeInstallerFile(file: string, script: string): Promise<void> {
+  await writeFile(file, '\uFEFF' + script, 'utf8')
 }

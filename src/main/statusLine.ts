@@ -632,6 +632,14 @@ export interface SessionSettingsInput {
   hideStatusLine: boolean
   /** The user's own statusLine command, or '' when there is nothing to echo. */
   passthroughCommand: string
+  /**
+   * Whether the CLI will find Git Bash, decided from the PATH the CHILD gets
+   * (index.ts passes `gitBashPath` over `buildEnvPath()`), not Stoke's own:
+   * the two differ once the registry PATH is read on Windows (gotcha 99), and a
+   * wrong answer writes the one syntax the CLI's shell rejects (gotcha 61).
+   * Omitted, it falls back to Stoke's own PATH, as before.
+   */
+  hasGitBash?: boolean
 }
 
 /**
@@ -653,7 +661,10 @@ export function sessionSettingsJson(input: SessionSettingsInput): Record<string,
   const out: Record<string, unknown> = {}
   if (input.ultracode) out.ultracode = true
   if (input.sessionId) {
-    out.statusLine = { type: 'command', command: statusLineCommand(input.sessionId) }
+    out.statusLine = {
+      type: 'command',
+      command: input.hasGitBash === undefined ? statusLineCommand(input.sessionId) : statusLineCommand(input.sessionId, process.platform, input.hasGitBash)
+    }
     /*
      * The hooks that tell Stoke where a session is. Measured against 2.1.237:
      * hooks in a `--settings` file fire, and they MERGE with the user's own
@@ -665,7 +676,8 @@ export function sessionSettingsJson(input: SessionSettingsInput): Record<string,
      * into the model's context. `timeout` is seconds; the wrapper takes
      * milliseconds, so 10 is a ceiling nothing should reach.
      */
-    const hook = [{ hooks: [{ type: 'command', command: hookCommand(input.sessionId), timeout: 10 }] }]
+    const hookLine = input.hasGitBash === undefined ? hookCommand(input.sessionId) : hookCommand(input.sessionId, process.platform, input.hasGitBash)
+    const hook = [{ hooks: [{ type: 'command', command: hookLine, timeout: 10 }] }]
     out.hooks = { Stop: hook, Notification: hook, UserPromptSubmit: hook }
   }
   return out

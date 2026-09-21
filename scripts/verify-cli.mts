@@ -36,7 +36,7 @@ import {
   probeClaude,
   expandWinEnv,
   isWindowsAppsAlias,
-  parseRegPath,
+  pathFromRegistry,
   resumeOrMint,
   setPathKey,
   shouldReprobe
@@ -404,16 +404,18 @@ console.log('\nWindows PATH: the registry, and one key')
  * call itself is the Windows workflow's to prove (probe-clis.mts).
  */
 {
-  const machine = [
-    '',
-    'HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment',
-    '    Path    REG_EXPAND_SZ    %SystemRoot%\\system32;%SystemRoot%;C:\\Program Files\\nodejs\\',
-    ''
-  ].join('\r\n')
-  check('parseRegPath reads a REG_EXPAND_SZ value, spaces in it and all', parseRegPath(machine), '%SystemRoot%\\system32;%SystemRoot%;C:\\Program Files\\nodejs\\')
-  check('and a plain REG_SZ', parseRegPath('    Path    REG_SZ    C:\\x;C:\\y\r\n'), 'C:\\x;C:\\y')
-  check('no Path value is null (reg exits 1 and prints nothing useful)', parseRegPath('ERROR: The system was unable to find the specified registry key or value.'), null)
-  check('a value named PathExt is not Path', parseRegPath('    PATHEXT    REG_SZ    .COM;.EXE'), null)
+  // What WIN_ENV_SCRIPT prints: every value of both Environment keys, raw.
+  const reg = {
+    machine: { Path: '%SystemRoot%\\system32;%SystemRoot%;C:\\Program Files\\nodejs\\', SystemRoot: 'C:\\Windows', OS: 'Windows_NT' },
+    user: { Path: '%USERPROFILE%\\.local\\bin;%PNPM_HOME%;C:\\Users\\Zoë\\AppData\\Roaming\\npm', PNPM_HOME: 'C:\\Users\\Zoë\\AppData\\Local\\pnpm' }
+  }
+  check(
+    'pathFromRegistry: machine then user, expanded — a variable the registry defines (PNPM_HOME) included, accents intact',
+    pathFromRegistry(reg, { USERPROFILE: 'C:\\Users\\Zoë' }),
+    'C:\\Windows\\system32;C:\\Windows;C:\\Program Files\\nodejs\\;C:\\Users\\Zoë\\.local\\bin;C:\\Users\\Zoë\\AppData\\Local\\pnpm;C:\\Users\\Zoë\\AppData\\Roaming\\npm'
+  )
+  check('a user with no Path of their own gets the machine\'s alone', pathFromRegistry({ machine: { PATH: 'C:\\x' }, user: {} }, {}), 'C:\\x')
+  check('no Path anywhere is null — a failed probe, not an empty PATH', pathFromRegistry({ machine: {}, user: {} }, {}), null)
   check(
     'expandWinEnv expands case-insensitively, as Windows does',
     expandWinEnv('%SystemRoot%\\system32;%userprofile%\\.local\\bin', { SYSTEMROOT: 'C:\\Windows', USERPROFILE: 'C:\\Users\\Ada' }),

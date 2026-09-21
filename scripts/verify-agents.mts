@@ -46,7 +46,7 @@ import { scanSkills } from '../src/main/skillsScan.ts'
 import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
-import { delimiter, join } from 'node:path'
+import { delimiter, dirname, join } from 'node:path'
 
 let failures = 0
 
@@ -362,9 +362,12 @@ console.log('\ninstalling')
   ok(
     'windows: each step in its OWN PowerShell, so a vendor script’s `exit` ends only its step and its exit code is its own',
     encoded.length === 2 &&
-      encoded[1] ===
-        'winget install --id GitHub.Copilot -e --source winget --accept-source-agreements --accept-package-agreements; if (@(-1978335189, -1978335135) -contains $LASTEXITCODE) { exit 0 }; exit $LASTEXITCODE',
+      encoded[1].includes('; winget install --id GitHub.Copilot -e --source winget --accept-source-agreements --accept-package-agreements; $code = $LASTEXITCODE;'),
     JSON.stringify(encoded)
+  )
+  ok(
+    'a machine with no winget fails the step with a reason — never `exit $null`, which is exit 0 (measured on the arm64 runner)',
+    encoded[1].startsWith('if (-not (Get-Command winget') && encoded[1].includes('if ($null -eq $code) { exit 1 }') && !/exit \$LASTEXITCODE/.test(encoded[1])
   )
   ok(
     'a winget step counts "already installed" (0x8A15002B / 0x8A150061) as installed, and only a winget step does',
@@ -383,23 +386,23 @@ console.log('\ninstalling')
   ok('a script with an npm agent installs Node first, when npm is missing', /if \(-not \(Get-Command npm[\s\S]*winget install --id OpenJS\.NodeJS\.LTS -e --source winget/.test(npmWin))
   ok('naming who needs it', npmWin.includes("Installing Node.js, needed by Gemini CLI'"))
   ok('and with no winget, says where to get Node rather than failing obscurely', /no winget to install it with\. Get it from https:\/\/nodejs\.org/.test(npmWin))
+  ok('and when winget ran but Node did not arrive, says THAT — with winget\'s exit code — not "no winget"', /if \(\$hadWinget\) \{\s*Write-Host \('    The Node\.js install did not finish \(winget exit code ' \+ \$nodeCode/.test(npmWin))
   ok('the npm step is skipped and marked failed when Node is still missing', npmWin.includes("if ($nodeMissing) { $failed += 'Gemini CLI' } else {"))
   ok('a script with no npm agent carries no Node step at all', !plainWin.includes('OpenJS.NodeJS.LTS') && !plainWin.includes('$nodeMissing'))
   ok('PATH is re-read from the registry before every step', (npmWin.match(/^Update-StokePath$/gm) ?? []).length === 3)
   ok('and deduplicated, or eighteen steps could pass the 32,767-character limit', /ContainsKey\(\$p\.ToLowerInvariant\(\)\)/.test(npmWin))
   /*
-   * pty.ts hands the whole script to powershell.exe as ONE -EncodedCommand
-   * argument (installerArgs), and a Windows command line is capped at 32,767
-   * characters. Every agent at once — "select all" in the picker — measured
-   * 25,024 encoded on 2026-09-21. Held under 30,000 so a new agent that would
-   * push it over fails here, not as a tab that dies on CreateProcess.
+   * pty.ts runs the Windows script from a FILE now (-File): as one
+   * -EncodedCommand it had to fit Windows' 32,767-character command line, and
+   * with every step itself encoded inside it, "select all" measured 29,640 on
+   * 2026-09-21. What still travels on a command line is each STEP's own encoded
+   * body, one child PowerShell each — held well under the limit here.
    */
   {
     const everyWin = installScript(CODING_CLIS.filter((c) => c.install.win32).map((c) => c.id), 'win32') ?? ''
-    const encodedLength = powershellEncode(everyWin).length
-    ok(`every Windows agent at once fits one command line: ${encodedLength} encoded characters, under 30,000 of Windows' 32,767`, encodedLength < 30_000)
+    const longest = Math.max(...[...everyWin.matchAll(/-EncodedCommand (\S+)/g)].map((m) => m[1].length))
+    ok(`every step's own encoded command fits a command line with room to spare (longest: ${longest} characters)`, longest < 8000)
   }
-
   /*
    * Run through a real PowerShell where there is one (CI's ubuntu runner ships
    * pwsh). Every generated Windows script must PARSE — a syntax slip here is a
@@ -439,6 +442,18 @@ console.log('\ninstalling')
     writeFileSync(file, shim + synthetic + '\n')
     const run = spawnSync(pwsh, ['-NoProfile', '-NonInteractive', '-File', file], { encoding: 'utf8', timeout: 120_000, cwd: dir })
     rmSync(dir, { recursive: true, force: true })
+    const noWinget = scriptFor([{ id: 'copilot', label: 'NoWinget', command: 'winget install --id Nope.Nope -e --source winget --accept-source-agreements --accept-package-agreements' }], 'win32') ?? ''
+    const dir2 = mkdtempSync(join(tmpdir(), 'stoke-winscript-'))
+    const file2 = join(dir2, 'install.ps1')
+    writeFileSync(file2, shim + noWinget + '\n')
+    // PATH without winget, which no machine running this suite has anyway.
+    const run2 = spawnSync(pwsh, ['-NoProfile', '-NonInteractive', '-File', file2], { encoding: 'utf8', timeout: 120_000, cwd: dir2, env: { ...process.env, PATH: dirname(pwsh) } })
+    rmSync(dir2, { recursive: true, force: true })
+    ok(
+      'windows, run: a winget step on a machine with NO winget is a failure that says why, not a silent "installed"',
+      run2.status === 1 && /Did not install: NoWinget/.test(run2.stdout) && /has no winget/.test(run2.stdout),
+      `status ${run2.status}: ${JSON.stringify((run2.stdout + run2.stderr).slice(-400))}`
+    )
     ok(
       'windows, run: a failing step is named, the steps after it still run, and the script exits 1',
       run.status === 1 && /step-one-ran/.test(run.stdout) && /step-three-ran/.test(run.stdout) && /Did not install: Breaks/.test(run.stdout),

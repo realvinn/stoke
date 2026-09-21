@@ -98,65 +98,86 @@ export function shouldReprobe(failedAt: number, now: number): boolean {
  * before them kept the PATH it was born with, so an agent installed from Stoke's
  * own picker sat "not found" until Stoke restarted.
  *
- * `reg.exe` by absolute path, under the probe's own timeout; a failure is
- * remembered for PROBE_RETRY_MS like the POSIX probe's, but never reported as a
- * login-shell failure — the words `notFoundError` uses for that would be false
- * here.
+ * Read through PowerShell, not reg.exe: reg.exe converts a piped value to the
+ * console code page, so an accented profile folder (which vendor installers
+ * write out as a literal, expanded path) arrived as U+FFFD, and it cannot say
+ * what the OTHER environment variables are — `%PNPM_HOME%` defined by an
+ * installer after Stoke started would stay literal. PowerShell hands over every
+ * value raw (DoNotExpandEnvironmentNames) as UTF-8 JSON, and `pathFromRegistry`
+ * expands them the way Windows builds a new process's environment. It costs
+ * what the macOS login-shell probe does (a few hundred ms, once, memoised,
+ * never on the boot path). A failure is remembered for PROBE_RETRY_MS like the
+ * POSIX probe's, but never reported as a login-shell failure — the words
+ * `notFoundError` uses for that would be false here.
  */
 let winPathProbe: Promise<string | null> | null = null
 let winPathFailedAt = 0
 
-/** The `Path` value out of `reg query <key> /v Path`, or null when it has none. */
-export function parseRegPath(stdout: string): string | null {
-  for (const line of stdout.split(/\r?\n/)) {
-    const m = /^\s+Path\s+REG_(?:EXPAND_)?SZ\s+(.*)$/i.exec(line)
-    if (m) return m[1].trim() || null
-  }
-  return null
-}
+const WIN_ENV_SCRIPT = [
+  '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8',
+  "function Vals($k) { $h = @{}; if ($k) { foreach ($n in $k.GetValueNames()) { $h[$n] = [string]$k.GetValue($n, '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames) } }; $h }",
+  "$m = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment')",
+  "$u = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment')",
+  '@{ machine = (Vals $m); user = (Vals $u) } | ConvertTo-Json -Compress'
+].join('; ')
 
 /**
  * `%NAME%` expanded the way Windows does it — case-insensitively, and a name it
- * does not know left exactly as written. REG_EXPAND_SZ values are stored
+ * does not know left exactly as written. Registry values are stored
  * unexpanded; `%USERPROFILE%\.local\bin` means nothing to a directory walk.
  */
-export function expandWinEnv(value: string, env: NodeJS.ProcessEnv): string {
+export function expandWinEnv(value: string, env: Record<string, string | undefined>): string {
   const lower = new Map(Object.entries(env).map(([k, v]) => [k.toLowerCase(), v]))
   return value.replace(/%([^%;]+)%/g, (whole, name: string) => lower.get(name.toLowerCase()) ?? whole)
+}
+
+/**
+ * The PATH a new process gets, from the two registry Environment keys: the
+ * machine Path, then the user's, each expanded against the environment Windows
+ * would build — this process's (for what comes from the profile, like
+ * USERPROFILE), then the machine's variables, then the user's, later winning.
+ */
+export function pathFromRegistry(
+  reg: { machine?: Record<string, string>; user?: Record<string, string> },
+  env: Record<string, string | undefined>
+): string | null {
+  const pathOf = (vars: Record<string, string> | undefined): string | null => {
+    if (!vars) return null
+    const key = Object.keys(vars).find((k) => k.toLowerCase() === 'path')
+    return key && vars[key] ? vars[key] : null
+  }
+  const machine = pathOf(reg.machine)
+  const user = pathOf(reg.user)
+  if (machine === null && user === null) return null
+  const scope = { ...env, ...(reg.machine ?? {}), ...(reg.user ?? {}) }
+  return [machine, user]
+    .filter((v): v is string => v !== null)
+    .map((v) => expandWinEnv(v, scope))
+    // Windows' separator, whatever machine a suite runs this on.
+    .join(';')
 }
 
 function windowsRegistryPath(): Promise<string | null> {
   if (winPathProbe) return winPathProbe
   if (!shouldReprobe(winPathFailedAt, Date.now())) return Promise.resolve(null)
   winPathProbe = (async () => {
-    const reg = join(process.env.SystemRoot ?? process.env.SYSTEMROOT ?? 'C:\\Windows', 'System32', 'reg.exe')
-    const read = async (key: string): Promise<string | null> => {
-      try {
-        const { stdout } = await execFileAsync(reg, ['query', key, '/v', 'Path'], {
-          timeout: PROBE_TIMEOUT_MS,
-          encoding: 'utf8',
-          windowsHide: true
-        })
-        return parseRegPath(stdout)
-      } catch {
-        // No such value (a user with no PATH of their own exits 1), or no reg.
-        return null
-      }
-    }
-    const [machine, user] = await Promise.all([
-      read('HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment'),
-      read('HKCU\\Environment')
-    ])
-    if (machine === null && user === null) {
+    const ps = join(process.env.SystemRoot ?? process.env.SYSTEMROOT ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+    try {
+      const { stdout } = await execFileAsync(ps, ['-NoProfile', '-NonInteractive', '-Command', WIN_ENV_SCRIPT], {
+        timeout: PROBE_TIMEOUT_MS,
+        encoding: 'utf8',
+        windowsHide: true,
+        maxBuffer: 4 * 1024 * 1024
+      })
+      const path = pathFromRegistry(JSON.parse(stdout.replace(/^\uFEFF/, '').trim()), process.env)
+      if (!path) throw new Error('the registry holds no Path')
+      winPathFailedAt = 0
+      return path
+    } catch {
       winPathFailedAt = Date.now()
       winPathProbe = null
       return null
     }
-    winPathFailedAt = 0
-    return [machine, user]
-      .filter((v): v is string => v !== null)
-      .map((v) => expandWinEnv(v, process.env))
-      .join(delimiter)
   })()
   return winPathProbe
 }
