@@ -83,7 +83,10 @@ installers, the mac dmgs and the linux appimage are sitting on
 [releases](https://github.com/realvinn/stoke/releases). the zips up there are two
 different things: `Stoke-<version>-<arch>.zip` is only how a mac installs its own
 updates, not something you need to download, while `Stoke-<version>-<arch>-win.zip`
-is a portable windows copy — unzip it anywhere and run `Stoke.exe`, no installer.
+is a portable windows copy — unzip it into a folder of its own and run `Stoke.exe`,
+no installer. it updates itself in place, which is why the folder has to be its own: a copy
+sharing a folder with other files (unzipped straight into downloads, say) says so and asks
+you to update by hand instead.
 
 ## deploying the install endpoint
 

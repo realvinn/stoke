@@ -450,7 +450,10 @@ route: electron-updater still checks, then `portableUpdate.ts` fetches the relea
 `-<arch>-win.zip` (its sha512 in `latest.yml`, injected by the publish job), unpacks it beside the
 running folder and hands a plan to `portableSwap.ts`'s helper, which waits for every process
 running out of the folder to exit and swaps the two by rename — never killing anything, and
-putting the old copy back if the new one will not move in. A package manager's own folder
+putting the old copy back if the new one will not move in. Because the swap renames the WHOLE
+folder, a folder holding anything that is not part of a Stoke build is never portable (it is
+told to update by hand), and the same check runs again after staging and right before the
+helper starts. A package manager's own folder
 (Scoop, a winget portable install, Chocolatey's lib) is shown its update command instead; a
 folder Stoke cannot write beside is shown the releases page and why. The NSIS installer itself,
 run silently over a running Stoke (`winget upgrade`, the one-liner), asks it to close rather
@@ -978,7 +981,12 @@ scripts/          the verify-*.mts suites, make-icon.cjs
                     before an install, which is what a running Stoke has. Machine-facing,
                     so not in check; the Windows workflow runs it after every install route
   windows-e2e.mts   the Windows workflow's hands for the steps that must use Stoke's own
-                    code: writing the swap helper's files, waiting on its result
+                    code: writing the swap helper's files, waiting on its result, the
+                    registry-PATH re-read and one-key terminal env checks (gotcha 99)
+  assert-nsis-payload.mjs  opens each built *-setup.exe with the full 7-Zip, extracts the
+                    embedded app-<arch>.7z and fails on a filter the installer's own nsis7z
+                    (19.00) cannot decode — the v0.9.9 arm64 installer installed nothing
+                    for exactly that (gotcha 102). Run after every Windows build
 build/bin/        the `stoke` command, shipped inside the app by `extraResources`
   stoke             macOS: resolves its own symlink back to the bundle, answers --help,
                     --version (PlistBuddy on the bundle's Info.plist), install-cli and

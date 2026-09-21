@@ -422,12 +422,14 @@ rule file named on the group line.
   `$$` for PowerShell's `$`): the stock macro force-kills a running Stoke under every `/S` install.
 - **95.** Name the Windows zip only via `win.artifactName` (`-win.zip`; installer via `nsis.artifactName`)
   — the default is the Intel Mac zip's name — and require an `.exe` AND a zip per Windows arch.
-- **96.** Decide the Windows install kind first (`classifyInstall`): electron-updater only runs NSIS,
-  which "updated" an unzipped folder into a second install; never let other kinds reach it.
+- **96.** Decide the Windows install kind first (`classifyInstall`), and never swap a folder holding
+  anything but Stoke (`isStokeFolderEntry`, `entriesNotIn`): the swap renames the WHOLE folder.
 - **97.** Grep Komac's dry run for all three `ManifestType:` lines and require a PR URL: it drops a
   manifest it cannot parse and exits 0.
 - **98.** Delete an unpacked Stoke with `original-fs` (`useRemover`): Electron's `fs` walks into
   `app.asar` as if it were a folder.
+- **102.** Build win-arm64 with `ELECTRON_BUILDER_7Z_FILTER=BCJ` and keep `assert-nsis-payload.mjs`
+  after every Windows build: nsis7z 19.00 cannot decode 7-Zip's ARM64 filter, so v0.9.9's arm64 installer installed nothing.
 - **69.** Regenerate installer art with `npm run art` and commit `build/installer-art.json` with
   it — the hashes are what catch an SVG edited without regenerating, which nothing else can see.
   Never hand-write a `.bmp`: NSIS shows only the 40-byte-header BMP3 the encoder emits,

@@ -409,6 +409,16 @@ running Stoke must exit 0 AND leave Stoke's own exit code 0 (a killed process is
 windowless process in the install folder must make the install exit non-zero while it stays
 alive.
 
+> **Checked on Windows on 2026-09-21** (x64, windows-latest, workflow run 35559817481): a silent
+> install over a RUNNING Stoke closed it — Stoke's own exit code was 0, not a kill's — and
+> completed; a windowless process running out of the install folder made the install exit
+> non-zero while it stayed alive. After review, two changes: an INTERACTIVE run asks first
+> (`IfSilent` skips the question, so silent runs are byte-for-byte unchanged — the stock step's
+> "is running, click OK" was the one prompt a person at the wizard had), and a refusal exits
+> **32** (ERROR_SHARING_VIOLATION), a declined question **1223** (ERROR_CANCELLED) — distinct from
+> electron-builder's own 2 — which the winget manifest maps to `packageInUse`/`cancelledByUser`,
+> since nullsoft gets no default mapping and winget would otherwise print a bare exit code.
+
 ## 95. A Windows zip can only be named by `win.artifactName`, and the default name is the Intel Mac zip's
 
 **`artifactPatternConfig` takes the target's own options first, then the platform block, then
@@ -465,6 +475,24 @@ the wrong CPU is every tab dead). The swap is `portableSwap.ts`'s helper; its ru
 file. `verify:portable` runs the helper under a real PowerShell where there is one, and
 `windows.yml` swaps the folder of a RUNNING packaged Stoke on Windows.
 
+> **Corrected after review, 2026-09-21 — the first version could destroy data.** The swap renames
+> the WHOLE folder Stoke.exe sits in, and the Windows zip has no top-level folder: 7-Zip's
+> "Extract Here" in Downloads made Downloads the app folder, so the swap moved all of Downloads
+> aside and the new copy's sweep deleted it a minute later, through original-fs (no Recycle Bin).
+> Reproduced with the real helper under pwsh. Three guards now, each alone sufficient: the
+> classifier refuses `portable` for a folder holding anything that is not a Stoke build
+> (`isStokeFolderEntry`, from the measured top level of `win-unpacked`); after staging and again
+> right before the helper starts, every top-level entry must exist in the new copy
+> (`entriesNotIn`/`swapWouldCarryAway`); and the sweep deletes a leftover only if its contents
+> are all Stoke-shaped. Also: a probe that timed out answers NULL and classifies as an
+> UNSETTLED `manual` that is asked again — `false` for "no uninstaller" had routed an installed
+> copy into the swap; the helper writes `started.json` first, so a Stoke reopened inside the
+> helper's wait is no longer told "PowerShell never ran it" (and no longer sweeps the staged copy
+> out from under it); the zip downloads into userData, not beside the app; the download is a
+> `stream.pipeline` (a disk error had been an uncaught exception that left it pending forever);
+> and a drive root, an inherited `PORTABLE_EXECUTABLE_FILE` and a junctioned manager root are
+> each classified correctly. `verify:portable` holds every one.
+
 ## 97. Komac rewrites what it submits, and silently drops a manifest it cannot parse — exit 0
 
 **`komac submit <dir>` parses every file into typed structs and writes them back** (a
@@ -494,3 +522,36 @@ in `portableUpdate.ts` goes through an injected remover (`useRemover`), which `s
 points at `require('original-fs').promises.rm`; a suite runs under plain node, where the default
 already is the unpatched one. Reading into an asar and deleting one need opposite fs modules —
 keep them apart.
+
+## 102. Every published arm64 Windows installer exited 0 and installed nothing
+
+**electron-builder packs the Windows app into a 7z inside the NSIS installer, and at install time
+NSIS's `nsis7z` plugin — FileVersion 19.00 — unpacks it.** 7-Zip 23.01 added an ARM64 branch
+filter and picks it BY ITSELF for ARM64 executables. `nsis7z` 19.00 knows BCJ, BCJ2, PPC, IA64,
+ARM, ARMT and SPARC and nothing newer. So the arm64 installer — built on GitHub's
+`windows-11-arm` runner — stored Stoke.exe, every DLL and node-pty's conpty binaries as
+`ARM64 LZMA2:20`, and on an arm64 machine it could not decode a single one of them: it **exited
+0, wrote its registry keys and Start-menu entries, and put no files down.** No build error, no
+install error, a green release every time, and `install.ps1` then printed "installed".
+
+Found by the Windows workflow (run 35559817481): a silent install on `windows-11-arm` left
+InstallLocation set and `Stoke.exe` missing. Confirmed on the published v0.9.9 assets with 7-Zip
+26.03 — `Stoke-0.9.9-arm64-setup.exe`'s `$PLUGINSDIR/app-arm64.7z` lists `ARM64 LZMA2:20` for
+the executables, while the x64 installer's payload is `BCJ2 LZMA2:20` (which nsis7z reads, and
+why every x64 release has installed). The arm64 PORTABLE zip is unaffected — a zip carries no 7z
+filters — and the workflow swapped a running Stoke's folder from it on arm64.
+
+**The fix is `ELECTRON_BUILDER_7Z_FILTER=BCJ` for win-arm64 builds** (app-builder-lib 26.15.3,
+`archive.js:87`, passed as `-mf=BCJ`; BCJ is lossless on any input and nsis7z decodes it). It is
+set in three places that all build arm64 — `scripts/targets.mjs` (`buildEnvFor`, so `npm run
+dist:win:arm64` gets it), release.yml's Windows build step, and windows.yml's — scoped to arm64 so
+the verified x64 payload is unchanged. And a build is never trusted to have honoured it:
+`scripts/assert-nsis-payload.mjs` opens every built `*-setup.exe` with the full 7-Zip (7z.exe on
+GitHub's Windows images; electron-builder's bundled 7za cannot read NSIS), extracts the embedded
+`app-<arch>.7z`, and fails on any method nsis7z 19.00 lacks, or a payload with no Stoke.exe. Run
+against the published v0.9.9 installers it fails arm64 and passes x64 — the counterfactual,
+measured. `verify:targets` holds all three settings and the assertion's place in both workflows.
+
+**Every arm64 user who installed a published release got an empty folder**, and the next release
+is the first that can fix it. Until then `install.ps1` refuses to call an install with no
+Stoke.exe a success, and points at the portable zip.

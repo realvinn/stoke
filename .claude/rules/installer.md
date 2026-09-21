@@ -499,3 +499,11 @@ unreachable in CI.
 `.github/workflows/windows.yml` runs the line from cmd, Windows PowerShell, PowerShell 7 and Git
 Bash on x64 and arm64. **The page change reaches users only after `npm run deploy:install`**,
 which stays a deliberate, manual act (the Worker serves what was embedded at the last deploy).
+
+> **Checked on Windows on 2026-09-21** (workflow run 35559817481). The documented line ran from
+> cmd.exe, and the short form from Windows PowerShell 5.1, against the deployed stoke.vinn.dev on
+> x64 — both installed Stoke. That is the first time install.ps1 has run anywhere. After review:
+> the handoff's `MSYS2_ARG_CONV_EXCL='*'` leaked into the Stoke install.ps1 starts at the end, so
+> every Claude Code session's Git Bash ran with MSYS path conversion off; PowerShell's first act
+> is now `Remove-Item Env:MSYS2_ARG_CONV_EXCL`. And install.ps1 no longer calls an install with no
+> Stoke.exe a success — the published arm64 installer exits 0 and installs nothing (gotcha 102).

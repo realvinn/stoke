@@ -71,6 +71,14 @@ env:
 jobs:
   one-liner:
     name: One-liner · ${{ matrix.shell }} · ${{ matrix.arch }}
+    # The one-liner installs the PUBLISHED release, and every published arm64
+    # installer up to v0.9.9 exits 0 and installs nothing (gotcha 102: its
+    # payload uses a 7z filter its own extractor predates). install.ps1 now says
+    # so instead of printing "installed", so these legs fail honestly until a
+    # release built with the fix is out. Allowed to fail meanwhile — the build
+    # job below is what proves the fix — and to be made strict again after the
+    # next release.
+    continue-on-error: ${{ matrix.arch == 'arm64' }}
     strategy:
       fail-fast: false
       matrix:
@@ -89,34 +97,44 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Serve this branch's install/ the way the Worker does
-        shell: pwsh
-        run: |
-          $log = Join-Path $env:RUNNER_TEMP 'serve.log'
-          Start-Process -FilePath node -ArgumentList 'scripts/serve-install.mjs', '8787' -RedirectStandardOutput $log -RedirectStandardError "$log.err" -WindowStyle Hidden
-          for ($i = 0; $i -lt 60; $i++) {
-            if ((Test-Path $log) -and (Select-String -Path $log -Pattern 'listening' -Quiet)) { Get-Content $log; exit 0 }
-            Start-Sleep -Milliseconds 500
-          }
-          Get-Content $log, "$log.err" -ErrorAction SilentlyContinue
-          throw 'the local installer endpoint never came up'
+      # The local endpoint is started INSIDE each install step, in that step's
+      # own shell: the runner ends a step's process tree when the step
+      # finishes, so a server started in a step of its own is gone by the next
+      # one ("connection refused", measured on the first run of this job).
+      # The wait uses the same probe everywhere — PowerShell's Invoke-WebRequest
+      # against /index.html — and only the LINE UNDER TEST is typed in the
+      # matrix shell.
 
       # The line a person types. In cmd it is the long form — `irm` alone is
       # "'irm' is not recognized" there, which is the report this began with.
       - name: Install from cmd.exe
         if: matrix.shell == 'cmd'
         shell: cmd
-        run: powershell -ExecutionPolicy Bypass -c "irm http://127.0.0.1:8787 | iex"
+        run: |
+          start "" /b cmd /c "node scripts\serve-install.mjs 8787 > %RUNNER_TEMP%\serve.log 2>&1"
+          powershell -NoProfile -Command "for ($i = 0; $i -lt 60; $i++) { try { $null = Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8787/index.html; exit 0 } catch { Start-Sleep -Milliseconds 500 } }; exit 1"
+          if errorlevel 1 exit /b 1
+          powershell -ExecutionPolicy Bypass -c "irm http://127.0.0.1:8787 | iex"
 
       - name: Install from Windows PowerShell 5.1
         if: matrix.shell == 'powershell'
         shell: powershell
-        run: irm http://127.0.0.1:8787 | iex
+        run: |
+          Start-Process -FilePath node -ArgumentList 'scripts/serve-install.mjs', '8787' -RedirectStandardOutput (Join-Path $env:RUNNER_TEMP 'serve.log') -WindowStyle Hidden
+          $up = $false; for ($i = 0; $i -lt 60 -and -not $up; $i++) { try { $null = Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8787/index.html; $up = $true } catch { Start-Sleep -Milliseconds 500 } }
+          if (-not $up) { throw 'the local installer endpoint never came up' }
+          irm http://127.0.0.1:8787 | iex
 
-      - name: Install from PowerShell 7
+      - name: Install from PowerShell 7, then again (the same version is a clean no-op)
         if: matrix.shell == 'pwsh'
         shell: pwsh
-        run: irm http://127.0.0.1:8787 | iex
+        run: |
+          Start-Process -FilePath node -ArgumentList 'scripts/serve-install.mjs', '8787' -RedirectStandardOutput (Join-Path $env:RUNNER_TEMP 'serve.log') -WindowStyle Hidden
+          $up = $false; for ($i = 0; $i -lt 60 -and -not $up; $i++) { try { $null = Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8787/index.html; $up = $true } catch { Start-Sleep -Milliseconds 500 } }
+          if (-not $up) { throw 'the local installer endpoint never came up' }
+          irm http://127.0.0.1:8787 | iex
+          Write-Host '--- and the same line again ---'
+          irm http://127.0.0.1:8787 | iex
 
       # Git Bash: curl.exe is handed install.sh (its User-Agent is curl's), which
       # notices Windows and hands over to the PowerShell installer. The handoff
@@ -125,7 +143,11 @@ jobs:
       - name: Install from Git Bash (the mac/linux line)
         if: matrix.shell == 'bash'
         shell: bash
-        run: curl -fsSL http://127.0.0.1:8787 | sh
+        run: |
+          LOG="$(cygpath -u "$RUNNER_TEMP")/serve.log"
+          node scripts/serve-install.mjs 8787 > "$LOG" 2>&1 &
+          for i in $(seq 1 60); do curl -fsS -o /dev/null http://127.0.0.1:8787/index.html && break; sleep 0.5; done
+          curl -fsSL http://127.0.0.1:8787 | sh
 
       - name: Stoke is installed, at the latest version, with its command
         shell: pwsh
@@ -151,11 +173,6 @@ jobs:
           } else {
             'stoke command   this release ships none'
           }
-
-      - name: The same line again is a clean no-op (upgrade path, same version)
-        if: matrix.shell == 'pwsh'
-        shell: pwsh
-        run: irm http://127.0.0.1:8787 | iex
 
       - name: What the endpoint handed each client
         if: always()
@@ -225,21 +242,30 @@ jobs:
           node --input-type=module -e "const a = await import('./src/shared/agents.ts'); const c = await import('./src/shared/codingClis.ts'); const ids = c.CODING_CLIS.filter((x) => x.install.win32).map((x) => x.id); const fs = await import('node:fs'); fs.writeFileSync(process.env.RUNNER_TEMP + '/install-agents.ps1', a.installScript(ids, 'win32')); fs.writeFileSync(process.env.RUNNER_TEMP + '/agent-ids.txt', ids.join(','))"
           Get-Content (Join-Path $env:RUNNER_TEMP 'agent-ids.txt')
 
-      # Exactly as pty.ts `installerArgs` does it: powershell.exe with the whole
-      # script as -EncodedCommand. Windows PowerShell 5.1, not 7 — it is what
-      # Stoke starts, and one vendor script (Cursor's) uses Get-WmiObject, which
-      # 7 does not have.
+      # Exactly as pty.ts `installerArgs` does it: the script in a UTF-8 file
+      # WITH a byte-order mark (Windows PowerShell 5.1 reads a BOM-less file as
+      # ANSI), run with -File. Windows PowerShell 5.1, not 7 — it is what Stoke
+      # starts, and one vendor script (Cursor's) uses Get-WmiObject, which 7
+      # does not have.
       - name: Run it the way Stoke does
         id: install
         shell: pwsh
         continue-on-error: true
         run: |
-          $script = Get-Content -Raw (Join-Path $env:RUNNER_TEMP 'install-agents.ps1')
-          $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
-          "encoded command: $($encoded.Length) characters (Windows allows 32767)"
-          & powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded 2>&1 | Tee-Object -FilePath (Join-Path $env:RUNNER_TEMP 'install.log')
+          $src = Join-Path $env:RUNNER_TEMP 'install-agents.ps1'
+          $file = Join-Path $env:RUNNER_TEMP 'stoke-install.ps1'
+          [System.IO.File]::WriteAllText($file, (Get-Content -Raw $src), (New-Object System.Text.UTF8Encoding($true)))
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $file 2>&1 | Tee-Object -FilePath (Join-Path $env:RUNNER_TEMP 'install.log')
           "exit $LASTEXITCODE"
 
+      # Three outcomes per agent, and only one of them is Stoke's fault:
+      #   found by Stoke's locator (PATH from before the install) and runs -> ok
+      #   not found by Stoke, but a NEW terminal finds it                  -> FAIL
+      #   found by neither: the vendor's installer exited 0 and installed
+      #   nothing (aider's does, on arm64 — it never checks `uv tool
+      #   install`'s status)                                               -> warning
+      # A step the script itself reported as failed ("Did not install:") is
+      # expected, not asserted: it is the vendor's, and the log says why.
       - name: What installed, and what Stoke finds without a restart
         shell: pwsh
         run: |
@@ -247,15 +273,39 @@ jobs:
           $failedLine = ($log -split "`n" | Where-Object { $_ -match '^Did not install: ' } | Select-Object -Last 1)
           $failed = @()
           if ($failedLine) { $failed = @(($failedLine -replace '^Did not install: ', '').Trim() -split ', ') }
-          "did not install: $($failed -join ', ')"
-          $labels = node --input-type=module -e "const c = await import('./src/shared/codingClis.ts'); console.log(JSON.stringify(Object.fromEntries(c.CODING_CLIS.map((x) => [x.label, x.id]))))" | ConvertFrom-Json
+          "the script reported as not installed: $($failed -join ', ')"
+          $meta = node --input-type=module -e "const c = await import('./src/shared/codingClis.ts'); console.log(JSON.stringify({ byLabel: Object.fromEntries(c.CODING_CLIS.map((x) => [x.label, x.id])), bins: Object.fromEntries(c.CODING_CLIS.map((x) => [x.id, x.bins.win32])) }))" | ConvertFrom-Json
           $ids = (Get-Content (Join-Path $env:RUNNER_TEMP 'agent-ids.txt')).Split(',')
-          $failedIds = @($failed | ForEach-Object { $labels.$_ })
+          $failedIds = @($failed | ForEach-Object { $meta.byLabel.$_ })
           $expect = @($ids | Where-Object { $failedIds -notcontains $_ })
-          "expecting Stoke to find: $($expect -join ', ')"
-          node scripts/probe-clis.mts --path-file (Join-Path $env:RUNNER_TEMP 'path-before.txt') --expect ($expect -join ',') --json (Join-Path $env:RUNNER_TEMP 'probe.json')
-          if ($LASTEXITCODE -ne 0) { throw 'an agent that installed is not found (or does not start) with the PATH a running Stoke has' }
-          if ($failed.Count) { "::warning::did not install on ${{ matrix.arch }}: $($failed -join ', ') — see the install log" }
+          $json = Join-Path $env:RUNNER_TEMP 'probe.json'
+          node scripts/probe-clis.mts --path-file (Join-Path $env:RUNNER_TEMP 'path-before.txt') --json $json
+          $rows = (Get-Content -Raw $json | ConvertFrom-Json).rows
+          # What a new terminal would find: the registry's PATH, freshly read.
+          $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('Path', 'User')
+          $stokeMisses = @(); $vendorMisses = @(); $broken = @()
+          foreach ($id in $expect) {
+            $row = $rows | Where-Object { $_.id -eq $id }
+            if ($row.path -and -not $row.error) { continue }
+            if ($row.path -and $row.error) { $broken += "$id at $($row.path): $($row.error)"; continue }
+            $seen = @($meta.bins.$id | ForEach-Object { Get-Command $_ -ErrorAction SilentlyContinue } | Select-Object -First 1)
+            if ($seen.Count) { $stokeMisses += "$id (a new terminal finds $($seen[0].Source))" } else { $vendorMisses += $id }
+          }
+          foreach ($v in $vendorMisses) { "::warning::$v's installer exited 0 but installed nothing a new terminal can find (${{ matrix.arch }})" }
+          if ($broken.Count) { "found but does not start:"; $broken; throw 'an agent Stoke finds does not start' }
+          if ($stokeMisses.Count) { "installed but Stoke does not find:"; $stokeMisses; throw "Stoke's locator misses an agent a new terminal finds" }
+          # A step that is Stoke's OWN command — `npm install -g` on a runner
+          # that has npm, `winget install` on one that has winget — failing is
+          # Stoke's regression, not a vendor's: fail on it. A vendor-hosted
+          # script failing is annotated and tolerated.
+          $commands = node --input-type=module -e "const c = await import('./src/shared/codingClis.ts'); console.log(JSON.stringify(Object.fromEntries(c.CODING_CLIS.map((x) => [x.label, x.install.win32 ?? '']))))" | ConvertFrom-Json
+          $haveNpm = [bool](Get-Command npm -ErrorAction SilentlyContinue)
+          $haveWinget = [bool](Get-Command winget -ErrorAction SilentlyContinue)
+          $ours = @($failed | Where-Object { ($haveNpm -and $commands.$_ -like 'npm *') -or ($haveWinget -and $commands.$_ -like 'winget *') })
+          foreach ($f in @($failed | Where-Object { $ours -notcontains $_ })) { "::warning::$f's vendor installer failed on ${{ matrix.arch }} — see the install log" }
+          if ($ours.Count) { throw "Stoke's own install command failed where its tool exists: $($ours -join ', ')" }
+          if ($expect.Count -lt [Math]::Ceiling($ids.Count / 2)) { throw "only $($expect.Count) of $($ids.Count) agents installed" }
+          "every agent that installed is found by Stoke, without a restart, and starts"
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -383,9 +433,9 @@ jobs:
           $env:Path = ([Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('Path', 'User'))
           if (Get-Command npm -ErrorAction SilentlyContinue) { throw "npm is still reachable at $((Get-Command npm).Source): this job would test nothing" }
           Remove-Item Env:npm_config_prefix -ErrorAction SilentlyContinue
-          $script = Get-Content -Raw (Join-Path $env:RUNNER_TEMP 'install.ps1')
-          $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
-          & powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded 2>&1 | Tee-Object -FilePath (Join-Path $env:RUNNER_TEMP 'install.log')
+          $file = Join-Path $env:RUNNER_TEMP 'stoke-install.ps1'
+          [System.IO.File]::WriteAllText($file, (Get-Content -Raw (Join-Path $env:RUNNER_TEMP 'install.ps1')), (New-Object System.Text.UTF8Encoding($true)))
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $file 2>&1 | Tee-Object -FilePath (Join-Path $env:RUNNER_TEMP 'install.log')
           if ($LASTEXITCODE -ne 0) { throw "the install exited $LASTEXITCODE" }
       - name: Node came first, and Stoke finds all three
         shell: pwsh
@@ -421,16 +471,47 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+
+      # The two Windows PATH fixes (gotcha 99), watched rather than argued.
+      # First: a folder put on the USER PATH in the registry after this job's
+      # own PATH was fixed must be found by Stoke's locator — the registry
+      # re-read is the only way it can be.
+      - name: A tool that is only on the registry PATH is found without a restart
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'registry-only'
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Set-Content -Path (Join-Path $dir 'stoke-probe-tool.cmd') -Value '@echo stoke-probe'
+          $user = [Environment]::GetEnvironmentVariable('Path', 'User')
+          [Environment]::SetEnvironmentVariable('Path', ((@($user, $dir) | Where-Object { $_ }) -join ';'), 'User')
+          "REGISTRY_ONLY_DIR=$dir" >> $env:GITHUB_ENV
+      - name: (the locator, in a process whose PATH predates that)
+        shell: pwsh
+        run: |
+          node scripts/windows-e2e.mts registry-path $env:REGISTRY_ONLY_DIR stoke-probe-tool.cmd
+          if ($LASTEXITCODE -ne 0) { throw 'the registry PATH re-read did not find it' }
+      # Second: one PATH key in a terminal's environment, through the real
+      # node-pty and conpty — and what the old two-key env did, for the record.
+      - name: A terminal sees the PATH Stoke built (one key, not two)
+        shell: pwsh
+        run: |
+          node scripts/windows-e2e.mts pty-path
+          if ($LASTEXITCODE -ne 0) { throw 'the child did not see the PATH Stoke built' }
+
       - name: Build the installer and the portable zip (targets.mjs flags)
         shell: pwsh
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          # The same as release.yml's Windows build step (gotcha 102).
+          ELECTRON_BUILDER_7Z_FILTER: ${{ matrix.arch == 'arm64' && 'BCJ' || '' }}
         run: |
           $flags = (node scripts/targets.mjs --args win-${{ matrix.arch }}).Trim() -split ' '
           npx electron-builder @flags --publish never
           if ($LASTEXITCODE -ne 0) { throw 'electron-builder failed' }
           node scripts/assert-packaged-pty.mjs win-${{ matrix.arch }}
           if ($LASTEXITCODE -ne 0) { throw 'the packaged terminal binary is for the wrong machine' }
+          node scripts/assert-nsis-payload.mjs release
+          if ($LASTEXITCODE -ne 0) { throw "the installer's payload is one its own extractor cannot read" }
 
       - name: The artefacts are named apart from the mac zips, and the zip is a complete Stoke
         shell: pwsh
@@ -516,6 +597,17 @@ jobs:
           $p = Start-Process -FilePath $setup -ArgumentList '/S' -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "first install exited $($p.ExitCode)" }
           $loc = (Get-ItemProperty -Path "HKCU:\Software\$env:STOKE_GUID").InstallLocation
+          # On the first arm64 run the installer exited 0, wrote the registry and
+          # put no Stoke.exe down. Say exactly what is there before going on.
+          "InstallLocation: $loc"
+          $exe = Join-Path $loc 'Stoke.exe'
+          for ($i = 0; $i -lt 60 -and -not (Test-Path $exe); $i++) { Start-Sleep -Seconds 1 }
+          if (-not (Test-Path $exe)) {
+            "processor: $env:PROCESSOR_ARCHITECTURE / native $env:PROCESSOR_ARCHITEW6432"
+            Get-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$env:STOKE_GUID" | Format-List | Out-String
+            Get-ChildItem -Force -Recurse -Depth 1 $loc -ErrorAction SilentlyContinue | Select-Object FullName, Length | Format-Table -AutoSize | Out-String
+            throw "the installer exited 0 and put no Stoke.exe in $loc"
+          }
           $ud = Join-Path $env:RUNNER_TEMP 'ud-installed'
           $stoke = Start-Process -FilePath (Join-Path $loc 'Stoke.exe') -ArgumentList "--user-data-dir=$ud" -PassThru
           $handle = $stoke.Handle  # hold it, so the exit code can be read afterwards
@@ -592,21 +684,72 @@ jobs:
       # header warning; everything else must validate clean.
       - name: winget validate
         shell: pwsh
+        timeout-minutes: 8
         run: |
           winget --version
           $dir = (Get-ChildItem -Recurse -Filter 'realvinn.Stoke.yaml' winget-out | Select-Object -First 1).DirectoryName
           "MANIFEST_DIR=$dir" >> $env:GITHUB_ENV
           winget validate --manifest $dir --disable-interactivity --ignore-warnings
           if ($LASTEXITCODE -ne 0) { throw "winget validate failed ($LASTEXITCODE)" }
+      # On the first run this step sat on "Starting package install…" until the
+      # job timed out, where the same installer with /S alone installs in
+      # seconds from install.ps1. So it runs under a watchdog that, on a stall,
+      # lists every window and relevant process and screenshots the desktop —
+      # the likeliest cause is a prompt nobody can see (winget marks what it
+      # downloads, and SmartScreen can hold an unsigned installer so marked).
       - name: winget install --manifest, as a user would get it
+        id: wingetinstall
         shell: pwsh
+        timeout-minutes: 12
+        continue-on-error: true
         run: |
           winget settings --enable LocalManifestFiles
-          winget install --manifest $env:MANIFEST_DIR --accept-package-agreements --accept-source-agreements --disable-interactivity --silent
-          if ($LASTEXITCODE -ne 0) { throw "winget install failed ($LASTEXITCODE)" }
+          $wingetArgs = @('install', '--manifest', $env:MANIFEST_DIR, '--accept-package-agreements', '--accept-source-agreements', '--disable-interactivity', '--silent')
+          $p = Start-Process -FilePath winget -ArgumentList $wingetArgs -PassThru -NoNewWindow
+          if (-not $p.WaitForExit(420000)) {
+            "winget install did not finish in 7 minutes. What is on screen:"
+            Get-Process | Where-Object { $_.MainWindowTitle } | Format-Table Id, ProcessName, MainWindowTitle -AutoSize | Out-String -Width 300
+            Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'setup|stoke|msiexec|smartscreen|winget|consent|appinstaller' } | Format-Table ProcessId, ParentProcessId, Name, CommandLine -AutoSize | Out-String -Width 400
+            Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+            $b = [System.Windows.Forms.SystemInformation]::VirtualScreen
+            $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+            [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Left, $b.Top, 0, 0, $bmp.Size)
+            $bmp.Save((Join-Path $env:RUNNER_TEMP 'winget-stall.png'))
+            throw 'winget install stalled — see the window list and winget-stall.png'
+          }
+          "winget exited $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) { throw "winget install failed ($($p.ExitCode))" }
           $key = Get-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$env:STOKE_GUID"
           "installed through winget: Stoke $($key.DisplayVersion)"
           if ($key.DisplayVersion -ne $env:VERSION) { throw "winget installed $($key.DisplayVersion), not $env:VERSION" }
           $loc = (Get-ItemProperty -Path "HKCU:\Software\$env:STOKE_GUID").InstallLocation
           if (-not (Test-Path (Join-Path $loc 'Uninstall Stoke.exe'))) { throw 'a winget install must be the installer kind, so it updates itself' }
           winget list --id realvinn.Stoke --disable-interactivity
+
+      # The same installer, with exactly the switches the manifest gives winget
+      # (/S from nullsoft's defaults, /currentuser from Custom), run directly —
+      # which separates "the installer hangs with these switches" from "winget's
+      # way of starting it hangs".
+      - name: The same installer with winget's switches, run directly
+        if: steps.wingetinstall.outcome == 'failure'
+        shell: pwsh
+        timeout-minutes: 6
+        run: |
+          $exe = Resolve-Path "winget-dl/Stoke-$env:VERSION-x64-setup.exe"
+          $p = Start-Process -FilePath $exe -ArgumentList '/S', '/currentuser' -PassThru
+          if (-not $p.WaitForExit(240000)) {
+            Get-Process | Where-Object { $_.MainWindowTitle } | Format-Table Id, ProcessName, MainWindowTitle -AutoSize | Out-String -Width 300
+            throw 'the installer itself stalls with /S /currentuser'
+          }
+          "direct run exited $($p.ExitCode)"
+          $loc = (Get-ItemProperty -Path "HKCU:\Software\$env:STOKE_GUID").InstallLocation
+          if (-not (Test-Path (Join-Path $loc 'Stoke.exe'))) { throw 'the direct run put no Stoke.exe down' }
+          'the installer runs fine with these switches — the stall is in how winget starts it'
+          exit 1
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: winget-diagnostics
+          if-no-files-found: ignore
+          path: ${{ runner.temp }}/winget-stall.png

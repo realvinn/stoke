@@ -340,3 +340,19 @@ it precedes `~\.local\bin`, which the native installer never puts on PATH), and 
 Unverified until `.github/workflows/windows.yml` runs: the two-key block's actual effect inside a
 conpty, `reg.exe`'s output shape on a real machine, and the Node install on a runner stripped of
 Node (its `fresh-node` job).
+
+> **Checked on 2026-09-21, after review and a first Windows run.** The registry is read through
+> PowerShell now, not `reg.exe`: reg.exe converts piped output to the console code page (an
+> accented profile folder arrived as U+FFFD) and cannot report the other Environment values, so
+> a `%PNPM_HOME%` an installer defined after Stoke started stayed literal. `pathFromRegistry`
+> expands against process env < machine vars < user vars, as Windows builds a new process.
+> `gitBashPath` now decides the statusLine/hook syntax from the PATH the child gets
+> (`buildEnvPath`), since the two can differ once the registry is read. And the install tab runs
+> its script from a temp `.ps1` via `-File` (UTF-8 WITH a BOM for 5.1), not `-EncodedCommand`:
+> every step inside is itself encoded, so "select all" measured 29,640 of Windows' 32,767
+> command-line characters. A winget step on a machine with NO winget had ended `exit
+> $LASTEXITCODE` — `exit $null`, exit 0 — and was reported installed (measured on the arm64
+> runner, which has no winget); it fails with a reason now. The Windows workflow's build job
+> proves the registry re-read (a tool only on the user PATH in the registry, found by a process
+> whose PATH predates it) and runs `cmd /c echo %PATH%` through the real node-pty with the old
+> two-key env and the new one.
