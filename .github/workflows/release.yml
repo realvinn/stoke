@@ -407,6 +407,22 @@ jobs:
           find dist -type f | sort
           node scripts/merge-update-manifests.mjs dist --out release-assets
 
+      # The Windows portable zips, listed in the merged latest.yml.
+      #
+      # electron-builder writes no update info for a Windows zip, so each
+      # Windows job's latest.yml names its installer and nothing else, and a
+      # portable copy reading that feed would find no zip for its arch and
+      # never be offered an update — silently, which is this workflow's
+      # recurring failure shape. The zips are added HERE, to the merged
+      # result, rather than to each job's manifest, so the per-job manifests
+      # stay byte-for-byte electron-builder's own output and verify:manifests'
+      # oracle (the merge must equal what one invocation would have written)
+      # still means something. Appended after the installers, so files[0],
+      # path and sha512 still name an .exe for NsisUpdater. Before the gate,
+      # which refuses a feed missing either half for any Windows arch.
+      - name: List the Windows portable zips in latest.yml
+        run: node scripts/add-portable-to-manifest.mjs release-assets
+
       # The gate. A release that quietly drops one platform's feed looks
       # complete from every angle — green run, assets on the page — and the
       # dropped arch's installed copies simply stop updating, with nothing on
@@ -468,3 +484,194 @@ jobs:
             --title "${TITLE:-$TAG}" \
             --notes-file notes.md \
             ${PRERELEASE}
+
+  # Submit the release to winget — the Windows package manager — as a pull
+  # request to microsoft/winget-pkgs, so `winget install realvinn.Stoke` gets
+  # the version that was just published.
+  #
+  # A job HERE, not a workflow on `release: published`, because a release
+  # created with GITHUB_TOKEN (the publish job above) triggers no other
+  # workflow: GitHub drops events a GITHUB_TOKEN caused, to stop recursion. A
+  # separate workflow would simply never run. `needs: publish` also means it
+  # never runs for a release that failed its gate.
+  #
+  # Stable tags only — a version with a hyphen is a prerelease, published as one
+  # above, and winget has no prerelease channel. scripts/winget.mjs refuses one
+  # too, so a hand run holds the same rule.
+  #
+  # What it needs, once (BUILDING.md, "Publishing to winget"): a classic PAT
+  # with public_repo in the WINGET_TOKEN secret, from an account that has a
+  # fork of microsoft/winget-pkgs — Komac opens the pull request from that fork
+  # and does not create it. Without the secret this job says so and does
+  # nothing else, green: the release itself is already out.
+  winget:
+    name: Submit to winget
+    needs: publish
+    if: startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      # For scripts/winget.mjs and scripts/targets.mjs. No `npm ci`: both
+      # import only node's builtins and each other.
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # Read from `env` rather than tested in an `if:`, for the reason the
+      # macOS signing step gives: `secrets` in a condition is not reliably
+      # available, and a condition that quietly evaluates false would skip the
+      # submission under a green tick. `-n`, so an empty secret is absent.
+      - name: Check for a winget token
+        id: token
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          if [ -n "$WINGET_TOKEN" ]; then
+            echo "have=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "have=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::WINGET_TOKEN is unset or empty, so this release was not submitted to winget. BUILDING.md, 'Publishing to winget', has the one-time setup and how to re-run this job."
+          fi
+
+      # Anonymously, from the URLs the manifest will name — so the digest in
+      # the manifest is the digest of the bytes winget will download, not of a
+      # copy that merely should be the same. `--print-urls` derives the list
+      # from scripts/targets.mjs, never from a second list here.
+      - name: Download the Windows installers from the release
+        if: steps.token.outputs.have == 'true'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          mkdir -p winget-in
+          node scripts/winget.mjs --print-urls --version "$VERSION" > urls.txt
+          cat urls.txt
+          while read -r ARCH URL; do
+            curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o "winget-in/${URL##*/}" "$URL"
+          done < urls.txt
+          ls -la winget-in
+
+      # The release's own publication date, read back rather than taken from
+      # the clock, so a re-run days later still states the day it shipped.
+      - name: Write the manifests
+        if: steps.token.outputs.have == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          DATE="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" -q '.published_at' | cut -c1-10)"
+          node scripts/winget.mjs --version "$VERSION" --installers winget-in --release-date "$DATE" --out winget-out
+          for f in winget-out/manifests/r/realvinn/Stoke/"$VERSION"/*; do echo "----- $f"; cat "$f"; done
+
+      # Pinned by version AND digest: this binary is handed a token that can
+      # open pull requests as the account behind it.
+      - name: Install Komac
+        if: steps.token.outputs.have == 'true'
+        run: |
+          set -euo pipefail
+          KOMAC_VERSION=2.16.0
+          KOMAC_SHA256=7d2707fa6210f2789a3702de49fbd150b736dbf426ee0b9bc8e098736f9fd82d
+          TARBALL="komac-${KOMAC_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$TARBALL" \
+            "https://github.com/russellbanks/Komac/releases/download/v${KOMAC_VERSION}/${TARBALL}"
+          echo "${KOMAC_SHA256}  $RUNNER_TEMP/$TARBALL" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/komac"
+          tar -xzf "$RUNNER_TEMP/$TARBALL" -C "$RUNNER_TEMP/komac"
+          KOMAC="$(find "$RUNNER_TEMP/komac" -type f -name komac | head -1)"
+          if [ -z "$KOMAC" ]; then
+            echo "::error::$TARBALL holds no file named komac:"; find "$RUNNER_TEMP/komac"; exit 1
+          fi
+          chmod +x "$KOMAC"
+          "$KOMAC" --version
+          echo "KOMAC=$KOMAC" >> "$GITHUB_ENV"
+
+      # Never open a second pull request for a version winget already has or is
+      # already reviewing — a re-run of this job must be safe. The contents API
+      # answers 404 for a folder that does not exist; ANY other failure (rate
+      # limit, outage) is not "absent" and fails the job rather than guessing.
+      # Read with this repo's own token: winget-pkgs is public.
+      - name: Skip a version winget already has
+        id: dedupe
+        if: steps.token.outputs.have == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          DIR="manifests/r/realvinn/Stoke/$VERSION"
+          set +e
+          OUT="$(gh api "repos/microsoft/winget-pkgs/contents/$DIR" 2>&1 >/dev/null)"
+          CODE=$?
+          set -e
+          if [ "$CODE" -eq 0 ]; then
+            echo "::notice::microsoft/winget-pkgs already has $DIR, so there is nothing to submit."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          case "$OUT" in
+            *"HTTP 404"*) ;;
+            *) echo "::error::Could not tell whether microsoft/winget-pkgs has $DIR: $OUT"; exit 1 ;;
+          esac
+          gh pr list --repo microsoft/winget-pkgs --state open --limit 100 \
+            --search "realvinn.Stoke $VERSION in:title" --json title,url > prs.json
+          OPEN="$(VERSION="$VERSION" node -e '
+            const prs = JSON.parse(require("fs").readFileSync("prs.json", "utf8"))
+            const hit = prs.find((p) => p.title.includes("realvinn.Stoke") && p.title.split(/\s+/).includes(process.env.VERSION))
+            process.stdout.write(hit ? hit.url : "")
+          ')"
+          if [ -n "$OPEN" ]; then
+            echo "::notice::An open pull request already submits realvinn.Stoke $VERSION: $OPEN"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      # The dry run is checked, not trusted. Komac rewrites every file it sends
+      # and SILENTLY DROPS a file it cannot parse, exiting 0 — so a green dry
+      # run can describe a two-file submission that winget-pkgs' validation will
+      # reject a day later. All three ManifestType lines must be in what it
+      # would send.
+      - name: Dry run
+        if: steps.token.outputs.have == 'true' && steps.dedupe.outputs.skip == 'false'
+        env:
+          GITHUB_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          "$KOMAC" submit "winget-out/manifests/r/realvinn/Stoke/$VERSION" --dry-run 2>&1 | tee dry-run.txt
+          for TYPE in version installer defaultLocale; do
+            if ! grep -Eq "ManifestType: ${TYPE}\b" dry-run.txt; then
+              echo "::error::Komac's dry run has no 'ManifestType: ${TYPE}' — it dropped that file. Refusing to submit."
+              exit 1
+            fi
+          done
+
+      # And the submission must name the pull request it opened. An exit 0
+      # with no URL is a submission nobody can find, so it fails here instead.
+      - name: Submit
+        if: steps.token.outputs.have == 'true' && steps.dedupe.outputs.skip == 'false'
+        env:
+          GITHUB_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          "$KOMAC" submit "winget-out/manifests/r/realvinn/Stoke/$VERSION" --yes 2>&1 | tee submit.txt
+          URL="$(grep -oE 'https://github\.com/microsoft/winget-pkgs/pull/[0-9]+' submit.txt | head -1 || true)"
+          if [ -z "$URL" ]; then
+            echo "::error::Komac exited 0 but printed no microsoft/winget-pkgs pull request URL. Check the fork and the token."
+            exit 1
+          fi
+          echo "::notice::winget pull request: $URL"
+          {
+            echo "### winget"
+            echo ""
+            echo "Submitted realvinn.Stoke $VERSION: $URL"
+          } >> "$GITHUB_STEP_SUMMARY"

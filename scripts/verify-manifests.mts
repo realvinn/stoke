@@ -26,9 +26,12 @@
  *   node scripts/verify-manifests.mts
  */
 import { createRequire } from 'node:module'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import {
   archRankFor,
@@ -41,8 +44,10 @@ import {
   serializeManifest,
   MANIFEST_RE,
 } from './merge-update-manifests.mjs'
-import { auditRelease, expectedFeeds, readReleaseDir } from './check-release-assets.mjs'
+import { auditRelease, expectedFeeds, nsisPickFor, readReleaseDir } from './check-release-assets.mjs'
+import { addPortableToDir, addPortableZips, sha512Base64 } from './add-portable-to-manifest.mjs'
 import { TARGETS } from './targets.mjs'
+import { portableAssetFor } from '../src/shared/installKind.ts'
 
 const require = createRequire(import.meta.url)
 
@@ -621,9 +626,12 @@ check('and an installer certainly is not', MANIFEST_RE.test('Stoke-0.9.4-x64-set
 console.log('\nthe whole download-artifact tree')
 
 const tree = join(work, 'dist')
+// Each Windows job also produces its portable zip — the win `zip` target — and
+// its latest.yml does NOT list it: electron-builder writes no update info for a
+// Windows zip, which is why add-portable-to-manifest.mjs exists.
 const jobs: [string, string, string, string[]][] = [
-  ['installers-win-x64', 'latest.yml', winX64Yml, ['Stoke-0.9.4-x64-setup.exe', 'Stoke-0.9.4-x64-setup.exe.blockmap']],
-  ['installers-win-arm64', 'latest.yml', winArmYml, ['Stoke-0.9.4-arm64-setup.exe', 'Stoke-0.9.4-arm64-setup.exe.blockmap']],
+  ['installers-win-x64', 'latest.yml', winX64Yml, ['Stoke-0.9.4-x64-setup.exe', 'Stoke-0.9.4-x64-setup.exe.blockmap', 'Stoke-0.9.4-x64-win.zip']],
+  ['installers-win-arm64', 'latest.yml', winArmYml, ['Stoke-0.9.4-arm64-setup.exe', 'Stoke-0.9.4-arm64-setup.exe.blockmap', 'Stoke-0.9.4-arm64-win.zip']],
   ['installers-mac-arm64', 'latest-mac.yml', macArmYml, ['Stoke-0.9.4-arm64.zip', 'Stoke-0.9.4-arm64.dmg']],
   ['installers-mac-x64', 'latest-mac.yml', macX64Yml, ['Stoke-0.9.4-x64.zip', 'Stoke-0.9.4-x64.dmg']],
 ]
@@ -647,7 +655,7 @@ check('five jobs produce three manifests, not five', result.written.map((w: any)
   'latest-mac.yml',
   'latest.yml',
 ])
-check('every asset is flattened into one directory', result.assets.length, 9)
+check('every asset is flattened into one directory, both portable zips included', result.assets.length, 11)
 checkText('the merged Windows feed is the two-arch one', readFileSync(join(out, 'latest.yml'), 'utf8'), winBothYml)
 checkText('the merged macOS feed is the two-arch one', readFileSync(join(out, 'latest-mac.yml'), 'utf8'), macBothYml)
 checkText('the Linux feed passes through untouched', readFileSync(join(out, 'latest-linux.yml'), 'utf8'), linuxYml)
@@ -671,6 +679,138 @@ refuses(
 )
 
 // ---------------------------------------------------------------------------
+// The portable zips, listed in the MERGED latest.yml — one step after the merge
+// and one before the gate. Everything above ran on electron-builder's own
+// per-job output, untouched, which is the whole reason the injection happens
+// here rather than in each job: the oracle above would otherwise be comparing
+// the merger to a manifest electron-builder never wrote.
+
+console.log('\nthe portable zips, listed after the merge')
+
+const b64 = (text: string) => createHash('sha512').update(text).digest('base64')
+const mergedWinText = readFileSync(join(out, 'latest.yml'), 'utf8')
+const injected = addPortableToDir(out)
+const injectedText = readFileSync(join(out, 'latest.yml'), 'utf8')
+const injectedWin = parseManifest(injectedText, 'latest.yml')
+
+check('both zips are added, x64 first — the Arch enum order, not readdir order', injected.added, [
+  'Stoke-0.9.4-x64-win.zip',
+  'Stoke-0.9.4-arm64-win.zip',
+])
+check(
+  'AFTER the installers, so files[0] is still an .exe',
+  injectedWin.files.map((f: any) => f.url),
+  ['Stoke-0.9.4-x64-setup.exe', 'Stoke-0.9.4-arm64-setup.exe', 'Stoke-0.9.4-x64-win.zip', 'Stoke-0.9.4-arm64-win.zip']
+)
+check(
+  'path and sha512 still name the x64 installer, exactly as the merge left them',
+  [injectedWin.path, injectedWin.sha512],
+  [parseManifest(mergedWinText, 'x').path, parseManifest(mergedWinText, 'x').sha512]
+)
+check(
+  "each zip's sha512 is the BASE64 digest of its bytes, like every entry electron-builder writes",
+  injectedWin.files.slice(2).map((f: any) => f.sha512),
+  [b64('Stoke-0.9.4-x64-win.zip'), b64('Stoke-0.9.4-arm64-win.zip')]
+)
+check(
+  'and sha512Base64 reads the file to the same answer',
+  sha512Base64(join(out, 'Stoke-0.9.4-x64-win.zip')),
+  b64('Stoke-0.9.4-x64-win.zip')
+)
+check(
+  'its size is the size on disk, as a number',
+  injectedWin.files.slice(2).map((f: any) => f.size),
+  [statSync(join(out, 'Stoke-0.9.4-x64-win.zip')).size, statSync(join(out, 'Stoke-0.9.4-arm64-win.zip')).size]
+)
+checkText(
+  'the rewritten file is the merged one plus two entries, nothing else moved',
+  injectedText,
+  mergedWinText.replace(
+    /\npath: /,
+    '\n' +
+      `  - url: Stoke-0.9.4-x64-win.zip\n    sha512: ${b64('Stoke-0.9.4-x64-win.zip')}\n    size: ${'Stoke-0.9.4-x64-win.zip'.length}\n` +
+      `  - url: Stoke-0.9.4-arm64-win.zip\n    sha512: ${b64('Stoke-0.9.4-arm64-win.zip')}\n    size: ${'Stoke-0.9.4-arm64-win.zip'.length}\n` +
+      'path: '
+  )
+)
+checkText('it round-trips through the merger\'s own reader and writer', serializeManifest(parseManifest(injectedText, 'x')), injectedText)
+if (dump) {
+  checkText(
+    'and is what js-yaml itself would write for the same object',
+    injectedText,
+    dump(injectedWin, { lineWidth: 8000, skipInvalid: false, noRefs: true })
+  )
+}
+checkText('the macOS feed is not touched', readFileSync(join(out, 'latest-mac.yml'), 'utf8'), macBothYml)
+
+const again = addPortableToDir(out)
+check('a second run adds nothing', again.added, [])
+check('and reports both as already listed with the same bytes', again.already, ['Stoke-0.9.4-x64-win.zip', 'Stoke-0.9.4-arm64-win.zip'])
+checkText('and leaves the file byte-for-byte as it was', readFileSync(join(out, 'latest.yml'), 'utf8'), injectedText)
+
+if (updaterOracle) {
+  // The property a user experiences, from the injected feed: the installer
+  // route still gets each arch its own installer, and the portable route its
+  // own zip. findFile is electron-updater's own; portableAssetFor is the one
+  // Stoke ships (src/shared/installKind.ts).
+  const resolved = injectedWin.files.map((f: any) => ({
+    url: new URL(f.url, 'https://github.com/realvinn/stoke/releases/download/v0.9.4/'),
+    info: { url: f.url, sha512: f.sha512, size: f.size },
+  }))
+  const realArch = process.arch
+  for (const arch of ['x64', 'arm64']) {
+    Object.defineProperty(process, 'arch', { value: arch, configurable: true })
+    check(`Windows ${arch}: findFile(files, 'exe') still hands it its own installer`, findFile(resolved, 'exe')?.info.url, `Stoke-0.9.4-${arch}-setup.exe`)
+    check(`Windows ${arch}: portableAssetFor hands a portable copy its own zip`, portableAssetFor(injectedWin.files, arch)?.url, `Stoke-0.9.4-${arch}-win.zip`)
+  }
+  Object.defineProperty(process, 'arch', { value: realArch, configurable: true })
+  check('and an arch the release does not build gets no zip, never another arch\'s', portableAssetFor(injectedWin.files, 'ia32'), null)
+}
+
+const WIN_BASE = parseManifest(winBothYml, 'latest.yml')
+const zip = (name: string) => ({ name, sha512: b64(name), size: name.length })
+refuses(
+  'a zip from a different version is refused, naming both',
+  () => addPortableZips(WIN_BASE, [zip('Stoke-0.9.5-x64-win.zip')]),
+  /Stoke-0\.9\.5-x64-win\.zip is not version 0\.9\.4/
+)
+refuses(
+  'the same name with different bytes is refused — a release can carry only one',
+  () => addPortableZips(injectedWin, [{ ...zip('Stoke-0.9.4-x64-win.zip'), sha512: b64('other bytes') }]),
+  /already lists Stoke-0\.9\.4-x64-win\.zip with different bytes/
+)
+refuses(
+  'a feed with no .exe is refused, because findFile would then hand the installer route files[0]',
+  () => addPortableZips({ version: '0.9.4', files: [{ url: 'Stoke-0.9.4-arm64.zip', sha512: b64('m'), size: 1 }] }, [zip('Stoke-0.9.4-x64-win.zip')]),
+  /lists no \.exe/
+)
+refuses('a hex digest is refused — electron-builder writes base64 (gotcha 71)', () => addPortableZips(WIN_BASE, [{ ...zip('Stoke-0.9.4-x64-win.zip'), sha512: 'ab'.repeat(64) }]), /base64/)
+
+mkdirSync(join(work, 'no-manifest'), { recursive: true })
+writeFileSync(join(work, 'no-manifest', 'Stoke-0.9.4-x64-win.zip'), 'z')
+refuses('win zips with no latest.yml beside them are refused', () => addPortableToDir(join(work, 'no-manifest')), /no latest\.yml to list them in/)
+mkdirSync(join(work, 'no-zips'), { recursive: true })
+writeFileSync(join(work, 'no-zips', 'latest.yml'), winBothYml)
+check('a directory with no win zips is left alone — whether zips are REQUIRED is the gate\'s rule', addPortableToDir(join(work, 'no-zips')).zips, [])
+checkText('and its latest.yml is untouched', readFileSync(join(work, 'no-zips', 'latest.yml'), 'utf8'), winBothYml)
+
+// And the CLI the publish job runs exits non-zero on a refusal, rather than
+// printing the reason and carrying on into the gate.
+mkdirSync(join(work, 'wrong-version'), { recursive: true })
+writeFileSync(join(work, 'wrong-version', 'latest.yml'), winBothYml)
+writeFileSync(join(work, 'wrong-version', 'Stoke-0.9.5-arm64-win.zip'), 'z')
+let cliExit = 0
+let cliErr = ''
+try {
+  execFileSync(process.execPath, [fileURLToPath(new URL('./add-portable-to-manifest.mjs', import.meta.url)), join(work, 'wrong-version')], { stdio: ['ignore', 'pipe', 'pipe'] })
+} catch (error: any) {
+  cliExit = error.status
+  cliErr = String(error.stderr ?? '')
+}
+check('the CLI exits 1 on a version mismatch', cliExit, 1)
+check('with a GitHub ::error:: line that names the file', /::error::.*Stoke-0\.9\.5-arm64-win\.zip is not version 0\.9\.4/.test(cliErr), true)
+
+// ---------------------------------------------------------------------------
 
 console.log('\nthe publish gate')
 
@@ -680,7 +820,8 @@ check(
   feeds.map((f: any) => `${f.manifest}:${f.archs.join('+')}`).sort(),
   ['latest-linux.yml:x64', 'latest-mac.yml:arm64+x64', 'latest.yml:x64+arm64']
 )
-check('only macOS demands a .zip', feeds.filter((f: any) => f.zip).map((f: any) => f.manifest), ['latest-mac.yml'])
+check('only macOS demands a .zip as its update', feeds.filter((f: any) => f.zip).map((f: any) => f.manifest), ['latest-mac.yml'])
+check('only Windows demands an installer AND a portable zip per arch', feeds.filter((f: any) => f.portable).map((f: any) => f.manifest), ['latest.yml'])
 check(
   'Linux is exempt from the arch-in-the-url rule, because its x64 AppImage has no arch in its name',
   feeds.find((f: any) => f.manifest === 'latest-linux.yml')?.archInUrl,
@@ -688,21 +829,115 @@ check(
 )
 
 const good = readReleaseDir(out)
-check('the merged release directory publishes', auditRelease({ ...good, version: '0.9.4' }), [])
+check('the merged, zip-listed release directory publishes', auditRelease({ ...good, version: '0.9.4' }), [])
 
+// The same directory as the merge left it, before the injector ran: every
+// installer present, no zip listed. Refused once per arch — which is what makes
+// the injector's position in the publish job a rule rather than a habit.
+const notInjected = new Map(good.manifests)
+notInjected.set('latest.yml', parseManifest(mergedWinText, 'x'))
+check(
+  'the feed the merge alone produces is refused, once per Windows arch — the zips are not in it',
+  auditRelease({ manifests: notInjected, assets: good.assets, version: '0.9.4' }),
+  ['x64', 'arm64'].map(
+    (arch) =>
+      `latest.yml lists no -${arch}-win.zip, so portable copies on ${arch} would never update. ` +
+      'scripts/add-portable-to-manifest.mjs lists each zip in the publish job; either it did not run ' +
+      `or the ${arch} job produced no zip. Listed: Stoke-0.9.4-x64-setup.exe, Stoke-0.9.4-arm64-setup.exe.`
+  )
+)
+
+// A lost arm64 job, in the new shape: its installer AND its zip gone from the
+// feed and from the directory.
+const lostArm = { ...injectedWin, files: injectedWin.files.filter((f: any) => !f.url.includes('arm64')) }
 const dropArch = new Map(good.manifests)
-dropArch.set('latest.yml', parseManifest(winX64Yml, 'x'))
+dropArch.set('latest.yml', lostArm)
+const dropAssets = new Set([...good.assets].filter((a) => !(a.includes('arm64') && (a.endsWith('.exe') || a.endsWith('-win.zip')))))
+const dropped = auditRelease({ manifests: dropArch, assets: dropAssets, version: '0.9.4' })
+check('a latest.yml that lost its arm64 job is refused twice — installer and zip', dropped.length, 2)
 check(
-  'a latest.yml that lost its arm64 job does not',
-  auditRelease({ manifests: dropArch, assets: good.assets, version: '0.9.4' }).length,
-  1
+  'the first says what arm64 would be handed instead: the x64 installer',
+  dropped[0],
+  'latest.yml lists no .exe whose name contains "arm64", so arm64 Windows installs would be handed ' +
+    'Stoke-0.9.4-x64-setup.exe instead. Listed: Stoke-0.9.4-x64-setup.exe, Stoke-0.9.4-x64-win.zip.'
 )
 check(
-  'and it says which arch and which file',
-  auditRelease({ manifests: dropArch, assets: good.assets, version: '0.9.4' })[0],
-  'latest.yml lists no file whose name contains "arm64", so arm64 installs will not find a download in it. ' +
-    'Listed: Stoke-0.9.4-x64-setup.exe.'
+  'the second that a portable copy on arm64 would never update',
+  dropped[1],
+  'latest.yml lists no -arm64-win.zip, so portable copies on arm64 would never update. ' +
+    'scripts/add-portable-to-manifest.mjs lists each zip in the publish job; either it did not run ' +
+    'or the arm64 job produced no zip. Listed: Stoke-0.9.4-x64-setup.exe, Stoke-0.9.4-x64-win.zip.'
 )
+
+/*
+ * The counterfactual the Windows rule exists for. A feed that lists portable
+ * zips has something other than an installer in it, and electron-updater's
+ * findFile(files, 'exe') falls back to files[0] when there is no .exe at all —
+ * so a feed whose installers went missing hands the installer route a ZIP. The
+ * gate refuses it; the real findFile shows what it would have done; and the
+ * gate's own description of the fallback (nsisPickFor) is held to the real
+ * thing across every feed shape here, so its messages cannot drift from what
+ * electron-updater does.
+ */
+const zipsOnly = { ...injectedWin, files: injectedWin.files.filter((f: any) => f.url.endsWith('.zip')) }
+const armExeGone = { ...injectedWin, files: injectedWin.files.filter((f: any) => f.url !== 'Stoke-0.9.4-arm64-setup.exe') }
+const armZipGone = { ...injectedWin, files: injectedWin.files.filter((f: any) => f.url !== 'Stoke-0.9.4-arm64-win.zip') }
+const withWin = (m: object) => {
+  const map = new Map(good.manifests)
+  map.set('latest.yml', m)
+  return auditRelease({ manifests: map, assets: good.assets, version: '0.9.4' })
+}
+check(
+  "a feed with its zips but arm64's installer gone is refused, and says arm64 would get the x64 installer",
+  withWin(armExeGone),
+  [
+    'latest.yml lists no .exe whose name contains "arm64", so arm64 Windows installs would be handed ' +
+      'Stoke-0.9.4-x64-setup.exe instead. Listed: Stoke-0.9.4-x64-setup.exe, Stoke-0.9.4-x64-win.zip, Stoke-0.9.4-arm64-win.zip.',
+  ]
+)
+check(
+  'a feed of zips with no installer at all is refused for both arches — each would download a zip as its installer',
+  withWin(zipsOnly).map((p: string) => /Windows installs would download a zip as their installer \(Stoke-0\.9\.4-x64-win\.zip\)/.test(p)),
+  [true, true]
+)
+check(
+  "a feed missing only arm64's zip is refused: portable copies on arm64 would never update",
+  withWin(armZipGone).map((p: string) => p.slice(0, p.indexOf('.', p.indexOf('never update')) + 1)),
+  ['latest.yml lists no -arm64-win.zip, so portable copies on arm64 would never update.']
+)
+if (updaterOracle) {
+  const realArch = process.arch
+  const feedsToProbe: [string, any][] = [
+    ['the full feed', injectedWin],
+    ["arm64's installer gone", armExeGone],
+    ['zips only', zipsOnly],
+    ["arm64's zip gone", armZipGone],
+  ]
+  const disagreements: string[] = []
+  for (const [label, m] of feedsToProbe) {
+    const resolved = m.files.map((f: any) => ({ url: new URL(f.url, 'https://x/'), info: { url: f.url } }))
+    for (const arch of ['x64', 'arm64']) {
+      Object.defineProperty(process, 'arch', { value: arch, configurable: true })
+      const real = findFile(resolved, 'exe')?.info.url
+      const ours = nsisPickFor(m.files, arch)?.url
+      if (real !== ours) disagreements.push(`${label}/${arch}: findFile ${real}, gate ${ours}`)
+    }
+  }
+  Object.defineProperty(process, 'arch', { value: 'arm64', configurable: true })
+  const zipsOnlyPick = findFile(zipsOnly.files.map((f: any) => ({ url: new URL(f.url, 'https://x/'), info: { url: f.url } })), 'exe')?.info.url
+  Object.defineProperty(process, 'arch', { value: realArch, configurable: true })
+  check("the gate's account of the fallback matches electron-updater's own findFile on every feed and arch", disagreements, [])
+  check(
+    'and on the zips-only feed the real findFile really does hand an arm64 installer route a zip',
+    zipsOnlyPick,
+    'Stoke-0.9.4-x64-win.zip'
+  )
+  check(
+    "while portableAssetFor finds no arm64 zip in the feed that lost it — hence \"would never update\"",
+    portableAssetFor(armZipGone.files, 'arm64'),
+    null
+  )
+}
 
 const dmgOnly = new Map(good.manifests)
 dmgOnly.set('latest-mac.yml', {

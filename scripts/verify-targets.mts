@@ -230,7 +230,7 @@ const triggers = wf.on ?? wf[true as unknown as string] ?? {}
 const stepsOf = (id: string) => (jobs[id]?.steps ?? []) as any[]
 const runsOf = (id: string) => stepsOf(id).map((s) => String(s.run ?? '')).join('\n')
 
-check('the four jobs are there and named', Object.keys(jobs), ['verify', 'prepare', 'build', 'publish'])
+check('the five jobs are there and named', Object.keys(jobs), ['verify', 'prepare', 'build', 'publish', 'winget'])
 check('build waits for both the gate and the matrix', jobs.build?.needs, ['verify', 'prepare'])
 check('publish waits for every build leg', jobs.publish?.needs, 'build')
 check('prepare publishes the matrix as an output', jobs.prepare?.outputs?.matrix, '${{ steps.targets.outputs.matrix }}')
@@ -283,11 +283,94 @@ check('nothing publishes from dist/', /gh release create [^\n]*\bdist\/\*/.test(
 const publishRuns = stepsOf('publish').map((s) => String(s.run ?? ''))
 const stepWith = (re: RegExp) => publishRuns.findIndex((r) => re.test(r))
 const mergeAt = stepWith(/merge-update-manifests\.mjs/)
+const portableAt = stepWith(/add-portable-to-manifest\.mjs release-assets/)
 const gateAt = stepWith(/check-release-assets\.mjs/)
 const createAt = stepWith(/gh release create/)
-check('each of the three publish steps is actually there', [mergeAt, gateAt, createAt].some((i) => i === -1), false)
+check('each of the four publish steps is actually there', [mergeAt, portableAt, gateAt, createAt].some((i) => i === -1), false)
 check('the merge runs before the gate, which has nothing to read otherwise', mergeAt < gateAt, true)
+/*
+ * The portable zips are listed AFTER the merge — each job's manifest has to
+ * stay electron-builder's own output for verify:manifests' oracle to mean
+ * anything, and before the merge there is no single latest.yml to add to — and
+ * BEFORE the gate, which refuses a Windows feed with no zip for an arch. Either
+ * order swapped is a red release, or worse, a green one with no portable feed.
+ */
+check('the portable zips are listed after the merge', mergeAt < portableAt, true)
+check('and before the gate, which requires them', portableAt < gateAt, true)
 check('and the gate runs BEFORE the release is created, or it is a post-mortem', gateAt < createAt, true)
+
+console.log('\nthe winget job')
+
+/*
+ * `needs: publish`, inside this workflow, and not a separate workflow on
+ * `release: published`: a release created with GITHUB_TOKEN triggers no other
+ * workflow, so that one would never run. And stable tags only — winget has no
+ * prerelease channel, and the publish job marks a hyphenated tag as one.
+ */
+const winget = jobs.winget ?? {}
+check('it waits for the publish job, so it only ever submits a release that passed the gate', winget.needs, 'publish')
+check(
+  'and runs only for a stable tag — a hyphen is a prerelease',
+  winget.if,
+  "startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-')"
+)
+const wingetRuns = stepsOf('winget').map((s) => String(s.run ?? ''))
+const wingetStep = (re: RegExp) => wingetRuns.findIndex((r) => re.test(r))
+const tokenAt = wingetStep(/WINGET_TOKEN/)
+const printAt = wingetStep(/winget\.mjs --print-urls/)
+const writeAt = wingetStep(/winget\.mjs --version/)
+const komacAt = wingetStep(/sha256sum -c/)
+const dedupeAt = wingetStep(/repos\/microsoft\/winget-pkgs\/contents/)
+const dryAt = wingetStep(/submit [^\n]*--dry-run/)
+const submitAt = wingetStep(/submit [^\n]*--yes/)
+check(
+  'every step is there: token check, download, write, Komac, dedupe, dry run, submit',
+  [tokenAt, printAt, writeAt, komacAt, dedupeAt, dryAt, submitAt].map((i) => i !== -1),
+  [true, true, true, true, true, true, true]
+)
+check(
+  'in that order — nothing is submitted before the dedupe and the checked dry run',
+  [tokenAt, printAt, writeAt, komacAt, dedupeAt, dryAt, submitAt].every((v, i, a) => i === 0 || a[i - 1] < v),
+  true
+)
+check(
+  'the token is tested in a step that reads env, the way the signing step does',
+  stepsOf('winget')[tokenAt]?.env?.WINGET_TOKEN,
+  '${{ secrets.WINGET_TOKEN }}'
+)
+check('Komac is pinned by digest, not just by version', /KOMAC_SHA256=[0-9a-f]{64}/.test(wingetRuns[komacAt] ?? ''), true)
+check(
+  'the dry run is checked for all three ManifestType lines — Komac drops a file it cannot parse and exits 0',
+  ['version', 'installer', 'defaultLocale'].every((t) => (wingetRuns[dryAt] ?? '').includes(t)) &&
+    /ManifestType: \$\{TYPE\}/.test(wingetRuns[dryAt] ?? ''),
+  true
+)
+check(
+  'and the submission must print a pull request URL',
+  /microsoft\/winget-pkgs\/pull\/\[0-9\]\+/.test(wingetRuns[submitAt] ?? '') && /GITHUB_STEP_SUMMARY/.test(wingetRuns[submitAt] ?? ''),
+  true
+)
+check(
+  'the dry run and the submission run only when the dedupe said there is something to send',
+  [stepsOf('winget')[dryAt]?.if, stepsOf('winget')[submitAt]?.if].every((c) => /steps\.dedupe\.outputs\.skip == 'false'/.test(String(c))),
+  true
+)
+check('it never builds anything, so it never needs npm ci', /npm ci/.test(wingetRuns.join('\n')), false)
+
+/*
+ * No `secrets.` inside ANY `if:` in the workflow. A secret in a condition is
+ * not reliably available and evaluates as empty where it is not — which reads
+ * as "not configured" and skips the step under a green tick. Walked over every
+ * job and step rather than grepped, so a comment mentioning the rule cannot
+ * satisfy or break it.
+ */
+const conditions: string[] = []
+for (const [id, job] of Object.entries(jobs) as [string, any][]) {
+  if (job?.if != null) conditions.push(`${id}: ${String(job.if)}`)
+  for (const step of job?.steps ?? []) if (step?.if != null) conditions.push(`${id}/${step.name ?? step.uses ?? '?'}: ${String(step.if)}`)
+}
+check('no `if:` anywhere in the workflow reads secrets', conditions.filter((c) => /\bsecrets\./.test(c)), [])
+check('and that walk saw the conditions it is meant to police', conditions.length > 5, true)
 
 check('workflow_dispatch is still a trigger, so the whole matrix can be rehearsed without a tag', 'workflow_dispatch' in triggers, true)
 check('a tag still triggers it', triggers.push?.tags, ['v*'])
@@ -305,6 +388,59 @@ check(
   /^\s+arch:/m.test(builderConfig),
   false
 )
+/*
+ * Windows builds the installer AND a portable zip, from one invocation — that is
+ * what puts resources/app-update.yml inside the zip — and the two need two
+ * names. Parsed, not grepped, because the rule is about which KEY holds which
+ * pattern: nsis.artifactName names the installer, win.artifactName is the only
+ * key that can name a win zip, and a top-level artifactName would be the
+ * fallback for every target without a name of its own — the Linux AppImage,
+ * whose arch-free name install.sh and the publish gate both rely on.
+ */
+let builder: any = {}
+try {
+  builder = require('js-yaml').load(builderConfig) ?? {}
+} catch (error) {
+  failures++
+  console.log(`  FAIL  electron-builder.yml does not parse as YAML: ${String(error)}`)
+}
+check('win.target is the installer and the portable zip', (builder.win?.target ?? []).map((t: any) => (typeof t === 'string' ? t : t.target)), ['nsis', 'zip'])
+check('the installer keeps its name, through nsis.artifactName', builder.nsis?.artifactName, '${productName}-${version}-${arch}-setup.${ext}')
+check('the zip is named by win.artifactName, with -win in it', builder.win?.artifactName, '${productName}-${version}-${arch}-win.${ext}')
+check('no top-level artifactName, which would rename the Linux AppImage', 'artifactName' in builder, false)
+check('and no top-level zip block, which electron-builder refuses outright', 'zip' in builder, false)
+
+/*
+ * The collision the `-win` exists to prevent, computed rather than described:
+ * every file every target produces, expanded from the patterns above, must be a
+ * different name — the publish job's merge refuses two assets with one name.
+ */
+const expand = (pattern: string, arch: string, ext: string) =>
+  pattern.replace('${productName}', 'Stoke').replace('${version}', '9.9.9').replace('${arch}', arch).replace('${ext}', ext)
+const produced: string[] = []
+for (const t of TARGETS) {
+  if (t.platform === 'win32') {
+    produced.push(expand(builder.nsis?.artifactName ?? '', t.arch, 'exe'))
+    produced.push(expand(builder.win?.artifactName ?? '', t.arch, 'zip'))
+  } else if (t.platform === 'darwin') {
+    for (const ext of ['dmg', 'zip']) produced.push(expand(builder.mac?.artifactName ?? '', t.arch, ext))
+  } else {
+    // No linux artifactName: electron-builder passes arch as null for x64 and
+    // strips `-${arch}`, so the AppImage is Stoke-<version>.AppImage.
+    produced.push(t.arch === 'x64' ? 'Stoke-9.9.9.AppImage' : `Stoke-9.9.9-${t.arch}.AppImage`)
+  }
+}
+check(
+  'no two targets produce the same file name — a Windows zip named like the mac zip would collide',
+  produced.filter((n, i) => produced.indexOf(n) !== i),
+  []
+)
+check(
+  'and without -win it WOULD collide: Stoke-<v>-x64.zip is the Intel mac zip',
+  expand('${productName}-${version}-${arch}.${ext}', 'x64', 'zip'),
+  expand(builder.mac?.artifactName ?? '', 'x64', 'zip')
+)
+
 const linuxBlock = /^linux:\n((?:[ \t].*\n|\n)*)/m.exec(builderConfig)?.[1] ?? ''
 check('there is a linux: block', linuxBlock.length > 0, true)
 check('and AppImage is its target — the only Linux format that self-updates without elevation', /AppImage/.test(linuxBlock), true)

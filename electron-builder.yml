@@ -26,9 +26,38 @@ asarUnpack:
 # long.
 win:
   icon: build/icon.png
+  # Two targets from ONE invocation: the installer, and a portable zip of the
+  # same win-unpacked folder. One invocation is what makes the zip complete:
+  # PublishManager's onAfterPack writes resources/app-update.yml into
+  # win-unpacked (PublishManager.js:75-89) BEFORE either target packs it, so
+  # the zip carries the same feed config the installer does, with Stoke.exe at
+  # the zip's root (ArchiveTarget.js:47, `withoutDir` for everything but mac).
+  # A Windows zip gets no latest.yml entry and no blockmap of its own
+  # (ArchiveTarget's isWriteUpdateInfo defaults false, and targetFactory
+  # never passes true for win): scripts/add-portable-to-manifest.mjs appends
+  # it to the merged feed in the publish job instead.
   target:
     - target: nsis
-  artifactName: ${productName}-${version}-${arch}-setup.${ext}
+    - target: zip
+  # Two names, and the split is forced. `artifactPatternConfig`
+  # (platformPackager.js:551-556) takes the target's own options first, then
+  # this block's artifactName, then the top-level one. NsisTarget passes
+  # `config.nsis` as its options (NsisTarget.js:137), so nsis.artifactName
+  # below names the installer. A win zip's options are `config.zip`, which is
+  # not a key electron-builder accepts at the top level at all (scheme.json,
+  # additionalProperties false) — so the zip can only be named HERE. Not by a
+  # top-level artifactName either: that is the fallback for every target with
+  # no name of its own, which here is the Linux AppImage, whose version-only
+  # name the one-line installer and the publish gate both rely on.
+  #
+  # `-win` is not decoration. Without it the zip is
+  # `Stoke-<version>-<arch>.zip`, which is exactly the mac zip's name — a
+  # Windows x64 job and a macOS x64 job would both produce
+  # `Stoke-0.9.9-x64.zip`, and the publish job's merge refuses a release with
+  # two assets under one name (merge-update-manifests.mjs's mergeTree), which
+  # beats the alternative of one silently replacing the other. src/shared/
+  # installKind.ts's portableAssetFor finds the zip by that same `-<arch>-win`.
+  artifactName: ${productName}-${version}-${arch}-win.${ext}
   # The `stoke` command for cmd and PowerShell, at <install>\resources\bin,
   # which is the folder Settings > Updates > Command line puts on PATH. Its
   # path to Stoke.exe (`%~dp0..\..`) depends on landing exactly here.
@@ -36,6 +65,11 @@ win:
     - from: build/bin/stoke.cmd
       to: bin/stoke.cmd
 nsis:
+  # The installer's name, unchanged from every release so far: install.ps1,
+  # the worker and every latest.yml already in the wild name
+  # `Stoke-<version>-<arch>-setup.exe`. Moved here from `win.artifactName`
+  # because that key now names the portable zip (see the win block).
+  artifactName: ${productName}-${version}-${arch}-setup.${ext}
   oneClick: false
   perMachine: false
   allowToChangeInstallationDirectory: true
@@ -57,11 +91,15 @@ nsis:
   installerHeader: build/installerHeader.bmp
   installerSidebar: build/installerSidebar.bmp
   uninstallerSidebar: build/uninstallerSidebar.bmp
-  # The one script Stoke owns, and it does exactly one thing: adds the welcome
-  # page. Without it MUI_WELCOMEFINISHPAGE_BITMAP -- i.e. installerSidebar.bmp
-  # above -- is read by no installer page until MUI_PAGE_FINISH, so the art
-  # shows once, at the end, after every decision has been made. See the file;
-  # it explains what it does not set and why.
+  # The one script Stoke owns, and it does exactly two things. It adds the
+  # welcome page: without it MUI_WELCOMEFINISHPAGE_BITMAP -- i.e.
+  # installerSidebar.bmp above -- is read by no installer page until
+  # MUI_PAGE_FINISH, so the art shows once, at the end, after every decision
+  # has been made. And it replaces the stock "is Stoke running?" step, which
+  # under /S (winget, the one-liner, a self-update) force-kills every process
+  # in the install folder and orphans every `claude` Stoke was running, with
+  # one that asks Stoke to close its window and waits. See the file; it
+  # explains what it does not set and why.
   #
   # `include`, never `script`. `script` replaces the whole generated script and
   # takes the uninstaller's generation AND its signing with it. Named rather

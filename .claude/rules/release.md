@@ -17,6 +17,15 @@ paths:
   - "scripts/assert-packaged-pty.mjs"
   - "src/main/codesign.ts"
   - "src/main/selfUpdate.ts"
+  - "src/main/portableUpdate.ts"
+  - "src/main/portableSwap.ts"
+  - "src/shared/installKind.ts"
+  - "scripts/add-portable-to-manifest.mjs"
+  - "scripts/winget.mjs"
+  - "scripts/verify-winget.mts"
+  - "scripts/verify-portable.mts"
+  - "scripts/windows-e2e.mts"
+  - ".github/workflows/windows.yml"
 ---
 
 # Packaging, signing, self-update
@@ -367,3 +376,121 @@ the whole window on a scaled display with nearest-neighbour. That is why the art
 and carries no text anywhere: not taste, survivability. `ManifestDPIAware true` from a custom
 include should work, is unverified, and NSIS's own reference warns it breaks the component-page
 tree bitmap — leave it.
+
+## 94. A silent NSIS install force-killed a running Stoke, and every Windows update route is silent
+
+**electron-builder's stock `_CHECK_APP_RUNNING` answers its own "Stoke is running" prompt under
+`/S` (`/SD IDOK`) and then `Stop-Process`es — then `-Force`s — every process whose path starts
+with `$INSTDIR`** (`templates/nsis/include/allowOnlyOneInstallerInstance.nsh`, app-builder-lib
+26.15.3). Every non-interactive route runs the installer with `/S`: `winget install`/`upgrade`,
+the one-line installer, electron-updater's install-on-quit. So `winget upgrade` of a running
+Stoke killed it, and a killed Stoke strands the `claude` processes its sessions run — the
+standing "never force-kill Stoke" rule, broken by the installer rather than by us.
+
+`build/installer.nsh` defines `!macro customCheckAppRunning`, which `CHECK_APP_RUNNING` inserts
+INSTEAD of the stock body for both the installer (`installSection.nsh`) and the uninstaller
+(`uninstaller.nsh`). The include lands in the shared header, before
+`allowOnlyOneInstallerInstance.nsh` tests `!ifmacrodef`, so it takes effect. What it does:
+`$INSTDIR` travels in the environment (`STOKE_INSTDIR`, via `SetEnvironmentVariable`) — never
+spliced into the command, where an apostrophe in a profile name ends the string; processes are
+found with `Get-CimInstance Win32_Process` (a 32-bit PowerShell cannot read a 64-bit process's
+`.Path`); the installer's own process is excluded by the PowerShell's parent pid, because the
+old uninstaller runs IN PLACE from `$INSTDIR` via `_?=`; each gets `CloseMainWindow()` — what
+clicking × does, so Stoke quits properly and ends its sessions — and it waits ~60s. Anything
+still running: Retry/Cancel, which under `/S` is Cancel, `SetErrorLevel 2`, `Quit` — a silent
+install fails loudly instead of killing. Every PowerShell `$` must be written `$$`; a single `$`
+is makensis warning 6000, and electron-builder passes `-WX`, so it fails the build (measured).
+`verify:welcome` holds the macro's body: no Stop-Process/taskkill/Kill/-Force, CloseMainWindow
+and CIM present, SetErrorLevel before Quit.
+
+Compiled locally with electron-builder's own makensis (no Wine needed, 2026-09-21).
+`.github/workflows/windows.yml`'s build job is what proves it on Windows: a silent install over a
+running Stoke must exit 0 AND leave Stoke's own exit code 0 (a killed process is not 0), and a
+windowless process in the install folder must make the install exit non-zero while it stays
+alive.
+
+## 95. A Windows zip can only be named by `win.artifactName`, and the default name is the Intel Mac zip's
+
+**`artifactPatternConfig` takes the target's own options first, then the platform block, then
+the top level** (`platformPackager.js:551-556`). The NSIS target's options are `config.nsis`, so
+`nsis.artifactName` names the installer; a Windows `zip` target's options would be `config.zip`,
+which the schema refuses at the top level — so `win.artifactName` is the ONLY key that names the
+zip. Left at `${productName}-${version}-${arch}.${ext}` it is `Stoke-0.9.9-x64.zip`, byte for
+byte the Intel Mac zip's name on the same release page; `mergeTree` refuses two assets with one
+name, so it would have stopped a release rather than shipped a broken feed, but only at publish
+time. The installer's name moved to `nsis.artifactName` (unchanged: `-setup.exe`, so every
+existing `latest.yml` and install.ps1's asset match still hold) and the zip is
+`Stoke-<v>-<arch>-win.zip`. A top-level `artifactName` would NOT rename the mac zip
+(`mac.artifactName` wins) but WOULD rename the Linux AppImage, whose arch-free name install.sh
+and the gate rely on. `verify:targets` expands every target's names and asserts they are unique.
+
+electron-builder writes no `latest.yml` entry and no blockmap for a Windows zip
+(`targetFactory.js` builds `ArchiveTarget` with `isWriteUpdateInfo = false`; only mac passes
+true). `scripts/add-portable-to-manifest.mjs` adds each `-win.zip` to the MERGED `latest.yml`
+in the publish job, after the exes, so the per-job manifests stay electron-builder's own output
+and verify:manifests' oracle still holds. That makes the gate's per-arch rule load-bearing in a
+new way: with zips in the feed, a release missing one arch's `.exe` would hand that arch
+`findFile`'s fallback — the OTHER arch's installer, or a zip if there is no exe at all — so
+`check-release-assets.mjs` requires both an `.exe` and a `-<arch>-win.zip` per Windows arch.
+`resources/app-update.yml` IS in the zip, but only because nsis builds in the same run
+(`PublishManager.js` writes it on afterPack only when a suitable Windows target is present): a
+zip-only build would produce copies that can never update, and nothing but the windows
+workflow's `tar -tf` check would say so.
+
+## 96. On Windows electron-updater only knows the NSIS installer, so a portable copy "updated" into a second install
+
+**`electron-updater/out/main.js` constructs an `NsisUpdater` on win32, whatever the copy is.**
+For an unzipped folder it downloaded the setup .exe and ran it with `--updated /S`; with no
+registry `InstallLocation` (nobody installed this folder) `multiUser.nsh` picked
+`%LOCALAPPDATA%\Programs\Stoke`, so the update installed a SECOND copy there and launched it
+(via the finish page) or not at all (install-on-quit), while the unzipped copy stayed on the old
+version and offered the same update on its next start, forever. A folder Scoop owns would have
+been overwritten behind Scoop's back.
+
+`src/shared/installKind.ts` decides the route first, from facts `portableUpdate.ts` gathers:
+`Uninstall Stoke.exe` beside Stoke.exe means the installer's folder (the website .exe, the
+one-liner and winget all run the same installer, which also rewrites the Apps & Features
+version winget reads — so winget needs no special handling); a package manager's own folder
+(`scoop\apps\`, `WinGet\Packages\`, `chocolatey\lib\`) gets its command, never an update
+behind its back; electron-builder's single-file `portable` exe (re-extracted to `%TEMP%` every
+launch, `PORTABLE_EXECUTABLE_FILE` set) and a folder Stoke cannot create files beside get the
+releases page and why; everything else is **portable**. Write access is tested with a real
+`mkdtemp` in the PARENT — `fs.access(W_OK)` "does not check the ACL" on Windows.
+
+The portable route keeps electron-updater for the CHECK (feed, version, betas) and must never
+let it download: `autoInstallOnAppQuit` is set per kind, and `downloadSelfUpdate` refuses the
+NSIS route for any non-installer kind. `portableAssetFor` picks `-<arch>-win.zip` and, unlike
+`findFile`, never falls back to another arch's (gotcha 67: a folder whose terminal binary is for
+the wrong CPU is every tab dead). The swap is `portableSwap.ts`'s helper; its rules are in the
+file. `verify:portable` runs the helper under a real PowerShell where there is one, and
+`windows.yml` swaps the folder of a RUNNING packaged Stoke on Windows.
+
+## 97. Komac rewrites what it submits, and silently drops a manifest it cannot parse — exit 0
+
+**`komac submit <dir>` parses every file into typed structs and writes them back** (a
+`# Created with komac` header, CRLF, shared installer fields hoisted to the root, the installer
+manifest's `ManifestVersion` forced to 1.12.0), **and a file that does not parse is dropped
+with `No valid packages to submit were found` — exit 0.** Unknown keys vanish the same way. So a
+green step can open a two-file pull request winget-pkgs rejects days later. The release
+workflow's `winget` job greps the dry run for all three `ManifestType:` lines and requires a
+`microsoft/winget-pkgs/pull/<n>` URL from the submit, and `scripts/winget.mjs` writes every file
+at 1.12.0 with the shared fields already at the root, so Komac's rewrite changes nothing
+`verify:winget` pinned. Also: Komac needs an existing `<owner>/winget-pkgs` fork and does not
+create one; the token is a classic PAT (`public_repo`) in `GITHUB_TOKEN`; a release created with
+`GITHUB_TOKEN` triggers no other workflow, which is why the job is `needs: publish` inside
+release.yml; secrets cannot be tested in `if:`, so the gate reads `env`. Re-running for a
+version already in winget-pkgs, or with an open PR, is skipped with a notice. None of the
+Komac behaviour has been observed in CI yet — it is read from its v2.16.0 source and a local
+dry run.
+
+## 98. Electron's `fs` treats every `app.asar` as a directory, so a recursive delete of an app folder walks into it
+
+**Inside Electron, `fs` is patched so an `.asar` archive reads as a folder** — which is exactly
+how `portableUpdate.ts`'s `asarVersion` can read `resources\app.asar\package.json` of a copy it
+just unpacked. The same patch makes `fs.rm(dir, { recursive: true })` of an unpacked Stoke
+descend INTO its `app.asar` and fail on the first virtual file, so a staged update, a failed
+download or an old copy could never be cleaned up from the main process. Every recursive delete
+in `portableUpdate.ts` goes through an injected remover (`useRemover`), which `selfUpdate.ts`
+points at `require('original-fs').promises.rm`; a suite runs under plain node, where the default
+already is the unpatched one. Reading into an asar and deleting one need opposite fs modules —
+keep them apart.

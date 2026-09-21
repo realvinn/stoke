@@ -49,26 +49,52 @@ import { TARGETS } from './targets.mjs'
  * `zip` is on for macOS only: MacUpdater searches the feed for a .zip and
  * rejects "dmg" and "pkg" by name, so a mac arch listed only as a dmg is an
  * arch that cannot update.
+ *
+ * `portable` is on for Windows only, and it asks for TWO entries per arch.
+ * The installer: NsisUpdater picks `findFile(files, 'exe')` (Provider.js
+ * 74-90), which filters to .exe, prefers the one naming process.arch, falls
+ * back to the FIRST .exe — another arch's installer — and, when the feed holds
+ * no .exe at all, to `files[0]`, which in a feed that lists portable zips can
+ * be a zip handed to the installer path. And the portable zip,
+ * `-<arch>-win.zip`, which src/shared/installKind.ts's portableAssetFor looks
+ * for and deliberately does not fall back from: no zip for this arch means a
+ * portable copy is never offered an update. electron-builder lists no zip in
+ * latest.yml by itself; scripts/add-portable-to-manifest.mjs does, one step
+ * before this gate.
  */
 export function expectedFeeds(targets = TARGETS) {
   const feeds = new Map()
   for (const target of targets) {
-    const { manifest, archInUrl, zip } =
+    const { manifest, archInUrl, zip, portable } =
       target.platform === 'win32'
-        ? { manifest: 'latest.yml', archInUrl: true, zip: false }
+        ? { manifest: 'latest.yml', archInUrl: true, zip: false, portable: true }
         : target.platform === 'darwin'
-          ? { manifest: 'latest-mac.yml', archInUrl: true, zip: true }
+          ? { manifest: 'latest-mac.yml', archInUrl: true, zip: true, portable: false }
           : {
               manifest: target.arch === 'x64' ? 'latest-linux.yml' : `latest-linux-${target.arch}.yml`,
               archInUrl: false,
               zip: false,
+              portable: false,
             }
-    if (!feeds.has(manifest)) feeds.set(manifest, { manifest, archInUrl, zip, archs: [], targets: [] })
+    if (!feeds.has(manifest)) feeds.set(manifest, { manifest, archInUrl, zip, portable, archs: [], targets: [] })
     const feed = feeds.get(manifest)
     if (!feed.archs.includes(target.arch)) feed.archs.push(target.arch)
     feed.targets.push(target.key)
   }
   return [...feeds.values()]
+}
+
+/**
+ * The entry electron-updater's NsisUpdater would download for `arch`: a
+ * transcription of `findFile(files, 'exe')` (electron-updater 6.8.9,
+ * providers/Provider.js:74-90) — .exe entries only, the one naming the arch,
+ * else the first .exe, else files[0]. Used only to say what a refused feed
+ * WOULD have done; verify:manifests holds it to the real findFile.
+ */
+export function nsisPickFor(files, arch) {
+  if (files.length === 0) return null
+  const exes = files.filter((f) => String(f.url ?? '').toLowerCase().endsWith('.exe'))
+  return exes.find((f) => String(f.url).includes(arch)) ?? exes[0] ?? files[0]
 }
 
 /**
@@ -98,6 +124,40 @@ export function auditRelease({ manifests, assets, version, targets = TARGETS }) 
       continue
     }
     if (!feed.archInUrl) continue
+
+    if (feed.portable) {
+      for (const arch of feed.archs) {
+        const exe = files.find((f) => {
+          const url = String(f.url ?? '')
+          return url.includes(arch) && url.toLowerCase().endsWith('.exe')
+        })
+        if (!exe) {
+          // Name what the updater would actually be handed instead, because
+          // the two outcomes are different failures: another arch's installer
+          // (runs under emulation, installs the wrong build) or — with no .exe
+          // left in the feed at all — whatever is first, which here can be a
+          // portable zip executed as an installer.
+          const fallback = nsisPickFor(files, arch)
+          const handed = fallback == null ? 'nothing' : String(fallback.url)
+          const why = handed.toLowerCase().endsWith('.zip')
+            ? `${arch} Windows installs would download a zip as their installer (${handed})`
+            : `${arch} Windows installs would be handed ${handed} instead`
+          problems.push(
+            `${feed.manifest} lists no .exe whose name contains "${arch}", so ${why}. ` +
+              `Listed: ${files.map((f) => f.url).join(', ')}.`
+          )
+        }
+        const zipRe = new RegExp(`-${arch}-win\\.zip$`, 'i')
+        if (!files.some((f) => zipRe.test(String(f.url ?? '')))) {
+          problems.push(
+            `${feed.manifest} lists no -${arch}-win.zip, so portable copies on ${arch} would never update. ` +
+              'scripts/add-portable-to-manifest.mjs lists each zip in the publish job; either it did not run ' +
+              `or the ${arch} job produced no zip. Listed: ${files.map((f) => f.url).join(', ')}.`
+          )
+        }
+      }
+      continue
+    }
 
     for (const arch of feed.archs) {
       const match = files.filter((f) => {

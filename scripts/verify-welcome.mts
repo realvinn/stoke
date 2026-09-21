@@ -346,6 +346,115 @@ ok('with no BOM', !NSH.startsWith('﻿'))
 ok('it sets no MUI colour overrides the header art is not drawn for', !/MUI_(?:BGCOLOR|TEXTCOLOR)/.test(NSH_CODE))
 ok('and does not touch ManifestDPIAware', !/ManifestDPIAware/.test(NSH_CODE))
 
+/* ------------------------------------------------------------------ *
+ * customCheckAppRunning: the installer's "Stoke is running" step,
+ * replaced so it closes Stoke instead of killing it.
+ *
+ * The stock step auto-confirms its own prompt under /S and runs
+ * Stop-Process -Force on everything in $INSTDIR, which orphans every
+ * `claude` Stoke was hosting — and /S is every winget install, every
+ * one-liner install and every self-update. The template swaps in this
+ * macro `!ifmacrodef customCheckAppRunning`, so the NAME is the
+ * contract and a typo is an installer that quietly goes back to
+ * killing. Same method as the welcome page: the BODY, out of the
+ * comment-stripped source, because the prose above the macro quotes
+ * Stop-Process and -Force while explaining why they are gone.
+ * ------------------------------------------------------------------ */
+
+console.log('\nthe NSIS "Stoke is running" step closes, never kills')
+ok('build/installer.nsh defines customCheckAppRunning', /^!macro\s+customCheckAppRunning\s*$/m.test(NSH_CODE))
+const RUNNING = /^!macro\s+customCheckAppRunning\s*$([\s\S]*?)^!macroend\s*$/m.exec(NSH_CODE)?.[1] ?? ''
+ok('and its body is not empty', RUNNING.trim().length > 0, 'an empty macro would let a running Stoke hold its files open')
+
+for (const [what, re] of [
+  ['Stop-Process', /Stop-Process/i],
+  ['taskkill', /taskkill/i],
+  ['a .Kill( call', /\.?Kill\s*\(/i],
+  ['-Force', /-Force\b/i],
+  ['nsProcess::KillProcess', /KillProcess/i]
+] as const) {
+  ok(`the body contains no ${what}`, !re.test(RUNNING), re.exec(RUNNING)?.[0] ?? '')
+}
+ok('it asks each window to close, the way clicking X does', /\.CloseMainWindow\(\)/.test(RUNNING))
+ok(
+  'and finds the processes through Get-CimInstance Win32_Process',
+  /Get-CimInstance Win32_Process/.test(RUNNING),
+  'from the 32-bit PowerShell $SYSDIR names, Get-Process .Path cannot read a 64-bit process; CIM can'
+)
+ok('by ExecutablePath under the install folder, case-insensitively', /ExecutablePath\.StartsWith\(\$\$d,\[StringComparison\]::OrdinalIgnoreCase\)/.test(RUNNING))
+ok(
+  'leaving out its own parent — an uninstaller run in place from $INSTDIR must not wait for itself',
+  /ParentProcessId/.test(RUNNING) && /ProcessId -ne \$\$me/.test(RUNNING)
+)
+
+/*
+ * The folder travels in the environment. Spliced into the command text, the
+ * first apostrophe in a user name (C:\Users\O'Brien) ends a PowerShell string.
+ */
+ok(
+  'the install folder is handed over in STOKE_INSTDIR',
+  /System::Call\s+'Kernel32::SetEnvironmentVariable\(t "STOKE_INSTDIR", t "\$INSTDIR"\)'/.test(RUNNING)
+)
+
+const EXEC = /nsExec::Exec\s+`"\$SYSDIR\\WindowsPowerShell\\v1\.0\\powershell\.exe"([^`]*?)-Command "([^"`]*)"`\s*$/m.exec(RUNNING)
+const PS_FLAGS = EXEC?.[1] ?? ''
+const PS_TEXT = EXEC?.[2] ?? ''
+ok(
+  'it runs $SYSDIR\'s powershell.exe through nsExec, with the whole -Command inside one "…" and no " in it',
+  EXEC !== null,
+  'a " inside the -Command text ends the argument early'
+)
+ok('with -NoProfile -NonInteractive -ExecutionPolicy Bypass', /-NoProfile -NonInteractive -ExecutionPolicy Bypass\s/.test(PS_FLAGS))
+ok('and the script reads the folder from $env:STOKE_INSTDIR', /\$\$env:STOKE_INSTDIR/.test(PS_TEXT))
+ok('never from $INSTDIR spliced into the text', !/\$INSTDIR/i.test(PS_TEXT))
+ok('and no backslash anywhere in it — [char]92 instead', !PS_TEXT.includes('\\') && /\[char\]92/.test(PS_TEXT))
+
+/*
+ * Every PowerShell `$` is `$$` to NSIS. One left single is either expanded by
+ * makensis (`$INSTDIR`, `$R0`…) or, with -WX, a build failure (warning 6000,
+ * measured) — or, worst, a name NSIS happens to know, which compiles and runs
+ * something else. The checker is exercised on a broken copy too, because a
+ * check that cannot fail is the thing this repo keeps finding (gotcha 50).
+ */
+const singleDollars = (text: string): string[] => text.replace(/\$\$/g, '').match(/\$[^$]{0,12}/g) ?? []
+ok('every $ inside the -Command text is doubled', PS_TEXT.length > 0 && singleDollars(PS_TEXT).length === 0, singleDollars(PS_TEXT).join(' | '))
+ok(
+  'and the checker would catch one that is not',
+  singleDollars(PS_TEXT.replace('$$ErrorActionPreference', '$ErrorActionPreference')).length === 1
+)
+
+/*
+ * The readable copy in the comment above the macro is the one people will
+ * read, so it is held equal to the code: `; PS> ` lines joined as they stand,
+ * against the -Command text with `$$` read back as `$`.
+ */
+const READABLE = NSH.split('\n')
+  .map((l) => /^\s*;\s*PS> (.*)$/.exec(l)?.[1])
+  .filter((l): l is string => l !== undefined)
+  .join('')
+check('the readable script in the comment is the one the code runs', READABLE, PS_TEXT.replace(/\$\$/g, '$'))
+
+ok('it exits 0 when nothing is running, and 1 when something outlives the wait', /\{exit 0\}/.test(PS_TEXT) && /;exit 1$/.test(PS_TEXT))
+ok('the wait is bounded — about a minute, not forever', /\$\$i -lt 120;\$\$i\+\+\)\{Start-Sleep -Milliseconds 500/.test(PS_TEXT))
+ok("and an unexpected error ends it non-zero rather than reading as 'nothing running'", /^\$\$ErrorActionPreference='Stop';/.test(PS_TEXT))
+
+/*
+ * What happens when it cannot close Stoke: ask, and under /S take Cancel —
+ * which must end the install with an error code, not fall through into files
+ * that are in use, and never into a kill.
+ */
+const RETRY = /MessageBox\s+MB_RETRYCANCEL\|MB_ICONEXCLAMATION\s+"\$\(appCannotBeClosed\)"\s+\/SD IDCANCEL\s+IDRETRY\s+(\w+)/.exec(RUNNING)
+ok('a failure asks Retry/Cancel, and a silent install takes Cancel', RETRY !== null)
+ok(
+  'Retry goes back to the check itself',
+  RETRY !== null && new RegExp(`^\\s*${RETRY[1]}:\\s*$`, 'm').test(RUNNING.slice(0, RUNNING.indexOf('nsExec::Exec')))
+)
+const errorAt = RUNNING.search(/SetErrorLevel\s+2\b/)
+const quitAt = RUNNING.search(/^\s*Quit\s*$/m)
+ok('Cancel sets exit code 2', errorAt !== -1)
+ok('before it quits — Quit first would exit 0 and read as a successful install', errorAt !== -1 && quitAt !== -1 && errorAt < quitAt)
+ok('and the exit code is read off nsExec before anything else', /nsExec::Exec[^\n]*\n\s*Pop \$R0\s*\n\s*StrCmp \$R0 "0"/.test(RUNNING))
+
 /*
  * The yml half. `include` is named rather than left to its default for the same
  * reason gotcha 69 gives for the three image keys: with the key SET,

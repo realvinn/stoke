@@ -8,7 +8,7 @@ Apple's own tooling, which does not exist on Windows.
 
 | Building on | Can produce |
 | --- | --- |
-| Windows | Windows `.exe` installer |
+| Windows | Windows `.exe` installer and portable `.zip` |
 | macOS (your M1) | macOS `.dmg` **and** `.zip`, and Windows packages |
 
 So the M1 is actually the more capable build machine. There is no way to make the Windows
@@ -62,9 +62,31 @@ npm install
 npm run dist:win
 ```
 
-Produces `release/Stoke-<version>-x64-setup.exe`, named from `package.json`. Run it; it
-installs per-user (no admin prompt) and creates a Start Menu entry. `npm run dist:win:arm64`
-covers Surface-class ARM machines.
+Produces two files in `release/`, both named from `package.json`:
+
+- `Stoke-<version>-x64-setup.exe`, the installer. Run it; it installs per-user (no admin
+  prompt) and creates a Start Menu entry.
+- `Stoke-<version>-x64-win.zip`, the portable copy: the same `win-unpacked` folder, zipped,
+  with `Stoke.exe` at its root. Unzip it anywhere you can write and run `Stoke.exe`. It
+  carries the same `resources/app-update.yml` as the installed copy, because both targets are
+  packed from one `electron-builder` run and that file is written before either is.
+
+`npm run dist:win:arm64` covers Surface-class ARM machines, with `-arm64-` in both names.
+
+**The `-win` in the zip's name is load-bearing.** `win.artifactName` is the only key that can
+name a Windows zip (`nsis.artifactName` names the installer; a top-level `zip:` block is not
+something electron-builder accepts), and without `-win` the zip would be `Stoke-<version>-x64.zip`
+— exactly the Intel Mac's zip. The publish job refuses a release with two assets under one
+name, so the collision would stop a release rather than ship one, but `verify:targets` expands
+every target's names and fails first.
+
+**The installer closes Stoke, it never kills it.** electron-builder's stock "is the app
+running?" step confirms its own prompt under `/S` and `Stop-Process -Force`s everything in the
+install folder — which every silent install (winget, the one-line installer, a self-update)
+goes through, and which orphans every `claude` Stoke was running. `build/installer.nsh`
+replaces it with `customCheckAppRunning`: ask Stoke's window to close, wait up to about a
+minute, and otherwise fail (a silent install exits with code 2) rather than kill. Compiled by
+makensis on every build; never yet run on Windows.
 
 **Bump `package.json` before building a release.** `electron-builder` templates both the
 artifact name and `latest.yml` from it, so building without the bump emits an installer
@@ -111,6 +133,97 @@ Without `latest.yml`, electron-updater 404s and self-update silently never happe
 job now enforces that instead of trusting it: it refuses to create the release if either
 `latest.yml` or `latest-mac.yml` is missing, and refuses again if `latest-mac.yml` lists no
 `.zip` — because a manifest can be present and still describe a Mac that cannot update itself.
+
+Windows gets the same treatment for both of its update routes. electron-builder lists the
+installer in `latest.yml` and not the portable zip, so the publish job runs
+`scripts/add-portable-to-manifest.mjs` on the merged feed — after the merge, so each job's own
+manifest stays exactly what electron-builder wrote, and before the gate — to append each
+`-<arch>-win.zip` with its base64 `sha512` and size, after the installers. The gate then
+requires, for every Windows arch in `scripts/targets.mjs`, both an `.exe` naming the arch and a
+`-<arch>-win.zip`. The order matters in a way that is easy to miss: electron-updater picks the
+installer with `findFile(files, 'exe')`, which falls back to the first entry when the feed holds
+no `.exe` at all — and in a feed that lists zips, the first entry can be a zip.
+
+## Publishing to winget
+
+A stable release (a tag with no hyphen) is also submitted to
+[winget](https://github.com/microsoft/winget-pkgs) as `realvinn.Stoke`, by the `winget` job at
+the end of `.github/workflows/release.yml`. It is a job in that workflow, `needs: publish`,
+rather than a workflow of its own on `release: published`, because a release created with
+`GITHUB_TOKEN` triggers no other workflow — a separate one would never run.
+
+### One-time setup
+
+1. **A token.** A *classic* personal access token with the `public_repo` scope — Komac, the
+   tool that opens the pull request, needs to push a branch to a fork and open a PR against
+   `microsoft/winget-pkgs`. Ideally on a dedicated account rather than your own: the token can
+   push to every public repo that account can. Classic, not fine-grained: a fine-grained token
+   is scoped to repositories one owner owns, and the pull request is opened against
+   Microsoft's.
+2. **A fork, under that same account.** Komac opens the PR from `<account>/winget-pkgs` and
+   does not create the fork itself:
+
+   ```bash
+   gh repo fork microsoft/winget-pkgs --clone=false    # signed in as that account
+   ```
+
+3. **The secret.** In this repo's settings, *Secrets and variables → Actions*, add
+   `WINGET_TOKEN` with the token. The job reads it through `env` and tests `-n`, so an empty
+   secret counts as absent, the same way the macOS signing step does.
+4. **The first pull request is reviewed by a person.** The first submission from an account
+   asks for the Microsoft CLA to be signed (a bot comments on the PR; reply as it says), and a
+   new package needs a winget-pkgs moderator's approval before it merges. Later versions go
+   through the automated validation alone. Until the first one merges, `winget install
+   realvinn.Stoke` finds nothing.
+
+### What the job does
+
+For a stable tag, after the release is published: it downloads each Windows installer
+anonymously from the exact URL the manifest will name, runs `scripts/winget.mjs` to write the
+three manifest files (version, installer, `en-US` locale — schema 1.12.0, one installer per
+Windows arch in `scripts/targets.mjs`, uppercase SHA-256 of the downloaded bytes), installs
+Komac pinned by version and sha256, and then:
+
+- **skips**, with a notice, if `microsoft/winget-pkgs` already has
+  `manifests/r/realvinn/Stoke/<version>` or an open PR titled with the id and version — so a
+  re-run never opens a duplicate. Anything other than a clean 404 from that lookup fails the
+  job rather than guessing;
+- runs `komac submit --dry-run` and **requires all three `ManifestType` lines in its output**.
+  Komac rewrites every file it sends and silently drops one it cannot parse while exiting 0, so
+  a green dry run alone proves nothing;
+- runs `komac submit --yes` and **requires a `microsoft/winget-pkgs/pull/<n>` URL in its
+  output**, which it writes to the run's summary.
+
+`npm run verify:winget` pins the manifests' full text and holds them to their sources: the
+`ProductCode` is UUIDv5 of `appId` (the Apps & Features key the installer writes), the
+`Publisher` is `package.json`'s author, and the installers are exactly the Windows targets.
+Two choices in them are deliberate and look like omissions: no `Silent` switches (winget passes
+`/S` itself), and `RequireExplicitUpgrade: true` — Stoke updates itself, so a
+`winget upgrade --all` must not close it to do the same; `winget upgrade realvinn.Stoke` still
+works.
+
+### How it fails, and what to do
+
+- **No secret.** The job logs a notice and does nothing else, green. The release is out either
+  way.
+- **A release cut before the secret existed.** Add the secret, then re-run **only the
+  `Submit to winget` job**: in the Actions tab open that tag's run, open the job, and use its
+  own re-run button. Not *Re-run all jobs* — that rebuilds the whole matrix and the publish job
+  then fails on a release that already exists, which skips this job anyway. Re-running one job
+  reuses the finished jobs it `needs`, reads the secret as it is now, and the dedupe step makes
+  it safe to repeat. GitHub only re-runs a run within 30 days of it; after that, do it by hand:
+  download the setup exes, then
+  `node scripts/winget.mjs --version <v> --installers <dir> --release-date <YYYY-MM-DD> --out out`
+  and `komac submit out/manifests/r/realvinn/Stoke/<v>` with `GITHUB_TOKEN` set to the token.
+- **The fork is missing or the token lacks `public_repo`.** Komac fails, or exits 0 without a
+  PR URL; the job fails either way and says which.
+- **The dry run lost a file.** The job refuses to submit and names the missing
+  `ManifestType`. Run the dry run locally against the same folder to see what Komac objected
+  to.
+- **winget-pkgs' validation rejects the PR.** That happens on their side after this job is
+  green: watch the PR it linked. The usual causes are a hash mismatch (the asset was replaced
+  after publishing — never do that; cut a new version) or an installer that fails its silent
+  install in their sandbox.
 
 ## macOS (M1 / Apple Silicon)
 
