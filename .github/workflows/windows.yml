@@ -1,0 +1,612 @@
+# Windows, run for real.
+#
+# Nothing in `npm run check` can run on Windows, and no round of work in this
+# repo had ever been run on a Windows machine — so every Windows claim was read
+# out of templates and vendor scripts rather than watched (CLAUDE.md,
+# "Verification"). This workflow is where they are watched, on GitHub's own x64
+# and arm64 Windows runners:
+#
+#   one-liner   the documented install line typed into cmd.exe, Windows
+#               PowerShell 5.1, PowerShell 7 and Git Bash — the bug report that
+#               started this was `irm … | iex` failing in cmd, where `irm`
+#               means nothing — against THIS branch's install/ scripts, served
+#               by the Worker's own routeFor (scripts/serve-install.mjs).
+#   live        the same line against the deployed stoke.vinn.dev, which is what
+#               a user actually runs today.
+#   agents      every coding agent with a Windows install, installed by the
+#               exact script Stoke's picker runs (src/shared/agents.ts), then
+#               looked for by Stoke's own locator (src/main/cli.ts) with the PATH
+#               from BEFORE the install — a running Stoke never sees an
+#               installer's PATH edit unless it re-reads the registry.
+#   routes      each documented way to get Claude Code and Codex, one per leg.
+#   fresh-node  a runner with Node.js uninstalled, the state a new Windows is
+#               in: the picker's script must install Node itself.
+#   build       this branch's installer and portable zip: artifact names, the
+#               zip's contents, what a packaged portable copy decides it is, a
+#               portable swap under a RUNNING Stoke, and the NSIS installer
+#               closing a running Stoke gracefully rather than killing it.
+#   winget      the winget manifest for the latest release, validated and
+#               installed through winget itself — before it is ever submitted.
+#
+# Runs on changes to what it covers, by hand, and weekly: vendors move their
+# install scripts without telling anybody, and the first person to notice
+# should not be a new user.
+name: Windows
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '23 5 * * 1'
+  push:
+    paths:
+      - '.github/workflows/windows.yml'
+      - 'install/**'
+      - 'worker/**'
+      - 'build/installer.nsh'
+      - 'electron-builder.yml'
+      - 'src/shared/agents.ts'
+      - 'src/shared/codingClis.ts'
+      - 'src/shared/installKind.ts'
+      - 'src/main/cli.ts'
+      - 'src/main/portableSwap.ts'
+      - 'src/main/portableUpdate.ts'
+      - 'src/main/selfUpdate.ts'
+      - 'scripts/serve-install.mjs'
+      - 'scripts/probe-clis.mts'
+      - 'scripts/windows-e2e.mts'
+      - 'scripts/winget.mjs'
+
+permissions:
+  contents: read
+
+env:
+  # Every PowerShell step below reads these rather than repeating them.
+  STOKE_GUID: 27e02fae-12b6-525c-aa7f-c00dfad6e928
+  # So vendor installers never stop to ask: Codex's script, npm's funding
+  # nags. Nothing here is interactive, and a prompt would hang the job.
+  CODEX_NON_INTERACTIVE: '1'
+  NPM_CONFIG_FUND: 'false'
+  NPM_CONFIG_AUDIT: 'false'
+
+jobs:
+  one-liner:
+    name: One-liner · ${{ matrix.shell }} · ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-latest, windows-11-arm]
+        shell: [cmd, powershell, pwsh, bash]
+        include:
+          - runner: windows-latest
+            arch: x64
+          - runner: windows-11-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Serve this branch's install/ the way the Worker does
+        shell: pwsh
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP 'serve.log'
+          Start-Process -FilePath node -ArgumentList 'scripts/serve-install.mjs', '8787' -RedirectStandardOutput $log -RedirectStandardError "$log.err" -WindowStyle Hidden
+          for ($i = 0; $i -lt 60; $i++) {
+            if ((Test-Path $log) -and (Select-String -Path $log -Pattern 'listening' -Quiet)) { Get-Content $log; exit 0 }
+            Start-Sleep -Milliseconds 500
+          }
+          Get-Content $log, "$log.err" -ErrorAction SilentlyContinue
+          throw 'the local installer endpoint never came up'
+
+      # The line a person types. In cmd it is the long form — `irm` alone is
+      # "'irm' is not recognized" there, which is the report this began with.
+      - name: Install from cmd.exe
+        if: matrix.shell == 'cmd'
+        shell: cmd
+        run: powershell -ExecutionPolicy Bypass -c "irm http://127.0.0.1:8787 | iex"
+
+      - name: Install from Windows PowerShell 5.1
+        if: matrix.shell == 'powershell'
+        shell: powershell
+        run: irm http://127.0.0.1:8787 | iex
+
+      - name: Install from PowerShell 7
+        if: matrix.shell == 'pwsh'
+        shell: pwsh
+        run: irm http://127.0.0.1:8787 | iex
+
+      # Git Bash: curl.exe is handed install.sh (its User-Agent is curl's), which
+      # notices Windows and hands over to the PowerShell installer. The handoff
+      # is this branch's; the ps1 it fetches is the DEPLOYED one at
+      # stoke.vinn.dev/install.ps1, because the handoff URL is fixed.
+      - name: Install from Git Bash (the mac/linux line)
+        if: matrix.shell == 'bash'
+        shell: bash
+        run: curl -fsSL http://127.0.0.1:8787 | sh
+
+      - name: Stoke is installed, at the latest version, with its command
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $want = (gh api repos/realvinn/stoke/releases/latest --jq .tag_name).TrimStart('v')
+          $uninstall = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$env:STOKE_GUID"
+          $key = Get-ItemProperty -Path $uninstall
+          $loc = (Get-ItemProperty -Path "HKCU:\Software\$env:STOKE_GUID").InstallLocation
+          "DisplayName     $($key.DisplayName)"
+          "DisplayVersion  $($key.DisplayVersion)"
+          "InstallLocation $loc"
+          if ($key.DisplayVersion -ne $want) { throw "installed $($key.DisplayVersion), latest is $want" }
+          if (-not (Test-Path (Join-Path $loc 'Stoke.exe'))) { throw "no Stoke.exe in $loc" }
+          if (-not (Test-Path (Join-Path $loc 'Uninstall Stoke.exe'))) { throw 'no uninstaller: the install kind would read as portable' }
+          $cmdShim = Join-Path $loc 'resources\bin\stoke.cmd'
+          if (Test-Path $cmdShim) {
+            $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+            if ($userPath -notlike "*$(Join-Path $loc 'resources\bin')*") { throw "stoke.cmd exists but its folder is not on the user PATH: $userPath" }
+            'stoke command   on the user PATH'
+          } else {
+            'stoke command   this release ships none'
+          }
+
+      - name: The same line again is a clean no-op (upgrade path, same version)
+        if: matrix.shell == 'pwsh'
+        shell: pwsh
+        run: irm http://127.0.0.1:8787 | iex
+
+      - name: What the endpoint handed each client
+        if: always()
+        shell: pwsh
+        run: Get-Content (Join-Path $env:RUNNER_TEMP 'serve.log') -ErrorAction SilentlyContinue
+
+  live:
+    name: Live stoke.vinn.dev · ${{ matrix.shell }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shell: [cmd, powershell]
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: The documented line, from cmd.exe
+        if: matrix.shell == 'cmd'
+        shell: cmd
+        run: powershell -ExecutionPolicy Bypass -c "irm https://stoke.vinn.dev | iex"
+      - name: The documented short form, from Windows PowerShell
+        if: matrix.shell == 'powershell'
+        shell: powershell
+        run: irm https://stoke.vinn.dev | iex
+      - name: Installed
+        shell: pwsh
+        run: |
+          $key = Get-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$env:STOKE_GUID"
+          "Stoke $($key.DisplayVersion) is installed"
+
+  agents:
+    name: Agents · ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            arch: x64
+          - runner: windows-11-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # A running Stoke keeps the PATH it started with. Saved now, handed back
+      # to the locator after the installs: a pass then means "found without
+      # restarting Stoke", which is what pressing Install then Start needs.
+      - name: Remember the PATH a running Stoke would have
+        shell: pwsh
+        run: $env:Path | Out-File -Encoding ascii (Join-Path $env:RUNNER_TEMP 'path-before.txt')
+
+      # npm behaves as on a fresh machine (global installs in %APPDATA%\npm,
+      # where Node's MSI points them) rather than as on the runner image, which
+      # sets a machine-wide prefix of C:\npm\prefix that no user has.
+      - name: Point npm at the default a real machine uses
+        shell: pwsh
+        run: |
+          [Environment]::SetEnvironmentVariable('npm_config_prefix', "$env:APPDATA\npm", 'User')
+          "npm_config_prefix=$env:APPDATA\npm" >> $env:GITHUB_ENV
+
+      - name: Write the script Stoke's picker runs, for every agent it offers on Windows
+        shell: pwsh
+        run: |
+          node --input-type=module -e "const a = await import('./src/shared/agents.ts'); const c = await import('./src/shared/codingClis.ts'); const ids = c.CODING_CLIS.filter((x) => x.install.win32).map((x) => x.id); const fs = await import('node:fs'); fs.writeFileSync(process.env.RUNNER_TEMP + '/install-agents.ps1', a.installScript(ids, 'win32')); fs.writeFileSync(process.env.RUNNER_TEMP + '/agent-ids.txt', ids.join(','))"
+          Get-Content (Join-Path $env:RUNNER_TEMP 'agent-ids.txt')
+
+      # Exactly as pty.ts `installerArgs` does it: powershell.exe with the whole
+      # script as -EncodedCommand. Windows PowerShell 5.1, not 7 — it is what
+      # Stoke starts, and one vendor script (Cursor's) uses Get-WmiObject, which
+      # 7 does not have.
+      - name: Run it the way Stoke does
+        id: install
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $script = Get-Content -Raw (Join-Path $env:RUNNER_TEMP 'install-agents.ps1')
+          $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
+          "encoded command: $($encoded.Length) characters (Windows allows 32767)"
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded 2>&1 | Tee-Object -FilePath (Join-Path $env:RUNNER_TEMP 'install.log')
+          "exit $LASTEXITCODE"
+
+      - name: What installed, and what Stoke finds without a restart
+        shell: pwsh
+        run: |
+          $log = Get-Content -Raw (Join-Path $env:RUNNER_TEMP 'install.log')
+          $failedLine = ($log -split "`n" | Where-Object { $_ -match '^Did not install: ' } | Select-Object -Last 1)
+          $failed = @()
+          if ($failedLine) { $failed = @(($failedLine -replace '^Did not install: ', '').Trim() -split ', ') }
+          "did not install: $($failed -join ', ')"
+          $labels = node --input-type=module -e "const c = await import('./src/shared/codingClis.ts'); console.log(JSON.stringify(Object.fromEntries(c.CODING_CLIS.map((x) => [x.label, x.id]))))" | ConvertFrom-Json
+          $ids = (Get-Content (Join-Path $env:RUNNER_TEMP 'agent-ids.txt')).Split(',')
+          $failedIds = @($failed | ForEach-Object { $labels.$_ })
+          $expect = @($ids | Where-Object { $failedIds -notcontains $_ })
+          "expecting Stoke to find: $($expect -join ', ')"
+          node scripts/probe-clis.mts --path-file (Join-Path $env:RUNNER_TEMP 'path-before.txt') --expect ($expect -join ',') --json (Join-Path $env:RUNNER_TEMP 'probe.json')
+          if ($LASTEXITCODE -ne 0) { throw 'an agent that installed is not found (or does not start) with the PATH a running Stoke has' }
+          if ($failed.Count) { "::warning::did not install on ${{ matrix.arch }}: $($failed -join ', ') — see the install log" }
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: agents-${{ matrix.arch }}
+          path: |
+            ${{ runner.temp }}/install.log
+            ${{ runner.temp }}/probe.json
+            ${{ runner.temp }}/install-agents.ps1
+
+  routes:
+    name: ${{ matrix.route }} · ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-latest, windows-11-arm]
+        route: [claude-native-ps1, claude-native-cmd, claude-npm, codex-native-ps1, codex-npm, claude-winget, codex-winget]
+        include:
+          - runner: windows-latest
+            arch: x64
+          - runner: windows-11-arm
+            arch: arm64
+        exclude:
+          # windows-11-arm ships no winget, and GitHub declined to add it
+          # (actions/runner-images#14083).
+          - runner: windows-11-arm
+            route: claude-winget
+          - runner: windows-11-arm
+            route: codex-winget
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Remember the PATH a running Stoke would have
+        shell: pwsh
+        run: |
+          $env:Path | Out-File -Encoding ascii (Join-Path $env:RUNNER_TEMP 'path-before.txt')
+          [Environment]::SetEnvironmentVariable('npm_config_prefix', "$env:APPDATA\npm", 'User')
+          "npm_config_prefix=$env:APPDATA\npm" >> $env:GITHUB_ENV
+
+      - name: Claude Code, native installer, PowerShell
+        if: matrix.route == 'claude-native-ps1'
+        shell: powershell
+        run: irm https://claude.ai/install.ps1 | iex
+      - name: Claude Code, native installer, cmd.exe
+        if: matrix.route == 'claude-native-cmd'
+        shell: cmd
+        run: curl -fsSL https://claude.ai/install.cmd -o install.cmd && install.cmd && del install.cmd
+      - name: Claude Code, npm
+        if: matrix.route == 'claude-npm'
+        shell: pwsh
+        run: npm install -g @anthropic-ai/claude-code
+      - name: Claude Code, winget
+        if: matrix.route == 'claude-winget'
+        shell: pwsh
+        run: winget install --id Anthropic.ClaudeCode -e --source winget --accept-source-agreements --accept-package-agreements --disable-interactivity
+      - name: Codex, native installer
+        if: matrix.route == 'codex-native-ps1'
+        shell: powershell
+        run: irm https://chatgpt.com/codex/install.ps1 | iex
+      - name: Codex, npm
+        if: matrix.route == 'codex-npm'
+        shell: pwsh
+        run: npm install -g @openai/codex
+      - name: Codex, winget
+        if: matrix.route == 'codex-winget'
+        shell: pwsh
+        run: winget install --id OpenAI.Codex -e --source winget --accept-source-agreements --accept-package-agreements --disable-interactivity
+
+      - name: Stoke finds it, without a restart, and it starts
+        shell: pwsh
+        run: |
+          $id = '${{ matrix.route }}'.Split('-')[0]
+          node scripts/probe-clis.mts --path-file (Join-Path $env:RUNNER_TEMP 'path-before.txt') --expect $id
+          if ($LASTEXITCODE -ne 0) { throw "Stoke's locator does not find $id after ${{ matrix.route }}" }
+
+  fresh-node:
+    name: Fresh machine (no Node.js) · x64
+    # x64 only: the script installs Node through winget, which windows-11-arm
+    # does not have.
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      # This job's own node — for writing the script and running the probe —
+      # comes from the tool cache, by absolute path, so hiding the machine's
+      # Node below cannot take it away.
+      - uses: actions/setup-node@v4
+        id: node
+        with:
+          node-version: '24'
+      - name: Make this runner look like a new Windows, as far as Node goes
+        shell: pwsh
+        run: |
+          $node = (Get-Command node).Source
+          "job node: $node"
+          "JOB_NODE=$node" >> $env:GITHUB_ENV
+          # Uninstall every Node.js the image installed, the way a person would.
+          $keys = Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall' -ErrorAction SilentlyContinue |
+            Get-ItemProperty | Where-Object { $_.DisplayName -like 'Node.js*' }
+          foreach ($k in $keys) {
+            "uninstalling $($k.DisplayName) $($k.DisplayVersion)"
+            Start-Process msiexec.exe -ArgumentList '/x', $k.PSChildName, '/qn', '/norestart' -Wait
+          }
+          # And take every node/npm folder off the machine and user PATH, and off
+          # this job's, except the tool-cache node this job runs its own scripts with.
+          $keep = Split-Path $node
+          foreach ($scope in 'Machine', 'User') {
+            $v = [Environment]::GetEnvironmentVariable('Path', $scope)
+            if ($v) { [Environment]::SetEnvironmentVariable('Path', (($v -split ';' | Where-Object { $_ -and $_ -notmatch 'nodejs|\\npm\b|npm\\prefix' }) -join ';'), $scope) }
+          }
+          [Environment]::SetEnvironmentVariable('npm_config_prefix', $null, 'Machine')
+          [Environment]::SetEnvironmentVariable('npm_config_prefix', $null, 'User')
+      - name: Write the picker's script for three npm agents
+        shell: pwsh
+        run: |
+          & $env:JOB_NODE --input-type=module -e "const a = await import('./src/shared/agents.ts'); (await import('node:fs')).writeFileSync(process.env.RUNNER_TEMP + '/install.ps1', a.installScript(['gemini', 'opencode', 'cline'], 'win32'))"
+      - name: Run it as Stoke does, with no Node anywhere on PATH
+        shell: pwsh
+        run: |
+          # The PATH a fresh session would get: the registry's, which no longer has Node.
+          $env:Path = ([Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('Path', 'User'))
+          if (Get-Command npm -ErrorAction SilentlyContinue) { throw "npm is still reachable at $((Get-Command npm).Source): this job would test nothing" }
+          Remove-Item Env:npm_config_prefix -ErrorAction SilentlyContinue
+          $script = Get-Content -Raw (Join-Path $env:RUNNER_TEMP 'install.ps1')
+          $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded 2>&1 | Tee-Object -FilePath (Join-Path $env:RUNNER_TEMP 'install.log')
+          if ($LASTEXITCODE -ne 0) { throw "the install exited $LASTEXITCODE" }
+      - name: Node came first, and Stoke finds all three
+        shell: pwsh
+        run: |
+          $log = Get-Content -Raw (Join-Path $env:RUNNER_TEMP 'install.log')
+          if ($log -notmatch 'Installing Node\.js, needed by') { throw 'the script never installed Node.js' }
+          $env:Path = ([Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('Path', 'User'))
+          & $env:JOB_NODE scripts/probe-clis.mts --expect gemini,opencode,cline
+          if ($LASTEXITCODE -ne 0) { throw 'an agent installed on a fresh machine is not found, or does not start' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fresh-node
+          path: ${{ runner.temp }}/install.log
+
+  build:
+    name: Build · ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            arch: x64
+          - runner: windows-11-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Build the installer and the portable zip (targets.mjs flags)
+        shell: pwsh
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: |
+          $flags = (node scripts/targets.mjs --args win-${{ matrix.arch }}).Trim() -split ' '
+          npx electron-builder @flags --publish never
+          if ($LASTEXITCODE -ne 0) { throw 'electron-builder failed' }
+          node scripts/assert-packaged-pty.mjs win-${{ matrix.arch }}
+          if ($LASTEXITCODE -ne 0) { throw 'the packaged terminal binary is for the wrong machine' }
+
+      - name: The artefacts are named apart from the mac zips, and the zip is a complete Stoke
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $v = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          "VERSION=$v" >> $env:GITHUB_ENV
+          Get-ChildItem release -File | Format-Table Name, Length
+          $exe = "release/Stoke-$v-${{ matrix.arch }}-setup.exe"
+          $zip = "release/Stoke-$v-${{ matrix.arch }}-win.zip"
+          foreach ($f in $exe, $zip) { if (-not (Test-Path $f)) { throw "missing $f" } }
+          $entries = & "$env:SystemRoot\System32\tar.exe" -tf $zip
+          foreach ($want in 'Stoke.exe', 'resources/app.asar', 'resources/app-update.yml') {
+            if (-not ($entries -contains $want)) { throw "the portable zip has no $want at its root" }
+          }
+          "the zip holds Stoke.exe, app.asar and app-update.yml at its root"
+
+      # What a packaged portable copy decides it is, asked of the app itself.
+      # An apostrophe in the folder, on purpose: it has broken PowerShell
+      # quoting everywhere else it has been tried.
+      - name: A packaged portable copy knows it is portable
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP "portable it's here"
+          $app = Join-Path $root 'Stoke'
+          New-Item -ItemType Directory -Force -Path $app | Out-Null
+          & "$env:SystemRoot\System32\tar.exe" -xf "release/Stoke-$env:VERSION-${{ matrix.arch }}-win.zip" -C $app
+          "APP_DIR=$app" >> $env:GITHUB_ENV
+          $ud = Join-Path $env:RUNNER_TEMP 'ud-portable'
+          $p = Start-Process -FilePath (Join-Path $app 'Stoke.exe') -ArgumentList "--user-data-dir=$ud", '--remote-debugging-port=9333' -PassThru
+          "STOKE_PID=$($p.Id)" >> $env:GITHUB_ENV
+          $env:CDP_PORT = '9333'
+          $state = $null
+          for ($i = 0; $i -lt 60; $i++) {
+            Start-Sleep -Seconds 1
+            $out = node scripts/cdp-eval.mjs 'window.stoke.self.state()' 2>$null
+            if ($LASTEXITCODE -eq 0 -and $out -match '"installKind":\{') { $state = $out; break }
+          }
+          if (-not $state) { throw 'the portable copy never reported an install kind' }
+          $state
+          $s = $state | ConvertFrom-Json
+          if ($s.installKind.kind -ne 'portable') { throw "a portable copy reported itself as $($s.installKind.kind)" }
+          if ($s.installKind.dir -ne $app) { throw "it thinks it runs from $($s.installKind.dir), not $app" }
+
+      # The riskiest thing in the portable route, done for real: swap the folder
+      # of a Stoke that is RUNNING, through the helper Stoke itself writes.
+      - name: The swap waits for a running Stoke to close, replaces its folder and starts it again
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $staged = "$env:APP_DIR.update-9.9.9"
+          New-Item -ItemType Directory -Force -Path $staged | Out-Null
+          & "$env:SystemRoot\System32\tar.exe" -xf "release/Stoke-$env:VERSION-${{ matrix.arch }}-win.zip" -C $staged
+          Set-Content -Path (Join-Path $staged 'the-new-one.txt') -Value 'swapped'
+          $dir = Join-Path $env:RUNNER_TEMP 'swap'
+          $argv = @(node scripts/windows-e2e.mts swap-files $dir $env:STOKE_PID $env:APP_DIR $staged $env:VERSION 9.9.9 1)
+          "powershell.exe $($argv -join ' ')"
+          Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList $argv -WindowStyle Hidden
+          Start-Sleep -Seconds 3
+          # Close Stoke the way a person does — never kill it.
+          $p = Get-Process -Id $env:STOKE_PID
+          [void]$p.CloseMainWindow()
+          node scripts/windows-e2e.mts wait-result (Join-Path $dir 'result.json') 180
+          if ($LASTEXITCODE -ne 0) { throw 'the swap did not succeed' }
+          if (-not (Test-Path (Join-Path $env:APP_DIR 'the-new-one.txt'))) { throw 'the app folder is not the new copy' }
+          if (-not (Test-Path "$env:APP_DIR.old-$env:VERSION\Stoke.exe")) { throw 'the old copy was not kept beside it' }
+          Start-Sleep -Seconds 5
+          $again = @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq (Join-Path $env:APP_DIR 'Stoke.exe') })
+          if ($again.Count -eq 0) { throw 'the new copy was not started again' }
+          "relaunched: pid $($again[0].ProcessId)"
+          foreach ($x in $again) { try { [void](Get-Process -Id $x.ProcessId).CloseMainWindow() } catch { } }
+
+      # The NSIS installer's running-app check used to auto-confirm under /S and
+      # Stop-Process everything in the install folder — so `winget upgrade`, or
+      # the one-liner, killed a running Stoke and stranded its sessions.
+      # build/installer.nsh's customCheckAppRunning asks it to close instead.
+      - name: A silent install over a running Stoke closes it gracefully — and never kills
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = Resolve-Path "release/Stoke-$env:VERSION-${{ matrix.arch }}-setup.exe"
+          $p = Start-Process -FilePath $setup -ArgumentList '/S' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "first install exited $($p.ExitCode)" }
+          $loc = (Get-ItemProperty -Path "HKCU:\Software\$env:STOKE_GUID").InstallLocation
+          $ud = Join-Path $env:RUNNER_TEMP 'ud-installed'
+          $stoke = Start-Process -FilePath (Join-Path $loc 'Stoke.exe') -ArgumentList "--user-data-dir=$ud" -PassThru
+          $handle = $stoke.Handle  # hold it, so the exit code can be read afterwards
+          Start-Sleep -Seconds 12
+          if ($stoke.HasExited) { throw 'Stoke did not stay up long enough to test anything' }
+          $up = Start-Process -FilePath $setup -ArgumentList '/S' -Wait -PassThru
+          "upgrade over a running Stoke exited $($up.ExitCode)"
+          if ($up.ExitCode -ne 0) { throw 'the upgrade failed with Stoke running' }
+          $stoke.WaitForExit(30000) | Out-Null
+          "Stoke exited with code $($stoke.ExitCode)"
+          if ($stoke.ExitCode -ne 0) { throw "Stoke did not quit on its own (exit $($stoke.ExitCode)): it was killed, not closed" }
+
+      - name: A process that will not close stops the install, and is left running
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = Resolve-Path "release/Stoke-$env:VERSION-${{ matrix.arch }}-setup.exe"
+          $loc = (Get-ItemProperty -Path "HKCU:\Software\$env:STOKE_GUID").InstallLocation
+          # A windowless program running out of the install folder: nothing to
+          # ask to close, so the only way past it would be to kill it.
+          $stub = Join-Path $loc 'lingering.exe'
+          Copy-Item "$env:SystemRoot\System32\ping.exe" $stub
+          $ling = Start-Process -FilePath $stub -ArgumentList '-n', '600', '127.0.0.1' -WindowStyle Hidden -PassThru
+          $up = Start-Process -FilePath $setup -ArgumentList '/S' -Wait -PassThru
+          "install with a stubborn process in the folder exited $($up.ExitCode)"
+          $alive = -not $ling.HasExited
+          Stop-Process -Id $ling.Id -Force -ErrorAction SilentlyContinue  # our own stand-in, not Stoke
+          if ($up.ExitCode -eq 0) { throw 'the installer went ahead with a process it could not close' }
+          if (-not $alive) { throw 'the installer killed the process instead of stopping' }
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-${{ matrix.arch }}
+          retention-days: 7
+          path: |
+            release/*.exe
+            release/*.zip
+            release/latest*.yml
+            ${{ runner.temp }}/swap/*
+
+  winget:
+    name: winget manifest · x64
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: The latest release's installers
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = gh api repos/realvinn/stoke/releases/latest --jq .tag_name
+          $v = $tag.TrimStart('v')
+          $date = (gh api repos/realvinn/stoke/releases/latest --jq .published_at).Substring(0, 10)
+          "VERSION=$v" >> $env:GITHUB_ENV
+          "RELEASE_DATE=$date" >> $env:GITHUB_ENV
+          New-Item -ItemType Directory -Force winget-dl | Out-Null
+          $arches = node --input-type=module -e "const t = await import('./scripts/targets.mjs'); console.log(t.TARGETS.filter((x) => x.platform === 'win32').map((x) => x.arch).join(' '))"
+          foreach ($a in $arches.Split(' ')) {
+            Invoke-WebRequest -UseBasicParsing -OutFile "winget-dl/Stoke-$v-$a-setup.exe" "https://github.com/realvinn/stoke/releases/download/$tag/Stoke-$v-$a-setup.exe"
+          }
+          Get-ChildItem winget-dl
+      - name: Generate the manifests
+        shell: pwsh
+        run: |
+          node scripts/winget.mjs --version $env:VERSION --installers winget-dl --release-date $env:RELEASE_DATE --out winget-out
+          if ($LASTEXITCODE -ne 0) { throw 'manifest generation failed' }
+          Get-ChildItem -Recurse winget-out | ForEach-Object { if (-not $_.PSIsContainer) { "---- $($_.Name)"; Get-Content $_.FullName } }
+      # The runner's winget may predate schema 1.12, which it reports as a
+      # header warning; everything else must validate clean.
+      - name: winget validate
+        shell: pwsh
+        run: |
+          winget --version
+          $dir = (Get-ChildItem -Recurse -Filter 'realvinn.Stoke.yaml' winget-out | Select-Object -First 1).DirectoryName
+          "MANIFEST_DIR=$dir" >> $env:GITHUB_ENV
+          winget validate --manifest $dir --disable-interactivity --ignore-warnings
+          if ($LASTEXITCODE -ne 0) { throw "winget validate failed ($LASTEXITCODE)" }
+      - name: winget install --manifest, as a user would get it
+        shell: pwsh
+        run: |
+          winget settings --enable LocalManifestFiles
+          winget install --manifest $env:MANIFEST_DIR --accept-package-agreements --accept-source-agreements --disable-interactivity --silent
+          if ($LASTEXITCODE -ne 0) { throw "winget install failed ($LASTEXITCODE)" }
+          $key = Get-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$env:STOKE_GUID"
+          "installed through winget: Stoke $($key.DisplayVersion)"
+          if ($key.DisplayVersion -ne $env:VERSION) { throw "winget installed $($key.DisplayVersion), not $env:VERSION" }
+          $loc = (Get-ItemProperty -Path "HKCU:\Software\$env:STOKE_GUID").InstallLocation
+          if (-not (Test-Path (Join-Path $loc 'Uninstall Stoke.exe'))) { throw 'a winget install must be the installer kind, so it updates itself' }
+          winget list --id realvinn.Stoke --disable-interactivity

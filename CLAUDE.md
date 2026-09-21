@@ -38,7 +38,7 @@ A `dist:*` exists per target and each MUST run on that target's own platform and
 Every suite runs alone as `npm run verify:<name>`: context, statusline, unicode, usage,
 profiles, settings, providers, claude-config, folders, search, color, theme-gen, activity,
 worklog-gate, tabs, launcher, registry,
-restore, shortcuts, drop, browser-url, voice, agents, campfire, cli, stoke-args, updates, targets, manifests, worklog-runner,
+restore, shortcuts, drop, browser-url, voice, agents, campfire, cli, stoke-args, updates, targets, manifests, portable, winget, worklog-runner,
 worklog-retry, worklog-recall, worklog-autoscan, ssh, remote, phone-ui, installer-art, install, welcome,
 selection — the `check` chain — plus extract and security, which
 need a live instance (`verify:security <url> <token> --access`). `verify:selection` opens a real
@@ -149,6 +149,8 @@ rule file named on the group line.
   remembered — `acceptLaunch`, both Open-folder dialogs, and `listProjects`'s scan roots and
   `projectMeta` keys — or a symlinked path (macOS's `/tmp`) and `claude`'s own resolved cwd become
   two sidebar rows for one folder.
+- **101.** Hand PowerShell its variable parts as data (a JSON plan, an env var), never inside `'…'`:
+  U+2018–U+201B are single quotes too; a script written to disk must be ASCII for PowerShell 5.1.
 
 **Terminal** — `.claude/rules/terminal.md`
 - **5.** Never read the terminal from the DOM: WebGL paints a canvas, so `.xterm-rows` is empty.
@@ -199,6 +201,8 @@ rule file named on the group line.
   script rather than a copy, under every shell: keep `setopt sh_word_split` for zsh, which
   parses the script perfectly and could not run a line of it. Put the renamed-aside
   `/Applications/Stoke.app` back whenever the new copy does not land.
+- **100.** Document Windows as `powershell -ExecutionPolicy Bypass -c "irm … | iex"` (cmd.exe has no
+  `irm`), keep install.sh's `windows_handoff` for Git Bash, and remember the page needs `deploy:install`.
 - **77.** After `deploy:install`, expect the custom domain to be `enabled` with a `cert_id` while
   DNS still says NXDOMAIN — the binding and the record are written separately, and the record took
   ~30 min. Prove the gap with `curl --resolve <host>:443:<zone proxy IP>` (200 + `ssl=0` means only
@@ -266,6 +270,8 @@ rule file named on the group line.
   the spawn: `--resume` on an id with no transcript exits 1, `--session-id` on one with a transcript is refused.
 - **84.** Keep an exited pty in `PtyManager`'s map for `ENDED_RETENTION_MS` (the phone lists it as
   ended); only an explicit close (`kill`/`stop`) deletes at once.
+- **99.** Set a child's PATH with `setPathKey` (Windows' inherited `Path` otherwise stays first, stale),
+  re-read the registry PATH on win32 (`windowsRegistryPath`), and never pick a `WindowsApps` claude.
 
 **Worklog** — `.claude/rules/worklog.md`
 - **15.** Keep the worklog scan `--safe-mode` and read boards in `recall.ts`'s own run: safe mode
@@ -412,6 +418,16 @@ rule file named on the group line.
   `merge-multiple: true`: only Linux gets an arch suffix, so two Windows or two macOS jobs both
   write one name and the flatten drops an arch silently. The publish gate
   (`check-release-assets.mjs`) derives what each feed must list from the same target list.
+- **94.** Keep `build/installer.nsh`'s `customCheckAppRunning` (CloseMainWindow, dir in `STOKE_INSTDIR`,
+  `$$` for PowerShell's `$`): the stock macro force-kills a running Stoke under every `/S` install.
+- **95.** Name the Windows zip only via `win.artifactName` (`-win.zip`; installer via `nsis.artifactName`)
+  — the default is the Intel Mac zip's name — and require an `.exe` AND a zip per Windows arch.
+- **96.** Decide the Windows install kind first (`classifyInstall`): electron-updater only runs NSIS,
+  which "updated" an unzipped folder into a second install; never let other kinds reach it.
+- **97.** Grep Komac's dry run for all three `ManifestType:` lines and require a PR URL: it drops a
+  manifest it cannot parse and exits 0.
+- **98.** Delete an unpacked Stoke with `original-fs` (`useRemover`): Electron's `fs` walks into
+  `app.asar` as if it were a folder.
 - **69.** Regenerate installer art with `npm run art` and commit `build/installer-art.json` with
   it — the hashes are what catch an SVG edited without regenerating, which nothing else can see.
   Never hand-write a `.bmp`: NSIS shows only the 40-byte-header BMP3 the encoder emits,

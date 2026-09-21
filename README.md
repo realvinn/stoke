@@ -29,9 +29,15 @@ been run on linux — treat it as experimental.
 curl -fsSL https://stoke.vinn.dev | sh          # mac, linux
 ```
 
-```powershell
-irm https://stoke.vinn.dev | iex                # windows
+```bat
+powershell -ExecutionPolicy Bypass -c "irm https://stoke.vinn.dev | iex"
 ```
+
+that last one is for windows, and it works typed into command prompt, windows
+powershell or powershell 7 alike. already in powershell, the short form is
+`irm https://stoke.vinn.dev | iex` — but `irm` is a powershell word, so in
+command prompt that alone says `'irm' is not recognized`. in git bash the
+mac/linux line works too: it notices windows and hands over to the powershell one.
 
 that resolves the latest release, checks every byte against the sha512 in the
 release's own update manifest, and puts the app where it goes. run the same line
@@ -74,9 +80,10 @@ picked by name at runtime and npm only installs the build host's.
 
 or build nothing at all: every tag builds all five on ci, so the windows
 installers, the mac dmgs and the linux appimage are sitting on
-[releases](https://github.com/realvinn/stoke/releases). there's a `.zip` up there
-too — that one is only how a mac installs its own updates, not something you
-need to download.
+[releases](https://github.com/realvinn/stoke/releases). the zips up there are two
+different things: `Stoke-<version>-<arch>.zip` is only how a mac installs its own
+updates, not something you need to download, while `Stoke-<version>-<arch>-win.zip`
+is a portable windows copy — unzip it anywhere and run `Stoke.exe`, no installer.
 
 ## deploying the install endpoint
 

@@ -439,6 +439,24 @@ well as an install without spending a second field.
 Self-update uses `electron-updater` against GitHub releases, configured in the `publish` block
 of `electron-builder.yml`. It only activates for a packaged app with a published release.
 
+**On Windows, how a copy updates depends on how it got there**, and that is decided first
+(`src/shared/installKind.ts`, probed once at startup). electron-updater only ever runs the NSIS
+installer, which is right for a copy the installer put down — the website `.exe`, the one-line
+installer and winget all run that same installer, so they all update the same way, and the
+installer rewrites the Apps & Features version winget reads. It is wrong for anything else: an
+unzipped folder "updated" by installing a second copy under `%LOCALAPPDATA%\Programs` and staying
+stale itself. So a folder without `Uninstall Stoke.exe` beside Stoke.exe takes the **portable**
+route: electron-updater still checks, then `portableUpdate.ts` fetches the release's
+`-<arch>-win.zip` (its sha512 in `latest.yml`, injected by the publish job), unpacks it beside the
+running folder and hands a plan to `portableSwap.ts`'s helper, which waits for every process
+running out of the folder to exit and swaps the two by rename — never killing anything, and
+putting the old copy back if the new one will not move in. A package manager's own folder
+(Scoop, a winget portable install, Chocolatey's lib) is shown its update command instead; a
+folder Stoke cannot write beside is shown the releases page and why. The NSIS installer itself,
+run silently over a running Stoke (`winget upgrade`, the one-liner), asks it to close rather
+than killing it (`build/installer.nsh`, `customCheckAppRunning`). `.github/workflows/windows.yml`
+runs all of this on real x64 and arm64 Windows.
+
 **macOS packages can only be built on macOS**, and the Windows NSIS installer needs Windows,
 so neither installer can be produced on the other's machine. The architecture is just as hard a
 constraint and fails silently instead (gotcha 67), so a release is **one arch per job on a
@@ -591,7 +609,10 @@ builds, that the `dist:*` scripts and the workflow both read `scripts/targets.mj
 every platform/arch node-pty publishes is built or named as deliberately unbuilt) and
 `verify:manifests` (the update-manifest merger and the publish gate, asserted against the real
 published v0.9.4 manifests, against electron-builder's own `writeUpdateInfoFiles`, and against
-electron-updater's own `findFile`/`filterFilesForArch`).
+electron-updater's own `findFile`/`filterFilesForArch`). And `verify:portable`: which kind of
+Windows copy this is, the zip each arch is offered (never another arch's), download/verify/unpack
+against a local server with every refusal made to happen, and the swap helper itself RUN under a
+real PowerShell where one exists — CI's ubuntu runner ships `pwsh`; elsewhere set `STOKE_PWSH`.
 
 The two `.mjs` suites want a live instance rather than a fixture, which is why `check` cannot
 run them: `verify:extract` drives the page extractor through Stoke's own MCP endpoint, and
@@ -694,6 +715,17 @@ src/main/         Electron main process
                     which App asks about first when a turn is running
   codesign.ts       whether this copy's signature could ever accept a downloaded update.
                     No electron import, so verify:updates can run the rule. Gotcha 24
+  portableUpdate.ts a portable Windows copy updating itself: gathers the facts
+                    installKind.ts decides on, downloads the release's -<arch>-win.zip
+                    checked against latest.yml's sha512, unpacks it beside the running
+                    folder with System32\tar.exe, checks the copy (app-update.yml, the
+                    version inside app.asar) and starts the swap helper. No electron
+                    import; recursive deletes go through original-fs (Electron's fs walks
+                    into app.asar)
+  portableSwap.ts   the swap helper: a constant ASCII PowerShell script plus a JSON plan,
+                    run with -File after Stoke quits. Waits for everything running out of
+                    the folder, renames it aside, renames the new copy in, rolls back on
+                    failure, never kills. Writes a result the next launch reports
   profiles.ts       plans and creates a profile's folder + scan root
   ssh.ts            ~/.ssh/config parsing, the ssh argv, the transcript command
   sshTranscript.ts  pulls a remote session's JSONL back, so SSH sessions can be read
@@ -938,6 +970,15 @@ scripts/          the verify-*.mts suites, make-icon.cjs
                     comes back
   cdp-eval.mjs      evaluates one expression in the renderer, or screenshots it.
                     Picks the target by its window.stoke object, never by URL
+  serve-install.mjs the install endpoint served locally from THIS checkout, through the
+                    Worker's own routeFor, so a test can pipe `irm http://127.0.0.1:8787`
+                    into PowerShell and exercise the branch rather than the deploy
+  probe-clis.mts    what Stoke's own locator (detectCodingClis) finds on this machine and
+                    whether each find runs `--version`; `--path-file` hands it the PATH from
+                    before an install, which is what a running Stoke has. Machine-facing,
+                    so not in check; the Windows workflow runs it after every install route
+  windows-e2e.mts   the Windows workflow's hands for the steps that must use Stoke's own
+                    code: writing the swap helper's files, waiting on its result
 build/bin/        the `stoke` command, shipped inside the app by `extraResources`
   stoke             macOS: resolves its own symlink back to the bundle, answers --help,
                     --version (PlistBuddy on the bundle's Info.plist), install-cli and
