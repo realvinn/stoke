@@ -13,6 +13,7 @@ import {
   clampTerminal,
   clampUiScale,
   type ZoomTarget,
+  type FullScreenReveal,
   FONT_SIZE_MAX,
   FONT_SIZE_MIN,
   LETTER_SPACING_MAX,
@@ -63,6 +64,17 @@ const ZOOM_TARGET_LABELS: { id: ZoomTarget; label: string; hint: string }[] = [
   { id: 'both', label: 'Both', hint: 'Interface scale and terminal font together' },
   { id: 'terminal', label: 'Terminal', hint: 'Terminal font only — the interface stays put' },
   { id: 'interface', label: 'Interface', hint: 'Interface only — the terminal text stays put' }
+]
+
+/**
+ * What the tabs do about the menu bar macOS slides down over them in full
+ * screen (gotcha 105). "Move tabs down" first, as the default: the room is
+ * only taken while the menu bar is actually out.
+ */
+const FULL_SCREEN_REVEAL_LABELS: { id: FullScreenReveal; label: string; hint: string }[] = [
+  { id: 'follow', label: 'Move tabs down', hint: 'The tabs slide below the menu bar while it is out, and back up a few seconds after you leave them' },
+  { id: 'reserve', label: 'Keep room', hint: 'Always leave the menu bar its own space, so the tabs never move' },
+  { id: 'off', label: 'Cover tabs', hint: "macOS's own behaviour: the menu bar slides over the tabs" }
 ]
 
 /**
@@ -590,6 +602,32 @@ export function SettingsSheet({
                   <span className="field-hint">
                     {window.stoke.platform === 'darwin' ? 'Cmd' : 'Ctrl'} with <kbd>+</kbd>,{' '}
                     <kbd>−</kbd> or <kbd>0</kbd> to reset.
+                  </span>
+                </div>
+
+                {/* Offered everywhere, like the brand row above, and for the same reason. */}
+                <div className="field">
+                  <span className="field-label">Menu bar in full screen</span>
+                  <div
+                    className="segmented"
+                    role="group"
+                    aria-label="What the tabs do when the full-screen menu bar slides down"
+                  >
+                    {FULL_SCREEN_REVEAL_LABELS.map((r) => (
+                      <button
+                        key={r.id}
+                        aria-pressed={settings.fullScreenReveal === r.id}
+                        title={r.hint}
+                        onClick={() => onPatch({ fullScreenReveal: r.id })}
+                      >
+                        {r.label}
+                      </button>
+                    ))}
+                  </div>
+                  <span className="field-hint">
+                    {window.stoke.platform === 'darwin'
+                      ? 'macOS slides the menu bar down over the tabs when the pointer reaches the top.'
+                      : 'macOS only — full screen elsewhere has no menu bar to cover the tabs.'}
                   </span>
                 </div>
               </>

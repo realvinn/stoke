@@ -1,4 +1,5 @@
 import type { InstallKind } from './installKind'
+import type { RevealInfo } from './fullScreenReveal'
 import type { SkillDirScan } from './skills'
 import type { MicAccess } from './voiceRoute'
 import type { CreateProfileInput, ProfilePlan } from './profiles'
@@ -343,6 +344,13 @@ export interface StokeApi {
      */
     isFullScreen(): Promise<boolean>
     onFullScreenChanged(cb: (fullScreen: boolean) => void): () => void
+    /**
+     * How far the menu bar and title strip that macOS slides down in full
+     * screen reach over the window, in px — 0 when not full screen or not a
+     * Mac — and whether this macOS slides them down on entering it. See
+     * `revealInsetFor` and `revealsOnEntry`.
+     */
+    revealInfo(): Promise<RevealInfo>
     /** Show and focus the window, from a notification click or the like. */
     focus(): void
     /**

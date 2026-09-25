@@ -195,6 +195,21 @@ export function clampZoomTarget(value: unknown): ZoomTarget {
   return ZOOM_TARGETS.includes(value as ZoomTarget) ? (value as ZoomTarget) : 'both'
 }
 
+/**
+ * What the tab strip does about macOS's full-screen menu bar, which slides down
+ * over it (gotcha 105). `follow` moves the shell below it while it is out;
+ * `reserve` keeps that room free for the whole of full screen; `off` is macOS's
+ * own behaviour, the menu bar over the tabs.
+ */
+export type FullScreenReveal = 'follow' | 'reserve' | 'off'
+
+export const FULL_SCREEN_REVEALS: readonly FullScreenReveal[] = ['follow', 'reserve', 'off']
+
+/** Anything unrecognised is the default, which is also what an older file has. */
+export function clampFullScreenReveal(value: unknown): FullScreenReveal {
+  return FULL_SCREEN_REVEALS.includes(value as FullScreenReveal) ? (value as FullScreenReveal) : 'follow'
+}
+
 /** The pair of size settings zoom operates on. */
 export interface ZoomState {
   uiScale: number

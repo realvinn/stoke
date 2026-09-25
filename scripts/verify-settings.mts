@@ -118,6 +118,14 @@ check('zoomTarget defaults to both', hydrateSettings({}).zoomTarget, 'both')
 check('a real target is kept', hydrateSettings({ zoomTarget: 'terminal' }).zoomTarget, 'terminal')
 check('junk falls back to both', hydrateSettings({ zoomTarget: 'sideways' }).zoomTarget, 'both')
 
+/*
+ * fullScreenReveal decides what the tabs do about macOS's full-screen menu bar
+ * (gotcha 105). An older file has none and gets the default, which moves them.
+ */
+check('fullScreenReveal defaults to follow', hydrateSettings({}).fullScreenReveal, 'follow')
+check('a real choice is kept', hydrateSettings({ fullScreenReveal: 'reserve' }).fullScreenReveal, 'reserve')
+check('junk falls back to follow', hydrateSettings({ fullScreenReveal: 'hide' }).fullScreenReveal, 'follow')
+
 console.log('\nterminal font size, which rounds as well as clamps')
 check('a hand-typed 3 is clamped up to the floor', hydrateSettings({ fontSize: 3 }).fontSize, 9)
 check('and 30 is clamped down to the ceiling', hydrateSettings({ fontSize: 30 }).fontSize, 24)

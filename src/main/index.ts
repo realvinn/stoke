@@ -1,10 +1,25 @@
 import { access, mkdir, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises'
-import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, net, protocol, shell, systemPreferences } from 'electron'
+import {
+  app,
+  BaseWindow,
+  BrowserWindow,
+  clipboard,
+  dialog,
+  ipcMain,
+  nativeTheme,
+  net,
+  protocol,
+  screen,
+  shell,
+  systemPreferences
+} from 'electron'
 import { pathToFileURL } from 'node:url'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { CH } from '@shared/ipc'
 import { activeThemeId, resolveTheme } from '@shared/themes'
+import { revealInsetFor, revealsOnEntry } from '@shared/fullScreenReveal'
+import type { RevealInfo } from '@shared/fullScreenReveal'
 import type {
   CliUpdateState,
   LaunchOptions,
@@ -1438,6 +1453,28 @@ function paintWindowChrome(theme: Theme, previousBg: string | null): void {
   }
 }
 
+/*
+ * A standard titled window's title bar, in px: the height of the strip macOS
+ * slides down over a full-screen window. Stoke's own window cannot say — with
+ * `hiddenInset` its content fills the frame — so a hidden `BaseWindow` (no
+ * renderer behind it) is asked once and kept. 32 on macOS 27, 28 before; 0 if
+ * the probe fails, which `revealInsetFor` replaces with its fallback.
+ */
+let titleBarHeight: number | null = null
+function standardTitleBarHeight(): number {
+  if (titleBarHeight !== null) return titleBarHeight
+  let probe: BaseWindow | null = null
+  try {
+    probe = new BaseWindow({ show: false, width: 240, height: 160 })
+    titleBarHeight = probe.getContentBounds().y - probe.getBounds().y
+  } catch {
+    titleBarHeight = 0
+  } finally {
+    probe?.destroy()
+  }
+  return titleBarHeight
+}
+
 function createWindow(): void {
   const settings = getSettings()
   applyNativeTheme(settings)
@@ -1870,6 +1907,29 @@ function registerIpc(): void {
   // Asked once on mount, because a window can be launched already full screen
   // and no enter-full-screen event fires for a state it started in.
   ipcMain.handle(CH.winIsFullScreen, () => win?.isFullScreen() ?? false)
+  /*
+   * How far macOS's full-screen reveal — the menu bar, and under it the title
+   * strip with the traffic lights — reaches over the window. Gotcha 105.
+   *
+   * Asked by the renderer once it hears the window is full screen, so the
+   * bounds read here are already the full-screen frame. Every input is
+   * measured rather than assumed: the menu bar is the display's work-area
+   * inset (still 30 while full screen on macOS 27, where it is cached), and the
+   * strip is a hidden standard window's frame-to-content height.
+   */
+  ipcMain.handle(CH.winRevealInfo, (): RevealInfo => {
+    if (!isMac || !win || !win.isFullScreen()) return { inset: 0, onEntry: false }
+    const bounds = win.getBounds()
+    const display = screen.getDisplayMatching(bounds)
+    return {
+      inset: revealInsetFor({
+        windowTop: bounds.y - display.bounds.y,
+        menuBar: display.workArea.y - display.bounds.y,
+        titleBar: standardTitleBarHeight()
+      }),
+      onEntry: revealsOnEntry(process.getSystemVersion())
+    }
+  })
 
   /*
    * What the OS says, and a push when it changes.

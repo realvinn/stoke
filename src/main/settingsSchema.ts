@@ -15,6 +15,7 @@ import { DEFAULT_WORKLOG_BOARDS, WORKLOG_TARGETS } from '../shared/worklog.ts'
 import { clampWelcomeSeen } from '../shared/welcome.ts'
 import {
   clampFontSize,
+  clampFullScreenReveal,
   clampPort,
   clampRemoteReach,
   clampTerminal,
@@ -48,6 +49,7 @@ export const DEFAULT_SETTINGS: Settings = {
   uiScale: 1,
   terminal: { ...TERMINAL_DEFAULTS },
   zoomTarget: 'both',
+  fullScreenReveal: 'follow',
   defaults: {
     permissionMode: 'default',
     model: '',
@@ -355,6 +357,7 @@ export function hydrateSettings(raw: unknown): Settings {
     terminal: clampTerminal(r.terminal),
     wallpaper: clampWallpaper(r.wallpaper),
     zoomTarget: clampZoomTarget(r.zoomTarget),
+    fullScreenReveal: clampFullScreenReveal(r.fullScreenReveal),
     providers: hydrateProviders(r.providers),
     agents: hydrateAgents(r.agents)
   }

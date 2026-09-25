@@ -17,6 +17,8 @@ paths:
   - "src/renderer/src/lib/theme.ts"
   - "src/renderer/src/styles/app.css"
   - "src/shared/ring.ts"
+  - "src/shared/fullScreenReveal.ts"
+  - "scripts/verify-fullscreen.mts"
 ---
 
 # CSS and layout traps
@@ -220,3 +222,79 @@ a frame of a moving one.
 > on a mounted element; prefer the flag anyway, for the two honest reasons — it is the state a
 > user with the OS setting actually boots into, and it needs no race against a splash that is
 > only up for `WELCOME_DISMISS_MS`.
+
+## 105. macOS's full-screen reveal is two windows over the page, 62px deep, and on macOS 27 it arrives with full screen
+
+**In native full screen, the top of the screen belongs to macOS.** Pushing the pointer against it
+slides the menu bar down, and under it a standard title strip holding the traffic lights and the
+window title. Electron makes that strip opaque in full screen (`NativeWindowMac::
+NotifyWindowEnterFullScreen` sets `titleVisibility` visible and `titlebarAppearsTransparent` NO),
+and both are separate windows drawn over the page — Chromium's own comment on
+`GetWindowControlsOverlayRect` calls the space "inaccessible to WebContents". Stoke's tab strip is
+the top 44px of the page, so while the reveal is out every tab is under it.
+
+**Measured on macOS 27 (MacBookPro17,1, no notch), 2026-09-25**, by putting a `hiddenInset`,
+`trafficLightPosition {16,18}` Electron 43 window into full screen and reading
+`CGWindowListCopyWindowInfo` (bounds and layers need no Screen Recording permission):
+
+- **Menu bar 30pt, strip 32pt: 62 in all.** Parked, they sit at y=−62 and −32; revealed, at 0 and
+  30. `trafficLightPosition` does not change the strip — `setWindowButtonPosition({y: 6})` in full
+  screen left it at 32. A hidden `BaseWindow`'s `getContentBounds().y - getBounds().y` is 32 on
+  the same machine, so that is how main measures it; `display.workArea.y - bounds.y` still reads 30
+  while full screen.
+- **macOS 27 slides the reveal down on ENTERING full screen and leaves it there.** Sampled for 18
+  seconds with the pointer still in the middle of the screen: menu bar and strip on screen the whole
+  time. This is the report — "if I full screen it just goes there" — and why a fresh entry starts
+  shifted there (`revealsOnEntry`, main's `RevealInfo.onEntry`). Other full-screen apps on the
+  same machine had theirs parked, so real pointer movement does put it away; a
+  `CGWarpMouseCursorPosition` warp does not.
+- **The page can tell where the pointer went, though not whether the reveal is out.** With the
+  cursor warped onto the strip or menu bar, the page got `mouseout` with `relatedTarget` null at the
+  pointer's own clientY (0, 45, 61); warped back below, `mouseover` + `mousemove` (63 already the
+  page, 80). No Electron event reports the reveal (`enter-/leave-full-screen` only, and no
+  presentation-options API: electron#22815).
+
+**What does not work, so nobody re-tries it:** `setWindowButtonVisibility(false)` hides the
+buttons, not the strip — it stayed 32pt and still took the pointer (`mouseout` at 45). `simpleFullscreen`
+only reroutes `setFullScreen` and the menu role; the green button calls AppKit's `toggleFullScreen:`
+directly and still enters native full screen. Kiosk disables Cmd+Tab and Force Quit. `app.dock.hide()`
+hides the reveal and the Dock icon with it. A window level above the menu bar (24) would cover it,
+but also the Dock and other apps' panels, and is unmeasured inside a full-screen Space.
+
+**So the shell moves, and it moves by `top`, never by a row.** `nextReveal` shifts on a
+`mousemove` at clientY 0 (pressed against the edge, reveal on its way) or a leave inside the band
+the reveal covers, and goes back up only after the pointer has stayed below the SHIFTED title bar
+for `REVEAL_LINGER_MS` (3s) — never the moment it comes off the reveal, since macOS hides it at
+exactly the moment you move onto the tabs it was covering, and going up then would pull the tab
+out from under the click. Coming back onto the tabs or the reveal cancels the countdown. The
+linger and the slide were both asked for after the first cut, which snapped: "a bit too jumpy".
+A held button changes nothing. A leave inside `.browser-hole` is the docked browser, a second
+page, not the reveal. `barBottom` is where the bar RESTS (`inset` + its `offsetHeight`), not its
+live rect, which is mid-slide right after a shift.
+
+`.app[data-reveal='follow']` is `position: relative; top: 0` with a `top` transition for all of
+full screen, and `[data-shifted]` sets `top: <inset>`: every row keeps its size, so no pty gets a
+SIGWINCH for a trip to the tabs (growing the title-bar row would resize every visible terminal
+twice per trip), and `#root { overflow: clip }` keeps the part hanging off the bottom from ever
+being scrolled to by a `focus()`. The attribute has to outlive the shift, or the slide back has
+no `top: 0` to transition to and snaps. The docked browser cannot transition — nothing fires
+while `top` animates, and a position-only move fires no ResizeObserver either (the worklog-column
+trap) — so BrowserPanel re-sends its rect every frame for 400ms after `shellOffset` changes.
+`reserve` pads `.app` instead and does resize, once, on entry.
+
+**What the first cut got wrong, found by an adversarial review before it shipped:** only the pointer
+could end a shift, so resting it on the tabs and typing kept the status bar and the bottom rows of
+the terminal clipped indefinitely — a key pressed outside the title bar now counts as "below" unless
+the pointer is up on the reveal (`onReveal`). The linger timer ignored held buttons and slid the
+shell mid-selection — a countdown that comes due under a held button now waits for the first
+buttonless event, and `held` comes from POINTER events, because a tab drag `preventDefault`s its
+pointerdown and so stops every compatibility mouse event, mousemove included, until release. An
+open title-bar popover hangs below the bar, so using it counted as leaving the tabs (`onTitleBar`).
+Any other window inside the band — a notification banner, detached DevTools — reads exactly like the
+reveal, so a leave-caused shift is undone the moment the page sees the pointer inside the band,
+which the real reveal, spanning the full width, makes impossible. And the start-shifted-on-entry
+rule is gated on `revealsOnEntry` (macOS ≥ 27, the only version measured doing it).
+
+**Not yet seen by a person:** the shift itself, driven by a real pointer. Everything above was
+measured with warps and a window list; this machine has no Accessibility permission to post real
+pointer events and no Screen Recording permission to screenshot native chrome.

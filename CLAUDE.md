@@ -38,7 +38,7 @@ A `dist:*` exists per target and each MUST run on that target's own platform and
 Every suite runs alone as `npm run verify:<name>`: context, statusline, unicode, usage,
 profiles, settings, providers, claude-config, folders, search, color, theme-gen, activity,
 worklog-gate, tabs, launcher, registry,
-restore, shortcuts, drop, browser-url, voice, agents, campfire, cli, stoke-args, updates, targets, manifests, portable, winget, worklog-runner,
+restore, shortcuts, drop, fullscreen, browser-url, voice, agents, campfire, cli, stoke-args, updates, targets, manifests, portable, winget, worklog-runner,
 worklog-retry, worklog-recall, worklog-autoscan, ssh, remote, phone-ui, installer-art, install, welcome,
 selection — the `check` chain — plus extract and security, which
 need a live instance (`verify:security <url> <token> --access`). `verify:selection` opens a real
@@ -375,6 +375,8 @@ rule file named on the group line.
   `1ms`/one iteration, so the resting style is what paints, and anything resting at `opacity: 0`
   (`.campfire-spark`) vanishes rather than stills. Prove it with
   `--force-prefers-reduced-motion` and a screenshot.
+- **105.** Keep the tabs out from under macOS's full-screen reveal (menu bar + title strip, 62px on
+  macOS 27) by sliding `.app` with `top`, never a row (`nextReveal`, `revealInsetFor`).
 
 **React state** — `.claude/rules/renderer.md`
 - **31.** `npm run check` cannot see a side effect inside a closure, or the wire from real input

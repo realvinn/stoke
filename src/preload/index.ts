@@ -34,6 +34,7 @@ const api: StokeApi = {
     onMaximizedChanged: (cb) => on<[boolean]>(CH.winMaximizedChanged, cb),
     isFullScreen: () => ipcRenderer.invoke(CH.winIsFullScreen),
     onFullScreenChanged: (cb) => on<[boolean]>(CH.winFullScreenChanged, cb),
+    revealInfo: () => ipcRenderer.invoke(CH.winRevealInfo),
     focus: () => ipcRenderer.send(CH.winFocus),
     systemDark: () => ipcRenderer.invoke(CH.systemDark),
     onSystemDarkChanged: (cb) => on<[boolean]>(CH.systemDarkChanged, cb)

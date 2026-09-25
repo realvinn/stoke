@@ -18,6 +18,8 @@ export const CH = {
    */
   winIsFullScreen: 'win:isFullScreen',
   winFullScreenChanged: 'win:fullScreenChanged',
+  /** How far macOS's full-screen menu bar reaches over the window, and whether it comes with full screen. Gotcha 105. */
+  winRevealInfo: 'win:revealInfo',
   /** Bring the window forward — what a clicked notification asks for. */
   winFocus: 'win:focus',
   /**

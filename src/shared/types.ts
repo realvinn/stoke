@@ -5,7 +5,7 @@
 import type { CodingCliId } from './codingClis.ts'
 import type { ProviderSettings } from './providers.ts'
 import type { AgentSettings } from './agents.ts'
-import type { RemoteReachPreference, ZoomTarget } from './ui.ts'
+import type { FullScreenReveal, RemoteReachPreference, ZoomTarget } from './ui.ts'
 
 /* ------------------------------------------------------------------ launch */
 
@@ -923,6 +923,11 @@ export interface Settings {
    * "zoom" means depends on whether you came from a terminal or an editor.
    */
   zoomTarget: ZoomTarget
+  /**
+   * macOS full screen only: keep the tabs clear of the menu bar that slides
+   * down over them. See FullScreenReveal. Offered everywhere, like `showBrand`.
+   */
+  fullScreenReveal: FullScreenReveal
   defaults: {
     permissionMode: PermissionMode
     model: string

@@ -483,8 +483,8 @@ Linux arm64 is deliberately not built (`NOT_BUILT` in `scripts/targets.mjs`).
 
 ## Testing
 
-Verification lives in `scripts/`, one `verify-*` suite per subject — thirty-eight of them now.
-Thirty-six are in `npm run check`, between the typecheck and the full build; `check` is the
+Verification lives in `scripts/`, one `verify-*` suite per subject — forty-five of them now.
+Forty-three are in `npm run check`, between the typecheck and the full build; `check` is the
 gate, and it is what "done" means here. They are `.mts` run straight through node's
 type-stripping with no build step, except `verify:selection`, which opens a real Electron window
 and so needs a display. Each runs alone:
@@ -544,6 +544,9 @@ npm run verify:shortcuts      # app chords vs the keys the terminal owns, the zo
                               # that Ctrl+Tab and the bare brackets still reach the CLI
 npm run verify:drop           # what a dropped file types: quoting per platform, and the
                               # names that cannot be typed at all
+npm run verify:fullscreen     # the macOS full-screen menu bar: how far it reaches (notch,
+                              # never-hide, failed reads) and when the shell moves under it
+                              # and back, replayed from measured pointer events (gotcha 105)
 npm run verify:browser-url    # what the docked browser will load: file://, javascript:,
                               # data: refused to a tool call, file:// kept for the address
                               # bar, and localhost:3000 not mistaken for a scheme
@@ -868,6 +871,10 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
   drop.ts           what a file dropped on the terminal types: the per-platform quoting,
                     and the refusal for a name that cannot be typed. Pure, platform passed
                     in, so verify:drop runs it for every OS. Gotcha 59
+  fullScreenReveal.ts  how far macOS's full-screen menu bar and title strip reach over the
+                    window (main measures the inputs), and the pointer rule that moves the
+                    shell below them and back. Pure, geometry passed in, so
+                    verify:fullscreen replays the measured events. Gotcha 105
   campfire.ts       the fire the one-line installer burns while it downloads: twelve frames
                     over a constant hearth, which one a progress value shows, the four
                     colour tiers and the segment encoding the shell draws from, and the

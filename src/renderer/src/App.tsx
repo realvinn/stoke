@@ -1,6 +1,8 @@
 import { capsFor, cliFor, DEFAULT_CLI, isClaudeCode } from '@shared/codingClis'
 import type { CodingCliDetection, CodingCliId } from '@shared/codingClis'
 import { visibleAgents } from '@shared/agents'
+import { nextReveal, REVEAL_ENTRY_GRACE_MS } from '@shared/fullScreenReveal'
+import type { RevealInfo, RevealInput, RevealState } from '@shared/fullScreenReveal'
 import { AgentPicker } from './components/AgentPicker'
 import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type {
@@ -185,6 +187,9 @@ const EMPTY_BROWSER: BrowserState = {
   findActive: 0,
   bookmarked: false
 }
+
+/** Not full screen, or not a Mac: nothing slides over the tabs. Gotcha 105. */
+const NO_REVEAL: RevealInfo = { inset: 0, onEntry: false }
 
 export function App(): React.JSX.Element {
   const platform = window.stoke.platform
@@ -2951,6 +2956,146 @@ export function App(): React.JSX.Element {
     if (tab?.kind === 'session' && tab.status === 'running') focusTerm(tab.ptyId)
   }, [shellInert])
 
+  /*
+   * macOS full screen: keep the tabs out from under the menu bar. Gotcha 105.
+   *
+   * macOS slides its menu bar, and a title strip under it, down over the top of
+   * a full-screen window — 62px on macOS 27, deeper than the whole title bar —
+   * and on macOS 27 it does so on entering full screen and stays. `revealInset`
+   * is how far it reaches (main measures it); `fullScreenReveal` is what to do.
+   * `reserve` keeps that room free for all of full screen. `follow` slides the
+   * whole shell down by it while the pointer is up on the reveal, and back a few
+   * seconds after the pointer has gone below the title bar, with `nextReveal` as
+   * the rule. It moves by `top`, never by resizing a row, so a trip to the tabs
+   * resizes no pty; BrowserPanel walks the native view along with the slide.
+   */
+  const [revealInfo, setRevealInfo] = useState<RevealInfo>(NO_REVEAL)
+  useEffect(() => {
+    if (platform !== 'darwin' || !fullScreen) {
+      setRevealInfo(NO_REVEAL)
+      return
+    }
+    let live = true
+    void window.stoke.window.revealInfo().then((info) => {
+      if (live) setRevealInfo(info)
+    })
+    return () => {
+      live = false
+    }
+  }, [platform, fullScreen])
+  const revealInset = revealInfo.inset
+  const revealOnEntry = revealInfo.onEntry
+
+  const revealMode = settings?.fullScreenReveal ?? 'follow'
+  const followReveal = revealMode === 'follow' && revealInset > 0 && !shellInert
+  const [revealShift, setRevealShift] = useState(false)
+  // Entering full screen starts shifted where macOS slides the reveal down as
+  // full screen begins and leaves it over the tabs until the pointer goes
+  // somewhere (27; `revealsOnEntry`). Only just after the entry, though: the
+  // first `follow` run can come much later — full screen entered under
+  // `reserve`, the mode switched in Settings — and by then it is long parked.
+  const fullScreenAt = useRef<number | null>(null)
+  useEffect(() => {
+    fullScreenAt.current = fullScreen ? performance.now() : null
+  }, [fullScreen])
+  useEffect(() => {
+    if (!followReveal) {
+      setRevealShift(false)
+      return
+    }
+    const enteredAt = fullScreenAt.current
+    fullScreenAt.current = null
+    let state: RevealState = {
+      shifted: revealOnEntry && enteredAt !== null && performance.now() - enteredAt < REVEAL_ENTRY_GRACE_MS,
+      releaseAt: null,
+      onReveal: null
+    }
+    setRevealShift(state.shifted)
+    let timer: ReturnType<typeof setTimeout> | undefined
+    /*
+     * The buttons held right now, from pointer events rather than mouse ones: a
+     * tab drag `preventDefault`s its pointerdown, which stops every compatibility
+     * mouse event — mousemove included — until the button comes up, so a
+     * countdown coming due mid-drag would otherwise read the last move's 0.
+     */
+    let held = 0
+
+    // Where the bar RESTS once shifted, not its live rect, which is mid-slide.
+    const shiftedBarBottom = (): number =>
+      revealInset + (appRef.current?.querySelector<HTMLElement>(':scope > .titlebar')?.offsetHeight ?? 0)
+    // Leaving the page for the docked browser looks just like leaving it for the
+    // reveal — the browser is a second page — so a leave inside its rect is not
+    // one. 2px of slack for main rounding the rect it was sent.
+    const overBrowser = (x: number, y: number): boolean => {
+      const r = appRef.current?.querySelector('.browser-hole')?.getBoundingClientRect()
+      return !!r && x >= r.left - 2 && x < r.right + 2 && y >= r.top - 2 && y < r.bottom + 2
+    }
+    // An open title-bar popover and its backdrop are DOM children of the title
+    // bar, and hang well below it; a context menu opened on a tab does too.
+    const onTitleBar = (target: EventTarget | null): boolean =>
+      target instanceof Element && target.closest('.titlebar, .context-menu') !== null
+    // `now` is the clock the rule runs on; the linger timer passes the instant it
+    // was set for, so a timeout that fires a millisecond early still releases.
+    const update = (input: RevealInput, now = performance.now()): void => {
+      // The bar's edge only matters once shifted, so a plain move reads no layout.
+      const next = nextReveal(state, input, { inset: revealInset, barBottom: state.shifted ? shiftedBarBottom() : 0 }, now)
+      if (next === state) return
+      if (next.releaseAt !== state.releaseAt) {
+        clearTimeout(timer)
+        const due = next.releaseAt
+        if (due !== null) {
+          timer = setTimeout(() => update({ kind: 'tick', buttons: held }, due), Math.max(0, due - now))
+        }
+      }
+      if (next.shifted !== state.shifted) setRevealShift(next.shifted)
+      state = next
+    }
+    const onMove = (e: MouseEvent): void => {
+      held = e.buttons
+      update({ kind: 'move', y: e.clientY, buttons: e.buttons, onTitleBar: onTitleBar(e.target) })
+    }
+    const onDown = (e: PointerEvent): void => {
+      held = e.buttons
+    }
+    // The end of a drag is where a countdown that came due under it releases.
+    const onUp = (e: PointerEvent): void => {
+      held = e.buttons
+      update({ kind: 'move', y: e.clientY, buttons: e.buttons, onTitleBar: onTitleBar(e.target) })
+    }
+    // Typing means done with the tabs — unless it is into the title bar itself
+    // (renaming a tab, a popover's field) or a context menu.
+    const onKey = (e: KeyboardEvent): void => {
+      if (!onTitleBar(e.target)) update({ kind: 'key', buttons: held })
+    }
+    const onOut = (e: MouseEvent): void => {
+      if (e.relatedTarget !== null) return
+      update({
+        kind: 'leave',
+        y: e.clientY,
+        buttons: e.buttons,
+        overNativeView: overBrowser(e.clientX, e.clientY),
+        throughEdge: e.clientX <= 0 || e.clientX >= window.innerWidth - 1 || e.clientY >= window.innerHeight - 1
+      })
+    }
+    window.addEventListener('mousemove', onMove, true)
+    window.addEventListener('pointerdown', onDown, true)
+    window.addEventListener('pointerup', onUp, true)
+    window.addEventListener('mouseout', onOut, true)
+    window.addEventListener('keydown', onKey, true)
+    return () => {
+      clearTimeout(timer)
+      window.removeEventListener('keydown', onKey, true)
+      window.removeEventListener('mousemove', onMove, true)
+      window.removeEventListener('pointerdown', onDown, true)
+      window.removeEventListener('pointerup', onUp, true)
+      window.removeEventListener('mouseout', onOut, true)
+    }
+  }, [followReveal, revealInset, revealOnEntry])
+  // `follow` stays set for the whole of full screen, shifted or not, so the
+  // slide back up has a `top: 0` to transition to.
+  const revealLayout = revealInset > 0 && revealMode !== 'off' ? revealMode : undefined
+  const revealShifted = revealLayout === 'follow' && followReveal && revealShift
+
   useEffect(() => {
     refreshAgents()
   }, [refreshAgents])
@@ -3781,7 +3926,13 @@ export function App(): React.JSX.Element {
   )
 
   return (
-    <div className="app" ref={appRef}>
+    <div
+      className="app"
+      ref={appRef}
+      data-reveal={revealLayout}
+      data-shifted={revealShifted || undefined}
+      style={revealLayout ? ({ '--reveal-inset': `${revealInset}px` } as React.CSSProperties) : undefined}
+    >
       <TitleBar
         platform={platform}
         showBrand={settings?.showBrand !== false}
@@ -4181,6 +4332,7 @@ export function App(): React.JSX.Element {
             <div style={{ width: browserWidth, display: 'flex', flexShrink: 0 }}>
               <BrowserPanel
                 state={browserState}
+                shellOffset={revealShifted ? revealInset : 0}
                 bookmarks={settings?.browser.bookmarks ?? []}
                 onAskClaude={askClaude}
                 onClose={() => setBrowserOpen(false)}

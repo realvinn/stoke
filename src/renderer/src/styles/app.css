@@ -420,6 +420,68 @@ body {
   background: var(--bg);
 }
 
+/*
+ * macOS full screen: room for the menu bar that slides down over the tabs.
+ * Gotcha 105. `--reveal-inset` is how far it reaches — the menu bar plus the
+ * title strip macOS hangs under it, 62px on macOS 27 — measured by main and
+ * written inline by App.
+ *
+ * `follow` slides the whole shell down while the pointer is up on the reveal,
+ * by `top` rather than a taller row: every row keeps its size, so no pty
+ * resizes, and the bottom of the shell hangs off the window until it slides
+ * back. The attribute stays for all of full screen and `data-shifted` moves
+ * it, so there is a `top: 0` for the slide back to transition to. Reduced
+ * motion gets the global 1ms, which lands on the same resting place.
+ * `reserve` gives the room for all of full screen instead, so the rows do
+ * shrink — once, on entering full screen, which resizes them anyway.
+ * Either way the band above the title bar is painted as title bar: it is what
+ * shows there once macOS slides its own strip back up.
+ */
+.app[data-reveal] {
+  position: relative;
+}
+
+.app[data-reveal='follow'] {
+  top: 0;
+  transition: top var(--dur-slow) var(--ease);
+}
+
+.app[data-reveal='follow'][data-shifted] {
+  top: var(--reveal-inset, 0px);
+}
+
+.app[data-reveal='reserve'] {
+  padding-top: var(--reveal-inset, 0px);
+}
+
+.app[data-reveal]::before {
+  content: '';
+  position: absolute;
+  inset-inline: 0;
+  top: 0;
+  height: var(--reveal-inset, 0px);
+  background: var(--bg-sunken);
+}
+
+.app[data-reveal='follow']::before {
+  top: calc(-1 * var(--reveal-inset, 0px));
+}
+
+:root[data-wallpaper] .app[data-reveal]::before {
+  background: color-mix(in srgb, var(--bg-sunken) calc(var(--panel-alpha, 0.85) * 100%), transparent);
+}
+
+/*
+ * A shifted shell hangs off the bottom of the window, and must be clipped
+ * there, never scrolled to. `body`'s `overflow: hidden` still lets `focus()`
+ * scroll the page — and xterm focuses a textarea at the prompt row, which is
+ * exactly the part hanging off — so the page would be left scrolled up by the
+ * inset after the shell came back. `clip` is not a scroll container at all.
+ */
+#root {
+  overflow: clip;
+}
+
 .body-row {
   display: flex;
   min-height: 0;
