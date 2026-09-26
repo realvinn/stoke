@@ -126,6 +126,24 @@ check('fullScreenReveal defaults to follow', hydrateSettings({}).fullScreenRevea
 check('a real choice is kept', hydrateSettings({ fullScreenReveal: 'reserve' }).fullScreenReveal, 'reserve')
 check('junk falls back to follow', hydrateSettings({ fullScreenReveal: 'hide' }).fullScreenReveal, 'follow')
 
+/*
+ * Browser profiles (browserProfiles.ts). An older file has none: it must come
+ * back with Default alone and Default active, which is the partition every
+ * login made before profiles already lives in.
+ */
+check('an older file gets the Default browser profile', hydrateSettings({}).browser.profiles.map((p) => p.id), ['default'])
+check('and uses it', hydrateSettings({}).browser.currentProfile, 'default')
+check(
+  'an active profile that is gone falls back to Default',
+  hydrateSettings({ browser: { profiles: [{ id: 'w1', label: 'Work' }], currentProfile: 'gone' } } as never).browser.currentProfile,
+  'default'
+)
+check(
+  'bookmarks survive beside profiles',
+  hydrateSettings({ browser: { bookmarks: ['https://a.test'] } } as never).browser.bookmarks,
+  ['https://a.test']
+)
+
 console.log('\nterminal font size, which rounds as well as clamps')
 check('a hand-typed 3 is clamped up to the floor', hydrateSettings({ fontSize: 3 }).fontSize, 9)
 check('and 30 is clamped down to the ceiling', hydrateSettings({ fontSize: 30 }).fontSize, 24)

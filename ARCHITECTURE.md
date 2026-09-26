@@ -483,8 +483,8 @@ Linux arm64 is deliberately not built (`NOT_BUILT` in `scripts/targets.mjs`).
 
 ## Testing
 
-Verification lives in `scripts/`, one `verify-*` suite per subject — forty-five of them now.
-Forty-three are in `npm run check`, between the typecheck and the full build; `check` is the
+Verification lives in `scripts/`, one `verify-*` suite per subject — forty-six of them now.
+Forty-four are in `npm run check`, between the typecheck and the full build; `check` is the
 gate, and it is what "done" means here. They are `.mts` run straight through node's
 type-stripping with no build step, except `verify:selection`, which opens a real Electron window
 and so needs a display. Each runs alone:
@@ -550,6 +550,8 @@ npm run verify:fullscreen     # the macOS full-screen menu bar: how far it reach
 npm run verify:browser-url    # what the docked browser will load: file://, javascript:,
                               # data: refused to a tool call, file:// kept for the address
                               # bar, and localhost:3000 not mistaken for a scheme
+npm run verify:browser-profiles  # browser profiles: Default keeps the old partition, a settings
+                              # file cannot name one two profiles would share (browserProfiles.ts)
 npm run verify:agents         # the coding agents: what is stored, what the launcher shows,
                               # each CLI's exact launch plan (endpoint, MCP, continue) with
                               # every key in env and none in argv, and the install script —
@@ -871,6 +873,9 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
   drop.ts           what a file dropped on the terminal types: the per-platform quoting,
                     and the refusal for a name that cannot be typed. Pure, platform passed
                     in, so verify:drop runs it for every OS. Gotcha 59
+  browserProfiles.ts  the docked browser's profiles: each its own persistent partition
+                    (`partitionFor`; Default keeps `persist:stoke-browser`), the hydrate that
+                    repairs a settings file's list, and id/label minting. verify:browser-profiles
   fullScreenReveal.ts  how far macOS's full-screen menu bar and title strip reach over the
                     window (main measures the inputs), and the pointer rule that moves the
                     shell below them and back. Pure, geometry passed in, so

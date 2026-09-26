@@ -4383,6 +4383,9 @@ export function App(): React.JSX.Element {
                 bookmarks={settings?.browser.bookmarks ?? []}
                 onAskClaude={askClaude}
                 onClose={() => setBrowserOpen(false)}
+                profiles={settings?.browser.profiles ?? []}
+                currentProfile={settings?.browser.currentProfile ?? 'default'}
+                onManageProfiles={() => openSettings('browser')}
               />
             </div>
           </>

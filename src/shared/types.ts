@@ -6,6 +6,7 @@ import type { CodingCliId } from './codingClis.ts'
 import type { ProviderSettings } from './providers.ts'
 import type { AgentSettings } from './agents.ts'
 import type { FullScreenReveal, RemoteReachPreference, ZoomTarget } from './ui.ts'
+import type { BrowserProfile } from './browserProfiles.ts'
 
 /* ------------------------------------------------------------------ launch */
 
@@ -951,6 +952,10 @@ export interface Settings {
     lastUrl: string
     width: number
     bookmarks: string[]
+    /** Separate sets of logins, Default first. See browserProfiles.ts. */
+    profiles: BrowserProfile[]
+    /** The profile new tabs open in and the tab strip shows. Not `Settings.activeProfile`, the project-group chip. */
+    currentProfile: string
   }
   /** Serving Stoke's sessions to a phone, normally behind a Cloudflare Tunnel. */
   remote: {
@@ -1142,6 +1147,8 @@ export interface BrowserTabState {
   title: string
   url: string
   loading: boolean
+  /** The browser profile the tab belongs to. The strip lists only the active profile's. */
+  profileId: string
 }
 
 export interface BrowserState {

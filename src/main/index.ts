@@ -7,6 +7,7 @@ import {
   clipboard,
   dialog,
   ipcMain,
+  Menu,
   nativeTheme,
   net,
   protocol,
@@ -14,12 +15,14 @@ import {
   shell,
   systemPreferences
 } from 'electron'
+import { randomUUID } from 'node:crypto'
 import { pathToFileURL } from 'node:url'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { CH } from '@shared/ipc'
 import { activeThemeId, resolveTheme } from '@shared/themes'
 import { revealInsetFor, revealsOnEntry } from '@shared/fullScreenReveal'
+import { DEFAULT_BROWSER_PROFILE_ID, newProfileId, nextProfileLabel } from '@shared/browserProfiles'
 import type { RevealInfo } from '@shared/fullScreenReveal'
 import type {
   CliUpdateState,
@@ -1598,6 +1601,7 @@ function createWindow(): void {
     () => send(CH.browserFindRequested)
   )
   browser.setBookmarks(settings.browser.bookmarks)
+  browser.setProfiles(settings.browser.profiles, settings.browser.currentProfile, settings.browser.homepage)
 
   /*
    * Self-update and the CLI check, both deferred so they never compete with
@@ -2249,6 +2253,65 @@ function registerIpc(): void {
     send(CH.settingsChanged, next)
   })
 
+  /*
+   * Browser profiles. The list and the active id live in settings and nowhere
+   * else (gotcha 57); `browser.setProfiles` follows every write of them, here
+   * and in `CH.settingsSet`.
+   */
+  const writeBrowser = (patch: Partial<Settings['browser']>): Settings => {
+    const s = getSettings()
+    const next = setSettings({ browser: { ...s.browser, ...patch } })
+    browser?.setProfiles(next.browser.profiles, next.browser.currentProfile, next.browser.homepage)
+    send(CH.settingsChanged, next)
+    return next
+  }
+  ipcMain.handle(
+    CH.browserProfileMenu,
+    (_e, x: number, y: number) =>
+      new Promise<'manage' | null>((resolve) => {
+        if (!win) return resolve(null)
+        const s = getSettings()
+        const menu = Menu.buildFromTemplate([
+          ...s.browser.profiles.map((p) => ({
+            label: p.label,
+            sublabel: p.source || undefined,
+            type: 'radio' as const,
+            checked: p.id === s.browser.currentProfile,
+            click: (): void => {
+              if (p.id !== getSettings().browser.currentProfile) writeBrowser({ currentProfile: p.id })
+              resolve(null)
+            }
+          })),
+          { type: 'separator' },
+          { label: 'Manage profiles…', click: () => resolve('manage') }
+        ])
+        // `callback` runs when the menu closes, which may be before a click
+        // handler on some platforms: resolving twice is a no-op, so dismissal
+        // waits a beat for a click that is on its way.
+        menu.popup({
+          window: win,
+          x: Math.round(x),
+          y: Math.round(y),
+          callback: () => setTimeout(() => resolve(null), 50)
+        })
+      })
+  )
+  ipcMain.handle(CH.browserAddProfile, () => {
+    const profiles = getSettings().browser.profiles
+    const profile = { id: newProfileId(profiles, randomUUID), label: nextProfileLabel(profiles), source: '' }
+    return writeBrowser({ profiles: [...profiles, profile] })
+  })
+  ipcMain.handle(CH.browserRemoveProfile, async (_e, id: string) => {
+    if (id === DEFAULT_BROWSER_PROFILE_ID || !getSettings().browser.profiles.some((p) => p.id === id)) return getSettings()
+    await browser?.clearProfileData(id)
+    // Read AFTER the await: settings may have moved while the jar was wiped.
+    const s = getSettings()
+    return writeBrowser({
+      profiles: s.browser.profiles.filter((p) => p.id !== id),
+      currentProfile: s.browser.currentProfile === id ? DEFAULT_BROWSER_PROFILE_ID : s.browser.currentProfile
+    })
+  })
+
   /* ------------------------------------------------------ claude code config */
   /*
    * Claude Code's own settings, which are not Stoke's and live in Claude's own
@@ -2572,6 +2635,8 @@ function registerIpc(): void {
   ipcMain.handle(CH.settingsSet, async (_e, patch: Partial<Settings>) => {
     const prev = getSettings()
     const next = setSettings(patch)
+    // A renamed or re-ordered profile list, or a switch made from the panel.
+    if (patch.browser) browser?.setProfiles(next.browser.profiles, next.browser.currentProfile, next.browser.homepage)
     /*
      * A running remote server reads its config once, at start. So ticking
      * "also listen on the local network", changing the port, or requiring

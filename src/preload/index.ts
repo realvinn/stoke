@@ -125,6 +125,9 @@ const api: StokeApi = {
     stopFind: () => ipcRenderer.send(CH.browserStopFind),
     zoom: (level: number) => ipcRenderer.send(CH.browserZoom, level),
     bookmark: () => ipcRenderer.send(CH.browserBookmark),
+    profileMenu: (x, y) => ipcRenderer.invoke(CH.browserProfileMenu, x, y),
+    addProfile: () => ipcRenderer.invoke(CH.browserAddProfile),
+    removeProfile: (id) => ipcRenderer.invoke(CH.browserRemoveProfile, id),
     onState: (cb) => on<[Parameters<typeof cb>[0]]>(CH.browserState, cb)
   },
 

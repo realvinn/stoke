@@ -14,6 +14,12 @@ import { DEFAULT_LIGHT_THEME_ID, DEFAULT_THEME_ID, validateTheme } from '../shar
 import { DEFAULT_WORKLOG_BOARDS, WORKLOG_TARGETS } from '../shared/worklog.ts'
 import { clampWelcomeSeen } from '../shared/welcome.ts'
 import {
+  clampCurrentProfile,
+  DEFAULT_BROWSER_PROFILE,
+  DEFAULT_BROWSER_PROFILE_ID,
+  hydrateBrowserProfiles
+} from '../shared/browserProfiles.ts'
+import {
   clampFontSize,
   clampFullScreenReveal,
   clampPort,
@@ -67,7 +73,9 @@ export const DEFAULT_SETTINGS: Settings = {
     homepage: 'https://code.claude.com/docs',
     lastUrl: '',
     width: 460,
-    bookmarks: []
+    bookmarks: [],
+    profiles: [{ ...DEFAULT_BROWSER_PROFILE }],
+    currentProfile: DEFAULT_BROWSER_PROFILE_ID
   },
   remote: {
     enabled: false,
@@ -216,6 +224,19 @@ function hydrateWorklogBoards(raw: unknown): WorklogBoards {
   }
 }
 
+/** The browser block, with its profile list repaired (browserProfiles.ts). */
+function hydrateBrowser(raw: Partial<Settings['browser']> | undefined): Settings['browser'] {
+  const r = raw ?? {}
+  const profiles = hydrateBrowserProfiles(r.profiles)
+  return {
+    ...DEFAULT_SETTINGS.browser,
+    ...r,
+    bookmarks: Array.isArray(r.bookmarks) ? r.bookmarks : [],
+    profiles,
+    currentProfile: clampCurrentProfile(r.currentProfile, profiles)
+  }
+}
+
 /** Shallow-merge persisted values over defaults so new keys appear on upgrade. */
 export function hydrateSettings(raw: unknown): Settings {
   // `{}` is an object, so this falls straight into the main path below rather
@@ -232,11 +253,7 @@ export function hydrateSettings(raw: unknown): Settings {
     ...DEFAULT_SETTINGS,
     ...r,
     defaults: { ...DEFAULT_SETTINGS.defaults, ...(r.defaults ?? {}) },
-    browser: {
-      ...DEFAULT_SETTINGS.browser,
-      ...(r.browser ?? {}),
-      bookmarks: Array.isArray(r.browser?.bookmarks) ? r.browser.bookmarks : []
-    },
+    browser: hydrateBrowser(r.browser),
     remote: {
       ...DEFAULT_SETTINGS.remote,
       ...(r.remote ?? {}),

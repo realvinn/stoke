@@ -282,6 +282,14 @@ while `top` animates, and a position-only move fires no ResizeObserver either (t
 trap) — so BrowserPanel re-sends its rect every frame for 400ms after `shellOffset` changes.
 `reserve` pads `.app` instead and does resize, once, on entry.
 
+> **Checked against the code on 2026-09-26** — the slide is no longer a `top` transition. It
+> rests by `top` but moves by a transform animation (FLIP, `slideRef` in App.tsx): the `top`
+> transition repainted and rasterised the whole shell on the main thread every frame, 7.7–15.1 ms
+> of paint per slide with dropped frames in 2 of 15 slides under streaming load, against 0–2.8 ms
+> and none in 16 for a transform. Reduced motion is checked in code, because the global CSS rule
+> does not reach `element.animate()` (gotcha 72). The `follow` attribute still stays for all of full
+> screen, now only for the band's position.
+
 **What the first cut got wrong, found by an adversarial review before it shipped:** only the pointer
 could end a shift, so resting it on the tabs and typing kept the status bar and the bottom rows of
 the terminal clipped indefinitely — a key pressed outside the title bar now counts as "below" unless

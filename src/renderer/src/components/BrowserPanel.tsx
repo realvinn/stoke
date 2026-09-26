@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import type { BrowserProfile } from '@shared/browserProfiles'
 import type { BrowserState } from '@shared/types'
 import {
   IconArrowLeft,
@@ -26,6 +27,11 @@ interface Props {
    * the rect be re-sent even if this component is ever memoised.
    */
   shellOffset: number
+  /** Browser profiles, Default first, and the one in use. See browserProfiles.ts. */
+  profiles: BrowserProfile[]
+  currentProfile: string
+  /** "Manage profiles…" in the switcher: open Settings > Browser. */
+  onManageProfiles: () => void
 }
 
 /** --dur-slow is 240ms; follow the shell's slide a little past its end. */
@@ -41,8 +47,18 @@ const ZOOM_STEP = 0.5
  * and painted over `.browser-hole`, so this component's real job is to keep
  * that element's geometry reported upstream and to drive the controls.
  */
-export function BrowserPanel({ state, bookmarks, onAskClaude, onClose, shellOffset }: Props): React.JSX.Element {
+export function BrowserPanel({
+  state,
+  bookmarks,
+  onAskClaude,
+  onClose,
+  shellOffset,
+  profiles,
+  currentProfile,
+  onManageProfiles
+}: Props): React.JSX.Element {
   const holeRef = useRef<HTMLDivElement>(null)
+  const profileLabel = profiles.find((p) => p.id === currentProfile)?.label ?? 'Default'
   const findRef = useRef<HTMLInputElement>(null)
   const [draft, setDraft] = useState(state.url)
   const [editing, setEditing] = useState(false)
@@ -222,6 +238,29 @@ export function BrowserPanel({ state, bookmarks, onAskClaude, onClose, shellOffs
       )}
 
       <div className="browser-bar">
+        {/*
+          Which set of logins this panel is using. Only once there is a choice:
+          with the Default profile alone it would be a label with nothing to
+          switch to. The switcher itself is a native menu from main, because the
+          page view paints over any DOM dropdown that would reach down into it
+          (gotcha 14).
+        */}
+        {profiles.length > 1 && (
+          <button
+            className="browser-profile"
+            title={`Browser profile: ${profileLabel}. Each profile has its own logins.`}
+            onClick={(e) => {
+              const r = e.currentTarget.getBoundingClientRect()
+              void window.stoke.browser.profileMenu(r.left, r.bottom + 2).then((act) => {
+                if (act === 'manage') onManageProfiles()
+              })
+            }}
+          >
+            <span className="browser-profile-dot" aria-hidden="true" />
+            <span className="browser-profile-label">{profileLabel}</span>
+            <span className="sr-only">, switch browser profile</span>
+          </button>
+        )}
         <button
           className="icon-btn"
           onClick={() => window.stoke.browser.back()}

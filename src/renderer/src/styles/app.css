@@ -3022,6 +3022,46 @@ mark.hit {
   border-bottom: 1px solid var(--border-subtle);
 }
 
+/*
+ * The browser profile chip. A pill, not an icon button: the name is the
+ * information. `--accent-ink` for the dot, a stroke-sized mark on the bar's
+ * own background (gotcha 44); border and background declared, so Chromium's
+ * grey buttonface never shows (gotcha 47).
+ */
+.browser-profile {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+  max-width: 9rem;
+  height: var(--control-h);
+  padding: 0 var(--space-8);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-full);
+  background: transparent;
+  color: var(--text);
+  font-size: var(--fs-sm);
+  cursor: default;
+  transition: background var(--dur-fast) var(--ease);
+}
+
+.browser-profile:hover {
+  background: var(--surface-hover);
+}
+
+.browser-profile-dot {
+  width: 0.4375rem;
+  height: 0.4375rem;
+  flex-shrink: 0;
+  border-radius: var(--r-full);
+  background: var(--accent-ink);
+}
+
+.browser-profile-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .browser-find {
   display: flex;
   align-items: center;

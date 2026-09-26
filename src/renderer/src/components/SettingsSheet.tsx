@@ -35,6 +35,7 @@ import { IconClose } from './Icons'
 import { useEffect, useRef, useState } from 'react'
 import { useDraft } from '../lib/useDraft'
 import { HostsSettings } from './HostsSettings'
+import { BrowserSettings } from './BrowserSettings'
 import { ProfilesSettings } from './ProfilesSettings'
 import { ClaudeCodeSettings } from './ClaudeCodeSettings'
 import { ProvidersSettings } from './ProvidersSettings'
@@ -126,6 +127,7 @@ export type SectionId =
   | 'voice'
   | 'projects'
   | 'hosts'
+  | 'browser'
   | 'worklog'
   | 'remote'
   | 'updates'
@@ -165,7 +167,8 @@ const GROUPS: { title: string; sections: Section[] }[] = [
       { id: 'providers', label: 'Providers', hint: 'Claude Code’s API keys and gateway, and the shared OpenRouter key' },
       { id: 'voice', label: 'Voice', hint: 'The microphone, Claude Code’s /voice, and Stoke’s dictation' },
       { id: 'projects', label: 'Projects', hint: 'Which folders the sidebar scans' },
-      { id: 'hosts', label: 'SSH hosts', hint: 'Remote machines to open sessions on' }
+      { id: 'hosts', label: 'SSH hosts', hint: 'Remote machines to open sessions on' },
+      { id: 'browser', label: 'Browser', hint: 'Profiles for the docked browser, each with its own logins' }
     ]
   },
   {
@@ -832,6 +835,8 @@ export function SettingsSheet({
                 </label>
               </>
             )}
+
+            {section === 'browser' && <BrowserSettings browser={settings.browser} onPatch={onPatch} />}
 
             {section === 'projects' && (
               <>

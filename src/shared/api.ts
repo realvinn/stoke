@@ -493,6 +493,16 @@ export interface StokeApi {
     zoom(level: number): void
     /** Toggle the bookmark for the active tab's URL. */
     bookmark(): void
+    /**
+     * Pop the profile switcher at a point in the window. Picking a profile
+     * switches to it in main; `manage` asks the renderer to open Settings >
+     * Browser. Null when dismissed.
+     */
+    profileMenu(x: number, y: number): Promise<'manage' | null>
+    /** Add an empty profile; returns the settings with it in. Not switched to. */
+    addProfile(): Promise<Settings>
+    /** Close a profile's tabs, wipe its logins and data, and drop it. Default is refused. */
+    removeProfile(id: string): Promise<Settings>
     onState(cb: (state: BrowserState) => void): () => void
   }
 

@@ -114,6 +114,10 @@ export const CH = {
   browserStopFind: 'browser:stopFind',
   browserZoom: 'browser:zoom',
   browserBookmark: 'browser:bookmark',
+  /** The profile switcher: a native menu, since the page view paints over any DOM one (gotcha 14). */
+  browserProfileMenu: 'browser:profileMenu',
+  browserAddProfile: 'browser:addProfile',
+  browserRemoveProfile: 'browser:removeProfile',
 
   // remote access (phone / tunnel)
   remoteStatus: 'remote:status',

@@ -5,6 +5,8 @@ import type { BrowserState, BrowserTabState, Rect } from '@shared/types'
 // Relative and with the extension, so this module still runs under
 // `node --experimental-strip-types` (no path aliases there).
 import { normalizeUrl } from '../shared/url.ts'
+import { DEFAULT_BROWSER_PROFILE_ID, partitionFor } from '../shared/browserProfiles.ts'
+import type { BrowserProfile } from '../shared/browserProfiles.ts'
 
 /** Recent console output, exposed to the agent through the MCP tools. */
 export interface ConsoleEntry {
@@ -35,13 +37,14 @@ export interface NetEntry {
 /** Ring buffer size per tab for each log. Enough for a page load, cheap to keep. */
 const LOG_LIMIT = 300
 
-/**
- * A dedicated persistent partition. Logins survive restarts, and browsing stays
- * separate from the app's own session. Shared with the agent by design: this is
- * what lets Claude read dashboards and internal tools you are already signed
- * into, which a cold headless browser cannot do.
+/*
+ * Each browser profile is a dedicated persistent partition (`partitionFor`).
+ * Logins survive restarts, and browsing stays separate from the app's own
+ * session. Shared with the agent by design: this is what lets Claude read
+ * dashboards and internal tools you are already signed into, which a cold
+ * headless browser cannot do — and the agent acts in the ACTIVE profile only.
+ * The Default profile keeps the partition the single browser always had.
  */
-const PARTITION = 'persist:stoke-browser'
 
 /**
  * The only permissions a browsed page may have, out of the twenty-odd Electron
@@ -71,6 +74,8 @@ const DEFAULT_VIEWPORT = { x: 0, y: 0, width: 1280, height: 900 }
 
 interface Tab {
   id: string
+  /** The browser profile, and so the partition, this tab lives in. */
+  profileId: string
   view: WebContentsView
   consoleLog: ConsoleEntry[]
   netLog: NetEntry[]
@@ -98,8 +103,13 @@ export class EmbeddedBrowser {
   /** True only while the panel is open in the UI. */
   private userVisible = false
   private bounds: Rect = { x: 0, y: 0, width: 0, height: 0 }
-  private netHooked = false
-  private permsHooked = false
+  /** Partitions whose session hooks are installed: once each, since a second webRequest listener replaces the first. */
+  private hookedPartitions = new Set<string>()
+  private currentProfile = DEFAULT_BROWSER_PROFILE_ID
+  /** Each profile's last active tab, so switching back returns to it. */
+  private lastActive = new Map<string, string>()
+  /** Where a profile's first tab opens when it is switched to with none. */
+  private homepage = ''
 
   private readonly win: BrowserWindow
   private readonly emit: (state: BrowserState) => void
@@ -123,6 +133,11 @@ export class EmbeddedBrowser {
     return this.tabs.find((t) => t.id === this.activeId) ?? null
   }
 
+  /** The active profile's tabs, in strip order. */
+  private shownTabs(): Tab[] {
+    return this.tabs.filter((t) => t.profileId === this.currentProfile)
+  }
+
   /** Create the first tab lazily so an unopened panel costs nothing. */
   private ensure(): Tab {
     const current = this.active()
@@ -130,19 +145,21 @@ export class EmbeddedBrowser {
     return this.newTab()
   }
 
-  newTab(url?: string): Tab {
+  newTab(url?: string, profileId: string = this.currentProfile): Tab {
+    const partition = partitionFor(profileId)
     const view = new WebContentsView({
       webPreferences: {
         // Nothing from Stoke is exposed to browsed pages.
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
-        partition: PARTITION
+        partition
       }
     })
 
     const tab: Tab = {
       id: randomUUID(),
+      profileId,
       view,
       consoleLog: [],
       netLog: [],
@@ -263,15 +280,15 @@ export class EmbeddedBrowser {
       }
     })
 
-    // A link that asks for a new window gets a real new tab, like a browser.
+    // A link that asks for a new window gets a real new tab, like a browser —
+    // in the opener's profile, so it carries the same logins.
     wc.setWindowOpenHandler(({ url: target }) => {
-      this.newTab(target)
+      this.newTab(target, tab.profileId)
       return { action: 'deny' }
     })
 
     this.hookConsole(wc, tab)
-    this.hookNetwork()
-    this.hookPermissions()
+    this.hookSession(partition)
 
     view.setBackgroundColor('#00000000')
 
@@ -281,35 +298,90 @@ export class EmbeddedBrowser {
     view.setBounds(DEFAULT_VIEWPORT)
     view.setVisible(false)
 
-    this.activeId = tab.id
+    // A popup from a background profile's page joins that profile quietly
+    // rather than pulling the strip over to it.
+    if (profileId === this.currentProfile) this.activeId = tab.id
+    else this.lastActive.set(profileId, tab.id)
     this.applyVisibility()
 
-    if (url) this.navigate(url)
+    if (url) this.load(tab, url)
     this.emit(this.state())
     return tab
   }
 
   closeTab(id: string): void {
-    const index = this.tabs.findIndex((t) => t.id === id)
-    if (index === -1) return
-    const [tab] = this.tabs.splice(index, 1)
+    const tab = this.tabs.find((t) => t.id === id)
+    if (!tab) return
+    // The next tab is picked among the closed one's own profile.
+    const siblings = this.tabs.filter((t) => t.profileId === tab.profileId)
+    const at = siblings.indexOf(tab)
+    const next = siblings[at + 1] ?? siblings[at - 1] ?? null
+    this.tabs.splice(this.tabs.indexOf(tab), 1)
 
     this.win.contentView.removeChildView(tab.view)
     tab.view.webContents.close()
 
-    if (this.activeId === id) {
-      const next = this.tabs[index] ?? this.tabs[index - 1] ?? null
-      this.activeId = next?.id ?? null
+    if (this.activeId === id) this.activeId = next?.id ?? null
+    if (this.lastActive.get(tab.profileId) === id) {
+      if (next) this.lastActive.set(tab.profileId, next.id)
+      else this.lastActive.delete(tab.profileId)
     }
     this.applyVisibility()
     this.emit(this.state())
   }
 
   selectTab(id: string): void {
-    if (!this.tabs.some((t) => t.id === id)) return
+    // Only a tab in the strip, which is the active profile's.
+    if (!this.shownTabs().some((t) => t.id === id)) return
     this.activeId = id
     this.applyVisibility()
     this.emit(this.state())
+  }
+
+  /* -------------------------------------------------------------- profiles */
+
+  /**
+   * Follow the profile list and the active profile from settings, which are
+   * their only writer (gotcha 57). A profile that is gone takes its tabs with
+   * it; its stored data is only cleared by `clearProfileData`, deliberately
+   * and separately.
+   */
+  setProfiles(profiles: BrowserProfile[], active: string, homepage: string): void {
+    this.homepage = homepage
+    const known = new Set(profiles.map((p) => p.id))
+    for (const tab of [...this.tabs]) if (!known.has(tab.profileId)) this.closeTab(tab.id)
+    const target = known.has(active) ? active : DEFAULT_BROWSER_PROFILE_ID
+    if (target !== this.currentProfile) this.switchProfile(target)
+    else this.emit(this.state())
+  }
+
+  private switchProfile(id: string): void {
+    if (this.activeId) this.lastActive.set(this.currentProfile, this.activeId)
+    this.currentProfile = id
+    const remembered = this.lastActive.get(id)
+    const tabs = this.shownTabs()
+    this.activeId = tabs.find((t) => t.id === remembered)?.id ?? tabs[0]?.id ?? null
+    // Switched to while showing, with nothing to show: open its homepage.
+    if (!this.activeId && this.userVisible) {
+      this.newTab(this.homepage || 'about:blank', id)
+      return
+    }
+    this.applyVisibility()
+    this.emit(this.state())
+  }
+
+  /** Close a profile's tabs and wipe everything its partition stored. */
+  async clearProfileData(id: string): Promise<void> {
+    for (const tab of this.tabs.filter((t) => t.profileId === id)) this.closeTab(tab.id)
+    this.lastActive.delete(id)
+    const ses = session.fromPartition(partitionFor(id))
+    await ses.clearStorageData()
+    await ses.clearCache()
+  }
+
+  /** The active profile, for the agent's tools and the panel's chip. */
+  currentProfileId(): string {
+    return this.currentProfile
   }
 
   /** Only the active tab is ever visible; the rest keep a viewport but hide. */
@@ -404,22 +476,30 @@ export class EmbeddedBrowser {
    * `permissions.query()` and several getters consult it without ever raising a
    * request, so a request-only handler still reports "granted".
    */
-  private hookPermissions(): void {
-    if (this.permsHooked) return
-    this.permsHooked = true
-    const ses = session.fromPartition(PARTITION)
+  private hookSession(partition: string): void {
+    if (this.hookedPartitions.has(partition)) return
+    this.hookedPartitions.add(partition)
+    const ses = session.fromPartition(partition)
+    this.hookPermissions(ses)
+    this.hookNetwork(ses, partition)
+  }
+
+  private hookPermissions(ses: Electron.Session): void {
     const allow = (permission: string): boolean => HARMLESS_PERMISSIONS.has(permission)
     ses.setPermissionRequestHandler((_wc, permission, callback) => callback(allow(permission)))
     ses.setPermissionCheckHandler((_wc, permission) => allow(permission))
   }
 
-  private hookNetwork(): void {
-    if (this.netHooked) return
-    this.netHooked = true
-    const wr = session.fromPartition(PARTITION).webRequest
+  private hookNetwork(ses: Electron.Session, partition: string): void {
+    const wr = ses.webRequest
 
+    // A request with no webContents falls back to the active tab only when
+    // that tab is in this session — never to another profile's log.
     const route = (id: number | undefined): NetEntry[] | null => {
-      if (id === undefined) return this.active()?.netLog ?? null
+      if (id === undefined) {
+        const active = this.active()
+        return active && partitionFor(active.profileId) === partition ? active.netLog : null
+      }
       const tab = this.tabs.find((t) => t.view.webContents.id === id)
       return tab ? tab.netLog : null
     }
@@ -489,11 +569,12 @@ export class EmbeddedBrowser {
   }
 
   private tabState(): BrowserTabState[] {
-    return this.tabs.map((t) => ({
+    return this.shownTabs().map((t) => ({
       id: t.id,
       title: t.view.webContents.getTitle() || 'New tab',
       url: t.view.webContents.getURL(),
-      loading: t.view.webContents.isLoading()
+      loading: t.view.webContents.isLoading(),
+      profileId: t.profileId
     }))
   }
 
@@ -578,7 +659,10 @@ export class EmbeddedBrowser {
    * calls `normalizeUrl` without it.
    */
   navigate(input: string): void {
-    const tab = this.ensure()
+    this.load(this.ensure(), input)
+  }
+
+  private load(tab: Tab, input: string): void {
     void tab.view.webContents
       .loadURL(normalizeUrl(input, { allowLocalFiles: true }))
       .catch(() => {
