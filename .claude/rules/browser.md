@@ -49,3 +49,25 @@ rather than after it comes back (`browser.ts:126-153`).
 > by a second pass. The entry above is the original text; where the two disagree, the code
 > has moved on. Line numbers drift; search for the names.
 > - The repo's own CDP tool now says filtering on URL is not enough. scripts/cdp-eval.mjs:14-19 reads 'Matching on URL is NOT enough', because the docked browser can legitimately show `localhost:<port>`, `/index.html` and `file://`. At :153-204 it takes every `type === 'page'` target that has a `webSocketDebuggerUrl` and keeps the one where `typeof window.stoke === "object" && typeof window.stoke.platform === "string"` is true, since contextBridge is injected into the renderer only. CLAUDE.md's own Layout entry for cdp-eval.mjs agrees: 'never by URL'.
+
+## 106. `webContents.getURL()` is the last COMMITTED URL — empty for the whole of a fresh tab's first load
+
+**Opening a terminal link on the first click of a run showed a blank page.** `openUrl` (App.tsx)
+sends `browser.show(url)`, and the panel's open effect follows it with a bare `browser.show()`.
+On the first link of a run there is no tab yet: `show(url)` creates one and starts loading the link,
+and the bare `show()` used to seed `about:blank` whenever `getURL()` was empty — which it is, because
+`getURL()` reports the last committed URL, and nothing has committed while the first load is still
+in flight. So the second call navigated to `about:blank` over the link. Every later link worked,
+because by then the tab had a committed page, which is why it read as "sometimes".
+
+Measured 2026-09-26, both over the real IPC pair and with a real click: a fake CLI printed a local
+URL into a terminal, CDP hovered and clicked it, and main read the view's URL 3 s later —
+`about:blank` on the old code, the page on the fix. `show(url)` alone always loaded.
+
+The fix is in `EmbeddedBrowser.show`: seed `about:blank` only in the call that CREATED the tab
+(`!this.active()` before `ensure()`). A tab that already exists either has a page or has one on the
+way. This is the second round of the same race: the first (the `seededBrowser` claim in `openUrl`)
+stopped the effect from navigating to the homepage over the link, and left this one underneath it.
+Anything else that decides "this tab has no page yet" from `getURL()` has the same hole — use
+`isLoading()` or track the request, never the committed URL.
+

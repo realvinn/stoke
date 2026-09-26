@@ -543,11 +543,23 @@ export class EmbeddedBrowser {
   }
 
   show(url?: string): void {
-    const tab = this.ensure()
+    /*
+     * Seed `about:blank` only in the call that CREATED the tab. It used to seed
+     * whenever `getURL()` was empty — but that is the last COMMITTED URL, and it
+     * stays empty for the whole of a fresh tab's first load. Opening a terminal
+     * link sends `show(url)` and then, from BrowserPanel's open effect, a bare
+     * `show()`; on the first link of a run the second one found the link still
+     * loading, read an empty URL, and navigated to about:blank over it, so the
+     * panel opened on a blank page. Reproduced every time over the real IPC pair
+     * (the link alone loaded); every later link worked because the tab by then
+     * had a page, which is why it read as "sometimes". Gotcha 106.
+     */
+    const created = !this.active()
+    this.ensure()
     this.userVisible = true
     this.applyVisibility()
     if (url) this.navigate(url)
-    else if (!tab.view.webContents.getURL()) this.navigate('about:blank')
+    else if (created) this.navigate('about:blank')
     this.emit(this.state())
   }
 

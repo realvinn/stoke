@@ -218,6 +218,8 @@ rule file named on the group line.
 - **6.** Pick Stoke's renderer from the CDP `page` targets by evaluating `typeof window.stoke`, as
   `scripts/cdp-eval.mjs` does, never by URL: the docked browser is a page target too and can show
   localhost or `file://`.
+- **106.** Never read an empty `getURL()` as "no page": it is the last COMMITTED URL, empty through a
+  fresh tab's first load — `show()` seeds `about:blank` only when it created the tab (`created`).
 
 **statusLine and context meter** — `.claude/rules/statusline.md`
 - **2.** Take the context window from the statusLine payload, not the model id (transcripts drop
