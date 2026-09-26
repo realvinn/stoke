@@ -448,9 +448,9 @@ rule file named on the group line.
   electron-builder validates none of it, and an UNSET image key hides a missing file. Keep
   `dmg.background` without `dmg.window`, and keep the art clear of `dmg.contents`' icon boxes
   (measured: 80px, centred 130,220 and 410,220).
-
 - **108.** Keep `electronFuses.enableCookieEncryption` on forever (one-way: off again signs everyone out)
   and `runAsNode` on (the statusLine shim); `assert-cookie-fuse.mjs` is the only thing that shows either.
+
 **Verify suites** — `.claude/rules/suites.md`
 - **9.** Never stub IPC by assigning over `window.stoke` methods in a test — contextBridge freezes
   it, the assignment silently does nothing, and the test is really exercising production.
