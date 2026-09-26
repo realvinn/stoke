@@ -121,6 +121,10 @@ the value came back encrypted (failing closed); bookmarks still come. Turning th
 Storage" Keychain item to the signature (gotcha 24), which is why it is a release decision and not
 part of this change.
 
+> **Checked against the code on 2026-09-27** — the fuse is on from 0.9.94 (gotcha 108), so a packaged
+> build's probe passes and logins import. Unpackaged runs still use Electron's stock binary, fuse off,
+> so `npm run dev` keeps refusing logins; that is the probe working, not a bug.
+
 **Two grants reach further than the import.** The Keychain prompt names `security`: Allow is the
 safe answer, Always Allow puts `security` on the item's access list for good, after which any
 program can read Chrome's key silently — the UI says which to press. Full Disk Access is granted to

@@ -359,6 +359,12 @@ jobs:
       - name: Assert the packaged terminal binary matches this runner
         run: node scripts/assert-packaged-pty.mjs ${{ matrix.key }}
 
+      # The fuses are invisible too: a build that lost enableCookieEncryption
+      # would write every cookie in plain text, and one that loses it AFTER a
+      # release had it on would leave every user a store they cannot read.
+      - name: Assert cookies are encrypted and run-as-node is kept
+        run: node scripts/assert-cookie-fuse.mjs release
+
       # Uploaded even on failure: if a later step dies, the installer that did
       # build still exists somewhere retrievable rather than only inside a
       # container that has already been destroyed.

@@ -10,6 +10,25 @@ publish:
 directories:
   output: release
   buildResources: build
+# Electron's fuses: bytes in the binary, flipped here at package time.
+#
+# enableCookieEncryption — ON, and it is ONE-WAY. Off (Electron's default),
+# every cookie the docked browser keeps is written to its partition's SQLite
+# file in plain text, readable by any program running as the user with no
+# prompt, a Claude session's shell included; the browser import refuses logins
+# into such a store (gotcha 107). On, Chromium encrypts values with a key in a
+# "Stoke Safe Storage" Keychain item whose access is tied to the signature —
+# which is what makes gotcha 24's stable `Stoke` identity load-bearing. Existing
+# plain cookies still read, and are encrypted as they are next written
+# (measured on a copy of this Electron with the fuse flipped). Turning it off
+# again would leave every user with a store they cannot read.
+#
+# runAsNode stays ON on purpose: the statusLine wrapper and hook shim run Stoke
+# as node (ELECTRON_RUN_AS_NODE, statusLine.ts). scripts/assert-cookie-fuse.mjs
+# reads both back out of every packaged build, since nothing else shows them.
+electronFuses:
+  enableCookieEncryption: true
+  runAsNode: true
 files:
   - out/**
   - package.json

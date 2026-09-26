@@ -15,6 +15,7 @@ paths:
   - "scripts/merge-update-manifests.mjs"
   - "scripts/check-release-assets.mjs"
   - "scripts/assert-packaged-pty.mjs"
+  - "scripts/assert-cookie-fuse.mjs"
   - "src/main/codesign.ts"
   - "src/main/selfUpdate.ts"
   - "src/main/portableUpdate.ts"
@@ -591,3 +592,32 @@ measured. `verify:targets` holds all three settings and the assertion's place in
 **Every arm64 user who installed a published release got an empty folder**, and the next release
 is the first that can fix it. Until then `install.ps1` refuses to call an install with no
 Stoke.exe a success, and points at the portable zip.
+
+## 108. Cookie encryption is a fuse, it is one-way, and nothing shows whether a build has it
+
+**`electronFuses.enableCookieEncryption` is on from 0.9.94 and must never come off.** Electron ships
+it off, and off, Chromium writes each cookie's value into the partition's `Cookies` SQLite file in
+plain text — measured, the value column held the string and `encrypted_value` was 0 bytes — where
+any program running as the user can read it with no prompt, a Claude session's shell included. On,
+values are encrypted with a key in a "Stoke Safe Storage" Keychain item (DPAPI on Windows, the
+keyring on Linux), and a store written that way is unreadable to a build with the fuse off: a
+release that dropped it would sign every user out of everything.
+
+**The upgrade was measured before it shipped, never on the real Keychain.** A copy of this Electron
+with the fuse flipped (`flipFuses`, ad-hoc re-signed) was run against a profile whose jar the stock
+build had written, under `--use-mock-keychain` so no Keychain item was created: the old cookie still
+read, a new one landed encrypted (empty `value`, 51 bytes of `encrypted_value`), both read after a
+relaunch, and `cookieStoreEncrypted` (gotcha 107) turned the browser import's logins on. Old plain
+cookies are only encrypted when next written. The Keychain item's access follows the signature, so
+gotcha 24's stable `Stoke` identity now also decides whether an update can read the cookie store —
+a build signed any other way would prompt for it, or lose it.
+
+**`runAsNode` stays on**, set explicitly beside it: the statusLine wrapper and the hook shim run
+Stoke's own binary with `ELECTRON_RUN_AS_NODE=1`, and without it the context meter and the activity
+dots go dark with no error anywhere.
+
+**Nothing at build or run time shows a fuse**, so `scripts/assert-cookie-fuse.mjs` reads both back out
+of every packaged build in the release workflow, next to `assert-packaged-pty.mjs`. Proven both ways:
+it fails a stock Electron and passes the flipped copy and a local `electron-builder --dir` build.
+Point it at a CLEAN `release/`: a stale `win-unpacked` from an older local build fails it, correctly.
+
