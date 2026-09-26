@@ -1,5 +1,28 @@
 import type { InstallKind } from './installKind'
 import type { RevealInfo } from './fullScreenReveal'
+
+/** A browser profile Stoke could import from. Mirrors main's `SourceProfile`. */
+export interface ImportSource {
+  key: string
+  browser: string
+  browserName: string
+  name: string
+  detail: string
+  status: 'ready' | 'needsAppData' | 'needsFullDiskAccess' | 'unreadable'
+  note?: string
+}
+
+/** What importing one source profile did. Mirrors main's `ImportReport`: counts only. */
+export interface ImportResult {
+  key: string
+  profileId: string
+  cookies: number
+  skippedCookies: number
+  bookmarks: number
+  error?: string
+  /** The bookmarks came, the logins did not: why. */
+  cookieError?: string
+}
 import type { SkillDirScan } from './skills'
 import type { MicAccess } from './voiceRoute'
 import type { CreateProfileInput, ProfilePlan } from './profiles'
@@ -503,6 +526,26 @@ export interface StokeApi {
     addProfile(): Promise<Settings>
     /** Close a profile's tabs, wipe its logins and data, and drop it. Default is refused. */
     removeProfile(id: string): Promise<Settings>
+    /**
+     * Every profile of every browser Stoke can import from, with whether it can
+     * be read yet — and whether logins may be imported at all, which needs a
+     * cookie store that encrypts what it writes.
+     */
+    importScan(): Promise<{ sources: ImportSource[]; loginsAllowed: boolean }>
+    /**
+     * Import the chosen profiles: logins into a Stoke profile of their own each,
+     * bookmarks into the shared list. Counts only come back; null while an
+     * import is already running.
+     */
+    importRun(keys: string[], what: { cookies: boolean; bookmarks: boolean }): Promise<ImportResult[] | null>
+    /** System Settings > Privacy & Security > Full Disk Access, for Safari. */
+    openFullDiskAccess(): void
+    /** Rename a browser profile, against the settings main holds now. */
+    renameProfile(id: string, label: string): Promise<Settings>
+    /** Switch the docked browser to a profile. */
+    useProfile(id: string): Promise<Settings>
+    /** Turn down the panel's one-time import offer. */
+    dismissImportOffer(): Promise<Settings>
     onState(cb: (state: BrowserState) => void): () => void
   }
 

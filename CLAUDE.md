@@ -38,7 +38,7 @@ A `dist:*` exists per target and each MUST run on that target's own platform and
 Every suite runs alone as `npm run verify:<name>`: context, statusline, unicode, usage,
 profiles, settings, providers, claude-config, folders, search, color, theme-gen, activity,
 worklog-gate, tabs, launcher, registry,
-restore, shortcuts, drop, fullscreen, browser-url, browser-profiles, voice, agents, campfire, cli, stoke-args, updates, targets, manifests, portable, winget, worklog-runner,
+restore, shortcuts, drop, fullscreen, browser-url, browser-profiles, safari-import, chrome-import, voice, agents, campfire, cli, stoke-args, updates, targets, manifests, portable, winget, worklog-runner,
 worklog-retry, worklog-recall, worklog-autoscan, ssh, remote, phone-ui, installer-art, install, welcome,
 selection — the `check` chain — plus extract and security, which
 need a live instance (`verify:security <url> <token> --access`). `verify:selection` opens a real
@@ -61,7 +61,9 @@ src/main/            Electron main process
   claudePaths.ts, claudeSettings.ts, claudeGlobalConfig.ts   Claude Code's own config files
   updates.ts           CLI version, channel, and the unasked-update gate
   selfUpdate.ts, codesign.ts   Stoke's own updates; whether a signature can ever take one
-  browser.ts           docked Chromium: tabs, find, console/network capture
+  browser.ts           docked Chromium: tabs, find, console/network capture, a partition per browser profile
+  browserImport/       Chrome/Safari -> a browser profile of their own: chrome.ts (Keychain key, cookie DB),
+                       safari.ts (Full Disk Access, binarycookies), index.ts (runImport). Values stay in main
   projects.ts, projectMeta.ts, profiles.ts, workspace.ts, workspaceRoots.ts   folders, sessions
   store.ts, settingsSchema.ts   settings persistence; defaults + hydrate (no electron import)
   tabStore.ts          the tabs open at quit; restore is `--resume`, never a reattach
@@ -220,6 +222,8 @@ rule file named on the group line.
   localhost or `file://`.
 - **106.** Never read an empty `getURL()` as "no page": it is the last COMMITTED URL, empty through a
   fresh tab's first load — `show()` seeds `about:blank` only when it created the tab (`created`).
+- **107.** Import cookies into their own profile, never Default, and only into an encrypted store
+  (`cookieStoreEncrypted`); host-only cookies get NO `domain`; Chromium's samesite `0` is `no_restriction`.
 
 **statusLine and context meter** — `.claude/rules/statusline.md`
 - **2.** Take the context window from the statusLine payload, not the model id (transcripts drop

@@ -836,7 +836,7 @@ export function SettingsSheet({
               </>
             )}
 
-            {section === 'browser' && <BrowserSettings browser={settings.browser} onPatch={onPatch} />}
+            {section === 'browser' && <BrowserSettings browser={settings.browser} />}
 
             {section === 'projects' && (
               <>

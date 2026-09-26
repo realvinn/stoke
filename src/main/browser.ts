@@ -639,8 +639,10 @@ export class EmbeddedBrowser {
     this.ensure()
     this.userVisible = true
     this.applyVisibility()
+    // A tab this call made, with nowhere to go, opens the homepage — a profile
+    // switched to from Settings while the panel was hidden lands here.
     if (url) this.navigate(url)
-    else if (created) this.navigate('about:blank')
+    else if (created) this.navigate(this.homepage || 'about:blank')
     this.emit(this.state())
   }
 

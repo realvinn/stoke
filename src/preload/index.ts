@@ -128,6 +128,12 @@ const api: StokeApi = {
     profileMenu: (x, y) => ipcRenderer.invoke(CH.browserProfileMenu, x, y),
     addProfile: () => ipcRenderer.invoke(CH.browserAddProfile),
     removeProfile: (id) => ipcRenderer.invoke(CH.browserRemoveProfile, id),
+    importScan: () => ipcRenderer.invoke(CH.browserImportScan),
+    importRun: (keys, what) => ipcRenderer.invoke(CH.browserImportRun, keys, what),
+    openFullDiskAccess: () => ipcRenderer.send(CH.browserOpenFullDiskAccess),
+    renameProfile: (id, label) => ipcRenderer.invoke(CH.browserRenameProfile, id, label),
+    useProfile: (id) => ipcRenderer.invoke(CH.browserUseProfile, id),
+    dismissImportOffer: () => ipcRenderer.invoke(CH.browserDismissImportOffer),
     onState: (cb) => on<[Parameters<typeof cb>[0]]>(CH.browserState, cb)
   },
 

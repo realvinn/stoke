@@ -6,6 +6,11 @@ paths:
   - "scripts/cdp-eval.mjs"
   - "scripts/verify-extract.mjs"
   - "src/renderer/src/components/BrowserPanel.tsx"
+  - "src/renderer/src/components/BrowserSettings.tsx"
+  - "src/main/browserImport/*.ts"
+  - "src/shared/browserProfiles.ts"
+  - "scripts/verify-chrome-import.mts"
+  - "scripts/verify-safari-import.mts"
 ---
 
 # Docked browser and CDP
@@ -70,4 +75,62 @@ way. This is the second round of the same race: the first (the `seededBrowser` c
 stopped the effect from navigating to the homepage over the link, and left this one underneath it.
 Anything else that decides "this tab has no page yet" from `getURL()` has the same hole — use
 `isLoading()` or track the request, never the committed URL.
+
+## 107. Importing another browser's logins: six ways a correct-looking cookie comes out wrong
+
+**Where they land.** Each source profile goes into a Stoke browser profile of its own (`origin` =
+the source key, so a second import refreshes it), never Default. Two accounts on one site in one jar
+overwrite each other, and Claude's browser tools act in whichever profile is in use — a login is only
+handed to them where the user put it. A source with no cookies makes no profile.
+
+**Chromium's `samesite` column is -1 unspecified, 0 NO_RESTRICTION, 1 lax, 2 strict** (3, the
+deprecated "extended", reads as unspecified) — `DBCookieSameSite` in
+`net/extras/sqlite/sqlite_persistent_cookie_store.cc`. The research pass had 0 as "unspecified";
+reading the source is what caught it, and that mapping would have turned every `SameSite=None`
+cookie into Lax and broken embedded logins. SameSite=None without Secure goes in as unspecified,
+since Chromium's own setter refuses it.
+
+**A host-only cookie must be set with NO `domain`.** Electron dots any domain it is handed, which
+widens `app.example.com` to every subdomain. Chrome marks host-only by a `host_key` without a leading
+dot; keep the dot only when it was there.
+
+**Times are microseconds since 1601, past 2^53.** `node:sqlite` throws on such an integer unless the
+statement has `setReadBigInts(true)`; convert with bigint division (`chromeTimeToUnix`). A session
+cookie (`has_expires` 0) is imported with a 30-day expiry — as a real session cookie it would be gone
+the first time Stoke quit.
+
+**Meta version 24+ prefixes the decrypted value with SHA-256(host_key)**, and Chrome drops a row whose
+prefix does not match; so does `decryptChromeValue`. Partitioned (CHIPS) cookies are skipped:
+`cookies.set` has no partition key, and setting one unpartitioned hands it to every embedder.
+
+**macOS guards all of it.** Chrome's folder answers EPERM until Stoke is allowed "access data from other
+apps" (the prompt is raised by the read itself, so only ever from a button); the key comes from
+`/usr/bin/security find-generic-password -s "Chrome Safe Storage"`, whose prompt names `security`;
+Safari's files need Full Disk Access and a relaunch. EPERM is a status, not an error
+(`needsAppData`, `needsFullDiskAccess`). The live DB is copied with its `-wal` before it is opened —
+Chrome may be running and holding it — and the copy is removed however the read ends.
+
+**The cookie store is plaintext, so logins are gated on it (`cookieStoreEncrypted`).** Stoke's
+builds ship with Electron's `EnableCookieEncryption` fuse OFF — measured: a cookie set in a fresh
+partition and flushed lands in `<partition>/Cookies` with `value` = the plain string and a 0-byte
+`encrypted_value`. Imported Chrome logins would then sit in a file any process running as the user
+reads with no prompt, a Claude session's shell included, where Chrome kept them behind the Keychain.
+So the import writes one marker cookie, reads the partition's SQLite back, and refuses logins unless
+the value came back encrypted (failing closed); bookmarks still come. Turning the fuse on
+(`electronFuses.enableCookieEncryption` in electron-builder.yml) is one-way and ties a "Stoke Safe
+Storage" Keychain item to the signature (gotcha 24), which is why it is a release decision and not
+part of this change.
+
+**Two grants reach further than the import.** The Keychain prompt names `security`: Allow is the
+safe answer, Always Allow puts `security` on the item's access list for good, after which any
+program can read Chrome's key silently — the UI says which to press. Full Disk Access is granted to
+Stoke as the responsible process, so every pty child (every Claude session, hook, terminal) inherits
+it for as long as it stays on — the copy says so and suggests turning it off after a Safari import,
+and a Chrome import never points at it (the narrower "data from other apps" grant is enough).
+
+Verified 2026-09-26 against a SYNTHETIC Chrome tree (`HOME` pointed at it, the key handed in through
+`STOKE_TEST_CHROME_SAFE_STORAGE`, honoured only unpackaged): two profiles imported into two new Stoke
+profiles, 4 cookies each with host-only/domain/samesite/session all as above, the expired and the
+partitioned one skipped, a `javascript:` bookmark refused, a re-import reusing both profiles, a double
+press refused. No real browser data or Keychain item has been read by any test.
 

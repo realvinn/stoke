@@ -483,8 +483,8 @@ Linux arm64 is deliberately not built (`NOT_BUILT` in `scripts/targets.mjs`).
 
 ## Testing
 
-Verification lives in `scripts/`, one `verify-*` suite per subject — forty-six of them now.
-Forty-four are in `npm run check`, between the typecheck and the full build; `check` is the
+Verification lives in `scripts/`, one `verify-*` suite per subject — forty-eight of them now.
+Forty-six are in `npm run check`, between the typecheck and the full build; `check` is the
 gate, and it is what "done" means here. They are `.mts` run straight through node's
 type-stripping with no build step, except `verify:selection`, which opens a real Electron window
 and so needs a display. Each runs alone:
@@ -552,6 +552,9 @@ npm run verify:browser-url    # what the docked browser will load: file://, java
                               # bar, and localhost:3000 not mistaken for a scheme
 npm run verify:browser-profiles  # browser profiles: Default keeps the old partition, a settings
                               # file cannot name one two profiles would share (browserProfiles.ts)
+npm run verify:chrome-import  # Chrome's cookie crypto and row mapping, on values the suite encrypts
+                              # itself the way Chrome does (gotcha 107)
+npm run verify:safari-import  # Safari's binarycookies and XML plists, on synthetic files
 npm run verify:agents         # the coding agents: what is stored, what the launcher shows,
                               # each CLI's exact launch plan (endpoint, MCP, continue) with
                               # every key in env and none in argv, and the install script —
@@ -715,6 +718,11 @@ src/main/         Electron main process
   claudeGlobalConfig.ts  ~/.claude.json: the lock protocol, the refusals, and the
                     verify-after-write. See gotcha 38 before touching it
   browser.ts        docked Chromium: tabs, find, console/network capture
+  browserImport/    Chrome-family and Safari profiles into a Stoke browser profile each:
+                    chrome.ts (Local State, the Keychain key, the cookie DB copied and read with
+                    node:sqlite), chromeCookies.ts (the v10 crypto and row mapping, pure),
+                    safari.ts + safariCookies.ts + plist.ts (Full Disk Access, binarycookies,
+                    Bookmarks.plist), index.ts (scan, runImport). Gotcha 107
   workspace.ts      default folder + scratch folders
   workspaceRoots.ts where a session with no project starts, per platform. Takes the
                     platform and home as arguments so a suite can ask for another machine's

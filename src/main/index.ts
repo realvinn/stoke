@@ -2262,9 +2262,30 @@ function registerIpc(): void {
     const s = getSettings()
     const next = setSettings({ browser: { ...s.browser, ...patch } })
     browser?.setProfiles(next.browser.profiles, next.browser.currentProfile, next.browser.homepage)
+    // The star reads its own copy; an import that adds bookmarks must refresh it,
+    // or a bookmarked page shows unstarred and a click REMOVES the bookmark.
+    browser?.setBookmarks(next.browser.bookmarks)
     send(CH.settingsChanged, next)
     return next
   }
+  /*
+   * Profile edits go through main, against the settings as they are NOW. The
+   * renderer used to send its whole copy of the browser block, and a copy taken
+   * just before an import finished dropped the profiles the import had added.
+   */
+  ipcMain.handle(CH.browserRenameProfile, (_e, id: unknown, label: unknown) => {
+    if (typeof id !== 'string' || typeof label !== 'string' || !label.trim()) return getSettings()
+    const profiles = getSettings().browser.profiles
+    if (!profiles.some((p) => p.id === id)) return getSettings()
+    return writeBrowser({ profiles: profiles.map((p) => (p.id === id ? { ...p, label: label.trim() } : p)) })
+  })
+  ipcMain.handle(CH.browserUseProfile, (_e, id: unknown) => {
+    if (typeof id !== 'string' || !getSettings().browser.profiles.some((p) => p.id === id)) return getSettings()
+    return writeBrowser({ currentProfile: id })
+  })
+  ipcMain.handle(CH.browserDismissImportOffer, () =>
+    getSettings().browser.importOffer === 'unasked' ? writeBrowser({ importOffer: 'dismissed' }) : getSettings()
+  )
   ipcMain.handle(
     CH.browserProfileMenu,
     (_e, x: number, y: number) =>
@@ -2298,11 +2319,33 @@ function registerIpc(): void {
   )
   ipcMain.handle(CH.browserAddProfile, () => {
     const profiles = getSettings().browser.profiles
-    const profile = { id: newProfileId(profiles, randomUUID), label: nextProfileLabel(profiles), source: '' }
+    const profile = { id: newProfileId(profiles, randomUUID), label: nextProfileLabel(profiles), source: '', origin: '' }
     return writeBrowser({ profiles: [...profiles, profile] })
+  })
+  /*
+   * Importing from Chrome and Safari (browserImport/). Loaded on first use:
+   * most launches never import, and the module pulls in SQLite and crypto
+   * (gotcha 40).
+   */
+  ipcMain.handle(CH.browserImportScan, async () => {
+    const { cookieStoreEncrypted, scanImportSources } = await import('./browserImport/index.ts')
+    const [sources, loginsAllowed] = await Promise.all([scanImportSources(), cookieStoreEncrypted()])
+    return { sources, loginsAllowed }
+  })
+  ipcMain.handle(CH.browserImportRun, async (_e, keys: unknown, what: unknown) => {
+    const list = Array.isArray(keys) ? keys.filter((k): k is string => typeof k === 'string') : []
+    const w = (what ?? {}) as { cookies?: unknown; bookmarks?: unknown }
+    const { runImport } = await import('./browserImport/index.ts')
+    return runImport(list, { cookies: w.cookies === true, bookmarks: w.bookmarks === true }, { getSettings, writeBrowser })
+  })
+  ipcMain.on(CH.browserOpenFullDiskAccess, () => {
+    void shell.openExternal('x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles')
   })
   ipcMain.handle(CH.browserRemoveProfile, async (_e, id: string) => {
     if (id === DEFAULT_BROWSER_PROFILE_ID || !getSettings().browser.profiles.some((p) => p.id === id)) return getSettings()
+    // Not while an import is writing: it may be writing into this very profile,
+    // and would leave logins in a partition no profile names.
+    if ((await import('./browserImport/index.ts')).importInProgress()) return getSettings()
     await browser?.clearProfileData(id)
     // Read AFTER the await: settings may have moved while the jar was wiped.
     const s = getSettings()
@@ -2635,8 +2678,11 @@ function registerIpc(): void {
   ipcMain.handle(CH.settingsSet, async (_e, patch: Partial<Settings>) => {
     const prev = getSettings()
     const next = setSettings(patch)
-    // A renamed or re-ordered profile list, or a switch made from the panel.
-    if (patch.browser) browser?.setProfiles(next.browser.profiles, next.browser.currentProfile, next.browser.homepage)
+    // A renamed or re-ordered profile list, a switch, or a bookmark list moved.
+    if (patch.browser) {
+      browser?.setProfiles(next.browser.profiles, next.browser.currentProfile, next.browser.homepage)
+      browser?.setBookmarks(next.browser.bookmarks)
+    }
     /*
      * A running remote server reads its config once, at start. So ticking
      * "also listen on the local network", changing the port, or requiring

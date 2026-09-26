@@ -15,6 +15,7 @@ import { DEFAULT_WORKLOG_BOARDS, WORKLOG_TARGETS } from '../shared/worklog.ts'
 import { clampWelcomeSeen } from '../shared/welcome.ts'
 import {
   clampCurrentProfile,
+  clampImportOffer,
   DEFAULT_BROWSER_PROFILE,
   DEFAULT_BROWSER_PROFILE_ID,
   hydrateBrowserProfiles
@@ -75,7 +76,8 @@ export const DEFAULT_SETTINGS: Settings = {
     width: 460,
     bookmarks: [],
     profiles: [{ ...DEFAULT_BROWSER_PROFILE }],
-    currentProfile: DEFAULT_BROWSER_PROFILE_ID
+    currentProfile: DEFAULT_BROWSER_PROFILE_ID,
+    importOffer: 'unasked'
   },
   remote: {
     enabled: false,
@@ -233,7 +235,8 @@ function hydrateBrowser(raw: Partial<Settings['browser']> | undefined): Settings
     ...r,
     bookmarks: Array.isArray(r.bookmarks) ? r.bookmarks : [],
     profiles,
-    currentProfile: clampCurrentProfile(r.currentProfile, profiles)
+    currentProfile: clampCurrentProfile(r.currentProfile, profiles),
+    importOffer: clampImportOffer(r.importOffer)
   }
 }
 

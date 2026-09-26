@@ -32,6 +32,10 @@ interface Props {
   currentProfile: string
   /** "Manage profiles…" in the switcher: open Settings > Browser. */
   onManageProfiles: () => void
+  /** Show the one-time offer to import from Chrome or Safari. */
+  offerImport: boolean
+  /** The offer was answered either way; it is not shown again. */
+  onAnswerImport: (accepted: boolean) => void
 }
 
 /** --dur-slow is 240ms; follow the shell's slide a little past its end. */
@@ -55,7 +59,9 @@ export function BrowserPanel({
   shellOffset,
   profiles,
   currentProfile,
-  onManageProfiles
+  onManageProfiles,
+  offerImport,
+  onAnswerImport
 }: Props): React.JSX.Element {
   const holeRef = useRef<HTMLDivElement>(null)
   const profileLabel = profiles.find((p) => p.id === currentProfile)?.label ?? 'Default'
@@ -406,6 +412,22 @@ export function BrowserPanel({
         </button>
         </div>
       </div>
+
+      {/*
+        The one-time offer. A row in the panel, above the page, never an overlay:
+        the page view paints over anything drawn across it (gotcha 14).
+      */}
+      {offerImport && (
+        <div className="browser-offer" role="note">
+          <span className="browser-offer-text">Bring your logins and bookmarks over from Chrome or Safari?</span>
+          <button className="btn" data-variant="primary" data-size="sm" onClick={() => onAnswerImport(true)}>
+            Import…
+          </button>
+          <button className="btn" data-variant="ghost" data-size="sm" onClick={() => onAnswerImport(false)}>
+            Not now
+          </button>
+        </div>
+      )}
 
       {findOpen && (
         <div className="browser-find">

@@ -118,6 +118,13 @@ export const CH = {
   browserProfileMenu: 'browser:profileMenu',
   browserAddProfile: 'browser:addProfile',
   browserRemoveProfile: 'browser:removeProfile',
+  /** Importing Chrome/Safari profiles: find them, import chosen ones, open the privacy pane. */
+  browserImportScan: 'browser:importScan',
+  browserImportRun: 'browser:importRun',
+  browserOpenFullDiskAccess: 'browser:openFullDiskAccess',
+  browserRenameProfile: 'browser:renameProfile',
+  browserUseProfile: 'browser:useProfile',
+  browserDismissImportOffer: 'browser:dismissImportOffer',
 
   // remote access (phone / tunnel)
   remoteStatus: 'remote:status',

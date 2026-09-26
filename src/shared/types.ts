@@ -6,7 +6,7 @@ import type { CodingCliId } from './codingClis.ts'
 import type { ProviderSettings } from './providers.ts'
 import type { AgentSettings } from './agents.ts'
 import type { FullScreenReveal, RemoteReachPreference, ZoomTarget } from './ui.ts'
-import type { BrowserProfile } from './browserProfiles.ts'
+import type { BrowserProfile, ImportOffer } from './browserProfiles.ts'
 
 /* ------------------------------------------------------------------ launch */
 
@@ -956,6 +956,8 @@ export interface Settings {
     profiles: BrowserProfile[]
     /** The profile new tabs open in and the tab strip shows. Not `Settings.activeProfile`, the project-group chip. */
     currentProfile: string
+    /** The panel's one-time offer to import from Chrome or Safari. */
+    importOffer: ImportOffer
   }
   /** Serving Stoke's sessions to a phone, normally behind a Cloudflare Tunnel. */
   remote: {

@@ -16,8 +16,14 @@ export interface BrowserProfile {
   id: string
   /** What the switcher shows. */
   label: string
-  /** Where it came from, e.g. "Chrome · Work"; empty for one made in Stoke. */
+  /** Where it came from, e.g. "Chrome · you@work.com"; empty for one made in Stoke. */
   source: string
+  /**
+   * The source profile it was imported from (`SourceProfile.key`, e.g.
+   * `chrome/Profile 1`), so importing it again refreshes this profile instead
+   * of making a second one. Empty for one made in Stoke.
+   */
+  origin: string
 }
 
 export const DEFAULT_BROWSER_PROFILE_ID = 'default'
@@ -25,7 +31,8 @@ export const DEFAULT_BROWSER_PROFILE_ID = 'default'
 export const DEFAULT_BROWSER_PROFILE: BrowserProfile = {
   id: DEFAULT_BROWSER_PROFILE_ID,
   label: 'Default',
-  source: ''
+  source: '',
+  origin: ''
 }
 
 /**
@@ -72,7 +79,8 @@ export function hydrateBrowserProfiles(raw: unknown): BrowserProfile[] {
     out.push({
       id: p.id,
       label: label || 'Profile',
-      source: typeof p.source === 'string' ? p.source.slice(0, 80) : ''
+      source: typeof p.source === 'string' ? p.source.slice(0, 80) : '',
+      origin: typeof p.origin === 'string' ? p.origin.slice(0, 160) : ''
     })
   }
   return out
@@ -101,3 +109,31 @@ export function nextProfileLabel(taken: readonly BrowserProfile[], base = 'Profi
   if (!used.has(base.toLowerCase())) return base
   for (let n = 2; ; n++) if (!used.has(`${base} ${n}`.toLowerCase())) return `${base} ${n}`
 }
+
+/**
+ * The browser panel's one-time offer to bring logins over from another
+ * browser: not yet shown, turned down, or done by an import.
+ */
+export type ImportOffer = 'unasked' | 'dismissed' | 'done'
+
+export function clampImportOffer(raw: unknown): ImportOffer {
+  return raw === 'dismissed' || raw === 'done' ? raw : 'unasked'
+}
+
+/**
+ * Bookmarks after an import: every existing one kept, in order, and imported
+ * ones appended once each until `max`. Never a slice of the merged list — that
+ * cut the user's OWN bookmarks once they alone passed the cap.
+ */
+export function mergeBookmarks(current: readonly string[], incoming: readonly string[], max: number): string[] {
+  const merged = [...current]
+  const seen = new Set(merged)
+  for (const url of incoming) {
+    if (merged.length >= max) break
+    if (seen.has(url)) continue
+    seen.add(url)
+    merged.push(url)
+  }
+  return merged
+}
+

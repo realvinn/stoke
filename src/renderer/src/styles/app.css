@@ -3062,6 +3062,37 @@ mark.hit {
   white-space: nowrap;
 }
 
+/* The panel's one-time import offer: a row above the page, like the find bar. */
+.browser-offer {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  padding: var(--space-4) var(--space-8);
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+.browser-offer-text {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+.import-source {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.import-source-text {
+  display: grid;
+}
+
+/* Under the name, past the checkbox (1rem + the check-row gap). */
+.import-source-extra {
+  padding-left: calc(1rem + var(--space-8));
+}
+
 .browser-find {
   display: flex;
   align-items: center;
