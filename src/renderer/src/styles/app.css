@@ -426,12 +426,12 @@ body {
  * title strip macOS hangs under it, 62px on macOS 27 — measured by main and
  * written inline by App.
  *
- * `follow` slides the whole shell down while the pointer is up on the reveal,
- * by `top` rather than a taller row: every row keeps its size, so no pty
- * resizes, and the bottom of the shell hangs off the window until it slides
- * back. The attribute stays for all of full screen and `data-shifted` moves
- * it, so there is a `top: 0` for the slide back to transition to. Reduced
- * motion gets the global 1ms, which lands on the same resting place.
+ * `follow` moves the whole shell down while the pointer is up on the reveal,
+ * resting by `top` rather than a taller row: every row keeps its size, so no
+ * pty resizes, and the bottom of the shell hangs off the window until it goes
+ * back. No transition here: App slides it between the two resting places with
+ * a transform animation (FLIP), because a transitioned `top` repainted the
+ * whole shell on the main thread every frame and dropped frames under load.
  * `reserve` gives the room for all of full screen instead, so the rows do
  * shrink — once, on entering full screen, which resizes them anyway.
  * Either way the band above the title bar is painted as title bar: it is what
@@ -443,7 +443,6 @@ body {
 
 .app[data-reveal='follow'] {
   top: 0;
-  transition: top var(--dur-slow) var(--ease);
 }
 
 .app[data-reveal='follow'][data-shifted] {

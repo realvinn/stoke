@@ -48,26 +48,107 @@ const EXISTS_DEADLINE_MS = 1500
  * The deadline is the other half, and it is what stops one asleep disk from
  * delaying the list for everyone else in it.
  */
-async function pathExists(path: string): Promise<boolean> {
+/*
+ * How many of these probes may be inside the filesystem at once, per volume.
+ * Keystrokes need the same threads.
+ *
+ * `fs` calls run on libuv's thread pool, and so does node-pty's write to the
+ * pty (`CustomWriteStream` -> `fs.write`): every keystroke sent to a session
+ * queues behind whatever holds the pool. The deadline above stops a sleeping
+ * disk from delaying the LIST, but not the thread — a timed-out `access` keeps
+ * its thread until the disk answers. With every folder probed at once on each
+ * window focus, and six projects on an external volume, a disk spinning up
+ * could hold all four threads; measured with the pool held, a keystroke's echo
+ * arrived 1502 ms late, released the instant the pool was, while the event
+ * loop looked perfectly healthy.
+ *
+ * So a slot is freed only when the call itself settles, not when its caller
+ * gives up, and a probe whose deadline passes while it is still queued never
+ * reaches the disk at all. Per volume, because one shared limit would let two
+ * probes stuck on a sleeping external disk make every local folder time out in
+ * the queue behind them and show as missing.
+ */
+const PROBE_SLOTS_PER_VOLUME = 2
+
+interface VolumeSlots {
+  inFlight: number
+  queue: Array<() => void>
+}
+const volumeSlots = new Map<string, VolumeSlots>()
+
+/**
+ * The volume a path lives on, as far as sharing a sleeping disk goes: a
+ * mount point under `/Volumes`, `/mnt` or `/media/<user>`, a drive letter or a
+ * UNC share on Windows, and one key for everything else on the system disk.
+ */
+export function probeVolume(path: string): string {
+  const win = /^([a-zA-Z]:)[\\/]/.exec(path) ?? /^(\\\\[^\\]+\\[^\\]+)/.exec(path)
+  if (win) return win[1].toUpperCase()
+  const mount = /^(\/Volumes\/[^/]+|\/mnt\/[^/]+|\/media\/[^/]+\/[^/]+)/.exec(path)
+  return mount ? mount[1] : '/'
+}
+
+/**
+ * Run `op` for `path` in one of its volume's slots, raced against `deadlineMs`.
+ * The slot is held until `op` itself settles; a probe still queued when its
+ * deadline passes is dropped without touching the disk.
+ */
+export async function probe<T>(path: string, op: () => Promise<T>, deadlineMs = EXISTS_DEADLINE_MS): Promise<T> {
+  const key = probeVolume(path)
+  const slots = volumeSlots.get(key) ?? { inFlight: 0, queue: [] }
+  volumeSlots.set(key, slots)
+  const drain = (): void => {
+    while (slots.inFlight < PROBE_SLOTS_PER_VOLUME && slots.queue.length > 0) slots.queue.shift()?.()
+    if (slots.inFlight === 0 && slots.queue.length === 0) volumeSlots.delete(key)
+  }
   let timer: ReturnType<typeof setTimeout> | undefined
+  let run: (() => void) | undefined
+  const inSlot = new Promise<T>((resolve, reject) => {
+    run = (): void => {
+      slots.inFlight++
+      op()
+        .then(resolve, reject)
+        .finally(() => {
+          slots.inFlight--
+          drain()
+        })
+    }
+    if (slots.inFlight < PROBE_SLOTS_PER_VOLUME) run()
+    else slots.queue.push(run)
+  })
   try {
-    await Promise.race([
-      access(path),
+    return await Promise.race([
+      inSlot,
       new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error('timed out')), EXISTS_DEADLINE_MS)
+        timer = setTimeout(() => {
+          // Still queued: it never reaches the disk, and does not wait there
+          // for a volume that may never answer.
+          const queued = run ? slots.queue.indexOf(run) : -1
+          if (queued >= 0) slots.queue.splice(queued, 1)
+          if (slots.inFlight === 0 && slots.queue.length === 0) volumeSlots.delete(key)
+          reject(new Error('timed out'))
+        }, deadlineMs)
         // Never hold the process open for this; it is a deadline, not work.
         timer.unref?.()
       })
     ])
-    return true
-  } catch {
-    return false
   } finally {
     if (timer) clearTimeout(timer)
+    // A rejected race leaves `inSlot` unobserved; it has nowhere to report to.
+    inSlot.catch(() => {})
   }
 }
 
-/** Resolve a whole set of paths at once, deduplicated, in parallel. */
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await probe(path, () => access(path))
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Resolve a whole set of paths at once, deduplicated; `PROBE_SLOTS_PER_VOLUME` per disk reach it. */
 async function existsMap(paths: Iterable<string>): Promise<Map<string, boolean>> {
   const unique = [...new Set(paths)]
   const answers = await Promise.all(unique.map(pathExists))
@@ -91,23 +172,14 @@ async function existsMap(paths: Iterable<string>): Promise<Map<string, boolean>>
  * resolved through symlinks.
  */
 async function realpathOf(path: string): Promise<string> {
-  let timer: ReturnType<typeof setTimeout> | undefined
   try {
-    return await Promise.race([
-      realpath(path),
-      new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error('timed out')), EXISTS_DEADLINE_MS)
-        timer.unref?.()
-      })
-    ])
+    return await probe(path, () => realpath(path))
   } catch {
     return path
-  } finally {
-    if (timer) clearTimeout(timer)
   }
 }
 
-/** `realpathOf` for a whole set of paths at once, deduplicated, in parallel. */
+/** `realpathOf` for a whole set of paths at once, deduplicated, through the same slots. */
 async function realpathMap(paths: Iterable<string>): Promise<Map<string, string>> {
   const unique = [...new Set(paths)]
   const answers = await Promise.all(unique.map(realpathOf))

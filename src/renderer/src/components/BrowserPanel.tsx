@@ -123,8 +123,8 @@ export function BrowserPanel({ state, bookmarks, onAskClaude, onClose, shellOffs
 
   /*
    * The shell sliding under the full-screen menu bar (gotcha 105) is one such
-   * move, and a slide: `top` transitions over --dur-slow, and nothing fires
-   * while it runs. So the rect is re-sent every frame for a little longer than
+   * move, and a slide: a transform animated over --dur-slow, and nothing fires
+   * while it runs (`getBoundingClientRect` includes the transform). So the rect is re-sent every frame for a little longer than
    * the slide — `report` sends only when it changed, so the tail costs a
    * rect read a frame — and the page moves with the shell instead of jumping
    * to where it ends up.

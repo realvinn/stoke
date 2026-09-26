@@ -39,6 +39,7 @@ import {
   pathFromRegistry,
   resumeOrMint,
   setPathKey,
+  pickLoginPath,
   shouldReprobe
 } from '../src/main/cli.ts'
 import {
@@ -122,6 +123,10 @@ check(
 // ---------------------------------------------------------------------------
 
 check('with no failure on record, a probe may run', shouldReprobe(0, 1_000_000), true)
+check('a fresh login-shell PATH wins over the remembered one', pickLoginPath('/fresh/bin', '/old/bin'), '/fresh/bin')
+check('a probe still running: the remembered PATH, not a wait', pickLoginPath(undefined, '/old/bin'), '/old/bin')
+check('a probe that failed: the remembered PATH, not none (gotcha 52)', pickLoginPath(null, '/old/bin'), '/old/bin')
+check('nothing remembered and the probe failed: none', pickLoginPath(null, null), null)
 check(
   'a probe that has just failed is not retried — that is the stampede this cache exists to stop',
   shouldReprobe(1_000_000, 1_000_000 + PROBE_RETRY_MS - 1),

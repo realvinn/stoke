@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process'
 import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs'
+import { readFile, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { promisify } from 'node:util'
@@ -54,6 +55,52 @@ const isWin = process.platform === 'win32'
  */
 let loginPathProbe: Promise<string | null> | null = null
 let probeFailedAt = 0
+
+/*
+ * The last PATH a login shell printed, kept on disk so a session never waits
+ * on the next probe to get one.
+ *
+ * `zsh -ilc` measured 2.96–4.18 s here against its 5 s timeout, and the first
+ * session of a launch — restored tabs included — waited on it: 516 and 1246 ms
+ * to `pty:start` when Start was pressed right after the launcher enabled, 7–18
+ * ms for every start after. A PATH changes when someone edits a shell rc,
+ * which is rare; a launch happens every day. So a start waits
+ * `REMEMBERED_WAIT_MS` for a fresh answer and otherwise takes the remembered
+ * one, while the probe finishes behind it for the next start. It also means a
+ * probe that times out — gotcha 52's Finder launch — leaves the session with
+ * the PATH the shell gave last time rather than none. POSIX only: Windows'
+ * registry read is quick and has its own race in `buildEnvPath`.
+ */
+const REMEMBERED_WAIT_MS = 200
+let rememberedLoginPath: string | null = null
+let rememberedLoginPathFile: string | null = null
+
+/** Where the remembered PATH lives, and load it. Called once, at app ready. */
+export async function rememberLoginPathIn(file: string): Promise<void> {
+  rememberedLoginPathFile = file
+  try {
+    const saved = JSON.parse(await readFile(file, 'utf8')) as { path?: unknown }
+    if (typeof saved.path === 'string' && saved.path) rememberedLoginPath ??= saved.path
+  } catch {
+    /* none yet, or unreadable: the first probe writes it */
+  }
+}
+
+/**
+ * The PATH a session start uses: a fresh probe's if it answered in time, else
+ * the remembered one. `fresh` is `undefined` when the probe is still running,
+ * `null` when it failed. Pure, for verify:cli.
+ */
+export function pickLoginPath(fresh: string | null | undefined, remembered: string | null): string | null {
+  return fresh ?? remembered
+}
+
+function rememberLoginPath(path: string): void {
+  if (path === rememberedLoginPath) return
+  rememberedLoginPath = path
+  if (!rememberedLoginPathFile) return
+  void writeFile(rememberedLoginPathFile, JSON.stringify({ path, at: Date.now() })).catch(() => {})
+}
 
 /**
  * How long a *failed* probe stands before the next caller retries it, and the
@@ -276,6 +323,7 @@ function loginShellPath(): Promise<string | null> {
       const path = stdout.trim()
       if (!path) throw new Error('the login shell printed no PATH')
       probeFailedAt = 0
+      rememberLoginPath(path)
       return path
     } catch {
       probeFailedAt = Date.now()
@@ -297,6 +345,10 @@ function loginShellPath(): Promise<string | null> {
  */
 export function forgetLoginPath(): void {
   if (probeFailedAt === 0) loginPathProbe = null
+  // And the remembered copy, in memory only: the next start must wait for the
+  // shell that knows the new bin directory, not take the one from before it.
+  // The probe's success writes the file again.
+  rememberedLoginPath = null
   // Windows' equivalent: an installer just wrote the registry PATH.
   if (winPathFailedAt === 0) winPathProbe = null
 }
@@ -329,7 +381,15 @@ export async function buildEnvPath(): Promise<string> {
   // is still this process's PATH plus the known install folders below.
   const login = isWin
     ? await Promise.race([loginShellPath(), new Promise<null>((r) => setTimeout(() => r(null), PROBE_TIMEOUT_MS).unref())])
-    : await loginShellPath()
+    : rememberedLoginPath
+      ? pickLoginPath(
+          await Promise.race([
+            loginShellPath(),
+            new Promise<undefined>((r) => setTimeout(() => r(undefined), REMEMBERED_WAIT_MS).unref())
+          ]),
+          rememberedLoginPath
+        )
+      : await loginShellPath()
   if (login) for (const p of login.split(delimiter)) if (p) parts.add(p)
   for (const p of (process.env.PATH ?? '').split(delimiter)) if (p) parts.add(p)
   for (const p of extraSearchDirs()) parts.add(p)

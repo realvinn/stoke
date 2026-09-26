@@ -73,6 +73,13 @@ interface MenuState {
   clip: ClipboardPeek
 }
 
+/** A context lost again this soon after it was made counts against the GPU. */
+const WEBGL_QUICK_LOSS_MS = 10_000
+/** That many in a row and the terminal stays on the DOM renderer. */
+const WEBGL_MAX_QUICK_LOSSES = 3
+/** The first retry after a loss; doubled for each quick loss before it. */
+const WEBGL_RETRY_MS = 250
+
 interface Props {
   tab: Tab
   active: boolean
@@ -347,15 +354,50 @@ export function TerminalView({
     // probes; there used to be a second copy of it kept here.
     registerTerm(tab.ptyId, term)
 
-    // WebGL is a large win on a busy terminal but is unavailable on some GPUs
-    // and inside remote sessions; the DOM renderer is the fallback.
-    try {
-      const webgl = new WebglAddon()
-      webgl.onContextLoss(() => webgl.dispose())
-      term.loadAddon(webgl)
-    } catch {
-      /* stay on the DOM renderer */
+    /*
+     * WebGL is a large win on a busy terminal but is unavailable on some GPUs
+     * and inside remote sessions; the DOM renderer is the fallback.
+     *
+     * A lost context is got back, not lived without. It used to be disposed and
+     * never replaced, so a terminal that lost its context once — sleep and
+     * wake, a GPU reset, or a 17th terminal making Chromium drop the oldest of
+     * its 16 — drew on the DOM renderer for the rest of the session. Measured
+     * with two sessions streaming 150 KB/s: renderer CPU 12.9% -> 76.9% of a
+     * core, and keydown input delay p90 0.8 -> 11.6 ms. A fresh addon costs
+     * about 12 ms and one long frame, and brought it back to 10.3%.
+     *
+     * Only a pane that is showing asks for one (`applyFit` asks again when a
+     * hidden pane is shown): a background tab has nothing to draw, and taking
+     * a context for it would only make Chromium drop somebody else's. A
+     * context that is lost again within `WEBGL_QUICK_LOSS_MS` counts against
+     * the GPU; after `WEBGL_MAX_QUICK_LOSSES` in a row it stays on the DOM.
+     */
+    let webgl: WebglAddon | null = null
+    let webglBornAt = 0
+    let webglQuickLosses = 0
+    let webglTimer: ReturnType<typeof setTimeout> | undefined
+    const attachWebgl = (): void => {
+      if (webgl || webglQuickLosses >= WEBGL_MAX_QUICK_LOSSES) return
+      if (host.clientWidth === 0 || host.clientHeight === 0) return
+      try {
+        const addon = new WebglAddon()
+        addon.onContextLoss(() => {
+          addon.dispose()
+          if (webgl !== addon) return
+          webgl = null
+          webglQuickLosses = performance.now() - webglBornAt < WEBGL_QUICK_LOSS_MS ? webglQuickLosses + 1 : 0
+          clearTimeout(webglTimer)
+          webglTimer = setTimeout(attachWebgl, WEBGL_RETRY_MS * 2 ** webglQuickLosses)
+        })
+        term.loadAddon(addon)
+        webgl = addon
+        webglBornAt = performance.now()
+      } catch {
+        /* stay on the DOM renderer */
+        webglQuickLosses = WEBGL_MAX_QUICK_LOSSES
+      }
     }
+    attachWebgl()
 
     termRef.current = term
     fitRef.current = fit
@@ -773,6 +815,8 @@ export function TerminalView({
        * anyway.
        */
       if (host.clientWidth === 0 || host.clientHeight === 0) return
+      // Shown again: a context lost while hidden is got back now.
+      attachWebgl()
       try {
         fit.fit()
         window.stoke.pty.resize(tab.ptyId, term.cols, term.rows)
@@ -823,6 +867,7 @@ export function TerminalView({
     fitNowRef.current = applyFit
 
     return () => {
+      clearTimeout(webglTimer)
       fitNowRef.current = () => {}
       ro.disconnect()
       host.removeEventListener('mousedown', onDownPoint, true)

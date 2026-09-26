@@ -2966,8 +2966,9 @@ export function App(): React.JSX.Element {
    * `reserve` keeps that room free for all of full screen. `follow` slides the
    * whole shell down by it while the pointer is up on the reveal, and back a few
    * seconds after the pointer has gone below the title bar, with `nextReveal` as
-   * the rule. It moves by `top`, never by resizing a row, so a trip to the tabs
-   * resizes no pty; BrowserPanel walks the native view along with the slide.
+   * the rule. It rests by `top`, never by resizing a row, so a trip to the tabs
+   * resizes no pty, and slides by a transform (below); BrowserPanel walks the
+   * native view along with the slide.
    */
   const [revealInfo, setRevealInfo] = useState<RevealInfo>(NO_REVEAL)
   useEffect(() => {
@@ -3095,6 +3096,52 @@ export function App(): React.JSX.Element {
   // slide back up has a `top: 0` to transition to.
   const revealLayout = revealInset > 0 && revealMode !== 'off' ? revealMode : undefined
   const revealShifted = revealLayout === 'follow' && followReveal && revealShift
+
+  /*
+   * The slide between the two resting places, as FLIP: `top` jumps straight to
+   * where the shell rests (the CSS), and a transform carries it there from where
+   * it was, on the compositor. Animating `top` itself repainted and rasterised
+   * the whole shell on the main thread every frame — measured, 7.7–15.1 ms of
+   * paint per slide and dropped frames in 2 of 15 slides with terminals
+   * streaming; a transform, 0–2.8 ms and none in 16. Only the 240 ms of the
+   * slide is transformed: a transform left in place would make `.app` the
+   * containing block for every `position: fixed` overlay inside it, and a tab's
+   * context menu, opened exactly while shifted, would land 62px low.
+   *
+   * A slide that reverses halfway starts from where the shell visibly is, read
+   * off the running animation. Reduced motion is checked here because the
+   * stylesheet's global rule does not reach `element.animate()` (gotcha 72).
+   */
+  const slideRef = useRef<{ rest: number; anim: Animation | null }>({ rest: 0, anim: null })
+  useLayoutEffect(() => {
+    const el = appRef.current
+    const slide = slideRef.current
+    const rest = revealShifted ? revealInset : 0
+    const from = slide.rest
+    slide.rest = rest
+    if (!el || rest === from) return
+    let carried = 0
+    if (slide.anim) {
+      const transform = getComputedStyle(el).transform
+      carried = transform && transform !== 'none' ? new DOMMatrixReadOnly(transform).m42 : 0
+      slide.anim.cancel()
+      slide.anim = null
+    }
+    if (revealLayout !== 'follow' || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    const offset = from + carried - rest
+    if (Math.abs(offset) < 1) return
+    const root = getComputedStyle(document.documentElement)
+    const anim = el.animate([{ transform: `translateY(${offset}px)` }, { transform: 'translateY(0)' }], {
+      duration: Number.parseFloat(root.getPropertyValue('--dur-slow')) || 240,
+      easing: root.getPropertyValue('--ease').trim() || 'ease-out'
+    })
+    slide.anim = anim
+    const done = (): void => {
+      if (slide.anim === anim) slide.anim = null
+    }
+    anim.addEventListener('finish', done)
+    anim.addEventListener('cancel', done)
+  }, [revealShifted, revealInset, revealLayout])
 
   useEffect(() => {
     refreshAgents()

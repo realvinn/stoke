@@ -1,3 +1,4 @@
+import './threadPool.ts'
 import { access, mkdir, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises'
 import {
   app,
@@ -39,7 +40,16 @@ import type {
 } from '@shared/types'
 import { EmbeddedBrowser } from './browser.ts'
 import { clearWallpaper, mimeFor, storeWallpaper, WALLPAPER_SCHEME, wallpaperFileFor } from './wallpaper.ts'
-import { buildEnvPath, detectCodingClis, forgetIdentities, forgetLoginPath, loginShellPathValue, probeClaude, resumeOrMint } from './cli.ts'
+import {
+  buildEnvPath,
+  detectCodingClis,
+  forgetIdentities,
+  forgetLoginPath,
+  loginShellPathValue,
+  probeClaude,
+  rememberLoginPathIn,
+  resumeOrMint
+} from './cli.ts'
 import { scanSkills } from './skillsScan.ts'
 import { ContextWatcher } from './context.ts'
 import {
@@ -3081,6 +3091,14 @@ if (!app.requestSingleInstanceLock(launchRequest ? { stokeCli: launchRequest } :
     })
     registerIpc()
     createWindow()
+    /*
+     * Start the login-shell PATH probe now rather than when the renderer first
+     * asks: it takes seconds, and the first session waits on it. The
+     * remembered PATH loads first so a start in the meantime has one.
+     */
+    if (!isWindows) {
+      void rememberLoginPathIn(join(app.getPath('userData'), 'login-path.json')).then(() => loginShellPathValue())
+    }
     // A cold start's own request, queued until the renderer asks for it.
     if (launchRequest) acceptLaunch(launchRequest)
     /*
