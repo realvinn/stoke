@@ -473,6 +473,21 @@ export function shouldRestartRemote(
 }
 
 /**
+ * The key to put in the QR code / connect link.
+ *
+ * The QR is built from settings while the running server authorises against the
+ * token it was STARTED with. If a token change reaches settings without the
+ * server picking it up (a restart race — seen on Windows: the server rejected
+ * the key its own QR advertised, "This link's key isn't current"), the two
+ * diverge and every scan fails. Advertise the RUNNING server's token whenever it
+ * has one, so the link can never carry a key the live server will refuse; fall
+ * back to settings only when nothing is running (the off-state preview).
+ */
+export function advertisedRemoteToken(runningToken: string | null, settingsToken: string): string {
+  return runningToken || settingsToken
+}
+
+/**
  * Whether a phone's `?k=` may be stored as the key cookie — review finding on
  * PX-14. Once the shell went public the cookie was built from ANY `k`, so a
  * link with a wrong key (or any page navigating the phone to one) overwrote a

@@ -21,6 +21,7 @@ import {
 } from '../src/main/remote/cloudflare.ts'
 import { clampPort, clampRemoteReach, REMOTE_REACH_PREFERENCES } from '../src/shared/ui.ts'
 import {
+  advertisedRemoteToken,
   answerVerdict,
   ENDED_RETENTION_MS,
   isEndedExpired,
@@ -561,6 +562,16 @@ check('a digit is typing', isTerminalReport('2'), false)
   check('an off server with no error is not started by a port edit', shouldRestartRemote(base, moved, { running: false, error: null }), false)
   check('nothing bound moved: no restart', shouldRestartRemote(base, { ...base }, { running: true, error: null }), false)
   check('no server object yet: nothing to restart', shouldRestartRemote(base, moved, null), false)
+}
+
+console.log('\nthe connect link advertises the RUNNING server token, never a drifted settings one')
+{
+  // The bug the user hit on Windows: settings held a token the running server
+  // was not validating against, so its own QR got "This link's key isn't current".
+  check('a running token wins over a drifted settings token', advertisedRemoteToken('server-key', 'settings-key'), 'server-key')
+  check('with the server off, the settings token is the preview', advertisedRemoteToken(null, 'settings-key'), 'settings-key')
+  check('an empty running token falls back rather than advertising a blank key', advertisedRemoteToken('', 'settings-key'), 'settings-key')
+  check('when they already agree the answer is that token', advertisedRemoteToken('same', 'same'), 'same')
 }
 
 // Review of PX-14: /?k=<anything> used to set the cookie with no check.

@@ -480,6 +480,10 @@ export function App(): React.JSX.Element {
   const [asked, setAsked] = useState<Set<string>>(new Set())
 
   const [paletteOpen, setPaletteOpen] = useState(false)
+  // The phone popover is open. Not part of `overlayOpen` (it makes nothing
+  // inert), but the docked browser must hide while it is up or its QR paints
+  // behind the WebContentsView (gotcha 14).
+  const [phonePopoverOpen, setPhonePopoverOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   /** Where the sheet opens. Set by whoever asked for it, cleared with the sheet. */
   const [settingsSection, setSettingsSection] = useState<SectionId | undefined>(undefined)
@@ -3232,10 +3236,11 @@ export function App(): React.JSX.Element {
   )
 
   // The WebContentsView paints above the DOM, so it must be detached while a
-  // palette or settings sheet is open or it would cover them.
+  // palette or settings sheet — or the phone popover, whose QR would otherwise
+  // hide behind it — is open, or it would cover them (gotcha 14).
   useEffect(() => {
     if (!settings) return
-    if (browserOpen && !overlayOpen) {
+    if (browserOpen && !overlayOpen && !phonePopoverOpen) {
       if (seededBrowser.current) {
         window.stoke.browser.show()
       } else {
@@ -3245,7 +3250,7 @@ export function App(): React.JSX.Element {
     } else {
       window.stoke.browser.hide()
     }
-  }, [browserOpen, overlayOpen, settings])
+  }, [browserOpen, overlayOpen, phonePopoverOpen, settings])
 
   // Remember the last page, so reopening the panel returns you to it.
   useEffect(() => {
@@ -4064,6 +4069,7 @@ export function App(): React.JSX.Element {
         onOpenPalette={() => setPaletteOpen(true)}
         onOpenSettings={() => openSettings()}
         onOpenPhoneSettings={() => openSettings('remote')}
+        onPhonePopoverOpenChange={setPhonePopoverOpen}
         labelFor={(t) => {
           if (t.kind !== 'new') return tabLabel(t, null)
           // The tab in front names what its launcher is aimed at, fallback

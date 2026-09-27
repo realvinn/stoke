@@ -70,6 +70,8 @@ interface Props {
   onOpenSettings: () => void
   /** Settings, opened straight at Phone access. */
   onOpenPhoneSettings: () => void
+  /** The phone popover opened or closed — App hides the docked browser while it is up (gotcha 14). */
+  onPhonePopoverOpenChange: (open: boolean) => void
   /**
    * What a tab says: `New · stoke` for a New tab aimed at a project, and the
    * agent a non-Claude tab runs (QA L16). Omitted means the tab's own title.
@@ -114,6 +116,7 @@ export function TitleBar({
   onOpenPalette,
   onOpenSettings,
   onOpenPhoneSettings,
+  onPhonePopoverOpenChange,
   labelFor,
   settingsOpen
 }: Props): React.JSX.Element {
@@ -430,7 +433,11 @@ export function TitleBar({
           <IconPin />
           <span className="sr-only">Toggle worklog review</span>
         </button>
-        <PhonePopover onOpenSettings={onOpenPhoneSettings} settingsOpen={settingsOpen} />
+        <PhonePopover
+          onOpenSettings={onOpenPhoneSettings}
+          settingsOpen={settingsOpen}
+          onOpenChange={onPhonePopoverOpenChange}
+        />
         <UsageChip />
 
         <button

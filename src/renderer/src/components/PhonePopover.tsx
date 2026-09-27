@@ -14,6 +14,12 @@ interface Props {
    * sheet.
    */
   settingsOpen: boolean
+  /**
+   * Called when the popover opens or closes. The docked browser's
+   * `WebContentsView` paints over all DOM (gotcha 14), so App hides it while
+   * this is open — otherwise the QR code renders behind the browser.
+   */
+  onOpenChange?: (open: boolean) => void
 }
 
 /**
@@ -26,7 +32,7 @@ interface Props {
  * code to scan — or, when the server is off, the single button that turns it
  * on and picks a route a phone can actually use.
  */
-export function PhonePopover({ onOpenSettings, settingsOpen }: Props): React.JSX.Element {
+export function PhonePopover({ onOpenSettings, settingsOpen, onOpenChange }: Props): React.JSX.Element {
   const [state, setState] = useState<RemoteState | null>(null)
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -37,6 +43,12 @@ export function PhonePopover({ onOpenSettings, settingsOpen }: Props): React.JSX
   useEffect(() => {
     if (settingsOpen) setOpen(false)
   }, [settingsOpen])
+
+  // Tell App so it can hide the docked browser while the popover is up — the
+  // WebContentsView would otherwise paint over the QR (gotcha 14).
+  useEffect(() => {
+    onOpenChange?.(open)
+  }, [open, onOpenChange])
 
   const refresh = useCallback(async (): Promise<void> => {
     setState(await window.stoke.remote.status())

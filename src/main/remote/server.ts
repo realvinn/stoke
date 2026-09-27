@@ -361,6 +361,15 @@ export class RemoteServer {
     this.onClientsChanged = onClientsChanged
   }
 
+  /**
+   * The token the running server authorises against, or null when it is not
+   * running. The connect link is built from this so it can never advertise a
+   * key the live server would refuse (`advertisedRemoteToken`).
+   */
+  runningToken(): string | null {
+    return this.servers.length > 0 ? (this.config?.token ?? null) : null
+  }
+
   status(): RemoteStatus {
     const attachedByPty: Record<string, number> = {}
     for (const [ptyId, set] of this.attached) if (set.size) attachedByPty[ptyId] = set.size

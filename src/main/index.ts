@@ -78,7 +78,7 @@ import {
 } from '../shared/stokeArgs.ts'
 import { installCommand, readCommandState, removeCommand, type CommandEnv } from './stokeCommand.ts'
 import { keepUsage } from '../shared/statusLine.ts'
-import { shouldRestartRemote } from '../shared/remotePhone.ts'
+import { advertisedRemoteToken, shouldRestartRemote } from '../shared/remotePhone.ts'
 import { parseSession, readTranscript } from './sessionFile.ts'
 import { fetchRemoteTranscript } from './sshTranscript.ts'
 import { PtyManager, type StartResult } from './pty.ts'
@@ -819,9 +819,14 @@ const remoteState = async (): Promise<RemoteState> => {
    * URL used to be printed bare and the QR kept encoding the LAN link, so a
    * phone opening the tunnel got 401: the key was in the other string.
    */
-  const target = connectTarget({ ...cfg, tunnelUrl: tun.running ? tun.url : null })
+  // Advertise the token the RUNNING server authorises against, not a fresh
+  // settings read: the two can drift (a restart race — the phone got "This
+  // link's key isn't current" from the server's own QR on Windows), and the
+  // running token is the only one a scan can actually connect with.
+  const token = advertisedRemoteToken(remote?.runningToken() ?? null, cfg.token)
+  const target = connectTarget({ ...cfg, token, tunnelUrl: tun.running ? tun.url : null })
   // No key, no link: a URL with `?k=` would be a lie the server cannot honour.
-  const url = cfg.token ? target.url : null
+  const url = token ? target.url : null
   let qr: string | null = null
   if (url) {
     const s = getSettings()
