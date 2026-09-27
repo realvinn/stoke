@@ -16,6 +16,7 @@ import {
   SESSION_COOKIE_DAYS,
   type ChromeCookieRow
 } from '../src/main/browserImport/chromeCookies.ts'
+import { CHROMIUM_BROWSERS, chromiumRoot } from '../src/main/browserImport/chromiumProfiles.ts'
 
 let failures = 0
 
@@ -154,6 +155,35 @@ check(
   })(),
   [true, false, 'strict']
 )
+
+console.log('\nprofile roots, per platform')
+{
+  const chrome = CHROMIUM_BROWSERS.find((b) => b.id === 'chrome')!
+  const edge = CHROMIUM_BROWSERS.find((b) => b.id === 'edge')!
+  const arc = CHROMIUM_BROWSERS.find((b) => b.id === 'arc')!
+  check(
+    "macOS Chrome sits under ~/Library/Application Support",
+    chromiumRoot(chrome, 'darwin', {}, '/Users/x'),
+    '/Users/x/Library/Application Support/Google/Chrome'
+  )
+  check(
+    'Windows Chrome uses %LOCALAPPDATA% and its own User Data root',
+    chromiumRoot(chrome, 'win32', { LOCALAPPDATA: 'C:\\Users\\x\\AppData\\Local' }, 'C:\\Users\\x'),
+    'C:\\Users\\x\\AppData\\Local\\Google\\Chrome\\User Data'
+  )
+  check(
+    'Windows Edge lands in Microsoft\\Edge\\User Data',
+    chromiumRoot(edge, 'win32', { LOCALAPPDATA: 'C:\\Users\\x\\AppData\\Local' }, 'C:\\Users\\x'),
+    'C:\\Users\\x\\AppData\\Local\\Microsoft\\Edge\\User Data'
+  )
+  check(
+    'Windows falls back to <home>\\AppData\\Local when LOCALAPPDATA is unset',
+    chromiumRoot(chrome, 'win32', {}, 'C:\\Users\\x'),
+    'C:\\Users\\x\\AppData\\Local\\Google\\Chrome\\User Data'
+  )
+  check('a browser with no known Windows folder (Arc) is skipped there', chromiumRoot(arc, 'win32', { LOCALAPPDATA: 'C:\\l' }, 'C:\\h'), null)
+  check('Linux imports from no Chromium browser', chromiumRoot(chrome, 'linux', {}, '/home/x'), null)
+}
 
 console.log(failures ? `\n${failures} FAILED` : '\nall pass')
 process.exitCode = failures ? 1 : 0

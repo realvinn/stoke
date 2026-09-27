@@ -4386,7 +4386,9 @@ export function App(): React.JSX.Element {
                 profiles={settings?.browser.profiles ?? []}
                 currentProfile={settings?.browser.currentProfile ?? 'default'}
                 onManageProfiles={() => openSettings('browser')}
-                offerImport={platform === 'darwin' && settings?.browser.importOffer === 'unasked'}
+                offerImport={
+                  (platform === 'darwin' || platform === 'win32') && settings?.browser.importOffer === 'unasked'
+                }
                 onAnswerImport={(accepted) => {
                   // Through main, against its own settings, never this copy (gotcha 57).
                   void window.stoke.browser.dismissImportOffer()

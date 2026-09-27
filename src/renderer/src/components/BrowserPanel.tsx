@@ -419,7 +419,11 @@ export function BrowserPanel({
       */}
       {offerImport && (
         <div className="browser-offer" role="note">
-          <span className="browser-offer-text">Bring your logins and bookmarks over from Chrome or Safari?</span>
+          <span className="browser-offer-text">
+            {window.stoke.platform === 'darwin'
+              ? 'Bring your logins and bookmarks over from Chrome or Safari?'
+              : 'Bring your bookmarks over from Chrome?'}
+          </span>
           <button className="btn" data-variant="primary" data-size="sm" onClick={() => onAnswerImport(true)}>
             Import…
           </button>

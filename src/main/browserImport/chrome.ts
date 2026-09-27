@@ -6,46 +6,36 @@ import { promisify } from 'node:util'
 import { app } from 'electron'
 import { chromeKey, chromeRowToCookie, decryptChromeValue } from './chromeCookies.ts'
 import type { ChromeCookieRow } from './chromeCookies.ts'
-import type { BrowserSource, ImportBrowserId, ImportedCookie, ReadResult, ReadWhat, SourceProfile } from './types.ts'
+import { CHROMIUM_BROWSERS, chromiumRoot } from './chromiumProfiles.ts'
+import type { ChromiumBrowser } from './chromiumProfiles.ts'
+import type { BrowserSource, ImportedCookie, ReadResult, ReadWhat, SourceProfile } from './types.ts'
 
 const execFileAsync = promisify(execFile)
 
 /*
- * Chrome, and the browsers built on the same Chromium profile layout, on macOS.
+ * Chrome, and the browsers built on the same Chromium profile layout.
  *
- * Where each keeps its profiles and which Keychain item holds its cookie key.
- * Chrome's entry is the one proven on this machine's layout; the others follow
- * the same Chromium conventions and the Keychain names other importers use
- * (yt-dlp's), and are only ever touched when their folder exists.
+ * Their profile folders live at platform-specific roots (chromiumProfiles.ts).
+ * Bookmarks import on macOS and Windows alike — same JSON. Logins are macOS-only
+ * for now: there the cookie key is in the login Keychain and `security` hands it
+ * over on a prompt; on Windows Chrome seals it with DPAPI + app-bound encryption,
+ * so `read` brings only the bookmarks and says why the logins stayed behind.
  */
-interface ChromiumBrowser {
-  id: ImportBrowserId
-  name: string
-  /** Under ~/Library/Application Support. */
-  dir: string
-  /** The Keychain generic password's service. */
-  keychain: string
-}
-
-const BROWSERS: ChromiumBrowser[] = [
-  { id: 'chrome', name: 'Chrome', dir: 'Google/Chrome', keychain: 'Chrome Safe Storage' },
-  { id: 'chrome-beta', name: 'Chrome Beta', dir: 'Google/Chrome Beta', keychain: 'Chrome Safe Storage' },
-  { id: 'brave', name: 'Brave', dir: 'BraveSoftware/Brave-Browser', keychain: 'Brave Safe Storage' },
-  { id: 'edge', name: 'Edge', dir: 'Microsoft Edge', keychain: 'Microsoft Edge Safe Storage' },
-  { id: 'arc', name: 'Arc', dir: 'Arc/User Data', keychain: 'Arc Safe Storage' },
-  { id: 'vivaldi', name: 'Vivaldi', dir: 'Vivaldi', keychain: 'Vivaldi Safe Storage' },
-  { id: 'chromium', name: 'Chromium', dir: 'Chromium', keychain: 'Chromium Safe Storage' }
-]
 
 /** Long enough to answer a Keychain prompt; it waits on a person. */
 const KEYCHAIN_TIMEOUT_MS = 120_000
 /** Rows folded between yields, so a big jar never holds the event loop (gotcha 40). */
 const ROWS_PER_TURN = 200
 
-const support = (): string => join(homedir(), 'Library', 'Application Support')
-const browserOf = (profile: SourceProfile): ChromiumBrowser | undefined => BROWSERS.find((b) => b.id === profile.browser)
+/** Why Chrome's logins cannot come over on this OS. Bookmarks still do. */
+const OFF_PLATFORM_LOGINS =
+  'Logins cannot be imported from Chrome on Windows yet: Chrome seals them with app-bound encryption tied to its own signature. Your bookmarks still came over, and Chrome keeps you signed in there.'
+
+const rootOf = (b: ChromiumBrowser): string | null => chromiumRoot(b, process.platform, process.env, homedir())
+const browserOf = (profile: SourceProfile): ChromiumBrowser | undefined =>
+  CHROMIUM_BROWSERS.find((b) => b.id === profile.browser)
 const profileDirOf = (profile: SourceProfile, b: ChromiumBrowser): string =>
-  join(support(), b.dir, profile.key.slice(b.id.length + 1))
+  join(rootOf(b) ?? '', profile.key.slice(b.id.length + 1))
 
 const denied = (err: unknown): boolean => {
   const code = (err as { code?: string }).code
@@ -125,12 +115,15 @@ export function forgetChromeKeys(): void {
 }
 
 async function listBrowser(b: ChromiumBrowser): Promise<SourceProfile[]> {
-  const root = join(support(), b.dir)
-  if (!(await exists(root))) return []
+  const root = rootOf(b)
+  if (!root || !(await exists(root))) return []
   let state: { profile?: { info_cache?: Record<string, { name?: string; user_name?: string }>; profiles_order?: string[] } }
   try {
     state = JSON.parse(await readFile(join(root, 'Local State'), 'utf8'))
   } catch (err) {
+    // App Data protection (EPERM) is a macOS thing; on Windows a failed read is
+    // just unreadable, with no "allow other apps' data" panel to send them to.
+    const appData = process.platform === 'darwin' && denied(err)
     return [
       {
         key: `${b.id}/*`,
@@ -138,8 +131,8 @@ async function listBrowser(b: ChromiumBrowser): Promise<SourceProfile[]> {
         browserName: b.name,
         name: b.name,
         detail: '',
-        status: denied(err) ? 'needsAppData' : 'unreadable',
-        note: denied(err)
+        status: appData ? 'needsAppData' : 'unreadable',
+        note: appData
           ? `macOS is keeping ${b.name}'s folder from Stoke. Press Look again and choose Allow when macOS asks whether Stoke may access data from other apps.`
           : `${b.name}'s profile list could not be read.`
       }
@@ -265,8 +258,8 @@ async function readBookmarks(profileDir: string): Promise<string[]> {
 
 export const chromeSource: BrowserSource = {
   async list(): Promise<SourceProfile[]> {
-    if (process.platform !== 'darwin') return []
-    const found = await Promise.all(BROWSERS.map((b) => listBrowser(b).catch(() => [])))
+    if (process.platform !== 'darwin' && process.platform !== 'win32') return []
+    const found = await Promise.all(CHROMIUM_BROWSERS.map((b) => listBrowser(b).catch(() => [])))
     return found.flat()
   },
 
@@ -276,6 +269,9 @@ export const chromeSource: BrowserSource = {
     const dir = profileDirOf(profile, b)
     const bookmarks = what.bookmarks ? await readBookmarks(dir) : []
     if (!what.cookies) return { cookies: [], skippedCookies: 0, bookmarks }
+    // The cookie key is only reachable on macOS; elsewhere the bookmarks stand
+    // and the logins are reported as left behind (see the file header).
+    if (process.platform !== 'darwin') return { cookies: [], skippedCookies: 0, bookmarks, cookieError: OFF_PLATFORM_LOGINS }
     try {
       const { cookies, skipped } = await readCookies(b, dir)
       return { cookies, skippedCookies: skipped, bookmarks }

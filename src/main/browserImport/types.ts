@@ -6,8 +6,10 @@
  * writes it into the profile's partition, which is why `runImport` refuses
  * logins unless Stoke's own cookie store is encrypted (`cookieStoreEncrypted`).
  *
- * macOS only for now. Chrome's cookie key lives in the login Keychain there; on
- * Windows it is DPAPI with app-bound encryption, on Linux libsecret.
+ * Bookmarks import on macOS and Windows (the profile files are identical); logins
+ * are macOS-only, where Chrome's cookie key lives in the login Keychain. On
+ * Windows it is DPAPI with app-bound encryption, on Linux libsecret — neither
+ * done. Safari is macOS-only outright.
  */
 
 export type ImportBrowserId = 'chrome' | 'chrome-beta' | 'brave' | 'edge' | 'arc' | 'vivaldi' | 'chromium' | 'safari'

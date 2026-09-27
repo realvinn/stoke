@@ -125,6 +125,15 @@ part of this change.
 > build's probe passes and logins import. Unpackaged runs still use Electron's stock binary, fuse off,
 > so `npm run dev` keeps refusing logins; that is the probe working, not a bug.
 
+> **Windows, added 2026-09-27.** Chrome-family profiles are found and their BOOKMARKS imported on
+> Windows too — the Local State and Bookmarks JSON are the same files as macOS, so only the profile
+> ROOT differs (`chromiumProfiles.ts`: `%LOCALAPPDATA%\<browser>\User Data`, resolved with
+> `path.win32.join` so a test on a Mac still gets the right separators). Logins are NOT: Chrome on
+> Windows wraps its cookie key with DPAPI + app-bound encryption (Chrome 127+) tied to Chrome's own
+> signature, unwrappable only by its elevation service — `chromeSource.read` returns the bookmarks and
+> a `cookieError` saying so, and the Settings panel disables the Logins box off macOS (`canLogins`).
+> Safari stays macOS-only. Untested on real Windows (no Windows round has run; CLAUDE.md).
+
 **Two grants reach further than the import.** The Keychain prompt names `security`: Allow is the
 safe answer, Always Allow puts `security` on the item's access list for good, after which any
 program can read Chrome's key silently — the UI says which to press. Full Disk Access is granted to

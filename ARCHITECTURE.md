@@ -721,6 +721,8 @@ src/main/         Electron main process
   browserImport/    Chrome-family and Safari profiles into a Stoke browser profile each:
                     chrome.ts (Local State, the Keychain key, the cookie DB copied and read with
                     node:sqlite), chromeCookies.ts (the v10 crypto and row mapping, pure),
+                    chromiumProfiles.ts (where each browser keeps its profiles on macOS/Windows,
+                    pure and platform-parameterised — bookmarks import on both, logins macOS-only),
                     safari.ts + safariCookies.ts + plist.ts (Full Disk Access, binarycookies,
                     Bookmarks.plist), index.ts (scan, runImport). Gotcha 107
   workspace.ts      default folder + scratch folders
