@@ -35,7 +35,9 @@ import {
   rebindTabs,
   continuePlan,
   newTabToReuse,
-  tabLabel
+  nextCustomTitle,
+  tabLabel,
+  tabsToClose
 } from '../src/renderer/src/lib/tabs.ts'
 
 let failures = 0
@@ -1051,6 +1053,45 @@ check(
   tabLabel({ kind: 'session', title: 'Installing Codex CLI', cliId: 'codex', installing: ['codex'] }, null),
   { text: 'Installing Codex CLI', agentTag: null }
 )
+
+console.log('\ntabLabel: a name the user gave the tab wins over the ai-title')
+check(
+  'a renamed session tab shows the custom name, not the ai-title',
+  tabLabel({ kind: 'session', title: 'proj-a', customTitle: 'Auth work', cliId: 'claude' }, null),
+  { text: 'Auth work', agentTag: null }
+)
+check(
+  'the agent tag survives a rename',
+  tabLabel({ kind: 'session', title: 'proj-a', customTitle: 'Auth work', cliId: 'codex' }, null),
+  { text: 'Auth work', agentTag: 'codex' }
+)
+check(
+  'a whitespace-only custom title is no name and falls back',
+  tabLabel({ kind: 'session', title: 'proj-a', customTitle: '   ', cliId: 'claude' }, null),
+  { text: 'proj-a', agentTag: null }
+)
+check(
+  'a renamed New tab shows its name over the aimed project',
+  tabLabel({ kind: 'new', title: 'New session', customTitle: 'Scratch', cliId: 'claude' }, 'stoke'),
+  { text: 'Scratch', agentTag: null }
+)
+
+console.log('\nnextCustomTitle: a rename does not freeze the ai-title')
+// The rename editor seeds with the current title, so committing unchanged must
+// keep following the ai-title — undefined, not the ai-title pinned as a name.
+check('committing the ai-title unchanged is no override', nextCustomTitle('proj-a', 'proj-a'), undefined)
+check('a real name is kept', nextCustomTitle('Auth work', 'proj-a'), 'Auth work')
+check('a blank name clears the override', nextCustomTitle('   ', 'proj-a'), undefined)
+check('surrounding whitespace is trimmed', nextCustomTitle('  Auth work  ', 'proj-a'), 'Auth work')
+check('a name that only matches after trimming the ai-title still counts as the ai-title', nextCustomTitle('  proj-a  ', 'proj-a'), undefined)
+
+console.log('\ntabsToClose: Chrome-style bulk close picks the right ids in strip order')
+check('close others leaves the anchor', tabsToClose(five, 'c', 'others'), ['a', 'b', 'd', 'e'])
+check('close to the right takes only what follows', tabsToClose(five, 'c', 'right'), ['d', 'e'])
+check('close to the left takes only what precedes', tabsToClose(five, 'c', 'left'), ['a', 'b'])
+check('close to the right of the last closes nothing', tabsToClose(five, 'e', 'right'), [])
+check('close to the left of the first closes nothing', tabsToClose(five, 'a', 'left'), [])
+check('an anchor not in the list closes nothing', tabsToClose(five, 'zz', 'others'), [])
 
 /*
  * The tally is the LAST thing in this file, and it has to stay that way.

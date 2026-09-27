@@ -887,10 +887,43 @@ export function newTabToReuse(
  * tab in one folder were both just `proj-a` (QA L16).
  */
 export function tabLabel(
-  tab: { kind: string; title: string; cliId: CodingCliId; installing?: readonly string[] },
+  tab: { kind: string; title: string; customTitle?: string; cliId: CodingCliId; installing?: readonly string[] },
   newTarget: string | null
 ): { text: string; agentTag: string | null } {
-  if (tab.kind === 'new') return { text: newTarget ? `New · ${newTarget}` : tab.title, agentTag: null }
+  // A name the user typed wins over the ai-title, on every kind of tab; cleared
+  // to blank it falls through to what the label was before (`tabLabel` gets the
+  // trimmed value, so whitespace-only never counts as a name).
+  const custom = tab.customTitle?.trim()
+  if (tab.kind === 'new') return { text: custom || (newTarget ? `New · ${newTarget}` : tab.title), agentTag: null }
   const tag = isClaudeCode(tab.cliId) || tab.installing?.length ? null : cliFor(tab.cliId).bins.posix[0]
-  return { text: tab.title, agentTag: tag }
+  return { text: custom || tab.title, agentTag: tag }
+}
+
+/**
+ * The `customTitle` to store for a rename, or undefined for "no override".
+ *
+ * A blank name clears the override, and so does one equal to the ai-title:
+ * the rename editor seeds with the current title, so committing it unchanged
+ * must keep FOLLOWING the ai-title rather than freeze the current one against
+ * Claude's later updates (a bug the review caught).
+ */
+export function nextCustomTitle(rawTitle: string, aiTitle: string): string | undefined {
+  const name = rawTitle.trim()
+  return name && name !== aiTitle ? name : undefined
+}
+
+/** Which side of a tab a bulk close acts on. */
+export type CloseSide = 'others' | 'right' | 'left'
+
+/**
+ * The ids a Chrome-style bulk close would remove, in strip order — every other
+ * tab, or those after / before the anchor. Pure so `verify:tabs` can pin the
+ * index maths; the caller still filters out a mid-turn session (gotchas 82/90).
+ * An anchor that is not in the list closes nothing.
+ */
+export function tabsToClose(ids: string[], anchorId: string, side: CloseSide): string[] {
+  const at = ids.indexOf(anchorId)
+  if (at < 0) return []
+  if (side === 'others') return ids.filter((id) => id !== anchorId)
+  return side === 'right' ? ids.slice(at + 1) : ids.slice(0, at)
 }

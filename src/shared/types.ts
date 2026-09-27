@@ -1365,6 +1365,8 @@ export interface StoredTab {
   cwd: string
   projectName: string
   title: string
+  /** A name the user gave this tab; wins over `title` when set. Absent when never renamed. */
+  customTitle?: string
   permissionMode: PermissionMode
   model: string
   effort: EffortLevel

@@ -57,6 +57,13 @@ export interface Tab {
   /** Falls back to the project name until Claude generates an ai-title. */
   title: string
   /**
+   * A name the user gave this tab (double-click the tab, or right-click →
+   * Rename). When set it wins over `title` everywhere the label is drawn
+   * (`tabLabel`); cleared to blank, the tab falls back to Claude's ai-title.
+   * Persisted across restart (`StoredTab.customTitle`).
+   */
+  customTitle?: string
+  /**
    * Kept live from `ContextSnapshot.permissionMode` rather than frozen at
    * launch, so Shift+Tab inside the session reaches the indicator. Written by
    * A Task 53; before it, no writer ever updated this field.

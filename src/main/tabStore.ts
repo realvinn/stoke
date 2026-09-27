@@ -97,6 +97,8 @@ function tabOf(v: unknown): StoredTab | null {
     cwd,
     projectName: str(v.projectName),
     title: str(v.title),
+    // Absent unless the user gave the tab a name — an empty string is no name.
+    ...(nullableStr(v.customTitle) ? { customTitle: nullableStr(v.customTitle) as string } : {}),
     permissionMode: permissionModeOf(v.permissionMode),
     model: str(v.model),
     effort: effortOf(v.effort),

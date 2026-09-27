@@ -32,6 +32,9 @@ export function toStored(
       cwd: t.cwd,
       projectName: t.projectName,
       title: t.title,
+      // Only when the tab was renamed — keeps a never-renamed tab's stored form
+      // byte-for-byte what it always was.
+      ...(t.customTitle ? { customTitle: t.customTitle } : {}),
       permissionMode: t.permissionMode,
       model: t.model,
       effort: t.effort,
@@ -68,6 +71,7 @@ export function fromStored(state: StoredTabs): { tabs: Tab[]; activeId: string |
     cwd: s.cwd,
     projectName: s.projectName,
     title: s.title,
+    ...(s.customTitle ? { customTitle: s.customTitle } : {}),
     permissionMode: s.permissionMode,
     model: s.model,
     effort: s.effort,

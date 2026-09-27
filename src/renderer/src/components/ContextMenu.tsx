@@ -19,6 +19,12 @@ interface Props {
   y: number
   items: MenuItem[]
   /**
+   * A title and dim subtitle drawn above the items — what the menu is acting on.
+   * The tab menu uses it for the tab's name and the project folder it launched
+   * from. Not focusable and not a menu item, so it stays out of `role="menu"`.
+   */
+  header?: { title: string; subtitle?: string }
+  /**
    * Explanatory text below the items. Not a menu item: it is not focusable and
    * cannot be chosen, so it stays out of `role="menu"`'s children.
    */
@@ -32,7 +38,7 @@ interface Props {
  * property. It renders hidden for one frame so it can be measured and nudged
  * back on screen before it is ever seen.
  */
-export function ContextMenu({ x, y, items, footer, onClose }: Props): React.JSX.Element {
+export function ContextMenu({ x, y, items, header, footer, onClose }: Props): React.JSX.Element {
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -83,6 +89,12 @@ export function ContextMenu({ x, y, items, footer, onClose }: Props): React.JSX.
       style={{ left: x, top: y, visibility: 'hidden' }}
       onContextMenu={(e) => e.preventDefault()}
     >
+      {header && (
+        <div className="context-menu-header">
+          <span className="context-menu-title">{header.title}</span>
+          {header.subtitle && <span className="context-menu-subtitle">{header.subtitle}</span>}
+        </div>
+      )}
       {items.map((item) => (
         <button
           key={item.label}

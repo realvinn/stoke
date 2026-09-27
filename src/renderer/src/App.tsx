@@ -90,6 +90,7 @@ import {
   moveTab,
   neighbourOf,
   newTabToReuse,
+  nextCustomTitle,
   paneOrder,
   pendingRelaunchStep,
   rebindTabs,
@@ -98,6 +99,8 @@ import {
   adoptRemoteTab,
   restartPlan,
   tabLabel,
+  tabsToClose,
+  type CloseSide,
   type PendingOrigin,
   type RelaunchPlan
 } from './lib/tabs'
@@ -910,7 +913,9 @@ export function App(): React.JSX.Element {
       const background = !document.hasFocus() || !inFront
       if (mode === 'off' || (mode === 'background' && !background)) return
       if (typeof Notification === 'undefined' || Notification.permission === 'denied') return
-      const title = tab?.title ?? tab?.projectName ?? 'Claude Code'
+      // A name the user gave the tab wins here too, so the OS notification names
+      // the session the way the strip does (the review caught it using the ai-title).
+      const title = tab?.customTitle?.trim() || tab?.title || tab?.projectName || 'Claude Code'
       const body =
         ev.kind === 'stop'
           ? (ev.message ?? 'Finished — waiting for you.')
@@ -1706,11 +1711,17 @@ export function App(): React.JSX.Element {
           cols: 120,
           rows: 30
         })
+        // A relaunch or a Resume replaces the session tab in place; it is the
+        // same conversation, so a name the user gave it must survive (the review
+        // caught it being dropped here). Inherited from the replaced tab, not
+        // threaded through every caller.
+        const replaced = opts.replaceTabId ? tabsRef.current.find((t) => t.id === opts.replaceTabId) : undefined
         const tab: Tab = {
           id: res.ptyId,
           kind: 'session',
           cliId: launchCli,
           ...(opts.install?.length ? { installing: opts.install } : {}),
+          ...(replaced?.customTitle ? { customTitle: replaced.customTitle } : {}),
           ptyId: res.ptyId,
           sessionId: res.sessionId,
           cwd: opts.cwd,
@@ -2469,6 +2480,49 @@ export function App(): React.JSX.Element {
         return
       }
       closeTab(id)
+    },
+    [closeTab]
+  )
+
+  /**
+   * Give a tab a name, or clear it back to Claude's ai-title with a blank one.
+   * Written onto the tab; the debounced `tabs.save` above persists it, so a
+   * renamed tab comes back named after a restart (`StoredTab.customTitle`).
+   */
+  const renameTab = useCallback((id: string, title: string): void => {
+    const name = title.trim()
+    setTabs((list) => {
+      const tab = list.find((t) => t.id === id)
+      if (!tab) return list
+      // `nextCustomTitle` (pure, tested) drops a blank name AND one equal to the
+      // ai-title, so committing the editor unchanged keeps following the ai-title
+      // rather than freezing it.
+      const custom = nextCustomTitle(name, tab.title)
+      // No change (including clearing one that was never set) writes nothing, so
+      // an unrenamed tab's stored form stays exactly what it was.
+      if ((tab.customTitle ?? undefined) === custom) return list
+      const next = list.map((t) => (t.id === id ? { ...t, customTitle: custom } : t))
+      tabsRef.current = next
+      return next
+    })
+  }, [])
+
+  /**
+   * Chrome's "Close others / to the right / to the left", from the tab menu.
+   * A mid-turn session is left standing — bulk close must never SIGHUP a running
+   * reply (gotchas 82/90); single Close still asks through `requestCloseTab`.
+   * `closeTab` reads and rewrites `tabsRef` synchronously, so closing the ids
+   * one after another is safe even though the list shifts under each call.
+   */
+  const closeTabsSide = useCallback(
+    (anchorId: string, side: CloseSide): void => {
+      const ids = tabsToClose(tabsRef.current.map((t) => t.id), anchorId, side)
+      for (const id of ids) {
+        const tab = tabsRef.current.find((t) => t.id === id)
+        if (!tab) continue
+        if (tab.kind === 'session' && tab.status === 'running' && liveRef.current[tab.ptyId]?.busy === true) continue
+        closeTab(id)
+      }
     },
     [closeTab]
   )
@@ -3830,7 +3884,10 @@ export function App(): React.JSX.Element {
    */
   const busyDialog = ((): React.JSX.Element | null => {
     if (!busyPrompt) return null
-    const quote = (t: Tab | undefined): string => `“${t?.title || t?.projectName || 'this tab'}”`
+    // A renamed tab is named by its custom title here too, so a Close/Relaunch
+    // busy dialog matches the strip rather than showing the stale ai-title.
+    const quote = (t: Tab | undefined): string =>
+      `“${t?.customTitle?.trim() || t?.title || t?.projectName || 'this tab'}”`
     /*
      * The turn ended but the session is still busy with a workflow or subagent
      * it started (gotcha 104): no reply is in flight, the background
@@ -3994,6 +4051,8 @@ export function App(): React.JSX.Element {
         browserOpen={browserOpen}
         onSelectTab={setActiveTabId}
         onCloseTab={requestCloseTab}
+        onRenameTab={renameTab}
+        onCloseTabsSide={closeTabsSide}
         onNewTab={openNewTab}
         onReorderTab={reorderTab}
         onToggleSidebar={() => setSidebarOpen((v) => !v)}

@@ -81,6 +81,24 @@ console.log('\nround trip')
   rmSync(dir, { recursive: true, force: true })
 }
 
+console.log('\na renamed tab keeps its name across a restart')
+{
+  const dir = mkdtempSync(join(tmpdir(), 'stoke-restore-'))
+  const file = tabStateFile(dir)
+  writeTabState(file, state({ tabs: [tab({ customTitle: 'Auth work' })] }))
+  check('a custom title survives the store round trip', readTabState(file, NOW).tabs[0]?.customTitle, 'Auth work')
+
+  // A never-renamed tab must not gain a customTitle key — its stored form stays
+  // byte-for-byte what it always was.
+  writeTabState(file, state())
+  check('a tab that was never renamed has no customTitle key', 'customTitle' in readTabState(file, NOW).tabs[0], false)
+
+  // An empty string on disk (hand-edited, or an old write) is no name and is dropped.
+  writeTabState(file, state({ tabs: [tab({ customTitle: '' })] }))
+  check('an empty custom title is dropped, not restored as one', 'customTitle' in readTabState(file, NOW).tabs[0], false)
+  rmSync(dir, { recursive: true, force: true })
+}
+
 console.log('\ncaps')
 {
   const many = Array.from({ length: MAX_STORED_TABS + 5 }, (_, i) =>

@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ContextSnapshot } from '@shared/types'
 import type { WorklogButtonState } from '@shared/worklog'
 import { UsageChip } from './UsageMeter'
 import { PhonePopover } from './PhonePopover'
+import { ContextMenu, type MenuItem } from './ContextMenu'
 import { TabIndicator } from './TabIndicator'
 import {
   BrandMark,
@@ -19,6 +20,7 @@ import {
 } from './Icons'
 import { chordLabel } from '../lib/shortcuts'
 import { useTabDrag } from '../lib/useTabDrag'
+import type { CloseSide } from '../lib/tabs'
 import type { ActivityView } from '@shared/activityView'
 import type { Tab } from '../types'
 
@@ -46,6 +48,10 @@ interface Props {
   browserOpen: boolean
   onSelectTab: (id: string) => void
   onCloseTab: (id: string) => void
+  /** Give a session tab a name (double-click or the menu); a blank name clears it. */
+  onRenameTab: (id: string, title: string) => void
+  /** Chrome's Close others / to the right / to the left, from the tab's context menu. */
+  onCloseTabsSide: (anchorId: string, side: CloseSide) => void
   onNewTab: () => void
   /**
    * Reorder: the dragged tab takes the target's index. Called once per drag,
@@ -95,6 +101,8 @@ export function TitleBar({
   browserOpen,
   onSelectTab,
   onCloseTab,
+  onRenameTab,
+  onCloseTabsSide,
   onNewTab,
   onReorderTab,
   onToggleSidebar,
@@ -120,6 +128,40 @@ export function TitleBar({
     onReorder: onReorderTab
   })
 
+  // The right-click menu (its anchor tab) and the inline rename in progress.
+  // Both are transient UI, so they live here rather than on the tab model.
+  const [menu, setMenu] = useState<{ x: number; y: number; tabId: string } | null>(null)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [draft, setDraft] = useState('')
+  const renameRef = useRef<HTMLInputElement>(null)
+
+  const titleOf = (tab: Tab): string => (labelFor?.(tab) ?? { text: tab.title }).text
+
+  const startRename = (tab: Tab): void => {
+    // A New tab has no conversation to name; renaming it would be renaming the
+    // launcher. Session tabs only, the menu item disabled to match.
+    if (tab.kind !== 'session') return
+    setMenu(null)
+    setDraft(titleOf(tab))
+    setEditingId(tab.id)
+  }
+  const commitRename = (): void => {
+    // Recreated each render, so `editingId`/`draft` are current. A second call
+    // (Enter then the unmount's blur) is a no-op: `renameTab` skips an unchanged
+    // name and `setEditingId(null)` is idempotent.
+    if (editingId) onRenameTab(editingId, draft)
+    setEditingId(null)
+  }
+
+  // Focus and select the rename field once it appears, not on every keystroke —
+  // a select() per render would fight the caret.
+  useEffect(() => {
+    if (!editingId) return
+    const el = renameRef.current
+    el?.focus()
+    el?.select()
+  }, [editingId])
+
   /*
    * Keep the selected tab on screen.
    *
@@ -144,7 +186,10 @@ export function TitleBar({
     el?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
   }, [activeTabId, tabs.length, drag])
 
+  const menuTab = menu ? tabs.find((t) => t.id === menu.tabId) : null
+
   return (
+    <>
     <header className="titlebar" data-platform={platform} data-fullscreen={fullScreen || undefined}>
       <button
         className="icon-btn"
@@ -229,10 +274,19 @@ export function TitleBar({
                 onAuxClick={(e) => {
                   if (e.button === 1) onCloseTab(tab.id)
                 }}
+                // Double-click to rename, the standard tab gesture (session tabs only).
+                onDoubleClick={() => startRename(tab)}
+                // Right-click opens the tab menu; select the tab first so the menu
+                // and any close acts on the tab under the cursor.
+                onContextMenu={(e) => {
+                  e.preventDefault()
+                  onSelectTab(tab.id)
+                  setMenu({ x: e.clientX, y: e.clientY, tabId: tab.id })
+                }}
                 title={
                   tab.kind === 'new'
                     ? `${label.text} — press Enter on the page to start, or pick another folder`
-                    : `${tab.title}${label.agentTag ? ` · ${label.agentTag}` : ''}\n${tab.cwd}`
+                    : `${label.text}${label.agentTag ? ` · ${label.agentTag}` : ''}\n${tab.cwd}`
                 }
               >
                 <TabIndicator
@@ -242,7 +296,41 @@ export function TitleBar({
                   permissionMode={tab.permissionMode}
                   watched={watchedSessions.has(tab.sessionId)}
                 />
-                <span className="tab-label">{label.text}</span>
+                {editingId === tab.id ? (
+                  <input
+                    ref={renameRef}
+                    className="tab-rename"
+                    value={draft}
+                    spellCheck={false}
+                    maxLength={60}
+                    aria-label="Rename tab"
+                    onChange={(e) => setDraft(e.target.value)}
+                    // Keep every press inside the field: the tab's own handlers
+                    // select, start a drag, close on middle-click (onAuxClick), or
+                    // open the tab menu on right-click (onContextMenu). Without the
+                    // last two, a middle-click closes the tab mid-edit and a
+                    // right-click hijacks the native text menu.
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={(e) => e.stopPropagation()}
+                    onDoubleClick={(e) => e.stopPropagation()}
+                    onAuxClick={(e) => e.stopPropagation()}
+                    onContextMenu={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => {
+                      e.stopPropagation()
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        commitRename()
+                      } else if (e.key === 'Escape') {
+                        e.preventDefault()
+                        setEditingId(null)
+                      }
+                    }}
+                    onBlur={commitRename}
+                  />
+                ) : (
+                  <span className="tab-label">{label.text}</span>
+                )}
                 {label.agentTag && (
                   <span className="tab-agent" title={`Running ${label.agentTag}, not Claude Code`}>
                     {label.agentTag}
@@ -274,8 +362,9 @@ export function TitleBar({
                   title={`Close (${chordLabel('closeTab', isMac)})`}
                 >
                   <IconClose />
-                  <span className="sr-only">Close {tab.title}</span>
-
+                  {/* label.text, not tab.title: a renamed tab's × must name the
+                      custom title to a screen reader, like the strip does. */}
+                  <span className="sr-only">Close {label.text}</span>
                 </button>
               </div>
             )
@@ -389,5 +478,55 @@ export function TitleBar({
         )}
       </div>
     </header>
+
+    {menu && menuTab && (
+      <ContextMenu
+        x={menu.x}
+        y={menu.y}
+        header={{
+          title: titleOf(menuTab),
+          // Where Claude was launched: the folder for a local session, the host
+          // alias for SSH (its cwd IS the alias, gotcha 18), the aimed project
+          // for a New tab. Omitted when there is none yet.
+          subtitle: (menuTab.kind === 'new' ? menuTab.projectName : menuTab.cwd) || undefined
+        }}
+        items={buildTabMenu(tabs, menuTab, isMac, {
+          onRename: startRename,
+          onClose: onCloseTab,
+          onCloseSide: onCloseTabsSide
+        })}
+        onClose={() => setMenu(null)}
+      />
+    )}
+    </>
   )
+}
+
+/** The tab context menu's items — Rename, then Chrome's four close actions. */
+function buildTabMenu(
+  tabs: Tab[],
+  tab: Tab,
+  isMac: boolean,
+  on: {
+    onRename: (t: Tab) => void
+    onClose: (id: string) => void
+    onCloseSide: (anchorId: string, side: CloseSide) => void
+  }
+): MenuItem[] {
+  const idx = tabs.findIndex((t) => t.id === tab.id)
+  const hasRight = idx >= 0 && idx < tabs.length - 1
+  const hasLeft = idx > 0
+  return [
+    {
+      label: 'Rename',
+      hint: 'Double-click',
+      // A New tab has no conversation to name (matches `startRename`).
+      disabled: tab.kind !== 'session',
+      onSelect: () => on.onRename(tab)
+    },
+    { label: 'Close', separated: true, hint: chordLabel('closeTab', isMac), onSelect: () => on.onClose(tab.id) },
+    { label: 'Close others', disabled: tabs.length <= 1, onSelect: () => on.onCloseSide(tab.id, 'others') },
+    { label: 'Close tabs to the right', disabled: !hasRight, onSelect: () => on.onCloseSide(tab.id, 'right') },
+    { label: 'Close tabs to the left', disabled: !hasLeft, onSelect: () => on.onCloseSide(tab.id, 'left') }
+  ]
 }
