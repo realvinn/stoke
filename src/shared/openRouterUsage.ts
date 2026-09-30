@@ -142,7 +142,7 @@ export function openRouterResponse(status: number, body: unknown, now: number, r
   if (status >= 200 && status < 300) return parseOpenRouterKey(body, now)
   const snap: UsageSnapshot = { source: 'openrouter', windows: [], extraCredits: null, fetchedAt: now, error: null }
   if (status === 401 || status === 403) {
-    snap.error = 'OpenRouter refused the key in Settings › Providers.'
+    snap.error = 'OpenRouter refused the key in Settings › Agents › Claude Code › Provider & keys.'
     return snap
   }
   snap.error = `OpenRouter usage unavailable (${status}).`

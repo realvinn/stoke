@@ -90,8 +90,8 @@ function KeyStorage({ status }: { status: SecretStoreStatus | null | 'loading' }
       {stranded.length > 0 && (
         <span className="field-hint" data-tone="warning">
           {stranded.length === 1 ? 'One saved key' : `${stranded.length} saved keys`} could not be opened on this run (
-          {stranded.map((p) => secretLabel(p)).join(', ')}). They are kept, not deleted: type a key again in Providers
-          or Agents to replace it.
+          {stranded.map((p) => secretLabel(p)).join(', ')}). They are kept, not deleted: type the key again where it is
+          set (Agents › Claude Code › Provider &amp; keys, an agent&rsquo;s own page, or Voice) to replace it.
         </span>
       )}
       <FieldHint>

@@ -546,7 +546,7 @@ export function endpointProblem(id: CodingCliId, ep: AgentEndpoint, openrouterKe
   if (ep.mode === 'default') return null
   if (ep.mode === 'openrouter') {
     if (!cli.endpoints.openrouter) return `${cli.label} cannot be pointed at OpenRouter from Stoke.`
-    if (!openrouterKey) return `${cli.label} is set to use OpenRouter, but there is no OpenRouter key. Add one in Settings › Providers.`
+    if (!openrouterKey) return `${cli.label} is set to use OpenRouter, but there is no OpenRouter key. Add one in Settings › Agents › Claude Code › Provider & keys.`
     if (!ep.model) return `${cli.label} is set to use OpenRouter, but no model is chosen. Set one in Settings › Agents.`
     return null
   }

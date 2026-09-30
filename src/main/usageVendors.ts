@@ -44,9 +44,9 @@ function failed(source: UsageSnapshot['source'], now: number, err: unknown, what
   return { source, windows: [], extraCredits: null, fetchedAt: now, error: `${what} ${reason}.` }
 }
 
-/** Settings › Providers' OpenRouter key: what it has spent and what is left. */
+/** The OpenRouter key in Settings › Agents › Claude Code › Provider & keys: what it has spent and what is left. */
 export async function fetchOpenRouterUsage(key: string, now = Date.now()): Promise<UsageSnapshot> {
-  if (!key) return { source: 'openrouter', windows: [], extraCredits: null, fetchedAt: now, error: 'No OpenRouter key in Settings › Providers.' }
+  if (!key) return { source: 'openrouter', windows: [], extraCredits: null, fetchedAt: now, error: 'No OpenRouter key in Settings › Agents › Claude Code › Provider & keys.' }
   try {
     const res = await fetch(OPENROUTER_KEY_URL, {
       headers: { authorization: `Bearer ${key}`, accept: 'application/json' },
