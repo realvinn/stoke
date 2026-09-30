@@ -13,8 +13,8 @@
  *             env_key}` and `-m`. `codex doctor` reported the provider and its
  *             key env var as present, and probed the route (HTTP 200). Codex
  *             speaks only the Responses API (`wire_api` has one value left).
- *             MCP likewise: `-c mcp_servers.<id>.{url,bearer_token_env_var}`,
- *             listed by `codex mcp get` with nothing written to config.toml.
+ *             MCP likewise: `-c mcp_servers.<id>.*`, listed by `codex mcp get`
+ *             with nothing written to config.toml (mcpServers.ts `codexMcp`).
  *   opencode  OpenRouter is built in and wants `OPENROUTER_API_KEY` plus
  *             `-m openrouter/<model>`. Anything else rides in
  *             `OPENCODE_CONFIG_CONTENT`, an inline config the CLI layers on top
@@ -39,6 +39,7 @@
  * relative with `.ts` (gotcha 78).
  */
 import {
+  capsFor,
   CODING_CLIS,
   cliFor,
   cliIdOf,
@@ -49,6 +50,23 @@ import {
   type InstallPlatform
 } from './codingClis.ts'
 import { hydrateAgentColors, type AgentColors } from './agentColors.ts'
+import {
+  codexMcp,
+  copilotMcpFile,
+  DEFAULT_AGENT_MCP,
+  ENV_VIBE_MCP,
+  hydrateAgentMcp,
+  kimiMcpFile,
+  mcpFileName,
+  opencodeMcp,
+  piMcp,
+  qwenMcpFile,
+  vibeMcpEnv,
+  type AgentMcpSettings,
+  type McpRefusal,
+  type McpServerSpec,
+  type PlanFile
+} from './mcpServers.ts'
 
 export const OPENROUTER_OPENAI_BASE_URL = 'https://openrouter.ai/api/v1'
 
@@ -110,6 +128,12 @@ export interface AgentSettings {
    * the way out on a machine whose policy refuses the flag.
    */
   shareSkillsToClaude: boolean
+  /**
+   * Which MCP servers each agent is handed at launch, by name, and the servers
+   * Stoke itself holds (mcpServers.ts). Claude Code's own list is never stored
+   * here — it is read from `~/.claude.json` at every launch.
+   */
+  mcp: AgentMcpSettings
   /**
    * The small tag on a tab whose agent is not the default one (`tabLabel`):
    * whether it is drawn, and what it says per agent. With it off, the agent's
@@ -178,6 +202,7 @@ export const DEFAULT_AGENTS: AgentSettings = {
   endpoints: {},
   defaultCli: DEFAULT_CLI,
   shareSkillsToClaude: true,
+  mcp: DEFAULT_AGENT_MCP,
   tag: { show: true, labels: {} },
   colors: {},
   format: AGENTS_FORMAT
@@ -270,13 +295,20 @@ export function hydrateAgents(raw: unknown): AgentSettings {
   // No block at all is a fresh install or a file from before agents: no
   // endpoint to upgrade, so it is simply this build's format.
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-    return { ...DEFAULT_AGENTS, endpoints: {}, tag: hydrateAgentTag(undefined), colors: {} }
+    return {
+      ...DEFAULT_AGENTS,
+      endpoints: {},
+      mcp: hydrateAgentMcp(undefined, isCodingCliId),
+      tag: hydrateAgentTag(undefined),
+      colors: {}
+    }
   }
   const r = raw as {
     chosen?: unknown
     endpoints?: unknown
     defaultCli?: unknown
     shareSkillsToClaude?: unknown
+    mcp?: unknown
     tag?: unknown
     colors?: unknown
     format?: unknown
@@ -307,6 +339,7 @@ export function hydrateAgents(raw: unknown): AgentSettings {
     // Only an explicit false turns it off: every file written before the
     // setting existed has no key, and reads as the default.
     shareSkillsToClaude: r.shareSkillsToClaude !== false,
+    mcp: hydrateAgentMcp(r.mcp, isCodingCliId),
     tag: hydrateAgentTag(r.tag),
     colors: hydrateAgentColors(r.colors),
     // Upgraded above, so this build's number whatever was read — a newer
@@ -375,6 +408,14 @@ export interface LaunchPlan {
    * exactly what the argv or environment carried.
    */
   model: string
+  /**
+   * Files this launch needs on disk before the spawn, written owner-only
+   * (0600) by main: an MCP config for an agent that takes only a path. Absent
+   * when there are none.
+   */
+  files?: PlanFile[]
+  /** MCP servers this launch could not hand the agent, and why. Absent when none were. */
+  mcpSkipped?: McpRefusal[]
 }
 
 export type LaunchPlanResult = { ok: true; plan: LaunchPlan } | { ok: false; message: string }
@@ -386,20 +427,35 @@ export interface LaunchPlanInput {
   openrouterKey: string
   /** Continue the latest session in the folder, where the CLI can. */
   continueLast: boolean
-  /** Stoke's browser MCP server, when it is up, for the CLIs that take one per launch. */
-  mcp: { url: string; token: string } | null
   /**
-   * The same server as config FILES, for the CLIs that take a path rather than
-   * flags or an env var — so the bearer token never lands in argv. `claude` is
-   * Stoke's existing `mcp-browser.json` (Claude Code's own format, which Copilot
-   * accepts unchanged); `httpUrl` is the Gemini-family form Qwen needs, where a
-   * plain `url` means SSE and never connects. Both checked against a server
-   * that logged every request: Copilot and Qwen each sent initialize and
-   * tools/list with the bearer.
+   * The MCP servers this launch hands the agent, already resolved
+   * (`serversForLaunch`): Stoke's browser server first, with its bearer, when
+   * it is ticked and up, then the user's ticks. Ignored for an agent whose
+   * `CLI_CAPS.mcp` is `none`.
    */
-  mcpFiles?: { claude: string | null; httpUrl: string | null }
+  mcp: readonly McpServerSpec[]
+  /**
+   * Where a file-taking agent's MCP config goes, given the file's name — main's
+   * owner-only folder. Null when it cannot be written, and then Qwen and
+   * Copilot get no MCP rather than a flag naming nothing.
+   */
+  mcpFileFor?: ((name: string) => string) | null
+  /**
+   * Server names the agent's own config already defines (Codex's config.toml,
+   * Kimi's mcp.json, Vibe's config.toml): skipped, never merged into or
+   * replaced for the session.
+   */
+  mcpOwn?: readonly string[]
+  /**
+   * The agent's OWN MCP files to name beside Stoke's, because naming any file
+   * stops it reading its default (Kimi: `--mcp-config-file` given means
+   * `~/.kimi/mcp.json` is not loaded). Only files that exist; main checks.
+   */
+  mcpKeep?: readonly string[]
   /** Where Stoke keeps Pi's provider extension, for a custom endpoint. */
   piExtensionPath: string | null
+  /** Where Stoke keeps Pi's MCP extension (`PI_MCP_EXTENSION`); null when it could not be written. */
+  piMcpExtensionPath?: string | null
 }
 
 /**
@@ -436,7 +492,7 @@ export const ENV_OPENROUTER_KEY = 'STOKE_OPENROUTER_API_KEY'
 export const ENV_CUSTOM_KEY = 'STOKE_CUSTOM_API_KEY'
 export const ENV_CUSTOM_BASE_URL = 'STOKE_CUSTOM_BASE_URL'
 export const ENV_CUSTOM_MODEL = 'STOKE_CUSTOM_MODEL'
-export const ENV_MCP_TOKEN = 'STOKE_MCP_TOKEN'
+export { ENV_MCP_TOKEN } from './mcpServers.ts'
 
 /**
  * What `endpointProblem` says about a model that is not a model id — shared so
@@ -492,10 +548,31 @@ export function launchModel(id: CodingCliId, ep: AgentEndpoint | undefined): str
  * OpenRouter, is worse than a message saying which field is empty.
  */
 export function agentLaunchPlan(input: LaunchPlanInput): LaunchPlanResult {
-  const { id, openrouterKey, continueLast, mcp, piExtensionPath } = input
+  const { id, openrouterKey, continueLast, piExtensionPath } = input
   const cli = cliFor(id)
   const ep = input.endpoint ?? DEFAULT_ENDPOINT
   if (isClaudeCode(id)) return { ok: true, plan: { args: [], env: {}, model: '' } }
+  // An agent with no confirmed route takes nothing, and Settings greys it.
+  const files: PlanFile[] = []
+  const skipped: McpRefusal[] = []
+  // A name the agent's own config already uses is its own server: never
+  // replaced or merged into for a session. (Codex says so per name below.)
+  const ownSet = new Set(id === 'codex' ? [] : (input.mcpOwn ?? []))
+  const mcp = (capsFor(id).mcp === 'none' ? [] : input.mcp).filter((s) => {
+    if (!ownSet.has(s.name)) return true
+    skipped.push({ name: s.name, reason: `${cli.label}’s own configuration defines a server with this name` })
+    return false
+  })
+  /** One owner-only file for an agent that takes a path, or null when none can be written. */
+  const mcpFile = (content: string): string | null => {
+    if (!input.mcpFileFor) {
+      skipped.push(...mcp.map((s) => ({ name: s.name, reason: 'Stoke could not write the file this agent reads servers from' })))
+      return null
+    }
+    const path = input.mcpFileFor(mcpFileName(id, content))
+    files.push({ path, content })
+    return path
+  }
 
   const problem = endpointProblem(id, ep, openrouterKey)
   if (problem) return { ok: false, message: problem }
@@ -529,13 +606,11 @@ export function agentLaunchPlan(input: LaunchPlanInput): LaunchPlanResult {
         )
         env[keyVar] = ep.mode === 'openrouter' ? openrouterKey : customKey
       }
-      if (mcp) {
-        args.push(
-          '-c', `mcp_servers.stoke.url=${tomlString(mcp.url)}`,
-          '-c', `mcp_servers.stoke.bearer_token_env_var=${tomlString(ENV_MCP_TOKEN)}`
-        )
-        env[ENV_MCP_TOKEN] = mcp.token
-      }
+      // After the endpoint, so a server can never take a variable it set.
+      const out = codexMcp(mcp, input.mcpOwn ?? [], env)
+      args.push(...out.args)
+      Object.assign(env, out.env)
+      skipped.push(...out.skipped)
       break
     }
     // Kilo is built on OpenCode and reads the same inline config under its own
@@ -559,13 +634,11 @@ export function agentLaunchPlan(input: LaunchPlanInput): LaunchPlanResult {
         env[ENV_CUSTOM_KEY] = customKey
         args.push('-m', `${PROVIDER_CUSTOM}/${ep.model}`)
       }
-      if (mcp) {
-        // The token inline rather than as `{env:…}`: substitution inside MCP
+      if (mcp.length) {
+        // Secrets inline rather than as `{env:…}`: substitution inside MCP
         // headers was the one part of this path nobody saw work, and the value
         // is already confined to this process's environment either way.
-        config.mcp = {
-          stoke: { type: 'remote', url: mcp.url, headers: { Authorization: `Bearer ${mcp.token}` }, enabled: true }
-        }
+        config.mcp = opencodeMcp(mcp)
       }
       if (Object.keys(config).length) env[configVar] = JSON.stringify(config)
       break
@@ -614,6 +687,14 @@ export function agentLaunchPlan(input: LaunchPlanInput): LaunchPlanResult {
         env[ENV_CUSTOM_MODEL] = ep.model
         args.push('-e', piExtensionPath, '--provider', PROVIDER_CUSTOM, '--model', ep.model)
       }
+      if (mcp.length) {
+        if (input.piMcpExtensionPath) {
+          args.push('-e', input.piMcpExtensionPath)
+          Object.assign(env, piMcp(mcp).env)
+        } else {
+          skipped.push(...mcp.map((s) => ({ name: s.name, reason: 'Stoke could not write the extension Pi takes servers through' })))
+        }
+      }
       break
     }
     case 'qwen': {
@@ -625,7 +706,8 @@ export function agentLaunchPlan(input: LaunchPlanInput): LaunchPlanResult {
         env.OPENAI_API_KEY = ep.mode === 'openrouter' ? openrouterKey : customKey
         args.push('--auth-type', 'openai', '-m', ep.model)
       }
-      if (input.mcpFiles?.httpUrl) args.push('--mcp-config', input.mcpFiles.httpUrl)
+      const file = mcp.length ? mcpFile(qwenMcpFile(mcp)) : null
+      if (file) args.push('--mcp-config', file)
       break
     }
     case 'kimi': {
@@ -638,6 +720,17 @@ export function agentLaunchPlan(input: LaunchPlanInput): LaunchPlanResult {
         env.KIMI_MODEL_PROVIDER_TYPE = 'openai'
         env.KIMI_MODEL_BASE_URL = ep.mode === 'openrouter' ? OPENROUTER_OPENAI_BASE_URL : ep.baseUrl
       }
+      // Any `--mcp-config-file` stops Kimi reading its own mcp.json, so that
+      // file is named too, after Stoke's (`mcpKeep`).
+      const file = mcp.length ? mcpFile(kimiMcpFile(mcp)) : null
+      if (file) {
+        args.push('--mcp-config-file', file)
+        for (const keep of input.mcpKeep ?? []) args.push('--mcp-config-file', keep)
+      }
+      break
+    }
+    case 'vibe': {
+      if (mcp.length) env[ENV_VIBE_MCP] = vibeMcpEnv(mcp)
       break
     }
     case 'copilot': {
@@ -649,26 +742,17 @@ export function agentLaunchPlan(input: LaunchPlanInput): LaunchPlanResult {
         env.COPILOT_PROVIDER_API_KEY = ep.mode === 'openrouter' ? openrouterKey : customKey
         env.COPILOT_MODEL = ep.model
       }
-      if (input.mcpFiles?.claude) args.push('--additional-mcp-config', `@${input.mcpFiles.claude}`)
+      const file = mcp.length ? mcpFile(copilotMcpFile(mcp)) : null
+      if (file) args.push('--additional-mcp-config', `@${file}`)
       break
     }
   }
 
   if (continueLast && cli.continueArgs) args.push(...cli.continueArgs)
-  return { ok: true, plan: { args, env, model } }
-}
-
-/**
- * Stoke's browser MCP server in the Gemini-family config shape, for Qwen's
- * `--mcp-config <path>`: `httpUrl` is streamable HTTP there, and a bare `url`
- * would be read as SSE (measured: a GET and a HEAD, then "failed to start").
- */
-export function httpUrlMcpConfig(mcp: { url: string; token: string }): string {
-  return JSON.stringify(
-    { mcpServers: { stoke: { httpUrl: mcp.url, headers: { Authorization: `Bearer ${mcp.token}` } } } },
-    null,
-    2
-  )
+  const plan: LaunchPlan = { args, env, model }
+  if (files.length) plan.files = files
+  if (skipped.length) plan.mcpSkipped = skipped
+  return { ok: true, plan }
 }
 
 /**

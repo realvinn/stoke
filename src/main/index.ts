@@ -58,6 +58,8 @@ import {
 } from './cli.ts'
 import { scanSkills } from './skillsScan.ts'
 import { ClaudeSkillsProjector } from './skillsProject.ts'
+import { ClaudeConfigReader, McpFileStore, readMcpCatalog, resolveLaunchMcp, type LaunchMcp } from './mcpLaunch.ts'
+import { claudeMcpConfigs, PI_MCP_EXTENSION, type McpRefusal } from '../shared/mcpServers.ts'
 import { ContextWatcher } from './context.ts'
 import {
   findSessionFile,
@@ -87,10 +89,9 @@ import { parseSession, readTranscript } from './sessionFile.ts'
 import { fetchRemoteTranscript } from './sshTranscript.ts'
 import { PtyManager, type StartResult } from './pty.ts'
 import { checkMicrophone } from './audio/defaultDevice.ts'
-import { CODING_CLIS, cliIdOf, isClaudeCode, type CodingCliId } from '../shared/codingClis.ts'
+import { CODING_CLIS, capsFor, cliIdOf, isClaudeCode, type CodingCliId } from '../shared/codingClis.ts'
 import {
   agentLaunchPlan,
-  httpUrlMcpConfig,
   installedAgents,
   PI_PROVIDER_EXTENSION,
   resolveDefaultAgent,
@@ -220,6 +221,15 @@ let mcpConfigPath: string | null = null
  * keyed on userData, and kept: the sets it handed out this run are in its memory.
  */
 let skillsProjector: ClaudeSkillsProjector | null = null
+/**
+ * Claude Code's own MCP list, read at each launch that needs it and cached on
+ * the file's mtime (mcpLaunch.ts). Read-only: `~/.claude.json` is never written
+ * for MCP (gotcha 38), and never through claudeGlobalConfig's sync reader
+ * (gotcha 40).
+ */
+const claudeConfigReader = new ClaudeConfigReader()
+/** The owner-only MCP files Qwen, Copilot and Claude Code are pointed at; keyed on userData, so made on first use. */
+let mcpFiles: McpFileStore | null = null
 let remote: RemoteServer | null = null
 /**
  * Timers armed by `createWindow`, cleared when that window closes.
@@ -587,25 +597,51 @@ async function piExtensionFile(): Promise<string | null> {
 }
 
 /**
- * Stoke's browser MCP server in the `httpUrl` shape Qwen reads, beside the
- * Claude-shaped `mcp-browser.json`. Holds the bearer token, like that file, so
- * it is written owner-only; rewritten only when the server's port or token has
- * changed, which is once per Stoke run. Null when the server is not up.
+ * The MCP servers one local launch hands its agent (mcpServers.ts): Stoke's
+ * browser server when it is ticked and up, then the servers the user ticked for
+ * this agent — Claude Code's own list read afresh for this folder, or ones
+ * Stoke holds. Empty for an agent with no launch-time route. What could not be
+ * handed over is logged by name and reason, never by value.
  */
-async function httpUrlMcpFile(): Promise<string | null> {
-  const endpoint = mcp?.endpoint()
-  if (!endpoint) return null
-  const file = join(app.getPath('userData'), 'agents', 'mcp-httpurl.json')
-  const body = httpUrlMcpConfig(endpoint)
+async function launchMcpFor(cliId: CodingCliId, cwd: string): Promise<LaunchMcp> {
+  if (capsFor(cliId).mcp === 'none') return { servers: [], own: [], keep: [] }
   try {
-    if ((await readFile(file, 'utf8').catch(() => null)) !== body) {
+    return await resolveLaunchMcp({
+      cliId,
+      cwd,
+      mcp: getSettings().agents.mcp,
+      browser: mcp?.spec() ?? null,
+      reader: claudeConfigReader
+    })
+  } catch (err) {
+    // A launch never dies of its tools. It goes with none — not the browser
+    // alone: for Kimi that would name a file without the user's own beside it.
+    console.error('[stoke] could not resolve MCP servers for a launch', err)
+    return { servers: [], own: [], keep: [] }
+  }
+}
+
+/**
+ * Pi's MCP extension (mcpServers.ts `PI_MCP_EXTENSION`), under Stoke's own
+ * userData — never into `~/.pi`. Constant text holding no secret, rewritten
+ * only when missing or different. Null when it cannot be written, and Pi then
+ * goes without MCP rather than with a flag naming nothing.
+ */
+async function piMcpExtensionFile(): Promise<string | null> {
+  const file = join(app.getPath('userData'), 'agents', 'pi-mcp.ts')
+  try {
+    if ((await readFile(file, 'utf8').catch(() => null)) !== PI_MCP_EXTENSION) {
       await mkdir(dirname(file), { recursive: true })
-      await writeFile(file, body, { encoding: 'utf8', mode: 0o600 })
+      await writeFile(file, PI_MCP_EXTENSION, 'utf8')
     }
     return file
   } catch {
     return null
   }
+}
+
+function logMcpSkipped(cliId: CodingCliId, skipped: readonly McpRefusal[] | undefined): void {
+  for (const s of skipped ?? []) console.warn(`[stoke] ${cliId} was not handed MCP server "${s.name}": ${s.reason}`)
 }
 
 /**
@@ -663,23 +699,53 @@ async function launchSession(
    * refused with the plan's own sentence when a field it needs is empty.
    */
   const cliId = cliIdOf(opts.cli)
+  /*
+   * MCP servers only for a LOCAL session: an SSH tab's agent is on another
+   * machine and takes no flag from here (gotcha 19), and an install or an
+   * enrollment runs no agent. Headless worklog runs never come through here
+   * (agent.ts, gotcha 15).
+   */
+  const localAgent = !opts.host && !opts.install?.length
+  mcpFiles ??= new McpFileStore(join(app.getPath('userData'), 'agents'))
+  const launchMcp: LaunchMcp = localAgent ? await launchMcpFor(cliId, opts.cwd) : { servers: [], own: [], keep: [] }
   let agentPlan: LaunchPlan | null = null
-  if (!opts.host && !opts.install?.length && !isClaudeCode(cliId)) {
+  if (localAgent && !isClaudeCode(cliId)) {
     const endpoint = settings.agents.endpoints[cliId]
-    const planned = agentLaunchPlan({
+    const input = {
       id: cliId,
       endpoint,
       openrouterKey: settings.providers.openrouterApiKey,
       continueLast: opts.continueLast === true,
-      mcp: mcp?.endpoint() ?? null,
+      mcp: launchMcp.servers,
+      mcpFileFor: mcpFiles.fileFor,
+      mcpOwn: launchMcp.own,
+      mcpKeep: launchMcp.keep,
       piExtensionPath: cliId === 'pi' && endpoint?.mode === 'custom' ? await piExtensionFile() : null,
-      mcpFiles: {
-        claude: mcpConfigPath,
-        httpUrl: cliId === 'qwen' ? await httpUrlMcpFile() : null
-      }
-    })
+      piMcpExtensionPath: cliId === 'pi' && launchMcp.servers.length ? await piMcpExtensionFile() : null
+    }
+    let planned = agentLaunchPlan(input)
     if (!planned.ok) throw new Error(planned.message)
+    // An agent that reads its servers from a file gets one only once it is on
+    // disk, owner-only; if it cannot be written, the launch goes without MCP
+    // rather than with a flag naming nothing.
+    if (planned.plan.files && !(await mcpFiles.write(planned.plan.files))) {
+      planned = agentLaunchPlan({ ...input, mcpFileFor: null })
+      if (!planned.ok) throw new Error(planned.message)
+    }
     agentPlan = planned.plan
+    logMcpSkipped(cliId, agentPlan.mcpSkipped)
+  }
+  /*
+   * Claude Code loads its own servers itself, so its `--mcp-config` carries
+   * only Stoke's: the browser file when ticked, and one generated file of the
+   * servers Stoke holds that are ticked for it.
+   */
+  let claudeConfigs: string[] = []
+  if (localAgent && isClaudeCode(cliId)) {
+    const out = claudeMcpConfigs(launchMcp.servers, mcpConfigPath, mcpFiles.fileFor)
+    claudeConfigs = (await mcpFiles.write(out.files))
+      ? out.configs
+      : out.configs.filter((c) => !out.files.some((f) => f.path === c))
   }
   // Which shell the CLI will run the statusLine and hooks under is decided from
   // the PATH the child is given, which on Windows now leads with the registry's
@@ -701,7 +767,7 @@ async function launchSession(
   const started = await ptys.start(
     opts,
     settings.claudePath,
-    mcpConfigPath,
+    claudeConfigs,
     (statusKey) =>
       writeSessionSettingsFile({
         sessionId: statusKey,
@@ -2161,6 +2227,7 @@ function registerIpc(): void {
   /* ------------------------------------------------------------------- cli */
   ipcMain.handle(CH.cliInfo, () => probeClaude(getSettings().claudePath))
   ipcMain.handle(CH.skillsScan, () => scanSkills())
+  ipcMain.handle(CH.mcpCatalog, () => readMcpCatalog(claudeConfigReader))
   ipcMain.handle(CH.cliDetect, (_e, opts?: { fresh?: boolean }) => {
     if (opts?.fresh === true) {
       forgetLoginPath()

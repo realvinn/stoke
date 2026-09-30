@@ -155,6 +155,10 @@ export const DEFAULT_SETTINGS: Settings = {
     endpoints: {},
     defaultCli: DEFAULT_AGENTS.defaultCli,
     shareSkillsToClaude: DEFAULT_AGENTS.shareSkillsToClaude,
+    // No ticks stored: every agent gets only Stoke's browser server until the
+    // user ticks another (mcpServers.ts DEFAULT_MCP_TICKS), and Stoke holds no
+    // servers of its own. Claude Code's list is never copied here.
+    mcp: { perAgent: {}, extra: {} },
     tag: { show: true, labels: {} },
     colors: {},
     // Nothing stored to upgrade (agents.ts AGENTS_FORMAT).

@@ -41,6 +41,11 @@ export const CH = {
   cliDetect: 'cli:detect',
   /** Which skills each agent's folders hold. Read-only; see shared/skills.ts. */
   skillsScan: 'skills:scan',
+  /**
+   * Claude Code's MCP servers as Settings › Agents lists them — names and kinds
+   * only, never a value (shared/mcpServers.ts `mcpCatalog`). Read-only.
+   */
+  mcpCatalog: 'mcp:catalog',
 
   // plan limits
   usageRead: 'usage:read',

@@ -369,7 +369,13 @@ export class PtyManager {
   async start(
     opts: LaunchOptions,
     claudePathOverride: string | null,
-    mcpConfigPath?: string | null,
+    /**
+     * The `--mcp-config` files a local Claude Code session gets: Stoke's
+     * browser server's, and one of the servers Stoke holds that are ticked for
+     * Claude (index.ts, mcpServers.ts `claudeMcpConfigs`). Never Claude's own
+     * servers — it loads those itself. Empty or null passes no flag.
+     */
+    mcpConfigs: readonly string[] | null = null,
     sessionSettings: (statusKey: string) => string | null = () => null,
     providers: ProviderSettings = DEFAULT_PROVIDERS,
     /**
@@ -538,12 +544,14 @@ export class PtyManager {
             ? buildArgs({ ...opts, sessionId }, settingsFile)
             : [...(agentPlan?.args ?? [])]
 
-    // Hand the session Stoke's own browser tools. A file path rather than an
-    // inline JSON string: quoting JSON through a shell differs per platform and
-    // fails silently when it goes wrong.
+    // Hand the session Stoke's own browser tools, and any server Stoke holds
+    // that is ticked for Claude. File paths rather than inline JSON strings:
+    // quoting JSON through a shell differs per platform and fails silently when
+    // it goes wrong. One flag with every file after it — `--mcp-config
+    // <configs...>` in the CLI's own help.
     // Only meaningful locally: the flags belong to claude, and a remote session
     // is running ssh. The remote's own CLI config governs there.
-    if (mcpConfigPath && instrumented) args.push('--mcp-config', mcpConfigPath)
+    if (mcpConfigs?.length && instrumented) args.push('--mcp-config', ...mcpConfigs)
     // The skills in ~/.agents/skills that Claude Code does not read on its own,
     // as a plugin for this process only (skillsProject.ts). Same gate, same
     // reason: a local Claude session, never ssh and never another CLI.
