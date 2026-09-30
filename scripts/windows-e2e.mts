@@ -26,6 +26,19 @@
  *       find <file> anyway — the registry re-read is the only way it can
  *       (gotcha 99) — and loginShellPathValue must name <dir>.
  *
+ *   node scripts/windows-e2e.mts chrome-locate <browserId>
+ *       Runs Stoke's own executable locator (chromeCookiesWin.ts) for a
+ *       Chromium-family browser and prints the path it found. Fails if it finds
+ *       nothing or returns a WindowsApps Store alias (gotcha 99).
+ *
+ *   node scripts/windows-e2e.mts chrome-read <profileDir> <chromeExe> <name> <value>
+ *       Drives Stoke's OWN Windows cookie reader (chromeCookiesWin.ts) against a
+ *       COPY of <profileDir>, launching <chromeExe> headless so Chrome decrypts
+ *       its own app-bound (v20) jar, and asserts the cookie <name> comes back
+ *       with value <value> and HttpOnly true. Proves the seal is resolved on the
+ *       one platform where it matters. Prints the counts; exits 1 if the cookie
+ *       is missing or its value did not decrypt.
+ *
  *   node scripts/windows-e2e.mts pty-path
  *       Spawns `cmd /d /c echo %PATH%` through the real node-pty twice: with the
  *       env the old pty.ts built (the inherited `Path` AND a fresh `PATH`) and
@@ -157,6 +170,32 @@ if (cmd === 'swap-files') {
   // node-pty keeps a handle open under plain node after its children exit, so
   // the process would otherwise never end.
   process.exit(0)
+} else if (cmd === 'chrome-locate') {
+  const [id] = rest
+  const { locateChromiumExe } = await import('../src/main/browserImport/chromeCookiesWin.ts')
+  const { CHROMIUM_BROWSERS } = await import('../src/main/browserImport/chromiumProfiles.ts')
+  const browser = CHROMIUM_BROWSERS.find((b) => b.id === (id ?? 'chrome'))
+  if (!browser) fail(`no such browser id: ${id}`)
+  const exe = await locateChromiumExe(browser)
+  console.log(`locate ${browser.id} -> ${exe ?? '(not found)'}`)
+  if (!exe) fail(`${browser.name} was not located — the App Paths read and the install-dir fallbacks all missed`)
+  if (/[\\/]Microsoft[\\/]WindowsApps[\\/]/i.test(exe)) fail('the locator returned a WindowsApps alias (gotcha 99)')
+  console.log('located a real executable, not a Store alias')
+} else if (cmd === 'chrome-read') {
+  const [profileDir, chromeExe, name, value] = rest
+  if (!profileDir || !chromeExe || !name) fail('usage: chrome-read <profileDir> <chromeExe> <name> <value>')
+  const { readChromeCookiesWin } = await import('../src/main/browserImport/chromeCookiesWin.ts')
+  const { CHROMIUM_BROWSERS } = await import('../src/main/browserImport/chromiumProfiles.ts')
+  const chrome = CHROMIUM_BROWSERS.find((b) => b.id === 'chrome')
+  if (!chrome) fail('no chrome entry')
+  const { cookies, skipped } = await readChromeCookiesWin(chrome, profileDir, { exePath: chromeExe })
+  console.log(`read ${cookies.length} cookie(s), ${skipped} skipped`)
+  const hit = cookies.find((c) => c.name === name)
+  if (!hit) fail(`the cookie "${name}" did not come back — the reader saw: ${cookies.map((c) => c.name).join(', ') || '(none)'}`)
+  console.log(`"${name}" = ${JSON.stringify(hit.value)} (httpOnly ${hit.httpOnly}, sameSite ${hit.sameSite})`)
+  if (value !== undefined && hit.value !== value) fail(`"${name}" decrypted to ${JSON.stringify(hit.value)}, expected ${JSON.stringify(value)}`)
+  if (hit.value === '') fail(`"${name}" came back with an empty value — it did not decrypt`)
+  console.log('the app-bound cookie was read back decrypted')
 } else {
-  fail('usage: node scripts/windows-e2e.mts swap-files|wait-result|classify|registry-path|pty-path …')
+  fail('usage: node scripts/windows-e2e.mts swap-files|wait-result|classify|registry-path|pty-path|chrome-locate|chrome-read …')
 }
