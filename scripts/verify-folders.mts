@@ -677,15 +677,25 @@ check(
 )
 
 const home = mkdtempSync(join(tmpdir(), 'stoke-home-'))
+/*
+ * The darwin list, on purpose, on every machine: the Windows one leads with a
+ * hardcoded G:\Code that a real Windows machine (this author's) has, and this
+ * existsSync cannot be faked. So the answers are darwin's, joined with '/'
+ * whatever this machine is — `C:\...\stoke-home/dev` on Windows, which Windows
+ * opens fine. The expectation is joined the same way; the host's join() made
+ * three checks fail on the first Windows run over a separator the function
+ * picks deliberately.
+ */
+const underHome = (name: string): string => `${home.replace(/[\\/]+$/, '')}/${name}`
 try {
   check('with nothing there at all, the home folder wins', resolveDefaultCwd(null, 'darwin', home), home)
   mkdirSync(join(home, 'dev'))
-  check('a folder that exists beats the home folder', resolveDefaultCwd(null, 'darwin', home), join(home, 'dev'))
+  check('a folder that exists beats the home folder', resolveDefaultCwd(null, 'darwin', home), underHome('dev'))
   mkdirSync(join(home, 'Developer'))
   check(
     'and the more preferred of two that exist wins',
     resolveDefaultCwd(null, 'darwin', home),
-    join(home, 'Developer')
+    underHome('Developer')
   )
   check(
     'an explicit setting beats every candidate',
@@ -695,7 +705,7 @@ try {
   check(
     'an explicit setting that has been deleted falls back rather than failing',
     resolveDefaultCwd(join(home, 'gone'), 'darwin', home),
-    join(home, 'Developer')
+    underHome('Developer')
   )
 } finally {
   rmSync(home, { recursive: true, force: true })

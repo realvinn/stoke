@@ -816,10 +816,21 @@ console.log('\ninstalling')
       clean.status === 0 && /fine-ran/.test(String(clean.stdout)) && /Done\./.test(String(clean.stdout)),
       `status ${clean.status}: ${JSON.stringify((String(clean.stdout) + String(clean.stderr)).slice(-400))}`
     )
+    /*
+     * Both streams, because the install tab is a terminal and shows both. The
+     * reason is Write-Host'd by the step's OWN PowerShell, and on Windows a
+     * PowerShell whose output another PowerShell is capturing hands that back
+     * as CLIXML on stderr — the first windows-latest run failed on exactly
+     * that, with the CLIXML tail as its only output — where Linux pwsh leaves
+     * it on stdout. The two tails are printed apart so a failure says which
+     * stream held what.
+     */
+    const run2Out = String(run2.stdout)
+    const run2Err = String(run2.stderr)
     ok(
       'windows, run: a winget step on a machine with NO winget is a failure that says why, not a silent "installed"',
-      run2.status === 1 && /Did not install: NoWinget/.test(String(run2.stdout)) && /has no winget/.test(String(run2.stdout)),
-      `status ${run2.status}: ${JSON.stringify((String(run2.stdout) + String(run2.stderr)).slice(-400))}`
+      run2.status === 1 && /Did not install: NoWinget/.test(run2Out + run2Err) && /has no winget/.test(run2Out + run2Err),
+      `status ${run2.status}; stdout ${JSON.stringify(run2Out.slice(-300))}; stderr says "has no winget": ${/has no winget/.test(run2Err)}`
     )
     ok(
       'windows, run: a failing step is named, the steps after it still run, and the script exits 1',
