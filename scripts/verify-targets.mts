@@ -17,6 +17,11 @@
  * deliberately unbuilt — the same shape as ci-verify.mjs's asserted exclusion
  * list, for the same reason (CLAUDE.md gotcha 62).
  *
+ * It also holds .github/workflows/ci.yml, the everyday gate, to the release
+ * gate it mirrors: every push and PR, the suite list read from `check` through
+ * verify:ci rather than written out, xvfb installed so the window suite runs,
+ * and the macOS/Windows legs allowed to fail.
+ *
  *   node scripts/verify-targets.mts
  */
 import { readFileSync } from 'node:fs'
@@ -46,6 +51,7 @@ function ok(name: string, cond: boolean): void {
 
 const pkg = JSON.parse(read('package.json'))
 const workflow = read('.github/workflows/release.yml')
+const ciWorkflow = read('.github/workflows/ci.yml')
 const builderConfig = read('electron-builder.yml')
 
 // ---------------------------------------------------------------------------
@@ -378,6 +384,105 @@ check('and that walk saw the conditions it is meant to police', conditions.lengt
 check('workflow_dispatch is still a trigger, so the whole matrix can be rehearsed without a tag', 'workflow_dispatch' in triggers, true)
 check('a tag still triggers it', triggers.push?.tags, ['v*'])
 check('and publishing is still gated on a tag', jobs.publish?.if, "startsWith(github.ref, 'refs/tags/')")
+
+// ---------------------------------------------------------------------------
+
+console.log('\nthe everyday gate (ci.yml) runs what the release gate runs, on every push')
+
+/*
+ * Until ci.yml, release.yml's `verify` job was the only place a suite ran in
+ * CI, and only on a tag. The gate that runs every day has to be the same gate:
+ * the same setup, the same commands, and the suite list read from `check`
+ * through verify:ci rather than written out — a second list here would be the
+ * drift gotcha 62 records, one file over.
+ */
+let ci: any
+try {
+  ci = require('js-yaml').load(ciWorkflow) ?? {}
+} catch (error) {
+  failures++
+  console.log(`  FAIL  .github/workflows/ci.yml does not parse as YAML: ${String(error)}`)
+  ci = { jobs: {} }
+}
+const ciJobs = ci.jobs ?? {}
+const ciOn = ci.on ?? ci[true as unknown as string] ?? {}
+const ciStepsOf = (id: string) => (ciJobs[id]?.steps ?? []) as any[]
+const ciRunsOf = (id: string) => ciStepsOf(id).map((s) => String(s.run ?? '').trim())
+const namesASuite = (r: string) => /npm run verify:(?!ci\b)/.test(r)
+
+check(
+  'it runs on push, pull_request, a schedule and by hand',
+  ['push', 'pull_request', 'schedule', 'workflow_dispatch'].filter((t) => !(t in ciOn)),
+  []
+)
+check('every branch is pushed through it', ciOn.push?.branches, ['**'])
+check(
+  'and no paths filter lets a push dodge it',
+  ['paths', 'paths-ignore', 'branches-ignore'].filter((k) => k in (ciOn.push ?? {})),
+  []
+)
+check('the schedule is one cron line', (ciOn.schedule ?? []).map((s: any) => typeof s?.cron), ['string'])
+check('it can only read the repository', ci.permissions, { contents: 'read' })
+check(
+  'a newer run on the same ref cancels the one it supersedes',
+  [/github\.ref\b/.test(String(ci.concurrency?.group ?? '')), ci.concurrency?.['cancel-in-progress']],
+  [true, true]
+)
+
+const gate = ciJobs.verify ?? {}
+const gateRuns = ciRunsOf('verify')
+const gateAtCmd = (cmd: string) => gateRuns.indexOf(cmd)
+check('the gate is a job called verify, on ubuntu-latest', gate['runs-on'], 'ubuntu-latest')
+check('and it gates — nothing lets it fail quietly', gate['continue-on-error'] ?? false, false)
+check('and it waits for nothing', gate.needs ?? null, null)
+check(
+  'npm ci, typecheck, verify:ci, build — each there, in that order',
+  [gateAtCmd('npm ci'), gateAtCmd('npm run typecheck'), gateAtCmd('npm run verify:ci'), gateAtCmd('npm run build')].every(
+    (v, i, a) => v !== -1 && (i === 0 || a[i - 1] < v)
+  ),
+  true
+)
+check('it names no single suite — the list comes from `check` (gotcha 62)', gateRuns.filter(namesASuite), [])
+const xvfbAt = gateRuns.findIndex((r) => /apt-get install\b[^\n]*\bxvfb\b/.test(r))
+check(
+  'it installs xvfb before verify:ci, so the window suite runs instead of being skipped',
+  xvfbAt !== -1 && xvfbAt < gateAtCmd('npm run verify:ci'),
+  true
+)
+
+// The mirror, asserted rather than promised in a comment: same actions at the
+// same versions with the same inputs, and the same npm commands in the same
+// order as release.yml's `verify`. A bump to one that misses the other fails.
+const setupOf = (steps: any[]) => steps.filter((s) => s.uses).map((s) => ({ uses: s.uses, with: s.with ?? null }))
+const npmOf = (steps: any[]) => steps.map((s) => String(s.run ?? '').trim()).filter((r) => /^npm (ci|run )/.test(r))
+check("it sets up exactly as release.yml's verify job does", setupOf(ciStepsOf('verify')), setupOf(stepsOf('verify')))
+check('and runs the same npm commands', npmOf(ciStepsOf('verify')), npmOf(stepsOf('verify')))
+check("and release.yml's gate still names no single suite either", stepsOf('verify').map((s) => String(s.run ?? '')).filter(namesASuite), [])
+
+const port = ciJobs.portability ?? {}
+const portRuns = ciRunsOf('portability')
+check('the only other job is the portability legs', Object.keys(ciJobs).filter((id) => id !== 'verify'), ['portability'])
+check('which are allowed to fail, so a leg nobody has seen green cannot block a push', port['continue-on-error'], true)
+check('and do not cancel each other', port.strategy?.['fail-fast'], false)
+check('on macOS and Windows', port.strategy?.matrix?.os, ['macos-14', 'windows-latest'])
+check(
+  'each a runner label GitHub publishes',
+  (port.strategy?.matrix?.os ?? []).filter((os: string) => !(os in RUNNERS)),
+  []
+)
+check('each leg runs on its own matrix os', port['runs-on'], '${{ matrix.os }}')
+check(
+  'and runs typecheck, then verify:ci',
+  [portRuns.indexOf('npm run typecheck'), portRuns.indexOf('npm run verify:ci')].every((v, i, a) => v !== -1 && (i === 0 || a[i - 1] < v)),
+  true
+)
+check('naming no single suite', portRuns.filter(namesASuite), [])
+check(
+  'every job has a timeout, so a hung Electron window cannot hold a runner for six hours',
+  Object.entries(ciJobs).filter(([, j]: [string, any]) => typeof j?.['timeout-minutes'] !== 'number').map(([id]) => id),
+  []
+)
+check('and nothing in it reads a secret — it runs for pull requests', /\bsecrets\./.test(JSON.stringify(ci)), false)
 
 // ---------------------------------------------------------------------------
 
