@@ -60,6 +60,14 @@ migration is verified by `grep -rn -- '--sp-' src/` returning **zero**, and a sw
 stylesheet is not the whole job — 26 uses were inside `style={{ }}` objects in eight `.tsx`
 files and rendered at 0 until they were found.
 
+> **Checked against the code on 2026-09-30** — the same trap runs the other way for a class
+> NAME, and there it is silent. a708435 deleted the old review panel's stylesheet as dead; two of
+> its rules, `.worklog-head` and `.worklog-title`, were still carried by `ActivityPanel`, whose
+> header then fell back to block layout and stacked its Refresh and Close buttons. A class with no
+> rule is not an error to the typecheck, the build or the browser. Before deleting CSS as dead,
+> grep every class name it styles across `src/**/*.tsx` to zero; `verify:activity` now fails on
+> any `className="…"` literal in ActivityPanel.tsx or WorklogPrompt.tsx that app.css never names.
+
 ## 23. macOS traffic lights are device pixels; anything clearing them must be too
 
 **macOS traffic lights are device pixels; anything clearing them must be too.** `padding-left`

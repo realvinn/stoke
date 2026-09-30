@@ -11,7 +11,7 @@
  *
  *   node scripts/verify-activity.mts
  */
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -249,6 +249,48 @@ check(
 check('an empty path is not shelled out for', (await commitSubjects('', '2026-08-25')).length === 0)
 
 rmSync(dir, { recursive: true, force: true })
+
+/*
+ * Every class the panel names has a rule. The header's Refresh and Close
+ * stacked one above the other because a708435 deleted the review panel's
+ * stylesheet as dead, and two of those rules — `.worklog-head` and
+ * `.worklog-title` — were still carried by this panel. Nothing failed: a class
+ * with no rule is not an error anywhere, the JSX typechecks, the build passes,
+ * and the header quietly fell back to block layout. So this reads the source
+ * and the stylesheet as text. Only `className="…"` literals are checked; a
+ * computed className would need its own line here.
+ */
+console.log('\nevery class the panel uses is styled')
+
+const css = readFileSync(new URL('../src/renderer/src/styles/app.css', import.meta.url), 'utf8')
+  // A class named only inside a comment is not styled by it.
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+/** The classes in `source`'s `className="…"` literals that no selector in app.css names. */
+const unstyled = (source: string): { used: string[]; missing: string[] } => {
+  const used = [
+    ...new Set([...source.matchAll(/className="([^"]*)"/g)].flatMap((m) => m[1].split(/\s+/).filter(Boolean)))
+  ]
+  const missing = used.filter((cls) => !new RegExp(`\\.${escapeRe(cls)}(?![\\w-])`).test(css))
+  return { used, missing }
+}
+
+check(
+  'the check can fail: the two class names a708435 orphaned are reported',
+  JSON.stringify(unstyled('<div className="worklog-head"><span className="worklog-title" /></div>').missing) ===
+    JSON.stringify(['worklog-head', 'worklog-title'])
+)
+check(
+  'and a class named only in a CSS comment does not count as styled',
+  !/\.worklog-head(?![\w-])/.test(css)
+)
+
+for (const file of ['ActivityPanel.tsx', 'WorklogPrompt.tsx']) {
+  const source = readFileSync(new URL(`../src/renderer/src/components/${file}`, import.meta.url), 'utf8')
+  const { used, missing } = unstyled(source)
+  check(`${file} names classes at all (the scan read something)`, used.length > 0, String(used.length))
+  check(`every class in ${file} has a rule in app.css`, missing.length === 0, missing.join(', '))
+}
 
 console.log(failed === 0 ? '\nall pass' : `\n${failed} failure(s)`)
 process.exitCode = failed === 0 ? 0 : 1

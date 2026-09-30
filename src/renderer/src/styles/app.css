@@ -3202,6 +3202,10 @@ mark.hit {
      come and go is worse than no prompt. */
   min-height: 2.5rem;
   overflow: hidden;
+  /* The queries below read this strip's own width, not the window's: the
+     column it sits in narrows with the sidebar, the docked browser and the
+     Activity panel, none of which a media query can see. */
+  container: worklog-prompt / inline-size;
 }
 
 .worklog-prompt-kind {
@@ -3244,19 +3248,76 @@ mark.hit {
   font-weight: 600;
 }
 
+/* The folder name gives way before anything else does: it shrinks (it is
+   `.truncate`), then goes. */
 .worklog-prompt-meta {
-  flex-shrink: 0;
+  flex: 0 1 auto;
+  min-width: 0;
   max-width: 12rem;
   font-size: var(--fs-xs);
   color: var(--text-faint);
 }
 
 /* Never shrink the answers. A half-width "Update it" is worse than a clipped
-   question, because the question can be read in the panel and the button cannot
-   be pressed anywhere else. */
+   question, because the question can be read on hover (its title) and the
+   button cannot be pressed anywhere else. */
 .worklog-prompt .btn,
 .worklog-prompt .icon-btn {
   flex-shrink: 0;
+}
+
+/*
+ * Narrow widths: shed whole controls, lowest value first, so that what stays
+ * always fits and Review all and Dismiss are never the ones cut off.
+ *
+ * The strip is one line with `overflow: hidden` and every button `flex-shrink:
+ * 0`, so its minimum was ~640px at scale 1 — and `overflow` clips from the
+ * right, which is where Review all and the Dismiss × sit. With the sidebar and
+ * the Activity panel open the column is under 400px, so the two controls that
+ * get you OUT of the strip were the two you could not reach. Wrapping to a
+ * second line is not the answer (the comment on `.worklog-prompt` says why),
+ * and shrinking a button is not either (the one above), so below each width a
+ * control is removed outright rather than half-drawn.
+ *
+ * The order: the folder name, then the kind pill (the question's own verb —
+ * "Add …", "Mark …" — already says which it is), then Not now (the × does the
+ * same for the whole strip), then Reject, and last the answer itself — only
+ * once the question beside it is down to a word or two, since an answer to a
+ * question nobody can read should not be offered. Review all and the × always
+ * stay. `rem`, so the widths track Interface scale with the buttons they make
+ * room for; measured by sweeping the strip's width at scales 0.8, 1 and 1.4.
+ *
+ * Below about 10rem even those two cannot fit, and nothing here pretends
+ * otherwise; the column is then too narrow for the terminal as well.
+ */
+@container worklog-prompt (width < 46rem) {
+  .worklog-prompt-meta {
+    display: none;
+  }
+}
+
+@container worklog-prompt (width < 38rem) {
+  .worklog-prompt-kind {
+    display: none;
+  }
+}
+
+@container worklog-prompt (width < 32rem) {
+  .worklog-prompt .btn[data-shed='skip'] {
+    display: none;
+  }
+}
+
+@container worklog-prompt (width < 27rem) {
+  .worklog-prompt .btn[data-shed='reject'] {
+    display: none;
+  }
+}
+
+@container worklog-prompt (width < 16rem) {
+  .worklog-prompt .btn[data-shed='answer'] {
+    display: none;
+  }
 }
 
 /* --------------------------------------------------------------- resizer */
@@ -5303,9 +5364,9 @@ summary.agent-picker-section:hover {
 /* --------------------------------------------------------------- activity */
 
 /*
- * Shaped like `.worklog`: a sibling column inside `.body-row`, never an
- * overlay, because the docked browser is a native WebContentsView that paints
- * above every pixel of renderer DOM.
+ * A sibling column inside `.body-row`, never an overlay, because the docked
+ * browser is a native WebContentsView that paints above every pixel of
+ * renderer DOM (gotcha 14). It took the review panel's place, and its column.
  */
 .activity {
   display: flex;
@@ -5314,6 +5375,41 @@ summary.agent-picker-section:hover {
   min-width: 0;
   border-left: 1px solid var(--border);
   background: var(--bg-sunken);
+}
+
+/*
+ * The header: title, then Refresh and Close in one row on the right.
+ *
+ * Its own names, and that is the fix. It used to borrow `.worklog-head` and
+ * `.worklog-title` from the review panel it replaced; a708435 deleted that
+ * panel's stylesheet as dead — which it was, apart from these two — and the
+ * header fell back to plain block layout. `.icon-btn` is `display: grid`, so
+ * each button then took a line of its own, stacked under the word "Activity",
+ * and the inline `flex: 1` spacer between them did nothing outside a flex row.
+ * `verify:activity` now fails on any class in ActivityPanel.tsx that no
+ * selector here names, which is exactly what that sweep left behind.
+ *
+ * No background: `.activity` is the one surface here, and a second tinted
+ * layer compounds under a wallpaper (gotcha 54).
+ */
+.activity-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  flex-shrink: 0;
+  padding: var(--space-8);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+/* `flex: 1 1 0%` + `min-width: 0` push the buttons right without ever letting
+   the title widen the column (gotcha 14's nowrap rule). */
+.activity-title {
+  flex: 1 1 0%;
+  min-width: 0;
+  padding-left: var(--space-4);
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--text);
 }
 
 .activity-body {

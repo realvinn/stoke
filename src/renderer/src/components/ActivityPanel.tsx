@@ -77,9 +77,13 @@ export function ActivityPanel({ onClose }: { onClose: () => void }): React.JSX.E
 
   return (
     <section className="activity" style={{ width: '100%' }} aria-label="Activity report">
-      <div className="worklog-head">
-        <span className="worklog-title">Activity</span>
-        <span style={{ flex: 1 }} />
+      {/*
+        Its own class names, styled in app.css's activity section. It used to
+        borrow the deleted review panel's, and stacked its two buttons once
+        those rules went (see `.activity-head`).
+      */}
+      <div className="activity-head">
+        <span className="activity-title truncate">Activity</span>
         <button className="icon-btn" onClick={() => void load(period)} disabled={busy} title="Refresh">
           <IconRefresh />
           <span className="sr-only">Refresh the activity report</span>
