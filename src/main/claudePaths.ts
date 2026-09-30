@@ -36,7 +36,7 @@ export function claudeSettingsPath(env: NodeJS.ProcessEnv, home: string): string
  * developer pointed at a staging endpoint has a differently-named config and
  * writing the wrong one would be a silent no-op.
  */
-function oauthSuffix(env: NodeJS.ProcessEnv): string {
+export function oauthSuffix(env: NodeJS.ProcessEnv): string {
   const url = env.CLAUDE_CODE_CUSTOM_OAUTH_URL
   if (!url) return ''
   if (url.includes('localhost') || url.includes('127.0.0.1')) return '-local-oauth'

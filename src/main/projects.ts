@@ -4,6 +4,7 @@ import { basename, dirname, join } from 'node:path'
 import type { Project, ProjectMeta, SessionMeta, Settings } from '@shared/types'
 import { normalizePath, pathRulesFor } from '../shared/paths.ts'
 import { applyProjectMeta } from './projectMeta.ts'
+import { claudeConfigDir, claudeGlobalConfigPath } from './claudePaths.ts'
 import {
   CHUNK,
   contextLimitFor,
@@ -186,12 +187,21 @@ async function realpathMap(paths: Iterable<string>): Promise<Map<string, string>
   return new Map(unique.map((p, i) => [p, answers[i]]))
 }
 
+/**
+ * Where Claude Code writes transcripts: `<config dir>/projects`, the config dir
+ * being `CLAUDE_CONFIG_DIR` when Stoke inherited one (claudePaths.ts). This
+ * used to be `~/.claude/projects` whatever the variable said, so a Stoke
+ * started from a shell that set it listed, watched and resumed against a tree
+ * its own `claude` never wrote to. An account's home (accounts.ts) links its
+ * `projects` back to this same tree, so accounts need no second root here.
+ */
 export function projectsRoot(): string {
-  return join(homedir(), '.claude', 'projects')
+  return join(claudeConfigDir(process.env, homedir()), 'projects')
 }
 
+/** The CLI's global config, where its own project list lives: `CLAUDE_CONFIG_DIR`-aware too. */
 function claudeConfigPath(): string {
-  return join(homedir(), '.claude.json')
+  return claudeGlobalConfigPath(process.env, homedir())
 }
 
 /**
