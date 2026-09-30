@@ -56,7 +56,12 @@ import {
   skillReport
 } from '../src/shared/skills.ts'
 import { scanSkills } from '../src/main/skillsScan.ts'
-import { ClaudeSkillsProjector, SHARED_PLUGIN_MANIFEST } from '../src/main/skillsProject.ts'
+import {
+  ClaudeSkillsProjector,
+  localSettingsFiles,
+  SHARED_PLUGIN_MANIFEST,
+  skillOverridesFor
+} from '../src/main/skillsProject.ts'
 import { DEFAULT_SETTINGS, hydrateSettings } from '../src/main/settingsSchema.ts'
 import {
   existsSync,
@@ -666,6 +671,7 @@ console.log('\nskills Claude Code is lent at launch: the projection, on a fake h
       return ''
     }
   }
+  let userData: string | null = null
   const listing = (root: string): string[] => {
     const out: string[] = []
     const walk = (d: string): void => {
@@ -779,7 +785,7 @@ console.log('\nskills Claude Code is lent at launch: the projection, on a fake h
     )
 
     // --- the projector: a real folder under a fake userData ---
-    const userData = realpathSync(mkdtempSync(join(tmpdir(), 'stoke-share-ud-')))
+    userData = realpathSync(mkdtempSync(join(tmpdir(), 'stoke-share-ud-')))
     const agentsDir = join(userData, 'agents')
     const root = join(agentsDir, 'claude-skills')
     mkdirSync(root, { recursive: true })
@@ -869,8 +875,88 @@ console.log('\nskills Claude Code is lent at launch: the projection, on a fake h
       null
     )
     rmSync(empty, { recursive: true, force: true })
-    rmSync(userData, { recursive: true, force: true })
+
+    // --- where the local layer lives: the repo's top, not the cwd (gotcha 117) ---
+    // A real repo, made by git itself, so the worktree layout is git's and not
+    // this suite's idea of it. Isolated from the user's git config (hooks,
+    // templates, signing), and only ever run inside the fake home.
+    const gitCfg = join(home, 'gitconfig-empty')
+    writeFileSync(gitCfg, '')
+    const git = (cwd: string, ...args: string[]): boolean =>
+      spawnSync(
+        'git',
+        ['-c', 'user.name=stoke', '-c', 'user.email=stoke@example.invalid', '-c', 'commit.gpgsign=false', ...args],
+        { cwd, stdio: 'ignore', env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: gitCfg, GIT_TERMINAL_PROMPT: '0' } }
+      ).status === 0
+    // The native realpath, as main's `realpath` is: on Windows it also expands
+    // 8.3 short names (a runner's TEMP is C:\Users\RUNNER~1\…), the JS one does not.
+    // A folder git failed to make answers its own path, so the checks below
+    // print FAIL rather than the suite dying on ENOENT.
+    const real = (p: string): string => {
+      try {
+        return realpathSync.native(p)
+      } catch {
+        return p
+      }
+    }
+    const local = (dir: string): string => join(real(dir), '.claude', 'settings.local.json')
+    const repo = join(home, 'repo')
+    mkdirSync(join(repo, '.claude'), { recursive: true })
+    ok('git made the fixture repo', git(home, 'init', '-q', repo))
+    writeFileSync(join(repo, '.claude', 'settings.local.json'), JSON.stringify({ skillOverrides: { trimmed: 'off' } }))
+    const sub = join(repo, 'packages', 'app')
+    mkdirSync(sub, { recursive: true })
+    const legacy = join(repo, 'legacy')
+    mkdirSync(join(legacy, '.claude'), { recursive: true })
+    writeFileSync(
+      join(legacy, '.claude', 'settings.local.json'),
+      JSON.stringify({ skillOverrides: { trimmed: 'on', 'only-shared': 'off' } })
+    )
+    ok('and a commit', git(repo, 'commit', '-q', '--allow-empty', '--no-verify', '-m', 'fixture'))
+    // Where Stoke's own worktrees live, and where the reviewer's case was.
+    const wt = join(repo, '.claude', 'worktrees', 'wt')
+    ok('and a linked worktree', git(repo, 'worktree', 'add', '-q', wt))
+    const uid = statSync(repo).uid
+    const opts = { claudeDir: join(home, '.claude'), home, uid }
+
+    check('a repo top is its own local layer, with no legacy one under it', await localSettingsFiles(repo, home, uid), [local(repo)])
+    check(
+      "a subfolder reads the repo top's settings.local.json, over its own",
+      await localSettingsFiles(sub, home, uid),
+      [local(sub), local(repo)]
+    )
+    check(
+      "a linked worktree reads the MAIN worktree's, not its own checkout's",
+      await localSettingsFiles(wt, home, uid),
+      [local(wt), local(repo)]
+    )
+    check('a folder in no repo reads its own only', await localSettingsFiles(other, home, uid), [local(other)])
+    check('where there are no uids, the CLI never moves it (POSIX-only)', await localSettingsFiles(sub, home, null), [local(sub)])
+    check("nor off a repo that is not the user's", await localSettingsFiles(sub, home, uid + 1), [local(sub)])
+    check(
+      "the cwd's copy is still read, UNDER the root's: the root's 'off' wins, the cwd's own trim stays",
+      await skillOverridesFor(legacy, opts),
+      { trimmed: 'off', 'only-shared': 'off' }
+    )
+    const repoHome = realpathSync(mkdtempSync(join(tmpdir(), 'stoke-share-homerepo-')))
+    try {
+      ok('git made a repo AT a home (a dotfiles repo)', git(repoHome, 'init', '-q', repoHome))
+      const inHome = join(repoHome, 'proj')
+      mkdirSync(inHome)
+      check('a repo that IS the home is never the local layer', await localSettingsFiles(inHome, repoHome, uid), [local(inHome)])
+      check('the same repo under another home is', await localSettingsFiles(inHome, home, uid), [local(inHome), local(repoHome)])
+    } finally {
+      rmSync(repoHome, { recursive: true, force: true })
+    }
+
+    const inRepo = new ClaudeSkillsProjector({ root, home, claudeDir: join(home, '.claude'), managedDir: null, uid })
+    const fromSub = await inRepo.prepare(sub)
+    check("a tab in the repo's subfolder is not lent what the repo trims", fromSub ? readdirSync(join(fromSub, 'skills')) : null, ['only-shared'])
+    const fromWt = await inRepo.prepare(wt)
+    check('nor is a tab in a linked worktree of it', fromWt ? readdirSync(join(fromWt, 'skills')) : null, ['only-shared'])
   } finally {
+    // In finally: a throw anywhere above must not leave a fixture behind.
+    if (userData) rmSync(userData, { recursive: true, force: true })
     rmSync(home, { recursive: true, force: true })
   }
 

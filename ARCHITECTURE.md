@@ -845,8 +845,10 @@ src/main/         Electron main process
   skillsProject.ts  lends a local Claude session the `~/.agents/skills` entries it would
                     not otherwise see: `--plugin-dir <userData>/agents/claude-skills/<set>`,
                     a `stoke-shared` plugin of links (junctions on win32), one folder per
-                    distinct set, never rewritten once built, filtered by the launch folder's
-                    `skillOverrides` (Claude ignores those for plugin skills). Serialised
+                    distinct set, never rewritten once built, filtered by the `skillOverrides`
+                    Claude reads for the launch folder (Claude ignores those for plugin skills;
+                    `localSettingsFiles` finds the local layer at the git root, as the CLI
+                    does, under the cwd's own legacy copy). Serialised
                     (gotcha 20), under a deadline, never throws; deletes only its own names,
                     link by link, never recursively. Not SSH, not headless (gotchas 19, 15)
   stt.ts            the one place Stoke talks to the speech sidecar. Both the desktop and

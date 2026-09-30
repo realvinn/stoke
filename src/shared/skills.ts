@@ -120,7 +120,8 @@ function claudeSees(dir: string): boolean {
  * and so are two whose names Claude would flatten to the same `stoke-shared:`
  * name.
  *
- * `overrides` is the merged `skillOverrides` of the launch's folder. Claude
+ * `overrides` is the merged `skillOverrides` Claude reads for the launch's
+ * folder (`skillOverridesFor` in main: the local layer is the git root's). Claude
  * Code applies that setting to its own skills only — its resolver returns "on"
  * for any skill whose source is a plugin (read out of 2.1.285; gotcha 117) —
  * so a per-project trim of a shared skill would be bypassed by the projection

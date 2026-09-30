@@ -1,7 +1,20 @@
 import { createHash, randomBytes } from 'node:crypto'
-import { lstat, mkdir, readdir, readFile, readlink, rename, rmdir, symlink, unlink, writeFile } from 'node:fs/promises'
+import {
+  lstat,
+  mkdir,
+  readdir,
+  readFile,
+  readlink,
+  realpath,
+  rename,
+  rmdir,
+  stat,
+  symlink,
+  unlink,
+  writeFile
+} from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { claudeConfigDir } from './claudePaths.ts'
 import { expandHome, scanClaudePluginSkills, scanSkillDir } from './skillsScan.ts'
 import { CLAUDE_SHARED_PLUGIN, claudeProjection, SHARED_SKILLS_DIR } from '../shared/skills.ts'
@@ -81,6 +94,151 @@ export interface ProjectorOptions {
   managedDir?: string | null
   /** A launch never waits longer than this for its skills (gotcha 40). */
   deadlineMs?: number
+  /**
+   * The user the CLI checks a git root's ownership against before it reads
+   * that root's `settings.local.json` — this process's euid by default, null
+   * where there are no uids (Windows), which the CLI reads as "never move the
+   * local layer off the cwd". See `localSettingsFiles`.
+   */
+  uid?: number | null
+}
+
+/** This process's effective uid, as the CLI asks for its own; null where Node has none (Windows). */
+function processUid(): number | null {
+  if (typeof process.geteuid === 'function') return process.geteuid()
+  if (typeof process.getuid === 'function') return process.getuid()
+  return null
+}
+
+/** A `.git` that counts, as the CLI's root walk tests it: a folder or a file, or a link to one. */
+async function isGitEntry(path: string): Promise<boolean> {
+  try {
+    const l = await lstat(path)
+    if (l.isDirectory() || l.isFile()) return true
+    if (!l.isSymbolicLink()) return false
+    const s = await stat(path)
+    return s.isDirectory() || s.isFile()
+  } catch {
+    return false
+  }
+}
+
+/** The nearest folder at or above `start` holding a `.git`, or null. `start` is already real. */
+async function gitRootOf(start: string): Promise<string | null> {
+  let dir = resolve(start)
+  for (;;) {
+    if (await isGitEntry(join(dir, '.git'))) return dir
+    const up = dirname(dir)
+    if (up === dir) return null
+    dir = up
+  }
+}
+
+async function realOr(path: string): Promise<string> {
+  return realpath(path).catch(() => resolve(path))
+}
+
+async function isRegularFile(path: string): Promise<boolean> {
+  return (await lstat(path).catch(() => null))?.isFile() === true
+}
+
+/**
+ * The repository a git root belongs to, as the CLI canonicalises it: a linked
+ * worktree (`.git` is a FILE, `gitdir: <main>/.git/worktrees/<name>`) resolves
+ * to the MAIN worktree's root, when git's own back-pointers agree; anything
+ * else — a plain repo, a submodule, a layout that does not check out — is the
+ * root itself. A worktree of a bare repo answers the bare folder, which the
+ * ownership check then refuses (it has no `.git`), as the CLI's does.
+ */
+async function canonicalRootOf(root: string): Promise<string> {
+  try {
+    const text = (await readFile(join(root, '.git'), 'utf8')).trim()
+    if (!text.startsWith('gitdir:')) return root
+    const gitDir = resolve(root, text.slice(7).trim())
+    if (!(await isRegularFile(join(gitDir, 'commondir')))) return root
+    const common = resolve(gitDir, (await readFile(join(gitDir, 'commondir'), 'utf8')).trim())
+    if (dirname(gitDir) !== join(common, 'worktrees')) return root
+    if (!(await isRegularFile(join(gitDir, 'gitdir')))) return root
+    const back = resolve(gitDir, (await readFile(join(gitDir, 'gitdir'), 'utf8')).trim())
+    if ((await realOr(back)) !== join(await realOr(root), '.git')) return root
+    if (basename(common) !== '.git') return (await isGitEntry(join(common, '.git'))) ? root : common
+    return dirname(common)
+  } catch {
+    return root
+  }
+}
+
+/**
+ * Does the user own the root, its `.git` and its `.claude` (when present)? The
+ * CLI will not read a local-settings file out of a folder someone else
+ * controls; any failure to tell is a no.
+ */
+async function ownedBy(root: string, uid: number): Promise<boolean> {
+  try {
+    const rootUid = (await stat(root)).uid
+    const gitUid = (await lstat(join(root, '.git'))).uid
+    let claudeUid: number | null = null
+    try {
+      claudeUid = (await lstat(join(root, '.claude'))).uid
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+    }
+    return rootUid === uid && gitUid === uid && (claudeUid === null || claudeUid === uid)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The `settings.local.json` files Claude Code merges for a session in `cwd`,
+ * lowest first. NOT simply `<cwd>/.claude/settings.local.json` (2.1.285,
+ * gotcha 117): the CLI reads the local layer from the cwd's CANONICAL git root
+ * — the repo's top, and for a linked worktree the MAIN worktree's top — and
+ * merges the cwd's own copy underneath it as a legacy layer. It stays at the
+ * cwd alone when there is no repo, the root IS the cwd, the root is `$HOME`,
+ * or the root, its `.git` or its `.claude` is not the user's; and always where
+ * there are no uids ("canonicalization is POSIX-only").
+ *
+ * So a tab started in a repo's subfolder, or in a worktree under
+ * `.claude/worktrees/`, has the owner's per-project trims from the repo's top,
+ * and missing them here would lend every skill they turn off.
+ */
+export async function localSettingsFiles(cwd: string, home: string, uid: number | null): Promise<string[]> {
+  const real = await realOr(cwd)
+  const own = join(real, '.claude', 'settings.local.json')
+  if (uid === null) return [own]
+  const found = await gitRootOf(real)
+  if (!found) return [own]
+  const root = await realOr(await canonicalRootOf(found))
+  if (root === real) return [own]
+  const realHome = await realpath(home).catch(() => null)
+  if (realHome === null || root === realHome) return [own]
+  if (!(await ownedBy(root, uid))) return [own]
+  return [own, join(root, '.claude', 'settings.local.json')]
+}
+
+/**
+ * The merged `skillOverrides` Claude would read in `cwd`, in the CLI's order:
+ * user < project (`<cwd>/.claude/settings.json`) < local (`localSettingsFiles`,
+ * the cwd's legacy copy under the repo root's). Each file is read under a
+ * deadline (gotcha 40), and the whole prepare is under another.
+ */
+export async function skillOverridesFor(
+  cwd: string,
+  opts: { claudeDir: string; home: string; uid: number | null }
+): Promise<Record<string, unknown>> {
+  const locals = await localSettingsFiles(cwd, opts.home, opts.uid)
+  const layers = await Promise.all(
+    [join(opts.claudeDir, 'settings.json'), join(cwd, '.claude', 'settings.json'), ...locals].map((f) =>
+      readJsonUnder(f, 1500)
+    )
+  )
+  const merged: Record<string, unknown> = {}
+  for (const l of layers) {
+    const o = l?.skillOverrides
+    if (o && typeof o === 'object' && !Array.isArray(o)) Object.assign(merged, o)
+  }
+  return merged
 }
 
 async function readJsonUnder(path: string, deadlineMs: number): Promise<Record<string, unknown> | null> {
@@ -117,6 +275,7 @@ export class ClaudeSkillsProjector {
   private readonly platform: string
   private readonly managedDir: string | null
   private readonly deadlineMs: number
+  private readonly uid: number | null
   /** Serialises every prepare: the claim, taken before any await (gotcha 20). */
   private queue: Promise<unknown> = Promise.resolve()
   /** Sets handed to a session this run. Never removed until the next run. */
@@ -129,6 +288,7 @@ export class ClaudeSkillsProjector {
     this.platform = opts.platform ?? process.platform
     this.managedDir = opts.managedDir === undefined ? managedSettingsDir(this.platform) : opts.managedDir
     this.deadlineMs = opts.deadlineMs ?? 3000
+    this.uid = opts.uid === undefined ? processUid() : opts.uid
   }
 
   /**
@@ -151,19 +311,8 @@ export class ClaudeSkillsProjector {
     return Promise.race([run.catch(() => null), late]).finally(() => clearTimeout(timer))
   }
 
-  /** The merged `skillOverrides` Claude would read in `cwd`: user < project < local. */
-  private async overridesFor(cwd: string): Promise<Record<string, unknown>> {
-    const layers = await Promise.all([
-      readJsonUnder(join(this.claudeDir, 'settings.json'), 1500),
-      readJsonUnder(join(cwd, '.claude', 'settings.json'), 1500),
-      readJsonUnder(join(cwd, '.claude', 'settings.local.json'), 1500)
-    ])
-    const merged: Record<string, unknown> = {}
-    for (const l of layers) {
-      const o = l?.skillOverrides
-      if (o && typeof o === 'object' && !Array.isArray(o)) Object.assign(merged, o)
-    }
-    return merged
+  private overridesFor(cwd: string): Promise<Record<string, unknown>> {
+    return skillOverridesFor(cwd, { claudeDir: this.claudeDir, home: this.home, uid: this.uid })
   }
 
   /**

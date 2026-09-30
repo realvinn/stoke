@@ -677,7 +677,8 @@ async function launchSession(
    * local session as a plugin. Never for an SSH tab (its `claude` is another
    * machine's, gotcha 19), an install tab or another agent; `prepare` answers
    * null rather than failing, so a launch never waits on it past its deadline
-   * or dies of it. Filtered by this folder's own `skillOverrides`.
+   * or dies of it. Filtered by the `skillOverrides` Claude reads in this
+   * folder, whose local layer is the git root's (`localSettingsFiles`).
    */
   let claudePluginDir: string | null = null
   if (!opts.host && !opts.install?.length && isClaudeCode(cliId) && settings.agents.shareSkillsToClaude) {
