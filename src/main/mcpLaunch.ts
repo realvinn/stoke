@@ -5,8 +5,11 @@ import { dirname, join, resolve, sep } from 'node:path'
 import { claudeConfigDir } from './claudePaths.ts'
 import { canonicalRootOf, gitRootOf, localSettingsFiles, readJsonUnder, realOr } from './skillsProject.ts'
 import {
+  accountMcpMirror,
   claudeMcpServers,
   codexConfiguredServers,
+  NO_ACCOUNT_MIRROR,
+  type AccountMcpMirror,
   foldApprovals,
   isTrustedFolder,
   jsonConfiguredServers,
@@ -515,6 +518,41 @@ export async function resolveLaunchMcp(input: {
   if (!servers.length) return { servers, own: [], keep: [] }
   const { real, gitRoot } = await place()
   return { servers, ...(await agentOwnMcp(input.cliId, env, home, { real, gitRoot })) }
+}
+
+/**
+ * A second Claude account's share of the Default account's user-scope servers
+ * (`accountMcpMirror`): both `~/.claude.json`s read-only, under the deadline,
+ * and — for a launch — the folder's key and `.mcp.json` chain, so the account's
+ * own servers there are never shadowed. `cwd` null is the account row: user
+ * scope only.
+ *
+ * Either file unreadable means nothing is handed on. Default's, because there
+ * is nothing to hand; the account's, because a name it defines could not be
+ * told apart from one it does not, and shadowing its own server is the
+ * direction never to fail in. A MISSING account file (never signed in) is not
+ * an error: it defines nothing.
+ */
+export async function resolveAccountMirror(input: {
+  cwd: string | null
+  defaultReader: ClaudeConfigReader
+  accountReader: ClaudeConfigReader
+  env?: NodeJS.ProcessEnv
+}): Promise<{ mirror: AccountMcpMirror; error: string | null }> {
+  const [d, a] = await Promise.all([input.defaultReader.read(), input.accountReader.read()])
+  if (d.error) return { mirror: NO_ACCOUNT_MIRROR, error: `Default’s servers could not be read: ${d.error}` }
+  if (a.error) return { mirror: NO_ACCOUNT_MIRROR, error: `Its own servers could not be read, so none of Default’s are passed on: ${a.error}` }
+  let projectKey: string | null = null
+  let projectMcpJson: unknown = null
+  if (input.cwd) {
+    const { key, real } = await claudeProjectKey(input.cwd)
+    projectKey = key
+    projectMcpJson = await mcpJsonChain(real)
+  }
+  return {
+    mirror: accountMcpMirror({ defaultJson: d.json, accountJson: a.json, projectKey, projectMcpJson, env: input.env ?? process.env }),
+    error: null
+  }
 }
 
 /** The agents whose own user config Settings reads, to grey the names they define (`ownMcpSources`). */

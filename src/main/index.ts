@@ -59,8 +59,22 @@ import {
 } from './cli.ts'
 import { scanSkills } from './skillsScan.ts'
 import { ClaudeSkillsProjector } from './skillsProject.ts'
-import { ClaudeConfigReader, McpFileStore, readMcpCatalog, resolveLaunchMcp, type LaunchMcp } from './mcpLaunch.ts'
-import { claudeMcpConfigs, PI_MCP_EXTENSION, type McpRefusal } from '../shared/mcpServers.ts'
+import {
+  ClaudeConfigReader,
+  McpFileStore,
+  readMcpCatalog,
+  resolveAccountMirror,
+  resolveLaunchMcp,
+  type LaunchMcp
+} from './mcpLaunch.ts'
+import {
+  accountMcpSummary,
+  claudeAccountServers,
+  claudeMcpConfigs,
+  PI_MCP_EXTENSION,
+  type AccountMcpSummary,
+  type McpRefusal
+} from '../shared/mcpServers.ts'
 import { ContextWatcher } from './context.ts'
 import {
   findSessionFile,
@@ -725,6 +739,46 @@ async function launchMcpFor(cliId: CodingCliId, cwd: string): Promise<LaunchMcp>
 }
 
 /**
+ * `~/.claude.json` as a second Claude account's CLI reads it: its home as
+ * `CLAUDE_CONFIG_DIR`, exactly the variable its launch gets (`accountEnv`).
+ * One cached reader per home, like the Default's.
+ */
+const accountConfigReaders = new Map<string, ClaudeConfigReader>()
+function accountConfigReader(home: string): ClaudeConfigReader {
+  let r = accountConfigReaders.get(home)
+  if (!r) {
+    r = new ClaudeConfigReader({ ...process.env, CLAUDE_CONFIG_DIR: home }, homedir())
+    accountConfigReaders.set(home, r)
+  }
+  return r
+}
+
+/**
+ * The Default account's user-scope servers a second Claude account is handed
+ * (`resolveAccountMirror`), for one launch folder or — `cwd` null — for its
+ * row in Settings. Never throws: a launch never dies of its tools.
+ */
+async function accountMirrorFor(account: AgentAccount, cwd: string | null): ReturnType<typeof resolveAccountMirror> {
+  try {
+    return await resolveAccountMirror({ cwd, defaultReader: claudeConfigReader, accountReader: accountConfigReader(account.home) })
+  } catch (err) {
+    console.error('[stoke] could not read MCP servers for an account', err)
+    return { mirror: { servers: [], own: [], refused: [], accountNames: [] }, error: 'Its MCP servers could not be read.' }
+  }
+}
+
+/** What each Claude login account's row says about the Default account's servers (`CH.accountsMcp`). */
+async function accountsMcp(): Promise<Record<string, AccountMcpSummary>> {
+  const out: Record<string, AccountMcpSummary> = {}
+  const claude = Object.values(getSettings().accounts).filter((a) => a.cli === 'claude' && a.kind === 'login')
+  const reads = await Promise.all(claude.map((a) => accountMirrorFor(a, null)))
+  claude.forEach((a, i) => {
+    out[a.id] = accountMcpSummary(reads[i].mirror, reads[i].error)
+  })
+  return out
+}
+
+/**
  * Pi's MCP extension (mcpServers.ts `PI_MCP_EXTENSION`), under Stoke's own
  * userData — never into `~/.pi`. Constant text holding no secret, rewritten
  * only when missing or different. Null when it cannot be written, and Pi then
@@ -900,11 +954,22 @@ async function launchSession(
   /*
    * Claude Code loads its own servers itself, so its `--mcp-config` carries
    * only Stoke's: the browser file when ticked, and one generated file of the
-   * servers Stoke holds that are ticked for it.
+   * servers Stoke holds that are ticked for it — plus, on a second account
+   * (its own `CLAUDE_CONFIG_DIR`, so its own `~/.claude.json`), the Default
+   * account's user-scope servers it would otherwise never see
+   * (`accountMcpMirror`): URL and headers only for an http server, never an
+   * OAuth token (gotcha 36), and never a name the account defines itself.
    */
   let claudeConfigs: string[] = []
   if (localAgent && isClaudeCode(cliId)) {
-    const out = claudeMcpConfigs(launchMcp.servers, mcpConfigPath, mcpFiles.fileFor)
+    let servers = launchMcp.servers
+    if (account?.kind === 'login') {
+      const { mirror, error } = await accountMirrorFor(account, opts.cwd)
+      if (error) console.warn(`[stoke] ${account.id}: ${error}`)
+      logMcpSkipped(cliId, mirror.refused)
+      servers = claudeAccountServers(servers, mirror)
+    }
+    const out = claudeMcpConfigs(servers, mcpConfigPath, mcpFiles.fileFor)
     claudeConfigs = (await mcpFiles.write(out.files))
       ? out.configs
       : out.configs.filter((c) => !out.files.some((f) => f.path === c))
@@ -2659,6 +2724,7 @@ function registerIpc(): void {
   ipcMain.handle(CH.accountsCreate, (_e, input: AccountCreateInput) => createAccount(input))
   ipcMain.handle(CH.accountsRemove, (_e, id: string) => removeAccount(id))
   ipcMain.handle(CH.accountsIdentify, () => identifyAccounts())
+  ipcMain.handle(CH.accountsMcp, () => accountsMcp())
   ipcMain.handle(CH.mcpCatalog, () => readMcpCatalog(claudeConfigReader))
   ipcMain.handle(CH.cliDetect, (_e, opts?: { fresh?: boolean }) => {
     if (opts?.fresh === true) {

@@ -35,10 +35,12 @@ import {
   type AgentAccount
 } from '@shared/accounts'
 import {
+  accountMcpLines,
   mcpTicksFor,
   STOKE_BROWSER_SERVER,
   urlInArgvProblem,
   withMcpTick,
+  type AccountMcpSummary,
   type McpCatalog,
   type McpServerSpec
 } from '@shared/mcpServers'
@@ -1277,12 +1279,17 @@ function AgentAccounts({
   const [message, setMessage] = useState<string | null>(null)
   const [removing, setRemoving] = useState<string | null>(null)
   const [emails, setEmails] = useState<Record<string, string | null>>({})
+  const [mcp, setMcp] = useState<Record<string, AccountMcpSummary>>({})
   const homes = accounts.map((a) => `${a.id}:${a.home}`).join('|')
   useEffect(() => {
     if (cli.id !== 'claude') return
     let live = true
     void window.stoke.accounts.identify().then((e) => {
       if (live) setEmails(e)
+    })
+    // What each account is handed of Default's user-scope MCP servers.
+    void window.stoke.accounts.mcp().then((m) => {
+      if (live) setMcp(m)
     })
     return () => {
       live = false
@@ -1350,6 +1357,7 @@ function AgentAccounts({
             cli={cli}
             account={a}
             email={emails[a.id] ?? null}
+            mcp={mcp[a.id] ?? null}
             checked={current === a.id}
             onDefault={() => onDefault(a.id)}
             onPatch={(patch) => onPatchAccount(a.id, patch)}
@@ -1418,6 +1426,7 @@ function AccountRow({
   cli,
   account,
   email,
+  mcp,
   checked,
   onDefault,
   onPatch,
@@ -1429,6 +1438,8 @@ function AccountRow({
   cli: CodingCli
   account: AgentAccount
   email: string | null
+  /** A Claude login account: what it gets of Default's user-scope MCP servers. */
+  mcp: AccountMcpSummary | null
   checked: boolean
   onDefault: () => void
   onPatch: (patch: { label?: string; apiKey?: string }) => void
@@ -1477,10 +1488,23 @@ function AccountRow({
           onKeyDown={(e) => e.key === 'Enter' && commit()}
         />
         {account.kind === 'login' ? (
-          <span className="field-hint mono agent-account-home" title={account.home}>
-            {email && email !== account.label ? `${email} · ` : ''}
-            {account.home}
-          </span>
+          <>
+            <span className="field-hint mono agent-account-home" title={account.home}>
+              {email && email !== account.label ? `${email} · ` : ''}
+              {account.home}
+            </span>
+            {mcp &&
+              accountMcpLines(mcp).map((line) => (
+                <span
+                  key={line}
+                  className="field-hint agent-account-mcp"
+                  data-testid="account-mcp"
+                  data-tone={mcp.error || line.startsWith('Not passed') ? 'warning' : undefined}
+                >
+                  {line}
+                </span>
+              ))}
+          </>
         ) : (
           <input
             className="input mono"

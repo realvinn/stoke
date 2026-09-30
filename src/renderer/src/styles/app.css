@@ -4306,6 +4306,11 @@ summary.agent-picker-section:hover {
   white-space: nowrap;
 }
 
+/* What a second Claude account gets of Default's MCP servers: names, so it wraps. */
+.agent-account-mcp {
+  overflow-wrap: anywhere;
+}
+
 .agent-account-add {
   display: flex;
   align-items: center;

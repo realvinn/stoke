@@ -52,10 +52,13 @@ export const CH = {
    * login account's folder becomes an agent's config home, so the renderer
    * names an agent and a label, never a path. `identify` reads each Claude
    * account's signed-in email, read-only, from its own `.claude.json`.
+   * `mcp` is what each Claude login account is handed of the Default
+   * account's user-scope MCP servers, by name (`accountMcpSummary`).
    */
   accountsCreate: 'accounts:create',
   accountsRemove: 'accounts:remove',
   accountsIdentify: 'accounts:identify',
+  accountsMcp: 'accounts:mcp',
 
   // plan limits
   usageRead: 'usage:read',
