@@ -437,6 +437,13 @@ future reads, it cannot un-read the past, so rotate those at their provider and 
 SSH key off its hosts. Claim-before-await (gotcha 20): the hub serialises chain appends per account
 (the loser gets `chain-conflict` and rebases).
 
+> **Built 2026-10-01 (the desktop client, gotcha 141):** "re-wrap the recovery copy" needs the Kit's
+> wrap key RK, and no device keeps it. RK never changes for a Kit's life and the recovery wrap is
+> readable from a pending session, so a removed device that kept RK could open every later epoch
+> with the password. The client asks for the Kit at revoke (typed, used once), or makes a new Kit
+> and posts `revoke` + `rotate` in one append (wraps for the final epoch only), shown and confirmed
+> before anything is posted.
+
 ### 4.7 Item sealing, and why the path is bound through an id
 
 ```
@@ -715,7 +722,7 @@ imports only `node:crypto` and `src/shared`.
 |---|---|---|
 | **H0** (this change) | This spec, the contract, the crypto reference, `verify:hub` | `npm run check` green |
 | **H1** server | `stoke-hub` on Node 24 + `node:sqlite`: bootstrap, accounts, sessions, signed requests, chain, wraps, items, pairing, presence; `invite`, `backup`, `reset-password` subcommands; LAN listener | Two sandbox Stokes pair over a loopback hub and converge a setting; a DB dump holds no planted canary |
-| **H2** client | Settings › Hub: URL, sign in/up, devices, pair/approve with the code, Recovery Kit, revoke, sync switches, conflict notes, T4 picker | An API key and an SSH key typed on one sandbox arrive on another; revocation rotates |
+| **H2** client | Settings › Hub: URL, sign in/up, devices, pair/approve with the code, Recovery Kit, revoke, sync switches, conflict notes, T4 picker | An API key and an SSH key typed on one sandbox arrive on another; revocation rotates — **met 2026-10-01** (Settings › Account & sync, `src/main/hub/service.ts`, `verify:hub-client`; two sandbox Stokes on a loopback hub). Not built: republishing after a restore (§7.3), `SshReach` on hosts |
 | **H3** relay | Presence, relays, host grants and dialog, an "Other machines" list attaching through the phone client | A second sandbox lists and types into the first's stub session through the hub |
 | **H4** edge | `stoke-hub-edge` Worker + owner steps (§7.4) | The owner's two machines sync through `https://stoke.vinn.dev/hub` |
 | Later | Phone through the hub (WebCrypto keys, no vault), direct WebRTC, public multi-tenant | — |

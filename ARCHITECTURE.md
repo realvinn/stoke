@@ -323,8 +323,28 @@ every put, the pairing commitment), counts a device ACTIVE only when the chain l
 the key it signed in with (gotcha 140), takes every claim before its one await (scrypt), and relays
 frames between two sockets of one account without parsing them. The hub is reached publicly
 through a second Worker, `worker/hub-edge.ts`, on the route `stoke.vinn.dev/hub/*`; the installer
-Worker is not changed. The runbook for the NUC is `hub/README.md`. Still to build: the client
-panel and sync engine in Stoke, and the relay's host side.
+Worker is not changed. The runbook for the NUC is `hub/README.md`.
+
+The CLIENT is `src/main/hub/` beside the reference crypto, loaded lazily (gotcha 40) the first
+time Settings › Account & sync asks, or 4 s after a boot with a hub configured. `service.ts` is the
+order things happen in: sign-in (an active device proves its sign-in by signature, spec §3.3), the
+vault's genesis only after the Recovery Kit is typed back, joining by the six digits or by the
+Kit, a sync pass (verify and pin the chain, take any new vault key only as the chain's `vk`
+commitment vouches for it, read the change feed, apply, give new hosts sync ids, upload), SSH keys
+shared one at a time and installed by a press, rename (`acct/pref/device-names`), revoke with
+re-seal and prune, presence hints, and sign-out. One queue for every hub step; every action claims
+before its first await. The rules it follows are pure in `src/shared/hub/client.ts` (what each tier
+offers, the pass plan, conflict notes, where a received key lands, the panel's view);
+`files.ts` keeps `hub-device.json` and `hub-state.json` (0600, every secret sealed by safeStorage,
+no vault key where the key store protects nothing); `sshKeys.ts` lists key pairs by their `.pub`,
+reads one private key when it is shared, and writes a received one with `wx` at 0600, appending
+an IdentityFile block (checked with `ssh -G -F` when the config is not the passwd home's). The
+session never reaches Settings or the renderer; `settings.hub` has one writer, the service, and
+`commitSettings` drops a renderer patch's copy. Revoking needs the Recovery Kit (or makes a new
+one): the hub demands the Kit's wrap of every new epoch, and a device that kept the Kit's wrap key
+could open every later key from a pending session with the password (gotcha 141). Still to build:
+the relay's host and guest sides (spec H3), republishing after a hub restore (§7.3: the alarm
+offers only "take the hub's copy"), and `SshReach` on T3 hosts.
 
 ## Remote access
 
@@ -909,6 +929,18 @@ npm run verify:hub-server     # the hub SERVER over real sockets on a temp data 
                               # of it, logs and the SQLite file free of every planted secret,
                               # graceful shutdown, and the `stoke-hub` command from source and
                               # bundled (serve, invite, backup, reset-password, health, SIGTERM)
+npm run verify:hub-client     # the hub CLIENT: what each tier offers and what never syncs (the
+                              # phone key, the hub session, account keys, T4 outside a press),
+                              # the pass plan (upload, apply, adopt, last-writer-wins with a note,
+                              # the hub's copy winning a first meeting but never a tombstone over
+                              # a value never agreed, no phantom upload after hydrate), the state
+                              # file's repair, no vault key under basic_text, SSH keys listed by
+                              # .pub and received with no overwrite (-stoke-2, a lone .pub counts,
+                              # 0600, IdentityFile appended with a backup), then three devices
+                              # against a real hub on 127.0.0.1: genesis after the Kit, join by
+                              # the six digits and by the Kit, an API key and an SSH key arriving,
+                              # a conflict, rename, revoke with re-seal, and hub.db holding no
+                              # secret. Eight rules mutated one at a time each turn it red
 npm run verify:install        # the one-line installer and the endpoint that serves it: the whole
                               # User-Agent matrix through the Worker's routing rule (PowerShell
                               # before anything browser-shaped, and HTML as the fallback), the
@@ -1176,6 +1208,18 @@ src/main/         Electron main process
                     wraps, the Recovery Kit, item seal/open under opaque ids, the pairing code,
                     the relay handshake and `RelayCipher`, scrypt passwords. No electron import;
                     the hub server imports it. verify:hub
+  hub/service.ts    the hub CLIENT: sign-in, the vault and its Kit, joining (code or Kit), the
+                    sync pass, SSH key share/install, rename, revoke + re-seal, presence,
+                    sign-out. One queue; claims before awaits. No electron import (dialogs are
+                    injected by index.ts). verify:hub-client
+  hub/files.ts      `hub-device.json` (device keys, session) and `hub-state.json` (chain, pin,
+                    records, cursor, notes, prefs, sealed vault keys), 0600, sealed by the
+                    injected SecretBackend; refuses a vault key under an unprotected key store
+  hub/http.ts       one signed request, read through `readHubResponse` (a 200 web page is not
+                    the hub, gotcha 71)
+  hub/sshKeys.ts    ~/.ssh key pairs by their .pub, one private key read on share, a received
+                    key written `wx` 0600 and an IdentityFile appended (`ssh -G -F` when the
+                    config is not the passwd home's). Paths injectable
   accounts.ts       an agent account's folder, `~/.stoke/accounts/<cli>-<slug>` (not userData:
                     dev and packaged differ, and the `stoke` command reads it with no app),
                     realpath'd once — Claude's Keychain item is named after that exact string
@@ -1382,6 +1426,12 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     "More agents" folded. Claude Code's page holds its four launch defaults
                     (moved from Sessions, still `settings.defaults`, gotcha 57) and the way to
                     Providers and Claude Code's own config — never an endpoint
+  src/components/AccountSyncSettings.tsx  Settings › Account & sync: Stoke Hub's panel — the
+                    address, sign-in or invite sign-up, the vault and its Recovery Kit (shown once,
+                    file or print, a group typed back), joining by the code or the Kit, what syncs,
+                    SSH keys (share one, install by a press), conflict notes, devices (rename,
+                    remove with the Kit), a new Kit, sign-out. Draws main's `HubView` and presses
+                    `window.stoke.hub`; never writes `settings.hub`, never sees a key
   src/components/SpeechServiceSettings.tsx  Settings → Voice's speech service: the provider
                     picker, the sidecar's address or a custom server's base URL, the model
                     (a list plus "Another model…", free text for custom), a key per provider
@@ -1487,7 +1537,9 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     envelope, `putVerdict`, `decideConflict`), relay.ts (handshake, frames,
                     RELAY_ROUTES, grants), edge.ts (`hubUrlVerdict`, the edge Worker's rules,
                     `edgeVerdict`), settings.ts (the T0 `hub` block, `applySyncedSettings`,
-                    `sshKeyTarget`)
+                    `sshKeyTarget`), client.ts (the desktop client's rules: `localValues`,
+                    `planSync`, `incomingFrom`, `sshKeyInstallPlan`, hub-state.json's shape, the
+                    panel's `HubView`)
   cfAccess.ts       Cloudflare Access without crypto: the team-domain and AUD clamps settings
                     hydrate through, the policy, the login-redirect parser Look it up reads,
                     the status and refusal words the panel shows. Gotcha 124

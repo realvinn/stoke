@@ -39,7 +39,7 @@ A `dist:*` exists per target and each MUST run on that target's own platform and
 (gotcha 67): `dist:win`, `dist:win:arm64`, `dist:mac`, `dist:mac:intel`, `dist:linux`.
 
 Every suite runs alone as `npm run verify:<name>`: context, statusline, unicode, usage,
-profiles, settings, secrets, hub, hub-server, providers, claude-config, folders, search, chat-sources, color, theme-gen, activity,
+profiles, settings, secrets, hub, hub-server, hub-client, providers, claude-config, folders, search, chat-sources, color, theme-gen, activity,
 worklog-gate, tabs, launcher, registry,
 restore, shortcuts, drop, fullscreen, layers, browser-url, browser-profiles, safari-import, chrome-import, voice, agents, accounts, campfire, cli, stoke-args, updates, targets, manifests, portable, winget, worklog-runner,
 worklog-retry, worklog-recall, worklog-autoscan, ssh, ssh-enroll, remote, phone-ui, installer-art, install, welcome,
@@ -85,7 +85,9 @@ src/main/            Electron main process
                        inject/extract.js (runs IN the page, no deps)
   remote/              phone access: server.ts, link.ts, tunnel.ts, cloudflare.ts
   hub/                 Stoke Hub: crypto.ts, the node:crypto reference (no electron import, so the
-                       hub server on the NUC imports it too). Spec: docs/superpowers/specs/2026-10-01-*
+                       hub server on the NUC imports it too), and the desktop client (service.ts,
+                       files.ts, http.ts, sshKeys.ts; rules in shared/hub/client.ts), lazily loaded
+                       for Settings › Account & sync. Spec: docs/superpowers/specs/2026-10-01-*
 src/preload/         contextBridge -> window.stoke
 src/renderer/        desktop React UI (all colour via CSS custom properties)
 src/remote/          mobile web UI, built separately to out/remote
@@ -177,6 +179,8 @@ rule file named on the group line.
   by `syncId`, else equal alias + command (`applySyncedSettings`). `mergeSetup` still matches by id.
 - **140.** Count a hub device ACTIVE only when the chain lists its id WITH the key its session signed in with
   (`authenticate`): a password-holder can squat an id before the real device joins. `login` refuses a bound id.
+- **141.** Never keep the Recovery Kit's wrap key on a device: a revoke needs the Kit typed or a new Kit
+  (`revokeDevice`), since a removed device with RK and the password opens every later recovery wrap.
 
 **Terminal** — `.claude/rules/terminal.md`
 - **5.** Never read the terminal from the DOM: WebGL paints a canvas, so `.xterm-rows` is empty.

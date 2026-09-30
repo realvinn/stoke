@@ -418,3 +418,30 @@ log's redaction was untested. A suite that passes first time has not yet shown i
 > refusals under one key do not lock another. Mutated back to id alone, the squatter's reveal
 > refused B's pair and B's own pairing failed outright. Wraps got the same rule in the same review:
 > `chainAppend` takes them only from a device active before or after the entries, by id and key.
+
+## 141. The hub demands the Recovery Kit's wrap of every new epoch, and a device that could make one could open it
+
+**Found 2026-10-01, building the hub client's revoke (`HubService.rotate`).** Spec §4.6 says a
+revoke makes `VK_{e+1}`, "wraps it to every remaining active device and re-wraps the recovery
+copy" — and the server (`chainAppend`) refuses any revoke or rotate without a recovery wrap for the
+new epoch. A recovery wrap is AES-GCM under `RK = HKDF(Kit secret, account)`, so the revoking device
+must hold RK. The obvious way to make that painless is to keep RK on every device (sealed, or as a
+vault item). That quietly defeats revocation: RK never changes for the life of a Kit, and
+`GET /v1/vault/recovery` is a `session` route — a pending device may read it by design, because the
+wrap is useless without the Kit. A removed device that kept RK, plus the account password (a stolen
+laptop, or malware that saw it typed), signs in as a NEW pending device, fetches the recovery wrap
+of every later epoch and opens it. Spec §7.1's "cannot: anything after revocation" would be false.
+
+The rule: **never keep RK (or the Kit) on a device.** Removing a device asks for the Kit, typed and
+used once (`revokeDevice(target, { kit })`), or makes a NEW Kit in the same append (`{ newKit: true }`:
+a `revoke` then a `rotate` naming the new recovery key, wraps for the final epoch only, the new Kit
+shown and confirmed before anything is posted — `PendingKit.purpose: 'revoke'`). The panel says why
+it needs the Kit. The costs, accepted: revoking is impossible without the Kit or a new one, and a
+removed device holding RK from a Kit typed on it (the Kit join, `recover`) is exactly why the panel
+recommends a new Kit after joining that way.
+
+Held by `verify:hub-client` (`removing a device needs the Kit`, a wrong Kit refused; after the
+revoke, the removed device's sealed vault keys open none of the re-sealed items and the hub holds
+no wrap of the new epoch for it) and proven in two sandbox Stokes against the real server: after
+the revoke, `wraps` held epoch 2 for the remaining device only, every item sat at epoch 2, and a key
+added afterwards never reached the removed one.
