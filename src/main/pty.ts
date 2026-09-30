@@ -333,8 +333,20 @@ export class PtyManager {
    * straight out of the closure that still holds the session, is what lets
    * index.ts clean up its own per-session state (`statusLineSeen`) for a
    * session that ended on its own, not only one the user closed by hand.
+   *
+   * `loggedIn` is the remote session's login watch at exit (`login.settled`),
+   * null for a local one. The renderer's automatic reconnect of a kept SSH tab
+   * reads it (gotcha 126): how long ssh ran says nothing about whether the
+   * link was ever up — a host that drops SYNs holds ssh ~75 s before it
+   * exits 255, and a try that never got in must not reset the backoff.
    */
-  private readonly onExit: (ptyId: string, code: number, signal: number | undefined, sessionId: string) => void
+  private readonly onExit: (
+    ptyId: string,
+    code: number,
+    signal: number | undefined,
+    sessionId: string,
+    loggedIn: boolean | null
+  ) => void
   /**
    * A remote asked one of our sessions for a password.
    *
@@ -352,7 +364,7 @@ export class PtyManager {
   // so the main-process modules stay runnable under node's type stripping.
   constructor(
     onData: (ptyId: string, data: string) => void,
-    onExit: (ptyId: string, code: number, signal: number | undefined, sessionId: string) => void,
+    onExit: (ptyId: string, code: number, signal: number | undefined, sessionId: string, loggedIn: boolean | null) => void,
     onSshAuth: (ptyId: string, hostId: string, prompt: SshAuthPrompt) => void
   ) {
     this.onData = onData
@@ -769,7 +781,7 @@ export class PtyManager {
       // session's settings file out from under a CLI that has not read it yet
       // (gotcha 73).
       releaseSessionFiles(session.statusKey, session.ptyId)
-      this.onExit(ptyId, exitCode, signal, session.sessionId)
+      this.onExit(ptyId, exitCode, signal, session.sessionId, session.login ? session.login.settled : null)
       for (const fn of this.exitSubscribers) fn(ptyId, exitCode)
     })
 

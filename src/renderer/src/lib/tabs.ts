@@ -450,14 +450,18 @@ export function restartPlan(
  */
 export const RECONNECT_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 20_000, 30_000] as const
 
-/** Past this many tries in a row the tab stops and says so: about ten minutes of trying. */
+/**
+ * Past this many tries in a row with no connection that got in and lasted, the
+ * tab stops and says so. About ten minutes against a host that refuses at
+ * once; longer when each try waits out a TCP timeout (~75 s on macOS for a
+ * host that drops SYNs), since a try that never got in never resets the count.
+ */
 export const RECONNECT_MAX_ATTEMPTS = 24
 
 /**
- * A connection that ended this soon after it started, on its FIRST try, never
- * got anywhere — a typo'd alias, a host that is off — and is left on its exit
- * card rather than retried: retrying cannot fix it, and a card cycling through
- * reconnects hides ssh's own words about why.
+ * How long a connection that GOT IN has to last before its drop counts as a
+ * fresh start (the count goes back to try 1). Shorter, and a link that logs in
+ * and drops at once would retry at 1 s forever; the cap would never fire.
  */
 export const RECONNECT_MIN_UPTIME_MS = 5_000
 
@@ -476,10 +480,23 @@ export type ReconnectDecision =
  * on the far side too, so there is nothing to go back to. Any other status is
  * the remote command's own, and retrying would only repeat it.
  *
+ * "The connection was up" is `loggedIn` — main's login watch had settled, so
+ * ssh got past authentication (tmux painting is the usual sign) — never how
+ * long the process ran. The first version reset the count on 5 s of uptime,
+ * and ssh has no ConnectTimeout here: a host that drops SYNs holds a try ~75 s
+ * before exit 255, so every failed try reset the count, the backoff never grew
+ * past 1 s and the 24-try cap never fired. A try that got in AND lasted is a
+ * fresh start; anything else continues the run of tries.
+ *
+ * On a run's first try (`attempt` 0: the tab was up, or was just opened), a
+ * connection that never got in is left on its exit card — a typo'd alias, a
+ * host that is off — rather than retried: retrying cannot fix it, and a card
+ * cycling through reconnects hides ssh's own words about why.
+ *
  * Pure, and separate from the timer that acts on it, for gotcha 31's reason:
  * the decision is the part a suite can hold, and the wire to it is a closure.
- * `attempt` is how many automatic reconnects have already run in a row (0 for
- * a tab that was up); `ranMs` how long this process lived.
+ * `attempt` is how many automatic reconnects have run in a row before this
+ * exit; the decision's `attempt` is the count to keep after it.
  */
 export function reconnectDecision(input: {
   exitCode: number | null
@@ -487,7 +504,10 @@ export function reconnectDecision(input: {
   persisted: boolean
   hostKnown: boolean
   attempt: number
+  /** How long this ssh process lived. */
   ranMs: number
+  /** This connection got past authentication (main's `SshLoginWatch` settled). */
+  loggedIn: boolean
 }): ReconnectDecision {
   if (!input.hostKnown) return { kind: 'stop', reason: 'That host is no longer in Settings.' }
   if (!input.persisted) return { kind: 'stop', reason: 'This tab does not keep its shell running.' }
@@ -497,14 +517,16 @@ export function reconnectDecision(input: {
       reason: input.exitCode === 0 ? 'The shell ended.' : `The remote command exited with ${input.exitCode ?? 'a signal'}.`
     }
   }
-  if (input.attempt === 0 && input.ranMs < RECONNECT_MIN_UPTIME_MS) {
+  const lasted = input.loggedIn && input.ranMs >= RECONNECT_MIN_UPTIME_MS
+  const inRow = lasted ? 0 : input.attempt
+  if (inRow === 0 && !input.loggedIn) {
     return { kind: 'stop', reason: 'The connection never came up, so trying again by itself would not help.' }
   }
-  if (input.attempt >= RECONNECT_MAX_ATTEMPTS) {
+  if (inRow >= RECONNECT_MAX_ATTEMPTS) {
     return { kind: 'stop', reason: `Stopped after ${RECONNECT_MAX_ATTEMPTS} tries.` }
   }
-  const delayMs = RECONNECT_DELAYS_MS[Math.min(input.attempt, RECONNECT_DELAYS_MS.length - 1)]
-  return { kind: 'reconnect', attempt: input.attempt + 1, delayMs }
+  const delayMs = RECONNECT_DELAYS_MS[Math.min(inRow, RECONNECT_DELAYS_MS.length - 1)]
+  return { kind: 'reconnect', attempt: inRow + 1, delayMs }
 }
 
 /**

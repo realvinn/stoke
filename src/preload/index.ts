@@ -76,7 +76,7 @@ const api: StokeApi = {
     kill: (ptyId: string) => ipcRenderer.send(CH.ptyKill, ptyId),
     stop: (ptyId: string, capMs?: number) => ipcRenderer.invoke(CH.ptyStop, ptyId, capMs),
     onData: (cb) => on<[string, string]>(CH.ptyData, cb),
-    onExit: (cb) => on<[string, number, number | undefined]>(CH.ptyExit, cb)
+    onExit: (cb) => on<[string, number, number | undefined, boolean | null | undefined]>(CH.ptyExit, cb)
   },
 
   context: {

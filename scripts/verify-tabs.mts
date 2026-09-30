@@ -281,7 +281,8 @@ check(
 )
 
 console.log('\na kept SSH tab reconnects by itself only when its link dropped')
-const up = { persisted: true, hostKnown: true, attempt: 0, ranMs: 60_000 }
+// `loggedIn` is main's login watch at exit: the connection got past auth.
+const up = { persisted: true, hostKnown: true, attempt: 0, ranMs: 60_000, loggedIn: true }
 check('a dropped link (ssh exit 255) after a while reconnects in 1 s', reconnectDecision({ ...up, exitCode: 255 }), {
   kind: 'reconnect',
   attempt: 1,
@@ -291,23 +292,68 @@ check('exit 0 is the shell ending: nothing to go back to', reconnectDecision({ .
 check('the remote command’s own failure is not retried', reconnectDecision({ ...up, exitCode: 1 }).kind, 'stop')
 check('killed by a signal is not a dropped link', reconnectDecision({ ...up, exitCode: null }).kind, 'stop')
 check(
-  'a first try that died at once never came up — left on its card',
-  reconnectDecision({ ...up, exitCode: 255, ranMs: RECONNECT_MIN_UPTIME_MS - 1 }).kind,
+  'a first try that never got in never came up — left on its card',
+  reconnectDecision({ ...up, exitCode: 255, ranMs: 200, loggedIn: false }).kind,
   'stop'
 )
 check(
-  'but a RETRY that fails at once (still offline) keeps trying, backing off',
-  reconnectDecision({ ...up, exitCode: 255, attempt: 3, ranMs: 200 }),
-  { kind: 'reconnect', attempt: 4, delayMs: RECONNECT_DELAYS_MS[3] }
+  'however long it ran: a host that drops SYNs holds ssh ~75 s and it still never came up',
+  reconnectDecision({ ...up, exitCode: 255, ranMs: 75_000, loggedIn: false }).kind,
+  'stop'
 )
 check(
+  'a first connection that got in and dropped at once still reconnects',
+  reconnectDecision({ ...up, exitCode: 255, ranMs: 200 }),
+  { kind: 'reconnect', attempt: 1, delayMs: RECONNECT_DELAYS_MS[0] }
+)
+check(
+  'but a RETRY that fails at once (still offline) keeps trying, backing off',
+  reconnectDecision({ ...up, exitCode: 255, attempt: 3, ranMs: 200, loggedIn: false }),
+  { kind: 'reconnect', attempt: 4, delayMs: RECONNECT_DELAYS_MS[3] }
+)
+/*
+ * The review's case. The first version reset the count on 5 s of uptime, and a
+ * try at a host that drops SYNs runs ~75 s (no ConnectTimeout) before ssh exits
+ * 255 — so every failed try was "a fresh start": 1 s forever, no cap.
+ */
+check(
+  'a retry that waited out a TCP timeout and never got in continues the run',
+  reconnectDecision({ ...up, exitCode: 255, attempt: 5, ranMs: 75_000, loggedIn: false }),
+  { kind: 'reconnect', attempt: 6, delayMs: RECONNECT_DELAYS_MS[5] }
+)
+check(
+  'so does one that got in and dropped straight away (a flapping link cannot loop at 1 s)',
+  reconnectDecision({ ...up, exitCode: 255, attempt: 5, ranMs: RECONNECT_MIN_UPTIME_MS - 1, loggedIn: true }),
+  { kind: 'reconnect', attempt: 6, delayMs: RECONNECT_DELAYS_MS[5] }
+)
+check(
+  'a retry that got in AND lasted is a fresh start: its drop is try 1 again',
+  reconnectDecision({ ...up, exitCode: 255, attempt: 5, ranMs: RECONNECT_MIN_UPTIME_MS, loggedIn: true }),
+  { kind: 'reconnect', attempt: 1, delayMs: RECONNECT_DELAYS_MS[0] }
+)
+{
+  // The whole run against a host that went dark: every try waits out TCP.
+  let attempt = reconnectDecision({ ...up, exitCode: 255 }).kind === 'reconnect' ? 1 : -1
+  const delays: number[] = []
+  let last: ReturnType<typeof reconnectDecision> | null = null
+  for (let i = 0; i < 200; i++) {
+    last = reconnectDecision({ ...up, exitCode: 255, attempt, ranMs: 75_000, loggedIn: false })
+    if (last.kind === 'stop') break
+    delays.push(last.delayMs)
+    attempt = last.attempt
+  }
+  check('a host that went dark: the tries stop, out loud', last?.kind === 'stop' ? last.reason : null, `Stopped after ${RECONNECT_MAX_ATTEMPTS} tries.`)
+  check('after exactly the cap', attempt, RECONNECT_MAX_ATTEMPTS)
+  check('and the wait grew to its longest step on the way', delays[delays.length - 1], RECONNECT_DELAYS_MS[RECONNECT_DELAYS_MS.length - 1])
+}
+check(
   'the wait settles at its longest step rather than growing forever',
-  reconnectDecision({ ...up, exitCode: 255, attempt: 12, ranMs: 200 }),
+  reconnectDecision({ ...up, exitCode: 255, attempt: 12, ranMs: 200, loggedIn: false }),
   { kind: 'reconnect', attempt: 13, delayMs: RECONNECT_DELAYS_MS[RECONNECT_DELAYS_MS.length - 1] }
 )
 check(
   'and it gives up, out loud, after the last try',
-  reconnectDecision({ ...up, exitCode: 255, attempt: RECONNECT_MAX_ATTEMPTS, ranMs: 200 }).kind,
+  reconnectDecision({ ...up, exitCode: 255, attempt: RECONNECT_MAX_ATTEMPTS, ranMs: 200, loggedIn: false }).kind,
   'stop'
 )
 check('a tab that does not keep its shell never reconnects', reconnectDecision({ ...up, exitCode: 255, persisted: false }).kind, 'stop')

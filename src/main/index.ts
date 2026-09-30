@@ -1804,8 +1804,10 @@ function createWindow(): void {
 
   ptys = new PtyManager(
     (ptyId, data) => send(CH.ptyData, ptyId, data),
-    (ptyId, code, signal, sessionId) => {
-      send(CH.ptyExit, ptyId, code, signal)
+    (ptyId, code, signal, sessionId, loggedIn) => {
+      // `loggedIn`: whether a remote session got past authentication, which
+      // the renderer's kept-tab reconnect needs and cannot see (gotcha 126).
+      send(CH.ptyExit, ptyId, code, signal, loggedIn)
       // A session that ends on its own (`/exit`, a crash) never reaches the
       // `CH.ptyKill` handler's cleanup below — by the time a user later
       // closes that tab, `sessionIdFor` already returns null, because

@@ -107,7 +107,6 @@ import {
   restartPlan,
   reconnectDecision,
   closeAsksDetach,
-  RECONNECT_MIN_UPTIME_MS,
   tabLabel,
   tabsToClose,
   type CloseSide,
@@ -743,11 +742,13 @@ export function App(): React.JSX.Element {
    * and `startHostSession` gives the tab that pty's id, so an id does not
    * survive the very thing being counted. The name is the one constant.
    *
-   * `hostStartedAt` is when each SSH pty was started, so an exit can tell "the
-   * link dropped after a while" (reconnect) from "never came up" (leave it).
-   * `reconnectTries` counts automatic tries in a row, reset once a connection
-   * lasts; `reconnectTimers` holds the pending one, cleared by anything the
-   * user does to the tab first — Start again, Close, Stop.
+   * `hostStartedAt` is when each SSH pty was started. Whether a connection
+   * was ever up is main's to say (`loggedIn` on the exit), not the uptime's —
+   * a try at a host that drops SYNs runs ~75 s and never gets in.
+   * `reconnectTries` counts automatic tries in a row, reset only by a
+   * connection that got in and lasted (`reconnectDecision`); `reconnectTimers`
+   * holds the pending one, cleared by anything the user does to the tab first
+   * — Start again, Close, Stop.
    */
   const hostStartedAtRef = useRef<Map<string, number>>(new Map())
   const reconnectTriesRef = useRef<Map<string, number>>(new Map())
@@ -1780,7 +1781,7 @@ export function App(): React.JSX.Element {
     const offs = tabs
       .filter((t) => t.kind === 'session' && t.status === 'running')
       .map((t) =>
-        attachExit(t.ptyId, (code) => {
+        attachExit(t.ptyId, (code, _signal, loggedIn) => {
           /*
            * A relaunch kills this process on purpose and replaces the tab in
            * place once the new one is up. Its exit arrives in between, and
@@ -1794,7 +1795,7 @@ export function App(): React.JSX.Element {
            * tab still goes to `exited`, carrying `reconnect` so its card counts
            * down instead of offering Start again.
            */
-          const reconnect = t.hostId && t.remoteSession ? hostExitRef.current(t, code) : null
+          const reconnect = t.hostId && t.remoteSession ? hostExitRef.current(t, code, loggedIn === true) : null
           setTabs((list) =>
             list.map((x) =>
               x.ptyId === t.ptyId
@@ -2349,32 +2350,40 @@ export function App(): React.JSX.Element {
    * Returns what to show on the tab while it waits, or null for the ordinary
    * exit card. `reconnectDecision` (lib/tabs.ts) is the rule; this is the wire.
    */
-  const hostExitRef = useRef<(t: Tab, code: number) => { attempt: number; at: number } | null>(() => null)
+  const hostExitRef = useRef<(t: Tab, code: number, loggedIn: boolean) => { attempt: number; at: number } | null>(
+    () => null
+  )
   // One decision per pty: `attachExit` replays a recorded exit to a sink that
   // re-attaches before the tab's `exited` state has rendered, and a second
   // decision would count one drop as two tries.
   const hostExitSeenRef = useRef<Map<string, { attempt: number; at: number } | null>>(new Map())
-  hostExitRef.current = (t: Tab, code: number): { attempt: number; at: number } | null => {
+  hostExitRef.current = (t: Tab, code: number, loggedIn: boolean): { attempt: number; at: number } | null => {
     const name = t.remoteSession
     if (!name) return null
     if (hostExitSeenRef.current.has(t.ptyId)) return hostExitSeenRef.current.get(t.ptyId) ?? null
-    const result = decideHostExit(t, name, code)
+    const result = decideHostExit(t, name, code, loggedIn)
     hostExitSeenRef.current.set(t.ptyId, result)
     return result
   }
-  const decideHostExit = (t: Tab, name: string, code: number): { attempt: number; at: number } | null => {
+  const decideHostExit = (
+    t: Tab,
+    name: string,
+    code: number,
+    loggedIn: boolean
+  ): { attempt: number; at: number } | null => {
     const host = settingsRef.current?.hosts.find((h) => h.id === t.hostId)
     const started = hostStartedAtRef.current.get(t.ptyId)
     hostStartedAtRef.current.delete(t.ptyId)
     const ranMs = started ? Date.now() - started : 0
-    // A connection that lasted is a fresh start: its drop is try 1 again.
-    if (ranMs >= RECONNECT_MIN_UPTIME_MS) reconnectTriesRef.current.delete(name)
+    // Whether this drop starts a fresh run of tries is the rule's to say: only
+    // a connection that got in AND lasted does (`reconnectDecision`).
     const decision = reconnectDecision({
       exitCode: code,
       persisted: hostPersists(host),
       hostKnown: !!host,
       attempt: reconnectTriesRef.current.get(name) ?? 0,
-      ranMs
+      ranMs,
+      loggedIn
     })
     if (decision.kind === 'stop') {
       reconnectTriesRef.current.delete(name)

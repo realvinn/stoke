@@ -490,7 +490,12 @@ export interface StokeApi {
      */
     stop(ptyId: string, capMs?: number): Promise<boolean>
     onData(cb: (ptyId: string, data: string) => void): () => void
-    onExit(cb: (ptyId: string, code: number, signal?: number) => void): () => void
+    /**
+     * `loggedIn`: for a remote session, whether it got past authentication
+     * (main's `SshLoginWatch` had settled when it exited); null for a local
+     * one. What a kept SSH tab's reconnect backoff resets on (gotcha 126).
+     */
+    onExit(cb: (ptyId: string, code: number, signal?: number, loggedIn?: boolean | null) => void): () => void
   }
 
   context: {
