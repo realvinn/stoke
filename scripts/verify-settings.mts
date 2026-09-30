@@ -593,5 +593,67 @@ check(
   ''
 )
 
+/*
+ * Settings › Agents. An agent's Default model on its own sign-in is the SAME
+ * `endpoint.model` an OpenRouter or custom endpoint uses (gotcha 57: one field,
+ * one writer), so it rides the endpoint's hydrate — and has to survive the
+ * whole-file round trip `setSettings` puts every write through, while anything
+ * that is not a model id is dropped before it can reach argv. Claude Code's
+ * launch defaults moved into the same area and are still `settings.defaults`.
+ */
+console.log('\nagents: a default model, and Claude Code’s launch defaults, through the round trip')
+{
+  const roundTrip = (s: unknown) => hydrateSettings(JSON.parse(JSON.stringify(s)))
+  const withModel = roundTrip({
+    ...DEFAULT_SETTINGS,
+    agents: {
+      ...DEFAULT_SETTINGS.agents,
+      endpoints: {
+        codex: { mode: 'default', model: 'gpt-6.1-sol', baseUrl: '', apiKey: '' },
+        gemini: { mode: 'default', model: 'gemini-2.5-pro', baseUrl: '', apiKey: '' },
+        grok: { mode: 'openrouter', model: 'x-ai/grok-5', baseUrl: '', apiKey: '' }
+      }
+    }
+  })
+  check(
+    'a default model on the agent’s own sign-in survives, beside an OpenRouter one',
+    withModel.agents.endpoints,
+    {
+      codex: { mode: 'default', model: 'gpt-6.1-sol', baseUrl: '', apiKey: '' },
+      gemini: { mode: 'default', model: 'gemini-2.5-pro', baseUrl: '', apiKey: '' },
+      grok: { mode: 'openrouter', model: 'x-ai/grok-5', baseUrl: '', apiKey: '' }
+    }
+  )
+  check('and a second pass changes nothing (gotcha 116)', roundTrip(withModel).agents, withModel.agents)
+  const junk = roundTrip({
+    ...DEFAULT_SETTINGS,
+    agents: {
+      ...DEFAULT_SETTINGS.agents,
+      endpoints: {
+        codex: { mode: 'default', model: 'x & calc', baseUrl: '', apiKey: '' },
+        opencode: { mode: 'openrouter', model: '--yolo', baseUrl: '', apiKey: '' }
+      }
+    }
+  })
+  check('a metacharacter model on its own sign-in leaves nothing to store', junk.agents.endpoints.codex, undefined)
+  check(
+    'a flag dressed as an OpenRouter model is dropped, and the mode kept — the launch then says a model is missing',
+    junk.agents.endpoints.opencode,
+    { mode: 'openrouter', model: '', baseUrl: '', apiKey: '' }
+  )
+  check(
+    'a Claude entry is still refused: its endpoint is Providers',
+    roundTrip({ ...DEFAULT_SETTINGS, agents: { ...DEFAULT_SETTINGS.agents, endpoints: { claude: { mode: 'default', model: 'opus' } } } })
+      .agents.endpoints,
+    {}
+  )
+  const defaults = { permissionMode: 'plan', model: 'opus', effort: 'high', ultracode: true }
+  check(
+    'Claude Code’s four launch defaults round-trip where they always lived',
+    roundTrip({ ...DEFAULT_SETTINGS, defaults }).defaults,
+    defaults
+  )
+}
+
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
 process.exitCode = failures ? 1 : 0

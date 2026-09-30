@@ -75,7 +75,15 @@ export function fromStored(state: StoredTabs): { tabs: Tab[]; activeId: string |
     title: s.title,
     ...(s.customTitle ? { customTitle: s.customTitle } : {}),
     permissionMode: s.permissionMode,
-    model: s.model,
+    /*
+     * Another agent's paused tab comes back with no model. Its Resume asks
+     * main's launch plan again, from today's settings, and the tab takes the
+     * model that plan reports — and a tab saved before other agents carried
+     * their own model holds Claude Code's default instead, which the status
+     * bar would now name beside a Codex tab. The literal id because this
+     * module imports types only (verify:restore runs it, gotcha 78).
+     */
+    model: s.cliId === 'claude' ? s.model : '',
     effort: s.effort,
     ultracode: s.ultracode,
     /*

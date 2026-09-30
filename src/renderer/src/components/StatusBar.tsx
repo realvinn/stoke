@@ -340,10 +340,15 @@ export function StatusBar({
         the model carries the same colour as the tab's tag and its pane's rule —
         whose model this is, at a glance.
       */}
+      {/*
+        Another agent's model is shown as it was typed and passed: `modelLabel`
+        reads Claude Code's ids (`claude-opus-5[1m]` -> "Opus 5 · 1M"), and
+        turned Codex's `gpt-6.1-sol` into "Gpt" when it was first driven.
+      */}
       {!installTab && caps.launchFlags.model && model && (
-        <span className="status-item" {...agentMark(cliIdOf(tab.cliId))}>
+        <span className="status-item" title={model} {...agentMark(cliIdOf(tab.cliId))}>
           <span className="agent-dot" aria-hidden="true" />
-          {modelLabel(model)}
+          {claudeTab ? modelLabel(model) : model}
         </span>
       )}
 

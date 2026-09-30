@@ -356,6 +356,19 @@ console.log('\nconverting between the tab list and the snapshot')
   const back = fromStored(state({ activeIndex: 99, tabs: [tab({ sessionId: 'x' }), tab({ sessionId: 'y' })] }))
   check('an out-of-range activeIndex with tabs present falls back to the first tab', back.activeId, back.tabs[0]?.id)
 }
+{
+  /*
+   * Another agent's tab carries the model its launch plan asked for, and the
+   * status bar names it. A tab saved before that stamped Claude Code's default
+   * on every tab, Codex's included; restored as it was, "Opus" would sit beside
+   * a paused Codex tab. Its Resume asks main's plan again anyway.
+   */
+  const back = fromStored(
+    state({ tabs: [tab({ cliId: 'claude', model: 'opus' }), tab({ cliId: 'codex', model: 'opus' })] })
+  )
+  check('a Claude tab keeps the model it was launched with', back.tabs[0]?.model, 'opus')
+  check("another agent's tab comes back with no model — its Resume asks the plan again", back.tabs[1]?.model, '')
+}
 
 console.log('\nscreensFrom keys the screen map by position, not by content')
 {

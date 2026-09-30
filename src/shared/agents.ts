@@ -27,6 +27,10 @@
  *             loaded with `-e`; Stoke writes that file under its own userData
  *             and the endpoint itself arrives through the environment.
  *
+ * On an agent's own sign-in the one thing Stoke adds is its Default model,
+ * through the flag `CodingCli.modelArgs` names — each read out of the vendor's
+ * own artefact or docs on 2026-09-30 (codingClis.ts says which).
+ *
  * Keys only ever travel in the environment, never in argv, where any other
  * process on the machine could read them from the process table.
  *
@@ -56,6 +60,13 @@ export interface AgentEndpoint {
    * The model to ask for. Required off `default`: Grok Build picks the FIRST
    * model an endpoint lists when it is not told, which on OpenRouter was an
    * obscure 27B model, and the others refuse to start without one.
+   *
+   * On `default` — the agent's own sign-in — it is the "Default model" in
+   * Settings › Agents, optional, and passed only through the agent's own
+   * confirmed flag (`CodingCli.modelArgs`); blank lets the agent choose. One
+   * field for both, never a second "default model" beside it (gotcha 57), so a
+   * mode change clears it: an id means something only to the endpoint it was
+   * chosen for. Only ever an id `isModelId` accepts, since it reaches argv.
    */
   model: string
   /** A custom endpoint's base URL — the `/v1` root of an OpenAI-style API. */
@@ -133,17 +144,44 @@ function isEndpointMode(v: unknown): v is EndpointMode {
 
 const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : '')
 
+/** Longer than any real model id; a pasted paragraph is not one. */
+export const MODEL_ID_MAX = 200
+
+/**
+ * What a model id may be before it goes anywhere near argv.
+ *
+ * The model is an argument to someone else's binary, and on Windows an npm
+ * agent is a `.cmd` shim that `spawnSpec` runs through `cmd.exe /c`, which
+ * reads `& | ^ < > ( ) % !` and quotes as its own syntax (gotcha 13) — so a
+ * model of `x & calc` would be two commands. Every real id seen here fits this
+ * set: `gpt-6.1-sol`, `anthropic/claude-sonnet-5`, `qwen3-coder:30b`,
+ * `claude-opus-5[1m]`, `@cf/meta/llama-4`, `provider/id:high`. It must also
+ * start with a letter, digit, `_` or `@`: an id beginning `-` would be read by
+ * the agent's option parser as a flag of its own (`-m --yolo`).
+ */
+const MODEL_ID = /^[A-Za-z0-9_@][A-Za-z0-9._:/@+[\]-]*$/
+
+export function isModelId(v: string): boolean {
+  return v.length <= MODEL_ID_MAX && MODEL_ID.test(v)
+}
+
 /**
  * Repair a stored endpoint. Rebuilt from named keys, like `hydrateProviders`
  * and the ui.ts clamps: a field this does not name does not survive, so a new
  * field needs a line here in the same change.
+ *
+ * A model that is not a model id is dropped rather than kept: `setSettings`
+ * hydrates every write, so nothing that would reach argv unchecked is ever
+ * stored — a hand-edited file included. Off `default` that leaves no model,
+ * and `endpointProblem` refuses the launch with a sentence saying so.
  */
 export function hydrateEndpoint(raw: unknown): AgentEndpoint {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ...DEFAULT_ENDPOINT }
   const r = raw as Partial<AgentEndpoint>
+  const model = str(r.model)
   return {
     mode: isEndpointMode(r.mode) ? r.mode : 'default',
-    model: str(r.model),
+    model: isModelId(model) ? model : '',
     baseUrl: str(r.baseUrl).replace(/\/+$/, ''),
     apiKey: str(r.apiKey)
   }
@@ -270,6 +308,12 @@ export interface LaunchPlan {
   args: string[]
   /** Merged over the inherited environment. Where every key travels. */
   env: Record<string, string>
+  /**
+   * The model this launch asks for (`launchModel`), '' when the agent picks.
+   * Reported back to the renderer as the tab's model, so the status bar names
+   * exactly what the argv or environment carried.
+   */
+  model: string
 }
 
 export type LaunchPlanResult = { ok: true; plan: LaunchPlan } | { ok: false; message: string }
@@ -333,20 +377,50 @@ export const ENV_CUSTOM_BASE_URL = 'STOKE_CUSTOM_BASE_URL'
 export const ENV_CUSTOM_MODEL = 'STOKE_CUSTOM_MODEL'
 export const ENV_MCP_TOKEN = 'STOKE_MCP_TOKEN'
 
-/** What is wrong with an endpoint before anything is spawned, or null. */
+/**
+ * What `endpointProblem` says about a model that is not a model id — shared so
+ * the settings field can say it while the id is being typed, before the store
+ * would drop it.
+ */
+export function modelIdProblem(label: string): string {
+  return `${label}’s model is not a model id. Use letters, digits and . _ : / @ + [ ] -, starting with a letter or digit, and no spaces. Set it in Settings › Agents.`
+}
+
+/**
+ * What is wrong with an endpoint before anything is spawned, or null.
+ *
+ * The model is checked first and in every mode: it reaches argv, where
+ * `cmd.exe` would read a metacharacter as syntax (`isModelId`). A stored
+ * endpoint has been through `hydrateEndpoint` already; this is the second lock,
+ * for a value that did not come from the store (a settings draft, a suite).
+ */
 export function endpointProblem(id: CodingCliId, ep: AgentEndpoint, openrouterKey: string): string | null {
   const cli = cliFor(id)
+  if (ep.model && !isModelId(ep.model)) return modelIdProblem(cli.label)
   if (ep.mode === 'default') return null
   if (ep.mode === 'openrouter') {
     if (!cli.endpoints.openrouter) return `${cli.label} cannot be pointed at OpenRouter from Stoke.`
     if (!openrouterKey) return `${cli.label} is set to use OpenRouter, but there is no OpenRouter key. Add one in Settings › Providers.`
-    if (!ep.model) return `${cli.label} is set to use OpenRouter, but no model is chosen. Set one in Settings › Coding agents.`
+    if (!ep.model) return `${cli.label} is set to use OpenRouter, but no model is chosen. Set one in Settings › Agents.`
     return null
   }
   if (!cli.endpoints.custom) return `${cli.label} cannot be pointed at a custom endpoint from Stoke.`
-  if (!isEndpointUrl(ep.baseUrl)) return `${cli.label}’s custom endpoint needs an http(s) base URL. Set it in Settings › Coding agents.`
-  if (!ep.model) return `${cli.label}’s custom endpoint needs a model. Set it in Settings › Coding agents.`
+  if (!isEndpointUrl(ep.baseUrl)) return `${cli.label}’s custom endpoint needs an http(s) base URL. Set it in Settings › Agents.`
+  if (!ep.model) return `${cli.label}’s custom endpoint needs a model. Set it in Settings › Agents.`
   return null
+}
+
+/**
+ * The model a launch of this agent asks for, or '' when the agent chooses:
+ * off `default` the endpoint's (required there), on its own sign-in the
+ * Default model — but only where the table has a flag to pass it with
+ * (`modelArgs`). What the tab carries and the status bar names, and what
+ * `agentLaunchPlan` reports in `LaunchPlan.model`, so the two cannot differ.
+ */
+export function launchModel(id: CodingCliId, ep: AgentEndpoint | undefined): string {
+  if (isClaudeCode(id) || !ep?.model || !isModelId(ep.model)) return ''
+  if (ep.mode !== 'default') return ep.model
+  return cliFor(id).modelArgs ? ep.model : ''
 }
 
 /**
@@ -360,7 +434,7 @@ export function agentLaunchPlan(input: LaunchPlanInput): LaunchPlanResult {
   const { id, openrouterKey, continueLast, mcp, piExtensionPath } = input
   const cli = cliFor(id)
   const ep = input.endpoint ?? DEFAULT_ENDPOINT
-  if (isClaudeCode(id)) return { ok: true, plan: { args: [], env: {} } }
+  if (isClaudeCode(id)) return { ok: true, plan: { args: [], env: {}, model: '' } }
 
   const problem = endpointProblem(id, ep, openrouterKey)
   if (problem) return { ok: false, message: problem }
@@ -368,6 +442,16 @@ export function agentLaunchPlan(input: LaunchPlanInput): LaunchPlanResult {
   const args: string[] = []
   const env: Record<string, string> = {}
   const customKey = ep.apiKey || NO_KEY
+
+  /*
+   * On the agent's own sign-in, the Default model through its own confirmed
+   * flag, first — ahead of the MCP flags and well ahead of `continueArgs`,
+   * since Codex's `resume --last` is a subcommand and its global flags go
+   * before it (the order the endpoint `-m` below has always used). Off
+   * `default` each case passes the endpoint's model in its own shape instead.
+   */
+  const model = launchModel(id, ep)
+  if (ep.mode === 'default' && model && cli.modelArgs) args.push(...cli.modelArgs(model))
 
   switch (id) {
     case 'codex': {
@@ -510,7 +594,7 @@ export function agentLaunchPlan(input: LaunchPlanInput): LaunchPlanResult {
   }
 
   if (continueLast && cli.continueArgs) args.push(...cli.continueArgs)
-  return { ok: true, plan: { args, env } }
+  return { ok: true, plan: { args, env, model } }
 }
 
 /**

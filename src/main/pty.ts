@@ -75,6 +75,12 @@ export interface StartResult {
   sessionId: string
   command: string
   args: string[]
+  /**
+   * Another agent's launch only: the model its plan asked for, '' when the
+   * agent picks its own (`launchModel`, agents.ts). Absent for Claude Code,
+   * whose model is the one the renderer chose and sent.
+   */
+  model?: string
 }
 
 interface Session {
