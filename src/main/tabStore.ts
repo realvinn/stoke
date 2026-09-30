@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path'
 import type { EffortLevel, PermissionMode, StoredTab, StoredTabs } from '../shared/types.ts'
 import { cliIdOf } from '../shared/codingClis.ts'
 import { isSafeRemoteSessionName } from '../shared/sshPersist.ts'
+import { cliOfAccountId } from '../shared/accounts.ts'
 
 /**
  * The tabs that were open when Stoke last quit.
@@ -91,11 +92,20 @@ function tabOf(v: unknown): StoredTab | null {
    */
   if (kind === 'session' && !cwd) return null
   const ctx = isRecord(v.context) ? v.context : null
+  const cliId = cliIdOf(v.cliId)
+  /*
+   * An account only if it is an account id of THIS tab's agent: the value
+   * becomes a launch's environment (a config home, a key), and a `codex-work`
+   * on a Claude tab — hand-edited, or from a newer build — must restore on
+   * Default rather than be handed to the wrong agent. Absent for Default, so
+   * a Default tab's stored form is what it always was.
+   */
+  const accountId = typeof v.accountId === 'string' && cliOfAccountId(v.accountId) === cliId ? v.accountId : null
   return {
     kind,
     // Hydrated, never taken raw: this value chooses which binary a restore
     // spawns, and the file it comes from is one a user can edit.
-    cliId: cliIdOf(v.cliId),
+    cliId,
     sessionId: str(v.sessionId),
     cwd,
     projectName: str(v.projectName),
@@ -118,6 +128,7 @@ function tabOf(v: unknown): StoredTab | null {
     ...(nullableStr(v.hostId) && isSafeRemoteSessionName(v.remoteSession)
       ? { remoteSession: v.remoteSession }
       : {}),
+    ...(accountId && kind === 'session' ? { accountId } : {}),
     selectedPath: nullableStr(v.selectedPath),
     expandedPath: nullableStr(v.expandedPath),
     lastActiveAt: typeof v.lastActiveAt === 'number' && Number.isFinite(v.lastActiveAt) ? v.lastActiveAt : 0,

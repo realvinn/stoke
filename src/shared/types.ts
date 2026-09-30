@@ -5,6 +5,7 @@
 import type { CodingCliId } from './codingClis.ts'
 import type { ProviderSettings } from './providers.ts'
 import type { AgentSettings } from './agents.ts'
+import type { AgentAccount } from './accounts.ts'
 import type { FullScreenReveal, RemoteReachPreference, ZoomTarget } from './ui.ts'
 import type { BrowserProfile, ImportOffer } from './browserProfiles.ts'
 import type { ChatIndexMode, ChatIndexOptions } from './chatIndex.ts'
@@ -103,6 +104,23 @@ export interface LaunchOptions {
    * ignored for such a launch. The tab it opens is never saved for restore.
    */
   enroll?: { hostId: string }
+  /**
+   * The account this session runs on (shared/accounts.ts): an account id,
+   * `'default'` for the agent's own sign-in, or absent for "this agent's
+   * default account" (`agents.defaultAccount`). Resolved in main
+   * (`resolveLaunchAccount`), refused when it names another agent's account,
+   * and reported back as `StartResult.accountId` so the tab carries the answer
+   * rather than the question. Ignored for SSH and installs.
+   */
+  accountId?: string
+  /**
+   * Sign this account in instead of running a session: the tab runs the
+   * agent's own login (`claude auth login`, `codex login`, or the agent
+   * itself where it asks on first run) under the account's home. Only the id
+   * crosses this boundary — the argv and the folder are main's
+   * (`startAccountLogin`) — and the tab is never saved for restore.
+   */
+  accountLogin?: { accountId: string }
   /**
    * Which way round this window's colours are, for `COLORFGBG`.
    *
@@ -1279,6 +1297,15 @@ export interface Settings {
    */
   agents: AgentSettings
   /**
+   * Extra sign-ins per coding agent, keyed by account id (`claude-work`).
+   * Machine-local: a login account's home is a folder on this disk, signed in
+   * on this device, so it never travels in a setup file. A key account's key
+   * is sealed in secrets.json (`accounts.*.apiKey`). Written only by main —
+   * `accounts:create`/`accounts:remove` — except a label, swatch or key, which
+   * a settings patch may change (`accountsFromRenderer`).
+   */
+  accounts: Record<string, AgentAccount>
+  /**
    * The Stoke version whose first-run campfire has already been watched, or
    * null on a machine that has never seen one.
    *
@@ -1541,6 +1568,16 @@ export interface StoredTab {
    * a new one. Absent for every other tab; whitelisted on read.
    */
   remoteSession?: string
+  /**
+   * The account the session ran on, when it was not the agent's own sign-in
+   * (shared/accounts.ts). Absent is Default — every tab written before
+   * accounts existed, and a tab explicitly on Default, whose stored form is
+   * byte-for-byte what it always was. Hydrated through `isAccountId` and
+   * checked against the tab's agent; a restore asks for it by id, and main
+   * refuses one that has since been removed rather than moving the
+   * conversation to another account.
+   */
+  accountId?: string
   selectedPath: string | null
   expandedPath: string | null
   lastActiveAt: number

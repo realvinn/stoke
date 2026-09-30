@@ -410,6 +410,62 @@ console.log('\nconverting between the tab list and the snapshot')
   check("another agent's tab comes back with no model — its Resume asks the plan again", back.tabs[1]?.model, '')
 }
 
+console.log('\nthe account a tab ran on (shared/accounts.ts)')
+{
+  /*
+   * A tab on another account comes back asking for THAT account: a Resume on
+   * the default account would spend another plan. Absent in the file is the
+   * agent's own sign-in — every tab from before accounts — and restores as
+   * 'default' by name, never as "whatever the default account is now". The
+   * value becomes a launch's environment, so only an id of the tab's OWN
+   * agent survives the read.
+   */
+  const read = normaliseTabs(
+    state({
+      tabs: [
+        tab({ sessionId: 'a', accountId: 'claude-work' }),
+        tab({ sessionId: 'b' }),
+        tab({ sessionId: 'c', accountId: 'codex-work' }),
+        tab({ sessionId: 'd', cliId: 'codex', accountId: 'codex-work' }),
+        tab({ sessionId: 'e', accountId: '../../etc' as never }),
+        tab({ sessionId: 'f', accountId: 'default' }),
+        tab({ sessionId: 'g', accountId: 42 as never })
+      ]
+    }),
+    NOW
+  )
+  check(
+    'kept only for an id of the tab\u2019s own agent',
+    read.tabs.map((t) => t.accountId ?? null),
+    ['claude-work', null, null, 'codex-work', null, null, null]
+  )
+  const back = fromStored(read)
+  check(
+    'restored: its account by id, or the agent\u2019s own sign-in by name',
+    back.tabs.map((t) => t.accountId),
+    ['claude-work', 'default', 'default', 'codex-work', 'default', 'default', 'default']
+  )
+  const ssh = fromStored(state({ tabs: [tab({ hostId: 'h1', cwd: 'vps' })] }))
+  check('an SSH tab carries none: its claude is on the far machine', ssh.tabs[0]?.accountId, undefined)
+
+  const base = {
+    kind: 'session' as const, cliId: 'claude' as const, permissionMode: 'default' as const, model: '',
+    effort: 'default' as const, ultracode: false, exitCode: null, selectedPath: null, expandedPath: null, hostId: null
+  }
+  const live: Tab[] = [
+    { ...base, id: 'w', ptyId: 'w', sessionId: 's-w', cwd: '/w', projectName: 'w', title: 'on work', status: 'running', accountId: 'claude-work' },
+    { ...base, id: 'd', ptyId: 'd', sessionId: 's-d', cwd: '/w', projectName: 'w', title: 'on default', status: 'running', accountId: 'default' },
+    { ...base, id: 'l', ptyId: 'l', sessionId: '', cwd: '/h/.stoke/accounts/claude-work', projectName: 'Work', title: 'Sign in · Work', status: 'running', accountId: 'claude-work', accountLogin: 'claude-work' }
+  ]
+  const snap = toStored(live, 'l', {}, (t) => t.id, NOW)
+  check('a sign-in tab is never saved', snap.tabs.map((t) => t.title), ['on work', 'on default'])
+  check(
+    'an account tab stores its id; a Default tab\u2019s stored form is what it always was',
+    snap.tabs.map((t) => ('accountId' in t ? t.accountId : 'absent')),
+    ['claude-work', 'absent']
+  )
+}
+
 console.log('\nscreensFrom keys the screen map by position, not by content')
 {
   const stored = state({

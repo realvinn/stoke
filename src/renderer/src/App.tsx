@@ -9,6 +9,7 @@ import {
 import type { CodingCliDetection, CodingCliId } from '@shared/codingClis'
 import { installedAgents, resolveDefaultAgent, visibleAgents } from '@shared/agents'
 import { paintAgentColors, type AgentColors } from '@shared/agentColors'
+import { accountSeed, accountsOf, DEFAULT_ACCOUNT_ID } from '@shared/accounts'
 import { nextReveal, REVEAL_ENTRY_GRACE_MS } from '@shared/fullScreenReveal'
 import type { RevealInfo, RevealInput, RevealState } from '@shared/fullScreenReveal'
 import { AgentPicker } from './components/AgentPicker'
@@ -1361,6 +1362,8 @@ export function App(): React.JSX.Element {
           // A phone's start on a host that keeps its shells: the name main
           // gave it, so this tab reconnects and restores to the same shell.
           ...(info.hostId && isSafeRemoteSessionName(info.remoteSession) ? { remoteSession: info.remoteSession } : {}),
+          // The account main launched it on, so its Resume asks for that one.
+          ...(info.accountId && !info.hostId ? { accountId: info.accountId } : {}),
           selectedPath: null,
           expandedPath: null
         }
@@ -1596,15 +1599,31 @@ export function App(): React.JSX.Element {
     () => tabs.filter((t) => t.kind === 'session' && !t.installing?.length).map((t) => t.cliId),
     [tabs]
   )
-  const agentPaint = paintAgentColors(primaryCli, visibleAgentIds, openAgentIds)
+  /*
+   * Accounts (shared/accounts.ts) wear colours too, under their ids, and the
+   * paint is on while any account exists or a tab on one is open: two
+   * accounts of one agent are two things in view, even with one agent.
+   */
+  const storedAccounts = settings?.accounts
+  const accountTabOpen = tabs.some(
+    (t) => t.kind === 'session' && (!!t.accountLogin || (!!t.accountId && t.accountId !== DEFAULT_ACCOUNT_ID))
+  )
+  const agentPaint =
+    paintAgentColors(primaryCli, visibleAgentIds, openAgentIds) ||
+    accountTabOpen ||
+    Object.keys(storedAccounts ?? {}).length > 0
   const agentColorsKey = JSON.stringify(settings?.agents.colors ?? {})
+  const accountSeedsKey = JSON.stringify(
+    Object.values(storedAccounts ?? {}).map((a) => ({ key: a.id, seed: accountSeed(a) }))
+  )
 
   useEffect(() => {
     applyAppearance(theme, activeProfile, {
       colors: JSON.parse(agentColorsKey) as AgentColors,
+      accounts: JSON.parse(accountSeedsKey) as { key: string; seed: string }[],
       paint: agentPaint
     })
-  }, [theme, activeProfile, agentColorsKey, agentPaint])
+  }, [theme, activeProfile, agentColorsKey, accountSeedsKey, agentPaint])
 
   const wallpaper = settings?.wallpaper ?? null
   useEffect(() => {
@@ -2018,6 +2037,12 @@ export function App(): React.JSX.Element {
       install?: CodingCliId[]
       /** Another agent's chat to reopen by its own id (chat search; `resumeArgs`). */
       agentResumeId?: string
+      /**
+       * The account to start on: a tab's own (relaunch, Resume, Start again),
+       * or absent for the agent's default account. Main resolves and checks
+       * it; the tab stores main's answer (`StartResult.accountId`).
+       */
+      accountId?: string
     }): Promise<boolean> => {
       setError(null)
       const launchCli = opts.cli ?? DEFAULT_CLI
@@ -2054,6 +2079,7 @@ export function App(): React.JSX.Element {
           install: opts.install,
           // Never a Claude flag: Claude's resume is `sessionId` + `resume` above.
           agentResumeId: isClaudeCode(launchCli) ? undefined : opts.agentResumeId,
+          accountId: opts.install?.length ? undefined : opts.accountId,
           permissionMode,
           model: sessionModel,
           effort: sessionEffort,
@@ -2075,6 +2101,7 @@ export function App(): React.JSX.Element {
           cliId: launchCli,
           ...(opts.install?.length ? { installing: opts.install } : {}),
           ...(replaced?.customTitle ? { customTitle: replaced.customTitle } : {}),
+          ...(!opts.install?.length && res.accountId ? { accountId: res.accountId } : {}),
           ptyId: res.ptyId,
           sessionId: res.sessionId,
           cwd: opts.cwd,
@@ -2383,6 +2410,9 @@ export function App(): React.JSX.Element {
            * in the same folder.
            */
           cli: tab.cliId,
+          // Its own account: a restored conversation resumes on the plan it
+          // was spending, and main refuses one that has since been removed.
+          accountId: tab.accountId,
           sessionId: tab.sessionId || undefined,
           // No id means a --continue session, which never learned its own
           // (gotcha 26). Continue in the same folder instead.
@@ -2709,6 +2739,13 @@ export function App(): React.JSX.Element {
       void window.stoke.self.check()
       return
     }
+    // `stoke account add`: main has made the account and asks for its sign-in.
+    // An `account-add` itself never arrives here — main turns it into this.
+    if (req.kind === 'account-add') return
+    if (req.kind === 'account-login') {
+      void startAccountLogin(req.accountId)
+      return
+    }
     const rules = pathRulesFor(platform)
     const key = pathKey(req.cwd, rules)
     // The sidebar's own spelling of the folder when it has one: on APFS
@@ -2755,6 +2792,7 @@ export function App(): React.JSX.Element {
           t.status === 'running' &&
           !t.hostId &&
           t.cliId === reqCli &&
+          !t.accountLogin &&
           pathKey(t.cwd, rules) === key
       )
       if (open) {
@@ -3144,6 +3182,87 @@ export function App(): React.JSX.Element {
   const startSshEnrollRef = useRef(startSshEnroll)
   startSshEnrollRef.current = startSshEnroll
 
+  /* ------------------------------------------------------ account sign-in */
+
+  /**
+   * Sign an account in: a tab running the agent's own login (`claude auth
+   * login`, `codex login`, or the agent itself) under the account's home,
+   * where the person answers it (gotcha 109). Only the account id goes to
+   * main, which builds the argv and holds the claim until the tab exits;
+   * this ref only stops a second press racing the first IPC call (gotcha
+   * 51). Never saved for restore (`toStored`), and "Start again" signs in
+   * again rather than starting the agent (`restartPlan`).
+   */
+  const accountLoginRef = useRef(new Set<string>())
+  const startAccountLogin = useCallback(
+    async (accountId: string, replaceTabId?: string): Promise<void> => {
+      if (accountLoginRef.current.has(accountId)) return
+      // Claimed before the first await (gotcha 20).
+      accountLoginRef.current.add(accountId)
+      setError(null)
+      try {
+        /*
+         * Asked of main when the render's copy does not have it yet: an account
+         * made a moment ago (Add account, `stoke account add`) is pushed with
+         * `settings:changed`, and the caller gets here before React has
+         * committed that push — the first drive of this read "That account is
+         * no longer in Settings" for the account it had just made.
+         */
+        const account =
+          settingsRef.current?.accounts[accountId] ?? (await window.stoke.settings.get()).accounts[accountId]
+        if (!account) {
+          setError('That account is no longer in Settings › Agents.')
+          return
+        }
+        const res = await window.stoke.pty.start({
+          // Main ignores every field here but the account id, the size and the appearance.
+          cwd: '',
+          accountLogin: { accountId },
+          permissionMode: 'default',
+          model: '',
+          effort: 'default',
+          appearance: launchAppearance(),
+          cols: 120,
+          rows: 30
+        })
+        const tab: Tab = {
+          id: res.ptyId,
+          kind: 'session',
+          cliId: account.cli,
+          accountLogin: accountId,
+          accountId,
+          ptyId: res.ptyId,
+          sessionId: '',
+          cwd: account.home,
+          projectName: account.label,
+          title: `Sign in · ${account.label}`,
+          permissionMode: 'default',
+          model: '',
+          effort: 'default',
+          ultracode: false,
+          status: 'running',
+          exitCode: null,
+          hostId: null,
+          selectedPath: null,
+          expandedPath: null
+        }
+        setTabs((list) => {
+          const next = replaceOrAppend(list, tab, replaceTabId)
+          tabsRef.current = next
+          return next
+        })
+        // In front: the sign-in is answered here.
+        activeTabIdRef.current = tab.id
+        setActiveTabId(tab.id)
+      } catch (e) {
+        setError(ipcErrorMessage(e))
+      } finally {
+        accountLoginRef.current.delete(accountId)
+      }
+    },
+    [launchAppearance]
+  )
+
   /**
    * Main has proved (or failed to prove) the enrollment, after its tab exited.
    *
@@ -3323,6 +3442,12 @@ export function App(): React.JSX.Element {
         return
       }
 
+      if (plan.kind === 'login') {
+        // "Start again" on a sign-in tab: the same sign-in, in this tab's slot.
+        void startAccountLogin(plan.accountId, tab.id).finally(() => releaseStart(tab.id))
+        return
+      }
+
       if (plan.kind === 'install') {
         void startSession({
           cwd: defaultCwd,
@@ -3340,6 +3465,7 @@ export function App(): React.JSX.Element {
         // From the plan, not from the tab, so there is one decision and one
         // place it is made.
         cli: plan.cli,
+        accountId: plan.accountId,
         name: tab.projectName,
         replaceTabId: tab.id,
         permissionMode: tab.permissionMode,
@@ -3348,7 +3474,7 @@ export function App(): React.JSX.Element {
         ultracode: tab.ultracode
       }).finally(() => releaseStart(tab.id))
     },
-    [settings, startSession, startHostSession, startSshEnroll, claimStart, releaseStart, defaultCwd, cancelReconnect]
+    [settings, startSession, startHostSession, startSshEnroll, startAccountLogin, claimStart, releaseStart, defaultCwd, cancelReconnect]
   )
 
   /**
@@ -3434,6 +3560,8 @@ export function App(): React.JSX.Element {
         return startSession({
           cwd: tab.cwd,
           cli: tab.cliId,
+          // The same account: a relaunch moves the CLI, never the plan it spends.
+          accountId: tab.accountId,
           name: tab.projectName,
           title: tab.title,
           sessionId: plan.sessionId,
@@ -4029,8 +4157,36 @@ export function App(): React.JSX.Element {
   const agentTagShown = settings?.agents.tag.show ?? true
   const agentTagLabels = settings?.agents.tag.labels
   const tagOptions = useMemo(
-    () => ({ show: agentTagShown, labels: agentTagLabels ?? {}, primary: primaryCli }),
-    [agentTagShown, agentTagLabels, primaryCli]
+    () => ({ show: agentTagShown, labels: agentTagLabels ?? {}, primary: primaryCli, accounts: storedAccounts ?? {} }),
+    [agentTagShown, agentTagLabels, primaryCli, storedAccounts]
+  )
+
+  /*
+   * The launcher's account pill: the primary agent's own sign-in, then its
+   * stored accounts. Derived from settings, and picking one writes
+   * `agents.defaultAccount` — the one value Start, `stoke .` and the phone
+   * resolve through (gotcha 57), never a copy held here.
+   */
+  const launcherAccounts = useMemo(
+    () => [
+      { id: DEFAULT_ACCOUNT_ID, label: 'Default', colorKey: null },
+      ...accountsOf(primaryCli, storedAccounts ?? {}).map((a) => ({ id: a.id, label: a.label, colorKey: a.id }))
+    ],
+    [primaryCli, storedAccounts]
+  )
+  const storedDefaultAccount = settings?.agents.defaultAccount[primaryCli]
+  const launcherAccountId =
+    storedDefaultAccount && storedAccounts?.[storedDefaultAccount] ? storedDefaultAccount : DEFAULT_ACCOUNT_ID
+  const pickAccount = useCallback(
+    (id: string): void => {
+      const cur = settingsRef.current
+      if (!cur) return
+      const defaultAccount = { ...cur.agents.defaultAccount }
+      if (id === DEFAULT_ACCOUNT_ID) delete defaultAccount[primaryCli]
+      else defaultAccount[primaryCli] = id
+      void patchSettings({ agents: { ...cur.agents, defaultAccount } })
+    },
+    [patchSettings, primaryCli]
   )
 
 
@@ -5431,6 +5587,9 @@ export function App(): React.JSX.Element {
               onLookAgain={() => refreshAgents(true)}
               otherClis={otherClis}
               onMakeDefaultAgent={makeDefaultAgent}
+              accounts={launcherAccounts}
+              accountId={launcherAccountId}
+              onPickAccount={pickAccount}
               onAddAgents={() => setAgentPickerOpen(true)}
               onStartCli={(id) => {
                 if (!launchTarget) return
@@ -5590,6 +5749,12 @@ export function App(): React.JSX.Element {
             onInstall: (ids) => {
               setSettingsOpen(false)
               installAgents(ids)
+            },
+            // The sheet goes so the sign-in tab it opens is what the user sees.
+            onSignIn: (accountId) => {
+              setPreviewTheme(null)
+              setSettingsOpen(false)
+              void startAccountLogin(accountId)
             }
           }}
           onRestartToUpdate={requestSelfRestart}

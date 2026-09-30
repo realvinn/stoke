@@ -288,6 +288,8 @@ export const PARTIAL_KEYS = {
  * - `chatIndex`, `chatIndexOptions`: consent to copy THIS machine's chat text
  *   into a local index, and which of its tools and how much. A yes given on one
  *   computer is not a yes on another, and the offer there must still be asked.
+ * - `accounts`: each login account is a folder on this disk signed in on this
+ *   device (shared/accounts.ts), and its key accounts' keys are not portable.
  *
  * `verify:secrets` asserts PORTABLE_KEYS, PARTIAL_KEYS and LOCAL_KEYS
  * partition every key of DEFAULT_SETTINGS exactly, so a new setting fails the
@@ -307,7 +309,8 @@ export const LOCAL_KEYS = [
   'activeProfile',
   'welcomeSeenVersion',
   'chatIndex',
-  'chatIndexOptions'
+  'chatIndexOptions',
+  'accounts'
 ] as const satisfies readonly (keyof Settings)[]
 
 function cloneJson<T>(v: T): T {

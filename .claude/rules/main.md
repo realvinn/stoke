@@ -26,6 +26,21 @@ own `(dev)` userData so it never fights the installed app, but that override has
 skipped when the flag is present, or a test profile boots the wrong settings and looks
 fine doing it.
 
+> **Checked against the code on 2026-09-30** — the isolation stops at userData. Anything Stoke
+> writes OUTSIDE it (`~/.stoke/accounts/index.json`, the account folders beside it) is shared by
+> the installed app, `npm run dev` and every `--user-data-dir` sandbox that does not also move
+> HOME, and each of them knows only its own settings. The first account index was written from
+> one Stoke's list alone, so a dev build with no accounts booted, found the installed app's
+> index and wrote it back EMPTY — `stoke account env work` then failed for the app's accounts,
+> and the app's own write cache kept it from repairing the file until it restarted (found in
+> review; reproduced by `verify:accounts` against the old write: 10 failures, including the
+> shim printing nothing). A shared file is merged per writer and never replaced
+> (`updateAccountIndex`: a `writers` record keyed by the realpath'd userData, a `mkdir` lock
+> around the read-merge-write, a writer whose userData is gone dropped), and a Stoke with
+> nothing of its own in it never writes at all (`accountIndexNeedsWrite`). Proven live with two
+> userData folders under one scratch HOME: the dev instance's boot left the app's index
+> byte-for-byte, and its add-then-remove put it back to exactly the app's.
+
 ## 13. `execFile` defaults to a 1 MB `maxBuffer`, and `spawnSpec` routes `.cmd` installs through `cmd.exe /c`
 
 **`execFile` defaults to a 1 MB `maxBuffer`, and `spawnSpec` routes `.cmd` installs

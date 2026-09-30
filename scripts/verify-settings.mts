@@ -745,5 +745,61 @@ console.log('\nssh hosts: keeping sessions running')
   check('hydrating twice changes nothing (gotcha 116)', hydrateSettings(once).hosts, once.hosts)
 }
 
+console.log('\naccounts: rebuilt from named keys, never trusted (shared/accounts.ts)')
+{
+  /*
+   * A login account's home becomes an agent's config dir, so the hydrate is
+   * the lock: a hand-edited file cannot point an agent at `relative/../x`, a
+   * home with a newline in it, or a login account for an agent whose sign-in
+   * does not follow its home (Cursor). Nothing is ever added on read.
+   */
+  check('none by default', DEFAULT_SETTINGS.accounts, {})
+  check('agents.defaultAccount defaults to every agent on its own sign-in', DEFAULT_SETTINGS.agents.defaultAccount, {})
+  const h = hydrateSettings({
+    accounts: {
+      'claude-work': { cli: 'claude', label: '  Work  ', kind: 'login', home: '/Users/v/.stoke/accounts/claude-work', swatch: 'teal', extra: 'dropped' },
+      'codex-2': { kind: 'login', home: 'C:\\Users\\v\\.stoke\\accounts\\codex-2' },
+      'grok-team': { kind: 'key', apiKey: '  xai-k  ', home: '/ignored' },
+      'claude-rel': { kind: 'login', home: 'relative/../x' },
+      'claude-nl': { kind: 'login', home: '/a\nb' },
+      'cursor-me': { kind: 'login', home: '/Users/v/.stoke/accounts/cursor-me' },
+      'cursor-ci': { kind: 'key', apiKey: 'cur' },
+      'claude-wrong': { cli: 'codex', kind: 'login', home: '/x' },
+      'banana-1': { kind: 'key', apiKey: 'k' },
+      default: { kind: 'login', home: '/x' },
+      'Claude-Work': { kind: 'login', home: '/x' },
+      'vibe-1': { kind: 'login', home: '/x' },
+      'vibe-2': { kind: 'key', apiKey: 'm' }
+    }
+  })
+  check(
+    'only well-formed accounts of known agents survive',
+    Object.keys(h.accounts),
+    ['claude-work', 'codex-2', 'grok-team', 'cursor-ci', 'vibe-2']
+  )
+  check('a label is trimmed, an unknown key dropped, a known swatch kept', h.accounts['claude-work'], {
+    id: 'claude-work',
+    cli: 'claude',
+    label: 'Work',
+    kind: 'login',
+    home: '/Users/v/.stoke/accounts/claude-work',
+    apiKey: '',
+    swatch: 'teal'
+  })
+  check('an unnamed account is called after its slug', h.accounts['codex-2']?.label, '2')
+  check('a Windows home is a home', h.accounts['codex-2']?.home, 'C:\\Users\\v\\.stoke\\accounts\\codex-2')
+  check('a key account keeps its key, trimmed, and no home', [h.accounts['grok-team']?.apiKey, h.accounts['grok-team']?.home], ['xai-k', ''])
+  const empty = hydrateSettings({ accounts: { 'grok-team': { kind: 'key', apiKey: '' } } })
+  check('a key account with its key emptied (sealed in secrets.json) is KEPT', Object.keys(empty.accounts), ['grok-team'])
+  check('junk is no accounts', [hydrateSettings({ accounts: 'x' }).accounts, hydrateSettings({ accounts: [1] }).accounts], [{}, {}])
+  check(
+    'a default account survives only as an id of its own agent',
+    hydrateSettings({ agents: { defaultAccount: { claude: 'claude-work', codex: 'claude-work', grok: 'nope', banana: 'banana-1' } } }).agents
+      .defaultAccount,
+    { claude: 'claude-work' }
+  )
+  check('a hydrate of a hydrate is the same', hydrateSettings(h).accounts, h.accounts)
+}
+
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
 process.exitCode = failures ? 1 : 0

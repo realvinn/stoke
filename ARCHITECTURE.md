@@ -714,6 +714,16 @@ npm run verify:browser-profiles  # browser profiles: Default keeps the old parti
 npm run verify:chrome-import  # Chrome's cookie crypto and row mapping, on values the suite encrypts
                               # itself the way Chrome does (gotcha 107)
 npm run verify:safari-import  # Safari's binarycookies and XML plists, on synthetic files
+npm run verify:accounts       # agent accounts: the home/key variable per agent, which account
+                              # a launch runs on and every refusal, a second account's rate
+                              # limits kept out of the chip (both orders), Claude's Keychain
+                              # name against the sha256/NFC formula, the account folder and
+                              # its links on synthetic trees with bystanders (gotcha 74), and
+                              # the real build/bin/stoke's `account list|env` under every
+                              # POSIX shell, its output evaluated back; the index shared by
+                              # several Stokes: a dev boot with no accounts writes nothing,
+                              # each writer's rows survive the others', a deleted userData's
+                              # are dropped, two concurrent writers both land (the lock)
 npm run verify:agents         # the coding agents: what is stored, what the launcher shows,
                               # the default agent and its fallback (`resolveDefaultAgent`),
                               # the tab tag and agent colours as stored (junk included), the
@@ -991,6 +1001,19 @@ src/main/         Electron main process
                     verify:secrets never touches the Keychain. basic_text is NOT protection
   setupFile.ts      sealing/opening a `.stoke-setup`: scrypt N=2^17 + AES-256-GCM, header as
                     AAD, node:crypto only
+  accounts.ts       an agent account's folder, `~/.stoke/accounts/<cli>-<slug>` (not userData:
+                    dev and packaged differ, and the `stoke` command reads it with no app),
+                    realpath'd once — Claude's Keychain item is named after that exact string
+                    (`claudeKeychainService`, sha256 of the NFC dir, 8 hex). A Claude account
+                    DIRECTORY-links projects/sessions/skills/agents/commands/plugins/
+                    output-styles into the default tree (junctions on Windows), so transcripts,
+                    the registry and `--resume` stay one tree; never links, copies or creates
+                    `.claude.json`/`.credentials.json`; copies settings.json and CLAUDE.md
+                    once. Codex links skills only. `updateAccountIndex` keeps this Stoke's
+                    part of `index.json` for the shim: every Stoke on the machine (installed,
+                    dev, a sandbox) shares that one file, so it is merged per userData under a
+                    `mkdir` lock, never rewritten from one settings file. No electron import:
+                    verify:accounts runs it on synthetic trees
   settingsSchema.ts defaults + hydrate, with no electron import so a suite can run it
   tabStore.ts       the tabs that were open at quit. Restoring is a relaunch
                     (`claude --resume`), never a reattach: a CLI child cannot outlive the app.
@@ -1236,7 +1259,19 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     the ink re-solved where it misses 4.5:1 on the tab strip. Clear of the meter,
                     --danger and --warning by measurement; painted only while more than one
                     agent is in view (`paintAgentColors`). Keyed by string so an account can
-                    add `claude-work`
+                    add `claude-work` — accounts pass their seeds as `extra`
+  accounts.ts       agent accounts: a login account is a config HOME per agent
+                    (`ACCOUNT_HOME_ENV`, each read from the vendor's artefact; Cursor and Vibe
+                    get none, their sign-ins do not follow a home), a key account is an API key
+                    (`ACCOUNT_KEY_ENV`, sealed as `accounts.*.apiKey`). The implicit Default
+                    account is today's behaviour, no variable; `resolveLaunchAccount` picks
+                    the tab's account, else `agents.defaultAccount`, and refuses a removed or
+                    another agent's one. A Claude account skips Settings › Providers (the
+                    Default account's auth). `usageShareOf` keeps a second account's rate
+                    limits out of the plan chip until usage is keyed per account.
+                    `accountIndexText` is the line-shaped JSON `stoke account list|env` reads;
+                    `mergeAccountIndex` keeps every other writer's rows (its `writers` record),
+                    and a Stoke that never held an account never writes (`accountIndexNeedsWrite`)
   skills.ts         which skill folders each agent reads, and the report of who can see
                     which skill. `~/.agents/skills` is the one nearly all share; Claude Code
                     reads only `~/.claude/skills`. A report, never a sync — linking between

@@ -4,6 +4,8 @@ import { homedir, platform } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import type { UsageSnapshot, UsageWindow } from '../shared/types'
+import { claudeConfigDir } from './claudePaths.ts'
+import { claudeKeychainService } from './accounts.ts'
 
 export type { UsageSnapshot, UsageWindow }
 
@@ -121,7 +123,21 @@ function credentialsFrom(raw: string, source: StoredCredentials['source']): Stor
   }
 }
 
-const KEYCHAIN_SERVICE = 'Claude Code-credentials'
+/**
+ * The Keychain item the CLI keeps the token under, for the config dir this
+ * process was started with: `Claude Code-credentials` with no
+ * `CLAUDE_CONFIG_DIR`, and a hash-suffixed name with one (accounts.ts
+ * `claudeKeychainService`). Hardcoding the plain name read the WRONG account's
+ * token — or none — whenever Stoke inherited the variable.
+ */
+export function usageKeychainService(env: Record<string, string | undefined> = process.env): string {
+  return claudeKeychainService(env)
+}
+
+/** `<config dir>/.credentials.json`, the same dir rule as the Keychain name. */
+export function usageCredentialsPath(env: Record<string, string | undefined> = process.env, home: string = homedir()): string {
+  return join(claudeConfigDir(env as NodeJS.ProcessEnv, home), '.credentials.json')
+}
 
 /**
  * macOS keeps the token in the login Keychain, not in a file.
@@ -142,7 +158,7 @@ async function readKeychain(): Promise<StoredCredentials | null> {
   try {
     const { stdout } = await execFileAsync(
       '/usr/bin/security',
-      ['find-generic-password', '-s', KEYCHAIN_SERVICE, '-w'],
+      ['find-generic-password', '-s', usageKeychainService(), '-w'],
       // The blob carries every connected MCP server's record too - 22 KB on
       // this machine - so the 1 MB default is raised well clear of it.
       { timeout: 5_000, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' }
@@ -193,7 +209,7 @@ export function freshestCredentials(
 export async function readCredentials(): Promise<StoredCredentials | null> {
   let fromFile: StoredCredentials | null = null
   try {
-    const raw = await readFile(join(homedir(), '.claude', '.credentials.json'), 'utf8')
+    const raw = await readFile(usageCredentialsPath(), 'utf8')
     fromFile = credentialsFrom(raw, 'file')
   } catch {
     // No file is ordinary rather than an error worth reporting.

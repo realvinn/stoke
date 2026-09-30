@@ -38,7 +38,7 @@ A `dist:*` exists per target and each MUST run on that target's own platform and
 Every suite runs alone as `npm run verify:<name>`: context, statusline, unicode, usage,
 profiles, settings, secrets, providers, claude-config, folders, search, chat-sources, color, theme-gen, activity,
 worklog-gate, tabs, launcher, registry,
-restore, shortcuts, drop, fullscreen, layers, browser-url, browser-profiles, safari-import, chrome-import, voice, agents, campfire, cli, stoke-args, updates, targets, manifests, portable, winget, worklog-runner,
+restore, shortcuts, drop, fullscreen, layers, browser-url, browser-profiles, safari-import, chrome-import, voice, agents, accounts, campfire, cli, stoke-args, updates, targets, manifests, portable, winget, worklog-runner,
 worklog-retry, worklog-recall, worklog-autoscan, ssh, ssh-enroll, remote, phone-ui, installer-art, install, welcome,
 selection — the `check` chain — plus extract and security, which
 need a live instance (`verify:security <url> <token> --access`). `verify:selection` opens a real
@@ -132,8 +132,8 @@ One line per gotcha, grouped by where you would be working. The full entry is `#
 rule file named on the group line.
 
 **Anywhere in the main process** — `.claude/rules/main.md`
-- **12.** Keep the unpackaged `(dev)` userData override skipped when `--user-data-dir` is passed —
-  otherwise a test profile silently boots the wrong settings and looks fine doing it.
+- **12.** Skip the `(dev)` userData override when `--user-data-dir` is passed, or a test profile boots
+  the wrong settings; a file OUTSIDE userData is every Stoke's, merged per writer (`updateAccountIndex`).
 - **13.** Give `execFile` a `maxBuffer` well past 1 MB and pass prompts on stdin, never argv:
   `spawnSpec` runs `.cmd` installs through `cmd.exe /c`, which eats `& | ^ < >`.
 - **20.** Claim the item or set the guard BEFORE the first `await` in a poll, IPC handler or
@@ -442,6 +442,8 @@ rule file named on the group line.
   no-reading tab (a non-Claude CLI) still closes at once, and window-quit's own kill is unguarded.
 - **104.** Decide a tab's dot in `activityView` (hooks + registry): a Stop ends a TURN while a workflow
   runs on (`background_tasks`, `stopNotifies`), `waiting` is the registry's and survives looking.
+- **127.** Act on an id main just made (an account) through main's reply or `settings.get()`, never
+  `settingsRef`: the ref is the last RENDER's, and the push lands after the await (`startAccountLogin`).
 
 **Packaging and signing** — `.claude/rules/release.md`
 - **7.** Pick architectures with the `--x64`/`--arm64` CLI flags and never add an `arch:` list to

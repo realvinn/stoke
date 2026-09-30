@@ -817,6 +817,30 @@ body {
 }
 
 /*
+ * The account a tab runs on, when it is not the agent's own sign-in
+ * (shared/accounts.ts). Shaped like the agent tag, in the account's colour
+ * under the same paint rule; an email label is cut, never wrapped.
+ */
+.tab-account {
+  flex-shrink: 1;
+  min-width: 0;
+  max-width: 9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+:root[data-agent-paint] .tab-account[data-agent] {
+  border-color: var(--agent-ink);
+  color: var(--agent-text);
+}
+
+/*
  * With tags off, the agent stays on the tab as a rule along its foot, in the
  * same ink — the top rule is the selection's and the profile's, so the agent
  * takes the other edge. Nothing at all while only one agent is in view.
@@ -2786,6 +2810,21 @@ mark.hit {
   color: var(--text-muted);
 }
 
+/*
+ * The launcher's account pill (shared/accounts.ts), in the chosen account's
+ * colour: an outline in its ink and its label in its text token, under the
+ * same paint rule as every agent mark. Its own agent's sign-in is unmarked.
+ */
+.launcher-account {
+  display: flex;
+  align-items: center;
+}
+
+:root[data-agent-paint] .launcher-account[data-agent] .chip {
+  border-color: var(--agent-ink);
+  color: var(--agent-text);
+}
+
 .chip-wrap {
   position: relative;
 }
@@ -4225,6 +4264,58 @@ summary.agent-picker-section:hover {
   min-width: 0;
   padding: var(--space-12) 0;
   border-top: 1px solid var(--border-subtle);
+}
+
+/*
+ * An agent's accounts (shared/accounts.ts): Default, then one row each — the
+ * radio says which one new sessions start on, the dot is its colour.
+ */
+.agent-accounts {
+  max-width: 36rem;
+}
+
+.agent-account-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+}
+
+.agent-account-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  min-width: 0;
+}
+
+.agent-account-name {
+  font-size: var(--fs-sm);
+  font-weight: 550;
+}
+
+.agent-account-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.agent-account-home {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-account-add {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  min-width: 0;
+}
+
+.agent-account-add > .input {
+  flex: 1;
+  min-width: 0;
 }
 
 /* An agent's colour and tab tag, one labelled row each. */

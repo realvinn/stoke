@@ -252,6 +252,28 @@ check(
   restartPlan({ cwd: '/tmp/scratch', hostId: '' }, ['host-1']),
   { kind: 'local', cwd: '/tmp/scratch', cli: 'claude' }
 )
+/*
+ * Accounts (shared/accounts.ts). Start again asks for the tab's own account —
+ * spending another plan is not a restart — and a sign-in tab signs in again,
+ * checked BEFORE the local branch, because it carries a cliId and an
+ * accountId too: read as a session it would start the agent on an account
+ * whose sign-in may just have failed.
+ */
+check(
+  'a tab on claude-work starts again on claude-work',
+  restartPlan({ cwd: '/tmp/x', hostId: null, cliId: 'claude', accountId: 'claude-work' }, []),
+  { kind: 'local', cwd: '/tmp/x', cli: 'claude', accountId: 'claude-work' }
+)
+check(
+  'a tab on the agent’s own sign-in asks for it by name',
+  restartPlan({ cwd: '/tmp/x', hostId: null, cliId: 'codex', accountId: 'default' }, []),
+  { kind: 'local', cwd: '/tmp/x', cli: 'codex', accountId: 'default' }
+)
+check(
+  'a sign-in tab signs in again, never starts a session on the account',
+  restartPlan({ cwd: '/h/.stoke/accounts/claude-work', hostId: null, cliId: 'claude', accountId: 'claude-work', accountLogin: 'claude-work' }, []),
+  { kind: 'login', accountId: 'claude-work' }
+)
 
 /*
  * Gotcha 126: a kept SSH tab's Start again, Resume and restore must REATTACH
@@ -1184,27 +1206,27 @@ console.log('\ntabLabel: tabs say which project and which agent (QA L16)')
 check(
   'a New tab aimed at a project names it',
   tabLabel({ kind: 'new', title: 'New session', cliId: 'claude' }, 'stoke'),
-  { text: 'New · stoke', agentTag: null, agent: null }
+  { text: 'New · stoke', agentTag: null, agent: null, account: null }
 )
 check(
   'a New tab aimed nowhere keeps its title',
   tabLabel({ kind: 'new', title: 'New session', cliId: 'claude' }, null),
-  { text: 'New session', agentTag: null, agent: null }
+  { text: 'New session', agentTag: null, agent: null, account: null }
 )
 check(
   'a Codex tab is tagged codex',
   tabLabel({ kind: 'session', title: 'proj-a', cliId: 'codex' }, null),
-  { text: 'proj-a', agentTag: 'codex', agent: 'codex' }
+  { text: 'proj-a', agentTag: 'codex', agent: 'codex', account: null }
 )
 check(
   'a Claude tab carries no tag',
   tabLabel({ kind: 'session', title: 'proj-a', cliId: 'claude' }, null),
-  { text: 'proj-a', agentTag: null, agent: null }
+  { text: 'proj-a', agentTag: null, agent: null, account: null }
 )
 check(
   'an install tab is not tagged as the agent it installs',
   tabLabel({ kind: 'session', title: 'Installing Codex CLI', cliId: 'codex', installing: ['codex'] }, null),
-  { text: 'Installing Codex CLI', agentTag: null, agent: null }
+  { text: 'Installing Codex CLI', agentTag: null, agent: null, account: null }
 )
 
 console.log('\ntabLabel: the tag is a setting — shown or not, named by the user, keyed on the default agent')
@@ -1212,12 +1234,12 @@ const TAGS = { show: true, labels: {}, primary: 'claude' as const }
 check(
   'tags hidden: no tag, but the agent is still named for the colour and the tooltip',
   tabLabel({ kind: 'session', title: 'proj-a', cliId: 'codex' }, null, { ...TAGS, show: false }),
-  { text: 'proj-a', agentTag: null, agent: 'codex' }
+  { text: 'proj-a', agentTag: null, agent: 'codex', account: null }
 )
 check(
   'a custom label wins over the executable name',
   tabLabel({ kind: 'session', title: 'proj-a', cliId: 'cursor' }, null, { ...TAGS, labels: { cursor: 'Cursor' } }),
-  { text: 'proj-a', agentTag: 'Cursor', agent: 'cursor' }
+  { text: 'proj-a', agentTag: 'Cursor', agent: 'cursor', account: null }
 )
 check(
   'another agent’s label does not leak onto this one',
@@ -1239,12 +1261,12 @@ const CODEX_DEFAULT = { ...TAGS, primary: 'codex' as const }
 check(
   'Codex the default: a Claude tab is the one tagged',
   tabLabel({ kind: 'session', title: 'proj-a', cliId: 'claude' }, null, CODEX_DEFAULT),
-  { text: 'proj-a', agentTag: 'claude', agent: 'claude' }
+  { text: 'proj-a', agentTag: 'claude', agent: 'claude', account: null }
 )
 check(
   'Codex the default: a Codex tab carries no tag',
   tabLabel({ kind: 'session', title: 'proj-a', cliId: 'codex' }, null, CODEX_DEFAULT),
-  { text: 'proj-a', agentTag: null, agent: null }
+  { text: 'proj-a', agentTag: null, agent: null, account: null }
 )
 check(
   'Codex the default: a Grok tab is still tagged, as itself',
@@ -1265,37 +1287,86 @@ check(
     tabLabel({ kind: 'session', title: 'Installing', cliId: 'codex', installing: ['codex', 'grok'] }, null, o)
   ),
   [
-    { text: 'Installing', agentTag: null, agent: null },
-    { text: 'Installing', agentTag: null, agent: null },
-    { text: 'Installing', agentTag: null, agent: null }
+    { text: 'Installing', agentTag: null, agent: null, account: null },
+    { text: 'Installing', agentTag: null, agent: null, account: null },
+    { text: 'Installing', agentTag: null, agent: null, account: null }
   ]
 )
 check(
   'a New tab is never tagged, whatever the default',
   tabLabel({ kind: 'new', title: 'New session', cliId: 'claude' }, null, CODEX_DEFAULT),
-  { text: 'New session', agentTag: null, agent: null }
+  { text: 'New session', agentTag: null, agent: null, account: null }
 )
 
 console.log('\ntabLabel: a name the user gave the tab wins over the ai-title')
 check(
   'a renamed session tab shows the custom name, not the ai-title',
   tabLabel({ kind: 'session', title: 'proj-a', customTitle: 'Auth work', cliId: 'claude' }, null),
-  { text: 'Auth work', agentTag: null, agent: null }
+  { text: 'Auth work', agentTag: null, agent: null, account: null }
 )
 check(
   'the agent tag survives a rename',
   tabLabel({ kind: 'session', title: 'proj-a', customTitle: 'Auth work', cliId: 'codex' }, null),
-  { text: 'Auth work', agentTag: 'codex', agent: 'codex' }
+  { text: 'Auth work', agentTag: 'codex', agent: 'codex', account: null }
 )
 check(
   'a whitespace-only custom title is no name and falls back',
   tabLabel({ kind: 'session', title: 'proj-a', customTitle: '   ', cliId: 'claude' }, null),
-  { text: 'proj-a', agentTag: null, agent: null }
+  { text: 'proj-a', agentTag: null, agent: null, account: null }
 )
 check(
   'a renamed New tab shows its name over the aimed project',
   tabLabel({ kind: 'new', title: 'New session', customTitle: 'Scratch', cliId: 'claude' }, 'stoke'),
-  { text: 'Scratch', agentTag: null, agent: null }
+  { text: 'Scratch', agentTag: null, agent: null, account: null }
+)
+
+console.log('\ntabLabel: a tab on another account says which (shared/accounts.ts)')
+/*
+ * Which plan a session spends is not decoration, so the account is drawn with
+ * agent tags off too, and on the default agent's own tabs; its key is the
+ * account id, which is its colour key. Default, and an account since removed,
+ * draw nothing.
+ */
+const ACCOUNTS = { ...TAGS, accounts: { 'claude-work': { label: 'Work' }, 'codex-2': { label: 'Codex 2' } } }
+check(
+  'a Claude tab on claude-work is tagged Work, keyed by its id',
+  tabLabel({ kind: 'session', title: 'proj-a', cliId: 'claude', accountId: 'claude-work' }, null, ACCOUNTS),
+  { text: 'proj-a', agentTag: null, agent: null, account: { key: 'claude-work', text: 'Work' } }
+)
+check(
+  'and still with agent tags hidden',
+  tabLabel({ kind: 'session', title: 'proj-a', cliId: 'claude', accountId: 'claude-work' }, null, { ...ACCOUNTS, show: false }).account,
+  { key: 'claude-work', text: 'Work' }
+)
+check(
+  'a Codex tab on its own account carries both tags',
+  tabLabel({ kind: 'session', title: 'proj-a', cliId: 'codex', accountId: 'codex-2' }, null, ACCOUNTS),
+  { text: 'proj-a', agentTag: 'codex', agent: 'codex', account: { key: 'codex-2', text: 'Codex 2' } }
+)
+check(
+  'the agent\u2019s own sign-in draws no account tag',
+  tabLabel({ kind: 'session', title: 'proj-a', cliId: 'claude', accountId: 'default' }, null, ACCOUNTS).account,
+  null
+)
+check(
+  'an account since removed draws none either',
+  tabLabel({ kind: 'session', title: 'proj-a', cliId: 'claude', accountId: 'claude-gone' }, null, ACCOUNTS).account,
+  null
+)
+check(
+  'a sign-in tab is tagged with the account it signs in',
+  tabLabel({ kind: 'session', title: 'Sign in · Work', cliId: 'claude', accountLogin: 'claude-work', accountId: 'claude-work' }, null, ACCOUNTS).account,
+  { key: 'claude-work', text: 'Work' }
+)
+check(
+  'an install tab never is',
+  tabLabel({ kind: 'session', title: 'Installing', cliId: 'claude', installing: ['claude'], accountId: 'claude-work' }, null, ACCOUNTS).account,
+  null
+)
+check(
+  'a New tab never is',
+  tabLabel({ kind: 'new', title: 'New session', cliId: 'claude', accountId: 'claude-work' }, null, ACCOUNTS).account,
+  null
 )
 
 console.log('\nnextCustomTitle: a rename does not freeze the ai-title')

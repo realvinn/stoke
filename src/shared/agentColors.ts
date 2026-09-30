@@ -185,11 +185,21 @@ function textInk(seed: string, ink: string, appearance: Appearance, grounds: Age
  * Every agent's tokens for one theme. Called by `applyAppearance` and by the
  * suites, so what is asserted is what is painted (the meterScale pattern).
  */
-export function agentColorTokens(colors: AgentColors, appearance: Appearance, grounds: AgentGrounds): AgentTokens[] {
-  return CODING_CLIS.map((c) => {
-    const seed = agentSeed(c.id, colors)
+export function agentColorTokens(
+  colors: AgentColors,
+  appearance: Appearance,
+  grounds: AgentGrounds,
+  /**
+   * More keys to derive, each from a seed of its own — an account
+   * (`claude-work`, shared/accounts.ts), whose seed is one of
+   * `ACCOUNT_SWATCHES`. Same derivation, same writer, no CSS added.
+   */
+  extra: readonly { key: AgentColorKey; seed: string }[] = []
+): AgentTokens[] {
+  const keyed = [...CODING_CLIS.map((c) => ({ key: c.id as AgentColorKey, seed: agentSeed(c.id, colors) })), ...extra]
+  return keyed.map(({ key, seed }) => {
     const t = deriveAccent(seed, appearance, grounds.bg)
-    return { key: c.id, seed, ink: t.accentInk, text: textInk(seed, t.accentInk, appearance, grounds), fill: t.accent }
+    return { key, seed, ink: t.accentInk, text: textInk(seed, t.accentInk, appearance, grounds), fill: t.accent }
   })
 }
 

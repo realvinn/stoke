@@ -47,6 +47,12 @@ const api: StokeApi = {
     skills: () => ipcRenderer.invoke(CH.skillsScan)
   },
 
+  accounts: {
+    create: (input) => ipcRenderer.invoke(CH.accountsCreate, input),
+    remove: (id) => ipcRenderer.invoke(CH.accountsRemove, id),
+    identify: () => ipcRenderer.invoke(CH.accountsIdentify)
+  },
+
   usage: {
     read: (reason?: UsageReadReason) => ipcRenderer.invoke(CH.usageRead, reason)
   },

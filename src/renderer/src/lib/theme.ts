@@ -8,8 +8,10 @@ import { agentColorTokens, agentTokenNames, type AgentColors } from '@shared/age
 /** What `applyAppearance` needs to colour the agents: overrides, and whether to paint. */
 export interface AgentPaint {
   colors: AgentColors
-  /** `paintAgentColors`: more than one agent in view. */
+  /** `paintAgentColors`: more than one agent in view — or an account's tab open. */
   paint: boolean
+  /** Each stored account's colour key and seed (shared/accounts.ts `accountSeed`). */
+  accounts?: readonly { key: string; seed: string }[]
 }
 
 /** camelCase token -> `--kebab-case` custom property. */
@@ -101,7 +103,7 @@ export function applyAppearance(theme: Theme, profile: Profile | null, agents?: 
    * app exactly as before. Not profile-dependent: the profile owns the accent,
    * the tab's top rule and the cursor; the agent owns its tag and its pane rule.
    */
-  for (const t of agentColorTokens(agents?.colors ?? {}, theme.appearance, theme.colors)) {
+  for (const t of agentColorTokens(agents?.colors ?? {}, theme.appearance, theme.colors, agents?.accounts ?? [])) {
     const names = agentTokenNames(t.key)
     root.style.setProperty(names.ink, t.ink)
     root.style.setProperty(names.text, t.text)

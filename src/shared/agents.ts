@@ -50,6 +50,7 @@ import {
   type InstallPlatform
 } from './codingClis.ts'
 import { hydrateAgentColors, type AgentColors } from './agentColors.ts'
+import { accountEnv, accountProblem, hydrateDefaultAccounts, type AgentAccount } from './accounts.ts'
 
 export const OPENROUTER_OPENAI_BASE_URL = 'https://openrouter.ai/api/v1'
 
@@ -121,6 +122,14 @@ export interface AgentSettings {
   /** The user's colour per agent, over `AGENT_SEEDS` (agentColors.ts). */
   colors: AgentColors
   /**
+   * Per agent, the account a launch that names none starts on (accounts.ts).
+   * Absent is the implicit Default account: the agent's own sign-in, no
+   * variable set — exactly what every launch was before accounts. Read only
+   * through `resolveLaunchAccount`, which falls back to Default when the
+   * account has since been removed.
+   */
+  defaultAccount: Partial<Record<CodingCliId, string>>
+  /**
    * The shape this block was written in (`AGENTS_FORMAT`). Absent in every
    * file from before it existed, which reads as 1. Always this build's number
    * once hydrated, so the upgrade it keys runs once per file.
@@ -181,6 +190,7 @@ export const DEFAULT_AGENTS: AgentSettings = {
   shareSkillsToClaude: true,
   tag: { show: true, labels: {} },
   colors: {},
+  defaultAccount: {},
   format: AGENTS_FORMAT
 }
 
@@ -271,7 +281,7 @@ export function hydrateAgents(raw: unknown): AgentSettings {
   // No block at all is a fresh install or a file from before agents: no
   // endpoint to upgrade, so it is simply this build's format.
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-    return { ...DEFAULT_AGENTS, endpoints: {}, tag: hydrateAgentTag(undefined), colors: {} }
+    return { ...DEFAULT_AGENTS, endpoints: {}, tag: hydrateAgentTag(undefined), colors: {}, defaultAccount: {} }
   }
   const r = raw as {
     chosen?: unknown
@@ -280,6 +290,7 @@ export function hydrateAgents(raw: unknown): AgentSettings {
     shareSkillsToClaude?: unknown
     tag?: unknown
     colors?: unknown
+    defaultAccount?: unknown
     format?: unknown
   }
   const from = agentsFormatOf(r.format)
@@ -310,6 +321,7 @@ export function hydrateAgents(raw: unknown): AgentSettings {
     shareSkillsToClaude: r.shareSkillsToClaude !== false,
     tag: hydrateAgentTag(r.tag),
     colors: hydrateAgentColors(r.colors),
+    defaultAccount: hydrateDefaultAccounts(r.defaultAccount),
     // Upgraded above, so this build's number whatever was read — a newer
     // build's included, since only this build's fields survived the hydrate.
     format: AGENTS_FORMAT
@@ -408,6 +420,13 @@ export interface LaunchPlanInput {
   mcpFiles?: { claude: string | null; httpUrl: string | null }
   /** Where Stoke keeps Pi's provider extension, for a custom endpoint. */
   piExtensionPath: string | null
+  /**
+   * The account this launch runs on (`resolveLaunchAccount`), or null/absent
+   * for the Default account — the agent's own sign-in, nothing added. Its
+   * environment is merged LAST, over the endpoint's, and a key account is
+   * refused beside an endpoint that brings a key of its own (`accountProblem`).
+   */
+  account?: AgentAccount | null
 }
 
 /**
@@ -667,6 +686,16 @@ export function agentLaunchPlan(input: LaunchPlanInput): LaunchPlanResult {
     if (!isSafeResumeId(input.resumeId)) return { ok: false, message: `That ${cli.label} chat id is not one Stoke will pass on.` }
     args.push(...cli.resumeArgs(input.resumeId))
   } else if (continueLast && cli.continueArgs) args.push(...cli.continueArgs)
+
+  const account = input.account ?? null
+  if (account) {
+    // Main resolves the account against the launch's own agent first; this is
+    // the second lock, for a plan built from anything else (a suite, a draft).
+    if (account.cli !== id) return { ok: false, message: `${account.label} is not a ${cli.label} account.` }
+    const trouble = accountProblem(account, ep.mode)
+    if (trouble) return { ok: false, message: trouble }
+    Object.assign(env, accountEnv(account))
+  }
   return { ok: true, plan: { args, env, model } }
 }
 

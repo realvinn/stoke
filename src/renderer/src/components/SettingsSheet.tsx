@@ -249,6 +249,8 @@ interface Props {
     onRefresh: () => Promise<void>
     onOpenPicker: () => void
     onInstall: (ids: CodingCliId[]) => void
+    /** Open an account's sign-in tab (shared/accounts.ts). App's, because it opens a tab. */
+    onSignIn: (accountId: string) => void
   }
   /**
    * Which section to open on. Three other panels say "open Settings" and used
@@ -968,6 +970,7 @@ export function SettingsSheet({
                 onPage={setAgentPage}
                 onOpenProviders={() => setSection('providers')}
                 onOpenClaudeConfig={() => setSection('claude')}
+                onSignIn={agents.onSignIn}
               />
             )}
 

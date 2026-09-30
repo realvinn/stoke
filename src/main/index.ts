@@ -188,6 +188,31 @@ import {
 } from './claudeGlobalConfig.ts'
 import { claudeConfigDir, claudeGlobalConfigPath } from './claudePaths.ts'
 import {
+  accountsRoot,
+  defaultTrees,
+  makeAccountHome,
+  readClaudeAccountEmail,
+  repairAccountHome,
+  updateAccountIndex
+} from './accounts.ts'
+import {
+  accountEnv,
+  accountIdFor,
+  accountKindsFor,
+  accountProblem,
+  accountsFromRenderer,
+  accountsOf,
+  accountSlug,
+  cleanAccountLabel,
+  loginArgsFor,
+  nextSwatch,
+  resolveLaunchAccount,
+  usageShareOf,
+  type AgentAccount
+} from '../shared/accounts.ts'
+import { agentSeed } from '../shared/agentColors.ts'
+import type { AccountCreateInput, AccountCreateResult } from '@shared/api'
+import {
   CLAUDE_SETTINGS,
   WORKFLOW_SIZE_KEY,
   validateWorkflowSize,
@@ -469,8 +494,13 @@ const statusLineSeen = new Map<string, number>()
 function pushStatusLine(sessionId: string): void {
   // Through the launch key: a rebound session's files are named after the id
   // it was LAUNCHED with, not the one it is on now. See `payloadKeyFor`.
-  const snap = readStatusLine(payloadKeyFor(sessionId))
-  if (!snap) return
+  const key = payloadKeyFor(sessionId)
+  const read = readStatusLine(key)
+  if (!read) return
+  // Another account's rate limits are not the Default account's: until usage
+  // is keyed per account, only the Default account feeds the chip
+  // (`usageShareOf`, shared/accounts.ts), here and in the renderer's merge.
+  const snap = usageShareOf(read, ptys?.accountIdForKey(key))
   if (statusLineSeen.get(sessionId) === snap.receivedAt) return
   statusLineSeen.set(sessionId, snap.receivedAt)
   // Same rule as refreshStatusLine: the newer reading wins for everything
@@ -516,7 +546,7 @@ function refreshLastStatusLine(): void {
   for (const key of ptys?.statusKeys() ?? []) {
     const snap = readStatusLine(key)
     if (!snap) continue
-    lastStatusLine = keepUsage(lastStatusLine, snap)
+    lastStatusLine = keepUsage(lastStatusLine, usageShareOf(snap, ptys?.accountIdForKey(key)))
   }
 }
 const tunnel = new TunnelManager()
@@ -683,8 +713,10 @@ async function httpUrlMcpFile(): Promise<string | null> {
 /**
  * Whether a transcript exists for this session id, on this machine.
  *
- * Both roots, because `projectsRoot()` is `~/.claude/projects` and a
- * `CLAUDE_CONFIG_DIR` moves the CLI's own. Answering "no transcript" wrongly is
+ * Both roots: `projectsRoot()` now follows an inherited `CLAUDE_CONFIG_DIR`
+ * too, so the two are usually one (the Set folds them), and an account's own
+ * `projects` is a link into that same tree (accounts.ts) — so a conversation
+ * started on one account resumes on another. Answering "no transcript" wrongly is
  * the expensive direction — `resumeOrMint` would then pass `--session-id` for a
  * conversation that exists and the CLI refuses it — so a hit in EITHER root
  * counts.
@@ -713,6 +745,8 @@ async function launchSession(
   // Its own path, before anything else reads the request: an enrollment takes
   // the host id from it and nothing more (`planEnrollLaunch`).
   if (requested.enroll) return startEnrollSession(requested)
+  // The same shape for an account's sign-in tab: only the account id is read.
+  if (requested.accountLogin) return startAccountLogin(requested)
   const settings = getSettings()
   /*
    * A phone starting a session on a host that keeps its shells sends no
@@ -750,6 +784,42 @@ async function launchSession(
    * refused with the plan's own sentence when a field it needs is empty.
    */
   const cliId = cliIdOf(opts.cli)
+  /*
+   * The account this launch runs on (shared/accounts.ts): the one the tab
+   * names, else this agent's default account, else Default — the agent's own
+   * sign-in, nothing added. A named account that has gone, or that belongs to
+   * another agent, is refused: resuming a conversation on someone else's plan
+   * is not a fallback. An SSH tab's `claude` and an install are not an
+   * agent's session, so they carry none.
+   */
+  let account: AgentAccount | null = null
+  let accountId: string | undefined
+  if (!opts.host && !opts.install?.length) {
+    const resolved = resolveLaunchAccount({
+      cli: cliId,
+      requested: opts.accountId,
+      accounts: settings.accounts,
+      defaults: settings.agents.defaultAccount
+    })
+    if (!resolved.ok) throw new Error(resolved.message)
+    account = resolved.account
+    accountId = resolved.accountId
+    if (account) {
+      const trouble = accountProblem(
+        account,
+        isClaudeCode(cliId) ? 'default' : (settings.agents.endpoints[cliId]?.mode ?? 'default')
+      )
+      if (trouble) throw new Error(trouble)
+      // The folder and its links, repaired if something removed them: a Claude
+      // account whose `projects` link had gone would write a second history
+      // nobody reads. Never a new path — only the stored home.
+      if (account.kind === 'login') {
+        await repairAccountHome(account, defaultTrees(process.env, homedir())).catch((err) =>
+          console.error('[stoke] could not repair an account folder', err)
+        )
+      }
+    }
+  }
   let agentPlan: LaunchPlan | null = null
   if (!opts.host && !opts.install?.length && !isClaudeCode(cliId)) {
     const endpoint = settings.agents.endpoints[cliId]
@@ -766,7 +836,8 @@ async function launchSession(
       mcpFiles: {
         claude: mcpConfigPath,
         httpUrl: cliId === 'qwen' ? await httpUrlMcpFile() : null
-      }
+      },
+      account
     })
     if (!planned.ok) throw new Error(planned.message)
     agentPlan = planned.plan
@@ -789,7 +860,7 @@ async function launchSession(
     claudePluginDir = await skillsProjector.prepare(opts.cwd)
   }
   const started = await ptys.start(
-    opts,
+    accountId ? { ...opts, accountId } : opts,
     settings.claudePath,
     mcpConfigPath,
     (statusKey) =>
@@ -805,7 +876,9 @@ async function launchSession(
     settings.providers,
     agentPlan,
     null,
-    claudePluginDir
+    claudePluginDir,
+    // A second Claude account's home, applied in place of the Providers keys.
+    isClaudeCode(cliId) && account ? accountEnv(account) : null
   )
   /*
    * Another agent's tab carries the model its plan asked for (`launchModel`):
@@ -813,7 +886,8 @@ async function launchSession(
    * or '' when the agent picks. Never the renderer's Claude default, which it
    * sends with every launch and which nothing here passed to this binary.
    */
-  const result: StartResult = agentPlan ? { ...started, model: agentPlan.model } : started
+  const planned: StartResult = agentPlan ? { ...started, model: agentPlan.model } : started
+  const result: StartResult = accountId ? { ...planned, accountId } : planned
   // A brand-new row for /ws/events, whichever side started it — a phone
   // watching the list should see a desktop-started session appear too.
   remote?.notifySessionsChanged()
@@ -835,7 +909,8 @@ async function launchSession(
       model: agentPlan ? agentPlan.model : (opts.model ?? ''),
       effort: opts.effort ?? 'default',
       hostId: opts.host?.id ?? null,
-      ...(opts.host && opts.remoteSession ? { remoteSession: opts.remoteSession } : {})
+      ...(opts.host && opts.remoteSession ? { remoteSession: opts.remoteSession } : {}),
+      ...(accountId ? { accountId } : {})
     }
     send(CH.remoteSessionStarted, started)
   }
@@ -936,6 +1011,226 @@ async function finishEnrollRun(
     emit({ hostId, stage: 'failed', message: `Could not check the key: ${(err as Error).message}` })
   } finally {
     enrolling.delete(hostId)
+  }
+}
+
+/* ------------------------------------------------------------- accounts */
+
+/**
+ * Accounts being made, signed in or removed, one at a time: each reads the
+ * list, decides and writes (gotcha 66), and a sign-in tab is claimed per
+ * account before the first await and held until its process exits (gotcha
+ * 20) — two presses would open two logins racing one folder.
+ */
+let accountChain: Promise<unknown> = Promise.resolve()
+const signingIn = new Set<string>()
+/** The sign-in tab behind each pty, so its exit can read the email it signed in as. */
+const accountLoginRuns = new Map<string, string>()
+
+function serialAccounts<T>(work: () => Promise<T>): Promise<T> {
+  const next = accountChain.then(work, work)
+  accountChain = next.catch(() => {})
+  return next
+}
+
+/** The label an account made with no name gets, which a sign-in may replace with its email. */
+function numberedLabel(cli: CodingCliId, n: number): string {
+  return `${CODING_CLIS.find((c) => c.id === cli)?.label ?? cli} ${n}`
+}
+
+/** Whether a label is still the numbered one the account was made with. */
+function isNumberedLabel(account: AgentAccount): boolean {
+  const n = Number(account.label.split(' ').pop())
+  return Number.isInteger(n) && account.label === numberedLabel(account.cli, n)
+}
+
+/**
+ * Make an agent account, or find the one already there under that name.
+ *
+ * A login account gets its folder here and nowhere else — the renderer and
+ * the `stoke` command name an agent and a label, never a path — made under
+ * ~/.stoke/accounts, realpath'd (gotcha 91), and for Claude Code linked into
+ * the default tree (accounts.ts). A key account stores its key, which the
+ * secret store seals (`accounts.*.apiKey`).
+ */
+function createAccount(input: AccountCreateInput): Promise<AccountCreateResult> {
+  return serialAccounts(async (): Promise<AccountCreateResult> => {
+    const cli = CODING_CLIS.find((c) => c.id === input?.cli)?.id
+    if (!cli) return { ok: false, message: 'Stoke does not know that agent.' }
+    const kind = input.kind === 'key' ? 'key' : 'login'
+    const agentLabel = CODING_CLIS.find((c) => c.id === cli)?.label ?? cli
+    if (!accountKindsFor(cli).includes(kind)) {
+      return {
+        ok: false,
+        message:
+          kind === 'login'
+            ? `${agentLabel} keeps one sign-in for the whole machine, so Stoke cannot hold a second one.`
+            : `${agentLabel} takes no API key from Stoke.`
+      }
+    }
+    const s = getSettings()
+    const typed = cleanAccountLabel(input.name ?? '')
+    let id: string
+    let name: string
+    if (typed) {
+      const slug = accountSlug(typed)
+      if (!slug) return { ok: false, message: 'Give the account a name with a letter or digit in it.' }
+      id = accountIdFor(cli, slug)
+      name = typed
+    } else {
+      let n = 2
+      while (s.accounts[accountIdFor(cli, String(n))]) n++
+      id = accountIdFor(cli, String(n))
+      name = numberedLabel(cli, n)
+    }
+    const existing = s.accounts[id]
+    if (existing) {
+      if (existing.kind !== kind) {
+        return { ok: false, message: `${existing.label} is already a ${existing.kind === 'key' ? 'key' : 'sign-in'} account.` }
+      }
+      return { ok: true, account: existing, created: false }
+    }
+    const swatch = nextSwatch(cli, accountsOf(cli, s.accounts).map((a) => a.swatch), agentSeed(cli, s.agents.colors))
+    let account: AgentAccount
+    if (kind === 'login') {
+      const made = await makeAccountHome({
+        root: accountsRoot(homedir()),
+        id,
+        cli,
+        trees: defaultTrees(process.env, homedir())
+      })
+      account = { id, cli, label: name, kind, home: made.home, apiKey: '', swatch }
+    } else {
+      account = { id, cli, label: name, kind, home: '', apiKey: (input.apiKey ?? '').trim(), swatch }
+    }
+    const next = setSettings({ accounts: { ...getSettings().accounts, [id]: account } })
+    send(CH.settingsChanged, next)
+    return { ok: true, account: next.accounts[id] ?? account, created: true }
+  })
+}
+
+/**
+ * Forget an account. Its folder stays on disk — it holds a sign-in and maybe
+ * a history, and deleting either unasked is not Stoke's to do — and a default
+ * that pointed at it goes back to the agent's own sign-in.
+ */
+function removeAccount(id: string): Promise<void> {
+  return serialAccounts(async () => {
+    const s = getSettings()
+    if (typeof id !== 'string' || !s.accounts[id]) return
+    const accounts = { ...s.accounts }
+    delete accounts[id]
+    const defaultAccount = Object.fromEntries(
+      Object.entries(s.agents.defaultAccount).filter(([, v]) => v !== id)
+    ) as typeof s.agents.defaultAccount
+    send(CH.settingsChanged, setSettings({ accounts, agents: { ...s.agents, defaultAccount } }))
+  })
+}
+
+/** Each Claude login account's signed-in email, read-only, or null. */
+async function identifyAccounts(): Promise<Record<string, string | null>> {
+  const out: Record<string, string | null> = {}
+  for (const a of Object.values(getSettings().accounts)) {
+    if (a.cli === 'claude' && a.kind === 'login') out[a.id] = await readClaudeAccountEmail(a.home, process.env)
+  }
+  return out
+}
+
+/**
+ * Keep this Stoke's part of `~/.stoke/accounts/index.json` — what `stoke
+ * account list|env` reads — in step with its stored accounts, when that part
+ * changed. The file is shared with every other Stoke on the machine (the
+ * installed app, `npm run dev`, a sandbox), so it is MERGED under this
+ * userData's name, never rewritten from this list alone: a dev build with no
+ * accounts used to boot, find the installed app's index and write it back
+ * empty, and `stoke account env work` then failed until the app restarted.
+ */
+let indexedAccounts: string | null = null
+let indexWriter: Promise<string> | null = null
+function syncAccountIndex(accounts: Record<string, AgentAccount>): void {
+  const list = Object.values(accounts)
+  const key = JSON.stringify(list.map((a) => [a.id, a.kind, a.home, a.label]))
+  if (key === indexedAccounts) return
+  indexedAccounts = key
+  // realpath'd once, so a `/tmp` sandbox is one writer however it was typed (gotcha 91).
+  const writer = (indexWriter ??= realpathFolder(app.getPath('userData')))
+  void serialAccounts(async () => {
+    await updateAccountIndex({ root: accountsRoot(homedir()), me: await writer, accounts: list })
+  }).catch((err) => {
+    // Not written, so the next change (or the next boot) tries again.
+    if (indexedAccounts === key) indexedAccounts = null
+    console.error('[stoke] could not write the account index', err)
+  })
+}
+
+/**
+ * An account's sign-in, in a tab: the agent's own login under the account's
+ * home, where the user can answer it (gotcha 109). Only the account id is
+ * read from the request. A key account has nothing to sign in.
+ */
+async function startAccountLogin(requested: LaunchOptions): Promise<StartResult> {
+  if (!ptys) throw new Error('Window is not ready')
+  const id = requested.accountLogin?.accountId
+  const settings = getSettings()
+  const account = typeof id === 'string' ? settings.accounts[id] : undefined
+  if (!account) throw new Error('That account is no longer in Settings › Agents.')
+  if (account.kind !== 'login') throw new Error(`${account.label} is an API-key account; there is nothing to sign in.`)
+  // Claimed before the first await and refused on re-entry (gotchas 20, 66).
+  if (signingIn.has(account.id)) throw new Error(`${account.label} is already signing in, in another tab.`)
+  signingIn.add(account.id)
+  let started = false
+  try {
+    const trouble = accountProblem(account)
+    if (trouble) throw new Error(trouble)
+    await repairAccountHome(account, defaultTrees(process.env, homedir()))
+    const plan: LaunchPlan = { args: loginArgsFor(account.cli), env: accountEnv(account), model: '' }
+    const result = await ptys.start(
+      {
+        cwd: homedir(),
+        cli: account.cli,
+        accountLogin: { accountId: account.id },
+        accountId: account.id,
+        permissionMode: 'default',
+        model: '',
+        effort: 'default',
+        appearance: requested.appearance,
+        cols: requested.cols,
+        rows: requested.rows
+      },
+      settings.claudePath,
+      null,
+      () => null,
+      settings.providers,
+      plan
+    )
+    accountLoginRuns.set(result.ptyId, account.id)
+    started = true
+    return { ...result, accountId: account.id }
+  } finally {
+    // On success the claim is held until the tab exits (`finishAccountLogin`).
+    if (!started) signingIn.delete(account.id)
+  }
+}
+
+/**
+ * A sign-in tab's process has exited: release the claim, and for Claude read
+ * the email it signed in as (read-only, `.claude.json`). An account still
+ * wearing the numbered name it was made with takes the email as its label;
+ * one the user named keeps its name.
+ */
+async function finishAccountLogin(accountId: string): Promise<void> {
+  try {
+    const account = getSettings().accounts[accountId]
+    if (!account || account.cli !== 'claude' || account.kind !== 'login') return
+    const email = await readClaudeAccountEmail(account.home, process.env)
+    const now = getSettings().accounts[accountId]
+    if (!email || !now || !isNumberedLabel(now)) return
+    const label = cleanAccountLabel(email)
+    send(CH.settingsChanged, setSettings({ accounts: { ...getSettings().accounts, [accountId]: { ...now, label } } }))
+  } catch (err) {
+    console.error('[stoke] could not read the account it signed in as', err)
+  } finally {
+    signingIn.delete(accountId)
   }
 }
 
@@ -1284,6 +1579,17 @@ function acceptLaunch(req: StokeCliRequest): void {
   launchChain = launchChain
     .then(async () => {
       let checked: StokeCliRequest = req
+      /*
+       * `stoke account add AGENT NAME`: made here, where accounts are made
+       * (`createAccount`), then handed to the renderer as the one thing it
+       * does with an account id — open its sign-in tab.
+       */
+      if (req.kind === 'account-add') {
+        const made = await createAccount({ cli: req.cli, name: req.name, kind: 'login' })
+        checked = made.ok
+          ? { kind: 'account-login', accountId: made.account.id }
+          : { kind: 'error', message: `stoke: ${made.message}` }
+      }
       const folder = folderOf(req)
       if (folder) {
         const problem = await launchFolderProblem(folder)
@@ -1895,6 +2201,12 @@ function createWindow(): void {
         enrollRuns.delete(ptyId)
         void finishEnrollRun(run, code, signal)
       }
+      // An account's sign-in tab: see who it signed in as, and release it.
+      const login = accountLoginRuns.get(ptyId)
+      if (login) {
+        accountLoginRuns.delete(ptyId)
+        void finishAccountLogin(login)
+      }
     },
     /*
      * A remote asked one of our sessions for a password.
@@ -2254,6 +2566,10 @@ function registerIpc(): void {
   /* ------------------------------------------------------------------- cli */
   ipcMain.handle(CH.cliInfo, () => probeClaude(getSettings().claudePath))
   ipcMain.handle(CH.skillsScan, () => scanSkills())
+  /* ------------------------------------------------------------ accounts */
+  ipcMain.handle(CH.accountsCreate, (_e, input: AccountCreateInput) => createAccount(input))
+  ipcMain.handle(CH.accountsRemove, (_e, id: string) => removeAccount(id))
+  ipcMain.handle(CH.accountsIdentify, () => identifyAccounts())
   ipcMain.handle(CH.cliDetect, (_e, opts?: { fresh?: boolean }) => {
     if (opts?.fresh === true) {
       forgetLoginPath()
@@ -3008,7 +3324,14 @@ function registerIpc(): void {
    */
   async function commitSettings(patch: Partial<Settings>): Promise<Settings> {
     const prev = getSettings()
-    const next = setSettings(patch)
+    /*
+     * The renderer may rename an account, recolour it or change its key —
+     * never add one, remove one or move its home, which becomes an agent's
+     * config dir. Those are `accounts:create`/`accounts:remove`, in main.
+     */
+    const next = setSettings(
+      patch.accounts ? { ...patch, accounts: accountsFromRenderer(prev.accounts, patch.accounts) } : patch
+    )
     // A renamed or re-ordered profile list, a switch, or a bookmark list moved.
     if (patch.browser) {
       browser?.setProfiles(next.browser.profiles, next.browser.currentProfile, next.browser.homepage)
@@ -3712,6 +4035,13 @@ if (!app.requestSingleInstanceLock(launchRequest ? { stokeCli: launchRequest } :
      * and every IPC answer should already see the keys.
      */
     initSecretStore()
+    /*
+     * The `stoke` command's copy of the account list (accounts.ts), brought
+     * up to date now — an upgrade, or a settings.json edited by hand — and
+     * after every write that changes it. Process-wide, not per window.
+     */
+    syncAccountIndex(getSettings().accounts)
+    onSettingsChanged((next) => syncAccountIndex(next.accounts))
     protocol.handle(WALLPAPER_SCHEME, (request) => {
       const file = wallpaperFileFor(app.getPath('userData'), request.url)
       if (!file) return new Response('not found', { status: 404 })

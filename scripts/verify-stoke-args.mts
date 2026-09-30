@@ -332,6 +332,57 @@ for (const typed of [['.'], ['--cli', 'codex', '--new', 'x'], ['--open', '~/w'],
 }
 
 // ---------------------------------------------------------------------------
+console.log('\nstoke account (shared/accounts.ts)')
+// ---------------------------------------------------------------------------
+/*
+ * `add` is the app's: it makes the account and opens its sign-in tab. `list`
+ * and `env` are the shim's own, answered from ~/.stoke/accounts/index.json
+ * with no app (verify:accounts runs them); one that reached the app came from
+ * a launcher that does not answer them, and is told where the answer is.
+ */
+check('add AGENT NAME is a request', parse('account', 'add', 'claude', 'work'), { kind: 'account-add', cli: 'claude', name: 'work' })
+check('a name with spaces arrives as one argument, tidied', parse('account', 'add', 'codex', '  Side   gig '), {
+  kind: 'account-add',
+  cli: 'codex',
+  name: 'Side gig'
+})
+ok('an unknown agent is refused', kind(parse('account', 'add', 'banana', 'work')) === 'error')
+ok(
+  'an agent whose sign-in does not follow its home is refused, and told about key accounts',
+  /one sign-in/.test(msg(parse('account', 'add', 'cursor', 'work'))) && /API key/.test(msg(parse('account', 'add', 'cursor', 'work')))
+)
+ok('Vibe too: its key is in one keyring item, whatever the home', kind(parse('account', 'add', 'vibe', 'work')) === 'error')
+ok('a name with no letter or digit is refused', kind(parse('account', 'add', 'claude', '---')) === 'error')
+ok('no name is refused', kind(parse('account', 'add', 'claude')) === 'error')
+ok('a second name is refused rather than joined', kind(parse('account', 'add', 'claude', 'work', 'extra')) === 'error')
+ok('list reaching the app is told the shim answers it', /answered by the stoke command itself/.test(msg(parse('account', 'list'))))
+ok('env too', /answered by the stoke command itself/.test(msg(parse('account', 'env', 'work'))))
+ok('an unknown verb says what account takes', /list, add AGENT NAME, or env NAME/.test(msg(parse('account', 'remove', 'work'))))
+check('account is a command only as the FIRST word: a folder named account is stoke ./account', parse('./account'), session('/Users/me/proj/account'))
+check(
+  'without the marker it is nothing at all',
+  parseStokeArgs(['Stoke', 'account', 'add', 'claude', 'work'], MAC),
+  null
+)
+check(
+  'an account-add survives the forward',
+  requestFrom(JSON.parse(JSON.stringify(parse('account', 'add', 'claude', 'work'))), 'darwin'),
+  { kind: 'account-add', cli: 'claude', name: 'work' }
+)
+check(
+  'a forwarded account-add for a keyring-only agent is dropped',
+  requestFrom({ kind: 'account-add', cli: 'cursor', name: 'work' }, 'darwin'),
+  null
+)
+check(
+  'account-login is main\u2019s alone: another process naming an id gets nothing',
+  requestFrom({ kind: 'account-login', accountId: 'claude-work' }, 'darwin'),
+  null
+)
+ok('the help offers the account verbs on macOS and Windows', ['darwin', 'win32'].every((p) => stokeHelp(p).includes('stoke account env NAME')))
+ok('but not on Linux, whose launcher does not answer list or env', !stokeHelp('linux').includes('stoke account'))
+
+// ---------------------------------------------------------------------------
 console.log('\na forwarded request is rebuilt, never trusted')
 // ---------------------------------------------------------------------------
 /*

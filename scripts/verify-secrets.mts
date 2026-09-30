@@ -71,7 +71,8 @@ const CANARY = {
   openrouter: 'sk-or-CANARY-f6g7h8i9j0',
   custom: 'gw-CANARY-k1l2m3n4o5',
   codex: 'codex-CANARY-p6q7r8s9t0',
-  phone: 'phone-CANARY-u1v2w3x4y5'
+  phone: 'phone-CANARY-u1v2w3x4y5',
+  account: 'xai-CANARY-z6y5x4w3v2'
 }
 const ALL_CANARIES = Object.values(CANARY)
 const hasCanary = (text: string): string[] => ALL_CANARIES.filter((c) => text.includes(c))
@@ -96,7 +97,10 @@ function plaintextSettings(): Record<string, unknown> {
       defaultCli: 'claude'
     },
     remote: { enabled: true, port: 7878, token: CANARY.phone },
-    hosts: [{ id: 'h1', label: 'Box', alias: 'box', command: '', keyEnrolled: true }]
+    hosts: [{ id: 'h1', label: 'Box', alias: 'box', command: '', keyEnrolled: true }],
+    // A key account (shared/accounts.ts): its key is sealed like the rest,
+    // and never travels — accounts are machine-local.
+    accounts: { 'grok-team': { cli: 'grok', label: 'Team', kind: 'key', home: '', apiKey: CANARY.account } }
   }
 }
 
@@ -141,6 +145,7 @@ console.log('\nthe secret-path registry')
   const s = plaintextSettings()
   const paths = secretPathsIn(s).sort()
   check('every registered secret is found in a populated settings object', paths, [
+    'accounts.grok-team.apiKey',
     'agents.endpoints.codex.apiKey',
     'providers.anthropicApiKey',
     'providers.customAuthToken',
@@ -156,7 +161,7 @@ console.log('\nthe secret-path registry')
       'no path in a hydrated populated Settings matches it'
     )
   }
-  check('collectSecrets returns exactly the five values', Object.values(collectSecrets(s)).sort(), [...ALL_CANARIES].sort())
+  check('collectSecrets returns exactly the six values', Object.values(collectSecrets(s)).sort(), [...ALL_CANARIES].sort())
   const scrubbed = scrubSecrets(s)
   check('scrubSecrets empties every secret', hasCanary(JSON.stringify(scrubbed)), [])
   check('and leaves the rest alone', (scrubbed as Record<string, unknown>).themeId, 'lagoon')
@@ -207,13 +212,25 @@ console.log('\nmigration on a synthetic userData')
   ok('settings.json.tmp (a crash leftover holding keys) is gone', !existsSync(`${settingsFile}.tmp`))
   const vaultText = read(secretsFile)
   check('no canary appears in secrets.json either', hasCanary(vaultText), [])
-  check('secrets.json holds one item per secret', Object.keys(parseSecretsFile(vaultText)?.items ?? {}).length, 5)
+  check('secrets.json holds one item per secret', Object.keys(parseSecretsFile(vaultText)?.items ?? {}).length, 6)
   if (process.platform !== 'win32') {
     check('secrets.json is mode 0600', (statSync(secretsFile).mode & 0o777).toString(8), '600')
     check('settings.json is mode 0600 too', (statSync(settingsFile).mode & 0o777).toString(8), '600')
   }
   check('the bystander in userData survives untouched', read(bystander), '{"bystander":true}')
-  ok('the key store was asked, since there was something to seal', calls.available > 0 && calls.encrypt === 5)
+  ok('the key store was asked, since there was something to seal', calls.available > 0 && calls.encrypt === 6)
+  // The account itself stays, key emptied: settings.json read before the vault
+  // opens must not drop it, or the next write would lose it (accounts.ts).
+  check(
+    'a key account stays in settings.json, its key an empty string',
+    [JSON.parse(onDisk).accounts?.['grok-team']?.kind, JSON.parse(onDisk).accounts?.['grok-team']?.apiKey],
+    ['key', '']
+  )
+  check(
+    'and hydrating that file keeps the account',
+    Object.keys(hydrateSettings(JSON.parse(onDisk)).accounts),
+    ['grok-team']
+  )
 
   // Idempotent: a second boot writes nothing and reads the same keys.
   const past = new Date(Date.now() - 60_000)
@@ -314,7 +331,7 @@ console.log('\nitems that will not open are kept, never deleted')
   const storeB = new SecretStore(dir, fakeBackend({ key: 0x33 }).backend, 'darwin')
   const underB = hydrateSettings(storeB.load())
   check('under another key the app sees no keys', collectSecrets(underB), {})
-  check('and status lists all five as stranded', storeB.status().stranded.length, 5)
+  check('and status lists all six as stranded', storeB.status().stranded.length, 6)
   storeB.save({ ...underB, fontSize: 17 })
   check('a save with no keys leaves every stranded item in secrets.json', parseSecretsFile(read(secretsFile))?.items, parseSecretsFile(sealedByA)?.items)
   storeB.save({ ...underB, providers: { ...underB.providers, anthropicApiKey: 'sk-ant-reentered' } })
@@ -439,6 +456,7 @@ console.log('\nwhat travels in a setup file')
     'providers.openrouterApiKey'
   ])
   ok('but never the phone access key', !JSON.stringify(withKeys).includes(CANARY.phone))
+  ok('nor an account\u2019s key: accounts stay on this machine', !JSON.stringify(withKeys).includes(CANARY.account))
 }
 
 console.log('\nsealing and opening (scrypt N=2^17, AES-256-GCM)')
