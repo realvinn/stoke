@@ -894,6 +894,37 @@ export interface WallpaperSettings {
   opacity: number
 }
 
+/**
+ * Stoke's own dictation (⇧⌘D in a tab, the phone's microphone), in Settings →
+ * Voice. Claude Code's `/voice` is NOT configured here — that lives in
+ * `~/.claude/settings.json` and Stoke only reports it.
+ *
+ * A block of its own rather than a field of `remote`, which is where the
+ * address used to live because the phone was dictation's first surface: the
+ * desktop uses it as much as the phone does, and the settings that follow it
+ * (which provider, which microphone, how long a hold is) are nothing to do
+ * with phone access. Repaired by `clampVoice` (shared/voiceSettings.ts), which
+ * rebuilds the object from named keys — a field added here needs its default
+ * in VOICE_DEFAULTS and a line in clampVoice in the same change, or it
+ * hydrates as undefined.
+ */
+export interface VoiceSettings {
+  /**
+   * The speech server both dictation paths post to, e.g.
+   * `http://127.0.0.1:17890`. Only main reaches it (`stt.ts`): it has no
+   * authentication of its own, so publishing it would put an open
+   * transcription endpoint wherever the phone link reaches.
+   *
+   * Empty does NOT hide the microphone: the phone's button is gated on
+   * browser capability alone (`voiceSupported()`), so an empty value instead
+   * fails at press time with a 503 from `/api/transcribe`. Settings repairs an
+   * emptied box both on blur and on close, so the UI will not persist one — but
+   * `clampVoice` keeps an empty string written by hand, which is the only way
+   * to say "no server" today.
+   */
+  sttUrl: string
+}
+
 export interface Settings {
   themeId: string
   /**
@@ -992,19 +1023,19 @@ export interface Settings {
     /** Name of the pre-created cloudflared tunnel to run. */
     tunnelName: string
     /**
-     * Speech-to-text sidecar used for dictation from the phone, for example
-     * `http://127.0.0.1:17890`. Stoke proxies to it so the sidecar itself never
-     * has to face the internet.
+     * A write-only MIRROR of `voice.sttUrl`, kept for one release so a settings
+     * file this build writes still gives an older build — which reads the
+     * address here — the same speech server. `hydrateSettings` overwrites it
+     * from `voice.sttUrl` on every read and every write, so nothing may read it:
+     * `voice.sttUrl` is the setting. A file from before the move has only this
+     * key, and hydrate migrates it into `voice`.
      *
-     * Empty does NOT hide the microphone: the button is gated on browser
-     * capability alone (`voiceSupported()`), so an empty value instead fails at
-     * press time with a 503 from `/api/transcribe`. Settings repairs an emptied
-     * box both on blur and on close, so the UI will not persist one - but
-     * `hydrate` keeps an empty string written by hand, since own properties
-     * override the defaults.
+     * @deprecated Read `Settings.voice.sttUrl`. Drop this after the next release.
      */
     sttUrl: string
   }
+  /** Stoke's dictation: where speech is transcribed. See VoiceSettings. */
+  voice: VoiceSettings
   /**
    * Which profile's projects to show, by `Project.group`. Null shows all.
    *

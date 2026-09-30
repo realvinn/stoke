@@ -17,6 +17,7 @@ import {
   themeSlotFor
 } from '../src/shared/themes.ts'
 import { nextBoards } from '../src/renderer/src/lib/worklogBoards.ts'
+import { clampVoice, DEFAULT_STT_URL, VOICE_DEFAULTS } from '../src/shared/voiceSettings.ts'
 import type { WorklogTarget } from '../src/shared/types.ts'
 
 let failures = 0
@@ -468,6 +469,93 @@ check('Stoke downloads its own update in the background by default', hydrateSett
 check('off stays off', hydrateSettings({ selfUpdateAuto: false }).selfUpdateAuto, false)
 check('junk reads as the default', hydrateSettings({ selfUpdateAuto: 'no' as never }).selfUpdateAuto, true)
 check('and DEFAULT_SETTINGS agrees', DEFAULT_SETTINGS.selfUpdateAuto, true)
+
+/*
+ * The speech server moved from `remote.sttUrl` to its own `voice` block when
+ * its field moved from Phone access to Settings → Voice. Three things must hold,
+ * and a regression in any of them is silent in the app: a file from before the
+ * move keeps its address (someone who pointed dictation at a speech box on the
+ * tailnet would otherwise be re-aimed at localhost with no error until they next
+ * spoke); `voice` wins once it exists, so the mirror can never undo an edit; and
+ * the mirror is rewritten on every hydrate, so a file this build writes still
+ * gives an OLDER build — which reads only `remote.sttUrl` — the same address.
+ */
+console.log('\nthe speech server, moved from remote to voice')
+check('an untouched machine gets the documented sidecar port', hydrateSettings({}).voice, { sttUrl: 'http://127.0.0.1:17890' })
+check('and DEFAULT_SETTINGS agrees with the shared default', DEFAULT_SETTINGS.voice, VOICE_DEFAULTS)
+check('the default IS the sidecar port, in one place', DEFAULT_STT_URL, 'http://127.0.0.1:17890')
+check(
+  'a file with only remote.sttUrl migrates it into voice',
+  hydrateSettings({ remote: { sttUrl: 'http://x:1' } }).voice.sttUrl,
+  'http://x:1'
+)
+check(
+  'and keeps the rest of the remote block it came from',
+  (() => {
+    const s = hydrateSettings({ remote: { sttUrl: 'http://x:1', port: 9000, hostname: 'h.example.com' } })
+    return [s.remote.port, s.remote.hostname, s.remote.sttUrl]
+  })(),
+  [9000, 'h.example.com', 'http://x:1']
+)
+check(
+  'voice wins over the mirror once it exists',
+  hydrateSettings({ voice: { sttUrl: 'http://new:2' }, remote: { sttUrl: 'http://old:1' } }).voice.sttUrl,
+  'http://new:2'
+)
+check(
+  'and the mirror is rewritten from it, for an older build reading this file',
+  hydrateSettings({ voice: { sttUrl: 'http://new:2' }, remote: { sttUrl: 'http://old:1' } }).remote.sttUrl,
+  'http://new:2'
+)
+check(
+  // The renderer's Phone access panel spreads its whole `remote` copy into
+  // every patch, stale sttUrl included; setSettings hydrates `{...current,
+  // ...patch}`, so this is exactly what a Port edit looks like after a Voice edit.
+  'a remote patch carrying a stale mirror cannot move the setting',
+  hydrateSettings({
+    ...hydrateSettings({ voice: { sttUrl: 'http://new:2' } }),
+    remote: { ...hydrateSettings({}).remote, sttUrl: 'http://stale:9', port: 9100 }
+  }).voice.sttUrl,
+  'http://new:2'
+)
+check(
+  'a file written by this build round-trips unchanged',
+  (() => {
+    const once = hydrateSettings({ remote: { sttUrl: 'http://x:1' } })
+    const twice = hydrateSettings(JSON.parse(JSON.stringify(once)))
+    return [twice.voice, twice.remote.sttUrl]
+  })(),
+  [{ sttUrl: 'http://x:1' }, 'http://x:1']
+)
+check('junk in voice falls back to the mirror', hydrateSettings({ voice: 'banana', remote: { sttUrl: 'http://x:1' } }).voice.sttUrl, 'http://x:1')
+check('a number is not an address', hydrateSettings({ voice: { sttUrl: 42 } }).voice.sttUrl, 'http://127.0.0.1:17890')
+check('nor is a number in the old key', hydrateSettings({ remote: { sttUrl: 42 } }).voice.sttUrl, 'http://127.0.0.1:17890')
+check('an array is not a voice block', hydrateSettings({ voice: ['http://x:1'] }).voice.sttUrl, 'http://127.0.0.1:17890')
+check('null is not one either', hydrateSettings({ voice: null }).voice, { sttUrl: 'http://127.0.0.1:17890' })
+check('an address is trimmed', hydrateSettings({ voice: { sttUrl: '  http://x:1/  ' } }).voice.sttUrl, 'http://x:1/')
+/*
+ * Kept, not defaulted: "" is the only way to say "no speech server", and it is
+ * what makes the phone's /api/host say `off` rather than probing a default
+ * nobody runs. The Voice panel repairs an emptied BOX; a hand-written file is
+ * the user's word.
+ */
+check('a hand-written empty address is kept', hydrateSettings({ voice: { sttUrl: '' } }).voice.sttUrl, '')
+check('including one migrated from the old key', hydrateSettings({ remote: { sttUrl: '' } }).voice.sttUrl, '')
+check(
+  'the clamp rebuilds from named keys, so junk fields do not ride through',
+  hydrateSettings({ voice: { sttUrl: 'http://x:1', provider: 'banana', __proto__x: 1 } }).voice,
+  { sttUrl: 'http://x:1' }
+)
+check(
+  'and every named key survives it',
+  Object.keys(clampVoice({ ...VOICE_DEFAULTS })).sort(),
+  Object.keys(VOICE_DEFAULTS).sort()
+)
+check('clampVoice with nothing at all is the defaults', clampVoice(undefined), VOICE_DEFAULTS)
+ok(
+  'and returns a fresh object, never the module constant',
+  clampVoice(undefined) !== VOICE_DEFAULTS && hydrateSettings({}).voice !== DEFAULT_SETTINGS.voice
+)
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
 process.exitCode = failures ? 1 : 0

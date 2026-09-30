@@ -498,8 +498,9 @@ npm run verify:statusline     # the statusLine wrapper: payload, suppression, pa
                               # no bypass bead is drawn where the ring's arc would touch it
 npm run verify:unicode        # xterm's cell widths for emoji and box drawing
 npm run verify:profiles       # profile resolution + every accent clears 4.5:1
-npm run verify:settings       # settings hydration: repair, clamps, what it drops, and the
-                              # light/dark theme pair the OS chooses between
+npm run verify:settings       # settings hydration: repair, clamps, what it drops, the
+                              # light/dark theme pair the OS chooses between, and the speech
+                              # server's move from `remote.sttUrl` to `voice` (and its mirror)
 npm run verify:claude-config  # writing Claude Code's OWN config: the allowlist, the refusals,
                               # and the ~/.claude.json lock. Runs against real files in a temp
                               # CLAUDE_CONFIG_DIR, never the user's (gotchas 38, 39)
@@ -880,6 +881,11 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     dictation — and the words for a refused microphone. On macOS a CLI in a
                     Stoke pty records AS Stoke (TCC's responsible process), so Stoke's one
                     Privacy switch is every CLI's. Gotcha 79
+  voiceSettings.ts  the `voice` settings block (Settings → Voice): VOICE_DEFAULTS,
+                    DEFAULT_STT_URL and `clampVoice`, which rebuilds it from named keys and
+                    migrates the speech server from the old `remote.sttUrl`. hydrate keeps
+                    `remote.sttUrl` as a write-only mirror for one release, for older builds.
+                    A new voice field needs its default AND a clampVoice line in one change
   drop.ts           what a file dropped on the terminal types: the per-platform quoting,
                     and the refusal for a name that cannot be typed. Pure, platform passed
                     in, so verify:drop runs it for every OS. Gotcha 59

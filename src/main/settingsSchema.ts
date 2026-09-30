@@ -13,6 +13,7 @@ import { tidy } from './projectMeta.ts'
 import { DEFAULT_LIGHT_THEME_ID, DEFAULT_THEME_ID, validateTheme } from '../shared/themes.ts'
 import { DEFAULT_WORKLOG_BOARDS, WORKLOG_TARGETS } from '../shared/worklog.ts'
 import { clampWelcomeSeen } from '../shared/welcome.ts'
+import { clampVoice, VOICE_DEFAULTS } from '../shared/voiceSettings.ts'
 import {
   clampCurrentProfile,
   clampImportOffer,
@@ -91,13 +92,11 @@ export const DEFAULT_SETTINGS: Settings = {
     requireAccessHeader: false,
     autoStartTunnel: false,
     tunnelName: 'stoke',
-    /*
-     * The speech sidecar's documented local port. Nothing is contacted unless
-     * the microphone is actually used, and if no sidecar is listening the phone
-     * gets a plain "unreachable" message rather than a silent failure.
-     */
-    sttUrl: 'http://127.0.0.1:17890'
+    // The mirror of `voice.sttUrl` an older build reads. Never read it here;
+    // hydrateSettings rewrites it from `voice` every time. See types.ts.
+    sttUrl: VOICE_DEFAULTS.sttUrl
   },
+  voice: { ...VOICE_DEFAULTS },
   activeProfile: null,
   profiles: [],
   hosts: [],
@@ -252,6 +251,13 @@ export function hydrateSettings(raw: unknown): Settings {
   // which already returns fresh objects.
   if (!raw || typeof raw !== 'object') return hydrateSettings({})
   const r = raw as Partial<Settings>
+  /*
+   * Before the remote block, because the remote block's `sttUrl` is written
+   * FROM it. `r.remote?.sttUrl` is where a file from before Settings → Voice
+   * keeps the address; `clampVoice` prefers `voice.sttUrl` whenever there is
+   * one, so the migration happens once and the mirror can never win again.
+   */
+  const voice = clampVoice(r.voice, r.remote?.sttUrl)
   return {
     ...DEFAULT_SETTINGS,
     ...r,
@@ -270,8 +276,18 @@ export function hydrateSettings(raw: unknown): Settings {
        * loopback — a phone link that quietly stops working because of a typo
        * in a file.
        */
-      reach: clampRemoteReach(r.remote?.reach)
+      reach: clampRemoteReach(r.remote?.reach),
+      /*
+       * Kept in step with `voice.sttUrl` for one release, on every read and so
+       * on every write (`setSettings` hydrates what it persists), so a file this
+       * build writes still gives an older build — which reads the address here
+       * — the same speech server. Overwritten rather than spread through: a
+       * stale copy in a remote patch, or an old build's edit, must never beat
+       * the setting it mirrors.
+       */
+      sttUrl: voice.sttUrl
     },
+    voice,
     /*
      * Themes are repaired rather than trusted. applyTheme writes whatever keys
      * are on the object, so a custom theme missing a token used to render an
