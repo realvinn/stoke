@@ -15,7 +15,7 @@ import {
   shell,
   systemPreferences
 } from 'electron'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { pathToFileURL } from 'node:url'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
@@ -61,8 +61,22 @@ import {
 } from './cli.ts'
 import { scanSkills } from './skillsScan.ts'
 import { ClaudeSkillsProjector } from './skillsProject.ts'
-import { ClaudeConfigReader, McpFileStore, readMcpCatalog, resolveLaunchMcp, type LaunchMcp } from './mcpLaunch.ts'
-import { claudeMcpConfigs, PI_MCP_EXTENSION, type McpRefusal } from '../shared/mcpServers.ts'
+import {
+  ClaudeConfigReader,
+  McpFileStore,
+  readMcpCatalog,
+  resolveAccountMirror,
+  resolveLaunchMcp,
+  type LaunchMcp
+} from './mcpLaunch.ts'
+import {
+  accountMcpSummary,
+  claudeAccountServers,
+  claudeMcpConfigs,
+  PI_MCP_EXTENSION,
+  type AccountMcpSummary,
+  type McpRefusal
+} from '../shared/mcpServers.ts'
 import { ContextWatcher } from './context.ts'
 import {
   findSessionFile,
@@ -91,7 +105,14 @@ import {
 } from '../shared/stokeArgs.ts'
 import { installCommand, readCommandState, removeCommand, type CommandEnv } from './stokeCommand.ts'
 import { keepUsage } from '../shared/statusLine.ts'
-import { advertisedRemoteToken, shouldRestartRemote } from '../shared/remotePhone.ts'
+import {
+  advertisedRemoteToken,
+  livePushSubscriptions,
+  pushSubscriptionKey,
+  rememberGonePush,
+  shouldRestartRemote,
+  withPushSubscription
+} from '../shared/remotePhone.ts'
 import { parseSession, readTranscript } from './sessionFile.ts'
 import { fetchRemoteTranscript } from './sshTranscript.ts'
 import { PtyManager, type StartResult } from './pty.ts'
@@ -162,7 +183,8 @@ import {
 import { createScratchDir, resolveDefaultCwd } from './workspace.ts'
 import { launchFolderProblem, realpathFolder } from './folderCheck.ts'
 import { BrowserMcpServer } from './mcp/server.ts'
-import { connectTarget, generateToken, RemoteServer, tailnetAddress, type RemoteDeps } from './remote/server.ts'
+import { connectTarget, generateToken, RemoteServer, tailnetAddress, type RemoteDeps, type RemotePushDeps } from './remote/server.ts'
+import { generateVapidKeys, isVapidPair, sendPush } from './remote/push.ts'
 import { TunnelManager } from './remote/tunnel.ts'
 import { discoverAccess } from './remote/accessJwt.ts'
 import { ACCESS_STATUS_OFF, type AccessLookup } from '../shared/cfAccess.ts'
@@ -735,6 +757,46 @@ async function launchMcpFor(cliId: CodingCliId, cwd: string): Promise<LaunchMcp>
 }
 
 /**
+ * `~/.claude.json` as a second Claude account's CLI reads it: its home as
+ * `CLAUDE_CONFIG_DIR`, exactly the variable its launch gets (`accountEnv`).
+ * One cached reader per home, like the Default's.
+ */
+const accountConfigReaders = new Map<string, ClaudeConfigReader>()
+function accountConfigReader(home: string): ClaudeConfigReader {
+  let r = accountConfigReaders.get(home)
+  if (!r) {
+    r = new ClaudeConfigReader({ ...process.env, CLAUDE_CONFIG_DIR: home }, homedir())
+    accountConfigReaders.set(home, r)
+  }
+  return r
+}
+
+/**
+ * The Default account's user-scope servers a second Claude account is handed
+ * (`resolveAccountMirror`), for one launch folder or — `cwd` null — for its
+ * row in Settings. Never throws: a launch never dies of its tools.
+ */
+async function accountMirrorFor(account: AgentAccount, cwd: string | null): ReturnType<typeof resolveAccountMirror> {
+  try {
+    return await resolveAccountMirror({ cwd, defaultReader: claudeConfigReader, accountReader: accountConfigReader(account.home) })
+  } catch (err) {
+    console.error('[stoke] could not read MCP servers for an account', err)
+    return { mirror: { servers: [], own: [], refused: [], accountNames: [] }, error: 'Its MCP servers could not be read.' }
+  }
+}
+
+/** What each Claude login account's row says about the Default account's servers (`CH.accountsMcp`). */
+async function accountsMcp(): Promise<Record<string, AccountMcpSummary>> {
+  const out: Record<string, AccountMcpSummary> = {}
+  const claude = Object.values(getSettings().accounts).filter((a) => a.cli === 'claude' && a.kind === 'login')
+  const reads = await Promise.all(claude.map((a) => accountMirrorFor(a, null)))
+  claude.forEach((a, i) => {
+    out[a.id] = accountMcpSummary(reads[i].mirror, reads[i].error)
+  })
+  return out
+}
+
+/**
  * Pi's MCP extension (mcpServers.ts `PI_MCP_EXTENSION`), under Stoke's own
  * userData — never into `~/.pi`. Constant text holding no secret, rewritten
  * only when missing or different. Null when it cannot be written, and Pi then
@@ -910,11 +972,22 @@ async function launchSession(
   /*
    * Claude Code loads its own servers itself, so its `--mcp-config` carries
    * only Stoke's: the browser file when ticked, and one generated file of the
-   * servers Stoke holds that are ticked for it.
+   * servers Stoke holds that are ticked for it — plus, on a second account
+   * (its own `CLAUDE_CONFIG_DIR`, so its own `~/.claude.json`), the Default
+   * account's user-scope servers it would otherwise never see
+   * (`accountMcpMirror`): URL and headers only for an http server, never an
+   * OAuth token (gotcha 36), and never a name the account defines itself.
    */
   let claudeConfigs: string[] = []
   if (localAgent && isClaudeCode(cliId)) {
-    const out = claudeMcpConfigs(launchMcp.servers, mcpConfigPath, mcpFiles.fileFor)
+    let servers = launchMcp.servers
+    if (account?.kind === 'login') {
+      const { mirror, error } = await accountMirrorFor(account, opts.cwd)
+      if (error) console.warn(`[stoke] ${account.id}: ${error}`)
+      logMcpSkipped(cliId, mirror.refused)
+      servers = claudeAccountServers(servers, mirror)
+    }
+    const out = claudeMcpConfigs(servers, mcpConfigPath, mcpFiles.fileFor)
     claudeConfigs = (await mcpFiles.write(out.files))
       ? out.configs
       : out.configs.filter((c) => !out.files.some((f) => f.path === c))
@@ -1373,13 +1446,106 @@ function remoteConfig(): Settings['remote'] {
   return getSettings().remote
 }
 
-/** Mint the bearer key if there is none yet, and tell the renderer. */
+/**
+ * Mint the bearer key if there is none yet — and Web Push's VAPID pair if
+ * there is no whole one (phone contract point 14) — in one write, and tell the
+ * renderer. Only the start paths call this (gotcha 53): `/api/host` reads the
+ * public key and never mints. A new pair retires every subscription, which was
+ * made to the old one and could never be sent to again.
+ */
 function ensureRemoteToken(): Settings['remote'] {
   const s = getSettings()
-  if (s.remote.token) return s.remote
-  const next = setSettings({ remote: { ...s.remote, token: generateToken() } })
+  const push = s.remote.push
+  const pushWhole = isVapidPair({ publicKey: push.vapidPublic, privateKey: push.vapidPrivate })
+  if (s.remote.token && pushWhole) return s.remote
+  const pair = pushWhole ? null : generateVapidKeys()
+  const next = setSettings({
+    remote: {
+      ...s.remote,
+      token: s.remote.token || generateToken(),
+      push: pair ? { vapidPublic: pair.publicKey, vapidPrivate: pair.privateKey, subscriptions: [] } : push
+    }
+  })
   send(CH.settingsChanged, next)
   return next.remote
+}
+
+/**
+ * Which phone key a subscription was made under: a truncated hash, never the
+ * key. A key replaced in Settings is a phone locked out, so a subscription made
+ * under the old one is never sent to again (`livePushSubscriptions`).
+ */
+function pushKeyTag(token: string): string {
+  return createHash('sha256').update(`stoke-push:${token}`).digest('hex').slice(0, 16)
+}
+
+/**
+ * Whether a push may go to plain http on 127.0.0.1: only an unpackaged build
+ * launched with `STOKE_PUSH_LOOPBACK=1`, which is how a sandbox points a phone
+ * at a fake push service (the same shape as `STOKE_ACCESS_CERTS_URL`). A
+ * packaged build never does.
+ */
+function pushLoopbackAllowed(): boolean {
+  return !app.isPackaged && process.env.STOKE_PUSH_LOOPBACK === '1'
+}
+
+/** `remote.push.subscriptions`, rewritten by main alone, then the renderer told (gotcha 53). */
+function writePushSubscriptions(edit: (list: Settings['remote']['push']['subscriptions']) => Settings['remote']['push']['subscriptions']): void {
+  const s = getSettings()
+  const next = setSettings({ remote: { ...s.remote, push: { ...s.remote.push, subscriptions: edit(s.remote.push.subscriptions) } } })
+  send(CH.settingsChanged, next)
+}
+
+/**
+ * Subscriptions a push service answered 404/410 for since this Stoke started
+ * (`rememberGonePush`), so a phone re-sending one is told 410 rather than
+ * re-enrolled to be refused again.
+ */
+let pushGone: string[] = []
+
+/**
+ * Web Push for the phone server (phone contract point 14), every read from
+ * settings on the call (gotcha 111). A send's `gone` (the phone unsubscribed,
+ * or its browser dropped it) forgets that subscription and remembers it as
+ * gone; a `failed` one is kept.
+ */
+function remotePushDeps(): RemotePushDeps {
+  const pair = (): { publicKey: string; privateKey: string } | null => {
+    const p = getSettings().remote.push
+    const keys = { publicKey: p.vapidPublic, privateKey: p.vapidPrivate }
+    return isVapidPair(keys) ? keys : null
+  }
+  return {
+    publicKey: () => pair()?.publicKey ?? null,
+    subscribe: (sub) => {
+      if (pushGone.includes(pushSubscriptionKey(sub))) return 'gone'
+      const tag = pushKeyTag(getSettings().remote.token)
+      writePushSubscriptions((list) => withPushSubscription(list, sub, tag, Date.now()))
+      return 'ok'
+    },
+    unsubscribe: (endpoint) => {
+      const had = getSettings().remote.push.subscriptions.some((s) => s.endpoint === endpoint)
+      if (had) writePushSubscriptions((list) => list.filter((s) => s.endpoint !== endpoint))
+      return had
+    },
+    notify: async (payload, opts = {}) => {
+      const keys = pair()
+      if (!keys) return []
+      const s = getSettings()
+      const live = livePushSubscriptions(s.remote.push.subscriptions, pushKeyTag(s.remote.token), pushLoopbackAllowed()).filter(
+        (sub) => !opts.only || sub.endpoint === opts.only
+      )
+      const outcomes = await Promise.all(live.map((sub) => sendPush(sub, payload, keys, { urgency: opts.urgency })))
+      const goneSubs = live.filter((_, i) => outcomes[i] === 'gone')
+      if (goneSubs.length) {
+        pushGone = rememberGonePush(pushGone, goneSubs.map(pushSubscriptionKey))
+        const gone = new Set(goneSubs.map((sub) => sub.endpoint))
+        writePushSubscriptions((list) => list.filter((sub) => !gone.has(sub.endpoint)))
+      }
+      return outcomes
+    },
+    allowLoopback: pushLoopbackAllowed
+  }
 }
 
 /**
@@ -1557,6 +1723,21 @@ function remoteDeps(): RemoteDeps {
         cli: s.agents.defaultCli
       }
     },
+    /**
+     * Per call (gotcha 111): an endpoint model or an account changed on the
+     * desktop is what the phone's next sheet shows, and what its next start
+     * is held to. `phoneAgentChoices` sends on ids, labels and models only.
+     */
+    launchFacts: () => {
+      const s = getSettings()
+      return {
+        endpoints: s.agents.endpoints,
+        accounts: s.accounts,
+        defaultAccount: s.agents.defaultAccount,
+        defaultModel: s.defaults.model
+      }
+    },
+    push: remotePushDeps(),
     sttStatus: async () => {
       const s = await sttStatusNow()
       return s === 'up' || s === 'ready' ? 'ready' : s
@@ -2655,6 +2836,7 @@ function registerIpc(): void {
   ipcMain.handle(CH.accountsCreate, (_e, input: AccountCreateInput) => createAccount(input))
   ipcMain.handle(CH.accountsRemove, (_e, id: string) => removeAccount(id))
   ipcMain.handle(CH.accountsIdentify, () => identifyAccounts())
+  ipcMain.handle(CH.accountsMcp, () => accountsMcp())
   ipcMain.handle(CH.mcpCatalog, () => readMcpCatalog(claudeConfigReader))
   ipcMain.handle(CH.cliDetect, (_e, opts?: { fresh?: boolean }) => {
     if (opts?.fresh === true) {
@@ -3493,9 +3675,15 @@ function registerIpc(): void {
      * The renderer may rename an account, recolour it or change its key —
      * never add one, remove one or move its home, which becomes an agent's
      * config dir. Those are `accounts:create`/`accounts:remove`, in main.
+     *
+     * Nor may it write `remote.push` at all: Phone access spreads its whole
+     * copy of `remote` into every patch, and a phone that subscribed since that
+     * copy was taken would be dropped by the next toggle (the same shape as
+     * gotcha 53's stale token). Main's own copy always stands.
      */
+    const guarded: Partial<Settings> = patch.remote ? { ...patch, remote: { ...patch.remote, push: prev.remote.push } } : patch
     const next = setSettings(
-      patch.accounts ? { ...patch, accounts: accountsFromRenderer(prev.accounts, patch.accounts) } : patch
+      guarded.accounts ? { ...guarded, accounts: accountsFromRenderer(prev.accounts, guarded.accounts) } : guarded
     )
     // A renamed or re-ordered profile list, a switch, or a bookmark list moved.
     if (patch.browser) {

@@ -6,7 +6,7 @@
  */
 import { deriveAccent } from '@shared/accent'
 import { meterScale } from '@shared/meter'
-import { accessRefusalMessage, type PhoneSessionStatus } from '@shared/remotePhone'
+import { accessRefusalMessage, type PhoneAgentChoices, type PhoneSessionStatus } from '@shared/remotePhone'
 
 export interface ContextInfo {
   contextTokens: number
@@ -49,6 +49,14 @@ export interface HostInfo {
   agents: { id: string; name: string }[]
   /** `cli` is the desktop's default agent; absent from a desktop older than it. */
   defaults: { permissionMode: string; model: string; effort: string; cli?: string }
+  /**
+   * What each offered agent takes on the confirm step, keyed by id (always
+   * `claude`): its modes, models, efforts and accounts. Absent from a desktop
+   * older than it, where the sheet falls back to Claude's own lists.
+   */
+  choices?: Record<string, PhoneAgentChoices>
+  /** Web Push (point 14): the key a subscription is made with, null until Phone access started with one. */
+  push?: { publicKey: string | null }
 }
 
 export interface ProjectRow {

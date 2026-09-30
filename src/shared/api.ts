@@ -26,7 +26,7 @@ export interface ImportResult {
   needsChromeClose?: boolean
 }
 import type { SkillDirScan } from './skills'
-import type { McpCatalog } from './mcpServers'
+import type { AccountMcpSummary, McpCatalog } from './mcpServers'
 import type { MicAccess } from './voiceRoute'
 import type { SttConfig } from './speechProviders'
 import type { CreateProfileInput, ProfilePlan } from './profiles'
@@ -498,6 +498,12 @@ export interface StokeApi {
     create(input: AccountCreateInput): Promise<AccountCreateResult>
     remove(id: string): Promise<void>
     identify(): Promise<Record<string, string | null>>
+    /**
+     * Per Claude login account, the Default account's user-scope MCP servers
+     * it is handed at launch, the ones it keeps its own, and any that cannot be
+     * passed on — names and reasons only.
+     */
+    mcp(): Promise<Record<string, AccountMcpSummary>>
   }
 
   usage: {

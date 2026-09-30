@@ -36,13 +36,24 @@ import { disambiguate } from '../../shared/launcher.ts'
 import { pathKey, pathRulesFor } from '../../shared/paths.ts'
 import type { FolderBase } from '../../shared/remotePhone.ts'
 import { addRemoteProject, browseRemoteFolder, resolveFolderBases } from './folders.ts'
+import type { PushOutcome } from './push.ts'
 import { isTailnetAddress, tailnetAddress } from './link.ts'
 import {
   answerBytes,
   answerVerdict,
   isGatedRemotePath,
   mayStoreKeyCookie,
+  phoneAgentChoices,
   phoneHostDefaults,
+  phoneLaunchVerdict,
+  hostChoices,
+  pushFor,
+  pushPayload,
+  pushStateOf,
+  pushSubscriptionFrom,
+  type PhoneLaunchFacts,
+  type PushPayload,
+  type PushState,
   refusalStatusLine,
   remoteRefusal,
   type RemoteAuthVerdict,
@@ -105,7 +116,13 @@ export type { ConnectTarget, Reach } from './link.ts'
  *    (`[{id,name}]`, installed + chosen, Claude first), `defaults`
  *    (`{permissionMode,model,effort,cli}` — bypass is never offered; `cli` is
  *    the desktop's default agent, always one of `agents` when any is listed),
- *    and a hostname with no `.local`/`.localdomain` suffix.
+ *    and a hostname with no `.local`/`.localdomain` suffix. `choices` (added,
+ *    nothing renamed) is each offered agent's own confirm step, keyed by id and
+ *    always including `claude` (`phoneAgentChoices`): `{modes, models,
+ *    modelFixed, efforts, accounts, account}`, each a list of `{id, label,
+ *    hint?, problem?}` — empty where `CLI_CAPS` says the agent takes none, the
+ *    one model another agent's launch will run with `modelFixed`, and Default
+ *    first in `accounts`.
  * 3. `GET /api/sessions` rows add `status`, `waitingFor`, `lastActivityAt`,
  *    `cli`, `agentName`, `project`, `title`, `endedAt`, `exitCode`. A session
  *    that exits on its own stays listed for `ENDED_RETENTION_MS` as `'ended'`
@@ -136,7 +153,11 @@ export type { ConnectTarget, Reach } from './link.ts'
  *    every new prompt, and when a later registry reading re-confirms one after
  *    input (`trackPrompt`).
  * 8. `POST /api/sessions` accepts `{cwd, cli?, permissionMode?, model?,
- *    effort?}`; `cli` must be an installed agent; bypass stays 403;
+ *    effort?, accountId?}`; `cli` must be an installed agent; bypass stays 403;
+ *    the rest must be what `choices[cli]` offers (`phoneLaunchVerdict`, 400 with
+ *    the reason otherwise): no mode or effort for an agent that takes none, no
+ *    model but its own for one whose model is fixed, an account of that agent's
+ *    that can start;
  *    `knownCwd` compares realpaths on both sides (F6), keyed by this OS's
  *    `pathKey` (case folds on macOS and Windows, never on Linux).
  *    Instead of `cwd` it takes `hostId` — an SSH host from Settings, looked up
@@ -169,7 +190,44 @@ export type { ConnectTarget, Reach } from './link.ts'
  *    snapshot or the last recorded one, else `null` (PX-19, gotcha 2).
  * 10. A session started from the phone pushes `CH.remoteSessionStarted`, so
  *     `App.tsx` adopts it as a desktop tab (PX-9/F3).
+ * 14. Web Push. `/api/host` adds `push: {publicKey}` — the VAPID key a
+ *     subscription is made with, null until a start path minted the pair
+ *     (never on this read, gotcha 53). `POST /api/push/subscription` takes a
+ *     `PushSubscription.toJSON()` (`pushSubscriptionFrom`: a real push
+ *     service's https endpoint only) and replies `{ok:true}` — an upsert the
+ *     phone repeats at every start and every sheet open, so "On" is the
+ *     computer's answer — or 410 `{error, gone:true}` for a subscription its
+ *     push service already refused (`rememberGonePush`); `DELETE` the
+ *     same path with `{endpoint}` forgets it, `{ok, removed}`; `POST
+ *     /api/push/test {endpoint}` sends that one subscription a test
+ *     notification, `{ok, outcome}`, or 410 `{error, gone:true}` when the
+ *     service refused it for good. Gated like every `/api` route. A session
+ *     then pushes on `pushFor`'s edges only — into waiting, a new prompt, an
+ *     exit on its own — with a content-free payload (`pushPayload`: project
+ *     name, "Needs you"/"Finished", the session's route). A subscription made
+ *     under an older phone key is never sent to.
  */
+
+/** What a phone is told when its push service refused its subscription for good (410; the phone drops its copy). */
+const PUSH_GONE_TEXT = 'This phone’s push service stopped taking its notifications. Turn them on again to make a new subscription.'
+
+/** Web Push, as the server needs it (main/remote/push.ts; phone contract point 14). Settings read per call. */
+export interface RemotePushDeps {
+  /** The VAPID public key, or null while there is no whole pair. Never mints one. */
+  publicKey: () => string | null
+  /**
+   * Remember one checked subscription under the phone key in force (an
+   * upsert: the phone re-sends it on every start). `gone` when its push
+   * service already refused this very subscription (`rememberGonePush`).
+   */
+  subscribe: (sub: { endpoint: string; p256dh: string; auth: string }) => 'ok' | 'gone'
+  /** Forget one by endpoint; true when it was there. */
+  unsubscribe: (endpoint: string) => boolean
+  /** Send one payload to every live subscription, or to `only` among them. What became of each send. */
+  notify: (payload: PushPayload, opts?: { only?: string; urgency?: 'high' | 'normal' }) => Promise<PushOutcome[]>
+  /** Whether a loopback http endpoint is accepted: an unpackaged build told so, for a fake push service. */
+  allowLoopback: () => boolean
+}
 
 export interface RemoteDeps {
   ptys: () => PtyManager | null
@@ -208,6 +266,16 @@ export interface RemoteDeps {
    * `bypassPermissions` never is, and the agent is resolved against `agents`.
    */
   defaults: () => { permissionMode: PermissionMode; model: string; effort: EffortLevel; cli: CodingCliId }
+  /**
+   * What a launch reads per agent — endpoints, accounts, each agent's default
+   * account, the desktop's default Claude model — read per call (gotcha 111).
+   * `/api/host` turns it into `choices` and `POST /api/sessions` holds a start
+   * to them (`phoneAgentChoices`, `phoneLaunchVerdict`). Never a key: only
+   * the ids, labels and models those two need leave this process.
+   */
+  launchFacts: () => PhoneLaunchFacts
+  /** Web Push (phone contract point 14); absent, the routes answer 503 and nothing is pushed. */
+  push?: RemotePushDeps
   sttStatus: () => Promise<'ready' | 'down' | 'off'>
   /**
    * A dictated clip to text, through `stt.ts` with the provider, key and
@@ -474,6 +542,12 @@ export class RemoteServer {
   /** What the panel is told about the last token refused and accepted. */
   private accessRefused: { reason: AccessRefusal; at: number } | null = null
   private accessAccepted: number | null = null
+  /**
+   * Each session's last reading as Web Push sees it (`pushFor`). A session
+   * first seen is a baseline, so a server start never announces what was
+   * already so; one gone from the list is forgotten.
+   */
+  private pushSeen = new Map<string, PushState>()
 
   private readonly deps: RemoteDeps
   /** Told whenever a client attaches or leaves, so the desktop can say so. */
@@ -625,6 +699,9 @@ export class RemoteServer {
           const set = this.attached.get(ptyId)
           if (set) for (const ws of set) if (ws.readyState === 1) ws.close(1000, 'exit')
           this.notifySessionsChanged()
+          // Finished, if it ended on its own: a tab closed at the desk is
+          // already gone from the list, and is sent nothing (`evaluatePush`).
+          this.evaluatePush()
         })
       }
     } catch (err) {
@@ -679,6 +756,8 @@ export class RemoteServer {
       this.eventsDebounce = null
     }
     this.lastEventsPayload = null
+    // A restart takes a fresh baseline: nothing seen while it was down is announced.
+    this.pushSeen.clear()
 
     this.wss?.close()
     this.wss = null
@@ -749,6 +828,38 @@ export class RemoteServer {
     for (const ptyId of this.attached.keys()) this.pushStatus(ptyId)
     this.pushSizes()
     if (this.eventsClients.size) this.notifySessionsChanged()
+    this.evaluatePush()
+  }
+
+  /**
+   * Web Push's edges (phone contract point 14), once a registry pass and on
+   * every exit: each listed session's reading against the last one
+   * (`pushFor`), and a content-free push for each edge (`pushPayload`). Runs
+   * whether or not anything is subscribed, so a phone that subscribes later
+   * starts from the truth rather than from a first sight. An "Add key" tab
+   * and an account sign-in are not sessions, as in `sessionList`.
+   */
+  private evaluatePush(): void {
+    const manager = this.deps.ptys()
+    if (!manager || this.servers.length === 0) return
+    const seen = new Set<string>()
+    for (const s of manager.list()) {
+      if (s.enroll || s.accountLogin) continue
+      const st = this.statusFor(s.ptyId)
+      if (!st) continue
+      seen.add(s.ptyId)
+      // The prompt's own identity, never its answer id: `trackPrompt` re-mints
+      // that after input, and a push on it fired for every pause at the desk.
+      const next: PushState = pushStateOf(st.status, this.prompts.get(s.ptyId) ?? null)
+      const kind = pushFor(this.pushSeen.get(s.ptyId) ?? null, next)
+      this.pushSeen.set(s.ptyId, next)
+      if (!kind || !this.deps.push) continue
+      const project = this.deps.hostFor(s.sessionId) ?? s.cwd.split(/[\\/]/).filter(Boolean).pop() ?? s.cwd
+      void this.deps.push
+        .notify(pushPayload(kind, project, s.ptyId), { urgency: kind === 'needs-you' ? 'high' : 'normal' })
+        .catch((err) => console.error('[remote] push', err))
+    }
+    for (const id of [...this.pushSeen.keys()]) if (!seen.has(id)) this.pushSeen.delete(id)
   }
 
   /**
@@ -1127,7 +1238,13 @@ export class RemoteServer {
             platform: process.platform,
             stt,
             agents,
-            defaults: phoneHostDefaults(defaults, defaults.cli, agents.map((a) => a.id))
+            defaults: phoneHostDefaults(defaults, defaults.cli, agents.map((a) => a.id)),
+            choices: phoneAgentChoices(
+              agents.map((a) => a.id),
+              this.deps.launchFacts()
+            ),
+            // Point 14: read, never minted here (gotcha 53).
+            push: { publicKey: this.deps.push?.publicKey() ?? null }
           },
           setCookie
         )
@@ -1392,6 +1509,27 @@ export class RemoteServer {
         }
 
         /*
+         * What the start asks the agent for must be what that agent takes
+         * (`choices`, phone contract points 2 and 8): Codex is handed no
+         * permission mode and runs the model Settings › Agents gives it, and a
+         * remote machine's `claude` takes nothing at all (gotcha 19). Read from
+         * settings on this request, the same facts `/api/host` served. The
+         * account is checked here too, so a key account with no key is a 400
+         * with its own sentence rather than a bare 500 from the launch.
+         */
+        if (host && body?.accountId !== undefined && body.accountId !== DEFAULT_ACCOUNT_ID) {
+          return this.json(res, { error: 'A remote machine starts on its own sign-in.' }, setCookie, 400)
+        }
+        const agentId = (cli ?? 'claude') as CodingCliId
+        const choices = host ? hostChoices() : phoneAgentChoices([agentId], this.deps.launchFacts())[agentId]
+        const launch = phoneLaunchVerdict(
+          body as Record<string, unknown> | null,
+          choices,
+          host ? 'A remote machine' : (CODING_CLIS.find((c) => c.id === agentId)?.label ?? agentId)
+        )
+        if (!launch.ok) return this.json(res, { error: launch.error }, setCookie, launch.status)
+
+        /*
          * One transcript, one `claude`. A Resume on a session that is running
          * in another pty (a desktop tab, another phone, this phone's own
          * previous Resume) used to start a second process on it: the desktop
@@ -1426,15 +1564,17 @@ export class RemoteServer {
 
         /*
          * The account to start on (shared/accounts.ts), when the phone names
-         * one: only an id's SHAPE is checked here. Main resolves it against
-         * settings and refuses one that is gone or belongs to another agent
-         * (`resolveLaunchAccount`) by throwing, which this route answers like
-         * any other launch refusal: a bare 500, the sentence in the log. Absent
-         * is the agent's default account, as on the desktop. An SSH start
-         * carries none.
+         * one: already held to this agent's own accounts above
+         * (`phoneLaunchVerdict`). Main resolves it against settings again and
+         * refuses one that went in between (`resolveLaunchAccount`) by
+         * throwing, which this route answers like any other launch refusal: a
+         * bare 500, the sentence in the log. Absent is the agent's default
+         * account, as on the desktop. An SSH start carries none.
          */
         const accountId =
-          !host && (body?.accountId === DEFAULT_ACCOUNT_ID || isAccountId(body?.accountId)) ? (body?.accountId as string) : undefined
+          !host && launch.accountId !== undefined && (launch.accountId === DEFAULT_ACCOUNT_ID || isAccountId(launch.accountId))
+            ? launch.accountId
+            : undefined
 
         const started = await this.deps.startSession({
           cwd,
@@ -1446,9 +1586,9 @@ export class RemoteServer {
           // would instead try to create a session that already exists.
           sessionId: resumeId ?? undefined,
           resume: resuming && resumeId !== null,
-          permissionMode: requested,
-          model: typeof body?.model === 'string' ? body.model : '',
-          effort: body?.effort ?? 'default',
+          permissionMode: launch.permissionMode,
+          model: launch.model,
+          effort: launch.effort,
           cols: 100,
           rows: 30
         })
@@ -1459,6 +1599,48 @@ export class RemoteServer {
          */
         if (host) return this.json(res, { ptyId: started.ptyId, sessionId: started.sessionId, cwd: host.alias }, setCookie)
         return this.json(res, { ...started, cwd }, setCookie)
+      }
+
+      /*
+       * Web Push (phone contract point 14). Subscribe, forget, and one test
+       * send to the phone asking. Gated like every /api route above — the key,
+       * then Access — and the endpoint is held to the real push services
+       * (`pushSubscriptionFrom`), so the key never buys "POST anywhere".
+       */
+      if (url.pathname === '/api/push/subscription' && (req.method === 'POST' || req.method === 'DELETE')) {
+        const push = this.deps.push
+        if (!push || !push.publicKey()) {
+          return this.json(res, { error: 'Notifications are not set up on this computer. Turn Phone access off and on in Stoke.' }, setCookie, 503)
+        }
+        const parsed = await this.readJson(req)
+        if (parsed === BAD_JSON) return this.json(res, { error: 'Malformed JSON body.' }, setCookie, 400)
+        if (req.method === 'DELETE') {
+          const endpoint = (parsed as { endpoint?: unknown } | null)?.endpoint
+          if (typeof endpoint !== 'string' || !endpoint) return this.json(res, { error: 'Name the subscription by its endpoint.' }, setCookie, 400)
+          return this.json(res, { ok: true, removed: push.unsubscribe(endpoint) }, setCookie)
+        }
+        const checked = pushSubscriptionFrom(parsed, push.allowLoopback())
+        if (!checked.ok) return this.json(res, { error: checked.error }, setCookie, 400)
+        if (push.subscribe(checked.sub) === 'gone') {
+          return this.json(res, { error: PUSH_GONE_TEXT, gone: true }, setCookie, 410)
+        }
+        return this.json(res, { ok: true }, setCookie, 201)
+      }
+      if (url.pathname === '/api/push/test' && req.method === 'POST') {
+        const push = this.deps.push
+        if (!push || !push.publicKey()) {
+          return this.json(res, { error: 'Notifications are not set up on this computer. Turn Phone access off and on in Stoke.' }, setCookie, 503)
+        }
+        const parsed = await this.readJson(req)
+        if (parsed === BAD_JSON) return this.json(res, { error: 'Malformed JSON body.' }, setCookie, 400)
+        const endpoint = (parsed as { endpoint?: unknown } | null)?.endpoint
+        if (typeof endpoint !== 'string' || !endpoint) return this.json(res, { error: 'Name the subscription by its endpoint.' }, setCookie, 400)
+        const [outcome] = await push.notify(pushPayload('test', 'Stoke', ''), { only: endpoint, urgency: 'normal' })
+        if (!outcome) return this.json(res, { error: 'This phone is not subscribed.' }, setCookie, 404)
+        if (outcome === 'sent') return this.json(res, { ok: true, outcome }, setCookie)
+        // Gone: the service refused this subscription for good, so the phone drops its copy (410).
+        if (outcome === 'gone') return this.json(res, { error: PUSH_GONE_TEXT, gone: true, outcome }, setCookie, 410)
+        return this.json(res, { error: 'The push service did not take it. Try again in a moment.', outcome }, setCookie, 502)
       }
 
       /*

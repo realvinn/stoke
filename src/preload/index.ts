@@ -53,7 +53,8 @@ const api: StokeApi = {
   accounts: {
     create: (input) => ipcRenderer.invoke(CH.accountsCreate, input),
     remove: (id) => ipcRenderer.invoke(CH.accountsRemove, id),
-    identify: () => ipcRenderer.invoke(CH.accountsIdentify)
+    identify: () => ipcRenderer.invoke(CH.accountsIdentify),
+    mcp: () => ipcRenderer.invoke(CH.accountsMcp)
   },
 
   usage: {

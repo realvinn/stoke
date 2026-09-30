@@ -57,6 +57,10 @@ import {
 import { CLI_CAPS, CODING_CLIS, type CodingCliId } from '../src/shared/codingClis.ts'
 import type { AgentAccount } from '../src/shared/accounts.ts'
 import {
+  accountMcpLines,
+  accountMcpMirror,
+  accountMcpSummary,
+  claudeAccountServers,
   claudeMcpConfigs,
   claudeMcpServers,
   claudeShapeMcpFile,
@@ -100,6 +104,7 @@ import {
   McpFileStore,
   ownMcpSources,
   readMcpCatalog,
+  resolveAccountMirror,
   resolveLaunchMcp,
   trustKeys
 } from '../src/main/mcpLaunch.ts'
@@ -2424,6 +2429,117 @@ console.log('\nMCP: where Claude Code files a folder — its canonical git root,
   } finally {
     rmSync(home, { recursive: true, force: true })
   }
+}
+
+/*
+ * A second Claude account (its own CLAUDE_CONFIG_DIR, so its own
+ * ~/.claude.json) saw none of the Default account's user-scope MCP servers.
+ * It is handed them as one generated owner-only --mcp-config file: never a
+ * name it defines itself, an http server as its URL (and configured headers)
+ * only, and never an OAuth token or `oauth` block (gotcha 36).
+ */
+console.log('\nMCP: a second Claude account gets the Default account’s user-scope servers (accountMcpMirror)')
+{
+  const OAUTH_SECRETS = ['OAUTH-CLIENT-SECRET-7', 'OAUTH-ACCESS-TOKEN-8', 'OAUTH-REFRESH-TOKEN-9', 'oauth-client-id-10']
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'stoke-verify-account-mcp-')))
+  try {
+    const project = join(home, 'work', 'app')
+    mkdirSync(project, { recursive: true })
+    const defaultJson = {
+      // Where a token would be if someone pasted one here; Claude keeps them in its credentials.
+      mcpOAuth: { 'notion|abc': { accessToken: OAUTH_SECRETS[1], refreshToken: OAUTH_SECRETS[2] } },
+      mcpServers: {
+        notion: { type: 'http', url: 'https://mcp.notion.com/mcp', oauth: { clientId: OAUTH_SECRETS[3], clientSecret: OAUTH_SECRETS[0] } },
+        github: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-github'], env: { GITHUB_PERSONAL_ACCESS_TOKEN: STDIO_SECRET } },
+        docs: { type: 'http', url: 'https://mcp.example.com/mcp', headers: { Authorization: `Bearer ${HTTP_BEARER}` } },
+        linear: { type: 'http', url: 'https://mcp.linear.app/mcp' },
+        old: { type: 'sse', url: 'https://old.example/sse' },
+        'off-here': { command: 'uvx', args: ['off'] },
+        'repo-tool': { command: 'default-repo-tool' }
+      },
+      projects: { [project]: { disabledMcpServers: ['off-here'] } }
+    }
+    writeFileSync(join(home, '.claude.json'), JSON.stringify(defaultJson))
+    // The CLI's own credentials, holding the real OAuth tokens: never read by any of this.
+    mkdirSync(join(home, '.claude'), { recursive: true })
+    writeFileSync(join(home, '.claude', '.credentials.json'), JSON.stringify({ mcpOAuth: { 'notion|abc': { accessToken: OAUTH_SECRETS[1] } } }))
+    writeFileSync(join(project, '.mcp.json'), JSON.stringify({ mcpServers: { 'repo-tool': { command: 'repo-own' } } }))
+    const accountHome = join(home, 'accounts', 'claude-work')
+    mkdirSync(accountHome, { recursive: true })
+    const accountJsonPath = join(accountHome, '.claude.json')
+    writeFileSync(
+      accountJsonPath,
+      JSON.stringify({
+        oauthAccount: { emailAddress: 'work@example.com' },
+        mcpServers: { linear: { type: 'http', url: 'https://account-own.example/mcp' } },
+        projects: { [project]: { mcpServers: { 'acct-local': { command: 'acct' } } } }
+      })
+    )
+    const defaultReader = new ClaudeConfigReader({}, home)
+    const accountReader = new ClaudeConfigReader({ CLAUDE_CONFIG_DIR: accountHome }, home)
+
+    const launch = await resolveAccountMirror({ cwd: project, defaultReader, accountReader, env: {} })
+    check('read without error', launch.error, null)
+    check(
+      "in the project: notion, github and docs are handed on; linear is the account's own; repo-tool is the folder's; off-here Default turned off here",
+      [launch.mirror.servers.map((s) => s.name), launch.mirror.own],
+      [['notion', 'github', 'docs'], ['linear', 'repo-tool']]
+    )
+    check('the SSE server is not passed, and says why', launch.mirror.refused.map((r) => r.name), ['old'])
+    ok("every name the account knows here is listed, so a Stoke-held one can't shadow it either", ['linear', 'acct-local', 'repo-tool'].every((n) => launch.mirror.accountNames.includes(n)))
+
+    // A Stoke-held `linear` ticked for Claude: the account's own linear wins; the browser stays.
+    const heldLinear: McpServerSpec = { ...DOCS, name: 'linear', url: 'https://stoke-held.example/mcp', headers: {} }
+    const servers = claudeAccountServers([BROWSER, heldLinear], launch.mirror)
+    check('the launch list: the browser, then Default’s servers; the Stoke-held twin of its own linear dropped', servers.map((s) => s.name), ['stoke', 'notion', 'github', 'docs'])
+    check('a name already on the list is not added twice', claudeAccountServers([BROWSER, ...launch.mirror.servers], launch.mirror).length, 4)
+
+    const store = new McpFileStore(join(home, 'ud', 'agents'))
+    const out = claudeMcpConfigs(servers, '/u/Stoke/mcp-browser.json', store.fileFor)
+    ok('one generated file beside the browser file', out.configs.length === 2 && out.files.length === 1 && out.configs[0] === '/u/Stoke/mcp-browser.json')
+    ok('the file is written', await store.write(out.files))
+    const written = out.files[0].path
+    const text = readFileSync(written, 'utf8')
+    const parsed = JSON.parse(text) as { mcpServers: Record<string, Record<string, unknown>> }
+    check('it holds exactly Default’s servers (the browser has its own file)', Object.keys(parsed.mcpServers), ['notion', 'github', 'docs'])
+    check('an OAuth http server goes as its URL alone', parsed.mcpServers.notion, { type: 'http', url: 'https://mcp.notion.com/mcp', headers: {} })
+    ok('no OAuth token, client secret or oauth block is ever written', !OAUTH_SECRETS.some((v) => text.includes(v)) && !text.includes('oauth') && !text.includes('mcpOAuth'))
+    check('a header the user configured goes with its server', parsed.mcpServers.docs.headers, { Authorization: `Bearer ${HTTP_BEARER}` })
+    if (process.platform !== 'win32') {
+      check('owner-only: the file is -rw-------', (statSync(written).mode & 0o777).toString(8), '600')
+    }
+    ok('neither ~/.claude.json was written', readFileSync(join(home, '.claude.json'), 'utf8') === JSON.stringify(defaultJson) && readFileSync(accountJsonPath, 'utf8').includes('account-own.example'))
+
+    const row = await resolveAccountMirror({ cwd: null, defaultReader, accountReader, env: {} })
+    const summary = accountMcpSummary(row.mirror, row.error)
+    check(
+      'the account row (user scope, no folder): what it gets, what it keeps, what cannot go',
+      [summary.passed, summary.own, summary.refused.map((r) => r.name)],
+      [['notion', 'github', 'docs', 'off-here', 'repo-tool'], ['linear'], ['old']]
+    )
+    check('and says so in words', accountMcpLines(summary).slice(0, 2), [
+      'Also gets your Default account’s MCP servers: notion, github, docs, off-here and 1 more',
+      'Keeps its own linear, which Default has too'
+    ])
+    ok('no value in the summary', !MCP_SECRETS.some((v) => JSON.stringify(summary).includes(v)) && !OAUTH_SECRETS.some((v) => JSON.stringify(summary).includes(v)))
+
+    // Never signed in: no ~/.claude.json of its own yet. It defines nothing, so it gets everything.
+    const fresh = new ClaudeConfigReader({ CLAUDE_CONFIG_DIR: join(home, 'accounts', 'claude-new') }, home)
+    const freshRead = await resolveAccountMirror({ cwd: null, defaultReader, accountReader: fresh, env: {} })
+    check('an account with no ~/.claude.json yet gets every passable one', [freshRead.error, freshRead.mirror.servers.map((s) => s.name)], [null, ['notion', 'github', 'docs', 'linear', 'off-here', 'repo-tool']])
+    // Unreadable: nothing is handed on rather than risk shadowing its own.
+    writeFileSync(accountJsonPath, '{"mcpServers": {"linear": ')
+    const broken = await resolveAccountMirror({ cwd: project, defaultReader, accountReader: new ClaudeConfigReader({ CLAUDE_CONFIG_DIR: accountHome }, home), env: {} })
+    check('an account file that will not parse hands on nothing, and says so', [broken.mirror.servers.length, typeof broken.error], [0, 'string'])
+    check('pure: no Default file at all is nothing to hand on', accountMcpMirror({ defaultJson: null, accountJson: null }).servers, [])
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+  const main = readFileSync(new URL('../src/main/index.ts', import.meta.url), 'utf8')
+  ok(
+    'the launch hands the mirror only to a login account, through claudeAccountServers, before claudeMcpConfigs',
+    /account\?\.kind === 'login'[\s\S]{0,400}claudeAccountServers\(servers, mirror\)[\s\S]{0,120}claudeMcpConfigs\(servers,/.test(main)
+  )
 }
 
 console.log(failures ? `\n${failures} FAILED` : '\nall pass')

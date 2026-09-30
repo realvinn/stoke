@@ -10,7 +10,16 @@
 
 import { folderChoices, type FolderChoice, type FolderGroup, type HostLike, type ProjectLike } from './launcher.ts'
 import { basenameOf, pathKey, pathRulesFor } from './paths.ts'
-import { MAX_FOLDER_NAME, newFolderNameProblem, sortSessionRows, type PhoneSessionStatus } from './remotePhone.ts'
+import {
+  agentChoicesFor,
+  hostChoices,
+  MAX_FOLDER_NAME,
+  newFolderNameProblem,
+  sortSessionRows,
+  type PhoneAgentChoices,
+  type PhoneSessionStatus
+} from './remotePhone.ts'
+import { isCodingCliId } from './codingClis.ts'
 
 /* ------------------------------------------------------------ the list */
 
@@ -960,4 +969,151 @@ export { MAX_FOLDER_NAME, newFolderNameProblem }
 export function initialAgent(agents: readonly { id: string }[], defaultCli: string | undefined): string {
   if (defaultCli && agents.some((a) => a.id === defaultCli)) return defaultCli
   return agents[0]?.id ?? 'claude'
+}
+
+/* ------------------------------------------- the confirm step, per agent */
+
+/**
+ * The confirm step's choices for one agent: what `/api/host` served for it,
+ * or — from a desktop too old to serve `choices` — the table's own answer with
+ * no endpoint and no account (Claude's lists; another agent's model is its
+ * own). A remote machine always gets `hostChoices`: its `claude` takes nothing
+ * the phone could pick (gotcha 19).
+ */
+export function phoneChoicesFor(
+  served: Readonly<Record<string, PhoneAgentChoices>> | undefined,
+  cli: string,
+  opts: { host?: boolean; defaultModel?: string } = {}
+): PhoneAgentChoices {
+  if (opts.host) return hostChoices()
+  const hit = served?.[cli]
+  if (hit) return hit
+  const id = isCodingCliId(cli) ? cli : 'claude'
+  return agentChoicesFor(id, { endpoints: {}, accounts: {}, defaultAccount: {}, defaultModel: opts.defaultModel ?? '' })
+}
+
+/** What the confirm step has picked. */
+export interface PhonePicks {
+  mode: string
+  model: string
+  effort: string
+  account: string
+}
+
+/**
+ * The picks a sheet opens on: the desktop's defaults where this agent offers
+ * them (`/api/host`'s `defaults` are Claude's), else the agent's first — and
+ * the account a start naming none would run on.
+ */
+export function initialPicks(
+  c: PhoneAgentChoices,
+  defaults: { permissionMode?: string; model?: string; effort?: string } | undefined
+): PhonePicks {
+  const has = (list: readonly { id: string }[], v: string | undefined): v is string => v !== undefined && list.some((x) => x.id === v)
+  return {
+    mode: has(c.modes, defaults?.permissionMode) ? defaults.permissionMode : (c.modes[0]?.id ?? 'default'),
+    model: !c.modelFixed && has(c.models, defaults?.model) ? defaults.model : (c.models[0]?.id ?? ''),
+    effort: has(c.efforts, defaults?.effort) ? defaults.effort : (c.efforts[0]?.id ?? 'default'),
+    account: c.account
+  }
+}
+
+/** Whether the account picker shows: Default and at least one account of the agent's own. */
+export function showsAccountPicker(c: PhoneAgentChoices): boolean {
+  return c.accounts.length > 1
+}
+
+/** Why Start is off with these picks (the picked account cannot start), or null. */
+export function startProblem(c: PhoneAgentChoices, picks: PhonePicks): string | null {
+  return c.accounts.find((a) => a.id === picks.account)?.problem ?? null
+}
+
+/**
+ * What `POST /api/sessions` is sent beyond where it runs: only what this agent
+ * takes. No mode, effort or model for an agent that takes none (the server
+ * refuses one), and an account only when there was a choice to make — absent,
+ * main starts the agent's own default account, which is the same one.
+ */
+export function startFields(cli: string, c: PhoneAgentChoices, picks: PhonePicks, host = false): Record<string, string> {
+  const out: Record<string, string> = {}
+  if (!host && cli !== 'claude') out.cli = cli
+  if (c.modes.length) out.permissionMode = picks.mode
+  if (!c.modelFixed) out.model = picks.model
+  if (c.efforts.length) out.effort = picks.effort
+  if (showsAccountPicker(c)) out.accountId = picks.account
+  return out
+}
+
+/* ---------------------------------------------------------- notifications */
+
+/** What the page can tell about Web Push here, read in the browser (`navigator`, `Notification`). */
+export interface PushEnv {
+  /** `window.isSecureContext`: https (the tunnel) or localhost. */
+  secure: boolean
+  serviceWorker: boolean
+  pushManager: boolean
+  notification: boolean
+  /** `Notification.permission`. */
+  permission: 'default' | 'granted' | 'denied'
+  /** An iPhone or iPad, where only a Home Screen app may subscribe. */
+  ios: boolean
+  /** Running as the installed app (`display-mode: standalone`, `navigator.standalone`). */
+  standalone: boolean
+  /** `/api/host`'s `push.publicKey`: null while the computer has no VAPID pair. */
+  serverKey: string | null
+}
+
+export type PushAvailability =
+  | { ok: true }
+  | { ok: false; reason: 'insecure' | 'install' | 'unsupported' | 'denied' | 'server'; text: string }
+
+/**
+ * Whether this page can turn notifications on, and if not, the one thing to do
+ * about it. The http link is the common case to explain: a LAN or tailnet
+ * address is plain http, where no browser registers a service worker or a push
+ * subscription, so it says to use the tunnel's https link rather than failing
+ * at the first tap.
+ */
+export function pushAvailability(env: PushEnv): PushAvailability {
+  if (!env.secure) {
+    return {
+      ok: false,
+      reason: 'insecure',
+      text: 'Notifications need Stoke’s https link, through your Cloudflare tunnel. This page came over plain http — the local network or the tailnet — where no browser allows them.'
+    }
+  }
+  if (env.ios && !env.standalone) {
+    return {
+      ok: false,
+      reason: 'install',
+      text: 'On iPhone and iPad, add Stoke to your Home Screen first (Share, then Add to Home Screen), open it from there, and turn notifications on in it.'
+    }
+  }
+  if (!env.serviceWorker || !env.pushManager || !env.notification) {
+    return { ok: false, reason: 'unsupported', text: 'This browser cannot receive notifications from a web page.' }
+  }
+  if (env.permission === 'denied') {
+    return { ok: false, reason: 'denied', text: 'Notifications are blocked for this site. Allow them in the browser’s site settings, then come back here.' }
+  }
+  if (!env.serverKey) {
+    return { ok: false, reason: 'server', text: 'Notifications are not set up on your computer yet. Turn Phone access off and on in Stoke.' }
+  }
+  return { ok: true }
+}
+
+/** A base64url VAPID key as the bytes `pushManager.subscribe` takes. */
+export function base64UrlBytes(s: string): Uint8Array {
+  const b64 = s.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (s.length % 4)) % 4)
+  const bin = atob(b64)
+  const out = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
+  return out
+}
+
+/** Whether a subscription the browser holds was made with `key` (the computer may have minted a new pair since). */
+export function sameServerKey(held: ArrayBuffer | null | undefined, key: string): boolean {
+  if (!held) return false
+  const a = new Uint8Array(held)
+  const b = base64UrlBytes(key)
+  return a.length === b.length && a.every((v, i) => v === b[i])
 }

@@ -438,3 +438,87 @@ home-screen install (its own cookie jar still opens on Connect), and an https tu
 > stored response, not just the key it is filed under. Against the old `sw.js` that suite now fails
 > three checks. A phone that stored the key under an earlier build loses it when the next build's
 > worker activates (every other `stoke-shell-*` cache is deleted); that upgrade was not driven.
+
+## 136. A push subscription's endpoint is a URL this machine will POST to, and no sandbox can make a real one
+
+**Found 2026-09-30, building Web Push for the phone shell (phone contract point 14).** Four things,
+each of which a plausible first version gets wrong with every suite green:
+
+- **The endpoint is an SSRF handle, not an address book entry.** `POST /api/push/subscription`
+  takes a URL from the phone and main POSTs to it on every edge. Taken as it came, the bearer key
+  buys "make the desktop send requests anywhere", its own LAN included (measured: the sandbox
+  accepted nothing but the services below; `http://192.168.1.1/admin` and a look-alike host are 400).
+  `pushEndpointOk` allows https on the real push services only (FCM, Mozilla autopush, Apple,
+  WNS; a leading-dot entry is a suffix), no credentials, no odd port — and hydrate re-checks a
+  stored one, since settings.json can be edited by hand. Plain http on 127.0.0.1 passes only in an
+  unpackaged build launched with `STOKE_PUSH_LOOPBACK=1`, the `STOKE_ACCESS_CERTS_URL` shape.
+- **A new phone key must retire every subscription made under the old one.** Replacing the key is
+  how the owner locks a phone out; a subscription that outlived it would keep telling that phone
+  which project needs attention. Each record carries a hash of the key it was made under
+  (`keyTag`), and only matching ones are sent to (`livePushSubscriptions`). And `remote.push` is
+  main's alone: Phone access spreads its whole `remote` copy into every patch, so `commitSettings`
+  pins `push` to main's copy — driven: a stale patch with `subscriptions: []` changed the tunnel
+  name and left the subscription in place.
+- **Prove the crypto against the RFC, never against yourself.** An encrypt/decrypt round trip with
+  your own code passes with the wrong info strings on both sides. `encryptPush` reproduces RFC
+  8291 Appendix A's message byte for byte (`verify:remote`), and the JWT is checked with
+  `crypto.verify` in IEEE P1363 form, which JWS requires (RFC 7518 §3.4) — node signs DER unless
+  told `dsaEncoding: 'ieee-p1363'`.
+- **A sandbox cannot subscribe for real, and must not try.** Chromium's `pushManager.subscribe`
+  registers with Google's FCM; the task rule is no real Apple or Google endpoint, and headless
+  Chromium has no push service anyway. What was driven instead, against the built app on
+  127.0.0.1 (a secure context, so the worker registers): the page's OWN notify.ts with only
+  `PushManager.prototype.subscribe`/`getSubscription` stubbed to return a subscription for a
+  loopback fake service that holds its private key; Turn on, Send a test, then a stub `claude`
+  walking the registry busy → waiting → busy → waiting → exit. The fake service received four
+  valid-JWT `aes128gcm` posts: the test, "Needs you" twice (one per prompt, none while a prompt
+  sat for 8 s), "Finished" once, and nothing for waiting → busy. The real worker's half:
+  CDP `ServiceWorker.deliverPushMessage` with the decrypted bytes, then
+  `registration.getNotifications()` in the page listed the notification with its `#/s/<ptyId>`
+  route. Opened over the LAN address instead (plain http, `isSecureContext` false, no
+  `navigator.serviceWorker`), the bell's sheet says to use the tunnel's https link and offers no
+  button (`pushAvailability`). **Not driven:** a real phone, a real push service, iOS's Home
+  Screen app, and a notification tap (the vm sandbox in `verify:remote` covers `notificationclick`).
+
+> **Checked against the code on 2026-09-30** (review of the branch that added it). Two of the
+> claims above held only for the run that was measured.
+> - **"None while a prompt sat for 8 s" was a run with no input.** `pushFor` fired on a new
+>   `promptId`, and `trackPrompt` mints a new one for the SAME prompt once input reached the pty
+>   and a reading `PROMPT_SETTLE_MS` later still says waiting — right for the answer route, wrong
+>   for "is this a new prompt?". `PtyManager.write` counts every write but a terminal report, and
+>   a mouse report is not one, so an arrow key in a permission menu, a wheel scroll or each pause
+>   while typing an answer at the desk sent another high-urgency "Needs you". `PushState` now
+>   carries the prompt's registry identity (`pushStateOf`; `samePrompt` compares `waitingFor` and
+>   `statusUpdatedAt`, which the CLI moves only when it writes a status). Driven against the built
+>   app with a stub `claude` whose prompt waited while the desk sent an arrow key, `y`, `e`, `s`
+>   and an SGR wheel report: the phone row's `promptId` changed five times and the fake service
+>   got nothing; then exactly "Needs you" (the second prompt) and "Finished". `verify:remote`
+>   builds its states from `trackPrompt` with input between readings; keyed on the answer id,
+>   three of its checks fail.
+> - **The sheet's "On" was the browser's word, not the computer's.** It read On whenever the
+>   browser held a subscription made with the current VAPID key, and only Turn on ever POSTed
+>   one — so a replaced phone key (the owner re-scans the same phone), the ninth subscription
+>   evicting the oldest, and a 404/410 drop each left it On while nothing arrived. Measured for
+>   the first two against the old server state: the browser still held its subscription (the
+>   old sheet's whole test for On) while the test route answered 404 "This phone is not
+>   subscribed."; the old sheet itself was not driven. The
+>   phone now re-sends a held subscription at every start and every sheet open (`confirm`, an
+>   upsert that needs the current key, so a locked-out phone cannot enrol itself back), and main
+>   remembers what a push service refused (`rememberGonePush`, by endpoint AND key, so a fresh
+>   subscription at a reused endpoint passes) and answers its re-send 410, which drops the
+>   browser's copy and reads Off with the reason. Driven: after a new key and a re-scan the boot
+>   re-send moved the record to the new `keyTag` and a test arrived; after eight other
+>   subscriptions evicted it, opening the sheet put it back and a test arrived; after the fake
+>   service answered 410 the sheet read Off, the browser's copy was gone, and Turn on made a new
+>   one that received.
+> - **Driving it: grant notifications in a browser context of your own.** In headless Chrome for
+>   Testing, `Browser.grantPermissions` on the DEFAULT context left `Notification.permission`
+>   `default` (then `denied` after one `requestPermission`); `chrome-headless-shell` read `denied`
+>   after the same default-context grant (a context of its own was not tried there).
+>   `Target.createBrowserContext`, the grant with that `browserContextId`, then
+>   `Target.createTarget` in it read `granted`. Know that the browser talks to Google's GCM by
+>   itself: the run launched with `--disable-background-networking` still logged three
+>   `registration_request.cc` errors (`DEPRECATED_ENDPOINT`), as the run without it had. That is
+>   Chrome's own registration, not a subscription of Stoke's — `subscribe` was stubbed and every
+>   endpoint Stoke POSTed to was the loopback fake — but it is a call to a real Google endpoint,
+>   and no flag tried stopped it.

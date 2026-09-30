@@ -93,7 +93,14 @@ export const SECRET_PATHS: readonly SecretPathSpec[] = [
   { pattern: 'agents.mcp.extra.*.env.*', label: 'MCP server variable', portable: true },
   { pattern: 'agents.mcp.extra.*.headers.*', label: 'MCP server header', portable: true },
   { pattern: 'agents.mcp.extra.*.bearer', label: 'MCP server token', portable: true },
-  { pattern: 'remote.token', label: 'Phone access key', portable: false }
+  { pattern: 'remote.token', label: 'Phone access key', portable: false },
+  /*
+   * The private half of the VAPID pair Web Push is signed with
+   * (main/remote/push.ts). Machine-local like the phone key: subscriptions
+   * are made to THIS pair, and a copy elsewhere could push to this machine's
+   * phones. Minted only by a start path (gotcha 53).
+   */
+  { pattern: 'remote.push.vapidPrivate', label: 'Phone notification key', portable: false }
 ]
 
 /**

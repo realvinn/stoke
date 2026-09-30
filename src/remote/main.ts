@@ -6,6 +6,7 @@ import { el, failure, humanError, icon, newButton, skeleton } from './dom'
 import { mountProjectHistory, mountRecent, mountTranscript, type Recent } from './history'
 import { mountSessionList, type SessionList } from './list'
 import { openNewSession } from './newSession'
+import { listenForNotificationTaps, notifyButton, resyncNotifications } from './notify'
 import { mountSession } from './session'
 import { store } from './store'
 
@@ -55,11 +56,15 @@ function brand(): HTMLElement {
   )
 }
 
-/** The one action the home bar carries (the History button became the Recent segment). */
+/**
+ * The one action the home bar carries (the History button became the Recent
+ * segment), and beside it the notifications bell — an icon, so New stays the
+ * bar's one labelled action.
+ */
 function topbarActions(): HTMLElement[] {
   const create = newButton('New session')
   create.addEventListener('click', () => openNewSession())
-  return [create]
+  return [notifyButton(), create]
 }
 
 /**
@@ -391,6 +396,8 @@ async function boot(): Promise<void> {
   }
   // Before the first request: Connect and an offline shell both deserve one.
   registerServiceWorker()
+  // A tapped notification while this page is open goes to its session here.
+  listenForNotificationTaps()
   setAuthFailureHandler(showConnect)
   try {
     await loadTheme()
@@ -398,6 +405,9 @@ async function boot(): Promise<void> {
   } catch (err) {
     if (err instanceof AuthError) return showConnect()
   }
+  // A phone that turned notifications on tells the computer again, so a new
+  // phone key or a full list never leaves it silently unsubscribed.
+  void resyncNotifications().catch(() => {})
   store.start()
   window.addEventListener('hashchange', render)
   wideQuery.addEventListener('change', () => {

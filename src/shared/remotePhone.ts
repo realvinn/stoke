@@ -10,10 +10,12 @@
  */
 
 import type { RegistryStatus } from './claudeRegistry.ts'
-import type { EffortLevel, PermissionMode } from './types.ts'
-import { resolveDefaultAgent } from './agents.ts'
+import type { EffortLevel, PermissionMode, PushSubscriptionRecord, RemotePushSettings } from './types.ts'
+import { launchModel, resolveDefaultAgent, type AgentEndpoint } from './agents.ts'
+import { accountProblem, accountsOf, DEFAULT_ACCOUNT_ID, resolveLaunchAccount, type AgentAccount } from './accounts.ts'
 import { accessRefusalForPhone, type AccessRefusal } from './cfAccess.ts'
-import { isCodingCliId, type CodingCliId } from './codingClis.ts'
+import { capsFor, cliFor, isClaudeCode, isCodingCliId, type CodingCliId } from './codingClis.ts'
+import { MODEL_OPTIONS, modelLabel } from './launch.ts'
 import { isInside, normalizePath, pathKey, type PathRules } from './paths.ts'
 
 /** What the phone shows for a session, distinct from the CLI's own vocabulary. */
@@ -332,11 +334,26 @@ export function isTerminalReport(data: string): boolean {
  * `statusUpdatedAt` for a new prompt, or the reading's time when a later pass
  * re-confirms it after some input (below).
  */
-export interface PromptTrack {
+export interface PromptTrack extends PromptIdentity {
   id: string
   since: number
+}
+
+/**
+ * What makes a prompt THIS prompt: the registry's own `waitingFor` and
+ * `statusUpdatedAt`, which the CLI moves only when it writes a status
+ * (sessionRegistry.ts `sameState`). Never the answer id — `trackPrompt` mints
+ * a new one for the same prompt after input, which is right for the answer
+ * route and wrong for anything that asks "is this a new prompt?" (`pushFor`).
+ */
+export interface PromptIdentity {
   waitingFor: string | null
   statusUpdatedAt: number | null
+}
+
+/** Whether two readings name the same prompt (`PromptIdentity`). */
+export function samePrompt(a: PromptIdentity, b: PromptIdentity): boolean {
+  return a.waitingFor === b.waitingFor && a.statusUpdatedAt === b.statusUpdatedAt
 }
 
 /**
@@ -372,8 +389,7 @@ export function trackPrompt(
   lastInputAt: number | null
 ): PromptTrack | null {
   if (!reading.waiting) return null
-  const fresh =
-    !prev || prev.waitingFor !== reading.waitingFor || prev.statusUpdatedAt !== reading.statusUpdatedAt
+  const fresh = !prev || !samePrompt(prev, reading)
   let since: number
   if (fresh) since = reading.statusUpdatedAt ?? reading.readAt
   else if (lastInputAt !== null && lastInputAt >= prev.since && reading.readAt >= lastInputAt + PROMPT_SETTLE_MS) {
@@ -668,6 +684,418 @@ export function phoneHostDefaults(
     effort: d.effort,
     cli: resolveDefaultAgent(defaultCli, agentIds.filter(isCodingCliId))
   }
+}
+
+/* ------------------------------------------- what each agent takes, per launch */
+
+/*
+ * The New session sheet's confirm step drew Claude Code's four permission
+ * modes, five models and six efforts for EVERY start, and hid them only for an
+ * agent other than Claude — so a Codex start showed nothing of the model it
+ * would run, and a Claude start offered a list the desktop's launcher had
+ * outgrown (no 1M variants). `/api/host` now serves each agent's own choices
+ * (`choices`, phone contract point 2), built here from the same facts a launch
+ * reads, and `POST /api/sessions` holds a start to them (`phoneLaunchVerdict`).
+ */
+
+/** One chip on the confirm step. */
+export interface PhoneChoice {
+  id: string
+  label: string
+  /** A line under the group while this one is picked (a permission mode's meaning). */
+  hint?: string
+  /** Why this one cannot start right now (an account with no key); the chip is drawn disabled. */
+  problem?: string
+}
+
+/** What one agent takes when the phone starts it (`/api/host` `choices[<agent id>]`). */
+export interface PhoneAgentChoices {
+  /** Permission modes the phone may offer, bypass never; empty when the agent takes none (`CLI_CAPS`). */
+  modes: PhoneChoice[]
+  /**
+   * The models. For Claude Code the aliases its `--model` accepts; for another
+   * agent the ONE model its launch will run (`launchModel`: its endpoint's, or
+   * its Default model where Stoke can pass one), which the phone shows and
+   * cannot change — it is Settings › Agents' to decide (`modelFixed`).
+   */
+  models: PhoneChoice[]
+  modelFixed: boolean
+  /** Effort levels; empty when the agent takes none. */
+  efforts: PhoneChoice[]
+  /** Default first, then the agent's own accounts (shared/accounts.ts). A picker only when more than one. */
+  accounts: PhoneChoice[]
+  /** The account a start that names none runs on (`resolveLaunchAccount`). */
+  account: string
+}
+
+/** Claude Code's permission modes as the phone offers them. Bypass is not here, and never will be. */
+export const PHONE_MODES: readonly PhoneChoice[] = [
+  { id: 'default', label: 'Ask', hint: 'Asks before each tool use.' },
+  { id: 'plan', label: 'Plan', hint: 'Researches and proposes; touches no files.' },
+  { id: 'acceptEdits', label: 'Edits', hint: 'File edits apply; other tools still ask.' },
+  { id: 'auto', label: 'Auto', hint: 'Decides when to ask by how risky the action is.' }
+]
+
+/** `--effort`'s levels, plus Default (no flag). */
+export const PHONE_EFFORTS: readonly PhoneChoice[] = [
+  { id: 'default', label: 'Default' },
+  { id: 'low', label: 'Low' },
+  { id: 'medium', label: 'Medium' },
+  { id: 'high', label: 'High' },
+  { id: 'xhigh', label: 'Extra high' },
+  { id: 'max', label: 'Max' }
+]
+
+/** What the launch reads, per agent — settings as they are, read per call (gotcha 111). */
+export interface PhoneLaunchFacts {
+  endpoints: Partial<Record<CodingCliId, AgentEndpoint>>
+  accounts: Record<string, AgentAccount>
+  defaultAccount: Partial<Record<CodingCliId, string>>
+  /** The desktop's default Claude model (`settings.defaults.model`), offered even when it is no alias. */
+  defaultModel: string
+}
+
+/** One agent's choices. */
+export function agentChoicesFor(id: CodingCliId, facts: PhoneLaunchFacts): PhoneAgentChoices {
+  const caps = capsFor(id)
+  const claude = isClaudeCode(id)
+  let models: PhoneChoice[]
+  if (claude) {
+    models = MODEL_OPTIONS.map((m) => ({ id: m.id, label: m.label }))
+    const d = facts.defaultModel.trim()
+    if (d && !models.some((m) => m.id === d)) models.push({ id: d, label: modelLabel(d) })
+  } else {
+    const m = launchModel(id, facts.endpoints[id])
+    models = [{ id: m, label: m || `Chosen by ${cliFor(id).label}` }]
+  }
+  const mode = claude ? 'default' : (facts.endpoints[id]?.mode ?? 'default')
+  const accounts: PhoneChoice[] = [{ id: DEFAULT_ACCOUNT_ID, label: 'Default' }]
+  for (const a of accountsOf(id, facts.accounts)) {
+    const problem = accountProblem(a, mode)
+    accounts.push(problem ? { id: a.id, label: a.label, problem } : { id: a.id, label: a.label })
+  }
+  const resolved = resolveLaunchAccount({ cli: id, requested: null, accounts: facts.accounts, defaults: facts.defaultAccount })
+  return {
+    modes: caps.launchFlags.permissionMode ? PHONE_MODES.map((m) => ({ ...m })) : [],
+    models,
+    modelFixed: !claude,
+    efforts: caps.launchFlags.effort ? PHONE_EFFORTS.map((e) => ({ ...e })) : [],
+    accounts,
+    account: resolved.ok ? resolved.accountId : DEFAULT_ACCOUNT_ID
+  }
+}
+
+/**
+ * Every offered agent's choices, keyed by id, and always Claude Code's — a
+ * start that names no agent (a Resume, an older phone) is Claude's. Ids this
+ * build does not know are skipped.
+ */
+export function phoneAgentChoices(agentIds: readonly string[], facts: PhoneLaunchFacts): Record<string, PhoneAgentChoices> {
+  const out: Record<string, PhoneAgentChoices> = {}
+  for (const id of ['claude', ...agentIds]) {
+    if (isCodingCliId(id) && !out[id]) out[id] = agentChoicesFor(id, facts)
+  }
+  return out
+}
+
+/**
+ * A remote machine's start: Claude Code on the far side, run by the host's own
+ * command with nothing added (gotcha 19) — so no mode, model, effort or
+ * account the phone could pick would reach it.
+ */
+export function hostChoices(): PhoneAgentChoices {
+  return {
+    modes: [],
+    models: [{ id: '', label: 'The remote machine’s own' }],
+    modelFixed: true,
+    efforts: [],
+    accounts: [{ id: DEFAULT_ACCOUNT_ID, label: 'Default' }],
+    account: DEFAULT_ACCOUNT_ID
+  }
+}
+
+export type PhoneLaunchVerdict =
+  | { ok: true; permissionMode: PermissionMode; model: string; effort: EffortLevel; accountId: string | undefined }
+  | { ok: false; status: 400; error: string }
+
+/**
+ * Whether a phone's start asks only for what this agent takes, and what it runs
+ * with. Held in main, from the same choices `/api/host` served — the phone's
+ * sheet is a convenience, never the check. `label` names the agent in a refusal.
+ *
+ * Absent values are the agent's defaults. For an agent that takes no mode or
+ * effort, only `default` (or nothing) passes; for one whose model is fixed,
+ * only that model (or nothing). An account must be one of this agent's, and
+ * one that can start: a key account with no key is refused here with its own
+ * sentence instead of a bare 500 from the launch. Bypass is refused before
+ * this, with its own 403.
+ */
+export function phoneLaunchVerdict(
+  body: { permissionMode?: unknown; model?: unknown; effort?: unknown; accountId?: unknown } | null,
+  choices: PhoneAgentChoices,
+  label: string
+): PhoneLaunchVerdict {
+  const bad = (error: string): PhoneLaunchVerdict => ({ ok: false, status: 400, error })
+  const given = (v: unknown): boolean => v !== undefined && v !== null
+  const mode = given(body?.permissionMode) ? body?.permissionMode : 'default'
+  if (typeof mode !== 'string') return bad('permissionMode must be a string.')
+  if (choices.modes.length) {
+    if (!choices.modes.some((m) => m.id === mode)) return bad('That permission mode is not one Stoke offers the phone.')
+  } else if (mode !== 'default') return bad(`${label} takes no permission mode from Stoke.`)
+
+  const effort = given(body?.effort) ? body?.effort : 'default'
+  if (typeof effort !== 'string') return bad('effort must be a string.')
+  if (choices.efforts.length) {
+    if (!choices.efforts.some((e) => e.id === effort)) return bad('That effort is not one Stoke offers.')
+  } else if (effort !== 'default') return bad(`${label} takes no effort level from Stoke.`)
+
+  const model = given(body?.model) ? body?.model : ''
+  if (typeof model !== 'string') return bad('model must be a string.')
+  let runs = model
+  if (choices.modelFixed) {
+    const fixed = choices.models[0]?.id ?? ''
+    if (model !== '' && model !== fixed) {
+      return bad(`${label} runs ${choices.models[0]?.label ?? 'its own model'}, set in Stoke’s Settings › Agents; the phone cannot change it.`)
+    }
+    // The launch reads the agent's own model from settings; nothing is passed.
+    runs = ''
+  } else if (!choices.models.some((m) => m.id === model)) return bad('That model is not one Stoke offers.')
+
+  const asked = body?.accountId
+  if (given(asked) && typeof asked !== 'string') return bad('accountId must be a string.')
+  const accountId = typeof asked === 'string' && asked !== '' ? asked : undefined
+  const pick = choices.accounts.find((a) => a.id === (accountId ?? choices.account))
+  if (accountId !== undefined && !pick) return bad(`That account is not one of ${label}’s.`)
+  if (pick?.problem) return bad(pick.problem)
+  return { ok: true, permissionMode: mode as PermissionMode, model: runs, effort: effort as EffortLevel, accountId }
+}
+
+/* ----------------------------------------------------------------- Web Push */
+
+/*
+ * A phone with the installed shell can be told when a session needs it,
+ * without the page open: Web Push (main/remote/push.ts). These are the parts
+ * that decide WHEN, WHAT and TO WHERE, pure so `verify:remote` holds them.
+ */
+
+/** What one push says. Content-free: a project name and a status word — never a prompt, a line of output or a path. */
+export interface PushPayload {
+  /** The project, or the remote machine's name (gotcha 18). */
+  title: string
+  /** "Needs you" or "Finished". */
+  body: string
+  /** One per session, so a newer notification replaces the older. */
+  tag: string
+  /** Where a tap opens, inside the shell: `#/s/<ptyId>` or `#/`. */
+  url: string
+}
+
+export type PushKind = 'needs-you' | 'finished' | 'test'
+
+/**
+ * One session's last reading, as Web Push sees it. The prompt is its
+ * IDENTITY (`PromptIdentity`), never `PromptTrack.id`: that id is re-minted for
+ * the same prompt once input reached the pty and a later reading still says
+ * waiting — an arrow key in a permission menu, a wheel scroll (a mouse report
+ * is input), a pause while typing an answer — and a push keyed on it sent
+ * "Needs you" at high urgency once per pause, for a prompt someone was
+ * already answering at the desk.
+ */
+export interface PushState {
+  status: PhoneSessionStatus
+  prompt: PromptIdentity | null
+}
+
+/** A session's `PushState` from its status and the prompt `trackPrompt` holds for it. */
+export function pushStateOf(status: PhoneSessionStatus, track: PromptTrack | null): PushState {
+  return {
+    status,
+    prompt: status === 'waiting' && track ? { waitingFor: track.waitingFor, statusUpdatedAt: track.statusUpdatedAt } : null
+  }
+}
+
+/**
+ * Whether a session's move from `prev` to `next` is worth a push.
+ *
+ * - First sight (`prev` null) is a baseline, never a push: a server that starts,
+ *   or a session it has not seen yet, does not announce what was already so.
+ * - Into `waiting` from anything else: it needs you — once.
+ * - `waiting` to `waiting`: only when a NEW prompt is on screen — the registry
+ *   wrote another `waitingFor` or `statusUpdatedAt` (`samePrompt`). The same
+ *   prompt read again is silent, and so is the same prompt re-confirmed under
+ *   a new answer id after input (`PushState`).
+ * - Into `ended` (the process exited on its own): finished — once. A session
+ *   closed at the desk is gone from the list instead, and the server sends
+ *   nothing for it.
+ */
+export function pushFor(prev: PushState | null, next: PushState): PushKind | null {
+  if (!prev) return null
+  if (next.status === 'ended') return prev.status === 'ended' ? null : 'finished'
+  if (next.status !== 'waiting') return null
+  if (prev.status !== 'waiting') return 'needs-you'
+  return prev.prompt && next.prompt && !samePrompt(prev.prompt, next.prompt) ? 'needs-you' : null
+}
+
+/** Longer than any folder name worth reading on a lock screen; cut rather than wrapped. */
+const PUSH_TITLE_MAX = 60
+
+/** The payload for one push (`pushFor`'s kind), for a session named `project`. */
+export function pushPayload(kind: PushKind, project: string, ptyId: string): PushPayload {
+  if (kind === 'test') return { title: 'Stoke', body: 'Notifications are on.', tag: 'stoke-test', url: '#/' }
+  const name = Array.from(project.replace(/\s+/g, ' ').trim()).slice(0, PUSH_TITLE_MAX).join('') || 'A session'
+  return {
+    title: name,
+    body: kind === 'needs-you' ? 'Needs you' : 'Finished',
+    tag: `stoke-${ptyId}`,
+    url: `#/s/${encodeURIComponent(ptyId)}`
+  }
+}
+
+/**
+ * The push services a subscription may point at — where the browsers a phone
+ * or laptop runs actually subscribe. Anything else is refused: the endpoint is
+ * a URL this machine will POST to, and the bearer key must not buy "make the
+ * desktop send requests anywhere" (an address on its LAN included). A leading
+ * dot is a suffix.
+ *
+ *   fcm.googleapis.com, android.googleapis.com   Chrome, Edge on Android, Samsung Internet, Opera, Brave
+ *   updates.push.services.mozilla.com             Firefox
+ *   web.push.apple.com, .push.apple.com           Safari and iOS home-screen apps
+ *   .notify.windows.com                           Edge on Windows
+ */
+export const PUSH_SERVICE_HOSTS: readonly string[] = [
+  'fcm.googleapis.com',
+  'android.googleapis.com',
+  'updates.push.services.mozilla.com',
+  'web.push.apple.com',
+  '.push.apple.com',
+  '.notify.windows.com'
+]
+
+/** More subscriptions than phones anyone carries; the oldest goes first. */
+export const MAX_PUSH_SUBSCRIPTIONS = 8
+
+const MAX_PUSH_ENDPOINT = 2048
+
+/**
+ * Whether Stoke may POST to `endpoint`: https on a push service above, or —
+ * only where `allowLoopback` (an unpackaged build told so, for a suite's fake
+ * push service) — plain http on 127.0.0.1. No credentials in it, ever.
+ */
+export function pushEndpointOk(endpoint: unknown, allowLoopback: boolean): endpoint is string {
+  if (typeof endpoint !== 'string' || !endpoint || endpoint.length > MAX_PUSH_ENDPOINT) return false
+  let u: URL
+  try {
+    u = new URL(endpoint)
+  } catch {
+    return false
+  }
+  if (u.username || u.password) return false
+  if (u.protocol === 'http:') return allowLoopback && u.hostname === '127.0.0.1'
+  if (u.protocol !== 'https:' || (u.port && u.port !== '443')) return false
+  const host = u.hostname.toLowerCase()
+  return PUSH_SERVICE_HOSTS.some((h) => (h.startsWith('.') ? host.endsWith(h) && host.length > h.length : host === h))
+}
+
+/** base64url of exactly `bytes` bytes, unpadded (a trailing `=` is tolerated and dropped). */
+function isB64u(v: unknown, bytes: number): v is string {
+  if (typeof v !== 'string') return false
+  const s = v.replace(/=+$/, '')
+  return /^[A-Za-z0-9_-]+$/.test(s) && s.length === Math.ceil((bytes * 4) / 3)
+}
+
+export type PushSubscriptionVerdict =
+  | { ok: true; sub: { endpoint: string; p256dh: string; auth: string } }
+  | { ok: false; error: string }
+
+/**
+ * A subscription from a phone (`PushSubscription.toJSON()`), or why not. The
+ * key must be an uncompressed P-256 point (65 bytes, leading 0x04 — base64url
+ * `B`) and the auth secret 16 bytes: anything else could never be encrypted
+ * to, and would be kept for nothing.
+ */
+export function pushSubscriptionFrom(raw: unknown, allowLoopback: boolean): PushSubscriptionVerdict {
+  const r = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as { endpoint?: unknown; keys?: unknown }) : null
+  if (!r) return { ok: false, error: 'Send the subscription as JSON.' }
+  if (!pushEndpointOk(r.endpoint, allowLoopback)) return { ok: false, error: 'That push service is not one Stoke sends to.' }
+  const keys = r.keys && typeof r.keys === 'object' ? (r.keys as { p256dh?: unknown; auth?: unknown }) : {}
+  if (!isB64u(keys.p256dh, 65) || !keys.p256dh.startsWith('B')) return { ok: false, error: 'The subscription’s key is not a P-256 public key.' }
+  if (!isB64u(keys.auth, 16)) return { ok: false, error: 'The subscription’s auth secret is not 16 bytes.' }
+  return { ok: true, sub: { endpoint: r.endpoint, p256dh: keys.p256dh.replace(/=+$/, ''), auth: keys.auth.replace(/=+$/, '') } }
+}
+
+/**
+ * The list after one phone subscribes under the key tagged `keyTag`: its old
+ * record for the same endpoint replaced, every record made under another key
+ * dropped (that key is gone), newest last, at most `MAX_PUSH_SUBSCRIPTIONS`.
+ */
+export function withPushSubscription(
+  list: readonly PushSubscriptionRecord[],
+  sub: { endpoint: string; p256dh: string; auth: string },
+  keyTag: string,
+  now: number
+): PushSubscriptionRecord[] {
+  const kept = list.filter((s) => s.keyTag === keyTag && s.endpoint !== sub.endpoint)
+  return [...kept, { ...sub, keyTag, addedAt: now }].slice(-MAX_PUSH_SUBSCRIPTIONS)
+}
+
+/**
+ * A phone re-sends its subscription every time the shell starts and whenever
+ * its Notifications sheet opens, so the sheet's "On" is the computer's answer,
+ * not just the browser's (a replaced phone key, an eviction by
+ * `MAX_PUSH_SUBSCRIPTIONS`, a drop after 404/410 all used to leave it saying
+ * On). A subscription its push service already called gone must not be taken
+ * back that way: it would be sent to, dropped and re-sent forever while the
+ * sheet said On. So main remembers the gone ones (in memory, the newest
+ * `MAX_GONE_PUSH`) by endpoint AND key — a fresh subscription always has a new
+ * key, so one that reuses an endpoint is never refused — and the route answers
+ * 410, which tells the phone to drop its copy and show Off.
+ */
+export const MAX_GONE_PUSH = 32
+
+/** One subscription as the gone memory names it: its endpoint and its key. */
+export function pushSubscriptionKey(sub: { endpoint: string; p256dh: string }): string {
+  return `${sub.p256dh} ${sub.endpoint}`
+}
+
+/** The gone memory after its push service refused `keys`: newest last, at most `MAX_GONE_PUSH`. */
+export function rememberGonePush(list: readonly string[], keys: readonly string[]): string[] {
+  return [...list.filter((k) => !keys.includes(k)), ...keys].slice(-MAX_GONE_PUSH)
+}
+
+/** Who is sent a push now: made under the key in force, and still a place Stoke may POST to. */
+export function livePushSubscriptions(
+  list: readonly PushSubscriptionRecord[],
+  keyTag: string,
+  allowLoopback: boolean
+): PushSubscriptionRecord[] {
+  return list.filter((s) => s.keyTag === keyTag && pushEndpointOk(s.endpoint, allowLoopback))
+}
+
+export const EMPTY_REMOTE_PUSH: RemotePushSettings = { vapidPublic: '', vapidPrivate: '', subscriptions: [] }
+
+/**
+ * Repair `remote.push`, rebuilt from named keys (the clamp rule). A key that is
+ * not base64url of the right size is dropped with its pair, and a subscription
+ * that does not hold up is dropped alone; the loopback shape passes here and
+ * is refused at send time outside a test build (`livePushSubscriptions`). The
+ * private key may be `''` while the vault has not opened.
+ */
+export function hydrateRemotePush(raw: unknown): RemotePushSettings {
+  const r = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {}
+  const pub = isB64u(r.vapidPublic, 65) && (r.vapidPublic as string).startsWith('B') ? (r.vapidPublic as string) : ''
+  const priv = typeof r.vapidPrivate === 'string' && (r.vapidPrivate === '' || isB64u(r.vapidPrivate, 32)) ? r.vapidPrivate : ''
+  const subscriptions: PushSubscriptionRecord[] = []
+  if (Array.isArray(r.subscriptions)) {
+    for (const s of r.subscriptions) {
+      if (!s || typeof s !== 'object') continue
+      const rec = s as Record<string, unknown>
+      const v = pushSubscriptionFrom({ endpoint: rec.endpoint, keys: { p256dh: rec.p256dh, auth: rec.auth } }, true)
+      if (!v.ok || typeof rec.keyTag !== 'string' || !/^[0-9a-f]{8,64}$/.test(rec.keyTag)) continue
+      subscriptions.push({ ...v.sub, keyTag: rec.keyTag, addedAt: typeof rec.addedAt === 'number' && Number.isFinite(rec.addedAt) ? rec.addedAt : 0 })
+    }
+  }
+  return pub ? { vapidPublic: pub, vapidPrivate: priv, subscriptions: subscriptions.slice(-MAX_PUSH_SUBSCRIPTIONS) } : { ...EMPTY_REMOTE_PUSH, subscriptions: [] }
 }
 
 /* ------------------------------------------------ folders a phone may reach */

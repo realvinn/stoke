@@ -4,10 +4,13 @@
  * tap of any of 61 unsearchable full-width cards, with no agent, mode, model
  * or effort choice. Now: pick where (the desktop switcher's own list,
  * `phonePickerGroups` — Recent projects, Default folder, Scratch session,
- * Remote machines, Browse folders…), then confirm with the choices the
- * desktop's launcher has, defaulted from `settings.defaults` (phone contract
- * points 2 and 8), on the desktop's default agent (`defaults.cli`). Bypass is
- * never offered.
+ * Remote machines, Browse folders…), then confirm with what the chosen agent
+ * actually takes — `/api/host`'s `choices` (phone contract points 2 and 8):
+ * Claude's modes, models and efforts, defaulted from `settings.defaults`;
+ * another agent's one model, shown and not changeable, and none of Claude's
+ * chips; an account picker when the agent has more than one account. It opens
+ * on the desktop's default agent (`defaults.cli`). Bypass is never offered,
+ * and main holds every start to the same choices (`phoneLaunchVerdict`).
  *
  * Browse walks folders under the places the server allows (phone contract
  * points 12, 13): a breadcrumb that starts at the place, the subfolders,
@@ -18,38 +21,23 @@ import type { FolderChoice } from '@shared/launcher'
 import {
   breadcrumb,
   initialAgent,
+  initialPicks,
   MAX_FOLDER_NAME,
   middleTruncate,
   newFolderHint,
+  phoneChoicesFor,
   phonePickerGroups,
   plural,
-  relativeTime
+  relativeTime,
+  showsAccountPicker,
+  startFields,
+  startProblem,
+  type PhonePicks
 } from '@shared/phoneUi'
+import type { PhoneChoice } from '@shared/remotePhone'
 import { api, folderName, host, loadHost, type FolderListing, type ProjectRow, type ProjectsReply } from './api'
 import { el, failure, humanError, icon, openSheet, skeleton, toast } from './dom'
 import { pendingMeta } from './session'
-
-const MODES = [
-  { id: 'default', label: 'Ask', hint: 'Asks before each tool use.' },
-  { id: 'plan', label: 'Plan', hint: 'Researches and proposes; touches no files.' },
-  { id: 'acceptEdits', label: 'Edits', hint: 'File edits apply; other tools still ask.' },
-  { id: 'auto', label: 'Auto', hint: 'Decides when to ask by how risky the action is.' }
-]
-const MODELS = [
-  { id: '', label: 'Default' },
-  { id: 'opus', label: 'Opus' },
-  { id: 'sonnet', label: 'Sonnet' },
-  { id: 'haiku', label: 'Haiku' },
-  { id: 'fable', label: 'Fable' }
-]
-const EFFORTS = [
-  { id: 'default', label: 'Default' },
-  { id: 'low', label: 'Low' },
-  { id: 'medium', label: 'Medium' },
-  { id: 'high', label: 'High' },
-  { id: 'xhigh', label: 'Extra high' },
-  { id: 'max', label: 'Max' }
-]
 
 /** Where a session will run, once picked. */
 type Target =
@@ -378,17 +366,25 @@ export function openNewSession(start?: { cwd: string; name: string }): void {
     sheet.setTitle(title, back)
     // A remote machine runs Claude Code, whatever else this desktop has (gotcha 19).
     const offered = host?.agents?.length ? host.agents : [{ id: 'claude', name: 'Claude Code' }]
-    const agents = target.kind === 'host' ? offered.filter((a) => a.id === 'claude').slice(0, 1) : offered
+    const onHost = target.kind === 'host'
+    const agents = onHost ? offered.filter((a) => a.id === 'claude').slice(0, 1) : offered
     const defaults = host?.defaults ?? { permissionMode: 'default', model: '', effort: 'default' }
     // The desktop's default agent, when this sheet offers it.
-    let cli = target.kind === 'host' ? 'claude' : initialAgent(agents, defaults.cli)
-    let mode = MODES.some((m) => m.id === defaults.permissionMode) ? defaults.permissionMode : 'default'
-    let model = MODELS.some((m) => m.id === defaults.model) ? defaults.model : ''
-    let effort = EFFORTS.some((e) => e.id === defaults.effort) ? defaults.effort : 'default'
+    let cli = onHost ? 'claude' : initialAgent(agents, defaults.cli)
+    /*
+     * What the chosen agent takes (`/api/host` `choices`): Claude's modes,
+     * models and efforts; another agent's one model, shown and fixed; a remote
+     * machine nothing at all. Rebuilt when the agent changes, from the
+     * desktop's defaults where that agent offers them.
+     */
+    const choicesOf = (id: string): ReturnType<typeof phoneChoicesFor> =>
+      phoneChoicesFor(host?.choices, id, { host: onHost, defaultModel: defaults.model })
+    let choices = choicesOf(cli)
+    let picks: PhonePicks = initialPicks(choices, defaults)
 
     const segmented = (
       label: string,
-      options: { id: string; label: string }[],
+      options: PhoneChoice[],
       value: () => string,
       set: (id: string) => void,
       grid = false
@@ -400,7 +396,19 @@ export function openNewSession(start?: { cwd: string; name: string }): void {
         }
       }
       for (const o of options) {
-        const b = el('button', { type: 'button', class: 'seg-btn', role: 'radio', 'data-id': o.id }, o.label)
+        const b = el(
+          'button',
+          {
+            type: 'button',
+            class: 'seg-btn',
+            role: 'radio',
+            'data-id': o.id,
+            // An account that cannot start is shown, and says why, but is not a pick.
+            disabled: o.problem ? true : undefined,
+            title: o.problem
+          },
+          o.label
+        )
         b.addEventListener('click', () => {
           set(o.id)
           paint()
@@ -412,23 +420,65 @@ export function openNewSession(start?: { cwd: string; name: string }): void {
       return el('div', { class: 'field' }, el('div', { class: 'field-label' }, label), group)
     }
 
+    /** A value the phone shows but cannot change: another agent's model, set on the desktop. */
+    const fixedRow = (label: string, value: string, hint: string): HTMLElement =>
+      el(
+        'div',
+        { class: 'field' },
+        el('div', { class: 'field-label' }, label),
+        el('div', { class: 'field-static', 'data-testid': 'fixed-model' }, value),
+        el('p', { class: 'field-note' }, hint)
+      )
+
     const modeHint = el('p', { class: 'field-hint' })
-    const claudeOnly = el('div', { class: 'claude-only' })
+    const accountHint = el('p', { class: 'field-hint', 'aria-live': 'polite' })
+    const agentBox = el('div', { class: 'claude-only agent-choices' })
     const startBtn = el('button', { type: 'button', class: 'btn btn-block', 'data-variant': 'primary' })
     const startLabel =
-      target.kind === 'folder' ? `Start in ${target.name}` : target.kind === 'host' ? `Connect to ${target.label}` : 'Start scratch session'
+      target.kind === 'folder' ? `Start in ${target.name}` : onHost ? `Connect to ${target.label}` : 'Start scratch session'
+    const agentName = (): string => agents.find((a) => a.id === cli)?.name ?? cli
+    let starting = false
+
     const after = (): void => {
-      modeHint.textContent = MODES.find((m) => m.id === mode)?.hint ?? ''
-      claudeOnly.hidden = cli !== 'claude'
-      startBtn.textContent = startLabel
+      modeHint.textContent = choices.modes.find((m) => m.id === picks.mode)?.hint ?? ''
+      modeHint.hidden = !modeHint.textContent
+      const problem = startProblem(choices, picks)
+      accountHint.textContent = problem ?? ''
+      accountHint.hidden = !problem
+      if (!starting) {
+        startBtn.textContent = startLabel
+        startBtn.disabled = problem !== null
+      }
     }
 
-    claudeOnly.append(
-      segmented('Permission mode', MODES, () => mode, (id) => (mode = id)),
-      modeHint,
-      segmented('Model', MODELS, () => model, (id) => (model = id)),
-      segmented('Effort', EFFORTS, () => effort, (id) => (effort = id), true)
-    )
+    /** The groups for the agent picked now — only what it takes. */
+    const drawAgent = (): void => {
+      const parts: HTMLElement[] = []
+      if (choices.modes.length) {
+        parts.push(segmented('Permission mode', choices.modes, () => picks.mode, (id) => (picks.mode = id)), modeHint)
+      }
+      if (!choices.modelFixed && choices.models.length > 1) {
+        parts.push(segmented('Model', choices.models, () => picks.model, (id) => (picks.model = id)))
+      } else if (choices.modelFixed) {
+        parts.push(
+          fixedRow(
+            'Model',
+            choices.models[0]?.label ?? '',
+            onHost
+              ? 'A remote machine runs Claude Code with its own settings.'
+              : `Set in Stoke’s Settings › Agents › ${agentName()}.`
+          )
+        )
+      }
+      if (choices.efforts.length) {
+        parts.push(segmented('Effort', choices.efforts, () => picks.effort, (id) => (picks.effort = id), true))
+      }
+      if (showsAccountPicker(choices)) {
+        parts.push(segmented('Account', choices.accounts, () => picks.account, (id) => (picks.account = id)), accountHint)
+      }
+      agentBox.replaceChildren(...parts)
+      after()
+    }
 
     const where =
       target.kind === 'folder'
@@ -438,19 +488,32 @@ export function openNewSession(start?: { cwd: string; name: string }): void {
           : el('div', { class: 'confirm-where' }, icon('plus', 18), el('span', {}, 'A new dated folder in Stoke’s scratch space'))
     const parts: HTMLElement[] = [where]
     if (agents.length > 1) {
-      parts.push(segmented('Agent', agents.map((a) => ({ id: a.id, label: a.name })), () => cli, (id) => (cli = id)))
+      parts.push(
+        segmented(
+          'Agent',
+          agents.map((a) => ({ id: a.id, label: a.name })),
+          () => cli,
+          (id) => {
+            if (id === cli) return
+            cli = id
+            choices = choicesOf(cli)
+            picks = initialPicks(choices, defaults)
+            drawAgent()
+          }
+        )
+      )
     }
-    parts.push(claudeOnly)
-    after()
+    parts.push(agentBox)
+    drawAgent()
 
     startBtn.addEventListener('click', () => {
-      if (startBtn.disabled) return
+      if (startBtn.disabled || starting) return
+      starting = true
       startBtn.disabled = true
       startBtn.textContent = 'Starting…'
       const body: Record<string, unknown> =
         target.kind === 'folder' ? { cwd: target.path } : target.kind === 'host' ? { hostId: target.id } : { scratch: true }
-      if (cli !== 'claude') body.cli = cli
-      else Object.assign(body, { permissionMode: mode, model, effort })
+      Object.assign(body, startFields(cli, choices, picks, onHost))
       void api<{ ptyId: string; sessionId: string; cwd?: string }>('/api/sessions', { method: 'POST', body: JSON.stringify(body) })
         .then((started) => {
           const cwd = started.cwd ?? (target.kind === 'folder' ? target.path : target.kind === 'host' ? target.alias : '')
@@ -462,7 +525,7 @@ export function openNewSession(start?: { cwd: string; name: string }): void {
           location.hash = `#/s/${encodeURIComponent(started.ptyId)}`
         })
         .catch((err) => {
-          startBtn.disabled = false
+          starting = false
           after()
           toast(humanError(err), 'error')
         })

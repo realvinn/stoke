@@ -1006,6 +1006,136 @@ export function claudeMcpConfigs(
   return { configs, files }
 }
 
+/* ------------------------------------------ a second Claude account's view */
+
+/*
+ * A second Claude Code account runs with `CLAUDE_CONFIG_DIR` set to its own
+ * home (shared/accounts.ts), so the CLI reads ITS `~/.claude.json` — which
+ * holds that account's sign-in and nothing the user set up under Default. So
+ * every user-scope server of the Default account (`claude mcp add -s user`)
+ * vanished on the second account. It is handed them at launch instead, the way
+ * Claude takes Stoke's own servers: one generated owner-only `--mcp-config`
+ * file (`claudeMcpConfigs`), never a write into either `.claude.json` (gotcha
+ * 38). A name the account's own config already defines is its own and is never
+ * shadowed; an http server goes as its URL and its configured headers alone —
+ * an `oauth` block is not read and Claude's `mcpOAuth` sign-ins are never read
+ * or copied (gotcha 36), so the second account signs in to it itself.
+ */
+
+export interface AccountMcpMirror {
+  /** The Default account's user-scope servers this account is handed, in their order. */
+  servers: McpServerSpec[]
+  /** Default user-scope names this account's own config already defines: its own wins. */
+  own: string[]
+  /** Default user-scope servers that cannot be passed on, and why. */
+  refused: McpRefusal[]
+  /** Every server name this account knows here — its own user and local scope, the folder's `.mcp.json` chain, what it turned off. */
+  accountNames: string[]
+}
+
+export const NO_ACCOUNT_MIRROR: AccountMcpMirror = { servers: [], own: [], refused: [], accountNames: [] }
+
+/**
+ * What a non-default Claude account is handed of the Default account's
+ * user-scope servers, for one launch folder (`projectKey`, main's
+ * `claudeProjectKey`) or for none (the account row, user scope only).
+ *
+ * Skipped: a name the ACCOUNT knows here — its `~/.claude.json` user scope, its
+ * local scope for this folder and the names it turned off there, and the
+ * folder's `.mcp.json` chain (which both accounts read) — so nothing of its own
+ * is ever shadowed; and a name the Default account turned off in this folder,
+ * which it would not load here either. Everything else goes through
+ * `specFromClaudeEntry`, which is what keeps an http server to its URL and its
+ * configured headers.
+ */
+export function accountMcpMirror(input: {
+  defaultJson: unknown
+  accountJson: unknown
+  projectKey?: string | null
+  projectMcpJson?: unknown
+  env?: Readonly<Record<string, string | undefined>>
+}): AccountMcpMirror {
+  const key = input.projectKey ?? null
+  const projectOf = (json: unknown): Record<string, unknown> => {
+    if (!key || !isRecord(json) || !isRecord(json.projects)) return {}
+    const p = json.projects[key]
+    return isRecord(p) ? p : {}
+  }
+  const names = (v: unknown): string[] =>
+    isRecord(v) ? Object.keys(v) : Array.isArray(v) ? v.filter((n): n is string => typeof n === 'string') : []
+  const account = isRecord(input.accountJson) ? input.accountJson : {}
+  const accountProject = projectOf(account)
+  const accountNames = new Set<string>([
+    ...names(account.mcpServers),
+    ...names(accountProject.mcpServers),
+    ...names(accountProject.disabledMcpServers),
+    ...(isRecord(input.projectMcpJson) ? names(input.projectMcpJson.mcpServers) : [])
+  ])
+  const defaultOff = new Set(names(projectOf(input.defaultJson).disabledMcpServers))
+  const user = isRecord(input.defaultJson) && isRecord(input.defaultJson.mcpServers) ? input.defaultJson.mcpServers : {}
+  const out: AccountMcpMirror = { servers: [], own: [], refused: [], accountNames: [...accountNames] }
+  for (const [name, raw] of Object.entries(user)) {
+    if (defaultOff.has(name)) continue
+    if (accountNames.has(name)) {
+      out.own.push(name)
+      continue
+    }
+    const parsed = specFromClaudeEntry(name, raw, input.env)
+    if (parsed.ok) out.servers.push(parsed.spec)
+    // Said for THIS case: the account is Claude too, so "the other agents" would be the wrong reason.
+    else if (isRecord(raw) && raw.type === 'sse') out.refused.push({ name, reason: 'it uses the older SSE transport, which Stoke does not pass between accounts' })
+    else out.refused.push({ name, reason: parsed.reason })
+  }
+  return out
+}
+
+/**
+ * One Claude launch's `--mcp-config` servers on a non-default account: the
+ * browser and Stoke-held servers it was already getting (minus a Stoke-held one
+ * whose name the account's own config uses), then the Default account's
+ * user-scope servers (`accountMcpMirror`). A name already on the list is not
+ * added twice.
+ */
+export function claudeAccountServers(launch: readonly McpServerSpec[], mirror: AccountMcpMirror): McpServerSpec[] {
+  const own = new Set(mirror.accountNames)
+  const out = launch.filter((s) => s.name === STOKE_BROWSER_SERVER || !own.has(s.name))
+  const have = new Set(out.map((s) => s.name))
+  for (const s of mirror.servers) {
+    if (have.has(s.name)) continue
+    have.add(s.name)
+    out.push(s)
+  }
+  return out
+}
+
+/** What Settings says on a Claude account's row: names and reasons only, never a value. */
+export interface AccountMcpSummary {
+  /** Default user-scope servers this account is handed at launch. */
+  passed: string[]
+  /** Default names its own config defines, which it keeps. */
+  own: string[]
+  refused: McpRefusal[]
+  /** Why nothing could be worked out (a config that could not be read), or null. */
+  error: string | null
+}
+
+export function accountMcpSummary(mirror: AccountMcpMirror, error: string | null = null): AccountMcpSummary {
+  return { passed: mirror.servers.map((s) => s.name), own: [...mirror.own], refused: mirror.refused.map((r) => ({ ...r })), error }
+}
+
+/** The row's lines, in the order they read. Empty when Default has no user-scope server at all. */
+export function accountMcpLines(s: AccountMcpSummary): string[] {
+  if (s.error) return [s.error]
+  const list = (xs: readonly string[]): string => (xs.length > 4 ? `${xs.slice(0, 4).join(', ')} and ${xs.length - 4} more` : xs.join(', '))
+  const lines: string[] = []
+  if (s.passed.length) {
+    lines.push(`Also gets your Default account’s MCP ${s.passed.length === 1 ? 'server' : 'servers'}: ${list(s.passed)}`)
+  }
+  if (s.own.length) lines.push(`Keeps its own ${list(s.own)}, which Default has too`)
+  for (const r of s.refused) lines.push(`Not passed on: ${r.name} — ${r.reason}`)
+  return lines
+}
+
 /**
  * The names Codex's own config.toml defines under `mcp_servers`, from its
  * text — `[mcp_servers.x]`, `[mcp_servers."x"]`, `[mcp_servers.x.env]`, and

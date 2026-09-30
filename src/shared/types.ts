@@ -996,6 +996,39 @@ export interface WallpaperSettings {
 }
 
 /**
+ * One phone's Web Push subscription (`PushSubscription.toJSON()`), as stored.
+ * Only ever an endpoint `pushSubscriptionFrom` accepted (remotePhone.ts).
+ */
+export interface PushSubscriptionRecord {
+  endpoint: string
+  /** The subscription's P-256 public key, base64url (65 bytes). */
+  p256dh: string
+  /** Its 16-byte auth secret, base64url. */
+  auth: string
+  /**
+   * Which phone key it was made under (a hash, never the key). A new key
+   * retires every subscription made under the old one: a phone whose key was
+   * replaced is a phone the owner locked out, and it is told nothing more.
+   */
+  keyTag: string
+  addedAt: number
+}
+
+/**
+ * Web Push for the phone's installed shell (main/remote/push.ts). Written by
+ * main only — a renderer patch never carries it (`commitSettings`), since a
+ * phone can subscribe while the desktop's Settings holds an older copy of
+ * `remote`.
+ */
+export interface RemotePushSettings {
+  /** The VAPID public key subscriptions are made with, base64url; '' until a start path mints the pair (gotcha 53). */
+  vapidPublic: string
+  /** Its private half, sealed in secrets.json (`remote.push.vapidPrivate`). */
+  vapidPrivate: string
+  subscriptions: PushSubscriptionRecord[]
+}
+
+/**
  * Stoke's own dictation (⇧⌘D in a tab, the phone's microphone), in Settings →
  * Voice. Claude Code's `/voice` is NOT configured here — that lives in
  * `~/.claude/settings.json` and Stoke only reports it.
@@ -1196,6 +1229,8 @@ export interface Settings {
      * @deprecated Read `Settings.voice.sttUrl`. Drop this after the next release.
      */
     sttUrl: string
+    /** Web Push: the VAPID pair and each phone's subscription (`hydrateRemotePush`). */
+    push: RemotePushSettings
   }
   /** Stoke's dictation: who transcribes, with which key, and the microphone. See VoiceSettings. */
   voice: VoiceSettings

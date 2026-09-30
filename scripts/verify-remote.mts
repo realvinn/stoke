@@ -30,6 +30,26 @@ import {
   accessRefusalMessage,
   mayStoreKeyCookie,
   phoneHostDefaults,
+  agentChoicesFor,
+  hostChoices,
+  phoneAgentChoices,
+  phoneLaunchVerdict,
+  type PhoneAgentChoices,
+  type PhoneLaunchFacts,
+  EMPTY_REMOTE_PUSH,
+  hydrateRemotePush,
+  livePushSubscriptions,
+  MAX_PUSH_SUBSCRIPTIONS,
+  pushEndpointOk,
+  pushFor,
+  pushPayload,
+  pushStateOf,
+  pushSubscriptionFrom,
+  pushSubscriptionKey,
+  rememberGonePush,
+  MAX_GONE_PUSH,
+  withPushSubscription,
+  type PushState,
   refusalStatusLine,
   remoteRefusal,
   phoneStatusFor,
@@ -57,10 +77,24 @@ import {
   type FolderBase
 } from '../src/shared/remotePhone.ts'
 import { isInside, pathRulesFor } from '../src/shared/paths.ts'
+import { CLI_CAPS } from '../src/shared/codingClis.ts'
 import { browseRemoteFolder, listSubfolders, resolveFolderBases } from '../src/main/remote/folders.ts'
 import { createServer, type Server } from 'node:http'
 import { join } from 'node:path'
-import { createHmac, generateKeyPairSync, sign, type KeyObject } from 'node:crypto'
+import {
+  createDecipheriv,
+  createECDH,
+  createHmac,
+  createPublicKey,
+  generateKeyPairSync,
+  hkdfSync,
+  randomBytes,
+  sign,
+  verify,
+  type ECDH,
+  type KeyObject
+} from 'node:crypto'
+import { encryptPush, generateVapidKeys, isVapidPair, sendPush, VAPID_SUBJECT, vapidJwt } from '../src/main/remote/push.ts'
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
 import { tmpdir } from 'node:os'
@@ -1006,6 +1040,97 @@ console.log("\n/api/host's defaults (phone contract point 2)")
 }
 
 /*
+ * What each agent takes (`/api/host` `choices`, `POST /api/sessions`'s
+ * `phoneLaunchVerdict`). The phone drew Claude's modes, models and efforts for
+ * every start, and hid them for any other agent without saying what it would
+ * run; the server accepted any model string for Claude (straight to argv) and
+ * any mode for Codex (dropped silently). Both halves are held here.
+ */
+console.log("\n/api/host's choices per agent, and the start held to them (phone contract points 2, 8)")
+{
+  const home = '/Users/v/.stoke/accounts'
+  const facts: PhoneLaunchFacts = {
+    endpoints: {
+      codex: { mode: 'default', model: 'gpt-6.1-sol', baseUrl: '', apiKey: '' },
+      grok: { mode: 'openrouter', model: 'x-ai/grok-5', baseUrl: '', apiKey: '' }
+    },
+    accounts: {
+      'codex-work': { id: 'codex-work', cli: 'codex', label: 'Work', kind: 'login', home: `${home}/codex-work`, apiKey: '' },
+      'grok-spare': { id: 'grok-spare', cli: 'grok', label: 'Spare', kind: 'key', apiKey: '', home: '' },
+      'claude-2': { id: 'claude-2', cli: 'claude', label: 'Second', kind: 'login', home: `${home}/claude-2`, apiKey: '' }
+    },
+    defaultAccount: { codex: 'codex-work' },
+    defaultModel: 'claude-opus-5[1m]'
+  }
+  const all = phoneAgentChoices(['claude', 'codex', 'grok', 'aider', 'bash'], facts)
+  check('keyed by every offered agent this build knows, junk ids skipped', Object.keys(all), ['claude', 'codex', 'grok', 'aider'])
+  check('Claude Code is always there, even when the offer names no Claude', Object.keys(phoneAgentChoices(['codex'], facts)), ['claude', 'codex'])
+  const claude = all.claude
+  check("Claude's modes: the four the phone may offer, never bypass", claude.modes.map((m) => m.id), ['default', 'plan', 'acceptEdits', 'auto'])
+  check(
+    "Claude's models: the launcher's alias list, 1M variants included, plus the desktop's own default model when it is no alias",
+    claude.models.map((m) => m.id),
+    ['', 'opus', 'opus[1m]', 'sonnet', 'sonnet[1m]', 'haiku', 'fable', 'fable[1m]', 'claude-opus-5[1m]']
+  )
+  check("…and they are Claude's to choose", claude.modelFixed, false)
+  check("Claude's efforts", claude.efforts.map((e) => e.id), ['default', 'low', 'medium', 'high', 'xhigh', 'max'])
+  check('Claude with a second account: Default first, then it', claude.accounts.map((a) => a.id), ['default', 'claude-2'])
+  const codex = all.codex
+  check(
+    "Codex: no permission mode, no effort (CLI_CAPS says it takes neither)",
+    [codex.modes.length, codex.efforts.length, CLI_CAPS.codex.launchFlags.permissionMode, CLI_CAPS.codex.launchFlags.effort],
+    [0, 0, false, false]
+  )
+  check("Codex: the one model its launch runs — its Default model — and fixed", [codex.models, codex.modelFixed], [[{ id: 'gpt-6.1-sol', label: 'gpt-6.1-sol' }], true])
+  check("Codex's account picker: Default and Work, and a start naming none is Work (its default account)", [codex.accounts.map((a) => a.id), codex.account], [['default', 'codex-work'], 'codex-work'])
+  check("Grok on OpenRouter: the endpoint's model", all.grok.models[0].id, 'x-ai/grok-5')
+  check(
+    'a key account beside an endpoint that brings its own key is listed with its reason, never silently offered',
+    all.grok.accounts.map((a) => [a.id, typeof a.problem === 'string']),
+    [['default', false], ['grok-spare', true]]
+  )
+  check('an agent with no model flag and no endpoint: its own choice, said so', all.aider.models, [{ id: '', label: 'Chosen by Aider' }])
+  check('with no accounts there is no picker', all.aider.accounts.map((a) => a.id), ['default'])
+  check('only ids, labels, hints, models and reasons leave: no home, no key', JSON.stringify(all).includes(home) || JSON.stringify(all).includes('apiKey'), false)
+
+  const verdict = (body: Record<string, unknown> | null, c: PhoneAgentChoices, label = 'Codex CLI') => {
+    const v = phoneLaunchVerdict(body, c, label)
+    return v.ok ? [v.permissionMode, v.model, v.effort, v.accountId ?? null] : [v.status, v.error]
+  }
+  check('Claude: nothing asked is the defaults', verdict(null, claude, 'Claude Code'), ['default', '', 'default', null])
+  check('Claude: a listed mode, model and effort pass as asked', verdict({ permissionMode: 'plan', model: 'opus[1m]', effort: 'xhigh' }, claude), ['plan', 'opus[1m]', 'xhigh', null])
+  check("Claude: the desktop's own default model passes", verdict({ model: 'claude-opus-5[1m]' }, claude)[1], 'claude-opus-5[1m]')
+  check('Claude: a model that is no offered alias is refused (it went to argv as it came)', verdict({ model: 'opus --dangerously-skip-permissions' }, claude)[0], 400)
+  check('Claude: an effort off the list is refused', verdict({ effort: 'ultra' }, claude)[0], 400)
+  check('Claude: a mode off the list is refused', verdict({ permissionMode: 'dontAsk' }, claude)[0], 400)
+  check('Claude: a non-string value is refused', verdict({ model: 7 }, claude)[0], 400)
+  check('Codex: nothing asked runs its own model on its default account (main resolves it)', verdict({}, codex), ['default', '', 'default', null])
+  check("Codex: its own model named back is fine, and passes nothing (the launch reads settings)", verdict({ model: 'gpt-6.1-sol' }, codex), ['default', '', 'default', null])
+  check(
+    'Codex: a permission mode is refused, with who takes none',
+    verdict({ permissionMode: 'plan' }, codex),
+    [400, 'Codex CLI takes no permission mode from Stoke.']
+  )
+  check('Codex: `default` as the mode (what an older phone sent for Claude) is not a request', verdict({ permissionMode: 'default', effort: 'default' }, codex)[0], 'default')
+  check('Codex: an effort is refused', verdict({ effort: 'high' }, codex)[0], 400)
+  check('Codex: another model is refused, naming the one it runs', verdict({ model: 'gpt-5' }, codex), [400, 'Codex CLI runs gpt-6.1-sol, set in Stoke’s Settings › Agents; the phone cannot change it.'])
+  check('Codex: its own account and Default pass', [verdict({ accountId: 'codex-work' }, codex)[3], verdict({ accountId: 'default' }, codex)[3]], ['codex-work', 'default'])
+  check("Codex: another agent's account is refused", verdict({ accountId: 'claude-2' }, codex), [400, 'That account is not one of Codex CLI’s.'])
+  check('an account id that is junk is refused, not shape-checked and dropped', verdict({ accountId: '../../x' }, codex)[0], 400)
+  check(
+    "Grok: its key account with no key — or beside OpenRouter — is a 400 with that account's own sentence",
+    verdict({ accountId: 'grok-spare' }, all.grok, 'Grok Build')[0],
+    400
+  )
+  const spareDefault = agentChoicesFor('grok', { ...facts, defaultAccount: { grok: 'grok-spare' } })
+  check('and a start naming none, whose default account cannot start, is refused the same way', verdict({}, spareDefault, 'Grok Build')[0], 400)
+  const host = hostChoices()
+  check("a remote machine takes nothing the phone could pick (gotcha 19)", [host.modes.length, host.efforts.length, host.modelFixed, host.accounts.map((a) => a.id)], [0, 0, true, ['default']])
+  check('a remote start with a mode is refused', verdict({ permissionMode: 'plan' }, host, 'A remote machine')[0], 400)
+  check('a remote start with nothing extra passes', verdict({}, host, 'A remote machine'), ['default', '', 'default', null])
+}
+
+/*
  * Cloudflare Access, verified (gotcha 124). The server used to pass any request
  * carrying `Cf-Access-Jwt-Assertion` — or the unsigned email header — with any
  * value at all. Everything below runs against keypairs generated here and a
@@ -1641,6 +1766,295 @@ console.log('\nbrowsing a real folder (GET /api/folders)')
     rmSync(tmp, { recursive: true, force: true })
   }
   check('newFolderNameProblem is the server’s own gate too', newFolderNameProblem('../x') !== null, true)
+}
+
+/*
+ * Web Push (phone contract point 14). When a push fires is a pure edge
+ * (`pushFor`); what it says is content-free (`pushPayload`); where it may go is
+ * the real push services only (`pushEndpointOk`); and the bytes are RFC 8291's
+ * — checked against the RFC's own Appendix A vector, not against ourselves.
+ */
+console.log('\nWeb Push: when, what, to where, and the bytes (phone contract point 14)')
+{
+  const P1 = { waitingFor: 'Bash', statusUpdatedAt: 1000 }
+  const S = (status: PushState['status'], prompt: PushState['prompt'] = null): PushState => ({ status, prompt })
+  check('busy → waiting: needs you', pushFor(S('busy'), S('waiting', P1)), 'needs-you')
+  check('idle → waiting: needs you too', pushFor(S('idle'), S('waiting', P1)), 'needs-you')
+  check('waiting → waiting, the same prompt: nothing (it fired once)', pushFor(S('waiting', P1), S('waiting', { ...P1 })), null)
+  check('waiting → waiting, the registry wrote a new stamp: a NEW prompt, needs you again', pushFor(S('waiting', P1), S('waiting', { ...P1, statusUpdatedAt: 2000 })), 'needs-you')
+  check('…or asks for something else', pushFor(S('waiting', P1), S('waiting', { ...P1, waitingFor: 'Edit' })), 'needs-you')
+  check('a prompt that only now has an identity is the same prompt', pushFor(S('waiting', null), S('waiting', P1)), null)
+  check('exit (ended on its own): finished', pushFor(S('busy'), S('ended')), 'finished')
+  check('…from waiting as well', pushFor(S('waiting', P1), S('ended')), 'finished')
+  check('ended → ended: once only', pushFor(S('ended'), S('ended')), null)
+  check('first sight is a baseline: a start never announces what was already so', [pushFor(null, S('waiting', P1)), pushFor(null, S('ended'))], [null, null])
+  check('busy → idle and waiting → busy say nothing', [pushFor(S('busy'), S('idle')), pushFor(S('waiting', P1), S('busy'))], [null, null])
+  check('pushStateOf carries a prompt only while waiting', [pushStateOf('busy', null).prompt, pushStateOf('idle', { id: 'x', since: 1, ...P1 }).prompt], [null, null])
+
+  /*
+   * Review of the first cut: `pushFor` fired on a new ANSWER id, and
+   * `trackPrompt` mints one for the same prompt once input reached the pty
+   * and a reading `PROMPT_SETTLE_MS` later still says waiting. So an arrow key
+   * in a permission menu, a wheel scroll, or each pause while typing an
+   * answer at the desk sent another high-urgency "Needs you". Built here as
+   * the server builds them: one `trackPrompt` per registry pass, then
+   * `pushStateOf`, with input landing between readings.
+   */
+  let track: PromptTrack | null = null
+  let last: PushState | null = null
+  const pass = (status: PushState['status'], r: { waitingFor?: string | null; statusUpdatedAt?: number | null; readAt: number }, lastInputAt: number | null) => {
+    track = trackPrompt(
+      track,
+      { waiting: status === 'waiting', waitingFor: r.waitingFor ?? null, statusUpdatedAt: r.statusUpdatedAt ?? null, readAt: r.readAt },
+      lastInputAt
+    )
+    const next = pushStateOf(status, track)
+    const kind = pushFor(last, next)
+    last = next
+    return { kind, id: track?.id ?? null }
+  }
+  check('a busy session first seen: the baseline', pass('busy', { readAt: 500 }, null).kind, null)
+  const asked = pass('waiting', { ...P1, readAt: 1500 }, null)
+  check('its prompt appears: needs you, once', asked.kind, 'needs-you')
+  const arrow = pass('waiting', { ...P1, readAt: 1500 + 1000 }, 1600)
+  check('an arrow key at the desk, then a reading after the settle: the answer id WAS re-minted', arrow.id !== asked.id, true)
+  check('…and the phone is told nothing: the same prompt is on screen', arrow.kind, null)
+  const typing = [3000, 4200, 5400].map((at) => pass('waiting', { ...P1, readAt: at + PROMPT_SETTLE_MS + 100 }, at))
+  check(
+    'typing an answer with pauses: a re-mint per pause, and not one push',
+    [new Set([arrow.id, ...typing.map((t) => t.id)]).size, typing.map((t) => t.kind)],
+    [4, [null, null, null]]
+  )
+  check('a scroll (a mouse report is input too) re-mints, still silent', pass('waiting', { ...P1, readAt: 7000 }, 6400).kind, null)
+  check('the next prompt, written by the CLI with a new stamp: needs you', pass('waiting', { waitingFor: 'Bash', statusUpdatedAt: 7500, readAt: 8000 }, 6400).kind, 'needs-you')
+  check('answered: waiting → busy says nothing', pass('busy', { readAt: 9000 }, 8600).kind, null)
+  check('and a prompt after that: needs you again', pass('waiting', { waitingFor: 'Edit', statusUpdatedAt: 9500, readAt: 10_000 }, 8600).kind, 'needs-you')
+
+  const p = pushPayload('needs-you', '  my   project  ', 'pty-1')
+  check('the payload: the project name, a status word, the session route — nothing else', p, { title: 'my project', body: 'Needs you', tag: 'stoke-pty-1', url: '#/s/pty-1' })
+  check('finished says so', pushPayload('finished', 'app', 'x').body, 'Finished')
+  check('a long name is cut, never wrapped', Array.from(pushPayload('finished', 'n'.repeat(200), 'x').title).length, 60)
+  check('the test push names no session', pushPayload('test', 'anything', ''), { title: 'Stoke', body: 'Notifications are on.', tag: 'stoke-test', url: '#/' })
+
+  const FCM = 'https://fcm.googleapis.com/fcm/send/abc123'
+  check(
+    'the real push services pass',
+    [FCM, 'https://updates.push.services.mozilla.com/wpush/v2/x', 'https://web.push.apple.com/QK', 'https://wns2-par02p.notify.windows.com/w/?token=x'].map((e) => pushEndpointOk(e, false)),
+    [true, true, true, true]
+  )
+  check(
+    'anywhere else is refused: another host, a look-alike, http, a LAN address, credentials, an odd port',
+    [
+      'https://evil.example/push',
+      'https://fcm.googleapis.com.evil.example/x',
+      'https://notify.windows.com/x',
+      'http://fcm.googleapis.com/x',
+      'https://192.168.1.1/x',
+      'https://user:pw@fcm.googleapis.com/x',
+      'https://fcm.googleapis.com:8443/x',
+      'http://127.0.0.1:9/x',
+      'not a url',
+      42
+    ].map((e) => pushEndpointOk(e, false)),
+    [false, false, false, false, false, false, false, false, false, false]
+  )
+  check('loopback http only where a test build allows it, and only 127.0.0.1', [pushEndpointOk('http://127.0.0.1:9/x', true), pushEndpointOk('http://localhost:9/x', true), pushEndpointOk('http://10.0.0.2:9/x', true)], [true, false, false])
+
+  const ua = createECDH('prime256v1')
+  ua.generateKeys()
+  const uaAuth = randomBytes(16)
+  const good = { endpoint: FCM, keys: { p256dh: ua.getPublicKey().toString('base64url'), auth: uaAuth.toString('base64url') } }
+  check('a real PushSubscription.toJSON() passes', pushSubscriptionFrom(good, false).ok, true)
+  check('padding is tolerated and dropped', pushSubscriptionFrom({ ...good, keys: { p256dh: `${good.keys.p256dh}=`, auth: `${good.keys.auth}==` } }, false), { ok: true, sub: { endpoint: FCM, ...good.keys } })
+  check(
+    'a key that is no P-256 point, or an auth secret of the wrong size, is refused',
+    [
+      pushSubscriptionFrom({ ...good, keys: { ...good.keys, p256dh: good.keys.p256dh.slice(1) } }, false).ok,
+      pushSubscriptionFrom({ ...good, keys: { ...good.keys, p256dh: `A${good.keys.p256dh.slice(1)}` } }, false).ok,
+      pushSubscriptionFrom({ ...good, keys: { ...good.keys, auth: 'short' } }, false).ok,
+      pushSubscriptionFrom({ ...good, endpoint: 'https://evil.example/x' }, false).ok,
+      pushSubscriptionFrom(null, false).ok
+    ],
+    [false, false, false, false, false]
+  )
+
+  const sub = (endpoint: string, keyTag = 'aaaaaaaaaaaaaaaa') => ({ endpoint, p256dh: good.keys.p256dh, auth: good.keys.auth, keyTag, addedAt: 1 })
+  const list = withPushSubscription([sub(FCM), sub(`${FCM}2`, 'bbbbbbbbbbbbbbbb')], { endpoint: FCM, p256dh: good.keys.p256dh, auth: good.keys.auth }, 'aaaaaaaaaaaaaaaa', 5)
+  check('re-subscribing replaces its own record; one made under another phone key is dropped', list.map((s) => [s.endpoint, s.addedAt]), [[FCM, 5]])
+  const many = Array.from({ length: 12 }, (_, i) => `${FCM}/${i}`).reduce(
+    (acc, e) => withPushSubscription(acc, { endpoint: e, p256dh: good.keys.p256dh, auth: good.keys.auth }, 'aaaaaaaaaaaaaaaa', 1),
+    [] as ReturnType<typeof withPushSubscription>
+  )
+  check('at most eight, the oldest first out', [many.length, many[0].endpoint], [MAX_PUSH_SUBSCRIPTIONS, `${FCM}/4`])
+  check(
+    'only subscriptions under the key in force are sent to (a replaced key is a phone locked out)',
+    livePushSubscriptions([sub(FCM), sub(`${FCM}2`, 'bbbbbbbbbbbbbbbb'), sub('http://127.0.0.1:9/x')], 'aaaaaaaaaaaaaaaa', false).map((s) => s.endpoint),
+    [FCM]
+  )
+  /*
+   * Review of the first cut: the phone's sheet said On from the browser's own
+   * subscription alone, so a replaced key, an eviction or a drop after 404/410
+   * left it On while nothing came. The phone now re-sends its subscription at
+   * every start and sheet open (an upsert), and one its push service already
+   * refused is answered 410 instead of taken back — named by endpoint AND key.
+   */
+  const gone1 = pushSubscriptionKey({ endpoint: FCM, p256dh: good.keys.p256dh })
+  const fresh = createECDH('prime256v1')
+  fresh.generateKeys()
+  check(
+    'a fresh subscription at a reused endpoint is not the gone one (its key is new)',
+    pushSubscriptionKey({ endpoint: FCM, p256dh: fresh.getPublicKey().toString('base64url') }) !== gone1,
+    true
+  )
+  check('re-sending the same one is an upsert, not a second record', withPushSubscription(list, { endpoint: FCM, p256dh: good.keys.p256dh, auth: good.keys.auth }, 'aaaaaaaaaaaaaaaa', 9).map((s) => [s.endpoint, s.addedAt]), [[FCM, 9]])
+  check(
+    'a phone re-scanned under a new key re-sends and is live again; every record under the old key goes',
+    livePushSubscriptions(withPushSubscription([sub(FCM), sub(`${FCM}2`)], { endpoint: FCM, p256dh: good.keys.p256dh, auth: good.keys.auth }, 'cccccccccccccccc', 9), 'cccccccccccccccc', false).map((s) => s.endpoint),
+    [FCM]
+  )
+  const goneList = Array.from({ length: MAX_GONE_PUSH + 5 }, (_, i) => `k${i}`).reduce((acc, k) => rememberGonePush(acc, [k]), [] as string[])
+  check('the gone memory keeps the newest, bounded', [goneList.length, goneList[0], goneList.at(-1)], [MAX_GONE_PUSH, 'k5', `k${MAX_GONE_PUSH + 4}`])
+  check('refused twice is remembered once, as the newest', rememberGonePush(['a', 'b', 'c'], ['a']), ['b', 'c', 'a'])
+
+  const vapid = generateVapidKeys()
+  const hydrated = hydrateRemotePush({
+    vapidPublic: vapid.publicKey,
+    vapidPrivate: vapid.privateKey,
+    subscriptions: [sub(FCM), { ...sub('https://evil.example/x') }, { ...sub(`${FCM}3`), keyTag: 'NOT HEX' }, 'junk'],
+    extra: 'dropped'
+  })
+  check('hydrate: rebuilt from named keys; an endpoint off the services, a bad tag and junk are dropped', [Object.keys(hydrated), hydrated.subscriptions.map((s) => s.endpoint)], [['vapidPublic', 'vapidPrivate', 'subscriptions'], [FCM]])
+  check('hydrate: no public key, no subscriptions (they were made to a pair that is gone)', hydrateRemotePush({ vapidPublic: 'nope', subscriptions: [sub(FCM)] }), EMPTY_REMOTE_PUSH)
+  check('hydrate: a sealed-away private key stays empty rather than dropping the pair', hydrateRemotePush({ vapidPublic: vapid.publicKey, vapidPrivate: '' }).vapidPublic, vapid.publicKey)
+  check('a minted pair is whole; a mismatched or empty one is not', [isVapidPair(vapid), isVapidPair({ ...vapid, privateKey: generateVapidKeys().privateKey }), isVapidPair({ ...vapid, privateKey: '' })], [true, false, false])
+
+  // RFC 8291 Appendix A, byte for byte.
+  const b = (s: string): Buffer => Buffer.from(s, 'base64url')
+  const rfc = encryptPush(
+    b('V2hlbiBJIGdyb3cgdXAsIEkgd2FudCB0byBiZSBhIHdhdGVybWVsb24'),
+    { p256dh: 'BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4', auth: 'BTBZMqHH6r4Tts7J_aSIgg' },
+    { salt: b('DGv6ra1nlYgDCS1FRnbzlw'), privateKey: b('yfWPiYE-n46HLnH0KqZOF1fJJU3MYrct3AELtAQ-oRw') }
+  )
+  check(
+    "encryptPush reproduces RFC 8291's Appendix A message exactly",
+    rfc.toString('base64url'),
+    'DGv6ra1nlYgDCS1FRnbzlwAAEABBBP4z9KsN6nGRTbVYI_c7VJSPQTBtkgcy27mlmlMoZIIgDll6e3vCYLocInmYWAmS6TlzAC8wEqKK6PBru3jl7A_yl95bQpu6cVPTpK4Mqgkf1CXztLVBSt2Ks3oZwbuwXPXLWyouBWLVWGNWQexSgSxsj_Qulcy4a-fN'
+  )
+
+  /** The receiver's side, as a phone's browser does it (RFC 8291 §3.4 read backwards). */
+  const decrypt = (msg: Buffer, receiver: ECDH, auth: Buffer): string => {
+    const salt = msg.subarray(0, 16)
+    const idlen = msg.readUInt8(20)
+    const asPublic = msg.subarray(21, 21 + idlen)
+    const shared = receiver.computeSecret(asPublic)
+    const keyInfo = Buffer.concat([Buffer.from('WebPush: info\0'), receiver.getPublicKey(), asPublic])
+    const ikm = Buffer.from(hkdfSync('sha256', shared, auth, keyInfo, 32))
+    const cek = Buffer.from(hkdfSync('sha256', ikm, salt, Buffer.from('Content-Encoding: aes128gcm\0'), 16))
+    const nonce = Buffer.from(hkdfSync('sha256', ikm, salt, Buffer.from('Content-Encoding: nonce\0'), 12))
+    const body = msg.subarray(21 + idlen)
+    const d = createDecipheriv('aes-128-gcm', cek, nonce)
+    d.setAuthTag(body.subarray(body.length - 16))
+    const plain = Buffer.concat([d.update(body.subarray(0, body.length - 16)), d.final()])
+    return plain.subarray(0, plain.lastIndexOf(2)).toString('utf8')
+  }
+  const round = encryptPush(Buffer.from('{"title":"app"}'), good.keys)
+  check('a fresh message decrypts with the subscription’s own private key', decrypt(round, ua, uaAuth), '{"title":"app"}')
+  check('and two messages never share a salt or an ephemeral key', round.subarray(0, 86).equals(encryptPush(Buffer.from('x'), good.keys).subarray(0, 86)), false)
+
+  const jwt = vapidJwt(`${FCM}/deep/path?x=1`, vapid, 1_000_000)
+  const [h, c, sig] = jwt.split('.')
+  const jwk = { kty: 'EC', crv: 'P-256', x: b(vapid.publicKey).subarray(1, 33).toString('base64url'), y: b(vapid.publicKey).subarray(33).toString('base64url') }
+  check('the VAPID JWT verifies against the public key (ES256, P1363)', verify('sha256', Buffer.from(`${h}.${c}`), { key: createPublicKey({ key: jwk, format: 'jwk' }), dsaEncoding: 'ieee-p1363' }, b(sig)), true)
+  check(
+    'for the push service’s ORIGIN, within a day, from an https subject',
+    [JSON.parse(b(h).toString()), JSON.parse(b(c).toString())],
+    [{ typ: 'JWT', alg: 'ES256' }, { aud: 'https://fcm.googleapis.com', exp: 1_000_000 + 12 * 3600, sub: VAPID_SUBJECT }]
+  )
+
+  // A fake push service on loopback: what a send puts on the wire, and what its answers mean.
+  const seen: { headers: Record<string, string | string[] | undefined>; body: Buffer }[] = []
+  let answer = 201
+  const fake = createServer((req, res) => {
+    const chunks: Buffer[] = []
+    req.on('data', (d: Buffer) => chunks.push(d))
+    req.on('end', () => {
+      seen.push({ headers: req.headers, body: Buffer.concat(chunks) })
+      res.writeHead(answer)
+      res.end()
+    })
+  })
+  await new Promise<void>((r) => fake.listen(0, '127.0.0.1', () => r()))
+  const port = (fake.address() as { port: number }).port
+  const record = { endpoint: `http://127.0.0.1:${port}/push/phone-1`, ...good.keys, keyTag: 'aaaaaaaaaaaaaaaa', addedAt: 1 }
+  try {
+    check('a 201 is sent', await sendPush(record, pushPayload('needs-you', 'app', 'pty-9'), vapid, { urgency: 'high' }), 'sent')
+    const got = seen[0]
+    check(
+      'aes128gcm, a TTL, the urgency, and a vapid Authorization naming the public key',
+      [got.headers['content-encoding'], got.headers.ttl, got.headers.urgency, String(got.headers.authorization).endsWith(`, k=${vapid.publicKey}`)],
+      ['aes128gcm', '3600', 'high', true]
+    )
+    check('what the phone decrypts is the content-free payload, and nothing else', JSON.parse(decrypt(got.body, ua, uaAuth)), pushPayload('needs-you', 'app', 'pty-9'))
+    answer = 410
+    check('410: the phone is gone, forget it', await sendPush(record, pushPayload('finished', 'app', 'x'), vapid), 'gone')
+    answer = 404
+    check('404: gone as well', await sendPush(record, pushPayload('finished', 'app', 'x'), vapid), 'gone')
+    answer = 503
+    check('a service error is a failure, and the subscription is kept', await sendPush(record, pushPayload('finished', 'app', 'x'), vapid), 'failed')
+    check('nothing listening is a failure, not a throw', await sendPush({ ...record, endpoint: 'http://127.0.0.1:9/x' }, pushPayload('finished', 'app', 'x'), vapid), 'failed')
+  } finally {
+    await new Promise<void>((r) => fake.close(() => r()))
+  }
+
+  // The worker's half: what it shows, and where a tap goes.
+  const swSource = readFileSync(new URL('../src/remote/public/sw.js', import.meta.url), 'utf8')
+  const listeners = new Map<string, (event: unknown) => void>()
+  const shown: { title: string; options: Record<string, unknown> }[] = []
+  const messages: unknown[] = []
+  const opened: string[] = []
+  let windows: { url: string; postMessage: (m: unknown) => void; focus: () => Promise<unknown> }[] = []
+  const sandbox: Record<string, unknown> = {
+    self: {
+      addEventListener: (type: string, fn: (event: unknown) => void) => listeners.set(type, fn),
+      registration: {
+        scope: 'https://phone.example/',
+        showNotification: async (title: string, options: Record<string, unknown>) => void shown.push({ title, options })
+      },
+      location: { origin: 'https://phone.example' },
+      clients: { claim: async () => {}, matchAll: async () => windows, openWindow: async (u: string) => void opened.push(u) },
+      skipWaiting: async () => {}
+    },
+    caches: { open: async () => ({}), keys: async () => [], delete: async () => true },
+    fetch: () => Promise.reject(new Error('offline')),
+    URL,
+    Response,
+    Promise,
+    setTimeout
+  }
+  runInNewContext(swSource, sandbox)
+  const firePush = async (data: unknown): Promise<void> => {
+    let done: Promise<unknown> = Promise.resolve()
+    listeners.get('push')?.({ data: data === undefined ? null : { json: () => (typeof data === 'string' ? JSON.parse(data) : data) }, waitUntil: (p: Promise<unknown>) => (done = p) })
+    await done
+  }
+  await firePush(pushPayload('needs-you', 'app', 'pty-9'))
+  check('a push shows its title and body, grouped by session, with the route to open', [shown[0]?.title, shown[0]?.options.body, shown[0]?.options.tag, (shown[0]?.options.data as { route: string }).route], ['app', 'Needs you', 'stoke-pty-9', '#/s/pty-9'])
+  await firePush({ title: 'x', body: 'y', url: 'https://evil.example/' })
+  await firePush({ title: 'x', url: 'javascript:alert(1)' })
+  check('a route that is not one of the shell’s own is replaced by home', shown.slice(1).map((s) => (s.options.data as { route: string }).route), ['#/', '#/'])
+  await firePush(undefined)
+  check('a push with no payload still shows something (a silent push is not allowed)', shown[3]?.title, 'Stoke')
+  const tap = async (route: string): Promise<void> => {
+    let done: Promise<unknown> = Promise.resolve()
+    listeners.get('notificationclick')?.({ notification: { close: () => {}, data: { route } }, waitUntil: (p: Promise<unknown>) => (done = p) })
+    await done
+  }
+  windows = [{ url: 'https://phone.example/#/', postMessage: (m) => messages.push(m), focus: async () => null }]
+  await tap('#/s/pty-9')
+  check('a tap with the shell open tells that window where to go, and opens nothing new', [messages, opened], [[{ type: 'stoke:open', route: '#/s/pty-9' }], []])
+  windows = []
+  await tap('#/s/pty-9')
+  check('with no window open, it opens the session', opened, ['https://phone.example/#/s/pty-9'])
 }
 
 console.log(failures ? `\n${failures} FAILED` : '\nall pass')

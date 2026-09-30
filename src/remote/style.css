@@ -1591,6 +1591,29 @@ a {
   gap: 8px;
 }
 
+/* Notifications: where this phone stands, then why not (when it cannot). */
+.notify-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.notify-status[data-state='on'] svg {
+  color: var(--accent-ink);
+}
+
+.notify-why {
+  margin: 0 0 16px;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.notify-why[hidden] {
+  display: none;
+}
+
 .sheet-actions .btn {
   flex: 1;
 }
@@ -2017,6 +2040,36 @@ button.crumb:hover {
   margin: -10px 4px 0;
   font-size: 13px;
   color: var(--text-faint);
+}
+
+.field-hint[hidden] {
+  display: none;
+}
+
+/* A value shown and not chosen here: another agent's model, set on the desktop. */
+.field-static {
+  display: flex;
+  align-items: center;
+  min-height: var(--tap);
+  padding: 0 var(--space-12);
+  border-radius: var(--radius-12);
+  background: var(--bg-sunken);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.field-note {
+  margin: 0 4px;
+  font-size: 13px;
+  color: var(--text-faint);
+}
+
+/* An account that cannot start: listed, with its reason in the tooltip and under the group. */
+.seg-btn:disabled {
+  opacity: 0.45;
+  text-decoration: line-through;
 }
 
 /* ------------------------------------------------------------- history */

@@ -231,6 +231,18 @@ check(
   await status(`/api/folders?path=${encodeURIComponent('/Users/../etc')}&k=${key}`)
 )
 check('POST /api/projects is gated', 401, await status('/api/projects', json({ path: outsidePath })))
+// Web Push (phone contract point 14): the endpoint is a URL this machine POSTs to.
+check('POST /api/push/subscription is gated', 401, await status('/api/push/subscription', json({ endpoint: 'https://fcm.googleapis.com/fcm/send/x' })))
+check('DELETE /api/push/subscription is gated', 401, await status('/api/push/subscription', { ...json({ endpoint: 'x' }), method: 'DELETE' }))
+check('POST /api/push/test is gated', 401, await status('/api/push/test', json({ endpoint: 'x' })))
+check(
+  'with the key, a subscription to anywhere but a push service is refused',
+  400,
+  await status(
+    `/api/push/subscription?k=${key}`,
+    json({ endpoint: 'http://192.168.1.1/admin', keys: { p256dh: `B${'A'.repeat(86)}`, auth: 'A'.repeat(22) } })
+  )
+)
 check(`adding ${outsidePath} as a project is refused`, 403, await status(`/api/projects?k=${key}`, json({ path: outsidePath })))
 check(
   `creating a folder inside ${outsidePath} is refused`,
