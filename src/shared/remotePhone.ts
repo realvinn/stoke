@@ -816,8 +816,16 @@ export function remoteFolderVerdict(
   rules: PathRules
 ): RemoteFolderVerdict {
   if (!isPlainFolderPath(input.requested, rules)) return { ok: false, reason: 'malformed' }
-  const real = normalizePath(typeof input.real === 'string' ? input.real : '', rules)
-  if (!real || !isAbsoluteFor(real, rules)) return { ok: false, reason: 'malformed' }
+  const raw = typeof input.real === 'string' ? input.real.trim() : ''
+  const real = normalizePath(raw, rules)
+  /*
+   * Absolute is asked of the path as given, not the normalised one: normalising
+   * strips a trailing separator, and a Windows drive root `C:\` becomes `C:`,
+   * which is not absolute — so the root of a drive, a well-formed place that is
+   * simply out of bounds, answered 400 "malformed" where `/` answers 403. The
+   * packaged-app probe's verify:security run found it on windows-latest.
+   */
+  if (!real || !isAbsoluteFor(raw, rules)) return { ok: false, reason: 'malformed' }
   const base = input.bases.find(
     (b) => folderDepth(normalizePath(b.path, rules)) >= MIN_FOLDER_BASE_DEPTH && isInside(b.path, real, rules)
   )

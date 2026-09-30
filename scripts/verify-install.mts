@@ -1191,6 +1191,23 @@ if (!POSIX_SH) {
       run('1000', ['--appimage-extract-and-run', '.']).argv,
       ['--appimage-extract-and-run', '.']
     )
+    /*
+     * The no-FUSE route the installer advises is a LAUNCH, so as root it needs
+     * the sandbox off like any other (gotcha 76) — after the flag, which the
+     * runtime reads from the first argument only. The Debian probe cannot show
+     * this one: inside Docker `unshare -Ur true` fails, so AppRun adds the flag
+     * itself; on a real root host that probe succeeds and nothing would.
+     */
+    check(
+      'as root, --appimage-extract-and-run still gets --no-sandbox, after the flag',
+      run('0', ['--appimage-extract-and-run', '.']).argv,
+      ['--appimage-extract-and-run', '--no-sandbox', '.']
+    )
+    check('and any other --appimage-* command goes through untouched, even as root', run('0', ['--appimage-offset']).argv, ['--appimage-offset'])
+    ok(
+      'the install tells a user without FUSE to install fuse3 — the static runtime needs a fusermount, which libfuse2 does not ship',
+      /sudo apt install fuse3/.test(readFileSync(SH, 'utf8')) && !/install libfuse2/.test(readFileSync(SH, 'utf8'))
+    )
     const help = run('1000', ['--help'])
     check('--help prints stokeHelp(linux) and starts nothing', [help.out, help.argv], [stokeHelp('linux'), null])
     writeFileSync(join(home, '.local', 'share', 'stoke', 'installed-version'), '1.2.3\n')

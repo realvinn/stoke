@@ -931,6 +931,28 @@ sessions on the machine, so on a clean runner the directory is simply not there 
 throws. Teaching it to synthesise its own fixtures would delete the only thing it is for, so it
 runs on a developer's machine and is skipped in CI.
 
+**The packaged-app probe drives what a release ships, on every OS it ships for** (ci.yml's
+`probe` and `debian` jobs, non-gating until they have a streak). Its legs are the release
+targets themselves (`targets.mjs --probe-matrix`, so a new target is probed with no second edit,
+and `verify:targets` holds ci.yml to reading it): each packages its target with `--dir` on its own
+native runner, runs `assert-packaged-pty` and `assert-cookie-fuse` as a release build does, then
+`scripts/probe-e2e.mts` boots it with CDP. Paid CLIs cannot sign in on a runner, so every agent is
+`scripts/probe/fake-agent.mjs`, which speaks the part of each contract Stoke depends on (argv, the
+transcript and registry entry, the statusLine and hook commands run in the CLI's own shell, the
+MCP config it was handed) — a green probe says Stoke's side held, never that the real CLI still
+behaves that way. The Linux leg also connects to a Debian sshd container
+(`.github/probe/sshd.Dockerfile`: a key user, a password-only user, tmux) and the arm64 Mac leg to
+the runner's own sshd on loopback (`scripts/probe/sshd-mac.sh`) for the kept-session, `~.` and
+key-enrollment checks; which legs have an sshd is `targets.mjs`'s `PROBE_SSH`. The `debian` legs are "terminal-only Debian": a bare
+`debian:bookworm` container as root runs this branch's one-line installer (served by
+`serve-install.mjs`), checks the launcher's uid-0 `--no-sandbox`, and boots the published AppImage
+under xvfb with FUSE and without (`scripts/probe/debian.sh`). Every check was shown able to fail:
+against the unpackaged Electron the cookie-encryption check goes red (no fuse); a statusLine
+command in the wrong shell's syntax turns the payload, hook and activity checks red; a stub that
+ignores `--session-id` turns the restore check red; the process table forced unreadable on Windows
+turns the `--continue` tab's registry checks red — the one place descent alone can name a tab
+(gotcha 92), and red for real on windows-11-arm, where the CIM query outlasts its deadline.
+
 Beyond that, verification has been done by driving the running app over CDP — launching with
 `--remote-debugging-port`, clicking through real flows and capturing screenshots. That is how
 every bug listed in CLAUDE.md was found; all of them produced *empty or wrong output rather
@@ -1596,7 +1618,32 @@ scripts/          the verify-*.mts suites, make-icon.cjs
                     two cannot drift. One arch per job on a NATIVE runner, because npm
                     installs only the host's `@lydell/node-pty-<platform>-<arch>` and
                     node-pty resolves that name at runtime — a cross-arch build ships a
-                    terminal that throws MODULE_NOT_FOUND with no build error. Gotcha 67
+                    terminal that throws MODULE_NOT_FOUND with no build error. Gotcha 67.
+                    `--probe-matrix` and `--debian-matrix` are ci.yml's probe legs: the
+                    same targets on the same runners, plus the Debian container legs
+  probe-e2e.mts     the packaged-app probe (ci.yml `probe`): boots a `--dir` build with CDP
+                    in a fully faked world (HOME, TMPDIR, userData, a no-rc SHELL) and
+                    drives it — `stoke --new` as a second instance, typing, the statusLine
+                    shim and hooks, three agents, a docked-browser login kept to its
+                    profile, the browser MCP from each agent, phone access and
+                    verify-remote-security.mjs, a graceful quit (SIGTERM; the window's close
+                    on Windows), the cookie encrypted on disk, a relaunch that resumes;
+                    `--ssh` (CI only: ssh reads the passwd home) a real sshd, `~.`, and a
+                    key enrollment. `--dev` runs the unpackaged build for a rehearsal. Not
+                    a suite; its tally and exit code are the last statement
+  probe/            the probe's parts. fake-agent.mjs is every agent (one launcher per id,
+                    .cmd on Windows): records argv/env (redacted), writes a Claude
+                    transcript and registry entry, runs the statusLine and hook commands
+                    in the shell the CLI would, calls the MCP server it was handed.
+                    login-server.mjs (/login, /whoami, /account, and windows.yml's /seed).
+                    debian.sh is the Debian legs: this branch's install.sh as root, the
+                    launcher's --no-sandbox, and the AppImage booting with and without FUSE.
+                    sshd-mac.sh is the arm64 Mac leg's SSH target: the runner's own sshd on
+                    loopback with two throwaway accounts (no Docker on a Mac runner); the
+                    Linux leg's is .github/probe/sshd.Dockerfile
+  cdp-lib.mjs       the CDP plumbing cdp-eval.mjs and the probe share: Stoke's renderer is
+                    the page with `window.stoke` (gotcha 6), a docked-browser page one
+                    without it, narrowed by URL
   assert-packaged-pty.mjs  each build job reads back which node-pty it actually packaged,
                     under app.asar.unpacked. The only thing that turns that silent runtime
                     failure into a red job
@@ -1630,7 +1677,8 @@ scripts/          the verify-*.mts suites, make-icon.cjs
                     can: whether a console renders the sequences, and whether the cursor
                     comes back
   cdp-eval.mjs      evaluates one expression in the renderer, or screenshots it.
-                    Picks the target by its window.stoke object, never by URL
+                    Picks the target by its window.stoke object, never by URL. A thin CLI
+                    over cdp-lib.mjs; windows.yml relies on its output and exit codes
   serve-install.mjs the install endpoint served locally from THIS checkout, through the
                     Worker's own routeFor, so a test can pipe `irm http://127.0.0.1:8787`
                     into PowerShell and exercise the branch rather than the deploy

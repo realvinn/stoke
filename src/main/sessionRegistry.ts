@@ -68,9 +68,11 @@ export interface RegistryEvents {
 /**
  * This machine's pid -> parent pid table, for `pickEntry`'s folder fallback, or
  * null when it cannot be read in time. `ps` on macOS and Linux; on Windows (the
- * only layout the fallback exists for, and UNVERIFIED there) the CIM process
- * list. A generous `maxBuffer` (gotcha 13) and a deadline, because this runs in
- * main's poll.
+ * only layout the fallback exists for) the CIM process list, which ci.yml's
+ * probe timed at 0.5-0.8 s on windows-latest and 23-28 s on windows-11-arm —
+ * where this deadline always wins, so descent never answers there (gotcha 92).
+ * A generous `maxBuffer` (gotcha 13) and a deadline, because a pass awaits it;
+ * asked for only when the id cannot answer (`needsDescent` in `pass`).
  */
 export function readProcessTable(platform: NodeJS.Platform = process.platform): Promise<Map<number, number> | null> {
   const [cmd, args] =
@@ -217,7 +219,6 @@ export class RegistryPoller {
         !pidMatched(t) && !this.everMatched.has(t.ptyId) && now - t.startedAt >= REGISTRY_FALLBACK_AFTER_MS
       const needAll = targets.some(fallsBack)
       const all = needAll ? await this.readAll(dir) : null
-      const parents = needAll && this.fs.processTable ? await this.processTable() : null
 
       // Sessions some target has provably by pid: a fallback may not take them.
       const claimed = new Set<string>()
@@ -225,6 +226,17 @@ export class RegistryPoller {
         const e = byPid.get(t.ptyId)
         if (pidMatched(t) && e?.sessionId) claimed.add(e.sessionId)
       }
+
+      /*
+       * The process table only for a fallback its id cannot answer: a
+       * `--continue` still on '' (gotcha 26), or a `/clear` that moved the
+       * process to an id Stoke does not hold yet. On Windows that table is a
+       * PowerShell start and a CIM query, and a `.cmd` pty is never matched by
+       * pid, so asking on every pass that merely fell back ran one a second for
+       * as long as any such tab was open, although the id already named it.
+       */
+      const needsDescent = (t: RegistryTarget): boolean => fallsBack(t) && pickEntry(t, null, all, claimed) === null
+      const parents = all && this.fs.processTable && targets.some(needsDescent) ? await this.processTable() : null
 
       for (const t of targets) {
         const descends =

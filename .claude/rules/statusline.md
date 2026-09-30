@@ -279,6 +279,10 @@ Three things that are easy to get wrong:
   id Stoke already has, else the ONE unclaimed entry in the same folder that started after the spawn,
   and refuses ambiguity either way. Unverified on Windows.
 
+> **Checked on 2026-09-30** — both fallbacks have now run on Windows runners under a stub `.cmd`
+> launcher: the id key on x64 and arm64, descent on x64 only (the CIM table outlasts its deadline on
+> windows-11-arm). Gotcha 92's note has the runs and numbers. A real npm `claude.cmd` is still unproven.
+
 ## 92. A dying tab was rebound to a stranger's `claude` in the same folder, and its Resume minted a blank session
 
 **The registry's folder fallback took a foreign process for a tab whose own file had just gone.**
@@ -307,6 +311,39 @@ Three locks:
 - **`resumeVerdict`** (remotePhone.ts): `POST /api/sessions` with `resume: true` is a 404 for a
   Claude id with no transcript and a 400 with no valid id, before anything spawns. A Resume must
   never silently become a new conversation.
+
+> **Checked on real Windows runners on 2026-09-30** (ci.yml `probe`, `scripts/probe-e2e.mts`, a
+> PACKAGED Stoke with a stub `claude` behind a `.cmd` launcher, so the pty is cmd.exe's and no
+> registry file carries its pid). This note first said run 36701034597 proved the descent fallback
+> and the CIM table on Windows. **It proved neither.** The stub wrote the id Stoke launched it with,
+> and `pickEntry` tries that id BEFORE descent, so the tab matched on the second key and the table
+> was never consulted; and `RegistryPoller.processTable()` turns every failure into null, so a CIM
+> query that failed outright would have left that check just as green. A check of a fallback proves
+> it only when every earlier key is unable to answer. What the probe shows now (run 36707295344):
+> - **The id key works** on windows-latest (x64) and windows-11-arm: the `--session-id` tab is named.
+> - **Descent works on windows-latest.** A `stoke <folder> --continue` tab holds `''`, so nothing but
+>   descent can name it: rebound 5.5 s after the request (4 s of `REGISTRY_FALLBACK_AFTER_MS`); the
+>   CIM query took 485 ms (471-774 ms in three timings over two runs), chain
+>   `node.exe <- cmd.exe <- Stoke.exe`. With the table forced to null on x64 (scratch run
+>   36706319439) exactly those three checks went red.
+> - **Descent FAILS on windows-11-arm.** The same query took 27.3 s there (23.6-28.2 s in three
+>   timings over two runs; `-Property ProcessId,ParentProcessId` 23 s, powershell.exe's bare start
+>   0.2 s), so the 5 s deadline always wins, the table is null, and a `--continue` tab is never
+>   named: no rebind, no ring (gotcha 26's symptom). Measured on the runner only; a real
+>   Windows-on-ARM machine is not.
+>   Raising the deadline is not the fix: a pass awaits the table while holding `running`, so every
+>   tab's state would freeze for as long as the query runs. A table fetched outside the pass, or the
+>   processes attached to the pty's own console (upstream node-pty kills with such a list; not
+>   checked in `@lydell/node-pty`'s Windows build, which this Mac does not install), might be —
+>   neither is done.
+> - **The table was read once a second for a `.cmd` tab's whole life.** Such a pty is never
+>   pid-matched, so it fell back on every pass, and every pass that fell back read the table — a
+>   PowerShell start and a CIM query — although the id already named the tab. `needsDescent`
+>   (`pass`) now asks only for a fallback its id cannot answer: a `--continue` on `''`, or a
+>   `/clear` to an id Stoke does not hold yet. `verify:registry` counts the asks (0 for an id-matched
+>   tab; the old poller asked on every pass). The CPU this cost was not measured.
+>
+> Still unproven: a real `claude.cmd` (npm) install, and descent on any Windows-on-ARM machine.
 
 ## 103. A whole-transcript parse is one block of the main process, and two pollers ran it on every change
 

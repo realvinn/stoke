@@ -29,7 +29,19 @@ import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 
-import { TARGETS, NOT_BUILT, buildEnvFor, matrixJson, ptyPackageFor, targetFor } from './targets.mjs'
+import {
+  DEBIAN_LEGS,
+  NOT_BUILT,
+  PROBE_NO_SSH,
+  PROBE_SSH,
+  TARGETS,
+  buildEnvFor,
+  debianMatrixJson,
+  matrixJson,
+  probeMatrixJson,
+  ptyPackageFor,
+  targetFor
+} from './targets.mjs'
 import { auditPty, findPtyDirs } from './assert-packaged-pty.mjs'
 
 const require = createRequire(import.meta.url)
@@ -502,7 +514,18 @@ for (const [file, steps] of [['ci.yml', ciGate], ['release.yml', releaseGate]] a
 
 const port = ciJobs.portability ?? {}
 const portRuns = ciRunsOf('portability')
-check('the only other job is the portability legs', Object.keys(ciJobs).filter((id) => id !== 'verify'), ['portability'])
+check(
+  'the other jobs are the portability legs and the packaged-app probe',
+  Object.keys(ciJobs).filter((id) => id !== 'verify'),
+  ['portability', 'probe-matrix', 'probe', 'debian']
+)
+check(
+  'and none of them gates: only verify may fail a push',
+  Object.entries(ciJobs)
+    .filter(([id, j]: [string, any]) => id !== 'verify' && id !== 'probe-matrix' && j?.['continue-on-error'] !== true)
+    .map(([id]) => id),
+  []
+)
 check('which are allowed to fail, so a leg nobody has seen green cannot block a push', port['continue-on-error'], true)
 check('and do not cancel each other', port.strategy?.['fail-fast'], false)
 check('on macOS and Windows', port.strategy?.matrix?.os, ['macos-14', 'windows-latest'])
@@ -531,6 +554,72 @@ check(
   []
 )
 check('and nothing in it reads a secret — it runs for pull requests', /\bsecrets\./.test(JSON.stringify(ci)), false)
+
+console.log('\nthe packaged-app probe (ci.yml) reads its legs from targets.mjs')
+
+/*
+ * The probe drives the build each target ships, so its legs ARE the targets:
+ * derived by `--probe-matrix`, never written in the workflow (gotchas 62, 67).
+ * A target added to TARGETS is probed on the next push with no second edit, and
+ * every leg must package with the target's own flags on the target's own runner
+ * and read back what it packaged, exactly as a release build does.
+ */
+{
+  const probeMatrix = JSON.parse(probeMatrixJson())
+  check('--probe-matrix has one leg per target, in order', probeMatrix.include.map((m: any) => m.key), TARGETS.map((t) => t.key))
+  check(
+    'each on the target\'s own runner (a native one — checked above)',
+    probeMatrix.include.map((m: any) => m.runner),
+    TARGETS.map((t) => t.runner)
+  )
+  check('with the target\'s own flags', probeMatrix.include.map((m: any) => m.args), TARGETS.map((t) => t.args.join(' ')))
+  check(
+    'and SSH only where a leg can reach an sshd (PROBE_SSH), every other platform named in PROBE_NO_SSH',
+    TARGETS.filter((t) => !(t.key in PROBE_SSH) && !(t.platform in PROBE_NO_SSH)).map((t) => t.key),
+    []
+  )
+  check('it is a single line, for $GITHUB_OUTPUT', probeMatrixJson().includes('\n') || debianMatrixJson().includes('\n'), false)
+  check(
+    'the Debian legs run a bare debian image, with FUSE and without',
+    DEBIAN_LEGS.map((l) => [l.image.startsWith('debian:'), l.fuse]),
+    [
+      [true, true],
+      [true, false]
+    ]
+  )
+
+  const pm = ciJobs['probe-matrix'] ?? {}
+  const pmRuns = ciRunsOf('probe-matrix').join('\n')
+  check('probe-matrix computes both matrices by running targets.mjs', [/targets\.mjs --probe-matrix/.test(pmRuns), /targets\.mjs --debian-matrix/.test(pmRuns)], [true, true])
+  check('and publishes them as outputs', [pm.outputs?.matrix, pm.outputs?.debian], ['${{ steps.targets.outputs.matrix }}', '${{ steps.targets.outputs.debian }}'])
+
+  const probe = ciJobs.probe ?? {}
+  const probeRuns = ciRunsOf('probe').join('\n')
+  check('probe consumes that matrix', [probe.needs, probe.strategy?.matrix], ['probe-matrix', '${{ fromJSON(needs.probe-matrix.outputs.matrix) }}'])
+  check('on the leg\'s own runner', probe['runs-on'], '${{ matrix.runner }}')
+  check('non-gating, and one dead leg does not cancel the rest', [probe['continue-on-error'], probe.strategy?.['fail-fast']], [true, false])
+  ok('it packages with the target\'s own flags from targets.mjs, as a directory', /electron-builder \$\(node scripts\/targets\.mjs --args \$\{\{ matrix\.key \}\}\) --dir\b/.test(probeRuns))
+  ok('and a real ad-hoc signature on a Mac (gotcha 24)', /-c\.mac\.identity=-/.test(probeRuns))
+  ok('every leg asserts the node-pty it packaged (gotcha 67)', /assert-packaged-pty\.mjs \$\{\{ matrix\.key \}\}/.test(probeRuns))
+  ok('and the fuses (gotcha 108)', /assert-cookie-fuse\.mjs release/.test(probeRuns))
+  ok('and then drives the packaged app with probe-e2e.mts', /node scripts\/probe-e2e\.mts --app "\$PROBE_APP"/.test(probeRuns))
+  ok('under a display on Linux, with the sandbox knob relaxed first', /xvfb-run -a[^\n]*probe-e2e\.mts/.test(probeRuns) && /sysctl -w kernel\.apparmor_restrict_unprivileged_userns=0/.test(probeRuns))
+  const sshdSteps = ciStepsOf('probe').filter((s) => /sshd to connect to/.test(s.name ?? ''))
+  ok(
+    '--ssh only on a leg the matrix says has an sshd, and an sshd set up for each OS that has one',
+    /matrix\.ssh/.test(probeRuns) &&
+      sshdSteps.length === new Set(TARGETS.filter((t) => t.key in PROBE_SSH).map((t) => t.platform)).size &&
+      sshdSteps.every((s) => String(s.if ?? '').startsWith('matrix.ssh && '))
+  )
+  const upload = ciStepsOf('probe').find((s) => String(s.uses ?? '').startsWith('actions/upload-artifact'))
+  check('and uploads what it saw even when it fails', [upload?.if, /probe\/shots/.test(String(upload?.with?.path ?? ''))], ['always()', true])
+
+  const deb = ciJobs.debian ?? {}
+  check('debian consumes the Debian matrix', [deb.needs, deb.strategy?.matrix], ['probe-matrix', '${{ fromJSON(needs.probe-matrix.outputs.debian) }}'])
+  check('in the leg\'s own container image, with its own docker options', [deb.container?.image, deb.container?.options], ['${{ matrix.image }}', '${{ matrix.options }}'])
+  check('non-gating', deb['continue-on-error'], true)
+  ok('it runs scripts/probe/debian.sh', /sh scripts\/probe\/debian\.sh /.test(ciRunsOf('debian').join('\n')))
+}
 
 // ---------------------------------------------------------------------------
 
