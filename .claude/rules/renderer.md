@@ -464,3 +464,28 @@ motion paints. Drive the built app over CDP to prove them.
 > that stamp only when it writes a status or `waitingFor`. The status bar dot's reduced-motion rule
 > lost on specificity to the rules it stilled and has its own block after them now. All asserted in
 > `verify:registry` and `verify:statusline`; the painted result is still gotcha 31's to prove.
+
+## 127. `settingsRef` is the last RENDERED settings, so something main made a moment ago is not in it yet
+
+**Settings › Agents › Add account made the account and then said "That account is no longer in
+Settings › Agents."** Found driving the built app on 2026-09-30, the first press. The flow is one
+`await`: `accounts:create` makes the folder and the record in main, `setSettings` there pushes
+`settings:changed`, and the invoke resolves with the new account; the Settings row then called
+`startAccountLogin(id)`, which looked the id up in `settingsRef.current.accounts`. Both messages
+had arrived, in order — the push was processed and its `setSettings` scheduled — but
+`settingsRef.current = settings` is assigned during RENDER, and the awaiting continuation ran as
+a microtask before React committed. So the ref still held the settings from before the account
+existed. Nothing was wrong with main, the push or the ordering; the renderer read a copy that is
+by construction one render behind.
+
+The fix reads main's answer when the render's copy misses: `settingsRef.current?.accounts[id] ??
+(await window.stoke.settings.get()).accounts[id]` (App.tsx `startAccountLogin`). The same path
+serves `stoke account add`, whose `account-login` request is pushed right behind the settings
+that contain the account and can hit the same gap.
+
+The rule: **anything that acts on an id main has just made — an account, a host, a profile —
+must take it from main's own reply or ask main, never from `settingsRef` or the `settings`
+state**, until a render has passed. Gotcha 31's `settingsRef` advice (a listener reads settings
+through the ref, not its deps) still holds; this is its limit: the ref is fresh as of the last
+render, not as of the last push. No suite can see it — the lookup is inside an `await` in a click
+handler (gotcha 31's class) — and a unit test with a synchronous fake would have passed.

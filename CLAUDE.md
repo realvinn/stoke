@@ -38,7 +38,7 @@ A `dist:*` exists per target and each MUST run on that target's own platform and
 Every suite runs alone as `npm run verify:<name>`: context, statusline, unicode, usage,
 profiles, settings, secrets, providers, claude-config, folders, search, color, theme-gen, activity,
 worklog-gate, tabs, launcher, registry,
-restore, shortcuts, drop, fullscreen, layers, browser-url, browser-profiles, safari-import, chrome-import, voice, agents, campfire, cli, stoke-args, updates, targets, manifests, portable, winget, worklog-runner,
+restore, shortcuts, drop, fullscreen, layers, browser-url, browser-profiles, safari-import, chrome-import, voice, agents, accounts, campfire, cli, stoke-args, updates, targets, manifests, portable, winget, worklog-runner,
 worklog-retry, worklog-recall, worklog-autoscan, ssh, ssh-enroll, remote, phone-ui, installer-art, install, welcome,
 selection — the `check` chain — plus extract and security, which
 need a live instance (`verify:security <url> <token> --access`). `verify:selection` opens a real
@@ -436,6 +436,8 @@ rule file named on the group line.
   no-reading tab (a non-Claude CLI) still closes at once, and window-quit's own kill is unguarded.
 - **104.** Decide a tab's dot in `activityView` (hooks + registry): a Stop ends a TURN while a workflow
   runs on (`background_tasks`, `stopNotifies`), `waiting` is the registry's and survives looking.
+- **127.** Act on an id main just made (an account) through main's reply or `settings.get()`, never
+  `settingsRef`: the ref is the last RENDER's, and the push lands after the await (`startAccountLogin`).
 
 **Packaging and signing** — `.claude/rules/release.md`
 - **7.** Pick architectures with the `--x64`/`--arm64` CLI flags and never add an `arch:` list to
