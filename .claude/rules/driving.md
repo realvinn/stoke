@@ -187,3 +187,30 @@ scratch dir, so nothing of the owner's Claude config is read for ownership or wr
 move `~/.local/bin` or the login shell's PATH, so it is enough only for a Claude tab (whose
 `claudePath` override wins before any search) — any other agent still needs gotcha 112's `SHELL` +
 `HOME`, from outside a worktree.
+
+## 133. A sandbox with chat history on reads the owner's real chats unless the caps are aimed at synthetic ones
+
+**`CLAUDE_CONFIG_DIR` does not isolate the chat index.** `claudeRoots` (chatIndex/sources.ts) reads
+`$CLAUDE_CONFIG_DIR/projects` AND `~/.claude/projects` — on purpose, since sessions started without
+the override are filed in the default folder — and Zed, Claude Cowork and Cline have no override (their
+roots are under the real `HOME`, which a worktree agent may not move, gotcha 128). So a driven
+sandbox with `chatIndex: 'on'` and the default sources copies the owner's real conversation text
+into the sandbox store, and every screenshot of a search is one query away from showing it.
+Measured on 2026-09-30 driving the export import and the chat viewer: with the Claude source on and
+`CLAUDE_CONFIG_DIR` pointed at scratch, the pass LISTED 116 real Claude transcripts beside the
+synthetic ones.
+
+What kept every real chat out, measured in the same run (`filesRead: 2`, `bytesRead: 1364`, both
+synthetic files): seed `settings.chatIndexOptions` so that only `claude` is on (`codex` could be moved
+with `CODEX_HOME`, OpenCode with `XDG_DATA_HOME`, but the others cannot, so they are off), set
+`caps.perSource` to the number of synthetic transcripts (2), and date the synthetic transcripts a
+week AHEAD (`utimes`) so they are the newest the listing sees — admission is newest-first by mtime,
+and the owner's live sessions are being written to right now, so a synthetic file dated "now" can
+lose its slot to one. Listing still stats the real files (names and sizes only); only admitted chats
+are read. Anything that appends to a synthetic transcript resets its mtime, so date
+it ahead again afterwards. Imports are safe by construction: use generated exports only (a zip
+writer is ~60 lines, `makeZip` in `verify:chat-sources`), and drop them with CDP's
+`Input.dispatchDragEvent` carrying `data.files` — a trusted drag that reaches `pathForFile` as a
+real path (gotcha 59), where the "Import an export…" button's native dialog cannot be driven. Two
+side effects remain: the viewer's copy buttons write the real system clipboard, and Settings writes
+the sandbox's `settings.json` back in full on first change.

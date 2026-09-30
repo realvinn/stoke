@@ -678,7 +678,12 @@ npm run verify:chat-sources   # chat history, against synthetic fixtures for eve
                               # as real ones are); no empty chat stored; the FIRST cwd kept; the
                               # store ceiling evicts once, never every pass; the worker keeps the
                               # main loop free; Delete index leaves the bystander beside the store
-                              # (gotcha 74)
+                              # (gotcha 74). Exports: real zips built in the suite (stored,
+                              # deflated, ZIP64) read back, and escaping names, bombs, lying and
+                              # oversize headers refused; claude.ai and ChatGPT branch trees keep
+                              # only the branch shown; a re-import updates in place; caps said;
+                              # imports survive passes and Rebuild, not Delete index; the viewer
+                              # re-reads a subagent's file at open time
 npm run verify:cli            # finding the `claude` binary: the version-manager shim dirs,
                               # the probe's retry rule, and the two not-found messages.
                               # Hermetic - HOME is redirected into a temp tree (gotcha 52)
@@ -981,12 +986,26 @@ src/main/         Electron main process
     scan.ts           one pass: list everything, fold Cline's copies into originals their tool
                       still has, admit the newest per source then in all (a file holding no
                       chat takes no slot; nothing at or below the store ceiling's remembered
-                      cut), read what changed under the byte and time budget, prune only a
-                      complete listing
+                      cut; imports take their room under the total first), read what changed
+                      under the byte and time budget, prune only a complete listing — never
+                      an import
     store.ts          node:sqlite + FTS5 in userData/chat-index (0700, files 0600). Search is
                       grouped per chat in SQL; a rowid bound to FTS5 must be an integer
                       (gotcha 125). The ceiling is chat TEXT, evicted oldest by admission
-                      key: FTS5 frees no page when a row is deleted (`evictToText`)
+                      key: FTS5 frees no page when a row is deleted (`evictToText`). Imports
+                      are `import_file` rows plus `chat.import_id` (schema 2, added in place)
+    zip.ts            a suspicious ZIP reader: the central directory (ZIP64 too), then ONE
+                      member inflated under its declared size; refuses escaping names, bombs
+                      (200:1 past 1 MB), oversize members, encryption, other methods, bad CRCs
+    exports.ts        claude.ai and ChatGPT `conversations.json` as words: split into objects
+                      by byte range (never one parse), only the branch the user sees
+                      (`current_leaf_message_uuid`, `current_node`), their own titles and times
+    importer.ts       an export into the store: recognised by content, ranked newest first,
+                      held to `perSource` and `total`, keyed by the conversation's own id so a
+                      re-import updates in place; disclosed per file (`importDisclosure`)
+    viewer.ts         one chat for the read-only viewer: a local one re-read from its tool's
+                      own file or database at open time (only inside that tool's root), the
+                      store's copy for an import or an original that is gone
   sessionIndex.ts   every session's title + first prompt, for search: one 256 KB chunk
                     from each end of a transcript, cached on mtime+size, top-level
                     `*.jsonl` only (never `<id>/subagents/`). Never `listSessions`, which
@@ -1222,7 +1241,13 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     buttons take Enter/Space only on the launcher's terms (gotchas 88, 93)
   src/components/ChatHistorySettings.tsx  Settings › Chat history: the switch, each source with
                     what was found and the sentence naming any cap that bound, the presets and
-                    six caps (committed on blur/Enter, gotcha 63), Index now, Rebuild, Delete
+                    six caps (committed on blur/Enter, gotcha 63), Index now, Rebuild (imports
+                    kept), Delete; "Import an export…" and a drop zone (Files only, gotcha 59)
+                    with each import, what it left in the index, and its Remove
+  src/components/ChatViewer.tsx  the read-only chat viewer: a `.body-row` column beside the main
+                    one, never an overlay (gotcha 14) — messages in order with who and when, the
+                    query's words marked (`highlightRanges`), copy per message and Copy all, and
+                    why it is not a live session (`chatOpenAction`'s note)
   src/components/AgentsSettings.tsx  Settings › Agents: the default agent, choosing and
                     re-detecting agents and the skills report, then one page per installed or
                     ticked agent (install state, endpoint, Default model, colour, tab tag) and
@@ -1438,7 +1463,9 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
   chatIndex.ts      chat history's pure half: the source registry, the `chatIndex` setting and
                     `clampChatIndexOptions`, the caps and presets, `sourceDisclosure` (every
                     cap that binds is said), the FTS query and snippet marks, and
-                    `chatOpenAction` — what pressing a hit may open
+                    `chatOpenAction` — what pressing a hit may open (resume, or the viewer).
+                    Imports (`CHAT_IMPORT_KINDS`, never a pass's source), the export reader's
+                    limits (`CHAT_EXPORT_LIMITS`) and `importDisclosure`
   welcome.ts        whether the first-run campfire plays, from two strings: the version whose
                     splash was last watched and the version running now. A semver comparison
                     and the clamp that repairs the stored value, together in one file because
