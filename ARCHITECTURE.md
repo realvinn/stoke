@@ -914,7 +914,9 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
   launcher.ts       the new-session page's pure half: same-name disambiguation, the
                     folder switcher's groups, which conversations list, the keyboard map,
                     the pinned launch aim (`launchAim`), the activation-key burst rule
-                    (`pressAllowed`), and the agent picker's sections and scoped Select all
+                    (`pressAllowed`), the agent picker's sections and scoped Select all, and
+                    whether a card can start Claude Code (`claudeLaunchesHere`) — then its
+                    chips and bypass warning show whatever the default agent is
   welcome.ts        whether the first-run campfire plays, from two strings: the version whose
                     splash was last watched and the version running now. A semver comparison
                     and the clamp that repairs the stored value, together in one file because

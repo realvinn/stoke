@@ -4493,7 +4493,14 @@ export function App(): React.JSX.Element {
                   cwd: launchTarget.path,
                   cli: id,
                   name: launchTarget.label,
-                  replaceTabId: activeNewTabId ?? undefined
+                  replaceTabId: activeNewTabId ?? undefined,
+                  /*
+                   * Claude Code from the menu takes the chips' choice, as Start
+                   * would: it is on screen (with the bypass warning) whenever
+                   * Claude is in this menu. Without it startSession fell back to
+                   * Stoke's defaults and dropped this tab's own picks.
+                   */
+                  ...(isClaudeCode(id) ? launchNow.choice : {})
                 })
               }}
               onStart={() => {

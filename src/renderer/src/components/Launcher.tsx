@@ -13,6 +13,7 @@ import {
   type ResolvedLaunch
 } from '@shared/launch'
 import {
+  claudeLaunchesHere,
   isActivationKey,
   launcherKey,
   newestConversation,
@@ -165,10 +166,28 @@ export function Launcher(props: Props): React.JSX.Element {
   const missing = !!target && !target.exists
   const canStart = !!target && !primaryBroken && !missing
   const canResume = !!target && !claudeBroken && !missing
-  // Claude's launch options mean nothing to another agent (CLI_CAPS), so its
-  // chips and the bypass warning are drawn only for an agent that takes them.
-  const flags = capsFor(primary.id).launchFlags
-  const showUltracode = isClaude && flags.effort
+  /*
+   * Claude's launch options mean nothing to another agent (CLI_CAPS), but this
+   * card starts Claude Code with them whatever Start starts: Continue, the
+   * rows, the digit keys and the caret menu's Claude Code all pass the chips'
+   * choice. So the chips, and above all the bypass warning, are drawn whenever
+   * the card can start Claude (`claudeLaunchesHere`), and are Claude's there.
+   */
+  const claudeInMenu = otherClis.some((c) => isClaudeCode(c.id))
+  const claudeHere = claudeLaunchesHere({
+    primaryIsClaude: isClaude,
+    claudeBroken,
+    conversations: sessions.length,
+    loading: sessionsLoading,
+    claudeInMenu
+  })
+  // Where those Claude sessions come from, for the note under another default.
+  const claudeRoutes = [
+    ...(sessions.length > 0 || sessionsLoading ? ['Continue', 'a conversation below'] : []),
+    ...(claudeInMenu ? ['Claude Code from the menu'] : [])
+  ]
+  const flags = capsFor(claudeHere ? 'claude' : primary.id).launchFlags
+  const showUltracode = claudeHere && flags.effort
   const anyChip = flags.permissionMode || flags.model || flags.effort || showUltracode
   const bypass = flags.permissionMode && launch.permissionMode.choice === 'bypassPermissions'
 
@@ -523,15 +542,33 @@ export function Launcher(props: Props): React.JSX.Element {
           )}
         </div>
 
-        {/* Row C: launch chips, resolved, for THIS launch (QA L10, L11). */}
-        {!anyChip && (
+        {/*
+          Row C: launch chips, resolved, for THIS launch (QA L10, L11). Under
+          another default they are Claude Code's, for the Claude sessions this
+          card still starts, and the note says so.
+        */}
+        {!isClaude && (
           <p className="launcher-agent-note">
-            {primary.label} starts on its own settings. Claude Code&rsquo;s launch options, context
-            ring and worklog do not apply to it.
+            {claudeHere ? (
+              <>
+                {primary.label} starts on its own settings; Claude Code&rsquo;s context ring and
+                worklog do not apply to it. The options below are for the Claude Code sessions
+                started here: {orList(claudeRoutes)}.
+              </>
+            ) : (
+              <>
+                {primary.label} starts on its own settings. Claude Code&rsquo;s launch options,
+                context ring and worklog do not apply to it.
+              </>
+            )}
           </p>
         )}
         {anyChip && (
-          <div className="launcher-chips" role="group" aria-label="Launch options">
+          <div
+            className="launcher-chips"
+            role="group"
+            aria-label={isClaude ? 'Launch options' : 'Claude Code launch options'}
+          >
             {flags.permissionMode && (
               <Chip
                 open={pop === 'mode'}
@@ -653,12 +690,20 @@ export function Launcher(props: Props): React.JSX.Element {
           </div>
         )}
 
-        {/* Inline rather than a dialog: visible for as long as it is armed. */}
+        {/*
+          Inline rather than a dialog: visible for as long as it is armed, and
+          under any default, since a resume here still takes the bypass.
+        */}
         {bypass && (
           <div className="launcher-alert" data-tone="danger">
             <div className="launcher-alert-text">
-              <b>Permissions are bypassed.</b>
-              <span>Claude will run commands and edit files without asking. Use it only where you trust the contents.</span>
+              <b>{isClaude ? 'Permissions are bypassed.' : 'Permissions are bypassed for Claude Code.'}</b>
+              <span>
+                {isClaude
+                  ? 'Claude will run commands and edit files without asking.'
+                  : `A Claude Code session started here will run commands and edit files without asking; ${primary.label} is not affected.`}{' '}
+                Use it only where you trust the contents.
+              </span>
             </div>
           </div>
         )}
@@ -768,6 +813,11 @@ export function Launcher(props: Props): React.JSX.Element {
 }
 
 /* ------------------------------------------------------------ small parts */
+
+/** "a", "a or b", "a, b or c". */
+function orList(items: readonly string[]): string {
+  return items.length > 1 ? `${items.slice(0, -1).join(', ')} or ${items[items.length - 1]}` : (items[0] ?? '')
+}
 
 /**
  * One launch chip: the resolved value, a dot when this launch differs from the
