@@ -24,6 +24,11 @@
  *              Stoke's binary with ELECTRON_RUN_AS_NODE — so the payload file
  *              appearing proves the runAsNode fuse (gotcha 108); its hooks
  *              landed; its transcript is where the relaunch will look
+ *   continue   `stoke <folder> --continue` opens a Claude tab holding NO id,
+ *              and the registry names it and rebinds the tab from '' (gotcha
+ *              26) — on Windows by descent over the CIM process table alone,
+ *              since cmd.exe's pid matches no file and there is no id to key on
+ *              (gotcha 92)
  *   agents     two other agents started the same way sit in tabs of their own,
  *              each its own process, and each can call Stoke's browser MCP with
  *              what its launch handed it (agentLaunchPlan)
@@ -74,6 +79,7 @@ import {
   writeFileSync,
   appendFileSync
 } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { createServer } from 'node:net'
 import { userInfo } from 'node:os'
@@ -177,11 +183,13 @@ const home = join(root, 'home')
 const tmp = join(root, 'tmp')
 const ud = join(root, 'ud')
 const proj = join(root, 'project')
+/** A second folder, for the `--continue` tab: a running Claude tab in `proj` would be reused. */
+const projContinue = join(root, 'project-continue')
 const agentsDir = join(root, 'agents')
 const shots = join(root, 'shots')
 const logs = join(root, 'logs')
 const stubBin = join(home, '.local', 'bin')
-for (const d of [home, tmp, ud, proj, agentsDir, shots, logs, stubBin]) mkdirSync(d, { recursive: true })
+for (const d of [home, tmp, ud, proj, projContinue, agentsDir, shots, logs, stubBin]) mkdirSync(d, { recursive: true })
 writeFileSync(join(proj, 'README.md'), '# Probe project\n\nA folder the CI probe opens sessions in.\n')
 
 const pkg = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')) as { version: string }
@@ -609,19 +617,82 @@ await step('typing reaches the session, and its hooks land', async () => {
   const transcript = join(home, '.claude', 'projects', proj.replace(/[^A-Za-z0-9]/g, '-'), `${claudeSession}.jsonl`)
   check('the transcript is on disk where a resume will look for it', existsSync(transcript), transcript)
   // POSIX matches by pid (the launcher execs the stub). On Windows the pty's
-  // child is cmd.exe running the .cmd launcher, so only the fallback can match:
-  // the one entry in the folder whose process descends from the pty (gotcha 92),
-  // which no run had ever exercised on Windows.
+  // child is cmd.exe running the .cmd launcher, so the pid never matches and
+  // `pickEntry` falls to its SECOND key: the one entry carrying the id Stoke
+  // launched with — which this stub writes, so descent is never asked here.
+  // The `--continue` step below is the one where only descent can answer.
   let states: Array<{ ptyId?: string; status?: string }> = []
   const mine = await waitFor('the registry entry to be matched to the tab', async () => {
     states = await ev<Array<{ ptyId?: string; status?: string }>>('window.stoke.session.states()')
     return states.find((s) => s.ptyId === t.ptyId) ?? null
   }, 20_000).catch(() => null)
   check(
-    `the CLI registry entry was matched to the tab ${isWin ? 'through a .cmd launcher, by descent (gotcha 92)' : 'by pid (gotcha 80)'}`,
+    `the CLI registry entry was matched to the tab ${isWin ? 'through a .cmd launcher, by the session id it was launched with (pickEntry\'s second key)' : 'by pid (gotcha 80)'}`,
     !!mine,
     JSON.stringify(states).slice(0, 400)
   )
+})
+
+/*
+ * A tab Stoke launches holding NO id: `stoke <folder> --continue` is
+ * `claude --continue`, which picks its own conversation after launch, so the
+ * tab starts on '' and only the registry can name it (gotcha 26). On POSIX the
+ * pid does. On Windows the pty is cmd.exe's and there is no id to key on, so
+ * `pickEntry`'s descent fallback is the ONLY thing that can match it — the
+ * process table (CIM) read and `descendsFrom` walked from cmd.exe to the stub
+ * (gotcha 92). With that table unreadable `pickEntry` answers null and this
+ * goes red, which is what a first-key match above could never show. A folder
+ * of its own, since a running Claude tab in `proj` would be reused instead;
+ * the tab is closed at the end, so the restore steps see the three they expect.
+ */
+await step('a `stoke <folder> --continue` tab: Stoke holds no id and learns it from the registry', async () => {
+  // A conversation for --continue to pick up, as a person's folder would hold.
+  const seeded = randomUUID()
+  const seedDir = join(home, '.claude', 'projects', projContinue.replace(/[^A-Za-z0-9]/g, '-'))
+  mkdirSync(seedDir, { recursive: true })
+  const at = new Date().toISOString()
+  writeFileSync(
+    join(seedDir, `${seeded}.jsonl`),
+    [
+      { type: 'user', sessionId: seeded, cwd: projContinue, uuid: randomUUID(), timestamp: at, message: { role: 'user', content: 'an earlier conversation' } },
+      { type: 'assistant', sessionId: seeded, cwd: projContinue, uuid: randomUUID(), timestamp: at, message: { role: 'assistant', content: [{ type: 'text', text: 'noted' }] } }
+    ]
+      .map((r) => JSON.stringify(r))
+      .join('\n') + '\n'
+  )
+  await ev('(window.__probeRebinds = [], window.stoke.session.onRebind((r) => window.__probeRebinds.push(r)), true)')
+  const taken = Object.keys(await buffers())
+  const code = await stokeCli(projContinue, '--continue')
+  check('the request was handed over', code === 0, `exit ${code}`)
+  const ptyId = await termShowing('STOKE-PROBE claude continued', 'the continued Claude stub\'s banner', 45_000, taken)
+  const pid = await pidIn(ptyId, 'claude')
+  const rec = await waitFor('the continued stub\'s start record', () => stubByPid(pid), 10_000)
+  const argv = rec.start.argv
+  check('it was started with --continue, and neither --session-id nor --resume', argv.includes('--continue') && !argv.includes('--session-id') && !argv.includes('--resume'), JSON.stringify(argv))
+  const stubId = String(rec.events.find((e) => e.kind === 'claude-session')?.sessionId ?? '')
+  check('(the stub continued the conversation seeded in its folder)', stubId === seeded, `stub on ${stubId}, seeded ${seeded}`)
+  let rebinds: Array<{ ptyId: string; sessionId: string; previous: string }> = []
+  const moved = await waitFor('the registry rebind for the continued tab', async () => {
+    rebinds = await ev<typeof rebinds>('window.__probeRebinds')
+    return rebinds.find((r) => r.ptyId === ptyId && r.sessionId === stubId) ?? null
+  }, 30_000).catch(() => null)
+  check(
+    isWin
+      ? 'Stoke held no id, so only descent could name it: the CIM process table was read and descendsFrom walked cmd.exe to the stub (gotcha 92)'
+      : 'matched by pid, though Stoke held no id (gotcha 80)',
+    !!moved,
+    JSON.stringify(rebinds).slice(0, 400)
+  )
+  check('and the tab was rebound from \'\' to the id the CLI chose (gotcha 26)', moved?.previous === '', JSON.stringify(moved))
+  const state = (await ev<Array<{ ptyId?: string; sessionId?: string }>>('window.stoke.session.states()')).find((s) => s.ptyId === ptyId)
+  check('session.states() reads the continued tab on that id', state?.sessionId === stubId, JSON.stringify(state ?? null))
+  await shot('02b-continued-session')
+  // Closed through the tab's own ×: an idle Claude tab closes without asking
+  // (gotcha 90), and its process is told.
+  await activate(ptyId)
+  await ev('(document.querySelector(".tablist .tab[aria-selected=\'true\'] .tab-close")?.click(), true)')
+  const gone = await waitFor('the continued tab\'s process to be told', () => exitMarkers().some((n) => n === `exit-claude-${pid}`), 20_000).catch(() => false)
+  check('closing the tab ended its process (its exit marker)', gone === true, exitMarkers().join(', '))
 })
 
 /* --------------------------------------------------------------- agents */
@@ -931,7 +1002,9 @@ await step('relaunch: the tabs come back, and resume what they were', async () =
     const now = stubRecords().filter((r) => !seenPids.has(r.pid))
     return AGENTS.every((a) => now.some((r) => r.id === a)) ? now : null
   }, 60_000).catch(() => stubRecords().filter((r) => !seenPids.has(r.pid)))
-  const claudeAgain = fresh.find((r) => r.id === 'claude')
+  // The main tab's, if two Claude tabs came back (the --continue tab is closed
+  // in its own step; if that failed, it is not this check's failure).
+  const claudeAgain = fresh.find((r) => r.id === 'claude' && argAfter(r.start.argv, '--resume') === claudeSession) ?? fresh.find((r) => r.id === 'claude')
   check('Claude came back with --resume <the same session id> (gotcha 81)', argAfter(claudeAgain?.start.argv ?? [], '--resume') === claudeSession, JSON.stringify(claudeAgain?.start.argv ?? null))
   check('and no --session-id beside it (the CLI refuses the pair)', !(claudeAgain?.start.argv ?? []).includes('--session-id'))
   const codexAgain = fresh.find((r) => r.id === 'codex')

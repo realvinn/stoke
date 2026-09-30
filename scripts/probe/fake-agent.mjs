@@ -24,7 +24,11 @@
  *             the probe can prove a quit reached it (before-quit's killAll)
  *             rather than orphaning it.
  *   claude    as Claude Code 2.1.x: `--session-id`/`--resume` pick the
- *             session, a transcript is written under the config dir's
+ *             session, and `--continue` the newest transcript in its folder
+ *             (a fresh id when there is none — where the real CLI would say
+ *             there is nothing to continue), so Stoke launches it holding NO
+ *             id and must learn it from the registry (gotchas 26, 92); a
+ *             transcript is written under the config dir's
  *             projects/, a registry entry under sessions/<pid>.json; the
  *             `--settings` file's statusLine command is run with a payload on
  *             stdin, and its UserPromptSubmit/Stop hooks on every prompt — each
@@ -39,7 +43,7 @@
  * artifacts of a public repository).
  */
 import { spawnSync } from 'node:child_process'
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -217,10 +221,30 @@ async function mcpVisit(target) {
 /* ------------------------------------------------ Claude Code's contract */
 
 const claude = id === 'claude'
-const resumeId = claude ? flagValue('--resume') : null
-const sessionId = claude ? (flagValue('--session-id') ?? resumeId ?? randomUUID()) : null
 const configDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude')
 const slug = process.cwd().replace(/[^A-Za-z0-9]/g, '-')
+const resumeId = claude ? flagValue('--resume') : null
+const continueLast = claude && argv.includes('--continue')
+
+/** The newest conversation in this folder, as `--continue` picks it, or null. */
+function newestInFolder() {
+  const at = join(configDir, 'projects', slug)
+  try {
+    const newest = readdirSync(at)
+      .filter((n) => /^[0-9a-f-]{36}\.jsonl$/.test(n))
+      .map((n) => ({ id: n.slice(0, -'.jsonl'.length), at: statSync(join(at, n)).mtimeMs }))
+      .sort((a, b) => b.at - a.at)[0]
+    return newest ? newest.id : null
+  } catch {
+    return null
+  }
+}
+
+const sessionId = claude
+  ? (flagValue('--session-id') ?? resumeId ?? (continueLast ? newestInFolder() : null) ?? randomUUID())
+  : null
+const sessionHow = !claude ? null : resumeId ? 'resumed' : continueLast ? 'continued' : 'session'
+if (claude) record('claude-session', { sessionId, how: sessionHow })
 const transcript = sessionId ? join(configDir, 'projects', slug, `${sessionId}.jsonl`) : null
 const registryFile = claude ? join(configDir, 'sessions', `${process.pid}.json`) : null
 const settings = (() => {
@@ -360,7 +384,7 @@ process.on('exit', () => end('exit'))
 
 say(`STOKE-PROBE ${id} ready pid=${process.pid}`)
 if (claude) {
-  say(`STOKE-PROBE claude ${resumeId ? 'resumed' : 'session'} ${sessionId}`)
+  say(`STOKE-PROBE claude ${sessionHow} ${sessionId}`)
   writeRegistry('idle')
   renderStatusLine(null)
 }
