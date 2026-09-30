@@ -68,7 +68,7 @@ export function BrowserSettings({ browser }: Props): React.JSX.Element {
 
   return (
     <>
-    <div className="field">
+    <div className="field" data-setting="browser.profiles">
       <span className="field-label">Browser profiles</span>
       <FieldHint>
         Each profile keeps its own logins, cookies and site data, like people in Chrome. The chip in the
@@ -254,7 +254,7 @@ function ImportFromBrowsers({ profiles }: { profiles: BrowserProfile[] }): React
   const intoOf = (key: string): string | null => profiles.find((p) => p.origin === key)?.label ?? null
 
   return (
-    <div className="field">
+    <div className="field" data-setting="browser.import">
       <span className="field-label">Import from other browsers</span>
       <FieldHint>
         {isMac

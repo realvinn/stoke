@@ -278,7 +278,7 @@ export function HostsSettings({
   )
 
   return (
-    <div className="field">
+    <div className="field" data-setting="hosts.list">
       <span className="field-label">Remote machines</span>
       {/*
         Everything that is true of every machine is said HERE, once.
@@ -355,7 +355,7 @@ export function HostsSettings({
         it is never copied into a `useState` here (gotcha 57), so the radios can
         only ever show what settings actually holds.
       */}
-      <div className="field" role="radiogroup" aria-labelledby="ssh-key-enroll-label">
+      <div className="field" role="radiogroup" aria-labelledby="ssh-key-enroll-label" data-setting="hosts.key-enroll">
         <span className="field-label" id="ssh-key-enroll-label">
           When a remote asks for a password
         </span>

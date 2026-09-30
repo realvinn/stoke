@@ -71,7 +71,8 @@ import { ChatOffer } from './components/ChatOffer'
 import { ChatViewer, type ChatViewTarget } from './components/ChatViewer'
 import { PausedSession } from './components/PausedSession'
 import { Resizer } from './components/Resizer'
-import { SettingsSheet, type SectionId } from './components/SettingsSheet'
+import { SettingsSheet, type SettingsRowTarget } from './components/SettingsSheet'
+import { ancestorsOf, resolveSettingsTarget, type SettingsTarget } from '@shared/settingsIndex'
 import { Sidebar } from './components/Sidebar'
 import { StatusBar } from './components/StatusBar'
 import { TerminalView } from './components/TerminalView'
@@ -624,8 +625,30 @@ export function App(): React.JSX.Element {
   // lib/floatingLayers.ts).
   const layerOverBrowser = useBrowserCovered()
   const [settingsOpen, setSettingsOpen] = useState(false)
-  /** Where the sheet opens. Set by whoever asked for it, cleared with the sheet. */
-  const [settingsSection, setSettingsSection] = useState<SectionId | undefined>(undefined)
+  /*
+   * Where the sheet opens: a page (any old section id still lands,
+   * `resolveSettingsTarget`) and, from the palette, a row on it. Set by whoever
+   * asked for it; a plain open clears both.
+   */
+  const [settingsSection, setSettingsSection] = useState<SettingsTarget | undefined>(undefined)
+  const [settingsRow, setSettingsRow] = useState<SettingsRowTarget | null>(null)
+  /*
+   * Which of the Settings menu's nodes are open (Agents, Claude Code). Here and
+   * not in the sheet, which is remounted on every open, so the menu comes back
+   * the way it was left for as long as the app runs — and one writer: the sheet
+   * and `openSettings` both change it through `expandSettingsNodes`.
+   */
+  const [settingsExpanded, setSettingsExpanded] = useState<readonly string[]>([])
+  const expandSettingsNodes = useCallback((ids: readonly string[], open: boolean): void => {
+    setSettingsExpanded((prev) => {
+      const next = new Set(prev)
+      for (const id of ids) {
+        if (open) next.add(id)
+        else next.delete(id)
+      }
+      return next.size === prev.length && prev.every((id) => next.has(id)) ? prev : [...next]
+    })
+  }, [])
   /*
    * Remounts the sheet on every open. The sheet reads `initialSection` once,
    * into its own state, so an open that arrives while it is already showing —
@@ -633,11 +656,19 @@ export function App(): React.JSX.Element {
    * leave it where it was.
    */
   const [settingsKey, setSettingsKey] = useState(0)
-  const openSettings = useCallback((section?: SectionId): void => {
-    setSettingsSection(section)
-    setSettingsKey((k) => k + 1)
-    setSettingsOpen(true)
-  }, [])
+  const openSettings = useCallback(
+    (section?: SettingsTarget, row?: SettingsRowTarget | null): void => {
+      setSettingsSection(section)
+      setSettingsRow(row ?? null)
+      // The page asked for is shown with its menu row on screen.
+      if (section) expandSettingsNodes(ancestorsOf(resolveSettingsTarget(section)), true)
+      setSettingsKey((k) => k + 1)
+      setSettingsOpen(true)
+    },
+    [expandSettingsNodes]
+  )
+  const settingsOpenRef = useRef(false)
+  settingsOpenRef.current = settingsOpen
   const [maximized, setMaximized] = useState(false)
   /*
    * Tracked apart from `maximized`, because on macOS they are different states
@@ -4481,7 +4512,9 @@ export function App(): React.JSX.Element {
           setBrowserOpen((v) => !v)
           break
         case 'settings':
-          setSettingsOpen((v) => !v)
+          // A plain open, like the gear's: Appearance, with the search box focused.
+          if (settingsOpenRef.current) setSettingsOpen(false)
+          else openSettings()
           break
         case 'tab': {
           const target = tabs[action.index - 1]
@@ -5770,6 +5803,9 @@ export function App(): React.JSX.Element {
           onProfileCreated={refreshProjects}
           onPreviewTheme={setPreviewTheme}
           initialSection={settingsSection}
+          initialRow={settingsRow}
+          expanded={settingsExpanded}
+          onExpand={expandSettingsNodes}
           agents={{
             detection: agentDetection,
             onRefresh: () => refreshAgents(true),

@@ -313,7 +313,7 @@ export function ProfilesSettings({ settings, onPatch, onCreated }: Props): React
   const preview = plan ? describePlan(plan) : null
 
   return (
-    <div className="field">
+    <div className="field" data-setting="profiles.list">
       <span className="field-label">Profiles</span>
       <span className="field-hint">
         A profile is a colour and a folder. Picking one in the sidebar shows the projects

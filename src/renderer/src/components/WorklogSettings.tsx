@@ -184,7 +184,7 @@ export function WorklogSettings({
   }
 
   return (
-    <div className="field">
+    <div className="field" data-setting="worklog.agent">
       <span className="field-label">
         Worklog agent{' '}
         {watched.size > 0 && (
@@ -228,7 +228,7 @@ export function WorklogSettings({
         all until a profile below is ticked, so the two controls read in that
         order: what happens, then where.
       */}
-      <label className="check-row">
+      <label className="check-row" data-setting="worklog.auto">
         <input type="checkbox" checked={auto} onChange={(e) => onChangeAuto(e.target.checked)} />
         <span>
           <span className="field-label">Scan while I work</span>
@@ -326,74 +326,80 @@ export function WorklogSettings({
         answer was compiled into runner.ts:37-38 — one person's board, in the
         binary, with no way for anyone else to use the feature at all.
       */}
-      <span className="field-label">Where reviews are filed</span>
+      <div className="field" data-setting="worklog.targets">
+        <span className="field-label">Where reviews are filed</span>
 
-      {WORKLOG_TARGETS.map((target) => {
-        const ui = TARGET_UI[target]
-        // Draft-aware: reflects what is on screen, including an id typed but
-        // not yet blurred, so the box does not sit disabled for the whole time
-        // someone is typing a valid id into it.
-        const draftIds = { notionDataSource: notionValue, clickupListId: clickupValue }
-        const hasId = idFor(draftIds, target).trim().length > 0
-        // Draft-aware here too, and for the same reason `disabled` is: clearing
-        // a previously-valid id commits as "off" the moment it is blurred (see
-        // the hint below), so showing the box still ticked in the meantime —
-        // while it is also disabled — would claim a board is on when nothing
-        // about the row agrees with that any more.
-        const checked = boards.targets.includes(target) && hasId
-        return (
-          <label className="check-row" key={target}>
-            <input
-              type="checkbox"
-              checked={checked}
-              disabled={!hasId}
-              onChange={(e) => toggle(target, e.target.checked)}
-            />
-            <span>
-              <span className="field-label">{ui.label}</span>
-              {/* Disabled inputs suppress the `title` tooltip in Chromium, so
-                  the reason lives in the row itself instead — same as the
-                  "no folders yet" case above. */}
-              {!hasId && <span className="field-hint">{ui.need}</span>}
-            </span>
-          </label>
-        )
-      })}
+        {WORKLOG_TARGETS.map((target) => {
+          const ui = TARGET_UI[target]
+          // Draft-aware: reflects what is on screen, including an id typed but
+          // not yet blurred, so the box does not sit disabled for the whole time
+          // someone is typing a valid id into it.
+          const draftIds = { notionDataSource: notionValue, clickupListId: clickupValue }
+          const hasId = idFor(draftIds, target).trim().length > 0
+          // Draft-aware here too, and for the same reason `disabled` is: clearing
+          // a previously-valid id commits as "off" the moment it is blurred (see
+          // the hint below), so showing the box still ticked in the meantime —
+          // while it is also disabled — would claim a board is on when nothing
+          // about the row agrees with that any more.
+          const checked = boards.targets.includes(target) && hasId
+          return (
+            <label className="check-row" key={target}>
+              <input
+                type="checkbox"
+                checked={checked}
+                disabled={!hasId}
+                onChange={(e) => toggle(target, e.target.checked)}
+              />
+              <span>
+                <span className="field-label">{ui.label}</span>
+                {/* Disabled inputs suppress the `title` tooltip in Chromium, so
+                    the reason lives in the row itself instead — same as the
+                    "no folders yet" case above. */}
+                {!hasId && <span className="field-hint">{ui.need}</span>}
+              </span>
+            </label>
+          )
+        })}
+      </div>
 
-      <label className="field-label" htmlFor="worklog-notion-id">
-        {TARGET_UI.notion.idLabel}
-      </label>
-      <input
-        id="worklog-notion-id"
-        className="input"
-        value={notionValue}
-        placeholder={TARGET_UI.notion.placeholder}
-        spellCheck={false}
-        onChange={(e) => setNotionDraft(e.target.value)}
-        onBlur={commitNotion}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') e.currentTarget.blur()
-        }}
-      />
-      <span className="field-hint">{TARGET_UI.notion.findIt}</span>
+      <div className="field" data-setting="worklog.notion">
+        <label className="field-label" htmlFor="worklog-notion-id">
+          {TARGET_UI.notion.idLabel}
+        </label>
+        <input
+          id="worklog-notion-id"
+          className="input"
+          value={notionValue}
+          placeholder={TARGET_UI.notion.placeholder}
+          spellCheck={false}
+          onChange={(e) => setNotionDraft(e.target.value)}
+          onBlur={commitNotion}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') e.currentTarget.blur()
+          }}
+        />
+        <span className="field-hint">{TARGET_UI.notion.findIt}</span>
+      </div>
 
-      <label className="field-label" htmlFor="worklog-clickup-id">
-        {TARGET_UI.clickup.idLabel}
-      </label>
-      <input
-        id="worklog-clickup-id"
-        className="input"
-        inputMode="numeric"
-        value={clickupValue}
-        placeholder={TARGET_UI.clickup.placeholder}
-        spellCheck={false}
-        onChange={(e) => setClickupDraft(e.target.value)}
-        onBlur={commitClickup}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') e.currentTarget.blur()
-        }}
-      />
-      <span className="field-hint">{TARGET_UI.clickup.findIt}</span>
+      <div className="field" data-setting="worklog.clickup">
+        <label className="field-label" htmlFor="worklog-clickup-id">
+          {TARGET_UI.clickup.idLabel}
+        </label>
+        <input
+          id="worklog-clickup-id"
+          className="input"
+          inputMode="numeric"
+          value={clickupValue}
+          placeholder={TARGET_UI.clickup.placeholder}
+          spellCheck={false}
+          onChange={(e) => setClickupDraft(e.target.value)}
+          onBlur={commitClickup}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') e.currentTarget.blur()
+          }}
+        />
+        <span className="field-hint">{TARGET_UI.clickup.findIt}</span>
+      </div>
 
     </div>
   )

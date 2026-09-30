@@ -48,96 +48,73 @@ import { Spinner } from './Spinner'
 import { ColorField } from './ColorField'
 import { FieldHint } from './FieldHint'
 import { agentMark } from '../lib/agentColor'
+import { agentRowId, type SettingsLocation } from '@shared/settingsIndex'
 import { EFFORT_LEVELS, MODEL_OPTIONS, PERMISSION_MODES, ULTRACODE_HINT } from '../lib/permissions'
 
 /*
- * Settings › Agents: every coding agent Stoke can run, Claude Code included,
- * each on a page of its own with the same kinds of setting — whether the
- * launcher offers it, where it sends requests, its default model, its colour
- * and its tab tag. Stoke stays agent-agnostic by keeping each one's settings in
- * the same shape; what differs is only what each agent can honestly be handed
- * at launch (codingClis.ts), and every one of them is a flag or an environment
- * variable for one process, never a write into the agent's own config
- * (gotchas 38/39).
+ * Settings › Agents: every coding agent Stoke can run, Claude Code included.
  *
- * Laid out as a header (the default agent, choosing and re-detecting agents,
- * the tab-tag switch and the skills report), then a sub-nav of the agents that
- * are installed or ticked, one page each, then "More agents" — the rest,
- * folded, each with its install button. Eighteen full rows end to end was the
- * layout this replaced.
+ * It was one section with a strip of agent tabs inside it, and the owner asked
+ * for what the menu now is: Agents opens in the Settings menu itself to the
+ * Agent manager and each INSTALLED agent, and Claude Code opens further to its
+ * launch defaults, its own settings file and its provider and keys — the three
+ * things that used to be three unrelated places (a pointer in Sessions, the
+ * "Claude Code" section, and "Providers"). This file draws three of those
+ * pages; the sheet draws the tree (`navTree`, shared/settingsIndex.ts).
  *
- * Claude Code's page holds its four launch defaults (moved from Sessions: the
- * same `settings.defaults` writer, so still one writer, gotcha 57) and the way
- * to Providers and Claude Code's own config. Never an endpoint: that is
- * Settings › Providers, and `hydrateAgents` refuses a Claude entry.
+ * - `AgentManager` — everything about agents as a set: the default agent,
+ *   choosing and re-detecting them, installing one, which the launcher shows,
+ *   each one's colour, the tab-tag switch and the skills report.
+ * - `AgentSettingsPage` — one agent: what and where it is, where it sends
+ *   requests and its default model, its accounts, its tools, its colour and
+ *   tab tag. Claude Code's has no endpoint (that is Provider & keys, and
+ *   `hydrateAgents` refuses a Claude entry); it points at its three sub-pages.
+ * - `ClaudeLaunchDefaults` — Claude Code's four launch defaults, still the
+ *   one `settings.defaults` writer the launcher derives its chips from
+ *   (gotcha 57).
+ *
+ * Each agent's settings keep the same shape, so Stoke stays agent-agnostic;
+ * what differs is only what each can honestly be handed at launch
+ * (codingClis.ts), and every one of them is a flag or an environment variable
+ * for one process, never a write into the agent's own config (gotchas 38/39).
  *
  * Endpoint fields commit on blur and are flushed on unmount through a ref,
  * because Escape closes the sheet by unmounting it and delivers no blur
- * (gotcha 63) — and switching agent pages unmounts one too. The whole `agents`
+ * (gotcha 63) — and moving to another page unmounts one too. The whole `agents`
  * block is sent on every commit: `setSettings` merges shallowly, so a partial
  * block would drop the other agents' entries.
  */
-export function AgentsSettings({
-  settings,
-  onPatch,
-  detection,
-  claudeRunnable,
-  onRefresh,
-  onOpenPicker,
-  onInstall,
-  page,
-  onPage,
-  onOpenProviders,
-  onOpenClaudeConfig,
-  onSignIn
-}: {
+
+/** What every agent page needs from the sheet. App owns the detection and the tab-opening actions. */
+export interface AgentPagesProps {
   settings: Settings
   onPatch: (patch: Partial<Settings>) => void
   detection: CodingCliDetection | null
-  /** Never rejects (App swallows a failed detection); settles when the look is done. */
-  onRefresh: () => Promise<void>
   /** Claude Code's own probe answered (`CliInfo.ok`), which honours an explicit path. */
   claudeRunnable: boolean
+  /** Never rejects (App swallows a failed detection); settles when the look is done. */
+  onRefresh: () => Promise<void>
   onOpenPicker: () => void
   onInstall: (ids: CodingCliId[]) => void
-  /** The agent page on show; null for the default agent's. Held by the sheet so Sessions can open Claude's. */
-  page: CodingCliId | null
-  onPage: (id: CodingCliId) => void
-  onOpenProviders: () => void
-  onOpenClaudeConfig: () => void
   /** Open an account's sign-in tab (App's, like an install: it opens a tab and closes the sheet). */
   onSignIn: (accountId: string) => void
-}): React.JSX.Element {
+  /** Move the sheet to another page — an agent's own, or one of Claude Code's. */
+  onGo: (loc: SettingsLocation) => void
+}
+
+/*
+ * The agents block's one set of writers, for whichever page is mounted. Only
+ * one agent page is ever on screen, so each holds its own ref; the ref moves
+ * with the patch, not only on the next render: two commits in one tick — a
+ * field flushed on unmount beside one committed on blur — would otherwise each
+ * spread the SAME stale block, and the second would put the first one's
+ * change back.
+ */
+function useAgentControls({ settings, onPatch, detection, claudeRunnable, onInstall }: AgentPagesProps) {
   const agents = settings.agents
-  const platform = window.stoke.platform
   const agentsRef = useRef(agents)
   agentsRef.current = agents
 
-  /*
-   * "Look again" re-reads the login shell (gotcha 52), which takes seconds, and
-   * a re-check keeps the last detection on screen — so the pages' "checking…"
-   * pills, which only a `null` detection draws, never appeared, and the button
-   * looked like it had done nothing. Its own state, and a ref claimed before
-   * the await so a second press cannot start a second probe (gotcha 20).
-   */
-  const [looking, setLooking] = useState(false)
-  const lookingRef = useRef(false)
-  const lookAgain = (): void => {
-    if (lookingRef.current) return
-    lookingRef.current = true
-    setLooking(true)
-    void onRefresh().finally(() => {
-      lookingRef.current = false
-      setLooking(false)
-    })
-  }
-
-  /*
-   * The ref moves with the patch, not only on the next render: two commits in
-   * one tick — a field flushed on unmount beside one committed on blur — would
-   * otherwise each spread the SAME stale block, and the second would put the
-   * first one's change back.
-   */
   const patchAgents = (next: AgentSettings): void => {
     agentsRef.current = next
     onPatch({ agents: next })
@@ -163,7 +140,6 @@ export function AgentsSettings({
    */
   const installed = installedAgents(detection?.clis ?? [], claudeRunnable)
   const offered = visibleAgents(agents.chosen, installed)
-  const defaultOptions = offered.includes(agents.defaultCli) ? offered : [agents.defaultCli, ...offered]
   const startsInstead = detection ? resolveDefaultAgent(agents.defaultCli, offered) : agents.defaultCli
 
   /** An agent's colour; null or its own seed clears the override. */
@@ -174,52 +150,6 @@ export function AgentsSettings({
     patchAgents({ ...agentsRef.current, colors })
   }
 
-  /** An agent's tab tag; blank, or its executable's own name, clears it. */
-  const setTagLabel = (id: CodingCliId, raw: string): void => {
-    const label = cleanTagLabel(raw)
-    const labels = { ...agentsRef.current.tag.labels }
-    if (!label || label === cliFor(id).bins.posix[0]) delete labels[id]
-    else labels[id] = label
-    patchAgents({ ...agentsRef.current, tag: { ...agentsRef.current.tag, labels } })
-  }
-
-  const setEndpoint = (id: CodingCliId, ep: AgentEndpoint): void => {
-    const endpoints = { ...agentsRef.current.endpoints }
-    if (ep.mode === 'default' && !ep.model && !ep.baseUrl && !ep.apiKey) delete endpoints[id]
-    else endpoints[id] = ep
-    patchAgents({ ...agentsRef.current, endpoints })
-  }
-
-  /*
-   * Claude Code's MCP servers, as names and kinds only (main never sends a
-   * value). Read once when the section opens; every LAUNCH reads the file
-   * afresh, so this list is only what can be ticked, never what is handed.
-   */
-  const [catalog, setCatalog] = useState<McpCatalog | null>(null)
-  useEffect(() => {
-    let live = true
-    void window.stoke.cli.mcpServers().then(
-      (c) => live && setCatalog(c),
-      () =>
-        live &&
-        setCatalog({
-          user: [],
-          local: [],
-          project: [],
-          unapproved: [],
-          refused: [],
-          own: {},
-          error: 'Stoke could not read Claude Code’s MCP servers.'
-        })
-    )
-    return () => {
-      live = false
-    }
-  }, [])
-  const setMcpTick = (id: CodingCliId, name: string, on: boolean): void => {
-    patchAgents({ ...agentsRef.current, mcp: withMcpTick(agentsRef.current.mcp, id, name, on) })
-  }
-
   const install = (id: CodingCliId): void => {
     // Installing an agent is choosing it: without this the launcher, which
     // shows only chosen agents, would not offer what was just installed —
@@ -228,40 +158,55 @@ export function AgentsSettings({
     onInstall([id])
   }
 
-  /*
-   * Pages for Claude Code, whatever its state — its launch defaults live
-   * there — and for every agent that is installed or ticked; the rest are
-   * "More agents". Ticking one there gives it a page.
-   */
-  const paged = CODING_CLIS.filter((c) => isClaudeCode(c.id) || installed.has(c.id) || shown(c.id))
-  const more = CODING_CLIS.filter((c) => !paged.includes(c))
-  const current =
-    paged.find((c) => c.id === page) ?? paged.find((c) => c.id === startsInstead) ?? paged[0]
+  return { agents, agentsRef, patchAgents, found, shown, setShown, installed, offered, startsInstead, setColor, install }
+}
 
-  const tabsRef = useRef<HTMLDivElement>(null)
-  const onTabKey = (e: React.KeyboardEvent): void => {
-    const i = paged.findIndex((c) => c.id === current.id)
-    const to =
-      e.key === 'ArrowRight' || e.key === 'ArrowDown'
-        ? (i + 1) % paged.length
-        : e.key === 'ArrowLeft' || e.key === 'ArrowUp'
-          ? (i - 1 + paged.length) % paged.length
-          : e.key === 'Home'
-            ? 0
-            : e.key === 'End'
-              ? paged.length - 1
-              : -1
-    if (to < 0) return
-    e.preventDefault()
-    // Kept from reaching the sheet's own section nav, which listens above.
-    e.stopPropagation()
-    onPage(paged[to].id)
-    tabsRef.current?.querySelectorAll<HTMLElement>('[role="tab"]')[to]?.focus()
+/*
+ * Settings › Agents › Agent manager: the agents as a set. The default agent and
+ * the two ways to change which agents there are (the picker, and looking
+ * again), then one row per agent you have — its colour, whether the launcher
+ * shows it, and the way to its own page — then the ones you do not, each with
+ * its install. The tab-tag switch and the skills report are about every agent
+ * at once, so they are here too.
+ */
+export function AgentManager(props: AgentPagesProps): React.JSX.Element {
+  const { detection, onRefresh, onOpenPicker, onGo } = props
+  const c = useAgentControls(props)
+  const { agents, agentsRef, patchAgents, installed, offered, startsInstead } = c
+  const platform = window.stoke.platform
+
+  /*
+   * "Look again" re-reads the login shell (gotcha 52), which takes seconds, and
+   * a re-check keeps the last detection on screen — so the pages' "checking…"
+   * pills, which only a `null` detection draws, never appeared, and the button
+   * looked like it had done nothing. Its own state, and a ref claimed before
+   * the await so a second press cannot start a second probe (gotcha 20).
+   */
+  const [looking, setLooking] = useState(false)
+  const lookingRef = useRef(false)
+  const lookAgain = (): void => {
+    if (lookingRef.current) return
+    lookingRef.current = true
+    setLooking(true)
+    void onRefresh().finally(() => {
+      lookingRef.current = false
+      setLooking(false)
+    })
   }
+
+  const defaultOptions = offered.includes(agents.defaultCli) ? offered : [agents.defaultCli, ...offered]
+
+  /*
+   * Yours: Claude Code, whatever its state — its launch defaults live under it
+   * — and every agent that is installed or ticked. The rest are More agents,
+   * and ticking one there moves it up here.
+   */
+  const yours = CODING_CLIS.filter((x) => isClaudeCode(x.id) || installed.has(x.id) || c.shown(x.id))
+  const more = CODING_CLIS.filter((x) => !yours.includes(x))
 
   return (
     <>
-      <div className="field">
+      <div className="field" data-setting="agents.default">
         <label className="field-label" htmlFor="agents-default">
           Default agent
         </label>
@@ -313,7 +258,55 @@ export function AgentsSettings({
         )}
       </div>
 
-      <label className="check-row">
+      <div className="field" data-setting="agents.list">
+        <span className="field-label">Your agents</span>
+        <span className="field-hint">
+          Each one&rsquo;s colour marks its tabs and its usage once more than one agent is in use.
+          Its own page — where it sends requests, its model, accounts and tools — is under Agents in
+          the menu.
+        </span>
+        <div className="agent-roster">
+          {yours.map((x) => (
+            <AgentRosterRow
+              key={x.id}
+              cli={x}
+              installed={installed.has(x.id)}
+              checking={detection === null}
+              isDefault={startsInstead === x.id}
+              shown={c.shown(x.id)}
+              onShown={(on) => c.setShown(x.id, on)}
+              color={agentSeed(x.id, agents.colors)}
+              colorOverridden={agents.colors[x.id] !== undefined}
+              onColor={(hex) => c.setColor(x.id, hex)}
+              onOpen={() => onGo({ page: 'agent', agent: x.id })}
+            />
+          ))}
+        </div>
+      </div>
+
+      {more.length > 0 && (
+        <details className="agent-more" data-testid="more-agents" data-setting="agents.more">
+          <summary>
+            More agents <span className="agent-more-count">{more.length} not installed</span>
+          </summary>
+          <div className="agent-more-list">
+            {more.map((x) => (
+              <AgentBrief
+                key={x.id}
+                cli={x}
+                conflict={detection?.clis.find((s) => s.id === x.id)?.conflict ?? null}
+                checking={detection === null}
+                shown={c.shown(x.id)}
+                onShown={(on) => c.setShown(x.id, on)}
+                installCommand={installSteps([x.id], platform)[0]?.command ?? null}
+                onInstall={() => c.install(x.id)}
+              />
+            ))}
+          </div>
+        </details>
+      )}
+
+      <label className="check-row" data-setting="agents.tags">
         <input
           type="checkbox"
           checked={agents.tag.show}
@@ -338,123 +331,204 @@ export function AgentsSettings({
       </label>
 
       <SkillsReport
-        agents={CODING_CLIS.map((c) => c.id).filter((id) => shown(id) && found.has(id))}
+        agents={CODING_CLIS.map((x) => x.id).filter((id) => c.shown(id) && c.found.has(id))}
         share={agents.shareSkillsToClaude}
         onShare={(on) => patchAgents({ ...agentsRef.current, shareSkillsToClaude: on })}
       />
-
-      <div className="agent-area">
-        <div
-          className="agent-tabs"
-          role="tablist"
-          aria-label="Agents"
-          ref={tabsRef}
-          onKeyDown={onTabKey}
-        >
-          {paged.map((c) => (
-            <button
-              key={c.id}
-              className="agent-tab"
-              role="tab"
-              id={`agent-tab-${c.id}`}
-              aria-controls="agent-page"
-              aria-selected={c.id === current.id}
-              tabIndex={c.id === current.id ? 0 : -1}
-              title={c.vendor}
-              onClick={() => onPage(c.id)}
-              {...agentMark(c.id)}
-            >
-              <span className="agent-tab-dot" aria-hidden="true" />
-              {c.label}
-              {!installed.has(c.id) && detection && <span className="agent-tab-note">not installed</span>}
-            </button>
-          ))}
-        </div>
-
-        <div className="agent-page" role="tabpanel" id="agent-page" aria-labelledby={`agent-tab-${current.id}`}>
-          <AgentPage
-            key={current.id}
-            cli={current}
-            path={detection?.clis.find((s) => s.id === current.id)?.path ?? null}
-            installed={installed.has(current.id)}
-            conflict={detection?.clis.find((s) => s.id === current.id)?.conflict ?? null}
-            checking={detection === null}
-            isDefault={startsInstead === current.id}
-            shown={shown(current.id)}
-            onShown={(on) => setShown(current.id, on)}
-            endpoint={agents.endpoints[current.id] ?? DEFAULT_ENDPOINT}
-            onEndpoint={(ep) => setEndpoint(current.id, ep)}
-            color={agentSeed(current.id, agents.colors)}
-            colorOverridden={agents.colors[current.id] !== undefined}
-            onColor={(hex) => setColor(current.id, hex)}
-            tagLabel={agents.tag.labels[current.id] ?? ''}
-            onTagLabel={(label) => setTagLabel(current.id, label)}
-            openrouterKey={settings.providers.openrouterApiKey}
-            installCommand={installSteps([current.id], platform)[0]?.command ?? null}
-            onInstall={() => install(current.id)}
-            accounts={
-              <AgentAccounts
-                cli={current}
-                accounts={accountsOf(current.id, settings.accounts)}
-                defaultId={agents.defaultAccount[current.id]}
-                onDefault={(id) => {
-                  const defaultAccount = { ...agentsRef.current.defaultAccount }
-                  if (id === DEFAULT_ACCOUNT_ID) delete defaultAccount[current.id]
-                  else defaultAccount[current.id] = id
-                  patchAgents({ ...agentsRef.current, defaultAccount })
-                }}
-                onPatchAccount={(id, patch) => {
-                  const mine = settings.accounts[id]
-                  if (mine) onPatch({ accounts: { [id]: { ...mine, ...patch } } })
-                }}
-                onSignIn={onSignIn}
-              />
-            }
-            tools={
-              <AgentTools
-                cli={current}
-                catalog={catalog}
-                ticks={mcpTicksFor(agents.mcp, current.id)}
-                extra={agents.mcp.extra}
-                onTick={(name, on) => setMcpTick(current.id, name, on)}
-              />
-            }
-            claude={
-              isClaudeCode(current.id) ? (
-                <ClaudePage
-                  settings={settings}
-                  onPatch={onPatch}
-                  onOpenProviders={onOpenProviders}
-                  onOpenClaudeConfig={onOpenClaudeConfig}
-                />
-              ) : null
-            }
-          />
-        </div>
-      </div>
-
-      {more.length > 0 && (
-        <details className="agent-more" data-testid="more-agents">
-          <summary>
-            More agents <span className="agent-more-count">{more.length} not installed</span>
-          </summary>
-          <div className="agent-more-list">
-            {more.map((c) => (
-              <AgentBrief
-                key={c.id}
-                cli={c}
-                conflict={detection?.clis.find((s) => s.id === c.id)?.conflict ?? null}
-                checking={detection === null}
-                shown={shown(c.id)}
-                onShown={(on) => setShown(c.id, on)}
-                installCommand={installSteps([c.id], platform)[0]?.command ?? null}
-                onInstall={() => install(c.id)}
-              />
-            ))}
-          </div>
-        </details>
-      )}
     </>
+  )
+}
+
+/**
+ * One of your agents in the manager: its dot, name and state, whether the
+ * launcher shows it, its colour, and the way to its page. The colour is the
+ * same `ColorField` the agent's own page uses (and the theme editor), so a
+ * better picker lands in every one of them at once.
+ */
+function AgentRosterRow({
+  cli,
+  installed,
+  checking,
+  isDefault,
+  shown,
+  onShown,
+  color,
+  colorOverridden,
+  onColor,
+  onOpen
+}: {
+  cli: CodingCli
+  installed: boolean
+  checking: boolean
+  isDefault: boolean
+  shown: boolean
+  onShown: (on: boolean) => void
+  color: string
+  colorOverridden: boolean
+  onColor: (hex: string | null) => void
+  onOpen: () => void
+}): React.JSX.Element {
+  return (
+    <div className="agent-roster-row" data-setting={agentRowId(cli.id)} {...agentMark(cli.id)}>
+      <div className="agent-roster-head">
+        <span className="agent-tab-dot" aria-hidden="true" />
+        <span className="agent-roster-name">{cli.label}</span>
+        <span className="pill" data-tone={installed ? 'success' : undefined}>
+          {checking ? 'checking…' : installed ? 'installed' : 'not installed'}
+        </span>
+        {isDefault && (
+          <span className="pill" data-tone="accent">
+            default
+          </span>
+        )}
+        <button
+          className="btn agent-roster-open"
+          data-variant="ghost"
+          onClick={onOpen}
+          title={`${cli.label}’s own settings`}
+        >
+          Settings ›
+        </button>
+      </div>
+      <div className="agent-roster-controls">
+        <label className="check-row agent-roster-shown">
+          <input
+            type="checkbox"
+            checked={shown}
+            onChange={(e) => onShown(e.target.checked)}
+            aria-label={`Show ${cli.label} in the launcher`}
+          />
+          <span className="field-hint">In the launcher</span>
+        </label>
+        <span className="agent-look-row">
+          <span className="agent-look-label">Colour</span>
+          <ColorField
+            value={color}
+            notation="hex"
+            label={`${cli.label} colour`}
+            onChange={(hex) => onColor(hex)}
+            commitOnUnmount
+          />
+          {colorOverridden && (
+            <button className="btn" data-variant="ghost" onClick={() => onColor(null)}>
+              Reset
+            </button>
+          )}
+        </span>
+      </div>
+    </div>
+  )
+}
+
+/*
+ * Settings › Agents › <an agent>: one agent's own page. Claude Code's has no
+ * endpoint of its own and instead points at the three pages under it.
+ */
+export function AgentSettingsPage(props: AgentPagesProps & { agent: CodingCliId }): React.JSX.Element {
+  const { settings, onPatch, detection, onSignIn, onGo, agent } = props
+  const c = useAgentControls(props)
+  const { agents, agentsRef, patchAgents, installed, startsInstead } = c
+  const platform = window.stoke.platform
+  const current = cliFor(agent)
+
+  /** An agent's tab tag; blank, or its executable's own name, clears it. */
+  const setTagLabel = (id: CodingCliId, raw: string): void => {
+    const label = cleanTagLabel(raw)
+    const labels = { ...agentsRef.current.tag.labels }
+    if (!label || label === cliFor(id).bins.posix[0]) delete labels[id]
+    else labels[id] = label
+    patchAgents({ ...agentsRef.current, tag: { ...agentsRef.current.tag, labels } })
+  }
+
+  const setEndpoint = (id: CodingCliId, ep: AgentEndpoint): void => {
+    const endpoints = { ...agentsRef.current.endpoints }
+    if (ep.mode === 'default' && !ep.model && !ep.baseUrl && !ep.apiKey) delete endpoints[id]
+    else endpoints[id] = ep
+    patchAgents({ ...agentsRef.current, endpoints })
+  }
+
+  /*
+   * Claude Code's MCP servers, as names and kinds only (main never sends a
+   * value). Read once when the page opens; every LAUNCH reads the file
+   * afresh, so this list is only what can be ticked, never what is handed.
+   */
+  const [catalog, setCatalog] = useState<McpCatalog | null>(null)
+  useEffect(() => {
+    let live = true
+    void window.stoke.cli.mcpServers().then(
+      (cat) => live && setCatalog(cat),
+      () =>
+        live &&
+        setCatalog({
+          user: [],
+          local: [],
+          project: [],
+          unapproved: [],
+          refused: [],
+          own: {},
+          error: 'Stoke could not read Claude Code’s MCP servers.'
+        })
+    )
+    return () => {
+      live = false
+    }
+  }, [])
+  const setMcpTick = (id: CodingCliId, name: string, on: boolean): void => {
+    patchAgents({ ...agentsRef.current, mcp: withMcpTick(agentsRef.current.mcp, id, name, on) })
+  }
+
+  return (
+    <div className="agent-page" id="agent-page">
+      <AgentPage
+        key={current.id}
+        cli={current}
+        path={detection?.clis.find((s) => s.id === current.id)?.path ?? null}
+        installed={installed.has(current.id)}
+        conflict={detection?.clis.find((s) => s.id === current.id)?.conflict ?? null}
+        checking={detection === null}
+        isDefault={startsInstead === current.id}
+        shown={c.shown(current.id)}
+        onShown={(on) => c.setShown(current.id, on)}
+        endpoint={agents.endpoints[current.id] ?? DEFAULT_ENDPOINT}
+        onEndpoint={(ep) => setEndpoint(current.id, ep)}
+        color={agentSeed(current.id, agents.colors)}
+        colorOverridden={agents.colors[current.id] !== undefined}
+        onColor={(hex) => c.setColor(current.id, hex)}
+        tagLabel={agents.tag.labels[current.id] ?? ''}
+        onTagLabel={(label) => setTagLabel(current.id, label)}
+        openrouterKey={settings.providers.openrouterApiKey}
+        installCommand={installSteps([current.id], platform)[0]?.command ?? null}
+        onInstall={() => c.install(current.id)}
+        accounts={
+          <AgentAccounts
+            cli={current}
+            accounts={accountsOf(current.id, settings.accounts)}
+            defaultId={agents.defaultAccount[current.id]}
+            onDefault={(id) => {
+              const defaultAccount = { ...agentsRef.current.defaultAccount }
+              if (id === DEFAULT_ACCOUNT_ID) delete defaultAccount[current.id]
+              else defaultAccount[current.id] = id
+              patchAgents({ ...agentsRef.current, defaultAccount })
+            }}
+            onPatchAccount={(id, patch) => {
+              const mine = settings.accounts[id]
+              if (mine) onPatch({ accounts: { [id]: { ...mine, ...patch } } })
+            }}
+            onSignIn={onSignIn}
+          />
+        }
+        tools={
+          <AgentTools
+            cli={current}
+            catalog={catalog}
+            ticks={mcpTicksFor(agents.mcp, current.id)}
+            extra={agents.mcp.extra}
+            onTick={(name, on) => setMcpTick(current.id, name, on)}
+          />
+        }
+        claude={isClaudeCode(current.id) ? <ClaudeParts onGo={onGo} /> : null}
+      />
+    </div>
   )
 }
 
@@ -691,7 +765,7 @@ function AgentEndpointFields({
 
   return (
     <div className="agent-endpoint">
-      <div className="field">
+      <div className="field" data-setting="agent.endpoint">
         <span className="field-label">Where it sends requests</span>
         {canEndpoint ? (
           <>
@@ -706,7 +780,10 @@ function AgentEndpointFields({
               {cli.endpoints.custom && <option value="custom">Custom endpoint</option>}
             </select>
             {draft.mode === 'openrouter' && (
-              <span className="field-hint">Uses the OpenRouter key in Settings › Providers.</span>
+              <span className="field-hint">
+                Uses the OpenRouter key in Agents › Claude Code › Provider &amp; keys, which every agent
+                shares.
+              </span>
             )}
           </>
         ) : (
@@ -717,7 +794,7 @@ function AgentEndpointFields({
       </div>
 
       {draft.mode === 'custom' && (
-        <div className="field">
+        <div className="field" data-setting="agent.custom-endpoint">
           <span className="field-label">Endpoint</span>
           <input
             className="input mono"
@@ -745,7 +822,7 @@ function AgentEndpointFields({
         </div>
       )}
 
-      <div className="field">
+      <div className="field" data-setting="agent.model">
         <label className="field-label" htmlFor={`agent-model-${cli.id}`}>
           {onOwnSignIn ? 'Default model' : 'Model'}
         </label>
@@ -794,27 +871,23 @@ function AgentEndpointFields({
 }
 
 /*
- * Claude Code's page: the four launch defaults every new Claude session starts
- * with, and the two sections that hold the rest of Claude — its keys and
- * gateway, and its own settings file. The defaults moved here from Sessions
- * and still write `settings.defaults`, the one value the launcher derives its
- * chips from (gotcha 57).
+ * Settings › Agents › Claude Code › Launch defaults: the four defaults every
+ * new Claude session starts with. They moved here from Sessions (and then off
+ * Claude Code's own page into a page of their own under it), and still write
+ * `settings.defaults`, the one value the launcher derives its chips from
+ * (gotcha 57).
  */
-function ClaudePage({
+export function ClaudeLaunchDefaults({
   settings,
-  onPatch,
-  onOpenProviders,
-  onOpenClaudeConfig
+  onPatch
 }: {
   settings: Settings
   onPatch: (patch: Partial<Settings>) => void
-  onOpenProviders: () => void
-  onOpenClaudeConfig: () => void
 }): React.JSX.Element {
   const d = settings.defaults
   return (
     <>
-      <div className="field">
+      <div className="field" data-setting="claude-launch.permissions">
         <span className="field-label">Default permissions</span>
         <div className="segmented" role="group" aria-label="Default permission mode">
           {PERMISSION_MODES.map((m) => (
@@ -832,7 +905,7 @@ function ClaudePage({
         <span className="field-hint">Applied to every new session unless changed at launch.</span>
       </div>
 
-      <div className="field">
+      <div className="field" data-setting="claude-launch.model">
         <label className="field-label" htmlFor="claude-default-model">
           Default model
         </label>
@@ -850,7 +923,7 @@ function ClaudePage({
         </select>
       </div>
 
-      <div className="field">
+      <div className="field" data-setting="claude-launch.effort">
         <label className="field-label" htmlFor="claude-default-effort">
           Default effort
         </label>
@@ -874,7 +947,7 @@ function ClaudePage({
         one option you would most want on by default was the one that had to be
         re-ticked for every session.
       */}
-      <label className="check-row">
+      <label className="check-row" data-setting="claude-launch.ultracode">
         <input
           type="checkbox"
           checked={d.ultracode}
@@ -897,31 +970,37 @@ function ClaudePage({
         </span>
       </label>
 
-      <div className="field">
-        <span className="field-label">Endpoint and keys</span>
-        <span className="field-hint">
-          Claude Code&rsquo;s API keys, gateway and the shared OpenRouter key are in Providers.
-        </span>
-        <div className="agent-actions">
-          <button className="btn" onClick={onOpenProviders}>
-            Open Providers
-          </button>
-        </div>
-      </div>
-
-      <div className="field">
-        <span className="field-label">Its own settings</span>
-        <span className="field-hint">
-          What Claude Code keeps in <span className="mono">~/.claude/settings.json</span>: thinking,
-          its theme, its update channel and the rest.
-        </span>
-        <div className="agent-actions">
-          <button className="btn" onClick={onOpenClaudeConfig}>
-            Open Claude Code settings
-          </button>
-        </div>
-      </div>
     </>
+  )
+}
+
+/*
+ * What Claude Code's own page says in place of an endpoint: the three pages
+ * under it in the menu, which hold the rest of Claude — the launch defaults,
+ * its settings file, and its keys and gateway. Buttons as well as menu rows,
+ * because a page that only says "look in the menu" makes the reader hunt.
+ */
+function ClaudeParts({ onGo }: { onGo: (loc: SettingsLocation) => void }): React.JSX.Element {
+  return (
+    <div className="field">
+      <span className="field-label">The rest of Claude Code</span>
+      <span className="field-hint">
+        Under Claude Code in the menu: the permissions, model and effort every new session starts
+        with; what Claude Code keeps in <span className="mono">~/.claude/settings.json</span>; and its
+        API keys, gateway and the OpenRouter key every agent shares.
+      </span>
+      <div className="agent-actions">
+        <button className="btn" onClick={() => onGo({ page: 'claude-launch' })}>
+          Launch defaults
+        </button>
+        <button className="btn" onClick={() => onGo({ page: 'claude-settings' })}>
+          Claude Code settings
+        </button>
+        <button className="btn" onClick={() => onGo({ page: 'providers' })}>
+          Provider &amp; keys
+        </button>
+      </div>
+    </div>
   )
 }
 
@@ -1033,7 +1112,7 @@ function AgentTools({
   const kind = (transport: string, detail: string): string => (detail ? `${transport} · ${detail}` : transport)
 
   return (
-    <div className="field agent-tools" data-testid="agent-tools" data-route={route}>
+    <div className="field agent-tools" data-testid="agent-tools" data-route={route} data-setting="agent.tools">
       <span className="field-label">
         Tools (MCP)
         {!off && <span className="agent-tool-count">{count} on</span>}
@@ -1144,7 +1223,7 @@ function AgentBrief({
   onInstall: () => void
 }): React.JSX.Element {
   return (
-    <div className="agent-brief">
+    <div className="agent-brief" data-setting={agentRowId(cli.id)}>
       <label className="check-row">
         <input type="checkbox" checked={shown} onChange={(e) => onShown(e.target.checked)} />
         <span>
@@ -1203,7 +1282,7 @@ function AgentLook({
   useEffect(() => () => commit(), [])
 
   return (
-    <div className="field">
+    <div className="field" data-setting="agent.look">
       <span className="field-label">In the tab strip</span>
       <div className="agent-look">
         <span className="agent-look-row">
@@ -1298,7 +1377,7 @@ function AgentAccounts({
 
   if (kinds.length === 0) {
     return (
-      <div className="field" data-testid="agent-accounts">
+      <div className="field" data-testid="agent-accounts" data-setting="agent.accounts">
         <span className="field-label">Accounts</span>
         <span className="field-hint">
           {cli.label} keeps one sign-in for the whole machine and takes no key from Stoke, so it
@@ -1336,7 +1415,7 @@ function AgentAccounts({
   }
 
   return (
-    <div className="field agent-accounts" data-testid="agent-accounts">
+    <div className="field agent-accounts" data-testid="agent-accounts" data-setting="agent.accounts">
       <span className="field-label">Accounts</span>
       <span className="field-hint">
         {kinds.includes('login')
@@ -1576,7 +1655,7 @@ function SkillsReport({
   const report = scans && agents.length > 0 ? skillReport(scans, agents, { shareToClaude: share }) : null
   const label = (id: CodingCliId): string => cliFor(id).label
   return (
-    <div className="field" data-testid="skills-report">
+    <div className="field" data-testid="skills-report" data-setting="agents.skills">
       <span className="field-label">Skills</span>
       <span className="field-hint">
         Every agent here reads the same SKILL.md format, from different folders.{' '}

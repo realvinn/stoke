@@ -4094,65 +4094,14 @@ summary.agent-picker-section:hover {
 }
 
 /*
- * Settings › Agents. A header, then a strip of the agents that are installed or
- * ticked — one page each underneath — then "More agents", folded. The strip
- * wraps rather than scrolls: a sideways scroller hides the agents past its
- * edge, and even eighteen fit in three short rows at the pane's 44rem.
+ * Settings › Agents: the Agent manager and each agent's own page (the menu
+ * itself is the list of agents now, so the strip of agent tabs that used to
+ * head this section is gone).
  */
 .agent-actions {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-8);
-}
-
-.agent-area {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-16);
-  min-width: 0;
-}
-
-.agent-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-4);
-  padding-bottom: var(--space-12);
-  border-bottom: 1px solid var(--border-subtle);
-}
-
-/*
- * `border` and `background` declared outright, or Chromium's `buttonface`
- * fill shows (gotcha 47). The selected agent is the raised surface, the same
- * signal the section nav beside it uses.
- */
-.agent-tab {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-8);
-  padding: var(--space-4) var(--space-12);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-full);
-  background: transparent;
-  color: var(--text-muted);
-  font-size: var(--fs-sm);
-  font-weight: 500;
-  line-height: var(--lh-tight);
-  cursor: default;
-  transition:
-    background var(--dur-fast) var(--ease),
-    color var(--dur-fast) var(--ease);
-}
-
-.agent-tab:hover {
-  background: var(--surface-hover);
-  color: var(--text);
-}
-
-.agent-tab[aria-selected='true'] {
-  border-color: var(--border-strong);
-  background: var(--surface);
-  color: var(--text);
-  box-shadow: var(--shadow-sm);
 }
 
 /*
@@ -4166,12 +4115,6 @@ summary.agent-picker-section:hover {
   height: 0.5rem;
   border-radius: var(--r-full);
   background: var(--agent-ink);
-}
-
-.agent-tab-note {
-  color: var(--text-faint);
-  font-size: var(--fs-xs);
-  font-weight: 400;
 }
 
 .agent-page {
@@ -4264,6 +4207,66 @@ summary.agent-picker-section:hover {
   min-width: 0;
   padding: var(--space-12) 0;
   border-top: 1px solid var(--border-subtle);
+}
+
+/*
+ * The Agent manager's list of your agents: one row each, its name and state on
+ * the first line and the two things set per agent here — whether the launcher
+ * shows it, and its colour — on the second, with the way to its own page at
+ * the end of the first. Rules between rows rather than cards, like More agents
+ * below it, so the page reads as one list.
+ */
+.agent-roster {
+  display: flex;
+  flex-direction: column;
+}
+
+.agent-roster-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  min-width: 0;
+  padding: var(--space-12) 0;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.agent-roster-row:last-child {
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.agent-roster-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+  min-width: 0;
+}
+
+.agent-roster-name {
+  font-size: var(--fs-md);
+  font-weight: 550;
+}
+
+.agent-roster-open {
+  margin-left: auto;
+}
+
+.agent-roster-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-8) var(--space-24);
+  /* Under the name, past the dot. */
+  padding-left: calc(0.5rem + var(--space-8));
+}
+
+.agent-roster-shown {
+  align-items: center;
+}
+
+.agent-roster-controls .agent-look-row {
+  flex: 1 1 16rem;
+  max-width: 24rem;
 }
 
 /*
@@ -4482,8 +4485,11 @@ summary.agent-picker-section:hover {
  * the SSH host list all wrap at around 400px and were measured there. A modal
  * that merely got wider would have left them stranded in a half-empty column,
  * so the pane is capped at 44rem rather than filling the dialog: the nav takes
- * a fixed 13rem and the rest is margin. That also keeps line length reasonable
- * for the sections that are mostly explanatory prose, which several are.
+ * a fixed 14.5rem and the rest is margin. That also keeps line length reasonable
+ * for the sections that are mostly explanatory prose, which several are. (It
+ * was 13rem until the menu grew a third level: "Claude Code settings" under
+ * Agents › Claude Code ellipsised at 13rem, measured at every scale, because
+ * the rem column and the rem indent grow together.)
  *
  * `min-height: 0` on the row and on the pane is load-bearing, not defensive. A
  * grid track's automatic minimum is its content's min-content height, so
@@ -4525,25 +4531,80 @@ summary.agent-picker-section:hover {
 
 .settings-cols {
   display: grid;
-  grid-template-columns: 13rem minmax(0, 1fr);
+  grid-template-columns: 14.5rem minmax(0, 1fr);
   min-height: 0;
 }
 
 /*
- * Two gaps, not one. The nav's own gap separates the four groups and the
- * tablist's separates the rows inside one — a single 2px gap over ten rows is
+ * The menu column: the search box, pinned, over the tree (or, while there is a
+ * query, the results list) that scrolls under it. A grid rather than one
+ * scrolling flex column so the box never scrolls away with the rows, and the
+ * scrolling track carries `min-height: 0` — without it the track's automatic
+ * minimum is its content's height and the list never scrolls (gotcha 47).
+ */
+.settings-nav {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+  border-right: 1px solid var(--border-subtle);
+  background: var(--bg-sunken);
+}
+
+.settings-search {
+  padding: var(--space-8) var(--space-8) var(--space-4);
+}
+
+/*
+ * The page, not the sunken fill the nav already is: `.input`'s own background
+ * is `--bg-sunken`, which on this column would leave only a border to say
+ * there is a box here at all.
+ */
+.settings-search-input {
+  background: var(--bg);
+}
+
+/*
+ * Chromium's own clear button on a search field is painted in its UA blue,
+ * whatever the theme. The same glyph, drawn as a mask over the muted text
+ * colour, so it follows the theme like everything else here. Escape clears
+ * too.
+ */
+.settings-search-input::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 0.75rem;
+  height: 0.75rem;
+  background: var(--text-muted);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2 2l8 8M10 2l-8 8' stroke='black' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E")
+    center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2 2l8 8M10 2l-8 8' stroke='black' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E")
+    center / contain no-repeat;
+  cursor: default;
+}
+
+.settings-search-input::-webkit-search-cancel-button:hover {
+  background: var(--text);
+}
+
+/*
+ * Two gaps, not one. The tree's own gap separates the four groups and each
+ * tree's separates the rows inside one — a single 2px gap over ten rows is
  * what made the menu one undifferentiated run, and a single large one would
  * space the rows as far apart as the groups and undo the grouping just as
  * thoroughly. The ratio is the signal; the absolute values are not.
  */
-.settings-nav {
+.settings-tree,
+.settings-results {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
-  padding: var(--space-8);
+  min-height: 0;
+  padding: var(--space-4) var(--space-8) var(--space-8);
   overflow-y: auto;
-  border-right: 1px solid var(--border-subtle);
-  background: var(--bg-sunken);
+}
+
+.settings-results {
+  gap: 2px;
 }
 
 .settings-nav-group {
@@ -4551,7 +4612,7 @@ summary.agent-picker-section:hover {
   flex-direction: column;
 }
 
-.settings-nav-group [role='tablist'] {
+.settings-nav-group [role='tree'] {
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -4585,12 +4646,21 @@ summary.agent-picker-section:hover {
  * `color` on buttons, so anything that does not declare its own box keeps
  * Chromium's UA `buttonface` fill and outset border — which is what these
  * rows rendered as first time round: ten chunky grey buttons where a menu
- * was intended. `.segmented button` above declares exactly the same three
- * properties for exactly the same reason.
+ * was intended (gotcha 47). `.segmented button` above declares exactly the
+ * same three properties for exactly the same reason.
+ *
+ * A row one level down is indented one step (`--nav-level`, set per row); the
+ * caret of a row that opens sits in the gutter that indent leaves, so every
+ * label at one level starts at one x whether its row opens or not.
  */
 .settings-nav button {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
   text-align: left;
-  padding: var(--space-8) var(--space-12) var(--space-8) var(--space-24);
+  padding: var(--space-8) var(--space-8) var(--space-8)
+    calc(var(--space-24) + (var(--nav-level, 1) - 1) * var(--space-16));
   border: none;
   border-radius: var(--r-md);
   background: transparent;
@@ -4602,6 +4672,7 @@ summary.agent-picker-section:hover {
   /* The row is the hit target, so it has to fill the column rather than
      shrink-wrap the word in it. */
   width: 100%;
+  min-width: 0;
   transition:
     background var(--dur-fast) var(--ease),
     color var(--dur-fast) var(--ease);
@@ -4619,6 +4690,101 @@ summary.agent-picker-section:hover {
   box-shadow: var(--shadow-sm);
 }
 
+/* A closed row whose page is the one on show: Agents, folded over Codex's page. */
+.settings-nav button[data-holds='true'] {
+  color: var(--text);
+  font-weight: 550;
+}
+
+.settings-nav-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/*
+ * The disclosure caret: FieldHint's and More agents' triangle, pointing at the
+ * label when closed and down when open. Its own hit area, so a click on it
+ * only opens and closes — on Claude Code a click on the label also goes to its
+ * page.
+ */
+.settings-nav-caret {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--space-4) + (var(--nav-level, 1) - 1) * var(--space-16));
+  width: var(--space-16);
+  display: grid;
+  place-items: center;
+}
+
+.settings-nav-caret::before {
+  content: '';
+  width: 0;
+  height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 5px solid currentColor;
+  transition: transform var(--dur-fast) var(--ease);
+}
+
+.settings-nav button[aria-expanded='true'] > .settings-nav-caret::before {
+  transform: rotate(90deg);
+}
+
+/*
+ * A search result: the row's name with the match marked, and where it is under
+ * it. Two lines in a narrow column, so each can be read without the other
+ * being cut. The keyboard's current one is the palette's accent wash
+ * (`.palette-item[data-active]`), the same signal for the same job; the one
+ * whose page is on show keeps the menu's raised surface.
+ */
+.settings-nav .settings-result {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  padding: var(--space-8);
+}
+
+.settings-nav .settings-result[data-here='true'] {
+  background: var(--surface);
+  color: var(--text);
+}
+
+.settings-nav .settings-result[aria-selected='true'] {
+  background: var(--accent-soft);
+  color: var(--text);
+  box-shadow: none;
+  font-weight: 500;
+}
+
+.settings-result-label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.settings-result-path {
+  font-size: var(--fs-xs);
+  font-weight: 400;
+  color: var(--text-faint);
+  overflow-wrap: anywhere;
+}
+
+.settings-result-path:empty {
+  display: none;
+}
+
+.settings-results-empty {
+  margin: 0;
+  padding: var(--space-8);
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
 .settings-pane {
   min-height: 0;
   overflow-y: auto;
@@ -4626,6 +4792,80 @@ summary.agent-picker-section:hover {
   display: flex;
   flex-direction: column;
   gap: var(--space-24);
+}
+
+/* Where a page under Agents is: `Agents › Claude Code › Provider & keys`. */
+.settings-crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  margin-bottom: calc(var(--space-12) - var(--space-24));
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.settings-crumb + .settings-crumb::before {
+  content: '›';
+  margin-right: var(--space-4);
+}
+
+/* The theme cards' three groups, marked as one row for search. Keeps the pane's own gap. */
+.settings-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-24);
+}
+
+/*
+ * A row search found. Paint only — a tint and a halo spread outside the box,
+ * both of which cost no layout — so marking and unmarking rows as you type
+ * never moves anything in the pane.
+ *
+ * `data-hit`: the page on show holds a match for the query.
+ * `data-flash`: the row a jump just landed on. It fades by an animation whose
+ * end is transparent; with reduced motion the global block would cut that to
+ * 1ms and leave nothing at all (gotcha 72), so there the flash is a still
+ * highlight instead, and `settingsJump.ts` takes it off after `FLASH_MS`.
+ */
+[data-setting][data-hit] {
+  border-radius: var(--r-md);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 var(--space-4) var(--accent-soft);
+}
+
+[data-setting][data-flash] {
+  border-radius: var(--r-md);
+  animation: setting-flash 1.6s var(--ease) forwards;
+}
+
+@keyframes setting-flash {
+  0%,
+  35% {
+    background: var(--accent-soft);
+    box-shadow:
+      0 0 0 var(--space-4) var(--accent-soft),
+      0 0 0 calc(var(--space-4) + 2px) var(--accent-ink);
+  }
+
+  100% {
+    background: transparent;
+    box-shadow:
+      0 0 0 var(--space-4) transparent,
+      0 0 0 calc(var(--space-4) + 2px) transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-setting][data-flash] {
+    animation: none;
+    background: var(--accent-soft);
+    box-shadow:
+      0 0 0 var(--space-4) var(--accent-soft),
+      0 0 0 calc(var(--space-4) + 2px) var(--accent-ink);
+  }
 }
 
 /* The prose and the form rows both stop here; see the width note above. */
@@ -4636,13 +4876,18 @@ summary.agent-picker-section:hover {
 
 /*
  * Below roughly the app's own minimum width the two columns stop fitting, so
- * the menu becomes a scrolling row above the pane rather than a 13rem track
+ * the menu becomes a scrolling row above the pane rather than a 14.5rem track
  * squeezing the content that is the point of the dialog.
  */
 @media (max-width: 52rem) {
   .settings-cols {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .settings-nav {
+    border-right: none;
+    border-bottom: 1px solid var(--border-subtle);
   }
 
   /*
@@ -4653,17 +4898,19 @@ summary.agent-picker-section:hover {
    * already has to be scrolled to be read. The wider gap between groups carries
    * what is left of the grouping, which is as much as one scrolling row can.
    */
-  .settings-nav {
+  .settings-tree {
     flex-direction: row;
     gap: var(--space-12);
     overflow-x: auto;
     overflow-y: hidden;
-    border-right: none;
-    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .settings-results {
+    max-height: 40vh;
   }
 
   .settings-nav-group,
-  .settings-nav-group [role='tablist'] {
+  .settings-nav-group [role='tree'] {
     flex-direction: row;
   }
 
@@ -4671,7 +4918,7 @@ summary.agent-picker-section:hover {
     display: none;
   }
 
-  .settings-nav button {
+  .settings-tree button {
     width: auto;
     white-space: nowrap;
   }

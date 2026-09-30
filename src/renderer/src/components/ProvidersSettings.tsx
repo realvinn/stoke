@@ -137,7 +137,7 @@ export function ProvidersSettings({ providers, onChange }: Props): React.JSX.Ele
       <div className="cc-group" style={{ marginTop: '0.75rem' }}>
         <span className="cc-group-title">Claude Code authentication</span>
         <div className="cc-rows">
-          <div className="cc-row">
+          <div className="cc-row" data-setting="providers.auth-mode">
             <span className="cc-text">
               <span className="field-label">Auth mode</span>
               <span className="field-hint">
@@ -160,6 +160,7 @@ export function ProvidersSettings({ providers, onChange }: Props): React.JSX.Ele
 
           {p.claudeAuth === 'anthropic' && (
             <SecretRow
+              settingId="providers.anthropic-key"
               label="Anthropic API key"
               hint="From console.anthropic.com. Sets ANTHROPIC_API_KEY and clears gateway overrides."
               value={draftOf('anthropicApiKey')}
@@ -174,6 +175,7 @@ export function ProvidersSettings({ providers, onChange }: Props): React.JSX.Ele
           {p.claudeAuth === 'openrouter' && (
             <>
               <SecretRow
+                settingId="providers.openrouter-key"
                 label="OpenRouter API key"
                 hint="From openrouter.ai/settings/keys. Sets ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN, and blanks ANTHROPIC_API_KEY."
                 value={draftOf('openrouterApiKey')}
@@ -183,7 +185,7 @@ export function ProvidersSettings({ providers, onChange }: Props): React.JSX.Ele
                 onChange={(v) => setDraft('openrouterApiKey', v)}
                 onCommit={() => commit('openrouterApiKey')}
               />
-              <div className="cc-row">
+              <div className="cc-row" data-setting="providers.gateway-models">
                 <span className="cc-text">
                   <span className="field-label">Gateway model picker</span>
                   <span className="field-hint">
@@ -208,7 +210,7 @@ export function ProvidersSettings({ providers, onChange }: Props): React.JSX.Ele
 
           {p.claudeAuth === 'custom' && (
             <>
-              <div className="field" style={{ margin: 0 }}>
+              <div className="field" style={{ margin: 0 }} data-setting="providers.gateway-url">
                 <span className="field-label">Gateway base URL</span>
                 <FieldHint>
                   Anthropic-compatible endpoint, e.g. a local Grok bridge at{' '}
@@ -230,6 +232,7 @@ export function ProvidersSettings({ providers, onChange }: Props): React.JSX.Ele
                 />
               </div>
               <SecretRow
+                settingId="providers.gateway-token"
                 label="Gateway bearer token"
                 hint="Sent as ANTHROPIC_AUTH_TOKEN. ANTHROPIC_API_KEY is blanked so Claude Code does not fall back to Anthropic directly."
                 value={draftOf('customAuthToken')}
@@ -257,7 +260,7 @@ export function ProvidersSettings({ providers, onChange }: Props): React.JSX.Ele
         is the one they share.
       */}
       <span className="field-hint" style={{ marginTop: '0.75rem' }}>
-        Codex, OpenCode, Grok Build, Pi and the other agents are in Settings › Agents. The
+        Codex, OpenCode, Grok Build, Pi and the other agents each have a page under Agents. The
         OpenRouter key above is shared with them.
       </span>
 
@@ -279,6 +282,7 @@ export function ProvidersSettings({ providers, onChange }: Props): React.JSX.Ele
 }
 
 function SecretRow({
+  settingId,
   label,
   hint,
   value,
@@ -288,6 +292,8 @@ function SecretRow({
   onChange,
   onCommit
 }: {
+  /** Its row id in the settings index (shared/settingsIndex.ts), for search to land on. */
+  settingId: string
   label: string
   hint: string
   value: string
@@ -298,7 +304,7 @@ function SecretRow({
   onCommit: () => void
 }): React.JSX.Element {
   return (
-    <div className="field" style={{ margin: 0 }}>
+    <div className="field" style={{ margin: 0 }} data-setting={settingId}>
       <span className="field-label">{label}</span>
       <FieldHint>{hint}</FieldHint>
       <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
