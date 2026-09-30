@@ -627,7 +627,7 @@ report's active time and lines written — a session's wall-clock span is not ti
 file does), `verify:targets` (that every runner in the release matrix is native for the arch it
 builds, that the `dist:*` scripts and the workflow both read `scripts/targets.mjs`, that
 every platform/arch node-pty publishes is built or named as deliberately unbuilt, and that
-ci.yml's everyday gate runs what release.yml's gate runs, on every push) and
+ci.yml's everyday gate is release.yml's gate step for step, run on every push) and
 `verify:manifests` (the update-manifest merger and the publish gate, asserted against the real
 published v0.9.4 manifests, against electron-builder's own `writeUpdateInfoFiles`, and against
 electron-updater's own `findFile`/`filterFilesForArch`). And `verify:portable`: which kind of
@@ -641,9 +641,10 @@ run them: `verify:extract` drives the page extractor through Stoke's own MCP end
 
 **CI runs on every push, every pull request and once a night** (`.github/workflows/ci.yml`),
 not only on a release tag, which until 2026-09-30 was the only time a suite ran in CI. Its
-`verify` job on ubuntu-latest is the gate — typecheck, `npm run verify:ci`, build — with the
-same setup and commands as release.yml's `verify` job, which still gates every release on its
-own; `verify:targets` parses both files and fails if they drift. Beside it, a non-gating
+`verify` job on ubuntu-latest is the gate — typecheck, `npm run verify:ci`, build — and it is
+release.yml's `verify` job step for step, which still gates every release on its own:
+`verify:targets` parses both files and fails if a single step differs, and names on its own
+each gate's xvfb and sandbox steps and its timeout. Beside it, a non-gating
 `portability` job runs typecheck and `verify:ci` on macos-14 and windows-latest, because a suite
 that passes on only one OS is a defect in the suite and nothing had ever run them off a Mac and
 that one Linux gate. Those legs are allowed to fail until they have a green streak.
@@ -653,9 +654,15 @@ that one Linux gate. Those legs are allowed to fail until they have a green stre
 (`npm run verify:ci -- --list` prints the plan; add `--platform linux` to see the Linux gate's
 from another machine). A suite whose script starts Electron needs a display, and that is decided
 per runner rather than excluded: macOS and Windows have one, Linux uses a set `DISPLAY` or else
-wraps the suite in `xvfb-run -a`, and only with neither is it skipped, saying why. ci.yml
-installs xvfb, so `verify:selection` runs there; release.yml's gate does not yet, so it prints
-the skip. The one exclusion is **`verify:context`, which deliberately reads the real
+wraps the suite in `xvfb-run -a`, and only with neither is it skipped, saying why. A display is
+not enough on Linux: where the kernel refuses unprivileged user namespaces (Ubuntu 24.04's
+AppArmor knob, which GitHub's image leaves on) and Chromium's setuid helper is not setuid root,
+Electron aborts before the suite runs, so that is skipped too, with the sysctl that fixes it
+(`sandboxProblem`). Both gates relax that knob and have xvfb, so `verify:selection` runs in
+both. The route follows the runner, not the workflow, and that is why the two gates are held
+to one step list: ubuntu-latest already ships `xvfb-run`, so when only ci.yml had the sysctl,
+release.yml's gate would have started the suite without it and failed the job every installer
+build waits on. The one exclusion is **`verify:context`, which deliberately reads the real
 transcripts under `~/.claude/projects`**: that is the reason it exists, not an oversight. It
 asserts the context maths, the window inference and the live watcher path against actual
 sessions on the machine, so on a clean runner the directory is simply not there and the suite
@@ -995,7 +1002,9 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
 scripts/          the verify-*.mts suites, make-icon.cjs
   ci-verify.mjs     derives CI's suite list from the `check` chain and fails on a stale
                     exclusion. A suite that starts Electron gets a display per runner
-                    (xvfb-run -a on a Linux one without), never an exclusion. Runs
+                    (xvfb-run -a on a Linux one without), never an exclusion, and
+                    skips it, saying why, on a Linux runner where Electron's sandbox
+                    cannot start (`sandboxProblem`: the userns knobs, root). Runs
                     suites through the shell on Windows, where npm is npm.cmd.
                     `npm run verify:ci -- --list [--platform linux]` prints the plan
   targets.mjs       the ONE list of what a release builds: key, job name, runner,

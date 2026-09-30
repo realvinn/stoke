@@ -173,3 +173,31 @@ Two rules:
 The same shape one level up: `ci-verify.mjs` had never run on Windows either, and could not have —
 it started every suite with `execFileSync('npm')`, which cannot start `npm.cmd` there. Nothing
 showed it until a Windows leg was about to call it.
+
+**And a route decided by the runner is inherited by every workflow that runs the script** (found
+in review, 2026-09-30, before anything was pushed). `displayRoute` sends the window suite to
+`xvfb-run -a` whenever `xvfb-run` is on PATH. ci.yml installed xvfb and relaxed Ubuntu 24.04's
+`kernel.apparmor_restrict_unprivileged_userns`; release.yml's `verify` got neither. But GitHub's
+ubuntu-24.04 image already ships xvfb (runner-images' `Ubuntu2404-Readme.md`, image
+20260920.314.1: `| xvfb | 2:21.1.12-1ubuntu1.6 |`) and leaves the knob on
+(actions/runner-images#11489, closed with "Workaround for that issue already provided" — the
+sysctl). So the release gate would have started Electron with no usable sandbox, watched it abort,
+and failed the job every installer build `needs:`. `verify:targets` stayed green through it,
+because its "mirror" compared only the `uses:` steps and the npm commands — the one part of the two
+jobs that had not drifted.
+
+Three rules:
+
+1. **Hold two copies of a gate to EVERY step, keys and values, not to the parts you expect to
+   change.** `verify:targets` now compares the two `verify` jobs step for step, and also names each
+   gate's xvfb and sysctl steps on their own, so deleting the pair from both files at once — which
+   a mirror calls agreement — still fails. Each was shown to fail against a mutated copy, and the
+   release.yml under review fails seven assertions.
+2. **Read every precondition of a route, not only the first one you thought of.** A display is
+   not enough for Electron on Linux: `sandboxProblem` skips the suite, naming the sysctl, where a
+   userns knob refuses (`apparmor_restrict_unprivileged_userns=1`, Debian's
+   `unprivileged_userns_clone=0`) and `chrome-sandbox` is not setuid root, or as root (gotcha 76).
+   A skip is right there for the same reason no display is a skip: it is a fact about the runner.
+   Neither gate should reach it: both relax the knob first, and `verify:targets` holds that.
+3. **Grep the image, not the workflow, for what a runner has.** "ci.yml installs xvfb" was true
+   and irrelevant: the route asks PATH, and PATH belongs to the image.
