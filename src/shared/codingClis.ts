@@ -83,6 +83,15 @@ export interface CodingCli {
    */
   continueArgs?: readonly string[]
   /**
+   * The arguments that reopen ONE named session of this CLI, appended where
+   * `continueArgs` would be. Present only where the flag was read in the
+   * vendor's own shipped binary; absent means a chat of this agent found by
+   * search cannot be reopened from Stoke (`chatOpenAction`, chatIndex.ts).
+   * Only an id `isSafeResumeId` accepts is ever handed to this: it reaches
+   * argv, and a `.cmd` install runs through `cmd.exe` (gotcha 13).
+   */
+  resumeArgs?: (id: string) => string[]
+  /**
    * Which endpoint overrides Stoke can apply to this CLI AT LAUNCH — flags and
    * environment only, never a write to the CLI's own config file (the same
    * discipline gotcha 38 demands for `~/.claude.json`). `custom` names the wire
@@ -153,6 +162,10 @@ export const CODING_CLIS: readonly CodingCli[] = [
     },
     // `resume` is a subcommand and filters by the working folder unless `--all`.
     continueArgs: ['resume', '--last'],
+    // binary (codex 0.153.1, installed here, read on 2026-09-30): `resume`
+    // "Resume a previous session by id or pick the most recent with --last",
+    // SESSION_ID being "Conversation/session id (UUID) or thread name".
+    resumeArgs: (id) => ['resume', id],
     endpoints: { openrouter: true, custom: 'OpenAI Responses API' },
     // docs (learn.chatgpt.com developer-commands, surface=cli): `--model, -m`,
     // "Override the model set in configuration (for example gpt-6.1-sol)", and
@@ -197,6 +210,10 @@ export const CODING_CLIS: readonly CodingCli[] = [
       win32: 'npm install -g opencode-ai'
     },
     continueArgs: ['--continue'],
+    // binary (Homebrew opencode, installed here, read on 2026-09-30): the TUI
+    // command's `.option("session",{alias:["s"],type:"string",describe:"session
+    // id to continue"})`.
+    resumeArgs: (id) => ['--session', id],
     endpoints: { openrouter: true, custom: 'OpenAI Chat Completions' },
     // binary (Homebrew opencode 1.18.31, installed here): the TUI command's
     // `.option("model",{alias:["m"],describe:"model to use in the format of
@@ -637,6 +654,22 @@ export function cliFor(id: CodingCliId): CodingCli {
 
 export function capsFor(id: CodingCliId): CliCaps {
   return CLI_CAPS[id] ?? CLI_CAPS.claude
+}
+
+/*
+ * What a session id handed to `resumeArgs` may be. The shape of `isSafeRegistryId`
+ * plus `_` (OpenCode's ids are `ses_…`), which is not a `cmd.exe` metacharacter.
+ * The id comes out of another program's files, and it reaches argv.
+ */
+const SAFE_RESUME_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{5,127}$/
+
+export function isSafeResumeId(v: unknown): v is string {
+  return typeof v === 'string' && SAFE_RESUME_ID.test(v)
+}
+
+/** The agents that can reopen one named session (`resumeArgs`), for chat search. */
+export function resumableClis(): Set<CodingCliId> {
+  return new Set(CODING_CLIS.filter((c) => c.resumeArgs !== undefined && !isClaudeCode(c.id)).map((c) => c.id))
 }
 
 /**

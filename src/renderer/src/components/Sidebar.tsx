@@ -1,12 +1,13 @@
 import { useMemo, useState } from 'react'
 import type { Project, ProjectMeta, SessionIndexEntry, SessionMeta } from '@shared/types'
+import { chatSourceInfo, type ChatSearchHit } from '@shared/chatIndex'
 import { ContextBar } from './ContextMeter'
 import type { ResolvedProfile } from '@shared/profiles'
 import { foldGroup } from '@shared/profiles'
 import { Highlight } from './Highlight'
 import { IconChevron, IconFolder, IconPin, IconPlus, IconSearch } from './Icons'
 import { ProjectMetaPicker } from './ProjectMetaPicker'
-import { relativeTime } from '../lib/format'
+import { baseName, relativeTime } from '../lib/format'
 import {
   capSessions,
   indexPending,
@@ -89,6 +90,16 @@ interface Props {
    * name, keyed by path (QA L14). Absent for a name no other project shares.
    */
   projectHints?: Record<string, string>
+  /**
+   * Chat history's body search (shared/chatIndex.ts): one hit per chat whose
+   * WORDS match, from every indexed tool, for the "In conversations" group.
+   * `off` when the index is not on (the group then offers to set it up), and
+   * `short` for a query under `CHAT_SEARCH_MIN_CHARS`.
+   */
+  chatSearch?: { state: 'off' | 'short' | 'searching' | 'ready' | 'error'; hits: ChatSearchHit[]; error?: string | null }
+  onOpenChat?: (hit: ChatSearchHit) => void
+  /** Settings › Chat history, from the group's "set up" line. */
+  onSetUpChats?: () => void
 }
 
 export function Sidebar({
@@ -118,7 +129,10 @@ export function Sidebar({
   profiles,
   activeProfile,
   onSelectProfile,
-  projectHints = {}
+  projectHints = {},
+  chatSearch,
+  onOpenChat,
+  onSetUpChats
 }: Props): React.JSX.Element {
   /* One picker open at a time, keyed by path — two open popovers in a scrolling
      list is a way to change the wrong folder without noticing. */
@@ -177,6 +191,16 @@ export function Sidebar({
     () => (searching ? searchProjects(scoped, sessionIndex ?? NO_INDEX, query) : null),
     [searching, scoped, sessionIndex, query]
   )
+
+  /*
+   * Body hits, minus Claude Code sessions a project row above already lists
+   * for this query — one conversation, one row.
+   */
+  const chatRows = useMemo(() => {
+    if (!searching || !chatSearch || chatSearch.state !== 'ready') return []
+    const shown = new Set((hits ?? []).flatMap((h) => h.sessions.map((x) => x.session.id)))
+    return chatSearch.hits.filter((h) => !(h.source === 'claude' && shown.has(h.nativeId)))
+  }, [searching, chatSearch, hits])
 
   /* No session has been looked at yet — including the frame before App's effect starts the fetch. */
   const pending = indexPending(sessionIndex, sessionIndexLoading, sessionIndexError)
@@ -655,11 +679,14 @@ export function Sidebar({
 
         {/* Not with no projects at all: "No projects yet" above already says
             everything, and this would contradict it. */}
+        {/* Not while conversations answered either: body hits are matches too. */}
         {!loading &&
           projects.length > 0 &&
           hits !== null &&
           hits.length === 0 &&
-          !pending && (
+          !pending &&
+          chatRows.length === 0 &&
+          chatSearch?.state !== 'searching' && (
             <div className="empty">
               <h3>Nothing matches</h3>
               <p>
@@ -676,6 +703,59 @@ export function Sidebar({
           )}
 
         {hits?.map(renderHit)}
+
+        {/* With indexing off, the set-up line is offered only where nothing else matched. */}
+        {searching && chatSearch && chatSearch.state !== 'short' && (chatSearch.state !== 'off' || (hits?.length ?? 0) === 0) && (
+          <section className="chat-hits" aria-label="In conversations">
+            <div className="sidebar-group">In conversations</div>
+            {chatSearch.state === 'off' ? (
+              <p className="sidebar-note">
+                Search inside every AI chat on this computer, not only titles.{' '}
+                {onSetUpChats && (
+                  <button className="session-more chat-setup" onClick={onSetUpChats}>
+                    Set up chat history…
+                  </button>
+                )}
+              </p>
+            ) : chatSearch.state === 'searching' && chatRows.length === 0 ? (
+              <p className="sidebar-note" aria-live="polite">
+                Searching conversations…
+              </p>
+            ) : chatSearch.state === 'error' ? (
+              <p className="sidebar-note" role="status">
+                Conversations could not be searched: {chatSearch.error}
+              </p>
+            ) : chatRows.length === 0 ? (
+              <p className="sidebar-note">No conversation says &ldquo;{query.trim()}&rdquo;.</p>
+            ) : (
+              <div className="sessions">
+                {chatRows.map((h) => {
+                  const at = snippet(h.snippet.text, h.snippet.ranges)
+                  const label = h.title ?? h.firstPrompt ?? 'Untitled chat'
+                  return (
+                    <button
+                      key={h.chatId}
+                      className="session chat-hit"
+                      aria-current={h.source === 'claude' && openSessions.has(h.nativeId) ? 'true' : undefined}
+                      onClick={() => onOpenChat?.(h)}
+                      title={`${label}${h.cwd ? `\n${h.cwd}` : ''}`}
+                    >
+                      <span className="session-title">{label}</span>
+                      <span className="session-snippet">
+                        <Highlight text={at.text} ranges={at.ranges} />
+                      </span>
+                      <span className="session-meta chat-hit-meta">
+                        <span className="pill chat-badge">{chatSourceInfo(h.source).badge}</span>
+                        <span className="chat-hit-age">{relativeTime(h.updatedMs)}</span>
+                        {h.cwd && <span className="truncate">{baseName(h.cwd)}</span>}
+                      </span>
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+          </section>
+        )}
 
         {groups.map(([group, items]) => (
           <div key={group}>

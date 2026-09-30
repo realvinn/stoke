@@ -63,6 +63,19 @@ export const CH = {
   sessionsIndex: 'sessions:index',
   sessionsChanged: 'sessions:changed',
 
+  /*
+   * Chat history (shared/chatIndex.ts): the searchable copy of every AI chat's
+   * text, built by a worker in main (src/main/chatIndex/). `detect` is names and
+   * sizes only, safe before consent; `status` is an invoke AND a push while a
+   * pass runs; `search` answers nothing unless `settings.chatIndex` is `on`.
+   */
+  chatsDetect: 'chats:detect',
+  chatsStatus: 'chats:status',
+  chatsSearch: 'chats:search',
+  chatsIndexNow: 'chats:indexNow',
+  chatsRebuild: 'chats:rebuild',
+  chatsDelete: 'chats:delete',
+
   // sessions that are not tied to a saved project
   workspaceDefault: 'workspace:default',
   workspaceScratch: 'workspace:scratch',

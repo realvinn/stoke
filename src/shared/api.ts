@@ -32,6 +32,7 @@ import type { ClaudeLaunchDefaults } from './launch'
 import type { SecretStoreStatus } from './secrets'
 import type { SetupPreview } from './setupFile'
 import type { AccessLookup, RemoteAccessStatus } from './cfAccess'
+import type { ChatDetection, ChatIndexStatus, ChatSearchHit } from './chatIndex'
 import type {
   ActivityReport,
   BrowserState,
@@ -463,6 +464,22 @@ export interface StokeApi {
      *  also how a folder that exists only because it was added leaves the list. */
     setMeta(path: string, meta: ProjectMeta | null): Promise<Settings>
     reveal(path: string): Promise<string>
+  }
+
+  /** Chat history: the searchable copy of every AI chat's text (shared/chatIndex.ts). */
+  chats: {
+    /** Names and sizes only — safe before the user has said yes. */
+    detect(): Promise<ChatDetection>
+    status(): Promise<ChatIndexStatus>
+    onStatus(cb: (s: ChatIndexStatus) => void): () => void
+    /** Body search, one hit per chat; empty unless `settings.chatIndex` is `on`. */
+    search(query: string): Promise<ChatSearchHit[]>
+    /** Start a pass now (it runs in the background; progress arrives by `onStatus`). */
+    indexNow(): Promise<void>
+    /** Delete the index and build it again from scratch. */
+    rebuild(): Promise<void>
+    /** Delete the index. The setting is left as it is. */
+    deleteIndex(): Promise<ChatIndexStatus>
   }
 
   workspace: {

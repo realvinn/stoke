@@ -70,7 +70,11 @@ import { indexSessions } from './sessionIndex.ts'
 import { IDLE_GAP_MS, readActivity, type ActivitySessionInput } from './activity.ts'
 import { commitSubjects } from './activityGit.ts'
 import { manualProjectPatch, projectMetaPatch } from './projectMeta.ts'
-import { normalizePath, pathKey, pathRulesFor } from '../shared/paths.ts'
+import { isInside, normalizePath, pathKey, pathRulesFor } from '../shared/paths.ts'
+import { ChatIndexHost } from './chatIndex/host.ts'
+import type { SourceEnv } from './chatIndex/sources.ts'
+import chatWorkerPath from './chatIndex/worker.ts?modulePath'
+import { CHAT_SEARCH_MIN_CHARS, type ChatIndexStatus } from '../shared/chatIndex.ts'
 import {
   folderOf,
   folderProblem,
@@ -221,6 +225,71 @@ let mcpConfigPath: string | null = null
  */
 let skillsProjector: ClaudeSkillsProjector | null = null
 let remote: RemoteServer | null = null
+
+/* ------------------------------------------------------------ chat history */
+
+/**
+ * The chat index's worker handle (chatIndex/host.ts), made on first use. Every
+ * read of a chat and every write of the store happens in that worker; nothing
+ * here does more than post a message.
+ */
+let chatIndex: ChatIndexHost | null = null
+/** First pass after boot: out of the way of everything boot does (gotcha 40). */
+const CHAT_BOOT_DELAY_MS = 30_000
+/** Then every fifteen minutes while the app is open, and on focus at most every five. */
+const CHAT_PASS_EVERY_MS = 15 * 60_000
+const CHAT_FOCUS_FLOOR_MS = 5 * 60_000
+let chatPassTimer: ReturnType<typeof setTimeout> | null = null
+
+function chatHost(): ChatIndexHost {
+  chatIndex ??= new ChatIndexHost({
+    workerPath: chatWorkerPath,
+    dir: join(app.getPath('userData'), 'chat-index'),
+    onStatus: (s) => send(CH.chatsStatus, chatStatusFor(s)),
+    onError: (err) => console.error('[stoke] chat index:', err.message)
+  })
+  return chatIndex
+}
+
+/** The status with the setting's word on it: a store can exist while indexing is off. */
+function chatStatusFor(s: ChatIndexStatus): ChatIndexStatus {
+  return getSettings().chatIndex === 'on' || s.state === 'running' ? s : { ...s, state: 'off' }
+}
+
+/** Where the sources are: this user's home and the overrides the tools themselves honour. */
+function chatEnv(): SourceEnv {
+  const e = process.env
+  return {
+    home: homedir(),
+    platform: process.platform,
+    env: {
+      CLAUDE_CONFIG_DIR: e.CLAUDE_CONFIG_DIR,
+      CODEX_HOME: e.CODEX_HOME,
+      XDG_DATA_HOME: e.XDG_DATA_HOME,
+      XDG_CONFIG_HOME: e.XDG_CONFIG_HOME,
+      APPDATA: e.APPDATA,
+      LOCALAPPDATA: e.LOCALAPPDATA
+    }
+  }
+}
+
+/** Start a pass when indexing is on; a pass already running takes this as its follow-up. */
+function runChatPass(): void {
+  const s = getSettings()
+  if (s.chatIndex !== 'on') return
+  chatHost()
+    .scan({ env: chatEnv(), options: s.chatIndexOptions })
+    .catch((err: Error) => console.error('[stoke] chat index pass failed:', err.message))
+}
+
+/** One pass `delay` from now, replacing any already waiting — a burst of setting changes is one pass. */
+function scheduleChatPass(delay: number): void {
+  if (chatPassTimer) clearTimeout(chatPassTimer)
+  chatPassTimer = setTimeout(() => {
+    chatPassTimer = null
+    runChatPass()
+  }, delay)
+}
 /**
  * Timers armed by `createWindow`, cleared when that window closes.
  *
@@ -671,6 +740,9 @@ async function launchSession(
       endpoint,
       openrouterKey: settings.providers.openrouterApiKey,
       continueLast: opts.continueLast === true,
+      // A chat found by search, reopened by its own id (`resumeArgs`); the
+      // plan refuses an id or a CLI it cannot vouch for.
+      resumeId: opts.agentResumeId ?? null,
       mcp: mcp?.endpoint() ?? null,
       piExtensionPath: cliId === 'pi' && endpoint?.mode === 'custom' ? await piExtensionFile() : null,
       mcpFiles: {
@@ -2228,6 +2300,35 @@ function registerIpc(): void {
    */
   ipcMain.handle(CH.sessionsIndex, async () => indexSessions(await listProjects(getSettings())))
 
+  /* ---------------------------------------------------------- chat history */
+  // Names and sizes only: what the offer card and Settings show before a yes.
+  ipcMain.handle(CH.chatsDetect, () => chatHost().detect(chatEnv(), getSettings().chatIndexOptions.subagents))
+  ipcMain.handle(CH.chatsStatus, async () => chatStatusFor(await chatHost().status()))
+  /*
+   * Body search. Nothing unless indexing is on — an index left on disk after a
+   * switch-off is not searched. A hit in a HIDDEN project never reaches the
+   * renderer, the rule `listProjects` keeps for session titles (sessionsIndex
+   * above): hiding a folder must hide its conversations from search too.
+   */
+  ipcMain.handle(CH.chatsSearch, async (_e, query: unknown) => {
+    const s = getSettings()
+    if (s.chatIndex !== 'on' || typeof query !== 'string' || query.trim().length < CHAT_SEARCH_MIN_CHARS) return []
+    const hits = await chatHost().search(query.slice(0, 200), 50)
+    const rules = pathRulesFor(process.platform)
+    return hits.filter((h) => !h.cwd || !s.hiddenProjects.some((p) => isInside(p, h.cwd!, rules)))
+  })
+  ipcMain.handle(CH.chatsIndexNow, () => {
+    runChatPass()
+  })
+  ipcMain.handle(CH.chatsRebuild, async () => {
+    await chatHost().deleteIndex()
+    runChatPass()
+  })
+  ipcMain.handle(CH.chatsDelete, async () => {
+    await chatHost().deleteIndex()
+    return chatStatusFor(await chatHost().status())
+  })
+
   ipcMain.handle(CH.projectsAddRoot, async () => {
     if (!win) return null
     const res = await dialog.showOpenDialog(win, {
@@ -3578,6 +3679,36 @@ if (!app.requestSingleInstanceLock(launchRequest ? { stokeCli: launchRequest } :
     registerIpc()
     createWindow()
     /*
+     * Chat history. Nothing runs unless the user said yes (`chatIndex: 'on'`):
+     * the first pass waits out boot, then one every fifteen minutes and on
+     * window focus at most every five. A pass that finds nothing changed costs
+     * one stat per chat, in the worker. Turning it on starts one at once;
+     * changing a source or a cap starts one shortly after the last change;
+     * turning it off stops the one running.
+     */
+    scheduleChatPass(CHAT_BOOT_DELAY_MS)
+    setInterval(runChatPass, CHAT_PASS_EVERY_MS).unref()
+    app.on('browser-window-focus', () => {
+      if (getSettings().chatIndex !== 'on' || chatPassTimer || chatIndex?.running) return
+      if (Date.now() - (chatIndex?.lastPassAt ?? 0) > CHAT_FOCUS_FLOOR_MS) runChatPass()
+    })
+    let chatSeen = { mode: getSettings().chatIndex, opts: JSON.stringify(getSettings().chatIndexOptions) }
+    onSettingsChanged((s) => {
+      const was = chatSeen
+      chatSeen = { mode: s.chatIndex, opts: JSON.stringify(s.chatIndexOptions) }
+      if (s.chatIndex !== was.mode) {
+        if (s.chatIndex === 'on') scheduleChatPass(250)
+        else {
+          if (chatPassTimer) clearTimeout(chatPassTimer)
+          chatPassTimer = null
+          void chatIndex?.cancel().catch(() => undefined)
+        }
+        if (chatIndex) void chatIndex.status().then((st) => send(CH.chatsStatus, chatStatusFor(st)), () => undefined)
+      } else if (s.chatIndex === 'on' && chatSeen.opts !== was.opts) {
+        scheduleChatPass(1500)
+      }
+    })
+    /*
      * Start the login-shell PATH probe now rather than when the renderer first
      * asks: it takes seconds, and the first session waits on it. The
      * remembered PATH loads first so a start in the meantime has one.
@@ -3647,6 +3778,8 @@ if (!app.requestSingleInstanceLock(launchRequest ? { stokeCli: launchRequest } :
     releaseHeldLocks()
     ptys?.killAll()
     watcher?.disposeAll()
+    // A pass stops where it is; the store is WAL, so an interrupted write is simply not there.
+    void chatIndex?.stop()
     mcp?.stop()
     void remote?.stop()
     tunnel.stop()

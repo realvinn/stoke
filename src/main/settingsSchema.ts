@@ -13,6 +13,7 @@ import { tidy } from './projectMeta.ts'
 import { DEFAULT_LIGHT_THEME_ID, DEFAULT_THEME_ID, validateTheme } from '../shared/themes.ts'
 import { DEFAULT_WORKLOG_BOARDS, WORKLOG_TARGETS } from '../shared/worklog.ts'
 import { clampWelcomeSeen } from '../shared/welcome.ts'
+import { CHAT_INDEX_DEFAULTS, clampChatIndex, clampChatIndexOptions } from '../shared/chatIndex.ts'
 import { clampVoice, VOICE_DEFAULTS } from '../shared/voiceSettings.ts'
 import { clampAccessAud, clampAccessTeamDomain } from '../shared/cfAccess.ts'
 import {
@@ -163,7 +164,12 @@ export const DEFAULT_SETTINGS: Settings = {
   // Never seen. Every existing settings file also has no such key and therefore
   // reads as this, which is right: the first launch after an upgrade is exactly
   // one of the two moments the campfire is for.
-  welcomeSeenVersion: null
+  welcomeSeenVersion: null,
+  // Asked, never assumed: nothing is read until the offer card (or Settings ›
+  // Chat history) says yes. Existing files have no key and read as this too,
+  // which is what shows them the offer once.
+  chatIndex: 'unasked',
+  chatIndexOptions: clampChatIndexOptions(CHAT_INDEX_DEFAULTS)
 }
 
 /**
@@ -419,6 +425,10 @@ export function hydrateSettings(raw: unknown): Settings {
     zoomTarget: clampZoomTarget(r.zoomTarget),
     fullScreenReveal: clampFullScreenReveal(r.fullScreenReveal),
     providers: hydrateProviders(r.providers),
-    agents: hydrateAgents(r.agents)
+    agents: hydrateAgents(r.agents),
+    // A whitelist: anything but the two literals is "never asked", which shows
+    // the offer again — the recoverable direction for a hand-edited file.
+    chatIndex: clampChatIndex(r.chatIndex),
+    chatIndexOptions: clampChatIndexOptions(r.chatIndexOptions)
   }
 }

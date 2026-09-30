@@ -282,3 +282,46 @@ into itself, must preview zero changes. The rule reaches past this file — the 
 Phase 2 sync is per-field last-writer-wins over hydrated records, and a phantom diff there is a
 phantom WRITE on every device on every sync. Whether to make `hydrateWorklogBoards`'s default branch
 filter like its other branch is a behaviour change to the worklog panel's fresh state, left open.
+
+## 125. node:sqlite binds a JS number as REAL, and an FTS5 table ignores a REAL rowid without a word
+
+**Chat search showed twenty hits from twenty different conversations with ONE snippet.** Found
+driving the built app on 2026-09-30 against a sandbox index of this machine's real chats (79 chats,
+4,355 messages): every "In conversations" row for "screenshot" quoted the same sentence. The store
+picked the best message of each chat correctly — twenty distinct message ids, twenty distinct texts
+(hashes compared, no text printed) — and then asked FTS5 for each one's snippet with
+`… WHERE message_fts MATCH ? AND rowid = ?`, binding the id as a plain JS number.
+
+node:sqlite binds every JS `number` as a REAL (a `BigInt` is the only way to bind an INTEGER without
+SQL help). An ordinary table compares `rowid = 2930.0` with 2930 and finds the row. FTS5 does not:
+its rowid constraint with a REAL value is simply not applied, the MATCH runs unfiltered, and
+`.get()` returns the FIRST match — measured with the same three ids, bound as a number the query
+answered rowid 6 three times; as a `BigInt`, as `CAST(? AS INTEGER)` and as a literal it answered
+2930, 3041 and 2514. No error, no warning, and a plausible-looking result, which is why only a
+screenshot of real data showed it: `verify:chat-sources` had one hit per snippet check until then.
+
+`ChatStore.search` casts in SQL (`rowid = CAST(? AS INTEGER)`), so call sites stay plain numbers,
+and the suite now asserts that every hit quotes its OWN chat (`each hit quotes its own chat`, shown
+to fail with the cast removed). The rule reaches every virtual table and every `node:sqlite` caller:
+a rowid or an id that a virtual table's `xBestIndex` compares should be bound as a `BigInt` or cast.
+Ordinary tables tolerate the REAL: the store's own `id = ?` deletes and lookups, bound the same way,
+are what `verify:chat-sources`' pruning checks exercise, and they pass.
+
+Two neighbours from the same round, both commented in `ChatStore.search`: an FTS5 auxiliary function
+(`bm25`, `snippet`) errors with "unable to use function bm25 in the requested context" once the
+subquery holding it is flattened into an aggregate — `WITH h AS MATERIALIZED (…)` keeps its FTS
+context — and grouping best-message-per-chat must happen in SQL before the limit, or one chat that
+matches more messages than the limit crowds every other chat out of the result.
+
+> **2026-09-30, the same store: FTS5 frees no page when a row is deleted.** The store's ceiling
+> first evicted "until the used pages fit" (`page_count - freelist_count`). With external content a
+> delete writes a tombstone into a NEW segment beside the old postings and frees neither until a
+> merge rewrites both. Measured with 200 synthetic chats: deleting half of them (text 11.22 → 5.86
+> MB) moved used pages 20.64 → 18.19 MB, and only `optimize` brought them to 10.92 (a Zipf
+> vocabulary: 7.77 → 5.54, then 3.89). So page-counted eviction took two to four times what it
+> needed — 11 of 12 chats to shed 30% in `verify:chat-sources` — and could empty the store with
+> the pages still over. Measure an FTS5 store by the text it holds (`evictToText`; merged, real
+> chats come to 1.73 disk bytes per text byte), never let a deleting loop wait on page counts, and
+> run `optimize` only where its whole-index rewrite is affordable (`tidy` after a big pass). Its
+> sibling in the same fix: an eviction that deletes a chat's read positions must leave a cut
+> behind (`storeCutMs`), or the next pass admits, re-reads and evicts the same chats every time.

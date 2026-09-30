@@ -107,6 +107,11 @@ interface Props {
   /** Continue this conversation, or — with null, while the list is still loading — the folder's latest. */
   onContinue: (s: SessionMeta | null) => void
   onResume: (s: SessionMeta) => void
+  /**
+   * A card above this one, in the same column — the one-time chat-history
+   * offer (ChatOffer). In the page, never over it: no overlay, no focus taken.
+   */
+  above?: React.ReactNode
 }
 
 type Pop = 'switcher' | 'agents' | 'mode' | 'model' | 'effort' | 'ultracode' | null
@@ -343,6 +348,7 @@ export function Launcher(props: Props): React.JSX.Element {
 
   return (
     <div className="launcher">
+      {props.above}
       <div className="launcher-card" ref={cardRef} tabIndex={-1} onKeyDown={onKeyDown}>
         {/* Row A: where it runs. */}
         <div className="launcher-head">

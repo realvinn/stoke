@@ -36,7 +36,7 @@ A `dist:*` exists per target and each MUST run on that target's own platform and
 (gotcha 67): `dist:win`, `dist:win:arm64`, `dist:mac`, `dist:mac:intel`, `dist:linux`.
 
 Every suite runs alone as `npm run verify:<name>`: context, statusline, unicode, usage,
-profiles, settings, secrets, providers, claude-config, folders, search, color, theme-gen, activity,
+profiles, settings, secrets, providers, claude-config, folders, search, chat-sources, color, theme-gen, activity,
 worklog-gate, tabs, launcher, registry,
 restore, shortcuts, drop, fullscreen, layers, browser-url, browser-profiles, safari-import, chrome-import, voice, agents, campfire, cli, stoke-args, updates, targets, manifests, portable, winget, worklog-runner,
 worklog-retry, worklog-recall, worklog-autoscan, ssh, ssh-enroll, remote, phone-ui, installer-art, install, welcome,
@@ -76,6 +76,8 @@ src/main/            Electron main process
   stt.ts               the only route to the speech sidecar ("only main may reach it" is its auth)
   audio/               reads the default capture device, to warn about virtual cables
   worklog/             Notion/ClickUp review queue: gate, watch, runner, recall, queue, autoscan
+  chatIndex/           chat history: host (main's handle) + worker (the only reader of any
+                       chat source and writer of the store), sources, parse, scan, store
   mcp/                 browser MCP server: server.ts (tools), cdp.ts, audit/design/perf/stack,
                        inject/extract.js (runs IN the page, no deps)
   remote/              phone access: server.ts, link.ts, tunnel.ts, cloudflare.ts
@@ -158,6 +160,8 @@ rule file named on the group line.
   U+2018–U+201B are single quotes too; a script written to disk must be ASCII for PowerShell 5.1.
 - **116.** Diff two settings only after hydrating both the same number of times, with keys sorted
   (`planImport`, `stable`): `hydrateSettings` is not idempotent (`worklogBoards`' default targets).
+- **125.** Bind a rowid to an FTS5 table as an integer (`CAST(? AS INTEGER)` or a BigInt): node:sqlite
+  binds every JS number as REAL, and FTS5 ignores `rowid = <real>` silently (`ChatStore.search`).
 
 **Terminal** — `.claude/rules/terminal.md`
 - **5.** Never read the terminal from the DOM: WebGL paints a canvas, so `.xterm-rows` is empty.

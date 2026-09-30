@@ -37,6 +37,8 @@ import { RemoteSettings, SelfUpdateSettings, StokeCommandSettings, UpdatesSettin
 import { VoiceSettings } from './VoiceSettings'
 import { AgentsSettings } from './AgentsSettings'
 import { BackupSettings } from './BackupSettings'
+import { ChatHistorySettings } from './ChatHistorySettings'
+import type { ChatDetection, ChatIndexStatus } from '@shared/chatIndex'
 import type { CodingCliDetection, CodingCliId } from '@shared/codingClis'
 import { WorklogSettings } from './WorklogSettings'
 
@@ -111,6 +113,7 @@ export type SectionId =
   | 'sessions'
   | 'claude'
   | 'agents'
+  | 'chats'
   | 'providers'
   | 'voice'
   | 'projects'
@@ -158,6 +161,11 @@ const GROUPS: { title: string; sections: Section[] }[] = [
         hint: 'Claude Code, Codex, Grok and the rest: the default agent, and each one’s model, endpoint, colour and tab tag'
       },
       { id: 'claude', label: 'Claude Code', hint: "Claude Code's own configuration" },
+      {
+        id: 'chats',
+        label: 'Chat history',
+        hint: 'A searchable copy of your AI chats: which tools, how much, and where the copy is'
+      },
       { id: 'providers', label: 'Providers', hint: 'Claude Code’s API keys and gateway, and the shared OpenRouter key' },
       {
         id: 'voice',
@@ -262,6 +270,8 @@ interface Props {
     enrollingHostId: string | null
     onSetUpKey: (hostId: string) => void
   }
+  /** Chat history's status and detection, which App holds for the offer and the sidebar too. */
+  chats: { status: ChatIndexStatus | null; detection: ChatDetection | null }
   onClose: () => void
 }
 
@@ -285,6 +295,7 @@ export function SettingsSheet({
   agents,
   onRestartToUpdate,
   sshKeys,
+  chats,
   onClose
 }: Props): React.JSX.Element {
   const themes: Theme[] = [...BUILT_IN_THEMES, ...settings.customThemes]
@@ -790,6 +801,10 @@ export function SettingsSheet({
             )}
 
             {section === 'browser' && <BrowserSettings browser={settings.browser} />}
+
+            {section === 'chats' && (
+              <ChatHistorySettings settings={settings} onPatch={onPatch} status={chats.status} detection={chats.detection} />
+            )}
 
             {section === 'projects' && (
               <>

@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { IpcRendererEvent } from 'electron'
 import { CH } from '@shared/ipc'
 import type { ClipboardPeek, StokeApi } from '@shared/api'
+import type { ChatIndexStatus } from '@shared/chatIndex'
 import type {
   Rect,
   LaunchOptions,
@@ -61,6 +62,16 @@ const api: StokeApi = {
     setMeta: (path: string, meta: ProjectMeta | null) =>
       ipcRenderer.invoke(CH.projectsMeta, path, meta),
     reveal: (path: string) => ipcRenderer.invoke(CH.projectsReveal, path)
+  },
+
+  chats: {
+    detect: () => ipcRenderer.invoke(CH.chatsDetect),
+    status: () => ipcRenderer.invoke(CH.chatsStatus),
+    onStatus: (cb) => on<[ChatIndexStatus]>(CH.chatsStatus, cb),
+    search: (query: string) => ipcRenderer.invoke(CH.chatsSearch, query),
+    indexNow: () => ipcRenderer.invoke(CH.chatsIndexNow),
+    rebuild: () => ipcRenderer.invoke(CH.chatsRebuild),
+    deleteIndex: () => ipcRenderer.invoke(CH.chatsDelete)
   },
 
   workspace: {
