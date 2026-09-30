@@ -93,7 +93,7 @@ export interface StoredChat {
   locator: string | null
 }
 
-/** What an import did, written when it ends. */
+/** What an import did, written when it ends — stopped part-way too, when `added + updated + empty` is short of `admitted`. */
 export interface ImportTally {
   admitted: number
   added: number

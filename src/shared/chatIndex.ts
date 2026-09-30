@@ -219,7 +219,10 @@ export interface ChatImportRecord {
   importedMs: number
   /** Distinct conversations the file held. */
   found: number
-  /** The newest of those that the caps let in. */
+  /**
+   * The newest of those that the caps let in. Every one is written unless the
+   * import was stopped part-way: then `added + updated + empty` falls short of it.
+   */
   admitted: number
   /** New to the index. */
   added: number
@@ -246,7 +249,29 @@ export type ChatImportResult = { ok: true; record: ChatImportRecord; warning: st
 export function importDisclosure(r: ChatImportRecord, caps: ChatIndexCaps): string {
   const parts: string[] = []
   if (r.found === 0) return 'The file held no conversations.'
-  if (r.admitted < r.found && r.cappedBy === 'perSource') {
+  /*
+   * The record is written before the first conversation and finished after the
+   * last (`finishImport`), and the caps are never below 1, so a file with
+   * conversations and none admitted is an import still running — or one whose
+   * worker was killed before it could finish. Either way, not "all of them".
+   */
+  if (r.admitted === 0) {
+    return `This import has not finished: ${formatCount(r.indexed)} of the file’s ${formatCount(r.found)} conversations are in the index.`
+  }
+  const done = r.added + r.updated + r.empty
+  if (done < r.admitted) {
+    // Stopped part-way — Delete index, switching chat history off, or quitting while it ran.
+    const range = r.admitted < r.found ? `the newest ${formatCount(r.admitted)} of ${formatCount(r.found)}` : formatCount(r.admitted)
+    const limit =
+      r.admitted < r.found && r.cappedBy === 'perSource'
+        ? ` (the limit is ${formatCount(caps.perSource)} per tool)`
+        : r.admitted < r.found && r.cappedBy === 'total'
+          ? ` (the index holds at most ${formatCount(caps.total)} chats)`
+          : ''
+    parts.push(
+      `The import was stopped after ${formatCount(done)} of ${range} conversations${limit}. Import the file again to finish: the ones already here are updated in place, not copied.`
+    )
+  } else if (r.admitted < r.found && r.cappedBy === 'perSource') {
     parts.push(`Imported the newest ${formatCount(r.admitted)} of ${formatCount(r.found)} conversations (the limit is ${formatCount(caps.perSource)} per tool).`)
   } else if (r.admitted < r.found && r.cappedBy === 'total') {
     parts.push(`Imported the newest ${formatCount(r.admitted)} of ${formatCount(r.found)} conversations: the index holds at most ${formatCount(caps.total)} chats.`)

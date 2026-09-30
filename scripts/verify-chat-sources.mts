@@ -217,6 +217,21 @@ section('import disclosure: every cap that binds is said')
     'Imported all 3 conversations. 1 was already here from an earlier import and was updated in place. 1 held no text and was left out. 1 is kept in part (over 512 KB of text). 1 has since left the index — a newer import of the same conversations, the per-tool or total limit, or the index’s size ceiling.'
   )
   check('an empty file says so', importDisclosure(rec({ found: 0, admitted: 0, added: 0, indexed: 0 }), caps), 'The file held no conversations.')
+  check(
+    'a stopped import says how far it got, never "all"',
+    importDisclosure(rec({ found: 5, admitted: 5, added: 2, indexed: 2 }), { ...caps, perSource: 10 }),
+    'The import was stopped after 2 of 5 conversations. Import the file again to finish: the ones already here are updated in place, not copied.'
+  )
+  check(
+    '...and the cap it was under',
+    importDisclosure(rec({ found: 5, admitted: 2, added: 1, indexed: 1, cappedBy: 'perSource' }), caps),
+    'The import was stopped after 1 of the newest 2 of 5 conversations (the limit is 2 per tool). Import the file again to finish: the ones already here are updated in place, not copied.'
+  )
+  check(
+    'a record not yet finished (running, or its worker killed) is not "all" either',
+    importDisclosure(rec({ found: 5, admitted: 0, added: 0, indexed: 3 }), caps),
+    'This import has not finished: 3 of the file’s 5 conversations are in the index.'
+  )
 }
 
 section('disclosure: a cap that binds is said out loud')
@@ -1270,6 +1285,23 @@ try {
       'Imported all 5 conversations. 3 have since left the index — a newer import of the same conversations, the per-tool or total limit, or the index’s size ceiling.'
     )
     low.close()
+
+    /*
+     * Stopped while writing (Delete index, switch-off, quit): what was written
+     * stays and the record says how far it got. It used to answer ok: true and
+     * "Imported all 5 conversations." with two of them written.
+     */
+    const halt = ChatStore.open(join(root, 'import-stopped'))
+    const wide = options({}, { perSource: 10 })
+    const stopped = await importExport(halt, { path: capZip, options: wide, maxTextBytes: BIG_TEXT }, importHooks({ cancelled: () => halt.importedCount() >= 2 }))
+    check('an import stopped part-way is not ok, and says how far it got', [stopped.ok, !stopped.ok && stopped.error], [
+      false,
+      'claude.ai export, caps.zip: The import was stopped after 2 of 5 conversations. Import the file again to finish: the ones already here are updated in place, not copied.'
+    ])
+    check('...what it wrote stays, newest first, and so does its record', [halt.importedCount(), words(halt, 'capword4'), words(halt, 'capword2'), halt.status('idle').imports.map((r) => [r.admitted, r.added])], [2, ['export-claude:cap-4'], [], [[5, 2]]])
+    const finish = await importExport(halt, { path: capZip, options: wide, maxTextBytes: BIG_TEXT }, importHooks())
+    check('importing it again finishes it, in place, and the stopped record goes', [finish.ok && [finish.record.added, finish.record.updated], halt.importedCount(), halt.status('idle').imports.length], [[3, 2], 5, 1])
+    halt.close()
   }
 
   section('the viewer: a local chat read again from its source, an import from the store')

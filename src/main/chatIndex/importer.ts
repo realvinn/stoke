@@ -24,7 +24,11 @@
  *    every local chat (`cleanText` via `push`: blobs out, keys redacted when
  *    asked, 64 KB a message) and the same per-chat cap (`chatKb`).
  * 4. **Hold** every import together to the caps (`capImports`) and the whole
- *    store to its ceiling (`evictToText`), as a pass does.
+ *    store to its ceiling (`evictToText`), as a pass does — and every pass
+ *    holds them again, to its own caps, since the user can lower them later.
+ *
+ * A stop (Delete index, chat history switched off, quit) keeps what was
+ * written, records how far it got, and answers `ok: false` saying so.
  *
  * Imported text lives in the index's store and nowhere else: the file is read
  * in place and never copied. Delete index removes it with everything; Remove
@@ -35,6 +39,7 @@ import { basename } from 'node:path'
 import {
   CHAT_EXPORT_LIMITS,
   CHAT_IMPORTS,
+  importDisclosure,
   isChatSourceId,
   type ChatImportKind,
   type ChatImportResult,
@@ -197,13 +202,23 @@ export async function importExport(store: ChatStore, plan: ImportPlan, hooks: Im
   const admitted = ranked.slice(0, room)
   const cappedBy: ImportTally['cappedBy'] = ranked.length > room ? (caps.total < caps.perSource ? 'total' : 'perSource') : null
 
-  /* 3. Write. */
+  /*
+   * 3. Write. `admitted` stays the number the caps let in; a stop leaves
+   * `added + updated + empty` short of it, and that shortfall is what the
+   * record says (`importDisclosure`). It used to be recorded and answered as a
+   * whole import — `ok: true`, "Imported all N conversations." — when Delete
+   * index, switching chat history off or quitting stopped it part-way.
+   */
   const chatBytes = Math.max(64, Math.floor(caps.chatKb * 1024))
   const importId = store.addImport(importKind, basename(plan.path), bytes, hooks.now(), ranked.length)
   const tally: ImportTally = { admitted: admitted.length, added: 0, updated: 0, empty: 0, truncated: 0, cappedBy }
+  let stopped = false
   try {
     for (let i = 0; i < admitted.length; i++) {
-      if (hooks.cancelled()) break
+      if (hooks.cancelled()) {
+        stopped = true
+        break
+      }
       const r = admitted[i]
       let conv: ReturnType<typeof foldExportConversation>
       try {
@@ -244,9 +259,16 @@ export async function importExport(store: ChatStore, plan: ImportPlan, hooks: Im
   for (const s of evicted.sources) if (isChatSourceId(s)) store.setCappedBy(s, 'store')
   if (evicted.newestMs !== null) store.setStoreCutMs(Math.max(evicted.newestMs, store.storeCutMs() ?? -Infinity))
   store.dropSupersededImports(importKind, importId)
-  store.tidy(tally.added + tally.updated > 50)
+  // No whole-index rewrite on the way out of a stop: quitting gives the worker 1.5 s (`ChatIndexHost.stop`).
+  store.tidy(!stopped && tally.added + tally.updated > 50)
   const record = store.importRecord(importId)
   if (!record) return { ok: false, error: 'The import was written, but its record could not be read back.' }
+  /*
+   * Stopped part-way: what it wrote stays, searchable and under the caps, and
+   * its record says how far it got. Answered as a failure, as a stop while
+   * ranking is, so the note under the button is a warning and no pass follows.
+   */
+  if (stopped) return { ok: false, error: `${CHAT_IMPORTS[importKind].label}, ${record.fileName}: ${importDisclosure(record, caps)}` }
   // Said, not hidden: a file cut short is the likeliest reason for fewer conversations than expected.
   const warning = complete
     ? null
