@@ -556,6 +556,7 @@ npm run verify:chrome-import  # Chrome's cookie crypto and row mapping, on value
                               # itself the way Chrome does (gotcha 107)
 npm run verify:safari-import  # Safari's binarycookies and XML plists, on synthetic files
 npm run verify:agents         # the coding agents: what is stored, what the launcher shows,
+                              # the default agent and its fallback (`resolveDefaultAgent`),
                               # each CLI's exact launch plan (endpoint, MCP, continue) with
                               # every key in env and none in argv, and the install script —
                               # only table ids survive into a command
@@ -871,7 +872,11 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     flags and env for one process, keys only in env — and never written
                     into the agent's own config, gotcha 38's rule for tools that rewrite
                     their files. `installScript` builds a tab's shell script from the table
-                    and ids it validates, so the renderer can never contribute command text
+                    and ids it validates, so the renderer can never contribute command text.
+                    `defaultCli` is the agent NEW sessions start (Start, the sidebar, Start on
+                    launch, scratch, `stoke .`, the phone); `resolveDefaultAgent` falls back
+                    to Claude Code, then the first agent on offer, when it is not installed
+                    and chosen. Resume, relaunch and Continue stay Claude's (gotcha 81)
   skills.ts         which skill folders each agent reads, and the report of who can see
                     which skill. `~/.agents/skills` is the one nearly all share; Claude Code
                     reads only `~/.claude/skills`. A report, never a sync — linking between

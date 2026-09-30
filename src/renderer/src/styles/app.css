@@ -2622,6 +2622,15 @@ mark.hit {
   gap: var(--space-8);
 }
 
+/* In Row C's place when the default agent takes none of Claude Code's launch
+   options: says why the chips are gone rather than leaving a gap. */
+.launcher-agent-note {
+  margin: 0;
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
 .chip-wrap {
   position: relative;
 }

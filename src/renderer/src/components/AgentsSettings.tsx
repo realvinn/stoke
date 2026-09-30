@@ -10,7 +10,10 @@ import {
 import {
   DEFAULT_ENDPOINT,
   endpointProblem,
+  installedAgents,
   installSteps,
+  resolveDefaultAgent,
+  visibleAgents,
   type AgentEndpoint,
   type AgentSettings,
   type EndpointMode
@@ -36,6 +39,7 @@ export function AgentsSettings({
   settings,
   onPatch,
   detection,
+  claudeRunnable,
   onRefresh,
   onOpenPicker,
   onInstall
@@ -43,6 +47,8 @@ export function AgentsSettings({
   settings: Settings
   onPatch: (patch: Partial<Settings>) => void
   detection: CodingCliDetection | null
+  /** Claude Code's own probe answered (`CliInfo.ok`), which honours an explicit path. */
+  claudeRunnable: boolean
   onRefresh: () => void
   onOpenPicker: () => void
   onInstall: (ids: CodingCliId[]) => void
@@ -66,6 +72,16 @@ export function AgentsSettings({
     patchAgents({ ...agentsRef.current, chosen: CODING_CLIS.map((c) => c.id).filter((x) => next.includes(x)) })
   }
 
+  /*
+   * The default agent: what the launcher can offer (installed AND chosen), with
+   * Claude Code counted when its own probe answered, and the stored value kept
+   * in the list even when it is no longer on offer so the select never shows a
+   * value it does not have — with a line saying what new sessions start instead.
+   */
+  const offered = visibleAgents(agents.chosen, installedAgents(detection?.clis ?? [], claudeRunnable))
+  const defaultOptions = offered.includes(agents.defaultCli) ? offered : [agents.defaultCli, ...offered]
+  const startsInstead = detection ? resolveDefaultAgent(agents.defaultCli, offered) : agents.defaultCli
+
   const setEndpoint = (id: CodingCliId, ep: AgentEndpoint): void => {
     const endpoints = { ...agentsRef.current.endpoints }
     if (ep.mode === 'default' && !ep.model && !ep.baseUrl && !ep.apiKey) delete endpoints[id]
@@ -75,6 +91,37 @@ export function AgentsSettings({
 
   return (
     <>
+      <div className="field">
+        <label className="field-label" htmlFor="agents-default">
+          Default agent
+        </label>
+        <span className="field-hint">
+          What a new session starts: the launcher&rsquo;s Start, the sidebar&rsquo;s new session,
+          Start on launch, a scratch folder, <span className="mono">stoke .</span> and the
+          phone&rsquo;s New session. Resuming or continuing a conversation stays with Claude Code,
+          whose conversations they are.
+        </span>
+        <select
+          id="agents-default"
+          className="select"
+          value={agents.defaultCli}
+          onChange={(e) => patchAgents({ ...agentsRef.current, defaultCli: e.target.value as CodingCliId })}
+        >
+          {defaultOptions.map((id) => (
+            <option key={id} value={id}>
+              {cliFor(id).label}
+              {offered.includes(id) ? '' : ' — not installed, or not ticked below'}
+            </option>
+          ))}
+        </select>
+        {startsInstead !== agents.defaultCli && (
+          <span className="field-hint" data-tone="warning">
+            {cliFor(agents.defaultCli).label} is not installed, or not ticked below, so new sessions
+            start {cliFor(startsInstead).label} until it is both.
+          </span>
+        )}
+      </div>
+
       <div className="field">
         <span className="field-label">Coding agents</span>
         <span className="field-hint">
