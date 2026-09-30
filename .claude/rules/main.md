@@ -8,6 +8,9 @@ paths:
   - "src/renderer/src/components/SettingsSheet.tsx"
   - "src/renderer/src/lib/useDraft.ts"
   - "src/shared/ui.ts"
+  - "src/shared/secrets.ts"
+  - "src/shared/setupFile.ts"
+  - "src/renderer/src/components/BackupSettings.tsx"
 ---
 
 # Anywhere in the main process
@@ -240,3 +243,28 @@ unattended helper uses `-File` instead.
 > with `-File` is subject to execution policy, which an AllSigned Group Policy enforces over the
 > command line's `Bypass`, while a script block built from text is not. The portable-update helper
 > still uses `-File`; under AllSigned it never starts, and the next launch says so.
+
+## 116. `hydrateSettings` is not idempotent, so two settings are comparable only after the same number of hydrates
+
+**An import of a file made from an identical fresh profile previewed "Worklog boards: changes
+targets".** Found driving the Backup & transfer import on 2026-09-30, not by the suite.
+`hydrateWorklogBoards` returns `DEFAULT_WORKLOG_BOARDS` whole for a settings file with no
+`worklogBoards` key — `targets: ['notion']` with an empty `notionDataSource` — and the SAME object
+hydrated again loses `'notion'`, because a destination with no id is dropped. So a profile that has
+never written a setting holds `['notion']` in the cache, the first `setSettings` of any field turns
+it into `[]`, and anything that diffs the cache against `hydrateSettings(merged)` reports a change
+that is only a second pass. Measured with `hydrateSettings(null)` exported and imported into
+`hydrateSettings(null)`: one phantom change before, none after.
+
+A second false change came from key ORDER, not value: a merged host is `{ ...theirs, keyEnrolled }`,
+so its keys come back in a different order from the stored record while every value is equal, and
+`JSON.stringify(a) === JSON.stringify(b)` calls that a change ("SSH hosts: updates Box" for a file
+made from this very setup).
+
+`planImport` (shared/setupFile.ts) hydrates the CURRENT settings once more before merging and
+diffing, so both sides have been through hydrate the same number of times, and `previewSetup`
+compares with `stable` (keys sorted). `verify:secrets` holds both: fresh into fresh, and a setup
+into itself, must preview zero changes. The rule reaches past this file — the auth-hub design's
+Phase 2 sync is per-field last-writer-wins over hydrated records, and a phantom diff there is a
+phantom WRITE on every device on every sync. Whether to make `hydrateWorklogBoards`'s default branch
+filter like its other branch is a behaviour change to the worklog panel's fresh state, left open.

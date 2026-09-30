@@ -223,6 +223,69 @@ Two behaviours do most of the work for token cost:
 Clicks dispatch a full pointer sequence, and typing goes through the prototype's native value
 setter — React and Vue track input values internally and ignore a plain assignment.
 
+## Secrets at rest, and the setup file
+
+Phase 1 of the auth-hub design (`docs/superpowers/specs/2026-09-30-auth-hub-design.md` §16): no
+account, no server.
+
+**Where keys live.** Through 0.9.97 every key Stoke held sat in plain text in
+`<userData>/settings.json`: `providers.{anthropicApiKey, openrouterApiKey, customAuthToken}`,
+`agents.endpoints[*].apiKey`, and `remote.token` — the phone bearer, which grants a shell. They
+now live in `<userData>/secrets.json` (mode 0600) as `{ v: 1, backend, items: { <settings path>:
+base64(safeStorage ciphertext) } }`, and settings.json keeps an empty string in each place.
+`src/shared/secrets.ts` holds `SECRET_PATHS`, the one registry of secret paths (`*` matches one
+object key), and the pure move between a settings object and a `{ path: value }` map; a later
+secret (a speech-to-text key, per-account keys) is one line there. `src/main/secrets.ts`
+(`SecretStore`, no electron import) does the sealing. `store.ts` keeps WHEN a write happens
+(coalescing, gotcha 63) and hands every write to `SecretStore.save`, which writes secrets.json
+first and only when a key moved, then settings.json scrubbed. `hydrateSettings` stays pure:
+`load` overlays the decrypted values onto the parsed file before hydrate sees it, so the cache,
+every IPC answer and the renderer see the keys exactly as before. Each sealed value carries its
+path (`sealedText`): macOS `safeStorage` is AES-CBC with no MAC, and the prefix turns a value
+opened with the wrong key into a refusal rather than garbage.
+
+**The migration** runs once per boot, first thing in `whenReady` (`initSecretStore`; `safeStorage`
+is not usable before `ready` on Windows and Linux): plaintext in settings.json is sealed, the
+vault is read back and every item opened, and only then is settings.json scrubbed and any
+`settings.json.tmp` removed. Idempotent — a clean profile writes nothing. Plaintext wins over the
+vault, being the newer write. The key store is asked only when there is something to seal or
+open, so a profile with no keys never touches the Keychain.
+
+**No lock-outs.** Protection is judged by `judgeProtection`: the Keychain and DPAPI count, and on
+Linux libsecret and KWallet do; Linux's `basic_text` (no Secret Service, common under tiling WMs)
+encrypts with a password hardcoded in Chromium and does NOT count. An unprotected run keeps the
+old behaviour exactly — plaintext settings.json — and Settings › Backup & transfer says so. An
+item that will not open (another key store, a recreated Keychain item) is kept verbatim and
+listed as stranded; re-entering the key replaces it. A key store that refuses mid-run demotes
+that run to plaintext rather than drop the key just typed.
+
+**Downgrade.** A build from before this reads settings.json only, so it sees every key as empty:
+API-key sessions refuse to start and Phone access mints a new key (the phone needs the new QR).
+secrets.json is untouched by it, and a key typed into the older build is plaintext the next boot
+of this build migrates in.
+
+**The setup file** (`.stoke-setup`, Settings › Backup & transfer) is one JSON object:
+`{ format: "stoke-setup", v: 1, kdf: { alg: "scrypt", N: 131072, r: 8, p: 1, salt }, aead:
+"AES-256-GCM", nonce, ciphertext }`, the tag appended to the ciphertext and the header bound as
+AAD. node:crypto only (`src/main/setupFile.ts`); scrypt at those parameters takes ~0.5 s in
+Electron 43, measured, off the main thread. The KDF bounds are checked before any key is
+derived, so a crafted header cannot ask for gigabytes. What travels is decided in
+`src/shared/setupFile.ts`: `PORTABLE_KEYS` whole, `PARTIAL_KEYS` in part, `LOCAL_KEYS` never
+(folders and projectMeta, `claudePath`, `remote`, `uiScale`, `sidebarWidth`, `activeProfile`,
+`welcomeSeenVersion`, the wallpaper file, browser partitions and window state); verify:secrets
+holds the three lists to a partition of every setting. Keys travel only when ticked, and never
+the phone key. Hosts travel without `keyEnrolled` (a fact about this device's key). Import is
+pick → preview → apply with the decrypted payload held in main throughout; `planImport` merges
+field by field (hosts, themes and profiles by id, bookmarks as a union), runs the result through
+`hydrateSettings`, and previews exactly what would be stored. A synced `bypassPermissions` is not
+applied. Driven sandboxes answer the native dialogs with `STOKE_TEST_SETUP_FILE` (unpackaged
+only), and should pass `--use-mock-keychain`, which Electron 43 honours: safeStorage then works
+with no Keychain item created or read.
+
+Not done here, on purpose: the `nodeCliInspect`/`nodeOptions` fuses (design §6.7). The
+statusLine shim runs as node (`runAsNode`, gotcha 108), and only a packaged build can prove a fuse
+change safe.
+
 ## Remote access
 
 `src/main/remote/server.ts` serves the mobile bundle plus a small API and a WebSocket that
@@ -503,8 +566,8 @@ Linux arm64 is deliberately not built (`NOT_BUILT` in `scripts/targets.mjs`).
 
 ## Testing
 
-Verification lives in `scripts/`, one `verify-*` suite per subject — forty-eight of them now.
-Forty-six are in `npm run check`, between the typecheck and the full build; `check` is the
+Verification lives in `scripts/`, one `verify-*` suite per subject — fifty of them now.
+Forty-eight are in `npm run check`, between the typecheck and the full build; `check` is the
 gate, and it is what "done" means here. They are `.mts` run straight through node's
 type-stripping with no build step, except `verify:selection`, which opens a real Electron window
 and so needs a display. Each runs alone:
@@ -521,6 +584,14 @@ npm run verify:profiles       # profile resolution + every accent clears 4.5:1
 npm run verify:settings       # settings hydration: repair, clamps, what it drops, the
                               # light/dark theme pair the OS chooses between, and the speech
                               # server's move from `remote.sttUrl` to `voice` (and its mirror)
+npm run verify:secrets        # secrets at rest and the setup file, on a SYNTHETIC userData with
+                              # an injected key store (never the Keychain) and a bystander that
+                              # must survive: migration scrubs settings.json and its .tmp, is
+                              # idempotent, plaintext wins; basic_text and no key store keep
+                              # plaintext; stranded items are kept; a canary never reaches disk
+                              # or an export; real scrypt/AES-GCM round trip, wrong passphrase,
+                              # flipped byte, edited header, unknown KDF/cipher/format refused;
+                              # import drops unknown keys, clamps, keeps local fields
 npm run verify:claude-config  # writing Claude Code's OWN config: the allowlist, the refusals,
                               # and the ~/.claude.json lock. Runs against real files in a temp
                               # CLAUDE_CONFIG_DIR, never the user's (gotchas 38, 39)
@@ -785,7 +856,14 @@ src/main/         Electron main process
   wallpaper.ts      the picked image, copied under userData and served over the custom
                     `stoke-asset://` scheme. Refuses anything that is not a bare file name
                     inside its own folder, so the scheme cannot be turned into a file reader
-  store.ts          settings persistence
+  store.ts          settings persistence: WHEN a write happens (coalesced, gotcha 63).
+                    Opens the secret store first thing in `whenReady` (`initSecretStore`)
+  secrets.ts        secrets at rest: `SecretStore` seals the registered secret paths into
+                    secrets.json with safeStorage and writes settings.json with them empty;
+                    the one-time migration. No electron import; the backend is injected, so
+                    verify:secrets never touches the Keychain. basic_text is NOT protection
+  setupFile.ts      sealing/opening a `.stoke-setup`: scrypt N=2^17 + AES-256-GCM, header as
+                    AAD, node:crypto only
   settingsSchema.ts defaults + hydrate, with no electron import so a suite can run it
   tabStore.ts       the tabs that were open at quit. Restoring is a relaunch
                     (`claude --resume`), never a reattach: a CLI child cannot outlive the app.
@@ -931,6 +1009,12 @@ src/remote/       mobile web UI, built separately to out/remote. Vanilla TS on o
   newSession.ts, history.ts, connect.ts, dom.ts   the new-session sheet, history and
                     read-back, the paste-your-link screen, the builder/icons/sheets
 src/shared/       types, IPC channel names, themes, profiles, colour maths
+  secrets.ts        `SECRET_PATHS`, the one registry of which settings are secrets (a new
+                    secret is one line here), the move between settings and a path->value
+                    map (`__proto__` refused), the secrets.json format, `judgeProtection`
+  setupFile.ts      the `.stoke-setup` header and its refusals, what travels
+                    (PORTABLE/PARTIAL/LOCAL_KEYS, a partition of Settings), the import merge
+                    and preview (`planImport`), and the passphrase strength reading
   remotePhone.ts    the phone contract's pure pieces: status mapping and sort, the ended
                     ring, `submitFrames` (typed, never bracketed for Claude: gotcha 86)
   phoneUi.ts        the phone UI's decisions: sections, answer-option parsing, the resize
