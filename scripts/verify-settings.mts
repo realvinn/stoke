@@ -6,6 +6,7 @@
  *
  *   node scripts/verify-settings.mts
  */
+import { join } from 'node:path'
 import { DEFAULT_SETTINGS, hydrateSettings } from '../src/main/settingsSchema.ts'
 import { wallpaperFileFor } from '../src/main/wallpaper.ts'
 import { DEFAULT_WORKLOG_BOARDS } from '../src/shared/worklog.ts'
@@ -181,9 +182,12 @@ check('blur and dim are bounded', [hydrateSettings({ wallpaper: { blur: 99 } }).
 
 console.log('\nthe wallpaper scheme serves one directory and nothing else')
 {
+  // userData is a path on THIS machine, so the answer is joined with its
+  // separator; the expectation is built the same way, or Windows reads
+  // `\tmp\stoke-ud\wallpaper\...` against a literal POSIX string.
   const ud = '/tmp/stoke-ud'
-  check('a bare file name in the wallpaper host resolves', wallpaperFileFor(ud, 'stoke-asset://wallpaper/abc123.png'), '/tmp/stoke-ud/wallpaper/abc123.png')
-  check('the encoded form resolves the same', wallpaperFileFor(ud, 'stoke-asset://wallpaper/a%20b.jpg'), '/tmp/stoke-ud/wallpaper/a b.jpg')
+  check('a bare file name in the wallpaper host resolves', wallpaperFileFor(ud, 'stoke-asset://wallpaper/abc123.png'), join(ud, 'wallpaper', 'abc123.png'))
+  check('the encoded form resolves the same', wallpaperFileFor(ud, 'stoke-asset://wallpaper/a%20b.jpg'), join(ud, 'wallpaper', 'a b.jpg'))
   check('a traversal is refused', wallpaperFileFor(ud, 'stoke-asset://wallpaper/..%2F..%2Fsettings.json'), null)
   check('so is a nested path', wallpaperFileFor(ud, 'stoke-asset://wallpaper/x/y.png'), null)
   check('so is another host', wallpaperFileFor(ud, 'stoke-asset://settings/x.png'), null)
