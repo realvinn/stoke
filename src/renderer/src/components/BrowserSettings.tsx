@@ -246,7 +246,7 @@ function ImportFromBrowsers({ profiles }: { profiles: BrowserProfile[] }): React
       <FieldHint>
         {isMac
           ? 'Logins come over as cookies into a browser profile of their own for each profile you pick, so nothing mixes with Default. Claude’s browser tools can use them in that profile. Saved passwords cannot come over: Safari’s are sealed to Apple’s apps, and Stoke has no password manager to put Chrome’s in. Some sites — Google accounts especially — tie a login to the browser it was made in and will ask you to sign in again.'
-          : 'Logins come over as cookies into a browser profile of their own for each profile you pick. Because Chrome seals its cookies to itself, Stoke briefly launches your own browser in the background to hand them over — nothing you have to click, and your open windows are left alone. Saved passwords cannot come over — Stoke has no password manager to put them in. Some sites — Google accounts especially — tie a login to the browser it was made in and will ask you to sign in again.'}
+          : 'Logins come over as cookies into a browser profile of their own for each profile you pick. Because Chrome seals its cookies to itself, Stoke briefly launches your own browser in the background — against a copy of the profile, so your open windows usually stay put; if the files are in use it will ask you to close the browser first, and never forces it. Saved passwords cannot come over — Stoke has no password manager to put them in. Some sites — Google accounts especially — tie a login to the browser it was made in and will ask you to sign in again.'}
       </FieldHint>
 
       {sources === null ? (
@@ -367,8 +367,8 @@ function ImportFromBrowsers({ profiles }: { profiles: BrowserProfile[] }): React
                 <FieldHint>
                   Chrome seals its cookies to itself, so Stoke briefly launches your own browser in the background — no
                   window, against a copy of the profile — to hand the logins over decrypted, then closes it. Your open
-                  windows are untouched. If your browser is holding the files, close it and import again; Stoke never
-                  forces it to quit.
+                  windows usually stay put. If your browser is holding the files, close it and import again; Stoke never
+                  forces it to quit. A login Chrome still will not decrypt is reported, not dropped silently.
                 </FieldHint>
               )}
             </span>

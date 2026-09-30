@@ -925,7 +925,8 @@ src/main/         Electron main process
                     path: locate the browser's exe, copy the profile, launch it headless and read
                     decrypted cookies over CDP — gotchas 130/99, lazy), chromiumProfiles.ts (where
                     each browser keeps its profiles on macOS/Windows, pure and platform-parameterised
-                    — bookmarks import on both, logins now on both),
+                    — bookmarks import on both, logins on macOS (proven) and Windows (mechanism
+                    proven for v10; v20 app-bound decrypt-in-a-copy unproven — gotcha 130),
                     safari.ts + safariCookies.ts + plist.ts (Full Disk Access, binarycookies,
                     Bookmarks.plist), index.ts (scan, runImport). Gotcha 107
   workspace.ts      default folder + scratch folders

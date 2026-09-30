@@ -195,7 +195,11 @@ if (cmd === 'swap-files') {
   console.log(`"${name}" = ${JSON.stringify(hit.value)} (httpOnly ${hit.httpOnly}, sameSite ${hit.sameSite})`)
   if (value !== undefined && hit.value !== value) fail(`"${name}" decrypted to ${JSON.stringify(hit.value)}, expected ${JSON.stringify(value)}`)
   if (hit.value === '') fail(`"${name}" came back with an empty value — it did not decrypt`)
-  console.log('the app-bound cookie was read back decrypted')
+  // Do NOT claim "app-bound" here: which scheme (v10 plain DPAPI vs v20 app-bound)
+  // Chrome wrote is decided by the seed step (cookie-prefix.mjs), not known here.
+  // A non-default --user-data-dir makes Chrome write v10, so this proves the
+  // mechanism, not the v20 seal (gotcha 130).
+  console.log(`the cookie was read back decrypted (scheme recorded by the seed step)`)
 } else {
   fail('usage: node scripts/windows-e2e.mts swap-files|wait-result|classify|registry-path|pty-path|chrome-locate|chrome-read …')
 }

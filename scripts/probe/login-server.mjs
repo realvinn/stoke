@@ -2,9 +2,12 @@
  * A tiny login server for the Windows Chrome-import e2e (.github/workflows/windows.yml).
  *
  * `/seed` is a GET that logs a browser in: it returns an HttpOnly cookie, so a
- * headless Chrome driven to it stores that cookie the way it stores any login —
- * app-bound-encrypted on Windows. The reader under test then has to hand it back
- * decrypted. `/whoami` reports whether the caller is carrying the cookie.
+ * headless Chrome driven to it stores that cookie the way it stores any login,
+ * encrypted with Chrome's own key. NOTE: in a NON-default --user-data-dir (which
+ * the seed uses) Chrome writes the v10/plain-DPAPI scheme, not the v20 app-bound
+ * one — see gotcha 130 and the seed step's tag readout. The reader under test
+ * then has to hand it back decrypted. `/whoami` reports whether the caller is
+ * carrying the cookie.
  *
  *   SID=<value> PORT=<n|0> node scripts/probe/login-server.mjs   # prints the port
  *

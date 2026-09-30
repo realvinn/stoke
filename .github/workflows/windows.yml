@@ -683,15 +683,18 @@ jobs:
             release/latest*.yml
             ${{ runner.temp }}/swap/*
 
-  # The Windows Chrome cookie seal, resolved for real. Chrome 127+ wraps its
-  # cookie key with DPAPI + app-bound encryption (a v20 tag), so Stoke cannot
-  # decrypt the jar itself. It has the user's OWN Chrome do it: copy the profile,
-  # launch chrome.exe headless against the copy, read Storage.getCookies (which
-  # returns plaintext, HttpOnly included) over CDP. This job seeds a throwaway
-  # profile with a login cookie on the runner's real Chrome, closes it, then runs
-  # Stoke's own reader (chromeCookiesWin.ts) and asserts the cookie comes back
-  # decrypted — the one platform where the seal exists. windows-latest ships
-  # Chrome, its path in the App Paths registry key (ci-runners research).
+  # The Windows Chrome login-import MECHANISM, end to end: locate chrome.exe,
+  # copy the profile, launch chrome.exe headless against the copy, read
+  # Storage.getCookies (plaintext, HttpOnly included) over CDP, map and assert.
+  # This job seeds a throwaway profile on the runner's real Chrome, closes it,
+  # then runs Stoke's own reader (chromeCookiesWin.ts) and asserts the cookie
+  # comes back decrypted. IMPORTANT — what this does NOT prove: the seed writes to
+  # a NON-default --user-data-dir, where Chrome turns app-bound encryption OFF, so
+  # the seeded cookie is v10 (plain DPAPI), not v20. The cookie-prefix step records
+  # the tag; a non-v20 tag means the app-bound (v20) seal was NOT exercised here.
+  # Decrypting a v20 cookie from a copied dir is still UNPROVEN (gotcha 130); the
+  # reader now reports any v20 row Chrome drops rather than reading short silently.
+  # windows-latest ships Chrome, its path in the App Paths registry key.
   chrome-import:
     name: Chrome login import · x64
     runs-on: windows-latest
@@ -756,22 +759,32 @@ jobs:
           node scripts/probe/chrome-seed.mjs 9223
           if ($LASTEXITCODE -ne 0) { throw 'the cookie was never seeded' }
           if (-not $p.WaitForExit(30000)) { throw 'Chrome did not exit after Browser.close' }
-          # Record what Chrome wrote: v20 is app-bound, v10 plain DPAPI. Either way
-          # the reader must hand it back decrypted; the tag is for the record.
+          # Record what Chrome wrote: v20 is app-bound, v10 plain DPAPI. In a
+          # non-default --user-data-dir Chrome writes v10, so the app-bound seal is
+          # NOT exercised here — print that plainly so a green run is not misread as
+          # a v20 proof. Either tag must still hand back decrypted; do not gate on it
+          # (a hard fail on v10 would be permanently red on the non-default dir).
           $db = Join-Path $seedProfile 'Network\Cookies'
           if (-not (Test-Path $db)) { $db = Join-Path $seedProfile 'Cookies' }
           $copy = Join-Path $env:RUNNER_TEMP 'cookies-peek.sqlite'
           Copy-Item $db $copy -Force
-          node scripts/probe/cookie-prefix.mjs $copy
+          $tags = node scripts/probe/cookie-prefix.mjs $copy
+          $tags
+          if ($tags -match 'tag=v20') {
+            "COOKIE SEAL: v20 (app-bound) — the seal WAS exercised on this run"
+          } else {
+            "COOKIE SEAL: not v20 — Chrome wrote plain DPAPI in a non-default dir, so the app-bound (v20) seal was NOT exercised (gotcha 130). The mechanism is proven; the v20 decrypt-in-a-copy is not."
+          }
 
       # The reader under test: it copies the seeded profile, launches the runner's
       # Chrome headless against the copy, and reads the cookie back over CDP. The
-      # value must come back decrypted — the whole point.
-      - name: Stoke reads the sealed cookie back, decrypted
+      # value must come back decrypted — this proves the mechanism (v10 here; the
+      # v20 seal is unexercised, see the seed step).
+      - name: Stoke reads the seeded cookie back, decrypted
         shell: pwsh
         run: |
           node scripts/windows-e2e.mts chrome-read "$env:SEED_PROFILE" "$env:CHROME_EXE" sid "$env:SID"
-          if ($LASTEXITCODE -ne 0) { throw 'the app-bound cookie did not come back decrypted' }
+          if ($LASTEXITCODE -ne 0) { throw 'the seeded cookie did not come back decrypted' }
           "read back the seeded login on Chrome $env:CHROME_VERSION"
 
   winget:
