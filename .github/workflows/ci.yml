@@ -9,10 +9,10 @@
 # One gating job and two that are not:
 #
 #   verify       ubuntu-latest: typecheck, `npm run verify:ci`, build — the
-#                steps of release.yml's `verify` job, with the same action
-#                versions (verify:targets holds the two together). xvfb is
-#                installed, so the one `check` suite that opens a window
-#                (verify:selection) runs rather than being skipped:
+#                same job as release.yml's `verify`, step for step
+#                (verify:targets fails if one step differs). xvfb and the
+#                sandbox sysctl are set up, so the one `check` suite that opens
+#                a window (verify:selection) runs rather than being skipped:
 #                scripts/ci-verify.mjs decides that per runner and prints why.
 #   portability  macOS and Windows, typecheck + `npm run verify:ci`, allowed to
 #                fail. A suite that passes on only one OS is a defect in the
@@ -62,21 +62,34 @@ jobs:
           node-version: '24'
           cache: npm
 
-      # A display for the suite that opens a real Electron window. Without
-      # xvfb-run on PATH, ci-verify.mjs skips that suite and says why; with it,
-      # the suite runs under `xvfb-run -a`.
+      # These two steps are copied, byte for byte, into release.yml's `verify`,
+      # and verify:targets fails if the jobs differ by one step: ci-verify.mjs
+      # decides the window suite's route from the RUNNER, so a gate that has
+      # xvfb-run but not the sysctl below would start Electron and abort.
+      #
+      # A display for the suite that opens a real Electron window. The
+      # ubuntu-24.04 image already ships xvfb (runner-images'
+      # Ubuntu2404-Readme.md lists it), so the install is a fallback for an
+      # image that stops shipping it, and the last line fails the step if there
+      # is still no xvfb-run. Without it, ci-verify.mjs would skip the suite
+      # and say why; with it, the suite runs under `xvfb-run -a`.
       - name: Install xvfb
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends xvfb
+          if ! command -v xvfb-run >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends xvfb
+          fi
+          command -v xvfb-run
 
       # Ubuntu 24.04 lets AppArmor refuse unprivileged user namespaces, the
       # sandbox Chromium tries first. Its fallback is the setuid helper, and the
       # one npm unpacks into node_modules/electron/dist is not setuid root, so
-      # Electron aborts before a line of the suite runs. Relaxed on this
-      # throwaway VM only, and only where the knob exists; the suite keeps its
-      # sandbox. Expected from Ubuntu's documented default, not yet watched on
-      # this runner — the first run is what shows it.
+      # Electron aborts before a line of the suite runs. GitHub's image keeps
+      # the restriction on: actions/runner-images#11489 asked for it off and
+      # was closed pointing at this very sysctl as the workaround. Relaxed on
+      # this throwaway VM only, and only where the knob exists; the suite keeps
+      # its sandbox. ci-verify.mjs reads the knob again before it starts the
+      # suite, and skips it, saying why, where the sandbox still cannot start.
       - name: Let Electron's sandbox start
         run: |
           if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then

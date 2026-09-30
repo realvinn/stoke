@@ -19,8 +19,9 @@
  *
  * It also holds .github/workflows/ci.yml, the everyday gate, to the release
  * gate it mirrors: every push and PR, the suite list read from `check` through
- * verify:ci rather than written out, xvfb installed so the window suite runs,
- * and the macOS/Windows legs allowed to fail.
+ * verify:ci rather than written out, the two `verify` jobs identical step for
+ * step (xvfb and the sandbox sysctl included, in both), and the macOS/Windows
+ * legs allowed to fail.
  *
  *   node scripts/verify-targets.mts
  */
@@ -443,21 +444,61 @@ check(
   true
 )
 check('it names no single suite — the list comes from `check` (gotcha 62)', gateRuns.filter(namesASuite), [])
-const xvfbAt = gateRuns.findIndex((r) => /apt-get install\b[^\n]*\bxvfb\b/.test(r))
-check(
-  'it installs xvfb before verify:ci, so the window suite runs instead of being skipped',
-  xvfbAt !== -1 && xvfbAt < gateAtCmd('npm run verify:ci'),
-  true
-)
 
-// The mirror, asserted rather than promised in a comment: same actions at the
-// same versions with the same inputs, and the same npm commands in the same
-// order as release.yml's `verify`. A bump to one that misses the other fails.
-const setupOf = (steps: any[]) => steps.filter((s) => s.uses).map((s) => ({ uses: s.uses, with: s.with ?? null }))
-const npmOf = (steps: any[]) => steps.map((s) => String(s.run ?? '').trim()).filter((r) => /^npm (ci|run )/.test(r))
-check("it sets up exactly as release.yml's verify job does", setupOf(ciStepsOf('verify')), setupOf(stepsOf('verify')))
-check('and runs the same npm commands', npmOf(ciStepsOf('verify')), npmOf(stepsOf('verify')))
-check("and release.yml's gate still names no single suite either", stepsOf('verify').map((s) => String(s.run ?? '')).filter(namesASuite), [])
+/*
+ * The mirror, asserted step for step rather than promised in a comment.
+ *
+ * It used to compare only the `uses:` steps and the npm commands, and that is
+ * exactly the part of the two jobs that could not drift in the way that
+ * mattered. ci.yml's gate gained two plain `run:` steps — install xvfb, relax
+ * the AppArmor user-namespace knob — and release.yml's gained neither, and
+ * both checks stayed green. ci-verify.mjs routes the window suite by what the
+ * RUNNER has, and ubuntu-latest already ships xvfb-run, so the release gate
+ * would have started Electron without the sysctl, watched it abort, and failed
+ * the job every installer build waits on. Every step now, in order, keys and
+ * all; a comment is not part of the parse, so the two files may explain
+ * themselves differently.
+ */
+const stepKey = (s: any) =>
+  JSON.stringify(Object.keys(s ?? {}).sort().map((k) => [k, k === 'run' ? String(s.run).trim() : s[k]]))
+const stepLabel = (s: any) => s?.name ?? s?.uses ?? String(s?.run ?? '').trim().split('\n')[0]
+const ciGate = ciStepsOf('verify')
+const releaseGate = stepsOf('verify')
+check(
+  "every step of ci.yml's gate is in release.yml's gate, exactly",
+  ciGate.filter((s) => !releaseGate.map(stepKey).includes(stepKey(s))).map(stepLabel),
+  []
+)
+check(
+  "and release.yml's gate has no step ci.yml's lacks",
+  releaseGate.filter((s) => !ciGate.map(stepKey).includes(stepKey(s))).map(stepLabel),
+  []
+)
+check('in the same order', releaseGate.map(stepLabel), ciGate.map(stepLabel))
+ok('step for step, keys and values', JSON.stringify(releaseGate.map(stepKey)) === JSON.stringify(ciGate.map(stepKey)))
+check("and the release gate's timeout is the everyday gate's", jobs.verify?.['timeout-minutes'], gate['timeout-minutes'])
+
+// Named on their own as well, so a failure says WHICH prerequisite a gate
+// lost, and so dropping the pair from both files at once — which the mirror
+// above would call agreement — still fails.
+for (const [file, steps] of [['ci.yml', ciGate], ['release.yml', releaseGate]] as const) {
+  const runs = steps.map((s: any) => String(s.run ?? '').trim())
+  const suitesAt = runs.indexOf('npm run verify:ci')
+  const before = (re: RegExp) => {
+    const at = runs.findIndex((r) => re.test(r))
+    return at !== -1 && suitesAt !== -1 && at < suitesAt
+  }
+  ok(
+    `${file}: xvfb-run is on PATH before verify:ci, so the window suite runs instead of being skipped`,
+    before(/apt-get install\b[^\n]*\bxvfb\b/) && before(/^command -v xvfb-run$/m)
+  )
+  ok(
+    `${file}: and the AppArmor user-namespace knob is relaxed before it — without it Electron aborts, the gate goes red`,
+    before(/\bsysctl -w kernel\.apparmor_restrict_unprivileged_userns=0\b/)
+  )
+  ok(`${file}: its gate job has a timeout, so a hung Electron window cannot hold a runner`, typeof (file === 'ci.yml' ? gate : jobs.verify)?.['timeout-minutes'] === 'number')
+  check(`${file}: and still names no single suite`, runs.filter(namesASuite), [])
+}
 
 const port = ciJobs.portability ?? {}
 const portRuns = ciRunsOf('portability')

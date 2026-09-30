@@ -45,25 +45,53 @@ permissions:
   contents: write
 
 jobs:
+  # Step for step the same job as ci.yml's `verify`, which has already run on
+  # the commit this tag names. verify:targets fails if the two differ by a
+  # single step, because they once did: ci.yml gained xvfb and the sandbox
+  # sysctl, this job gained neither, and since ubuntu-latest already ships
+  # xvfb-run, verify:ci would have started the window suite here too — into an
+  # Electron that aborts without the sysctl, failing the gate every build
+  # below waits on. Change both files or neither.
   verify:
     name: Verify
     runs-on: ubuntu-latest
+    # A hung Electron window must not hold the release for six hours.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
           cache: npm
+
+      # The display and the sandbox for the one `check` suite that opens a real
+      # Electron window (verify:selection). Why each is needed is written once,
+      # in ci.yml, beside the identical steps.
+      - name: Install xvfb
+        run: |
+          if ! command -v xvfb-run >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends xvfb
+          fi
+          command -v xvfb-run
+
+      - name: Let Electron's sandbox start
+        run: |
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
       - run: npm ci
 
       - run: npm run typecheck
 
       # `npm run check` is NOT used here, and that is deliberate: it ends in
       # `npm run build`, which the build jobs below already do per-platform, and
-      # two of its suites cannot run on a clean Linux runner. But the list of
-      # what DOES run is no longer transcribed here — `scripts/ci-verify.mjs`
-      # derives it from package.json's own `check` chain and runs everything in
-      # it except a short, asserted exclusion list.
+      # one of its suites (verify:context) reads this machine's real transcripts,
+      # which a clean runner does not have. But the list of what DOES run is no
+      # longer transcribed here — `scripts/ci-verify.mjs` derives it from
+      # package.json's own `check` chain and runs everything in it except a
+      # short, asserted exclusion list.
       #
       # That indirection is the fix for a bug this file had twice. It used to
       # carry twenty hand-written `- run:` lines under a comment telling the
