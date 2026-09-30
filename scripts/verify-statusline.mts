@@ -25,6 +25,7 @@ import { dirname, join } from 'node:path'
 import {
   claimSessionFiles,
   clearSessionFiles,
+  EMPTY_STATUS_LINE,
   releaseSessionFiles,
   gitBashPath,
   hookCommand,
@@ -371,13 +372,43 @@ try {
     })
   }
 
+  /**
+   * What Claude Code does with a status line's stdout before drawing it, as
+   * read out of the 2.1.285 bundle: trim the whole thing, trim every line, drop
+   * the lines left empty. An empty result is "no text", which its fullscreen
+   * renderer draws as a reserved one-space row — the blank row under the input
+   * box that suppression used to leave (gotcha 118).
+   */
+  const cliText = (stdout: string): string =>
+    stdout
+      .trim()
+      .split('\n')
+      .flatMap((l) => l.trim() || [])
+      .join('\n')
+  const SGR = /\x1b\[[\d;]*m/g
+
+  console.log('\nsuppressed: the payload lands, and the line has no text and no row')
+  check(
+    'the empty line is SGR and nothing else, so a terminal paints nothing for it',
+    EMPTY_STATUS_LINE.length > 0 && EMPTY_STATUS_LINE.replace(SGR, ''),
+    ''
+  )
   const suppressed = 'stoke-verify-suppress'
   try {
+    /*
+     * This asserted '' until 2026-09-30, which was the bug: an empty stdout is
+     * exactly what the CLI's fullscreen renderer pads into a blank row. Driven
+     * against 2.1.285, the empty line below took that row away and left the
+     * footer directly under the input box, as with no status line at all.
+     */
+    const out = runWrapper(suppressed, JSON.stringify(REAL))
+    check('suppressed: the wrapper prints exactly the empty line, nothing else', out, EMPTY_STATUS_LINE)
     check(
-      'suppressed: the wrapper prints nothing at all',
-      runWrapper(suppressed, JSON.stringify(REAL)),
-      ''
+      "suppressed: the CLI reads it as a line, so it never falls back to its blank-row placeholder",
+      cliText(out).length > 0,
+      true
     )
+    check('suppressed: and that line holds no visible character', cliText(out).replace(SGR, ''), '')
     check(
       'suppressed: the payload landed anyway, byte for byte',
       readFileSync(statusLinePayloadFile(suppressed), 'utf8'),
@@ -395,10 +426,12 @@ try {
   const through = 'stoke-verify-passthrough'
   try {
     writeFileSync(join(statusLineDir(), `${through}.cmd`), ECHO_CMD, 'utf8')
+    const passed = runWrapper(through, JSON.stringify(REAL))
+    check('pass-through: the user command owns stdout', passed.trim(), 'STOKE-PASSTHROUGH')
     check(
-      'pass-through: the user command owns stdout',
-      runWrapper(through, JSON.stringify(REAL)).trim(),
-      'STOKE-PASSTHROUGH'
+      "pass-through: and nothing of Stoke's is added to the user's line",
+      passed.includes(EMPTY_STATUS_LINE),
+      false
     )
     check(
       'pass-through: the payload is still captured',
@@ -442,7 +475,11 @@ try {
   }
 
   const junk = 'stoke-verify-junk'
-  check('a non-JSON payload prints nothing', runWrapper(junk, 'Error: something went wrong\n'), '')
+  check(
+    'a non-JSON payload prints only the empty line, never the text it was fed',
+    runWrapper(junk, 'Error: something went wrong\n'),
+    EMPTY_STATUS_LINE
+  )
   check('and is not stored, so the last good reading survives a bad frame', readStatusLine(junk), null)
 
   check(
@@ -949,6 +986,11 @@ try {
       'switching suppression back on removes the pass-through file rather than leaving it armed',
       existsSync(join(statusLineDir(), `${both}.cmd`)),
       false
+    )
+    check(
+      "and with it gone the wrapper prints the empty line again, not the user's",
+      runWrapper(both, JSON.stringify(REAL)),
+      EMPTY_STATUS_LINE
     )
 
     // Recreate the pass-through file so clearSessionFiles' removal of the

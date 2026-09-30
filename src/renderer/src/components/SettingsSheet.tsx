@@ -833,9 +833,12 @@ export function SettingsSheet({
                       more={
                         <>
                           Stoke installs its own status line to read the context window and your
-                          plan limits from what the CLI pipes to it, and prints nothing back,
-                          because the line duplicates chrome the app already draws. Turn this off
-                          to keep your own: it still runs and still shows exactly what it did
+                          plan limits from what the CLI pipes to it, and prints an empty line
+                          back, because the line duplicates chrome the app already draws. The
+                          footer then sits directly under the input box, as with no status line
+                          at all — except for &ldquo;? for shortcuts&rdquo;, which Claude Code
+                          itself leaves out whenever any status line is set. Turn this off to
+                          keep your own: it still runs and still shows exactly what it did
                           before. Your <span className="mono">~/.claude/settings.json</span> is
                           never modified either way, and the change applies to sessions started
                           after it. Plan limits additionally need a Claude.ai sign-in rather than
