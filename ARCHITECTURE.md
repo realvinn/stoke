@@ -464,6 +464,17 @@ tab still sitting at ssh's own `password:` is reconnected — never one whose us
 "Never got in" is a one-way watch over the session's whole life (`SshLoginWatch`), not the end of
 its output: a logged-in shell that runs `su` or `ssh other` ends in the very same prompt shape.
 
+**Kept sessions** (`SshHost.persist: 'tmux'`, on for new hosts) are what replaces byobu. Each tab
+gets a name (`Tab.remoteSession`, `stoke-<8 hex>`, minted in `startHostSession`, saved in
+`tabs.json`) and runs inside its own invisible tmux session on a private socket, so the shell
+outlives the connection. ssh's keepalives end a dead link in about a minute with exit 255, which
+reconnects the tab by itself with backoff (`reconnectDecision`); Resume, Start again and a restart
+reattach by the same name; closing a kept tab asks Detach or End (`closeAsksDetach`), and End is a
+BatchMode `kill-session`; the launcher's folder switcher asks each kept host what is still running
+there. The screen stays on xterm's normal buffer, so the wheel and selection are Stoke's own, and
+every reconnect reprints the session's history into the new terminal before attaching (gotcha 126
+records what tmux does to scrollback, and the seam that has to be exact).
+
 The queue (`queue.ts`) is the safety property. Rejections are kept as tombstones rather than
 deleted, so "no, don't log that" is permanent — and because proposal ids are the sha1 of the
 dedupe key, updates were given their own key shape so the `create` key could stay byte-for-byte
@@ -737,7 +748,9 @@ npm run verify:worklog-retry    # writes happen once, and a retry never duplicat
 npm run verify:worklog-recall   # the read-only board read, its parse and its cache
 npm run verify:worklog-autoscan # when a session is scanned without being asked
 npm run verify:ssh            # ssh argv, ~/.ssh/config parsing, the remote transcript fetch,
-                              # the login probe and IdentityFile block against real `ssh -G`
+                              # the login probe and IdentityFile block against real `ssh -G`,
+                              # the kept-session names/commands (refused, never escaped) and
+                              # the command run by every local login shell against a fake tmux
 npm run verify:ssh-enroll     # the password-prompt detector (POSIX and ConPTY-shaped streams),
                               # the login watch that gates a reconnect (a `su` or nested ssh
                               # after login is never "at the prompt"), the offer table,
@@ -976,10 +989,18 @@ src/main/         Electron main process
                     the folder, renames it aside, renames the new copy in, rolls back on
                     failure, never kills. Writes a result the next launch reports
   profiles.ts       plans and creates a profile's folder + scan root
-  ssh.ts            ~/.ssh/config parsing, the ssh argv, the transcript command; for key
+  ssh.ts            ~/.ssh/config parsing, the ssh argv (keepalives before the
+                    destination), the transcript command; for key
                     login the ssh-copy-id / fallback argv, the LOGIN probe (no -i, no
                     IdentitiesOnly: what the tab itself will do), and the append-only
-                    `Host` / `IdentityFile` block. Gotchas 29, 75
+                    `Host` / `IdentityFile` block. For a host that keeps its shells
+                    (`persist: 'tmux'`): `buildPersistentCommand` (one `sh -c` that prints
+                    the session's history then attaches its private tmux session),
+                    `sshHostArgs` (refuses rather than connecting unkept), and the
+                    BatchMode list/kill argv and parser. Gotchas 29, 75, 126
+  sshSessions.ts    runs those BatchMode list and kill calls (execFile, never a shell;
+                    never throws) for the launcher's "Running on <host>" and a tab's
+                    "End session". No electron import; the runner is injectable
   sshEnroll.ts      setting up key login for a host that asks for a password.
                     `planEnrollLaunch` takes only the host id and size from a
                     `pty:start` with `opts.enroll`; `prepareEnroll` picks the key ssh -G
@@ -1310,6 +1331,11 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     reconnected after enrolling — and withholds the offer from a
                     session already in; `buildRemoteInstallCommand` is the
                     no-ssh-copy-id body, wrapped in `sh -c '…'` for any login shell
+  sshPersist.ts     the kept remote session's pure halves, for both processes: the
+                    private socket name, the session-name whitelist and minting
+                    (`stoke-<8 hex>`), which connect commands may run inside one
+                    (refused, never escaped) and the sentence Settings and a refused
+                    launch both show. Gotcha 126
   api.ts            the type of window.stoke, shared by preload and renderer
 scripts/          the verify-*.mts suites, make-icon.cjs
   ci-verify.mjs     derives CI's suite list from the `check` chain and fails on a stale
