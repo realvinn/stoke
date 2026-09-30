@@ -36,6 +36,9 @@ import {
   isGatedRemotePath,
   mayStoreKeyCookie,
   phoneHostDefaults,
+  refusalStatusLine,
+  remoteRefusal,
+  type RemoteAuthVerdict,
   phoneStatusFor,
   resumeVerdict,
   trackPrompt,
@@ -74,7 +77,10 @@ export type { ConnectTarget, Reach } from './link.ts'
  *    and the icons are served WITHOUT the bearer key; none of it embeds data.
  *    Every `/api/*` route and every WebSocket upgrade stays gated exactly as
  *    before (`isGatedRemotePath`). `/?k=<key>` sets the HttpOnly cookie only
- *    when that key is the right one (`mayStoreKeyCookie`).
+ *    when that key is the right one (`mayStoreKeyCookie`). A refusal is 401
+ *    for a missing or wrong key and 403 `{error, refused: 'access'}` for a
+ *    right key whose Access token this machine refused (`remoteRefusal`): the
+ *    client reads 401 as "the key", so Access must never answer with it.
  *    POLICY CHANGE, deliberately: the shell also skips `requireAccessHeader`.
  *    It used to be "nothing without Access"; now it is "no DATA without
  *    Access". The shell is static files that name no project, path or session
@@ -355,6 +361,9 @@ function friendlyListenError(err: unknown, port: number): string {
   }
   return err instanceof Error ? err.message : String(err)
 }
+
+const AUTHORIZED: RemoteAuthVerdict = { ok: true }
+const REFUSED_KEY: RemoteAuthVerdict = { ok: false, refused: 'key' }
 
 function safeEqual(a: string, b: string): boolean {
   const ab = Buffer.from(a)
@@ -879,6 +888,8 @@ export class RemoteServer {
 
   /**
    * Whether this request may have data: the bearer key, then Cloudflare Access.
+   * Which of the two refused it is part of the answer (`RemoteAuthVerdict`),
+   * because the phone must not be told its key is wrong when it is not.
    *
    * Async because verifying an Access token can mean fetching the team's keys.
    * The key is checked FIRST, and a request without it never reaches the
@@ -886,11 +897,11 @@ export class RemoteServer {
    * the unknown-`kid` refetch (cooldown-gated either way) is only reachable by
    * someone who already holds it.
    */
-  private async authorize(req: IncomingMessage): Promise<boolean> {
+  private async authorize(req: IncomingMessage): Promise<RemoteAuthVerdict> {
     const cfg = this.config
-    if (!cfg) return false
+    if (!cfg) return REFUSED_KEY
     const token = this.tokenFrom(req)
-    if (token === null || !safeEqual(token, cfg.token)) return false
+    if (token === null || !safeEqual(token, cfg.token)) return REFUSED_KEY
 
     /*
      * Access headers are only meaningful on loopback, because that is the only
@@ -912,7 +923,7 @@ export class RemoteServer {
      * was always true, so every tailnet request 401'd, including the WebSocket
      * upgrade, and the terminal simply never opened.
      */
-    if (!cfg.requireAccessHeader || this.viaTailnet(req)) return true
+    if (!cfg.requireAccessHeader || this.viaTailnet(req)) return AUTHORIZED
 
     const policy = accessPolicyOf(cfg)
     if (!policy) {
@@ -923,10 +934,10 @@ export class RemoteServer {
        * proves nothing: either header can be set by anything that reaches the
        * port. The status says `presence-only` and the panel says why.
        */
-      return (
-        req.headers['cf-access-jwt-assertion'] !== undefined ||
+      return req.headers['cf-access-jwt-assertion'] !== undefined ||
         req.headers['cf-access-authenticated-user-email'] !== undefined
-      )
+        ? AUTHORIZED
+        : { ok: false, refused: 'access', reason: 'missing' }
     }
     /*
      * Verified: only the signed assertion counts. A missing one is a refusal
@@ -936,9 +947,17 @@ export class RemoteServer {
     const keys = this.accessKeys ?? (this.accessKeys = new AccessKeySet({ certsUrl: certsUrlFor(policy.teamDomain) }))
     const verdict = await verifyAccessJwt(req.headers['cf-access-jwt-assertion'], policy, keys, Date.now())
     // Only the reason and the time are kept: never the token or its claims.
-    if (verdict.ok) this.accessAccepted = Date.now()
-    else this.accessRefused = { reason: verdict.reason, at: Date.now() }
-    return verdict.ok
+    if (verdict.ok) {
+      this.accessAccepted = Date.now()
+      return AUTHORIZED
+    }
+    this.accessRefused = { reason: verdict.reason, at: Date.now() }
+    /*
+     * A refusal of its own kind, never the key's 401: this request HAD the key,
+     * and the phone reads a 401 as "your key was replaced". It is told the
+     * machine's reason instead (`remoteRefusal`, 403).
+     */
+    return { ok: false, refused: 'access', reason: verdict.reason }
   }
 
   /* --------------------------------------------------------------- http */
@@ -957,23 +976,29 @@ export class RemoteServer {
      * One verdict per request, computed at most once: `authorize` may verify an
      * Access token (and fetch keys), and both the gate and the cookie below ask.
      */
-    let verdict: Promise<boolean> | null = null
-    const authorized = (): Promise<boolean> => (verdict ??= this.authorize(req))
-    if (isGatedRemotePath(url.pathname) && !(await authorized())) {
-      res.writeHead(401, { 'content-type': 'text/plain; charset=utf-8' })
-      res.end('Unauthorized. Open the link from Stoke, which carries the key.')
-      return
+    let verdict: Promise<RemoteAuthVerdict> | null = null
+    const authorized = (): Promise<RemoteAuthVerdict> => (verdict ??= this.authorize(req))
+    if (isGatedRemotePath(url.pathname)) {
+      // 401 for the key, 403 + the machine's reason for Access (`remoteRefusal`).
+      const refusal = remoteRefusal(await authorized())
+      if (refusal) {
+        res.writeHead(refusal.status, { 'content-type': refusal.contentType })
+        res.end(refusal.body)
+        return
+      }
     }
 
     // First visit arrives with ?k=<token>; park it in a cookie so later asset
     // and socket requests authenticate without the key in every URL.
     /*
-     * Only a key that authorised THIS request is stored (`mayStoreKeyCookie`).
+     * Only a key that MATCHED on this request is stored (`mayStoreKeyCookie`).
      * `tokenFrom` reads `?k` before the cookie, so `authorized` here is a
      * verdict on `queryKey` itself. Once the shell went public, `/?k=<anything>`
      * got a Set-Cookie with no check at all: any page could navigate the phone
      * to a garbage key and overwrite its working 90-day cookie. A wrong key now
-     * gets the shell with no cookie, and its Connect screen explains it.
+     * gets the shell with no cookie, and its Connect screen explains it. A
+     * right key whose Access token this machine refused IS stored, so the
+     * phone's next call reaches the Access check and hears its reason.
      */
     const queryKey = url.searchParams.get('k')
     const setCookie: Record<string, string> = queryKey && mayStoreKeyCookie(queryKey, await authorized())
@@ -1514,10 +1539,12 @@ export class RemoteServer {
      * handshake 503 itself (ws 8 `completeUpgrade`).
      */
     socket.on('error', () => {})
-    void this.authorize(req).then((ok) => {
+    void this.authorize(req).then((verdict) => {
       if (socket.destroyed) return
-      if (!ok) {
-        socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')
+      // 401 for the key, 403 for Access — as `handleHttp` answers.
+      const refused = refusalStatusLine(verdict)
+      if (refused) {
+        socket.write(`${refused}\r\n\r\n`)
         socket.destroy()
         return
       }

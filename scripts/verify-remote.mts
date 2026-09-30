@@ -27,8 +27,11 @@ import {
   isEndedExpired,
   isGatedRemotePath,
   isTerminalReport,
+  accessRefusalMessage,
   mayStoreKeyCookie,
   phoneHostDefaults,
+  refusalStatusLine,
+  remoteRefusal,
   phoneStatusFor,
   PROMPT_SETTLE_MS,
   resumeVerdict,
@@ -63,6 +66,8 @@ import {
 import {
   accessCertsUrl,
   accessPolicyOf,
+  accessRefusalForPhone,
+  type AccessRefusal,
   clampAccessAud,
   clampAccessTeamDomain,
   parseAccessRedirect
@@ -600,9 +605,80 @@ console.log('\nthe connect link advertises the RUNNING server token, never a dri
 }
 
 // Review of PX-14: /?k=<anything> used to set the cookie with no check.
-check('a wrong ?k is never stored as the cookie', mayStoreKeyCookie('WRONGKEY', false), false)
-check('the right one is', mayStoreKeyCookie('RIGHTKEY', true), true)
-check('no ?k: nothing to store', mayStoreKeyCookie(null, true), false)
+check('a wrong ?k is never stored as the cookie', mayStoreKeyCookie('WRONGKEY', { ok: false, refused: 'key' }), false)
+check('the right one is', mayStoreKeyCookie('RIGHTKEY', { ok: true }), true)
+check('no ?k: nothing to store', mayStoreKeyCookie(null, { ok: true }), false)
+check('an empty ?k: nothing to store', mayStoreKeyCookie('', { ok: true }), false)
+/*
+ * Gotcha 124, review: an Access refusal withheld the cookie too, so the phone's
+ * next /api call carried no key, got 401, and said "This link's key isn't
+ * current" about a key that had just matched.
+ */
+check(
+  'the right key whose Access token this machine refused IS stored',
+  mayStoreKeyCookie('RIGHTKEY', { ok: false, refused: 'access', reason: 'no-keys' }),
+  true
+)
+
+console.log('\nan Access refusal is never told to the phone as a key problem (gotcha 124)')
+{
+  const REASONS: AccessRefusal[] = [
+    'missing',
+    'malformed',
+    'alg',
+    'no-keys',
+    'unknown-kid',
+    'signature',
+    'iss',
+    'aud',
+    'expired',
+    'not-yet-valid',
+    'type'
+  ]
+  check('an authorised request is not refused', [remoteRefusal({ ok: true }), refusalStatusLine({ ok: true })], [null, null])
+  const byKey = remoteRefusal({ ok: false, refused: 'key' })
+  check(
+    'a missing or wrong key is 401 with the old plain-text body (the phone shows Connect)',
+    [byKey?.status, byKey?.contentType, byKey?.body],
+    [401, 'text/plain; charset=utf-8', 'Unauthorized. Open the link from Stoke, which carries the key.']
+  )
+  check("the key's socket refusal is 401 too", refusalStatusLine({ ok: false, refused: 'key' }), 'HTTP/1.1 401 Unauthorized')
+  check("a 401 is never read as an Access refusal", accessRefusalMessage(byKey?.status, { error: 'x', refused: 'access' }), null)
+
+  // What the phone must NEVER say about a key that matched.
+  const keyStory = /replaced|not accepted|isn.t current|scan|copy the link/i
+  for (const reason of REASONS) {
+    const r = remoteRefusal({ ok: false, refused: 'access', reason })
+    let body: unknown = null
+    try {
+      body = JSON.parse(r?.body ?? '')
+    } catch {
+      /* judged below */
+    }
+    const text = accessRefusalMessage(r?.status, body)
+    check(
+      `Access '${reason}': 403, JSON, and the phone reads back the sentence it was sent`,
+      [r?.status, r?.contentType, text !== null && text === accessRefusalForPhone(reason)],
+      [403, 'application/json; charset=utf-8', true]
+    )
+    check(`  and that sentence tells no key story`, keyStory.test(text ?? ''), false)
+    check(
+      `  and its socket is refused 403, not 401`,
+      refusalStatusLine({ ok: false, refused: 'access', reason }),
+      'HTTP/1.1 403 Forbidden'
+    )
+  }
+  // The three causes the review named each get their own sentence, naming the machine's side.
+  check('a JWKS outage says the keys could not be fetched', /signing keys/.test(accessRefusalForPhone('no-keys')), true)
+  check('a stale AUD points at Look it up', /Look it up/.test(accessRefusalForPhone('aud')), true)
+  check('clock skew names the clock, both ways', [/clock/.test(accessRefusalForPhone('expired')), /clock/.test(accessRefusalForPhone('not-yet-valid'))], [true, true])
+  check('a request that skipped Access says so', /did not/.test(accessRefusalForPhone('missing')), true)
+  check('those four are different sentences', new Set(['no-keys', 'aud', 'expired', 'missing'].map((r) => accessRefusalForPhone(r as AccessRefusal))).size, 4)
+  // Every OTHER 403 keeps its own meaning: bypass mode is refused with an error and no `refused`.
+  check('a bypass-mode 403 is not an Access refusal', accessRefusalMessage(403, { error: 'bypassPermissions is not allowed from the phone' }), null)
+  check('nor is a 403 with no body', accessRefusalMessage(403, null), null)
+  check('nor an Access-shaped body with an empty sentence', accessRefusalMessage(403, { refused: 'access', error: '' }), null)
+}
 
 // Gotcha 92: "Resume conversation" must never quietly become a new one.
 {

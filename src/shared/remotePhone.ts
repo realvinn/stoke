@@ -12,6 +12,7 @@
 import type { RegistryStatus } from './claudeRegistry.ts'
 import type { EffortLevel, PermissionMode } from './types.ts'
 import { resolveDefaultAgent } from './agents.ts'
+import { accessRefusalForPhone, type AccessRefusal } from './cfAccess.ts'
 import { isCodingCliId, type CodingCliId } from './codingClis.ts'
 
 /** What the phone shows for a session, distinct from the CLI's own vocabulary. */
@@ -508,14 +509,83 @@ export function advertisedRemoteToken(runningToken: string | null, settingsToken
 }
 
 /**
+ * What the server decided about one request's credentials.
+ *
+ * Three answers, not a boolean, because the phone must be told WHICH check
+ * failed. Both refusals used to be one 401, and the phone reads every 401 as a
+ * key problem ("Your key was replaced", "This link's key isn't current") — so a
+ * machine that could not fetch its Access keys, held a stale AUD or had a
+ * skewed clock sent its owner off to re-scan a key that was fine (gotcha 124).
+ * `access` is only ever reached with the right key: the key is checked first.
+ */
+export type RemoteAuthVerdict =
+  | { ok: true }
+  | { ok: false; refused: 'key' }
+  | { ok: false; refused: 'access'; reason: AccessRefusal }
+
+/**
+ * The answer to a refused HTTP request, or null for an authorised one.
+ *
+ * A wrong or missing key is 401 with the old plain-text body — the phone's
+ * `api()` turns a 401 into the Connect screen, which is right for that case. An
+ * Access refusal is 403 with a JSON `{error, refused: 'access'}`: `api()`
+ * surfaces `error` for any non-401 status, so the list, the Connect check and
+ * the session strip each show the machine's own reason instead of a key story.
+ * The WebSocket upgrade uses the same status (`refusalStatusLine`).
+ */
+export function remoteRefusal(
+  verdict: RemoteAuthVerdict
+): { status: 401 | 403; contentType: string; body: string } | null {
+  if (verdict.ok) return null
+  if (verdict.refused === 'key') {
+    return {
+      status: 401,
+      contentType: 'text/plain; charset=utf-8',
+      body: 'Unauthorized. Open the link from Stoke, which carries the key.'
+    }
+  }
+  return {
+    status: 403,
+    contentType: 'application/json; charset=utf-8',
+    body: JSON.stringify({ error: accessRefusalForPhone(verdict.reason), refused: 'access' })
+  }
+}
+
+/**
+ * The phone's half of `remoteRefusal`: the computer's sentence when an answer
+ * is an Access refusal, else null. Kept beside the writer so `verify:remote`
+ * holds the round trip — a 401 is never one, and neither is any other 403 (a
+ * bypass-mode refusal carries `error` but not `refused`).
+ */
+export function accessRefusalMessage(status: number | undefined, body: unknown): string | null {
+  if (status !== 403 || typeof body !== 'object' || body === null) return null
+  const { refused, error } = body as { refused?: unknown; error?: unknown }
+  return refused === 'access' && typeof error === 'string' && error !== '' ? error : null
+}
+
+/** The raw status line a refused WebSocket handshake gets: 401 for the key, 403 for Access. */
+export function refusalStatusLine(verdict: RemoteAuthVerdict): string | null {
+  if (verdict.ok) return null
+  return verdict.refused === 'key' ? 'HTTP/1.1 401 Unauthorized' : 'HTTP/1.1 403 Forbidden'
+}
+
+/**
  * Whether a phone's `?k=` may be stored as the key cookie — review finding on
  * PX-14. Once the shell went public the cookie was built from ANY `k`, so a
  * link with a wrong key (or any page navigating the phone to one) overwrote a
  * working 90-day cookie and logged the phone out. Only the key the request
- * was actually authorised with is stored.
+ * was actually checked against and MATCHED is stored.
+ *
+ * That includes a request whose key matched and whose Access token this machine
+ * then refused. Storing it gives nothing away — the sender already holds that
+ * exact key, and every later request still has to pass Access — and withholding
+ * it is what made an Access refusal read as a key problem: the shell loaded
+ * with no cookie, the next `/api` call carried no key, 401, and the phone said
+ * "This link's key isn't current". With the cookie, that call reaches the
+ * Access check and gets its 403 and the real reason.
  */
-export function mayStoreKeyCookie(queryKey: string | null, authorized: boolean): boolean {
-  return queryKey !== null && queryKey !== '' && authorized
+export function mayStoreKeyCookie(queryKey: string | null, verdict: RemoteAuthVerdict): boolean {
+  return queryKey !== null && queryKey !== '' && (verdict.ok || verdict.refused === 'access')
 }
 
 /**

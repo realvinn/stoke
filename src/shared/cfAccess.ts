@@ -160,6 +160,34 @@ export function accessRefusalText(reason: AccessRefusal): string {
 }
 
 /**
+ * What the PHONE is told when this machine refuses its Access token.
+ *
+ * Only ever sent to a request that already carried the right key (the key is
+ * checked first), so it is a sentence for the owner, not a hint for a stranger.
+ * It exists because the phone used to get the same 401 as a wrong key and said
+ * "Your key was replaced" — a diagnosis the server could disprove, for a clock,
+ * an unreachable JWKS or a stale AUD on the desktop (gotchas 46, 52, 124).
+ * Each line names the machine's side of the check; the desktop panel keeps the
+ * exact reason (`accessRefusalText`).
+ */
+export function accessRefusalForPhone(reason: AccessRefusal): string {
+  switch (reason) {
+    case 'missing':
+      return 'Stoke on your computer only answers requests that come through Cloudflare Access, and this one did not.'
+    case 'no-keys':
+      return "Stoke on your computer could not fetch your Cloudflare team's signing keys, so it could not check your Access sign-in. Is the computer online?"
+    case 'iss':
+    case 'aud':
+      return 'Your Cloudflare Access sign-in is for a different team or application than the one Stoke on your computer has on file. On the computer, open Settings › Phone access and press Look it up.'
+    case 'expired':
+    case 'not-yet-valid':
+      return "Stoke on your computer read your Cloudflare Access sign-in as out of date. If this repeats, check the computer's clock."
+    default:
+      return 'Stoke on your computer could not verify your Cloudflare Access sign-in. Settings › Phone access on the computer says why.'
+  }
+}
+
+/**
  * The parts of Access's login redirect that name the team and the application.
  *
  * A browser-shaped request to a hostname behind Access answers 302 to

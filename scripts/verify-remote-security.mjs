@@ -328,14 +328,30 @@ check('no key is refused', 401, await eventsHandshakeStatus(false))
 check('the key authenticates', 101, await eventsHandshakeStatus(true))
 
 /*
- * Access verified (gotcha 124). Every forgery below HOLDS THE KEY, so a 401 is
- * the Access check refusing it and nothing else. Before verification, the
- * first of these — the email header alone — was exactly what --access sent,
- * and it passed.
+ * Access verified (gotcha 124). Every forgery below HOLDS THE KEY, so it must
+ * be refused by the Access check and by nothing else — and SAY so: 403 with
+ * `refused: 'access'`, never the key's 401, because the phone reads a 401 as
+ * "your key was replaced". Before verification, the first of these — the email
+ * header alone — was exactly what --access sent, and it passed. Before the
+ * review of it, every refusal here was a 401.
  */
 if (fakeTeam) {
   console.log('\nCloudflare Access is verified, not just present (gotcha 124)')
-  const withHeaders = (headers) => status(`/api/projects?k=${key}`, { headers: { ...headers } })
+  const REFUSED = '403 access'
+  /** `403 access` for an Access refusal the phone can read, else the bare status. */
+  const withHeaders = async (headers) => {
+    try {
+      const res = await fetch(`${base}/api/projects?k=${key}`, {
+        headers: { ...ACCESS, ...headers },
+        signal: AbortSignal.timeout(20_000)
+      })
+      if (res.status !== 403) return res.status
+      const body = await res.json().catch(() => null)
+      return body?.refused === 'access' && typeof body.error === 'string' && body.error ? REFUSED : 403
+    } catch (e) {
+      return `error:${e.name}`
+    }
+  }
   // `status` spreads ACCESS first; an empty assertion overrides the valid one.
   const only = (headers) => ({ 'cf-access-jwt-assertion': '', ...headers })
   const throwaway = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey
@@ -344,58 +360,76 @@ if (fakeTeam) {
   const hsInput = `${b64(header({ alg: 'HS256' }))}.${p}`
 
   check('a signed token and the key are served', 200, await withHeaders({}))
-  check('the key alone, with no Access token, is refused', 401, await withHeaders(only({})))
+  check('the key alone, with no Access token, is refused', REFUSED, await withHeaders(only({})))
   check(
     'the key and a forged Cf-Access-Authenticated-User-Email are refused',
-    401,
+    REFUSED,
     await withHeaders(only({ 'cf-access-authenticated-user-email': 'verify@localhost' }))
   )
-  check('a garbage assertion is refused', 401, await withHeaders({ 'cf-access-jwt-assertion': 'garbage' }))
+  check('a garbage assertion is refused', REFUSED, await withHeaders({ 'cf-access-jwt-assertion': 'garbage' }))
   check(
     'a well-formed RS256 token from a key the team does not hold is refused',
-    401,
+    REFUSED,
     await withHeaders({ 'cf-access-jwt-assertion': mint(throwaway, header(), claims()) })
   )
   check(
     'and under a kid the team does not publish',
-    401,
+    REFUSED,
     await withHeaders({ 'cf-access-jwt-assertion': mint(throwaway, header({ kid: 'not-a-team-kid' }), claims()) })
   )
-  check('alg none is refused', 401, await withHeaders({ 'cf-access-jwt-assertion': `${b64(header({ alg: 'none' }))}.${p}.AAAA` }))
+  check('alg none is refused', REFUSED, await withHeaders({ 'cf-access-jwt-assertion': `${b64(header({ alg: 'none' }))}.${p}.AAAA` }))
   check(
     'HS256 keyed with the public key is refused',
-    401,
+    REFUSED,
     await withHeaders({ 'cf-access-jwt-assertion': `${hsInput}.${createHmac('sha256', pem).update(hsInput).digest('base64url')}` })
   )
   check(
     'an expired token is refused',
-    401,
+    REFUSED,
     await withHeaders({ 'cf-access-jwt-assertion': mint(teamKey, header(), claims({ exp: nowS - 3600, iat: nowS - 4000, nbf: nowS - 4000 })) })
   )
-  check('a token for another application is refused', 401, await withHeaders({ 'cf-access-jwt-assertion': mint(teamKey, header(), claims({ aud: ['f'.repeat(64)] })) }))
+  check('a token for another application is refused', REFUSED, await withHeaders({ 'cf-access-jwt-assertion': mint(teamKey, header(), claims({ aud: ['f'.repeat(64)] })) }))
   check(
     'a token naming another team as issuer is refused',
-    401,
+    REFUSED,
     await withHeaders({ 'cf-access-jwt-assertion': mint(teamKey, header(), claims({ iss: 'https://evil.cloudflareaccess.com' })) })
   )
-  check('a payload edited after signing is refused', 401, await withHeaders({ 'cf-access-jwt-assertion': `${h}.${b64(claims({ email: 'x@evil.example' }))}.${signedToken.split('.')[2]}` }))
+  check('a payload edited after signing is refused', REFUSED, await withHeaders({ 'cf-access-jwt-assertion': `${h}.${b64(claims({ email: 'x@evil.example' }))}.${signedToken.split('.')[2]}` }))
   check('a signed token WITHOUT the key is still refused: Access is not the key', 401, await status('/api/projects'))
 
   {
-    const res = await fetch(`${base}/?k=${key}`, {
-      headers: { 'cf-access-authenticated-user-email': 'verify@localhost' },
+    /*
+     * The key matched, so it IS stored: the sender already holds it, and every
+     * later call still has to pass Access. Withholding it was half the bug — the
+     * phone's next call carried no key, got 401, and blamed the key.
+     */
+    const forgedOnly = { 'cf-access-authenticated-user-email': 'verify@localhost' }
+    const res = await fetch(`${base}/?k=${key}`, { headers: forgedOnly, signal: AbortSignal.timeout(20_000) })
+    check('the shell still loads for a forged header', 200, res.status)
+    const cookie = res.headers.get('set-cookie') ?? ''
+    check('and the matched key is stored as the cookie', true, cookie.startsWith(`stoke_key=${encodeURIComponent(key)};`))
+    // What the phone's next call looks like: the cookie, no ?k, the same forgery.
+    const next = await fetch(`${base}/api/host`, {
+      headers: { ...forgedOnly, cookie: cookie.split(';')[0] },
       signal: AbortSignal.timeout(20_000)
     })
-    check('the shell still loads for a forged header', 200, res.status)
-    check('but the key is not stored as a cookie for it', null, res.headers.get('set-cookie'))
+    const body = await next.json().catch(() => null)
+    check("so the phone's next call hears Access, not the key: 403", 403, next.status)
+    check('  with refused: access', 'access', body?.refused)
+    check('  and a sentence that tells no key story', false, /replaced|not accepted|isn.t current/i.test(body?.error ?? 'replaced'))
+    const wrong = 'x'.repeat(key.length)
+    const wrongShell = await fetch(`${base}/?k=${wrong}`, { headers: forgedOnly, signal: AbortSignal.timeout(20_000) })
+    const wrongApi = await fetch(`${base}/api/host?k=${wrong}`, { headers: forgedOnly, signal: AbortSignal.timeout(20_000) })
+    check('a wrong key with the same forgery is still the key: no cookie, 401', 'null 401', `${wrongShell.headers.get('set-cookie')} ${wrongApi.status}`)
   }
 
   const forged = { 'cf-access-authenticated-user-email': 'verify@localhost' }
-  check('the pty socket refuses the key with a forged email header', 401, await handshakeStatus(null, forged))
-  check('the pty socket refuses a throwaway-key token', 401, await handshakeStatus(null, { 'cf-access-jwt-assertion': mint(throwaway, header(), claims()) }))
+  // Sockets: 403 for Access, 401 only for the key — the same split as HTTP.
+  check('the pty socket refuses the key with a forged email header, 403', 403, await handshakeStatus(null, forged))
+  check('the pty socket refuses a throwaway-key token, 403', 403, await handshakeStatus(null, { 'cf-access-jwt-assertion': mint(throwaway, header(), claims()) }))
   check('the pty socket takes a signed token and the key', 101, await handshakeStatus(null))
-  check('but not a signed token without the key', 401, await handshakeStatus(null, ACCESS, false))
-  check('/ws/events refuses the key with a forged email header', 401, await eventsHandshakeStatus(true, forged))
+  check('but not a signed token without the key: that is the key, 401', 401, await handshakeStatus(null, ACCESS, false))
+  check('/ws/events refuses the key with a forged email header, 403', 403, await eventsHandshakeStatus(true, forged))
   check('/ws/events takes a signed token and the key', 101, await eventsHandshakeStatus(true))
 }
 
