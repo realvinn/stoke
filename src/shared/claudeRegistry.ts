@@ -165,9 +165,13 @@ const STARTED_SLACK_MS = 5000
  *     spawn, and whose process descends from the pty's.** The `--continue`
  *     case on such a machine, where Stoke holds no id.
  *
- * 2 and 3 are fallbacks for a layout this machine cannot produce, and they are
- * UNVERIFIED on Windows. Both refuse ambiguity — two candidates is no answer —
- * because naming the wrong process would rebind a tab to a stranger's session.
+ * 2 and 3 are fallbacks for a layout a Mac cannot produce. ci.yml's probe runs
+ * both on Windows behind a stub `.cmd` launcher (never a real npm install): 2
+ * answers on x64 and arm64; 3 on windows-latest only — on windows-11-arm the
+ * CIM process table took 23-28 s, past `readProcessTable`'s deadline, so there
+ * is no table and 3 never answers (gotcha 92). Both refuse ambiguity — two
+ * candidates is no answer — because naming the wrong process would rebind a
+ * tab to a stranger's session.
  * `claimed` is every session id some OTHER target has already matched by pid,
  * so a fallback cannot steal a session that is provably somebody else's.
  *

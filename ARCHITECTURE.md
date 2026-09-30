@@ -938,7 +938,9 @@ key-enrollment checks; which legs have an sshd is `targets.mjs`'s `PROBE_SSH`. T
 under xvfb with FUSE and without (`scripts/probe/debian.sh`). Every check was shown able to fail:
 against the unpackaged Electron the cookie-encryption check goes red (no fuse); a statusLine
 command in the wrong shell's syntax turns the payload, hook and activity checks red; a stub that
-ignores `--session-id` turns the restore check red.
+ignores `--session-id` turns the restore check red; the process table forced unreadable on Windows
+turns the `--continue` tab's registry checks red — the one place descent alone can name a tab
+(gotcha 92), and red for real on windows-11-arm, where the CIM query outlasts its deadline.
 
 Beyond that, verification has been done by driving the running app over CDP — launching with
 `--remote-debugging-port`, clicking through real flows and capturing screenshots. That is how

@@ -637,8 +637,8 @@ await step('typing reaches the session, and its hooks land', async () => {
  * What the descent fallback stands on here, measured beside it so a red
  * above says WHY (gotcha 92): the CIM query `readProcessTable` runs (with
  * each process's Name added), timed against its 5 s deadline, and the stub's
- * ancestry from it. One query: on windows-11-arm it took 23-28 s where
- * windows-latest took under 1 s (runs 36706319439), and the -Property
+ * ancestry from it. One query: on windows-11-arm it took 23.6-28.2 s where
+ * windows-latest took under 0.8 s (run 36706319439), and the -Property
  * variant and PowerShell's own start-up (0.2 s) were measured there too and
  * explain none of it. Printed, never checked — the checks above are what
  * Stoke did with it.

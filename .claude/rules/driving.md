@@ -139,6 +139,12 @@ genuinely different code paths.
 > any real agent CLI (the stubs speak Stoke's side of each contract, not the vendor's), the macOS
 > native chrome, and real OS keystrokes — CDP's `Input` events are what typed.
 
+> **Checked on 2026-09-30, run 36707295344** — the probe gained a `stoke <folder> --continue` tab,
+> the one launch where Stoke holds no id, so on Windows only the registry's descent fallback can name
+> it. Linux x64 and macOS arm64 81/81, macOS x64 and Windows x64 70/70, Windows arm64 **67/70**: its
+> three descent checks are red because the CIM process table took 27.3 s there against a 5 s deadline
+> (gotcha 92, which also corrects an earlier reading of the Windows registry match).
+
 ## 110. `require` from a main-process inspector exists only during the evaluation, and the error it throws later is a modal nobody can click
 
 **Driving the main process through its Node inspector (`--inspect=<port>`, `Runtime.evaluate`
