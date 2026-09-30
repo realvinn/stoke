@@ -148,3 +148,77 @@ export function chromeRowToCookie(
   if (host.startsWith('.')) cookie.domain = host
   return cookie
 }
+
+/**
+ * A cookie as CDP hands it back (`Storage.getCookies`/`Network.getAllCookies`).
+ *
+ * On Windows the value is ALREADY decrypted — Chrome unsealed its own v20
+ * (DPAPI + app-bound) jar and CDP returns plaintext, HttpOnly included. So the
+ * Windows path never touches `decryptChromeValue`; it copies the profile, asks
+ * the user's own `chrome.exe` to open it headless, and reads these objects out.
+ * Only the mapping is left, and it is the same six rules as the SQLite row
+ * (gotcha 107), sourced from CDP fields instead of columns.
+ */
+export interface CdpCookie {
+  name: string
+  value: string
+  /** With a leading dot for a Domain= cookie, without for a host-only one — as Chrome's SQLite host_key. */
+  domain: string
+  path: string
+  secure: boolean
+  httpOnly: boolean
+  /** True for a cookie with no persistent expiry; `expires` is then -1. */
+  session: boolean
+  /** Unix seconds, or -1 for a session cookie. */
+  expires: number
+  /** CDP spells it `Strict`/`Lax`/`None`; absent is unspecified. */
+  sameSite?: 'Strict' | 'Lax' | 'None'
+  /**
+   * Present for a partitioned (CHIPS) cookie — skipped, since `cookies.set` has
+   * no partition key (gotcha 107). CDP gives it as a string or `{ topLevelSite }`.
+   */
+  partitionKey?: unknown
+}
+
+const CDP_SAME_SITE: Record<string, ImportedCookie['sameSite']> = {
+  None: 'no_restriction',
+  Lax: 'lax',
+  Strict: 'strict'
+}
+
+/**
+ * One CDP cookie into a cookie Electron will accept, or why it is left behind.
+ *
+ * Mirrors `chromeRowToCookie` — the value is already plaintext, so the only
+ * difference is the source shape: `session`/`expires` for the 30-day rule,
+ * `domain`'s leading dot for host-only, `partitionKey` for CHIPS, the string
+ * `sameSite`. Kept a pure function so `verify:chrome-import` holds it on
+ * synthetic CDP objects, with no browser anywhere.
+ */
+export function cdpCookieToImported(c: CdpCookie, nowSeconds: number): ImportedCookie | SkipReason {
+  if (c.partitionKey !== undefined && c.partitionKey !== null && c.partitionKey !== '') return 'partitioned'
+  if (typeof c.value !== 'string') return 'undecryptable'
+  const host = String(c.domain ?? '')
+  const name = String(c.name ?? '')
+  if (!host || !/^[\w.\-[\]:]+$/.test(host.replace(/^\./, ''))) return 'invalid'
+  const secure = c.secure === true
+  const persistent = c.session !== true && typeof c.expires === 'number' && c.expires > 0
+  const expires = persistent ? Math.floor(c.expires) : nowSeconds + SESSION_COOKIE_DAYS * 86_400
+  if (expires <= nowSeconds) return 'expired'
+  let sameSite = (c.sameSite && CDP_SAME_SITE[c.sameSite]) ?? 'unspecified'
+  // SameSite=None without Secure is refused by Chromium's own setter.
+  if (sameSite === 'no_restriction' && !secure) sameSite = 'unspecified'
+  const path = c.path && c.path.startsWith('/') ? c.path : '/'
+  const cookie: ImportedCookie = {
+    url: `${secure ? 'https' : 'http'}://${host.replace(/^\./, '')}${path}`,
+    name,
+    value: c.value,
+    path,
+    secure,
+    httpOnly: c.httpOnly === true,
+    expirationDate: expires,
+    sameSite
+  }
+  if (host.startsWith('.')) cookie.domain = host
+  return cookie
+}
