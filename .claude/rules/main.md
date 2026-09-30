@@ -13,6 +13,9 @@ paths:
   - "src/renderer/src/components/BackupSettings.tsx"
   - "src/shared/hub/*.ts"
   - "scripts/verify-hub.mts"
+  - "hub/**/*.ts"
+  - "hub/build.mjs"
+  - "scripts/verify-hub-server.mts"
 ---
 
 # Anywhere in the main process
@@ -365,3 +368,40 @@ outright, and `verify:hub` holds the two-`host-1` case (`two machines' host-1 st
 **Not fixed here:** `mergeSetup` still matches by id, so a `.stoke-setup` import can still replace a
 different host. The fix is the same rule — by `syncId`, else alias + command, else append with a
 free id — and needs its own `verify:secrets` case (the one above, which the old merge fails).
+
+## 140. A device id is a name anyone with the password can claim, so a hub device is ACTIVE only by id AND key
+
+**Found 2026-10-01, building the hub server (`hub/app.ts`).** A device picks its own id and posts
+it with its public keys at sign-in (`LoginRequest.device`); the session is bound to both. The
+obvious "is this device active" test — is `session.device_id` in the chain's active list — is
+wrong in a way no honest flow ever exercises: someone holding the password signs in FIRST under
+the id a real device is about to join with (a squatter: pending, since the chain does not list
+that id yet), the real device then joins with its own keys, and the squatter's session now names
+an active id. By id alone the hub hands it every active-only route — read all of the account's
+items and every change to them (ciphertext, but all of it), and PUT over them as that device:
+junk no device can open, which destroys the data as surely as reading it would expose it. The
+spec's promise (§7.1) that a guessed password "cannot read items" would be false.
+
+The rule, in three places:
+
+- `authenticate` counts a session active only when the chain lists its id WITH
+  `sign === session.sign_pub` (`Authed.active`).
+- `login` refuses an id the chain binds to another key, and any revoked id: a revoked device
+  comes back as a new identity or not at all.
+- `verify:hub-server` holds the squatter: sign in under C's id first, let C join by the Recovery
+  Kit, and the squatter's `GET /v1/items` must still be `pending` (and its next sign-in
+  `forbidden`). Measured by mutation: with the key match dropped
+  (`find((d) => d.id === session.device_id)`), that check was the ONLY failure in the whole suite.
+
+The same holds wherever else "is this device active" is decided — the Stoke-side sync engine, and
+the relay host judging who is attaching (which already verifies the handshake against the
+chain's key for that id): compare the chain's record by id AND key, never by id.
+
+The suite-level lesson from the same round: `verify:hub-server` went green on its first run, so
+every refusal in the server was mutated one at a time (`/tmp/.../mut/run.mjs`, eighteen of them:
+drop the replay check, the edge secret, the invite claim, the wraps rule, the account scope on
+relay ids, …) until each turned it red. Two did not at first, and both were real gaps: the only
+text-frame check was on a frame the relay had QUEUED before the host joined, which takes a
+different delivery path from a live one; and nothing ever logged a secret-named field, so the
+log's redaction was untested. A suite that passes first time has not yet shown it can fail.
+
