@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { SshHost, SshKeyEnroll } from '@shared/types'
 import { isEnrollableAlias } from '@shared/sshAuth'
+import { persistRefusal } from '@shared/sshPersist'
 import { FieldHint } from './FieldHint'
-import { IconClose, IconPlus } from './Icons'
+import { IconClose, IconCopy, IconPlus } from './Icons'
 
 interface Props {
   hosts: SshHost[]
@@ -53,15 +54,52 @@ const KEY_ENROLL_CHOICES: { id: SshKeyEnroll; label: string; hint: string }[] = 
 ]
 
 /**
- * What a new host runs on connect, and why it is not empty.
+ * What a new host runs on connect: nothing extra, a login shell.
  *
- * A remote session cannot use Stoke's resume: resume replays the transcript
- * Claude Code writes, and for a remote session that file is on the far machine
- * where Stoke cannot see it. A terminal multiplexer is therefore the only thing
- * that survives a dropped link, so the useful default is one — not a bare login
- * shell that loses the work the first time the wifi drops.
+ * It used to be `byobu`, because a multiplexer was the only thing that
+ * survived a dropped link — Stoke's own resume replays a transcript that, for a
+ * remote session, lives on the far machine. A new host now keeps its tabs'
+ * shells itself (`persist: 'tmux'`, a private invisible session per tab), so
+ * byobu's status bar, windows and F-keys are no longer the price of surviving
+ * the wifi. A host saved with `byobu` keeps it (gotcha 126).
  */
-const DEFAULT_COMMAND = 'byobu'
+const DEFAULT_COMMAND = ''
+
+/**
+ * For people who keep byobu (or their own tmux) as the connect command.
+ * Nothing Stoke writes: it goes in their own config, by their own hand.
+ */
+const BYOBU_SNIPPET = [
+  '# ~/.byobu/.tmux.conf for byobu, ~/.tmux.conf for plain tmux',
+  '# The wheel scrolls tmux history; it leaves copy mode at the bottom.',
+  'set -g mouse on',
+  '# Copies inside the session reach this machine (vim "+y, tmux drags).',
+  'set -g set-clipboard on',
+  '# Append with -ga: plain -g replaces byobu’s own xterm* line.',
+  "set -ga terminal-overrides ',xterm*:indn@'"
+].join('\n')
+
+/** A snippet the user may copy into their own config, and the button that takes it. */
+function Snippet({ text }: { text: string }): React.JSX.Element {
+  const [copied, setCopied] = useState(false)
+  return (
+    <div className="step-cmd">
+      <pre className="mono">{text}</pre>
+      <button
+        className="btn"
+        data-variant="ghost"
+        onClick={() => {
+          window.stoke.clipboard.writeText(text)
+          setCopied(true)
+          window.setTimeout(() => setCopied(false), 1600)
+        }}
+      >
+        <IconCopy />
+        {copied ? 'Copied' : 'Copy'}
+      </button>
+    </div>
+  )
+}
 
 /** One shared datalist: every alias box offers the same aliases. */
 const ALIAS_LIST_ID = 'stoke-ssh-aliases'
@@ -224,7 +262,10 @@ export function HostsSettings({
         command: DEFAULT_COMMAND,
         worklog: false,
         keyEnrollRefused: false,
-        keyEnrolled: false
+        keyEnrolled: false,
+        // A NEW machine keeps its tabs' shells running between connections;
+        // one saved before this existed hydrates as 'off', unchanged.
+        persist: 'tmux'
       }
     ])
   }, [hosts, onChange])
@@ -259,12 +300,32 @@ export function HostsSettings({
               terminal and behave as they would in any shell.
             </p>
             <p>
-              <b>The connect command.</b> <span className="mono">byobu</span>, or{' '}
-              <span className="mono">tmux new -A -s stoke</span>, leaves the session running on the
-              far machine, so a dropped connection reconnects to the same work rather than losing
-              it. A multiplexer is the only thing that survives the link going down, because
-              Stoke&rsquo;s own resume cannot reach across. Leave it empty for a plain login shell.
+              <b>Keep sessions running.</b> Each tab to the machine gets its own shell inside an
+              invisible <span className="mono">tmux</span> session (a private one, so your own tmux
+              and byobu are never touched). A dropped connection, a sleeping laptop or quitting
+              Stoke leaves it running; the tab reconnects by itself, and a restart reattaches.
+              There is no status bar and no copy mode: the wheel, dragging and Copy work as they do
+              locally. Closing a tab asks whether to detach or end the shell, and the launcher lists
+              the ones still running. The machine needs <span className="mono">tmux</span>; without
+              it the tab says so and runs a plain shell.
             </p>
+            <p>
+              What scrolls back: everything a reconnect brings back (tmux keeps 5000 lines), and
+              anything that arrives a screen at a time. A burst longer than the screen keeps only
+              what tmux drew, as byobu does; reconnecting brings the rest back.
+            </p>
+            <p>
+              <b>The connect command</b> runs inside that session, as it is. Leave it empty for a
+              login shell. It cannot contain <span className="mono">&apos; &quot; \ $ `</span> or{' '}
+              <span className="mono">!</span> while sessions are kept, because Stoke hands it to the
+              remote shell untouched rather than escaping it.
+            </p>
+            <p>
+              <b>Keeping byobu instead?</b> Turn &ldquo;Keep sessions running&rdquo; off and set the
+              command to <span className="mono">byobu</span>. These lines in its config make the
+              wheel scroll its history and copies reach this machine:
+            </p>
+            <Snippet text={BYOBU_SNIPPET} />
             <p>
               <b>Writing up work.</b> Ticking that on a machine copies the session&rsquo;s
               transcript back over the same connection, which is also what makes the context meter
@@ -272,10 +333,9 @@ export function HostsSettings({
               nothing is copied off that machine at all.
             </p>
             <p>
-              Two things do not apply to a remote session, both for the same reason: the context
-              meter stays blank and Stoke&rsquo;s resume cannot reach one. Both read the transcript
-              Claude Code writes, and that file lives on the far machine — which is what the
-              connect command is for.
+              Stoke&rsquo;s own conversation resume does not reach a remote session: it replays the
+              transcript Claude Code writes, and that file lives on the far machine. A kept session
+              is what survives instead.
             </p>
           </>
         }
@@ -385,9 +445,12 @@ export function HostsSettings({
         const alias = valueOf(host, 'alias').trim()
         const unknownAlias = suggestions.length > 0 && alias !== '' && !known.has(alias.toLowerCase())
         const name = host.label.trim() || host.alias.trim() || 'New machine'
-        const summary = [host.alias.trim(), host.command.trim() || 'login shell']
+        const kept = host.persist === 'tmux'
+        const summary = [host.alias.trim(), host.command.trim() || 'login shell', kept ? 'kept running' : '']
           .filter(Boolean)
           .join(' — ')
+        // Said against the committed command, like the argv main will build.
+        const refusal = kept ? persistRefusal(host.command) : null
 
         return (
           <details key={host.id} className="settings-item" open={host.alias.trim() === ''}>
@@ -464,7 +527,7 @@ export function HostsSettings({
                 <span className="field-label">Command on connect</span>
                 <input
                   className="input mono"
-                  placeholder="byobu — empty for a login shell"
+                  placeholder="empty for a login shell"
                   value={valueOf(host, 'command')}
                   spellCheck={false}
                   onChange={(e) =>
@@ -475,6 +538,28 @@ export function HostsSettings({
                     if (e.key === 'Enter') e.currentTarget.blur()
                   }}
                 />
+              </label>
+              {refusal && <FieldHint tone="warning">{refusal}</FieldHint>}
+
+              {/*
+                Keep this machine's shells running between connections (gotcha
+                126). Per host, because it needs tmux over there and changes what
+                closing a tab means; new machines start with it on.
+              */}
+              <label className="check-row">
+                <input
+                  type="checkbox"
+                  checked={kept}
+                  onChange={(e) => update(host.id, { persist: e.target.checked ? 'tmux' : 'off' })}
+                />
+                <span>
+                  <span className="field-label">Keep sessions running on this machine</span>
+                  <span className="field-hint">
+                    {kept
+                      ? 'Each tab survives a dropped link and a restart. Needs tmux there.'
+                      : 'Off: a dropped link ends the shell, unless the command above keeps it.'}
+                  </span>
+                </span>
               </label>
 
               {/*
