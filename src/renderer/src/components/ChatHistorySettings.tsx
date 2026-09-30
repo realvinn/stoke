@@ -81,7 +81,8 @@ export function ChatHistorySettings({ settings, onPatch, status, detection }: Pr
   const [importNote, setImportNote] = useState<{ tone: 'success' | 'warning'; text: string } | null>(null)
   const [removing, setRemoving] = useState<number | null>(null)
   const runImport = (path: string | null): void => {
-    if (importingRef.current) return
+    // Nor while the index is being deleted: the import would write into a store about to go.
+    if (importingRef.current || busy === 'delete') return
     importingRef.current = true
     setImporting(true)
     setImportNote(null)
@@ -132,7 +133,7 @@ export function ChatHistorySettings({ settings, onPatch, status, detection }: Pr
       if (!carriesFiles(e)) return
       e.preventDefault()
       e.stopPropagation()
-      e.dataTransfer.dropEffect = on && !importing ? 'copy' : 'none'
+      e.dataTransfer.dropEffect = on && !importing && busy !== 'delete' ? 'copy' : 'none'
     },
     onDragLeave: (e: React.DragEvent): void => {
       if (!carriesFiles(e)) return
@@ -302,7 +303,7 @@ export function ChatHistorySettings({ settings, onPatch, status, detection }: Pr
           data-disabled={!on ? 'true' : undefined}
           {...dropProps}
         >
-          <button className="btn" disabled={!on || importing} aria-busy={importing} onClick={() => runImport(null)}>
+          <button className="btn" disabled={!on || importing || busy === 'delete'} aria-busy={importing} onClick={() => runImport(null)}>
             {importing && <Spinner />}
             {importing ? 'Importing…' : 'Import an export…'}
           </button>
@@ -393,14 +394,26 @@ export function ChatHistorySettings({ settings, onPatch, status, detection }: Pr
             disabled={!on || busy !== null}
             aria-busy={busy === 'rebuild'}
             onClick={() => act('rebuild')}
-            title="Read every tool again from scratch. Imported chats are kept."
+            title="Read every tool again from scratch. Imported chats are kept, and an import running now carries on."
           >
             {busy === 'rebuild' && <Spinner />}
             Rebuild
           </button>
+          {/*
+           * Delete waits for an import to end rather than stopping it: stopped,
+           * the import's note under the button would report a partial import of
+           * conversations the delete had just removed. Rebuild needs no such
+           * wait — it keeps imports and leaves a running one alone (worker.ts).
+           */}
           {confirmDelete ? (
             <>
-              <button className="btn" data-variant="danger" onClick={() => act('delete')}>
+              <button
+                className="btn"
+                data-variant="danger"
+                disabled={importing}
+                title={importing ? 'Wait for the import to finish' : undefined}
+                onClick={() => act('delete')}
+              >
                 Delete the copy
               </button>
               <button className="btn" data-variant="ghost" onClick={() => setConfirmDelete(false)}>
@@ -411,8 +424,9 @@ export function ChatHistorySettings({ settings, onPatch, status, detection }: Pr
             <button
               className="btn"
               data-variant="ghost"
-              disabled={busy !== null || !status || status.chats === 0}
+              disabled={busy !== null || importing || !status || status.chats === 0}
               aria-busy={busy === 'delete'}
+              title={importing ? 'Wait for the import to finish' : undefined}
               onClick={() => setConfirmDelete(true)}
             >
               {busy === 'delete' && <Spinner />}

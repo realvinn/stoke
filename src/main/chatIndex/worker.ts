@@ -26,9 +26,16 @@ const { dir } = workerData as WorkerData
 
 let store: ChatStore | null = null
 let running: Promise<ChatPassSummary> | null = null
-let cancel = false
 /** An import in progress: one at a time, and Delete index waits for it like a pass. */
 let importing: Promise<unknown> | null = null
+/*
+ * Two stop flags, not one. A pass and an import each clear their own when they
+ * start, and Rebuild stops only the pass: it keeps imports, so it has no reason
+ * to stop one — with a shared flag it did, and a pass starting mid-import
+ * cleared a stop that was meant for the import.
+ */
+let stopPass = false
+let stopImport = false
 let progress: ChatIndexStatus['progress'] = null
 
 /** The store, opened on first need — and never CREATED just to answer a status or a search. */
@@ -68,8 +75,10 @@ function fail(id: number, err: unknown): void {
   port!.postMessage(r)
 }
 
+/** Stop the pass and any import, and wait for both: Delete index and quit. */
 async function settle(): Promise<void> {
-  cancel = true
+  stopPass = true
+  stopImport = true
   if (running) await running.catch(() => null)
   if (importing) await importing.catch(() => null)
 }
@@ -85,12 +94,12 @@ port.on('message', async (msg: WorkerRequest) => {
       case 'scan': {
         // One pass at a time; the host queues the next.
         if (running) return reply(msg.id, null)
-        cancel = false
+        stopPass = false
         const s = openStore(true)!
         const pass = runPass(s, msg.plan, {
           now: Date.now,
           yieldTurn: () => new Promise((r) => setImmediate(r)),
-          cancelled: () => cancel,
+          cancelled: () => stopPass,
           progress: (p) => {
             progress = p
             emit()
@@ -116,7 +125,9 @@ port.on('message', async (msg: WorkerRequest) => {
         reply(msg.id, statusNow())
         return
       case 'cancel':
-        cancel = true
+        // Chat history switched off: nothing more is read, from a tool or a file.
+        stopPass = true
+        stopImport = true
         reply(msg.id, null)
         return
       case 'delete': {
@@ -137,12 +148,12 @@ port.on('message', async (msg: WorkerRequest) => {
       }
       case 'import': {
         if (importing) return reply(msg.id, { ok: false, error: 'An import is already running.' })
-        cancel = false
+        stopImport = false
         const s = openStore(true)!
         const job = importExport(s, { path: msg.path, options: msg.options, maxTextBytes: STORE_MAX_TEXT_BYTES }, {
           now: Date.now,
           yieldTurn: () => new Promise((r) => setImmediate(r)),
-          cancelled: () => cancel
+          cancelled: () => stopImport
         })
         importing = job
         try {
@@ -169,7 +180,9 @@ port.on('message', async (msg: WorkerRequest) => {
         return
       }
       case 'rebuild': {
-        await settle()
+        // The pass only: an import running beside it carries on, and Rebuild keeps what it writes.
+        stopPass = true
+        if (running) await running.catch(() => null)
         const s = openStore(false)
         if (s) {
           s.clearLocal()

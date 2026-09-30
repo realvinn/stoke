@@ -147,7 +147,7 @@ export class ChatIndexHost {
     })
   }
 
-  /** Stop the running pass where it is; nothing it wrote is lost. */
+  /** Stop the running pass, and any import, where they are (chat history switched off); nothing written is lost. */
   cancel(): Promise<void> {
     this.queued = null
     if (!this.worker) return Promise.resolve()
@@ -180,13 +180,16 @@ export class ChatIndexHost {
     return this.request('removeImport', { importId }).then(() => undefined)
   }
 
-  /** Every local chat gone, imports kept; the caller starts the pass that reads the tools again. */
+  /**
+   * Every local chat gone, imports kept; the caller starts the pass that reads
+   * the tools again. Stops the running pass, never an import: that carries on.
+   */
   rebuild(): Promise<void> {
     this.queued = null
     return this.request('rebuild', {}).then(() => undefined)
   }
 
-  /** Delete the whole store: the running pass is stopped first. */
+  /** Delete the whole store: the running pass and any import are stopped first. */
   deleteIndex(): Promise<void> {
     this.queued = null
     return this.request('delete', {}).then(() => undefined)

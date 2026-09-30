@@ -1426,6 +1426,26 @@ try {
     check('...and the status lists the import', st.imports.map((r) => [r.kind, r.indexed]), [['export-claude', 2]])
     await host.rebuild()
     check('Rebuild keeps imports', [(await host.search('currentbranchword', 10)).length, (await host.search('wombat', 10)).length], [1, 0])
+
+    /*
+     * Rebuild mid-import stops the pass only. The worker had one stop flag for
+     * both, so Rebuild — which keeps imports — stopped a running one, and a
+     * stop while writing was then recorded as the whole file imported.
+     */
+    const bulkZip = join(exportsDir, 'bulk.zip')
+    const bulk = Array.from({ length: 400 }, (_, k) => ({
+      uuid: `bulk-${k}`,
+      name: `Bulk ${k}`,
+      created_at: iso(T0 + k * 1000),
+      updated_at: iso(T0 + k * 1000),
+      chat_messages: [{ uuid: `bulk-${k}-m`, sender: 'human', content: [{ type: 'text', text: `bulkword number ${k}` }], created_at: iso(T0 + k * 1000) }]
+    }))
+    writeFileSync(bulkZip, makeZip([{ name: 'conversations.json', data: json(bulk) }]))
+    const roomy = options({}, { perSource: 1000 })
+    const [during] = await Promise.all([host.importExport(bulkZip, roomy), host.rebuild()])
+    check('Rebuild while an import runs leaves it to finish', [during.ok, during.ok && [during.record.admitted, during.record.added]], [true, [400, 400]])
+    const [cut] = await Promise.all([host.importExport(bulkZip, roomy), host.cancel()])
+    check('switching chat history off stops an import, and says so', [cut.ok, !cut.ok && /stopped/.test(cut.error)], [false, true])
   }
   await host.deleteIndex()
   check('Delete index removes the store…', existsSync(workerDir), false)
