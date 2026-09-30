@@ -115,6 +115,28 @@ interface Props {
   onOpenUrl: (url: string) => void
   onRestart: (tab: Tab) => void
   onClose: (tabId: string) => void
+  /** A kept SSH tab waiting to reconnect (`tab.reconnect`): try now, or stop trying. */
+  onReconnectNow?: (tab: Tab) => void
+  onStopReconnect?: (tabId: string) => void
+}
+
+/**
+ * "Reconnecting in 5 s" — its own component so the once-a-second tick
+ * re-renders this line and not the whole terminal pane.
+ */
+function ReconnectCountdown({ at, attempt }: { at: number; attempt: number }): React.JSX.Element {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(id)
+  }, [])
+  const secs = Math.max(0, Math.ceil((at - now) / 1000))
+  return (
+    <span>
+      Connection lost — {secs > 0 ? `reconnecting in ${secs} s` : 'reconnecting…'}
+      {attempt > 1 ? ` (try ${attempt})` : ''}. The shell is still running on the machine.
+    </span>
+  )
 }
 
 export function TerminalView({
@@ -129,7 +151,9 @@ export function TerminalView({
   voice,
   onOpenUrl,
   onRestart,
-  onClose
+  onClose,
+  onReconnectNow,
+  onStopReconnect
 }: Props): React.JSX.Element {
   const hostRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
@@ -281,6 +305,17 @@ export function TerminalView({
       // painted over the next one, which is what a wide ligature otherwise does.
       rescaleOverlappingGlyphs: true,
       scrollback: 20_000,
+      /*
+       * A kept SSH tab only (gotcha 126): tmux clears the screen with `CSI 2J`
+       * when it attaches, and xterm's default ED2 simply blanks what is there.
+       * A reconnect prints the session's history into this fresh terminal just
+       * before attaching, so the default wiped the last screenful of it — 29
+       * of the 30 lines above the prompt, measured. With this on, ED2 pushes
+       * the screen into the scrollback instead (PuTTY's and Terminal.app's
+       * behaviour), and nothing between the history and the live screen is
+       * lost. Other tabs keep xterm's default.
+       */
+      scrollOnEraseInDisplay: !!tab.remoteSession,
       allowProposedApi: true,
       allowTransparency: true,
       macOptionIsMeta: true,
@@ -1574,14 +1609,34 @@ export function TerminalView({
             Close tab
           </button>
         </div>
+      ) : tab.status === 'exited' && tab.reconnect ? (
+        /*
+         * A kept SSH tab whose link dropped, counting down to its next try
+         * (gotcha 126). The shell never stopped on the machine, so the card
+         * says so rather than "Session ended".
+         */
+        <div className="term-exit" role="status">
+          <ReconnectCountdown at={tab.reconnect.at} attempt={tab.reconnect.attempt} />
+          <button className="btn" data-variant="primary" onClick={() => onReconnectNow?.(tab)}>
+            Reconnect now
+          </button>
+          <button className="btn" data-variant="ghost" onClick={() => onStopReconnect?.(tab.id)}>
+            Stop
+          </button>
+          <button className="btn" data-variant="ghost" onClick={() => onClose(tab.id)}>
+            Close tab
+          </button>
+        </div>
       ) : tab.status === 'exited' && (
         <div className="term-exit" role="status">
           <span>
-            Session ended
+            {tab.remoteSession && tab.exitCode !== 0
+              ? 'Disconnected — the shell may still be running on the machine'
+              : 'Session ended'}
             {tab.exitCode !== null && tab.exitCode !== 0 ? ` (exit ${tab.exitCode})` : ''}
           </span>
           <button className="btn" data-variant="primary" onClick={() => onRestart(tab)}>
-            Start again
+            {tab.remoteSession && tab.exitCode !== 0 ? 'Reconnect' : 'Start again'}
           </button>
           <button className="btn" data-variant="ghost" onClick={() => onClose(tab.id)}>
             Close tab

@@ -161,6 +161,11 @@ export function openNewSession(start?: { cwd: string; name: string }): void {
           )
         case 'open':
           return pickRow({ icon: 'search', name: c.label, meta: 'Pick or create a folder beside your projects' }, () => browseStep(null))
+        // The phone's picker is never handed the running list (only the
+        // desktop launcher asks hosts for it), so this row is unreachable; it
+        // is here so a list that does carry one draws it inert, not blank.
+        case 'remote-session':
+          return pickRow({ icon: 'terminal', name: c.label, meta: 'Reattach it from the desktop', disabled: true }, () => {})
       }
     }
 

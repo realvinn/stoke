@@ -249,6 +249,16 @@ export const CH = {
   sshAwaitingPassword: 'ssh:awaiting-password',
   /** main -> renderer: progress and outcome of an enrollment. */
   sshEnrollEvent: 'ssh:enroll-event',
+  /**
+   * renderer -> main: the Stoke-managed sessions still running on a host
+   * (`SshHost.persist`), by host id. A BatchMode `tmux -L stoke ls`; read-only.
+   */
+  sshRemoteSessions: 'ssh:remote-sessions',
+  /**
+   * renderer -> main: end one managed session on a host ("End session" when a
+   * kept tab is closed). By host id and a whitelisted name; main builds the argv.
+   */
+  sshEndRemoteSession: 'ssh:end-remote-session',
 
   // tab restore
   tabsSave: 'tabs:save',

@@ -30,6 +30,22 @@ export function unregisterTerm(ptyId: string): void {
 }
 
 /**
+ * The size a new pty should START at: this pty's terminal if it is still
+ * mounted (a reconnect's dead tab), else any live one — every pane shares the
+ * one terminal area — else null for the caller's default.
+ *
+ * For a kept SSH tab this is not cosmetic (gotcha 126): tmux resizes the
+ * session to the size the reattaching client starts at, BEFORE the terminal's
+ * own fit arrives, and a start taller than the session was pulls lines back out
+ * of tmux's history that the reconnect has just printed — each one shown twice.
+ */
+export function termSizeHint(ptyId?: string): { cols: number; rows: number } | null {
+  const own = ptyId ? terms.get(ptyId) : undefined
+  const term = own ?? terms.values().next().value
+  return term ? { cols: term.cols, rows: term.rows } : null
+}
+
+/**
  * Put the caret back in a terminal, from outside its TerminalView.
  *
  * For the unclaimed-keystroke route in App (`typeThroughKey`): once a chrome

@@ -87,7 +87,7 @@ const api: StokeApi = {
     kill: (ptyId: string) => ipcRenderer.send(CH.ptyKill, ptyId),
     stop: (ptyId: string, capMs?: number) => ipcRenderer.invoke(CH.ptyStop, ptyId, capMs),
     onData: (cb) => on<[string, string]>(CH.ptyData, cb),
-    onExit: (cb) => on<[string, number, number | undefined]>(CH.ptyExit, cb)
+    onExit: (cb) => on<[string, number, number | undefined, boolean | null | undefined]>(CH.ptyExit, cb)
   },
 
   context: {
@@ -214,7 +214,9 @@ const api: StokeApi = {
     configHosts: () => ipcRenderer.invoke(CH.sshHosts),
     awaitingPassword: (ptyId: string) => ipcRenderer.invoke(CH.sshAwaitingPassword, ptyId),
     onPasswordPrompt: (cb) => on<[SshAuthPromptEvent]>(CH.sshAuthPrompt, cb),
-    onEnrollEvent: (cb) => on<[SshEnrollEvent]>(CH.sshEnrollEvent, cb)
+    onEnrollEvent: (cb) => on<[SshEnrollEvent]>(CH.sshEnrollEvent, cb),
+    remoteSessions: (hostId: string) => ipcRenderer.invoke(CH.sshRemoteSessions, hostId),
+    endRemoteSession: (hostId: string, name: string) => ipcRenderer.invoke(CH.sshEndRemoteSession, hostId, name)
   },
 
   activity: {

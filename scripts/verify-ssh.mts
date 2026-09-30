@@ -34,6 +34,26 @@ import {
   sshExecutable
 } from '../src/main/ssh.ts'
 import { fetchRemoteTranscript } from '../src/main/sshTranscript.ts'
+import {
+  MANAGED_HISTORY_LIMIT,
+  MANAGED_TERMINAL_OVERRIDES,
+  NO_TMUX_NOTICE,
+  REMOTE_SESSION_FORMAT,
+  buildPersistentCommand,
+  buildRemoteSessionKillArgs,
+  buildRemoteSessionListArgs,
+  parseRemoteSessionList,
+  sshHostArgs
+} from '../src/main/ssh.ts'
+import { endRemoteSession, listRemoteSessions, type RunResult } from '../src/main/sshSessions.ts'
+import {
+  isPersistableCommand,
+  isSafeRemoteSessionName,
+  mintRemoteSessionName,
+  persistRefusal
+} from '../src/shared/sshPersist.ts'
+import { chmod, readFile, symlink } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import type { SshHost } from '../src/shared/types.ts'
 
 const execFileAsync = promisify(execFile)
@@ -167,12 +187,20 @@ same('a Match block names no host', aliasesIn('Match user root\n  User root\n'),
 
 /* ------------------------------------------------------------------- argv */
 
+/*
+ * The keepalive pair every SSH tab carries (gotcha 126): local options, before
+ * the destination, so a dead link ENDS with exit 255 in ~45 s instead of
+ * freezing the tab until TCP gives up. Pinned here once and spread into every
+ * argv below, so a change to it is one visible edit, not eleven.
+ */
+const KA = ['-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=3']
+
 console.log('\nargv')
-same('no command means a plain login shell', buildSshArgs(host({})), ['-e', 'none', 'vps'])
+same('no command means a plain login shell', buildSshArgs(host({})), ['-e', 'none', ...KA, 'vps'])
 same(
   '-t is sent whenever a command is',
   buildSshArgs(host({ command: 'byobu' })),
-  ['-e', 'none', '-t', 'vps', 'byobu']
+  ['-e', 'none', ...KA, '-t', 'vps', 'byobu']
 )
 check(
   '-t comes before the destination, or ssh reads it as part of the command',
@@ -205,47 +233,47 @@ for (const shape of [host({}), host({ command: 'byobu' })]) {
 same(
   'a command with spaces stays exactly one argument',
   buildSshArgs(host({ command: 'tmux new -A -s stoke' })),
-  ['-e', 'none', '-t', 'vps', 'tmux new -A -s stoke']
+  ['-e', 'none', ...KA, '-t', 'vps', 'tmux new -A -s stoke']
 )
 check(
   'and that argument is not split however long it gets',
-  buildSshArgs(host({ command: 'cd /srv/app && tmux new -A -s stoke' })).length === 5,
+  buildSshArgs(host({ command: 'cd /srv/app && tmux new -A -s stoke' })).length === 9,
   ''
 )
 same(
   'shell metacharacters in the command add no argv elements',
   buildSshArgs(host({ command: 'echo "a b"; ls | wc -l' })),
-  ['-e', 'none', '-t', 'vps', 'echo "a b"; ls | wc -l']
+  ['-e', 'none', ...KA, '-t', 'vps', 'echo "a b"; ls | wc -l']
 )
 same(
   'an alias with a space stays one argument',
   buildSshArgs(host({ alias: 'two words' })),
-  ['-e', 'none', 'two words']
+  ['-e', 'none', ...KA, 'two words']
 )
 same(
   'an alias with shell metacharacters is not split either',
   buildSshArgs(host({ alias: 'user@host;rm -rf /' })),
-  ['-e', 'none', 'user@host;rm -rf /']
+  ['-e', 'none', ...KA, 'user@host;rm -rf /']
 )
 same(
   'a leading dash is fenced off with --',
   buildSshArgs(host({ alias: '-oProxyCommand=calc' })),
-  ['-e', 'none', '--', '-oProxyCommand=calc']
+  ['-e', 'none', ...KA, '--', '-oProxyCommand=calc']
 )
 same(
   'and -- sits after -t, since -- ends option parsing',
   buildSshArgs(host({ alias: '-weird', command: 'byobu' })),
-  ['-e', 'none', '-t', '--', '-weird', 'byobu']
+  ['-e', 'none', ...KA, '-t', '--', '-weird', 'byobu']
 )
 same(
   'surrounding whitespace is not passed to ssh',
   buildSshArgs(host({ alias: '  vps  ', command: '  byobu  ' })),
-  ['-e', 'none', '-t', 'vps', 'byobu']
+  ['-e', 'none', ...KA, '-t', 'vps', 'byobu']
 )
 same(
   'a whitespace-only command is no command',
   buildSshArgs(host({ command: '   ' })),
-  ['-e', 'none', 'vps']
+  ['-e', 'none', ...KA, 'vps']
 )
 
 /* ------------------------------------------------------------- the binary */
@@ -817,6 +845,360 @@ same(
   null
 )
 await rm(cacheDir, { recursive: true, force: true })
+
+/* ------------------------------------------- the managed remote session */
+
+/*
+ * Gotcha 126. A host with `persist: 'tmux'` runs each tab inside its own tmux
+ * session on a private socket, so the shell survives a dropped link, sleep and
+ * a Stoke restart. Everything that reaches the far machine's shell is built
+ * from a whitelisted name and a whitelisted command — refused, never escaped —
+ * and the command is then RUN here by every login shell this machine has,
+ * against a fake `tmux` that records its argv, so the claims about quoting are
+ * a shell's word rather than a regex's.
+ */
+console.log('\nthe managed session: names')
+
+{
+  const minted = mintRemoteSessionName()
+  check('a minted name is stoke- and 8 hex', /^stoke-[0-9a-f]{8}$/.test(minted), minted)
+  check('and passes its own whitelist', isSafeRemoteSessionName(minted), minted)
+  same('minting reads the bytes it is given', mintRemoteSessionName(new Uint8Array([0, 0xab, 0x0c, 0xff])), 'stoke-00ab0cff')
+  check('two mints differ', mintRemoteSessionName() !== mintRemoteSessionName(), '')
+  for (const bad of ['', '-x', 'a.b', 'a:b', 'a b', 'a;b', "a'b", 'a$(id)', 'a`id`', '../x', 'x'.repeat(65), 'é']) {
+    check(`refused as a name: ${JSON.stringify(bad)}`, !isSafeRemoteSessionName(bad), '')
+  }
+  check('a non-string is no name', !isSafeRemoteSessionName(undefined) && !isSafeRemoteSessionName(42), '')
+}
+
+console.log('\nthe managed session: which commands may run inside one')
+
+{
+  for (const ok of ['', 'claude', 'cd /srv/app && claude --model opus', 'htop', '~/bin/x | tee -a log.txt', 'a; b', 'make -j4 test > out 2>&1']) {
+    check(`accepted: ${JSON.stringify(ok)}`, isPersistableCommand(ok) && persistRefusal(ok) === null, '')
+  }
+  for (const bad of [
+    "echo 'x'",
+    'echo "x"',
+    'echo $HOME',
+    'echo `id`',
+    'echo \\x',
+    'echo !!',
+    'a\nb',
+    'a\tb',
+    '-l',
+    'echo x;',
+    'byobu\u0007'
+  ]) {
+    check(`refused: ${JSON.stringify(bad)}`, !isPersistableCommand(bad) && persistRefusal(bad) !== null, '')
+  }
+}
+
+console.log('\nthe managed session: the command')
+
+const kept = (p: Partial<SshHost>): SshHost => host({ persist: 'tmux', ...p })
+{
+  same('a refused name builds nothing', buildPersistentCommand(kept({}), 'a;rm -rf ~'), null)
+  same('a refused command builds nothing', buildPersistentCommand(kept({ command: 'echo $HOME' }), 'stoke-00000001'), null)
+  const cmd = buildPersistentCommand(kept({}), 'stoke-00000001') ?? ''
+  check('it is one sh -c with a single-quoted body', /^sh -c '[^']*'$/.test(cmd), cmd)
+  check('on the private socket with no config file', cmd.includes('tmux -u -L stoke -f /dev/null start-server'), cmd)
+  check('status bar and tmux mouse off', cmd.includes('set -g status off') && cmd.includes('set -g mouse off'), cmd)
+  /*
+   * `-f /dev/null` skips the user's config, not tmux's built-in C-b: C-b d
+   * detached with exit 0 (the tab closed as "the shell ended"), C-b c added a
+   * window, C-b [ opened copy mode (gotcha 126, measured on 3.5a and 3.4).
+   */
+  check(
+    'no prefix key: C-b and every key after it reach the pane',
+    cmd.includes('set -g prefix None') && cmd.includes('set -g prefix2 None') && cmd.indexOf('set -g prefix None') < cmd.indexOf('new-session'),
+    cmd
+  )
+  /*
+   * And never `unbind -a`: after its first run the prefix table no longer
+   * exists, so every later run — each reconnect, each second tab — errors
+   * "table prefix doesn't exist" and tmux skips the rest of the sequence,
+   * `new-session` included; `-q` only makes that abort silent (exit 0).
+   */
+  check('no unbind, which aborts every later attach', !/\bunbind(-key)?\b/.test(cmd), cmd)
+  check(
+    'terminal-overrides REPLACED with -s, never grown with -ga on every reconnect',
+    cmd.includes(`set -s terminal-overrides "${MANAGED_TERMINAL_OVERRIDES}"`) && !cmd.includes('-ga'),
+    cmd
+  )
+  check('attach-or-create by exactly that name', cmd.includes('new-session -A -s stoke-00000001'), cmd)
+  check(
+    'the history is printed before the attach',
+    cmd.indexOf('capture-pane') > -1 && cmd.indexOf('capture-pane') < cmd.indexOf('exec tmux'),
+    cmd
+  )
+  check('the user command is not there when there is none', !/new-session -A -s stoke-00000001 "/.test(cmd), cmd)
+  const withCmd = buildPersistentCommand(kept({ command: '  cd /srv && claude --model opus  ' }), 'stoke-00000001') ?? ''
+  check(
+    'the user command is embedded verbatim, never with a flag added (gotcha 19)',
+    withCmd.includes('new-session -A -s stoke-00000001 "cd /srv && claude --model opus"') && !withCmd.includes('--session-id'),
+    withCmd
+  )
+}
+
+console.log('\nthe managed session: the argv')
+
+{
+  same('a host that does not persist is the plain argv', sshHostArgs(host({ command: 'byobu' }), 'stoke-00000001'), {
+    ok: true,
+    args: buildSshArgs(host({ command: 'byobu' }))
+  })
+  const noName = sshHostArgs(kept({}), undefined)
+  check('a kept host with no name is refused, not connected unkept', !noName.ok, JSON.stringify(noName))
+  const badName = sshHostArgs(kept({}), 'x;y')
+  check('so is one with a name that fails the whitelist', !badName.ok, JSON.stringify(badName))
+  const badCmd = sshHostArgs(kept({ command: 'echo "$HOME"' }), 'stoke-00000001')
+  check(
+    'and one whose command cannot be wrapped, with the sentence Settings shows',
+    !badCmd.ok && badCmd.message === persistRefusal('echo "$HOME"'),
+    JSON.stringify(badCmd)
+  )
+  const plan = sshHostArgs(kept({}), 'stoke-00000001')
+  check('a kept host with a good name connects', plan.ok, JSON.stringify(plan))
+  if (plan.ok) {
+    const at = plan.args.indexOf('vps')
+    check('-t, since there is now always a command', plan.args.includes('-t') && plan.args.indexOf('-t') < at, plan.args.join(' '))
+    check('the command is the last argument, whole', plan.args.length === at + 2 && plan.args[at + 1].startsWith("sh -c '"), plan.args.join(' '))
+    for (const opt of ['ServerAliveInterval=15', 'ServerAliveCountMax=3']) {
+      const i = plan.args.indexOf(opt)
+      check(`${opt} is a -o option before the destination`, i > 0 && plan.args[i - 1] === '-o' && i < at, plan.args.join(' '))
+    }
+    check('-e none still first (gotcha 29)', plan.args[0] === '-e' && plan.args[1] === 'none', plan.args.join(' '))
+
+    /*
+     * ssh's own parser, with no connection: `-G` prints the resolved options.
+     * If the keepalives were anywhere but before the destination they would be
+     * part of the remote command and `-G` would report ssh's defaults (0).
+     */
+    // An empty config of our own rather than /dev/null, which Windows lacks.
+    const emptyDir = await mkdtemp(join(tmpdir(), 'stoke-ssh-empty-'))
+    const empty = join(emptyDir, 'config')
+    await writeFile(empty, '')
+    await lockDown([
+      { path: emptyDir, dir: true },
+      { path: empty, dir: false }
+    ])
+    const g = await execFileAsync(exe, ['-F', empty, '-G', ...plan.args], { encoding: 'utf8', timeout: 15000 }).catch(
+      (e: { stdout?: string }) => ({ stdout: e.stdout ?? '' })
+    )
+    await rm(emptyDir, { recursive: true, force: true })
+    check('ssh -G reads serveraliveinterval 15', /^serveraliveinterval 15$/m.test(g.stdout), '')
+    check('and serveralivecountmax 3', /^serveralivecountmax 3$/m.test(g.stdout), '')
+  }
+}
+
+console.log('\nthe managed session: run by real login shells against a fake tmux')
+
+{
+  /*
+   * The far machine runs `$SHELL -c '<remote command>'`. Reproduced here for
+   * every login shell present: bin/ holds a fake `tmux` that logs each argv
+   * element on its own line and exits, and a link to `sh`; bare/ holds only
+   * the `sh` link, for the no-tmux fallback. `SHELL` is a fake too, so the
+   * fallback's `exec "$SHELL" -l` is observable and runs nothing real.
+   */
+  const root = await mkdtemp(join(tmpdir(), 'stoke-managed-'))
+  const bin = join(root, 'bin')
+  const bare = join(root, 'bare')
+  await mkdir(bin)
+  await mkdir(bare)
+  const log = join(root, 'tmux.log')
+  const shellLog = join(root, 'shell.log')
+  const posixSh = existsSync('/bin/sh') ? '/bin/sh' : null
+  if (!posixSh || process.platform === 'win32') {
+    console.log('  SKIP  no /bin/sh here (Windows), so the remote command was not run')
+  } else {
+    await writeFile(
+      join(bin, 'tmux'),
+      [
+        '#!/bin/sh',
+        `for a in "$@"; do printf '%s\\n' "$a" >> '${log}'; done`,
+        `printf '%s\\n' '--end--' >> '${log}'`,
+        'case "$*" in',
+        '  *display*) printf "%s\\n" "${FAKE_HISTORY-5}";;',
+        '  *capture-pane*) printf "%s\\n" "HISTORY-LINE";;',
+        '  *) printf "%s\\n" "ATTACHED";;',
+        'esac'
+      ].join('\n')
+    )
+    await chmod(join(bin, 'tmux'), 0o755)
+    // `stty size` as the far pty would answer it: "rows cols", or a failure
+    // (no tty) when FAKE_ROWS is unset — which is what execFile gives anyway.
+    await writeFile(
+      join(bin, 'stty'),
+      ['#!/bin/sh', '[ -n "$FAKE_ROWS" ] || exit 1', 'printf "%s 120\\n" "$FAKE_ROWS"'].join('\n')
+    )
+    await chmod(join(bin, 'stty'), 0o755)
+    await symlink(posixSh, join(bin, 'sh'))
+    await symlink(posixSh, join(bare, 'sh'))
+    const fakeShell = join(root, 'fake-login-shell')
+    await writeFile(fakeShell, ['#!/bin/sh', `printf '%s\\n' "$*" >> '${shellLog}'`, 'echo FALLBACK-SHELL'].join('\n'))
+    await chmod(fakeShell, 0o755)
+
+    const name = 'stoke-0badc0de'
+    const userCmd = 'cd /srv && touch PWNED-BY-LOGIN-SHELL; claude --model opus | tee out.log'
+    const remote = buildPersistentCommand(kept({ command: userCmd }), name) ?? ''
+    const plain = buildPersistentCommand(kept({}), name) ?? ''
+    const wantTmux = [
+      '-u', '-L', 'stoke', '-f', '/dev/null', 'start-server', ';',
+      'set', '-s', 'escape-time', '10', ';',
+      'set', '-s', 'set-clipboard', 'on', ';',
+      'set', '-s', 'terminal-overrides', MANAGED_TERMINAL_OVERRIDES, ';',
+      'set', '-g', 'status', 'off', ';',
+      'set', '-g', 'mouse', 'off', ';',
+      'set', '-g', 'prefix', 'None', ';',
+      'set', '-g', 'prefix2', 'None', ';',
+      'set', '-g', 'history-limit', String(MANAGED_HISTORY_LIMIT), ';',
+      'new-session', '-A', '-s', name
+    ]
+    const wantAsk = ['-L', 'stoke', 'display', '-p', '-t', `=${name}:`, '#{history_size} #{pane_height} #{cursor_y}']
+    const capture = (end: string): string[] => ['-L', 'stoke', 'capture-pane', '-p', '-e', '-J', '-S', '-', '-E', end, '-t', `=${name}:`]
+    const wantCapture = capture('-1')
+
+    const run = async (
+      login: string,
+      command: string,
+      path: string,
+      history = '5 36 35',
+      rows = ''
+    ): Promise<{ out: string; calls: string[][]; shell: string }> => {
+      await rm(log, { force: true })
+      await rm(shellLog, { force: true })
+      const cwd = await mkdtemp(join(root, 'cwd-'))
+      const r = await execFileAsync(login, ['-c', command], {
+        cwd,
+        env: { PATH: path, SHELL: fakeShell, HOME: root, FAKE_HISTORY: history, ...(rows ? { FAKE_ROWS: rows } : {}) },
+        encoding: 'utf8',
+        timeout: 15000
+      }).catch((e: { stdout?: string; stderr?: string }) => ({ stdout: e.stdout ?? '', stderr: e.stderr ?? '' }))
+      const text = existsSync(log) ? await readFile(log, 'utf8') : ''
+      const calls = text
+        .split('--end--\n')
+        .filter((c) => c.length)
+        .map((c) => c.replace(/\n$/, '').split('\n'))
+      const pwned = existsSync(join(cwd, 'PWNED-BY-LOGIN-SHELL'))
+      return {
+        out: `${r.stdout}${(r as { stderr?: string }).stderr ?? ''}${pwned ? 'PWNED' : ''}`,
+        calls,
+        shell: existsSync(shellLog) ? await readFile(shellLog, 'utf8') : ''
+      }
+    }
+
+    const logins = ['/bin/sh', '/bin/bash', '/bin/dash', '/bin/zsh', '/bin/tcsh', '/usr/bin/fish', '/opt/homebrew/bin/fish']
+    let ran = 0
+    for (const login of logins) {
+      if (!existsSync(login)) {
+        console.log(`  SKIP  no ${login} on this machine`)
+        continue
+      }
+      ran++
+      const a = await run(login, remote, bin)
+      same(`${login}: first, how much history that one session has`, a.calls[0], wantAsk)
+      same(`${login}: then the history itself, of exactly that session`, a.calls[1], wantCapture)
+      same(`${login}: then tmux gets every option as its own argument, and the command as ONE`, a.calls[2], [...wantTmux, userCmd])
+      check(`${login}: history printed before the attach`, a.out.indexOf('HISTORY-LINE') > -1 && a.out.indexOf('HISTORY-LINE') < a.out.indexOf('ATTACHED'), JSON.stringify(a.out))
+      check(`${login}: nothing in the user's command ran in the login shell`, !a.out.includes('PWNED'), JSON.stringify(a.out))
+      /*
+       * No history (a session whose output never scrolled, or none yet): no
+       * capture at all. tmux clamps `-E -1` to the screen's first line when
+       * there is no history, so capturing anyway printed that line and the
+       * attach drew it again — measured in the app, fixed here.
+       */
+      const steps = (calls: string[][]): string[] =>
+        calls.map((c) => (c.includes('capture-pane') ? 'capture' : c.includes('display') ? 'ask' : c.includes('new-session') ? 'attach' : '?'))
+      for (const none of ['0 36 35', '0 36 4', '', 'no server running on /tmp/tmux-1000/stoke']) {
+        const e = await run(login, remote, bin, none)
+        same(`${login}: history ${JSON.stringify(none)} captures nothing, and still attaches`, steps(e.calls), ['ask', 'attach'])
+      }
+      /*
+       * The attach resizes the pane to this pty, so the seam moves; the
+       * capture follows tmux's own `screen_resize_y` rule (FAKE_HISTORY is
+       * "history_size pane_height cursor_y", FAKE_ROWS the pty's rows):
+       * shrinking drops blank rows under the cursor first and pushes
+       * `cursor_y + 1 - rows` into history; growing pulls up to
+       * `rows - pane_height` back out of it.
+       */
+      const endOf = async (history: string, rows: string): Promise<string | null> =>
+        (await run(login, remote, bin, history, rows)).calls.find((c) => c.includes('capture-pane'))?.[9] ?? null
+      same(`${login}: shorter, cursor at the bottom: the 6 pushed rows too`, await endOf('5 36 35', '30'), '5')
+      same(`${login}: the same with no history yet`, await endOf('0 36 35', '30'), '5')
+      same(`${login}: shorter, cursor near the top: blank rows go, nothing is pushed`, await endOf('5 36 4', '30'), '-1')
+      same(`${login}: shorter, cursor near the top, no history: nothing at all`, await endOf('0 36 4', '30'), null)
+      same(`${login}: shorter by more than the blank rows: only the overflow`, await endOf('5 36 32', '30'), '2')
+      same(`${login}: taller: the lines tmux pulls back are left out`, await endOf('5 36 35', '40'), '-5')
+      same(`${login}: taller by more than the history: nothing left to print`, await endOf('3 36 35', '44'), null)
+      same(`${login}: the same size, or no tty: history only`, [await endOf('5 36 35', '36'), await endOf('5 36 35', '')], ['-1', '-1'])
+      const b = await run(login, plain, bin)
+      same(`${login}: with no command the session runs the default shell`, b.calls[2], wantTmux)
+      const c = await run(login, plain, bare)
+      check(`${login}: no tmux — the notice, then the login shell`, c.out.includes(NO_TMUX_NOTICE) && c.out.includes('FALLBACK-SHELL'), JSON.stringify(c.out))
+      same(`${login}: the fallback shell is a login shell`, c.shell.trim(), '-l')
+      const d = await run(login, remote, bare)
+      same(`${login}: no tmux with a command — the command, as the plain tab ran it`, d.shell.trim(), `-c ${userCmd}`)
+    }
+    check('at least sh and bash ran it', ran >= 2, `${ran} shells`)
+
+    /*
+     * The listing and the kill, through the same fake: the format must reach
+     * tmux as one argument with its `#{…}` intact (unquoted, `#` starts a
+     * comment), and the kill must target exactly one name on Stoke's socket.
+     */
+    const listArgs = buildRemoteSessionListArgs(kept({})) ?? []
+    const listCmd = listArgs[listArgs.length - 1] ?? ''
+    const l = await run('/bin/sh', listCmd, bin)
+    same('the listing asks tmux exactly this', l.calls[0], ['-L', 'stoke', 'ls', '-F', REMOTE_SESSION_FORMAT])
+    const killArgs = buildRemoteSessionKillArgs(kept({}), name) ?? []
+    const k = await run('/bin/sh', killArgs[killArgs.length - 1] ?? '', bin)
+    same('the kill asks tmux exactly this', k.calls[0], ['-L', 'stoke', 'kill-session', '-t', `=${name}`])
+  }
+  await rm(root, { recursive: true, force: true })
+}
+
+console.log('\nthe managed session: listing and ending them')
+
+{
+  const listArgs = buildRemoteSessionListArgs(kept({})) ?? []
+  const at = listArgs.indexOf('vps')
+  for (const opt of ['BatchMode=yes', 'ControlPath=none', 'ConnectTimeout=10']) {
+    check(`the listing: ${opt} before the destination`, listArgs.indexOf(opt) > -1 && listArgs.indexOf(opt) < at, listArgs.join(' '))
+  }
+  check('the listing never allocates a tty', !listArgs.includes('-t'), listArgs.join(' '))
+  same('a leading-dash alias lists nothing', buildRemoteSessionListArgs(kept({ alias: '-oProxyCommand=x' })), null)
+  same('and a bad name is never sent to kill', buildRemoteSessionKillArgs(kept({}), 'a;b'), null)
+
+  const rows = [
+    'stoke-00000001|1790748224|1|bash|/home/v',
+    'stoke-00000002|1790748300|0|claude|/srv/a|b',
+    'evil;rm -rf ~|1|0|sh|/',
+    '',
+    'stoke-00000003|nope|x|htop|'
+  ].join('\n')
+  const parsed = parseRemoteSessionList(rows)
+  same('rows parse newest first, a hostile name dropped', parsed.map((s) => s.name), ['stoke-00000002', 'stoke-00000001', 'stoke-00000003'])
+  same('activity is kept in ms', parsed[0].activity, 1790748300 * 1000)
+  same('a path holding | is rejoined', parsed[0].path, '/srv/a|b')
+  same('attached is a count', [parsed[1].attached, parsed[0].attached], [1, 0])
+  same('an unreadable number is null / 0, not NaN', [parsed[2].activity, parsed[2].attached], [null, 0])
+
+  const fake = (r: Partial<RunResult>) => async (): Promise<RunResult> => ({ stdout: '', stderr: '', code: 0, error: '', ...r })
+  same('no sessions (or no tmux) is an empty list', await listRemoteSessions(kept({}), fake({})), { ok: true, sessions: [] })
+  same(
+    'ssh failing says ssh’s own last line',
+    await listRemoteSessions(kept({}), fake({ code: 255, stderr: 'banner\nv@vps: Permission denied (publickey,password).\n' })),
+    { ok: false, message: 'v@vps: Permission denied (publickey,password).' }
+  )
+  same('a timeout says so', await listRemoteSessions(kept({}), fake({ code: null, error: 'No answer within 20 s.' })), {
+    ok: false,
+    message: 'No answer within 20 s.'
+  })
+  same('ending a session that is already gone is done', await endRemoteSession(kept({}), 'stoke-00000001', fake({ code: 1, stderr: "can't find session: =stoke-00000001" })), { ok: true, message: '' })
+  same('ending with a bad name never runs ssh', (await endRemoteSession(kept({}), 'x;y', async () => { throw new Error('ran') })).ok, false)
+}
 
 /* ------------------------------------------------------------------------ */
 

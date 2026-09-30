@@ -54,7 +54,9 @@ export function PausedSession({
         <span className="paused-note">
           {onResume
             ? tab.hostId
-              ? 'Paused when Stoke quit. Resuming reconnects to this host.'
+              ? tab.remoteSession
+                ? 'Detached when Stoke quit; the shell kept running on the machine. Resuming reattaches to it.'
+                : 'Paused when Stoke quit. Resuming reconnects to this host.'
               : caps.resume === 'continue'
                 ? `Paused when Stoke quit. ${cliFor(tab.cliId).label} continues its most recent session in this folder — this one, unless another was started here since.`
                 : caps.resume === 'none'
@@ -74,11 +76,13 @@ export function PausedSession({
             >
               {resuming
                 ? 'Resuming…'
-                : !tab.hostId && caps.resume === 'continue'
-                  ? 'Continue latest session'
-                  : !tab.hostId && caps.resume === 'none'
-                    ? 'Start again'
-                    : 'Resume session'}
+                : tab.hostId && tab.remoteSession
+                  ? 'Reattach'
+                  : !tab.hostId && caps.resume === 'continue'
+                    ? 'Continue latest session'
+                    : !tab.hostId && caps.resume === 'none'
+                      ? 'Start again'
+                      : 'Resume session'}
             </button>
           )}
           <button className="btn" data-variant="ghost" onClick={() => onClose(tab.id)}>

@@ -22,9 +22,15 @@ interface Entry {
   chunks: string[]
   length: number
   sink: Sink | null
-  exit: { code: number; signal?: number } | null
-  exitSink: ((code: number, signal?: number) => void) | null
+  exit: { code: number; signal?: number; loggedIn?: boolean | null } | null
+  exitSink: ExitSink | null
 }
+
+/**
+ * `loggedIn` is main's answer for a remote session: did it get past
+ * authentication before it exited (null for a local one). See `pty.onExit`.
+ */
+type ExitSink = (code: number, signal?: number, loggedIn?: boolean | null) => void
 
 const entries = new Map<string, Entry>()
 let started = false
@@ -53,10 +59,10 @@ export function initPtyBus(): void {
     e.sink?.(data)
   })
 
-  window.stoke.pty.onExit((ptyId, code, signal) => {
+  window.stoke.pty.onExit((ptyId, code, signal, loggedIn) => {
     const e = entry(ptyId)
-    e.exit = { code, signal }
-    e.exitSink?.(code, signal)
+    e.exit = { code, signal, loggedIn }
+    e.exitSink?.(code, signal, loggedIn)
   })
 }
 
@@ -73,12 +79,9 @@ export function attachSink(ptyId: string, sink: Sink): () => void {
   }
 }
 
-export function attachExit(
-  ptyId: string,
-  sink: (code: number, signal?: number) => void
-): () => void {
+export function attachExit(ptyId: string, sink: ExitSink): () => void {
   const e = entry(ptyId)
-  if (e.exit) sink(e.exit.code, e.exit.signal)
+  if (e.exit) sink(e.exit.code, e.exit.signal, e.exit.loggedIn)
   e.exitSink = sink
   return () => {
     if (e.exitSink === sink) e.exitSink = null

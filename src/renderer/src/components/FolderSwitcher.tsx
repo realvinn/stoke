@@ -5,7 +5,8 @@ import {
   folderChoices,
   type FolderChoice,
   type HostLike,
-  type ProjectLike
+  type ProjectLike,
+  type RunningOnHost
 } from '@shared/launcher'
 import { IconChevron, IconFolder, IconPlus } from './Icons'
 import { relativeTime } from '../lib/format'
@@ -40,7 +41,8 @@ export function FolderSwitcher({
   onOpenChange,
   onChoose,
   triggerRef,
-  scratchBlocked = false
+  scratchBlocked = false,
+  openSessions = []
 }: {
   /** The target's name; empty while nothing has resolved yet. */
   label: string
@@ -62,6 +64,12 @@ export function FolderSwitcher({
    * runs its own `claude`).
    */
   scratchBlocked?: boolean
+  /**
+   * The managed session names the tabs in this window already hold, so a
+   * session still running on a host is marked "open here" rather than offered
+   * as if nothing had it (gotcha 126).
+   */
+  openSessions?: readonly string[]
 }): React.JSX.Element {
   const [query, setQuery] = useState('')
   const [active, setActive] = useState(0)
@@ -71,9 +79,70 @@ export function FolderSwitcher({
   const popRef = useRef<HTMLDivElement>(null)
   useFloatingLayer(popRef, open)
 
+  /*
+   * "Running on <machine>": asked fresh each time the list opens, of every
+   * host that keeps its shells, one BatchMode call each (main,
+   * `listRemoteSessions`). An answer that lands after the list closed, or
+   * after it was opened again, is dropped: `ask` is this opening's own
+   * generation, the same fresh-claim shape gotcha 20 records.
+   */
+  const [running, setRunning] = useState<RunningOnHost[]>([])
+  const askRef = useRef(0)
+  const persisting = useMemo(() => hosts.filter((h) => h.persist === 'tmux'), [hosts])
+  useEffect(() => {
+    if (!open || !persisting.length) return
+    const ask = ++askRef.current
+    setRunning(persisting.map((h) => ({ hostId: h.id, sessions: [], pending: true })))
+    for (const h of persisting) {
+      void window.stoke.ssh
+        .remoteSessions(h.id)
+        .then((r) => {
+          if (askRef.current !== ask) return
+          setRunning((cur) =>
+            cur.map((x) =>
+              x.hostId !== h.id
+                ? x
+                : r.ok
+                  ? {
+                      hostId: h.id,
+                      sessions: r.sessions.map((s) => ({
+                        hostId: h.id,
+                        name: s.name,
+                        activity: s.activity,
+                        command: s.command,
+                        path: s.path,
+                        openHere: false
+                      }))
+                    }
+                  : { hostId: h.id, sessions: [], error: r.message }
+            )
+          )
+        })
+        .catch(() => {
+          if (askRef.current !== ask) return
+          setRunning((cur) =>
+            cur.map((x) => (x.hostId === h.id ? { hostId: h.id, sessions: [], error: 'Stoke could not ask.' } : x))
+          )
+        })
+    }
+    return () => {
+      askRef.current++
+    }
+  }, [open, persisting])
+  // Which of them a tab here already holds, read at render: tabs change while
+  // the answer is out, and the answer does not.
+  const runningNow = useMemo(
+    () =>
+      running.map((r) => ({
+        ...r,
+        sessions: r.sessions.map((s) => ({ ...s, openHere: openSessions.includes(s.name) }))
+      })),
+    [running, openSessions]
+  )
+
   const groups = useMemo(
-    () => folderChoices({ projects, defaultCwd, hosts, query }),
-    [projects, defaultCwd, hosts, query]
+    () => folderChoices({ projects, defaultCwd, hosts, query, running: runningNow }),
+    [projects, defaultCwd, hosts, query, runningNow]
   )
   const flat = useMemo(() => flatChoices(groups), [groups])
 
@@ -245,6 +314,18 @@ function ChoiceBody({ choice: c, blocked }: { choice: FolderChoice; blocked: boo
             <span className="switcher-hint mono">ssh {c.alias}</span>
           </span>
           <span className="switcher-item-side">connects now</span>
+        </>
+      )
+    case 'remote-session':
+      return (
+        <>
+          <span className="switcher-item-main">
+            <span className="truncate">{c.label}</span>
+            <span className="switcher-hint mono">{c.name}</span>
+          </span>
+          <span className="switcher-item-side">
+            {c.openHere ? 'open in a tab' : c.activity ? `reattach · ${relativeTime(c.activity)}` : 'reattach'}
+          </span>
         </>
       )
     case 'open':

@@ -329,6 +329,8 @@ rule file named on the group line.
   enroll by host id, and only the no-`-i` login probe (`buildLoginProbeArgs`) may set `keyEnrolled`.
 - **109.** Run anything that asks for a password in a terminal the user can type into — key
   enrollment is an "Add key" tab (`LaunchOptions.enroll`) — and prove it against a real prompt.
+- **126.** Keep a kept session's `indn@`, `-u`, `prefix None` (never `unbind -a`: the next attach aborts) and
+  `capture-pane` seam (`buildPersistentCommand`); reset reconnect tries on a login, never uptime. No Copy mode.
 
 **Phone access** — `.claude/rules/phone.md`
 - **53.** Draw no QR for `connectTarget`'s `loopback` reach, mint the key only in start paths

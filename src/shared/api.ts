@@ -55,6 +55,7 @@ import type {
   StatusLineSnapshot,
   SshAuthPromptEvent,
   SshEnrollEvent,
+  RemoteSessionList,
   StoredTabs,
   UsageReadReason,
   UsageSnapshot,
@@ -267,6 +268,12 @@ export interface RemoteSessionStarted {
    * older main's push still types.
    */
   hostId?: string | null
+  /**
+   * The managed session main named for a phone's start on a host that keeps
+   * its shells (`SshHost.persist`), so the desktop tab it becomes reconnects
+   * and restores to that same shell. Absent otherwise.
+   */
+  remoteSession?: string
 }
 
 export interface SelfUpdateState {
@@ -500,7 +507,12 @@ export interface StokeApi {
      */
     stop(ptyId: string, capMs?: number): Promise<boolean>
     onData(cb: (ptyId: string, data: string) => void): () => void
-    onExit(cb: (ptyId: string, code: number, signal?: number) => void): () => void
+    /**
+     * `loggedIn`: for a remote session, whether it got past authentication
+     * (main's `SshLoginWatch` had settled when it exited); null for a local
+     * one. What a kept SSH tab's reconnect backoff resets on (gotcha 126).
+     */
+    onExit(cb: (ptyId: string, code: number, signal?: number, loggedIn?: boolean | null) => void): () => void
   }
 
   context: {
@@ -750,6 +762,17 @@ export interface StokeApi {
     onPasswordPrompt(cb: (e: SshAuthPromptEvent) => void): () => void
     /** Progress of an enrollment in flight. Returns an unsubscribe. */
     onEnrollEvent(cb: (e: SshEnrollEvent) => void): () => void
+    /**
+     * The Stoke-managed sessions still running on a host that keeps its tabs'
+     * shells (`SshHost.persist`), newest first. Asked with BatchMode, so a
+     * host that wants a password answers `ok: false` rather than prompting.
+     */
+    remoteSessions(hostId: string): Promise<RemoteSessionList>
+    /**
+     * End one managed session on a host. Resolves `ok: false` with ssh's
+     * reason when it could not be reached; never throws.
+     */
+    endRemoteSession(hostId: string, name: string): Promise<{ ok: boolean; message: string }>
   }
 
   /**

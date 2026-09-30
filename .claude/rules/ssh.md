@@ -1,6 +1,8 @@
 ---
 paths:
   - "src/main/ssh.ts"
+  - "src/main/sshSessions.ts"
+  - "src/shared/sshPersist.ts"
   - "src/main/sshEnroll.ts"
   - "src/shared/sshAuth.ts"
   - "scripts/verify-ssh-enroll.mts"
@@ -243,3 +245,113 @@ touched. `~/.ssh` was backed up first and restored byte-identical (19 files, sam
 The rule for anything that asks a human for a secret: **verify against a real prompt, not an
 injected fake**, and find the terminal the person will type into before writing the code that
 waits for them to.
+
+## 126. tmux draws SCREENS, not a stream: a kept session's scrollback and its reattach seam are both Stoke's job
+
+**A host with `persist: 'tmux'` runs every SSH tab inside its own invisible tmux session**
+(`buildPersistentCommand`, ssh.ts): a private server (`tmux -L stoke -f /dev/null`, so the user's own
+tmux, byobu and `~/.tmux.conf` are never read or touched), no status bar, `mouse off`, one pane,
+`new-session -A -s <Tab.remoteSession>`. The shell survives a dropped link, sleep and a Stoke quit;
+ssh exit 255 reconnects by itself with backoff (`reconnectDecision`, tabs.ts), restore and Start
+again reattach by name, closing asks Detach or End (`closeAsksDetach`), and the launcher lists
+"Running on <host>" from a BatchMode `tmux -L stoke ls`. The name and the user's command reach a
+remote shell, so both are whitelisted (`isSafeRemoteSessionName`, `isPersistableCommand`) — refused,
+never escaped — and the whole body is one `sh -c '…'` because the login shell may be fish or tcsh.
+`verify:ssh` runs it under sh, bash, dash, zsh and tcsh against a fake `tmux` that logs its argv.
+
+Everything below was measured against real tmux 3.5a (Debian trixie) and 3.4 (Ubuntu 24.04) in
+throwaway OrbStack containers, through a node-pty harness and the built app over CDP (2026-09-30).
+**"With status off and one pane on the normal screen, output lands in xterm's scrollback" is only
+half true, and each half needed a fix:**
+
+- **tmux scrolls a burst with ONE `CSI n S` (terminfo `indn`), and xterm.js carries SU out WITHOUT
+  keeping the lines.** `seq 1 3000` left a 30-line buffer: nothing reached the scrollback at all.
+  `terminal-overrides` now also sets `indn@`, so tmux scrolls with newlines and xterm keeps them.
+- **Even then, a burst is SNAPSHOTS.** tmux coalesces each read from the pane and clamps what it
+  scrolls to the region height (`screen_write_collect_flush`), so `seq 1 3000` live kept 148 lines;
+  interactive output a screen at a time is kept line for line. Byobu has the same limit. What makes
+  the whole history come back is the reconnect: before attaching, the command prints
+  `capture-pane -p -e -J -S - -E <end>` into the FRESH terminal a reconnect opens, and the tab's
+  xterm has `scrollOnEraseInDisplay` (kept tabs only) so tmux's `CSI 2J` on attach pushes that dump
+  into scrollback instead of blanking its last screenful. After a restart: 3000 of 3000 lines, in
+  order, no duplicates (`history-limit` 5000; tmux's 2000 is less than one build log).
+- **The capture's END has to match where the attach's screen starts, and the attach resizes the
+  pane to the new pty FIRST.** Three ways that seam went wrong, each seen in the app: with no
+  history, tmux clamps `-E -1` to screen line 0, so the top line showed twice; a pty shorter than
+  the pane makes tmux drop blank rows under the cursor and push `cursor_y + 1 - rows` into history
+  after the capture (a 38-row pane reattached at 36 lost two lines); a taller one pulls
+  `rows - pane_height` lines back OUT of history (10 duplicated). The command asks tmux for
+  `history_size pane_height cursor_y`, reads its own `stty size`, and ends the capture accordingly
+  — tmux's own `screen_resize_y` rule — and the renderer starts a reattach at a live terminal's
+  size (`termSizeHint`). Measured exact at 40→30, 30→40 and 36→36 on both versions, long and short
+  output. `$(( ))` runs only once tmux answered all three numbers: dash exits on an empty operand.
+- **`-u` is load-bearing.** A BatchMode or pty ssh without a UTF-8 `LANG` made tmux 3.5a draw `─`
+  as ACS and `✓` as `_`. And tmux 3.4 printed each TAB of an `ls -F` format as `_` to such a client,
+  so the listing splits on `|` (`REMOTE_SESSION_FORMAT`). `set -s terminal-overrides` REPLACES the
+  array; `-ga` appended another copy on every reconnect.
+
+**Keepalives are local options** (`-o ServerAliveInterval=15 -o ServerAliveCountMax=3`, before the
+destination), not gotcha 19. A frozen container (`docker pause`) ended the link in 55–75 s and the
+tab reconnected to the same shell once it thawed; a killed ProxyCommand ends it at once.
+
+**Copy mode: do not bring Stoke's back.** It was removed in 0.9 for cause (gotcha 10's third clone
+shape, Escape taken from the pane) and nothing here needs it: in a kept session the wheel, a plain
+drag at a shell prompt, Shift-drag under an app that reports the mouse, `Copy screen` and OSC 52
+(`set-clipboard on`) all work natively, and a reconnect reloads the history into the real
+scrollback. tmux's own copy-mode is still the only route to history under BYOBU (mixed windows, no
+kept seam) — the Hosts hint gives those users a snippet (`mouse on`, `set-clipboard on`, `-ga`) to
+paste themselves — and no route at all reaches a pane on the alternate screen (`claude`), under
+any setup. A Stoke-side wheel handler that types the tmux prefix and `[` was rejected: the prefix is
+the user's to choose, and byobu uses F7.
+
+Not measured: fish as the login shell ran the wrapper in the container but is not in the local
+suite run (no fish here); mode 2031 / OSC 11 theme-follow through tmux (gotcha 42); a password
+host's reconnect (it prompts again in the tab, by design); Windows OpenSSH as the client; the phone
+starting a kept session (main mints the name in `launchSession`, unexercised).
+
+> **Checked against the code on 2026-09-30, review of the branch.** Three corrections, each measured.
+> - **"No chrome" left tmux's keys live.** `-f /dev/null` skips the user's config, not tmux's built-in
+>   table, so C-b stayed the prefix. Through a pty client running the shipped command on 3.5a and 3.4:
+>   `echo AB`, C-b, `X`, Enter printed `AB` (the shell never saw C-b); C-b [ put the pane in copy mode;
+>   C-b c made a second window; C-b d detached with exit 0, which `reconnectDecision` reads as "the
+>   shell ended", so the tab closed without asking Detach or End. `set -g prefix None` and
+>   `set -g prefix2 None` now: `AXB`, no mode, one window, still attached, on 3.5a, 3.4 and 3.0a
+>   (Ubuntu 20.04), and in the built app with real key events (`echo AXB` → `AXB`, `prefix=None`).
+>   The root table holds only mouse bindings, which `mouse off` forwards to the pane. **Never
+>   `unbind -a -T prefix`**, the obvious fix: once it has run the table is gone, so the next run
+>   against that server (every reconnect, every second tab) fails "table prefix doesn't exist", and
+>   tmux skips the rest of the `\;` sequence, `new-session` included. `-q` only hides it: still no
+>   session, and exit 0. Measured on 3.5a and 3.4. `verify:ssh` pins both options and no `unbind`.
+> - **Uptime is not "the link was up".** `decideHostExit` reset the try count once ssh had run 5 s.
+>   A tab's ssh has no ConnectTimeout, so a try at a host that drops SYNs waits out TCP
+>   (`net.inet.tcp.keepinit` is 75000 ms on macOS) and exits 255 long after 5 s: every failed try
+>   reset the count, the wait never passed 1 s and the 24-try cap never fired. The exit event now
+>   carries main's login watch (`loggedIn` = `SshLoginWatch.settled`; tmux's first paint settles it),
+>   and `reconnectDecision` starts a run over only for a try that logged in AND lasted
+>   `RECONNECT_MIN_UPTIME_MS`; a first try that never logged in stops however long it ran. Driven in
+>   the built app against a proxy that swallows the connection for 8 s: tries 2, 3, 4 at 2, 5 and
+>   10 s (the old rule: try 1 at 1 s each time), then the same shell (`$MARK` intact) once the host
+>   came back, and a drop after that lasting login went back to try 1 at 1 s. A new tab whose first
+>   try ran 8 s and never logged in got the plain card and no retry. **A password host does not
+>   loop** — measured with OpenSSH 10.3 against sshd with `LoginGraceTime 8`: ssh sits at an
+>   unanswered prompt past the grace time (it is blocked reading the tty), and exits 255 ("Connection
+>   closed by … port …") only once something is typed. That line settles the watch, so a reconnect
+>   after a late answer starts at try 1, with the user there to see the fresh prompt.
+> - **The Detach/End question did not hold the countdown.** It ran on under the dialog, and a
+>   reconnect replaced the tab with one on a new id, so the answer found nothing to close and the
+>   tab came back live after End. Raising the question now pauses the timer (`pauseReconnect`),
+>   `reconnectNow` refuses a session whose close is being asked, Cancel re-arms for the time the card
+>   still shows, and the answer finds the tab by id or else by session name. A replacement whose
+>   session tab was closed while its `pty.start` was in flight is killed, never appended
+>   (`startHostSession`, gotcha 51). Driven: 9 s and 12 s under the question past a 5 s and a 10 s
+>   countdown fired nothing (same pty, no try reached the proxy); Cancel tried at once; End closed
+>   the tab and the host reported `no server running`. End pressed 4 ms after Reconnect now (before
+>   the start's IPC reply) left no tab and no session behind. Not driven: Windows.
+
+**Testing kept sessions without touching `~/.ssh`.** macOS's ssh reads its config and known_hosts from
+the passwd home, but OrbStack's `Include ~/.orbstack/ssh/config` line expands `~` from `$HOME`. A
+sandbox launched with a scratch `HOME` therefore gets its own `<HOME>/.orbstack/ssh/config`: hosts
+with a scratch `UserKnownHostsFile` and a `ProxyCommand` script whose own command line names the
+scratch dir, so a link drop is `kill -TERM` of your own process (it takes its relay child down;
+ssh exits 255). Nothing in the real `~/.ssh` is written (it is still READ: the config, and any key a
+`Host *` block names); hash it before and after anyway.

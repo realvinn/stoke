@@ -83,6 +83,16 @@ export interface LaunchOptions {
    */
   host?: SshHost
   /**
+   * The Stoke-managed tmux session this SSH tab lives in (`stoke-<8 hex>`),
+   * when `host.persist` is `'tmux'`: minted once by the renderer when the tab
+   * is first opened and sent again on every reconnect, resume and restart, so
+   * each of those is a reattach to the same shell rather than a new one.
+   * Ignored for a host that does not persist. Main whitelists it
+   * (`isSafeRemoteSessionName`) before it goes anywhere near a remote shell,
+   * and refuses the launch rather than escaping it.
+   */
+  remoteSession?: string
+  /**
    * Set up key login for this host instead of running anything else: the tab
    * runs `ssh-copy-id` (or its plain-ssh fallback) and the user types the
    * password there, once.
@@ -597,12 +607,27 @@ export interface SshHost {
   /**
    * Run this instead of a login shell.
    *
-   * `byobu` or `tmux new -A -s stoke` is the useful answer: a remote session
-   * cannot use Stoke's own resume, because the transcript lives on the far
-   * machine, so a multiplexer is the only thing that survives a dropped link.
-   * Empty means a plain login shell.
+   * With `persist: 'tmux'` it runs INSIDE the tab's own managed session, and
+   * only a command that passes `isPersistableCommand` can be wrapped — refused,
+   * never escaped. Without it, `byobu` or `tmux new -A -s stoke` was the old
+   * answer to a dropped link: a remote session cannot use Stoke's own resume,
+   * because the transcript lives on the far machine. Empty means a plain login
+   * shell.
    */
   command: string
+  /**
+   * Keep each tab's shell running on the machine between connections.
+   *
+   * `'tmux'`: every SSH tab to this host is backed by its own invisible tmux
+   * session on a private socket (`tmux -L stoke`, no config file, status bar
+   * off, one pane on the normal screen), named by `Tab.remoteSession`. A
+   * dropped link, a sleeping laptop or a Stoke restart reattaches to the same
+   * shell; the output scrolls into Stoke's own scrollback, so the wheel,
+   * selection and Copy work as they do locally. `'off'` (and absent) is the
+   * plain `ssh <alias> [command]` of before. New hosts get `'tmux'`; hosts
+   * saved before this field existed hydrate as `'off'`, unchanged.
+   */
+  persist?: 'tmux' | 'off'
   /**
    * Let the worklog agent write up sessions on this machine.
    *
@@ -682,6 +707,29 @@ export interface SshEnrollEvent {
   /** Set on 'done'. False means installed but plain `ssh <alias>` still does not get in on a key. */
   ok?: boolean
 }
+
+/**
+ * One Stoke-managed session still running on a host (`SshHost.persist`),
+ * as `tmux -L stoke ls` reports it — what the launcher offers to reattach.
+ */
+export interface RemoteSessionInfo {
+  /** The session name, `Tab.remoteSession`. Whitelisted before it is listed. */
+  name: string
+  /** Last activity, epoch ms, or null when tmux did not say. */
+  activity: number | null
+  /** How many clients are attached right now: >0 means a tab (here or elsewhere) has it open. */
+  attached: number
+  /** What the pane is running (`bash`, `claude`, …), for display only. */
+  command: string
+  /** The pane's working directory on the far machine, for display only. */
+  path: string
+}
+
+/** What asking a host for its managed sessions came back with. */
+export type RemoteSessionList =
+  | { ok: true; sessions: RemoteSessionInfo[] }
+  /** Unreachable, a password host (BatchMode cannot prompt), or no tmux. Said, never thrown. */
+  | { ok: false; message: string }
 
 /* ----------------------------------------------------------------- worklog */
 
@@ -1487,6 +1535,12 @@ export interface StoredTab {
   ultracode: boolean
   /** `SshHost.id` when the session ran on another machine. */
   hostId: string | null
+  /**
+   * The managed tmux session an SSH tab lives in (`LaunchOptions.remoteSession`),
+   * so a restore REATTACHES to the shell that kept running rather than opening
+   * a new one. Absent for every other tab; whitelisted on read.
+   */
+  remoteSession?: string
   selectedPath: string | null
   expandedPath: string | null
   lastActiveAt: number

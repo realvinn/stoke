@@ -26,6 +26,12 @@ import {
   replaceOrAppend,
   adoptRemoteTab,
   restartPlan,
+  reconnectDecision,
+  closeAsksDetach,
+  RECONNECT_DELAYS_MS,
+  RECONNECT_MAX_ATTEMPTS,
+  RECONNECT_MIN_UPTIME_MS,
+  SSH_LINK_FAILURE,
   autoRelaunchKey,
   autoRelaunchStep,
   busyTabIds,
@@ -246,6 +252,131 @@ check(
   restartPlan({ cwd: '/tmp/scratch', hostId: '' }, ['host-1']),
   { kind: 'local', cwd: '/tmp/scratch', cli: 'claude' }
 )
+
+/*
+ * Gotcha 126: a kept SSH tab's Start again, Resume and restore must REATTACH
+ * to the shell still running on the machine — the tab's own session name —
+ * never mint a second one beside it. The plan carries the name.
+ */
+console.log('\na kept SSH tab restarts into its own remote session')
+check(
+  'restartPlan reuses the tab’s remoteSession',
+  restartPlan({ cwd: 'vps', hostId: 'host-1', remoteSession: 'stoke-0badc0de' }, ['host-1']),
+  { kind: 'host', hostId: 'host-1', remoteSession: 'stoke-0badc0de' }
+)
+check(
+  'a host tab with no kept session plans exactly as before',
+  restartPlan({ cwd: 'vps', hostId: 'host-1' }, ['host-1']),
+  { kind: 'host', hostId: 'host-1' }
+)
+check(
+  'a deleted host is still impossible, whatever session the tab named',
+  restartPlan({ cwd: 'vps', hostId: 'host-9', remoteSession: 'stoke-0badc0de' }, ['host-1']).kind,
+  'impossible'
+)
+check(
+  'an enrollment tab is never read as a kept session to reattach',
+  restartPlan({ cwd: 'vps', hostId: 'host-1', enrollHostId: 'host-1', remoteSession: 'stoke-0badc0de' }, ['host-1']).kind,
+  'enroll'
+)
+
+console.log('\na kept SSH tab reconnects by itself only when its link dropped')
+// `loggedIn` is main's login watch at exit: the connection got past auth.
+const up = { persisted: true, hostKnown: true, attempt: 0, ranMs: 60_000, loggedIn: true }
+check('a dropped link (ssh exit 255) after a while reconnects in 1 s', reconnectDecision({ ...up, exitCode: 255 }), {
+  kind: 'reconnect',
+  attempt: 1,
+  delayMs: RECONNECT_DELAYS_MS[0]
+})
+check('exit 0 is the shell ending: nothing to go back to', reconnectDecision({ ...up, exitCode: 0 }).kind, 'stop')
+check('the remote command’s own failure is not retried', reconnectDecision({ ...up, exitCode: 1 }).kind, 'stop')
+check('killed by a signal is not a dropped link', reconnectDecision({ ...up, exitCode: null }).kind, 'stop')
+check(
+  'a first try that never got in never came up — left on its card',
+  reconnectDecision({ ...up, exitCode: 255, ranMs: 200, loggedIn: false }).kind,
+  'stop'
+)
+check(
+  'however long it ran: a host that drops SYNs holds ssh ~75 s and it still never came up',
+  reconnectDecision({ ...up, exitCode: 255, ranMs: 75_000, loggedIn: false }).kind,
+  'stop'
+)
+check(
+  'a first connection that got in and dropped at once still reconnects',
+  reconnectDecision({ ...up, exitCode: 255, ranMs: 200 }),
+  { kind: 'reconnect', attempt: 1, delayMs: RECONNECT_DELAYS_MS[0] }
+)
+check(
+  'but a RETRY that fails at once (still offline) keeps trying, backing off',
+  reconnectDecision({ ...up, exitCode: 255, attempt: 3, ranMs: 200, loggedIn: false }),
+  { kind: 'reconnect', attempt: 4, delayMs: RECONNECT_DELAYS_MS[3] }
+)
+/*
+ * The review's case. The first version reset the count on 5 s of uptime, and a
+ * try at a host that drops SYNs runs ~75 s (no ConnectTimeout) before ssh exits
+ * 255 — so every failed try was "a fresh start": 1 s forever, no cap.
+ */
+check(
+  'a retry that waited out a TCP timeout and never got in continues the run',
+  reconnectDecision({ ...up, exitCode: 255, attempt: 5, ranMs: 75_000, loggedIn: false }),
+  { kind: 'reconnect', attempt: 6, delayMs: RECONNECT_DELAYS_MS[5] }
+)
+check(
+  'so does one that got in and dropped straight away (a flapping link cannot loop at 1 s)',
+  reconnectDecision({ ...up, exitCode: 255, attempt: 5, ranMs: RECONNECT_MIN_UPTIME_MS - 1, loggedIn: true }),
+  { kind: 'reconnect', attempt: 6, delayMs: RECONNECT_DELAYS_MS[5] }
+)
+check(
+  'a retry that got in AND lasted is a fresh start: its drop is try 1 again',
+  reconnectDecision({ ...up, exitCode: 255, attempt: 5, ranMs: RECONNECT_MIN_UPTIME_MS, loggedIn: true }),
+  { kind: 'reconnect', attempt: 1, delayMs: RECONNECT_DELAYS_MS[0] }
+)
+{
+  // The whole run against a host that went dark: every try waits out TCP.
+  let attempt = reconnectDecision({ ...up, exitCode: 255 }).kind === 'reconnect' ? 1 : -1
+  const delays: number[] = []
+  let last: ReturnType<typeof reconnectDecision> | null = null
+  for (let i = 0; i < 200; i++) {
+    last = reconnectDecision({ ...up, exitCode: 255, attempt, ranMs: 75_000, loggedIn: false })
+    if (last.kind === 'stop') break
+    delays.push(last.delayMs)
+    attempt = last.attempt
+  }
+  check('a host that went dark: the tries stop, out loud', last?.kind === 'stop' ? last.reason : null, `Stopped after ${RECONNECT_MAX_ATTEMPTS} tries.`)
+  check('after exactly the cap', attempt, RECONNECT_MAX_ATTEMPTS)
+  check('and the wait grew to its longest step on the way', delays[delays.length - 1], RECONNECT_DELAYS_MS[RECONNECT_DELAYS_MS.length - 1])
+}
+check(
+  'the wait settles at its longest step rather than growing forever',
+  reconnectDecision({ ...up, exitCode: 255, attempt: 12, ranMs: 200, loggedIn: false }),
+  { kind: 'reconnect', attempt: 13, delayMs: RECONNECT_DELAYS_MS[RECONNECT_DELAYS_MS.length - 1] }
+)
+check(
+  'and it gives up, out loud, after the last try',
+  reconnectDecision({ ...up, exitCode: 255, attempt: RECONNECT_MAX_ATTEMPTS, ranMs: 200, loggedIn: false }).kind,
+  'stop'
+)
+check('a tab that does not keep its shell never reconnects', reconnectDecision({ ...up, exitCode: 255, persisted: false }).kind, 'stop')
+check('nor one whose host is gone from Settings', reconnectDecision({ ...up, exitCode: 255, hostKnown: false }).kind, 'stop')
+check('the link-failure code is ssh’s own 255', SSH_LINK_FAILURE, 255)
+
+console.log('\nclosing a kept SSH tab asks detach or end')
+const keptTab = {
+  kind: 'session' as const,
+  status: 'running' as const,
+  exitCode: null,
+  hostId: 'host-1',
+  remoteSession: 'stoke-0badc0de'
+}
+check('a connected kept tab asks', closeAsksDetach(keptTab, true), true)
+check('so does a paused (restored, not yet reattached) one', closeAsksDetach({ ...keptTab, status: 'paused' }, true), true)
+check('and one whose link dropped (255)', closeAsksDetach({ ...keptTab, status: 'exited', exitCode: 255 }, true), true)
+check('one that ended with 0 has no shell left: closes at once', closeAsksDetach({ ...keptTab, status: 'exited', exitCode: 0 }, true), false)
+check('a host that no longer keeps shells: closes at once', closeAsksDetach(keptTab, false), false)
+check('a plain SSH tab (no session name): closes at once', closeAsksDetach({ ...keptTab, remoteSession: undefined }, true), false)
+check('a local tab: closes at once', closeAsksDetach({ ...keptTab, hostId: null }, true), false)
+check('an "Add key" tab: closes at once', closeAsksDetach({ ...keptTab, enrollHostId: 'host-1' }, true), false)
+check('a New tab: closes at once', closeAsksDetach({ ...keptTab, kind: 'new' }, true), false)
 
 /*
  * The relaunch pill against a session that is not Claude Code.

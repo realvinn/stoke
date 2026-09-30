@@ -2,13 +2,16 @@ import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node
 import { dirname, join } from 'node:path'
 import type { EffortLevel, PermissionMode, StoredTab, StoredTabs } from '../shared/types.ts'
 import { cliIdOf } from '../shared/codingClis.ts'
+import { isSafeRemoteSessionName } from '../shared/sshPersist.ts'
 
 /**
  * The tabs that were open when Stoke last quit.
  *
  * Quitting runs `ptys.killAll()` and a restarted app cannot reattach to a CLI
  * child that outlived it, so this file is the only record of what was open.
- * Restoring from it is a relaunch (`claude --resume`), not a reattach.
+ * Restoring from it is a relaunch (`claude --resume`), not a reattach — except
+ * for an SSH tab on a host that keeps its shells (`remoteSession`), whose shell
+ * never died with Stoke: that one IS reattached, by name.
  *
  * A sibling of worklog/sessionStore.ts and deliberately not part of it: that one
  * is an address book the worklog reads, this one is a UI snapshot, and a corrupt
@@ -106,6 +109,15 @@ function tabOf(v: unknown): StoredTab | null {
     // hand, restores without it rather than with a truthy leftover.
     ultracode: v.ultracode === true,
     hostId: nullableStr(v.hostId),
+    /*
+     * Whitelisted on the way in, like the id a restore hands to `--resume`:
+     * this name is sent to a remote shell on reattach, and the file it comes
+     * from is one a user can edit. Only on a host tab — a local tab has no
+     * remote session, whatever the file says.
+     */
+    ...(nullableStr(v.hostId) && isSafeRemoteSessionName(v.remoteSession)
+      ? { remoteSession: v.remoteSession }
+      : {}),
     selectedPath: nullableStr(v.selectedPath),
     expandedPath: nullableStr(v.expandedPath),
     lastActiveAt: typeof v.lastActiveAt === 'number' && Number.isFinite(v.lastActiveAt) ? v.lastActiveAt : 0,

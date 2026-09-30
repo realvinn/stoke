@@ -725,5 +725,25 @@ console.log('\nagents: a default model, and Claude Code’s launch defaults, thr
   )
 }
 
+/*
+ * Gotcha 126: `SshHost.persist` decides whether a tab's shell is started inside
+ * a managed tmux session, so only the literal 'tmux' turns it on, and a host
+ * saved before the field existed must read as the plain ssh it always ran.
+ */
+console.log('\nssh hosts: keeping sessions running')
+{
+  const h = (over: Record<string, unknown>) =>
+    hydrateSettings({ hosts: [{ id: 'h1', label: 'VPS', alias: 'vps', command: 'byobu', ...over }] }).hosts[0]
+  check('a host saved before the field existed is off, and keeps its command', [h({}).persist, h({}).command], ['off', 'byobu'])
+  check("'tmux' is kept", h({ persist: 'tmux' }).persist, 'tmux')
+  check(
+    'anything else is off, never a truthy leftover',
+    [h({ persist: true }).persist, h({ persist: 'TMUX' }).persist, h({ persist: 1 }).persist],
+    ['off', 'off', 'off']
+  )
+  const once = hydrateSettings({ hosts: [{ id: 'h1', label: 'VPS', alias: 'vps', command: '', persist: 'tmux' }] })
+  check('hydrating twice changes nothing (gotcha 116)', hydrateSettings(once).hosts, once.hosts)
+}
+
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
 process.exitCode = failures ? 1 : 0
