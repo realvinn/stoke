@@ -3,6 +3,14 @@ import type { Profile } from '@shared/profiles'
 import { deriveAccent } from '@shared/accent'
 import { parseColor } from '@shared/color'
 import { meterScale } from '@shared/meter'
+import { agentColorTokens, agentTokenNames, type AgentColors } from '@shared/agentColors'
+
+/** What `applyAppearance` needs to colour the agents: overrides, and whether to paint. */
+export interface AgentPaint {
+  colors: AgentColors
+  /** `paintAgentColors`: more than one agent in view. */
+  paint: boolean
+}
 
 /** camelCase token -> `--kebab-case` custom property. */
 function cssVar(key: string): string {
@@ -41,7 +49,7 @@ export function applyTheme(theme: Theme): void {
  * accent tokens on top. Never remove a property; overwrite it. Nothing else in
  * the codebase should touch `documentElement.style` for colour.
  */
-export function applyAppearance(theme: Theme, profile: Profile | null): void {
+export function applyAppearance(theme: Theme, profile: Profile | null, agents?: AgentPaint): void {
   applyTheme(theme)
   const root = document.documentElement
 
@@ -81,6 +89,24 @@ export function applyAppearance(theme: Theme, profile: Profile | null): void {
   root.style.setProperty('--meter-low', meter.low)
   root.style.setProperty('--meter-mid', meter.mid)
   root.style.setProperty('--meter-high', meter.high)
+
+  /*
+   * Each agent's ink and fill (shared/agentColors.ts), derived against this
+   * theme's page like the accent above, and written for EVERY agent on every
+   * path, painted or not — a surface marked with an agent whose token was never
+   * written would resolve to nothing (app.css declares no fallback per agent).
+   * Whether any of it shows is one attribute: `data-agent-paint`, set only
+   * while more than one agent is in view, so a Claude-Code-only user sees the
+   * app exactly as before. Not profile-dependent: the profile owns the accent,
+   * the tab's top rule and the cursor; the agent owns its tag and its pane rule.
+   */
+  for (const t of agentColorTokens(agents?.colors ?? {}, theme.appearance, theme.colors.bg)) {
+    const names = agentTokenNames(t.key)
+    root.style.setProperty(names.ink, t.ink)
+    root.style.setProperty(names.fill, t.fill)
+  }
+  if (agents?.paint) root.dataset.agentPaint = 'true'
+  else delete root.dataset.agentPaint
 }
 
 export function applyTypography(

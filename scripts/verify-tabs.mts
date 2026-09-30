@@ -1044,52 +1044,127 @@ check(
 )
 
 console.log('\ntabLabel: tabs say which project and which agent (QA L16)')
+/*
+ * With no options, tabLabel draws what the strip always drew: tags on, the
+ * executable's name, Claude Code the default. `agent` is the tab's agent when
+ * it is marked at all, and is what colours the tab and names it in the tooltip
+ * whether or not the tag itself is drawn.
+ */
 check(
   'a New tab aimed at a project names it',
   tabLabel({ kind: 'new', title: 'New session', cliId: 'claude' }, 'stoke'),
-  { text: 'New · stoke', agentTag: null }
+  { text: 'New · stoke', agentTag: null, agent: null }
 )
 check(
   'a New tab aimed nowhere keeps its title',
   tabLabel({ kind: 'new', title: 'New session', cliId: 'claude' }, null),
-  { text: 'New session', agentTag: null }
+  { text: 'New session', agentTag: null, agent: null }
 )
 check(
   'a Codex tab is tagged codex',
   tabLabel({ kind: 'session', title: 'proj-a', cliId: 'codex' }, null),
-  { text: 'proj-a', agentTag: 'codex' }
+  { text: 'proj-a', agentTag: 'codex', agent: 'codex' }
 )
 check(
   'a Claude tab carries no tag',
   tabLabel({ kind: 'session', title: 'proj-a', cliId: 'claude' }, null),
-  { text: 'proj-a', agentTag: null }
+  { text: 'proj-a', agentTag: null, agent: null }
 )
 check(
   'an install tab is not tagged as the agent it installs',
   tabLabel({ kind: 'session', title: 'Installing Codex CLI', cliId: 'codex', installing: ['codex'] }, null),
-  { text: 'Installing Codex CLI', agentTag: null }
+  { text: 'Installing Codex CLI', agentTag: null, agent: null }
+)
+
+console.log('\ntabLabel: the tag is a setting — shown or not, named by the user, keyed on the default agent')
+const TAGS = { show: true, labels: {}, primary: 'claude' as const }
+check(
+  'tags hidden: no tag, but the agent is still named for the colour and the tooltip',
+  tabLabel({ kind: 'session', title: 'proj-a', cliId: 'codex' }, null, { ...TAGS, show: false }),
+  { text: 'proj-a', agentTag: null, agent: 'codex' }
+)
+check(
+  'a custom label wins over the executable name',
+  tabLabel({ kind: 'session', title: 'proj-a', cliId: 'cursor' }, null, { ...TAGS, labels: { cursor: 'Cursor' } }),
+  { text: 'proj-a', agentTag: 'Cursor', agent: 'cursor' }
+)
+check(
+  'another agent’s label does not leak onto this one',
+  tabLabel({ kind: 'session', title: 'proj-a', cliId: 'codex' }, null, { ...TAGS, labels: { cursor: 'Cursor' } })
+    .agentTag,
+  'codex'
+)
+check(
+  'a blank label falls back to the executable name',
+  tabLabel({ kind: 'session', title: 'proj-a', cliId: 'codex' }, null, { ...TAGS, labels: { codex: '  ' } }).agentTag,
+  'codex'
+)
+/*
+ * The rule is "differs from the default agent", not "is not Claude Code": the
+ * old rule tagged every Codex tab even for someone whose Start starts Codex, and
+ * left their one Claude tab looking like all the rest.
+ */
+const CODEX_DEFAULT = { ...TAGS, primary: 'codex' as const }
+check(
+  'Codex the default: a Claude tab is the one tagged',
+  tabLabel({ kind: 'session', title: 'proj-a', cliId: 'claude' }, null, CODEX_DEFAULT),
+  { text: 'proj-a', agentTag: 'claude', agent: 'claude' }
+)
+check(
+  'Codex the default: a Codex tab carries no tag',
+  tabLabel({ kind: 'session', title: 'proj-a', cliId: 'codex' }, null, CODEX_DEFAULT),
+  { text: 'proj-a', agentTag: null, agent: null }
+)
+check(
+  'Codex the default: a Grok tab is still tagged, as itself',
+  tabLabel({ kind: 'session', title: 'proj-a', cliId: 'grok' }, null, CODEX_DEFAULT).agentTag,
+  'grok'
+)
+check(
+  'Claude the default, stated: a Codex tab is tagged and a Claude tab is not',
+  [
+    tabLabel({ kind: 'session', title: 'p', cliId: 'codex' }, null, TAGS).agentTag,
+    tabLabel({ kind: 'session', title: 'p', cliId: 'claude' }, null, TAGS).agentTag
+  ],
+  ['codex', null]
+)
+check(
+  'an install tab gets no tag and no agent, whatever the default',
+  [TAGS, CODEX_DEFAULT, { ...TAGS, primary: 'grok' as const }].map((o) =>
+    tabLabel({ kind: 'session', title: 'Installing', cliId: 'codex', installing: ['codex', 'grok'] }, null, o)
+  ),
+  [
+    { text: 'Installing', agentTag: null, agent: null },
+    { text: 'Installing', agentTag: null, agent: null },
+    { text: 'Installing', agentTag: null, agent: null }
+  ]
+)
+check(
+  'a New tab is never tagged, whatever the default',
+  tabLabel({ kind: 'new', title: 'New session', cliId: 'claude' }, null, CODEX_DEFAULT),
+  { text: 'New session', agentTag: null, agent: null }
 )
 
 console.log('\ntabLabel: a name the user gave the tab wins over the ai-title')
 check(
   'a renamed session tab shows the custom name, not the ai-title',
   tabLabel({ kind: 'session', title: 'proj-a', customTitle: 'Auth work', cliId: 'claude' }, null),
-  { text: 'Auth work', agentTag: null }
+  { text: 'Auth work', agentTag: null, agent: null }
 )
 check(
   'the agent tag survives a rename',
   tabLabel({ kind: 'session', title: 'proj-a', customTitle: 'Auth work', cliId: 'codex' }, null),
-  { text: 'Auth work', agentTag: 'codex' }
+  { text: 'Auth work', agentTag: 'codex', agent: 'codex' }
 )
 check(
   'a whitespace-only custom title is no name and falls back',
   tabLabel({ kind: 'session', title: 'proj-a', customTitle: '   ', cliId: 'claude' }, null),
-  { text: 'proj-a', agentTag: null }
+  { text: 'proj-a', agentTag: null, agent: null }
 )
 check(
   'a renamed New tab shows its name over the aimed project',
   tabLabel({ kind: 'new', title: 'New session', customTitle: 'Scratch', cliId: 'claude' }, 'stoke'),
-  { text: 'Scratch', agentTag: null }
+  { text: 'Scratch', agentTag: null, agent: null }
 )
 
 console.log('\nnextCustomTitle: a rename does not freeze the ai-title')
