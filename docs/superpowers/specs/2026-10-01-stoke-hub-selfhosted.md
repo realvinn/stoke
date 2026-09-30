@@ -243,10 +243,22 @@ Two counters, both kept by the hub, both judged by `throttleVerdict`/`recordLogi
 | Key | Rule | Then |
 |---|---|---|
 | Normalised email (known or not) | 5 failures inside 15 min | locked 15 min, doubling per repeat lockout, capped at 24 h; a success clears it |
+| An active device's PROVEN sign-in (below), instead of the email | the same | the same, on `device:<account>:<id>`; a proven success clears only this |
 | Client IP (`x-stoke-client-ip` from the edge, else the socket's) | 30 failures inside 15 min | refused 15 min |
 
 Refusals are HTTP 429 `{error: 'locked' | 'rate-limited', retryAfterMs}`. Invite redemption and
 signup share the IP counter.
+
+**The owner's own devices are not locked out by a stranger (found in review, 2026-10-01).** The
+email lock is judged before the password and refuses the right one too, so anyone who knows the
+address could send five guesses every quarter-hour and keep every device from signing in again,
+the lock doubling to a day; per-IP counters do not stop a distributed sender. So a device the
+account's chain already lists signs its sign-in like any request (§3.4's four headers, no bearer,
+by the key the chain holds for its id): verified, within the skew and with a fresh nonce, the
+attempt is judged by that device's own counter, which only its key can trip, and a success there
+leaves the email locked for everyone else. Anything short of a proof is simply the email's case.
+What remains: a NEW device cannot sign in while the email is locked (`stoke-hub reset-password`
+clears it; an attacker can lock it again).
 
 ### 3.4 Every request after login is device-signed
 

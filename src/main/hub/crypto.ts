@@ -222,13 +222,17 @@ export function bodyDigest(body: Uint8Array | string | null | undefined): string
   return sha256B64u(body ?? '')
 }
 
-/** The four headers a signed request carries (spec §3.4), plus the bearer. */
+/**
+ * The four headers a signed request carries (spec §3.4), plus the bearer when
+ * there is a session. A sign-in has none yet: an active device signs it anyway
+ * (no `token`) to be judged by its own lockout, not the email's (spec §3.3).
+ */
 export function signRequest(f: {
   method: string
   pathFromV1: string
   device: string
   signPriv: string
-  token: string
+  token?: string
   body?: Uint8Array | string | null
   now: number
   nonce?: string
@@ -237,7 +241,7 @@ export function signRequest(f: {
   const ts = Math.floor(f.now)
   const text = requestSigningText({ method: f.method, pathFromV1: f.pathFromV1, ts, nonce, device: f.device, bodySha256: bodyDigest(f.body) })
   return {
-    authorization: `Bearer ${f.token}`,
+    ...(f.token ? { authorization: `Bearer ${f.token}` } : {}),
     [HUB_HEADERS.device]: f.device,
     [HUB_HEADERS.ts]: String(ts),
     [HUB_HEADERS.nonce]: nonce,

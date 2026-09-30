@@ -288,6 +288,15 @@ export interface SignupResponse {
   role: 'owner' | 'member'
 }
 
+/**
+ * `POST /v1/auth/login`. A device the account's chain already lists as active
+ * SHOULD sign it like any request (the four `x-stoke-*` headers of spec §3.4,
+ * no bearer, by the key the chain holds for `device.id`): the hub then judges
+ * the attempt by that device's own lockout (`DEVICE_THROTTLE`), which only
+ * its key can trip, instead of the email's, which anyone who knows the address
+ * can. A proof that does not verify — or a device the chain does not list — is
+ * simply not a proof: the email's lockout applies, and nothing says why.
+ */
 export interface LoginRequest {
   email: string
   password: string

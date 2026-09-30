@@ -229,7 +229,9 @@ back what it holds.
 Fixed by the protocol (`src/shared/hub/protocol.ts`): a request body is at most 1 MiB, a presence
 frame 64 KiB, a relay frame 1 MiB; 100 puts per request, 5,000 items and 32 active devices per
 account, 8 open relays per account. Sign-in locks an email for 15 minutes after 5 wrong
-passwords (doubling to 24 h) and an address after 30 failures.
+passwords (doubling to 24 h) and an address after 30 failures. A device that has already joined
+proves itself when it signs in and is judged by its own counter instead, so a stranger guessing
+your email cannot lock your devices out — only a new device waits out the lock.
 
 A relay is flow-controlled: once 4 MiB is queued toward an end that is not reading, the hub stops
 reading the other end until it drains (TCP then pushes back on the sender), and closes the relay

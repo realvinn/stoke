@@ -138,6 +138,8 @@ interface CallOpts {
   signPath?: string
   base?: string
   raw?: string
+  /** Sign this request with the device's key but no bearer: an active device proving itself at sign-in. */
+  proof?: Dev
 }
 
 async function call(method: 'GET' | 'POST', pathV1: string, body?: unknown, o: CallOpts = {}): Promise<Reply> {
@@ -162,6 +164,8 @@ async function call(method: 'GET' | 'POST', pathV1: string, body?: unknown, o: C
         nonce: o.nonce
       })
     )
+  } else if (o.proof) {
+    Object.assign(headers, signRequest({ method, pathFromV1: pathV1, device: o.proof.id, signPriv: o.proof.keys.signPriv, body: text, now: o.ts ?? clock, nonce: o.nonce }))
   }
   Object.assign(headers, o.headers)
   const started = performance.now()
@@ -204,8 +208,8 @@ async function signup(invite: string, email: string, password: string, o: CallOp
   return call('POST', '/v1/auth/signup', { invite, email, password }, o)
 }
 
-async function login(d: Dev, email: string, password: string, o: CallOpts = {}): Promise<Reply> {
-  const r = await call('POST', '/v1/auth/login', { email, password, device: draftOf(d) }, o)
+async function login(d: Dev, email: string, password: string, o: CallOpts & { prove?: boolean } = {}): Promise<Reply> {
+  const r = await call('POST', '/v1/auth/login', { email, password, device: draftOf(d) }, { ...o, proof: o.prove ? d : undefined })
   if (r.status === 200) {
     d.token = r.body.token
     d.account = r.body.accountId
@@ -538,6 +542,38 @@ async function main(): Promise<void> {
     const wrap = await call('GET', '/v1/vault/wrap', undefined, { dev: A })
     const vk = wrap.status === 200 ? unwrapVaultKey(wrap.body.wrap, { account: ACCOUNT, epoch: 1, device: A.id, boxPriv: A.keys.boxPriv, commit: await commitFromChain(A, 1) }) : null
     ok('the device unwraps the vault key it uploaded', !!vk && Buffer.from(vk).equals(Buffer.from(VK1)))
+  }
+
+  /* ------------------------------ the lockout vs the owner's devices */
+  console.log('\na stranger guessing the email cannot lock out the account’s own devices')
+  {
+    for (let i = 0; i < 5; i++) await login(newDevice('x'), OWNER_EMAIL, `a stranger's guess ${i} ....`, { ip: '203.0.113.66' })
+    const stranger = await login(newDevice('x'), OWNER_EMAIL, OWNER_PW, { ip: '198.51.100.70' })
+    check('five wrong guesses from anywhere lock the email, the right password included', [stranger.status, stranger.body?.error], [429, 'locked'])
+    const proven = await login(A, OWNER_EMAIL, OWNER_PW, { prove: true })
+    check('but an active device that signs its sign-in with the key the chain lists gets in', [proven.status, proven.body?.state], [200, 'active'])
+    const provenWrong = await login(A, OWNER_EMAIL, 'not the password at all', { prove: true })
+    check('and a wrong password from it is a plain refusal (401), not the email’s lock', [provenWrong.status, provenWrong.body?.message], [401, LOGIN_REFUSED])
+    const nonce = randomB64u(16)
+    await login(A, OWNER_EMAIL, OWNER_PW, { prove: true, nonce })
+    const replayed = await login(A, OWNER_EMAIL, OWNER_PW, { prove: true, nonce })
+    check('a replayed proof proves nothing: the email lock applies', [replayed.status, replayed.body?.error], [429, 'locked'])
+    const posing: Dev = { ...A, keys: { ...A.keys, signPriv: generateDeviceKeys().signPriv } }
+    const forged = await login(posing, OWNER_EMAIL, OWNER_PW, { prove: true })
+    check('nor does one signed by another key than the chain’s for that id', [forged.status, forged.body?.error], [429, 'locked'])
+    const impostor = await login({ ...newDevice('x'), id: A.id }, OWNER_EMAIL, OWNER_PW, { prove: true })
+    check('nor one that signs well with its OWN key under that id: the key must be the chain’s', [impostor.status, impostor.body?.error], [429, 'locked'])
+    const unlisted = await login(B, OWNER_EMAIL, OWNER_PW, { prove: true })
+    check('nor one from a device the chain does not list (pending)', [unlisted.status, unlisted.body?.error], [429, 'locked'])
+    for (let i = 0; i < 5; i++) await login(A, OWNER_EMAIL, `the device guessing ${i} ......`, { prove: true })
+    const deviceLocked = await login(A, OWNER_EMAIL, OWNER_PW, { prove: true })
+    check('five wrong passwords from the device lock ITS counter: a stolen device key cannot guess freely either', [deviceLocked.status, deviceLocked.body?.error], [429, 'locked'])
+    const still = await login(newDevice('x'), OWNER_EMAIL, OWNER_PW, { ip: '198.51.100.71' })
+    check('and the device getting in left the email locked for strangers', still.body?.error, 'locked')
+    clock += Math.max(still.body?.retryAfterMs ?? 0, deviceLocked.body?.retryAfterMs ?? 0) + 1
+    const later = await login(B, OWNER_EMAIL, OWNER_PW)
+    const deviceBack = await login(A, OWNER_EMAIL, OWNER_PW, { prove: true })
+    check('both unlock on their own time', [later.status, deviceBack.status], [200, 200])
   }
 
   /* ----------------------------------------------------- items */

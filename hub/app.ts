@@ -33,6 +33,7 @@ import type { Duplex } from 'node:stream'
 import { WebSocketServer, type RawData, type WebSocket } from 'ws'
 import {
   BOOTSTRAP_INVITE_TTL_MS,
+  DEVICE_THROTTLE,
   EMAIL_THROTTLE,
   formatInvite,
   INVITE_BYTES,
@@ -370,6 +371,11 @@ export function emailThrottleKey(email: string): string {
   return `email:${sha256B64u(email)}`
 }
 
+/** The throttle key of one active device's proven sign-ins (`DEVICE_THROTTLE`). */
+export function deviceThrottleKey(account: string, device: string): string {
+  return `device:${account}:${device}`
+}
+
 /* ------------------------------------------------------------ the server */
 
 type Listener = 'edge' | 'lan'
@@ -399,6 +405,9 @@ interface Ctx {
   ip: string
   route: HubRouteName | null
   auth: Authed | null
+  /** The request as it arrived, for a route that verifies a signature itself (`login`'s device proof). */
+  headers: Record<string, string | undefined>
+  raw: Buffer
 }
 
 type Handler = (ctx: Ctx, body: Record<string, unknown>, params: Record<string, string>, pathV1: string) => unknown | Promise<unknown>
@@ -442,7 +451,7 @@ class HubServer {
     this.handlers = {
       health: () => this.health(),
       signup: (ctx, body) => this.signup(ctx, body),
-      login: (ctx, body) => this.login(ctx, body),
+      login: (ctx, body, _p, pathV1) => this.login(ctx, body, pathV1),
       logout: (ctx) => this.logout(ctx),
       account: (ctx) => this.account(ctx),
       invite: (ctx) => this.invite(ctx),
@@ -689,7 +698,7 @@ class HubServer {
 
   private async onRequest(listener: Listener, req: IncomingMessage, res: ServerResponse): Promise<void> {
     const started = this.now()
-    const ctx: Ctx = { rid: randomB64u(6), listener, ip: socketIp(req), route: null, auth: null }
+    const ctx: Ctx = { rid: randomB64u(6), listener, ip: socketIp(req), route: null, auth: null, headers: {}, raw: Buffer.alloc(0) }
     this.inFlight++
     let status = 200
     let code: HubErrorCode | null = null
@@ -755,6 +764,8 @@ class HubServer {
       if (!isRecord(parsed)) throw new HubError('bad-request', 'That body is not a JSON object.')
       json = parsed
     }
+    ctx.headers = headers
+    ctx.raw = body
     ctx.auth = this.authenticate(HUB_ROUTES[match.name].auth, req.method ?? '', pathV1, headers, body)
     return await this.handlers[match.name](ctx, json, match.params, pathV1)
   }
@@ -763,7 +774,7 @@ class HubServer {
 
   private onUpgrade(listener: Listener, req: IncomingMessage, socket: Duplex, head: Buffer): void {
     socket.on('error', () => {})
-    const ctx: Ctx = { rid: randomB64u(6), listener, ip: socketIp(req), route: null, auth: null }
+    const ctx: Ctx = { rid: randomB64u(6), listener, ip: socketIp(req), route: null, auth: null, headers: {}, raw: Buffer.alloc(0) }
     try {
       if (this.closing) throw new HubError('server-error', 'The hub is restarting. Try again in a moment.')
       const raw = req.url ?? ''
@@ -911,7 +922,35 @@ class HubServer {
     return { accountId, role: claimed.role }
   }
 
-  private async login(ctx: Ctx, body: Record<string, unknown>): Promise<unknown> {
+  /**
+   * Whether this sign-in PROVES it comes from a device the account's chain
+   * lists as active: it carries spec §3.4's signed-request headers (no bearer
+   * yet), verified under the key the chain holds for that id (by id AND key,
+   * gotcha 140), within the clock skew, with a nonce never seen from it.
+   * Anything short of that is simply not a proof, and says nothing about why.
+   */
+  private provenDevice(ctx: Ctx, pathV1: string, account: AccountRow, draft: DeviceRecord): boolean {
+    if (ctx.headers[HUB_HEADERS.sig] === undefined) return false
+    const listed = this.chainState(account.id)?.verdict?.active.find((d) => d.id === draft.id && d.sign === draft.sign)
+    if (!listed) return false
+    const now = this.now()
+    const v = verifyRequest({ method: 'POST', pathFromV1: pathV1, headers: ctx.headers, body: ctx.raw, signPub: listed.sign, device: listed.id, now })
+    return v.ok && this.store.rememberNonce(listed.id, v.nonce, now)
+  }
+
+  /**
+   * Sign in (spec §3.2, §3.3). Which lockout judges the attempt: the EMAIL's
+   * (5 failures, 15 min doubling to 24 h) — unless the attempt proves it comes
+   * from an active device (`provenDevice`), which is judged by its own counter
+   * (`DEVICE_THROTTLE`) instead. Found in review: the email lock was checked
+   * before the password and refused the right one too, so anyone who knew the
+   * owner's address could send five guesses a quarter-hour and keep every one
+   * of the owner's devices from signing in again, doubling to a day; per-IP
+   * counters do not stop a distributed sender. A device's own counter can be
+   * tripped only with that device's key, and a proven success clears only it:
+   * the email stays locked for strangers.
+   */
+  private async login(ctx: Ctx, body: Record<string, unknown>, pathV1: string): Promise<unknown> {
     const email = normalizeEmail(body.email)
     if (!email) throw new HubError('bad-request', 'That is not an email address.')
     if (typeof body.password !== 'string' || body.password.length === 0 || body.password.length > MAX_PASSWORD_CHARS * 4) {
@@ -919,20 +958,24 @@ class HubServer {
     }
     const draft = draftRecord(body.device)
     if (typeof draft === 'string') throw new HubError('bad-request', `This device's keys are not usable: ${draft}.`)
-    const emailKey = emailThrottleKey(email)
-    const locked = throttleVerdict(this.store.throttle(emailKey), this.now())
+    const account = this.store.accountByEmail(email)
+    const proven = account !== null && this.provenDevice(ctx, pathV1, account, draft)
+    const lockKey = proven && account ? deviceThrottleKey(account.id, draft.id) : emailThrottleKey(email)
+    const rule = proven ? DEVICE_THROTTLE : EMAIL_THROTTLE
+    const locked = throttleVerdict(this.store.throttle(lockKey), this.now())
     if (!locked.ok) throw new HubError('locked', undefined, locked.retryAfterMs)
     const ipKey = this.ipGate(ctx.ip)
-    // Claims before the await (gotcha 20): one attempt per email in flight, a few per IP.
-    const releaseEmail = this.loginByEmail.claim(emailKey)
-    if (!releaseEmail) throw new HubError('rate-limited', 'A sign-in for this email is already being checked.', 1000)
+    // Claims before the await (gotcha 20): one attempt per lock key in flight (so the throttle
+    // counts every guess), a few per IP. A proven device's claim is its own, so a stranger's
+    // guesses in flight for the email cannot hold it off either.
+    const releaseKey = this.loginByEmail.claim(lockKey)
+    if (!releaseKey) throw new HubError('rate-limited', 'A sign-in for this email is already being checked.', 1000)
     const releaseIp = this.loginByIp.claim(ipKey)
     if (!releaseIp) {
-      releaseEmail()
+      releaseKey()
       throw new HubError('rate-limited', undefined, 1000)
     }
     try {
-      const account = this.store.accountByEmail(email)
       let good: boolean
       const release = await this.scryptSlot()
       try {
@@ -943,11 +986,11 @@ class HubServer {
       }
       if (!good || !account || account.status !== 'active') {
         const now = this.now()
-        this.store.saveThrottle(emailKey, recordLoginFailure(this.store.throttle(emailKey), now, EMAIL_THROTTLE))
+        this.store.saveThrottle(lockKey, recordLoginFailure(this.store.throttle(lockKey), now, rule))
         this.ipFailure(ipKey)
         throw new HubError('unauthorized', LOGIN_REFUSED)
       }
-      this.store.clearThrottle(emailKey)
+      this.store.clearThrottle(lockKey)
       const chain = this.chainState(account.id)
       if (chain) {
         if (chain.verdict?.revoked.includes(draft.id)) {
@@ -976,7 +1019,7 @@ class HubServer {
       this.log.info('signed in', { account: account.id, device: draft.id, state })
       return { token, accountId: account.id, expiresAt, state }
     } finally {
-      releaseEmail()
+      releaseKey()
       releaseIp()
     }
   }
