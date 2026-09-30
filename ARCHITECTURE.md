@@ -596,7 +596,8 @@ npm run verify:campfire       # the installer's campfire: the locked alphabet th
                               # and the shipped art blocks against the generator. Also runs
                               # the block through sh, bash, zsh and dash for real
 npm run verify:color          # colour maths: contrast, APCA, oklch; every theme's tokens, the
-                              # accent matrix, every agent's ink on every theme, the meter
+                              # accent matrix, every agent's ink on every theme and its tag
+                              # text at 4.5:1 on the tab strip's three grounds, the meter
                               # colours and the bypass mark at 3:1
 npm run verify:theme-gen      # the theme generator: that a five-field seed reproduces every
                               # built-in byte-for-byte, that no slider position can breach a
@@ -916,7 +917,7 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     the launcher's: `continuePlan` (Continue resumes by id, never a twin),
                     `newTabToReuse`, `tabLabel` (the agent tag: shown or not, the user's
                     label, on tabs whose agent is not the default one)
-  src/lib/agentColor.ts  `agentMark(key)`: `data-agent` plus `--agent-ink`/`--agent-fill`
+  src/lib/agentColor.ts  `agentMark(key)`: `data-agent` plus `--agent-ink`/`-text`/`-fill`
                     pointed at that key's tokens, inline, so a new agent or account needs
                     no stylesheet line. `paneAgent`: an install or key-enrolment tab is no
                     agent's
@@ -968,7 +969,8 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     `tag` (show, labels) and `colors` are hydrated here too
   agentColors.ts    each coding agent's colour: `AGENT_SEEDS`, the user's override, and
                     `agentColorTokens` — deriveAccent per seed, which applyAppearance writes
-                    as `--agent-<key>-ink`/`-fill` and the suites assert. Clear of the meter,
+                    as `--agent-<key>-ink`/`-text`/`-fill` and the suites assert; `-text` is
+                    the ink re-solved where it misses 4.5:1 on the tab strip. Clear of the meter,
                     --danger and --warning by measurement; painted only while more than one
                     agent is in view (`paintAgentColors`). Keyed by string so an account can
                     add `claude-work`

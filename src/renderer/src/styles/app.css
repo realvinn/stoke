@@ -794,20 +794,26 @@ body {
 }
 
 /*
- * Agent colour (shared/agentColors.ts). `agentMark` points `--agent-ink` and
- * `--agent-fill` at the marked agent's tokens inline; these are what a marked
- * surface falls back to without that mapping, so a read never resolves to
- * nothing (app.css declares no other fallback for a colour token).
+ * Agent colour (shared/agentColors.ts). `agentMark` points `--agent-ink`,
+ * `--agent-text` and `--agent-fill` at the marked agent's tokens inline; these
+ * are what a marked surface falls back to without that mapping, so a read never
+ * resolves to nothing (app.css declares no other fallback for a colour token).
  */
 [data-agent] {
   --agent-ink: var(--text-muted);
+  --agent-text: var(--text-muted);
   --agent-fill: var(--text-faint);
 }
 
-/* Painted only while more than one agent is in view: a 1px border and text, so ink. */
+/*
+ * Painted only while more than one agent is in view. The border is a graphic
+ * (3:1), so the ink; the label is text on the title bar's sunken chrome or a
+ * hovered tab, where the ink — solved against the page — measured 3.87:1 on
+ * every light theme, so the text token, held to 4.5:1 on all three grounds.
+ */
 :root[data-agent-paint] .tab-agent[data-agent] {
   border-color: var(--agent-ink);
-  color: var(--agent-ink);
+  color: var(--agent-text);
 }
 
 /*

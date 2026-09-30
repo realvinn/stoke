@@ -91,18 +91,20 @@ export function applyAppearance(theme: Theme, profile: Profile | null, agents?: 
   root.style.setProperty('--meter-high', meter.high)
 
   /*
-   * Each agent's ink and fill (shared/agentColors.ts), derived against this
-   * theme's page like the accent above, and written for EVERY agent on every
-   * path, painted or not — a surface marked with an agent whose token was never
-   * written would resolve to nothing (app.css declares no fallback per agent).
+   * Each agent's ink, text and fill (shared/agentColors.ts), derived against
+   * this theme's page like the accent above (the text against the tab strip's
+   * three grounds too), and written for EVERY agent on every path, painted or
+   * not — a surface marked with an agent whose token was never written would
+   * resolve to nothing (app.css declares no fallback per agent).
    * Whether any of it shows is one attribute: `data-agent-paint`, set only
    * while more than one agent is in view, so a Claude-Code-only user sees the
    * app exactly as before. Not profile-dependent: the profile owns the accent,
    * the tab's top rule and the cursor; the agent owns its tag and its pane rule.
    */
-  for (const t of agentColorTokens(agents?.colors ?? {}, theme.appearance, theme.colors.bg)) {
+  for (const t of agentColorTokens(agents?.colors ?? {}, theme.appearance, theme.colors)) {
     const names = agentTokenNames(t.key)
     root.style.setProperty(names.ink, t.ink)
+    root.style.setProperty(names.text, t.text)
     root.style.setProperty(names.fill, t.fill)
   }
   if (agents?.paint) root.dataset.agentPaint = 'true'

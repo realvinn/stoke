@@ -250,16 +250,18 @@ ok('every seed parses as an opaque colour', CODING_CLIS.every((c) => parseColor(
 ok('no seed names an agent the table does not have', Object.keys(AGENT_SEEDS).every((id) => CODING_CLIS.some((c) => c.id === id)))
 check('tokens are keyed, so a second account is one more key', agentTokenNames('claude-work'), {
   ink: '--agent-claude-work-ink',
+  text: '--agent-claude-work-text',
   fill: '--agent-claude-work-fill'
 })
+const EMBER = BUILT_IN_THEMES.find((t) => t.id === 'ember')!
 check(
   'agentColorTokens covers the whole table, in table order',
-  agentColorTokens({}, 'dark', '#181716').map((t) => t.key),
+  agentColorTokens({}, 'dark', EMBER.colors).map((t) => t.key),
   CODING_CLIS.map((c) => c.id)
 )
 check(
   'and an override reaches the token applyAppearance writes',
-  agentColorTokens({ codex: '#123456' }, 'dark', '#181716').find((t) => t.key === 'codex')?.seed,
+  agentColorTokens({ codex: '#123456' }, 'dark', EMBER.colors).find((t) => t.key === 'codex')?.seed,
   '#123456'
 )
 
@@ -286,21 +288,28 @@ const dist = (a: string, b: string): number => perceptualDistance(parseColor(a)!
   }
   console.log(`  nearest two common seeds: ${pair} at ${nearest.toFixed(3)} (floor ${AGENT_DISTINCT_DISTANCE})`)
 
-  let nearestInk = Infinity
-  let inkPair = ''
-  for (const t of BUILT_IN_THEMES) {
-    const inks = new Map(agentColorTokens({}, t.appearance, t.colors.bg).map((x) => [x.key, x.ink]))
-    for (let i = 0; i < COMMON_AGENTS.length; i++) {
-      for (let j = i + 1; j < COMMON_AGENTS.length; j++) {
-        const d = dist(inks.get(COMMON_AGENTS[i])!, inks.get(COMMON_AGENTS[j])!)
-        if (d < nearestInk) [nearestInk, inkPair] = [d, `${t.id} ${COMMON_AGENTS[i]}/${COMMON_AGENTS[j]}`]
+  /*
+   * The ink (borders, rules, dots) and the text (the tag's label, re-solved
+   * darker on a light theme's chrome) are both what the user tells agents
+   * apart by, so both are held to it.
+   */
+  for (const part of ['ink', 'text'] as const) {
+    let nearestInk = Infinity
+    let inkPair = ''
+    for (const t of BUILT_IN_THEMES) {
+      const inks = new Map(agentColorTokens({}, t.appearance, t.colors).map((x) => [x.key, x[part]]))
+      for (let i = 0; i < COMMON_AGENTS.length; i++) {
+        for (let j = i + 1; j < COMMON_AGENTS.length; j++) {
+          const d = dist(inks.get(COMMON_AGENTS[i])!, inks.get(COMMON_AGENTS[j])!)
+          if (d < nearestInk) [nearestInk, inkPair] = [d, `${t.id} ${COMMON_AGENTS[i]}/${COMMON_AGENTS[j]}`]
+        }
       }
     }
+    ok(
+      `the common five's ${part.toUpperCase()}S never become the same colour on any theme (nearest ${inkPair} ${nearestInk.toFixed(3)})`,
+      nearestInk >= 0.04
+    )
   }
-  ok(
-    `the common five's INKS never become the same colour on any theme (nearest ${inkPair} ${nearestInk.toFixed(3)})`,
-    nearestInk >= 0.04
-  )
 
   let nearestAll = Infinity
   let allPair = ''
@@ -320,27 +329,29 @@ const dist = (a: string, b: string): number => perceptualDistance(parseColor(a)!
    * pressure, an error, or "waiting for you".
    */
   for (const c of CODING_CLIS) {
-    let worst = Infinity
-    let where = ''
-    for (const t of BUILT_IN_THEMES) {
-      const ink = agentColorTokens({}, t.appearance, t.colors.bg).find((x) => x.key === c.id)!.ink
-      const m = meterScale(t.colors.bg, t.colors.bgSunken, t.appearance)
-      for (const [name, colour] of [
-        ['meter-low', m.low],
-        ['meter-mid', m.mid],
-        ['meter-high', m.high],
-        ['danger', t.colors.danger],
-        ['warning', t.colors.warning]
-      ] as const) {
-        const d = dist(ink, colour)
-        if (d < worst) [worst, where] = [d, `${t.id} ${name}`]
+    for (const part of ['ink', 'text'] as const) {
+      let worst = Infinity
+      let where = ''
+      for (const t of BUILT_IN_THEMES) {
+        const ink = agentColorTokens({}, t.appearance, t.colors).find((x) => x.key === c.id)![part]
+        const m = meterScale(t.colors.bg, t.colors.bgSunken, t.appearance)
+        for (const [name, colour] of [
+          ['meter-low', m.low],
+          ['meter-mid', m.mid],
+          ['meter-high', m.high],
+          ['danger', t.colors.danger],
+          ['warning', t.colors.warning]
+        ] as const) {
+          const d = dist(ink, colour)
+          if (d < worst) [worst, where] = [d, `${t.id} ${name}`]
+        }
       }
+      ok(
+        `${c.id}: its ${part} stays clear of the meter, danger and warning (nearest ${where} ${worst.toFixed(3)})`,
+        worst >= AGENT_CLEAR_DISTANCE,
+        `under ${AGENT_CLEAR_DISTANCE}`
+      )
     }
-    ok(
-      `${c.id}: its ink stays clear of the meter, danger and warning (nearest ${where} ${worst.toFixed(3)})`,
-      worst >= AGENT_CLEAR_DISTANCE,
-      `under ${AGENT_CLEAR_DISTANCE}`
-    )
   }
 }
 

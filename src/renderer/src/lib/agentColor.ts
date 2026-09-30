@@ -3,7 +3,8 @@ import { agentTokenNames, type AgentColorKey } from '@shared/agentColors'
 
 /**
  * Mark a surface as belonging to one agent: `data-agent` for the stylesheet to
- * select on, and `--agent-ink` / `--agent-fill` pointed at that agent's tokens.
+ * select on, and `--agent-ink` / `--agent-text` / `--agent-fill` pointed at that
+ * agent's tokens.
  *
  * The mapping is inline rather than one `[data-agent='codex']` rule per agent
  * in app.css, so a new key needs no stylesheet change — a new agent in the
@@ -19,7 +20,11 @@ export function agentMark(key: AgentColorKey | null | undefined): { 'data-agent'
   const t = agentTokenNames(key)
   return {
     'data-agent': key,
-    style: { '--agent-ink': `var(${t.ink})`, '--agent-fill': `var(${t.fill})` } as CSSProperties
+    style: {
+      '--agent-ink': `var(${t.ink})`,
+      '--agent-text': `var(${t.text})`,
+      '--agent-fill': `var(${t.fill})`
+    } as CSSProperties
   }
 }
 

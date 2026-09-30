@@ -11,9 +11,16 @@
  * Seeds live here, never in a component or in themes.ts (gotcha 43): they are
  * data, and `verify:color` / `verify:agents` hold every one of them to the
  * floors below. Like a profile accent (gotcha 44), a seed is a brand colour
- * that is DERIVED per theme: `--agent-<key>-ink` is `deriveAccent`'s ink —
- * 4.5:1 and APCA Lc 60 on the page, for text, borders and 1px/2px rules — and
- * `--agent-<key>-fill` is its fill, for a swatch that shows the colour itself.
+ * that is DERIVED per theme, into three tokens:
+ *  - `--agent-<key>-ink`, `deriveAccent`'s ink — 4.5:1 and APCA Lc 60 on the
+ *    page — for borders, 1px/2px rules and dots, which are graphics and need
+ *    3:1 on whatever they sit on (WCAG 1.4.11);
+ *  - `--agent-<key>-text`, the same colour held to 4.5:1 on every ground the
+ *    tab tag's TEXT sits on (`AgentGrounds`), which is the ink itself wherever
+ *    the ink already clears them — every dark theme — and solved darker where
+ *    it does not. The ink alone measured 3.87:1 on the title bar of every light
+ *    theme: it is solved against the page, and the tag sits on sunken chrome;
+ *  - `--agent-<key>-fill`, its fill, for a swatch that shows the colour itself.
  *
  * Three things the palette is kept clear of, and all three are asserted:
  *  - the context meter's green, orange and red (shared/meter.ts): an agent
@@ -39,7 +46,7 @@
  */
 import { deriveAccent, type Appearance } from './accent.ts'
 import { CODING_CLIS, isCodingCliId, type CodingCliId } from './codingClis.ts'
-import { parseColor, toHex } from './color.ts'
+import { contrastRatio, parseColor, toHex } from './color.ts'
 
 /**
  * The colour each agent starts with. Measured, not picked by eye: see the
@@ -91,10 +98,24 @@ export const AGENT_CLEAR_DISTANCE = 0.08
 /** A colour key: an agent id today, `<id>-<account>` once accounts have colours. */
 export type AgentColorKey = string
 
-/** The two custom properties `applyAppearance` writes for one key. */
-export function agentTokenNames(key: AgentColorKey): { ink: string; fill: string } {
-  return { ink: `--agent-${key}-ink`, fill: `--agent-${key}-fill` }
+/** The three custom properties `applyAppearance` writes for one key. */
+export function agentTokenNames(key: AgentColorKey): { ink: string; text: string; fill: string } {
+  return { ink: `--agent-${key}-ink`, text: `--agent-${key}-text`, fill: `--agent-${key}-fill` }
 }
+
+/**
+ * The grounds an agent's colour is painted on as TEXT: the page (the selected
+ * tab), the title bar's sunken chrome (every other tab) and `--surface-hover`
+ * (a hovered or lifted one). Theme colour keys, so `theme.colors` passes as is.
+ */
+export interface AgentGrounds {
+  bg: string
+  bgSunken: string
+  surfaceHover: string
+}
+
+/** WCAG 1.4.3: what `--agent-<key>-text` clears on every one of `AgentGrounds`. */
+export const AGENT_TEXT_WCAG = 4.5
 
 /** The user's overrides: only known ids, only opaque colours, stored as `#rrggbb`. */
 export type AgentColors = Partial<Record<CodingCliId, string>>
@@ -123,23 +144,52 @@ export function agentSeed(id: CodingCliId, colors: AgentColors): string {
   return colors[id] ?? AGENT_SEEDS[id]
 }
 
-/** One key's derived pair for a theme — the exact values `applyAppearance` writes. */
+/** One key's derived tokens for a theme — the exact values `applyAppearance` writes. */
 export interface AgentTokens {
   key: AgentColorKey
   seed: string
   ink: string
+  text: string
   fill: string
+}
+
+/**
+ * The text colour: the ink when it already clears `AGENT_TEXT_WCAG` on every
+ * ground, so the tag's text and its border stay one colour wherever they can;
+ * otherwise the seed solved against the ground it reads worst on, which is the
+ * same hue and chroma moved further from the page. Solving against the WORST
+ * ground clears the rest too, because every ground here sits on the page's
+ * side of the ink.
+ *
+ * `deriveAccent` judges against `--bg` on purpose (its own comment: the harder
+ * ground would darken every light accent past what the page needs), so the ink
+ * cannot simply be derived against the sunken chrome instead — the pane rule
+ * and the dots would darken for no reason. Hence a second token.
+ */
+function textInk(seed: string, ink: string, appearance: Appearance, grounds: AgentGrounds): string {
+  const fg = parseColor(ink)
+  if (!fg) return ink
+  let worst: string | null = null
+  let worstRatio = Infinity
+  for (const g of [grounds.bg, grounds.bgSunken, grounds.surfaceHover]) {
+    const c = parseColor(g)
+    if (!c) continue
+    const r = contrastRatio(fg, c)
+    if (r < worstRatio) [worst, worstRatio] = [g, r]
+  }
+  if (worst === null || worstRatio >= AGENT_TEXT_WCAG) return ink
+  return deriveAccent(seed, appearance, worst).accentInk
 }
 
 /**
  * Every agent's tokens for one theme. Called by `applyAppearance` and by the
  * suites, so what is asserted is what is painted (the meterScale pattern).
  */
-export function agentColorTokens(colors: AgentColors, appearance: Appearance, pageBg: string): AgentTokens[] {
+export function agentColorTokens(colors: AgentColors, appearance: Appearance, grounds: AgentGrounds): AgentTokens[] {
   return CODING_CLIS.map((c) => {
     const seed = agentSeed(c.id, colors)
-    const t = deriveAccent(seed, appearance, pageBg)
-    return { key: c.id, seed, ink: t.accentInk, fill: t.accent }
+    const t = deriveAccent(seed, appearance, grounds.bg)
+    return { key: c.id, seed, ink: t.accentInk, text: textInk(seed, t.accentInk, appearance, grounds), fill: t.accent }
   })
 }
 
