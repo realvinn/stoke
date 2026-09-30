@@ -214,6 +214,28 @@ function claudeChat(i: number, cwd: string, extra = ''): string {
   ])
 }
 
+/*
+ * A subagent's own transcript, as the CLI writes it under `<session>/subagents/`:
+ * EVERY record carries `isSidechain: true` (measured: 7,378 of 7,378 user and
+ * assistant records across 52 real files, and none with an ai-title). A
+ * fixture without the flag is how "subagents on" once indexed nothing and no
+ * check saw it.
+ */
+function claudeSubagentChat(i: number, cwd: string, word: string): string {
+  const t = T0 + i * 60_000
+  return jl([
+    { type: 'user', isSidechain: true, agentId: 'a1', message: { role: 'user', content: `subagent task ${word}` }, cwd, timestamp: iso(t), sessionId: uuid(29) },
+    {
+      type: 'assistant',
+      isSidechain: true,
+      agentId: 'a1',
+      timestamp: iso(t + 1000),
+      message: { model: 'claude-opus-5', content: [{ type: 'text', text: `subagent report ${word}` }, { type: 'tool_use', id: 's1', name: 'Read', input: { file_path: 'subtoolword' } }] }
+    },
+    { type: 'user', isSidechain: true, agentId: 'a1', cwd, timestamp: iso(t + 2000), message: { content: [{ type: 'tool_result', tool_use_id: 's1', content: 'subtooloutputword' }] } }
+  ])
+}
+
 const projDir = join(home, '.claude', 'projects', '-tmp-proj-a')
 const claudeFile = (i: number): string => join(projDir, `${uuid(i)}.jsonl`)
 for (let i = 0; i < 30; i++) {
@@ -224,7 +246,7 @@ for (let i = 0; i < 30; i++) {
   write(claudeFile(i), claudeChat(i, '/tmp/proj-a', extra), T0 + i * 60_000)
 }
 // A subagent's transcript beside its session, and a bystander that is not a transcript at all.
-write(join(projDir, uuid(29), 'subagents', 'agent-a1.jsonl'), claudeChat(99, '/tmp/proj-a', 'subagentword'), T0 + 90 * 60_000)
+write(join(projDir, uuid(29), 'subagents', 'agent-a1.jsonl'), claudeSubagentChat(99, '/tmp/proj-a', 'subagentword'), T0 + 90 * 60_000)
 write(join(projDir, 'notes.txt'), 'bystander, not a chat')
 
 // Codex: the threads table, one user thread and one guardian subagent, and their rollouts.
@@ -485,6 +507,72 @@ try {
     crowd.appendMessages(quiet, [{ role: 'user', text: 'one crowdword here', atMs: T0 }])
     check('one hit per chat, and a loud chat cannot crowd a quiet one out', crowd.search('crowdword').map((h) => h.nativeId).sort(), ['loud', 'quiet'])
     crowd.close()
+  }
+
+  section('subagents on: a subagent’s own transcript is its text')
+  {
+    const sub = ChatStore.open(join(root, 'sub-index'))
+    await runPass(sub, { env, options: options({ subagents: true }) }, hooks())
+    const subId = `${uuid(29)}/agent-a1`
+    const hit = sub.search('subagentword')
+    check('its words are searchable (every record in it is a sidechain one)', hit.map((h) => `${h.source}:${h.nativeId}`), [`claude:${subId}`])
+    check('...as a subagent chat, both turns, its tool payloads left out', [hit[0]?.subagent, sub.messages(sub.chatId('claude', subId) ?? -1).length, words(sub, 'subtoolword'), words(sub, 'subtooloutputword')], [
+      true,
+      2,
+      [],
+      []
+    ])
+    check('a sidechain record inside a top-level transcript is still not the user’s thread', words(sub, 'sidechainword'), [])
+    check(
+      'no chat is stored with nothing to search',
+      sub.chatsOf('claude').filter((c) => sub.messages(c.id).length === 0).length,
+      0
+    )
+    sub.close()
+  }
+
+  section('a transcript with nothing to search is never a chat, and takes no slot')
+  {
+    // Newest first: an empty session (opened, /clear, closed), then two real ones, under a per-tool cap of 2.
+    const eHome = join(root, 'empty-home')
+    const eEnv: SourceEnv = { home: eHome, env: {}, platform: process.platform }
+    const eDir = join(eHome, '.claude', 'projects', '-tmp-empty-proj')
+    const eFile = (n: number): string => join(eDir, `${uuid(n)}.jsonl`)
+    write(
+      eFile(1),
+      jl([
+        { type: 'permission-mode', permissionMode: 'default' },
+        { type: 'user', isMeta: true, cwd: '/tmp/empty-proj', message: { content: 'metaword' }, timestamp: iso(T0) },
+        { type: 'user', cwd: '/tmp/empty-proj', message: { content: '<command-name>/clear</command-name>' }, timestamp: iso(T0) }
+      ]),
+      T0 + 30 * 60_000
+    )
+    write(
+      eFile(2),
+      jl([
+        { type: 'user', cwd: '/tmp/empty-proj', message: { content: 'started here gerbilword' }, timestamp: iso(T0 + 1000) },
+        { type: 'assistant', message: { content: [{ type: 'text', text: 'ok' }] }, timestamp: iso(T0 + 2000) },
+        { type: 'user', cwd: '/tmp/empty-proj/moved', message: { content: 'then moved' }, timestamp: iso(T0 + 3000) }
+      ]),
+      T0 + 20 * 60_000
+    )
+    write(eFile(3), claudeChat(3, '/tmp/empty-proj', 'hamsterword'), T0 + 10 * 60_000)
+    const e = ChatStore.open(join(root, 'empty-index'))
+    const eOpts = options({}, { perSource: 2 })
+    await runPass(e, { env: eEnv, options: eOpts }, hooks())
+    check('the empty transcript is read but never stored as a chat', [e.hasChat('claude', uuid(1)), e.hasChat('claude', uuid(2))], [false, true])
+    await runPass(e, { env: eEnv, options: eOpts }, hooks())
+    check('...and on the next pass its slot goes to the next-newest real chat', e.chatsOf('claude').map((c) => c.nativeId).sort(), [uuid(2), uuid(3)])
+    const still = await runPass(e, { env: eEnv, options: eOpts }, hooks())
+    check('...and then nothing is read again', [still.filesRead, still.bytesRead], [0, 0])
+    appendFileSync(eFile(1), jl([{ type: 'user', cwd: '/tmp/empty-proj', message: { content: 'now a real question jerboaword' }, timestamp: iso(T0 + 5000) }]))
+    utimesSync(eFile(1), (T0 + 31 * 60_000) / 1000, (T0 + 31 * 60_000) / 1000)
+    await runPass(e, { env: eEnv, options: eOpts }, hooks())
+    check('once it says something it is a chat again, newest, and the oldest makes room', [words(e, 'jerboaword'), e.chatsOf('claude').map((c) => c.nativeId).sort()], [
+      [`claude:${uuid(1)}`],
+      [uuid(1), uuid(2)]
+    ])
+    e.close()
   }
 
   section('incremental: only appended bytes are read')

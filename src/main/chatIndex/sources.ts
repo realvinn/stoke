@@ -775,7 +775,11 @@ export function readZed(db: DatabaseSync, c: Candidate, fileBytes: number, redac
   return { fold: foldZedThread(JSON.parse(json.toString('utf8')), redact), mode: 'replace', file, bytesRead: raw.length, truncated: false }
 }
 
-/** The line folder for a JSONL kind, with redaction bound. */
-export function lineFolder(kind: CandidateKind, redact: boolean): (fold: Fold, line: string) => void {
-  return kind === 'jsonl-codex' ? (f, l) => foldCodexLine(f, l, redact) : (f, l) => foldClaudeLine(f, l, redact)
+/**
+ * The line folder for a JSONL kind, with redaction bound. `subagent` is the
+ * candidate's own flag: a Claude file listed from `<session>/subagents/` is a
+ * subagent's whole thread, so its sidechain records are its text.
+ */
+export function lineFolder(kind: CandidateKind, redact: boolean, subagent = false): (fold: Fold, line: string) => void {
+  return kind === 'jsonl-codex' ? (f, l) => foldCodexLine(f, l, redact) : (f, l) => foldClaudeLine(f, l, redact, subagent)
 }

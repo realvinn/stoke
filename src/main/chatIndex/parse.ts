@@ -177,8 +177,16 @@ export function claudeLineWorthParsing(line: string): boolean {
  * record carrying a tool_result (a tool's output fed back), local-command
  * noise, and the CLI's "[Request interrupted" notes. From an assistant record
  * only its `text` blocks: thinking and tool_use are not conversation.
+ *
+ * `subagentFile` is for a transcript under `<session>/subagents/`, listed
+ * only while "Include subagent chats" is on. EVERY record in one of those is
+ * `isSidechain: true` — measured on the machine this was fixed on, 7,378 of
+ * 7,378 user and assistant records across 52 files — because the whole file
+ * is the subagent's thread. Skipping sidechains there indexed nothing at all:
+ * every subagent transcript became an empty chat row that still took a slot
+ * under the caps. In a subagent's own file the sidechain IS the conversation.
  */
-export function foldClaudeLine(fold: Fold, line: string, redact: boolean): void {
+export function foldClaudeLine(fold: Fold, line: string, redact: boolean, subagentFile = false): void {
   if (!claudeLineWorthParsing(line)) return
   const rec = safeParse(line)
   if (!rec) return
@@ -188,7 +196,7 @@ export function foldClaudeLine(fold: Fold, line: string, redact: boolean): void 
     return
   }
   if (rec.type !== 'user' && rec.type !== 'assistant') return
-  if (rec.isSidechain === true || rec.isMeta === true) return
+  if ((rec.isSidechain === true && !subagentFile) || rec.isMeta === true) return
   const at = stamp(rec.timestamp)
   note(fold.meta, at)
   const msg = rec.message as { content?: unknown; model?: unknown } | undefined

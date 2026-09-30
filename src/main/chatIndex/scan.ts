@@ -9,10 +9,12 @@
  * 2. **Admit** the newest `perSource` of each source, then the newest `total`
  *    of those across all sources. Deciding the whole range up front is what
  *    keeps the total cap stable: evicting after the fact would re-read the
- *    evicted chats on the next pass and evict them again, every pass. Cline's
- *    imported copies are folded here too — a copy whose original its own tool
- *    still has is counted as a duplicate and never stored (164 of 172 Cline
- *    sessions on the machine measured were copies).
+ *    evicted chats on the next pass and evict them again, every pass. A file
+ *    already found to hold no chat takes no slot while it is unchanged
+ *    (`holdsNoChat`). Cline's imported copies are folded here too — a copy
+ *    whose original its own tool still has is counted as a duplicate and
+ *    never stored (164 of 172 Cline sessions on the machine measured were
+ *    copies).
  * 3. **Read** each admitted chat that changed — appended bytes only for a
  *    JSONL file (gotcha 103's cursor checks), the whole document or row
  *    otherwise — until the pass's byte or time budget runs out. A pass that
@@ -95,6 +97,17 @@ interface SourcePlan {
   cappedBy: ChatCap | null
 }
 
+/**
+ * A file read before and found to hold no chat — a subagent's while those are
+ * off, or nothing to index — and unchanged since. It takes no slot under the
+ * caps: counted as one, an empty transcript would push a real chat out of the
+ * newest N on every pass while never answering a search itself.
+ */
+function holdsNoChat(store: ChatStore, c: Candidate): boolean {
+  const f = store.getFile(c.locator)
+  return f !== null && f.chatId === null && f.size === c.size && f.mtimeMs === c.mtimeMs
+}
+
 export async function runPass(store: ChatStore, plan: PassPlan, hooks: PassHooks): Promise<ChatPassSummary> {
   const started = hooks.now()
   const { caps } = plan.options
@@ -146,13 +159,17 @@ export async function runPass(store: ChatStore, plan: PassPlan, hooks: PassHooks
       if (dup) duplicates++
       return !dup
     })
-    return {
-      id,
-      listing,
-      admitted: own.slice(0, caps.perSource),
-      duplicates,
-      cappedBy: own.length > caps.perSource ? 'perSource' : listing.atLeast ? 'discovery' : null
+    // Newest first, until `perSource` are in; one known to hold no chat takes no slot.
+    const admitted: Candidate[] = []
+    let cappedBy: ChatCap | null = listing.atLeast ? 'discovery' : null
+    for (const c of own) {
+      if (admitted.length >= caps.perSource) {
+        cappedBy = 'perSource'
+        break
+      }
+      if (!holdsNoChat(store, c)) admitted.push(c)
     }
+    return { id, listing, admitted, duplicates, cappedBy }
   })
   const everyone = plans.flatMap((p) => p.admitted).sort((a, b) => b.mtimeMs - a.mtimeMs)
   const admitted = new Set(everyone.slice(0, caps.total).map((c) => keyOf(c.source, c.nativeId)))
@@ -187,11 +204,8 @@ export async function runPass(store: ChatStore, plan: PassPlan, hooks: PassHooks
           const c = p.admitted[i]
           if (i % 20 === 0) hooks.progress({ source: p.id, done: i, total: p.admitted.length })
           const prev = store.getFile(c.locator)
-          if (prev && prev.size === c.size && prev.mtimeMs === c.mtimeMs) {
-            // Unchanged. A row with no chat is a file read before and found to be a subagent's.
-            if (prev.chatId === null) keep.delete(c.nativeId)
-            continue
-          }
+          // Unchanged since it was read: one stat, nothing more. (One holding no chat was never admitted.)
+          if (prev && prev.size === c.size && prev.mtimeMs === c.mtimeMs) continue
           let ex: Extracted
           try {
             if (c.kind === 'opencode' || c.kind === 'zed') {
@@ -208,7 +222,7 @@ export async function runPass(store: ChatStore, plan: PassPlan, hooks: PassHooks
               ex = readCline(c, fileBytes, redact)
             } else {
               // No chat behind the row: read it whole, so its first record is seen again.
-              ex = readJsonl(c.path, prev?.chatId === null ? null : prev, fileBytes, lineFolder(c.kind, redact))
+              ex = readJsonl(c.path, prev?.chatId === null ? null : prev, fileBytes, lineFolder(c.kind, redact, c.subagent))
             }
           } catch {
             // One unreadable chat does not stop its source.
@@ -229,6 +243,21 @@ export async function runPass(store: ChatStore, plan: PassPlan, hooks: PassHooks
             continue
           }
           const meta = mergeMeta(ex.fold.meta, c.meta)
+          const known = store.chatId(p.id, c.nativeId)
+          if (ex.fold.messages.length === 0 && !meta.title && (ex.mode === 'replace' || known === null)) {
+            /*
+             * Nothing to search: no message and no title. Never stored — an
+             * empty chat row answers no search and would still count as
+             * indexed — but remembered, so it is not read again, and takes no
+             * slot (`holdsNoChat`), until it changes.
+             */
+            keep.delete(c.nativeId)
+            store.tx(() => {
+              if (known !== null) store.deleteChat(known)
+              store.putFile({ locator: c.locator, source: p.id, chatId: null, ...ex.file })
+            })
+            continue
+          }
           /*
            * Held to the chat's text cap BEFORE it reaches the store: inserting a
            * 30 MB transcript's every line into FTS only to delete most of it
