@@ -719,10 +719,13 @@ npm run verify:voice          # who owns a held Space: Claude Code's /voice or S
                               # URL, auth header and body (`buildSttRequest`), no key in
                               # any URL, its transcript path (`readTranscript`), the size
                               # and length refusals, the failure wording (key refused,
-                              # credit, rate, too large; keys redacted), the free key
-                              # checks — and the shipped `stt.ts` against a fake on
-                              # loopback port 0 (multipart bytes intact, Deepgram's raw
-                              # body, 401, a hang); and the wire from TerminalView, the
+                              # credit, daily quota, rate, too large; keys redacted), a
+                              # 429 told apart by its structured code and never its prose,
+                              # on real Groq, OpenAI and Gemini bodies that link billing
+                              # while only throttling, the free key checks — and the
+                              # shipped `stt.ts` against a fake on loopback port 0
+                              # (multipart bytes intact, Deepgram's raw body, 401, real
+                              # 429s, a hang); and the wire from TerminalView, the
                               # phone, main and Settings to those rules, with the Test
                               # meter's per-press claim (gotcha 20) — `--wire <files>`
                               # runs it against another revision (gotcha 79)
@@ -1024,7 +1027,10 @@ src/main/         Electron main process
                     must never leave main. It sends what `buildSttRequest`
                     (shared/speechProviders.ts) describes, with global fetch/FormData/Blob
                     (no SDK), and words each failure (key refused, out of credit,
-                    rate-limited, too large; "not the microphone" when nothing answered).
+                    daily quota used, rate-limited, too large; "not the microphone" when
+                    nothing answered). A 429 is money only by its structured code
+                    (`sttErrorCodes`): a throttled free tier's own sentence links the
+                    billing page, so a word match called it out of credit.
                     Both callers read `sttConfigOf(voice)` per call (`CH.transcribe`,
                     `RemoteDeps.transcribe`); `unset` (no address, no key) is what turns
                     "not set up" into the phone's 503 rather than a 502.

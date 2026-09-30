@@ -676,19 +676,108 @@ export function readTranscript(provider: SttProviderId, json: unknown): string {
 
 /* ---------------------------------------------------------- the failures */
 
-export type SttErrorKind = 'key' | 'credit' | 'too-large' | 'rate' | 'upstream' | 'other'
+export type SttErrorKind = 'key' | 'credit' | 'quota' | 'too-large' | 'rate' | 'upstream' | 'other'
+
+function parseJson(body: string): unknown {
+  try {
+    return JSON.parse(body)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The machine-readable codes an error body carries, lower-cased, from the
+ * fields each vendor keeps them in: OpenAI and Groq `error.code`/`error.type`,
+ * Gemini `error.status`, Deepgram `err_code`, AssemblyAI `error_code`,
+ * ElevenLabs `detail.code`/`detail.type`/`detail.status`. Never the prose: a
+ * throttled free tier's reply links the billing page in its own sentence.
+ */
+export function sttErrorCodes(body: string): string[] {
+  const j = parseJson(body)
+  if (!isRecord(j)) return []
+  const out: string[] = []
+  for (const holder of [j, j.error, j.detail]) {
+    if (!isRecord(holder)) continue
+    for (const field of ['code', 'type', 'status', 'err_code', 'error_code']) {
+      const v = holder[field]
+      if (typeof v === 'string' && v.trim()) out.push(v.trim().toLowerCase())
+    }
+  }
+  return out
+}
+
+/** Codes that say "slow down": OpenAI/Groq/ElevenLabs `rate_limit_exceeded`, OpenAI `slow_down`, ElevenLabs' concurrency and busy codes. */
+const RATE_CODES = new Set(['rate_limit_exceeded', 'rate_limit_error', 'slow_down', 'concurrent_limit_exceeded', 'system_busy'])
+
+/** Codes that say "money": OpenAI's `credit_balance_exhausted`, `{organization,project}_spend_limit_exceeded`, `organization_usage_limit_exceeded`, and the older `insufficient_quota`. */
+function isCreditCode(code: string): boolean {
+  return (
+    code === 'insufficient_quota' ||
+    code === 'credit_balance_exhausted' ||
+    /_spend_limit_exceeded$/.test(code) ||
+    /_usage_limit_exceeded$/.test(code)
+  )
+}
+
+/** Google's `error.details[]` entries of one `@type` (`google.rpc.QuotaFailure`, `google.rpc.RetryInfo`). */
+function googleDetails(body: string, type: string): Record<string, unknown>[] {
+  const j = parseJson(body)
+  if (!isRecord(j) || !isRecord(j.error) || !Array.isArray(j.error.details)) return []
+  return j.error.details.filter(
+    (d): d is Record<string, unknown> => isRecord(d) && typeof d['@type'] === 'string' && d['@type'].endsWith(type)
+  )
+}
+
+/**
+ * Whether a Gemini 429 is a DAILY quota (`quotaId` `…PerDay…`) rather than a
+ * per-minute one. Both are `RESOURCE_EXHAUSTED` with the same sentence, and
+ * both carry a `retryDelay` of seconds — which for a daily quota is not when
+ * it comes back, so "try again in 34 s" would be a false promise.
+ */
+function dailyQuotaExhausted(body: string): boolean {
+  return googleDetails(body, 'google.rpc.QuotaFailure').some(
+    (d) =>
+      Array.isArray(d.violations) &&
+      d.violations.some((v) => isRecord(v) && typeof v.quotaId === 'string' && /PerDay/i.test(v.quotaId))
+  )
+}
+
+/** Gemini's wait, from `google.rpc.RetryInfo`'s `retryDelay` (`"34s"`): it sends no Retry-After header. */
+function bodyRetryDelay(body: string): number | null {
+  for (const d of googleDetails(body, 'google.rpc.RetryInfo')) {
+    const m = typeof d.retryDelay === 'string' ? /^(\d+(?:\.\d+)?)s$/.exec(d.retryDelay.trim()) : null
+    if (m) return Number(m[1])
+  }
+  return null
+}
 
 /**
  * What an HTTP failure means, per provider. The table is the vendors' own:
- * Gemini says a bad key with a 400 carrying `API_KEY_INVALID`, Deepgram's 402
- * and OpenAI's 429 `credit_balance_exhausted` are money rather than rate, and
- * Groq's 498 is capacity.
+ * Gemini says a bad key with a 400 carrying `API_KEY_INVALID`, a 402 is money
+ * (Deepgram, ElevenLabs, Gemini prepay), Groq's 498 is capacity.
+ *
+ * A 429 is judged by its structured code, never by its prose: OpenAI's
+ * `credit_balance_exhausted` and spend limits are money, but Groq's and
+ * OpenAI's ordinary `rate_limit_exceeded` replies link the billing page
+ * ("Need more tokens? Upgrade to Dev Tier today at
+ * https://console.groq.com/settings/billing") and Gemini's per-minute
+ * RESOURCE_EXHAUSTED says "check your plan and billing details" — a word
+ * match on "billing" told a throttled free tier it was out of credit.
  */
 export function classifySttError(provider: SttProviderId, status: number, body: string): SttErrorKind {
   if (status === 401 || status === 403) return 'key'
   if (provider === 'gemini' && status === 400 && /API_KEY_INVALID|API key not valid/i.test(body)) return 'key'
   if (status === 402) return 'credit'
-  if (status === 429 && /credit_balance|insufficient_quota|spend_limit|billing/i.test(body)) return 'credit'
+  if (status === 429) {
+    // Money first: its codes are specific, while `rate_limit_error` is the
+    // generic class OpenAI and ElevenLabs file a 429 under, and could ride
+    // along with a money code.
+    const codes = sttErrorCodes(body)
+    if (codes.some(isCreditCode)) return 'credit'
+    if (codes.some((c) => RATE_CODES.has(c))) return 'rate'
+    if (dailyQuotaExhausted(body)) return 'quota'
+  }
   if (status === 413 || /audio_too_large|request payload size exceeds|too large/i.test(body)) return 'too-large'
   if (status === 429 || status === 498 || /capacity_exceeded/i.test(body)) return 'rate'
   if (status >= 500) return 'upstream'
@@ -751,12 +840,15 @@ export function describeSttFailure(
     case 'key':
       return `The ${spec.name} key was refused (${status}${said}). Check it in Settings → Voice.`
     case 'credit':
-      return `${spec.name} refused the request: the account is out of credit or over its spending limit (${status}).`
+      return `${spec.name} refused the request: the account is out of credit or over a spending limit (${status}${said}).`
+    case 'quota':
+      return `${spec.name} has used up this key's daily quota (${status}). It resets once a day.`
     case 'too-large':
       return `The recording is too large for ${spec.name} (${status}).`
     case 'rate': {
-      const wait = Number(opts.retryAfter)
-      const when = Number.isFinite(wait) && wait > 0 ? `in ${Math.ceil(wait)} s` : 'in a moment'
+      const header = Number(opts.retryAfter)
+      const wait = Number.isFinite(header) && header > 0 ? header : bodyRetryDelay(body)
+      const when = wait !== null && wait > 0 ? `in ${Math.ceil(wait)} s` : 'in a moment'
       return `${spec.name} is rate-limiting this key (${status}). Try again ${when}.`
     }
     case 'upstream':

@@ -28,12 +28,14 @@ import {
   audioDestination,
   base64Of,
   buildSttRequest,
+  classifySttError,
   describeSttFailure,
   GEMINI_TRANSCRIBE_PROMPT,
   isRefusal,
   keyCheckRequest,
   readTranscript,
   redactKey,
+  sttErrorCodes,
   sttReadiness,
   upstreamMessage,
   STOKE_MAX_AUDIO_BYTES,
@@ -579,6 +581,169 @@ console.log('\nspeech providers: what a failure says')
   ok('upstream text is capped', describeSttFailure('mistral', 400, 'x'.repeat(5000)).length < 300)
 }
 
+/*
+ * Real 429 bodies. Groq's is a free-tier TPM reply quoted from a user's post
+ * (org id shortened); its whisper replies carry the same tail on the ASPH/RPM
+ * limits. Gemini's per-minute one is google/langextract#50's, its per-day one
+ * UKGovernmentBEIS/inspect_ai#5526's, both verbatim. OpenAI's insufficient_quota
+ * is verbatim from its community forum. OpenAI's throttle with a billing link
+ * is the reported shape for an account with no payment method (not re-found
+ * verbatim; its `code` is what the classifier reads, and that is documented).
+ */
+const GROQ_429_TPM = JSON.stringify({
+  error: {
+    message:
+      'Rate limit reached for model `mistral-saba-24b` in organization `org_01…` service tier `on_demand` on tokens per minute (TPM): Limit 6000, Used 4747, Requested 1691. Please try again in 4.375s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing',
+    type: 'tokens',
+    code: 'rate_limit_exceeded'
+  }
+})
+const OPENAI_429_RATE = JSON.stringify({
+  error: {
+    message:
+      'Rate limit reached for whisper-1 in organization org-… on requests per min (RPM): Limit 3, Used 3, Requested 1. Please try again in 20s. Visit https://platform.openai.com/account/rate-limits to learn more. You can increase your rate limit by adding a payment method to your account at https://platform.openai.com/account/billing.',
+    type: 'requests',
+    param: null,
+    code: 'rate_limit_exceeded'
+  }
+})
+const OPENAI_429_INSUFFICIENT_QUOTA = JSON.stringify({
+  error: {
+    message:
+      'You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.',
+    type: 'insufficient_quota',
+    param: null,
+    code: 'insufficient_quota'
+  }
+})
+const GEMINI_HELP = {
+  '@type': 'type.googleapis.com/google.rpc.Help',
+  links: [{ description: 'Learn more about Gemini API quotas', url: 'https://ai.google.dev/gemini-api/docs/rate-limits' }]
+}
+const GEMINI_429_PER_MINUTE = JSON.stringify({
+  error: {
+    code: 429,
+    message:
+      'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits.',
+    status: 'RESOURCE_EXHAUSTED',
+    details: [
+      {
+        '@type': 'type.googleapis.com/google.rpc.QuotaFailure',
+        violations: [
+          {
+            quotaMetric: 'generativelanguage.googleapis.com/generate_content_free_tier_requests',
+            quotaId: 'GenerateRequestsPerMinutePerProjectPerModel-FreeTier',
+            quotaDimensions: { location: 'global', model: 'gemini-2.5-flash' },
+            quotaValue: '10'
+          }
+        ]
+      },
+      GEMINI_HELP,
+      { '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay: '15s' }
+    ]
+  }
+})
+const GEMINI_429_PER_DAY = JSON.stringify({
+  error: {
+    code: 429,
+    message:
+      'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits.\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20\nPlease retry in 34.074824224s.',
+    status: 'RESOURCE_EXHAUSTED',
+    details: [
+      {
+        '@type': 'type.googleapis.com/google.rpc.QuotaFailure',
+        violations: [
+          {
+            quotaMetric: 'generativelanguage.googleapis.com/generate_content_free_tier_requests',
+            quotaId: 'GenerateRequestsPerDayPerProjectPerModel-FreeTier',
+            quotaDimensions: { location: 'global', model: 'gemini-2.5-flash' },
+            quotaValue: '20'
+          }
+        ]
+      },
+      { '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay: '34s' }
+    ]
+  }
+})
+
+console.log('\nspeech providers: a 429 is judged by its code, never by the word "billing"')
+{
+  // Every throttle below mentions billing in its prose; the old /…|billing/
+  // word match called all three "out of credit".
+  check(
+    'the old word match really did call them credit — the bodies are the ones that bit',
+    [GROQ_429_TPM, OPENAI_429_RATE, GEMINI_429_PER_MINUTE].map((b) => /credit_balance|insufficient_quota|spend_limit|billing/i.test(b)),
+    [true, true, true]
+  )
+  check(
+    'the codes come from the structured fields, not the prose',
+    [
+      sttErrorCodes(GROQ_429_TPM),
+      sttErrorCodes(GEMINI_429_PER_MINUTE),
+      sttErrorCodes('{"detail":{"type":"rate_limit_error","code":"system_busy","status":"system_busy"}}'),
+      sttErrorCodes('{"err_code":"ASR_PAYMENT_REQUIRED"}'),
+      sttErrorCodes('not json'),
+      sttErrorCodes('{"error":"billing"}')
+    ],
+    [['rate_limit_exceeded', 'tokens'], ['resource_exhausted'], ['system_busy', 'rate_limit_error', 'system_busy'], ['asr_payment_required'], [], []]
+  )
+  check(
+    'Groq’s free tier, throttled, whose sentence links console.groq.com/settings/billing, is rate — with its Retry-After',
+    describeSttFailure('groq', 429, GROQ_429_TPM, { retryAfter: '5' }),
+    'Groq is rate-limiting this key (429). Try again in 5 s.'
+  )
+  check(
+    'OpenAI’s rate_limit_exceeded is rate even when its sentence sends you to the billing page',
+    describeSttFailure('openai', 429, OPENAI_429_RATE, { retryAfter: '20' }),
+    'OpenAI is rate-limiting this key (429). Try again in 20 s.'
+  )
+  check(
+    'Gemini’s per-minute RESOURCE_EXHAUSTED ("check your plan and billing details") is rate, with the wait from RetryInfo — it sends no Retry-After',
+    describeSttFailure('gemini', 429, GEMINI_429_PER_MINUTE),
+    'Gemini is rate-limiting this key (429). Try again in 15 s.'
+  )
+  check(
+    'a Retry-After header, when there is one, outranks the body’s retryDelay',
+    describeSttFailure('gemini', 429, GEMINI_429_PER_MINUTE, { retryAfter: '3' }),
+    'Gemini is rate-limiting this key (429). Try again in 3 s.'
+  )
+  check(
+    'Gemini’s DAILY quota is neither credit nor "try again in 34 s" (its retryDelay is not when a day’s quota returns)',
+    describeSttFailure('gemini', 429, GEMINI_429_PER_DAY),
+    "Gemini has used up this key's daily quota (429). It resets once a day."
+  )
+  check(
+    'OpenAI’s insufficient_quota is credit, and says so in OpenAI’s own words',
+    describeSttFailure('openai', 429, OPENAI_429_INSUFFICIENT_QUOTA),
+    'OpenAI refused the request: the account is out of credit or over a spending limit (429: You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.).'
+  )
+  check(
+    'each of OpenAI’s documented money codes is credit, with its sentence',
+    [
+      ['credit_balance_exhausted', 'Your organization has no prepaid credits remaining.'],
+      ['organization_spend_limit_exceeded', 'Your organization reached its enforced spend limit.'],
+      ['project_spend_limit_exceeded', 'Your project reached its enforced spend limit.'],
+      ['organization_usage_limit_exceeded', 'Your organization reached its OpenAI-assigned usage limit.']
+    ].map(([code, message]) => describeSttFailure('openai', 429, JSON.stringify({ error: { message, type: 'invalid_request_error', code } }))),
+    [
+      'OpenAI refused the request: the account is out of credit or over a spending limit (429: Your organization has no prepaid credits remaining.).',
+      'OpenAI refused the request: the account is out of credit or over a spending limit (429: Your organization reached its enforced spend limit.).',
+      'OpenAI refused the request: the account is out of credit or over a spending limit (429: Your project reached its enforced spend limit.).',
+      'OpenAI refused the request: the account is out of credit or over a spending limit (429: Your organization reached its OpenAI-assigned usage limit.).'
+    ]
+  )
+  check(
+    'a specific money code outranks the generic rate_limit_error class beside it (a guard: this pairing is not documented)',
+    classifySttError('openai', 429, '{"error":{"message":"Your organization has no prepaid credits remaining.","type":"rate_limit_error","code":"credit_balance_exhausted"}}'),
+    'credit'
+  )
+  ok('OpenAI’s slow_down is rate', /rate-limiting/.test(describeSttFailure('openai', 429, '{"error":{"message":"Your request rate increased too quickly.","type":"rate_limit_error","code":"slow_down"}}')))
+  ok('ElevenLabs’ system_busy (in detail) is rate', /rate-limiting/.test(describeSttFailure('elevenlabs', 429, '{"detail":{"type":"rate_limit_error","code":"system_busy","message":"The system is currently busy. Try again later.","status":"system_busy"}}')))
+  ok('a word in the prose alone decides nothing: "insufficient_quota" as text is still rate', /rate-limiting/.test(describeSttFailure('mistral', 429, '{"message":"see insufficient_quota and billing"}')))
+  check('a 429 that is not JSON is rate', classifySttError('custom', 429, '<html>billing</html>'), 'rate')
+  check('the credit codes decide only a 429: a 400 carrying one is not money', classifySttError('openai', 400, '{"error":{"code":"insufficient_quota"}}'), 'other')
+}
+
 console.log('\nspeech providers: the key test never transcribes')
 {
   const kc = (id: SttProviderId, over: Partial<SttConfig> = {}): string | null => keyCheckRequest(cfg(id, over))?.url ?? null
@@ -730,9 +895,15 @@ console.log('\nspeech providers: through stt.ts, against a loopback fake')
     refused.ok ? 'ok' : [/^The OpenAI key was refused \(401/.test(refused.error), refused.error.includes(KEY), refused.unset ?? null],
     [true, false, null]
   )
-  answers.push(json(429, { error: { message: 'Rate limit reached' } }, { 'retry-after': '12' }))
+  answers.push(json(429, GROQ_429_TPM, { 'retry-after': '12' }))
   const limited = await transcribe(cfg('groq'), wav, { fetchImpl: via })
-  check('a 429 with Retry-After says when to try again', limited.ok ? 'ok' : limited.error, 'Groq is rate-limiting this key (429). Try again in 12 s.')
+  check('Groq’s real 429 (billing link and all) with Retry-After says when to try again', limited.ok ? 'ok' : limited.error, 'Groq is rate-limiting this key (429). Try again in 12 s.')
+  answers.push(json(429, GEMINI_429_PER_MINUTE))
+  const geminiLimited = await transcribe(cfg('gemini'), wav, { fetchImpl: via })
+  check('Gemini’s per-minute 429 through stt.ts: rate, the wait read from its body', geminiLimited.ok ? 'ok' : geminiLimited.error, 'Gemini is rate-limiting this key (429). Try again in 15 s.')
+  answers.push(json(429, OPENAI_429_INSUFFICIENT_QUOTA))
+  const broke = await testSpeechService(cfg('openai'), { fetchImpl: via })
+  check('Test: OpenAI’s insufficient_quota is out of credit, in red', [broke.ok, broke.tone, /^OpenAI refused the request: the account is out of credit/.test(broke.message)], [false, 'danger', true])
   answers.push(() => {}) // a server that takes the request and never answers
   const t0 = Date.now()
   const hung = await transcribe(cfg('custom', { baseUrl: `${origin}/v1` }), wav, { timeoutMs: 300 })
