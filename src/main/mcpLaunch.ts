@@ -21,7 +21,8 @@ import {
   type AgentMcpSettings,
   type McpCatalog,
   type McpServerSpec,
-  type PlanFile
+  type PlanFile,
+  type ProjectMcpRead
 } from '../shared/mcpServers.ts'
 import { isClaudeCode, type CodingCliId } from '../shared/codingClis.ts'
 
@@ -514,6 +515,39 @@ export async function resolveLaunchMcp(input: {
 /** The agents whose own user config Settings reads, to grey the names they define (`ownMcpSources`). */
 const OWN_MCP_AGENTS: readonly CodingCliId[] = ['codex', 'opencode', 'kilo', 'qwen', 'copilot', 'kimi', 'vibe']
 
+/** How long Settings waits for every known folder's `.mcp.json` before listing without them. */
+const CATALOG_PROJECTS_DEADLINE_MS = 3000
+
+/**
+ * The project scope of every folder `~/.claude.json` knows (its `projects`
+ * keys, each a canonical git root or a loose folder): the `.mcp.json` chain
+ * above each, every distinct file read once, and — only for a folder whose
+ * chain defines a server — the approvals a launch there would apply
+ * (`isTrustedFolder`, `mcpJsonApprovals`). Everything under the read deadline.
+ */
+async function projectMcpReads(
+  json: Record<string, unknown> | null,
+  env: NodeJS.ProcessEnv,
+  home: string
+): Promise<Record<string, ProjectMcpRead>> {
+  const projects = json && json.projects && typeof json.projects === 'object' ? Object.keys(json.projects) : []
+  const chains = projects.map((k) => foldersDownTo(k))
+  const dirs = [...new Set(chains.flat())]
+  const files = await Promise.all(dirs.map((d) => readJsonUnder(join(d, '.mcp.json'), READ_DEADLINE_MS)))
+  const byDir = new Map(dirs.map((d, i) => [d, files[i]]))
+  const out: Record<string, ProjectMcpRead> = {}
+  await Promise.all(
+    projects.map(async (k, i) => {
+      const mcpJson = mergeMcpJsons(chains[i].map((d) => byDir.get(d) ?? null))
+      if (!Object.keys(mcpJson.mcpServers).length) return
+      const { real, gitRoot } = await claudeProjectKey(k)
+      const trusted = isTrustedFolder(json, trustKeys(k, real, gitRoot))
+      out[k] = { mcpJson, approvals: await mcpJsonApprovals(real, env, home, trusted) }
+    })
+  )
+  return out
+}
+
 /** What Settings › Agents lists: names and kinds only, never a value (`mcpCatalog`). */
 export async function readMcpCatalog(
   reader: ClaudeConfigReader,
@@ -525,7 +559,17 @@ export async function readMcpCatalog(
   OWN_MCP_AGENTS.forEach((id, i) => {
     if (owns[i].own.length) own[id] = owns[i].own
   })
-  return mcpCatalog(read.json, own, read.error, env)
+  let timer: NodeJS.Timeout | undefined
+  const late = new Promise<null>((done) => {
+    timer = setTimeout(() => done(null), CATALOG_PROJECTS_DEADLINE_MS)
+  })
+  const projects = await Promise.race([projectMcpReads(read.json, env, home).catch(() => null), late])
+  clearTimeout(timer)
+  const error =
+    [read.error, projects === null ? 'Not every folder’s .mcp.json could be read in time, so some project servers may be missing.' : null]
+      .filter(Boolean)
+      .join(' ') || null
+  return mcpCatalog(read.json, own, error, env, projects ?? {})
 }
 
 /**

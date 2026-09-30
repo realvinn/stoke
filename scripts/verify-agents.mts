@@ -2009,6 +2009,34 @@ console.log('\nMCP: Claude Code’s own list, from a ~/.claude.json fixture')
   ])
   check('local servers, each with its folders', catalog.local.map((s) => [s.name, s.folders]), [['local-db', ['/work/app']], ['other-only', ['/work/other']]])
   ok('no env value, argument or header ever reaches Settings', !MCP_SECRETS.some((v) => JSON.stringify(catalog).includes(v)) && !JSON.stringify(catalog).includes('@modelcontextprotocol'))
+
+  // Project scope: each known folder's .mcp.json chain, as main read it.
+  const withProjects = mcpCatalog(
+    { ...claudeJson, projects: { ...claudeJson.projects, '/work/app': { ...claudeJson.projects['/work/app'], disabledMcpServers: ['turned-off', 'off-here'], disabledMcpjsonServers: ['rejected'] } } },
+    {},
+    null,
+    { DOCS_KEY: HEADER_SECRET },
+    {
+      '/work/app': {
+        mcpJson: { mcpServers: { 'repo-tool': { command: 'repo-mcp' }, unapproved: { command: 'evil' }, github: { command: 'dup' }, rejected: { command: 'r' }, 'off-here': { command: 'o' } } },
+        approvals: { enableAll: false, enabled: ['off-here'], disabled: [] }
+      },
+      '/work/other': {
+        mcpJson: { mcpServers: { 'repo-tool': { command: 'repo-mcp' }, keyed: { type: 'http', url: KEYED.url } } },
+        approvals: { enableAll: true, enabled: [], disabled: [] }
+      },
+      '/work/none': { mcpJson: { mcpServers: { unapproved: { command: 'evil' } } }, approvals: NO_APPROVALS }
+    }
+  )
+  check(
+    'project servers Claude may run, each with its folders — approved by projects[key] in one, by enableAll in another',
+    withProjects.project.map((s) => [s.name, s.folders]),
+    [['repo-tool', ['/work/app', '/work/other']], ['keyed', ['/work/other']]]
+  )
+  check('never approved anywhere: listed apart, with where', withProjects.unapproved, [{ name: 'unapproved', folders: ['/work/app', '/work/none'] }])
+  ok('refused at Claude’s prompt (disabledMcpjsonServers) or turned off in /mcp: not offered at all', !JSON.stringify(withProjects).includes('rejected') && !JSON.stringify(withProjects).includes('off-here'))
+  ok('a name user scope already lists is not listed again', !withProjects.project.some((s) => s.name === 'github'))
+  check('and a keyed URL carries only its reason to Settings', [withProjects.project[1]?.detail, typeof withProjects.project[1]?.urlProblem, JSON.stringify(withProjects).includes(URL_SECRET)], ['https://mcp.search.example', 'string', false])
 }
 
 console.log('\nMCP: what is stored — ticks and Stoke-held servers only')
@@ -2312,6 +2340,27 @@ console.log('\nMCP: where Claude Code files a folder — its canonical git root,
       await at(sub),
       [['stoke', ''], ['github', 'npx'], ['repo-tool', 'repo-mcp'], ['local-db', 'pg-mcp']]
     )
+
+    // Settings' list reads the same chain for every folder ~/.claude.json knows, under the same gate.
+    const catEnv = { QWEN_CODE_SYSTEM_SETTINGS_PATH: join(home, 'qwen-system', 'settings.json') }
+    const catalogNow = () => readMcpCatalog(new ClaudeConfigReader({}, home), catEnv, home)
+    const untrusted = await catalogNow()
+    check('Settings lists a known folder’s approved .mcp.json server, with its folder', untrusted.project.map((s) => [s.name, s.folders]), [['repo-tool', [repo]]])
+    check('and the ones Claude may not run there yet, apart', untrusted.unapproved, [
+      { name: 'outer-tool', folders: [repo] },
+      { name: 'shared', folders: [repo] }
+    ])
+    mkdirSync(join(repo, '.claude'), { recursive: true })
+    writeFileSync(join(repo, '.claude', 'settings.json'), JSON.stringify({ enableAllProjectMcpServers: true }))
+    check('the repo’s own approval does not count while it is untrusted', (await catalogNow()).project.map((s) => s.name), ['repo-tool'])
+    cfg.projects[repo].hasTrustDialogAccepted = true
+    writeFileSync(join(home, '.claude.json'), JSON.stringify(cfg))
+    const trusted = await catalogNow()
+    check('once trusted, every server of its chain', [trusted.project.map((s) => [s.name, s.folders]), trusted.unapproved], [
+      [['outer-tool', [repo]], ['shared', [repo]], ['repo-tool', [repo]]],
+      []
+    ])
+    check('and the catalog read no error', trusted.error, null)
   } finally {
     rmSync(home, { recursive: true, force: true })
   }

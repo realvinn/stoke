@@ -28,6 +28,7 @@ import { AGENT_SEEDS, agentSeed } from '@shared/agentColors'
 import {
   mcpTicksFor,
   STOKE_BROWSER_SERVER,
+  urlInArgvProblem,
   withMcpTick,
   type McpCatalog,
   type McpServerSpec
@@ -187,7 +188,15 @@ export function AgentsSettings({
       (c) => live && setCatalog(c),
       () =>
         live &&
-        setCatalog({ user: [], local: [], refused: [], own: {}, error: 'Stoke could not read Claude Code’s MCP servers.' })
+        setCatalog({
+          user: [],
+          local: [],
+          project: [],
+          unapproved: [],
+          refused: [],
+          own: {},
+          error: 'Stoke could not read Claude Code’s MCP servers.'
+        })
     )
     return () => {
       live = false
@@ -890,9 +899,11 @@ const MCP_ROUTE_HINT = {
 /*
  * An agent's Tools (MCP): which MCP servers it is handed at launch.
  *
- * The list is Claude Code's own — its user servers and each project's local
- * ones, read from `~/.claude.json` — plus any Stoke holds itself, and Stoke's
- * docked-browser server. Only the ticks are stored (`agents.mcp.perAgent`,
+ * The list is Claude Code's own — its user servers, each project's local ones
+ * from `~/.claude.json`, and each known folder's `.mcp.json` servers Claude
+ * Code may run there — plus any Stoke holds itself, and Stoke's docked-browser
+ * server. A name the agent's own config defines is greyed: Stoke never
+ * replaces or merges into it. Only the ticks are stored (`agents.mcp.perAgent`,
  * one writer, gotcha 57); the servers are read again at every launch, so a
  * server edited in Claude Code reaches the next session as edited. Only the
  * browser is on until another is ticked: every server's tools cost context on
@@ -921,12 +932,38 @@ function AgentTools({
   const listed = new Set([
     STOKE_BROWSER_SERVER,
     ...extraNames,
-    ...(claude ? [] : [...(catalog?.user ?? []), ...(catalog?.local ?? [])].map((s) => s.name))
+    ...(claude ? [] : [...(catalog?.user ?? []), ...(catalog?.local ?? []), ...(catalog?.project ?? [])].map((s) => s.name))
   ])
-  const count = off ? 0 : ticks.filter((n) => listed.has(n) && !own.has(n)).length
+  const where = (folders: string[]): string => (folders.length === 1 ? folders[0] : `${folders.length} folders`)
+  const cannot = catalog
+    ? [
+        ...catalog.refused,
+        ...catalog.unapproved.map((u) => ({
+          name: u.name,
+          reason: `the .mcp.json in ${where(u.folders)} defines it, and Claude Code has not been allowed to run it there — approve it in Claude Code first`
+        }))
+      ]
+    : []
+  /*
+   * An agent whose only route for a URL is argv (Codex's `-c`) is never handed
+   * one that may carry a key (`urlInArgvProblem`): each such row says why.
+   */
+  const urlProblems = new Map<string, string>()
+  if (route === 'flags') {
+    for (const s of [...(catalog?.user ?? []), ...(catalog?.local ?? []), ...(catalog?.project ?? [])]) {
+      if (s.urlProblem) urlProblems.set(s.name, s.urlProblem)
+    }
+    for (const name of extraNames) {
+      const p = urlInArgvProblem(extra[name])
+      if (p) urlProblems.set(name, p)
+    }
+  }
+  const count = off ? 0 : ticks.filter((n) => listed.has(n) && !own.has(n) && !urlProblems.has(n)).length
 
   const row = (name: string, detail: string, note?: string): React.JSX.Element => {
-    const blocked = own.has(name)
+    const mine = own.has(name)
+    const urlProblem = urlProblems.get(name)
+    const blocked = mine || urlProblem !== undefined
     return (
       <label className="check-row agent-tool" key={name}>
         <input
@@ -941,9 +978,14 @@ function AgentTools({
             <span className="mono">{name}</span>
             {detail && <span className="agent-tool-kind">{detail}</span>}
           </span>
-          {blocked ? (
+          {mine ? (
             <span className="field-hint">
               {cli.label}’s own configuration defines a server with this name, so Stoke leaves it be.
+            </span>
+          ) : urlProblem ? (
+            <span className="field-hint">
+              Not handed: {urlProblem}, and {cli.label} takes a URL only as a launch argument, which every
+              process on this machine can read. Add it to {cli.label}’s own configuration instead.
             </span>
           ) : (
             note && <span className="field-hint">{note}</span>
@@ -980,9 +1022,11 @@ function AgentTools({
                 The list is Claude Code’s own, from <span className="mono">~/.claude.json</span> and a
                 folder’s <span className="mono">.mcp.json</span>, read again at every launch — so a server
                 changed there reaches the next session as changed, and one a folder turned off stays off.
-                Nothing is written to {cli.label}’s own configuration. A server Claude Code signs in to with
-                OAuth is handed over as its address alone, and {cli.label} signs in itself. SSH tabs are
-                handed nothing.
+                A folder’s <span className="mono">.mcp.json</span> server is handed only in that folder.
+                Nothing is written to {cli.label}’s own configuration, and a server it already defines —
+                in its own settings, or in the folder it starts in — is left to it, never replaced. A server
+                Claude Code signs in to with OAuth is handed over as its address alone, and
+                {` ${cli.label} `}signs in itself. SSH tabs are handed nothing.
               </>
             )
           }
@@ -996,7 +1040,9 @@ function AgentTools({
         {claude ? (
           (() => {
             // Every server Claude loads, the ones other agents cannot be handed included.
-            const names = catalog ? [...catalog.user, ...catalog.local, ...catalog.refused].map((s) => s.name) : []
+            const names = catalog
+              ? [...catalog.user, ...catalog.local, ...catalog.project, ...catalog.refused].map((s) => s.name)
+              : []
             return (
               names.length > 0 && (
                 <span className="field-hint">
@@ -1010,11 +1056,10 @@ function AgentTools({
           <>
             {catalog?.user.map((s) => row(s.name, kind(s.transport, s.detail)))}
             {catalog?.local.map((s) =>
-              row(
-                s.name,
-                kind(s.transport, s.detail),
-                `Only in ${s.folders.length === 1 ? s.folders[0] : `${s.folders.length} folders`}, where Claude Code defines it.`
-              )
+              row(s.name, kind(s.transport, s.detail), `Only in ${where(s.folders)}, where Claude Code defines it.`)
+            )}
+            {catalog?.project.map((s) =>
+              row(s.name, kind(s.transport, s.detail), `Only in ${where(s.folders)}, from its .mcp.json.`)
             )}
           </>
         )}
@@ -1026,13 +1071,13 @@ function AgentTools({
           {catalog.error}
         </span>
       )}
-      {!claude && catalog && catalog.refused.length > 0 && (
+      {!claude && cannot.length > 0 && (
         <details>
           <summary className="field-hint">
-            {catalog.refused.length} of Claude Code’s servers cannot be handed to other agents
+            {cannot.length} of Claude Code’s servers cannot be handed to other agents
           </summary>
           <ul className="field-hint" style={{ margin: 0, paddingLeft: 'var(--space-16)' }}>
-            {catalog.refused.map((r) => (
+            {cannot.map((r) => (
               <li key={r.name}>
                 <span className="mono">{r.name}</span> — {r.reason}
               </li>

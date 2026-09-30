@@ -1058,15 +1058,37 @@ export interface McpCatalog {
   user: McpServerSummary[]
   /** Local-scope servers, each with the folders that define it. */
   local: (McpServerSummary & { folders: string[] })[]
+  /**
+   * Project-scope servers — a known folder's `.mcp.json` chain — that Claude
+   * Code has been allowed to run there, each with those folders. A tick is a
+   * name, so one is handed only where the launch folder's chain defines it.
+   */
+  project: (McpServerSummary & { folders: string[] })[]
+  /** `.mcp.json` servers Claude Code has not been allowed to run in any folder that defines them. */
+  unapproved: { name: string; folders: string[] }[]
   /** Loaded by Claude, not passable, and why. */
   refused: McpRefusal[]
   /**
-   * Per agent, the names its OWN config defines (Codex's config.toml, Kimi's
-   * mcp.json, Vibe's config.toml): Stoke never hands it a server of that name.
+   * Per agent, the names its OWN user-level config defines (Codex's
+   * config.toml, Kimi's mcp.json, Vibe's config.toml, OpenCode's and Kilo's
+   * config, Qwen's settings.json, Copilot's mcp-config.json): Stoke never hands
+   * it a server of that name. A launch also skips the names the FOLDER's own
+   * config defines (main's `agentOwnMcp`), which Settings cannot know.
    */
   own: Partial<Record<CodingCliId, string[]>>
-  /** Why `~/.claude.json` could not be read, or null. */
+  /** Why `~/.claude.json`, or some folder's `.mcp.json`, could not be read — or null. */
   error: string | null
+}
+
+/**
+ * One known folder's project scope, as main read it: the merged `.mcp.json`
+ * chain (`mergeMcpJsons`) and the approvals its settings layers give
+ * (trust-gated, as at launch). `~/.claude.json`'s own `projects[key]` copy is
+ * folded in by `mcpCatalog`.
+ */
+export interface ProjectMcpRead {
+  mcpJson: unknown
+  approvals: McpJsonApprovals
 }
 
 export function summarize(spec: McpServerSpec): McpServerSummary {
@@ -1095,7 +1117,8 @@ export function mcpCatalog(
   claudeJson: unknown,
   own: Partial<Record<CodingCliId, string[]>>,
   error: string | null,
-  env: Readonly<Record<string, string | undefined>> = {}
+  env: Readonly<Record<string, string | undefined>> = {},
+  projectMcp: Readonly<Record<string, ProjectMcpRead>> = {}
 ): McpCatalog {
   const root = isRecord(claudeJson) ? claudeJson : {}
   const user: McpServerSummary[] = []
@@ -1121,9 +1144,41 @@ export function mcpCatalog(
     }
   }
   const userNames = new Set(user.map((s) => s.name))
+  const localRows = [...local.values()].filter((s) => !userNames.has(s.name))
+
+  const project = new Map<string, McpServerSummary & { folders: string[] }>()
+  const unapproved = new Map<string, string[]>()
+  const projects = isRecord(root.projects) ? root.projects : {}
+  for (const [folder, read] of Object.entries(projectMcp)) {
+    const servers = isRecord(read.mcpJson) && isRecord(read.mcpJson.mcpServers) ? read.mcpJson.mcpServers : {}
+    const entry = isRecord(projects[folder]) ? (projects[folder] as Record<string, unknown>) : {}
+    const approvals = foldApprovals(read.approvals, entry)
+    const off = new Set(Array.isArray(entry.disabledMcpServers) ? entry.disabledMcpServers : [])
+    for (const [name, raw] of Object.entries(servers)) {
+      // Turned off in /mcp, or refused at Claude's own prompt: not offered.
+      if (off.has(name) || approvals.disabled.includes(name)) continue
+      if (!approvals.enableAll && !approvals.enabled.includes(name)) {
+        unapproved.set(name, [...(unapproved.get(name) ?? []), folder])
+        continue
+      }
+      const p = specFromClaudeEntry(name, raw, env)
+      if (!p.ok) {
+        if (!refused.some((r) => r.name === name)) refused.push({ name, reason: p.reason })
+        continue
+      }
+      const have = project.get(name)
+      if (have) have.folders.push(folder)
+      else project.set(name, { ...summarize(p.spec), folders: [folder] })
+    }
+  }
+  const listed = new Set([...userNames, ...localRows.map((s) => s.name)])
+  const projectRows = [...project.values()].filter((s) => !listed.has(s.name))
+  for (const s of projectRows) listed.add(s.name)
   return {
     user,
-    local: [...local.values()].filter((s) => !userNames.has(s.name)),
+    local: localRows,
+    project: projectRows,
+    unapproved: [...unapproved.entries()].filter(([name]) => !listed.has(name)).map(([name, folders]) => ({ name, folders })),
     refused,
     own,
     error
