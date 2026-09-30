@@ -929,6 +929,15 @@ check('nor one with a newline, which would be a second directive', buildIdentity
  * The writer, on synthetic paths only (gotcha 74): a temp dir standing in for
  * ~/.ssh, never the real one.
  */
+/*
+ * Windows has no POSIX mode: node reports every writable file as 666, and
+ * `appendToSshConfig` deliberately does not chmod there — Windows OpenSSH
+ * judges the file by the ACL it inherits from the profile folder instead. So
+ * the reading there is "left writable, not read-only", and 600 everywhere else.
+ * Asserting 600 on Windows failed the first Windows CI run on a mode the OS
+ * cannot hold, not on anything the writer did.
+ */
+const CONFIG_MODE = process.platform === 'win32' ? '666' : '600'
 const sandbox = await mkdtemp(join(tmpdir(), 'stoke-enroll-cfg-'))
 try {
   const block = buildIdentityBlock('web', join(sandbox, 'stoke_ed25519')) ?? ''
@@ -947,7 +956,7 @@ try {
     ok('and the block follows them', after.subarray(original.length).toString('utf8').includes('Host web'))
     ok('the previous file is kept as config.stoke.bak, exactly', (await readFile(`${file}.stoke.bak`)).equals(original))
     check("the user's own config.bak is untouched", await readFile(`${file}.bak`, 'utf8'), 'mine')
-    check('the mode is kept at 600 — ssh refuses a config others can write', ((await stat(file)).mode & 0o777).toString(8), '600')
+    check(`the mode is kept at ${CONFIG_MODE} — ssh refuses a config others can write`, ((await stat(file)).mode & 0o777).toString(8), CONFIG_MODE)
     // Beside the REAL path: macOS's $TMPDIR is itself behind /var -> /private/var.
     check('it reports the backup it made, beside the resolved file', r.backup, `${await realpath(file)}.stoke.bak`)
   }
@@ -967,7 +976,7 @@ try {
     const fresh = join(sandbox, 'nested', 'config')
     await appendToSshConfig(fresh, block)
     check('a missing config is created holding just the block', await readFile(fresh, 'utf8'), block)
-    check('at 600', ((await stat(fresh)).mode & 0o777).toString(8), '600')
+    check(`at ${CONFIG_MODE}`, ((await stat(fresh)).mode & 0o777).toString(8), CONFIG_MODE)
   }
 } finally {
   await rm(sandbox, { recursive: true, force: true })

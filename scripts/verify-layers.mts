@@ -17,7 +17,8 @@
  *   node scripts/verify-layers.mts
  */
 import { readdirSync, readFileSync } from 'node:fs'
-import { join, relative } from 'node:path'
+import { join, relative, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { coversBrowser, type Rect } from '../src/shared/floating.ts'
 
 let failures = 0
@@ -54,7 +55,10 @@ console.log('the geometry rule')
   check('but with nothing open, no placeholder still hides nothing', coversBrowser([], null), false)
 }
 
-const root = new URL('../', import.meta.url).pathname
+// fileURLToPath, not `.pathname`: on Windows that is `/D:/a/...`, which join()
+// turned into `D:\D:\a\...` on the first Windows CI run, and anywhere it keeps
+// a space as `%20`.
+const root = fileURLToPath(new URL('../', import.meta.url))
 const rendererDir = join(root, 'src/renderer/src')
 
 function tsxFiles(dir: string): string[] {
@@ -132,7 +136,8 @@ console.log('\nevery component that floats something registers it')
   const files = tsxFiles(rendererDir).sort()
   let seen = 0
   for (const path of files) {
-    const rel = relative(rendererDir, path)
+    // '/'-separated on every OS, since OVERLAY_COVERED is keyed that way.
+    const rel = relative(rendererDir, path).split(sep).join('/')
     const src = readFileSync(path, 'utf8')
     const markers = floatingMarkers(src)
     if (markers.length === 0) continue

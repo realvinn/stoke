@@ -44,6 +44,7 @@ import {
   type PromptTrack
 } from '../src/shared/remotePhone.ts'
 import { createServer, type Server } from 'node:http'
+import { join } from 'node:path'
 import { transcribe } from '../src/main/stt.ts'
 
 let failures = 0
@@ -326,17 +327,20 @@ check('and a 401 is our own server asking for the key', classifyHostname(401, nu
 check('a 502 is something else again', classifyHostname(502, null, 'bad gateway'), 'other')
 
 console.log('\nwhere the login certificate lives')
+// The home is this machine's, so the answer is joined with its separator: the
+// expectation is built the same way, or Windows reads `\home\x\...` against a
+// POSIX literal.
 check(
   'the default is the CLI\'s own',
   originCertPath({}, '/home/x'),
-  '/home/x/.cloudflared/cert.pem'
+  join('/home/x', '.cloudflared', 'cert.pem')
 )
 check(
   'and TUNNEL_ORIGIN_CERT overrides it, because cloudflared honours it',
   originCertPath({ TUNNEL_ORIGIN_CERT: '/tmp/other.pem' }, '/home/x'),
   '/tmp/other.pem'
 )
-check('an empty override is not an override', originCertPath({ TUNNEL_ORIGIN_CERT: '  ' }, '/home/x'), '/home/x/.cloudflared/cert.pem')
+check('an empty override is not an override', originCertPath({ TUNNEL_ORIGIN_CERT: '  ' }, '/home/x'), join('/home/x', '.cloudflared', 'cert.pem'))
 
 console.log('\nthe port box')
 check('a real port is kept', clampPort(8080), 8080)

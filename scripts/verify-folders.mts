@@ -438,8 +438,15 @@ function listSettings(patch: Partial<Settings>): Settings {
  * before it becomes a dedupe key (gotcha 91). Without this the fixture would
  * silently exercise the OLD, unresolved behaviour on exactly the platform
  * where the bug this suite is meant to catch is easiest to reproduce.
+ *
+ * `.native`, because that is the resolver `realpathOf` uses (`fs/promises`'
+ * `realpath`). The JS `realpathSync` leaves a Windows 8.3 short name alone;
+ * the native one expands it. A GitHub Windows runner's tmpdir() is
+ * `C:\Users\RUNNER~1\...`, so the product keyed every row `runneradmin` while
+ * this fixture looked them up as `RUNNER~1`, and twenty-five checks failed on
+ * a lookup rather than on anything listProjects does.
  */
-const tmp = realpathSync(mkdtempSync(join(tmpdir(), 'stoke-folders-')))
+const tmp = realpathSync.native(mkdtempSync(join(tmpdir(), 'stoke-folders-')))
 const added = join(tmp, 'added-by-hand')
 mkdirSync(added)
 try {
@@ -670,15 +677,25 @@ check(
 )
 
 const home = mkdtempSync(join(tmpdir(), 'stoke-home-'))
+/*
+ * The darwin list, on purpose, on every machine: the Windows one leads with a
+ * hardcoded G:\Code that a real Windows machine (this author's) has, and this
+ * existsSync cannot be faked. So the answers are darwin's, joined with '/'
+ * whatever this machine is — `C:\...\stoke-home/dev` on Windows, which Windows
+ * opens fine. The expectation is joined the same way; the host's join() made
+ * three checks fail on the first Windows run over a separator the function
+ * picks deliberately.
+ */
+const underHome = (name: string): string => `${home.replace(/[\\/]+$/, '')}/${name}`
 try {
   check('with nothing there at all, the home folder wins', resolveDefaultCwd(null, 'darwin', home), home)
   mkdirSync(join(home, 'dev'))
-  check('a folder that exists beats the home folder', resolveDefaultCwd(null, 'darwin', home), join(home, 'dev'))
+  check('a folder that exists beats the home folder', resolveDefaultCwd(null, 'darwin', home), underHome('dev'))
   mkdirSync(join(home, 'Developer'))
   check(
     'and the more preferred of two that exist wins',
     resolveDefaultCwd(null, 'darwin', home),
-    join(home, 'Developer')
+    underHome('Developer')
   )
   check(
     'an explicit setting beats every candidate',
@@ -688,7 +705,7 @@ try {
   check(
     'an explicit setting that has been deleted falls back rather than failing',
     resolveDefaultCwd(join(home, 'gone'), 'darwin', home),
-    join(home, 'Developer')
+    underHome('Developer')
   )
 } finally {
   rmSync(home, { recursive: true, force: true })
@@ -807,7 +824,7 @@ function touch(file: string): void {
   utimesSync(file, stamp, stamp)
 }
 
-const tx = realpathSync(mkdtempSync(join(tmpdir(), 'stoke-transcripts-')))
+const tx = realpathSync.native(mkdtempSync(join(tmpdir(), 'stoke-transcripts-')))
 try {
   const text = synthTranscript(400, 7)
   const bytes = Buffer.from(text, 'utf8')

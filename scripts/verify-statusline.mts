@@ -21,7 +21,7 @@ import {
   writeFileSync
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { delimiter, dirname, join } from 'node:path'
 import {
   claimSessionFiles,
   clearSessionFiles,
@@ -359,17 +359,147 @@ try {
   }
 
   const isWin = process.platform === 'win32'
-  const shell = isWin ? (process.env.COMSPEC ?? 'cmd.exe') : '/bin/sh'
-  const shellFlag = isWin ? '/c' : '-c'
-  /** A pass-through command that works on both shells and prints one marker. */
-  const ECHO_CMD = isWin ? 'echo STOKE-PASSTHROUGH' : "printf 'STOKE-PASSTHROUGH'"
 
-  /** Run the statusLine command the way a shell would, payload on stdin. */
-  function runWrapper(sessionId: string, input: string): string {
-    return execFileSync(shell, [shellFlag, statusLineCommand(sessionId)], {
-      input,
-      encoding: 'utf8'
-    })
+  /*
+   * How Claude Code runs a statusLine or hook command, read out of the 2.1.285
+   * bundle. Both go through one executor, `eU` — the status line as its event
+   * "StatusLine" — and Stoke sets no `shell` field on either, so the CLI's
+   * default decides: `RB()` is `Ta() ? "bash" : "powershell"`, `Ta()` being
+   * "not Windows, or Git Bash was located" (gotcha 61).
+   *
+   *   POSIX            spawn(command, [], { shell: true }): node's /bin/sh -c.
+   *   Windows + bash   spawn(command, [], { shell: <bash.exe> }), which node
+   *                    turns into `bash.exe -c command`, with bash's own folder
+   *                    put first on PATH (`H_n`). `O_n` rewrites the command
+   *                    first, but only to prefix `bash ` when its first word
+   *                    ends in `.sh`; Stoke's names run.cmd.
+   *   Windows, no bash <pwsh|powershell> -NoProfile -NonInteractive
+   *                    -ExecutionPolicy Bypass -Command command, PowerShell
+   *                    found as `mH` finds it: pwsh first, Windows PowerShell
+   *                    5.1 last.
+   *
+   * Never `cmd.exe /c`, which is what this suite used until 2026-09-30. The
+   * first Windows CI run died on it before asking a single real question: node
+   * quotes an argument holding `"` as `\"`, cmd.exe does not read that, and so
+   * it went looking for a program called `\"C:\...\run.cmd\"`. That was a
+   * shell the CLI never uses failing, which said nothing about Stoke — while
+   * the two the CLI does use, and the `&` gotcha 61 turns on, went unrun.
+   */
+  interface Route {
+    name: string
+    /** Whose syntax a line run here is written in: /bin/sh and Git Bash are both POSIX. */
+    family: 'posix' | 'powershell'
+    /** The command Stoke writes into --settings for a CLI that uses this shell. */
+    command: (sessionId: string, hook?: boolean) => string
+    /** Run `command` in this shell as the CLI would, `input` on stdin; stdout back. */
+    run: (command: string, input: string) => string
+  }
+
+  /** `dir` first on PATH, under whatever case Windows spelled the key in (`H_n`). */
+  function pathFirst(env: NodeJS.ProcessEnv, dir: string): NodeJS.ProcessEnv {
+    const key = Object.keys(env).find((k) => k.toUpperCase() === 'PATH') ?? 'PATH'
+    return { ...env, [key]: env[key] ? `${dir}${delimiter}${env[key]}` : dir }
+  }
+
+  /** The first `name` in a PATH directory, or null. */
+  function onPath(name: string): string | null {
+    const key = Object.keys(process.env).find((k) => k.toUpperCase() === 'PATH') ?? 'PATH'
+    for (const dir of (process.env[key] ?? '').split(delimiter)) {
+      if (dir && existsSync(join(dir, name))) return join(dir, name)
+    }
+    return null
+  }
+
+  const posixRoute: Route = {
+    name: '/bin/sh',
+    family: 'posix',
+    command: (id, hook) => (hook ? hookCommand(id) : statusLineCommand(id)),
+    run: (command, input) => execFileSync('/bin/sh', ['-c', command], { input, encoding: 'utf8' })
+  }
+
+  function gitBashRoute(bash: string): Route {
+    return {
+      name: `Git Bash (${bash})`,
+      family: 'posix',
+      command: (id, hook) => (hook ? hookCommand(id, 'win32', true) : statusLineCommand(id, 'win32', true)),
+      run: (command, input) =>
+        execFileSync(command, [], {
+          shell: bash,
+          env: pathFirst(process.env, dirname(bash)),
+          input,
+          encoding: 'utf8'
+        })
+    }
+  }
+
+  function powerShellRoute(exe: string): Route {
+    return {
+      name: exe,
+      family: 'powershell',
+      command: (id, hook) => (hook ? hookCommand(id, 'win32', false) : statusLineCommand(id, 'win32', false)),
+      run: (command, input) =>
+        execFileSync(exe, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command], {
+          input,
+          encoding: 'utf8'
+        })
+    }
+  }
+
+  const bashExe = isWin ? gitBashPath() : null
+  const pwshExe = isWin
+    ? (onPath('pwsh.exe') ??
+      (process.env.ProgramFiles && existsSync(join(process.env.ProgramFiles, 'PowerShell', '7', 'pwsh.exe'))
+        ? join(process.env.ProgramFiles, 'PowerShell', '7', 'pwsh.exe')
+        : null))
+    : null
+  const windowsPowerShell = isWin
+    ? join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+    : null
+
+  /**
+   * Every shell the CLI could run Stoke's command through on this machine, the
+   * one it WILL use first. A Windows machine with Git Bash still has users
+   * without it, so both syntaxes are run here, each through its own shell.
+   */
+  const routes: Route[] = isWin
+    ? [
+        ...(bashExe ? [gitBashRoute(bashExe)] : []),
+        ...(pwshExe ? [powerShellRoute(pwshExe)] : []),
+        ...(windowsPowerShell && existsSync(windowsPowerShell) ? [powerShellRoute(windowsPowerShell)] : [])
+      ]
+    : [posixRoute]
+  /** The shell the CLI picks here: Git Bash when it finds one, else PowerShell. */
+  const cliRoute: Route | undefined = routes[0]
+
+  console.log(`\nthe shells Claude Code would run the command through here: ${routes.map((r) => r.name).join(', ') || 'none'}`)
+  check('there is at least one, or nothing below proves anything', routes.length > 0, true)
+  if (isWin) {
+    // Windows PowerShell 5.1 ships with every Windows this runs on, so its
+    // absence is a broken reading, not a machine without it (gotcha 113).
+    check('Windows PowerShell 5.1 is where Windows keeps it', existsSync(windowsPowerShell ?? ''), true)
+  }
+  if (isWin && process.env.GITHUB_ACTIONS === 'true') {
+    // GitHub's Windows image ships Git for Windows and PowerShell 7. On a
+    // developer's machine a missing one is a fact about the machine; on the
+    // runner it would be a route quietly left unproven.
+    check('the Windows runner has Git Bash, so the syntax the CLI prefers is run', bashExe !== null, true)
+    check('and PowerShell 7, the shell a machine without Git Bash gets', pwshExe !== null, true)
+  }
+
+  /*
+   * The user's own line runs in the shell the CLI runs Stoke's command in — the
+   * word Stoke's command carries on Windows says which (gotcha 123) — so every
+   * pass-through below is written in that shell's syntax. It was cmd.exe's on
+   * Windows until 2026-09-30, which is neither.
+   */
+  const psLine = cliRoute?.family === 'powershell'
+  /** A pass-through command that prints one marker. */
+  const ECHO_CMD = psLine ? 'Write-Output STOKE-PASSTHROUGH' : "printf 'STOKE-PASSTHROUGH'"
+
+  /** Run the statusLine command the way the CLI would here, payload on stdin. */
+  function runWrapper(sessionId: string, input: string, route: Route | undefined = cliRoute): string {
+    if (!route) throw new Error('no shell to run the statusLine command through')
+    return route.run(route.command(sessionId), input)
   }
 
   /**
@@ -394,33 +524,44 @@ try {
     ''
   )
   const suppressed = 'stoke-verify-suppress'
-  try {
-    /*
-     * This asserted '' until 2026-09-30, which was the bug: an empty stdout is
-     * exactly what the CLI's fullscreen renderer pads into a blank row. Driven
-     * against 2.1.285, the empty line below took that row away and left the
-     * footer directly under the input box, as with no status line at all.
-     */
-    const out = runWrapper(suppressed, JSON.stringify(REAL))
-    check('suppressed: the wrapper prints exactly the empty line, nothing else', out, EMPTY_STATUS_LINE)
-    check(
-      "suppressed: the CLI reads it as a line, so it never falls back to its blank-row placeholder",
-      cliText(out).length > 0,
-      true
-    )
-    check('suppressed: and that line holds no visible character', cliText(out).replace(SGR, ''), '')
-    check(
-      'suppressed: the payload landed anyway, byte for byte',
-      readFileSync(statusLinePayloadFile(suppressed), 'utf8'),
-      JSON.stringify(REAL)
-    )
-    check(
-      'suppressed: and it parses back through the reader',
-      readStatusLine(suppressed)?.contextWindowSize,
-      1_000_000
-    )
-  } finally {
-    cleanup(statusLinePayloadFile(suppressed))
+  // Every route, not just the CLI's pick here: a statusLine command one shell
+  // cannot parse costs that population the context ring, the plan-limit chip,
+  // all three hooks and their own status line (gotcha 61).
+  for (const route of routes) {
+    const via = routes.length > 1 ? ` [${route.name}]` : ''
+    try {
+      /*
+       * This asserted '' until 2026-09-30, which was the bug: an empty stdout is
+       * exactly what the CLI's fullscreen renderer pads into a blank row. Driven
+       * against 2.1.285, the empty line below took that row away and left the
+       * footer directly under the input box, as with no status line at all.
+       */
+      let out: string | null = null
+      try {
+        out = runWrapper(suppressed, JSON.stringify(REAL), route)
+      } catch (error) {
+        console.log(`        ${route.name} could not run ${route.command(suppressed)}: ${String(error).split('\n').slice(0, 4).join(' | ')}`)
+      }
+      check(`suppressed${via}: the wrapper prints exactly the empty line, nothing else`, out, EMPTY_STATUS_LINE)
+      check(
+        `suppressed${via}: the CLI reads it as a line, so it never falls back to its blank-row placeholder`,
+        cliText(out ?? '').length > 0,
+        true
+      )
+      check(`suppressed${via}: and that line holds no visible character`, cliText(out ?? '').replace(SGR, ''), '')
+      check(
+        `suppressed${via}: the payload landed anyway, byte for byte`,
+        existsSync(statusLinePayloadFile(suppressed)) && readFileSync(statusLinePayloadFile(suppressed), 'utf8'),
+        JSON.stringify(REAL)
+      )
+      check(
+        `suppressed${via}: and it parses back through the reader`,
+        readStatusLine(suppressed)?.contextWindowSize,
+        1_000_000
+      )
+    } finally {
+      cleanup(statusLinePayloadFile(suppressed))
+    }
   }
 
   const through = 'stoke-verify-passthrough'
@@ -452,13 +593,12 @@ try {
    * invoked would start as node instead of as an app.
    */
   const envLeak = 'stoke-verify-env-leak'
-  // %VAR% in cmd.exe stays literal when VAR is unset rather than expanding to
-  // empty, so the Windows probe needs `if defined` instead of the POSIX
-  // shell's plain interpolation — each branch's own value for "gone".
-  const envCmd = isWin
-    ? 'if defined ELECTRON_RUN_AS_NODE (echo LEAKED) else (echo CLEAN)'
+  // Each shell's own way of saying "gone": an unset variable interpolates to
+  // nothing in a POSIX shell, and PowerShell reads $env: as $null.
+  const envCmd = psLine
+    ? "if ($env:ELECTRON_RUN_AS_NODE) { 'LEAKED' } else { 'CLEAN' }"
     : 'echo "[$ELECTRON_RUN_AS_NODE]"'
-  const envCmdWhenClean = isWin ? 'CLEAN' : '[]'
+  const envCmdWhenClean = psLine ? 'CLEAN' : '[]'
   const previousElectronEnv = process.env.ELECTRON_RUN_AS_NODE
   try {
     writeFileSync(join(statusLineDir(), `${envLeak}.cmd`), envCmd, 'utf8')
@@ -474,6 +614,45 @@ try {
     cleanup(join(statusLineDir(), `${envLeak}.cmd`), statusLinePayloadFile(envLeak))
   }
 
+  console.log("\nthe user's own line runs in the shell the CLI would have run it in (gotcha 123)")
+  /*
+   * Under every shell the CLI might pick here, a line written in THAT shell's
+   * syntax — and one no other shell reads the same way: a POSIX `$VAR` is
+   * literal text to cmd.exe and to PowerShell, and `$env:` means nothing to
+   * sh. Until 2026-09-30 the wrapper ran every Windows line through cmd.exe,
+   * which the CLI never uses, so each of these printed the wrong thing there.
+   * The elapsed time is printed because a second shell start sits inside the
+   * wrapper's 2s budget, and PowerShell's is the slow one.
+   */
+  for (const route of routes) {
+    const id = 'stoke-verify-shell-line'
+    const line =
+      route.family === 'powershell'
+        ? "if ($env:ELECTRON_RUN_AS_NODE) { 'LEAKED' } else { \"$($env:STOKE_VERIFY_WORD)-ps\" }"
+        : 'echo "${ELECTRON_RUN_AS_NODE:-$STOKE_VERIFY_WORD}-sh"'
+    const want = route.family === 'powershell' ? 'marker-ps' : 'marker-sh'
+    const before = process.env.ELECTRON_RUN_AS_NODE
+    try {
+      writeFileSync(join(statusLineDir(), `${id}.cmd`), line, 'utf8')
+      process.env.ELECTRON_RUN_AS_NODE = '1'
+      process.env.STOKE_VERIFY_WORD = 'marker'
+      const startedAt = Date.now()
+      let out: string | null = null
+      try {
+        out = runWrapper(id, JSON.stringify(REAL), route)
+      } catch (error) {
+        console.log(`        ${route.name}: ${String(error).split('\n').slice(0, 4).join(' | ')}`)
+      }
+      const ms = Date.now() - startedAt
+      check(`[${route.name}] a ${route.family} line runs as ${route.family}, with the wrapper's env stripped (${ms}ms)`, out?.trim(), want)
+    } finally {
+      if (before === undefined) delete process.env.ELECTRON_RUN_AS_NODE
+      else process.env.ELECTRON_RUN_AS_NODE = before
+      delete process.env.STOKE_VERIFY_WORD
+      cleanup(join(statusLineDir(), `${id}.cmd`), statusLinePayloadFile(id))
+    }
+  }
+
   const junk = 'stoke-verify-junk'
   check(
     'a non-JSON payload prints only the empty line, never the text it was fed',
@@ -484,7 +663,11 @@ try {
 
   check(
     'the command is one quoted path and one quoted id, with no shell metacharacter',
-    /^"[^"]+" "stoke-verify-junk"$/.test(statusLineCommand(junk)),
+    // Git Bash's form on win32, which adds only the shell's name; a PowerShell
+    // machine's `&` is asserted below.
+    (isWin ? /^"[^"]+" "stoke-verify-junk" "bash"$/ : /^"[^"]+" "stoke-verify-junk"$/).test(
+      statusLineCommand(junk, process.platform, true)
+    ),
     true
   )
 
@@ -516,9 +699,32 @@ try {
   const TASK_NOTIFICATION_EVENT =
     '{"session_id":"ac008fd7-5709-42c8-9258-e34c1ad89acd","transcript_path":"/tmp/x.jsonl","cwd":"/private/tmp/stoke-hooktest","prompt_id":"0c1d3a4e-7d52-4f4e-9d0b-6a1f0b8e2c11","permission_mode":"bypassPermissions","hook_event_name":"UserPromptSubmit","prompt":"<task-notification>\\n<task-id>b5qcvxnb6</task-id>\\n<tool-use-id>toolu_01FKtH1JEXb2Ba9ny37BgwAm</tool-use-id>\\n<output-file>/tmp/tasks/b5qcvxnb6.output</output-file>\\n<status>completed</status>\\n<summary>Background command \\"Parse install.ps1 with PowerShell 7 in docker\\" completed (exit code 0)</summary>\\n</task-notification>"}'
   /** Run the hook command the way the CLI runs it, event on stdin. */
-  const runHook = (sessionId: string, input: string): string =>
-    execFileSync(shell, [shellFlag, hookCommand(sessionId)], { input, encoding: 'utf8' })
+  const runHook = (sessionId: string, input: string, route: Route | undefined = cliRoute): string => {
+    if (!route) throw new Error('no shell to run the hook command through')
+    return route.run(route.command(sessionId, true), input)
+  }
   const hooked = 'stoke-verify-hook'
+  // The hook's contract under every shell the CLI might use, then the rest
+  // of it under the one it does use here.
+  for (const route of routes) {
+    const via = routes.length > 1 ? ` [${route.name}]` : ''
+    try {
+      let out: string | null = null
+      try {
+        out = runHook(hooked, STOP_EVENT, route)
+      } catch (error) {
+        console.log(`        ${route.name} could not run ${route.command(hooked, true)}: ${String(error).split('\n').slice(0, 4).join(' | ')}`)
+      }
+      check(`a hook${via} prints nothing at all`, out, '')
+      check(
+        `and${via} the event lands as one line`,
+        existsSync(sessionEventsFile(hooked)) && readFileSync(sessionEventsFile(hooked), 'utf8').split('\n').filter(Boolean).length,
+        1
+      )
+    } finally {
+      clearSessionFiles(hooked)
+    }
+  }
   try {
     check('a hook prints nothing at all', runHook(hooked, PROMPT_EVENT), '')
     check('a second event appends rather than replaces', runHook(hooked, STOP_EVENT), '')
@@ -719,9 +925,9 @@ try {
    * text.
    */
   /** Prints, then hangs — so an empty result proves the timeout, not a dud command. */
-  const hangCmd = isWin ? 'ping -n 31 127.0.0.1' : 'printf PARTIAL; sleep 30'
+  const hangCmd = psLine ? 'Write-Output PARTIAL; Start-Sleep 30' : 'printf PARTIAL; sleep 30'
   /** The same command with the wait taken out. The control for the check above. */
-  const controlCmd = isWin ? 'ping -n 1 127.0.0.1' : 'printf PARTIAL'
+  const controlCmd = psLine ? 'Write-Output PARTIAL' : 'printf PARTIAL'
 
   const control = 'stoke-verify-slow-control'
   try {
@@ -754,7 +960,7 @@ try {
 
   const bad = 'stoke-verify-badexit'
   try {
-    writeFileSync(join(statusLineDir(), `${bad}.cmd`), isWin ? 'exit /b 3' : 'exit 3', 'utf8')
+    writeFileSync(join(statusLineDir(), `${bad}.cmd`), 'exit 3', 'utf8')
     check('a non-zero exit prints nothing', runWrapper(bad, JSON.stringify(REAL)), '')
     check('and does not stop the payload being stored', readStatusLine(bad)?.contextWindowSize, 1_000_000)
   } finally {
@@ -764,9 +970,9 @@ try {
   /*
    * A quoted absolute path and nothing else — the same command shape as the
    * shim, which the checks above already prove a shell runs correctly on
-   * this platform. Written as a file rather than inlined because the Windows
-   * form of an infinite loop needs `&`, and cmd.exe eats it (CLAUDE.md
-   * gotcha 13).
+   * this platform (PowerShell's with the `&` it needs to call a quoted path).
+   * Written as a file, which also puts a quoted Windows path in a user's line:
+   * the cmd.exe pass-through this replaced mangled exactly that.
    *
    * 256 characters per line, so the 256KB cap is reached in about 1000
    * lines. That is what makes the elapsed-time check below able to tell
@@ -779,7 +985,7 @@ try {
   const FLOOD_MARKER = 'STOKE-FLOOD-CONTROL'
   // Named so it cannot be mistaken for `${flood}.cmd`, which is the pass-through
   // file pointing AT it rather than the script itself.
-  const floodScript = join(statusLineDir(), isWin ? 'runaway-script.cmd' : 'runaway-script.sh')
+  const floodScript = join(statusLineDir(), psLine ? 'runaway-script.ps1' : 'runaway-script.sh')
   try {
     /*
      * Positive control FIRST, in the identical "<quoted script path>" shape
@@ -795,13 +1001,13 @@ try {
      * it fails the control that runs first, not silently only the check it
      * originally guarded.
      */
-    if (isWin) {
-      writeFileSync(floodScript, `@echo off\r\necho ${FLOOD_MARKER}\r\n`, 'utf8')
+    if (psLine) {
+      writeFileSync(floodScript, `Write-Output ${FLOOD_MARKER}\r\n`, 'utf8')
     } else {
       writeFileSync(floodScript, `#!/bin/sh\necho ${FLOOD_MARKER}\n`, 'utf8')
       chmodSync(floodScript, 0o755)
     }
-    writeFileSync(join(statusLineDir(), `${flood}.cmd`), `"${floodScript}"`, 'utf8')
+    writeFileSync(join(statusLineDir(), `${flood}.cmd`), psLine ? `& "${floodScript}"` : `"${floodScript}"`, 'utf8')
     check(
       'flood control: the identical quoted-script shape actually runs and prints its marker',
       runWrapper(flood, JSON.stringify(REAL)).trim(),
@@ -810,8 +1016,8 @@ try {
     cleanup(statusLinePayloadFile(flood))
 
     // The real runaway payload, same file and same executable bit.
-    if (isWin) {
-      writeFileSync(floodScript, `@echo off\r\n:loop\r\necho ${FLOOD_LINE}\r\ngoto loop\r\n`, 'utf8')
+    if (psLine) {
+      writeFileSync(floodScript, `while ($true) { Write-Output ${FLOOD_LINE} }\r\n`, 'utf8')
     } else {
       writeFileSync(floodScript, `#!/bin/sh\nwhile :; do echo ${FLOOD_LINE}; done\n`, 'utf8')
     }
@@ -865,8 +1071,17 @@ try {
   )
   check(
     'the hook command is the statusLine command plus one word, so one program serves both',
-    hookCommand(both),
-    `${statusLineCommand(both)} "event"`
+    hookCommand(both, 'linux'),
+    `${statusLineCommand(both, 'linux')} "event"`
+  )
+  check(
+    "on Windows the hook's word stands where the shell's does: a hook runs no line of the user's",
+    [true, false].map(
+      (bash) =>
+        hookCommand(both, 'win32', bash) ===
+        statusLineCommand(both, 'win32', bash).replace(/ "(bash|powershell)"$/, ' "event"')
+    ),
+    [true, true]
   )
   check('the statusLine entry is a command', (json.statusLine as { type: string }).type, 'command')
   check(
@@ -1504,13 +1719,24 @@ check(
 console.log('\nthe Windows command matches the shell the CLI will actually use')
 check(
   'with no Git Bash, PowerShell gets an invocation rather than a string expression',
-  /^& "[^"]+" "stoke-win-shape"$/.test(statusLineCommand('stoke-win-shape', 'win32', false)),
+  /^& "[^"]+" "stoke-win-shape" "powershell"$/.test(statusLineCommand('stoke-win-shape', 'win32', false)),
   true
 )
 check(
   'with Git Bash present, no leading & — a POSIX shell would refuse to parse it',
-  /^"[^"]+" "stoke-win-shape"$/.test(statusLineCommand('stoke-win-shape', 'win32', true)),
+  /^"[^"]+" "stoke-win-shape" "bash"$/.test(statusLineCommand('stoke-win-shape', 'win32', true)),
   true
+)
+/*
+ * The last word names that shell, for the wrapper: it re-runs the user's own
+ * line where the CLI would have, and cannot see which shell started it (gotcha
+ * 123). It is right whenever the wrapper runs at all, because the syntax before
+ * it parses in no other shell.
+ */
+check(
+  "and the command names its shell, for the wrapper's pass-through",
+  [statusLineCommand('w', 'win32', true).endsWith(' "bash"'), statusLineCommand('w', 'win32', false).endsWith(' "powershell"')],
+  [true, true]
 )
 check(
   'the hooks follow the same rule, since they run through the same shim',
@@ -1530,8 +1756,8 @@ check(
 check(
   'the two quoted arguments survive either way',
   [
-    /"[^"]+" "same"$/.test(statusLineCommand('same', 'win32', false)),
-    /"[^"]+" "same"$/.test(statusLineCommand('same', 'win32', true))
+    /"[^"]+" "same" "powershell"$/.test(statusLineCommand('same', 'win32', false)),
+    /"[^"]+" "same" "bash"$/.test(statusLineCommand('same', 'win32', true))
   ],
   [true, true]
 )

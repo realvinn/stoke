@@ -349,6 +349,12 @@ console.log('\nthe scripts parse, in every shell that might run them')
  * on Debian and Ubuntu. zsh is what somebody will paste it into.
  */
 const SHELLS = ['/bin/sh', '/bin/bash', '/bin/dash', '/bin/zsh']
+/*
+ * Whether install.sh can be RUN here. Every block that runs it asks this: three
+ * did not, and the first Windows CI run died of `spawnSync /bin/sh ENOENT` in
+ * the first of them, taking every check after it down too.
+ */
+const POSIX_SH = process.platform !== 'win32' && existsSync('/bin/sh')
 if (process.platform === 'win32') {
   console.log('  SKIP  no POSIX shell here — this is the half of the contract a Windows runner cannot check.')
 } else {
@@ -861,7 +867,9 @@ console.log('\nwhat the script makes of a machine it is not running on')
  * Chromium's startup that no JavaScript of ours can catch — and the installer
  * cheerfully installed into /root and said "installed" right up until 0.9.5.
  */
-{
+if (!POSIX_SH) {
+  console.log('  SKIP  needs /bin/sh to run the shipped script with; the Linux and macOS legs run it.')
+} else {
   const shimDir = mkdtempSync(join(tmpdir(), 'stoke-preflight-'))
   const shim = (name: string, body: string): void => {
     const f = join(shimDir, name)
@@ -990,8 +998,15 @@ console.log('\nthe mac/linux line typed into a Windows shell')
  * the host's would find a real PowerShell there and the "no PowerShell at all"
  * branch could never be reached in CI. Everything the Windows branch calls
  * before handing over is either a builtin or one of these shims.
+ *
+ * Not on Windows itself: the recorder is a shell script NAMED powershell.exe,
+ * which Windows would try to load as a real executable, and there is no
+ * /bin/sh. So the Linux and macOS legs prove the handoff's logic, and a real
+ * Git Bash handing over to a real PowerShell is still unproven.
  */
-{
+if (!POSIX_SH) {
+  console.log('  SKIP  runs install.sh under /bin/sh against a shell-script powershell.exe; the Linux and macOS legs run it.')
+} else {
   const dir = mkdtempSync(join(tmpdir(), 'stoke-handoff-'))
   const shim = (name: string, body: string): void => writeFileSync(join(dir, name), body, { mode: 0o755 })
   const argvFile = join(dir, 'argv')
@@ -1085,7 +1100,9 @@ console.log('\nthe Linux launcher, run rather than read')
  * why a wrapper can sit on PATH at all, and why the file it points at must keep
  * a version-free name.
  */
-{
+if (!POSIX_SH) {
+  console.log('  SKIP  the Linux launcher is a POSIX script, run under /bin/sh; the Linux and macOS legs run it.')
+} else {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'stoke-wrapper-')))
   try {
     const record = join(dir, 'argv.txt')

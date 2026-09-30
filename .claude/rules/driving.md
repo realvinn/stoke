@@ -110,6 +110,12 @@ file appear on real Windows.** Treat it as unverified, not merely untested, unti
 statusLine-driven session there — once with Git for Windows installed and once without, which are
 genuinely different code paths.
 
+> **Checked on 2026-09-30:** ci.yml's windows-latest leg now runs every `check` suite, and
+> `verify:statusline` there runs the real shim through Git Bash, pwsh 7 and Windows PowerShell 5.1
+> the way Claude Code 2.1.285's executor does — the payload file DOES appear, and the hooks append,
+> under all three (gotchas 61, 123). What is still unproven is the other half: a real `claude` on
+> Windows choosing its shell and running the command, and the installed app around it.
+
 ## 110. `require` from a main-process inspector exists only during the evaluation, and the error it throws later is a modal nobody can click
 
 **Driving the main process through its Node inspector (`--inspect=<port>`, `Runtime.evaluate`

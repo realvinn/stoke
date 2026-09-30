@@ -40,10 +40,17 @@
  * so ran only on a Mac — which is how it came to pass only there while its own
  * comments called it portable (gotcha 113).
  *
- *   npm run verify:ci                          run the plan
+ *   npm run verify:ci                          run the plan, stopping at the first failure
+ *   npm run verify:ci -- --keep-going          run every suite, then name every failure
  *   npm run verify:ci -- --list                print it, run nothing
  *   npm run verify:ci -- --list --platform linux   the plan as a Linux runner
  *                                              would resolve it, from here
+ *
+ * `--keep-going` is for the portability legs, whose whole job is to show which
+ * suites are not portable yet. Stopping at the first failure there meant the
+ * first Windows run proved one suite red and left the other forty-five unrun,
+ * so each non-portable suite would have cost its own push to find. The gate
+ * keeps stopping at the first failure: it only has to say "no".
  */
 import { execFileSync, execSync } from 'node:child_process'
 import { accessSync, constants, readFileSync, statSync } from 'node:fs'
@@ -273,19 +280,25 @@ function runSuite(step) {
   }
 }
 
-let failed = null
+const keepGoing = process.argv.includes('--keep-going')
+const failed = []
 for (const step of toRun) {
   console.log(`\n─── ${step.name} ${'─'.repeat(Math.max(0, 60 - step.name.length))}`)
   try {
     runSuite(step)
   } catch {
-    failed = step.name
-    break
+    failed.push(step.name)
+    if (!keepGoing) break
   }
 }
 
-if (failed) {
-  console.error(`\n${failed} failed.`)
+if (failed.length) {
+  if (keepGoing) {
+    console.error(`\n${failed.length} of the ${toRun.length} suites failed:`)
+    for (const name of failed) console.error(`  ${name}`)
+  } else {
+    console.error(`\n${failed[0]} failed.`)
+  }
   process.exit(1)
 }
 console.log(`\nAll ${toRun.length} suites passed.`)

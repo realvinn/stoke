@@ -1,4 +1,4 @@
-import { join, win32 as winPath } from 'node:path'
+import { posix as macPath, win32 as winPath } from 'node:path'
 import type { ImportBrowserId } from './types.ts'
 
 /*
@@ -43,8 +43,12 @@ export const CHROMIUM_BROWSERS: ChromiumBrowser[] = [
 /**
  * The user-data root for one browser on this platform, or null when this
  * platform is not one Stoke imports from (Linux) or the browser has no known
- * folder here (Arc on Windows). `win32.join` is used for the Windows branch so
- * the path is right even when this resolves on a Mac inside a test.
+ * folder here (Arc on Windows). Each branch joins with its own platform's
+ * separator — `win32.join` for Windows, `posix.join` for macOS — so the answer
+ * is right wherever it is asked from. The macOS branch used the host's `join`
+ * until the first Windows CI run asked it for a Mac's root and got
+ * `\Users\x\Library\...` back (a question only a suite asks: production
+ * passes this machine's own platform).
  */
 export function chromiumRoot(
   b: Pick<ChromiumBrowser, 'macDir' | 'winDir'>,
@@ -57,6 +61,6 @@ export function chromiumRoot(
     const base = env.LOCALAPPDATA || (home ? winPath.join(home, 'AppData', 'Local') : '')
     return base ? winPath.join(base, b.winDir) : null
   }
-  if (platform === 'darwin') return join(home, 'Library', 'Application Support', b.macDir)
+  if (platform === 'darwin') return macPath.join(home, 'Library', 'Application Support', b.macDir)
   return null
 }
