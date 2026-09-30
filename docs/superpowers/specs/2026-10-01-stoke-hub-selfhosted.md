@@ -474,9 +474,12 @@ SSH key off its hosts. Claim-before-await (gotcha 20): the hub serialises chain 
 > **Only the current epoch is applied.** Every epoch after 1 was opened by a revoke or a rotate, to
 > shut someone out, and whoever was shut out keeps the older keys: an item sealed under an older
 > epoch may be a rollback the hub kept or a forgery by a removed device, and rollback detection is
-> per item id, which changes with the epoch. So `pull` never applies one; an older item this device
-> had agreed on value for value is re-sealed forward (`resealStale`: the part of a re-seal a revoker
-> never finished), and older vault keys are dropped once every record is under the current epoch.
+> per item id, which changes with the epoch. So `pull` never applies one, or even opens it. A
+> re-seal the revoker could not finish is owed and retried on its next pass (`resealOrOwe`), and
+> every other device, once per epoch, carries forward under the new key each older item it had
+> agreed on value for value (`carryForward`) — without that, an interrupted re-seal leaves the vault
+> empty to anyone who joins after. Older vault keys are dropped once every record is under the
+> current epoch and no re-seal is owed.
 
 ### 4.7 Item sealing, and why the path is bound through an id
 

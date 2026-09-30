@@ -333,7 +333,8 @@ BOTH screens: the joining device takes nothing until the owner presses "The code
 by the Kit (which is replaced in the same append, `postRecovery`), a sync pass (verify and pin the
 chain, count this device in only where the chain holds its own ANCHOR — the entry it joined
 through — take any new vault key only as the chain's `vk` commitment vouches for it, read the change
-feed and apply only what is sealed under the current epoch, hold anything that would change what
+feed and apply only what is sealed under the current epoch (a re-seal that did not finish is owed
+by its revoker and carried forward by every other device), hold anything that would change what
 runs here until the owner applies it on this computer, give new hosts sync ids, upload), SSH keys
 shared one at a time and installed by a press, rename (`acct/pref/device-names`), revoke with
 re-seal and prune, presence hints, and sign-out. One queue for every hub step; every action claims
@@ -953,9 +954,10 @@ npm run verify:hub-client     # the hub CLIENT: what each tier offers and what n
                               # through each device's injected fetch: a vault built around a new
                               # device's keys, a fake approver, another account's id, a list gone
                               # back in time (republish) or replaced (refused), a Kit join whose
-                              # post never lands, an old-epoch item a removed device forged, a
-                              # feed that never ends. Nineteen fixes mutated back one at a time
-                              # each turn it red
+                              # post never lands, a re-seal interrupted half-way (owed by the
+                              # revoker, carried forward by the rest), an old-epoch item a removed
+                              # device forged, a feed that never ends. Twenty-two fixes mutated
+                              # back one at a time each turn it red
 npm run verify:install        # the one-line installer and the endpoint that serves it: the whole
                               # User-Agent matrix through the Worker's routing rule (PowerShell
                               # before anything browser-shaped, and HTML as the fallback), the

@@ -609,6 +609,10 @@ export interface HubLocalState {
   received: Record<string, ReceivedKeyRecord>
   /** Changes that would run something, held until applied here (item path → what). */
   held: Record<string, HeldRecord>
+  /** The epoch whose items this device last carried forward from older ones (`carryForward`); 0 = none. */
+  carriedEpoch: number
+  /** The epoch this device's own key change closed and did not finish re-sealing; 0 = none owed. */
+  resealOwed: number
   alarm: HubAlarm | null
   lastSyncAt: number | null
 }
@@ -634,6 +638,8 @@ export function emptyHubState(account: string): HubLocalState {
     offered: {},
     received: {},
     held: {},
+    carriedEpoch: 0,
+    resealOwed: 0,
     alarm: null,
     lastSyncAt: null
   }
@@ -762,6 +768,8 @@ export function hydrateHubState(raw: unknown, account: string): HubLocalState {
       }
     }
   }
+  out.carriedEpoch = num(raw.carriedEpoch)
+  out.resealOwed = num(raw.resealOwed)
   if (isRecord(raw.alarm) && typeof raw.alarm.message === 'string' && ['rollback', 'fork', 'version', 'chain', 'key'].includes(raw.alarm.kind as string)) {
     out.alarm = { kind: raw.alarm.kind as HubAlarm['kind'], message: str(raw.alarm.message, 1000), at: num(raw.alarm.at) }
   }

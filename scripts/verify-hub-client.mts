@@ -17,6 +17,7 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { DatabaseSync } from 'node:sqlite'
 import { join } from 'node:path'
 import { startHub, type HubHandle } from '../hub/app.ts'
 import { HubLog } from '../hub/log.ts'
@@ -796,8 +797,26 @@ try {
   await E.svc.syncNow()
   check('and once that request is over, a list naming E is the alarm it is', E.svc.view().alarm?.kind, 'chain')
   const eId = E.svc.view().device?.id ?? ''
-  check('A removes E, added by mistake (E never had the Kit, so the Kit may be typed)', (await A.svc.revokeDevice(eId, { kit: made.kit })).ok, true)
+  const eEpoch = A.svc.view().epoch
+  A.intercept = (url, init) => (v1(url) === '/v1/items' && init.method === 'POST' ? json({ error: 'server-error', message: 'The hub fell over.' }, 500) : null)
+  const eGone = await A.svc.revokeDevice(eId, { kit: made.kit })
+  A.intercept = null
+  check(
+    'A removes E (added by mistake, never had the Kit); the hub falls over half-way through the re-seal: the removal stands, the re-seal is owed',
+    [eGone.ok, A.svc.view().epoch, /did not finish/.test(A.svc.view().error?.message ?? '')],
+    [true, eEpoch + 1, true]
+  )
+  await B.svc.syncNow()
+  const bRecs = Object.values(JSON.parse(readFileSync(join(B.userData, 'hub-state.json'), 'utf8')).records as Record<string, { epoch: number }>)
+  check('B carries forward, under the new key, all it had agreed on: the vault is not left empty behind an unfinished re-seal', [B.svc.view().epoch, bRecs.length > 10, bRecs.every((r) => r.epoch === eEpoch + 1)], [eEpoch + 1, true, true])
   await A.svc.syncNow()
+  const itemEpochs = (): number[] => {
+    const d = new DatabaseSync(join(hubDir, 'hub.db'), { readOnly: true })
+    const out = (d.prepare('SELECT envelope_json FROM items').all() as { envelope_json: string }[]).map((r) => JSON.parse(r.envelope_json).epoch as number)
+    d.close()
+    return out
+  }
+  check('and A finishes the re-seal it owed: no error, and the hub holds items under the new epoch only', [A.svc.view().error, [...new Set(itemEpochs())]], [null, [eEpoch + 1]])
   check('and the request is gone from the approving device', A.svc.view().pairs.some((p) => p.pair === reqE?.pair), false)
 
   /* ------------------------------------------ an SSH key, opt-in */
@@ -906,7 +925,6 @@ try {
   const bFiles = new HubFiles(B.userData, fakeBackend('win'), 'darwin')
   const bEpochs = Object.keys(bState.vaultKeys).map(Number)
   check('B holds no vault key for the new epoch', bEpochs.includes(epochBefore + 1), false)
-  const { DatabaseSync } = await import('node:sqlite')
   const db = new DatabaseSync(join(hubDir, 'hub.db'), { readOnly: true })
   const rows = db.prepare('SELECT envelope_json FROM items').all() as { envelope_json: string }[]
   const newest = rows.map((r) => JSON.parse(r.envelope_json)).filter((e) => e.epoch === epochBefore + 1)

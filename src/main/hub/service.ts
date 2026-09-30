@@ -940,11 +940,11 @@ export class HubService {
    * needs them: every record is sealed under it. An older key opens only what
    * was sealed before a revoke or a rotate, which is never applied (`pull`);
    * it is kept only while this device may still have to carry its own agreed
-   * values forward (`resealStale`).
+   * values forward (`carryForward`) or owes a re-seal (`resealOrOwe`).
    */
   private dropOldVaultKeys(epoch: number): void {
     const st = this.st()
-    if (Object.values(st.records).some((r) => r.epoch < epoch)) return
+    if (st.resealOwed || Object.values(st.records).some((r) => r.epoch < epoch)) return
     let dropped = false
     for (const e of Object.keys(st.vaultKeys)) {
       if (Number(e) >= epoch) continue
@@ -1309,8 +1309,7 @@ export class HubService {
     st.recoveryWraps[String(epoch)] = recovery
     this.loginState = 'active'
     this.saveState()
-    await this.reseal(now, itemKeys(vkOld, account, v.epoch))
-    this.dropOldVaultKeys(epoch)
+    await this.resealOrOwe(now, itemKeys(vkOld, account, v.epoch))
     this.syncSoon(50)
   }
 
@@ -1530,8 +1529,7 @@ export class HubService {
     this.storeVaultKey(epoch, vk)
     this.st().recoveryWraps[String(epoch)] = recovery
     this.saveState()
-    await this.reseal(now, oldKeys)
-    this.dropOldVaultKeys(epoch)
+    await this.resealOrOwe(now, oldKeys)
     if (f.target) {
       const label = this.deviceName(f.target, this.labelFromChain(f.target))
       this.revokeReport = { device: label, ...heldBefore, commands: runsCode(this.settings()) }
@@ -1603,6 +1601,70 @@ export class HubService {
     })
     await this.putResealed([...latest.values()], v, keys)
     await this.req('POST', '/v1/items/prune', { epochBelow: v.epoch })
+    this.saveState()
+  }
+
+  /**
+   * Re-seal after this device's own key change. The change itself is already
+   * in, so a failure here (the hub fell over, the network went) must not read
+   * as "not removed": it is recorded as owed and finished by the next pass.
+   */
+  private async resealOrOwe(v: ChainOk, oldKeys: ItemKeys): Promise<void> {
+    const st = this.st()
+    try {
+      await this.reseal(v, oldKeys)
+      st.resealOwed = 0
+      st.carriedEpoch = v.epoch
+      this.saveState()
+      this.dropOldVaultKeys(v.epoch)
+    } catch (err) {
+      st.resealOwed = oldKeys.epoch
+      this.saveState()
+      this.log('hub: re-sealing after a key change did not finish; the next sync finishes it', err)
+      this.lastError = { message: `The vault key changed, but re-sealing everything under it did not finish (${messageOf(err)}). Stoke finishes it on the next sync.`, at: this.now(), retryAt: null }
+      this.syncSoon(nextSyncDelay(1))
+    }
+  }
+
+  /**
+   * After the epoch changed, before reading the feed. First this device's own
+   * owed re-seal (`resealOrOwe`). Then, once per epoch and only while it still
+   * holds records from before, a walk from the start of the feed that carries
+   * forward — under the current epoch's keys — every older item this device
+   * had agreed on value for value and the hub holds under no newer one: the
+   * part of a re-seal its revoker never finished, which is otherwise ignored
+   * for good (`pull` applies only the current epoch), leaving the vault empty
+   * to anyone who joins after. Anything else under an older epoch stays
+   * ignored: it may be a rollback, or a forgery by a removed device.
+   */
+  private async carryForward(v: ChainOk, keys: ItemKeys): Promise<void> {
+    const st = this.st()
+    if (st.resealOwed && st.resealOwed < v.epoch) {
+      const oldKeys = await this.keysFor(v, st.resealOwed)
+      if (oldKeys) await this.resealOrOwe(v, oldKeys)
+      else st.resealOwed = 0
+      if (st.resealOwed) throw new Stop(this.lastError?.message ?? 'Re-sealing the vault did not finish.')
+    }
+    if (st.carriedEpoch >= v.epoch || !Object.values(st.records).some((r) => r.epoch < v.epoch)) return
+    const current = new Set<string>()
+    const older = new Map<string, RemoteItem>()
+    await this.walkFeed(0, async (s) => {
+      const env = s.envelope
+      const k = env.epoch === v.epoch ? keys : env.epoch < v.epoch ? await this.keysFor(v, env.epoch) : null
+      const opened = k ? openItem(k, env) : null
+      if (!opened?.ok) return
+      if (env.epoch === v.epoch) {
+        current.add(opened.item.path)
+        return
+      }
+      const item = this.remoteOf(env, opened.item)
+      const rec = st.records[item.path]
+      if (!rec || rec.epoch >= v.epoch || rec.hash !== item.hash) return
+      const cur = older.get(item.path)
+      if (!cur || cur.epoch < item.epoch || (cur.epoch === item.epoch && cur.version < item.version)) older.set(item.path, item)
+    })
+    await this.putResealed([...older.values()].filter((item) => !current.has(item.path)), v, keys)
+    st.carriedEpoch = v.epoch
     this.saveState()
   }
 
@@ -1840,34 +1902,25 @@ export class HubService {
 
   /**
    * The change feed since the cursor, opened. Only items sealed under the
-   * CURRENT epoch are taken (`delta`): every later epoch was opened by a
-   * revoke or a rotate, and whoever it shut out still holds the older keys —
-   * so an older item may be a rollback the hub kept or a forgery by a removed
-   * device, and is never applied. One this device had agreed on, value for
-   * value, is carried forward (`stale`, for `resealStale`), which finishes a
-   * re-seal its revoker never did. T4 items are listed (metadata only) and
-   * recorded here, never planned: a key is installed by a press.
+   * CURRENT epoch are taken: every later epoch was opened by a revoke or a
+   * rotate, and whoever it shut out still holds the older keys — so an older
+   * item may be a rollback the hub kept or a forgery by a removed device, and
+   * is never applied, or even opened (`carryForward` is the one reader of
+   * older items, and takes only values this device already agreed on). T4
+   * items are listed (metadata only) and recorded here, never planned: a key
+   * is installed by a press.
    */
-  private async pull(v: ChainOk): Promise<{ delta: Map<string, RemoteItem>; stale: Map<string, RemoteItem>; next: number }> {
+  private async pull(v: ChainOk): Promise<{ delta: Map<string, RemoteItem>; next: number }> {
     const st = this.st()
     const delta = new Map<string, RemoteItem>()
-    const stale = new Map<string, RemoteItem>()
     const next = await this.walkFeed(st.cursor, async (s) => {
       const env = s.envelope
       if (versionRegression(st.seen[env.id], env.version)) {
         this.raise('version', `The hub served an older version of an item than this device has already seen (${env.version} after ${st.seen[env.id]}). A restored or tampered hub looks like this. Nothing was synced.`)
       }
       st.seen[env.id] = Math.max(st.seen[env.id] ?? 0, env.version)
-      if (env.epoch < v.epoch) {
-        // Opened only while this device still holds records from before (else there is nothing it could carry forward).
-        if (!Object.values(st.records).some((r) => r.epoch < v.epoch)) return
-        const k = await this.keysFor(v, env.epoch)
-        const opened = k ? openItem(k, env) : null
-        if (!opened?.ok) return
-        const item = this.remoteOf(env, opened.item)
-        const rec = st.records[item.path]
-        if (rec && rec.epoch < v.epoch && rec.hash === item.hash) stale.set(item.path, item)
-        else this.log(`hub: ignored an item sealed under epoch ${env.epoch}, before the vault key last changed (${v.epoch})`)
+      if (env.epoch !== v.epoch) {
+        this.log(`hub: ignored an item sealed under epoch ${env.epoch}; only epoch ${v.epoch}'s are taken`)
         return
       }
       const keys = await this.keysFor(v, env.epoch)
@@ -1887,19 +1940,7 @@ export class HubService {
       if (cur && cur.version >= item.version) return
       delta.set(item.path, item)
     })
-    for (const path of delta.keys()) stale.delete(path)
-    return { delta, stale, next }
-  }
-
-  /**
-   * Carry forward, under the current epoch, the items the hub still holds only
-   * under an older one AND that this device had agreed on value for value —
-   * the part of a revoke's re-seal its revoker did not get to (`pull`).
-   */
-  private async resealStale(stale: Map<string, RemoteItem>, v: ChainOk, keys: ItemKeys): Promise<void> {
-    const st = this.st()
-    const items = [...stale.values()].filter((item) => (st.records[item.path]?.epoch ?? v.epoch) < v.epoch)
-    if (items.length) await this.putResealed(items, v, keys)
+    return { delta, next }
   }
 
   private noteSshKey(keyId: string, item: RemoteItem): void {
@@ -1949,8 +1990,8 @@ export class HubService {
       if (!keys) throw new Stop('This device is in the vault, but the hub has no vault key for it at the current epoch.')
       await this.refreshPairs().catch((err) => this.log('hub: could not list join requests', err))
       const st = this.state
-      const { delta, stale, next } = await this.pull(v)
-      await this.resealStale(stale, v, keys)
+      await this.carryForward(v, keys)
+      const { delta, next } = await this.pull(v)
       let scope = this.scope()
       const plan = (): ReturnType<typeof planSync> => {
         const remote = new Map(delta)
