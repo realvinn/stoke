@@ -411,3 +411,11 @@ too); `claudePath` set to the stub. A scratch HOME is also what keeps `~/.claude
 and `~/.codex` untouched, and lets a fixture transcript under `<scratch HOME>/.claude/projects` feed
 the launcher's conversation list. Check `launches.log`-style output from the stubs, not the tab: a
 real `codex` and a stub both paint something.
+
+> **Checked against the code on 2026-09-30** — the recipe above isolates the agents it stubs, not
+> every agent. `extraSearchDirs()` ends with `/opt/homebrew/bin`, `/usr/local/bin` and `/usr/bin`,
+> which no scratch `HOME` moves. Driven with exactly this recipe (stub `claude` and `codex`, scratch
+> HOME, no-rc SHELL), Settings › Coding agents listed OpenCode as installed at
+> `/opt/homebrew/bin/opencode` — the machine's real one. A stub still wins for its own name, since the
+> stub dir is first on the probed PATH; an agent with no stub is the real binary. Keep it unticked
+> (`agents.chosen`) and never start it, or stub it too.
