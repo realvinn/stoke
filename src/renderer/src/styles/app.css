@@ -4227,6 +4227,39 @@ summary.agent-picker-section:hover {
   border-top: 1px solid var(--border-subtle);
 }
 
+/* An agent's Tools (MCP): one checkbox row per server, name then its kind. */
+.agent-tools {
+  max-width: 36rem;
+}
+
+.agent-tool-count {
+  margin-left: var(--space-8);
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+  font-weight: 400;
+}
+
+.agent-tool-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  margin-top: var(--space-4);
+}
+
+.agent-tool-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-8);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.agent-tool-kind {
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+}
+
 /* An agent's colour and tab tag, one labelled row each. */
 .agent-look {
   display: grid;

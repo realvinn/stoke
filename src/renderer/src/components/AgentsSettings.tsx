@@ -25,6 +25,13 @@ import {
 import type { EffortLevel, PermissionMode, Settings } from '@shared/types'
 import { CLAUDE_SHARED_PLUGIN, SHARED_SKILLS_DIR, skillReport, type SkillDirScan } from '@shared/skills'
 import { AGENT_SEEDS, agentSeed } from '@shared/agentColors'
+import {
+  mcpTicksFor,
+  STOKE_BROWSER_SERVER,
+  withMcpTick,
+  type McpCatalog,
+  type McpServerSpec
+} from '@shared/mcpServers'
 import { Spinner } from './Spinner'
 import { ColorField } from './ColorField'
 import { FieldHint } from './FieldHint'
@@ -166,6 +173,28 @@ export function AgentsSettings({
     if (ep.mode === 'default' && !ep.model && !ep.baseUrl && !ep.apiKey) delete endpoints[id]
     else endpoints[id] = ep
     patchAgents({ ...agentsRef.current, endpoints })
+  }
+
+  /*
+   * Claude Code's MCP servers, as names and kinds only (main never sends a
+   * value). Read once when the section opens; every LAUNCH reads the file
+   * afresh, so this list is only what can be ticked, never what is handed.
+   */
+  const [catalog, setCatalog] = useState<McpCatalog | null>(null)
+  useEffect(() => {
+    let live = true
+    void window.stoke.cli.mcpServers().then(
+      (c) => live && setCatalog(c),
+      () =>
+        live &&
+        setCatalog({ user: [], local: [], refused: [], own: {}, error: 'Stoke could not read Claude Code’s MCP servers.' })
+    )
+    return () => {
+      live = false
+    }
+  }, [])
+  const setMcpTick = (id: CodingCliId, name: string, on: boolean): void => {
+    patchAgents({ ...agentsRef.current, mcp: withMcpTick(agentsRef.current.mcp, id, name, on) })
   }
 
   const install = (id: CodingCliId): void => {
@@ -340,6 +369,15 @@ export function AgentsSettings({
             openrouterKey={settings.providers.openrouterApiKey}
             installCommand={installSteps([current.id], platform)[0]?.command ?? null}
             onInstall={() => install(current.id)}
+            tools={
+              <AgentTools
+                cli={current}
+                catalog={catalog}
+                ticks={mcpTicksFor(agents.mcp, current.id)}
+                extra={agents.mcp.extra}
+                onTick={(name, on) => setMcpTick(current.id, name, on)}
+              />
+            }
             claude={
               isClaudeCode(current.id) ? (
                 <ClaudePage
@@ -457,6 +495,7 @@ function AgentPage({
   onColor,
   tagLabel,
   onTagLabel,
+  tools,
   claude
 }: {
   cli: CodingCli
@@ -482,6 +521,8 @@ function AgentPage({
   /** The stored tab tag, '' for the executable's name. */
   tagLabel: string
   onTagLabel: (label: string) => void
+  /** Its Tools (MCP) list (`AgentTools`). */
+  tools: React.ReactNode
   /** Claude Code's own section, drawn in place of an endpoint. */
   claude: React.ReactNode
 }): React.JSX.Element {
@@ -525,6 +566,8 @@ function AgentPage({
       </label>
 
       {claude ?? <AgentEndpointFields cli={cli} endpoint={endpoint} onEndpoint={onEndpoint} openrouterKey={openrouterKey} />}
+
+      {tools}
 
       <AgentLook
         cli={cli}
@@ -834,6 +877,170 @@ function ClaudePage({
         </div>
       </div>
     </>
+  )
+}
+
+/** How each agent is handed servers at launch, in the user's terms (`CLI_CAPS[id].mcp`). */
+const MCP_ROUTE_HINT = {
+  flags: 'as launch flags, every secret by variable name only',
+  env: 'in its environment, for that process only',
+  file: 'in a file only you can read, written for the launch'
+} as const
+
+/*
+ * An agent's Tools (MCP): which MCP servers it is handed at launch.
+ *
+ * The list is Claude Code's own — its user servers and each project's local
+ * ones, read from `~/.claude.json` — plus any Stoke holds itself, and Stoke's
+ * docked-browser server. Only the ticks are stored (`agents.mcp.perAgent`,
+ * one writer, gotcha 57); the servers are read again at every launch, so a
+ * server edited in Claude Code reaches the next session as edited. Only the
+ * browser is on until another is ticked: every server's tools cost context on
+ * every turn. Greyed where the agent has no launch-time route.
+ */
+function AgentTools({
+  cli,
+  catalog,
+  ticks,
+  extra,
+  onTick
+}: {
+  cli: CodingCli
+  catalog: McpCatalog | null
+  ticks: readonly string[]
+  extra: Record<string, McpServerSpec>
+  onTick: (name: string, on: boolean) => void
+}): React.JSX.Element {
+  const route = capsFor(cli.id).mcp
+  const off = route === 'none'
+  const claude = isClaudeCode(cli.id)
+  const own = new Set(catalog?.own[cli.id] ?? [])
+  const on = new Set(ticks)
+  const extraNames = Object.keys(extra)
+  // What a launch in a folder with every listed server would be handed.
+  const listed = new Set([
+    STOKE_BROWSER_SERVER,
+    ...extraNames,
+    ...(claude ? [] : [...(catalog?.user ?? []), ...(catalog?.local ?? [])].map((s) => s.name))
+  ])
+  const count = off ? 0 : ticks.filter((n) => listed.has(n) && !own.has(n)).length
+
+  const row = (name: string, detail: string, note?: string): React.JSX.Element => {
+    const blocked = own.has(name)
+    return (
+      <label className="check-row agent-tool" key={name}>
+        <input
+          type="checkbox"
+          checked={!off && !blocked && on.has(name)}
+          disabled={off || blocked}
+          aria-label={`Hand ${name} to ${cli.label}`}
+          onChange={(e) => onTick(name, e.target.checked)}
+        />
+        <span>
+          <span className="agent-tool-name">
+            <span className="mono">{name}</span>
+            {detail && <span className="agent-tool-kind">{detail}</span>}
+          </span>
+          {blocked ? (
+            <span className="field-hint">
+              {cli.label}’s own configuration defines a server with this name, so Stoke leaves it be.
+            </span>
+          ) : (
+            note && <span className="field-hint">{note}</span>
+          )}
+        </span>
+      </label>
+    )
+  }
+  const kind = (transport: string, detail: string): string => (detail ? `${transport} · ${detail}` : transport)
+
+  return (
+    <div className="field agent-tools" data-testid="agent-tools" data-route={route}>
+      <span className="field-label">
+        Tools (MCP)
+        {!off && <span className="agent-tool-count">{count} on</span>}
+      </span>
+      {off ? (
+        <span className="field-hint" data-tone="warning">
+          Stoke has no confirmed way to hand {cli.label} MCP servers at launch, so it gets none from here.
+          Its own configuration still applies.
+        </span>
+      ) : (
+        <FieldHint
+          more={
+            claude ? (
+              <>
+                Claude Code reads its own servers from <span className="mono">~/.claude.json</span> and a
+                folder’s <span className="mono">.mcp.json</span> as it always has. Stoke adds only its browser
+                and servers it holds itself, in a separate file for that launch, and never one named like
+                one of yours. SSH tabs are handed nothing.
+              </>
+            ) : (
+              <>
+                The list is Claude Code’s own, from <span className="mono">~/.claude.json</span> and a
+                folder’s <span className="mono">.mcp.json</span>, read again at every launch — so a server
+                changed there reaches the next session as changed, and one a folder turned off stays off.
+                Nothing is written to {cli.label}’s own configuration. A server Claude Code signs in to with
+                OAuth is handed over as its address alone, and {cli.label} signs in itself. SSH tabs are
+                handed nothing.
+              </>
+            )
+          }
+        >
+          Handed to {cli.label} {MCP_ROUTE_HINT[route]}. Each server’s tools cost context on every turn,
+          so only Stoke’s browser is on until you tick another.
+        </FieldHint>
+      )}
+      <div className="agent-tool-list">
+        {row(STOKE_BROWSER_SERVER, 'Stoke', 'The docked browser: open, read, click and inspect pages.')}
+        {claude ? (
+          (() => {
+            // Every server Claude loads, the ones other agents cannot be handed included.
+            const names = catalog ? [...catalog.user, ...catalog.local, ...catalog.refused].map((s) => s.name) : []
+            return (
+              names.length > 0 && (
+                <span className="field-hint">
+                  Claude Code loads its own {names.length} server{names.length === 1 ? '' : 's'} itself:{' '}
+                  <span className="mono">{names.join(', ')}</span>.
+                </span>
+              )
+            )
+          })()
+        ) : (
+          <>
+            {catalog?.user.map((s) => row(s.name, kind(s.transport, s.detail)))}
+            {catalog?.local.map((s) =>
+              row(
+                s.name,
+                kind(s.transport, s.detail),
+                `Only in ${s.folders.length === 1 ? s.folders[0] : `${s.folders.length} folders`}, where Claude Code defines it.`
+              )
+            )}
+          </>
+        )}
+        {extraNames.map((name) => row(name, kind(extra[name].transport, 'held by Stoke')))}
+      </div>
+      {catalog === null && <span className="field-hint">Reading Claude Code’s servers…</span>}
+      {catalog?.error && (
+        <span className="field-hint" data-tone="warning">
+          {catalog.error}
+        </span>
+      )}
+      {!claude && catalog && catalog.refused.length > 0 && (
+        <details>
+          <summary className="field-hint">
+            {catalog.refused.length} of Claude Code’s servers cannot be handed to other agents
+          </summary>
+          <ul className="field-hint" style={{ margin: 0, paddingLeft: 'var(--space-16)' }}>
+            {catalog.refused.map((r) => (
+              <li key={r.name}>
+                <span className="mono">{r.name}</span> — {r.reason}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
   )
 }
 
