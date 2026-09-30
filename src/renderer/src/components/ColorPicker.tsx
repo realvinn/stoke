@@ -14,17 +14,23 @@
  *    pointermove per frame; each one writing settings.json would be gotcha
  *    63's slider again. `onPreview` gets at most one colour per animation
  *    frame and writes nothing; `onCommit` is called once, on Enter, Done, an
- *    outside click, focus leaving, or unmount (the Settings sheet closes by
- *    unmounting, with no blur — gotcha 63's flush). Escape and Cancel revert:
+ *    outside click, focus leaving, its swatch scrolling out of sight, or
+ *    unmount (the Settings sheet closes by unmounting, with no blur — gotcha
+ *    63's flush). A press INSIDE it never closes it, whatever it lands on.
+ *    Escape and Cancel revert, and so does keeping the colour it opened with:
  *    the preview is withdrawn and nothing is committed.
  *  - Pointer capture on the ring and the map, so a drag that leaves the
  *    control keeps steering it; a press jumps straight to the point.
  *  - Both are sliders a keyboard can drive (`stepHue`, `stepSv`), named for a
  *    screen reader by `colorName`.
  *  - Portalled into the dialog it was opened from (or the body), `position:
- *    fixed`, flipped and clamped into the window by `placePopover` — the
- *    Settings pane scrolls and clips, and a popover inside it would be cut in
- *    half. Registered with `useFloatingLayer` (gotcha 14), since a fixed layer
+ *    fixed`, placed by `placePopover` — below or above its swatch, never over
+ *    it, scrolling inside the room it has — because the Settings pane scrolls
+ *    and clips, and a popover inside it would be cut in half. It never moves
+ *    while a drag is on, and its height does not change with the pick (the ink
+ *    note is one fixed two-line slot), so the ring and the map stay under the
+ *    pointer. Once its swatch is scrolled out of sight it closes, keeping the
+ *    pick. Registered with `useFloatingLayer` (gotcha 14), since a fixed layer
  *    can land over the docked browser.
  *
  * Its own chrome is CSS custom properties only. The colours it SHOWS — the
@@ -33,17 +39,20 @@
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
-import { agentTokensFor, clearanceFloor, reservedNear, type ReservedName } from '@shared/agentColors'
+import { accentNear, agentTokensFor, clearanceFloor, reservedNear, type ReservedName } from '@shared/agentColors'
 import { deriveAccent } from '@shared/accent'
 import { profileAccentFor } from '@shared/profiles'
 import {
+  anchorShown,
   colorName,
+  fillVanishes,
   hexToHsv,
   hsvToHex,
   hueAt,
   hueName,
   hueRingGradient,
   inkShift,
+  intersectBox,
   parseTyped,
   placePopover,
   pureHue,
@@ -52,7 +61,10 @@ import {
   stepSv,
   svAt,
   typedIsComplete,
-  type Hsv
+  worstContrast,
+  type Box,
+  type Hsv,
+  type Placement
 } from '@shared/colorPicker'
 import { useFloatingLayer } from '../lib/floatingLayers'
 import { readRootTheme } from '../lib/rootTheme'
@@ -94,13 +106,33 @@ export interface ColorPickerProps {
 
 const RING = hueRingGradient()
 
-/** What a reserved colour is, in words, for the picker's warning. */
+/** What a reserved colour is, in words, for the picker's warning. Short: the note has two lines. */
 const RESERVED_WORDS: Record<ReservedName, string> = {
   'meter-low': 'the context meter’s green',
   'meter-mid': 'the context meter’s orange',
   'meter-high': 'the context meter’s red',
   danger: 'the error red',
-  warning: 'the gold a waiting tab pulses in'
+  warning: 'a waiting tab’s gold'
+}
+
+/** "a", "a and b", "a, b and c". */
+function inWords(parts: readonly string[]): string {
+  return parts.length < 2 ? (parts[0] ?? '') : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`
+}
+
+const ratio = (r: number | null): string => (r === null ? '?' : `${r.toFixed(1)}:1`)
+
+/**
+ * The box a node is seen through: the window, cut down by every ancestor that
+ * clips (the Settings pane, the theme editor's token list).
+ */
+function clipOf(el: HTMLElement): Box {
+  let box: Box = { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight }
+  for (let p = el.parentElement; p; p = p.parentElement) {
+    const s = getComputedStyle(p)
+    if (s.overflowX !== 'visible' || s.overflowY !== 'visible') box = intersectBox(box, p.getBoundingClientRect())
+  }
+  return box
 }
 
 interface EyeDropperLike {
@@ -147,8 +179,30 @@ export function ColorPicker({
 
   /** Set once the pick is kept or reverted; nothing after that commits. */
   const done = useRef(false)
-  /** Whether a preview went out, so a revert knows to withdraw it. */
+  /** Whether a preview went out, so a close knows to settle it. */
   const previewed = useRef(false)
+  /** The last colour previewed, which can be a frame behind the pick. */
+  const sent = useRef<string | null>(null)
+
+  /**
+   * Leave the owner's preview agreeing with what was kept. Committing: bring
+   * the preview level with the pick first — the last frame's can be a move
+   * behind it (Done inside the frame), or a colour a typed hex replaced — so
+   * the stale one is not what paints while the commit makes its round trip.
+   * Not committing (reverted, or kept equal to where it started): WITHDRAW it.
+   * The keep-without-change path used to leave it standing, and App drops an
+   * agent's preview only when the stored colour moves, so it hid every later
+   * change made outside the picker until Settings closed.
+   */
+  const settle = useCallback((kept: string, commit: boolean): void => {
+    const now = latest.current
+    if (commit) {
+      if (previewed.current && sent.current !== kept) now.onPreview?.(kept)
+      now.onCommit(kept)
+    } else if (previewed.current) {
+      now.onPreview?.(null)
+    }
+  }, [])
 
   const setFromHex = useCallback((next: string): void => {
     setHsv((prev) => hexToHsv(next, prev) ?? prev)
@@ -164,19 +218,19 @@ export function ColorPicker({
    * Enter, Escape, Done, Cancel — never for a click somewhere else, which is
    * where they meant focus to go.
    */
-  const finish = useCallback((keep: boolean, refocus: boolean, pick?: string): void => {
-    if (done.current) return
-    done.current = true
-    const now = latest.current
-    const kept = pick ?? (now.typed !== null ? parseTyped(now.typed) : null) ?? now.hex
-    if (keep) {
-      if (!sameColor(kept, original.current)) now.onCommit(kept)
-    } else if (previewed.current) {
-      now.onPreview?.(null)
-    }
-    now.onClose()
-    if (refocus) now.anchor?.focus()
-  }, [])
+  const finish = useCallback(
+    (keep: boolean, refocus: boolean, pick?: string): void => {
+      if (done.current) return
+      done.current = true
+      const now = latest.current
+      const kept = pick ?? (now.typed !== null ? parseTyped(now.typed) : null) ?? now.hex
+      settle(kept, keep && !sameColor(kept, original.current))
+      now.onClose()
+      // preventScroll: a close because the swatch scrolled away must not pull it back.
+      if (refocus) now.anchor?.focus({ preventScroll: true })
+    },
+    [settle]
+  )
 
   /*
    * Unmounted while still open — the sheet closed round it, or its swatch was
@@ -188,14 +242,12 @@ export function ColorPicker({
     done.current = false
     return () => {
       if (done.current) return
+      done.current = true
       const now = latest.current
       const kept = (now.typed !== null ? parseTyped(now.typed) : null) ?? now.hex
-      if (!sameColor(kept, original.current)) {
-        done.current = true
-        now.onCommit(kept)
-      }
+      settle(kept, !sameColor(kept, original.current))
     }
-  }, [])
+  }, [settle])
 
   // Live preview, coalesced to one per frame: a drag moves many times a frame.
   useEffect(() => {
@@ -204,6 +256,7 @@ export function ColorPicker({
     const frame = requestAnimationFrame(() => {
       if (done.current) return
       previewed.current = true
+      sent.current = hex
       latest.current.onPreview?.(hex)
     })
     return () => cancelAnimationFrame(frame)
@@ -211,55 +264,71 @@ export function ColorPicker({
 
   /* ------------------------------------------------------------ placement */
 
-  const [pos, setPos] = useState<{ left: number; top: number; side: 'below' | 'above' } | null>(null)
+  const [pos, setPos] = useState<Placement | null>(null)
+  /** A re-place asked for mid-drag, run when it ends. */
+  const placeAfterDrag = useRef(false)
   const place = useCallback((): void => {
     const pop = popRef.current
     const a = latest.current.anchor
     if (!pop || !a) return
+    // Never under a drag: the ring and the map would move under the pointer
+    // steering them, and the drag would land on a colour nobody aimed at.
+    if (drag.current) {
+      placeAfterDrag.current = true
+      return
+    }
     const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16
     const next = placePopover(
       a.getBoundingClientRect(),
-      { width: pop.offsetWidth, height: pop.offsetHeight },
+      // Its natural height, not the capped box it may be scrolling in.
+      { width: pop.offsetWidth, height: pop.scrollHeight + pop.offsetHeight - pop.clientHeight },
       { width: window.innerWidth, height: window.innerHeight },
       GAP_REM * rem,
       EDGE_PX
     )
-    setPos((p) => (p && p.left === next.left && p.top === next.top && p.side === next.side ? p : next))
+    setPos((p) =>
+      p &&
+      p.left === next.left &&
+      p.top === next.top &&
+      p.bottom === next.bottom &&
+      p.maxHeight === next.maxHeight &&
+      p.side === next.side
+        ? p
+        : next
+    )
   }, [])
 
   /*
-   * The picker's own size changes as it is used — the ink notes come and go
-   * with the pick — and re-placing it then would move the ring and the map
-   * under a pointer that is dragging them (measured: opened above its swatch,
-   * the ink note vanishing mid-drag slid the whole picker down 38px, and a drag
-   * aimed at 75% brightness landed on 100%). So its own
-   * resize only keeps it inside the window, top where it was; the swatch
-   * moving (a scroll, a window resize) places it afresh.
+   * Placed once, and again only when the SWATCH moves — a scroll, a window
+   * resize — never because the picker's own size changed. It used to follow
+   * its own resize too: the ink notes came and went with the pick, and a
+   * picker at the window's bottom edge slid 100px up mid-drag, so a ring
+   * stroke aimed at 330° read 274°. The note is a fixed slot now, and a
+   * height change would move only the edge away from the swatch anyway.
    */
-  const keepInside = useCallback((): void => {
-    const pop = popRef.current
-    if (!pop) return
-    setPos((p) => {
-      if (!p) return p
-      const top = Math.max(EDGE_PX, Math.min(p.top, window.innerHeight - EDGE_PX - pop.offsetHeight))
-      return top === p.top ? p : { ...p, top }
-    })
-  }, [])
-
   useLayoutEffect(() => {
     place()
-    const pop = popRef.current
-    const ro = pop ? new ResizeObserver(keepInside) : null
-    if (pop) ro?.observe(pop)
+    const onScroll = (e: Event): void => {
+      const a = latest.current.anchor
+      if (!a || done.current) return
+      // Its own scroll (taller than the room it has) is not the swatch moving.
+      if (e.target instanceof Node && popRef.current?.contains(e.target)) return
+      if (!anchorShown(a.getBoundingClientRect(), clipOf(a))) {
+        // Scrolled out of sight: keep the pick, as a click elsewhere would, and
+        // keep focus in the sheet if it was in here.
+        finish(true, !!popRef.current?.contains(document.activeElement))
+        return
+      }
+      place()
+    }
     window.addEventListener('resize', place)
     // Capture: the Settings pane is the scroller, and its scroll does not bubble.
-    window.addEventListener('scroll', place, true)
+    window.addEventListener('scroll', onScroll, true)
     return () => {
-      ro?.disconnect()
       window.removeEventListener('resize', place)
-      window.removeEventListener('scroll', place, true)
+      window.removeEventListener('scroll', onScroll, true)
     }
-  }, [place, keepInside])
+  }, [place, finish])
 
   /* ------------------------------------------------------ closing outside */
 
@@ -337,6 +406,10 @@ export function ColorPicker({
 
   const endDrag = (): void => {
     drag.current = null
+    if (placeAfterDrag.current) {
+      placeAfterDrag.current = false
+      place()
+    }
   }
 
   /* ------------------------------------------------------------ keyboard */
@@ -411,6 +484,12 @@ export function ColorPicker({
   /* ----------------------------------------------------------- eyedropper */
 
   const Dropper = useMemo(eyeDropperCtor, [])
+  /*
+   * The presets as they were when it opened. The theme editor builds its row
+   * from the live draft, so while its accent was being dragged the "Accent"
+   * preset WAS the pick, and the theme's own accent was not on offer.
+   */
+  const [shownPresets] = useState(presets)
   // Claimed before the await, so a second press cannot open a second one (gotcha 20).
   const picking = useRef(false)
   const pickFromScreen = async (): Promise<void> => {
@@ -428,76 +507,98 @@ export function ColorPicker({
 
   /* ------------------------------------------------------ the ink preview */
 
+  /*
+   * What the pick becomes on this theme: one row (the sample and the colour
+   * Stoke paints), and ONE note in a slot of fixed height — so the picker's
+   * height never changes with the pick (see `place`). The most important note
+   * wins the slot: a warning, then a coincidence, then why the ink moved, and
+   * otherwise the measured contrast, so the slot is never an empty gap. The
+   * full text is its title, should a long one be cut at two lines.
+   */
   // Read once: the ink is judged against the page this was opened over.
   const theme = useMemo(readRootTheme, [])
+  const isDefault = !!defaultValue && sameColor(hex, defaultValue)
   const preview = ((): React.JSX.Element | null => {
     if (!ink) return null
+    const c = theme.colors
+    let row: React.JSX.Element
+    let note: { text: string; warning?: boolean }
     if (ink.kind === 'agent') {
-      const t = agentTokensFor(ink.key, hex, theme.appearance, theme.colors)
-      const shift = inkShift(hex, t.text)
+      const t = agentTokensFor(ink.key, hex, theme.appearance, c)
       const near = reservedNear(hex, theme, (r) => clearanceFloor(ink.key, r, theme.appearance))
-      return (
-        <div className="cp-ink">
-          <div className="cp-ink-row">
-            <span className="cp-ink-label">On this theme</span>
-            <span className="cp-tag-sample" style={{ '--cp-ink': t.ink, '--cp-text': t.text } as CSSProperties}>
-              {ink.tag}
-            </span>
-            <span className="cp-ink-hex mono">{t.text}</span>
-          </div>
-          {shift && (
-            <p className="cp-note">
-              Stoke paints it {shift.darker ? 'darker' : 'lighter'} here, {t.text}, so the tab tag reads at 4.5:1.
-            </p>
-          )}
-          {near.length > 0 && (
-            <p className="cp-note" data-tone="warning">
-              Close to {near.map((n) => RESERVED_WORDS[n.name]).join(' and ')} on this theme, so it may be read as that.
-            </p>
-          )}
-        </div>
+      const shift = inkShift(hex, t.text)
+      const tag = worstContrast(t.text, [c.bg, c.bgSunken, c.surfaceHover])
+      row = (
+        <>
+          <span className="cp-ink-label">On this theme</span>
+          <span className="cp-tag-sample" style={{ '--cp-ink': t.ink, '--cp-text': t.text } as CSSProperties}>
+            {ink.tag}
+          </span>
+          <span className="cp-ink-hex mono">{t.text}</span>
+        </>
       )
-    }
-    if (ink.kind === 'accent') {
-      const t = deriveAccent(hex, theme.appearance, theme.colors.bg)
+      note =
+        near.length > 0
+          ? { text: `Reads as ${inWords(near.map((n) => RESERVED_WORDS[n.name]))} here.`, warning: true }
+          : accentNear(t, theme.accentInk) !== null
+            ? { text: 'The same colour as this theme’s accent.' }
+            : // At rest on the default, "painted lighter" is noise: every
+              // default on a dark theme is lifted, and none needs fixing.
+              shift && !isDefault
+              ? { text: `Painted ${shift.darker ? 'darker' : 'lighter'} here, so the tag stays legible: ${ratio(tag)}.` }
+              : { text: `The tag reads at ${ratio(tag)} on this theme.` }
+    } else if (ink.kind === 'accent') {
+      const t = deriveAccent(hex, theme.appearance, c.bg)
       const shift = inkShift(hex, t.accentInk)
-      return (
-        <div className="cp-ink">
-          <div className="cp-ink-row">
-            <span className="cp-ink-label">On this theme</span>
-            <span className="cp-text-sample" style={{ '--cp-text': t.accentInk } as CSSProperties}>
-              Aa
-            </span>
-            <span className="cp-fill-sample" style={{ '--cp-fill': t.accent, '--cp-on': t.accentContrast } as CSSProperties}>
-              Button
-            </span>
-          </div>
-          {shift && (
-            <p className="cp-note">
-              Text and outlines use {t.accentInk} here, {shift.darker ? 'darker' : 'lighter'} than the pick, so they read at
-              4.5:1.
-            </p>
-          )}
-        </div>
+      const gone = fillVanishes(t.accent, [c.bg, c.bgSunken])
+      const text = worstContrast(t.accentInk, [c.bg])
+      row = (
+        <>
+          <span className="cp-ink-label">On this theme</span>
+          <span className="cp-text-sample" style={{ '--cp-text': t.accentInk } as CSSProperties}>
+            Aa
+          </span>
+          <span className="cp-fill-sample" style={{ '--cp-fill': t.accent, '--cp-on': t.accentContrast } as CSSProperties}>
+            Button
+          </span>
+        </>
       )
-    }
-    const p = profileAccentFor(hex)
-    if (!p) return null
-    const moved = inkShift(hex, p.accent)
-    return (
-      <div className="cp-ink">
-        <div className="cp-ink-row">
+      note =
+        gone !== null
+          ? { text: `Barely shows on this page (${ratio(gone)}): filled buttons lose their edge.`, warning: true }
+          : shift
+            ? { text: `Text and outlines use ${t.accentInk}, ${shift.darker ? 'darker' : 'lighter'}: ${ratio(text)}.` }
+            : { text: `Text in it reads at ${ratio(text)} on this page.` }
+    } else {
+      const p = profileAccentFor(hex)
+      if (!p) return null
+      const moved = inkShift(hex, p.accent)
+      // A profile's fill repaints the chrome's --accent as is (gotcha 44), so a
+      // fill the page swallows takes every primary button's shape with it.
+      const gone = fillVanishes(p.accent, [c.bg, c.bgSunken])
+      const label = worstContrast(p.accentContrast, [p.accent])
+      row = (
+        <>
           <span className="cp-ink-label">As the chip</span>
           <span className="cp-fill-sample" style={{ '--cp-fill': p.accent, '--cp-on': p.accentContrast } as CSSProperties}>
             {ink.name}
           </span>
           <span className="cp-ink-hex mono">{p.accent}</span>
-        </div>
-        {moved && (
-          <p className="cp-note">
-            Kept as {p.accent}, {moved.darker ? 'darker' : 'lighter'} than the pick, so the chip’s label reads at 4.5:1.
-          </p>
-        )}
+        </>
+      )
+      note =
+        gone !== null
+          ? { text: `Barely shows on this theme (${ratio(gone)}): filled buttons lose their edge.`, warning: true }
+          : moved
+            ? { text: `Kept as ${p.accent}, ${moved.darker ? 'darker' : 'lighter'}, so its label reads at ${ratio(label)}.` }
+            : { text: `Its label reads at ${ratio(label)} on the chip.` }
+    }
+    return (
+      <div className="cp-ink">
+        <div className="cp-ink-row">{row}</div>
+        <p className="cp-note" data-tone={note.warning ? 'warning' : undefined} title={note.text}>
+          {note.text}
+        </p>
       </div>
     )
   })()
@@ -514,14 +615,28 @@ export function ColorPicker({
       className="color-picker"
       role="dialog"
       aria-label={`${label}: colour picker`}
+      // Focusable itself, so a press on any part of it that takes no focus —
+      // the caption, the ink box, the gaps, a corner of the wheel — lands focus
+      // HERE, not on the nearest focusable ancestor (the Settings dialog, which
+      // the blur below would have read as leaving: the press closed the picker
+      // and saved the pick).
+      tabIndex={-1}
       data-side={pos?.side}
-      style={{ left: pos?.left ?? 0, top: pos?.top ?? 0 }}
+      style={{
+        left: pos?.left ?? 0,
+        top: pos ? (pos.top ?? undefined) : 0,
+        bottom: pos?.bottom ?? undefined,
+        maxHeight: pos?.maxHeight
+      }}
       onKeyDown={onRootKey}
       onBlur={(e) => {
         // Focus leaving to somewhere else keeps the pick, like a click there.
-        // A null relatedTarget is the window losing focus, or the eyedropper.
+        // Not leaving: into the picker, to its swatch, or to an ANCESTOR (a
+        // press the root above did not catch). A null relatedTarget is the
+        // window losing focus, or the eyedropper.
         const to = e.relatedTarget as Node | null
-        if (!to || popRef.current?.contains(to) || latest.current.anchor?.contains(to)) return
+        const pop = popRef.current
+        if (!to || !pop || pop.contains(to) || to.contains(pop) || latest.current.anchor?.contains(to)) return
         finish(true, false)
       }}
     >
@@ -608,9 +723,15 @@ export function ColorPicker({
 
       {preview}
 
-      {presets && presets.length > 0 && (
-        <div className="cp-presets" role="group" aria-label="Presets">
-          {presets.map((p) => (
+      {shownPresets && shownPresets.length > 0 && (
+        <div
+          className="cp-presets"
+          role="group"
+          aria-label="Presets"
+          // A row of fewer than nine (a profile's eight) spreads across the width too.
+          style={{ '--cp-cols': Math.min(9, shownPresets.length) } as CSSProperties}
+        >
+          {shownPresets.map((p) => (
             <button
               key={`${p.name}-${p.hex}`}
               type="button"

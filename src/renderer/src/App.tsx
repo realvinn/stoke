@@ -1634,6 +1634,12 @@ export function App(): React.JSX.Element {
    * settings.json until the picker commits. An entry is dropped once the
    * stored colour catches up with it (the commit's round trip), so a kept pick
    * never flashes back to the old colour in between; a revert drops it at once.
+   * It is also dropped when the stored colour moves to anything else: a write
+   * from outside the picker (the colour's text field, its Reset button) is
+   * newer than any preview, and an entry left standing over it hid that change
+   * — the tags kept the preview while the swatch showed the new colour — until
+   * Settings closed. Compared by value, so a settings push that does not touch
+   * that agent's colour leaves a live preview alone.
    */
   const [agentColorPreview, setAgentColorPreview] = useState<AgentColors>({})
   const previewAgentColor = useCallback((id: CodingCliId, hex: string | null): void => {
@@ -1647,11 +1653,16 @@ export function App(): React.JSX.Element {
     })
   }, [])
   const storedAgentColors = settings?.agents.colors
+  const storedBefore = useRef(storedAgentColors)
   useEffect(() => {
+    const before = storedBefore.current ?? {}
+    const now = storedAgentColors ?? {}
+    storedBefore.current = storedAgentColors
     setAgentColorPreview((prev) => {
-      const keep = Object.entries(prev).filter(
-        ([id, hex]) => agentSeed(id as CodingCliId, storedAgentColors ?? {}).toLowerCase() !== hex.toLowerCase()
-      )
+      const keep = Object.entries(prev).filter(([id, hex]) => {
+        const stored = agentSeed(id as CodingCliId, now).toLowerCase()
+        return stored !== hex.toLowerCase() && stored === agentSeed(id as CodingCliId, before).toLowerCase()
+      })
       return keep.length === Object.keys(prev).length ? prev : (Object.fromEntries(keep) as AgentColors)
     })
   }, [storedAgentColors])

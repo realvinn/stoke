@@ -30,9 +30,12 @@ import {
 } from '../src/shared/color.ts'
 import type { Rgb } from '../src/shared/color.ts'
 import {
+  anchorShown,
   clamp01,
   clampHsv,
   colorName,
+  FILL_VANISH_RATIO,
+  fillVanishes,
   hexToHsv,
   hsvToHex,
   hsvToRgb,
@@ -41,6 +44,7 @@ import {
   hueRingGradient,
   INK_NOTE_DISTANCE,
   inkShift,
+  intersectBox,
   parseTyped,
   placePopover,
   pureHue,
@@ -51,6 +55,7 @@ import {
   stepSv,
   svAt,
   typedIsComplete,
+  worstContrast,
   wrapHue
 } from '../src/shared/colorPicker.ts'
 import { neutralTokens, PAGE_CHROMA_MAX, TINT_MAX } from '../src/shared/ladder.ts'
@@ -1170,6 +1175,15 @@ console.log('\n-- the colour picker: HSV, the ring and the map, keys, names, pla
     ],
     ['vivid orange', 'orange', 'dark blue', 'pale azure', 'greyish green', 'black', 'white', 'light grey', 'grey', 'dark grey']
   )
+  /*
+   * Found by the visual QA: a salmon (Ember's --danger, #ffa192) was "red",
+   * and an ochre (#c4942d, h41) and an amber (#ffbf00, h45) were "yellow".
+   */
+  eq(
+    'colorName: light for the bright half-saturated band, and amber between orange and yellow',
+    ['#ffa192', '#c4942d', '#ffbf00', '#ffd700', '#e07b2e'].map((x) => colorName(rgbToHsv(parseColor(x)!))),
+    ['light red', 'amber', 'vivid amber', 'vivid yellow', 'orange']
+  )
   eq('hueName wraps red round both ends', [hueName(0), hueName(355), hueName(360), hueName(-5)], ['red', 'red', 'red', 'red'])
   eq('Codex’s seed is named as the purple it was asked to be', hueName(rgbToHsv(parseColor('#ba66e9')!).h), 'purple')
 
@@ -1181,18 +1195,130 @@ console.log('\n-- the colour picker: HSV, the ring and the map, keys, names, pla
   }
   eq('inkShift: junk is no note', inkShift('nonsense', '#000000'), null)
 
-  // Placement: below, flipped above, clamped into the window.
+  // The fill that vanishes, and the figure the picker prints.
+  {
+    const gone = fillVanishes('#261104', ['#181716', '#0d0c0c'])
+    okp(`fillVanishes: a near-black fill on Ember's page is reported (${gone?.toFixed(2)}:1, under ${FILL_VANISH_RATIO})`, gone !== null && gone < FILL_VANISH_RATIO)
+  }
+  eq('fillVanishes: a fill with an edge is not', fillVanishes('#ff9552', ['#181716', '#0d0c0c']), null)
+  eq('fillVanishes: junk is not reported', fillVanishes('nonsense', ['#181716']), null)
+  near('worstContrast: black text on white and grey is the grey', worstContrast('#000000', ['#ffffff', '#777777'])!, contrastRatio(parseColor('#000000')!, parseColor('#777777')!), 1e-9)
+
+  // Placement: below, flipped above, never over the swatch, scrolling in its room.
   const vp = { width: 1000, height: 800 }
   const sz = { width: 250, height: 400 }
-  eq('fits below: below, left-aligned, one gap under the swatch', placePopover({ left: 100, top: 100, right: 132, bottom: 122 }, sz, vp, 6, 8), { left: 100, top: 128, side: 'below' })
-  eq('no room below, more above: flipped above', placePopover({ left: 100, top: 700, right: 132, bottom: 722 }, sz, vp, 6, 8), { left: 100, top: 294, side: 'above' })
-  eq('at the right edge: slid left to stay in the window', placePopover({ left: 900, top: 100, right: 932, bottom: 122 }, sz, vp, 6, 8), { left: 742, top: 128, side: 'below' })
   eq(
-    'room on neither side: the roomier side (above), clamped on screen',
-    placePopover({ left: 100, top: 300, right: 132, bottom: 322 }, sz, { width: 1000, height: 600 }, 6, 8),
-    { left: 100, top: 8, side: 'above' }
+    'fits below: below, left-aligned, held by its top one gap under the swatch',
+    placePopover({ left: 100, top: 100, right: 132, bottom: 122 }, sz, vp, 6, 8),
+    { left: 100, top: 128, bottom: null, maxHeight: 664, side: 'below' }
   )
-  eq('taller than the window: its top stays on screen, where the controls are', placePopover({ left: 100, top: 100, right: 132, bottom: 122 }, { width: 250, height: 900 }, vp, 6, 8).top, 8)
+  eq(
+    'no room below, room above: above, held by its BOTTOM one gap over the swatch, so growing moves its top',
+    placePopover({ left: 100, top: 700, right: 132, bottom: 722 }, sz, vp, 6, 8),
+    { left: 100, top: null, bottom: 106, maxHeight: 686, side: 'above' }
+  )
+  eq(
+    'at the right edge: slid left to stay in the window',
+    placePopover({ left: 900, top: 100, right: 932, bottom: 122 }, sz, vp, 6, 8).left,
+    742
+  )
+  {
+    /*
+     * The QA's scale-1.4 case: a swatch at y 300-331 and a 605px picker in an
+     * 800px window. Neither side fits. The first cut clamped the top to 257,
+     * over the swatch; now it takes the roomier side and scrolls there.
+     */
+    const a = { left: 100, top: 300, right: 145, bottom: 331 }
+    const p = placePopover(a, { width: 347, height: 605 }, vp, 8.4, 8)
+    eq('room on neither side: the roomier side (below), capped to its room', p, { left: 100, top: 339, bottom: null, maxHeight: 452, side: 'below' })
+    okp('and the popover never covers its swatch', p.top !== null && p.top >= a.bottom)
+    const q = placePopover({ left: 100, top: 480, right: 145, bottom: 511 }, { width: 347, height: 605 }, vp, 8.4, 8)
+    okp(
+      `and above, its bottom edge stays over the swatch (bottom ${q.bottom}, swatch top ${480})`,
+      q.side === 'above' && q.bottom !== null && vp.height - q.bottom <= 480 && q.maxHeight === Math.floor(480 - 8.4 - 8)
+    )
+  }
+  {
+    // Every swatch position down an 800px window, for a picker too tall for either side.
+    let covered = 0
+    for (let top = 10; top < 780; top += 5) {
+      const a = { left: 100, top, right: 132, bottom: top + 22 }
+      const p = placePopover(a, { width: 250, height: 900 }, vp, 6, 8)
+      const box = p.side === 'below' ? { top: p.top!, bottom: p.top! + p.maxHeight } : { top: vp.height - p.bottom! - p.maxHeight, bottom: vp.height - p.bottom! }
+      if (box.top < a.bottom && box.bottom > a.top) covered++
+      if (box.top < 8 - 0.5 || box.bottom > vp.height - 8 + 0.5) covered++
+    }
+    eq('a picker taller than the window, anywhere down it: never over its swatch, never off screen', covered, 0)
+  }
+
+  // The swatch scrolled away closes it.
+  const clip = { left: 0, top: 100, right: 800, bottom: 600 }
+  eq(
+    'anchorShown: inside the pane, half out past its top, wholly out',
+    [
+      anchorShown({ left: 10, top: 200, right: 42, bottom: 222 }, clip),
+      anchorShown({ left: 10, top: 95, right: 42, bottom: 117 }, clip),
+      anchorShown({ left: 10, top: 80, right: 42, bottom: 102 }, clip),
+      anchorShown({ left: 10, top: -70, right: 42, bottom: -48 }, clip)
+    ],
+    [true, true, false, false]
+  )
+  eq('intersectBox: the overlap of the window and a pane', intersectBox({ left: 0, top: 0, right: 1000, bottom: 800 }, { left: 200, top: 60, right: 1200, bottom: 700 }), {
+    left: 200,
+    top: 60,
+    right: 1000,
+    bottom: 700
+  })
+}
+
+{
+  /*
+   * The wheel's two handles, from app.css's own declarations. The QA drove a
+   * vivid amber (h45) into the map's top-right corner and the map handle sat
+   * 5px inside the ring handle: the map was sized from the hole and ignored
+   * both handles and their halos. `--cp-map` is now solved from the six
+   * `.color-picker` tokens; this evaluates exactly what the stylesheet says, at
+   * the Interface scales Settings offers, and holds the corner handle's outer
+   * edge short of the ring handle's inner edge.
+   */
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'renderer', 'src', 'styles', 'app.css'), 'utf8')
+  const rule = (sel: string): string => {
+    const m = css.match(new RegExp(`\\n${sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\{([^}]*)\\}`))
+    return m ? m[1] : ''
+  }
+  const decl = (body: string, prop: string): string => body.match(new RegExp(`(?:^|[;\\s])${prop}:\\s*([^;]+);`))?.[1].trim() ?? ''
+  const tokens: Record<string, string> = {}
+  for (const m of rule('.color-picker').matchAll(/(--cp-[a-z-]+):\s*([^;]+);/g)) tokens[m[1]] = m[2].trim()
+  tokens['--cp-map'] = decl(rule('.cp-map'), '--cp-map')
+  /** A calc() of rem, px and the tokens above, in px at `rem`. Only arithmetic survives to the eval. */
+  const px = (expr: string, rem: number, depth = 0): number => {
+    if (depth > 8 || !expr) return NaN
+    const flat = expr
+      .replace(/var\((--[a-z-]+)\)/g, (_, name: string) => `(${px(tokens[name] ?? '', rem, depth + 1)})`)
+      .replace(/calc\(/g, '(')
+      .replace(/(-?[\d.]+)rem/g, (_, n: string) => `(${Number(n) * rem})`)
+      .replace(/(-?[\d.]+)px/g, (_, n: string) => `(${n})`)
+    if (!/^[\d.\s()+\-*/eE]+$/.test(flat)) return NaN
+    return Number(new Function(`return (${flat})`)())
+  }
+  okp('the six wheel tokens and --cp-map are all declared', ['--cp-size', '--cp-ring-w', '--cp-ring-handle', '--cp-map-handle', '--cp-halo', '--cp-clear', '--cp-map'].every((t) => tokens[t]))
+  eq('both handles are sized and haloed by those tokens', [decl(rule('.cp-ring-handle'), 'width'), decl(rule('.cp-map-handle'), 'width')], ['var(--cp-ring-handle)', 'var(--cp-map-handle)'])
+  okp('and both halos are --cp-halo', [rule('.cp-ring-handle'), rule('.cp-map-handle')].every((b) => /0 0 0 var\(--cp-halo\) var\(--cp-black\)/.test(b)))
+  for (const scale of [0.8, 1, 1.2, 1.4]) {
+    const rem = 16 * scale
+    const size = px('var(--cp-size)', rem)
+    const ringW = px('var(--cp-ring-w)', rem)
+    const halo = px('var(--cp-halo)', rem)
+    const ringInner = size / 2 - ringW / 2 - px('var(--cp-ring-handle)', rem) / 2 - halo
+    const side = px('var(--cp-map)', rem)
+    const mapOuter = side / Math.SQRT2 + px('var(--cp-map-handle)', rem) / 2 + halo
+    const hole = size / 2 - ringW
+    okp(
+      `scale ${scale}: the map handle at a corner ends ${(ringInner - mapOuter).toFixed(2)}px short of the ring handle (map ${side.toFixed(1)}px, hole radius ${hole.toFixed(1)})`,
+      // A visible gap, not a kiss: at 1px the two black halos read as touching.
+      ringInner - mapOuter >= 2 && side / Math.SQRT2 < hole
+    )
+  }
 }
 
 console.log('\n-- the ladder: borders and the surface ramp --')

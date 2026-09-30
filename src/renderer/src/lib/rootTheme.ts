@@ -12,6 +12,8 @@ import type { Appearance } from '@shared/accent'
 export interface RootTheme {
   appearance: Appearance
   colors: { bg: string; bgSunken: string; surfaceHover: string; danger: string; warning: string }
+  /** The accent ink in force — a profile's, when one is active — for "the same colour as the accent". */
+  accentInk: string
 }
 
 export function readRootTheme(): RootTheme {
@@ -26,6 +28,7 @@ export function readRootTheme(): RootTheme {
       surfaceHover: v('--surface-hover'),
       danger: v('--danger'),
       warning: v('--warning')
-    }
+    },
+    accentInk: v('--accent-ink')
   }
 }

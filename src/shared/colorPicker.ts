@@ -20,7 +20,7 @@
  * 27); loaded by a suite under strip-types, so shared imports are relative
  * with `.ts` (gotcha 78).
  */
-import { parseColor, perceptualDistance, toHex, toOklch, type Rgb } from './color.ts'
+import { contrastRatio, parseColor, perceptualDistance, toHex, toOklch, type Rgb } from './color.ts'
 import { parseNotation } from './notation.ts'
 
 /** Hue in degrees [0, 360), saturation and value (brightness) in [0, 1]. */
@@ -264,7 +264,10 @@ export function stepSv(sv: { s: number; v: number }, key: string, shift: boolean
  */
 const HUES: readonly [number, string][] = [
   [12, 'red'],
-  [40, 'orange'],
+  [38, 'orange'],
+  // Amber has a band of its own: #ffbf00 (h45) and an ochre like #c4942d
+  // (h41) were both called "yellow", which neither looks like.
+  [50, 'amber'],
   [65, 'yellow'],
   [95, 'lime'],
   [150, 'green'],
@@ -288,7 +291,9 @@ export function hueName(h: number): string {
 /**
  * A plain name for a colour, for a screen reader's `aria-valuetext` and the
  * picker's own caption: "vivid orange", "dark blue", "pale pink", "light
- * grey". Greys are named by brightness alone, because their hue is noise.
+ * red", "light grey". Greys are named by brightness alone, because their hue
+ * is noise. "light" is the bright half-saturated band between pale and plain:
+ * a salmon (#ffa192) is not what "red" makes anyone picture.
  */
 export function colorName(c: Hsv): string {
   const { h, s, v } = clampHsv(c)
@@ -301,6 +306,7 @@ export function colorName(c: Hsv): string {
   if (v < 0.4) return `dark ${name}`
   if (s < 0.35 && v > 0.75) return `pale ${name}`
   if (s < 0.35) return `greyish ${name}`
+  if (s < 0.5 && v > 0.85) return `light ${name}`
   if (s > 0.8 && v > 0.8) return `vivid ${name}`
   return name
 }
@@ -328,6 +334,46 @@ export function inkShift(pick: string, ink: string): { distance: number; darker:
   return { distance, darker: toOklch(b).l < toOklch(a).l }
 }
 
+/**
+ * Under this contrast against the page a FILL stops having an edge: a primary
+ * button in it is a label floating on nothing. Not WCAG's 3:1 for graphics —
+ * every button here also has its label, and 3:1 would refuse most mid-dark
+ * colours on a dark theme — but the point where the shape itself is gone
+ * (a near-black #261104 measured 1.01:1 on Ember's page).
+ */
+export const FILL_VANISH_RATIO = 1.5
+
+/**
+ * The worst contrast a fill has against the grounds it is painted on, when it
+ * is under `FILL_VANISH_RATIO` — so the picker can say so — else null.
+ */
+export function fillVanishes(fill: string, grounds: readonly string[]): number | null {
+  const f = parseColor(fill)
+  if (!f) return null
+  let worst = Infinity
+  for (const g of grounds) {
+    const c = parseColor(g)
+    if (c) worst = Math.min(worst, contrastRatio(f, c))
+  }
+  return worst < FILL_VANISH_RATIO ? worst : null
+}
+
+/**
+ * The worst contrast a text colour has on the grounds it is painted on: the
+ * figure the picker prints ("the tag reads at 9.2:1"), measured rather than
+ * the floor it was solved to.
+ */
+export function worstContrast(text: string, grounds: readonly string[]): number | null {
+  const t = parseColor(text)
+  if (!t) return null
+  let worst = Infinity
+  for (const g of grounds) {
+    const c = parseColor(g)
+    if (c) worst = Math.min(worst, contrastRatio(t, c))
+  }
+  return Number.isFinite(worst) ? worst : null
+}
+
 /* -------------------------------------------------------------- placement */
 
 export interface Box {
@@ -338,25 +384,74 @@ export interface Box {
 }
 
 /**
- * Where the popover goes: below its swatch if it fits, else above if there is
- * more room there, and always inside the window by `margin` — the flip-and-
- * clamp ProjectMetaPicker does against its scroll box, against the viewport,
- * since this one is `position: fixed`. Left-aligned with the swatch, slid left
- * as far as needed at the right edge. A popover taller than the window keeps
- * its top on screen: the controls are at the top.
+ * Where the popover goes, as `position: fixed` offsets.
+ *
+ * Below its swatch if it fits there, else above if it fits there, else on the
+ * roomier side — and NEVER over the swatch. The first cut clamped the popover
+ * into the window instead, which slid it over the swatch and the field it was
+ * editing whenever neither side had room (Interface scale 1.4), and over the
+ * swatch again when a popover opened above grew downward. So:
+ *  - below is held by its TOP and above by its BOTTOM, the edge beside the
+ *    swatch; anything that changes its height moves the far edge, never the
+ *    near one;
+ *  - `maxHeight` is the room on that side, and the popover scrolls inside it
+ *    when its content is taller.
+ * `height` is the popover's natural height (its content's, not a capped box).
+ * Left-aligned with the swatch, slid left as far as needed at the right edge.
  */
+export interface Placement {
+  left: number
+  /** Set when below: the popover's top edge. */
+  top: number | null
+  /** Set when above: the distance from the window's bottom to the popover's. */
+  bottom: number | null
+  maxHeight: number
+  side: 'below' | 'above'
+}
+
 export function placePopover(
   anchor: Box,
   size: { width: number; height: number },
   viewport: { width: number; height: number },
   gap: number,
   margin: number
-): { left: number; top: number; side: 'below' | 'above' } {
+): Placement {
   const below = viewport.height - margin - (anchor.bottom + gap)
   const above = anchor.top - gap - margin
-  const side: 'below' | 'above' = below < size.height && above > below ? 'above' : 'below'
-  const rawTop = side === 'below' ? anchor.bottom + gap : anchor.top - gap - size.height
-  const top = Math.max(margin, Math.min(rawTop, viewport.height - margin - size.height))
-  const left = Math.max(margin, Math.min(anchor.left, viewport.width - margin - size.width))
-  return { left: Math.round(left), top: Math.round(top), side }
+  const side: 'below' | 'above' =
+    size.height <= below ? 'below' : size.height <= above ? 'above' : below >= above ? 'below' : 'above'
+  const left = Math.round(Math.max(margin, Math.min(anchor.left, viewport.width - margin - size.width)))
+  return side === 'below'
+    ? { left, top: Math.round(anchor.bottom + gap), bottom: null, maxHeight: Math.max(0, Math.floor(below)), side }
+    : {
+        left,
+        top: null,
+        bottom: Math.round(viewport.height - (anchor.top - gap)),
+        maxHeight: Math.max(0, Math.floor(above)),
+        side
+      }
+}
+
+/**
+ * Whether the swatch a popover hangs off is still where the user can see it:
+ * its centre inside every box that clips it (each scrolling ancestor and the
+ * window, intersected by the caller). Once it is not — the Settings pane
+ * scrolled it away — the popover has nothing to hang off, and the picker
+ * closes (keeping the pick, as a click elsewhere does) rather than float over
+ * the sheet's header attached to nothing.
+ */
+export function anchorShown(anchor: Box, clip: Box): boolean {
+  const x = (anchor.left + anchor.right) / 2
+  const y = (anchor.top + anchor.bottom) / 2
+  return x >= clip.left && x <= clip.right && y >= clip.top && y <= clip.bottom
+}
+
+/** Two boxes' overlap (empty boxes have right < left or bottom < top). */
+export function intersectBox(a: Box, b: Box): Box {
+  return {
+    left: Math.max(a.left, b.left),
+    top: Math.max(a.top, b.top),
+    right: Math.min(a.right, b.right),
+    bottom: Math.min(a.bottom, b.bottom)
+  }
 }

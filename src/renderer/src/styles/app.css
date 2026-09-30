@@ -5116,22 +5116,49 @@ button.color-field-swatch[aria-expanded='true'] {
  * `--cp-black`). Both handles carry a white-then-black ring so they show on
  * any colour under them. The pick and every preset are painted from data,
  * inline; nothing below names a colour of its own.
+ *
+ * The wheel's geometry is six tokens, and `--cp-map` is solved from them so
+ * the two handles can never touch: the map's corner, plus its handle and halo,
+ * stops `--cp-clear` short of the ring handle's inner edge, plus ITS halo. The
+ * first cut sized the map from the hole alone, and a vivid pick near a corner
+ * direction (amber, h35-55) put the map handle 5px into the ring handle.
+ * verify:color evaluates these very declarations at scales 0.8-1.4.
+ *
+ * `top` OR `bottom`, and `max-height`, are set inline (`placePopover`): held
+ * by the edge beside its swatch, scrolling inside the room that side has.
  */
 .color-picker {
-  --cp-size: 12rem;
+  --cp-size: 12.5rem;
   --cp-ring-w: 1.125rem;
+  --cp-ring-handle: 0.875rem;
+  --cp-map-handle: 0.875rem;
+  --cp-halo: 3px;
+  --cp-clear: 3px;
   position: fixed;
   z-index: calc(var(--z-modal) + 1);
   display: flex;
   flex-direction: column;
   gap: var(--space-8);
   width: 15.5rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: var(--space-12);
   border: 1px solid var(--border-strong);
   border-radius: var(--r-lg);
   background: var(--bg-elevated);
   box-shadow: var(--shadow-panel);
   animation: pop var(--dur) var(--ease);
+}
+
+/* Scrolling inside its room: every row keeps its height and the box scrolls. */
+.color-picker > * {
+  flex-shrink: 0;
+}
+
+/* Focusable only so a press on its body keeps focus inside it; not a stop a
+   keyboard ever lands on, so no ring. */
+.color-picker:focus-visible {
+  outline: none;
 }
 
 .cp-head {
@@ -5148,7 +5175,7 @@ button.color-field-swatch[aria-expanded='true'] {
   height: 1.75rem;
   overflow: hidden;
   border-radius: var(--r-sm);
-  box-shadow: 0 0 0 1px var(--swatch-ring);
+  box-shadow: 0 0 0 1px var(--border-strong);
 }
 
 .cp-preview-new {
@@ -5212,21 +5239,25 @@ button.color-field-swatch[aria-expanded='true'] {
   position: absolute;
   left: 50%;
   top: 50%;
-  width: calc(var(--cp-ring-w) - 0.25rem);
-  height: calc(var(--cp-ring-w) - 0.25rem);
+  width: var(--cp-ring-handle);
+  height: var(--cp-ring-handle);
   translate: -50% -50%;
   border-radius: 50%;
   background: var(--cp-hue);
   box-shadow:
-    0 0 0 2px var(--cp-white),
-    0 0 0 3px var(--cp-black);
+    0 0 0 calc(var(--cp-halo) - 1px) var(--cp-white),
+    0 0 0 var(--cp-halo) var(--cp-black);
   transform: rotate(var(--cp-angle)) translateY(calc(var(--cp-ring-w) / 2 - var(--cp-size) / 2));
   pointer-events: none;
 }
 
-/* The largest square inside the hole, less a gap so the handles never touch. */
+/*
+ * A square whose corner (its half-diagonal, side / 1.4142) sits one map handle,
+ * both halos and `--cp-clear` inside the ring handle's centre line less its own
+ * half: the handles cannot meet at any hue.
+ */
 .cp-map {
-  --cp-map: calc((var(--cp-size) / 2 - var(--cp-ring-w) - 0.375rem) * 1.4142);
+  --cp-map: calc((var(--cp-size) / 2 - var(--cp-ring-w) / 2 - var(--cp-ring-handle) / 2 - var(--cp-map-handle) / 2 - 2 * var(--cp-halo) - var(--cp-clear)) * 1.4142);
   position: absolute;
   left: 50%;
   top: 50%;
@@ -5244,13 +5275,13 @@ button.color-field-swatch[aria-expanded='true'] {
 
 .cp-map-handle {
   position: absolute;
-  width: 0.875rem;
-  height: 0.875rem;
+  width: var(--cp-map-handle);
+  height: var(--cp-map-handle);
   translate: -50% -50%;
   border-radius: 50%;
   box-shadow:
-    0 0 0 2px var(--cp-white),
-    0 0 0 3px var(--cp-black);
+    0 0 0 calc(var(--cp-halo) - 1px) var(--cp-white),
+    0 0 0 var(--cp-halo) var(--cp-black);
   pointer-events: none;
 }
 
@@ -5326,7 +5357,17 @@ button.color-field-swatch[aria-expanded='true'] {
   color: var(--text-faint);
 }
 
+/*
+ * One note, in a slot exactly two lines tall whatever it says — the picker's
+ * height must not change with the pick (ColorPicker's `place`). Anything
+ * longer is cut at two lines; the whole text is its title.
+ */
 .cp-note {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  height: calc(2 * var(--lh-normal) * var(--fs-xs));
+  overflow: hidden;
   margin: 0;
   font-size: var(--fs-xs);
   line-height: var(--lh-normal);
@@ -5337,26 +5378,40 @@ button.color-field-swatch[aria-expanded='true'] {
   color: var(--warning);
 }
 
+/*
+ * Nine to a row, spread across it: the 18 agent presets fill two rows and the
+ * theme's 22 go 9/9/4, where a wrapped flex row left 10/8 and 10/10/2. Fewer
+ * than nine (a profile's eight) take one column each (`--cp-cols`, inline). The
+ * spread and the row gap put each 18px swatch on a pitch of at least 24px
+ * (WCAG 2.2 2.5.8's spacing exception) from Interface scale 1.0 up; the row
+ * gap holds 24px at any scale.
+ */
 .cp-presets {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-4);
+  --cp-preset: 1.125rem;
+  --cp-cols: 9;
+  display: grid;
+  grid-template-columns: repeat(var(--cp-cols), var(--cp-preset));
+  justify-content: space-between;
+  row-gap: max(0.375rem, calc(24px - var(--cp-preset)));
 }
 
+/* An inset edge in the border colour, so a preset the popover's own colour
+   (the theme editor's Surface) or a pale one on a light page still has one. */
 .cp-preset {
   --cp-swatch: var(--surface);
-  width: 1.125rem;
-  height: 1.125rem;
+  width: var(--cp-preset);
+  height: var(--cp-preset);
   padding: 0;
   border: none;
   border-radius: 50%;
   background: var(--cp-swatch);
-  box-shadow: 0 0 0 1px var(--swatch-ring);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
   cursor: pointer;
 }
 
 .cp-preset[aria-pressed='true'] {
   box-shadow:
+    inset 0 0 0 1px var(--border-strong),
     0 0 0 2px var(--bg-elevated),
     0 0 0 3.5px var(--accent-ink);
 }
