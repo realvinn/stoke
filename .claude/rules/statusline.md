@@ -151,6 +151,13 @@ it as pass-through is what failed to start. **`verify:statusline` was asserting 
 win32 unconditionally**, repeating the same false claim in its own comment — gotcha 10's defect
 a second time, a suite pinning a bug as correct.
 
+> **Checked on a real Windows runner on 2026-09-30** (windows-latest, Actions run 36670816756):
+> both syntaxes run as claimed. Git Bash runs `"…\run.cmd" "<key>"` and pwsh 7 and Windows
+> PowerShell 5.1 run `& "…\run.cmd" "<key>"`, the payload reaching the wrapper on stdin and the
+> hook events landing, driven the way 2.1.285's executor runs them. Still read from the bundle rather
+> than a live `claude` on Windows. On Windows the status-line command now ends in the shell's name,
+> `"bash"` or `"powershell"`, for the wrapper's pass-through (gotcha 123).
+
 ## 64. The context meter counted three of the four usage fields
 
 **The context meter counted three of the four usage fields.** `contextUsed` summed
@@ -440,3 +447,49 @@ other user setting (permission mode, theme) still applies. Unverified: Windows (
 the same node wrapper, so the bytes are identical, but nothing was driven there) and any CLI
 other than 2.1.285 — if a later one draws the reset as a row, the result is the old blank row,
 never visible text.
+
+## 123. On Windows the user's own status line was re-run in cmd.exe, which the CLI never uses, and a hung one outlived its kill
+
+**With "Hide Claude's status line" off, the wrapper re-runs the user's own `statusLine.command`,
+and on Windows it ran it through `cmd.exe /c`.** Claude Code runs statusLine and hook commands
+through Git Bash when it finds one and PowerShell when not (gotcha 61). Read again out of the 2.1.285
+bundle: one executor, `eU`, serves both, the status line as its event `"StatusLine"`, and with no
+`shell` field `RB()` is `Ta() ? "bash" : "powershell"`. So a line written for the shell the CLI
+really uses — `~/.claude/statusline.sh`, `$HOME`, `$env:`, `& "…"` — came back blank or wrong once
+Stoke wrapped it. Worse, node quotes an argv element holding `"` as `\"`, which cmd.exe cannot read,
+so ANY line that began with a quoted path printed nothing. The suite's own flood control failed on
+exactly that on the first windows-latest run (Actions run 36670816756).
+
+The wrapper cannot see which shell started it. Stoke's command already commits to one — `&` or not
+(gotcha 61) — so on Windows it now names it as a third word, `"bash"` or `"powershell"`
+(`statusLineCommand`), and `passthrough()` in the generated wrapper runs the line the way the CLI's
+executor does: `bash -c` with bash's own folder first on PATH (`H_n`) and a `.sh` first word run as
+`bash <line>` (`O_n`); or `pwsh`/`powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass
+-Command`, PowerShell found in `mH`'s order, with `${CLAUDE_PROJECT_DIR}` rewritten to `${env:…}`
+(`ELo`). The word is sound whenever the wrapper runs at all: the syntax before it parses in no other
+shell, so a wrong guess never starts the wrapper. A command with no word — a session an older Stoke
+launched, still running against the shared `wrapper.mjs` — keeps cmd.exe, now handed its line
+verbatim (`/d /s /c "…"` with `windowsVerbatimArguments`, as node's own `shell: true` does it).
+POSIX is unchanged: `/bin/sh -c`, no word.
+
+**A line that hangs held the CLI's render for as long as its child lived, not the 2s the wrapper
+promises.** Windows children inherit EVERY inheritable handle, the wrapper's own stdout — the pipe
+back to the CLI — among them. `execFileSync`'s timeout killed the shell, and its child (a `ping`, a
+`sleep`, a stuck network call) kept the CLI's pipe open until it finished: over 10s against the 2s
+timeout on the runner. `runContained` replaces `execFileSync` on every OS, with the same 2s and 256KB
+rules, and on Windows kills the whole tree with `taskkill /T /F`. Off Windows a child inherits only
+the three descriptors it is given, so killing the shell already released everything.
+
+Measured on windows-latest (run 36672038877), the whole chain — shell, run.cmd, the wrapper, the
+line's own shell — for a line written in each shell's syntax: Git Bash 154ms, pwsh 7 671ms, Windows
+PowerShell 5.1 618ms, all inside the 2s budget; the hang and the 256KB flood both contained. Run
+36670816756 was the first time the shim ran under any real Windows shell: Git Bash runs the no-`&`
+form, pwsh 7 and Windows PowerShell 5.1 run the `&` form, stdin reaches the wrapper, and the payload
+and hook events land. Still unproven: a real `claude` on Windows driving it.
+
+How it was found is the rule for next time: **run a command the way the thing that runs it does.**
+`verify:statusline` ran the shim through `cmd.exe /c` too. It died there on the `\"` quoting before
+asking anything, so the `&` split gotcha 61 turns on had never run on Windows at all. It now runs
+every shell present (Git Bash, pwsh 7, Windows PowerShell 5.1 on the runner; a GitHub runner missing
+one fails) with the syntax Stoke writes for each, and a line in each shell's own syntax through the
+pass-through.
