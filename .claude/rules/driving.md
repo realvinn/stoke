@@ -142,3 +142,26 @@ So: **call `require("electron")` synchronously inside the evaluation**, or keep 
 a variable before scheduling anything, and wrap anything deferred in `try/catch`. Quitting a
 sandbox instance with a synchronous `(() => { require("electron").app.quit(); return 1 })()` was
 measured clean (the reply still arrived, the process exited 0).
+
+## 119. A synthetic `blur()` commits nothing while the window lacks OS focus, so a blur-committed field looks broken under CDP
+
+**Most settings fields commit on blur** (`useDraft`, the Agents page's endpoint and Default model
+fields, the tab tag — gotcha 63). Driving one from CDP the obvious way — set the value through the
+prototype setter, dispatch `input`, then `input.blur()` — works while the Stoke window is the
+frontmost app, and silently stops working the moment it is not. Measured 2026-09-30 on the Agents
+page of a sandbox instance behind the terminal that drove it: `document.hasFocus()` read `false`
+and `document.activeElement` was `<body>`, and four focus-set-blur passes on the Gemini and Grok
+Default model fields left `settings.get()` unchanged while the field showed the new text (React's
+`onChange` had run: a junk id drew its warning). The same drive had committed the Codex field in the
+first minutes after launch — which is what makes it read as a bug in the page. A
+`keydown` of `Enter` dispatched on the input (the fields commit on Enter too) committed at once, in
+the same backgrounded window, every time.
+
+So: **commit a driven field with its Enter path, or check `document.hasFocus()` first** — never
+read "the value did not save" off a synthetic blur. (`Emulation.setFocusEmulationEnabled` is the
+CDP switch meant for this; not tried here.)
+
+Related, and also only a driving artefact: **`scrollIntoView` on anything inside the settings
+sheet scrolls the `.settings-modal` itself**, which is `overflow: hidden` — the header and the
+close button slide out of the dialog and stay out, in every later screenshot. A user cannot
+reach that state. Scroll `.settings-pane`'s own `scrollTop` instead.

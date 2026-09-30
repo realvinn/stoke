@@ -590,6 +590,47 @@ console.log('\nan import of an identical setup changes nothing')
   check('and every key reads as the same', plan.preview.secrets.map((s) => s.action), ['same', 'same', 'same', 'same'])
 }
 
+console.log('\nan import from before the Default model brings no hidden leftover in (agents.ts AGENTS_FORMAT)')
+{
+  /*
+   * The merged block carries THIS machine's `agents.format`, so hydrate alone
+   * would never upgrade what the file brought. A file exported before format 2
+   * can hold a default-mode model the old page hid — an OpenRouter id kept by
+   * a mode switch — which would arrive here as that agent's Default model.
+   */
+  const here = hydrateSettings({
+    agents: { chosen: ['codex', 'gemini', 'grok'], endpoints: { grok: { mode: 'default', model: 'grok-build' } }, format: 2 }
+  })
+  check('this machine’s Default model is stored', here.agents.endpoints.grok?.model, 'grok-build')
+  const payload = (agents: Record<string, unknown>): SetupPayload => ({
+    kind: 'stoke-setup-payload',
+    createdAt: '2026-09-30T00:00:00.000Z',
+    from: { version: '0.9.97', platform: 'darwin' },
+    settings: { agents },
+    secrets: {}
+  })
+  const endpoints = {
+    codex: { mode: 'default', model: 'anthropic/claude-sonnet-5', baseUrl: '', apiKey: '' },
+    gemini: { mode: 'openrouter', model: 'google/gemini-3-pro', baseUrl: '', apiKey: '' }
+  }
+  const old = planImport(here, payload({ chosen: ['codex'], endpoints }), { includeSecrets: false }, hydrateSettings)
+  check(
+    'an old file: its default-mode leftover is dropped, its OpenRouter endpoint arrives, this machine’s Default model stands',
+    old.next.agents.endpoints,
+    {
+      grok: { mode: 'default', model: 'grok-build', baseUrl: '', apiKey: '' },
+      gemini: { mode: 'openrouter', model: 'google/gemini-3-pro', baseUrl: '', apiKey: '' }
+    }
+  )
+  check('and the merged block is format 2', old.next.agents.format, 2)
+  const current = planImport(here, payload({ chosen: ['codex'], endpoints, format: 2 }), { includeSecrets: false }, hydrateSettings)
+  check(
+    'a format-2 file’s default-mode model was chosen on purpose, and is imported',
+    current.next.agents.endpoints.codex,
+    { mode: 'default', model: 'anthropic/claude-sonnet-5', baseUrl: '', apiKey: '' }
+  )
+}
+
 console.log('\npassphrase strength')
 check('empty is not acceptable', judgePassphrase('').acceptable, false)
 check('a short one is not acceptable', judgePassphrase('Tr0ub4dor').acceptable, false)

@@ -258,7 +258,7 @@ export function App(): React.JSX.Element {
   const [agentDetectFailed, setAgentDetectFailed] = useState(false)
 
   /*
-   * The agent a NEW session starts — Settings › Coding agents › Default agent,
+   * The agent a NEW session starts — Settings › Agents › Default agent,
    * resolved against what the launcher can offer (installed AND chosen) so an
    * agent uninstalled or unticked since can never leave Start pointing at
    * nothing. Derived at render, never copied into state (gotcha 57): the
@@ -1934,7 +1934,14 @@ export function App(): React.JSX.Element {
           projectName: opts.name,
           title: opts.title ?? opts.name,
           permissionMode,
-          model: sessionModel,
+          /*
+           * Claude Code's is the model this launch sent. Another agent's is the
+           * one main's launch plan asked for (`res.model`: its endpoint's, or
+           * its Default model), or '' when the agent chooses — never Claude's
+           * default, which it was not given, now that the status bar names a
+           * model for the agents that can be handed one.
+           */
+          model: isClaudeCode(launchCli) || opts.install?.length ? sessionModel : (res.model ?? ''),
           effort: sessionEffort,
           // What this session was launched with, so a relaunch or a Resume can
           // bring back the same one rather than today's global.
@@ -3599,7 +3606,7 @@ export function App(): React.JSX.Element {
     [patchSettings]
   )
 
-  /** The tab menu's "Hide/Show agent tags" — the same setting as Settings › Coding agents. */
+  /** The tab menu's "Hide/Show agent tags" — the same setting as Settings › Agents. */
   const toggleAgentTags = useCallback((): void => {
     const cur = settingsRef.current
     if (!cur) return

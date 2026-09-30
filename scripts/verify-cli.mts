@@ -359,12 +359,23 @@ for (const cli of CODING_CLIS.filter((c) => !isClaudeCode(c.id))) {
   )
   check(`${id} is not reviewed by the worklog, which shells out to claude -p`, caps.worklog, false)
   check(`${id} claims no plan usage — that endpoint is Anthropic's`, caps.usage, 'none')
+  /*
+   * `model` is raised exactly where the table has a model flag it read out of
+   * the vendor's own artefact or docs (`modelArgs`): that tab was launched
+   * with the model its plan asked for, so the status bar may name it. Mode
+   * and effort stay Claude's alone.
+   */
   check(
-    `${id} is passed none of Claude's launch flags`,
+    `${id} is passed none of Claude's launch flags, and a model only through its own confirmed flag`,
     caps.launchFlags,
-    { permissionMode: false, effort: false, model: false }
+    { permissionMode: false, effort: false, model: cli.modelArgs !== undefined }
   )
 }
+check(
+  'the model is raised for exactly the agents with a confirmed flag',
+  CODING_CLIS.filter((c) => !isClaudeCode(c.id) && CLI_CAPS[c.id].launchFlags.model).map((c) => c.id),
+  ['codex', 'grok', 'opencode', 'pi', 'gemini', 'qwen', 'kimi', 'copilot', 'cursor', 'kilo', 'aider', 'auggie']
+)
 check(
   'every known CLI has an entry, so a new one cannot default to instrumented',
   CODING_CLIS.every((c) => !!CLI_CAPS[c.id]),

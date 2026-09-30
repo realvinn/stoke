@@ -897,7 +897,7 @@ export function newTabToReuse(
   return tabs.find((t) => t.kind === 'new' && !t.launch)?.id ?? null
 }
 
-/** Settings › Coding agents' tag options, plus the agent Start starts. */
+/** Settings › Agents' tag options, plus the agent Start starts. */
 export interface AgentTagOptions {
   /** Draw the tag at all (`agents.tag.show`). */
   show: boolean

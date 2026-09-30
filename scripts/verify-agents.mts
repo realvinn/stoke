@@ -18,6 +18,8 @@
 import {
   AGENT_TAG_MAX,
   agentLaunchPlan,
+  AGENTS_FORMAT,
+  agentsFormatOf,
   agentTagText,
   cleanTagLabel,
   DEFAULT_AGENTS,
@@ -38,11 +40,16 @@ import {
   powershellEncode,
   scriptFor,
   isEndpointUrl,
+  isModelId,
+  launchModel,
+  MODEL_ID_MAX,
+  modelIdProblem,
   NO_KEY,
   OPENROUTER_OPENAI_BASE_URL,
   PI_PROVIDER_EXTENSION,
   resolveDefaultAgent,
   tomlString,
+  upgradeEndpoint,
   visibleAgents,
   windowsInstallerArgs,
   type AgentEndpoint,
@@ -152,7 +159,8 @@ check('nothing stored is never asked', hydrateAgents(undefined), {
   defaultCli: 'claude',
   shareSkillsToClaude: true,
   tag: { show: true, labels: {} },
-  colors: {}
+  colors: {},
+  format: AGENTS_FORMAT
 })
 check('junk is never asked, not "nothing chosen"', hydrateAgents({ chosen: 'codex' }).chosen, null)
 check('an empty choice is kept — it means "show none"', hydrateAgents({ chosen: [] }).chosen, [])
@@ -469,6 +477,27 @@ console.log('\nrefusing a launch that would not work')
 check('the default needs nothing', endpointProblem('codex', DEFAULT_ENDPOINT, ''), null)
 ok('OpenRouter with no key says where the key goes', /Settings › Providers/.test(endpointProblem('codex', or(), '') ?? ''))
 ok('OpenRouter with no model says so', /no model/.test(endpointProblem('grok', or(''), KEY) ?? ''))
+check(
+  'and names the section by its name now — Agents, not Coding agents',
+  endpointProblem('grok', or(''), KEY),
+  'Grok Build is set to use OpenRouter, but no model is chosen. Set one in Settings › Agents.'
+)
+check(
+  'a custom endpoint with no URL says where to set it',
+  endpointProblem('opencode', custom({ baseUrl: '' }), KEY),
+  'OpenCode’s custom endpoint needs an http(s) base URL. Set it in Settings › Agents.'
+)
+check(
+  'a custom endpoint with no model says where to set it',
+  endpointProblem('opencode', custom({ model: '' }), KEY),
+  'OpenCode’s custom endpoint needs a model. Set it in Settings › Agents.'
+)
+ok(
+  'no sentence names the old section',
+  [or(''), custom({ baseUrl: '' }), custom({ model: '' }), { ...DEFAULT_ENDPOINT, model: 'a b' }].every(
+    (ep) => !/Coding agents/.test(endpointProblem('codex', ep, KEY) ?? '')
+  )
+)
 ok('a custom endpoint needs an http(s) URL', /http\(s\)/.test(endpointProblem('opencode', custom({ baseUrl: 'ftp://h' }), KEY) ?? ''))
 check('a custom endpoint with no key is allowed — local servers take none', endpointProblem('opencode', custom({ apiKey: '' }), KEY), null)
 check('isEndpointUrl refuses a bare word', isEndpointUrl('localhost'), false)
@@ -489,7 +518,8 @@ console.log('\ncodex: -c overrides, Responses API, nothing written to config.tom
       '-c', `model_providers.stoke_openrouter.env_key="${ENV_OPENROUTER_KEY}"`,
       '-m', 'anthropic/claude-sonnet-5'
     ],
-    env: { [ENV_OPENROUTER_KEY]: KEY }
+    env: { [ENV_OPENROUTER_KEY]: KEY },
+    model: 'anthropic/claude-sonnet-5'
   })
   keysOnlyInEnv('codex openrouter', r)
   const c = plan('codex', custom({ apiKey: '' }))
@@ -500,7 +530,8 @@ console.log('\ncodex: -c overrides, Responses API, nothing written to config.tom
       '-c', `mcp_servers.stoke.url="${MCP.url}"`,
       '-c', `mcp_servers.stoke.bearer_token_env_var="${ENV_MCP_TOKEN}"`
     ],
-    env: { [ENV_MCP_TOKEN]: MCP.token }
+    env: { [ENV_MCP_TOKEN]: MCP.token },
+    model: ''
   })
   keysOnlyInEnv('codex mcp', m)
   check('continue is its resume subcommand, after the global flags', planOk(plan('codex', or(), { continueLast: true })).args.slice(-2), ['resume', '--last'])
@@ -510,7 +541,7 @@ console.log('\ncodex: -c overrides, Responses API, nothing written to config.tom
 console.log('\nopencode: built-in OpenRouter, everything else in OPENCODE_CONFIG_CONTENT')
 {
   const r = plan('opencode', or('z-ai/glm-5'))
-  check('OpenRouter', planOk(r), { args: ['-m', 'openrouter/z-ai/glm-5'], env: { OPENROUTER_API_KEY: KEY } })
+  check('OpenRouter', planOk(r), { args: ['-m', 'openrouter/z-ai/glm-5'], env: { OPENROUTER_API_KEY: KEY }, model: 'z-ai/glm-5' })
   const c = planOk(plan('opencode', custom(), { mcp: MCP }))
   const cfg = JSON.parse(c.env.OPENCODE_CONFIG_CONTENT ?? '{}')
   check('custom: the model is addressed through Stoke’s provider', c.args, ['-m', 'stoke_custom/qwen3-coder'])
@@ -518,7 +549,7 @@ console.log('\nopencode: built-in OpenRouter, everything else in OPENCODE_CONFIG
   check('custom: the key by reference, not by value', cfg.provider?.stoke_custom?.options?.apiKey, `{env:${ENV_CUSTOM_KEY}}`)
   check('custom: the value in the environment', c.env[ENV_CUSTOM_KEY], CUSTOM_KEY)
   check('mcp: a remote server at Stoke’s URL', cfg.mcp?.stoke?.url, MCP.url)
-  check('the default sign-in with no MCP sets nothing at all', planOk(plan('opencode', undefined)), { args: [], env: {} })
+  check('the default sign-in with no MCP sets nothing at all', planOk(plan('opencode', undefined)), { args: [], env: {}, model: '' })
   check('continue', planOk(plan('opencode', undefined, { continueLast: true })).args, ['--continue'])
 }
 
@@ -531,7 +562,8 @@ console.log('\ngrok build: GROK_MODELS_BASE_URL, and -m is not optional')
       GROK_MODELS_BASE_URL: OPENROUTER_OPENAI_BASE_URL,
       GROK_XAI_API_BASE_URL: OPENROUTER_OPENAI_BASE_URL,
       XAI_API_KEY: KEY
-    }
+    },
+    model: 'x-ai/grok-5'
   })
   keysOnlyInEnv('grok', r)
   check('custom', planOk(plan('grok', custom())).env.GROK_MODELS_BASE_URL, 'http://127.0.0.1:11434/v1')
@@ -541,7 +573,8 @@ console.log('\npi: --provider openrouter, and a Stoke-owned extension for anythi
 {
   check('OpenRouter', planOk(plan('pi', or())), {
     args: ['--provider', 'openrouter', '--model', 'anthropic/claude-sonnet-5'],
-    env: { OPENROUTER_API_KEY: KEY }
+    env: { OPENROUTER_API_KEY: KEY },
+    model: 'anthropic/claude-sonnet-5'
   })
   const c = plan('pi', custom())
   check('custom: the extension, then the provider it registers', planOk(c).args.slice(0, 4), [
@@ -564,7 +597,8 @@ console.log('\nqwen, kimi, copilot: environment only, and every key in it')
   const q = plan('qwen', or('qwen/qwen3-coder'))
   check('qwen: --auth-type on the command line, the key in env', planOk(q), {
     args: ['--auth-type', 'openai', '-m', 'qwen/qwen3-coder'],
-    env: { OPENAI_BASE_URL: OPENROUTER_OPENAI_BASE_URL, OPENAI_API_KEY: KEY }
+    env: { OPENAI_BASE_URL: OPENROUTER_OPENAI_BASE_URL, OPENAI_API_KEY: KEY },
+    model: 'qwen/qwen3-coder'
   })
   keysOnlyInEnv('qwen', q)
   const k = plan('kimi', or('moonshotai/kimi-k3'))
@@ -575,7 +609,8 @@ console.log('\nqwen, kimi, copilot: environment only, and every key in it')
       KIMI_MODEL_API_KEY: KEY,
       KIMI_MODEL_PROVIDER_TYPE: 'openai',
       KIMI_MODEL_BASE_URL: OPENROUTER_OPENAI_BASE_URL
-    }
+    },
+    model: 'moonshotai/kimi-k3'
   })
   const c = plan('copilot', custom())
   check('copilot: its own BYO-provider variables, model included', planOk(c), {
@@ -584,7 +619,8 @@ console.log('\nqwen, kimi, copilot: environment only, and every key in it')
       COPILOT_PROVIDER_BASE_URL: 'http://127.0.0.1:11434/v1',
       COPILOT_PROVIDER_API_KEY: CUSTOM_KEY,
       COPILOT_MODEL: 'qwen3-coder'
-    }
+    },
+    model: 'qwen3-coder'
   })
   const files = { claude: '/u/Stoke/mcp-browser.json', httpUrl: '/u/Stoke/agents/mcp-httpurl.json' }
   check(
@@ -613,14 +649,237 @@ console.log('\nkilo reads OpenCode’s inline config under its own name; aider t
   check('kilo: the same provider and MCP shape', Object.keys(JSON.parse(k.env.KILO_CONFIG_CONTENT ?? '{}')).sort(), ['mcp', 'provider'])
   check('aider: openrouter/<model> with OPENROUTER_API_KEY', planOk(plan('aider', or('deepseek/deepseek-v4'))), {
     args: ['--model', 'openrouter/deepseek/deepseek-v4'],
-    env: { OPENROUTER_API_KEY: KEY }
+    env: { OPENROUTER_API_KEY: KEY },
+    model: 'deepseek/deepseek-v4'
   })
   check('aider: openai/<model> at OPENAI_API_BASE for a custom endpoint', planOk(plan('aider', custom())), {
     args: ['--model', 'openai/qwen3-coder'],
-    env: { OPENAI_API_BASE: 'http://127.0.0.1:11434/v1', OPENAI_API_KEY: CUSTOM_KEY }
+    env: { OPENAI_API_BASE: 'http://127.0.0.1:11434/v1', OPENAI_API_KEY: CUSTOM_KEY },
+    model: 'qwen3-coder'
   })
   check('aider continues by restoring the folder’s chat', planOk(plan('aider', undefined, { continueLast: true })).args, ['--restore-chat-history'])
   ok('crush, droid and cline refuse an endpoint rather than ignore it', ['crush', 'droid', 'cline'].every((id) => !plan(id as CodingCliId, or()).ok))
+}
+
+console.log('\nthe default model on an agent’s own sign-in: exactly its confirmed flag, and nothing where there is none')
+{
+  const own = (model: string): AgentEndpoint => ({ ...DEFAULT_ENDPOINT, model })
+  /*
+   * The exact argv per agent, each one the flag codingClis.ts records reading
+   * in that vendor's own artefact or docs on 2026-09-30. Written out rather
+   * than derived from `modelArgs`, so a table edit that changes a flag has to
+   * change this line too.
+   */
+  const want: Partial<Record<CodingCliId, [string, string[]]>> = {
+    codex: ['gpt-6.1-sol', ['-m', 'gpt-6.1-sol']],
+    grok: ['grok-build', ['-m', 'grok-build']],
+    opencode: ['anthropic/claude-sonnet-5', ['-m', 'anthropic/claude-sonnet-5']],
+    pi: ['anthropic/claude-sonnet-5:high', ['--model', 'anthropic/claude-sonnet-5:high']],
+    gemini: ['gemini-2.5-pro', ['-m', 'gemini-2.5-pro']],
+    qwen: ['qwen3-coder-plus', ['-m', 'qwen3-coder-plus']],
+    kimi: ['kimi-k3', ['-m', 'kimi-k3']],
+    copilot: ['gpt-5.5', ['--model=gpt-5.5']],
+    cursor: ['sonnet-5', ['--model', 'sonnet-5']],
+    kilo: ['anthropic/claude-sonnet-5', ['-m', 'anthropic/claude-sonnet-5']],
+    aider: ['sonnet', ['--model', 'sonnet']],
+    auggie: ['sonnet5', ['-m', 'sonnet5']]
+  }
+  for (const c of CODING_CLIS) {
+    if (c.id === 'claude') continue
+    const w = want[c.id]
+    const model = w?.[0] ?? 'some-model'
+    const r = plan(c.id, own(model))
+    check(
+      w ? `${c.id}: ${w[1].join(' ')}` : `${c.id}: no confirmed flag, so nothing is passed — it chooses inside the agent`,
+      planOk(r).args,
+      w ? w[1] : []
+    )
+    check(`${c.id}: the plan reports the model the tab will carry`, planOk(r).model, w ? model : '')
+    check(`${c.id}: and CLI_CAPS lets the status bar name it exactly then`, CLI_CAPS[c.id].launchFlags.model, !!w)
+  }
+  check('the table has a flag for exactly those, and no more', CODING_CLIS.filter((c) => c.modelArgs).map((c) => c.id), Object.keys(want))
+  check('a blank default model passes nothing: the agent chooses', planOk(plan('codex', own(''))), { args: [], env: {}, model: '' })
+  check(
+    'codex: the model before the MCP overrides and before `resume --last`, whose global flags go first',
+    planOk(plan('codex', own('gpt-6.1-sol'), { mcp: MCP, continueLast: true })).args,
+    [
+      '-m', 'gpt-6.1-sol',
+      '-c', `mcp_servers.stoke.url="${MCP.url}"`,
+      '-c', `mcp_servers.stoke.bearer_token_env_var="${ENV_MCP_TOKEN}"`,
+      'resume', '--last'
+    ]
+  )
+  keysOnlyInEnv('codex default model with MCP', plan('codex', own('gpt-6.1-sol'), { mcp: MCP }))
+  check(
+    'qwen: the model beside its MCP file, the token still only in that file',
+    planOk(plan('qwen', own('qwen3-coder-plus'), { mcpFiles: { claude: null, httpUrl: '/u/Stoke/agents/mcp-httpurl.json' } })).args,
+    ['-m', 'qwen3-coder-plus', '--mcp-config', '/u/Stoke/agents/mcp-httpurl.json']
+  )
+  check(
+    'opencode: a default model beside its inline MCP config, whose token stays in env',
+    Object.keys(planOk(plan('opencode', own('anthropic/claude-sonnet-5'), { mcp: MCP })).env),
+    ['OPENCODE_CONFIG_CONTENT']
+  )
+  keysOnlyInEnv('opencode default model with MCP', plan('opencode', own('anthropic/claude-sonnet-5'), { mcp: MCP }))
+  check(
+    'off its own sign-in the endpoint’s shape wins, not the default-model flag',
+    planOk(plan('opencode', or('z-ai/glm-5'))).args,
+    ['-m', 'openrouter/z-ai/glm-5']
+  )
+  check('and the tab carries the endpoint’s model', planOk(plan('opencode', or('z-ai/glm-5'))).model, 'z-ai/glm-5')
+  check('kimi on OpenRouter: the model in env, and on the tab', planOk(plan('kimi', or('moonshotai/kimi-k3'))).model, 'moonshotai/kimi-k3')
+  check('claude is never planned here, and carries no agent model', planOk(plan('claude', own('opus'))), { args: [], env: {}, model: '' })
+  check('launchModel: an agent with no flag on its own sign-in picks its own', launchModel('amp', own('x')), '')
+  check('launchModel: Claude Code’s model is its launch defaults’, never this', launchModel('claude', own('opus')), '')
+  check('launchModel: a custom endpoint’s model, whatever the agent', launchModel('grok', custom()), 'qwen3-coder')
+}
+
+console.log('\nmodel ids: nothing that is not one reaches argv (cmd.exe reads & | ^ < > % as syntax, gotcha 13)')
+{
+  const real = [
+    'gpt-6.1-sol',
+    'anthropic/claude-sonnet-5',
+    'openrouter/z-ai/glm-5',
+    'qwen3-coder:30b',
+    'claude-opus-5[1m]',
+    '@cf/meta/llama-4',
+    'provider/id:high',
+    'moonshotai/kimi-k2:free',
+    'gemini-2.5-pro',
+    'o4_mini+beta'
+  ]
+  for (const id of real) ok(`a real id is accepted: ${id}`, isModelId(id))
+  const junk = [
+    '',
+    'gpt 5',
+    'x & calc',
+    'a|b',
+    'a^b',
+    'a<b',
+    'a>b',
+    '%PATH%',
+    '!x!',
+    '(x)',
+    'a;b',
+    '$(whoami)',
+    '`id`',
+    '"quoted"',
+    "it's",
+    'line\nbreak',
+    'tab\there',
+    '-m',
+    '--yolo',
+    '--dangerously-bypass-approvals-and-sandbox',
+    '.hidden',
+    'x'.repeat(MODEL_ID_MAX + 1)
+  ]
+  for (const id of junk) ok(`refused: ${JSON.stringify(id.length > 30 ? `${id.slice(0, 12)}…(${id.length})` : id)}`, !isModelId(id))
+  ok('the longest allowed id is allowed', isModelId('x'.repeat(MODEL_ID_MAX)))
+
+  check('hydrate drops a metacharacter model rather than storing it', hydrateEndpoint({ mode: 'openrouter', model: 'x & calc' }).model, '')
+  check('and a flag dressed as a model', hydrateEndpoint({ mode: 'default', model: '--yolo' }).model, '')
+  check('but keeps a real one, trimmed', hydrateEndpoint({ mode: 'default', model: '  gpt-6.1-sol ' }).model, 'gpt-6.1-sol')
+  check(
+    'a stored default endpoint whose only field was junk is not stored at all',
+    hydrateAgents({ endpoints: { gemini: { mode: 'default', model: '-m --yolo' } } }).endpoints,
+    {}
+  )
+  check(
+    'a default model survives hydrate for an agent with no endpoint of its own (Gemini)',
+    hydrateAgents({ endpoints: { gemini: { mode: 'default', model: 'gemini-2.5-pro' } }, format: AGENTS_FORMAT }).endpoints,
+    { gemini: { mode: 'default', model: 'gemini-2.5-pro', baseUrl: '', apiKey: '' } }
+  )
+
+  check(
+    'endpointProblem refuses a junk model on the agent’s own sign-in, and says where to fix it',
+    endpointProblem('codex', { ...DEFAULT_ENDPOINT, model: 'x & calc' }, ''),
+    modelIdProblem('Codex CLI')
+  )
+  ok('that sentence names Settings › Agents', /Settings › Agents\.$/.test(modelIdProblem('Codex CLI')))
+  check(
+    'and before any other problem off it — the model is what reaches argv',
+    endpointProblem('grok', or('a|b'), ''),
+    modelIdProblem('Grok Build')
+  )
+  check('an agent with no flag is still refused a junk one', endpointProblem('amp', { ...DEFAULT_ENDPOINT, model: '%x%' }, ''), modelIdProblem('Amp'))
+  for (const [id, ep] of [
+    ['gemini', { ...DEFAULT_ENDPOINT, model: '--yolo' }],
+    ['codex', or('x & calc')],
+    ['aider', custom({ model: 'm; rm -rf ~' })],
+    ['copilot', { ...DEFAULT_ENDPOINT, model: 'a"b' }]
+  ] as [CodingCliId, AgentEndpoint][]) {
+    const r = plan(id, ep)
+    ok(`${id}: a launch with ${JSON.stringify(ep.model)} is refused, not spawned`, !r.ok && r.message === modelIdProblem(CODING_CLIS.find((c) => c.id === id)!.label), JSON.stringify(r))
+  }
+  check('launchModel never reports a junk id either', launchModel('codex', { ...DEFAULT_ENDPOINT, model: 'a b' }), '')
+  // Every flag the table holds is a flag, and carries the model whole.
+  for (const c of CODING_CLIS.filter((x) => x.modelArgs)) {
+    const argv = c.modelArgs!('M-1')
+    ok(
+      `${c.id}: its flag is a flag and carries the model once, whole`,
+      argv[0].startsWith('-') && argv.filter((a) => a === 'M-1' || a.endsWith('=M-1')).length === 1,
+      JSON.stringify(argv)
+    )
+  }
+}
+
+console.log('\na file from before the Default model: its default-mode models are leftovers, cleared once (AGENTS_FORMAT)')
+{
+  /*
+   * Before format 2 a model on an agent's own sign-in did nothing and was never
+   * drawn, and switching back from OpenRouter kept the OpenRouter id. So the
+   * reviewer's case — Codex tried on OpenRouter, then set back — is stored as
+   * exactly this, and must not launch `codex -m anthropic/claude-sonnet-5` on a
+   * ChatGPT sign-in after the upgrade.
+   */
+  const leftover: AgentEndpoint = { ...DEFAULT_ENDPOINT, model: 'anthropic/claude-sonnet-5' }
+  const before = { chosen: ['codex'], endpoints: { codex: leftover } }
+
+  check(
+    'the format a block names: none, junk and fractions are 1; a whole number ≥ 1 is itself',
+    [undefined, null, '2', 0, -1, 1.5, NaN, 1, 2, 3].map(agentsFormatOf),
+    [1, 1, 1, 1, 1, 1, 1, 1, 2, 3]
+  )
+  check('this build writes format 2', AGENTS_FORMAT, 2)
+
+  check('upgradeEndpoint from 1: a default-mode model is cleared', upgradeEndpoint(leftover, 1), DEFAULT_ENDPOINT)
+  check('from 2 it is kept — it was set through the Default model field', upgradeEndpoint(leftover, 2), leftover)
+  check('an OpenRouter model is never a leftover', upgradeEndpoint(or(), 1), or())
+  check('nor a custom endpoint’s', upgradeEndpoint(custom(), 1), custom())
+  check(
+    'a default endpoint keeps its base URL and key: they reach nothing on its own sign-in, and Settings keeps them across a mode switch',
+    upgradeEndpoint({ ...custom(), mode: 'default' }, 1),
+    { ...custom(), mode: 'default', model: '' }
+  )
+
+  const up = hydrateAgents(before)
+  check('hydrate: the leftover is gone, and with it the whole stored entry', up.endpoints, {})
+  check('and the block now says format 2, so the upgrade runs once', up.format, AGENTS_FORMAT)
+  check('so Codex launches on its own sign-in with no model flag', planOk(plan('codex', up.endpoints.codex)), { args: [], env: {}, model: '' })
+  check(
+    'counterfactual: the same entry in a format-2 file IS the Default model — which is what the upgrade prevents for old files',
+    planOk(plan('codex', hydrateAgents({ ...before, format: 2 }).endpoints.codex)).args,
+    ['-m', 'anthropic/claude-sonnet-5']
+  )
+  check('a second hydrate changes nothing (gotcha 116)', hydrateAgents(up), up)
+  check(
+    'a Default model chosen after the upgrade survives every later read',
+    hydrateAgents({ ...up, endpoints: { codex: { ...DEFAULT_ENDPOINT, model: 'gpt-6.1-sol' } } }).endpoints,
+    { codex: { ...DEFAULT_ENDPOINT, model: 'gpt-6.1-sol' } }
+  )
+  check(
+    'only default-mode models go: OpenRouter and custom endpoints come through untouched',
+    hydrateAgents({ endpoints: { codex: leftover, opencode: or('z-ai/glm-5'), aider: custom() } }).endpoints,
+    { opencode: or('z-ai/glm-5'), aider: custom() }
+  )
+  check(
+    'a newer build’s format is not upgraded again, and is written back as this build’s',
+    [hydrateAgents({ ...before, format: 3 }).endpoints, hydrateAgents({ ...before, format: 3 }).format],
+    [{ codex: leftover }, AGENTS_FORMAT]
+  )
+  check('a junk format is 1, and upgraded', hydrateAgents({ ...before, format: '2' }).endpoints, {})
+  check('no agents block at all is this build’s format', [hydrateAgents(undefined).format, hydrateAgents('junk').format], [2, 2])
+  check('the default settings carry it', DEFAULT_SETTINGS.agents.format, AGENTS_FORMAT)
 }
 
 console.log('\nidentity: a file named after the agent is not always the agent')
@@ -646,7 +905,7 @@ for (const c of CODING_CLIS) {
     JSON.stringify(args)
   )
 }
-check('claude is never planned here — its launch is buildArgs', planOk(plan('claude', or())), { args: [], env: {} })
+check('claude is never planned here — its launch is buildArgs', planOk(plan('claude', or())), { args: [], env: {}, model: '' })
 
 console.log('\ninstalling')
 {

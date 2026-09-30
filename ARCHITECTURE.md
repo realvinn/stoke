@@ -696,7 +696,12 @@ npm run verify:agents         # the coding agents: what is stored, what the laun
                               # palette's distances from each other, the meter, --danger and
                               # --warning on every theme, when colour is painted at all,
                               # each CLI's exact launch plan (endpoint, MCP, continue) with
-                              # every key in env and none in argv, and the install script —
+                              # every key in env and none in argv, the Default model's exact
+                              # argv per agent on its own sign-in (`modelArgs`), a pre-format-2
+                              # file's default-mode leftovers cleared once and never again
+                              # (`upgradeEndpoint`), model ids
+                              # that could reach cmd.exe or pose as a flag refused at hydrate,
+                              # endpointProblem and launch, and the install script —
                               # only table ids survive into a command; the shared-skills
                               # projection and its plugin folder on a fake home and userData
                               # (bystanders survive, links are never followed)
@@ -1068,6 +1073,12 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     (resolved, THIS launch only, "Make default"), the conversation list.
                     Top-aligned so nothing above a row moves when a row below loads. Its
                     keys come from `launcherKey` (shared/launcher.ts). Gotcha 88
+  src/components/AgentsSettings.tsx  Settings › Agents: the default agent, choosing and
+                    re-detecting agents and the skills report, then one page per installed or
+                    ticked agent (install state, endpoint, Default model, colour, tab tag) and
+                    "More agents" folded. Claude Code's page holds its four launch defaults
+                    (moved from Sessions, still `settings.defaults`, gotcha 57) and the way to
+                    Providers and Claude Code's own config — never an endpoint
   src/components/MicPicker.tsx  Settings → Voice's microphone for Stoke's dictation (System
                     default + the audio inputs, refreshed on devicechange, "Show device names"
                     when the browser withholds them), a Test meter that records nothing, and
@@ -1150,6 +1161,11 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     launch, scratch, `stoke .`, the phone); `resolveDefaultAgent` falls back
                     to Claude Code, then the first agent on offer, when it is not installed
                     and chosen. Resume, relaunch and Continue stay Claude's (gotcha 81).
+                    `endpoint.model` is also the Default model on an agent's own sign-in,
+                    passed only through its table flag; `isModelId` gates it everywhere.
+                    The block's `format` (`AGENTS_FORMAT`, 2) clears every default-mode
+                    model in a file from before it, once — hidden leftovers of a mode switch
+                    then — and `mergeSetup` does the same for an old setup file's endpoints.
                     `tag` (show, labels) and `colors` are hydrated here too
   agentColors.ts    each coding agent's colour: `AGENT_SEEDS`, the user's override, and
                     `agentColorTokens` — deriveAccent per seed, which applyAppearance writes
@@ -1255,7 +1271,9 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     since an npm install is a .cmd shim) — and CLI_CAPS, what Stoke may
                     honestly draw beside each. Only Claude Code feeds the ring, resume, the
                     worklog and the plan chip; every other CLI starts at the floor, so a
-                    Codex tab shows nothing there rather than Claude's numbers
+                    Codex tab shows nothing there rather than Claude's numbers. `modelArgs`
+                    is each agent's model flag, only where it was read in the vendor's own
+                    artefact or docs (dated beside it); it raises `launchFlags.model`
   stokeArgs.ts      `stoke …` from a terminal: an argv into one request (focus, session,
                     open, update, error), or null. ONLY an argv carrying `--stoke-cli` is a
                     request; the first `--` after it is Chromium's terminator, not the

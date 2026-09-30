@@ -90,7 +90,32 @@ export interface CodingCli {
    * to know before pointing it anywhere.
    */
   endpoints: { openrouter: boolean; custom: string | null }
+  /**
+   * The arguments that ask this agent for a model at launch, on its OWN sign-in
+   * — the "Default model" in Settings › Agents, `AgentEndpoint.model` in
+   * `default` mode (agents.ts). Present only where the flag was read in the
+   * vendor's own shipped artefact or official docs, never guessed and never by
+   * running the CLI; each entry names what was read and when. Absent means
+   * Stoke cannot ask, and the agent picks its model itself. (OpenRouter and a
+   * custom endpoint pass their model in `agentLaunchPlan`'s own shapes.)
+   *
+   * The model reaches argv, and a `.cmd` shim runs through `cmd.exe` (gotcha
+   * 13), so only an id `isModelId` accepts is ever handed to this.
+   */
+  modelArgs?: (model: string) => string[]
+  /** What a model id looks like to this agent, for the field's placeholder. */
+  modelExample?: string
 }
+
+/*
+ * The model flags below were checked on 2026-09-30, by reading — nothing was
+ * run. "binary"/"package" means the string was read out of the vendor's own
+ * shipped artefact (an installed copy, or its registry tarball streamed through
+ * a search and never written to disk); "docs" means the vendor's own reference
+ * page.
+ */
+const DASH_M = (model: string): string[] => ['-m', model]
+const LONG_MODEL = (model: string): string[] => ['--model', model]
 
 export const CODING_CLIS: readonly CodingCli[] = [
   {
@@ -128,7 +153,12 @@ export const CODING_CLIS: readonly CodingCli[] = [
     },
     // `resume` is a subcommand and filters by the working folder unless `--all`.
     continueArgs: ['resume', '--last'],
-    endpoints: { openrouter: true, custom: 'OpenAI Responses API' }
+    endpoints: { openrouter: true, custom: 'OpenAI Responses API' },
+    // docs (learn.chatgpt.com developer-commands, surface=cli): `--model, -m`,
+    // "Override the model set in configuration (for example gpt-6.1-sol)", and
+    // `codex resume` "accepts the same global flags as codex".
+    modelArgs: DASH_M,
+    modelExample: 'gpt-6.1-sol'
   },
   {
     id: 'grok',
@@ -148,7 +178,11 @@ export const CODING_CLIS: readonly CodingCli[] = [
     // environment variables, so neither is this agent.
     identify: /^grok \d+\.\d+\.\d+ \(/m,
     continueArgs: ['--continue'],
-    endpoints: { openrouter: true, custom: 'OpenAI Chat Completions' }
+    endpoints: { openrouter: true, custom: 'OpenAI Chat Completions' },
+    // binary (x.ai/cli grok-1.0.44-macos-aarch64, its embedded docs):
+    // "`-m, --model <MODEL>` | Model to use (e.g., `grok-build`)".
+    modelArgs: DASH_M,
+    modelExample: 'grok-build'
   },
   {
     id: 'opencode',
@@ -163,7 +197,12 @@ export const CODING_CLIS: readonly CodingCli[] = [
       win32: 'npm install -g opencode-ai'
     },
     continueArgs: ['--continue'],
-    endpoints: { openrouter: true, custom: 'OpenAI Chat Completions' }
+    endpoints: { openrouter: true, custom: 'OpenAI Chat Completions' },
+    // binary (Homebrew opencode 1.18.31, installed here): the TUI command's
+    // `.option("model",{alias:["m"],describe:"model to use in the format of
+    // provider/model"})`.
+    modelArgs: DASH_M,
+    modelExample: 'provider/model'
   },
   {
     id: 'pi',
@@ -179,7 +218,11 @@ export const CODING_CLIS: readonly CodingCli[] = [
     },
     installNeeds: 'Node.js 22.19 or newer',
     continueArgs: ['--continue'],
-    endpoints: { openrouter: true, custom: 'OpenAI Chat Completions' }
+    endpoints: { openrouter: true, custom: 'OpenAI Chat Completions' },
+    // package (@earendil-works/pi-coding-agent 0.99.1): `--model <pattern>`,
+    // "Model pattern or ID (supports "provider/id" and optional ":<thinking>")".
+    modelArgs: LONG_MODEL,
+    modelExample: 'provider/id'
   },
   /*
    * The six below were read off each vendor's docs and the installed CLI's
@@ -204,7 +247,12 @@ export const CODING_CLIS: readonly CodingCli[] = [
     continueArgs: ['--resume', 'latest'],
     // GOOGLE_GEMINI_BASE_URL exists but speaks only the Gemini protocol
     // (`…:streamGenerateContent`, x-goog-api-key), which OpenRouter does not serve.
-    endpoints: { openrouter: false, custom: null }
+    endpoints: { openrouter: false, custom: null },
+    // package (@google/gemini-cli 0.62.0): `.option("model", { alias: "m",
+    // type: "string", nargs: 1 })`; docs (geminicli.com cli-reference):
+    // `--model | -m | string | auto`.
+    modelArgs: DASH_M,
+    modelExample: 'gemini-2.5-pro'
   },
   {
     id: 'qwen',
@@ -220,7 +268,10 @@ export const CODING_CLIS: readonly CodingCli[] = [
       win32: 'irm https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.ps1 | iex'
     },
     continueArgs: ['--continue'],
-    endpoints: { openrouter: true, custom: 'OpenAI Chat Completions' }
+    endpoints: { openrouter: true, custom: 'OpenAI Chat Completions' },
+    // package (@qwen-code/qwen-code 0.24.7): `DEFAULT_COMMAND_OPTIONS={model:
+    // {alias:"m",type:"string",description:"Model"`, read as `cli.model`.
+    modelArgs: DASH_M
   },
   {
     id: 'kimi',
@@ -236,7 +287,11 @@ export const CODING_CLIS: readonly CodingCli[] = [
     },
     installNote: 'On Windows it needs Git for Windows.',
     continueArgs: ['--continue'],
-    endpoints: { openrouter: true, custom: 'OpenAI Chat Completions' }
+    endpoints: { openrouter: true, custom: 'OpenAI Chat Completions' },
+    // package (@moonshot-ai/kimi-code 2.1.1, the build install.sh ships):
+    // `new Option("-m, --model <model>", "LLM model alias to use for this
+    // invocation. Defaults to default_model in config.toml.")`.
+    modelArgs: DASH_M
   },
   {
     id: 'copilot',
@@ -253,7 +308,11 @@ export const CODING_CLIS: readonly CodingCli[] = [
       win32: 'winget install --id GitHub.Copilot -e --source winget --accept-source-agreements --accept-package-agreements'
     },
     continueArgs: ['--continue'],
-    endpoints: { openrouter: true, custom: 'OpenAI Chat Completions' }
+    endpoints: { openrouter: true, custom: 'OpenAI Chat Completions' },
+    // docs (docs.github.com, Copilot CLI command reference): `--model=MODEL`,
+    // "Set the AI model you want to use". Written as the docs write it, one
+    // argument. (Its packaged binary's JS is compressed; nothing to read there.)
+    modelArgs: (model) => [`--model=${model}`]
   },
   {
     id: 'cursor',
@@ -270,7 +329,10 @@ export const CODING_CLIS: readonly CodingCli[] = [
       win32: 'irm "https://cursor.com/install?win32=true" | iex'
     },
     continueArgs: ['--continue'],
-    endpoints: { openrouter: false, custom: null }
+    endpoints: { openrouter: false, custom: null },
+    // docs (cursor.com/docs/cli/reference/parameters): `--model <model>`,
+    // "Model to use".
+    modelArgs: LONG_MODEL
   },
   {
     id: 'amp',
@@ -288,6 +350,7 @@ export const CODING_CLIS: readonly CodingCli[] = [
     identify: /^0\.0\.\d{9,}/m,
     continueArgs: ['threads', 'continue', '--last'],
     endpoints: { openrouter: false, custom: null }
+    // No model flag: its model follows the mode, by design (blurb above).
   },
   /*
    * And seven more, fact-checked the same way. Kilo and Aider take an endpoint
@@ -311,7 +374,11 @@ export const CODING_CLIS: readonly CodingCli[] = [
     },
     installNeeds: 'Node.js',
     continueArgs: ['--continue'],
-    endpoints: { openrouter: true, custom: 'OpenAI Chat Completions' }
+    endpoints: { openrouter: true, custom: 'OpenAI Chat Completions' },
+    // binary (@kilocode/cli-darwin-arm64 7.8.1): the same TUI option as
+    // OpenCode's, "model to use in the format of provider/model".
+    modelArgs: DASH_M,
+    modelExample: 'provider/model'
   },
   {
     id: 'aider',
@@ -327,7 +394,10 @@ export const CODING_CLIS: readonly CodingCli[] = [
     },
     // Aider keeps the chat in the folder; this reloads it.
     continueArgs: ['--restore-chat-history'],
-    endpoints: { openrouter: true, custom: 'OpenAI Chat Completions' }
+    endpoints: { openrouter: true, custom: 'OpenAI Chat Completions' },
+    // docs (aider.chat/docs/config/options.html): "--model MODEL  Specify the
+    // model to use for the main chat".
+    modelArgs: LONG_MODEL
   },
   {
     id: 'crush',
@@ -343,6 +413,8 @@ export const CODING_CLIS: readonly CodingCli[] = [
     },
     installNeeds: 'Node.js (Windows uses winget)',
     endpoints: { openrouter: false, custom: null }
+    // No model flag: its README documents none for the interactive command;
+    // models are picked in its own settings.
   },
   {
     id: 'droid',
@@ -357,6 +429,9 @@ export const CODING_CLIS: readonly CodingCli[] = [
       win32: 'npm install -g droid'
     },
     endpoints: { openrouter: false, custom: null }
+    // No model flag: `-m, --model <id>` is in its binary (0.230.0) and docs,
+    // but beside "requires a prompt" options and only ever shown on
+    // `droid exec`; nothing says the interactive command takes it.
   },
   {
     id: 'cline',
@@ -372,6 +447,10 @@ export const CODING_CLIS: readonly CodingCli[] = [
     },
     installNeeds: 'Node.js 20 or newer',
     endpoints: { openrouter: false, custom: null }
+    // No model flag, though its binary (3.0.66) has `-m, --model <model-id>`:
+    // a run records its provider settings in providers.json (see above), and
+    // whether the model rides along could not be read without running it. A
+    // launch flag that writes the agent's own config is what Stoke never does.
   },
   {
     id: 'auggie',
@@ -387,7 +466,10 @@ export const CODING_CLIS: readonly CodingCli[] = [
     },
     installNeeds: 'Node.js 20 or newer',
     continueArgs: ['-c'],
-    endpoints: { openrouter: false, custom: null }
+    endpoints: { openrouter: false, custom: null },
+    // package (@augmentcode/auggie 0.36.0): `-m, --model <id>`, "Select the
+    // model to use for the agent. Use 'auggie model list' to see available models."
+    modelArgs: DASH_M
   },
   {
     id: 'vibe',
@@ -402,6 +484,10 @@ export const CODING_CLIS: readonly CodingCli[] = [
     },
     continueArgs: ['-c'],
     endpoints: { openrouter: false, custom: null }
+    // No model flag, and the two sources disagree: Mistral's configuration
+    // docs say "pass it directly with --model", but the 2.25.8 package's own
+    // argparse (vibe/cli/entrypoint.py) defines no --model, so it would exit
+    // on an unrecognised argument.
   }
 ]
 
@@ -444,7 +530,14 @@ export interface CliCaps {
   worklog: boolean
   /** Whose plan the usage chip would be describing. */
   usage: 'anthropic' | 'none'
-  /** Which launcher pills mean anything. Claude's flags are Claude's. */
+  /**
+   * Which launch flags a session of this CLI was actually given, so which of
+   * the status bar's mode / model / effort items describe it. Claude's three
+   * are Claude's. `model` is also raised for every other agent Stoke can hand
+   * a model (`modelArgs`), whose tab then carries the model its launch asked
+   * for. The launcher's chips are Claude Code's options whatever this says,
+   * and are drawn only where the card can start Claude (Launcher.tsx).
+   */
   launchFlags: { permissionMode: boolean; effort: boolean; model: boolean }
 }
 
@@ -458,6 +551,17 @@ const FLOOR: CliCaps = {
   worklog: false,
   usage: 'none',
   launchFlags: { permissionMode: false, effort: false, model: false }
+}
+
+/**
+ * The floor, with `launchFlags.model` raised when the table can hand this agent
+ * a model (`modelArgs`, each read from the vendor's own artefact or docs). The
+ * one real source behind it is the launch itself: `agentLaunchPlan` passes the
+ * model, and the tab carries what that plan asked for.
+ */
+function floorFor(id: CodingCliId, resume: CliCaps['resume']): CliCaps {
+  const model = CODING_CLIS.some((c) => c.id === id && c.modelArgs !== undefined)
+  return { ...FLOOR, resume, launchFlags: { ...FLOOR.launchFlags, model } }
 }
 
 export const CLI_CAPS: Record<CodingCliId, CliCaps> = {
@@ -475,29 +579,29 @@ export const CLI_CAPS: Record<CodingCliId, CliCaps> = {
    * be handed a session id Stoke chose before launch the way Claude Code can,
    * so none is `mintedId`.
    */
-  codex: { ...FLOOR, resume: 'continue' },
-  grok: { ...FLOOR, resume: 'continue' },
-  opencode: { ...FLOOR, resume: 'continue' },
-  pi: { ...FLOOR, resume: 'continue' },
+  codex: floorFor('codex', 'continue'),
+  grok: floorFor('grok', 'continue'),
+  opencode: floorFor('opencode', 'continue'),
+  pi: floorFor('pi', 'continue'),
   // Each one's own continue flag, from its --help: `gemini --resume latest`,
   // `qwen --continue`, `kimi --continue`, `copilot --continue`,
   // `cursor-agent --continue`, `amp threads continue --last`.
-  gemini: { ...FLOOR, resume: 'continue' },
-  qwen: { ...FLOOR, resume: 'continue' },
-  kimi: { ...FLOOR, resume: 'continue' },
-  copilot: { ...FLOOR, resume: 'continue' },
-  cursor: { ...FLOOR, resume: 'continue' },
-  amp: { ...FLOOR, resume: 'continue' },
+  gemini: floorFor('gemini', 'continue'),
+  qwen: floorFor('qwen', 'continue'),
+  kimi: floorFor('kimi', 'continue'),
+  copilot: floorFor('copilot', 'continue'),
+  cursor: floorFor('cursor', 'continue'),
+  amp: floorFor('amp', 'continue'),
   // `kilo --continue`, `aider --restore-chat-history`, `auggie -c`, `vibe -c`.
   // Crush, Droid and Cline have resume flags whose meaning with no id was not
   // confirmed, so a paused tab of theirs starts fresh rather than guessing.
-  kilo: { ...FLOOR, resume: 'continue' },
-  aider: { ...FLOOR, resume: 'continue' },
-  crush: FLOOR,
-  droid: FLOOR,
-  cline: FLOOR,
-  auggie: { ...FLOOR, resume: 'continue' },
-  vibe: { ...FLOOR, resume: 'continue' }
+  kilo: floorFor('kilo', 'continue'),
+  aider: floorFor('aider', 'continue'),
+  crush: floorFor('crush', 'none'),
+  droid: floorFor('droid', 'none'),
+  cline: floorFor('cline', 'none'),
+  auggie: floorFor('auggie', 'continue'),
+  vibe: floorFor('vibe', 'continue')
 }
 
 /**

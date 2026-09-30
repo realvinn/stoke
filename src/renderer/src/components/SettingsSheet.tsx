@@ -1,11 +1,4 @@
-import type {
-  CliInfo,
-  EffortLevel,
-  NotificationMode,
-  PermissionMode,
-  Settings,
-  Theme
-} from '@shared/types'
+import type { CliInfo, NotificationMode, Settings, Theme } from '@shared/types'
 import type { ResolvedProfile } from '@shared/profiles'
 import { BUILT_IN_THEMES, resolveTheme } from '@shared/themes'
 import {
@@ -46,12 +39,6 @@ import { AgentsSettings } from './AgentsSettings'
 import { BackupSettings } from './BackupSettings'
 import type { CodingCliDetection, CodingCliId } from '@shared/codingClis'
 import { WorklogSettings } from './WorklogSettings'
-import {
-  EFFORT_LEVELS,
-  MODEL_OPTIONS,
-  PERMISSION_MODES,
-  ULTRACODE_HINT
-} from '../lib/permissions'
 
 /**
  * The zoom targets, worded as what they move rather than as their ids.
@@ -159,13 +146,18 @@ const GROUPS: { title: string; sections: Section[] }[] = [
   {
     title: 'Configuration',
     sections: [
-      { id: 'sessions', label: 'Sessions', hint: 'What a new session starts with' },
-      { id: 'claude', label: 'Claude Code', hint: "Claude Code's own configuration" },
+      { id: 'sessions', label: 'Sessions', hint: 'Where a new session opens, and what it tells you' },
+      /*
+       * One Agents area for every agent Stoke runs, Claude Code included —
+       * the default one, and each one's model, endpoint, colour and tag. The
+       * id stays 'agents': other panels open it by id.
+       */
       {
         id: 'agents',
-        label: 'Coding agents',
-        hint: 'Codex, OpenCode, Grok, Pi and the rest: which show, installing them, their endpoints'
+        label: 'Agents',
+        hint: 'Claude Code, Codex, Grok and the rest: the default agent, and each one’s model, endpoint, colour and tab tag'
       },
+      { id: 'claude', label: 'Claude Code', hint: "Claude Code's own configuration" },
       { id: 'providers', label: 'Providers', hint: 'Claude Code’s API keys and gateway, and the shared OpenRouter key' },
       {
         id: 'voice',
@@ -240,7 +232,7 @@ interface Props {
   onPreviewTheme: (theme: Theme | null) => void
   /**
    * The coding-agent detection App already holds, and the three things the
-   * Coding agents section can ask App to do. App owns them because the picker,
+   * Agents section can ask App to do. App owns them because the picker,
    * the launcher row and an install tab all read the same detection.
    */
   agents: {
@@ -297,6 +289,12 @@ export function SettingsSheet({
 }: Props): React.JSX.Element {
   const themes: Theme[] = [...BUILT_IN_THEMES, ...settings.customThemes]
   const [section, setSection] = useState<SectionId>(initialSection ?? 'appearance')
+  /*
+   * Which agent's page Agents shows. Held here rather than inside
+   * AgentsSettings so Sessions' "Open Agents › Claude Code" can land on
+   * Claude's page; null shows the default agent's.
+   */
+  const [agentPage, setAgentPage] = useState<CodingCliId | null>(null)
 
   /*
    * The scrolling pane, reset to the top on every section change.
@@ -664,100 +662,30 @@ export function SettingsSheet({
 
             {section === 'sessions' && (
               <>
-                <div className="field">
-                  <span className="field-label">Default permissions</span>
-                  <div className="segmented" role="group" aria-label="Default permission mode">
-                    {PERMISSION_MODES.map((m) => (
-                      <button
-                        key={m.id}
-                        aria-pressed={settings.defaults.permissionMode === m.id}
-                        data-danger={m.danger ? 'true' : undefined}
-                        title={m.hint}
-                        onClick={() =>
-                          onPatch({
-                            defaults: {
-                              ...settings.defaults,
-                              permissionMode: m.id as PermissionMode
-                            }
-                          })
-                        }
-                      >
-                        {m.label}
-                      </button>
-                    ))}
-                  </div>
-                  <span className="field-hint">
-                    Applied to every new session unless changed at launch.
-                  </span>
-                </div>
-
-                <div className="field">
-                  <span className="field-label">Default model</span>
-                  <select
-                    className="select"
-                    value={settings.defaults.model}
-                    onChange={(e) =>
-                      onPatch({ defaults: { ...settings.defaults, model: e.target.value } })
-                    }
-                  >
-                    {MODEL_OPTIONS.map((m) => (
-                      <option key={m.id || 'default'} value={m.id}>
-                        {m.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="field">
-                  <span className="field-label">Default effort</span>
-                  <select
-                    className="select"
-                    value={settings.defaults.effort}
-                    onChange={(e) =>
-                      onPatch({
-                        defaults: { ...settings.defaults, effort: e.target.value as EffortLevel }
-                      })
-                    }
-                  >
-                    {EFFORT_LEVELS.map((e) => (
-                      <option key={e.id} value={e.id}>
-                        {e.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
                 {/*
-                  The fourth launch default. The launcher has had an Ultracode
-                  toggle since it shipped and this pane had the other three —
-                  permissions, model, effort — so the one option you would most
-                  want on by default was the one that had to be re-ticked for
-                  every session.
+                  Claude Code's four launch defaults — permissions, model,
+                  effort, Ultracode — live on its page under Agents now, beside
+                  every other agent's default model. Still `settings.defaults`,
+                  still one writer (gotcha 57); this says where they went.
                 */}
-                <label className="check-row">
-                  <input
-                    type="checkbox"
-                    checked={settings.defaults.ultracode}
-                    onChange={(e) =>
-                      onPatch({ defaults: { ...settings.defaults, ultracode: e.target.checked } })
-                    }
-                  />
-                  <span>
-                    <span className="field-label">Start sessions with Ultracode</span>
-                    <FieldHint
-                      more={
-                        <>
-                          Ultracode is a key in the settings file Stoke writes for each session,
-                          not a flag, and the CLI resolves effort to its own maximum while it is
-                          on — so the Effort control above is overridden for as long as this is
-                          ticked, and comes back when it is not.
-                        </>
-                      }
-                    >
-                      {ULTRACODE_HINT}
-                    </FieldHint>
+                <div className="field">
+                  <span className="field-label">Launch defaults</span>
+                  <span className="field-hint">
+                    Claude Code&rsquo;s default permissions, model, effort and Ultracode are on its
+                    page under Agents, beside every other agent&rsquo;s default model.
                   </span>
-                </label>
+                  <div style={{ display: 'flex', gap: 'var(--space-8)' }}>
+                    <button
+                      className="btn"
+                      onClick={() => {
+                        setAgentPage('claude')
+                        setSection('agents')
+                      }}
+                    >
+                      Open Agents › Claude Code
+                    </button>
+                  </div>
+                </div>
 
                 <div className="field">
                   <span className="field-label">Default folder</span>
@@ -1021,6 +949,10 @@ export function SettingsSheet({
                 onRefresh={agents.onRefresh}
                 onOpenPicker={agents.onOpenPicker}
                 onInstall={agents.onInstall}
+                page={agentPage}
+                onPage={setAgentPage}
+                onOpenProviders={() => setSection('providers')}
+                onOpenClaudeConfig={() => setSection('claude')}
               />
             )}
 

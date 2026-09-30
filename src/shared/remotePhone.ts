@@ -616,7 +616,7 @@ export interface PhoneHostDefaults {
   effort: EffortLevel
   /**
    * The agent the New session sheet starts on: the desktop's default agent
-   * (Settings › Coding agents), resolved against the agents this reply offers
+   * (Settings › Agents), resolved against the agents this reply offers
    * so it is always one of them. Added beside the other three rather than
    * renaming anything — the contract's names are load-bearing.
    */

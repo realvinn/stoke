@@ -257,7 +257,7 @@ export function ProvidersSettings({ providers, onChange }: Props): React.JSX.Ele
         is the one they share.
       */}
       <span className="field-hint" style={{ marginTop: '0.75rem' }}>
-        Codex, OpenCode, Grok Build, Pi and the other agents are in Settings › Coding agents. The
+        Codex, OpenCode, Grok Build, Pi and the other agents are in Settings › Agents. The
         OpenRouter key above is shared with them.
       </span>
 

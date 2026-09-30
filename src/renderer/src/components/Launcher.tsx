@@ -32,6 +32,8 @@ import { EFFORT_LEVELS, PERMISSION_MODES, ULTRACODE_HINT } from '../lib/permissi
 import { useFloatingLayer } from '../lib/floatingLayers'
 import { agentMark } from '../lib/agentColor'
 
+const NO_LAUNCH_FLAGS = { permissionMode: false, effort: false, model: false } as const
+
 /** Where the next session runs. */
 export interface LaunchTarget {
   path: string
@@ -82,7 +84,7 @@ interface Props {
    */
   armedAt?: number | null
   /**
-   * The agent Start starts: Settings › Coding agents › Default agent, already
+   * The agent Start starts: Settings › Agents › Default agent, already
    * resolved against what is installed and chosen (`resolveDefaultAgent`).
    */
   primary: CodingCli
@@ -189,7 +191,13 @@ export function Launcher(props: Props): React.JSX.Element {
     ...(sessions.length > 0 || sessionsLoading ? ['Continue', 'a conversation below'] : []),
     ...(claudeInMenu ? ['Claude Code from the menu'] : [])
   ]
-  const flags = capsFor(claudeHere ? 'claude' : primary.id).launchFlags
+  /*
+   * Claude's flags or none. Another agent's `launchFlags.model` says its tab
+   * is launched with a model (its Default model, set in Settings › Agents) —
+   * not that these chips, whose options are Claude Code's models, mean
+   * anything to it.
+   */
+  const flags = claudeHere ? capsFor('claude').launchFlags : NO_LAUNCH_FLAGS
   const showUltracode = claudeHere && flags.effort
   const anyChip = flags.permissionMode || flags.model || flags.effort || showUltracode
   const bypass = flags.permissionMode && launch.permissionMode.choice === 'bypassPermissions'
@@ -497,7 +505,7 @@ export function Launcher(props: Props): React.JSX.Element {
                         onPick: () => props.onStartCli(c.id)
                       })),
                       // What Start starts, changed from where it is used; the
-                      // same setting as Settings › Coding agents › Default agent.
+                      // same setting as Settings › Agents › Default agent.
                       ...otherClis.map((c, i) => ({
                         key: `default-${c.id}`,
                         label: `Make ${c.label} the default`,

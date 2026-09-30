@@ -20,6 +20,7 @@
  * (gotchas 27, 78: no `node:` import, relative `.ts` imports only).
  */
 import type { Settings } from './types.ts'
+import { agentsFormatOf, hydrateEndpoint, upgradeEndpoint } from './agents.ts'
 import {
   applySecrets,
   collectSecrets,
@@ -447,10 +448,19 @@ export function mergeSetup(current: Settings, payload: SetupPayload, opts: { inc
       case 'agents': {
         if (!isRecord(theirs)) break
         const endpoints = { ...(current.agents.endpoints as Record<string, unknown>) }
+        /*
+         * Upgraded HERE, by the file's own format: the merged block carries this
+         * machine's `format`, so `hydrateAgents` will not upgrade it afterwards,
+         * and a file exported before format 2 would otherwise bring its hidden
+         * default-mode leftovers in as Default models (AGENTS_FORMAT). The rest
+         * of the block is left raw for the hydrate, which repairs it anyway;
+         * `hydrateEndpoint` is idempotent, so running it early changes nothing.
+         */
+        const from = agentsFormatOf(theirs.format)
         if (isRecord(theirs.endpoints)) {
           for (const [id, ep] of Object.entries(theirs.endpoints)) {
             if (id === '__proto__' || id === 'constructor' || id === 'prototype') continue
-            endpoints[id] = ep
+            endpoints[id] = upgradeEndpoint(hydrateEndpoint(ep), from)
           }
         }
         next.agents = {
@@ -520,7 +530,7 @@ const LABELS: Record<string, string> = {
   sshKeyEnroll: 'SSH key offer',
   notifications: 'Notifications',
   providers: 'Providers',
-  agents: 'Coding agents',
+  agents: 'Agents',
   'wallpaper.blur': 'Wallpaper blur',
   'wallpaper.dim': 'Wallpaper dim',
   'wallpaper.opacity': 'Panel opacity',

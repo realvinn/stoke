@@ -698,7 +698,7 @@ async function launchSession(
     skillsProjector ??= new ClaudeSkillsProjector({ root: join(app.getPath('userData'), 'agents', 'claude-skills') })
     claudePluginDir = await skillsProjector.prepare(opts.cwd)
   }
-  const result = await ptys.start(
+  const started = await ptys.start(
     opts,
     settings.claudePath,
     mcpConfigPath,
@@ -717,6 +717,13 @@ async function launchSession(
     null,
     claudePluginDir
   )
+  /*
+   * Another agent's tab carries the model its plan asked for (`launchModel`):
+   * its endpoint's, or its Default model where the table has a flag for one,
+   * or '' when the agent picks. Never the renderer's Claude default, which it
+   * sends with every launch and which nothing here passed to this binary.
+   */
+  const result: StartResult = agentPlan ? { ...started, model: agentPlan.model } : started
   // A brand-new row for /ws/events, whichever side started it — a phone
   // watching the list should see a desktop-started session appear too.
   remote?.notifySessionsChanged()
@@ -735,7 +742,7 @@ async function launchSession(
         : (opts.cwd.split(/[\\/]/).filter(Boolean).pop() ?? opts.cwd),
       cli: opts.host ? 'claude' : cliId,
       permissionMode: opts.permissionMode ?? 'default',
-      model: opts.model ?? '',
+      model: agentPlan ? agentPlan.model : (opts.model ?? ''),
       effort: opts.effort ?? 'default',
       hostId: opts.host?.id ?? null
     }
