@@ -69,16 +69,35 @@ export function MicPicker({
   /* ----------------------------------------------------------- test meter */
 
   const [testing, setTesting] = useState<{ label: string; notice: string | null } | null>(null)
+  /** Between the press and the microphone opening — the first macOS prompt holds it open. */
+  const [opening, setOpening] = useState(false)
   const [testFlat, setTestFlat] = useState(false)
   const fillRef = useRef<HTMLSpanElement>(null)
-  const stopTestRef = useRef<(() => void) | null>(null)
+  /*
+   * The live test's claim: a fresh object per press, holding its stop once
+   * the microphone is open. Every callback of one start compares against ITS
+   * object, so an open that lands after a Stop — or after a later Test — sees
+   * someone else's claim, or none, and closes its own microphone.
+   *
+   * It used to be one shared placeholder, `() => {}`, and any non-null value
+   * read as "mine". Test, Stop, Test while the first open was pending then let
+   * both opens install themselves, the second overwriting the first's stop, so
+   * one stream, its AudioContext and its rAF loop ran on with the OS indicator
+   * lit until the renderer reloaded — Stop and closing Settings reached only
+   * the survivor. The older start's failure also cleared the newer claim, which
+   * orphaned the newer stream the same way and showed an error for a test
+   * already cancelled. Both measured over CDP against the built app.
+   */
+  const claimRef = useRef<{ stop: (() => void) | null } | null>(null)
   const testTimerRef = useRef(0)
 
   const stopTest = useCallback(() => {
     window.clearTimeout(testTimerRef.current)
-    stopTestRef.current?.()
-    stopTestRef.current = null
+    const claim = claimRef.current
+    claimRef.current = null
+    claim?.stop?.()
     setTesting(null)
+    setOpening(false)
     setTestFlat(false)
   }, [])
 
@@ -86,13 +105,17 @@ export function MicPicker({
   useEffect(() => stopTest, [stopTest])
 
   const startTest = (): void => {
-    if (stopTestRef.current) return
+    if (claimRef.current) return
     // Claimed before the await, so a second press cannot open a second stream (gotcha 20).
-    stopTestRef.current = () => {}
+    const mine: { stop: (() => void) | null } = { stop: null }
+    claimRef.current = mine
+    setOpening(true)
     setMicError(null)
     const watch = createSignalWatch()
     let flat = false
     void testMicrophone({ id: voice.micDeviceId, label: voice.micLabel }, (level) => {
+      // A superseded test's last frame (and its stop's zero) must not move the live line.
+      if (claimRef.current !== mine) return
       if (fillRef.current) fillRef.current.style.transform = `scaleX(${level.toFixed(3)})`
       const now = watch(level, performance.now())
       if (now !== flat) {
@@ -101,12 +124,13 @@ export function MicPicker({
       }
     })
       .then((t) => {
-        if (!stopTestRef.current) {
-          // Stopped (or unmounted) while the microphone was opening.
+        if (claimRef.current !== mine) {
+          // Stopped, restarted or unmounted while the microphone was opening.
           t.stop()
           return
         }
-        stopTestRef.current = t.stop
+        mine.stop = t.stop
+        setOpening(false)
         setTesting({ label: t.label, notice: t.notice })
         // A test, not a recording: it lets go by itself.
         testTimerRef.current = window.setTimeout(stopTest, 15_000)
@@ -114,7 +138,10 @@ export function MicPicker({
         refresh()
       })
       .catch((err: unknown) => {
-        stopTestRef.current = null
+        // A failure of a test already stopped is nobody's news, and not ours to clear.
+        if (claimRef.current !== mine) return
+        claimRef.current = null
+        setOpening(false)
         setMicError(microphoneError(err, window.stoke.platform))
       })
   }
@@ -171,12 +198,13 @@ export function MicPicker({
             ))}
             {missing && <option value={MISSING}>{voice.micLabel || 'The chosen microphone'} — not connected</option>}
           </select>
+          {/* While the microphone is opening the press already cancels, so it says so. */}
           <button
             className="btn"
-            onClick={() => (testing || stopTestRef.current ? stopTest() : startTest())}
-            aria-pressed={!!testing}
+            onClick={() => (claimRef.current ? stopTest() : startTest())}
+            aria-pressed={!!testing || opening}
           >
-            {testing ? 'Stop test' : 'Test'}
+            {testing || opening ? 'Stop test' : 'Test'}
           </button>
         </div>
         {testing && (

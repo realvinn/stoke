@@ -355,27 +355,26 @@ console.log('\nthe wire: TerminalView and the phone really route through these')
 /*
  * Regexes over the shipped source, so they can be pointed at any revision:
  *
- *   node scripts/verify-voice.mts --wire <TerminalView.tsx> <session.ts> <VoiceSettings.tsx>
+ *   node scripts/verify-voice.mts --wire <TerminalView.tsx> <session.ts> <VoiceSettings.tsx> [MicPicker.tsx]
  *
- * reads those three files instead of the working copy's. That is how the checks
- * were shown to FAIL against the files from before the hold threshold (gotcha
- * 79's method) — a wire check that passes on the old file proves nothing.
+ * reads those files instead of the working copy's (MicPicker's only when a
+ * fourth is given). That is how the checks were shown to FAIL against the files
+ * from before the hold threshold (gotcha 79's method) — a wire check that
+ * passes on the old file proves nothing.
  */
 {
   const argv = process.argv.slice(2)
   const at = argv.indexOf('--wire')
-  const [termPath, phonePath, settingsPath] =
-    at >= 0
-      ? argv.slice(at + 1, at + 4)
-      : [
-          new URL('../src/renderer/src/components/TerminalView.tsx', import.meta.url),
-          new URL('../src/remote/session.ts', import.meta.url),
-          new URL('../src/renderer/src/components/VoiceSettings.tsx', import.meta.url)
-        ]
+  const given = at >= 0 ? argv.slice(at + 1, at + 5) : []
+  const termPath = given[0] ?? new URL('../src/renderer/src/components/TerminalView.tsx', import.meta.url)
+  const phonePath = given[1] ?? new URL('../src/remote/session.ts', import.meta.url)
+  const settingsPath = given[2] ?? new URL('../src/renderer/src/components/VoiceSettings.tsx', import.meta.url)
+  const micPath = given[3] ?? new URL('../src/renderer/src/components/MicPicker.tsx', import.meta.url)
   const term = readFileSync(termPath, 'utf8')
   const phone = readFileSync(phonePath, 'utf8')
   const settingsUi = readFileSync(settingsPath, 'utf8')
-  if (at >= 0) console.log(`  (reading ${termPath}, ${phonePath}, ${settingsPath})`)
+  const micUi = readFileSync(micPath, 'utf8')
+  if (at >= 0) console.log(`  (reading ${termPath}, ${phonePath}, ${settingsPath}, ${micPath})`)
 
   ok('the old repeat pass-through is gone', !/e\.code !== 'Space' \|\| e\.repeat\) return/.test(term))
   ok(
@@ -402,6 +401,24 @@ console.log('\nthe wire: TerminalView and the phone really route through these')
   ok('and no longer starts on the first press', !/e\.code === 'Space' && !e\.repeat\) void begin\(e\)/.test(phone))
   ok('the phone’s composer carries the level line', /onLevel: \(level\) =>[\s\S]{0,80}levelFill\.style\.transform/.test(phone))
   ok('Settings → Voice offers the microphone picker', /<MicPicker voice=\{voice\} patchVoice=\{patchVoice\}/.test(settingsUi))
+  /*
+   * Settings' Test meter claims per press. A shared placeholder claim let Test,
+   * Stop, Test during a slow open install both streams and orphan one, lit
+   * indicator and all — measured over CDP: one live track and one running
+   * AudioContext left after Stop and after closing Settings.
+   */
+  ok(
+    'the Test meter claims with a fresh object per press, not a shared placeholder',
+    /const mine\b[^\n]*= \{ stop: null \}/.test(micUi) && /claimRef\.current = mine/.test(micUi) && !/Ref\.current = \(\) => \{\}/.test(micUi)
+  )
+  ok(
+    'an open that lands after its claim moved closes its own microphone',
+    /\.then\(\(t\) => \{\s*if \(claimRef\.current !== mine\) \{[\s\S]{0,120}t\.stop\(\)/.test(micUi)
+  )
+  ok(
+    'a superseded failure clears nothing and shows nothing',
+    /\.catch\([\s\S]{0,200}if \(claimRef\.current !== mine\) return\s*\n\s*claimRef\.current = null/.test(micUi)
+  )
 }
 
 console.log(failures ? `\n${failures} FAILED` : '\nall pass')
