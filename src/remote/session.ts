@@ -2,6 +2,12 @@
  * One session: the terminal, its status, the answer tray, the key row and the
  * composer.
  *
+ * The chrome is kept to two bars. The header says what the session is doing
+ * (its title), then where, its state and its context in one quiet line; Stop
+ * is there only while a turn runs, and everything else is behind one "more"
+ * menu. The dock is the composer, with the key row out only when it is the
+ * vocabulary of the moment (`keyRowShown`) or asked for.
+ *
  * The terminal is read-mostly on a phone — text goes in through a <textarea>,
  * because typing into an xterm on a soft keyboard is awful and autocorrect
  * fights the TUI. On a laptop (pointer: fine) the terminal takes keys too, and
@@ -20,6 +26,7 @@ import {
   cancelQueued,
   decideResize,
   desktopFont,
+  keyRowShown,
   fontToFit,
   scrollToColumn,
   isTerminalReport,
@@ -148,10 +155,11 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
 
   const back = iconButton('back', 'Back to sessions', { class: 'icon-btn back-btn' })
   back.addEventListener('click', opts.onBack, { signal })
-  const project = el('span', { class: 'sbar-project' })
-  const subtitle = el('span', { class: 'sbar-sub' })
-  const pillSlot = el('span', { class: 'sbar-pill' })
-  const ctxChip = el('span', { class: 'ctx-chip', hidden: true })
+  const titleLine = el('span', { class: 'sbar-project' })
+  const where = el('span', { class: 'sbar-where' })
+  const statusSlot = el('span', { class: 'sbar-status' })
+  const ctxChip = el('span', { class: 'sbar-ctx', hidden: true })
+  const subtitle = el('span', { class: 'sbar-sub' }, where, statusSlot, ctxChip)
   const stopBtn = el(
     'button',
     { type: 'button', class: 'stop-btn', hidden: true, 'aria-label': 'Stop: interrupt what the agent is doing' },
@@ -163,8 +171,7 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
     'header',
     { class: 'sbar' },
     back,
-    el('div', { class: 'sbar-title' }, el('div', { class: 'sbar-line' }, project, pillSlot), subtitle),
-    ctxChip,
+    el('div', { class: 'sbar-title' }, titleLine, subtitle),
     stopBtn,
     moreBtn
   )
@@ -194,7 +201,12 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
   const queued = el('div', { class: 'queued', hidden: true, 'aria-live': 'polite' })
   const endedBox = el('div', { class: 'ended', hidden: true, role: 'status' })
 
-  const keys = el('div', { class: 'keys', role: 'toolbar', 'aria-label': 'Terminal keys' })
+  const keys = el('div', { class: 'keys', role: 'toolbar', 'aria-label': 'Terminal keys', id: `keys-${ptyId}` })
+  const keysToggle = el(
+    'button',
+    { type: 'button', class: 'keys-toggle', 'aria-label': 'Terminal keys', 'aria-expanded': 'false', 'aria-controls': keys.id },
+    icon('keyboard', 20)
+  )
   const input = el('textarea', {
     rows: 1,
     class: 'composer-input',
@@ -206,7 +218,8 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
   })
   const mic = el('button', { type: 'button', class: 'mic', 'aria-label': 'Dictate' }, icon('mic', 20))
   const send = el('button', { type: 'button', class: 'send', 'aria-label': 'Send' }, icon('send', 20))
-  const composer = el('div', { class: 'composer' }, input, mic, send)
+  // The mic sits inside the field, as a keyboard's own does: one control less on the row.
+  const composer = el('div', { class: 'composer' }, keysToggle, el('div', { class: 'composer-field' }, input, mic), send)
   const dockRow = el('div', { class: 'dock-row' }, keys, composer)
   const dock = el('div', { class: 'dock' }, tray, queued, endedBox, dockRow)
 
@@ -224,16 +237,21 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
 
   const paintHeader = (): void => {
     const name = row?.project ?? pending?.project ?? 'Session'
-    project.textContent = name
-    const t = row ? rowTitle(row) : 'Starting…'
+    // What it is doing first, as the list reads; the project while it has no title.
+    const title = row ? rowTitle(row) : 'Starting…'
+    const titled = Boolean(row?.title || row?.context?.title)
+    titleLine.textContent = titled || !row ? title : name
     const agent = row && row.cli !== 'claude' ? row.agentName : null
-    subtitle.textContent = [agent, row?.host ? `ssh ${row.host}` : null, t].filter(Boolean).join(' · ')
+    where.textContent = [titled || !row ? name : null, row?.host ? 'ssh' : agent].filter(Boolean).join(' · ')
+    where.hidden = !where.textContent
     document.title = `${name} · Stoke`
     const p = statusPill(status, waitingFor, !linkStrip.hidden)
-    pillSlot.replaceChildren(el('span', { class: 'pill', 'data-tone': p.tone }, el('i', { 'aria-hidden': 'true' }), p.label))
+    statusSlot.dataset.tone = p.tone
+    statusSlot.replaceChildren(el('i', { 'aria-hidden': 'true' }), p.label)
     const ctx = row?.context
     if (ctx?.ready && ctx.contextLimit > 0) {
       const pct = contextPercent(ctx.contextTokens, ctx.contextLimit)
+      // The number alone, as the list's meter label reads; the words are for a screen reader.
       ctxChip.textContent = `${pct}%`
       ctxChip.title = `Context: ${pct}% used`
       ctxChip.setAttribute('aria-label', `Context ${pct}% used`)
@@ -422,16 +440,16 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
       layoutBanner.hidden = true
       return
     }
-    const fitBtn = el('button', { type: 'button', class: 'btn', 'data-variant': 'primary' }, 'Fit to phone')
-    const keep = el('button', { type: 'button', class: 'btn' }, 'Keep desktop size')
+    const fitBtn = el('button', { type: 'button', class: 'btn btn-sm', 'data-variant': 'primary' }, 'Fit to phone')
+    const keep = el('button', { type: 'button', class: 'btn btn-sm' }, 'Keep')
     fitBtn.addEventListener('click', () => chooseLayout('fit'))
     keep.addEventListener('click', () => chooseLayout('desktop'))
     layoutBanner.replaceChildren(
       el(
         'div',
         { class: 'banner-text' },
-        el('strong', {}, `The desktop terminal is ${desktop.cols} columns wide.`),
-        el('span', {}, ' Fit it to this screen? The terminal on your computer reflows to match while you watch.')
+        el('strong', {}, `${desktop.cols}-column desktop`),
+        el('span', {}, 'Fitting reflows it there too.')
       ),
       el('div', { class: 'banner-actions' }, keep, fitBtn)
     )
@@ -584,6 +602,7 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
       tray.hidden = true
       lastTraySig = ''
       dock.dataset.waiting = 'false'
+      paintKeys()
       return
     }
     const prompt: ParsedPrompt | null = parseAnswerOptions(screenLines(term), term.cols)
@@ -591,6 +610,7 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
     const sig = JSON.stringify([prompt?.question, options])
     dock.dataset.waiting = 'true'
     tray.hidden = false
+    paintKeys()
     if (sig === lastTraySig) return
     lastTraySig = sig
     const buttons = options.map((o, i) =>
@@ -607,15 +627,16 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
         el('span', { class: 'tray-label' }, o.label === o.key ? `Option ${o.key}` : o.label)
       )
     )
+    // Cancel rides on the question's line: a full row of its own made the tray a band taller.
     const esc = el(
       'button',
-      { type: 'button', class: 'tray-btn', 'data-variant': 'quiet', 'aria-label': 'Escape: cancel', onclick: () => void answer('esc') },
+      { type: 'button', class: 'tray-cancel', 'aria-label': 'Escape: cancel', onclick: () => void answer('esc') },
       el('span', { class: 'tray-key' }, 'esc'),
-      el('span', { class: 'tray-label' }, 'Cancel')
+      'Cancel'
     )
     tray.replaceChildren(
-      el('div', { class: 'tray-q' }, prompt?.question ?? statusPill('waiting', waitingFor).label),
-      el('div', { class: 'tray-options' }, ...buttons, esc)
+      el('div', { class: 'tray-head' }, el('div', { class: 'tray-q' }, prompt?.question ?? statusPill('waiting', waitingFor).label), esc),
+      el('div', { class: 'tray-options' }, ...buttons)
     )
   }
 
@@ -631,6 +652,7 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
     if (ok) {
       tray.hidden = true
       dock.dataset.waiting = 'false'
+      paintKeys()
     }
   }
 
@@ -651,7 +673,9 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
         'data-key': k.label,
         'data-wide': k.wide ? 'true' : undefined,
         'aria-label': k.aria,
-        onclick: () => write(k.seq)
+        onclick: () => write(k.seq),
+        // Keep the composer's focus (and the soft keyboard): the row is out because of it.
+        onmousedown: (e: Event) => e.preventDefault()
       },
       el('span', { class: 'key-main' }, k.label),
       k.wide ? el('span', { class: 'key-sub' }, 'mode') : null
@@ -688,7 +712,8 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
   const moreToggle = el(
     'button',
     { type: 'button', class: 'key key-toggle', 'aria-expanded': 'false', 'aria-controls': moreKeys.id, 'aria-label': 'More keys' },
-    icon('keyboard', 18)
+    // Not the keyboard glyph: that is the composer's own toggle for this whole row now.
+    icon('more', 18)
   )
   moreToggle.addEventListener('click', () => {
     const open = moreToggle.getAttribute('aria-expanded') !== 'true'
@@ -696,6 +721,63 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
     keys.dataset.more = String(open)
   })
   keys.append(el('div', { class: 'keys-main' }, ...PRIMARY_KEYS.map(keyButton), moreToggle), moreKeys)
+  for (const b of [moreToggle, eof, keysToggle]) b.addEventListener('mousedown', (e) => e.preventDefault(), { signal })
+
+  /*
+   * The key row: behind `keysToggle`, and out on its own while the composer has
+   * focus and no prompt waits (`keyRowShown`). Focus is read a beat late on
+   * the way out, so a tap on a key lands on the key and not on whatever moved
+   * up into its place as the row folded away under the finger.
+   */
+  let keysChoice: boolean | null = null
+  let composerFocused = false
+  let wasWaiting = false
+  let blurTimer: ReturnType<typeof setTimeout> | null = null
+  const paintKeys = (): void => {
+    const waiting = dock.dataset.waiting === 'true'
+    if (waiting !== wasWaiting) {
+      // A prompt arriving or leaving is a new moment: the toggle's old choice lapses.
+      wasWaiting = waiting
+      keysChoice = null
+    }
+    const shown = keyRowShown({ toggled: keysChoice, composerFocused, waiting, ended })
+    keys.hidden = !shown
+    keysToggle.setAttribute('aria-expanded', String(shown))
+    requestAnimationFrame(markKeyOverflow)
+  }
+  keysToggle.addEventListener(
+    'click',
+    () => {
+      keysChoice = keys.hidden
+      paintKeys()
+    },
+    { signal }
+  )
+  input.addEventListener(
+    'focus',
+    () => {
+      if (blurTimer) clearTimeout(blurTimer)
+      blurTimer = null
+      composerFocused = true
+      paintKeys()
+    },
+    { signal }
+  )
+  input.addEventListener(
+    'blur',
+    () => {
+      if (blurTimer) clearTimeout(blurTimer)
+      blurTimer = setTimeout(() => {
+        blurTimer = null
+        composerFocused = document.activeElement === input
+        paintKeys()
+      }, 300)
+    },
+    { signal }
+  )
+  signal.addEventListener('abort', () => {
+    if (blurTimer) clearTimeout(blurTimer)
+  })
 
   /*
    * A landscape phone (PX-17) lays every key on one row that scrolls sideways
@@ -1116,6 +1198,7 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
     )
     endedBox.hidden = false
     dockRow.hidden = true
+    paintKeys()
     tray.hidden = true
     queued.hidden = true
     layoutBanner.hidden = true
@@ -1225,6 +1308,7 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
   )
 
   paintHeader()
+  paintKeys()
   connect()
 
   const destroy = (): void => {

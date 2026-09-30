@@ -34,6 +34,13 @@ import {
   newFolderNameProblem,
   phonePickerGroups,
   groupSessionRows,
+  homeSegmentFor,
+  keyRowShown,
+  recentProjects,
+  rowActivity,
+  rowMeta,
+  rowPillShown,
+  runningBadge,
   initialAgent,
   isTerminalReport,
   middleTruncate,
@@ -108,6 +115,96 @@ check(
 )
 check('busy is Working', statusPill('busy', null).label, 'Working')
 check('an agent with no registry is Running, not Idle', statusPill('unknown', null).label, 'Running')
+
+/* ------------------------------------------------------------------ */
+console.log('\nhome: Running | Recent, and two-line rows (the clean-up)')
+
+// History was a screen of its own behind a second topbar button; it is home's
+// Recent segment now, and a project or conversation opened from it keeps Recent lit.
+check(
+  'home and a session are Running; the old History address, a project and a conversation are Recent',
+  ['home', 'session', 'history', 'project', 'transcript', 'nonsense'].map(homeSegmentFor),
+  ['running', 'running', 'recent', 'recent', 'recent', 'running']
+)
+check(
+  "Running's badge counts live sessions and the ones waiting, never an ended one",
+  runningBadge([{ status: 'waiting' }, { status: 'busy' }, { status: 'waiting' }, { status: 'ended' }, { status: 'unknown' }]),
+  { live: 4, needsYou: 2 }
+)
+check('no rows yet (loading) is no badge, not a crash', runningBadge(null), { live: 0, needsYou: 0 })
+// The pill said Working under the Working heading: the same word twice per row.
+check(
+  'only a prompt kind or an ended session wears a pill; Working/Idle/Running are the heading already',
+  (['waiting', 'busy', 'idle', 'unknown', 'ended'] as const).map(rowPillShown),
+  [true, false, false, false, true]
+)
+// A block of its own: `base` is the resize section's name further down.
+{
+const NOW = 1_800_000_000_000
+const base = {
+  project: 'api-server',
+  host: null as string | null,
+  cli: 'claude',
+  agentName: 'Claude Code',
+  status: 'idle' as 'idle' | 'busy' | 'waiting' | 'ended' | 'unknown',
+  lastActivityAt: NOW - 5 * 60_000 as number | null,
+  startedAt: NOW - 60 * 60_000,
+  endedAt: null as number | null,
+  exitCode: null as number | null
+}
+check('an idle row: the project, then the time since it last did anything', rowMeta(base, NOW), 'api-server · 5m ago')
+check(
+  'a busy row says only the time: "working" was its heading said again',
+  rowMeta({ ...base, status: 'busy', lastActivityAt: NOW - 10_000 }, NOW),
+  'api-server · just now'
+)
+check('no activity yet falls back to when it started', rowActivity({ ...base, lastActivityAt: null }, NOW), '1h ago')
+check(
+  'an ended row says it ended, and a non-zero exit, because no heading can',
+  rowMeta({ ...base, status: 'ended', endedAt: NOW - 2 * 60_000, exitCode: 1 }, NOW),
+  'api-server · ended 2m ago · exit 1'
+)
+check('a clean exit is not called out', rowActivity({ ...base, status: 'ended', endedAt: NOW - 2 * 60_000, exitCode: 0 }, NOW), 'ended 2m ago')
+check('an end with no timestamp still reads', rowActivity({ ...base, status: 'ended', endedAt: null, exitCode: null }, NOW), 'ended just now')
+check(
+  "an SSH row's project is its host already (gotcha 18): it adds ssh, not the host twice",
+  rowMeta({ ...base, project: 'build-box', host: 'build-box' }, NOW),
+  'build-box · ssh · 5m ago'
+)
+check('another agent adds its name', rowMeta({ ...base, cli: 'codex', agentName: 'Codex' }, NOW), 'api-server · Codex · 5m ago')
+check('an empty project drops out rather than leaving a leading dot', rowMeta({ ...base, project: '' }, NOW), '5m ago')
+
+const projects = [
+  { name: 'web', label: 'web', path: '/u/a/web', sessionCount: 3, lastActivityAt: 10 },
+  { name: 'web', label: 'web', hint: 'b', path: '/u/b/web', sessionCount: 1, lastActivityAt: 30 },
+  { name: 'api', label: 'Api Server', path: '/u/a/api', sessionCount: 2, lastActivityAt: 20 },
+  { name: 'fresh', label: 'fresh', path: '/u/a/fresh', sessionCount: 0, lastActivityAt: 99 }
+]
+check(
+  'Recent: projects with a past conversation, newest first; one with none is not listed',
+  recentProjects(projects, '').map((p) => p.path),
+  ['/u/b/web', '/u/a/api', '/u/a/web']
+)
+check('the search matches the label the row shows', recentProjects(projects, 'server').map((p) => p.path), ['/u/a/api'])
+check('and the folder path, case-blind', recentProjects(projects, '  /U/B ').map((p) => p.path), ['/u/b/web'])
+check('a search that matches nothing is an empty list', recentProjects(projects, 'zzz'), [])
+
+/* ------------------------------------------------------------------ */
+console.log('\nthe session dock: the key row behind one toggle')
+
+const dock = (over: Partial<Parameters<typeof keyRowShown>[0]> = {}): boolean =>
+  keyRowShown({ toggled: null, composerFocused: false, waiting: false, ended: false, ...over })
+check('at rest the key row is in: the composer alone', dock(), false)
+check('typing brings it out: a soft keyboard has no esc, arrows or shift-tab', dock({ composerFocused: true }), true)
+check(
+  'a waiting prompt leaves it in: the answer tray replaced it (0d17f6b), and both is a band too many',
+  [dock({ waiting: true }), dock({ waiting: true, composerFocused: true })],
+  [false, false]
+)
+check('but the toggle brings it out over a prompt the tray cannot read', dock({ waiting: true, toggled: true }), true)
+check('and the toggle closing it while typing is not overruled by the focus', dock({ composerFocused: true, toggled: false }), false)
+check('an ended session has no keys, toggled or not', [dock({ ended: true, toggled: true }), dock({ ended: true, composerFocused: true })], [false, false])
+}
 
 /* ------------------------------------------------------------------ */
 console.log('\nanswer options read off the screen (PX-12)')

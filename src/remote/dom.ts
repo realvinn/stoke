@@ -80,6 +80,20 @@ export function iconButton(name: string, label: string, props: Record<string, un
   return el('button', { type: 'button', class: 'icon-btn', 'aria-label': label, title: label, ...props }, icon(name))
 }
 
+/**
+ * The one primary action a bar carries: a labelled "New" pill. It was a bare
+ * accent circle beside a History icon, and two icon-only buttons of equal
+ * weight read as two equal choices; the label says which one is the action.
+ */
+export function newButton(label: string): HTMLButtonElement {
+  return el(
+    'button',
+    { type: 'button', class: 'btn btn-pill', 'data-variant': 'primary', 'aria-label': label, title: label },
+    icon('plus', 18),
+    el('span', {}, 'New')
+  )
+}
+
 /* --------------------------------------------------------------- toasts */
 
 let toastHost: HTMLElement | null = null

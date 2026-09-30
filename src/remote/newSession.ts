@@ -80,12 +80,20 @@ function pickRow(
     meta?: string
     disabled?: boolean
     label?: string
+    /** The full path, on hover. */
+    title?: string
   },
   onPick: () => void
 ): HTMLButtonElement {
   const b = el(
     'button',
-    { type: 'button', class: 'prow', disabled: p.disabled, 'aria-label': p.label ?? `${p.name}${p.badge ? `, ${p.badge}` : ''}` },
+    {
+      type: 'button',
+      class: 'prow',
+      disabled: p.disabled,
+      title: p.title,
+      'aria-label': p.label ?? `${p.name}${p.badge ? `, ${p.badge}` : ''}`
+    },
     el('span', { class: 'prow-icon' }, icon(p.icon, 18)),
     el(
       'span',
@@ -141,13 +149,15 @@ export function openNewSession(start?: { cwd: string; name: string }): void {
             : [p?.sessionCount ? plural(p.sessionCount, 'session') : 'no sessions yet', relativeTime(c.lastModified, now)]
                 .filter(Boolean)
                 .join(' · ')
+          // No path line: the name (and `hint`, when two share it) says which;
+          // the confirm step shows the whole path before anything starts.
           return pickRow(
-            { icon: c.pinned ? 'pin' : 'folder', name: c.label, hint: c.hint, path: c.path, meta, disabled: c.missing },
+            { icon: c.pinned ? 'pin' : 'folder', name: c.label, hint: c.hint, meta, disabled: c.missing, title: c.path },
             () => confirmStep({ kind: 'folder', path: c.path, name: c.label }, pickFolder)
           )
         }
         case 'default':
-          return pickRow({ icon: 'folder', name: folderName(c.path), badge: 'Default folder', path: c.path }, () =>
+          return pickRow({ icon: 'folder', name: folderName(c.path), badge: 'Default folder', title: c.path }, () =>
             confirmStep({ kind: 'folder', path: c.path, name: folderName(c.path) }, pickFolder)
           )
         case 'scratch':
@@ -156,7 +166,7 @@ export function openNewSession(start?: { cwd: string; name: string }): void {
           )
         case 'host':
           return pickRow(
-            { icon: 'terminal', name: c.label, path: c.alias, meta: 'Claude Code over SSH', label: `${c.label}, remote machine` },
+            { icon: 'terminal', name: c.label, meta: `Claude Code over SSH · ${c.alias}`, label: `${c.label}, remote machine` },
             () => confirmStep({ kind: 'host', id: c.id, label: c.label, alias: c.alias }, pickFolder)
           )
         case 'open':
@@ -181,7 +191,7 @@ export function openNewSession(start?: { cwd: string; name: string }): void {
         ...(q && onlyBrowse
           ? [el('div', { class: 'empty small' }, el('p', { class: 'empty-text' }, `No project matches “${search.value}”.`))]
           : []),
-        ...groups.flatMap((g) => [
+        ...groups.flatMap((g): (HTMLElement | null)[] => [
           g.title
             ? el(
                 'h3',
@@ -190,7 +200,7 @@ export function openNewSession(start?: { cwd: string; name: string }): void {
                 g.items[0]?.kind === 'project' ? el('span', { class: 'section-count' }, String(g.items.length)) : null
               )
             : null,
-          ...g.items.map((c) => choiceRow(c, byPath, now))
+          el('div', { class: 'group' }, ...g.items.map((c) => choiceRow(c, byPath, now)))
         ]).filter((n): n is HTMLElement => n !== null)
       )
     }
@@ -331,11 +341,17 @@ export function openNewSession(start?: { cwd: string; name: string }): void {
           )
         )
       }
-      for (const f of listing.folders) {
+      if (listing.folders.length) {
         nodes.push(
-          listing.path
-            ? pickRow({ icon: 'folder', name: f.name }, () => browseStep(f.path))
-            : pickRow({ icon: 'folder', name: f.name, path: f.path, meta: PLACE_META[f.kind ?? ''] }, () => browseStep(f.path))
+          el(
+            'div',
+            { class: 'group' },
+            ...listing.folders.map((f) =>
+              listing.path
+                ? pickRow({ icon: 'folder', name: f.name, title: f.path }, () => browseStep(f.path))
+                : pickRow({ icon: 'folder', name: f.name, path: f.path, meta: PLACE_META[f.kind ?? ''] }, () => browseStep(f.path))
+            )
+          )
         )
       }
       if (listing.truncated) {

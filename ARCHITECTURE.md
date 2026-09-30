@@ -376,7 +376,8 @@ attaches to a PTY, replaying its scrollback first.
 The mobile UI (`src/remote/`) is a separate Vite build because it is a plain web app, not an
 Electron surface. Input goes through a normal `<textarea>` rather than the terminal: typing
 into an xterm on a soft keyboard is miserable and autocorrect fights the TUI. A key row
-supplies `esc`, `tab`, arrows and `ctrl-c`, which phone keyboards lack.
+supplies `esc`, `tab`, arrows and `ctrl-c`, which phone keyboards lack; it comes out while the
+composer has focus, and otherwise waits behind one toggle (`keyRowShown`).
 
 It is an installable PWA shell: a manifest, and a service worker (`public/sw.js`) registered only
 in a secure context — the tunnel's https, or localhost; browsers refuse one on a plain-http LAN or
@@ -768,9 +769,11 @@ npm run verify:remote         # phone access: where the link points and how it s
                               # /ws, offline paints the kept shell, a `?k=` is never cached,
                               # activation drops only Stoke's other builds
 npm run verify:phone-ui       # the phone UI's decisions: list sections, answer options read
-                              # off the screen, the resize policy, queued sends, connect input,
+                              # off the screen, the resize policy (a height change never
+                              # resizes, not even on the blur), queued sends, connect input,
                               # the New session picker (the desktop's `folderChoices`), the
-                              # Browse breadcrumb and New folder names
+                              # Browse breadcrumb and New folder names, home's segments, the
+                              # two-line row, and when the key row is out
 npm run verify:installer-art  # the committed installer bitmaps: BMP3 headers decoded by hand,
                               # exact dimensions, that neither the bitmaps nor the dmg PNGs are a
                               # well-formed blank, that the generator, electron-builder.yml and
@@ -1127,7 +1130,9 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
 src/remote/       mobile web UI, built separately to out/remote. Vanilla TS on one `el()`
                   builder, hash-routed; below 1024px one screen at a time, from 1024px a
                   340px session rail beside the session (never a stretched phone)
-  main.ts           boot (key scrub, live theme), the router and the rail/pane layout
+  main.ts           boot (key scrub, live theme, service worker in a secure context only), the
+                    router and the rail/pane layout; home is Running | Recent (`homeSegmentFor`),
+                    `#/history` being Recent, so the bar carries one action, New
   public/sw.js      the installable shell's service worker. Network-first index.html (kept under
                     one fixed key, so a `?k=` never lands in Cache Storage), cache-first for the
                     content-hashed /assets and the icons, never /api or /ws. vite.remote.config.ts
@@ -1138,12 +1143,15 @@ src/remote/       mobile web UI, built separately to out/remote. Vanilla TS on o
                     screen; a 403 `refused: 'access'` is the computer's Access reason,
                     `accessRefusalOf`), /api/theme -> :root including derived accent-ink and meters
   store.ts          the one session list: /ws/events pushes, a 5s poll while it is down
-  list.ts           Needs you / Working / Idle / Ended rows, answerable from the list; reads
+  list.ts           Needs you / Working / Idle / Ended groups of two-line rows (title; `rowMeta`),
+                    a pill only for news (`rowPillShown`), answerable from the list; reads
                     a waiting prompt's options by replaying the pty into an unopened xterm
-  session.ts        terminal, status pill, answer tray, keys, composer (queued sends),
-                    Fit to phone via decideResize (gotcha 87), ended banner
-  newSession.ts, history.ts, connect.ts, dom.ts   the new-session sheet, history and
-                    read-back, the paste-your-link screen, the builder/icons/sheets
+  session.ts        terminal, a two-line header (title; place, state, context), answer tray,
+                    keys behind one toggle (`keyRowShown`), composer with the mic in its field
+                    (queued sends), Fit to phone via decideResize (gotcha 87), ended banner
+  newSession.ts, history.ts, connect.ts, dom.ts   the new-session sheet, Recent (`mountRecent`),
+                    a project's sessions and read-back, the paste-your-link screen, the
+                    builder/icons/sheets
 src/shared/       types, IPC channel names, themes, profiles, colour maths
   secrets.ts        `SECRET_PATHS`, the one registry of which settings are secrets (a new
                     secret is one line here), the move between settings and a path->value

@@ -54,6 +54,143 @@ export function groupSessionRows<T extends { status: PhoneSessionStatus; lastAct
     .filter((s) => s.rows.length > 0)
 }
 
+/* ------------------------------------------------------- home and rows */
+
+/**
+ * Home's two segments: what runs now, and what ran before.
+ *
+ * History used to be a screen of its own behind a second topbar button, beside
+ * New — two actions competing for the one bar a phone has. It is home's Recent
+ * segment now, and a project or a conversation opened from it keeps Recent
+ * lit, so Back, the segment and the laptop rail all agree on where you are.
+ */
+export type HomeSegment = 'running' | 'recent'
+
+export function homeSegmentFor(route: string): HomeSegment {
+  return route === 'history' || route === 'project' || route === 'transcript' ? 'recent' : 'running'
+}
+
+/**
+ * What the Running segment's label carries: how many sessions are live, and
+ * how many of those wait on you — shown while Recent is open, so a prompt
+ * arriving then is not invisible. Ended rows are listed but not counted.
+ */
+export function runningBadge(rows: readonly { status: PhoneSessionStatus }[] | null): { live: number; needsYou: number } {
+  const list = rows ?? []
+  return {
+    live: list.filter((r) => r.status !== 'ended').length,
+    needsYou: list.filter((r) => r.status === 'waiting').length
+  }
+}
+
+/**
+ * Whether a list row wears a status pill. Every row used to, and the section
+ * heading above it already said Working or Idle: the pill was the same word
+ * twice. Only a prompt's kind (Permission, Plan review, Question) and an ended
+ * session's are news a heading cannot carry.
+ */
+export function rowPillShown(status: PhoneSessionStatus): boolean {
+  return status === 'waiting' || status === 'ended'
+}
+
+/**
+ * How recently a row did something, in the list's second line. Its section
+ * heading already says Working or Idle, so this is only the time: "working"
+ * and "active" in front of it were the heading said again. An ended row says
+ * so, with a non-zero exit, because that is news no heading carries.
+ */
+export function rowActivity(
+  r: {
+    status: PhoneSessionStatus
+    lastActivityAt: number | null
+    startedAt: number
+    endedAt: number | null
+    exitCode: number | null
+  },
+  now: number
+): string {
+  if (r.status === 'ended') {
+    const code = r.exitCode !== null && r.exitCode !== 0 ? ` · exit ${r.exitCode}` : ''
+    return `ended ${relativeTime(r.endedAt, now) || 'just now'}${code}`
+  }
+  return relativeTime(r.lastActivityAt ?? r.startedAt, now)
+}
+
+/**
+ * A list row's second line: where the session runs, then when it last did
+ * anything. The first line is the session's own title — two sessions in one
+ * project are told apart by what they are doing, not by the folder they share.
+ * An SSH row's project is already its host (gotcha 18), so it adds "ssh";
+ * another agent adds its name.
+ */
+export function rowMeta(
+  r: {
+    project: string
+    host: string | null
+    cli: string
+    agentName: string
+    status: PhoneSessionStatus
+    lastActivityAt: number | null
+    startedAt: number
+    endedAt: number | null
+    exitCode: number | null
+  },
+  now: number
+): string {
+  const where = r.host ? 'ssh' : r.cli !== 'claude' && r.agentName ? r.agentName : null
+  return [r.project, where, rowActivity(r, now)].filter(Boolean).join(' · ')
+}
+
+/**
+ * Recent: the projects with a past conversation, newest first, narrowed by a
+ * search over the name the user sees, its folder name and its path.
+ */
+export function recentProjects<T extends { name: string; label?: string | null; path: string; sessionCount: number; lastActivityAt: number | null }>(
+  projects: readonly T[],
+  query: string
+): T[] {
+  const q = query.trim().toLowerCase()
+  return projects
+    .filter((p) => p.sessionCount > 0)
+    .filter(
+      (p) =>
+        !q ||
+        p.name.toLowerCase().includes(q) ||
+        (p.label ?? '').toLowerCase().includes(q) ||
+        p.path.toLowerCase().includes(q)
+    )
+    .sort((a, b) => (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0))
+}
+
+/* ------------------------------------------------------------ the dock */
+
+/**
+ * Whether the session's key row (esc, arrows, enter, shift-tab) is out.
+ *
+ * It used to be out always, a full band of keys above the composer on every
+ * session, most of the time for nothing. Now it is behind one toggle, and comes
+ * out on its own only while the composer has focus: the soft keyboard has none
+ * of those keys. While a prompt waits the answer tray is the vocabulary (it
+ * replaced the key row in the PX redesign, 0d17f6b), so the row stays in unless
+ * asked for — a prompt the tray cannot read, a multi-question form, is one tap
+ * on the toggle away, where before it had no keys at all. An ended session has
+ * no input. The toggle's own choice wins in both directions, so a person who
+ * closed it while typing is not overruled on the next keystroke; the session
+ * screen forgets that choice when a prompt arrives or goes, a new moment with
+ * its own answer.
+ */
+export function keyRowShown(s: {
+  /** The toggle's state: null while untouched, else what it was set to. */
+  toggled: boolean | null
+  composerFocused: boolean
+  waiting: boolean
+  ended: boolean
+}): boolean {
+  if (s.ended) return false
+  if (s.toggled !== null) return s.toggled
+  return !s.waiting && s.composerFocused
+}
+
 export type PillTone = 'waiting' | 'busy' | 'idle' | 'ended' | 'unknown'
 
 /**
