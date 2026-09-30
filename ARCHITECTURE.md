@@ -582,9 +582,14 @@ npm run verify:agents         # the coding agents: what is stored, what the laun
                               # every key in env and none in argv, and the install script —
                               # only table ids survive into a command
 npm run verify:voice          # who owns a held Space: Claude Code's /voice or Stoke's
-                              # dictation, and that dictation swallows the REPEATS too;
-                              # what a refused microphone is called; and the wire from
-                              # TerminalView to those rules (gotcha 79)
+                              # dictation; `spaceHold` (a tap types a space and never
+                              # opens the microphone, a hold records, every REPEAT is
+                              # taken in every phase); the level line's dBFS maths; the
+                              # microphone pick (exact id, then label, then the default
+                              # with a notice) and the virtual-cable names; what a refused
+                              # microphone is called; and the wire from TerminalView, the
+                              # phone and Settings to those rules — `--wire <files>` runs
+                              # it against another revision (gotcha 79)
 npm run verify:campfire       # the installer's campfire: the locked alphabet that lets one
                               # copy of the art live in a POSIX string and a PowerShell
                               # here-string, a hearth that never moves, the stage boundaries,
@@ -843,7 +848,9 @@ src/main/         Electron main process
                     sidecar's whole authentication story. Both callers read `voice.sttUrl`
                     per call (`CH.transcribe`, `RemoteDeps.transcribe`), and `unset` is what
                     turns "no server set" into the phone's 503 rather than a 502
-  audio/            reads the default capture device, to warn about virtual cables
+  audio/            reads the Windows default capture device, to warn about virtual
+                    cables — by `isVirtualCapture` (shared/micDevice.ts), the same rule the
+                    Voice picker applies to a device picked for Stoke's dictation
   worklog/          the Notion/ClickUp review queue
     gate.ts           which project groups are watched
     watch.ts          the one predicate: is this session watched, and why not
@@ -895,6 +902,10 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     (resolved, THIS launch only, "Make default"), the conversation list.
                     Top-aligned so nothing above a row moves when a row below loads. Its
                     keys come from `launcherKey` (shared/launcher.ts). Gotcha 88
+  src/components/MicPicker.tsx  Settings → Voice's microphone for Stoke's dictation (System
+                    default + the audio inputs, refreshed on devicechange, "Show device names"
+                    when the browser withholds them), a Test meter that records nothing, and
+                    the Hold Space threshold. Writes settings only on a choice (gotcha 57)
   src/components/Spinner.tsx  the busy mark for a check / refresh / look-again button. The
                     house rule it belongs to: the button keeps `disabled` (plus a ref claimed
                     before the await), carries `aria-busy="true"` so app.css leaves it at full
@@ -960,12 +971,23 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     reads only `~/.claude/skills`. A report, never a sync — linking between
                     folders would hand agents that read both every skill twice
   voiceRoute.ts     who owns a held Space bar in a tab — Claude Code's /voice or Stoke's
-                    dictation — and the words for a refused microphone. On macOS a CLI in a
+                    dictation — `spaceHold`, the reducer that makes a tap a space and only a
+                    hold a recording (desktop and phone), and the words for a refused
+                    microphone. On macOS a CLI in a
                     Stoke pty records AS Stoke (TCC's responsible process), so Stoke's one
                     Privacy switch is every CLI's. Gotcha 79
+  voiceLevel.ts     the recording-volume line: `levelFromSamples` (RMS in dBFS, -60..0 ->
+                    0..1), attack/release smoothing, and the 2 s flat-line "no signal" watch.
+                    Pure; voice.ts's analyser feeds it (gotcha 27/78)
+  micDevice.ts      which microphone Stoke's dictation records from: `pickDevice` (exact
+                    id, else the same label under a re-minted id, else the default with a
+                    notice), the pseudo-device filter, and `isVirtualCapture`, moved here
+                    from main so a PICKED cable warns too. Claude's /voice has no device
   voiceSettings.ts  the `voice` settings block (Settings → Voice): VOICE_DEFAULTS,
-                    DEFAULT_STT_URL and `clampVoice`, which rebuilds it from named keys and
-                    migrates the speech server from the old `remote.sttUrl`. hydrate keeps
+                    DEFAULT_STT_URL, the hold threshold (`holdMs`, 150-800) and the chosen
+                    microphone (`micDeviceId` + `micLabel`), and `clampVoice`, which
+                    rebuilds it from named keys and migrates the speech server from the
+                    old `remote.sttUrl`. hydrate keeps
                     `remote.sttUrl` as a write-only mirror for one release, for older builds.
                     A new voice field needs its default AND a clampVoice line in one change
   drop.ts           what a file dropped on the terminal types: the per-platform quoting,
