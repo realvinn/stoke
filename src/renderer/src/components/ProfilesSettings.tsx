@@ -1,15 +1,17 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import type { ProfileConfig, Settings } from '@shared/types'
-import type { CreateProfileInput, ProfilePlan, ResolvedProfile } from '@shared/profiles'
+import type { CreateProfileInput, ProfileAccent, ProfilePlan, ResolvedProfile } from '@shared/profiles'
 import {
   PROFILE_SWATCHES,
   describePlan,
   foldGroup,
   folderName,
+  profileAccentFor,
   resolveProfiles,
   visibleProfiles
 } from '@shared/profiles'
 import { IconClose, IconFolder, IconPlus } from './Icons'
+import { ColorPicker } from './ColorPicker'
 
 /**
  * The profile bridge, typed here rather than in `@shared/api`.
@@ -49,21 +51,46 @@ interface Props {
 interface Draft {
   name: string
   folder: string
-  swatch: string
+  /** The four stored colours: a swatch's own, or a picked colour's (`profileAccentFor`). */
+  colors: ProfileAccent
 }
 
-const EMPTY_DRAFT: Draft = { name: '', folder: '', swatch: PROFILE_SWATCHES[0].id }
+const FIRST_SWATCH: ProfileAccent = {
+  accent: PROFILE_SWATCHES[0].accent,
+  accentHover: PROFILE_SWATCHES[0].accentHover,
+  accentSoft: PROFILE_SWATCHES[0].accentSoft,
+  accentContrast: PROFILE_SWATCHES[0].accentContrast
+}
 
-/** A colour row. The only way a profile is ever assigned a colour. */
+const EMPTY_DRAFT: Draft = { name: '', folder: '', colors: FIRST_SWATCH }
+
+const SWATCH_PRESETS = PROFILE_SWATCHES.map((s) => ({ name: s.name, hex: s.accent }))
+
+/**
+ * A colour row: the eight shipped swatches, and Custom, which opens the colour
+ * picker. The list used to be the only way to colour a profile, because a
+ * hand-typed fill and label go unreadable without ever erroring; a custom
+ * colour is stored through `profileAccentFor`, which solves the chip's label
+ * to 4.5:1 on its fill (and says so in the picker when that moved the fill).
+ */
 function Swatches({
   value,
+  ink,
   onPick,
-  label
+  label,
+  name
 }: {
   value: string
-  onPick: (s: (typeof PROFILE_SWATCHES)[number]) => void
+  /** The label colour stored with `value`, for the Custom chip when it is the one in use. */
+  ink: string
+  onPick: (colors: ProfileAccent) => void
   label: string
+  /** The profile's name, drawn on the picker's chip preview. */
+  name: string
 }): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+  const customRef = useRef<HTMLButtonElement>(null)
+  const custom = !PROFILE_SWATCHES.some((s) => s.accent.toLowerCase() === value.toLowerCase())
   return (
     <div className="profiles" role="group" aria-label={label}>
       {PROFILE_SWATCHES.map((s) => (
@@ -72,18 +99,48 @@ function Swatches({
           className="profile-chip"
           aria-pressed={value.toLowerCase() === s.accent.toLowerCase()}
           title={s.name}
-          onClick={() => onPick(s)}
+          onClick={() =>
+            onPick({ accent: s.accent, accentHover: s.accentHover, accentSoft: s.accentSoft, accentContrast: s.accentContrast })
+          }
           style={
             {
               '--chip': s.accent,
               '--chip-ink': s.accentContrast,
               '--chip-second': s.accent
-            } as React.CSSProperties
+            } as CSSProperties
           }
         >
           {s.name}
         </button>
       ))}
+      <button
+        ref={customRef}
+        className="profile-chip"
+        aria-pressed={custom}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        title="Any colour, on the colour wheel"
+        onClick={() => setOpen(!open)}
+        style={
+          (custom ? { '--chip': value, '--chip-ink': ink, '--chip-second': value } : undefined) as CSSProperties | undefined
+        }
+      >
+        Custom…
+      </button>
+      {open && (
+        <ColorPicker
+          anchor={customRef.current}
+          value={value}
+          label={label}
+          presets={SWATCH_PRESETS}
+          ink={{ kind: 'profile', name: name || 'Profile' }}
+          onCommit={(hex) => {
+            const colors = profileAccentFor(hex)
+            if (colors) onPick(colors)
+          }}
+          onClose={() => setOpen(false)}
+        />
+      )}
     </div>
   )
 }
@@ -285,17 +342,13 @@ export function ProfilesSettings({ settings, onPatch, onCreated }: Props): React
 
   const create = useCallback(async (): Promise<void> => {
     if (!bridge || !plan || plan.error) return
-    const swatch = PROFILE_SWATCHES.find((s) => s.id === draft.swatch) ?? PROFILE_SWATCHES[0]
     setBusy(true)
     setError(null)
     try {
       await bridge.create({
         folder: draft.folder,
         name: draft.name.trim(),
-        accent: swatch.accent,
-        accentHover: swatch.accentHover,
-        accentSoft: swatch.accentSoft,
-        accentContrast: swatch.accentContrast
+        ...draft.colors
       })
       setCreating(false)
       setDraft(EMPTY_DRAFT)
@@ -407,15 +460,10 @@ export function ProfilesSettings({ settings, onPatch, onCreated }: Props): React
 
             <Swatches
               value={p.accent}
+              ink={p.accentContrast}
               label={`Colour for ${p.label}`}
-              onPick={(s) =>
-                store(p, {
-                  accent: s.accent,
-                  accentHover: s.accentHover,
-                  accentSoft: s.accentSoft,
-                  accentContrast: s.accentContrast
-                })
-              }
+              name={p.label}
+              onPick={(colors) => store(p, colors)}
             />
 
             <span className="field-hint">
@@ -497,11 +545,11 @@ export function ProfilesSettings({ settings, onPatch, onCreated }: Props): React
           </div>
 
           <Swatches
-            value={
-              (PROFILE_SWATCHES.find((s) => s.id === draft.swatch) ?? PROFILE_SWATCHES[0]).accent
-            }
+            value={draft.colors.accent}
+            ink={draft.colors.accentContrast}
             label="Colour for the new profile"
-            onPick={(s) => setDraft((d) => ({ ...d, swatch: s.id }))}
+            name={draft.name.trim()}
+            onPick={(colors) => setDraft((d) => ({ ...d, colors }))}
           />
 
           {/*

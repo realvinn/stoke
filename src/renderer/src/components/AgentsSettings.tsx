@@ -89,7 +89,8 @@ export function AgentsSettings({
   onPage,
   onOpenProviders,
   onOpenClaudeConfig,
-  onSignIn
+  onSignIn,
+  onPreviewColor
 }: {
   settings: Settings
   onPatch: (patch: Partial<Settings>) => void
@@ -107,6 +108,12 @@ export function AgentsSettings({
   onOpenClaudeConfig: () => void
   /** Open an account's sign-in tab (App's, like an install: it opens a tab and closes the sheet). */
   onSignIn: (accountId: string) => void
+  /**
+   * An agent's colour while its picker moves, unsaved; null withdraws it.
+   * App's, because `applyAppearance` is the one writer of every colour on
+   * :root — the tab tags and pane rules repaint through it, not beside it.
+   */
+  onPreviewColor?: (id: CodingCliId, hex: string | null) => void
 }): React.JSX.Element {
   const agents = settings.agents
   const platform = window.stoke.platform
@@ -387,6 +394,7 @@ export function AgentsSettings({
             color={agentSeed(current.id, agents.colors)}
             colorOverridden={agents.colors[current.id] !== undefined}
             onColor={(hex) => setColor(current.id, hex)}
+            onPreviewColor={onPreviewColor ? (hex) => onPreviewColor(current.id, hex) : undefined}
             tagLabel={agents.tag.labels[current.id] ?? ''}
             onTagLabel={(label) => setTagLabel(current.id, label)}
             openrouterKey={settings.providers.openrouterApiKey}
@@ -534,6 +542,7 @@ function AgentPage({
   color,
   colorOverridden,
   onColor,
+  onPreviewColor,
   tagLabel,
   onTagLabel,
   accounts,
@@ -560,6 +569,8 @@ function AgentPage({
   colorOverridden: boolean
   /** Null resets to the seed. */
   onColor: (hex: string | null) => void
+  /** Unsaved, while the colour picker moves (App's `applyAppearance` paints it). */
+  onPreviewColor?: (hex: string | null) => void
   /** The stored tab tag, '' for the executable's name. */
   tagLabel: string
   onTagLabel: (label: string) => void
@@ -619,6 +630,7 @@ function AgentPage({
         color={color}
         colorOverridden={colorOverridden}
         onColor={onColor}
+        onPreviewColor={onPreviewColor}
         tagLabel={tagLabel}
         onTagLabel={onTagLabel}
       />
@@ -1166,6 +1178,12 @@ function AgentBrief({
   )
 }
 
+/**
+ * The colour picker's presets on an agent's page: every agent's own colour,
+ * named for its agent, so "Codex's purple" is one click from any page.
+ */
+const AGENT_PRESETS = CODING_CLIS.map((c) => ({ name: c.label, hex: AGENT_SEEDS[c.id] }))
+
 /*
  * How an agent looks in the strip: its colour and its tab tag.
  *
@@ -1178,6 +1196,7 @@ function AgentLook({
   color,
   colorOverridden,
   onColor,
+  onPreviewColor,
   tagLabel,
   onTagLabel
 }: {
@@ -1185,6 +1204,7 @@ function AgentLook({
   color: string
   colorOverridden: boolean
   onColor: (hex: string | null) => void
+  onPreviewColor?: (hex: string | null) => void
   tagLabel: string
   onTagLabel: (label: string) => void
 }): React.JSX.Element {
@@ -1214,6 +1234,10 @@ function AgentLook({
             label={`${cli.label} colour`}
             onChange={(hex) => onColor(hex)}
             commitOnUnmount
+            presets={AGENT_PRESETS}
+            defaultValue={AGENT_SEEDS[cli.id]}
+            ink={{ kind: 'agent', key: cli.id, tag: draft.trim() || cli.bins.posix[0] }}
+            onPreview={onPreviewColor}
           />
           {colorOverridden && (
             <button className="btn" data-variant="ghost" onClick={() => onColor(null)}>

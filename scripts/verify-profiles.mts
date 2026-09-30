@@ -21,7 +21,7 @@
  */
 import type { ProfileConfig, Project, Settings } from '../src/shared/types.ts'
 import { profileIdForCwd } from '../src/shared/paths.ts'
-import { apcaContrast, parseColor, perceptualDistance, type Rgb } from '../src/shared/color.ts'
+import { apcaContrast, fitToSrgb, parseColor, perceptualDistance, toHex, type Rgb } from '../src/shared/color.ts'
 import { deriveAccent } from '../src/shared/accent.ts'
 import { BUILT_IN_THEMES } from '../src/shared/themes.ts'
 import {
@@ -32,6 +32,8 @@ import {
   foldGroup,
   folderName,
   nextProfileId,
+  PROFILE_LABEL_WCAG,
+  profileAccentFor,
   profileFor,
   resolveProfiles,
   visibleProfiles
@@ -1029,8 +1031,10 @@ const ratio = (a: string, b: string): number => {
 
 /*
  * Everything a profile can end up wearing: the named seeds, the colours an
- * unknown folder is given, and every swatch the settings UI offers. The UI has
- * no free-form colour input precisely so this list is the whole set.
+ * unknown folder is given, every swatch the settings UI offers — and, since
+ * the colour picker, any colour at all, stored through `profileAccentFor`. The
+ * UI used to have no free-form colour input precisely so this list was the
+ * whole set; the sweep after it is what replaces that guarantee.
  */
 const derived = resolveProfiles(counts({ a: 2, b: 2, c: 2, d: 2 }), [])
 const wearable = [
@@ -1043,6 +1047,50 @@ for (const p of wearable) {
   const ok = r >= 4.5
   if (!ok) failures++
   console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${p.label.padEnd(11)} ${r.toFixed(2)}:1`)
+}
+
+console.log('\na colour picked on the wheel: the chip\u2019s label is solved, never left to chance')
+{
+  /*
+   * Every hue in 5° steps at ten lightnesses and four chromas, greys and the
+   * sRGB edge included: 2,880 picks. `deriveAccent` chooses the label by APCA
+   * Lc 60, which a mid-tone fill can clear while WCAG says 4.3:1, so
+   * `profileAccentFor` walks the fill until both hold — asserted on every pick.
+   */
+  let worst = Infinity
+  let worstAt = ''
+  let moved = 0
+  let picks = 0
+  for (let h = 0; h < 360; h += 5) {
+    for (const l of [0.2, 0.35, 0.5, 0.6, 0.65, 0.7, 0.75, 0.8, 0.9, 0.97]) {
+      for (const c of [0, 0.05, 0.1, 0.2]) {
+        const hex = toHex(fitToSrgb({ l, c, h }))
+        const p = profileAccentFor(hex)
+        picks++
+        if (!p) {
+          worst = 0
+          worstAt = `${hex} -> null`
+          continue
+        }
+        const r = ratio(p.accent, p.accentContrast)
+        if (r < worst) [worst, worstAt] = [r, `${hex} -> ${p.accent} under ${p.accentContrast}`]
+        if (p.accent !== hex) moved++
+      }
+    }
+  }
+  const ok = worst >= PROFILE_LABEL_WCAG
+  if (!ok) failures++
+  console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${picks} picks, the worst chip label ${worst.toFixed(2)}:1 (${worstAt}); ${moved} fills moved to get there`)
+  const same = PROFILE_SWATCHES.every((s) => {
+    const p = profileAccentFor(s.accent.toUpperCase())
+    return !!p && p.accent === s.accent && p.accentHover === s.accentHover && p.accentSoft === s.accentSoft && p.accentContrast === s.accentContrast
+  })
+  if (!same) failures++
+  console.log(`  ${same ? 'PASS' : 'FAIL'}  picking a shipped swatch on the wheel stores exactly that swatch, all four fields`)
+  const junk = ['nonsense', 'transparent', 'rgba(1, 2, 3, 0.5)', ''].map(profileAccentFor)
+  const none = junk.every((x) => x === null)
+  if (!none) failures++
+  console.log(`  ${none ? 'PASS' : 'FAIL'}  junk and translucent picks store nothing`)
 }
 
 console.log('\na working directory resolves to a profile')

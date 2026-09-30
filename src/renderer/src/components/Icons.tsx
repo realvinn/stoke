@@ -206,3 +206,11 @@ export function BrandMark(props: SVGProps<SVGSVGElement>): React.JSX.Element {
     </svg>
   )
 }
+
+/** The colour picker's "pick a colour from the screen" (EyeDropper API). */
+export const IconEyedropper = (p: SVGProps<SVGSVGElement>): React.JSX.Element => (
+  <Base {...p}>
+    <path d="M10.2 3.3l1.1-1.1a1.6 1.6 0 0 1 2.3 2.3l-1.1 1.1" />
+    <path d="M9 2.9l4.1 4.1M11.3 5.2l-6.8 6.8-2.2.6.6-2.2 6.8-6.8" />
+  </Base>
+)
