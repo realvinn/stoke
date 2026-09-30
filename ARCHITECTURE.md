@@ -671,6 +671,14 @@ npm run verify:search         # sidebar + palette search: tiers, recency, highli
                               # accented text, the label in both surfaces; and the session
                               # index against real files in a temp dir - a 40 MB transcript
                               # costs two 256 KB reads, a second pass costs none
+npm run verify:settings-search # the Settings index against the sheet: every `data-setting`
+                              # mark in every .tsx is a row the index names and every row is
+                              # marked, each in a component that draws its page; the menu tree
+                              # (Agents > manager + installed agents, Claude Code > its three
+                              # pages, levels and holders); every old section id and every
+                              # `openSettings('<id>')` caller landing; ranking, synonyms,
+                              # spellings and highlights, every row found by its own label; the
+                              # palette's interleave; the flash's reduced-motion rule (138)
 npm run verify:chat-sources   # chat history, against synthetic fixtures for every source
                               # (Claude, Codex + its threads table, OpenCode, Cline, Zed's zstd,
                               # Cowork) under a fake home: tool output, reasoning, injected
@@ -1308,12 +1316,20 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     one, never an overlay (gotcha 14) — messages in order with who and when, the
                     query's words marked (`highlightRanges`), copy per message and Copy all, and
                     why it is not a live session (`chatOpenAction`'s note)
-  src/components/AgentsSettings.tsx  Settings › Agents: the default agent, choosing and
-                    re-detecting agents and the skills report, then one page per installed or
-                    ticked agent (install state, endpoint, Default model, colour, tab tag) and
-                    "More agents" folded. Claude Code's page holds its four launch defaults
-                    (moved from Sessions, still `settings.defaults`, gotcha 57) and the way to
-                    Providers and Claude Code's own config — never an endpoint
+  src/components/SettingsSheet.tsx  the Settings dialog: a search box over the menu (results
+                    replace the tree in the same column; Enter jumps to the row and focuses its
+                    control, Escape clears, Cmd+F comes back), the menu as a WAI-ARIA tree (one
+                    `tree` per group, flat rows with aria-level; Agents and Claude Code open and
+                    close, remembered in App for the session), and the page on show. Every row
+                    it and its panels draw carries `data-setting` (gotcha 138)
+  src/components/AgentsSettings.tsx  Settings › Agents' pages: `AgentManager` (the default agent,
+                    Choose agents / Look again, each of your agents with its launcher tick,
+                    `ColorField` and a way to its page, More agents with their installs, the
+                    tag switch, the skills report), `AgentSettingsPage` (one agent: install
+                    state, endpoint, Default model, accounts, tools, colour and tab tag — Claude
+                    Code's points at its three pages instead of an endpoint) and
+                    `ClaudeLaunchDefaults` (the four launch defaults, still `settings.defaults`,
+                    gotcha 57)
   src/components/SpeechServiceSettings.tsx  Settings → Voice's speech service: the provider
                     picker, the sidecar's address or a custom server's base URL, the model
                     (a list plus "Another model…", free text for custom), a key per provider
@@ -1350,6 +1366,13 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
   src/lib/floatingLayers.ts  every open popover, menu and picker (`useFloatingLayer`), and
                     whether one lies over `.browser-hole` (`useBrowserCovered`), which App
                     hides the docked browser for. verify:layers. Gotcha 14
+  src/lib/settingsJump.ts  showing one Settings row: found by its `data-setting` (looked for
+                    each frame while its page draws, its `fallback` after 250 ms), every
+                    `<details>` around it opened, scrolled to the middle, flashed for 1.6 s, its
+                    control focused with `preventScroll`; and `markSettingHits` for the page on
+                    show while there is a query
+  src/lib/paletteRows.ts  the Cmd+K palette's one list: projects and settings interleaved on
+                    one tier scale (`paletteTier`), a tie to the project. verify:settings-search
   src/lib/projectSearch.ts  the one matcher the sidebar search and the Cmd+K palette share:
                     label/name/path, session title and first prompt, ranked by tier then
                     recency, with highlight ranges. No runtime imports, so verify:search
@@ -1526,6 +1549,12 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     `effortLevel`). The model alias list, `[1m]` included, read from the
                     CLI. Main reads the files (`readLaunchDefaults`), the chips draw this.
                     Gotcha 89
+  settingsIndex.ts  every Settings page and row as data: the menu tree (`navTree`,
+                    `visibleNodes`, `visibleHolder`), where each old section id lands
+                    (`resolveSettingsTarget`: providers, claude, agents moved), the rows the
+                    sheet marks (`SETTING_ROWS` plus two generated families) and the search over
+                    them (`searchSettings`: phrase, then every word, synonyms and British/US
+                    spellings). The sheet's search and Cmd+K both read it. Gotcha 138
   launcher.ts       the new-session page's pure half: same-name disambiguation, the
                     folder switcher's groups, which conversations list, the keyboard map,
                     the pinned launch aim (`launchAim`), the activation-key burst rule

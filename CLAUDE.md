@@ -36,7 +36,7 @@ A `dist:*` exists per target and each MUST run on that target's own platform and
 (gotcha 67): `dist:win`, `dist:win:arm64`, `dist:mac`, `dist:mac:intel`, `dist:linux`.
 
 Every suite runs alone as `npm run verify:<name>`: context, statusline, unicode, usage,
-profiles, settings, secrets, providers, claude-config, folders, search, chat-sources, color, theme-gen, activity,
+profiles, settings, secrets, providers, claude-config, folders, search, settings-search, chat-sources, color, theme-gen, activity,
 worklog-gate, tabs, launcher, registry,
 restore, shortcuts, drop, fullscreen, layers, browser-url, browser-profiles, safari-import, chrome-import, voice, agents, accounts, campfire, cli, stoke-args, updates, targets, manifests, portable, winget, worklog-runner,
 worklog-retry, worklog-recall, worklog-autoscan, ssh, ssh-enroll, remote, phone-ui, installer-art, install, welcome,
@@ -87,7 +87,7 @@ src/remote/          mobile web UI, built separately to out/remote
 src/shared/          compiled by BOTH tsconfigs, so no `node:` imports (browser-only voice.ts is
                      excluded from the node project by name). types, ipc.ts, themes,
                      ladder/themeGen/accent/notation/color, paths, drop, claudeConfig, worklog,
-                     statusLine, usageView, providers, codingClis, agents, updateCheck, sshAuth, ui.ts. A new terminal or wallpaper field needs its default
+                     statusLine, usageView, providers, codingClis, agents, updateCheck, sshAuth, settingsIndex, ui.ts. A new terminal or wallpaper field needs its default
                      in TERMINAL_DEFAULTS/WALLPAPER_DEFAULTS AND a line in clampTerminal/
                      clampWallpaper (all in ui.ts) in the same change: the clamps rebuild the
                      object from named keys, so a field they miss hydrates as undefined
@@ -462,6 +462,8 @@ rule file named on the group line.
   runs on (`background_tasks`, `stopNotifies`), `waiting` is the registry's and survives looking.
 - **127.** Act on an id main just made (an account) through main's reply or `settings.get()`, never
   `settingsRef`: the ref is the last RENDER's, and the push lands after the await (`startAccountLogin`).
+- **138.** Give a new Settings row a `data-setting` mark AND a `SETTING_ROWS` entry (settingsIndex.ts), with a
+  `fallback` if it is drawn only sometimes; open Settings by id only through `resolveSettingsTarget`.
 
 **Packaging and signing** — `.claude/rules/release.md`
 - **7.** Pick architectures with the `--x64`/`--arm64` CLI flags and never add an `arch:` list to
