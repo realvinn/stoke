@@ -356,8 +356,12 @@ jobs:
       - run: npm ci --ignore-scripts
         env:
           ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+      # The work dir is inside the workspace and the upload names it RELATIVELY:
+      # in a container job `${{ runner.temp }}` is the HOST's path, and of five
+      # absolute patterns only the first matched anything — the first runs
+      # uploaded the logs and none of the screenshots that were there.
       - name: Install as root, and boot it (scripts/probe/debian.sh)
-        run: sh scripts/probe/debian.sh ${{ matrix.fuse && 'fuse' || 'nofuse' }} "$RUNNER_TEMP/debian"
+        run: sh scripts/probe/debian.sh ${{ matrix.fuse && 'fuse' || 'nofuse' }} "$GITHUB_WORKSPACE/probe-debian"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -365,8 +369,8 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
           path: |
-            ${{ runner.temp }}/debian/*.log
-            ${{ runner.temp }}/debian/*.png
-            ${{ runner.temp }}/debian/*.err
-            ${{ runner.temp }}/debian/*.out
-            ${{ runner.temp }}/debian/*.txt
+            probe-debian/*.log
+            probe-debian/*.png
+            probe-debian/*.err
+            probe-debian/*.out
+            probe-debian/*.txt
