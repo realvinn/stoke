@@ -251,8 +251,9 @@ x-stoke-sig:     Ed25519 over requestSigningText(method, pathFromV1, ts, nonce, 
 
 The hub refuses a skew beyond ±5 min (`clock-skew`), a nonce seen from that device in the last 10
 min (`replayed`), and a signature that does not verify under the session's bound key
-(`bad-signature`). Consequences: a stolen token alone cannot write or pair, and plain-http LAN use
-leaks reads of ciphertext at worst. A device the chain does not (yet) list is **pending**: it may
+(`bad-signature`). Consequences: a stolen token alone cannot make any request at all — read,
+write or pair — and on plain-http LAN use an observer sees the token and the ciphertext passing,
+never anything they can act on. A device the chain does not (yet) list is **pending**: it may
 only use the pairing and recovery routes (§4.4, §4.5).
 
 ### 3.5 Multi-user data model (SQLite on the NUC)
@@ -285,7 +286,9 @@ a JWK carrying only `d` is refused ("Invalid JWK OKP key") by both.
 
 Domain separation: every KDF info string, signed text and AAD starts with a label from
 `HUB_LABELS` (`src/shared/hub/labels.ts`), `stoke-hub/v1/…`, followed by `\n` and the
-`canonicalJson` of its fields (sorted keys, integers only, no whitespace). `verify:hub` pins test
+`canonicalJson` of its fields (keys sorted at every depth, no whitespace, NaN/Infinity/non-plain
+objects refused; every field a signature covers is a string or an integer, so another language
+never has to reproduce JavaScript's float formatting). `verify:hub` pins test
 vectors over all of them: **changing a label makes every item and wrap already on a hub
 unreadable**, so a label change fails the suite until it is a deliberate v2.
 
@@ -401,9 +404,9 @@ plaintext  = canonicalJson({path, editedAt, deleted, value})
 envelope   = { v: 1, id, version, epoch, author, nonce, ct }      ← all the hub stores
 ```
 
-The task named "the item path as AAD". Taken literally that puts every path in front of the hub —
-`t2/secret/providers.anthropicApiKey` announces the owner has an Anthropic key, and `t4/ssh-key/…`
-names their SSH keys. So the hub sees an opaque id, the AAD binds that id (plus version, epoch and
+The brief for this design said "the item path as AAD". Taken literally that puts every path in
+front of the hub — `t2/secret/providers.anthropicApiKey` announces the owner has an Anthropic
+key, and `t4/ssh-key/…` names their SSH keys. So the hub sees an opaque id, the AAD binds that id (plus version, epoch and
 author), and the reader re-derives the id from the decrypted path and refuses any mismatch
 (`openItem` does both). A ciphertext moved to another slot, replayed at another version or epoch,
 or relabelled with another author fails the GCM tag; a slot whose plaintext names a different path
@@ -476,14 +479,16 @@ any other change, so gotcha 63's coalescing and the secret vault apply unchanged
 
 ### 5.4 SSH private keys (T4): transfer by explicit choice
 
-- **Upload:** Settings lists `~/.ssh/*` files that parse as private keys; nothing is read until
-  the owner picks one. The file's bytes travel as-is — a passphrase-protected key stays
-  passphrase-protected — plus its `.pub`. The item is immutable: a changed key is a new id.
+- **Upload:** Settings lists the `~/.ssh` key pairs by name (a file with a `.pub` beside it — the
+  `.pub` is what is read to list it); a private key's bytes are read only when the owner picks
+  that key. They travel as-is — a passphrase-protected key stays passphrase-protected — plus its
+  `.pub`. The item is immutable: a changed key is a new id.
 - **Receive:** `sshKeyTarget(wanted, probe)` picks the file name: the wanted name if free; the
   same name if an identical key is already there (reused, nothing written); else `<name>-stoke-2`,
   `-3`, … Never overwrite, never write `config`, `known_hosts`, `authorized_keys` or a dotfile.
-  Written with mode 0600 (the `.pub` 0644) into `~/.ssh` (0700 if created), each by temp file and
-  rename.
+  Written with mode 0600 (the `.pub` 0644) into `~/.ssh` (0700 if created), each created with the
+  exclusive flag (`wx`), never renamed over a name — a file that appeared since the probe makes the
+  write fail rather than replace it.
 - **Use:** for every synced T3 host whose `keyRefs` name that key, append a `Host`/`IdentityFile`
   block exactly as `saveKeyLocally` does (`buildIdentityBlock` + `appendToSshConfig`: append-only,
   `config.stoke.bak`, re-checked with `ssh -G`). The receive is a visible action with a result
@@ -573,9 +578,9 @@ reattach is today.
 | Adversary | Can | Cannot |
 |---|---|---|
 | **The NUC or the hub process compromised** (or its disk stolen) | Read ciphertext, item counts and sizes, device labels/platforms/public keys, emails, scrypt password hashes, session-token hashes, relay timing. Delete or withhold data; roll it back. | Decrypt anything (no key material on it), add a device (signed chain + a pairing code on a device the owner holds), MITM a relay (pinned device keys), forge an item (GCM under VK, id-bound path). Rollback is detected (§4.3, §5.2). |
-| **Cloudflare, or the Cloudflare account** (TLS terminates at the edge) | Everything a network observer sees in the clear at the edge: bearer tokens, ciphertext, metadata; replay a token. | Write, pair or relay as a device (every request is signed by a key only the device has), or read content. |
+| **Cloudflare, or the Cloudflare account** (TLS terminates at the edge) | See what passes the edge in the clear: bearer tokens, ciphertext, metadata. Drop or delay requests. | Use a token it saw (every request is signed by a key only the device has, and a nonce is refused twice), write, pair, relay as a device, or read content. |
 | **Edge secret leaked** | Talk to the tunnel hostname as if forwarded; forge `x-stoke-client-ip` (weakens per-IP throttling). | Anything an account and a device key are needed for. |
-| **Password guessed or phished** | Sign in as a pending device: see ciphertext and metadata, ask to pair. | Decrypt, or join: a pair needs approval and the matching code on an active device, and every pending request shows on every device. |
+| **Password guessed or phished** | Sign in as a pending device: read the device list (labels, platforms, public keys) and the recovery wrap (useless without the Kit), ask to pair. | Read items (the items routes are active-only), decrypt, or join: a pair needs approval and the matching code on an active device, and every pending request shows on every device. |
 | **Stolen unlocked device / same-user malware** | What that device holds: VK, synced keys, transferred SSH keys; relay as it until revoked. | Anything after revocation (§4.6). The panel lists what to rotate. |
 | **LAN observer (plain http mode)** | The session token and ciphertext. | Writes (signed), content (E2E). Use https (`tailscale serve`) where possible. |
 
