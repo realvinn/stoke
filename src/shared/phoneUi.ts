@@ -27,7 +27,8 @@ const SECTION_OF: Record<PhoneSessionStatus, SectionId> = {
   busy: 'working',
   idle: 'idle',
   // Another agent writes no registry, so Stoke cannot say more than "running".
-  // It sits with the idle ones: nothing about it is known to need you.
+  // It sits with the idle ones: nothing about it is known to need you. Its row
+  // says Running itself (`rowPillShown`), since no heading does.
   unknown: 'idle',
   ended: 'ended'
 }
@@ -86,11 +87,14 @@ export function runningBadge(rows: readonly { status: PhoneSessionStatus }[] | n
 /**
  * Whether a list row wears a status pill. Every row used to, and the section
  * heading above it already said Working or Idle: the pill was the same word
- * twice. Only a prompt's kind (Permission, Plan review, Question) and an ended
- * session's are news a heading cannot carry.
+ * twice. A prompt's kind (Permission, Plan review, Question) and an ended
+ * session's are news a heading cannot carry — and so is `unknown`: another
+ * agent writes no registry, and `SECTION_OF` files it under Idle, so without
+ * its Running pill a Codex session hard at work sat under IDLE with nothing
+ * saying otherwise. There is no Running heading for the pill to repeat.
  */
 export function rowPillShown(status: PhoneSessionStatus): boolean {
-  return status === 'waiting' || status === 'ended'
+  return status === 'waiting' || status === 'ended' || status === 'unknown'
 }
 
 /**

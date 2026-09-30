@@ -133,10 +133,17 @@ check(
 )
 check('no rows yet (loading) is no badge, not a crash', runningBadge(null), { live: 0, needsYou: 0 })
 // The pill said Working under the Working heading: the same word twice per row.
+// But `unknown` (another agent, no registry) is filed under Idle, and there is no
+// Running heading: its pill is the only thing saying it is not idle.
 check(
-  'only a prompt kind or an ended session wears a pill; Working/Idle/Running are the heading already',
+  'a prompt kind, an ended session and an unreadable agent wear a pill; Working and Idle are the heading already',
   (['waiting', 'busy', 'idle', 'unknown', 'ended'] as const).map(rowPillShown),
-  [true, false, false, false, true]
+  [true, false, false, true, true]
+)
+check(
+  'an unreadable agent sits under the Idle heading, so its row must say Running itself',
+  [groupSessionRows([row('codex', 'unknown', 1)]).map((s) => s.label), rowPillShown('unknown'), statusPill('unknown', null).label],
+  [['Idle'], true, 'Running']
 )
 // A block of its own: `base` is the resize section's name further down.
 {

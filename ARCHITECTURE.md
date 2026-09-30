@@ -1146,7 +1146,8 @@ src/remote/       mobile web UI, built separately to out/remote. Vanilla TS on o
                     `accessRefusalOf`), /api/theme -> :root including derived accent-ink and meters
   store.ts          the one session list: /ws/events pushes, a 5s poll while it is down
   list.ts           Needs you / Working / Idle / Ended groups of two-line rows (title; `rowMeta`),
-                    a pill only for news (`rowPillShown`), answerable from the list; reads
+                    a pill only for news (`rowPillShown`: a prompt's kind, Ended, and Running
+                    for another agent filed under Idle), answerable from the list; reads
                     a waiting prompt's options by replaying the pty into an unopened xterm
   session.ts        terminal, a two-line header (title; place, state, context), answer tray,
                     keys behind one toggle (`keyRowShown`), composer with the mic in its field

@@ -7,7 +7,8 @@
  * A row is two lines: what the session is doing (its title), then where and
  * when (`rowMeta`), with the context meter at the edge. The status pill is
  * only there when it says something the section heading does not
- * (`rowPillShown`): the kind of prompt waiting, or that it ended.
+ * (`rowPillShown`): the kind of prompt waiting, that it ended, or Running for
+ * another agent, which Stoke cannot read and files under Idle.
  *
  * Rows are keyed and patched, never rebuilt wholesale: `/ws/events` pushes
  * every ~250ms while a session prints, and replacing a row under a thumb that
