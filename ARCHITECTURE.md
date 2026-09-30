@@ -354,6 +354,18 @@ the meter starts reading for SSH sessions, and the auto-scan trigger, which is f
 snapshots, starts firing for them. Remote sessions poll at 30s rather than 1.5s, because it is a
 network round trip rather than a `stat`.
 
+That fetch is `BatchMode=yes`, so on a host that only takes a password it fails silently, every
+poll. **Key login** is what fixes that, and it is the one SSH flow that needs the user's hands:
+when a tab's ssh prints its password prompt (`sshAuthStep`, gotcha 75) a strip offers to set up
+a key, and "Set up key login" in Settings > SSH hosts does the same without waiting for one. Main
+(`sshEnroll.ts`) picks or makes the key and, when plain `ssh <alias>` would not offer it, appends
+one `IdentityFile` block to `~/.ssh/config`; then `ssh-copy-id` runs in a visible "Add key to …"
+tab, because ssh reads a password from its own terminal and nowhere else (gotcha 109). When that
+tab exits, a `BatchMode` login probe with the tab's own identities decides `keyEnrolled`, and a
+tab still sitting at ssh's own `password:` is reconnected — never one whose user already got in.
+"Never got in" is a one-way watch over the session's whole life (`SshLoginWatch`), not the end of
+its output: a logged-in shell that runs `su` or `ssh other` ends in the very same prompt shape.
+
 The queue (`queue.ts`) is the safety property. Rejections are kept as tombstones rather than
 deleted, so "no, don't log that" is permanent — and because proposal ids are the sha1 of the
 dedupe key, updates were given their own key shape so the `create` key could stay byte-for-byte
@@ -592,7 +604,14 @@ npm run verify:worklog-runner   # prompt building, JSON parsing, titles, create-
 npm run verify:worklog-retry    # writes happen once, and a retry never duplicates a record
 npm run verify:worklog-recall   # the read-only board read, its parse and its cache
 npm run verify:worklog-autoscan # when a session is scanned without being asked
-npm run verify:ssh            # ssh argv, ~/.ssh/config parsing, the remote transcript fetch
+npm run verify:ssh            # ssh argv, ~/.ssh/config parsing, the remote transcript fetch,
+                              # the login probe and IdentityFile block against real `ssh -G`
+npm run verify:ssh-enroll     # the password-prompt detector (POSIX and ConPTY-shaped streams),
+                              # the login watch that gates a reconnect (a `su` or nested ssh
+                              # after login is never "at the prompt"), the offer table,
+                              # the append-only config writer on synthetic
+                              # paths, the launch plan by id, prepare/finish with ssh faked,
+                              # and the fallback command run under sh/bash/zsh/dash/tcsh
 npm run verify:remote         # phone access: where the link points and how it says it gets
                               # there, the LAN interface ranking, what a dead tunnel reports,
                               # and stt.ts against fake sidecars on loopback port 0: the
@@ -800,7 +819,20 @@ src/main/         Electron main process
                     the folder, renames it aside, renames the new copy in, rolls back on
                     failure, never kills. Writes a result the next launch reports
   profiles.ts       plans and creates a profile's folder + scan root
-  ssh.ts            ~/.ssh/config parsing, the ssh argv, the transcript command
+  ssh.ts            ~/.ssh/config parsing, the ssh argv, the transcript command; for key
+                    login the ssh-copy-id / fallback argv, the LOGIN probe (no -i, no
+                    IdentitiesOnly: what the tab itself will do), and the append-only
+                    `Host` / `IdentityFile` block. Gotchas 29, 75
+  sshEnroll.ts      setting up key login for a host that asks for a password.
+                    `planEnrollLaunch` takes only the host id and size from a
+                    `pty:start` with `opts.enroll`; `prepareEnroll` picks the key ssh -G
+                    already names or makes ~/.ssh/id_ed25519, appends an IdentityFile
+                    block to ~/.ssh/config if plain ssh would not offer it (bytes kept,
+                    config.stoke.bak, tmp+rename, re-checked with ssh -G) and builds the
+                    install argv; the install runs in a VISIBLE "Add key to …" tab where
+                    the user types the password; `finishEnroll` runs after that tab exits
+                    and alone may set keyEnrolled. Every path and program injectable.
+                    Gotchas 75, 109
   sshTranscript.ts  pulls a remote session's JSONL back, so SSH sessions can be read
   agent.ts          headless `claude -p` runner (prompt on stdin, json out)
   skillsScan.ts     lists the skills in every folder an agent reads, with each one's real
@@ -854,6 +886,10 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     before the relaunch pill or "Restart and install" kills a turn in flight.
                     Wait is the focused button. In `overlayOpen`, so the docked browser comes
                     off the window while it is up (gotcha 14). Gotcha 82
+  src/components/SshKeyPrompt.tsx  "E2E box asked for a password. Set up key login?" — a
+                    `.main-col` row, never an overlay (gotcha 14). Add a key opens the
+                    "Add key to …" tab (App's `startSshEnroll`); the strip then reports
+                    main's stages and never takes a password itself (gotcha 109)
   src/components/Launcher.tsx  a New tab's page, one top-aligned column: where it runs
                     (FolderSwitcher), Start split with the other agents, the launch chips
                     (resolved, THIS launch only, "Make default"), the conversation list.
@@ -1029,7 +1065,14 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     Gotcha 104
   sshAuth.ts        recognising that a remote is asking for a PASSWORD rather than for a
                     key passphrase or a sudo password, and whether to offer to enroll a
-                    key. The tail anchor is the load-bearing rule; gotcha 75
+                    key. The tail anchor is the load-bearing rule; gotcha 75. Under ConPTY
+                    (Windows) the stream is scrubbed first (`conptyScrub`) — unverified on
+                    Windows. `SshLoginWatch` (`sshOutputStep`, `sshLoginInput`)
+                    follows each remote session until it shows a login, and
+                    `awaitingSshPassword` over it decides whether a tab may be
+                    reconnected after enrolling — and withholds the offer from a
+                    session already in; `buildRemoteInstallCommand` is the
+                    no-ssh-copy-id body, wrapped in `sh -c '…'` for any login shell
   api.ts            the type of window.stoke, shared by preload and renderer
 scripts/          the verify-*.mts suites, make-icon.cjs
   ci-verify.mjs     derives CI's suite list from the `check` chain and fails on a stale

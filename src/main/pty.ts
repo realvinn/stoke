@@ -25,6 +25,20 @@ import {
 } from './cli.ts'
 import { windowFromBanner } from './sessionFile.ts'
 import { buildSshArgs, sshExecutable } from './ssh.ts'
+// Relative and with the extension, like every other main-process import here:
+// this module is loaded directly under `node --experimental-strip-types`, which
+// resolves no aliases. The detector itself is pure and lives in shared/ so a
+// suite can replay a byte stream against it with no PTY at all (gotcha 75).
+import {
+  awaitingSshPassword,
+  newSshAuthScan,
+  newSshLoginWatch,
+  sshLoginInput,
+  sshOutputStep,
+  type SshAuthPrompt,
+  type SshAuthScan,
+  type SshLoginWatch
+} from '../shared/sshAuth.ts'
 import { claimSessionFiles, releaseSessionFiles } from './statusLine.ts'
 import type { RegistryTarget } from '../shared/claudeRegistry.ts'
 import {
@@ -93,6 +107,8 @@ interface Session {
   realCwd: string
   /** A local Claude Code session: the only kind with a registry file to read. */
   instrumented: boolean
+  /** An "Add key to …" tab running ssh-copy-id (`opts.enroll`), not a session. */
+  enroll: boolean
   exited: boolean
   /**
    * When the process exited, or null while it is still running.
@@ -123,6 +139,38 @@ interface Session {
   bannerWindow: number | null
   /** Bytes of output still worth scanning for the banner. */
   bannerScanned: number
+  /**
+   * `SshHost.id` when this session runs on another machine, null when it is
+   * local. Carried so a detected password prompt can name the host that asked
+   * WITHOUT parsing anything the far end printed: the `user@host` in the prompt
+   * is text a remote machine sent, and enrollment builds its argv from
+   * `SshHost.alias` instead (gotcha 75).
+   */
+  hostId: string | null
+  /**
+   * The password-prompt window, or null for a session that is never scanned.
+   *
+   * `opts.host ? newSshAuthScan() : null` in `start()` is the whole first gate
+   * of the detector, and it is a transport check rather than a pattern: only a
+   * session Stoke launched as `ssh` is looked at, so every local `sudo`, every
+   * git credential helper, every `ssh-add` passphrase and every "password" the
+   * CLI itself prints is excluded with no matching whatsoever. Do not widen it.
+   *
+   * Null too for the key-enrollment tab (`opts.enroll`), which runs
+   * `ssh-copy-id` with no `opts.host`: its own password prompt is the one the
+   * user is there to answer, and scanning it would offer to fix itself, forever.
+   */
+  sshAuth: SshAuthScan | null
+  /**
+   * Whether this remote session is still inside its authentication, or null
+   * for a session that is not remote (the same `opts.host` gate as `sshAuth`).
+   * Fed every output chunk and every input write until it settles, one-way,
+   * on the first sign of a login (`sshLoginOutput`/`sshLoginInput`).
+   * `awaitingPassword` reads it: after a key is enrolled, a tab still at ssh's
+   * own `password:` may be reconnected, and one whose user got in — even one
+   * now sitting at a `su` or nested-ssh prompt — may not.
+   */
+  login: SshLoginWatch | null
   startedAt: number
   /** Last pty output, or the last registry state change reported via `touch`. */
   lastActivityAt: number
@@ -171,6 +219,12 @@ export interface SessionInfo {
   cli: string
   /** A local Claude Code session: the only kind the registry poller can read. */
   instrumented: boolean
+  /**
+   * An SSH key-enrollment tab (`opts.enroll`): ssh-copy-id in the home folder,
+   * not a session. The phone's list leaves it out — it would read as a Claude
+   * session named after the home folder.
+   */
+  enroll: boolean
 }
 
 /**
@@ -220,6 +274,48 @@ const STRIP_ENV = [
   'CLAUDE_PID'
 ]
 
+/**
+ * The environment every PTY Stoke spawns starts from: the inherited one minus
+ * `STRIP_ENV`, one PATH, and the terminal's own identity.
+ *
+ * Pure (source, PATH and platform are arguments) so the rule can be read off
+ * without a spawn. Only the parts that are true of ANY child live here — every
+ * session kind, the SSH key enrollment (`opts.enroll`) included. A session's
+ * appearance hint and its provider keys are local-session-only and stay in
+ * `start()`, where the tests that gate them already are.
+ *
+ * PATH goes through `setPathKey` and nowhere else (gotcha 99). The first draft
+ * of this extraction (88ee181) carried the old `env.PATH = …; if (platform !==
+ * 'win32') env.Path = env.PATH` forward from before that fix — two keys on
+ * Windows, the stale inherited `Path` first — and `verify:cli` now refuses any
+ * direct PATH assignment in this file.
+ */
+export function ptyEnvFrom(
+  source: Record<string, string | undefined>,
+  path: string,
+  platform: string = process.platform
+): Record<string, string> {
+  const env: Record<string, string> = {}
+  for (const [k, v] of Object.entries(source)) {
+    if (v === undefined) continue
+    if (STRIP_ENV.includes(k)) continue
+    env[k] = v
+  }
+  // One PATH key, not two: on Windows the copied env already holds `Path`,
+  // and a second `PATH` beside it lost to the stale one (cli.ts setPathKey).
+  setPathKey(env, path, platform)
+  env.TERM = 'xterm-256color'
+  env.COLORTERM = 'truecolor'
+  // Tell Claude Code it is inside a wrapper, in case that ever matters to it.
+  env.TERM_PROGRAM = 'Stoke'
+  return env
+}
+
+/** `ptyEnvFrom` over this process's own environment and the PATH a child gets. */
+export async function buildPtyEnv(): Promise<Record<string, string>> {
+  return ptyEnvFrom(process.env, await buildEnvPath())
+}
+
 export class PtyManager {
   private sessions = new Map<string, Session>()
   private readonly onData: (ptyId: string, data: string) => void
@@ -233,15 +329,29 @@ export class PtyManager {
    * session that ended on its own, not only one the user closed by hand.
    */
   private readonly onExit: (ptyId: string, code: number, signal: number | undefined, sessionId: string) => void
+  /**
+   * A remote asked one of our sessions for a password.
+   *
+   * Reports the fact and nothing else: no password is read, held or passed
+   * here — ssh turns echo off, so the bytes never appear in the stream this
+   * scans in the first place. `hostId` is Stoke's own id for the host the
+   * session was launched against; `prompt` carries the far end's text for
+   * display only. Whether to offer anything at all is index.ts's decision
+   * (`shouldOfferKey` against the settings), and installing anything at all
+   * needs a user press (a `pty:start` with `opts.enroll`, which opens a tab).
+   */
+  private readonly onSshAuth: (ptyId: string, hostId: string, prompt: SshAuthPrompt) => void
 
   // Explicit fields rather than TS parameter properties, matching ContextWatcher
   // so the main-process modules stay runnable under node's type stripping.
   constructor(
     onData: (ptyId: string, data: string) => void,
-    onExit: (ptyId: string, code: number, signal: number | undefined, sessionId: string) => void
+    onExit: (ptyId: string, code: number, signal: number | undefined, sessionId: string) => void,
+    onSshAuth: (ptyId: string, hostId: string, prompt: SshAuthPrompt) => void
   ) {
     this.onData = onData
     this.onExit = onExit
+    this.onSshAuth = onSshAuth
   }
 
   /**
@@ -261,7 +371,13 @@ export class PtyManager {
      * endpoint, its MCP servers, its continue flag — built by `agentLaunchPlan`
      * in main from settings. Ignored for Claude Code, SSH and installs.
      */
-    agentPlan: LaunchPlan | null = null
+    agentPlan: LaunchPlan | null = null,
+    /**
+     * The program an SSH key-enrollment tab runs (`opts.enroll`), built in main
+     * by `prepareEnroll` from the host settings holds under that id. Never from
+     * the renderer: without it an enroll launch is refused rather than guessed.
+     */
+    enrollCommand: { file: string; args: string[] } | null = null
   ): Promise<StartResult> {
     /*
      * A remote session is the same machinery with a different argv: ssh instead
@@ -289,26 +405,40 @@ export class PtyManager {
     const cliId = cliIdOf(opts.cli)
     const remote = !!opts.host
     /*
+     * A key-enrollment tab runs `ssh-copy-id` (or plain ssh appending the key)
+     * against a host, in a terminal the user can type the password into — the
+     * whole point: ssh reads a password from its tty and nowhere else (gotcha
+     * 109). It is not `remote`: it gets no `opts.host`, so no password scan
+     * (its prompt is the one being answered), no statusLine files and no
+     * transcript. The command is main's (`enrollCommand`); `opts.enroll`
+     * carries only the host id it was built from.
+     */
+    const enrolling = !remote && !!opts.enroll
+    if (enrolling && !enrollCommand) throw new Error('An SSH key enrollment is started by main, from settings.')
+    /*
      * An install tab runs the vendors' own install commands in a shell instead
      * of a CLI. The script is built here, in main, from the shared table and
      * ids it validates — `opts.install` carries ids, never command text.
      */
-    const script = !remote && opts.install?.length ? installScript(opts.install, process.platform) : null
-    if (!remote && opts.install?.length && !script) {
+    const script =
+      !remote && !enrolling && opts.install?.length ? installScript(opts.install, process.platform) : null
+    if (!remote && !enrolling && opts.install?.length && !script) {
       throw new Error('Stoke has no install command for those agents on this platform. Their websites say how.')
     }
     const installing = script !== null
-    const instrumented = !remote && !installing && isClaudeCode(cliId)
+    const instrumented = !remote && !installing && !enrolling && isClaudeCode(cliId)
 
     const exe = remote
       ? sshExecutable()
-      : installing
-        ? await installerShell()
-        : await findCli(cliId, isClaudeCode(cliId) ? claudePathOverride : null)
+      : enrolling
+        ? enrollCommand!.file
+        : installing
+          ? await installerShell()
+          : await findCli(cliId, isClaudeCode(cliId) ? claudePathOverride : null)
     if (!exe) throw new Error(notFoundError(loginPathProbeFailed(), cliId))
     // An install has no project; it runs from home so a vendor script that
-    // writes relative to the cwd lands somewhere harmless.
-    const cwd = installing ? homedir() : opts.cwd
+    // writes relative to the cwd lands somewhere harmless. An enrollment too.
+    const cwd = installing || enrolling ? homedir() : opts.cwd
 
     /*
      * The folder has to exist, and node-pty will not tell us if it does not.
@@ -386,11 +516,13 @@ export class PtyManager {
     if (installFile && script) await writeInstallerFile(installFile, script)
     const args = remote
       ? buildSshArgs(opts.host!)
-      : installing
-        ? installerArgs(script, installFile)
-        : instrumented
-          ? buildArgs({ ...opts, sessionId }, settingsFile)
-          : [...(agentPlan?.args ?? [])]
+      : enrolling
+        ? [...enrollCommand!.args]
+        : installing
+          ? installerArgs(script, installFile)
+          : instrumented
+            ? buildArgs({ ...opts, sessionId }, settingsFile)
+            : [...(agentPlan?.args ?? [])]
 
     // Hand the session Stoke's own browser tools. A file path rather than an
     // inline JSON string: quoting JSON through a shell differs per platform and
@@ -410,14 +542,7 @@ export class PtyManager {
 
     const spec = spawnSpec(exe, args)
 
-    const env: Record<string, string> = {}
-    for (const [k, v] of Object.entries(process.env)) {
-      if (v === undefined) continue
-      if (STRIP_ENV.includes(k)) continue
-      env[k] = v
-    }
-
-    // buildEnvPath and the native spawn are the only things between here and
+    // buildPtyEnv and the native spawn are the only things between here and
     // proc.onExit being registered below that can throw - and settingsFile
     // above has already written statusKey's .settings.json (and maybe .cmd)
     // to disk by this point. A project folder deleted since the launcher
@@ -426,13 +551,7 @@ export class PtyManager {
     // ever runs from an exit handler this session never gets to register.
     let proc: IPty
     try {
-      // One PATH key, not two: on Windows the copied env already holds `Path`,
-      // and a second `PATH` beside it lost to the stale one (cli.ts setPathKey).
-      setPathKey(env, await buildEnvPath())
-      env.TERM = 'xterm-256color'
-      env.COLORTERM = 'truecolor'
-      // Tell Claude Code it is inside a wrapper, in case that ever matters to it.
-      env.TERM_PROGRAM = 'Stoke'
+      const env = await buildPtyEnv()
       /*
        * Which way round the colours are, in the one form a TUI already reads.
        *
@@ -503,6 +622,7 @@ export class PtyManager {
       cwd,
       realCwd: cwd,
       instrumented,
+      enroll: enrolling,
       exited: false,
       endedAt: null,
       exitCode: null,
@@ -514,6 +634,9 @@ export class PtyManager {
       length: 0,
       bannerWindow: null,
       bannerScanned: 0,
+      hostId: opts.host?.id ?? null,
+      sshAuth: opts.host ? newSshAuthScan() : null,
+      login: opts.host ? newSshLoginWatch() : null,
       startedAt: now,
       lastActivityAt: now,
       cols: Math.max(20, opts.cols || 120),
@@ -558,6 +681,27 @@ export class PtyManager {
       if (session.bannerWindow === null && session.bannerScanned < BANNER_SCAN_LIMIT) {
         session.bannerScanned += data.length
         session.bannerWindow = windowFromBanner(session.chunks.join(''))
+      }
+      /*
+       * Is the far end asking for a password? Only ever for a session launched
+       * against a host (`sshAuth` is null otherwise), and `sshAuthStep` closes
+       * its own window on the first escape byte, at 16 KB, or once it has
+       * fired — ssh asks three times by default and the user is offered a key
+       * once. Nothing here reads a password: it is typed with echo off, so it
+       * is not in this stream at all.
+       *
+       * `sshOutputStep` also follows the login itself (`session.login`), for
+       * the reconnect gate and to withhold the offer from a session that has
+       * already shown it got in: its prompt is `su`'s or a nested ssh's, a
+       * different password, which gotcha 75 exists to leave alone. ConPTY
+       * re-renders every frame as VT, so on Windows the stream is scrubbed
+       * before the escape rule applies (sshAuth.ts, `conptyScrub`).
+       */
+      if (session.sshAuth && session.login) {
+        const step = sshOutputStep(session.sshAuth, session.login, data, { conpty: process.platform === 'win32' })
+        session.sshAuth = step.scan
+        session.login = step.login
+        if (step.offer && session.hostId) this.onSshAuth(ptyId, session.hostId, step.offer)
       }
       this.onData(ptyId, data)
       for (const fn of this.subscribers) fn(ptyId, data)
@@ -607,10 +751,35 @@ export class PtyManager {
     if (!s || s.exited) return
     try {
       s.proc.write(data)
-      if (data && !isTerminalReport(data)) s.lastInputAt = Date.now()
+      if (data && !isTerminalReport(data)) {
+        s.lastInputAt = Date.now()
+        this.noteLoginInput(s, data)
+      }
     } catch {
       /* process died between the renderer's keystroke and here */
     }
+  }
+
+  /** Every write a person (or the phone) made reaches the login watch. */
+  private noteLoginInput(s: Session, data: string): void {
+    if (s.login && !s.login.settled) s.login = sshLoginInput(s.login, data, { conpty: process.platform === 'win32' })
+  }
+
+  /**
+   * Is this SSH session sitting at ssh's own password prompt, never having
+   * got in?
+   *
+   * False for anything that is not a live remote session, and false once the
+   * session has shown any sign of a login (`awaitingSshPassword` over the
+   * whole-life `login` watch, not over the last bytes printed). The renderer
+   * asks before reconnecting a tab after a key was enrolled: a tab at ssh's
+   * `password:` has nothing to lose; a tab whose user got in has, even when it
+   * now sits at a `su` or nested-ssh `Password:` that looks exactly the same.
+   */
+  awaitingPassword(ptyId: string): boolean {
+    const s = this.sessions.get(ptyId)
+    if (!s || s.exited || !s.login) return false
+    return awaitingSshPassword(s.login, { conpty: process.platform === 'win32' })
   }
 
   /** When input last reached this pty (`Session.lastInputAt`), or null. */
@@ -659,6 +828,7 @@ export class PtyManager {
       try {
         cur.proc.write(data)
         cur.lastInputAt = Date.now()
+        this.noteLoginInput(cur, data)
         return true
       } catch {
         return false
@@ -888,7 +1058,8 @@ export class PtyManager {
       cols: s.cols,
       rows: s.rows,
       cli: s.cli,
-      instrumented: s.instrumented
+      instrumented: s.instrumented,
+      enroll: s.enroll
     }))
   }
 

@@ -161,3 +161,85 @@ becomes one.
 PTY, so a `~` after a newline is still an ssh escape — but `ssh-copy-id` is a wrapper with no `-e`
 flag. `-o EscapeChar=none` is the `ssh_config` form of the same setting; `ssh -G -o EscapeChar=none`
 reports `escapechar none`.
+
+> **Checked against the code on 2026-09-30** — this entry was written with the feature, and for
+> two weeks none of it shipped: HEAD had only the contract (887b921); the main half, the strip and
+> the suite sat on three unmerged branches. They are merged now, and four points above moved.
+> - **`buildPubkeyProbeArgs` no longer sets `keyEnrolled`.** It probed with `-i <key> -o
+>   IdentitiesOnly=yes`, which asks whether the SERVER takes the key — and passed for a key minted
+>   as `~/.ssh/stoke_ed25519` that plain `ssh <alias>` never offers, so the flag went true and the
+>   next tab still asked. The flag is now `buildLoginProbeArgs`' alone: BatchMode, publickey only,
+>   `ControlPath=none`, no `-i`, no `IdentitiesOnly` — the tab's own identities. The `-i` probe only
+>   words a failure. A key plain ssh would not offer gets one appended `Host`/`IdentityFile` block in
+>   `~/.ssh/config` first (`saveKeyLocally`: bytes kept, `config.stoke.bak`, re-checked with `ssh -G`).
+> - **"The enrollment PTY" is a tab now** — an "Add key to …" PtyManager session launched with
+>   `LaunchOptions.enroll = { hostId }`, argv built in main by id (`planEnrollLaunch`). It still has
+>   `sshAuth: null` (no `opts.host`), which is what keeps its own prompt from offering itself. See 109.
+> - **"No `0x1b` before auth" is a POSIX measurement.** On Windows node-pty runs ConPTY, which
+>   repaints as VT from its first frame (`CSI ?25l`, `CSI 2J`, an `OSC 0` title, `?9001h ?1004h`),
+>   so the escape rule closed the window before ssh printed anything. `sshAuthStep(…, { conpty })`
+>   scrubs OSC/CSI first and closes only on alt-screen, mouse tracking or bracketed paste — never on
+>   ConPTY's own `?9001h`/`?1004h`. Replayed as a ConPTY-SHAPED stream in `verify:ssh-enroll`;
+>   **never run on Windows**.
+> - **The fallback body is `sh -c '…'`** with no single quote inside, because the remote LOGIN
+>   shell parses it first: fish rejects `{ …; }`. Run under sh, bash, zsh, dash and tcsh here. A
+>   Windows OpenSSH server has no `sh`; the failure says to run `ssh-copy-id` from Git Bash.
+
+> **Checked against the code on 2026-09-30, second pass (review of the merge).** The tail anchor
+> proves a prompt is on screen. It does not prove whose. The reconnect gate after an enrollment
+> (`PtyManager.awaitingPassword`) read the last 512 bytes of a tab's output, and a shell that had
+> logged in and then run `su` ends in `Password: ` (PAM's shape). Measured from bash 5.2:
+> `su\r\n ESC[?2004l \r` then `Password: `. One that ran `ssh other` ends in `v@other's password: `.
+> Both passed, so after every enrollment the renderer killed and reconnected them, on every tab of
+> the host. The gate now reads `SshLoginWatch` (sshAuth.ts), a one-way flag kept for the session's
+> whole life. It settles on the first of: something painting, the 16 KB budget, a finished line
+> after the first prompt that is not ssh's own chatter, or Enter on a line that is not a prompt,
+> not empty and not one of ssh's questions. That covers shells that paint nothing: dash, ash, bash
+> before 5.1. The same watch withholds the OFFER from a session already in (`sshOutputStep`). That
+> closes a false offer the detector made on its own: log in by key to a shell that paints nothing,
+> run `su` inside the first 16 KB, and the detector saw an exact PAM prompt. Measured with dash.
+> What remains is a host whose own `command` prompts before any shell runs (`su -`). That still
+> reads as "at the prompt", and there is nothing to lose there.
+> Proven on real bytes: a node-pty harness ran `/usr/bin/ssh` (OpenSSH 10.3) against a Debian sshd
+> on loopback, with `-F /dev/null` and nothing in `~/.ssh` touched. After login, bash 5.2 and dash
+> each ran `su` and a nested ssh, and a dash key login ran `su`. The old gate said true in all five
+> cases and the new one false. On the key-login `su` the detector alone fired and the new step did
+> not. Then in the built app: three restored tabs on one host. A stayed at ssh's prompt; B logged
+> in and ran `su`; C logged in and ran a nested ssh. `awaitingPassword` answered true, false,
+> false. After a real enrollment, A was reconnected by key and B and C kept their ptys. Two things
+> that run showed: ssh 10.3 ends its log lines `\r\r\n\r`, and it prints `key fingerprint is:`
+> with a colon. The pattern for that line now takes both forms.
+
+## 109. An enrollment whose password prompt has no visible terminal can never complete
+
+**ssh reads a password from its controlling terminal and from nowhere else — not stdin, not an
+argument, not an environment variable Stoke would ever set — so an install that prompts has to run
+where a person can type.** The first SSH key enrollment ran `ssh-copy-id` in a private node-pty
+that was deliberately "not a PtyManager session" and that "nothing is ever written INTO": no tab,
+no `pty:write`, no IPC reaching it. The renderer half, built in parallel, assumed the user would
+type the password "into the terminal" — but the tab's xterm writes to the TAB's pty, the original
+ssh sitting at its own prompt. So `ssh-copy-id`'s prompt appeared in the strip as text, sat for
+`INSTALL_TIMEOUT_MS` (180 s) and was killed as "failed". On every host, every time — the feature
+could only fail, and the timeout returned before the probe ran.
+
+**Every suite was green and every commit said "measured".** The main half drove the orchestrator
+with an injected `spawnPty` that exited on cue; the renderer half stubbed main in a throwaway copy
+of the bundle; the detector was proved against a real sshd — up to the offer, and no further. Each
+half was verified against the other's promise, and no run ever typed a password into a real
+prompt. The injected fake is exactly the part that was wrong, so no amount of it could find this.
+
+The shape now: the install is an ordinary PtyManager session (`LaunchOptions.enroll`, an "Add key
+to …" tab, never saved for restore), the password goes over the existing `pty:write` path, and
+main proves the result after the tab's process exits (`finishEnroll`). Proven end to end on
+2026-09-30 on macOS against the built app and a password-only Debian sshd on loopback: the real
+prompt raised the strip, Add a key opened the tab, the password typed over CDP `Input.insertText`
+into that tab installed exactly one `authorized_keys` line (700/600), `keyEnrolled` went true, and
+the source tab reconnected to a shell with no prompt. A wrong password left the tab open with ssh's
+own "Permission denied" and a Try again that then succeeded; an already-authenticated tab was not
+touched. `~/.ssh` was backed up first and restored byte-identical (19 files, same sha256 and modes).
+(That tab sat at a shell prompt. One that had run `su` or a nested ssh WAS killed. The second
+2026-09-30 note under 75 has the fix and the rerun.)
+
+The rule for anything that asks a human for a secret: **verify against a real prompt, not an
+injected fake**, and find the terminal the person will type into before writing the code that
+waits for them to.

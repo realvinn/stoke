@@ -1256,7 +1256,9 @@ export class RemoteServer {
     const watcher = this.deps.watcher()
     if (!ptys) return []
     const registry = this.deps.registryStates()
-    const rows = ptys.list().map((s): RemoteSessionRow => {
+    // An "Add key to …" tab is ssh-copy-id in the home folder, not a session:
+    // listed, it would read as a Claude session named after that folder.
+    const rows = ptys.list().filter((s) => !s.enroll).map((s): RemoteSessionRow => {
       const host = this.deps.hostFor(s.sessionId)
       const reg = registry.find((r) => r.ptyId === s.ptyId) ?? null
       const context = watcher?.snapshot(s.sessionId) ?? null

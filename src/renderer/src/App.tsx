@@ -17,6 +17,8 @@ import type {
   SessionIndexEntry,
   SessionMeta,
   Settings,
+  SshAuthPromptEvent,
+  SshEnrollEvent,
   SshHost,
   Theme,
   WorklogProposal,
@@ -62,6 +64,7 @@ import { StatusBar } from './components/StatusBar'
 import { TerminalView } from './components/TerminalView'
 import { TitleBar } from './components/TitleBar'
 import { ActivityPanel } from './components/ActivityPanel'
+import { SshKeyPrompt } from './components/SshKeyPrompt'
 import { WorklogPrompt } from './components/WorklogPrompt'
 import { baseName, ipcErrorMessage } from './lib/format'
 import {
@@ -527,6 +530,39 @@ export function App(): React.JSX.Element {
   const [proposedIds, setProposedIds] = useState<string[]>([])
   const [asked, setAsked] = useState<Set<string>>(new Set())
 
+  /*
+   * The SSH key offer: one machine's password prompt, and whatever the
+   * enrollment it may start has said so far.
+   *
+   * One at a time, deliberately. A second prompt replaces the first rather than
+   * queueing — an offer is only meaningful next to the session that raised it,
+   * and a queue of them would be a list of questions about connections that
+   * have since given up asking.
+   *
+   * Nothing here installs anything by itself. An enrollment starts only from
+   * `startSshEnroll` (below, after `closeTab`), whose callers are the strip's
+   * Add-a-key button, Settings' "Set up key login", and an `offer: 'auto'`
+   * prompt — which the user asked for in Settings, and which still needs the
+   * password typed into the tab it opens.
+   */
+  const [sshOffer, setSshOffer] = useState<SshAuthPromptEvent | null>(null)
+  const [sshEnroll, setSshEnroll] = useState<SshEnrollEvent | null>(null)
+  /*
+   * Which host an enrollment is running for, as a ref AND as state, for gotcha
+   * 51's two separate reasons. The ref is correctness: it is claimed before the
+   * IPC call, so a second press landing before React has re-rendered the
+   * disabled button cannot open a second tab asking for the same password. The
+   * state is honesty: an install takes as long as it takes the user to type a
+   * password, and a button that looks pressable is what invites the second
+   * press. Held from the press until main reports `done` or `failed` — after
+   * the tab's process exits and the probe has run — and released at once if
+   * the start itself is refused.
+   */
+  const sshEnrollingRef = useRef<string | null>(null)
+  const [sshEnrolling, setSshEnrolling] = useState<string | null>(null)
+  /** The tab whose password prompt the running enrollment answers, if any. */
+  const enrollSourceRef = useRef<string | null>(null)
+
   const [paletteOpen, setPaletteOpen] = useState(false)
   // The phone popover is open. Not part of `overlayOpen` (it makes nothing
   // inert), but the docked browser must hide while it is up or its QR paints
@@ -827,6 +863,37 @@ export function App(): React.JSX.Element {
    */
   const settingsRef = useRef<Settings | null>(settings)
   settingsRef.current = settings
+
+  /**
+   * Not now, the close button and Escape. Session-only: nothing is written, and
+   * an enrollment already running carries on in its tab — this only takes the
+   * strip away until the next stage or the next prompt.
+   */
+  const dismissSshOffer = useCallback((): void => {
+    setSshOffer(null)
+    setSshEnroll(null)
+  }, [])
+
+  /**
+   * Never for this host.
+   *
+   * One boolean on one host, from one press. HostsSettings draws it as a
+   * checkbox per machine, so it is both findable and undoable — which is the
+   * whole reason this does not ask twice the way rejecting a worklog proposal
+   * does. Read through `settingsRef` so the callback does not rebuild, and so
+   * it writes the hosts that are current at the press rather than at render.
+   */
+  const refuseSshKey = useCallback(
+    (hostId: string): void => {
+      setSshOffer(null)
+      const s = settingsRef.current
+      if (!s) return
+      void patchSettings({
+        hosts: s.hosts.map((h) => (h.id === hostId ? { ...h, keyEnrollRefused: true } : h))
+      })
+    },
+    [patchSettings]
+  )
 
   /*
    * The tab list and the selection, readable from the hook-event listener
@@ -1159,6 +1226,37 @@ export function App(): React.JSX.Element {
       })
     })
 
+    /*
+     * A remote asked one of Stoke's sessions for a password.
+     *
+     * Main has already decided whether an offer is due at all — the setting,
+     * this host's refusal, and whether an enrollment is already running are all
+     * `shouldOfferKey`'s business, and it sends nothing when the answer is no.
+     * This end draws the question — and, for `offer: 'auto'`, which the user
+     * chose in Settings ("Start adding a key straight away — you still type the
+     * password"), opens the enrollment tab at once. Through a ref: this effect
+     * runs once, before `startSshEnroll` exists.
+     */
+    const offSshPrompt = window.stoke.ssh.onPasswordPrompt((e) => {
+      setSshOffer(e)
+      /*
+       * Progress belongs to the enrollment that is still running, and to
+       * nothing else. Without the guard a new question would arrive under the
+       * last run's "Done"; with a blanket reset, a prompt arriving while an
+       * install is mid-flight (the remote asks for the password it is waiting
+       * for) would blank the progress the user is watching.
+       */
+      setSshEnroll((cur) => (cur && cur.hostId === sshEnrollingRef.current ? cur : null))
+      if (e.offer === 'auto') {
+        const source = tabsRef.current.find((t) => t.ptyId === e.ptyId)
+        void startSshEnrollRef.current?.(e.hostId, source?.id ?? null)
+      }
+    })
+    const offSshEnroll = window.stoke.ssh.onEnrollEvent((e) => {
+      setSshEnroll(e)
+      if (e.stage === 'done' || e.stage === 'failed') void enrollFinishedRef.current?.(e)
+    })
+
     void (async () => {
       const s = await window.stoke.settings.get()
       setSettings(s)
@@ -1193,6 +1291,8 @@ export function App(): React.JSX.Element {
       offProposed()
       offWatch()
       offRemoteStart()
+      offSshPrompt()
+      offSshEnroll()
     }
   }, [refreshProjects])
 
@@ -2553,6 +2653,153 @@ export function App(): React.JSX.Element {
     [closeTab]
   )
 
+  /* ------------------------------------------------------ ssh key login */
+
+  /**
+   * Set up key login for a host: open an "Add key to …" tab running
+   * `ssh-copy-id`, where the user types the password once.
+   *
+   * A TAB, because that is the only place a password can be typed (gotcha
+   * 109): ssh reads it from its own terminal and nowhere else, and the first
+   * version ran the install in a private pty nobody could write to, so every
+   * enrollment sat on its prompt until a timeout killed it. The keystrokes go
+   * over the ordinary `pty.write` path; no channel carries a secret.
+   *
+   * Only the host id goes to main. The key, the ssh config line and the argv
+   * are built there from settings (`planEnrollLaunch`), so nothing typed here —
+   * nor anything the far end printed — can pick the destination.
+   *
+   * The guard is claimed before the IPC call (gotchas 20, 51) and held until
+   * main reports `done`/`failed` after the tab exits (`enrollFinished`); a
+   * refused start releases it at once. The tab is transient: `toStored` never
+   * saves it, so a restart cannot bring back an `ssh-copy-id`.
+   */
+  const startSshEnroll = useCallback(
+    async (hostId: string, sourceTabId: string | null, replaceTabId?: string): Promise<void> => {
+      if (sshEnrollingRef.current !== null) return
+      const host = settingsRef.current?.hosts.find((h) => h.id === hostId)
+      if (!host) return
+      sshEnrollingRef.current = hostId
+      enrollSourceRef.current = sourceTabId
+      setSshEnrolling(hostId)
+      // Said at once rather than waiting for main's own 'starting': the button
+      // going quiet for a second is what a second press is made of.
+      setSshEnroll({ hostId, stage: 'starting', message: '' })
+      try {
+        const res = await window.stoke.pty.start({
+          // Main ignores every field here but the host id and the size.
+          cwd: '',
+          enroll: { hostId },
+          permissionMode: 'default',
+          model: '',
+          effort: 'default',
+          cols: 120,
+          rows: 30
+        })
+        const label = host.label.trim() || host.alias.trim()
+        const tab: Tab = {
+          id: res.ptyId,
+          kind: 'session',
+          cliId: 'claude',
+          ptyId: res.ptyId,
+          sessionId: '',
+          // An alias, not a folder, exactly as on the host's own tabs
+          // (gotcha 18) — `hostId` is what says so to everything else.
+          cwd: host.alias,
+          projectName: label,
+          title: `Add key to ${label}`,
+          permissionMode: 'default',
+          model: '',
+          effort: 'default',
+          ultracode: false,
+          status: 'running',
+          exitCode: null,
+          hostId: host.id,
+          enrollHostId: host.id,
+          selectedPath: null,
+          expandedPath: null
+        }
+        setTabs((list) => {
+          const next = replaceOrAppend(list, tab, replaceTabId)
+          tabsRef.current = next
+          return next
+        })
+        // In front: the password is typed here, and nowhere else.
+        activeTabIdRef.current = tab.id
+        setActiveTabId(tab.id)
+      } catch (e) {
+        // Main has usually said why already, as a 'failed' event on the strip;
+        // this covers a refusal it could not report.
+        setSshEnroll({ hostId, stage: 'failed', message: ipcErrorMessage(e) })
+        sshEnrollingRef.current = null
+        enrollSourceRef.current = null
+        setSshEnrolling(null)
+      }
+    },
+    []
+  )
+  const startSshEnrollRef = useRef(startSshEnroll)
+  startSshEnrollRef.current = startSshEnroll
+
+  /**
+   * Main has proved (or failed to prove) the enrollment, after its tab exited.
+   *
+   * On a verified success the "Add key" tab has done its job and is closed, and
+   * the tabs on that host that asked for the password are reconnected — but
+   * only a tab with nothing to lose: one that never got in and still sits at
+   * ssh's own `password:`, or the one that raised the offer if its ssh has
+   * already given up. "Never got in" is main's to answer (`awaitingPassword`),
+   * from a watch over the session's whole life rather than the end of its
+   * output: a logged-in shell that has since run `su` or `ssh other` ends in
+   * the very same prompt shape, and killing it to "help" would lose whatever
+   * runs there. On failure everything stays: the enroll tab holds ssh's words.
+   */
+  const enrollFinished = useCallback(
+    async (e: SshEnrollEvent): Promise<void> => {
+      if (sshEnrollingRef.current !== e.hostId) return
+      const sourceTabId = enrollSourceRef.current
+      sshEnrollingRef.current = null
+      enrollSourceRef.current = null
+      setSshEnrolling(null)
+      if (e.stage !== 'done' || e.ok !== true) return
+
+      for (const t of tabsRef.current) if (t.enrollHostId === e.hostId) closeTab(t.id)
+
+      const host = settingsRef.current?.hosts.find((h) => h.id === e.hostId)
+      if (!host) return
+      const candidates = tabsRef.current.filter(
+        (t) => t.kind === 'session' && t.hostId === e.hostId && !t.enrollHostId
+      )
+      for (const t of candidates) {
+        let reconnect = false
+        if (t.status === 'exited') reconnect = t.id === sourceTabId
+        else if (t.status === 'running') reconnect = await window.stoke.ssh.awaitingPassword(t.ptyId)
+        if (!reconnect || !claimStart(t.id)) continue
+        // Its exit must not flash "Session ended" over a tab being moved.
+        relaunchingRef.current.add(t.id)
+        try {
+          if (t.status === 'running') {
+            forgetPty(t.ptyId)
+            await window.stoke.pty.stop(t.ptyId, 3000).catch(() => true)
+            forgetPty(t.ptyId)
+          }
+          await startHostSession(host, t.id, {
+            permissionMode: t.permissionMode,
+            model: t.model,
+            effort: t.effort,
+            focus: t.id === sourceTabId
+          })
+        } finally {
+          relaunchingRef.current.delete(t.id)
+          releaseStart(t.id)
+        }
+      }
+    },
+    [closeTab, claimStart, releaseStart, startHostSession]
+  )
+  const enrollFinishedRef = useRef(enrollFinished)
+  enrollFinishedRef.current = enrollFinished
+
   /**
    * Give a tab a name, or clear it back to Claude's ai-title with a blank one.
    * Written onto the tab; the debounced `tabs.save` above persists it, so a
@@ -2661,6 +2908,13 @@ export function App(): React.JSX.Element {
         return
       }
 
+      if (plan.kind === 'enroll') {
+        // "Try again" on a failed key install: the same enrollment, in this
+        // tab's slot. It answers no prompt now, so it has no source tab.
+        void startSshEnroll(plan.hostId, null, tab.id).finally(() => releaseStart(tab.id))
+        return
+      }
+
       if (plan.kind === 'install') {
         void startSession({
           cwd: defaultCwd,
@@ -2686,7 +2940,7 @@ export function App(): React.JSX.Element {
         ultracode: tab.ultracode
       }).finally(() => releaseStart(tab.id))
     },
-    [settings, startSession, startHostSession, claimStart, releaseStart, defaultCwd]
+    [settings, startSession, startHostSession, startSshEnroll, claimStart, releaseStart, defaultCwd]
   )
 
   /**
@@ -4101,6 +4355,18 @@ export function App(): React.JSX.Element {
     )
   })()
 
+  /*
+   * The machine the strip is about: the prompt's, else the enrollment's (one
+   * started from Settings has no prompt). Undefined when settings has no such
+   * host — a real state: the host can be deleted between the prompt landing
+   * and the render. There is then nothing to enroll and nothing truthful to
+   * name, so the strip is not drawn at all.
+   */
+  const sshStripHostId = sshOffer?.hostId ?? sshEnroll?.hostId ?? null
+  const sshOfferHost = sshStripHostId ? settings?.hosts.find((h) => h.id === sshStripHostId) : undefined
+  /** The open "Add key to …" tab for that host, if there is one. */
+  const sshEnrollTab = sshOfferHost ? tabs.find((t) => t.enrollHostId === sshOfferHost.id) : undefined
+
   const worklogPending = worklog.filter((p) => p.status === 'pending').length
   const worklogState = useMemo(
     () => worklogButtonState(worklogWatch, worklogPending),
@@ -4351,6 +4617,39 @@ export function App(): React.JSX.Element {
                 <IconClose />
               </button>
             </div>
+          )}
+
+          {/*
+            Same row, same reason as the worklog strip below, and the reason is
+            the whole design of this control: a modal, an overlay or a popover
+            would be painted over by the docked browser's WebContentsView
+            (gotcha 14) exactly while somebody is working with the browser open.
+          */}
+          {sshOfferHost && (
+            <SshKeyPrompt
+              prompt={sshOffer && sshOffer.hostId === sshOfferHost.id ? sshOffer : null}
+              host={sshOfferHost}
+              /* Only this host's own progress: an event for another machine is
+                 not news about the one being asked about. */
+              progress={sshEnroll && sshEnroll.hostId === sshOfferHost.id ? sshEnroll : null}
+              busy={sshEnrolling === sshOfferHost.id}
+              canShowTab={!!sshEnrollTab && sshEnrollTab.id !== activeTabId}
+              /* Escape is the settings sheet's, the palette's and the report's
+                 while any of them is up — App owns that stack, and a strip in
+                 the flow is never the thing on top. */
+              escapeDismisses={!settingsOpen && !paletteOpen && !worklogOpen && welcome === null}
+              onEnroll={() => {
+                // The tab whose prompt raised the offer, so it can be
+                // reconnected once the key works.
+                const source = sshOffer ? tabs.find((t) => t.ptyId === sshOffer.ptyId) : undefined
+                void startSshEnroll(sshOfferHost.id, source?.id ?? null)
+              }}
+              onShowTab={() => {
+                if (sshEnrollTab) setActiveTabId(sshEnrollTab.id)
+              }}
+              onDismiss={dismissSshOffer}
+              onNever={() => refuseSshKey(sshOfferHost.id)}
+            />
           )}
 
           {/*
@@ -4642,6 +4941,16 @@ export function App(): React.JSX.Element {
             }
           }}
           onRestartToUpdate={requestSelfRestart}
+          sshKeys={{
+            enrollingHostId: sshEnrolling,
+            onSetUpKey: (hostId) => {
+              // The sheet goes so the "Add key to …" tab it opens is what the
+              // user sees, and types the password into.
+              setPreviewTheme(null)
+              setSettingsOpen(false)
+              void startSshEnroll(hostId, null)
+            }
+          }}
           onClose={() => {
             // Drop any live preview with the sheet. Closing settings mid-edit
             // is a cancel by any other name, and leaving the preview applied

@@ -215,7 +215,8 @@ export function StatusBar({
   // An install tab carries its first agent as `cliId` — which can be Claude
   // Code — but it is a shell running installers, not a session: none of the
   // session items below describe it (found by review).
-  const installTab = !!tab?.installing?.length
+  // An "Add key to …" tab is the same: ssh-copy-id in a terminal, no session.
+  const installTab = !!tab?.installing?.length || !!tab?.enrollHostId
   const claudeTab = !installTab && isClaudeCode(cliIdOf(tab?.cliId))
   const shownVersion = claudeTab
     ? (versionNumber(liveVersion) ??
@@ -401,7 +402,9 @@ export function StatusBar({
          * The user would watch a status bar that never resolves and reasonably
          * conclude the meter was broken.
          */
-        tab.installing?.length ? (
+        tab.enrollHostId ? (
+          <span className="status-item">Setting up key login — the password goes in this tab</span>
+        ) : tab.installing?.length ? (
           <span className="status-item">
             Installing {tab.installing.map((id) => cliFor(id).label).join(', ')}
           </span>

@@ -21,8 +21,10 @@ export function toStored(
   screenOf: (tab: Tab) => string,
   now = Date.now()
 ): StoredTabs {
-  // An install tab is not a session and cannot come back as one.
-  const kept = tabs.filter((t) => !t.installing?.length)
+  // An install tab is not a session and cannot come back as one. Nor can an
+  // "Add key to …" tab: restoring it would reopen an ssh-copy-id asking for a
+  // password nobody is there to type, on a host that may have its key by now.
+  const kept = tabs.filter((t) => !t.installing?.length && !t.enrollHostId)
   const stored: StoredTab[] = kept.map((t) => {
     const snap = t.sessionId ? contexts[t.sessionId] : undefined
     return {

@@ -30,6 +30,8 @@ import type {
   ProjectMeta,
   Rect,
   Settings,
+  SshAuthPromptEvent,
+  SshEnrollEvent,
   SshHost,
   StatusLineSnapshot,
   LiveSessionState,
@@ -99,6 +101,7 @@ import { claudeVoiceEnabled, isMicAccess, type MicAccess } from '../shared/voice
 import { transcribe } from './stt.ts'
 import { createProfile, planProfile } from './profiles.ts'
 import { readSshConfigHosts } from './ssh.ts'
+import { shouldOfferKey } from '../shared/sshAuth.ts'
 import {
   consumeUpdateRestart,
   readTabState,
@@ -456,6 +459,22 @@ const lastContextLimit = new Map<string, number>()
 const sessionHosts = new Map<string, SshHost>()
 
 /**
+ * Hosts with a key enrollment running, from the press until the probe after
+ * its tab exits. Claimed in `startEnrollSession` before its first await and
+ * refused on re-entry (gotchas 20, 51, 66): two presses would otherwise open
+ * two tabs, both asking for the same password, and race two `ssh-keygen`s over
+ * one file name. Read synchronously by the offer (`shouldOfferKey`'s
+ * `inFlight`), which is decided inside `PtyManager`'s data callback.
+ */
+const enrolling = new Set<string>()
+
+/**
+ * The enrollment tab behind each pty, so its exit can be proven. Keyed by
+ * ptyId; the entry is taken (deleted) by the exit that finishes it.
+ */
+const enrollRuns = new Map<string, { host: SshHost; keyPath: string; fallback: boolean }>()
+
+/**
  * When each entry in `sessionCwds`/`sessionHosts` was last genuinely written —
  * either restored off disk at boot or set by `launchSession` for the session
  * it just started.
@@ -599,6 +618,9 @@ async function launchSession(
   origin: 'desktop' | 'remote' = 'desktop'
 ): Promise<StartResult> {
   if (!ptys) throw new Error('Window is not ready')
+  // Its own path, before anything else reads the request: an enrollment takes
+  // the host id from it and nothing more (`planEnrollLaunch`).
+  if (requested.enroll) return startEnrollSession(requested)
   const settings = getSettings()
   /*
    * `--resume` or `--session-id`, decided here, against the disk, right before
@@ -704,6 +726,75 @@ async function launchSession(
    */
   persistSessionState()
   return result
+}
+
+/**
+ * Set up key login for a host, in a tab (`opts.enroll`).
+ *
+ * The renderer names the host by id; everything else — the key, the config
+ * line that makes plain `ssh <alias>` offer it, the `ssh-copy-id` argv — is
+ * built here from settings (`planEnrollLaunch`, `prepareEnroll`). The tab is a
+ * real PtyManager session so the user can type the password into it (gotcha
+ * 109); the password goes over the ordinary `pty:write` path and nothing else.
+ * When the tab's process exits, `finishEnrollRun` proves the result.
+ *
+ * `sshEnroll.ts` is imported lazily, never at module scope: a static import is
+ * evaluated before `app.whenReady()`, and this is a button most launches never
+ * press (gotcha 40).
+ */
+async function startEnrollSession(requested: LaunchOptions): Promise<StartResult> {
+  if (!ptys) throw new Error('Window is not ready')
+  const hostId = requested.enroll?.hostId
+  if (typeof hostId !== 'string' || !hostId) throw new Error('No host was named.')
+  // Claimed before the first await and refused on re-entry (gotchas 20, 66).
+  if (enrolling.has(hostId)) throw new Error('Stoke is already setting up key login for that machine.')
+  enrolling.add(hostId)
+  let started = false
+  const emit = (event: SshEnrollEvent): void => send(CH.sshEnrollEvent, event)
+  try {
+    const { planEnrollLaunch, prepareEnroll } = await import('./sshEnroll.ts')
+    const plan = planEnrollLaunch(requested, getSettings().hosts)
+    if (!plan.ok) {
+      emit({ hostId, stage: 'failed', message: plan.message })
+      throw new Error(plan.message)
+    }
+    const prep = await prepareEnroll(plan.host, { emit })
+    if (!prep.ok) throw new Error(prep.message)
+    const result = await ptys.start(plan.opts, null, null, () => null, getSettings().providers, null, prep.command)
+    enrollRuns.set(result.ptyId, { host: plan.host, keyPath: prep.keyPath, fallback: prep.fallback })
+    started = true
+    return result
+  } finally {
+    // On success the claim is held until the tab exits (`finishEnrollRun`).
+    if (!started) enrolling.delete(hostId)
+  }
+}
+
+/**
+ * An enrollment tab's process has exited: prove it worked for the TAB's own
+ * connection, and only then write `keyEnrolled` (gotcha 75). The host is
+ * re-read by id rather than patched from the launch copy: Settings may have
+ * changed while the install waited on a password.
+ */
+async function finishEnrollRun(
+  run: { host: SshHost; keyPath: string; fallback: boolean },
+  exitCode: number,
+  signal: number | undefined
+): Promise<void> {
+  const hostId = run.host.id
+  const emit = (event: SshEnrollEvent): void => send(CH.sshEnrollEvent, event)
+  try {
+    const { finishEnroll } = await import('./sshEnroll.ts')
+    const result = await finishEnroll(run.host, run.keyPath, exitCode, run.fallback, { emit }, signal)
+    if (!result.ok) return
+    if (!getSettings().hosts.some((h) => h.id === hostId)) return
+    const hosts = getSettings().hosts.map((h) => (h.id === hostId ? { ...h, keyEnrolled: true } : h))
+    send(CH.settingsChanged, setSettings({ hosts }))
+  } catch (err) {
+    emit({ hostId, stage: 'failed', message: `Could not check the key: ${(err as Error).message}` })
+  } finally {
+    enrolling.delete(hostId)
+  }
 }
 
 /** Write the session address book the worklog reads. See `launchSession`. */
@@ -1695,6 +1786,47 @@ function createWindow(): void {
       // same exit event, while it is still known, so this entry does not
       // sit in `statusLineSeen` forever.
       if (sessionId) statusLineSeen.delete(sessionId)
+      // An enrollment tab: ssh-copy-id has finished, been closed, or failed.
+      // Whichever — only the probe knows whether it worked.
+      const run = enrollRuns.get(ptyId)
+      if (run) {
+        enrollRuns.delete(ptyId)
+        void finishEnrollRun(run, code, signal)
+      }
+    },
+    /*
+     * A remote asked one of our sessions for a password.
+     *
+     * Everything this does is decide whether to SAY so. `shouldOfferKey` is
+     * pure and its whole truth table is asserted without bytes; a 'no' sends
+     * nothing at all, so an offer the user turned off costs one map lookup and
+     * leaves no trace. Nothing here can install anything — that needs a
+     * `pty:start` with `opts.enroll`, which the renderer sends from a press
+     * (or from an 'auto' offer the user chose in Settings).
+     *
+     * The host is resolved by ID from settings, never from the `user@host` the
+     * far end printed: that text is display-only (gotcha 75), and it travels on
+     * to the renderer purely so a mismatch through a ProxyJump is visible.
+     */
+    (ptyId, hostId, prompt) => {
+      const settings = getSettings()
+      const host = settings.hosts.find((h) => h.id === hostId)
+      if (!host) return
+      const offer = shouldOfferKey({
+        setting: settings.sshKeyEnroll,
+        refused: host.keyEnrollRefused === true,
+        enrolled: host.keyEnrolled === true,
+        inFlight: enrolling.has(hostId)
+      })
+      if (offer === 'no') return
+      const event: SshAuthPromptEvent = {
+        ptyId,
+        hostId,
+        offer,
+        user: prompt.user,
+        host: prompt.host
+      }
+      send(CH.sshAuthPrompt, event)
     }
   )
   /*
@@ -2825,6 +2957,16 @@ function registerIpc(): void {
 
   /* ------------------------------------------------------------------- ssh */
   ipcMain.handle(CH.sshHosts, () => readSshConfigHosts())
+
+  /**
+   * Is this SSH tab still sitting at a password prompt? Asked by the renderer
+   * after a key was enrolled, before it reconnects the tab that raised the
+   * offer: only a tab with nothing to lose is ever restarted (`awaitingPassword`
+   * in pty.ts). A string id and nothing else — this reads, it never acts.
+   */
+  ipcMain.handle(CH.sshAwaitingPassword, (_e, ptyId: unknown) =>
+    typeof ptyId === 'string' && ptyId ? (ptys?.awaitingPassword(ptyId) ?? false) : false
+  )
 
   /* ------------------------------------------------------------------ tabs */
   ipcMain.on(CH.tabsSave, (_e, state: StoredTabs) => {

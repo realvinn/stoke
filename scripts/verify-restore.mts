@@ -326,6 +326,27 @@ console.log('\nconverting between the tab list and the snapshot')
   check('an install tab that was active falls back to the first tab', toStored(live, 'inst', {}, (t) => t.id, NOW).activeIndex, 0)
 }
 {
+  /*
+   * An "Add key to …" tab is transient. Saved, a restart would reopen an
+   * ssh-copy-id asking for a password nobody is there to type — or, read as
+   * the SSH tab its `hostId` makes it look like, reconnect to the host as a
+   * plain session. It has to vanish from the snapshot whatever state it is in.
+   */
+  const base = {
+    kind: 'session' as const, cliId: 'claude' as const, permissionMode: 'default' as const, model: '',
+    effort: 'default' as const, ultracode: false, exitCode: null, selectedPath: null, expandedPath: null
+  }
+  const live: Tab[] = [
+    { ...base, id: 'ssh', ptyId: 'ssh', sessionId: 'sess-ssh', cwd: 'vps', projectName: 'VPS', title: 'VPS', status: 'running', hostId: 'h1' },
+    { ...base, id: 'key', ptyId: 'key', sessionId: '', cwd: 'vps', projectName: 'VPS', title: 'Add key to VPS', status: 'running', hostId: 'h1', enrollHostId: 'h1' },
+    { ...base, id: 'key2', ptyId: 'key2', sessionId: '', cwd: 'vps', projectName: 'VPS', title: 'Add key to VPS', status: 'exited', hostId: 'h1', enrollHostId: 'h1' }
+  ]
+  const snap = toStored(live, 'key', {}, (t) => t.id, NOW)
+  check('an Add-key tab is never saved, running or exited', snap.tabs.map((t) => t.title), ['VPS'])
+  check('while the SSH tab beside it is', snap.tabs.map((t) => t.hostId), ['h1'])
+  check('and an active Add-key tab falls back to the first tab', snap.activeIndex, 0)
+}
+{
   const back = fromStored({ version: 1, savedAt: NOW, activeIndex: 0, tabs: [] })
   check('an empty snapshot restores nothing and selects nothing', [back.tabs.length, back.activeId], [0, null])
 }

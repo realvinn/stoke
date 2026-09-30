@@ -204,8 +204,12 @@ export const CH = {
   sshHosts: 'ssh:hosts',
   /** main -> renderer: a remote just asked this session for a password. */
   sshAuthPrompt: 'ssh:auth-prompt',
-  /** renderer -> main: the user pressed "Add a key". The ONLY way to enroll. */
-  sshEnroll: 'ssh:enroll',
+  /**
+   * renderer -> main: is this SSH tab still at a password prompt? Read-only.
+   * (Enrolling itself is a `pty:start` with `opts.enroll`: it opens a tab the
+   * user types the password into, so it rides the pty channels.)
+   */
+  sshAwaitingPassword: 'ssh:awaiting-password',
   /** main -> renderer: progress and outcome of an enrollment. */
   sshEnrollEvent: 'ssh:enroll-event',
 

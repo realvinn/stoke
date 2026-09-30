@@ -18,7 +18,11 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import {
   MAX_REMOTE_TRANSCRIPT_BYTES,
+  appendIdentityBlock,
+  buildIdentityBlock,
+  buildLoginProbeArgs,
   buildSshArgs,
+  identityFilesFromSshG,
   buildTranscriptArgs,
   buildTranscriptCommand,
   isConnectableAlias,
@@ -521,6 +525,74 @@ try {
   )
 } finally {
   await rm(dir, { recursive: true, force: true })
+}
+
+/* --------------------------------- key login: the probe and the config block */
+
+/*
+ * What sets `keyEnrolled` has to ask what the TAB will do, so its argv must
+ * look like the tab's: no `-i`, no `IdentitiesOnly`. The first version probed
+ * with both and passed for a key plain ssh never offers.
+ */
+console.log('\nkey login: the login probe and the IdentityFile block')
+
+{
+  const probe = buildLoginProbeArgs(host({}))
+  check('the login probe is built for a plain alias', probe !== null, '')
+  if (probe) {
+    check('it carries no -i: the tab offers what the config offers', !probe.includes('-i'), probe.join(' '))
+    check(
+      'and no IdentitiesOnly, which would narrow it to one key',
+      !probe.some((a) => /IdentitiesOnly/i.test(a)),
+      probe.join(' ')
+    )
+    for (const opt of ['BatchMode=yes', 'PreferredAuthentications=publickey', 'ControlPath=none']) {
+      check(`${opt}, before the destination`, probe.indexOf(opt) > 0 && probe.indexOf(opt) < probe.indexOf('vps'), probe.join(' '))
+    }
+    check('-e none before the destination (gotcha 29)', probe.indexOf('-e') < probe.indexOf('vps') && probe[probe.indexOf('-e') + 1] === 'none', probe.join(' '))
+    same('the alias then `exit`, last', probe.slice(-2), ['vps', 'exit'])
+  }
+  same('a leading-dash alias gets no probe at all', buildLoginProbeArgs(host({ alias: '-oProxyCommand=x' })), null)
+}
+
+{
+  /*
+   * The claim that makes APPENDING safe: `IdentityFile` accumulates across
+   * matching blocks, so a block at the end adds a key and overrides nothing.
+   * A claim about ssh, so ssh is asked — `-G` against a fixture, no connection.
+   */
+  const kdir = await mkdtemp(join(tmpdir(), 'stoke-ssh-key-'))
+  const combinedOutput = async (argv: string[]): Promise<string> => {
+    try {
+      const { stdout, stderr } = await execFileAsync(sshExecutable(), argv, { encoding: 'utf8', timeout: 15000 })
+      return `${stdout}${stderr}`
+    } catch (err) {
+      const e = err as { stdout?: string; stderr?: string }
+      return `${e.stdout ?? ''}${e.stderr ?? ''}`
+    }
+  }
+  try {
+    const key = join(kdir, 'stoke_ed25519')
+    const base = ['Host *', '  IdentityFile ~/.ssh/work_key', '  IdentitiesOnly yes', ''].join('\n')
+    const block = buildIdentityBlock('vps', key)
+    const bare = buildIdentityBlock('v@203.0.113.9', key)
+    check('a block is built for a plain alias', block !== null, '')
+    check('and for user@host, as a Host line for the host part', bare !== null && bare.includes('\nHost 203.0.113.9\n'), bare ?? 'null')
+    if (block && bare) {
+      const fixture = join(kdir, 'config')
+      await writeFile(fixture, appendIdentityBlock(appendIdentityBlock(base, block), bare), 'utf8')
+      const out = await combinedOutput(['-F', fixture, '-G', 'vps'])
+      const files = identityFilesFromSshG(out)
+      check('ssh -G still lists the key the config already named', files.some((f) => f.endsWith('work_key')), files.join(', '))
+      check('and now lists the appended one too — IdentityFile accumulates', files.includes(key), files.join(', '))
+      const outBare = await combinedOutput(['-F', fixture, '-G', 'v@203.0.113.9'])
+      check('a user@host alias picks up its Host-part block', identityFilesFromSshG(outBare).includes(key), identityFilesFromSshG(outBare).join(', '))
+      const other = identityFilesFromSshG(await combinedOutput(['-F', fixture, '-G', 'some-other-host']))
+      check('and a host the block does not name is untouched', !other.includes(key), other.join(', '))
+    }
+  } finally {
+    await rm(kdir, { recursive: true, force: true })
+  }
 }
 
 /* ------------------------------------------- fetching a remote transcript */

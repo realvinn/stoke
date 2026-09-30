@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { SshHost } from '@shared/types'
+import type { SshHost, SshKeyEnroll } from '@shared/types'
+import { isEnrollableAlias } from '@shared/sshAuth'
 import { FieldHint } from './FieldHint'
 import { IconClose, IconPlus } from './Icons'
 
@@ -8,7 +9,48 @@ interface Props {
   /** Host aliases read out of ~/.ssh/config. Offered, never required. */
   suggestions: string[]
   onChange: (hosts: SshHost[]) => void
+  /** `Settings.sshKeyEnroll`. The only copy — never mirrored into state. */
+  keyEnroll: SshKeyEnroll
+  onChangeKeyEnroll: (value: SshKeyEnroll) => void
+  /**
+   * Set up key login for this host now: App closes the sheet and opens the
+   * "Add key to …" tab (`startSshEnroll`), where the password is typed.
+   */
+  onSetUpKey: (hostId: string) => void
+  /** The host an enrollment is running for, or null. One at a time. */
+  enrollingHostId: string | null
 }
+
+/**
+ * What to do when a remote asks for a password, in the user's words.
+ *
+ * The middle label says what it says on purpose and must not be shortened to
+ * "add keys automatically". Installing a key requires authenticating to the
+ * machine, authenticating requires the password, and the password is the one
+ * thing Stoke never holds — so the automatic setting cannot mean "without you".
+ * It skips the question and nothing else; the password is still typed by hand.
+ *
+ * Radios rather than a <select>: a closed <select> cannot ellipsis its own
+ * value, and that middle line is the one that would be cut in half
+ * (ClaudeCodeSettings measured the same trap and records it).
+ */
+const KEY_ENROLL_CHOICES: { id: SshKeyEnroll; label: string; hint: string }[] = [
+  {
+    id: 'ask',
+    label: 'Offer to add a key',
+    hint: 'A strip above the terminal asks. Nothing is installed until you press it.'
+  },
+  {
+    id: 'auto',
+    label: 'Start adding a key straight away — you still type the password',
+    hint: 'Skips the yes/no. Stoke cannot install a key without you authenticating, so you type the password once either way.'
+  },
+  {
+    id: 'off',
+    label: 'Do nothing',
+    hint: 'Never offer, on any machine. Passwords keep working exactly as they do now.'
+  }
+]
 
 /**
  * What a new host runs on connect, and why it is not empty.
@@ -70,7 +112,15 @@ export function commitField(
  * already owns the settings round trip, and a component that fetched its own
  * hosts would be a second copy of the same list to keep in step.
  */
-export function HostsSettings({ hosts, suggestions, onChange }: Props): React.JSX.Element {
+export function HostsSettings({
+  hosts,
+  suggestions,
+  onChange,
+  keyEnroll,
+  onChangeKeyEnroll,
+  onSetUpKey,
+  enrollingHostId
+}: Props): React.JSX.Element {
   /*
    * Text fields are local drafts, committed on blur or Enter.
    *
@@ -156,9 +206,26 @@ export function HostsSettings({ hosts, suggestions, onChange }: Props): React.JS
   const add = useCallback((): void => {
     onChange([
       ...hosts,
-      // Explicitly off. A new host must never arrive with an agent already
-      // reading its transcripts.
-      { id: newHostId(hosts), label: '', alias: '', command: DEFAULT_COMMAND, worklog: false }
+      /*
+       * Every optional flag stated, none left to `undefined`.
+       *
+       * `worklog: false` so a new machine never arrives with an agent already
+       * reading its transcripts — and the two key fields for the same reason,
+       * one step further: `keyEnrollRefused` decides whether this machine is
+       * ever offered a key and `keyEnrolled` claims one is already installed
+       * and working. A field that is absent reads as false everywhere, which is
+       * the right answer both times; writing it down is what stops a later
+       * `h.keyEnrolled ?? somethingElse` from quietly meaning something else.
+       */
+      {
+        id: newHostId(hosts),
+        label: '',
+        alias: '',
+        command: DEFAULT_COMMAND,
+        worklog: false,
+        keyEnrollRefused: false,
+        keyEnrolled: false
+      }
     ])
   }, [hosts, onChange])
 
@@ -217,6 +284,73 @@ export function HostsSettings({ hosts, suggestions, onChange }: Props): React.JS
         land.
       </FieldHint>
 
+      {/*
+        One control for every machine, above the list, because that is its
+        scope: `Settings.sshKeyEnroll` is app-wide and each host's own
+        `keyEnrollRefused` is the exception to it. Both are readable here, which
+        is the point -- a refusal pressed under a password prompt months ago is
+        otherwise a setting the user can turn on and never off.
+
+        `keyEnroll` comes in as a prop and goes out through `onChangeKeyEnroll`;
+        it is never copied into a `useState` here (gotcha 57), so the radios can
+        only ever show what settings actually holds.
+      */}
+      <div className="field" role="radiogroup" aria-labelledby="ssh-key-enroll-label">
+        <span className="field-label" id="ssh-key-enroll-label">
+          When a remote asks for a password
+        </span>
+        {KEY_ENROLL_CHOICES.map((c) => (
+          <label className="check-row" key={c.id}>
+            <input
+              type="radio"
+              name="ssh-key-enroll"
+              checked={keyEnroll === c.id}
+              onChange={() => onChangeKeyEnroll(c.id)}
+            />
+            <span>
+              <span className="field-label">{c.label}</span>
+              <span className="field-hint">{c.hint}</span>
+            </span>
+          </label>
+        ))}
+        <FieldHint
+          more={
+            <>
+              <p>
+                A password prompt from a machine you use every day is a machine that has never been
+                given a key. Stoke notices the prompt -- the detection is a whitelist of{' '}
+                <span className="mono">ssh</span>&rsquo;s own wording, so a{' '}
+                <span className="mono">sudo</span> prompt or a credential helper&rsquo;s prompt
+                inside the session is never mistaken for one -- and offers to run{' '}
+                <span className="mono">ssh-copy-id</span> for that host.
+              </p>
+              <p>
+                <b>Your password never reaches Stoke.</b> The install opens its own tab, &ldquo;Add
+                key to &hellip;&rdquo;, which asks for the password itself, and you type it there,
+                once. Stoke holds no password at any point, in any setting, which is also why the
+                automatic setting cannot be silent.
+              </p>
+              <p>
+                Stoke uses the key <span className="mono">ssh</span> already picks for that host, or
+                makes <span className="mono">~/.ssh/id_ed25519</span>. When your ssh config would not
+                offer that key to the host, it adds one <span className="mono">Host</span> block
+                naming it at the end of <span className="mono">~/.ssh/config</span> (backed up to{' '}
+                <span className="mono">config.stoke.bak</span> first) and changes nothing else.
+                Then it connects once with <span className="mono">BatchMode</span> to prove a plain{' '}
+                <span className="mono">ssh</span> gets in without a password.
+              </p>
+              <p>
+                Nothing is offered at all while this is set to <b>Do nothing</b>. &ldquo;Set up key
+                login&rdquo; on a machine below works either way.
+              </p>
+            </>
+          }
+        >
+          Offered only by machines that ask; &ldquo;Set up key login&rdquo; below works on any. The
+          key goes in that machine&rsquo;s <span className="mono">authorized_keys</span>.
+        </FieldHint>
+      </div>
+
       {/* Native datalist: the box stays free-form, so a host that is not in the
           config can still be typed out in full as user@host. */}
       <datalist id={ALIAS_LIST_ID}>
@@ -263,6 +397,19 @@ export function HostsSettings({ hosts, suggestions, onChange }: Props): React.JS
               {host.worklog === true && (
                 <span className="settings-item-dot" title="Work done here is written up">
                   <span className="sr-only">written up</span>
+                </span>
+              )}
+              {/* Per-host state, readable without opening the row. A pill
+                  rather than a second dot: the dot beside it already means
+                  "written up", and two dots of different colours in one row is
+                  a legend nobody has. */}
+              {host.keyEnrolled === true && (
+                <span
+                  className="pill"
+                  data-tone="accent"
+                  title="Stoke added an SSH key to this machine"
+                >
+                  key
                 </span>
               )}
             </summary>
@@ -347,6 +494,69 @@ export function HostsSettings({ hosts, suggestions, onChange }: Props): React.JS
                 />
                 <span className="field-label">Write up work done on this machine</span>
               </label>
+
+              {/*
+                The way back from "Never for this host".
+
+                That button writes `keyEnrollRefused` from a strip that appears
+                under a password prompt and is gone a moment later, so without a
+                row here it would be a setting a user can turn on and never off
+                -- which is also why the offer itself needs no confirm step.
+              */}
+              <label className="check-row">
+                <input
+                  type="checkbox"
+                  checked={host.keyEnrollRefused !== true}
+                  onChange={(e) => update(host.id, { keyEnrollRefused: !e.target.checked })}
+                />
+                <span>
+                  <span className="field-label">
+                    Offer to add a key when this machine asks for a password
+                  </span>
+                  {/* Only where there is something to say: a hint under every
+                      host in every state is the prose-per-machine this file
+                      already paid for once. */}
+                  {host.keyEnrolled === true ? (
+                    <span className="field-hint">
+                      Stoke has added a key here and checked that it works
+                      {host.keyEnrollRefused === true ? ', and the offer is off.' : '.'}
+                    </span>
+                  ) : (
+                    host.keyEnrollRefused === true && (
+                      <span className="field-hint">
+                        Turned off by &ldquo;Never for this host&rdquo;. Ticking it is the way back.
+                      </span>
+                    )
+                  )}
+                </span>
+              </label>
+
+              {/*
+                The way in that needs no password prompt first. Uses the
+                COMMITTED alias (what a tab would connect to), not a draft still
+                being typed; main looks the host up by id anyway.
+              */}
+              <div className="settings-item-actions">
+                <button
+                  className="btn"
+                  data-size="sm"
+                  disabled={!isEnrollableAlias(host.alias.trim()) || enrollingHostId !== null}
+                  onClick={() => onSetUpKey(host.id)}
+                  aria-label={`Set up key login for ${name}`}
+                >
+                  {enrollingHostId === host.id ? 'Setting up key login…' : 'Set up key login'}
+                </button>
+                {host.alias.trim() !== '' && !isEnrollableAlias(host.alias.trim()) ? (
+                  <span className="field-hint">
+                    Stoke will not hand this alias to <span className="mono">ssh-copy-id</span>. Run it
+                    yourself.
+                  </span>
+                ) : (
+                  <span className="field-hint">
+                    Opens a tab that asks for this machine&rsquo;s password once.
+                  </span>
+                )}
+              </div>
 
               {/* In the body, not the summary. A button inside a <summary>
                   toggles the disclosure on its way through unless it calls

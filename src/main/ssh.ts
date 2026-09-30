@@ -462,15 +462,53 @@ export function buildEnrollFallbackArgs(host: SshHost, pubkeyLine: string): stri
 }
 
 /**
- * Does public-key authentication actually work for this host?
+ * Does the TAB's own connection now get in without a password?
  *
- * The only thing that may set `SshHost.keyEnrolled`. `ssh-copy-id` exiting 0
- * means the key reached `authorized_keys`, which is not the same claim:
- * `PubkeyAuthentication no`, an `AuthorizedKeysFile` pointing somewhere else, or
- * a group-writable home directory each produce a happy install and a server that
- * still asks for a password. Only a connection can tell, and this is the
- * connection — `BatchMode=yes` guarantees it can never prompt, so it either
- * succeeds on the key or exits non-zero.
+ * The only thing that may set `SshHost.keyEnrolled`, and it asks exactly the
+ * question the flag answers: what will `ssh <alias>` — `buildSshArgs`, the
+ * argv every SSH tab runs — do next time. So no `-i` and no `IdentitiesOnly`:
+ * the identities come from the user's config and agent, the same as the tab's.
+ *
+ * The first draft probed with `-i <key> -o IdentitiesOnly=yes` instead, which
+ * proves the SERVER accepts that key and says nothing about whether plain ssh
+ * will offer it. With a key minted as `~/.ssh/stoke_ed25519` — not one of
+ * ssh's default names — that probe passed, `keyEnrolled` went true, and the
+ * next tab still asked for a password. That probe survives as
+ * `buildPubkeyProbeArgs`, only to word a failure of this one.
+ *
+ * `ssh-copy-id` exiting 0 is not evidence either (`PubkeyAuthentication no`,
+ * an `AuthorizedKeysFile` elsewhere, a group-writable home all give a happy
+ * install and a server that still asks). `BatchMode=yes` means this can never
+ * prompt, so it either succeeds on a key or exits non-zero; `ControlPath=none`
+ * so a multiplexed master cannot answer for it; `PreferredAuthentications=
+ * publickey` so a host that also allows keyboard-interactive does not count.
+ */
+export function buildLoginProbeArgs(host: SshHost): string[] | null {
+  const alias = host.alias.trim()
+  if (!isEnrollableAlias(alias)) return null
+  return [
+    '-o',
+    'BatchMode=yes',
+    '-o',
+    'PreferredAuthentications=publickey',
+    '-o',
+    'ControlPath=none',
+    '-o',
+    'ConnectTimeout=10',
+    '-e',
+    'none',
+    alias,
+    'exit'
+  ]
+}
+
+/**
+ * Does the SERVER accept this one key?
+ *
+ * Not what sets `keyEnrolled` — see `buildLoginProbeArgs`. Run only after the
+ * login probe failed, to tell "the server refuses the key" (sshd config,
+ * permissions) from "the server takes it but plain ssh does not offer it"
+ * (the local config), which need opposite fixes.
  *
  * Lifted from `ssh-copy-id`'s own pre-flight check, which uses the same three
  * options for the same reason.
@@ -496,6 +534,87 @@ export function buildPubkeyProbeArgs(host: SshHost, keyPath: string): string[] |
     alias,
     'exit'
   ]
+}
+
+/* ------------------------------------------------- the key, saved locally */
+
+/**
+ * The identity files `ssh -G <alias>` prints, in ssh's order, `~` expanded.
+ *
+ * `ssh -G` resolves the whole config — `Host` blocks, `Match`, `Include`, the
+ * defaults when nothing names a file — and prints every keyword lower-cased,
+ * one per line, value after a single space. This is the list plain
+ * `ssh <alias>` will offer from disk, which is the list a new key has to be on.
+ */
+export function identityFilesFromSshG(stdout: string, home?: string): string[] {
+  const out: string[] = []
+  for (const line of stdout.split(/\r?\n/)) {
+    if (!line.startsWith('identityfile ')) continue
+    const raw = line.slice('identityfile '.length).trim()
+    if (!raw) continue
+    out.push(home && (raw === '~' || raw.startsWith('~/')) ? join(home, raw.slice(2)) : expandTilde(raw))
+  }
+  return out
+}
+
+/**
+ * The `Host` pattern that makes a block apply to this alias, or null.
+ *
+ * ssh matches `Host` patterns against the destination's HOST part, so a bare
+ * `user@1.2.3.4` needs `Host 1.2.3.4`, not the whole string. Whitelisted, never
+ * escaped: the result is written into a file every ssh on the machine reads,
+ * so anything that could be a second pattern, a negation, a wildcard or the
+ * start of another keyword is refused (`ssh://` URIs and IPv6 brackets too —
+ * rare enough that "add it yourself" is the right answer).
+ */
+export function sshConfigHostPattern(alias: string): string | null {
+  const a = alias.trim()
+  if (!isEnrollableAlias(a)) return null
+  const at = a.lastIndexOf('@')
+  const hostPart = at >= 0 ? a.slice(at + 1) : a
+  return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(hostPart) ? hostPart : null
+}
+
+/**
+ * The block that makes plain `ssh <alias>` offer `keyPath`, or null.
+ *
+ * `IdentityFile` ACCUMULATES across matching blocks — it is one of the few
+ * keywords where ssh does not stop at the first value — so a block appended
+ * at the end adds this key to whatever the user's config already offers and
+ * overrides nothing. That is what makes appending safe where editing would
+ * not be.
+ *
+ * The path is double-quoted (a home folder can hold a space) and refused if it
+ * holds a `"`, a newline or a `%` — ssh expands `%d`, `%u` and friends inside
+ * `IdentityFile`, so a literal `%` would silently name another file.
+ */
+export function buildIdentityBlock(alias: string, keyPath: string): string | null {
+  const pattern = sshConfigHostPattern(alias)
+  if (!pattern) return null
+  if (!keyPath || /["%\r\n]/.test(keyPath)) return null
+  return [
+    `# Added by Stoke when it set up key login for ${alias.trim()}.`,
+    `Host ${pattern}`,
+    `  IdentityFile "${keyPath}"`,
+    ''
+  ].join('\n')
+}
+
+/**
+ * `existing` with `block` after it, and nothing before it changed.
+ *
+ * Append-only by construction: the result always starts with `existing`
+ * byte for byte (`verify:ssh-enroll` asserts exactly that), a missing final
+ * newline is supplied rather than letting the block's `Host` line join the
+ * user's last line, and one blank line separates the two so the block reads
+ * as its own.
+ */
+export function appendIdentityBlock(existing: string, block: string): string {
+  if (!existing) return block
+  const eol = existing.includes('\r\n') ? '\r\n' : '\n'
+  const body = eol === '\r\n' ? block.replace(/\n/g, '\r\n') : block
+  const sep = existing.endsWith('\n') ? eol : `${eol}${eol}`
+  return `${existing}${sep}${body}`
 }
 
 /* ------------------------------------------------------ the remote transcript */

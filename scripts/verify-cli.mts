@@ -273,6 +273,21 @@ for (const marker of [
 for (const keep of ['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR', 'HOME', 'PATH']) {
   check(`${keep} is NOT stripped`, ptyStrip.includes(keep), false)
 }
+/*
+ * Gotcha 99, guarded where it regressed. A child's PATH is set through
+ * `setPathKey` and nowhere else: `env.PATH = …` beside an inherited Windows
+ * `Path` is two keys, the stale one first. The SSH-enrollment work extracted
+ * pty.ts's env into `buildPtyEnv` from a branch cut before the fix and carried
+ * the old two-line form straight back. Read as text for the reason above.
+ */
+{
+  // Code only: the comments explaining the old bug quote it.
+  const ptySrc = readFileSync(new URL('../src/main/pty.ts', import.meta.url), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '')
+  check('pty.ts never assigns env.PATH or env.Path directly (gotcha 99)', /\benv\.(PATH|Path)\s*=[^=]/.test(ptySrc), false)
+  check('it sets PATH through setPathKey', /setPathKey\(env,/.test(ptySrc), true)
+}
 
 
 /*

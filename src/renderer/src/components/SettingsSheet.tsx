@@ -254,6 +254,15 @@ interface Props {
    * over one loses it, so App asks first.
    */
   onRestartToUpdate: () => void
+  /**
+   * SSH hosts' "Set up key login" and the host it is running for. App's,
+   * because the enrollment opens a tab and the guard lives beside the strip
+   * that reports it.
+   */
+  sshKeys: {
+    enrollingHostId: string | null
+    onSetUpKey: (hostId: string) => void
+  }
   onClose: () => void
 }
 
@@ -276,6 +285,7 @@ export function SettingsSheet({
   initialSection,
   agents,
   onRestartToUpdate,
+  sshKeys,
   onClose
 }: Props): React.JSX.Element {
   const themes: Theme[] = [...BUILT_IN_THEMES, ...settings.customThemes]
@@ -983,6 +993,10 @@ export function SettingsSheet({
                 hosts={settings.hosts}
                 suggestions={sshAliases}
                 onChange={(hosts) => onPatch({ hosts })}
+                keyEnroll={settings.sshKeyEnroll}
+                onChangeKeyEnroll={(sshKeyEnroll) => onPatch({ sshKeyEnroll })}
+                onSetUpKey={sshKeys.onSetUpKey}
+                enrollingHostId={sshKeys.enrollingHostId}
               />
             )}
 
