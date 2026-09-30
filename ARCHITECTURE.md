@@ -126,7 +126,10 @@ That command, together with the `ultracode` key it shares a file with, is the on
 puts into the session's `--settings` file — a separate mechanism from the `--mcp-config`
 injection that hands the CLI its browser tools (below). Neither writes anything of Claude's: the
 settings file, the wrapper and the payloads all live under the system temp directory, and
-`~/.claude/settings.json` is read for the user's own status line and never modified.
+`~/.claude/settings.json` is read for the user's own status line and never modified. With the
+line suppressed (the default) the wrapper prints one SGR reset, `EMPTY_STATUS_LINE`, never an
+empty stdout: the CLI lays its footer out by whether a status line is configured, and pads an
+empty one into a blank row under the input box in its fullscreen renderer (gotcha 118).
 
 `ContextWatcher` polls rather than using `fs.watch`: transcripts are appended constantly,
 append semantics differ across macOS and Windows, and only the handful of sessions with an

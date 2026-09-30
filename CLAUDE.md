@@ -250,6 +250,8 @@ rule file named on the group line.
   needs descent (`descendsFrom`); a phone Resume of an id with no transcript is refused (`resumeVerdict`).
 - **103.** Never parse a whole transcript in one block: the watcher folds only appends (`advanceCursor`,
   SSH copies whole), `foldFrom` cuts at a newline before decoding, `listSessions` caches per file.
+- **118.** Never let the suppressed wrapper print an empty stdout: fullscreen Claude Code pads it into a
+  blank row. Print `EMPTY_STATUS_LINE` (an SGR reset, zero height); "? for shortcuts" is lost regardless.
 
 **Usage chip** — `.claude/rules/usage.md`
 - **21.** Treat a missing `rate_limits` or either missing window as unknown, never 0% (none arrive
