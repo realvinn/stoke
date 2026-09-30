@@ -2361,6 +2361,14 @@ console.log('\nMCP: where Claude Code files a folder — its canonical git root,
       []
     ])
     check('and the catalog read no error', trusted.error, null)
+    // A folder whose entry carries none of the MCP keys is still a known folder.
+    const bare = join(home, 'bare')
+    mkdirSync(bare, { recursive: true })
+    writeFileSync(join(bare, '.mcp.json'), JSON.stringify({ mcpServers: { 'bare-tool': { command: 'bare' } } }))
+    cfg.projects[bare] = { lastSessionId: 'x' }
+    writeFileSync(join(home, '.claude.json'), JSON.stringify(cfg))
+    writeFileSync(join(home, '.claude', 'settings.json'), JSON.stringify({ enabledMcpjsonServers: ['repo-tool', 'bare-tool'] }))
+    check('a folder whose ~/.claude.json entry has no MCP key is still scanned', (await catalogNow()).project.find((s) => s.name === 'bare-tool')?.folders, [bare])
   } finally {
     rmSync(home, { recursive: true, force: true })
   }

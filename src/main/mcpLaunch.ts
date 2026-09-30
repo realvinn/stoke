@@ -71,7 +71,12 @@ async function globalConfigPath(env: NodeJS.ProcessEnv, home: string): Promise<s
   return join(env.CLAUDE_CONFIG_DIR || home, `.claude${suffix}.json`)
 }
 
-/** Only the MCP keys of a parsed `~/.claude.json` — the rest (history, tips, caches) is not kept. */
+/**
+ * Only the MCP keys of a parsed `~/.claude.json` — the rest (history, tips,
+ * caches) is not kept. Every project KEY is kept, even with none of those
+ * keys: Settings scans each known folder's `.mcp.json` (`projectMcpReads`),
+ * and a folder must not vanish from that just because its entry is bare.
+ */
 function mcpPart(raw: unknown): Record<string, unknown> | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
   const r = raw as Record<string, unknown>
@@ -91,7 +96,7 @@ function mcpPart(raw: unknown): Record<string, unknown> | null {
       ]) {
         if (pr[k] !== undefined) keep[k] = pr[k]
       }
-      if (Object.keys(keep).length) projects[folder] = keep
+      projects[folder] = keep
     }
   }
   return { mcpServers: r.mcpServers, projects }
