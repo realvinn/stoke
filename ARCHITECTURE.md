@@ -378,6 +378,13 @@ Electron surface. Input goes through a normal `<textarea>` rather than the termi
 into an xterm on a soft keyboard is miserable and autocorrect fights the TUI. A key row
 supplies `esc`, `tab`, arrows and `ctrl-c`, which phone keyboards lack.
 
+It is an installable PWA shell: a manifest, and a service worker (`public/sw.js`) registered only
+in a secure context — the tunnel's https, or localhost; browsers refuse one on a plain-http LAN or
+tailnet link, and that page runs as it always did. The worker caches the shell and the hashed
+bundle so the app opens at once and paints Connect or "can't reach" with no network, and never
+touches /api or /ws. Web Push is not built: it would need VAPID keys minted in start paths, a
+content-free payload and an https origin.
+
 ## The worklog agent
 
 `src/main/worklog/` turns finished work into Notion pages and ClickUp tasks. It is a **review
@@ -755,7 +762,11 @@ npm run verify:remote         # phone access: where the link points and how it s
                               # prefix, a symlink out, `..`, case per OS, too-shallow places),
                               # that no phone add widens the places (every add, every
                               # configuration of a small tree) and /api/folders against a
-                              # real temp tree (gotcha 121)
+                              # real temp tree (gotcha 121); the public shell's static answers
+                              # (a missing file is a 404, never the shell; only hashed /assets
+                              # immutable) and public/sw.js run in a vm sandbox: never /api or
+                              # /ws, offline paints the kept shell, a `?k=` is never cached,
+                              # activation drops only Stoke's other builds
 npm run verify:phone-ui       # the phone UI's decisions: list sections, answer options read
                               # off the screen, the resize policy, queued sends, connect input,
                               # the New session picker (the desktop's `folderChoices`), the
@@ -1117,6 +1128,12 @@ src/remote/       mobile web UI, built separately to out/remote. Vanilla TS on o
                   builder, hash-routed; below 1024px one screen at a time, from 1024px a
                   340px session rail beside the session (never a stretched phone)
   main.ts           boot (key scrub, live theme), the router and the rail/pane layout
+  public/sw.js      the installable shell's service worker. Network-first index.html (kept under
+                    one fixed key, so a `?k=` never lands in Cache Storage), cache-first for the
+                    content-hashed /assets and the icons, never /api or /ws. vite.remote.config.ts
+                    stamps BUILD and the file list into the copy in out/remote, so each bundle is
+                    a new worker whose activation drops the old build's cache. verify:remote runs
+                    it in a vm sandbox
   api.ts            the phone contract's shapes, the fetch wrapper (a 401 is the Connect
                     screen; a 403 `refused: 'access'` is the computer's Access reason,
                     `accessRefusalOf`), /api/theme -> :root including derived accent-ink and meters

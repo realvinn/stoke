@@ -261,6 +261,20 @@ function showConnect(): void {
   app.replaceChildren(mountConnect({ linkKey: openedWithKey }))
 }
 
+/**
+ * The shell's service worker (public/sw.js): an installable app that opens at
+ * once and paints Connect or "can't reach" with no network. Only in a secure
+ * context — https through the tunnel, or localhost — because a browser refuses
+ * one anywhere else; a plain-http LAN link runs exactly as before. It never
+ * sees /api or /ws, so no session data is ever cached.
+ */
+function registerServiceWorker(): void {
+  if (!window.isSecureContext || !('serviceWorker' in navigator)) return
+  navigator.serviceWorker.register('./sw.js', { scope: './' }).catch(() => {
+    /* a refused registration leaves the page as it always was */
+  })
+}
+
 /*
  * Boot.
  *
@@ -282,6 +296,8 @@ async function boot(): Promise<void> {
     here.searchParams.delete('k')
     window.history.replaceState(null, '', `${here.pathname}${here.search}${here.hash}`)
   }
+  // Before the first request: Connect and an offline shell both deserve one.
+  registerServiceWorker()
   setAuthFailureHandler(showConnect)
   try {
     await loadTheme()

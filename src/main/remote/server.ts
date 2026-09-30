@@ -50,6 +50,8 @@ import {
   trackPrompt,
   type PromptTrack,
   sortSessionRows,
+  staticCacheControl,
+  staticMissAnswer,
   stripLocalHostnameSuffix,
   type AnswerKey,
   type PhoneSessionStatus
@@ -93,7 +95,11 @@ export type { ConnectTarget, Reach } from './link.ts'
  *    (verify-remote-security checks the page names no project path), and a
  *    phone must load something before it can say why it is locked out. Every
  *    route that returns data, and every socket, still requires Access when it
- *    is on.
+ *    is on. The shell's `/sw.js` (its service worker, registered only in a
+ *    secure context) is public too. `/assets/*` names are content-hashed and
+ *    served `immutable`; everything else is `no-cache` (`staticCacheControl`).
+ *    Only a path naming no file falls back to the shell: a missing file is a
+ *    404 (`staticMissAnswer`), never HTML under a script's name.
  * 2. `GET /api/host` adds `stt` ('ready'|'down'|'off'), `agents`
  *    (`[{id,name}]`, installed + chosen, Claude first), `defaults`
  *    (`{permissionMode,model,effort,cli}` — bypass is never offered; `cli` is
@@ -1645,15 +1651,22 @@ export class RemoteServer {
       const data = await readFile(target)
       res.writeHead(200, {
         'content-type': MIME[extname(target).toLowerCase()] ?? 'application/octet-stream',
-        'cache-control': 'no-cache',
+        // Hashed /assets/ files are kept; the shell and sw.js are revalidated (`staticCacheControl`).
+        'cache-control': staticCacheControl(pathname),
         ...extra
       })
       res.end(data)
     } catch {
+      // A missing FILE is a 404, never the shell dressed as a script (`staticMissAnswer`).
+      if (staticMissAnswer(pathname) === 'not-found') {
+        res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-cache', ...extra })
+        res.end('Not found.')
+        return
+      }
       // Single-page app: unknown paths fall back to the shell.
       try {
         const html = await readFile(join(root, 'index.html'))
-        res.writeHead(200, { 'content-type': MIME['.html'], ...extra })
+        res.writeHead(200, { 'content-type': MIME['.html'], 'cache-control': 'no-cache', ...extra })
         res.end(html)
       } catch {
         res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })

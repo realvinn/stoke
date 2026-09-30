@@ -2,6 +2,8 @@
 paths:
   - "src/main/remote/*.ts"
   - "src/remote/*.ts"
+  - "src/remote/public/sw.js"
+  - "vite.remote.config.ts"
   - "src/renderer/src/components/CloudflareSetup.tsx"
   - "src/renderer/src/components/PhonePopover.tsx"
   - "src/renderer/src/components/RemoteSettings.tsx"
@@ -380,3 +382,40 @@ builds only, loopback only).
 > `Unexpected response code: 403`. A browser cannot read a refused handshake's status, which is why
 > the session view's strip takes its sentence from the store's poll. Not driven: that strip over a
 > live pty, and `no-keys` (a last-good set outlives a JWKS outage by design).
+
+## 131. A service worker on the phone shell pins whatever it first caches, so the server must stop lying about missing files first
+
+**Found 2026-09-30, making the phone shell an installable PWA.** A service worker is the one piece
+of the phone UI that outlives a Stoke update: whatever it caches it serves until a NEW worker
+script replaces it, and a browser installs a new one only when the bytes of `sw.js` change. Four
+traps, each of which ships a phone stuck on an old or broken shell with every suite green:
+
+- **The static handler answered every missing path with `index.html` and a 200** (the SPA
+  fallback). A browser that asks for `/assets/index-<old hash>.js` after an update, or for `/sw.js`
+  from a build that has none, got HTML dressed as a script: the module loader runs it and fails,
+  and a worker registration or `cache.put` KEEPS it. `staticMissAnswer` (`remotePhone.ts`) now
+  sends the shell only for a path that names no file; anything with an extension is a 404.
+- **The bundle had fixed names** (`assets/index.js`), so an update could not be told from the
+  build before it by URL, and any cache of it was a staleness bug. Names are content-hashed now
+  (vite.remote.config.ts), `/assets/*` is `immutable`, and everything else is `no-cache`
+  (`staticCacheControl`) — `sw.js` included, or the browser's own HTTP cache delays the update check.
+- **An unchanged `sw.js` never updates.** `stampServiceWorker` (vite.remote.config.ts) writes the
+  build's hash and file list into the copy in out/remote at `'__STOKE_BUILD__'` and
+  `/* __STOKE_PRECACHE__ */ []`, and FAILS the build if either marker is gone; the cache is named
+  after the build and activation deletes every other `stoke-shell-*` one. `verify:remote` checks
+  both markers exist in the source.
+- **What the worker must never touch.** `/api/*` and `/ws*` (every byte of session data, and the
+  key — `route` returns null for them before anything else), a `?k=` navigation's URL (the shell is
+  stored under ONE fixed key, `index.html`, so the key never lands in Cache Storage), and an HTML
+  answer for an asset (never kept as that asset). The shell is network-first with a
+  `SHELL_WAIT_MS` stall, so an update is on screen at the next load even under the OLD worker.
+
+Registered only when `window.isSecureContext` — https through the tunnel, or localhost. A plain
+http LAN or tailnet link cannot have one and runs exactly as before, so no phone depends on it.
+Measured in Chromium against a sandbox on 127.0.0.1: registered and controlling at scope `/`,
+precached the seven stamped files under `stoke-shell-98104baa3bfe`; an offline reload painted the
+shell with "Can't reach your computer"; after a rebuild the FIRST load ran the new
+`index-B9AqmGWx.js` through the old worker, and by the second the only cache was
+`stoke-shell-f331132be8cb`. `verify:remote` runs `sw.js` itself in a `node:vm` sandbox (routes,
+the fetch handler, offline, the `?k=` key, activation). **Not driven:** a real phone, iOS's
+home-screen install (its own cookie jar still opens on Connect), and an https tunnel origin.

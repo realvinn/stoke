@@ -604,6 +604,34 @@ export function isGatedRemotePath(pathname: string): boolean {
   return pathname.startsWith('/api/')
 }
 
+/**
+ * What the public shell's static handler answers for a path with no file
+ * behind it: the SPA shell, or a plain 404.
+ *
+ * Only a path that names no file (`/`, `/session/x`) is a page and gets the
+ * shell. A missing FILE — `/assets/index-<old hash>.js` after an update,
+ * `/sw.js` from a build without one — used to get `index.html` with a 200 as
+ * well, which a browser then ran as a script, or a service worker cached as
+ * the script it asked for, and kept serving. A 404 is the truthful answer, and
+ * the one a service worker's install and a module loader both treat as failure.
+ */
+export function staticMissAnswer(pathname: string): 'shell' | 'not-found' {
+  const last = pathname.split('/').pop() ?? ''
+  const ext = /\.[A-Za-z0-9]+$/.exec(last)?.[0].toLowerCase() ?? ''
+  return ext === '' || ext === '.html' ? 'shell' : 'not-found'
+}
+
+/**
+ * The `Cache-Control` a public shell file is served with. The bundle's files
+ * carry a content hash in their names (vite.remote.config.ts), so an
+ * `/assets/` URL names one exact file forever and may be kept; everything
+ * else — the shell, the service worker, the manifest, the icons — is revalidated
+ * every time, so a Stoke update reaches the phone on its next load.
+ */
+export function staticCacheControl(pathname: string): string {
+  return pathname.startsWith('/assets/') ? 'public, max-age=31536000, immutable' : 'no-cache'
+}
+
 /** A machine's hostname, without the local-network suffix mDNS often adds. */
 export function stripLocalHostnameSuffix(host: string): string {
   return host.replace(/\.(local|localdomain)$/i, '')
