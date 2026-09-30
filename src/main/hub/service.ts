@@ -790,6 +790,7 @@ export class HubService {
       } catch (err) {
         if (err instanceof HubRequestError && err.code === 'forbidden' && this.state?.pinned) {
           this.revoked = REVOKED_SENTENCE
+          this.remote?.chainChanged()
           this.emit()
         }
         throw err
@@ -894,6 +895,7 @@ export class HubService {
     if (entries.length === 0) {
       if (st.pinned) this.raise('rollback', 'The hub no longer has this account’s device list, which this device has seen. That is what a restored or tampered hub looks like, so nothing was synced.')
       this.verdict = null
+      this.remote?.chainChanged()
       return null
     }
     const v = verifyChain(entries, nodeChainCrypto, { account: this.account() })
@@ -916,6 +918,8 @@ export class HubService {
     st.chain = entries as ChainEntry[]
     st.pinned = { seq: ok.seq, head: ok.head }
     this.verdict = ok
+    // A relay checks the chain at its handshake; one already open learns of a revoke only here (spec §6.5).
+    this.remote?.chainChanged()
     if (st.alarm?.kind !== 'version' && st.alarm?.kind !== 'key') st.alarm = null
     return ok
   }
@@ -2513,6 +2517,8 @@ export class HubService {
       case 'bye':
         if (/removed/.test(f.reason)) {
           this.revoked = REVOKED_SENTENCE
+          // Out of the vault: no remote context, so every relay and remote tab here ends.
+          this.remote?.chainChanged()
           this.emit()
         }
         break

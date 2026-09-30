@@ -12,10 +12,11 @@
  *   `parseRemoteStatus` is the only way one comes back in: every field is
  *   checked and cut to size, because it is text another machine chose.
  * - The HOST's rules for a relay that asks for one of its sessions: whether to
- *   serve it, ask the owner, or refuse (`attachDecision`), what an "Allow once"
- *   covers (`relayScopeVerdict`), and how long it lasts across a dropped link
- *   (`OnceGrant`, `ONCE_GRACE_MS`). An "Always" is a `HubGrant` in the host's
- *   own `hub.grants` (T0: never synced, so neither the hub nor any synced item
+ *   serve it, ask the owner, or refuse (`attachDecision`), what a relay then
+ *   reaches — its own session, under either answer (`relayScopeVerdict`) —
+ *   and how long an "Allow once" lasts across a dropped link (`OnceGrant`,
+ *   `ONCE_GRACE_MS`). An "Always" is a `HubGrant` in the host's own
+ *   `hub.grants` (T0: never synced, so neither the hub nor any synced item
  *   can grant anything); revoking it is deleting it.
  *
  * Pure (gotcha 27); imports only src/shared by relative `.ts` path (gotcha 78).
@@ -217,21 +218,27 @@ export function pruneOnce(once: readonly OnceGrant[], now: number): OnceGrant[] 
   return once.filter((g) => g.until === null || g.until > now)
 }
 
-/** What a relay the owner answered may reach: every relayed route ("Always"), or one session ("Allow once"). */
-export type RelayScope = { kind: 'any' } | { kind: 'session'; ptyId: string }
+/**
+ * What a relay the owner answered may reach: the one session it attached to,
+ * under "Allow once" AND under "Always". "Always" only stops the question for
+ * that device's next attach (to any running session); it never widened a
+ * relay to the rest of the phone API — starting sessions, creating folders,
+ * every project path and every past conversation — which the owner, asked
+ * about one session, was never told about (found in review, 2026-10-01).
+ */
+export type RelayScope = { kind: 'session'; ptyId: string }
 
 /**
  * Whether a frame stays inside what the owner allowed. `relayFrameVerdict`
- * (relay.ts) is the grant's MODE; this is its REACH. An "Allow once" was
- * asked about ONE session, so under it a guest may open that session's pty
- * socket, answer that session's prompt, and read the host's name and theme to
- * draw it — and nothing else: no other pty, not even the session list (its
- * rows carry every session's folder path, which the presence summary leaves
- * out on purpose), no transcripts or history, no folders, no new sessions.
+ * (relay.ts) is the grant's MODE; this is its REACH. The owner was asked
+ * about ONE session, so a guest may open that session's pty socket, answer
+ * that session's prompt, and read the host's name and theme to draw it — and
+ * nothing else: no other pty, not even the session list (its rows carry every
+ * session's folder path, which the presence summary leaves out on purpose),
+ * no transcripts or history, no folders, no new sessions.
  */
 export function relayScopeVerdict(scope: RelayScope, frame: RelayInnerFrame): { ok: true } | { ok: false; reason: string } {
-  if (scope.kind === 'any') return { ok: true }
-  const outside = { ok: false as const, reason: 'You were allowed this one session only.' }
+  const outside = { ok: false as const, reason: 'This connection reaches only the session it opened.' }
   switch (frame.t) {
     case 'ws-open': {
       const r = relayRouteFor('WS', frame.path)
@@ -300,7 +307,11 @@ export function otherMachines(f: {
     .sort((a, b) => a.label.localeCompare(b.label) || a.id.localeCompare(b.id))
 }
 
-/** A later status replaces an earlier one; an older one (a hub replaying) is ignored. */
+/**
+ * A later status replaces the one on show. Replay protection is NOT this
+ * alone — the shown status is cleared on every presence reconnect and
+ * offline — but `HubRemote`'s per-(device, epoch) mark, which never is.
+ */
 export function newerStatus(have: RemoteStatus | undefined, got: RemoteStatus): boolean {
   return !have || got.at > have.at
 }

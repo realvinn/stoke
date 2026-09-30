@@ -108,6 +108,16 @@ export class RelayChannel {
     return this.st
   }
 
+  /**
+   * The peer's signing key this end checked the handshake against, pinned
+   * from THIS device's chain when the handshake began — or null before then.
+   * An end that later finds its chain no longer holds the peer by that key
+   * (a revoke) ends the channel (`HubRemote.chainChanged`).
+   */
+  get peerSignKey(): string | null {
+    return this.peerSign
+  }
+
   /** Begin: a guest sends `hs1`; a host waits for it. */
   start(): void {
     if (this.st !== 'idle') return

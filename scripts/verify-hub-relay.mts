@@ -16,6 +16,10 @@
  * - Two `HubRemote`s wired through a fake hub, a fake pty on the host: list,
  *   ask, Allow once / Always / Deny, type and see the echo, a guest that
  *   reaches outside what it was allowed, a canary the relay must never see.
+ * - What a review found (2026-10-01): a device removed from the chain while
+ *   its relay is open (either end), a quiet tab the hub would close as idle,
+ *   a status replayed after a presence reconnect, a status too large for the
+ *   hub, and what "Always" reaches.
  *
  * Every input is synthetic (gotcha 74): keys, ids, clocks, sessions. Nothing
  * reaches the network, no agent CLI runs, and nothing in ~ is read. Imports
@@ -36,7 +40,7 @@ import { HubRemote, type RelaySocket, type RemoteContext } from '../src/main/hub
 import { VirtualSocket } from '../src/main/remote/socket.ts'
 import { b64uDecode, b64uEncode, idFromBytes } from '../src/shared/hub/codec.ts'
 import { HUB_LABELS } from '../src/shared/hub/labels.ts'
-import { parsePresenceClientFrame, parsePresenceServerFrame, sealedStatusProblem, type PresenceClientFrame, type SealedStatus } from '../src/shared/hub/protocol.ts'
+import { HUB_LIMITS, parsePresenceClientFrame, parsePresenceServerFrame, sealedStatusProblem, type PresenceClientFrame, type SealedStatus } from '../src/shared/hub/protocol.ts'
 import {
   attachDecision,
   holdOnce,
@@ -56,7 +60,10 @@ import {
 import {
   parseRelayInner,
   RELAY_CHUNK_CHARS,
+  RELAY_IDLE_MS,
   RELAY_MAX_FRAME_BYTES,
+  RELAY_PING_MS,
+  RELAY_PONG_WAIT_MS,
   relayFrameParts,
   type HubGrant,
   type RelayHs1,
@@ -416,18 +423,28 @@ console.log('\nthe host’s rules: refuse, serve, or ask')
   check('not another’s', v({ t: 'req', id: 1, method: 'POST', path: '/api/sessions/pty-2/answer' }), 'no')
   check('the host’s name and theme', [v({ t: 'req', id: 1, method: 'GET', path: '/api/host' }), v({ t: 'req', id: 1, method: 'GET', path: '/api/theme' })], ['ok', 'ok'])
   check('not the session list (paths), transcripts, history, folders or a new session', ['/api/sessions', '/api/transcript?id=x', '/api/history?cwd=/', '/api/folders', '/api/projects'].map((p) => v({ t: 'req', id: 1, method: 'GET', path: p })).concat(v({ t: 'req', id: 1, method: 'POST', path: '/api/sessions' })), ['no', 'no', 'no', 'no', 'no', 'no'])
-  check('Always reaches every relayed route', relayScopeVerdict({ kind: 'any' }, { t: 'req', id: 1, method: 'GET', path: '/api/transcript?id=x' }).ok, true)
+  // "Always" is the same scope (the relay's own session): held live below, against a rogue guest.
 }
 
 /* ============================================================ two machines */
 
 console.log('\ntwo machines through a fake hub: list, ask, type, see it echo')
 
-/** A fake hub: relays pair two sockets and forward verbatim; every byte is kept to search for the canary. */
+/**
+ * A fake hub: relays pair two sockets and forward verbatim; every byte is kept
+ * to search for the canary. Like `RelayBroker`, a relay's activity is the
+ * (fake) time it last forwarded a frame, and `hubTick` closes one idle for
+ * `RELAY_IDLE_MS`; a muted socket's frames are lost on the way.
+ */
 const hubBytes: Buffer[] = []
+const activity = new Map<string, number>()
+const forwarded = new Map<string, { guest: number; host: number }>()
 class FakeSocket implements RelaySocket {
   readyState = 0
   peer: FakeSocket | null = null
+  relay: string | null = null
+  role: 'guest' | 'host' | null = null
+  mute = false
   private handlers: Record<string, ((...a: unknown[]) => void)[]> = {}
   private pending: [Uint8Array | string, boolean][] = []
   on(event: string, fn: (...a: never[]) => void): unknown {
@@ -445,6 +462,13 @@ class FakeSocket implements RelaySocket {
   send(data: string | Uint8Array): void {
     const binary = typeof data !== 'string'
     hubBytes.push(Buffer.from(typeof data === 'string' ? data : data))
+    if (this.mute) return
+    if (this.relay && this.role) {
+      activity.set(this.relay, clock)
+      const n = forwarded.get(this.relay) ?? { guest: 0, host: 0 }
+      n[this.role]++
+      forwarded.set(this.relay, n)
+    }
     const p = this.peer
     const copy = typeof data === 'string' ? data : Buffer.from(data)
     setTimeout(() => {
@@ -464,10 +488,27 @@ class FakeSocket implements RelaySocket {
 
 let clock = 1_000_000
 const relays = new Map<string, { guest: FakeSocket; host: FakeSocket; hostDevice: string; guestDevice: string }>()
+let lastRelay = ''
+/** `RelayBroker.tick`'s idle rule, on the fake clock: the relays it closed. */
+function hubTick(): string[] {
+  const closed: string[] = []
+  for (const [id, r] of relays) {
+    if (r.guest.readyState !== 1 || r.host.readyState !== 1) continue
+    if (clock - (activity.get(id) ?? 0) < RELAY_IDLE_MS) continue
+    r.guest.close(1000)
+    r.host.close(1000)
+    closed.push(id)
+  }
+  return closed
+}
 const presence: { from: string; frame: PresenceClientFrame }[] = []
 interface Machine {
   dev: Dev
   remote: HubRemote
+  /** The chain THIS machine verified: every device it holds as active. */
+  active: Dev[]
+  /** This machine is out of the vault (revoked, signed out): no remote context at all. */
+  out: boolean
   sharing: boolean
   grants: Record<string, HubGrant>
   views: HubRemoteView[]
@@ -480,15 +521,16 @@ interface Machine {
 const machines = new Map<string, Machine>()
 const vkShared = randomU8(32)
 
-function machine(d: Dev): Machine {
-  const m = { dev: d, sharing: false, grants: {}, views: [], frames: [], ptyInput: [], sockets: [], requests: [], sessions: [] } as unknown as Machine
-  const ctx = (): RemoteContext => ({
+function machine(d: Dev, opts: { keepAlive?: { pingMs: number; pongWaitMs: number } } = {}): Machine {
+  const m = { dev: d, active: [...ACTIVE], out: false, sharing: false, grants: {}, views: [], frames: [], ptyInput: [], sockets: [], requests: [], sessions: [] } as unknown as Machine
+  const ctx = (): RemoteContext | null => m.out ? null : ({
     account: ACCOUNT,
     epoch: 1,
     me: { id: d.id, label: d.label, platform: d.platform, signPriv: d.keys.signPriv },
-    active: ACTIVE.map((a) => ({ id: a.id, label: a.label, platform: a.platform, sign: a.keys.signPub }))
+    active: m.active.map((a) => ({ id: a.id, label: a.label, platform: a.platform, sign: a.keys.signPub }))
   })
   m.remote = new HubRemote({
+    keepAlive: opts.keepAlive,
     now: () => clock,
     context: ctx,
     presenceKey: async (epoch) => presenceKey(vkShared, ACCOUNT, epoch),
@@ -503,6 +545,11 @@ function machine(d: Dev): Machine {
       const hostSock = new FakeSocket()
       guest.peer = hostSock
       hostSock.peer = guest
+      guest.relay = hostSock.relay = relay
+      guest.role = 'guest'
+      hostSock.role = 'host'
+      activity.set(relay, clock)
+      lastRelay = relay
       relays.set(relay, { guest, host: hostSock, hostDevice: host, guestDevice: d.id })
       const target = machines.get(host)
       setTimeout(() => void target?.remote.onRelay(relay, d.id), 0)
@@ -551,6 +598,36 @@ function machine(d: Dev): Machine {
   return m
 }
 
+/** A raw guest channel into `host`, as `as`: a guest that sends whatever it likes once the handshake is done. */
+async function rogueChannel(host: Machine, as: Dev): Promise<{ ch: RelayChannel; got: RelayInnerFrame[]; closed: () => string | null }> {
+  const relay = idFromBytes('relay', randomU8(15))
+  const gs = new FakeSocket()
+  const hs = new FakeSocket()
+  gs.peer = hs
+  hs.peer = gs
+  relays.set(relay, { guest: gs, host: hs, hostDevice: host.dev.id, guestDevice: as.id })
+  const got: RelayInnerFrame[] = []
+  let open = false
+  let closedWhy: string | null = null
+  const ch = new RelayChannel({
+    role: 'guest',
+    relay,
+    account: ACCOUNT,
+    me: { id: as.id, signPriv: as.keys.signPriv },
+    peer: host.dev.id,
+    peerKey: keyOf,
+    io: { send: (x) => gs.send(x), close: (c) => gs.close(c) },
+    events: { onOpen: () => (open = true), onFrame: (f) => got.push(f), onClose: (r) => (closedWhy = r) }
+  })
+  gs.on('message', (data: unknown, binary: boolean) => ch.receive(binary ? new Uint8Array(data as Buffer) : String(data), binary))
+  gs.on('close', () => ch.close('the relay closed'))
+  gs.open()
+  void host.remote.onRelay(relay, as.id)
+  ch.start()
+  await until(() => open)
+  return { ch, got, closed: () => closedWhy }
+}
+
 const hostA = machine(A)
 const guestB = machine(B)
 const last = (m: Machine): HubRemoteView => m.remote.view()
@@ -575,6 +652,23 @@ hostA.sessions = [{ ptyId: 'pty-a1', project: 'stoke', title: 'Stub session', st
   await guestB.remote.onStatus(B.id, firstFromA?.status ?? null)
   await guestB.remote.onStatus(X.id, firstFromA?.status ?? null)
   check('nor does A’s status handed over as B’s own, or as a removed device’s', last(guestB).machines.map((m) => m.label), ['Studio'])
+
+  // The status on show is cleared by a presence reconnect and by "offline"; the replay mark is not.
+  const fromA = presence.filter((p) => p.from === A.id && p.frame.t === 'status').map((p) => (p.frame as { status: SealedStatus }).status)
+  const newestFromA = fromA[fromA.length - 1]
+  guestB.remote.presenceClosed()
+  guestB.remote.presenceOpened()
+  guestB.remote.onOnline([A.id, B.id])
+  await guestB.remote.onStatus(A.id, fromA[0])
+  check('after B’s presence reconnects, the hub handing back A’s older status is refused', last(guestB).machines[0]?.status, null)
+  await guestB.remote.onStatus(A.id, newestFromA)
+  check('while A’s latest, which the hub hands back on every connect, is taken', last(guestB).machines[0]?.status?.sessions.length, 1)
+  guestB.remote.onOnline([B.id])
+  guestB.remote.onOnline([A.id, B.id])
+  await guestB.remote.onStatus(A.id, fromA[0])
+  check('after the hub says A went offline and came back, the older one is still refused', last(guestB).machines[0]?.status, null)
+  await guestB.remote.onStatus(A.id, newestFromA)
+  ok('(A’s latest again, so the rest runs on a full list)', last(guestB).machines[0]?.status?.sessions.length === 1)
   const beforeRepeat = presence.length
   await hostA.remote.publish()
   check('an unchanged status is not sent again', presence.length, beforeRepeat)
@@ -690,6 +784,32 @@ hostA.sessions = [{ ptyId: 'pty-a1', project: 'stoke', title: 'Stub session', st
   check('none of the refused ones reached the phone handlers', [hostA.sockets.length - socketsBefore, hostA.requests.filter((r) => /transcript|sessions|transcribe/.test(r)).length], [0, 0])
   rogue.close('done')
 
+  // "Always" stops the question; it does not widen the relay past its own session.
+  hostA.remote.dropGuests() // the Allow once above is still in its grace: ask afresh
+  const always = await rogueChannel(hostA, B)
+  always.ch.send({ t: 'attach', ptyId: 'pty-a1' })
+  const askAlways = await until(() => last(hostA).asks[0])
+  await hostA.remote.answer(askAlways!.id, 'always')
+  await until(() => always.got.some((f) => f.t === 'ready'))
+  const socketsAlways = hostA.sockets.length
+  const requestsAlways = hostA.requests.length
+  always.ch.send({ t: 'ws-open', id: 3, path: '/ws?ptyId=pty-other' })
+  always.ch.send({ t: 'req', id: 4, method: 'POST', path: '/api/sessions', body: { cwd: '/tmp' } })
+  always.ch.send({ t: 'req', id: 5, method: 'POST', path: '/api/projects', body: { name: 'x' } })
+  always.ch.send({ t: 'req', id: 6, method: 'GET', path: '/api/projects' })
+  always.ch.send({ t: 'req', id: 7, method: 'GET', path: '/api/history?cwd=/' })
+  always.ch.send({ t: 'req', id: 8, method: 'GET', path: '/api/transcript?id=00000000-0000-0000-0000-000000000000' })
+  always.ch.send({ t: 'req', id: 9, method: 'GET', path: '/api/sessions' })
+  always.ch.send({ t: 'ws-open', id: 10, path: '/ws?ptyId=pty-a1' })
+  always.ch.send({ t: 'req', id: 11, method: 'GET', path: '/api/host' })
+  await until(() => always.got.some((f) => f.t === 'res' && f.id === 11))
+  const statusOf = (id: number): number | undefined => (always.got.find((f) => f.t === 'res' && f.id === id) as { status?: number } | undefined)?.status
+  check('under Always too: new sessions, folders, project paths, history, transcripts and the session list get 403', [4, 5, 6, 7, 8, 9].map(statusOf), [403, 403, 403, 403, 403, 403])
+  check('another session’s socket is refused, its own opens, the host’s name is served', [!!always.got.find((f) => f.t === 'ws-close' && f.id === 3), hostA.sockets.length - socketsAlways, statusOf(11)], [true, 1, 200])
+  check('and only that reached the phone handlers', hostA.requests.slice(requestsAlways), ['GET /api/host'])
+  always.ch.close('done')
+  await hostA.remote.revokeGrant(B.id)
+
   // A removed device (not in the chain A verified) is never taken at all.
   const xRelay = idFromBytes('relay', randomU8(15))
   relays.set(xRelay, { guest: new FakeSocket(), host: new FakeSocket(), hostDevice: A.id, guestDevice: X.id })
@@ -699,6 +819,203 @@ hostA.sessions = [{ ptyId: 'pty-a1', project: 'stoke', title: 'Stub session', st
 
   hostA.remote.reset()
   guestB.remote.reset()
+}
+
+/* ============================================================ what a review found */
+
+const stubRow = (): RemoteRowLike => ({ ptyId: 'pty-a1', project: 'stoke', title: 'Stub session', status: 'idle', agentName: 'Claude Code', exited: false, lastActivityAt: clock, context: null })
+const tabOf = (m: Machine, id: string): HubRemoteView['tabs'][number] | undefined => last(m).tabs.find((t) => t.id === id)
+
+/** B opens A's pty-a1 and A allows it once (or serves it under a grant or a held once): the tab id. */
+async function served(hostM: Machine, guestM: Machine): Promise<string> {
+  const o = guestM.remote.open(A.id, 'pty-a1')
+  const tab = o.ok ? o.tab : ''
+  const ask = await until(() => last(hostM).asks[0] ?? (tabOf(guestM, tab)?.state === 'open' ? 'open' : null))
+  if (ask && ask !== 'open') await hostM.remote.answer(ask.id, 'once')
+  await until(() => tabOf(guestM, tab)?.state === 'open' && guestM.frames.some((f) => f.tab === tab && f.frame.type === 'attached'))
+  return tab
+}
+
+console.log('\na device removed from the chain while its relay is open')
+{
+  const hostM = machine(A)
+  const guestM = machine(B)
+  hostM.sessions = [stubRow()]
+  hostM.sharing = true
+  for (const m of [hostM, guestM]) m.remote.onOnline([A.id, B.id])
+
+  // A's chain drops B while B is typing into A's session, and the hub keeps the relay open.
+  const tab1 = await served(hostM, guestM)
+  guestM.remote.input(tab1, 'before-revoke\r')
+  await until(() => hostM.ptyInput.includes('before-revoke\r'))
+  ok('(B is attached and typing)', hostM.ptyInput.includes('before-revoke\r') && last(hostM).guests.length === 1)
+  const relay1 = lastRelay
+  hostM.active = [A]
+  hostM.remote.chainChanged()
+  await until(() => tabOf(guestM, tab1)?.state === 'refused')
+  check('A’s chain drops B mid-serve: B’s tab is told why, and not reconnected', [tabOf(guestM, tab1)?.state, /no longer one of this account/.test(tabOf(guestM, tab1)?.message ?? '')], ['refused', true])
+  check('A’s indicator goes, and its relayed pty socket closes', [last(hostM).guests.length, hostM.sockets.every((x) => x.readyState === 3)], [0, true])
+  ok('A closed the relay itself: the hub never did', relays.get(relay1)?.host.readyState === 3)
+  guestM.remote.input(tab1, 'after-revoke\r')
+  await tick(30)
+  check('nothing typed after it reaches A’s pty', hostM.ptyInput.includes('after-revoke\r'), false)
+  guestM.remote.close(tab1)
+  hostM.active = [...ACTIVE]
+
+  // The chain moves and no hook has run yet: B's next frame is refused anyway.
+  hostM.remote.dropGuests()
+  const r2 = await rogueChannel(hostM, B)
+  r2.ch.send({ t: 'attach', ptyId: 'pty-a1' })
+  const ask2 = await until(() => last(hostM).asks[0])
+  await hostM.remote.answer(ask2!.id, 'once')
+  await until(() => r2.got.some((f) => f.t === 'ready'))
+  hostM.active = [A]
+  const requests2 = hostM.requests.length
+  r2.ch.send({ t: 'req', id: 1, method: 'GET', path: '/api/host' })
+  r2.ch.send({ t: 'ws-open', id: 2, path: '/ws?ptyId=pty-a1' })
+  await until(() => r2.closed())
+  check('with no hook run, B’s next frames are refused and the relay closed', [r2.got.some((f) => f.t === 'res'), r2.got.some((f) => f.t === 'refused'), !!r2.closed(), hostM.requests.length - requests2], [false, true, true, 0])
+  hostM.active = [...ACTIVE]
+
+  // Removed while the question waited: the answer serves nothing and grants nothing.
+  hostM.remote.dropGuests()
+  const o3 = guestM.remote.open(A.id, 'pty-a1')
+  const tab3 = o3.ok ? o3.tab : ''
+  const ask3 = await until(() => last(hostM).asks[0])
+  hostM.active = [A]
+  const answered = await hostM.remote.answer(ask3!.id, 'always')
+  await until(() => tabOf(guestM, tab3)?.state === 'refused')
+  check('Always pressed after B left the chain: nothing served, nothing granted', [answered.ok, Object.keys(hostM.grants), tabOf(guestM, tab3)?.state], [false, [], 'refused'])
+  guestM.remote.close(tab3)
+  hostM.active = [...ACTIVE]
+
+  // The hook, while the question waits.
+  const o4 = guestM.remote.open(A.id, 'pty-a1')
+  const tab4 = o4.ok ? o4.tab : ''
+  await until(() => last(hostM).asks[0])
+  hostM.active = [A]
+  hostM.remote.chainChanged()
+  await until(() => tabOf(guestM, tab4)?.state === 'refused')
+  check('a question still waiting when B leaves the chain goes, and B is refused', [last(hostM).asks.length, tabOf(guestM, tab4)?.state], [0, 'refused'])
+  guestM.remote.close(tab4)
+
+  // An Always for a device the chain no longer holds is deleted.
+  hostM.grants = { [B.id]: { mode: 'full', label: 'Laptop', at: 1 } }
+  hostM.remote.chainChanged()
+  await until(() => Object.keys(hostM.grants).length === 0)
+  check('A’s Always for B goes with B', Object.keys(hostM.grants), [])
+  hostM.active = [...ACTIVE]
+
+  // The other end: B's chain drops A (a stolen laptop) while B has A's session open.
+  hostM.remote.dropGuests()
+  const tab6 = await served(hostM, guestM)
+  const relaysBefore = relays.size
+  guestM.active = [B]
+  guestM.remote.chainChanged()
+  await until(() => last(hostM).guests.length === 0)
+  check('B’s chain drops A: B’s tab ends and says why, and A’s end goes too', [tabOf(guestM, tab6)?.state, /no longer one of your devices/.test(tabOf(guestM, tab6)?.message ?? ''), last(hostM).guests.length], ['lost', true, 0])
+  guestM.remote.input(tab6, 'to-a-removed-host\r')
+  await tick(1500)
+  check('and it is neither reconnected nor typed into', [relays.size - relaysBefore, tabOf(guestM, tab6)?.state, hostM.ptyInput.includes('to-a-removed-host\r')], [0, 'lost', false])
+  guestM.remote.close(tab6)
+  guestM.active = [...ACTIVE]
+
+  // B itself leaves the vault (its context goes): its tab ends, blaming this computer, not A.
+  hostM.remote.dropGuests()
+  const tab7 = await served(hostM, guestM)
+  guestM.out = true
+  guestM.remote.chainChanged()
+  await until(() => last(hostM).guests.length === 0)
+  check('B leaves the vault itself: its tab ends, saying so, and A’s end goes', [tabOf(guestM, tab7)?.state, tabOf(guestM, tab7)?.message, last(hostM).guests.length], ['lost', 'This computer is no longer in your hub’s vault.', 0])
+  check('and its banner still names A, though B’s chain no longer can', tabOf(guestM, tab7)?.deviceLabel, 'Studio')
+  guestM.remote.close(tab7)
+  guestM.out = false
+  hostM.remote.reset()
+  guestM.remote.reset()
+}
+
+console.log('\na quiet remote tab: the guest pings, so the hub never closes it as idle')
+{
+  check('a ping and its wait fit well inside the hub’s idle close', [RELAY_PING_MS + RELAY_PONG_WAIT_MS < RELAY_IDLE_MS, RELAY_PING_MS * 2 <= RELAY_IDLE_MS], [true, true])
+  // Real milliseconds for the keepalive; the hub's idle rule runs on the fake clock, one ping interval per step.
+  const fast = { pingMs: 20, pongWaitMs: 400 }
+  let hostM = machine(A, { keepAlive: fast })
+  let guestM = machine(B, { keepAlive: fast })
+  hostM.sessions = [stubRow()]
+  hostM.sharing = true
+  for (const m of [hostM, guestM]) m.remote.onOnline([A.id, B.id])
+  const tab = await served(hostM, guestM)
+  const relay = lastRelay
+  const start = clock
+  const pongsBefore = forwarded.get(relay)?.host ?? 0
+  const closed: string[] = []
+  for (let step = 0; step < 4; step++) {
+    clock += RELAY_PING_MS
+    await until(() => activity.get(relay) === clock)
+    closed.push(...hubTick())
+  }
+  check(`${(clock - start) / 60_000} quiet minutes on, past the hub’s ${RELAY_IDLE_MS / 60_000}: the relay and the tab are open`, [closed, tabOf(guestM, tab)?.state], [[], 'open'])
+  // The last pong may still be on its way when the fourth step ends: wait for it, never race it.
+  const pongs = await until(() => ((forwarded.get(relay)?.host ?? 0) - pongsBefore >= 4 ? (forwarded.get(relay)?.host ?? 0) - pongsBefore : 0))
+  ok('and the host answered the pings', (pongs ?? 0) >= 4, `${pongs ?? 0} frames back`)
+
+  // The host stops answering (its frames are lost on the way): no pong, so the guest closes and reconnects.
+  const host = relays.get(relay)?.host
+  if (host) host.mute = true
+  await until(() => tabOf(guestM, tab)?.state === 'reconnecting', 3000)
+  check('a ping with no pong inside the wait: the guest closes the channel and reconnects', [tabOf(guestM, tab)?.state, relays.get(relay)?.guest.readyState], ['reconnecting', 3])
+  await until(() => tabOf(guestM, tab)?.state === 'open', 5000)
+  check('(on a fresh relay, inside the Allow once grace)', [tabOf(guestM, tab)?.state, lastRelay !== relay], ['open', true])
+  guestM.remote.close(tab)
+  hostM.remote.reset()
+  guestM.remote.reset()
+
+  // Control: with no ping, the same fake hub does close a quiet relay, so the check above can fail.
+  const never = { pingMs: 2 ** 30, pongWaitMs: 2 ** 30 }
+  hostM = machine(A, { keepAlive: never })
+  guestM = machine(B, { keepAlive: never })
+  hostM.sessions = [stubRow()]
+  hostM.sharing = true
+  for (const m of [hostM, guestM]) m.remote.onOnline([A.id, B.id])
+  hostM.remote.dropGuests()
+  const quiet = await served(hostM, guestM)
+  const quietRelay = lastRelay
+  clock += RELAY_IDLE_MS
+  const idle = hubTick()
+  await until(() => tabOf(guestM, quiet)?.state === 'reconnecting')
+  check('(control: unpinged, the fake hub closes it as idle and the tab drops to reconnecting)', [idle.includes(quietRelay), tabOf(guestM, quiet)?.state], [true, 'reconnecting'])
+  guestM.remote.close(quiet)
+  hostM.remote.reset()
+  guestM.remote.reset()
+}
+
+console.log('\na status too large for the hub is cut to fit, not dropped by it')
+{
+  const BIG = dev('大きな机', 'darwin')
+  const bigM = machine(BIG)
+  bigM.sharing = true
+  bigM.sessions = Array.from({ length: REMOTE_MAX_SESSIONS }, (_, i) => ({
+    ptyId: `pty-${i}`,
+    project: '项目'.repeat(40),
+    title: (i % 2 ? '会话标题' : '😀🧪').repeat(60),
+    status: 'busy',
+    agentName: '🤖'.repeat(40),
+    exited: false,
+    lastActivityAt: clock - i,
+    context: { contextTokens: 123_456, contextLimit: 1_000_000, ready: true }
+  }))
+  const fBig = { account: ACCOUNT, epoch: 1, device: BIG.id }
+  const naive = sealStatus(presenceKey(vkShared, ACCOUNT, 1), fBig, JSON.stringify(remoteStatusFrom({ at: clock, name: BIG.label, platform: 'darwin', open: true, rows: bigM.sessions })))
+  check(`24 sessions of CJK and emoji titles seal past the hub’s ${HUB_LIMITS.statusBytes}-character cap`, sealedStatusProblem(naive), 'too large')
+  const n0 = presence.length
+  bigM.remote.presenceOpened()
+  const sent = await until(() => presence.slice(n0).find((p) => p.from === BIG.id && p.frame.t === 'status'))
+  const sealed = (sent?.frame as { status: SealedStatus } | undefined)?.status
+  check('what is sent passes the hub’s own check, and its parser takes the frame', [sealed ? sealedStatusProblem(sealed) : 'nothing sent', parsePresenceClientFrame(JSON.parse(JSON.stringify(sent?.frame ?? null)))?.t], [null, 'status'])
+  const opened = sealed ? parseRemoteStatus(openStatus(presenceKey(vkShared, ACCOUNT, 1), fBig, sealed) ?? '') : null
+  const n = opened?.sessions.length ?? 0
+  ok(`it lists the first sessions that fit, in the phone’s order (${n} of ${REMOTE_MAX_SESSIONS})`, n > 0 && n < REMOTE_MAX_SESSIONS && (opened?.sessions ?? []).every((x, i) => x.ptyId === `pty-${i}`))
+  bigM.remote.reset()
 }
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)

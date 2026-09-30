@@ -104,7 +104,17 @@ export type RelayDir = keyof typeof RELAY_DIR
 export const RELAY_MAX_FRAME_BYTES = 1024 * 1024
 /** A relay is closed (and a new one asked for) before a direction's counter reaches this. */
 export const RELAY_MAX_COUNTER = 2 ** 40
+/** The hub closes a relay that forwarded no frame for this long (its WebSocket pings do not count). */
 export const RELAY_IDLE_MS = 10 * 60_000
+/**
+ * A guest sends an inner `ping` this often while its channel is open, well
+ * under `RELAY_IDLE_MS`: a remote tab on a quiet session (Claude at its
+ * prompt, the owner reading) otherwise sends nothing, and the hub would close
+ * it as idle every ten minutes, dropping keys typed during the reconnect.
+ */
+export const RELAY_PING_MS = 4 * 60_000
+/** No `pong` within this after a ping: the other end is not serving the channel, and the guest closes it. */
+export const RELAY_PONG_WAIT_MS = 60_000
 export const RELAY_OPEN_TTL_MS = 60_000
 export const RELAYS_PER_ACCOUNT = 8
 /** How long the host's "let this device in?" question waits before it refuses. */

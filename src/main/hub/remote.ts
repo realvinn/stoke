@@ -21,12 +21,17 @@
  *   server's own handlers (`RemoteServer.relayRequest`/`relaySocket`), after
  *   the grant's mode (`relayFrameVerdict`) and the answer's reach
  *   (`relayScopeVerdict`). Nothing here opens a port.
+ * - The CHAIN. The handshake checks each end against this device's verified
+ *   chain, and so does every frame after it; when the chain moves
+ *   (`chainChanged`), a relay or tab to a device it no longer holds ends.
+ * - LIVENESS. A guest pings through the channel (`RELAY_PING_MS`), or the hub
+ *   would close a quiet tab as idle every `RELAY_IDLE_MS`.
  *
  * No electron import, so a suite can run two of these against a real hub.
  * No TypeScript parameter properties (strip-only mode).
  */
 import { stableJson } from '../../shared/hub/codec.ts'
-import { reconnectDelayMs, type PresenceClientFrame, type SealedStatus } from '../../shared/hub/protocol.ts'
+import { reconnectDelayMs, sealedStatusProblem, type PresenceClientFrame, type SealedStatus } from '../../shared/hub/protocol.ts'
 import {
   attachDecision,
   emptyRemoteView,
@@ -49,7 +54,17 @@ import {
   type RemoteTabFrame,
   type RemoteTabState
 } from '../../shared/hub/remote.ts'
-import { isPtyId, keyFingerprint, RELAY_ASK_MS, relayFrameVerdict, type HubGrant, type RelayInnerFrame, type RelayMode } from '../../shared/hub/relay.ts'
+import {
+  isPtyId,
+  keyFingerprint,
+  RELAY_ASK_MS,
+  RELAY_PING_MS,
+  RELAY_PONG_WAIT_MS,
+  relayFrameVerdict,
+  type HubGrant,
+  type RelayInnerFrame,
+  type RelayMode
+} from '../../shared/hub/relay.ts'
 import type { PhoneSocket } from '../remote/socket.ts'
 import { VirtualSocket } from '../remote/socket.ts'
 import { RelayChannel } from './channel.ts'
@@ -103,8 +118,12 @@ export interface HubRemoteDeps extends RemoteMachineDeps {
   grants(): Record<string, HubGrant>
   setGrant(device: string, grant: HubGrant | null): Promise<void>
   log(message: string, err?: unknown): void
+  /** Tests only: the guest's keepalive, in real milliseconds (`RELAY_PING_MS`, `RELAY_PONG_WAIT_MS`). */
+  keepAlive?: { pingMs: number; pongWaitMs: number }
 }
 
+/** Why a relay from, or a tab to, a device the verified chain no longer holds as active is ended. */
+const NOT_A_DEVICE = 'That device is no longer one of this account’s devices.'
 /** Reconnect tries before a tab gives up and offers Try again. */
 const MAX_TRIES = 8
 /** How long a host waits for `attach` after the handshake. */
@@ -123,6 +142,8 @@ const PTY_SOCKET = 1
 interface GuestTab {
   id: string
   device: string
+  /** The host's name when the tab opened: the banner keeps it after the chain or presence forgets the device. */
+  label: string
   ptyId: string
   title: string
   project: string
@@ -136,12 +157,17 @@ interface GuestTab {
   channel: RelayChannel | null
   timer: ReturnType<typeof setTimeout> | null
   hint: ReturnType<typeof setTimeout> | null
+  /** The keepalive while the channel is open, and the wait for its pong. */
+  ping: ReturnType<typeof setInterval> | null
+  pongWait: ReturnType<typeof setTimeout> | null
   closed: boolean
 }
 
 interface HostRelay {
   relay: string
   guest: string
+  /** The guest's signing key the handshake was checked against: a chain that stops holding it ends the relay. */
+  guestKey: string | null
   channel: RelayChannel | null
   phase: 'handshake' | 'attach' | 'asking' | 'serving' | 'closed'
   ptyId: string | null
@@ -181,6 +207,13 @@ export class HubRemote {
   private readonly hosted: Map<string, HostRelay>
   private readonly asks: Map<string, PendingAsk>
   private once: OnceGrant[]
+  /**
+   * The newest `at` opened per device and epoch, for the life of the process:
+   * never cleared by a presence reconnect or a device going offline, so a hub
+   * cannot hand back an older status after either (it could, while the only
+   * mark was the displayed status, which both clear).
+   */
+  private readonly statusMarks: Map<string, number>
 
   constructor(d: HubRemoteDeps) {
     this.d = d
@@ -195,6 +228,7 @@ export class HubRemote {
     this.hosted = new Map()
     this.asks = new Map()
     this.once = []
+    this.statusMarks = new Map()
   }
 
   /* ======================================================== the view */
@@ -209,7 +243,7 @@ export class HubRemote {
     v.tabs = [...this.tabs.values()].map((t) => ({
       id: t.id,
       device: t.device,
-      deviceLabel: label(t.device),
+      deviceLabel: ctx?.active.find((a) => a.id === t.device)?.label ?? this.statuses[t.device]?.name ?? t.label,
       platform: ctx?.active.find((a) => a.id === t.device)?.platform ?? '',
       ptyId: t.ptyId,
       title: t.title,
@@ -290,6 +324,16 @@ export class HubRemote {
       this.d.log(`hub remote: a status from ${device} did not open`)
       return
     }
+    /*
+     * Older than one already opened from that device in this epoch: a replay,
+     * refused whatever is on show. EQUAL is the same status again — the hub
+     * hands every device's latest back on each presence connect — and is
+     * taken, or a reconnect would blank the list until the device changed.
+     */
+    const mark = `${device}:${ctx.epoch}`
+    const high = this.statusMarks.get(mark)
+    if (high !== undefined && status.at < high) return
+    this.statusMarks.set(mark, Math.max(high ?? 0, status.at))
     if (!newerStatus(this.statuses[device], status)) return
     this.statuses[device] = status
     this.emit()
@@ -327,7 +371,8 @@ export class HubRemote {
         const since = now - last.at
         if (last.core === core ? since < STATUS_ACTIVITY_MS : since < REMOTE_STATUS_MIN_MS) return
       }
-      const sealed = sealStatus(key, { account: ctx.account, epoch: ctx.epoch, device: ctx.me.id }, JSON.stringify(status))
+      const sealed = this.sealToFit(key, ctx, status)
+      if (!sealed) return
       if (this.d.sendPresence({ t: 'status', status: sealed })) {
         this.sent = { core, full, at: now, epoch: ctx.epoch }
         this.lastAt = at
@@ -337,6 +382,30 @@ export class HubRemote {
     } finally {
       this.publishing = false
     }
+  }
+
+  /**
+   * Seal `status` as the hub will take it. Each string is capped by code
+   * points, not the whole: 24 sessions of emoji or CJK titles and folder
+   * names seal past `HUB_LIMITS.statusBytes`, and the hub drops a status that
+   * does not pass `sealedStatusProblem` without a word — the other machines
+   * would keep the old list, and this one would think it had sent. So the
+   * last-listed sessions (the phone's order: least urgent, least recent) go
+   * until it fits. Null (logged) when even none fits.
+   */
+  private sealToFit(key: Uint8Array, ctx: RemoteContext, status: RemoteStatus): SealedStatus | null {
+    const f = { account: ctx.account, epoch: ctx.epoch, device: ctx.me.id }
+    for (let n = status.sessions.length; n >= 0; n--) {
+      const sealed = sealStatus(key, f, JSON.stringify(n === status.sessions.length ? status : { ...status, sessions: status.sessions.slice(0, n) }))
+      const problem = sealedStatusProblem(sealed)
+      if (problem === null) {
+        if (n < status.sessions.length) this.d.log(`hub remote: the status lists ${n} of ${status.sessions.length} sessions, to fit what the hub carries`)
+        return sealed
+      }
+      if (problem !== 'too large') break
+    }
+    this.d.log('hub remote: this machine’s status could not be sealed as the hub takes it; not sent')
+    return null
   }
 
   /* ======================================================== guest: remote tabs */
@@ -352,6 +421,7 @@ export class HubRemote {
     const tab: GuestTab = {
       id: `rt-${randomB64u(9)}`,
       device,
+      label: ctx.active.find((a) => a.id === device)?.label ?? this.statuses[device]?.name ?? 'another device',
       ptyId,
       title: summary?.title || summary?.project || 'Session',
       project: summary?.project ?? '',
@@ -363,6 +433,8 @@ export class HubRemote {
       channel: null,
       timer: null,
       hint: null,
+      ping: null,
+      pongWait: null,
       closed: false
     }
     this.tabs.set(tab.id, tab)
@@ -396,6 +468,7 @@ export class HubRemote {
     t.closed = true
     if (t.timer) clearTimeout(t.timer)
     if (t.hint) clearTimeout(t.hint)
+    this.stopKeepAlive(t)
     t.gen++
     const ch = t.channel
     t.channel = null
@@ -432,6 +505,7 @@ export class HubRemote {
         events: {
           onOpen: () => {
             if (!current()) return
+            this.keepAlive(t, channel, current)
             channel.send({ t: 'attach', ptyId: t.ptyId })
             t.hint = setTimeout(() => {
               if (current() && t.state === 'connecting') {
@@ -445,7 +519,10 @@ export class HubRemote {
             if (current()) this.guestFrame(t, channel, f)
           },
           onClose: (reason) => {
-            if (t.channel === channel) t.channel = null
+            if (t.channel === channel) {
+              t.channel = null
+              this.stopKeepAlive(t)
+            }
             if (current()) this.lost(t, reason)
           }
         }
@@ -506,9 +583,42 @@ export class HubRemote {
       case 'ping':
         channel.send({ t: 'pong' })
         return
+      case 'pong':
+        if (t.pongWait) clearTimeout(t.pongWait)
+        t.pongWait = null
+        return
       default:
         return
     }
+  }
+
+  /**
+   * While the channel is open, ping the host every `RELAY_PING_MS`. The hub
+   * closes a relay that forwarded nothing for `RELAY_IDLE_MS`, and a tab on a
+   * quiet session forwards nothing; its own WebSocket pings do not count.
+   * A ping with no pong inside `RELAY_PONG_WAIT_MS` closes the channel, so a
+   * host that stopped serving it is found and reconnected, not typed into.
+   */
+  private keepAlive(t: GuestTab, channel: RelayChannel, current: () => boolean): void {
+    this.stopKeepAlive(t)
+    const { pingMs, pongWaitMs } = this.d.keepAlive ?? { pingMs: RELAY_PING_MS, pongWaitMs: RELAY_PONG_WAIT_MS }
+    t.ping = setInterval(() => {
+      if (!current() || channel.state !== 'open') return this.stopKeepAlive(t)
+      if (t.pongWait) return // the last one is still owed: its own timer decides
+      if (!channel.send({ t: 'ping' })) return
+      t.pongWait = setTimeout(() => {
+        t.pongWait = null
+        if (current() && channel.state === 'open') channel.close('the other machine stopped answering')
+      }, pongWaitMs)
+    }, pingMs)
+    t.ping.unref?.()
+  }
+
+  private stopKeepAlive(t: GuestTab): void {
+    if (t.ping) clearInterval(t.ping)
+    if (t.pongWait) clearTimeout(t.pongWait)
+    t.ping = null
+    t.pongWait = null
   }
 
   private lost(t: GuestTab, reason: string): void {
@@ -552,6 +662,7 @@ export class HubRemote {
     const h: HostRelay = {
       relay,
       guest,
+      guestKey: null,
       channel: null,
       phase: 'handshake',
       ptyId: null,
@@ -586,6 +697,7 @@ export class HubRemote {
       io: { send: (data) => socket.send(data), close: (code, reason) => socket.close(code, reason) },
       events: {
         onOpen: () => {
+          h.guestKey = channel.peerSignKey
           h.phase = 'attach'
           h.wait = setTimeout(() => channel.close('no session was named'), ATTACH_WAIT_MS)
         },
@@ -602,6 +714,8 @@ export class HubRemote {
 
   private async hostFrame(h: HostRelay, channel: RelayChannel, f: RelayInnerFrame): Promise<void> {
     if (h.phase === 'closed') return
+    // Every frame, not only the handshake: a device removed since is refused at its next keystroke.
+    if (!this.guestHolds(h)) return this.refuse(h, channel, NOT_A_DEVICE)
     if (f.t === 'ping') {
       channel.send({ t: 'pong' })
       return
@@ -666,6 +780,17 @@ export class HubRemote {
       default:
         return
     }
+  }
+
+  /** The guest is still a device this machine's chain holds as active, by the key its handshake was checked against. */
+  private guestHolds(h: HostRelay): boolean {
+    return this.holds(h.guest, h.guestKey)
+  }
+
+  /** `device` is another ACTIVE device of the verified chain (and, once pinned, under `key`: gotcha 140). */
+  private holds(device: string, key: string | null): boolean {
+    const ctx = this.d.context()
+    return !!ctx && device !== ctx.me.id && ctx.active.some((a) => a.id === device && (key === null || a.sign === key))
   }
 
   /** The grant's mode, then the answer's reach. */
@@ -735,6 +860,11 @@ export class HubRemote {
       this.emit()
       return { ok: false }
     }
+    // Removed from the chain while the question waited: nothing it asked is served, and nothing is granted.
+    if (!this.guestHolds(h)) {
+      this.refuse(h, channel, NOT_A_DEVICE)
+      return { ok: false }
+    }
     if (answer === 'deny') {
       this.refuse(h, channel, why ?? `The owner of ${this.d.context()?.me.label ?? 'that computer'} said no.`)
       return { ok: true }
@@ -745,6 +875,12 @@ export class HubRemote {
     }
     if (answer === 'always') {
       await this.d.setGrant(h.guest, { mode: 'full', label: a.label, at: this.d.now() })
+      if (!this.guestHolds(h)) {
+        // The chain moved during the write: take the grant back before anything is served under it.
+        await this.d.setGrant(h.guest, null)
+        if (h.phase === 'asking') this.refuse(h, channel, NOT_A_DEVICE)
+        return { ok: false }
+      }
       if (h.phase !== 'asking') return { ok: false }
       this.serve(h, channel, 'full', 'always')
     } else {
@@ -756,9 +892,15 @@ export class HubRemote {
   private serve(h: HostRelay, channel: RelayChannel, mode: RelayMode, via: 'once' | 'always'): void {
     const ctx = this.d.context()
     if (!ctx || !h.ptyId) return this.refuse(h, channel, 'This computer is not in your hub’s vault any more.')
+    if (!this.guestHolds(h)) return this.refuse(h, channel, NOT_A_DEVICE)
     h.mode = mode
     h.via = via
-    h.scope = via === 'once' ? { kind: 'session', ptyId: h.ptyId } : { kind: 'any' }
+    /*
+     * Both answers reach the session this relay attached to, and no more:
+     * "Always" means "do not ask again for this device", not the whole phone
+     * API. The guest opens one relay per tab and never needs another route.
+     */
+    h.scope = { kind: 'session', ptyId: h.ptyId }
     if (via === 'once') this.once = holdOnce(this.once, h.guest, h.ptyId)
     h.phase = 'serving'
     channel.send({ t: 'ready', mode, host: { label: ctx.me.label, platform: ctx.me.platform } })
@@ -823,6 +965,67 @@ export class HubRemote {
       else this.endHosted(h)
     }
     this.emit()
+  }
+
+  /**
+   * The verified chain moved (a sync pass, a revoke, the hub's "removed").
+   * Every hosted relay and pending question whose guest is no longer an
+   * active device — by the key its handshake pinned — ends now, not when the
+   * relay next closes; every remote tab whose host is gone ends and is not
+   * reconnected; "Allow once" and "Always" for a removed device go. With no
+   * context at all (this device is out of the vault) everything goes.
+   * `hostFrame`, `answer` and `serve` re-read the chain too, but only when a
+   * frame or an answer comes; this is what ends a relay that has gone quiet,
+   * and a tab here whose host was removed (a stolen laptop).
+   */
+  chainChanged(): void {
+    const ctx = this.d.context()
+    let moved = false
+    for (const h of [...this.hosted.values()]) {
+      if (this.guestHolds(h)) continue
+      moved = true
+      const ch = h.channel
+      if (ch && ch.state === 'open') this.refuse(h, ch, NOT_A_DEVICE)
+      else {
+        ch?.close('not a device of this account')
+        this.endHosted(h)
+      }
+    }
+    for (const t of [...this.tabs.values()]) {
+      if (t.closed || this.holds(t.device, t.channel?.peerSignKey ?? null)) continue
+      // Already at rest (nothing open, nothing scheduled): its banner stands.
+      const resting = t.state === 'lost' || t.state === 'refused' || t.state === 'ended'
+      if (resting && !t.channel && !t.timer && !t.connecting) continue
+      moved = true
+      // No context: it is THIS computer that left the vault (revoked, signed out), not the other one.
+      this.endTab(t, 'lost', ctx ? `${this.nameOf(t.device)} is no longer one of your devices.` : 'This computer is no longer in your hub’s vault.')
+    }
+    const before = this.once.length
+    this.once = this.once.filter((g) => this.holds(g.device, null))
+    if (this.once.length !== before) moved = true
+    if (ctx) {
+      for (const device of Object.keys(this.d.grants())) {
+        if (this.holds(device, null)) continue
+        moved = true
+        void this.d.setGrant(device, null).catch((err) => this.d.log('hub remote: could not take back a removed device’s grant', err))
+      }
+    }
+    if (moved) this.emit()
+  }
+
+  /** A tab that will not reconnect by itself: its channel and timers go, its banner says why. */
+  private endTab(t: GuestTab, state: 'lost' | 'refused', message: string): void {
+    if (t.timer) clearTimeout(t.timer)
+    if (t.hint) clearTimeout(t.hint)
+    t.timer = null
+    t.hint = null
+    this.stopKeepAlive(t)
+    t.gen++
+    const ch = t.channel
+    t.channel = null
+    t.state = state
+    t.message = message
+    ch?.close(message)
   }
 
   /** Sign-out, a revoke, quit: every relay and tab goes, and nothing is remembered. */
