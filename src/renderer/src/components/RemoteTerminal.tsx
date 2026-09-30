@@ -161,8 +161,17 @@ export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize,
     if (active) termRef.current?.focus()
   }, [active, view?.state])
 
-  const state = view?.state ?? 'connecting'
-  const canRetry = state === 'refused' || state === 'lost'
+  /*
+   * No view for a tab main once had: main dropped it (a sign-out, a revoke,
+   * the hub client stopping), so the link is gone for good and only Close
+   * means anything. Before the first view arrives it is still connecting.
+   */
+  const seenRef = useRef(false)
+  if (view) seenRef.current = true
+  const gone = !view && seenRef.current
+  const state = view?.state ?? (gone ? 'lost' : 'connecting')
+  const message = gone ? 'The link is gone: this computer signed out of your hub, or left it.' : (view?.message ?? null)
+  const canRetry = !!view && (state === 'refused' || state === 'lost')
   return (
     <div className="term-pane remote-pane" hidden={!active} data-remote-state={state} data-remote-tab={remoteId}>
       <div className="remote-banner" role="status" aria-live="polite">
@@ -171,8 +180,8 @@ export function RemoteTerminal({ tab, view, active, theme, fontFamily, fontSize,
           <strong>{deviceLabel}</strong>’s session · {view?.title ?? tab.title}
           <span className="remote-banner-state" data-state={state}>
             {' '}
-            · {state === 'asking' && view?.message ? view.message : STATE_WORDS[state]}
-            {view?.message && state !== 'open' && state !== 'asking' ? ` — ${view.message}` : ''}
+            · {state === 'asking' && message ? message : STATE_WORDS[state]}
+            {message && state !== 'open' && state !== 'asking' ? ` — ${message}` : ''}
           </span>
         </p>
         {canRetry && (
