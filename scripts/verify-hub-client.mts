@@ -550,6 +550,27 @@ try {
   check('the hub holds no wrap of the new key for B', wraps.some((w) => w.device_id === bId), false)
   db.close()
 
+  /* ------------------------------------------ a lost Kit: remove with a NEW one */
+  const cId = C.svc.view().device!.id
+  const epochNow = A.svc.view().epoch
+  const fresh = await A.svc.revokeDevice(cId, { newKit: true })
+  check('removing a device with no Kit to hand makes a new Kit first, posting nothing yet', [fresh.ok, A.svc.view().kitPending, A.svc.view().epoch], [true, true, epochNow])
+  const freshKit = (fresh as { ok: true; kit: string; group: number }).kit
+  secretsSeen.push(freshKit)
+  check('the new Kit is not the old one', freshKit !== made.kit, true)
+  check('confirming it removes C and replaces the Kit in one append (revoke, then rotate)', (await A.svc.confirmKit(freshKit.split('-')[(fresh as { group: number }).group])).ok, true)
+  check('two epochs on, one device left', [A.svc.view().epoch, A.svc.view().devices.map((d) => d.label)], [epochNow + 2, ['Mac']])
+  const D = device('spare', {} as Partial<Settings>)
+  await D.svc.start()
+  await D.svc.setUrl(URL)
+  await D.svc.signIn({ email: EMAIL, password: PASSWORD, label: 'Spare' })
+  const oldKit = await D.svc.recover(made.kit)
+  check('the old Kit no longer opens the vault', [oldKit.ok, !oldKit.ok && /not this account’s current one/.test(oldKit.message)], [false, true])
+  check('the new one does', (await D.svc.recover(freshKit)).ok, true)
+  await until('D syncs', () => D.svc.view().lastSyncAt !== null)
+  check('and D reads everything, re-sealed under the newest key', [D.svc.view().epoch, D.settings().providers.openrouterApiKey], [epochNow + 2, CANARY_KEY_2])
+  D.svc.stop()
+
   /* ------------------------------------------ what the hub can see */
   const files = readdirSync(hubDir).filter((f) => f.startsWith('hub.db'))
   const bytes = Buffer.concat(files.map((f) => readFileSync(join(hubDir, f))))
