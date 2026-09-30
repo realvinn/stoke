@@ -49,6 +49,7 @@ import {
   hostChoices,
   pushFor,
   pushPayload,
+  pushStateOf,
   pushSubscriptionFrom,
   type PhoneLaunchFacts,
   type PushPayload,
@@ -836,7 +837,9 @@ export class RemoteServer {
       const st = this.statusFor(s.ptyId)
       if (!st) continue
       seen.add(s.ptyId)
-      const next: PushState = { status: st.status, promptId: st.promptId }
+      // The prompt's own identity, never its answer id: `trackPrompt` re-mints
+      // that after input, and a push on it fired for every pause at the desk.
+      const next: PushState = pushStateOf(st.status, this.prompts.get(s.ptyId) ?? null)
       const kind = pushFor(this.pushSeen.get(s.ptyId) ?? null, next)
       this.pushSeen.set(s.ptyId, next)
       if (!kind || !this.deps.push) continue

@@ -334,11 +334,26 @@ export function isTerminalReport(data: string): boolean {
  * `statusUpdatedAt` for a new prompt, or the reading's time when a later pass
  * re-confirms it after some input (below).
  */
-export interface PromptTrack {
+export interface PromptTrack extends PromptIdentity {
   id: string
   since: number
+}
+
+/**
+ * What makes a prompt THIS prompt: the registry's own `waitingFor` and
+ * `statusUpdatedAt`, which the CLI moves only when it writes a status
+ * (sessionRegistry.ts `sameState`). Never the answer id — `trackPrompt` mints
+ * a new one for the same prompt after input, which is right for the answer
+ * route and wrong for anything that asks "is this a new prompt?" (`pushFor`).
+ */
+export interface PromptIdentity {
   waitingFor: string | null
   statusUpdatedAt: number | null
+}
+
+/** Whether two readings name the same prompt (`PromptIdentity`). */
+export function samePrompt(a: PromptIdentity, b: PromptIdentity): boolean {
+  return a.waitingFor === b.waitingFor && a.statusUpdatedAt === b.statusUpdatedAt
 }
 
 /**
@@ -374,8 +389,7 @@ export function trackPrompt(
   lastInputAt: number | null
 ): PromptTrack | null {
   if (!reading.waiting) return null
-  const fresh =
-    !prev || prev.waitingFor !== reading.waitingFor || prev.statusUpdatedAt !== reading.statusUpdatedAt
+  const fresh = !prev || !samePrompt(prev, reading)
   let since: number
   if (fresh) since = reading.statusUpdatedAt ?? reading.readAt
   else if (lastInputAt !== null && lastInputAt >= prev.since && reading.readAt >= lastInputAt + PROMPT_SETTLE_MS) {
@@ -878,10 +892,26 @@ export interface PushPayload {
 
 export type PushKind = 'needs-you' | 'finished' | 'test'
 
-/** One session's last reading, as Web Push sees it. */
+/**
+ * One session's last reading, as Web Push sees it. The prompt is its
+ * IDENTITY (`PromptIdentity`), never `PromptTrack.id`: that id is re-minted for
+ * the same prompt once input reached the pty and a later reading still says
+ * waiting — an arrow key in a permission menu, a wheel scroll (a mouse report
+ * is input), a pause while typing an answer — and a push keyed on it sent
+ * "Needs you" at high urgency once per pause, for a prompt someone was
+ * already answering at the desk.
+ */
 export interface PushState {
   status: PhoneSessionStatus
-  promptId: string | null
+  prompt: PromptIdentity | null
+}
+
+/** A session's `PushState` from its status and the prompt `trackPrompt` holds for it. */
+export function pushStateOf(status: PhoneSessionStatus, track: PromptTrack | null): PushState {
+  return {
+    status,
+    prompt: status === 'waiting' && track ? { waitingFor: track.waitingFor, statusUpdatedAt: track.statusUpdatedAt } : null
+  }
 }
 
 /**
@@ -890,8 +920,10 @@ export interface PushState {
  * - First sight (`prev` null) is a baseline, never a push: a server that starts,
  *   or a session it has not seen yet, does not announce what was already so.
  * - Into `waiting` from anything else: it needs you — once.
- * - `waiting` to `waiting`: only when a NEW prompt is on screen (`trackPrompt`
- *   gave it another id); the same prompt read again is silent.
+ * - `waiting` to `waiting`: only when a NEW prompt is on screen — the registry
+ *   wrote another `waitingFor` or `statusUpdatedAt` (`samePrompt`). The same
+ *   prompt read again is silent, and so is the same prompt re-confirmed under
+ *   a new answer id after input (`PushState`).
  * - Into `ended` (the process exited on its own): finished — once. A session
  *   closed at the desk is gone from the list instead, and the server sends
  *   nothing for it.
@@ -901,7 +933,7 @@ export function pushFor(prev: PushState | null, next: PushState): PushKind | nul
   if (next.status === 'ended') return prev.status === 'ended' ? null : 'finished'
   if (next.status !== 'waiting') return null
   if (prev.status !== 'waiting') return 'needs-you'
-  return prev.promptId !== null && next.promptId !== null && next.promptId !== prev.promptId ? 'needs-you' : null
+  return prev.prompt && next.prompt && !samePrompt(prev.prompt, next.prompt) ? 'needs-you' : null
 }
 
 /** Longer than any folder name worth reading on a lock screen; cut rather than wrapped. */

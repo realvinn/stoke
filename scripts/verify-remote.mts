@@ -43,6 +43,7 @@ import {
   pushEndpointOk,
   pushFor,
   pushPayload,
+  pushStateOf,
   pushSubscriptionFrom,
   withPushSubscription,
   type PushState,
@@ -1761,17 +1762,59 @@ console.log('\nbrowsing a real folder (GET /api/folders)')
  */
 console.log('\nWeb Push: when, what, to where, and the bytes (phone contract point 14)')
 {
-  const S = (status: PushState['status'], promptId: string | null = null): PushState => ({ status, promptId })
-  check('busy → waiting: needs you', pushFor(S('busy'), S('waiting', 'p1')), 'needs-you')
-  check('idle → waiting: needs you too', pushFor(S('idle'), S('waiting', 'p1')), 'needs-you')
-  check('waiting → waiting, the same prompt: nothing (it fired once)', pushFor(S('waiting', 'p1'), S('waiting', 'p1')), null)
-  check('waiting → waiting, a NEW prompt id: needs you again', pushFor(S('waiting', 'p1'), S('waiting', 'p2')), 'needs-you')
-  check('a prompt that only now got an id is the same prompt', pushFor(S('waiting', null), S('waiting', 'p1')), null)
+  const P1 = { waitingFor: 'Bash', statusUpdatedAt: 1000 }
+  const S = (status: PushState['status'], prompt: PushState['prompt'] = null): PushState => ({ status, prompt })
+  check('busy → waiting: needs you', pushFor(S('busy'), S('waiting', P1)), 'needs-you')
+  check('idle → waiting: needs you too', pushFor(S('idle'), S('waiting', P1)), 'needs-you')
+  check('waiting → waiting, the same prompt: nothing (it fired once)', pushFor(S('waiting', P1), S('waiting', { ...P1 })), null)
+  check('waiting → waiting, the registry wrote a new stamp: a NEW prompt, needs you again', pushFor(S('waiting', P1), S('waiting', { ...P1, statusUpdatedAt: 2000 })), 'needs-you')
+  check('…or asks for something else', pushFor(S('waiting', P1), S('waiting', { ...P1, waitingFor: 'Edit' })), 'needs-you')
+  check('a prompt that only now has an identity is the same prompt', pushFor(S('waiting', null), S('waiting', P1)), null)
   check('exit (ended on its own): finished', pushFor(S('busy'), S('ended')), 'finished')
-  check('…from waiting as well', pushFor(S('waiting', 'p1'), S('ended')), 'finished')
+  check('…from waiting as well', pushFor(S('waiting', P1), S('ended')), 'finished')
   check('ended → ended: once only', pushFor(S('ended'), S('ended')), null)
-  check('first sight is a baseline: a start never announces what was already so', [pushFor(null, S('waiting', 'p1')), pushFor(null, S('ended'))], [null, null])
-  check('busy → idle and waiting → busy say nothing', [pushFor(S('busy'), S('idle')), pushFor(S('waiting', 'p1'), S('busy'))], [null, null])
+  check('first sight is a baseline: a start never announces what was already so', [pushFor(null, S('waiting', P1)), pushFor(null, S('ended'))], [null, null])
+  check('busy → idle and waiting → busy say nothing', [pushFor(S('busy'), S('idle')), pushFor(S('waiting', P1), S('busy'))], [null, null])
+  check('pushStateOf carries a prompt only while waiting', [pushStateOf('busy', null).prompt, pushStateOf('idle', { id: 'x', since: 1, ...P1 }).prompt], [null, null])
+
+  /*
+   * Review of the first cut: `pushFor` fired on a new ANSWER id, and
+   * `trackPrompt` mints one for the same prompt once input reached the pty
+   * and a reading `PROMPT_SETTLE_MS` later still says waiting. So an arrow key
+   * in a permission menu, a wheel scroll, or each pause while typing an
+   * answer at the desk sent another high-urgency "Needs you". Built here as
+   * the server builds them: one `trackPrompt` per registry pass, then
+   * `pushStateOf`, with input landing between readings.
+   */
+  let track: PromptTrack | null = null
+  let last: PushState | null = null
+  const pass = (status: PushState['status'], r: { waitingFor?: string | null; statusUpdatedAt?: number | null; readAt: number }, lastInputAt: number | null) => {
+    track = trackPrompt(
+      track,
+      { waiting: status === 'waiting', waitingFor: r.waitingFor ?? null, statusUpdatedAt: r.statusUpdatedAt ?? null, readAt: r.readAt },
+      lastInputAt
+    )
+    const next = pushStateOf(status, track)
+    const kind = pushFor(last, next)
+    last = next
+    return { kind, id: track?.id ?? null }
+  }
+  check('a busy session first seen: the baseline', pass('busy', { readAt: 500 }, null).kind, null)
+  const asked = pass('waiting', { ...P1, readAt: 1500 }, null)
+  check('its prompt appears: needs you, once', asked.kind, 'needs-you')
+  const arrow = pass('waiting', { ...P1, readAt: 1500 + 1000 }, 1600)
+  check('an arrow key at the desk, then a reading after the settle: the answer id WAS re-minted', arrow.id !== asked.id, true)
+  check('…and the phone is told nothing: the same prompt is on screen', arrow.kind, null)
+  const typing = [3000, 4200, 5400].map((at) => pass('waiting', { ...P1, readAt: at + PROMPT_SETTLE_MS + 100 }, at))
+  check(
+    'typing an answer with pauses: a re-mint per pause, and not one push',
+    [new Set([arrow.id, ...typing.map((t) => t.id)]).size, typing.map((t) => t.kind)],
+    [4, [null, null, null]]
+  )
+  check('a scroll (a mouse report is input too) re-mints, still silent', pass('waiting', { ...P1, readAt: 7000 }, 6400).kind, null)
+  check('the next prompt, written by the CLI with a new stamp: needs you', pass('waiting', { waitingFor: 'Bash', statusUpdatedAt: 7500, readAt: 8000 }, 6400).kind, 'needs-you')
+  check('answered: waiting → busy says nothing', pass('busy', { readAt: 9000 }, 8600).kind, null)
+  check('and a prompt after that: needs you again', pass('waiting', { waitingFor: 'Edit', statusUpdatedAt: 9500, readAt: 10_000 }, 8600).kind, 'needs-you')
 
   const p = pushPayload('needs-you', '  my   project  ', 'pty-1')
   check('the payload: the project name, a status word, the session route — nothing else', p, { title: 'my project', body: 'Needs you', tag: 'stoke-pty-1', url: '#/s/pty-1' })
