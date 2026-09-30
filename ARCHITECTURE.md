@@ -643,6 +643,13 @@ npm run verify:search         # sidebar + palette search: tiers, recency, highli
                               # accented text, the label in both surfaces; and the session
                               # index against real files in a temp dir - a 40 MB transcript
                               # costs two 256 KB reads, a second pass costs none
+npm run verify:chat-sources   # chat history, against synthetic fixtures for every source
+                              # (Claude, Codex + its threads table, OpenCode, Cline, Zed's zstd,
+                              # Cowork) under a fake home: tool output, reasoning, injected
+                              # context, base64 and keys never indexed; caps enforced AND said;
+                              # an append reads only its bytes; Cline's copies folded; snippets
+                              # per chat, accents and CJK; the worker keeps the main loop free;
+                              # Delete index leaves the bystander beside the store (gotcha 74)
 npm run verify:cli            # finding the `claude` binary: the version-manager shim dirs,
                               # the probe's retry rule, and the two not-found messages.
                               # Hermetic - HOME is redirected into a temp tree (gotcha 52)
@@ -892,6 +899,25 @@ src/main/         Electron main process
                     shares. `foldFrom` streams 1 MB reads, one chunk's fold per
                     event-loop turn across the process, so no parse blocks the main
                     thread for long (gotcha 103)
+  chatIndex/        chat history: a searchable copy of every AI chat's TEXT, off until the
+                    user says yes (shared/chatIndex.ts has the rules both processes share)
+    host.ts           main's handle on the worker: lazy start, idle stop, a pass claimed
+                      before its first await, a second ask queued once (gotcha 20)
+    worker.ts         the worker thread (its own bundle via `?modulePath`): the store's only
+                      writer and the only reader of any source; yields between chats so a
+                      search is answered mid-pass
+    sources.ts        where each tool keeps its chats (named roots only, overrides honoured),
+                      listing newest first under discovery's cap, and SYNC reads — the libuv
+                      pool is shared with pty writes. JSONL is read from the last offset with
+                      advanceCursor's checks (gotcha 103); detection is names and sizes only
+    parse.ts          user + assistant words only, per source: no tool payloads, reasoning,
+                      injected context, base64 or keys; Claude's rules are sessionFile.ts's own
+    scan.ts           one pass: list everything, fold Cline's copies into originals their tool
+                      still has, admit the newest per source then in all, read what changed
+                      under the byte and time budget, prune only a complete listing
+    store.ts          node:sqlite + FTS5 in userData/chat-index (0700, files 0600). Search is
+                      grouped per chat in SQL; a rowid bound to FTS5 must be an integer
+                      (gotcha 125)
   sessionIndex.ts   every session's title + first prompt, for search: one 256 KB chunk
                     from each end of a transcript, cached on mtime+size, top-level
                     `*.jsonl` only (never `<id>/subagents/`). Never `listSessions`, which
@@ -1073,6 +1099,13 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     (resolved, THIS launch only, "Make default"), the conversation list.
                     Top-aligned so nothing above a row moves when a row below loads. Its
                     keys come from `launcherKey` (shared/launcher.ts). Gotcha 88
+  src/components/ChatOffer.tsx  "Make your AI chats searchable?" — the one-time offer, a card
+                    in the launcher's column (Launcher's `above`), never a modal: shown only
+                    once the splash and agent picker have settled, never focused, and its
+                    buttons take Enter/Space only on the launcher's terms (gotchas 88, 93)
+  src/components/ChatHistorySettings.tsx  Settings › Chat history: the switch, each source with
+                    what was found and the sentence naming any cap that bound, the presets and
+                    six caps (committed on blur/Enter, gotcha 63), Index now, Rebuild, Delete
   src/components/AgentsSettings.tsx  Settings › Agents: the default agent, choosing and
                     re-detecting agents and the skills report, then one page per installed or
                     ticked agent (install state, endpoint, Default model, colour, tab tag) and
@@ -1232,6 +1265,10 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     (`pressAllowed`), the agent picker's sections and scoped Select all, and
                     whether a card can start Claude Code (`claudeLaunchesHere`) — then its
                     chips and bypass warning show whatever the default agent is
+  chatIndex.ts      chat history's pure half: the source registry, the `chatIndex` setting and
+                    `clampChatIndexOptions`, the caps and presets, `sourceDisclosure` (every
+                    cap that binds is said), the FTS query and snippet marks, and
+                    `chatOpenAction` — what pressing a hit may open
   welcome.ts        whether the first-run campfire plays, from two strings: the version whose
                     splash was last watched and the version running now. A semver comparison
                     and the clamp that repairs the stored value, together in one file because
