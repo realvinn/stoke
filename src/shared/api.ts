@@ -25,6 +25,7 @@ export interface ImportResult {
 }
 import type { SkillDirScan } from './skills'
 import type { MicAccess } from './voiceRoute'
+import type { SttConfig } from './speechProviders'
 import type { CreateProfileInput, ProfilePlan } from './profiles'
 import type { CodingCliDetection, CodingCliId } from './codingClis'
 import type { StokeCliRequest } from './stokeArgs'
@@ -91,11 +92,20 @@ export interface VoiceState {
 }
 
 /**
- * Whether the speech server at `voice.sttUrl` answers. `unknown` when no
- * address is set, so there is nothing to ask. Probed at most every 15s per
- * address.
+ * Whether Stoke's dictation is ready (`sttReadiness`, shared/speechProviders.ts).
+ * `up` / `down`: the sidecar or a custom server answered a probe or did not,
+ * probed at most every 15s per address. `ready`: a hosted provider with a key
+ * (never probed — that would be a request). `off`: nothing to use — no address,
+ * or no key. `unknown` is kept for an older main.
  */
-export type SttProbe = 'up' | 'down' | 'unknown'
+export type SttProbe = 'up' | 'down' | 'ready' | 'off' | 'unknown'
+
+/** Settings → Voice's Test answer. `ok` means dictation should work; `tone` colours the line. */
+export interface VoiceTestResult {
+  ok: boolean
+  message: string
+  tone: 'success' | 'warning' | 'danger'
+}
 
 /** What is on the OS clipboard right now, read in one synchronous hop. */
 export interface ClipboardPeek {
@@ -800,8 +810,14 @@ export interface StokeApi {
     requestMic(): Promise<VoiceState>
     /** Open the system's microphone privacy page. */
     openMicPrivacy(): void
-    /** Whether the speech server Stoke's dictation posts to is answering. */
+    /** Whether the speech service Stoke's dictation posts to is ready: probed, or keyed. */
     sttStatus(): Promise<SttProbe>
+    /**
+     * Test a provider and key as the panel shows them, with a request that
+     * bills nothing. Never rejects; a second press while one runs is answered
+     * with a refusal rather than a second request.
+     */
+    voiceTest(cfg: SttConfig): Promise<VoiceTestResult>
     /**
      * A finished 16 kHz mono 16-bit PCM WAV in, a transcript out.
      *

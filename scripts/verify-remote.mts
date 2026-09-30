@@ -754,6 +754,8 @@ console.log('\nthe speech server, per call')
     })
   const close = (s: Server): Promise<void> => new Promise((r) => s.close(() => r()))
   const wav = new Uint8Array(64).fill(7)
+  // The sidecar provider, as `sttConfigOf` builds it from `voice` per call.
+  const side = (sttUrl: string) => ({ provider: 'sidecar' as const, model: '', baseUrl: '', sttUrl, key: '' })
 
   const a = await sidecar('from A')
   const b = await sidecar('from B')
@@ -761,30 +763,30 @@ console.log('\nthe speech server, per call')
   const gone = await sidecar('never')
   await close(gone.server)
 
-  const none = await transcribe('', wav)
+  const none = await transcribe(side(''), wav)
   check(
     'no address is `unset`, the 503 case, and names where to add one',
     none.ok ? 'ok' : [none.unset, /Settings → Voice/.test(none.error)],
     [true, true]
   )
-  const blank = await transcribe('   ', wav)
+  const blank = await transcribe(side('   '), wav)
   check('nor is whitespace an address', blank.ok ? 'ok' : blank.unset, true)
-  check('the address is the argument, per call: A', await transcribe(a.url, wav), { ok: true, text: 'from A' })
-  check('then B, with nothing restarted in between', await transcribe(`${b.url}/`, wav), { ok: true, text: 'from B' })
+  check('the address is the argument, per call: A', await transcribe(side(a.url), wav), { ok: true, text: 'from A' })
+  check('then B, with nothing restarted in between', await transcribe(side(`${b.url}/`), wav), { ok: true, text: 'from B' })
   check('each sidecar got the clip intact, once', [a.bodies, b.bodies], [[64], [64]])
-  const refused = await transcribe(gone.url, wav)
+  const refused = await transcribe(side(gone.url), wav)
   check(
     'a refused connection is a failure but NOT unset — the 502 case — and says it is not the microphone',
     refused.ok ? 'ok' : [refused.unset ?? null, /not the microphone/.test(refused.error), refused.error.includes(gone.url)],
     [null, true, true]
   )
-  const failed = await transcribe(broken.url, wav)
+  const failed = await transcribe(side(broken.url), wav)
   check(
     "an upstream 500 passes the sidecar's own words through, and is not unset",
     failed.ok ? 'ok' : [failed.unset ?? null, failed.error],
     [null, 'Speech server: 500 {"error":"model fell over"}']
   )
-  check('an empty clip is refused before any request', await transcribe(a.url, new Uint8Array(0)), {
+  check('an empty clip is refused before any request', await transcribe(side(a.url), new Uint8Array(0)), {
     ok: false,
     error: 'Nothing was recorded.'
   })

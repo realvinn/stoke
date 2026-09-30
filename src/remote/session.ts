@@ -839,7 +839,7 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
     if (host?.stt === 'off') {
       return {
         title: 'Dictation is not set up',
-        message: `Dictation isn't set up on ${machineName()}: it needs a speech server, set in Stoke's Settings → Voice there. Use your keyboard's dictation key instead.`
+        message: `Dictation isn't set up on ${machineName()}: it needs a speech server or a provider key, set in Stoke's Settings → Voice there. Use your keyboard's dictation key instead.`
       }
     }
     return null

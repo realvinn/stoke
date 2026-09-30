@@ -71,7 +71,8 @@ const CANARY = {
   openrouter: 'sk-or-CANARY-f6g7h8i9j0',
   custom: 'gw-CANARY-k1l2m3n4o5',
   codex: 'codex-CANARY-p6q7r8s9t0',
-  phone: 'phone-CANARY-u1v2w3x4y5'
+  phone: 'phone-CANARY-u1v2w3x4y5',
+  voice: 'stt-CANARY-z9y8x7w6v5'
 }
 const ALL_CANARIES = Object.values(CANARY)
 const hasCanary = (text: string): string[] => ALL_CANARIES.filter((c) => text.includes(c))
@@ -96,6 +97,7 @@ function plaintextSettings(): Record<string, unknown> {
       defaultCli: 'claude'
     },
     remote: { enabled: true, port: 7878, token: CANARY.phone },
+    voice: { sttUrl: 'http://127.0.0.1:17890', provider: 'openai', model: '', baseUrl: '', keys: { openai: CANARY.voice } },
     hosts: [{ id: 'h1', label: 'Box', alias: 'box', command: '', keyEnrolled: true }]
   }
 }
@@ -145,7 +147,8 @@ console.log('\nthe secret-path registry')
     'providers.anthropicApiKey',
     'providers.customAuthToken',
     'providers.openrouterApiKey',
-    'remote.token'
+    'remote.token',
+    'voice.keys.openai'
   ])
   // A pattern that names a path Settings does not have encrypts nothing, silently.
   const hydrated = hydrateSettings(s)
@@ -156,7 +159,7 @@ console.log('\nthe secret-path registry')
       'no path in a hydrated populated Settings matches it'
     )
   }
-  check('collectSecrets returns exactly the five values', Object.values(collectSecrets(s)).sort(), [...ALL_CANARIES].sort())
+  check('collectSecrets returns exactly the six values', Object.values(collectSecrets(s)).sort(), [...ALL_CANARIES].sort())
   const scrubbed = scrubSecrets(s)
   check('scrubSecrets empties every secret', hasCanary(JSON.stringify(scrubbed)), [])
   check('and leaves the rest alone', (scrubbed as Record<string, unknown>).themeId, 'lagoon')
@@ -171,6 +174,8 @@ console.log('\nthe secret-path registry')
   ok('a __proto__ segment is refused (no prototype pollution)', ({} as Record<string, unknown>).apiKey === undefined)
   check('and writes nothing', polluted, {})
   check('secretLabel names the agent for a wildcard path', secretLabel('agents.endpoints.codex.apiKey'), 'Codex endpoint key')
+  check('and a speech provider by its own spelling, not a capitalised id', secretLabel('voice.keys.openai'), 'OpenAI speech-to-text key')
+  check('a provider the table does not name falls back to capitalising', secretLabel('voice.keys.newco'), 'Newco speech-to-text key')
   check('a whitespace-only value is not a secret', collectSecrets({ providers: { anthropicApiKey: '   ' } }), {})
 }
 
@@ -207,13 +212,13 @@ console.log('\nmigration on a synthetic userData')
   ok('settings.json.tmp (a crash leftover holding keys) is gone', !existsSync(`${settingsFile}.tmp`))
   const vaultText = read(secretsFile)
   check('no canary appears in secrets.json either', hasCanary(vaultText), [])
-  check('secrets.json holds one item per secret', Object.keys(parseSecretsFile(vaultText)?.items ?? {}).length, 5)
+  check('secrets.json holds one item per secret', Object.keys(parseSecretsFile(vaultText)?.items ?? {}).length, ALL_CANARIES.length)
   if (process.platform !== 'win32') {
     check('secrets.json is mode 0600', (statSync(secretsFile).mode & 0o777).toString(8), '600')
     check('settings.json is mode 0600 too', (statSync(settingsFile).mode & 0o777).toString(8), '600')
   }
   check('the bystander in userData survives untouched', read(bystander), '{"bystander":true}')
-  ok('the key store was asked, since there was something to seal', calls.available > 0 && calls.encrypt === 5)
+  ok('the key store was asked, since there was something to seal', calls.available > 0 && calls.encrypt === ALL_CANARIES.length)
 
   // Idempotent: a second boot writes nothing and reads the same keys.
   const past = new Date(Date.now() - 60_000)
@@ -314,7 +319,7 @@ console.log('\nitems that will not open are kept, never deleted')
   const storeB = new SecretStore(dir, fakeBackend({ key: 0x33 }).backend, 'darwin')
   const underB = hydrateSettings(storeB.load())
   check('under another key the app sees no keys', collectSecrets(underB), {})
-  check('and status lists all five as stranded', storeB.status().stranded.length, 5)
+  check('and status lists every one as stranded', storeB.status().stranded.length, ALL_CANARIES.length)
   storeB.save({ ...underB, fontSize: 17 })
   check('a save with no keys leaves every stranded item in secrets.json', parseSecretsFile(read(secretsFile))?.items, parseSecretsFile(sealedByA)?.items)
   storeB.save({ ...underB, providers: { ...underB.providers, anthropicApiKey: 'sk-ant-reentered' } })
@@ -432,11 +437,12 @@ console.log('\nwhat travels in a setup file')
   ok('nor the remote block', !('remote' in bare.settings))
   check('a host travels without this device’s keyEnrolled', (bare.settings.hosts as Record<string, unknown>[])[0].keyEnrolled, undefined)
   const withKeys = buildSetupPayload(current, { includeSecrets: true, version: '0.0.0', platform: 'darwin', now: new Date(0) })
-  check('with the tick, the four portable keys travel', Object.keys(withKeys.secrets).sort(), [
+  check('with the tick, the five portable keys travel', Object.keys(withKeys.secrets).sort(), [
     'agents.endpoints.codex.apiKey',
     'providers.anthropicApiKey',
     'providers.customAuthToken',
-    'providers.openrouterApiKey'
+    'providers.openrouterApiKey',
+    'voice.keys.openai'
   ])
   ok('but never the phone access key', !JSON.stringify(withKeys).includes(CANARY.phone))
 }
@@ -587,7 +593,7 @@ console.log('\nan import of an identical setup changes nothing')
   const own = buildSetupPayload(busy, { includeSecrets: true, version: 'x', platform: 'darwin', now: new Date(0) })
   const plan = planImport(busy, own, { includeSecrets: true }, hydrateSettings)
   check('a setup into itself: no changes', plan.preview.changes, [])
-  check('and every key reads as the same', plan.preview.secrets.map((s) => s.action), ['same', 'same', 'same', 'same'])
+  check('and every key reads as the same', plan.preview.secrets.map((s) => s.action), ['same', 'same', 'same', 'same', 'same'])
 }
 
 console.log('\nan import from before the Default model brings no hidden leftover in (agents.ts AGENTS_FORMAT)')

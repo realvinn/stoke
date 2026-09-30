@@ -515,7 +515,7 @@ const LABELS: Record<string, string> = {
   zoomTarget: 'What zoom moves',
   fullScreenReveal: 'Full-screen menu bar',
   defaults: 'Session defaults',
-  voice: 'Speech server',
+  voice: 'Voice dictation',
   profiles: 'Profiles',
   hosts: 'SSH hosts',
   worklogGroups: 'Worklog groups',

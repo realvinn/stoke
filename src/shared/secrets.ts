@@ -16,7 +16,16 @@
  * strip-types, so a shared import here must be relative with `.ts` (gotcha 78).
  */
 
+import { STT_PROVIDERS, STT_PROVIDER_IDS } from './speechProviders.ts'
+
 /* ------------------------------------------------------------- registry */
+
+/** `openai` → `OpenAI`, from the one provider table. */
+function sttProviderNames(): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const id of STT_PROVIDER_IDS) out[id] = STT_PROVIDERS[id].name
+  return out
+}
 
 /**
  * One kind of secret in `Settings`.
@@ -36,6 +45,12 @@ export interface SecretPathSpec {
    * door key, which nothing would ever revoke (auth-hub design §8, tier T0).
    */
   portable: boolean
+  /**
+   * What a `*` segment is called in a sentence, where capitalising the key
+   * would misspell it (`openai` is "OpenAI", not "Openai"). Optional: a
+   * segment not named here is capitalised, as agent ids always were.
+   */
+  names?: Readonly<Record<string, string>>
 }
 
 /**
@@ -52,6 +67,11 @@ export const SECRET_PATHS: readonly SecretPathSpec[] = [
   { pattern: 'providers.openrouterApiKey', label: 'OpenRouter API key', portable: true },
   { pattern: 'providers.customAuthToken', label: 'Custom gateway token', portable: true },
   { pattern: 'agents.endpoints.*.apiKey', label: 'endpoint key', portable: true },
+  /*
+   * A speech-to-text key per provider (Settings → Voice). Portable like the
+   * other API keys: it bills the account it belongs to, not this machine.
+   */
+  { pattern: 'voice.keys.*', label: 'speech-to-text key', portable: true, names: sttProviderNames() },
   { pattern: 'remote.token', label: 'Phone access key', portable: false }
 ]
 
@@ -203,7 +223,8 @@ export function secretLabel(path: string, specs: readonly SecretPathSpec[] = SEC
   const wild = spec.pattern.split('.').findIndex((s) => s === '*')
   if (wild < 0) return spec.label
   const which = path.split('.')[wild]
-  return `${which.charAt(0).toUpperCase()}${which.slice(1)} ${spec.label}`
+  const named = spec.names && Object.prototype.hasOwnProperty.call(spec.names, which) ? spec.names[which] : null
+  return `${named ?? `${which.charAt(0).toUpperCase()}${which.slice(1)}`} ${spec.label}`
 }
 
 /* ------------------------------------------------------- the vault file */

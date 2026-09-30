@@ -513,7 +513,7 @@ check('and DEFAULT_SETTINGS agrees', DEFAULT_SETTINGS.selfUpdateAuto, true)
  * gives an OLDER build — which reads only `remote.sttUrl` — the same address.
  */
 console.log('\nthe speech server, moved from remote to voice')
-check('an untouched machine gets the documented sidecar port', hydrateSettings({}).voice, { sttUrl: 'http://127.0.0.1:17890', holdMs: 250, micDeviceId: null, micLabel: '' })
+check('an untouched machine gets the documented sidecar port', hydrateSettings({}).voice, { sttUrl: 'http://127.0.0.1:17890', provider: 'sidecar', model: '', baseUrl: '', keys: {}, holdMs: 250, micDeviceId: null, micLabel: '' })
 check('and DEFAULT_SETTINGS agrees with the shared default', DEFAULT_SETTINGS.voice, VOICE_DEFAULTS)
 check('the default IS the sidecar port, in one place', DEFAULT_STT_URL, 'http://127.0.0.1:17890')
 check(
@@ -557,13 +557,13 @@ check(
     const twice = hydrateSettings(JSON.parse(JSON.stringify(once)))
     return [twice.voice, twice.remote.sttUrl]
   })(),
-  [{ sttUrl: 'http://x:1', holdMs: 250, micDeviceId: null, micLabel: '' }, 'http://x:1']
+  [{ sttUrl: 'http://x:1', provider: 'sidecar', model: '', baseUrl: '', keys: {}, holdMs: 250, micDeviceId: null, micLabel: '' }, 'http://x:1']
 )
 check('junk in voice falls back to the mirror', hydrateSettings({ voice: 'banana', remote: { sttUrl: 'http://x:1' } }).voice.sttUrl, 'http://x:1')
 check('a number is not an address', hydrateSettings({ voice: { sttUrl: 42 } }).voice.sttUrl, 'http://127.0.0.1:17890')
 check('nor is a number in the old key', hydrateSettings({ remote: { sttUrl: 42 } }).voice.sttUrl, 'http://127.0.0.1:17890')
 check('an array is not a voice block', hydrateSettings({ voice: ['http://x:1'] }).voice.sttUrl, 'http://127.0.0.1:17890')
-check('null is not one either', hydrateSettings({ voice: null }).voice, { sttUrl: 'http://127.0.0.1:17890', holdMs: 250, micDeviceId: null, micLabel: '' })
+check('null is not one either', hydrateSettings({ voice: null }).voice, { sttUrl: 'http://127.0.0.1:17890', provider: 'sidecar', model: '', baseUrl: '', keys: {}, holdMs: 250, micDeviceId: null, micLabel: '' })
 check('an address is trimmed', hydrateSettings({ voice: { sttUrl: '  http://x:1/  ' } }).voice.sttUrl, 'http://x:1/')
 /*
  * Kept, not defaulted: "" is the only way to say "no speech server", and it is
@@ -576,7 +576,7 @@ check('including one migrated from the old key', hydrateSettings({ remote: { stt
 check(
   'the clamp rebuilds from named keys, so junk fields do not ride through',
   hydrateSettings({ voice: { sttUrl: 'http://x:1', provider: 'banana', __proto__x: 1 } }).voice,
-  { sttUrl: 'http://x:1', holdMs: 250, micDeviceId: null, micLabel: '' }
+  { sttUrl: 'http://x:1', provider: 'sidecar', model: '', baseUrl: '', keys: {}, holdMs: 250, micDeviceId: null, micLabel: '' }
 )
 check(
   'and every named key survives it',
@@ -598,6 +598,10 @@ ok(
 console.log('\nthe hold threshold and the microphone')
 check('a file from before them gets the defaults', hydrateSettings({ voice: { sttUrl: 'http://x:1' } }).voice, {
   sttUrl: 'http://x:1',
+  provider: 'sidecar',
+  model: '',
+  baseUrl: '',
+  keys: {},
   holdMs: 250,
   micDeviceId: null,
   micLabel: ''
@@ -610,7 +614,7 @@ check('nor is NaN', clampHoldMs(Number.NaN), 250)
 check(
   'a chosen microphone survives with its label',
   hydrateSettings({ voice: { micDeviceId: 'abc123', micLabel: ' USB Mic ' } }).voice,
-  { sttUrl: DEFAULT_STT_URL, holdMs: 250, micDeviceId: 'abc123', micLabel: 'USB Mic' }
+  { sttUrl: DEFAULT_STT_URL, provider: 'sidecar', model: '', baseUrl: '', keys: {}, holdMs: 250, micDeviceId: 'abc123', micLabel: 'USB Mic' }
 )
 check(
   'a label with no id is dropped — nothing could act on it',
@@ -624,6 +628,46 @@ check(
   hydrateSettings({ voice: { micDeviceId: 'abc', micLabel: 9 } }).voice.micLabel,
   ''
 )
+
+/*
+ * The speech provider joined the block with hosted speech-to-text. An unknown
+ * provider must come back as the sidecar — never a guess that sends audio to a
+ * company — and the per-provider keys are rebuilt from the ids this build
+ * knows, so neither junk nor a prototype key survives a hand-edited file.
+ */
+console.log('\nthe speech provider, its model, address and keys')
+{
+  const kept = hydrateSettings({
+    voice: { provider: 'groq', model: ' whisper-large-v3 ', baseUrl: ' http://box:8000/v1 ', keys: { groq: ' gsk_x ', openai: 'sk-y' } }
+  }).voice
+  check('a chosen provider, model and address survive, trimmed', [kept.provider, kept.model, kept.baseUrl], [
+    'groq',
+    'whisper-large-v3',
+    'http://box:8000/v1'
+  ])
+  check('every provider keeps its own key, trimmed', kept.keys, { openai: 'sk-y', groq: 'gsk_x' })
+  check('an unknown provider is the sidecar, never a hosted guess', hydrateSettings({ voice: { provider: 'azure' } }).voice.provider, 'sidecar')
+  check('a non-string provider too', hydrateSettings({ voice: { provider: 7 } }).voice.provider, 'sidecar')
+  check(
+    'keys for unknown providers, the sidecar, blanks and non-strings are dropped',
+    hydrateSettings({ voice: { keys: { banana: 'k', sidecar: 'k', openai: '   ', groq: 5, deepgram: 'dg' } } }).voice.keys,
+    { deepgram: 'dg' }
+  )
+  const proto = JSON.parse('{"voice":{"keys":{"__proto__":{"openai":"pwned"},"constructor":"x"}}}')
+  const protoKeys = hydrateSettings(proto).voice.keys
+  ok('a __proto__ key cannot plant a key', JSON.stringify(protoKeys) === '{}' && ({} as Record<string, unknown>).openai === undefined)
+  check('an array is not a key map', hydrateSettings({ voice: { keys: ['sk'] } }).voice.keys, {})
+  check('a scrubbed key (settings.json holds "") reads as no key', hydrateSettings({ voice: { keys: { openai: '' } } }).voice.keys, {})
+  check(
+    'a control character cannot ride into a model id (it goes into a header for AssemblyAI)',
+    hydrateSettings({ voice: { model: 'uni\r\nX-Evil: 1' } }).voice.model,
+    'uniX-Evil: 1'
+  )
+  check('a non-string model is the default', hydrateSettings({ voice: { model: 3 } }).voice.model, '')
+  ok('the defaults hold no shared key object', hydrateSettings({}).voice.keys !== VOICE_DEFAULTS.keys && DEFAULT_SETTINGS.voice.keys !== VOICE_DEFAULTS.keys)
+  const twice = hydrateSettings(JSON.parse(JSON.stringify(hydrateSettings({ voice: { provider: 'custom', baseUrl: 'http://x/v1', keys: { custom: 'k' } } }))))
+  check('and the whole block round-trips', [twice.voice.provider, twice.voice.baseUrl, twice.voice.keys], ['custom', 'http://x/v1', { custom: 'k' }])
+}
 
 /*
  * Settings › Agents. An agent's Default model on its own sign-in is the SAME

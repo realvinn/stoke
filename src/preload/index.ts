@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { IpcRendererEvent } from 'electron'
 import { CH } from '@shared/ipc'
 import type { ClipboardPeek, StokeApi } from '@shared/api'
+import type { SttConfig } from '@shared/speechProviders'
 import type {
   Rect,
   LaunchOptions,
@@ -233,6 +234,7 @@ const api: StokeApi = {
     requestMic: () => ipcRenderer.invoke(CH.micRequest),
     openMicPrivacy: () => ipcRenderer.send(CH.micPrivacy),
     sttStatus: () => ipcRenderer.invoke(CH.sttStatus),
+    voiceTest: (cfg: SttConfig) => ipcRenderer.invoke(CH.voiceTest, cfg),
     // The ArrayBuffer crosses as a structured clone, so the audio never becomes
     // a string on the way — no base64 round trip, and no copy of the clip
     // sitting in a JS string for the GC to get to eventually.

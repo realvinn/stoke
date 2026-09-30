@@ -8,6 +8,7 @@
  * project excludes; nothing here may reach for an audio API (gotcha 27).
  */
 import type { VoiceSettings } from './types.ts'
+import { cleanModel, isSttProvider, STT_PROVIDER_IDS, type SttProviderId } from './speechProviders.ts'
 
 /**
  * The speech sidecar's documented local port (`scripts/stt-sidecar.py`).
@@ -29,6 +30,10 @@ export const HOLD_MS_MAX = 800
 
 export const VOICE_DEFAULTS: VoiceSettings = {
   sttUrl: DEFAULT_STT_URL,
+  provider: 'sidecar',
+  model: '',
+  baseUrl: '',
+  keys: {},
   holdMs: DEFAULT_HOLD_MS,
   micDeviceId: null,
   micLabel: ''
@@ -78,5 +83,39 @@ export function clampVoice(raw: unknown, legacySttUrl?: unknown): VoiceSettings 
    */
   const micDeviceId = typeof r.micDeviceId === 'string' && r.micDeviceId.trim() ? r.micDeviceId : null
   const micLabel = micDeviceId && typeof r.micLabel === 'string' ? r.micLabel.trim() : ''
-  return { sttUrl, holdMs: clampHoldMs(r.holdMs), micDeviceId, micLabel }
+  return {
+    sttUrl,
+    /*
+     * An unknown provider — a typo, or one a newer build added — is the
+     * sidecar, never a guess at a hosted API: the default sends audio nowhere
+     * it was not already going.
+     */
+    provider: isSttProvider(r.provider) ? r.provider : VOICE_DEFAULTS.provider,
+    model: cleanModel(r.model),
+    baseUrl: typeof r.baseUrl === 'string' ? r.baseUrl.trim() : '',
+    keys: clampSttKeys(r.keys),
+    holdMs: clampHoldMs(r.holdMs),
+    micDeviceId,
+    micLabel
+  }
+}
+
+/**
+ * The per-provider keys, rebuilt from the provider ids this build knows —
+ * never spread from the input, so neither junk nor a `__proto__` key rides
+ * through. Trimmed like every other key (`hydrateProviders`); an empty one is
+ * dropped, which is also how settings.json's scrubbed `''` reads (the vault
+ * puts the real value back before hydrate, `applySecrets`). The sidecar has no
+ * key to keep.
+ */
+export function clampSttKeys(raw: unknown): Partial<Record<SttProviderId, string>> {
+  const out: Partial<Record<SttProviderId, string>> = {}
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out
+  const r = raw as Record<string, unknown>
+  for (const id of STT_PROVIDER_IDS) {
+    if (id === 'sidecar' || !Object.prototype.hasOwnProperty.call(r, id)) continue
+    const v = r[id]
+    if (typeof v === 'string' && v.trim()) out[id] = v.trim()
+  }
+  return out
 }
