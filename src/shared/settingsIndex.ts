@@ -49,6 +49,7 @@ export type SettingsPageId =
   | 'worklog'
   | 'remote'
   | 'updates'
+  | 'account'
   | 'backup'
 
 /** Where the sheet is: a page, and for an agent's page, which agent. */
@@ -183,6 +184,12 @@ export const SETTINGS_PAGES: readonly SettingsPageDef[] = [
     keywords: ['version', 'upgrade', 'beta', 'release', 'cli path', 'stoke command']
   },
   {
+    id: 'account',
+    label: 'Account & sync',
+    hint: 'Stoke Hub: keep settings, API keys, SSH hosts and chosen SSH keys in step across your computers',
+    keywords: ['stoke hub', 'hub', 'sync', 'account', 'sign in', 'log in', 'devices', 'vault', 'recovery kit', 'other machines', 'remote', 'nuc', 'transfer keys']
+  },
+  {
     id: 'backup',
     label: 'Backup & transfer',
     hint: 'Where your API keys are kept, and a passphrase-sealed file that moves this setup to another computer',
@@ -284,7 +291,7 @@ export function navTree(agents: readonly CodingCliId[]): NavGroup[] {
       ]
     },
     { title: 'Integrations', nodes: [pageNode('worklog'), pageNode('remote')] },
-    { title: 'System', nodes: [pageNode('updates'), pageNode('backup')] }
+    { title: 'System', nodes: [pageNode('updates'), pageNode('account'), pageNode('backup')] }
   ]
 }
 
@@ -555,6 +562,17 @@ export const SETTING_ROWS: readonly SettingRow[] = [
   { id: 'updates.cli-path', page: 'updates', label: 'Claude CLI path', keywords: ['claude executable', 'where is claude', 'not found', 'binary'] },
 
   // Backup & transfer
+  { id: 'account.overview', page: 'account', label: 'Stoke Hub status', keywords: ['sync status', 'signed in', 'hub', 'in sync', 'conflict', 'sync stopped', 'waiting for you on this computer', 'waiting to join', 'changed in two places'] },
+  { id: 'account.create-vault', page: 'account', label: 'Create your vault', keywords: ['vault', 'first device', 'recovery kit', 'encryption'], fallback: 'account.overview' },
+  { id: 'account.join', page: 'account', label: 'Join your vault', keywords: ['pair', 'pairing code', 'approve device', 'new computer', 'recovery kit'], fallback: 'account.overview' },
+  { id: 'account.address', page: 'account', label: 'Hub address', keywords: ['hub url', 'server', 'nuc', 'stoke.vinn.dev', 'self-hosted'], fallback: 'account.overview' },
+  { id: 'account.sign-in', page: 'account', label: 'Sign in to Stoke Hub', keywords: ['log in', 'login', 'create account', 'invite', 'password', 'email'], fallback: 'account.overview' },
+  { id: 'account.syncing', page: 'account', label: 'What syncs', keywords: ['sync settings', 'sync api keys', 'ssh hosts', 'sync now', 'api keys, for the whole account', 'api keys on this computer'], fallback: 'account.overview' },
+  { id: 'account.ssh-keys', page: 'account', label: 'SSH keys', keywords: ['share ssh key', 'private key', 'transfer ssh', 'id_ed25519'], fallback: 'account.overview' },
+  { id: 'account.devices', page: 'account', label: 'Your devices', keywords: ['remove device', 'revoke', 'rename device', 'computers'], fallback: 'account.overview' },
+  { id: 'account.other-machines', page: 'account', label: 'Other machines', keywords: ['remote sessions', 'open sessions elsewhere', 'share sessions', 'relay', 'let my other devices see and open my sessions'], fallback: 'account.overview' },
+  { id: 'account.recovery', page: 'account', label: 'Recovery Kit', keywords: ['recovery code', 'lost device', 'new kit'], fallback: 'account.overview' },
+  { id: 'account.sign-out', page: 'account', label: 'Sign out of Stoke Hub', keywords: ['log out', 'logout', 'disconnect hub'], fallback: 'account.overview' },
   { id: 'backup.storage', page: 'backup', label: 'Where your keys live', keywords: ['keychain', 'secrets', 'encryption', 'api keys', 'safe storage'] },
   { id: 'backup.export', page: 'backup', label: 'Export this setup', keywords: ['backup', 'setup file', 'passphrase', 'another computer', 'transfer', 'include api keys'] },
   { id: 'backup.import', page: 'backup', label: 'Import a setup', keywords: ['restore', 'setup file', 'transfer'] }

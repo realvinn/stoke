@@ -1,0 +1,33 @@
+{
+  // The Worker that carries https://stoke.vinn.dev/hub/* to the owner's hub —
+  // see worker/hub-edge.ts and hub/README.md. NOT the installer: that is
+  // wrangler.jsonc, which this file never touches and whose deploy never
+  // touches this one.
+  //
+  // Deployed BY HAND, like the installer:
+  //   npx wrangler login
+  //   npx wrangler secret put HUB_EDGE_SECRET -c wrangler.hub-edge.jsonc
+  //   npm run deploy:hub-edge
+  "$schema": "node_modules/wrangler/config-schema.json",
+
+  // Never "stoke-install": deploying under the installer's name would replace
+  // the installer. verify:install holds both names apart.
+  "name": "stoke-hub-edge",
+  "main": "worker/hub-edge.ts",
+  "compatibility_date": "2026-09-01",
+
+  // A ROUTE, not a custom domain. A custom domain takes the whole hostname
+  // (and stoke.vinn.dev already is the installer's); a route on a hostname
+  // runs before that hostname's custom-domain Worker, for the paths it
+  // matches. `/hub/*`, not `/hub*`: `/hubba` and the bare `/hub` stay the
+  // installer's. It rides the existing proxied record, so no new DNS name and
+  // no gotcha-77 wait for this half.
+  "routes": [{ "pattern": "stoke.vinn.dev/hub/*", "zone_name": "vinn.dev" }],
+
+  // The tunnel hostname cloudflared serves on the NUC (hub/README.md). Gotcha
+  // 77 DOES apply to it: `cloudflared tunnel route dns` writes that record.
+  // HUB_EDGE_SECRET is a secret (wrangler secret put), never a var here.
+  "vars": { "HUB_ORIGIN": "https://hub-origin.vinn.dev" },
+
+  "observability": { "enabled": true }
+}

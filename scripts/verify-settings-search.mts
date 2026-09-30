@@ -128,6 +128,7 @@ console.log('every row the sheet marks is in the index, and every row in the ind
     'components/HostsSettings.tsx': ['hosts'],
     'components/BrowserSettings.tsx': ['browser'],
     'components/BackupSettings.tsx': ['backup'],
+    'components/AccountSyncSettings.tsx': ['account'],
     'components/RemoteSettings.tsx': ['remote', 'updates'],
     'components/AgentsSettings.tsx': ['agents', 'agent', 'claude-launch']
   }
@@ -347,7 +348,13 @@ console.log('\nsearch: what ranks first, synonyms, spellings and highlights')
   check('"themes": the theme cards first', top('themes'), ['row:appearance.theme'])
   check('"wallpapers": Wallpaper first', top('wallpapers'), ['row:appearance.wallpaper'])
   check('"microphones": the microphone rows lead', top('microphones', 2).sort(), ['row:voice.mic-access', 'row:voice.microphone'])
-  check('"ssh keys": key login for SSH hosts first', top('ssh keys'), ['row:hosts.key-enroll'])
+  // Two rows answer "ssh keys" now: setting up key login to a host, and the hub's
+  // sharing of your own keys between devices (Account & sync). Both lead, in either order.
+  check(
+    '"ssh keys": key login for SSH hosts and the hub\'s SSH keys lead',
+    top('ssh keys', 2).slice().sort(),
+    ['row:account.ssh-keys', 'row:hosts.key-enroll']
+  )
   check(
     '"api keys": both Claude Code key rows ahead of Where your keys live',
     [top('api keys', 2).sort(), searchSettings(entries, 'api keys').findIndex((h) => h.entry.key === 'row:backup.storage') > 1],
@@ -450,6 +457,7 @@ console.log('\nevery control the sheet labels is found by its label, on its own 
     'components/HostsSettings.tsx': ['hosts'],
     'components/BrowserSettings.tsx': ['browser'],
     'components/BackupSettings.tsx': ['backup'],
+    'components/AccountSyncSettings.tsx': ['account'],
     'components/RemoteSettings.tsx': ['remote', 'updates'],
     'components/AgentsSettings.tsx': ['agents', 'agent', 'claude-launch']
   }
@@ -461,7 +469,8 @@ console.log('\nevery control the sheet labels is found by its label, on its own 
     ['components/BrowserSettings.tsx: Name', "one field of each browser profile's own row"],
     ['components/RemoteSettings.tsx: Enter them by hand', "a disclosure over the Access team domain and AUD tag, which remote.access's keywords name"],
     ['components/RemoteSettings.tsx: Advanced', 'a disclosure over Port and the key, each a row of its own'],
-    ['components/BackupSettings.tsx: Also import the', "the import's question about the keys in a file, drawn once one is chosen (its text stops at a count)"]
+    ['components/BackupSettings.tsx: Also import the', "the import's question about the keys in a file, drawn once one is chosen (its text stops at a count)"],
+    ['components/AccountSyncSettings.tsx: Account \' sync', "the page's own heading while it asks the hub, before any row is drawn; the page is found by name"]
   ])
   const labelled = [
     /className="field-label"[^>]*>\s*([^<{]+?)\s*[<{]/g,

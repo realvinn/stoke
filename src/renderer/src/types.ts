@@ -19,8 +19,12 @@ import type { HookActivity } from '@shared/activityView'
  */
 export type SessionActivity = HookActivity
 
-/** A New Project tab has no PTY yet; every session tab does. */
-export type TabKind = 'session' | 'new'
+/**
+ * A New Project tab has no PTY yet; every session tab does. A `remote` tab is
+ * another of the owner's machines' session, streamed through the hub relay
+ * (src/main/hub/remote.ts): no pty here, no transcript here, never restored.
+ */
+export type TabKind = 'session' | 'new' | 'remote'
 
 /** A live terminal tab. Distinct from Claude's own session record. */
 export interface Tab {
@@ -131,6 +135,12 @@ export interface Tab {
    * persisted — a restore reattaches paused, as every other tab restores.
    */
   reconnect?: { attempt: number; at: number }
+  /**
+   * Set on a `remote` tab only: main's handle for it (`tabId`) and whose
+   * session it is. Never saved for restore (`toStored` drops the tab): a
+   * relay is two live sockets, and the other machine asks again.
+   */
+  remote?: { tabId: string; device: string; deviceLabel: string; platform: string; ptyId: string }
   /**
    * Per-tab launcher selection, so several New Project tabs can be open at once
    * without both pointing at whatever was clicked last. Null on a session tab.

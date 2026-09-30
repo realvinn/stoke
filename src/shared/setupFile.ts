@@ -290,6 +290,9 @@ export const PARTIAL_KEYS = {
  *   computer is not a yes on another, and the offer there must still be asked.
  * - `accounts`: each login account is a folder on this disk signed in on this
  *   device (shared/accounts.ts), and its key accounts' keys are not portable.
+ * - `hub`: which Stoke Hub THIS device is signed in to, as which device, and
+ *   the grants it gives other devices (shared/hub/settings.ts, tier T0). A
+ *   copy on another machine would claim to be this device.
  *
  * `verify:secrets` asserts PORTABLE_KEYS, PARTIAL_KEYS and LOCAL_KEYS
  * partition every key of DEFAULT_SETTINGS exactly, so a new setting fails the
@@ -310,7 +313,8 @@ export const LOCAL_KEYS = [
   'welcomeSeenVersion',
   'chatIndex',
   'chatIndexOptions',
-  'accounts'
+  'accounts',
+  'hub'
 ] as const satisfies readonly (keyof Settings)[]
 
 function cloneJson<T>(v: T): T {

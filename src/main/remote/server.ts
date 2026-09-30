@@ -5,7 +5,7 @@ import { hostname } from 'node:os'
 import { extname, join, normalize, sep } from 'node:path'
 import type { Duplex } from 'node:stream'
 import { app } from 'electron'
-import { WebSocketServer, type WebSocket } from 'ws'
+import { WebSocketServer } from 'ws'
 import type {
   ContextSnapshot,
   EffortLevel,
@@ -38,6 +38,7 @@ import type { FolderBase } from '../../shared/remotePhone.ts'
 import { addRemoteProject, browseRemoteFolder, resolveFolderBases } from './folders.ts'
 import type { PushOutcome } from './push.ts'
 import { isTailnetAddress, tailnetAddress } from './link.ts'
+import type { PhoneSocket } from './socket.ts'
 import {
   answerBytes,
   answerVerdict,
@@ -509,11 +510,11 @@ export class RemoteServer {
   private wss: WebSocketServer | null = null
   private config: RemoteConfig | null = null
   private error: string | null = null
-  private clients = new Set<WebSocket>()
+  private clients = new Set<PhoneSocket>()
   private offData: (() => void) | null = null
   private offExit: (() => void) | null = null
   /** ptyId -> sockets attached to it. */
-  private attached = new Map<string, Set<WebSocket>>()
+  private attached = new Map<string, Set<PhoneSocket>>()
   /**
    * The desktop's own size for a pty a phone has resized, so it can be put
    * back when the last phone leaves. A phone that fits the terminal to its
@@ -522,7 +523,7 @@ export class RemoteServer {
    */
   private desktopSize = new Map<string, { cols: number; rows: number }>()
   /** Sockets on `/ws/events` — phone contract point 4. */
-  private eventsClients = new Set<WebSocket>()
+  private eventsClients = new Set<PhoneSocket>()
   /** The last `{type:'sessions',...}` payload sent, so an unchanged poll sends nothing. */
   private lastEventsPayload: string | null = null
   private eventsDebounce: NodeJS.Timeout | null = null
@@ -533,7 +534,7 @@ export class RemoteServer {
   /** What `/api/theme` answered last, serialised, so `onThemeChanged` pushes only a real change. */
   private themeSig: string | null = null
   /** The pty size each attached socket was last told, `cols x rows` (`pushSizes`). */
-  private toldSize = new WeakMap<WebSocket, string>()
+  private toldSize = new WeakMap<PhoneSocket, string>()
   /**
    * The team's signing keys, while Access is verified. Kept across a restart
    * that leaves the keys URL alone, so a port edit does not refetch them.
@@ -623,7 +624,7 @@ export class RemoteServer {
       // Phone contract point 5: on, for both the pty socket and /ws/events —
       // a reconnect replays up to MAX_HISTORY of scrollback (audit PX-22).
       const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_WS_FRAME, perMessageDeflate: true })
-      wss.on('connection', (ws, req) => this.handleSocket(ws, req))
+      wss.on('connection', (ws, req) => this.handleSocket(ws, new URL(req.url ?? '/', 'http://localhost')))
 
       const listen = async (host: string): Promise<void> => {
         const server = createServer((req, res) => void this.handleHttp(req, res))
@@ -678,37 +679,77 @@ export class RemoteServer {
       }
 
       this.wss = wss
-
-      // Fan PTY output out to every attached remote client.
-      const ptys = this.deps.ptys()
-      if (ptys) {
-        this.offData = ptys.subscribe((ptyId, data) => {
-          this.broadcast(ptyId, { type: 'data', ptyId, data })
-          this.notifySessionsChanged()
-        })
-        this.offExit = ptys.subscribeExit((ptyId, code) => {
-          this.broadcast(ptyId, { type: 'exit', ptyId, code })
-          /*
-           * Phone contract point 5: the socket closes with a NORMAL code
-           * right after the exit frame, so the client can tell "the process
-           * ended" apart from "the network dropped" and knows not to
-           * reconnect. It used to stay open forever after an exit it had
-           * already reported, so a later write from that client (audit F1/
-           * PX-13's dead composer) went nowhere with no error either.
-           */
-          const set = this.attached.get(ptyId)
-          if (set) for (const ws of set) if (ws.readyState === 1) ws.close(1000, 'exit')
-          this.notifySessionsChanged()
-          // Finished, if it ended on its own: a tab closed at the desk is
-          // already gone from the list, and is sent nothing (`evaluatePush`).
-          this.evaluatePush()
-        })
-      }
+      this.fanOut()
     } catch (err) {
       this.error = friendlyListenError(err, config.port)
     }
 
     return this.status()
+  }
+
+  /** Fan PTY output out to every attached client. Idempotent; `stop` undoes it. */
+  private fanOut(): void {
+    const ptys = this.deps.ptys()
+    if (!ptys || this.offData) return
+    this.offData = ptys.subscribe((ptyId, data) => {
+      this.broadcast(ptyId, { type: 'data', ptyId, data })
+      this.notifySessionsChanged()
+    })
+    this.offExit = ptys.subscribeExit((ptyId, code) => {
+      this.broadcast(ptyId, { type: 'exit', ptyId, code })
+      /*
+       * Phone contract point 5: the socket closes with a NORMAL code
+       * right after the exit frame, so the client can tell "the process
+       * ended" apart from "the network dropped" and knows not to
+       * reconnect. It used to stay open forever after an exit it had
+       * already reported, so a later write from that client (audit F1/
+       * PX-13's dead composer) went nowhere with no error either.
+       */
+      const set = this.attached.get(ptyId)
+      if (set) for (const ws of set) if (ws.readyState === 1) ws.close(1000, 'exit')
+      this.notifySessionsChanged()
+      // Finished, if it ended on its own: a tab closed at the desk is
+      // already gone from the list, and is sent nothing (`evaluatePush`).
+      this.evaluatePush()
+    })
+  }
+
+  /* ------------------------------------------------------- hub relay */
+
+  /*
+   * The same routes and sockets, served to another of the owner's machines
+   * through the hub relay (src/main/hub/remote.ts, spec §6.4) — "never by
+   * opening its loopback port": the instance main keeps for the relay is
+   * never `start`ed, binds nothing, and exists whether or not Phone access is
+   * on. The host's grant and scope are judged BEFORE any of these is called.
+   */
+
+  /** Serve relayed sockets: subscribe to the ptys with no listener. */
+  serveRelay(): void {
+    this.fanOut()
+  }
+
+  /** One relayed request, through `api` (`path` carries its query). */
+  async relayRequest(method: 'GET' | 'POST', path: string, body: unknown): Promise<{ status: number; body: unknown }> {
+    try {
+      const url = new URL(path, 'http://localhost')
+      const answer = await this.api(method, url, async () => (body === undefined ? null : body))
+      return answer ?? { status: 404, body: { error: 'No such endpoint or method.' } }
+    } catch (err) {
+      console.error('[remote] relayed request', err)
+      return { status: 500, body: { error: 'Internal error.' } }
+    }
+  }
+
+  /** One relayed socket (`/ws/events` or `/ws?ptyId=…`), handled exactly as a phone's. */
+  relaySocket(path: string, sock: PhoneSocket): void {
+    this.fanOut()
+    this.handleSocket(sock, new URL(path, 'http://localhost'))
+  }
+
+  /** The session rows a phone would be sent (`/api/sessions`), for the hub status. */
+  sessionRows(): Promise<RemoteSessionRow[]> {
+    return this.sessionList()
   }
 
   /**
@@ -938,7 +979,7 @@ export class RemoteServer {
    * dropped could sit in `this.attached`/`this.eventsClients` indefinitely,
    * counted as a live phone that was actually gone.
    */
-  private attachKeepalive(ws: WebSocket): void {
+  private attachKeepalive(ws: PhoneSocket): void {
     let alive = true
     ws.on('pong', () => {
       alive = true
@@ -1217,175 +1258,8 @@ export class RemoteServer {
       : {}
 
     try {
-      if (url.pathname === '/api/sessions' && req.method === 'GET') {
-        return this.json(res, await this.sessionList(), setCookie)
-      }
-      /*
-       * Which machine this is, and what it can offer. With one desktop the
-       * machine name is noise; with a laptop and a desktop behind the same
-       * bookmarks, two tabs are indistinguishable and it is entirely possible
-       * to start work on the wrong computer. `stt`/`agents`/`defaults` are
-       * phone contract point 2 — the New Session sheet needs an agent list
-       * and a set of defaults before it can offer either.
-       */
-      if (url.pathname === '/api/host' && req.method === 'GET') {
-        const [agents, stt] = await Promise.all([this.deps.agents(), this.deps.sttStatus()])
-        const defaults = this.deps.defaults()
-        return this.json(
-          res,
-          {
-            machine: stripLocalHostnameSuffix(hostname()),
-            platform: process.platform,
-            stt,
-            agents,
-            defaults: phoneHostDefaults(defaults, defaults.cli, agents.map((a) => a.id)),
-            choices: phoneAgentChoices(
-              agents.map((a) => a.id),
-              this.deps.launchFacts()
-            ),
-            // Point 14: read, never minted here (gotcha 53).
-            push: { publicKey: this.deps.push?.publicKey() ?? null }
-          },
-          setCookie
-        )
-      }
-      /*
-       * The colours this window is painting, so the phone paints the same
-       * ones. Before this the mobile bundle carried a hand copy of one palette
-       * that no suite could see and that had drifted to pre-ladder values: the
-       * phone's terminal was a different black from its own page.
-       */
-      if (url.pathname === '/api/theme' && req.method === 'GET') {
-        const { theme, fontFamily, contrastBoost } = this.deps.theme()
-        return this.json(
-          res,
-          // `contrastBoost`: the phone's terminal keeps at least its own floor
-          // over it (`phoneTermContrast`, audit PX-21).
-          { appearance: theme.appearance, colors: theme.colors, terminal: theme.terminal, fontFamily, contrastBoost: contrastBoost ?? 1 },
-          setCookie
-        )
-      }
-
-      if (url.pathname === '/api/projects' && req.method === 'GET') {
-        const projects = await this.deps.listProjects()
-        /*
-         * Deduped by realpath — audit finding: `/tmp/…/proj-a` and
-         * `/private/tmp/…/proj-a` (macOS's `/tmp` symlink) listed as two
-         * separate cards for one project. The first occurrence wins; ties in
-         * `listProjects()`'s own order are broken there, not here. Resolved
-         * together under the launch deadline (gotcha 40) — one at a time, a
-         * sleeping disk held the whole reply once per project on it.
-         */
-        const rules = pathRulesFor(process.platform)
-        const reals = await Promise.all(projects.map((p) => realpathFolder(p.path)))
-        const seen = new Set<string>()
-        const deduped: Project[] = []
-        projects.forEach((p, i) => {
-          const key = pathKey(reals[i], rules)
-          if (seen.has(key)) return
-          seen.add(key)
-          deduped.push(p)
-        })
-        /*
-         * Every project (phone contract point 11). The list used to stop at
-         * 60 and the phone searched only what it was sent, so the 61st
-         * project could not be reached from a phone at all.
-         */
-        const hints = disambiguate(deduped.map((p) => ({ path: p.path, label: p.label ?? p.name })))
-        return this.json(
-          res,
-          {
-            defaultCwd: this.deps.defaultCwd(),
-            projects: deduped.map((p) => ({
-              path: p.path,
-              name: p.name,
-              label: p.label,
-              hint: hints[p.path] ?? '',
-              sessionCount: p.sessionCount,
-              lastActivityAt: p.lastModified,
-              pinned: p.pinned,
-              exists: p.exists
-            })),
-            // Id, name and alias only: never `command`, which is argv.
-            hosts: this.deps.hosts().map((h) => ({ id: h.id, label: h.label, alias: h.alias })),
-            roots: this.deps.projectRoots()
-          },
-          setCookie
-        )
-      }
-
-      /*
-       * Browse (phone contract point 12). Only immediate subfolders of a
-       * folder inside a place `remoteFolderVerdict` allows.
-       */
-      if (url.pathname === '/api/folders' && req.method === 'GET') {
-        const result = await browseRemoteFolder(url.searchParams.get('path'), await this.folderBases(), process.platform)
-        if (!result.ok) return this.json(res, { error: result.error }, setCookie, result.status)
-        return this.json(res, result.body, setCookie)
-      }
-
-      /*
-       * Add or create a project folder (phone contract point 13). The one
-       * write a phone makes to settings; `addProject` pushes it to the desktop.
-       */
-      if (url.pathname === '/api/projects' && req.method === 'POST') {
-        const parsed = await this.readJson(req)
-        if (parsed === BAD_JSON) return this.json(res, { error: 'Malformed JSON body.' }, setCookie, 400)
-        const result = await addRemoteProject(parsed, {
-          bases: () => this.folderBases(),
-          platform: process.platform,
-          remember: (realPath) => this.deps.addProject(realPath)
-        })
-        if (!result.ok) return this.json(res, { error: result.error }, setCookie, result.status)
-        return this.json(res, result.body, setCookie)
-      }
-      /*
-       * Past sessions. Without these the phone can only see what happens to be
-       * running on the desktop this second, which is almost never what someone
-       * opening the site is looking for — the work they did earlier is in
-       * Claude Code's transcripts, and the desktop app has always read them.
-       */
-      if (url.pathname === '/api/history' && req.method === 'GET') {
-        const cwd = url.searchParams.get('cwd')
-        if (!cwd) return this.json(res, { error: 'cwd is required' }, setCookie, 400)
-        const sessions = await this.deps.listSessions(cwd)
-        /*
-         * `live`/`ptyId` (PX-10): a history row for a session running right
-         * now used to offer a primary Resume button, and pressing it forked
-         * the conversation with a second `claude --resume` on the same id.
-         *
-         * `contextLimit` (PX-19 / gotcha 2): the transcript's own model id
-         * drops the `[1m]` tier, so a 1M-context session's history row showed
-         * 95k/200k — orange — while the live list correctly read 9%. The live
-         * watcher's own snapshot wins when the session is live; otherwise the
-         * last window `ContextWatcher` ever recorded for it stands in; a
-         * session neither live nor ever recorded gets `null`, which the
-         * client shows as tokens with no percentage rather than a wrong one.
-         */
-        const watcher = this.deps.watcher()
-        const live = this.deps.ptys()?.list() ?? []
-        const rows = sessions.slice(0, 100).map((s) => {
-          const pty = live.find((p) => p.sessionId === s.id && !p.exited)
-          const contextLimit = watcher?.snapshot(s.id)?.contextLimit ?? this.deps.recordedContextLimit(s.id)
-          return { ...s, live: pty !== undefined, ptyId: pty?.ptyId ?? null, contextLimit: contextLimit ?? null }
-        })
-        return this.json(res, { cwd, sessions: rows }, setCookie)
-      }
-
-      if (url.pathname === '/api/transcript' && req.method === 'GET') {
-        const id = url.searchParams.get('id')
-        if (!id) return this.json(res, { error: 'id is required' }, setCookie, 400)
-        /*
-         * Session ids are UUIDs and are joined onto a path. Without this an
-         * `id` of `../../../../something` escaped the transcript directory and
-         * read any .jsonl on the machine.
-         */
-        if (!UUID.test(id)) return this.json(res, { error: 'bad session id' }, setCookie, 400)
-        const transcript = await this.deps.readTranscript(id)
-        if (!transcript) return this.json(res, { error: 'no such session' }, setCookie, 404)
-        return this.json(res, transcript, setCookie)
-      }
-
+      // The routes that read the raw request stay here, dictation's audio and
+      // Web Push; everything else is `api`, which the hub relay shares.
       /*
        * Dictation. The phone records, converts to 16-bit PCM WAV in the browser
        * and posts the bytes here; we forward them to the chosen speech service
@@ -1415,190 +1289,6 @@ export class RemoteServer {
           return this.json(res, { error: result.error }, setCookie, result.unset ? 503 : 502)
         }
         return this.json(res, { text: result.text }, setCookie)
-      }
-
-      if (url.pathname === '/api/sessions' && req.method === 'POST') {
-        const parsed = await this.readJson(req)
-        /*
-         * A body that failed to parse used to read as "no body" and quietly
-         * started a session in the default directory. A truncated request now
-         * fails loudly instead of launching a real process somewhere unasked.
-         */
-        if (parsed === BAD_JSON) {
-          return this.json(res, { error: 'Malformed JSON body.' }, setCookie, 400)
-        }
-        const body = parsed as (Partial<Omit<LaunchOptions, 'host'>> & { host?: unknown; hostId?: unknown; scratch?: unknown }) | null
-
-        /*
-         * The phone may not start an unsandboxed agent. `bypassPermissions`
-         * becomes --dangerously-skip-permissions, and the desktop guards it
-         * behind an explicit confirmation; this route had no equivalent and the
-         * UI never offered it, so accepting it turned "drive a terminal someone
-         * is watching" into "spawn a silent autonomous agent anywhere on disk".
-         */
-        const requested = body?.permissionMode ?? 'default'
-        if (requested === 'bypassPermissions') {
-          return this.json(
-            res,
-            { error: 'Bypass permissions cannot be started remotely. Use the desktop app.' },
-            setCookie,
-            403
-          )
-        }
-
-        /*
-         * Where it runs: a known folder, an SSH host named by id, or a new
-         * scratch folder (phone contract point 8) — one of them. A `host`
-         * OBJECT is refused outright: its alias and command become an ssh
-         * argv, so a host is only ever the one Settings holds under that id.
-         */
-        if (body && typeof body === 'object' && 'host' in body) {
-          return this.json(res, { error: 'Name a remote machine by its hostId.' }, setCookie, 400)
-        }
-        const hostId = body?.hostId
-        const scratch = body?.scratch === true
-        if (hostId !== undefined && (typeof hostId !== 'string' || !hostId)) {
-          return this.json(res, { error: 'hostId must name a remote machine.' }, setCookie, 400)
-        }
-        if (hostId !== undefined && scratch) {
-          return this.json(res, { error: 'A session runs on a remote machine or in a scratch folder, not both.' }, setCookie, 400)
-        }
-        let host: SshHost | null = null
-        if (typeof hostId === 'string') {
-          host = this.deps.hosts().find((h) => h.id === hostId) ?? null
-          if (!host) return this.json(res, { error: 'That remote machine is not in Settings.' }, setCookie, 400)
-          // Its `claude` is on the far machine; nothing is added to its command (gotcha 19).
-          const asked: unknown = body?.cli
-          if (typeof asked === 'string' && asked !== '' && asked !== 'claude') {
-            return this.json(res, { error: 'A remote machine runs Claude Code.' }, setCookie, 400)
-          }
-          if (body?.resume === true) {
-            return this.json(res, { error: "Resume a remote machine's conversation from the desktop." }, setCookie, 400)
-          }
-        }
-        if (scratch && body?.resume === true) {
-          return this.json(res, { error: 'A scratch folder has no conversation to resume.' }, setCookie, 400)
-        }
-
-        /*
-         * The working directory has to be one the desktop already knows about.
-         * It was passed straight to spawn, so any path on the machine was fair
-         * game, and a bad one threw a message that leaked absolute paths back.
-         * An SSH session's local cwd is the default folder, as the desktop's
-         * own `startHostSession` uses; a scratch folder is made below, once
-         * everything else has passed.
-         */
-        let cwd = host || scratch ? this.deps.defaultCwd() : body?.cwd || this.deps.defaultCwd()
-        if (!host && !scratch && !(await this.knownCwd(cwd))) {
-          return this.json(res, { error: 'Unknown project directory.' }, setCookie, 400)
-        }
-
-        /*
-         * Phone contract point 8: `cli` must name an agent the picker already
-         * offers (installed and chosen) — never an arbitrary string handed
-         * straight to the CLI lookup, and never an agent the user has not
-         * said they use.
-         */
-        let cli: string | undefined
-        if (!host && typeof body?.cli === 'string' && body.cli.length > 0) {
-          const agents = await this.deps.agents()
-          if (!agents.some((a) => a.id === body.cli)) {
-            return this.json(res, { error: 'That agent is not installed.' }, setCookie, 400)
-          }
-          cli = body.cli
-        }
-
-        /*
-         * What the start asks the agent for must be what that agent takes
-         * (`choices`, phone contract points 2 and 8): Codex is handed no
-         * permission mode and runs the model Settings › Agents gives it, and a
-         * remote machine's `claude` takes nothing at all (gotcha 19). Read from
-         * settings on this request, the same facts `/api/host` served. The
-         * account is checked here too, so a key account with no key is a 400
-         * with its own sentence rather than a bare 500 from the launch.
-         */
-        if (host && body?.accountId !== undefined && body.accountId !== DEFAULT_ACCOUNT_ID) {
-          return this.json(res, { error: 'A remote machine starts on its own sign-in.' }, setCookie, 400)
-        }
-        const agentId = (cli ?? 'claude') as CodingCliId
-        const choices = host ? hostChoices() : phoneAgentChoices([agentId], this.deps.launchFacts())[agentId]
-        const launch = phoneLaunchVerdict(
-          body as Record<string, unknown> | null,
-          choices,
-          host ? 'A remote machine' : (CODING_CLIS.find((c) => c.id === agentId)?.label ?? agentId)
-        )
-        if (!launch.ok) return this.json(res, { error: launch.error }, setCookie, launch.status)
-
-        /*
-         * One transcript, one `claude`. A Resume on a session that is running
-         * in another pty (a desktop tab, another phone, this phone's own
-         * previous Resume) used to start a second process on it: the desktop
-         * then held two tabs on one id, and closing the ended twin wiped the
-         * live one's context meter (`dropSessionState`). Refused with the pty
-         * that has it, so the phone opens that one instead.
-         */
-        const resumeId =
-          !host && !scratch && typeof body?.sessionId === 'string' && UUID.test(body.sessionId) ? body.sessionId : null
-        const resuming = body?.resume === true
-        /*
-         * And a Resume never silently becomes a new conversation (gotcha 92):
-         * an id with no transcript is refused here rather than handed to
-         * `resumeOrMint`, which would mint a fresh session under it.
-         */
-        const verdict = resumeVerdict({
-          resume: resuming,
-          sessionId: resumeId,
-          livePty: resuming && resumeId ? (this.deps.ptys()?.liveFor(resumeId) ?? null) : null,
-          hasTranscript:
-            resuming && resumeId && (cli === undefined || cli === 'claude')
-              ? await this.deps.transcriptExists(resumeId)
-              : null
-        })
-        if (!verdict.ok) {
-          const { status, ...payload } = verdict
-          return this.json(res, { error: payload.error, live: payload.live, ptyId: payload.ptyId }, setCookie, status)
-        }
-
-        // Made only now, so a refused request leaves no folder behind.
-        if (scratch) cwd = await this.deps.createScratch()
-
-        /*
-         * The account to start on (shared/accounts.ts), when the phone names
-         * one: already held to this agent's own accounts above
-         * (`phoneLaunchVerdict`). Main resolves it against settings again and
-         * refuses one that went in between (`resolveLaunchAccount`) by
-         * throwing, which this route answers like any other launch refusal: a
-         * bare 500, the sentence in the log. Absent is the agent's default
-         * account, as on the desktop. An SSH start carries none.
-         */
-        const accountId =
-          !host && launch.accountId !== undefined && (launch.accountId === DEFAULT_ACCOUNT_ID || isAccountId(launch.accountId))
-            ? launch.accountId
-            : undefined
-
-        const started = await this.deps.startSession({
-          cwd,
-          cli: cli as LaunchOptions['cli'],
-          ...(host ? { host } : {}),
-          ...(accountId ? { accountId } : {}),
-          // Resuming needs both flags: the id says which transcript, and
-          // resume turns it into --resume rather than --session-id, which
-          // would instead try to create a session that already exists.
-          sessionId: resumeId ?? undefined,
-          resume: resuming && resumeId !== null,
-          permissionMode: launch.permissionMode,
-          model: launch.model,
-          effort: launch.effort,
-          cols: 100,
-          rows: 30
-        })
-        /*
-         * `cwd` (point 8) is what the phone's header names: the folder, or the
-         * host's alias — an SSH session's local cwd is not where it runs
-         * (gotcha 18). An SSH start echoes no argv.
-         */
-        if (host) return this.json(res, { ptyId: started.ptyId, sessionId: started.sessionId, cwd: host.alias }, setCookie)
-        return this.json(res, { ...started, cwd }, setCookie)
       }
 
       /*
@@ -1643,56 +1333,8 @@ export class RemoteServer {
         return this.json(res, { error: 'The push service did not take it. Try again in a moment.', outcome }, setCookie, 502)
       }
 
-      /*
-       * Phone contract point 7: one tap answers a permission prompt. Writes
-       * only while the CLI's own registry says this pty is `waiting` right
-       * now — answering blind would send a stray digit into whatever the
-       * session is doing by the time the tap lands.
-       */
-      const answerMatch = /^\/api\/sessions\/([^/]+)\/answer$/.exec(url.pathname)
-      if (answerMatch && req.method === 'POST') {
-        const ptyId = answerMatch[1]
-        const parsed = await this.readJson(req)
-        if (parsed === BAD_JSON) return this.json(res, { error: 'Malformed JSON body.' }, setCookie, 400)
-        const body = parsed as { key?: unknown; promptId?: unknown } | null
-        const key = body?.key
-        if (key !== '1' && key !== '2' && key !== '3' && key !== 'esc' && key !== 'enter') {
-          return this.json(res, { error: "key must be '1', '2', '3', 'esc' or 'enter'." }, setCookie, 400)
-        }
-        /*
-         * The prompt the phone was shown must be the one on screen now, with
-         * nothing typed since (`answerVerdict`). The registry alone lags up to
-         * a poll: a prompt answered at the desk still read `waiting`, and a tap
-         * in that second wrote a stray digit and returned 200.
-         */
-        const status = this.statusFor(ptyId)
-        if (status?.status !== 'waiting') {
-          return this.json(res, { error: 'not waiting' }, setCookie, 409)
-        }
-        const verdict = answerVerdict(
-          this.prompts.get(ptyId) ?? null,
-          body?.promptId,
-          this.deps.ptys()?.lastInputAt(ptyId) ?? null
-        )
-        if (verdict !== 'ok') {
-          return this.json(res, { error: verdict, promptId: status.promptId }, setCookie, 409)
-        }
-        const manager = this.deps.ptys()
-        const ok = manager ? this.answer(manager, ptyId, key) : false
-        if (!ok) return this.json(res, { error: 'That session is no longer running.' }, setCookie, 404)
-        return this.json(res, { ok: true }, setCookie)
-      }
-
-      /*
-       * Anything under /api that reached here matched no route - usually the
-       * right path with the wrong method. It must not fall through to the
-       * static handler, which answers unknown paths with the SPA shell: a
-       * client calling .json() on that gets a parse error instead of a status
-       * it can act on.
-       */
-      if (url.pathname.startsWith('/api/')) {
-        return this.json(res, { error: 'No such endpoint or method.' }, setCookie, 404)
-      }
+      const answer = await this.api(req.method ?? 'GET', url, () => this.readJson(req))
+      if (answer) return this.json(res, answer.body, setCookie, answer.status)
 
       await this.serveStatic(url.pathname, res, setCookie)
     } catch (err) {
@@ -1702,6 +1344,410 @@ export class RemoteServer {
       res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' })
       res.end('Internal error.')
     }
+  }
+
+  /**
+   * The phone API's routes that read no raw request: every `/api/*` a phone
+   * AND a relayed machine may call (src/shared/hub/relay.ts `RELAY_ROUTES`),
+   * as `{status, body}`. `handleHttp` answers them after its key and Access
+   * gate; the hub relay answers them after the host's grant and scope
+   * (`relayRequest`, spec §6.4), so both run the same handlers and every
+   * verdict in them (gotchas 84-87, 121) holds for both. Null: not an API
+   * path at all (the static shell). Dictation and Web Push read the raw
+   * request and are the phone's alone, so they stay in `handleHttp`.
+   */
+  private async api(method: string, url: URL, readJson: () => Promise<unknown>): Promise<{ status: number; body: unknown } | null> {
+    const req = { method }
+    if (url.pathname === '/api/sessions' && req.method === 'GET') {
+      return { status: 200, body: await this.sessionList() }
+    }
+    /*
+     * Which machine this is, and what it can offer. With one desktop the
+     * machine name is noise; with a laptop and a desktop behind the same
+     * bookmarks, two tabs are indistinguishable and it is entirely possible
+     * to start work on the wrong computer. `stt`/`agents`/`defaults` are
+     * phone contract point 2 — the New Session sheet needs an agent list
+     * and a set of defaults before it can offer either.
+     */
+    if (url.pathname === '/api/host' && req.method === 'GET') {
+      const [agents, stt] = await Promise.all([this.deps.agents(), this.deps.sttStatus()])
+      const defaults = this.deps.defaults()
+      return { status: 200, body: {
+          machine: stripLocalHostnameSuffix(hostname()),
+          platform: process.platform,
+          stt,
+          agents,
+          defaults: phoneHostDefaults(defaults, defaults.cli, agents.map((a) => a.id)),
+          choices: phoneAgentChoices(
+            agents.map((a) => a.id),
+            this.deps.launchFacts()
+          ),
+          // Point 14: read, never minted here (gotcha 53).
+          push: { publicKey: this.deps.push?.publicKey() ?? null }
+        } }
+    }
+    /*
+     * The colours this window is painting, so the phone paints the same
+     * ones. Before this the mobile bundle carried a hand copy of one palette
+     * that no suite could see and that had drifted to pre-ladder values: the
+     * phone's terminal was a different black from its own page.
+     */
+    if (url.pathname === '/api/theme' && req.method === 'GET') {
+      const { theme, fontFamily, contrastBoost } = this.deps.theme()
+      // `contrastBoost`: the phone's terminal keeps at least its own floor
+      // over it (`phoneTermContrast`, audit PX-21).
+      return {
+        status: 200,
+        body: { appearance: theme.appearance, colors: theme.colors, terminal: theme.terminal, fontFamily, contrastBoost: contrastBoost ?? 1 }
+      }
+    }
+
+    if (url.pathname === '/api/projects' && req.method === 'GET') {
+      const projects = await this.deps.listProjects()
+      /*
+       * Deduped by realpath — audit finding: `/tmp/…/proj-a` and
+       * `/private/tmp/…/proj-a` (macOS's `/tmp` symlink) listed as two
+       * separate cards for one project. The first occurrence wins; ties in
+       * `listProjects()`'s own order are broken there, not here. Resolved
+       * together under the launch deadline (gotcha 40) — one at a time, a
+       * sleeping disk held the whole reply once per project on it.
+       */
+      const rules = pathRulesFor(process.platform)
+      const reals = await Promise.all(projects.map((p) => realpathFolder(p.path)))
+      const seen = new Set<string>()
+      const deduped: Project[] = []
+      projects.forEach((p, i) => {
+        const key = pathKey(reals[i], rules)
+        if (seen.has(key)) return
+        seen.add(key)
+        deduped.push(p)
+      })
+      /*
+       * Every project (phone contract point 11). The list used to stop at
+       * 60 and the phone searched only what it was sent, so the 61st
+       * project could not be reached from a phone at all.
+       */
+      const hints = disambiguate(deduped.map((p) => ({ path: p.path, label: p.label ?? p.name })))
+      return { status: 200, body: {
+          defaultCwd: this.deps.defaultCwd(),
+          projects: deduped.map((p) => ({
+            path: p.path,
+            name: p.name,
+            label: p.label,
+            hint: hints[p.path] ?? '',
+            sessionCount: p.sessionCount,
+            lastActivityAt: p.lastModified,
+            pinned: p.pinned,
+            exists: p.exists
+          })),
+          // Id, name and alias only: never `command`, which is argv.
+          hosts: this.deps.hosts().map((h) => ({ id: h.id, label: h.label, alias: h.alias })),
+          roots: this.deps.projectRoots()
+        } }
+    }
+
+    /*
+     * Browse (phone contract point 12). Only immediate subfolders of a
+     * folder inside a place `remoteFolderVerdict` allows.
+     */
+    if (url.pathname === '/api/folders' && req.method === 'GET') {
+      const result = await browseRemoteFolder(url.searchParams.get('path'), await this.folderBases(), process.platform)
+      if (!result.ok) return { status: result.status, body: { error: result.error } }
+      return { status: 200, body: result.body }
+    }
+
+    /*
+     * Add or create a project folder (phone contract point 13). The one
+     * write a phone makes to settings; `addProject` pushes it to the desktop.
+     */
+    if (url.pathname === '/api/projects' && req.method === 'POST') {
+      const parsed = await readJson()
+      if (parsed === BAD_JSON) return { status: 400, body: { error: 'Malformed JSON body.' } }
+      const result = await addRemoteProject(parsed, {
+        bases: () => this.folderBases(),
+        platform: process.platform,
+        remember: (realPath) => this.deps.addProject(realPath)
+      })
+      if (!result.ok) return { status: result.status, body: { error: result.error } }
+      return { status: 200, body: result.body }
+    }
+    /*
+     * Past sessions. Without these the phone can only see what happens to be
+     * running on the desktop this second, which is almost never what someone
+     * opening the site is looking for — the work they did earlier is in
+     * Claude Code's transcripts, and the desktop app has always read them.
+     */
+    if (url.pathname === '/api/history' && req.method === 'GET') {
+      const cwd = url.searchParams.get('cwd')
+      if (!cwd) return { status: 400, body: { error: 'cwd is required' } }
+      const sessions = await this.deps.listSessions(cwd)
+      /*
+       * `live`/`ptyId` (PX-10): a history row for a session running right
+       * now used to offer a primary Resume button, and pressing it forked
+       * the conversation with a second `claude --resume` on the same id.
+       *
+       * `contextLimit` (PX-19 / gotcha 2): the transcript's own model id
+       * drops the `[1m]` tier, so a 1M-context session's history row showed
+       * 95k/200k — orange — while the live list correctly read 9%. The live
+       * watcher's own snapshot wins when the session is live; otherwise the
+       * last window `ContextWatcher` ever recorded for it stands in; a
+       * session neither live nor ever recorded gets `null`, which the
+       * client shows as tokens with no percentage rather than a wrong one.
+       */
+      const watcher = this.deps.watcher()
+      const live = this.deps.ptys()?.list() ?? []
+      const rows = sessions.slice(0, 100).map((s) => {
+        const pty = live.find((p) => p.sessionId === s.id && !p.exited)
+        const contextLimit = watcher?.snapshot(s.id)?.contextLimit ?? this.deps.recordedContextLimit(s.id)
+        return { ...s, live: pty !== undefined, ptyId: pty?.ptyId ?? null, contextLimit: contextLimit ?? null }
+      })
+      return { status: 200, body: { cwd, sessions: rows } }
+    }
+
+    if (url.pathname === '/api/transcript' && req.method === 'GET') {
+      const id = url.searchParams.get('id')
+      if (!id) return { status: 400, body: { error: 'id is required' } }
+      /*
+       * Session ids are UUIDs and are joined onto a path. Without this an
+       * `id` of `../../../../something` escaped the transcript directory and
+       * read any .jsonl on the machine.
+       */
+      if (!UUID.test(id)) return { status: 400, body: { error: 'bad session id' } }
+      const transcript = await this.deps.readTranscript(id)
+      if (!transcript) return { status: 404, body: { error: 'no such session' } }
+      return { status: 200, body: transcript }
+    }
+
+    if (url.pathname === '/api/sessions' && req.method === 'POST') {
+      const parsed = await readJson()
+      /*
+       * A body that failed to parse used to read as "no body" and quietly
+       * started a session in the default directory. A truncated request now
+       * fails loudly instead of launching a real process somewhere unasked.
+       */
+      if (parsed === BAD_JSON) {
+        return { status: 400, body: { error: 'Malformed JSON body.' } }
+      }
+      const body = parsed as (Partial<Omit<LaunchOptions, 'host'>> & { host?: unknown; hostId?: unknown; scratch?: unknown }) | null
+
+      /*
+       * The phone may not start an unsandboxed agent. `bypassPermissions`
+       * becomes --dangerously-skip-permissions, and the desktop guards it
+       * behind an explicit confirmation; this route had no equivalent and the
+       * UI never offered it, so accepting it turned "drive a terminal someone
+       * is watching" into "spawn a silent autonomous agent anywhere on disk".
+       */
+      const requested = body?.permissionMode ?? 'default'
+      if (requested === 'bypassPermissions') {
+        return { status: 403, body: { error: 'Bypass permissions cannot be started remotely. Use the desktop app.' } }
+      }
+
+      /*
+       * Where it runs: a known folder, an SSH host named by id, or a new
+       * scratch folder (phone contract point 8) — one of them. A `host`
+       * OBJECT is refused outright: its alias and command become an ssh
+       * argv, so a host is only ever the one Settings holds under that id.
+       */
+      if (body && typeof body === 'object' && 'host' in body) {
+        return { status: 400, body: { error: 'Name a remote machine by its hostId.' } }
+      }
+      const hostId = body?.hostId
+      const scratch = body?.scratch === true
+      if (hostId !== undefined && (typeof hostId !== 'string' || !hostId)) {
+        return { status: 400, body: { error: 'hostId must name a remote machine.' } }
+      }
+      if (hostId !== undefined && scratch) {
+        return { status: 400, body: { error: 'A session runs on a remote machine or in a scratch folder, not both.' } }
+      }
+      let host: SshHost | null = null
+      if (typeof hostId === 'string') {
+        host = this.deps.hosts().find((h) => h.id === hostId) ?? null
+        if (!host) return { status: 400, body: { error: 'That remote machine is not in Settings.' } }
+        // Its `claude` is on the far machine; nothing is added to its command (gotcha 19).
+        const asked: unknown = body?.cli
+        if (typeof asked === 'string' && asked !== '' && asked !== 'claude') {
+          return { status: 400, body: { error: 'A remote machine runs Claude Code.' } }
+        }
+        if (body?.resume === true) {
+          return { status: 400, body: { error: "Resume a remote machine's conversation from the desktop." } }
+        }
+      }
+      if (scratch && body?.resume === true) {
+        return { status: 400, body: { error: 'A scratch folder has no conversation to resume.' } }
+      }
+
+      /*
+       * The working directory has to be one the desktop already knows about.
+       * It was passed straight to spawn, so any path on the machine was fair
+       * game, and a bad one threw a message that leaked absolute paths back.
+       * An SSH session's local cwd is the default folder, as the desktop's
+       * own `startHostSession` uses; a scratch folder is made below, once
+       * everything else has passed.
+       */
+      let cwd = host || scratch ? this.deps.defaultCwd() : body?.cwd || this.deps.defaultCwd()
+      if (!host && !scratch && !(await this.knownCwd(cwd))) {
+        return { status: 400, body: { error: 'Unknown project directory.' } }
+      }
+
+      /*
+       * Phone contract point 8: `cli` must name an agent the picker already
+       * offers (installed and chosen) — never an arbitrary string handed
+       * straight to the CLI lookup, and never an agent the user has not
+       * said they use.
+       */
+      let cli: string | undefined
+      if (!host && typeof body?.cli === 'string' && body.cli.length > 0) {
+        const agents = await this.deps.agents()
+        if (!agents.some((a) => a.id === body.cli)) {
+          return { status: 400, body: { error: 'That agent is not installed.' } }
+        }
+        cli = body.cli
+      }
+
+      /*
+       * What the start asks the agent for must be what that agent takes
+       * (`choices`, phone contract points 2 and 8): Codex is handed no
+       * permission mode and runs the model Settings › Agents gives it, and a
+       * remote machine's `claude` takes nothing at all (gotcha 19). Read from
+       * settings on this request, the same facts `/api/host` served. The
+       * account is checked here too, so a key account with no key is a 400
+       * with its own sentence rather than a bare 500 from the launch.
+       */
+      if (host && body?.accountId !== undefined && body.accountId !== DEFAULT_ACCOUNT_ID) {
+        return { status: 400, body: { error: 'A remote machine starts on its own sign-in.' } }
+      }
+      const agentId = (cli ?? 'claude') as CodingCliId
+      const choices = host ? hostChoices() : phoneAgentChoices([agentId], this.deps.launchFacts())[agentId]
+      const launch = phoneLaunchVerdict(
+        body as Record<string, unknown> | null,
+        choices,
+        host ? 'A remote machine' : (CODING_CLIS.find((c) => c.id === agentId)?.label ?? agentId)
+      )
+      if (!launch.ok) return { status: launch.status, body: { error: launch.error } }
+
+      /*
+       * One transcript, one `claude`. A Resume on a session that is running
+       * in another pty (a desktop tab, another phone, this phone's own
+       * previous Resume) used to start a second process on it: the desktop
+       * then held two tabs on one id, and closing the ended twin wiped the
+       * live one's context meter (`dropSessionState`). Refused with the pty
+       * that has it, so the phone opens that one instead.
+       */
+      const resumeId =
+        !host && !scratch && typeof body?.sessionId === 'string' && UUID.test(body.sessionId) ? body.sessionId : null
+      const resuming = body?.resume === true
+      /*
+       * And a Resume never silently becomes a new conversation (gotcha 92):
+       * an id with no transcript is refused here rather than handed to
+       * `resumeOrMint`, which would mint a fresh session under it.
+       */
+      const verdict = resumeVerdict({
+        resume: resuming,
+        sessionId: resumeId,
+        livePty: resuming && resumeId ? (this.deps.ptys()?.liveFor(resumeId) ?? null) : null,
+        hasTranscript:
+          resuming && resumeId && (cli === undefined || cli === 'claude')
+            ? await this.deps.transcriptExists(resumeId)
+            : null
+      })
+      if (!verdict.ok) {
+        const { status, ...payload } = verdict
+        return { status: status, body: { error: payload.error, live: payload.live, ptyId: payload.ptyId } }
+      }
+
+      // Made only now, so a refused request leaves no folder behind.
+      if (scratch) cwd = await this.deps.createScratch()
+
+      /*
+       * The account to start on (shared/accounts.ts), when the phone names
+       * one: already held to this agent's own accounts above
+       * (`phoneLaunchVerdict`). Main resolves it against settings again and
+       * refuses one that went in between (`resolveLaunchAccount`) by
+       * throwing, which this route answers like any other launch refusal: a
+       * bare 500, the sentence in the log. Absent is the agent's default
+       * account, as on the desktop. An SSH start carries none.
+       */
+      const accountId =
+        !host && launch.accountId !== undefined && (launch.accountId === DEFAULT_ACCOUNT_ID || isAccountId(launch.accountId))
+          ? launch.accountId
+          : undefined
+
+      const started = await this.deps.startSession({
+        cwd,
+        cli: cli as LaunchOptions['cli'],
+        ...(host ? { host } : {}),
+        ...(accountId ? { accountId } : {}),
+        // Resuming needs both flags: the id says which transcript, and
+        // resume turns it into --resume rather than --session-id, which
+        // would instead try to create a session that already exists.
+        sessionId: resumeId ?? undefined,
+        resume: resuming && resumeId !== null,
+        permissionMode: launch.permissionMode,
+        model: launch.model,
+        effort: launch.effort,
+        cols: 100,
+        rows: 30
+      })
+      /*
+       * `cwd` (point 8) is what the phone's header names: the folder, or the
+       * host's alias — an SSH session's local cwd is not where it runs
+       * (gotcha 18). An SSH start echoes no argv.
+       */
+      if (host) return { status: 200, body: { ptyId: started.ptyId, sessionId: started.sessionId, cwd: host.alias } }
+      return { status: 200, body: { ...started, cwd } }
+    }
+
+    /*
+     * Phone contract point 7: one tap answers a permission prompt. Writes
+     * only while the CLI's own registry says this pty is `waiting` right
+     * now — answering blind would send a stray digit into whatever the
+     * session is doing by the time the tap lands.
+     */
+    const answerMatch = /^\/api\/sessions\/([^/]+)\/answer$/.exec(url.pathname)
+    if (answerMatch && req.method === 'POST') {
+      const ptyId = answerMatch[1]
+      const parsed = await readJson()
+      if (parsed === BAD_JSON) return { status: 400, body: { error: 'Malformed JSON body.' } }
+      const body = parsed as { key?: unknown; promptId?: unknown } | null
+      const key = body?.key
+      if (key !== '1' && key !== '2' && key !== '3' && key !== 'esc' && key !== 'enter') {
+        return { status: 400, body: { error: "key must be '1', '2', '3', 'esc' or 'enter'." } }
+      }
+      /*
+       * The prompt the phone was shown must be the one on screen now, with
+       * nothing typed since (`answerVerdict`). The registry alone lags up to
+       * a poll: a prompt answered at the desk still read `waiting`, and a tap
+       * in that second wrote a stray digit and returned 200.
+       */
+      const status = this.statusFor(ptyId)
+      if (status?.status !== 'waiting') {
+        return { status: 409, body: { error: 'not waiting' } }
+      }
+      const verdict = answerVerdict(
+        this.prompts.get(ptyId) ?? null,
+        body?.promptId,
+        this.deps.ptys()?.lastInputAt(ptyId) ?? null
+      )
+      if (verdict !== 'ok') {
+        return { status: 409, body: { error: verdict, promptId: status.promptId } }
+      }
+      const manager = this.deps.ptys()
+      const ok = manager ? this.answer(manager, ptyId, key) : false
+      if (!ok) return { status: 404, body: { error: 'That session is no longer running.' } }
+      return { status: 200, body: { ok: true } }
+    }
+
+    /*
+     * Anything under /api that reached here matched no route - usually the
+     * right path with the wrong method. It must not fall through to the
+     * static handler, which answers unknown paths with the SPA shell: a
+     * client calling .json() on that gets a parse error instead of a status
+     * it can act on.
+     */
+    if (url.pathname.startsWith('/api/')) {
+      return { status: 404, body: { error: 'No such endpoint or method.' } }
+    }
+    return null
   }
 
   /**
@@ -1920,8 +1966,7 @@ export class RemoteServer {
     })
   }
 
-  private handleSocket(ws: WebSocket, req: IncomingMessage): void {
-    const url = new URL(req.url ?? '/', 'http://localhost')
+  private handleSocket(ws: PhoneSocket, url: URL): void {
     /*
      * Phone contract point 4: a second kind of socket, gated the same way as
      * the pty one in `handleUpgrade` (this method only ever runs after that
@@ -1932,10 +1977,10 @@ export class RemoteServer {
       this.handleEventsSocket(ws)
       return
     }
-    this.handlePtySocket(ws, req, url)
+    this.handlePtySocket(ws, url)
   }
 
-  private handleEventsSocket(ws: WebSocket): void {
+  private handleEventsSocket(ws: PhoneSocket): void {
     this.clients.add(ws)
     this.eventsClients.add(ws)
     this.attachKeepalive(ws)
@@ -1950,7 +1995,7 @@ export class RemoteServer {
     ws.on('error', drop)
   }
 
-  private handlePtySocket(ws: WebSocket, req: IncomingMessage, url: URL): void {
+  private handlePtySocket(ws: PhoneSocket, url: URL): void {
     this.clients.add(ws)
     const ptyId = url.searchParams.get('ptyId')
     const ptys = this.deps.ptys()

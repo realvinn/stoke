@@ -26,7 +26,10 @@ export function toStored(
   // password nobody is there to type, on a host that may have its key by now.
   // An account's sign-in tab neither: a login reopened at the next start
   // would ask nobody for a sign-in.
-  const kept = tabs.filter((t) => !t.installing?.length && !t.enrollHostId && !t.accountLogin)
+  // Nor another machine's session: a relay does not survive a restart, and that machine asks again.
+  const kept = tabs.filter(
+    (t): t is Tab & { kind: 'session' | 'new' } => t.kind !== 'remote' && !t.installing?.length && !t.enrollHostId && !t.accountLogin
+  )
   const stored: StoredTab[] = kept.map((t) => {
     const snap = t.sessionId ? contexts[t.sessionId] : undefined
     return {

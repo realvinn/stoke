@@ -294,6 +294,90 @@ Not done here, on purpose: the `nodeCliInspect`/`nodeOptions` fuses (design §6.
 statusLine shim runs as node (`runAsNode`, gotcha 108), and only a packaged build can prove a fuse
 change safe.
 
+## Stoke Hub (sync and remote between the owner's devices)
+
+Phases 2+ of the auth-hub plan, re-planned self-hosted first:
+`docs/superpowers/specs/2026-10-01-stoke-hub-selfhosted.md`. One small Node 24 service on the
+owner's NUC, reached as `https://stoke.vinn.dev/hub` through a separate edge Worker on the route
+`stoke.vinn.dev/hub/*` (the installer Worker is untouched) and a Cloudflare Tunnel, or directly on
+the LAN/tailnet. Email + password sign-in that opens nothing; per-device Ed25519/X25519 keys; a
+signed device list the hub cannot extend; a vault key per epoch; items sealed under opaque ids;
+pairing by a six-digit code both screens show; a Recovery Kit; relays carrying the phone API
+end-to-end encrypted between two devices, authorised on the host.
+
+The CONTRACT is `src/shared/hub/` (pure, both tsconfigs) and the node:crypto reference
+`src/main/hub/crypto.ts`, which imports only `node:crypto` and `src/shared` so the hub server can
+import it as is. `verify:hub` runs them against each other and pins test vectors over every label
+and byte layout — a changed label would strand every wrap and item already on a hub, so it must
+fail there first.
+
+The SERVER is `hub/`: a Node 24 service on `node:http`, `node:sqlite` (one WAL file,
+`synchronous = FULL`: a chain append the hub acknowledged and then lost to a power cut would look,
+to every device that pinned it, exactly like a rollback attack) and `ws`, runnable from source
+under strip-types (`npm run hub`) or as one bundled file (`npm run build:hub` ->
+`hub/dist/stoke-hub.mjs`, what the NUC runs). Two listeners: the EDGE one on loopback, which
+cloudflared targets and which demands the Worker's shared secret on every request, and an optional
+LAN one that asks for none and refuses anything carrying Cloudflare's headers. It runs the
+contract's own rules rather than trusting clients (`verifyChain` on every append, `putVerdict` on
+every put, the pairing commitment), counts a device ACTIVE only when the chain lists its id WITH
+the key it signed in with (gotcha 140), takes every claim before its one await (scrypt), and relays
+frames between two sockets of one account without parsing them. The hub is reached publicly
+through a second Worker, `worker/hub-edge.ts`, on the route `stoke.vinn.dev/hub/*`; the installer
+Worker is not changed. The runbook for the NUC is `hub/README.md`.
+
+The CLIENT is `src/main/hub/` beside the reference crypto, loaded lazily (gotcha 40) the first
+time Settings › Account & sync asks, or 4 s after a boot with a hub configured. `service.ts` is the
+order things happen in: sign-in (an active device proves its sign-in by signature, spec §3.3), the
+vault's genesis only after the Recovery Kit is typed back, joining by the six digits (confirmed on
+BOTH screens: the joining device takes nothing until the owner presses "The codes match" there) or
+by the Kit (which is replaced in the same append, `postRecovery`), a sync pass (verify and pin the
+chain, count this device in only where the chain holds its own ANCHOR — the entry it joined
+through — take any new vault key only as the chain's `vk` commitment vouches for it, read the change
+feed and apply only what is sealed under the current epoch (a re-seal that did not finish is owed
+by its revoker and carried forward by every other device), hold anything that would change what
+runs here until the owner applies it on this computer, give new hosts sync ids, upload), SSH keys
+shared one at a time and installed by a press, rename (`acct/pref/device-names`), revoke with
+re-seal and prune, presence hints, and sign-out. One queue for every hub step; every action claims
+before its first await. The rules it follows are pure in `src/shared/hub/client.ts` (what each tier
+offers, the pass plan, conflict notes, where a received key lands, the panel's view);
+`files.ts` keeps `hub-device.json` and `hub-state.json` (0600, every secret sealed by safeStorage,
+no vault key where the key store protects nothing); `sshKeys.ts` lists key pairs by their `.pub`,
+reads one private key when it is shared, and writes a received one with `wx` at 0600, appending
+an IdentityFile block (checked with `ssh -G -F` when the config is not the passwd home's). The
+session never reaches Settings or the renderer; `settings.hub` has one writer, the service, and
+`commitSettings` drops a renderer patch's copy. Revoking needs the Recovery Kit (or makes a new
+one): the hub demands the Kit's wrap of every new epoch, and a device that kept the Kit's wrap key
+could open every later key from a pending session with the password (gotcha 141) — so a device that
+has had the current Kit in hand (`kitHandlers`: made it, joined with it, or had it typed to remove
+another) is removed only with a new Kit. A hub gone back in time is republished to from a device
+(§7.3), and only over a list that is an earlier copy of the device's own (`isPrefixOf`); the pin and
+the anchor go only with sign-out. Every walk of the change feed is paged and bounded (`feedStep`),
+and every answer is read under a 16 MiB cap. Still to build: `SshReach` on T3 hosts.
+
+REMOTE between the owner's devices ("Other machines", spec §6, H3) is `hub/remote.ts` inside the
+service, playing both parts. Over presence each device sends a STATUS sealed under the epoch's
+presence key (from the vault key; the hub keeps the last one per connected device in memory and
+forwards it blind): its name, platform and — only while its owner ticked "Let my other devices see
+and open my sessions" there (`hub.shareSessions`, default off) — a summary of its sessions, a
+project's folder NAME and a title, never a path. A GUEST opens one as a remote tab: a relay from the
+hub, `RelayChannel` (`hub/channel.ts`: the handshake against keys its own verified chain holds, then
+AES-GCM with a counter per direction; any dropped, repeated, reordered or edited frame closes it),
+an `attach` naming the session, then the phone's own pty-socket protocol. The HOST decides
+(`attachDecision`): not sharing or no such session refuses; an Always grant (`hub.grants`, T0) or a
+live Allow once serves; anything else asks the owner in a strip — Allow once / Always / Deny,
+refused after 60 s. Either answer reaches only the session the relay attached to
+(`relayScopeVerdict`: not even the session list, whose rows carry paths, nor new sessions, folders,
+history or transcripts) — Always only stops the question — and an Allow once outlives a dropped
+relay by two minutes. Every relayed request and socket runs the phone server's own handlers (`api`,
+`relaySocket`) in a second `RemoteServer` that is never started — so it binds nothing and works
+with Phone access off — after the grant's mode (`relayFrameVerdict`) and the answer's reach, and
+only while the host's verified chain still holds the guest by the key its handshake pinned: when
+the chain moves, `HubService` calls `chainChanged`, which ends every relay, question and tab to a
+device it no longer holds, and takes back its grants. A guest pings through the channel every
+4 min, as the hub closes a relay that forwarded nothing for 10. Large frames go as `part`s: a full
+pty replay measures past the hub's 1 MiB frame cap (gotcha 142), and a status is cut to the
+sessions that fit the hub's 24 KiB cap before it is sealed and sent.
+
 ## Remote access
 
 `src/main/remote/server.ts` serves the mobile bundle plus a small API and a WebSocket that
@@ -656,6 +740,16 @@ npm run verify:secrets        # secrets at rest and the setup file, on a SYNTHET
                               # or an export; real scrypt/AES-GCM round trip, wrong passphrase,
                               # flipped byte, edited header, unknown KDF/cipher/format refused;
                               # import drops unknown keys, clamps, keeps local fields
+npm run verify:hub            # the Stoke Hub contract against its node:crypto reference: codecs,
+                              # a real signed device chain and 24 forged or broken ones refused,
+                              # vault wraps (a wrap of any key but the one the epoch's signed
+                              # entry commits to refused), the Recovery Kit, item sealing
+                              # (moved, replayed, relabelled, forged-path envelopes refused),
+                              # the put rule, LWW conflicts, pairing codes, the relay
+                              # handshake and ciphers (MITM, drop, replay, reflection),
+                              # grants, signed requests, the hub URL
+                              # and edge rules, synced-settings folding (gotcha 139), and pinned
+                              # vectors that reproduce under Node/OpenSSL and Electron/BoringSSL
 npm run verify:claude-config  # writing Claude Code's OWN config: the allowlist, the refusals,
                               # and the ~/.claude.json lock. Runs against real files in a temp
                               # CLAUDE_CONFIG_DIR, never the user's (gotchas 38, 39)
@@ -860,6 +954,62 @@ npm run verify:installer-art  # the committed installer bitmaps: BMP3 headers de
                               # the four SVG sources name the same files and share one campfire,
                               # and — via build/installer-art.json — that every raster was
                               # generated from the SVG committed beside it
+npm run verify:hub-server     # the hub SERVER over real sockets on a temp data dir and a fake
+                              # clock: the bootstrap invite, both listeners and the edge secret,
+                              # sign-up by invite only (a race on one invite has one winner),
+                              # lockout and its doubling, the per-IP counter, one sign-in in
+                              # flight per email, signed requests (replay, skew, body, query,
+                              # stolen token), genesis and wraps, compare-and-swap items and
+                              # epochs, pairing by the six digits, the Recovery Kit join and a
+                              # rotate, a squatter on a not-yet-listed id kept pending, a second
+                              # account kept apart, the relay (frames byte-for-byte, another
+                              # account refused, 1 MiB cap, idle and unjoined timeouts, flow
+                              # control under a host that reads nothing, pongs that must echo),
+                              # a wrap planted in hub.db refused by the device, wraps never
+                              # replaced and only from a member, pairs by id AND key, an active
+                              # device's proven sign-in past a stranger's email lock,
+                              # revocation, size caps, the rate bucket, the edge Worker in front
+                              # of it, logs and the SQLite file free of every planted secret,
+                              # graceful shutdown, and the `stoke-hub` command from source and
+                              # bundled (serve, invite, backup, reset-password, health, SIGTERM)
+npm run verify:hub-client     # the hub CLIENT: what each tier offers and what never syncs (the
+                              # phone key, the hub session, account keys, T4 outside a press),
+                              # the pass plan (upload, apply, adopt, last-writer-wins with a note,
+                              # the hub's copy winning a first meeting but never a tombstone over
+                              # a value never agreed, no phantom upload after hydrate), the state
+                              # file's repair, no vault key under basic_text, SSH keys listed by
+                              # .pub and received with no overwrite (-stoke-2, a lone .pub counts,
+                              # 0600, IdentityFile appended with a backup), then three devices
+                              # against a real hub on 127.0.0.1: genesis after the Kit, join by
+                              # the six digits (confirmed on both screens) and by the Kit (a new
+                              # Kit in the same append), an API key and an SSH key arriving, a
+                              # conflict, rename, revoke with re-seal, a held MCP program and host
+                              # command, and hub.db holding no secret — and a hub that lies,
+                              # through each device's injected fetch: a vault built around a new
+                              # device's keys, a fake approver, another account's id, a list gone
+                              # back in time (republish) or replaced (refused), a Kit join whose
+                              # post never lands, a re-seal interrupted half-way (owed by the
+                              # revoker, carried forward by the rest), an old-epoch item a removed
+                              # device forged, a feed that never ends. Twenty-three fixes mutated
+                              # back one at a time each turn it red
+npm run verify:hub-relay      # "Other machines": two RelayChannels through an in-memory relay
+                              # that plays the hub — forwarding, and dropping, repeating,
+                              # reordering, reflecting and rewriting frames, swapping the host's
+                              # ephemeral key, answering as the host with its own key, naming
+                              # the wrong guest, a removed device: each closes the channel; a
+                              # 1.5 MB replay cut into parts under the 1 MiB cap and joined byte
+                              # for byte. The sealed status (relabelled, re-epoched, edited: no
+                              # open; another machine's text cut to size; a pinned vector). The
+                              # host's rules (attachDecision, the Allow once grace, the scope).
+                              # Then two HubRemotes through a fake hub with a fake pty: list,
+                              # ask, Allow once / Always / Deny, type and see the echo, revoke,
+                              # Disconnect, sharing off, a raw guest reaching outside its scope
+                              # (under Always too), and a canary no relayed byte carries in the
+                              # clear. A device dropped from either end's chain mid-serve (the
+                              # relay ends though the hub keeps it open; a waiting question and
+                              # a grant go), a quiet tab past the hub's idle close on a fake
+                              # clock (and its unpinged control), a missing pong, a status
+                              # replayed after a presence reconnect, and one too large to send
 npm run verify:install        # the one-line installer and the endpoint that serves it: the whole
                               # User-Agent matrix through the Worker's routing rule (PowerShell
                               # before anything browser-shaped, and HTML as the fallback), the
@@ -871,7 +1021,10 @@ npm run verify:install        # the one-line installer and the endpoint that ser
                               # electron-builder.yml's appId, http answered with a 301, the
                               # Mac refusals (inside Stoke, several copies) run through main
                               # before any download, the Linux launcher run both as a user
-                              # and as root, and the macOS `stoke` link step via --link-cli
+                              # and as root, and the macOS `stoke` link step via --link-cli;
+                              # and that /hub/* is the hub edge Worker's: both wrangler configs
+                              # (names, one route, never a custom domain), who answers each URL,
+                              # and the edge's forwarding and refusals, run under node
 npm run verify:welcome        # the first-run campfire: which (lastSeen, current) version pairs
                               # play it and which must not, the settings field it remembers that
                               # in, that the component carries no colour and no second copy of
@@ -1120,6 +1273,31 @@ src/main/         Electron main process
                     verify:secrets never touches the Keychain. basic_text is NOT protection
   setupFile.ts      sealing/opening a `.stoke-setup`: scrypt N=2^17 + AES-256-GCM, header as
                     AAD, node:crypto only
+  hub/crypto.ts     Stoke Hub's node:crypto reference: device keys, signed requests, vault
+                    wraps, the Recovery Kit, item seal/open under opaque ids, the pairing code,
+                    the relay handshake and `RelayCipher`, scrypt passwords. No electron import;
+                    the hub server imports it. verify:hub
+  hub/service.ts    the hub CLIENT: sign-in, the vault and its Kit, joining (code or Kit), the
+                    sync pass, SSH key share/install, rename, revoke + re-seal, presence,
+                    sign-out. One queue; claims before awaits. No electron import (dialogs are
+                    injected by index.ts). verify:hub-client
+  hub/files.ts      `hub-device.json` (device keys, session, the digest key) and
+                    `hub-state.json` (chain, pin, anchor, records keyed by HMAC digests, cursor,
+                    notes, prefs, held changes, sealed vault keys), 0600, sealed by the injected
+                    SecretBackend; refuses a vault key under an unprotected key store
+  hub/http.ts       one signed request, read under a 16 MiB cap through `readHubResponse` (a 200
+                    web page is not the hub, gotcha 71)
+  hub/sshKeys.ts    ~/.ssh key pairs by their .pub, one private key read on share, a received
+                    key written `wx` 0600 and an IdentityFile appended (`ssh -G -F` when the
+                    config is not the passwd home's). Paths injectable
+  hub/channel.ts    one end of an E2E relay: the handshake against keys THIS device's chain
+                    holds, per-direction AES-GCM with counters, `part` frames. Transport
+                    agnostic, no electron import. verify:hub-relay
+  hub/remote.ts     "Other machines" (HubRemote): the sealed presence status, remote tabs (the
+                    guest, with its keepalive), and relays asked of this machine (the host: the
+                    owner's question, grants, the scope, relayed requests and sockets through the
+                    phone server's handlers); `chainChanged` ends what the chain stopped
+                    vouching for. No electron import. verify:hub-relay
   accounts.ts       an agent account's folder, `~/.stoke/accounts/<cli>-<slug>` (not userData:
                     dev and packaged differ, and the `stoke` command reads it with no app),
                     realpath'd once — Claude's Keychain item is named after that exact string
@@ -1267,7 +1445,11 @@ src/main/         Electron main process
     inject/extract.js runs IN the page; markdown + refs + find. No deps.
   remote/           phone access
     server.ts         loopback HTTP + WebSocket, token auth, tailnet listener, and
-                      /api/theme so the phone paints the desktop's own palette
+                      /api/theme so the phone paints the desktop's own palette. Its routes
+                      (`api`) and socket handlers also serve the hub relay, from a second
+                      instance main never starts (`relayRequest`, `relaySocket`)
+    socket.ts         `PhoneSocket`, the part of `ws` the handlers use, and `VirtualSocket`,
+                      a relayed one. No electron import
     folders.ts        the phone's folder routes minus HTTP: the places it may reach
                       (realpath'd, `remoteFolderBases`), one folder's subfolders under the
                       deadline, and Start here / New folder as a project. Every WHERE is
@@ -1298,6 +1480,14 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     before the relaunch pill or "Restart and install" kills a turn in flight.
                     Wait is the focused button. In `overlayOpen`, so the docked browser comes
                     off the window while it is up (gotcha 14). Gotcha 82
+  src/components/OtherMachines.tsx  the sidebar's "Other machines" group: the owner's other
+                    signed-in desktops online now and, where their owner shares them, their
+                    sessions; a click opens one as a remote tab. A group, never an overlay
+  src/components/RemoteTerminal.tsx  a remote tab: the other machine's pty through the relay,
+                    held at that pty's grid (decideResize `native`, gotcha 87), never typing
+                    xterm's own reports, under a banner saying whose it is and the link's state
+  src/components/RemoteHostStrip.tsx  on the host, `.main-col` strips: "Let <device> open
+                    <session>?" Allow once / Always / Deny, and who is attached, Disconnect
   src/components/SshKeyPrompt.tsx  "E2E box asked for a password. Set up key login?" — a
                     `.main-col` row, never an overlay (gotcha 14). Add a key opens the
                     "Add key to …" tab (App's `startSshEnroll`); the strip then reports
@@ -1334,6 +1524,14 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     Code's points at its three pages instead of an endpoint) and
                     `ClaudeLaunchDefaults` (the four launch defaults, still `settings.defaults`,
                     gotcha 57)
+  src/components/AccountSyncSettings.tsx  Settings › Account & sync: Stoke Hub's panel — the
+                    address, sign-in or invite sign-up, the vault and its Recovery Kit (shown once,
+                    file or print, a group typed back), joining by the code or the Kit, what syncs,
+                    SSH keys (share one, install by a press), conflict notes, devices (rename,
+                    remove with the Kit), Other machines (the share tick, the devices always
+                    allowed, Disconnect), a new Kit, sign-out. Draws main's `HubView` and
+                    `HubRemoteView` and presses `window.stoke.hub`; never writes `settings.hub`,
+                    never sees a key
   src/components/SpeechServiceSettings.tsx  Settings → Voice's speech service: the provider
                     picker, the sidecar's address or a custom server's base URL, the model
                     (a list plus "Another model…", free text for custom), a key per provider
@@ -1438,6 +1636,20 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
   setupFile.ts      the `.stoke-setup` header and its refusals, what travels
                     (PORTABLE/PARTIAL/LOCAL_KEYS, a partition of Settings), the import merge
                     and preview (`planImport`), and the passphrase strength reading
+  hub/              the Stoke Hub wire contract, pure: codec.ts (base64url, Crockford base32,
+                    canonical JSON, ids), labels.ts (every signature/KDF/AAD label), protocol.ts
+                    (routes, bodies, errors, headers, presence, the request-signing text),
+                    auth.ts (email, password hash format, invites, throttle), chain.ts (the
+                    signed device list: `verifyChain`, `compareToPinned`), pairing.ts (commit,
+                    six-digit code, Recovery Kit format), items.ts (path grammar, T1_KEYS,
+                    envelope, `putVerdict`, `decideConflict`), relay.ts (handshake, frames,
+                    `attach` and `part`, RELAY_ROUTES, grants), remote.ts ("Other machines": the
+                    status a device seals, `attachDecision`, `relayScopeVerdict`, the Allow once
+                    grace, the views), edge.ts (`hubUrlVerdict`, the edge Worker's rules,
+                    `edgeVerdict`), settings.ts (the T0 `hub` block, `applySyncedSettings`,
+                    `sshKeyTarget`), client.ts (the desktop client's rules: `localValues`,
+                    `planSync`, `incomingFrom`, `sshKeyInstallPlan`, hub-state.json's shape, the
+                    panel's `HubView`)
   cfAccess.ts       Cloudflare Access without crypto: the team-domain and AUD clamps settings
                     hydrate through, the policy, the login-redirect parser Look it up reads,
                     the status and refusal words the panel shows. Gotcha 124
@@ -1806,7 +2018,24 @@ install/          the one-line installer, and the page a browser gets instead
                     file has not been parsed by one. Gotcha 71
   index.html        what a browser gets from stoke.vinn.dev, and the fallback for anything
                     the Worker could not identify. No frameworks, no fonts, Stoke's palette
-worker/           the Cloudflare Worker behind stoke.vinn.dev
+hub/              Stoke Hub, the server the owner runs on the NUC (spec:
+                  docs/superpowers/specs/2026-10-01-stoke-hub-selfhosted.md; runbook: README.md).
+                  Imports src/shared/hub and src/main/hub/crypto.ts by relative .ts path
+  server.ts         `stoke-hub`: serve, invite, backup, reset-password, health. Refusals are
+                    thrown, never process.exit (stdout/stderr on a macOS pipe are async)
+  app.ts            the HTTP routes, the auth pipeline (session, device signature, nonce,
+                    active = chain id AND key), the chain/items/pairing/relay handlers,
+                    graceful close. `startHub` is what verify:hub-server drives
+  store.ts          the SQLite file: WAL, synchronous FULL, 0600; hashes of tokens and invites,
+                    never the values; VACUUM INTO for backups
+  sockets.ts        presence registry and the relay broker (in memory, frames forwarded verbatim)
+  limits.ts         the per-IP bucket, the scrypt semaphore, the one-sign-in-per-email claim
+  log.ts            JSON-lines log that redacts by field name and by value shape
+  config.ts         env and flags; the edge secret never from argv
+  build.mjs         esbuild bundle -> hub/dist/stoke-hub.mjs (NOT out/: electron-builder ships out/**)
+  Dockerfile, compose.yaml, stoke-hub.service, stoke-hub-backup.{service,timer},
+  cloudflared.example.yml, hub.env.example   deployment artefacts, none run yet
+worker/           the Cloudflare Workers behind stoke.vinn.dev
   route.ts          which of the three bodies a request gets, and why. Pure and import-free
                     so verify:install can run the whole User-Agent matrix through it — the
                     PowerShell test must come before anything browser-shaped, because
@@ -1816,6 +2045,12 @@ worker/           the Cloudflare Worker behind stoke.vinn.dev
                     deploy time from install/, never fetched at request time, and the
                     Worker never learns what the current release is — the scripts resolve
                     that themselves, so cutting a release needs no deploy
+  hub-edge.ts       the SECOND Worker, on the route stoke.vinn.dev/hub/*: forwards to the
+                    hub's tunnel origin with the shared secret (the client's copy dropped),
+                    path and query exact so signatures verify; bridges WebSocket upgrades.
+                    Refuses http, paths outside /hub/, an unset secret, a looping origin
+wrangler.hub-edge.jsonc   the edge Worker's config: name stoke-hub-edge, one route, never a custom
+                    domain; `npm run deploy:hub-edge` after `wrangler secret put HUB_EDGE_SECRET`
 wrangler.jsonc    deployed by hand: `npx wrangler login`, then `npm run deploy:install`.
                     A custom domain, so Cloudflare makes the DNS record and the certificate
 ```

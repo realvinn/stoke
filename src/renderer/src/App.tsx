@@ -79,6 +79,11 @@ import { TerminalView } from './components/TerminalView'
 import { TitleBar } from './components/TitleBar'
 import { ActivityPanel } from './components/ActivityPanel'
 import { SshKeyPrompt } from './components/SshKeyPrompt'
+import { OtherMachines } from './components/OtherMachines'
+import { RemoteHostStrip } from './components/RemoteHostStrip'
+import { RemoteTerminal } from './components/RemoteTerminal'
+import { useHubRemote } from './lib/hubRemote'
+import type { OtherMachineView, RemoteSessionSummary } from '@shared/hub/remote'
 import { WorklogPrompt } from './components/WorklogPrompt'
 import { baseName, ipcErrorMessage } from './lib/format'
 import {
@@ -1087,6 +1092,8 @@ export function App(): React.JSX.Element {
    */
   const tabsRef = useRef<Tab[]>(tabs)
   tabsRef.current = tabs
+  /** "Other machines" (src/main/hub/remote.ts), as main pushes it. */
+  const hubRemote = useHubRemote()
   const activeTabIdRef = useRef<string | null>(activeTabId)
   activeTabIdRef.current = activeTabId
 
@@ -3080,6 +3087,8 @@ export function App(): React.JSX.Element {
         window.stoke.pty.kill(tab.ptyId)
         forgetPty(tab.ptyId)
       }
+      // Another machine's session: only the relay goes; it keeps running there.
+      if (tab.kind === 'remote' && tab.remote) void window.stoke.hub.remote.close(tab.remote.tabId)
       // A closed tab reconnects to nothing: its countdown goes with it.
       cancelReconnect(tab.remoteSession)
       hostStartedAtRef.current.delete(tab.ptyId)
@@ -4871,6 +4880,46 @@ export function App(): React.JSX.Element {
    * transcript, an agent that is missing or cannot resume by id — opens in the
    * read-only viewer, which says why it is not a live session.
    */
+  /**
+   * Open one of another machine's sessions as a remote tab here. Main asks
+   * the hub for a relay and the other machine asks its owner; the tab shows
+   * that while it waits. Claimed per session before the IPC (gotchas 20, 51):
+   * a double click must not make two tabs on one relay.
+   */
+  const remoteOpening = useRef(new Set<string>())
+  const openRemoteSession = useCallback((m: OtherMachineView, s: RemoteSessionSummary): void => {
+    const key = `${m.id}\n${s.ptyId}`
+    if (remoteOpening.current.has(key)) return
+    remoteOpening.current.add(key)
+    void window.stoke.hub.remote
+      .open(m.id, s.ptyId)
+      .then((r) => {
+        if (!r.ok) {
+          setError(r.message)
+          return
+        }
+        const have = tabsRef.current.find((t) => t.kind === 'remote' && t.remote?.tabId === r.tab)
+        if (have) {
+          setActiveTabId(have.id)
+          return
+        }
+        const tab: Tab = {
+          ...newTab(),
+          id: `remote-${r.tab}`,
+          kind: 'remote',
+          title: `${m.label}: ${s.title || s.project || 'session'}`,
+          projectName: m.label,
+          remote: { tabId: r.tab, device: m.id, deviceLabel: m.label, platform: m.platform, ptyId: s.ptyId }
+        }
+        const next = [...tabsRef.current, tab]
+        tabsRef.current = next
+        setTabs(next)
+        setActiveTabId(tab.id)
+      })
+      .catch((e) => setError(ipcErrorMessage(e)))
+      .finally(() => remoteOpening.current.delete(key))
+  }, [])
+
   const openChat = useCallback(
     (hit: ChatSearchHit): void => {
       const action = chatOpenAction(hit, { installed: installedAgentIds, resumable: resumableClis() })
@@ -5365,6 +5414,7 @@ export function App(): React.JSX.Element {
                 chatSearch={chatSearch}
                 onOpenChat={openChat}
                 onSetUpChats={() => openSettings('chats')}
+                otherMachines={<OtherMachines view={hubRemote} onOpen={openRemoteSession} />}
               />
             </div>
             <Resizer
@@ -5545,6 +5595,13 @@ export function App(): React.JSX.Element {
             `.worklog-prompt` sheds whole controls by its own width rather than
             clip its Review all and Dismiss off the right edge.
           */}
+          {/*
+            Another of the owner's machines asking for a session here, and who
+            is attached now: strips in the flow for the same reason as the SSH
+            key offer above (gotcha 14).
+          */}
+          <RemoteHostStrip view={hubRemote} />
+
           <WorklogPrompt
             proposals={promptQueue}
             busy={worklogBusy}
@@ -5584,8 +5641,25 @@ export function App(): React.JSX.Element {
 
           <div
             className="term-stack"
-            style={{ display: activeTab?.kind === 'session' ? 'block' : 'none' }}
+            style={{ display: activeTab?.kind === 'session' || activeTab?.kind === 'remote' ? 'block' : 'none' }}
           >
+            {tabs
+              .filter((t) => t.kind === 'remote')
+              .map((tab) => (
+                <RemoteTerminal
+                  key={tab.id}
+                  tab={tab}
+                  view={hubRemote.tabs.find((v) => v.id === tab.remote?.tabId)}
+                  active={tab.id === activeTabId}
+                  theme={theme}
+                  fontFamily={settings?.fontFamily ?? 'monospace'}
+                  fontSize={settings?.fontSize ?? 13}
+                  terminal={settings?.terminal ?? TERMINAL_DEFAULTS}
+                  accent={activeProfile?.accent ?? null}
+                  alpha={termAlpha}
+                  onClose={requestCloseTab}
+                />
+              ))}
             {panes.map((tab) =>
               tab.status === 'paused' ? (
                 <PausedSession

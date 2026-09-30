@@ -100,7 +100,15 @@ export const SECRET_PATHS: readonly SecretPathSpec[] = [
    * are made to THIS pair, and a copy elsewhere could push to this machine's
    * phones. Minted only by a start path (gotcha 53).
    */
-  { pattern: 'remote.push.vapidPrivate', label: 'Phone notification key', portable: false }
+  { pattern: 'remote.push.vapidPrivate', label: 'Phone notification key', portable: false },
+  /*
+   * The Stoke Hub session (shared/hub/settings.ts). Machine-local: it is bound
+   * to THIS device's signing key, so a copy elsewhere could not use it anyway.
+   * The hub client keeps the live token sealed in `<userData>/hub-device.json`
+   * and leaves this field '' (a Settings field reaches the renderer); the line
+   * is here so a value that ever lands in it is sealed like any key.
+   */
+  { pattern: 'hub.token', label: 'Hub session', portable: false }
 ]
 
 /**

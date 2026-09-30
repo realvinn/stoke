@@ -251,6 +251,76 @@ export const CH = {
   setupImportCancel: 'setup:importCancel',
 
   /*
+   * Stoke Hub, Settings › Account & sync (src/main/hub/service.ts). Every
+   * write goes through main's hub service — the renderer never patches
+   * `settings.hub` (gotcha 57) — and every answer is a `HubResult`. What
+   * crosses to the renderer is the `HubView` (names, counts, times, the
+   * pairing code), plus the Recovery Kit when it is made, once. Keys, tokens
+   * and SSH private keys never do; the picker gets names and fingerprints.
+   */
+  hubView: 'hub:view',
+  /** main -> renderer: the view moved. */
+  hubChanged: 'hub:changed',
+  hubSetUrl: 'hub:set-url',
+  hubCheckUrl: 'hub:check-url',
+  hubSignIn: 'hub:sign-in',
+  hubSignOut: 'hub:sign-out',
+  hubCreateVault: 'hub:create-vault',
+  /** The Kit still waiting to be confirmed (it lives only in main's memory until then). */
+  hubKit: 'hub:kit',
+  hubKitConfirm: 'hub:kit-confirm',
+  hubKitCancel: 'hub:kit-cancel',
+  hubKitSave: 'hub:kit-save',
+  hubKitPrint: 'hub:kit-print',
+  hubNewKit: 'hub:new-kit',
+  hubJoinStart: 'hub:join-start',
+  hubJoinCancel: 'hub:join-cancel',
+  /** The owner's answer on the JOINING device: do both screens show the same six digits? */
+  hubJoinConfirm: 'hub:join-confirm',
+  hubRecover: 'hub:recover',
+  hubApproveStart: 'hub:approve-start',
+  hubApproveConfirm: 'hub:approve-confirm',
+  hubRefuse: 'hub:refuse',
+  hubSyncNow: 'hub:sync-now',
+  hubSetScope: 'hub:set-scope',
+  hubSetAccountKeys: 'hub:set-account-keys',
+  hubRename: 'hub:rename',
+  hubRevoke: 'hub:revoke',
+  hubDismissNotes: 'hub:dismiss-notes',
+  /** After a hub went back in time: put back, from this device, what it lost (spec §7.3). */
+  hubRepublish: 'hub:republish',
+  /** A synced change that would run something here: apply it on this computer, or keep this computer's. */
+  hubApplyHeld: 'hub:apply-held',
+  hubKeepHeld: 'hub:keep-held',
+  hubLocalKeys: 'hub:local-keys',
+  hubShareKey: 'hub:share-key',
+  hubUnshareKey: 'hub:unshare-key',
+  hubInstallKey: 'hub:install-key',
+  /*
+   * "Other machines" (src/main/hub/remote.ts, spec §6): the owner's other
+   * signed-in devices and their sessions, remote tabs, and — on the host —
+   * the question and who is attached. What crosses is `HubRemoteView` (names,
+   * titles, states) and a remote tab's pty frames; never a key, never a path.
+   */
+  hubRemoteView: 'hub:remote-view',
+  /** main -> renderer: the "Other machines" view moved. */
+  hubRemoteChanged: 'hub:remote-changed',
+  /** main -> renderer: one pty-socket frame for a remote tab (tabId, frame). */
+  hubRemoteFrame: 'hub:remote-frame',
+  hubRemoteOpen: 'hub:remote-open',
+  /** renderer -> main, fire and forget: keystrokes typed into a remote tab. */
+  hubRemoteInput: 'hub:remote-input',
+  hubRemoteClose: 'hub:remote-close',
+  hubRemoteRetry: 'hub:remote-retry',
+  /** On the host: the owner's answer to "Let <device> open <session>?". */
+  hubRemoteAnswer: 'hub:remote-answer',
+  /** On the host: drop every attached device. */
+  hubRemoteDrop: 'hub:remote-drop',
+  /** "Let my other devices see and open my sessions" on this computer. */
+  hubSetSharing: 'hub:set-sharing',
+  hubRevokeGrant: 'hub:revoke-grant',
+
+  /*
    * Claude Code's own configuration, which is not Stoke's Settings. These read
    * and write ~/.claude/settings.json and one key in ~/.claude.json; see
    * src/main/claudeSettings.ts and src/main/claudeGlobalConfig.ts.

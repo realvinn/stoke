@@ -559,7 +559,7 @@ export function reconnectDecision(input: {
  */
 export function closeAsksDetach(
   tab: {
-    kind: 'session' | 'new'
+    kind: 'session' | 'new' | 'remote'
     status: 'running' | 'exited' | 'paused'
     exitCode: number | null
     hostId: string | null
@@ -666,7 +666,7 @@ export function versionNumber(raw: string | null): string | null {
 
 export function relaunchPlan(input: {
   tab: {
-    kind: 'session' | 'new'
+    kind: 'session' | 'new' | 'remote'
     status: 'running' | 'exited' | 'paused'
     sessionId: string
     hostId: string | null

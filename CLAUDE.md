@@ -30,13 +30,16 @@ npm run dist:mac   # dmg + zip, arm64 (the zip is what auto-update installs). MU
 npm run targets    # every platform a release builds, its runner and its flags (targets.mjs)
 npm run deploy:install   # the stoke.vinn.dev Worker, by hand after `npx wrangler login`.
                    # A release needs no deploy: the scripts resolve the version at run time
+npm run hub        # the Stoke Hub server from source (hub/README.md is the NUC runbook);
+                   # build:hub bundles it to hub/dist/stoke-hub.mjs, deploy:hub-edge ships the
+                   # stoke.vinn.dev/hub/* Worker by hand. Nothing here is ever deployed by CI
 ```
 
 A `dist:*` exists per target and each MUST run on that target's own platform and arch
 (gotcha 67): `dist:win`, `dist:win:arm64`, `dist:mac`, `dist:mac:intel`, `dist:linux`.
 
 Every suite runs alone as `npm run verify:<name>`: context, statusline, unicode, usage,
-profiles, settings, secrets, providers, claude-config, folders, search, settings-search, chat-sources, color, theme-gen, activity,
+profiles, settings, secrets, hub, hub-server, hub-client, hub-relay, providers, claude-config, folders, search, settings-search, chat-sources, color, theme-gen, activity,
 worklog-gate, tabs, launcher, registry,
 restore, shortcuts, drop, fullscreen, layers, browser-url, browser-profiles, safari-import, chrome-import, voice, agents, accounts, campfire, cli, stoke-args, updates, targets, manifests, portable, winget, worklog-runner,
 worklog-retry, worklog-recall, worklog-autoscan, ssh, ssh-enroll, remote, phone-ui, installer-art, install, welcome,
@@ -81,6 +84,11 @@ src/main/            Electron main process
   mcp/                 browser MCP server: server.ts (tools), cdp.ts, audit/design/perf/stack,
                        inject/extract.js (runs IN the page, no deps)
   remote/              phone access: server.ts, link.ts, tunnel.ts, cloudflare.ts
+  hub/                 Stoke Hub: crypto.ts, the node:crypto reference (no electron import, so the
+                       hub server on the NUC imports it too), and the desktop client (service.ts,
+                       files.ts, http.ts, sshKeys.ts; rules in shared/hub/client.ts), lazily loaded
+                       for Settings › Account & sync. remote.ts + channel.ts are "Other machines"
+                       (the E2E relay; rules in shared/hub/remote.ts). Spec: docs/superpowers/specs/2026-10-01-*
 src/preload/         contextBridge -> window.stoke
 src/renderer/        desktop React UI (all colour via CSS custom properties)
 src/remote/          mobile web UI, built separately to out/remote
@@ -90,7 +98,9 @@ src/shared/          compiled by BOTH tsconfigs, so no `node:` imports (browser-
                      statusLine, usageView, providers, codingClis, agents, updateCheck, sshAuth, settingsIndex, ui.ts. A new terminal or wallpaper field needs its default
                      in TERMINAL_DEFAULTS/WALLPAPER_DEFAULTS AND a line in clampTerminal/
                      clampWallpaper (all in ui.ts) in the same change: the clamps rebuild the
-                     object from named keys, so a field they miss hydrates as undefined
+                     object from named keys, so a field they miss hydrates as undefined.
+                     hub/ is the Stoke Hub wire contract (protocol, chain, items, pairing,
+                     relay, edge, settings); its labels are pinned by verify:hub test vectors
 scripts/             verify-*.mts suites, ci-verify.mjs, gen-themes.mts, cdp-eval.mjs over
                      cdp-lib.mjs (picks the target by its window.stoke object, never by URL),
                      probe-e2e.mts + probe/ (ci.yml's packaged-app probe), mac-signing-secrets.sh
@@ -102,7 +112,10 @@ build/bin/           the `stoke` command shipped inside the app: `stoke` (macOS 
                      what they send; only an argv carrying `--stoke-cli` is ever a request
 worker/              the Cloudflare Worker at stoke.vinn.dev: route.ts decides which of the
                      three bodies a request gets (pure, so verify:install holds the matrix) and
-                     index.ts serves it from install/, embedded at deploy time
+                     index.ts serves it from install/, embedded at deploy time. hub-edge.ts is a
+                     SECOND Worker (wrangler.hub-edge.jsonc) on the route stoke.vinn.dev/hub/*
+hub/                 the Stoke Hub server the owner runs on the NUC (Node 24, node:sqlite, ws):
+                     app.ts routes, store.ts SQLite, sockets.ts presence + relay, server.ts CLI
 ```
 
 ## Conventions
@@ -163,6 +176,14 @@ rule file named on the group line.
   (`planImport`, `stable`): `hydrateSettings` is not idempotent (`worklogBoards`' default targets).
 - **125.** Bind a rowid to an FTS5 table as an integer (`CAST(? AS INTEGER)` or a BigInt): node:sqlite
   binds every JS number as REAL, and FTS5 ignores `rowid = <real>` silently (`ChatStore.search`).
+- **139.** Never match an SSH host across machines by `SshHost.id`, a per-machine counter (`newHostId`): match
+  by `syncId`, else equal alias + command (`applySyncedSettings`). `mergeSetup` still matches by id.
+- **140.** Count a hub device ACTIVE only by its id WITH the key its session signed in with (`authenticate`) — and on
+  the client only where the chain holds its own anchor (`isActiveIn`): a hub can build a list around posted keys.
+- **141.** Never keep the Recovery Kit's wrap key on a device: a revoke needs the Kit typed, or a new Kit when the
+  target has had it (`kitHandlers`); a Kit join replaces the Kit in the same append (`postRecovery`).
+- **142.** Send every hub relay frame through `relayFrameParts` (a 512 K pty replay is 1.23 MB as JSON in JSON, over the
+  1 MiB cap), stamp a status `max(now, lastAt + 1)`, serve a frame only past BOTH verdicts and a live chain (`chainChanged`).
 
 **Terminal** — `.claude/rules/terminal.md`
 - **5.** Never read the terminal from the DOM: WebGL paints a canvas, so `.xterm-rows` is empty.

@@ -10,6 +10,7 @@ import type { FullScreenReveal, RemoteReachPreference, ZoomTarget } from './ui.t
 import type { BrowserProfile, ImportOffer } from './browserProfiles.ts'
 import type { ChatIndexMode, ChatIndexOptions } from './chatIndex.ts'
 import type { SttProviderId } from './speechProviders.ts'
+import type { HubSettings } from './hub/settings.ts'
 
 /* ------------------------------------------------------------------ launch */
 
@@ -687,6 +688,13 @@ export interface SshHost {
    * key is not working and going quiet is the one answer with no way back.
    */
   keyEnrolled?: boolean
+  /**
+   * The host's Stoke Hub SYNC id (`h…`), minted the first time the hub
+   * uploads it and the same on every device that has it. Never `id`, which
+   * is a per-machine counter (gotcha 139). Absent until a hub sync touches
+   * the host; validated by `hydrateSettings`.
+   */
+  syncId?: string
 }
 
 /**
@@ -1388,6 +1396,15 @@ export interface Settings {
   chatIndex: ChatIndexMode
   /** Which sources, and the caps. Repaired by `clampChatIndexOptions`. */
   chatIndexOptions: ChatIndexOptions
+  /**
+   * Stoke Hub: this device's own hub block (shared/hub/settings.ts). Machine
+   * local (setupFile.ts LOCAL_KEYS) and written only by main's hub service —
+   * the renderer changes it through `window.stoke.hub`, never `settings.set`
+   * (gotcha 57). `hub.token` stays '': the live session is sealed in
+   * `<userData>/hub-device.json`, so it never reaches the renderer with the
+   * rest of Settings.
+   */
+  hub: HubSettings
 }
 
 /* --------------------------------------------------------------- browser */

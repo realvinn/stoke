@@ -59,6 +59,7 @@ import { RemoteSettings, SelfUpdateSettings, StokeCommandSettings, UpdatesSettin
 import { VoiceSettings } from './VoiceSettings'
 import { AgentManager, AgentSettingsPage, ClaudeLaunchDefaults, type AgentPagesProps } from './AgentsSettings'
 import { BackupSettings } from './BackupSettings'
+import { AccountSyncSettings } from './AccountSyncSettings'
 import { ChatHistorySettings } from './ChatHistorySettings'
 import type { ChatDetection, ChatIndexStatus } from '@shared/chatIndex'
 import type { CodingCliDetection, CodingCliId } from '@shared/codingClis'
@@ -1228,6 +1229,7 @@ export function SettingsSheet({
             {loc.page === 'remote' && <RemoteSettings settings={settings} onPatch={onPatch} />}
 
             {loc.page === 'voice' && <VoiceSettings settings={settings} onPatch={onPatch} />}
+            {loc.page === 'account' && <AccountSyncSettings />}
 
             {loc.page === 'backup' && <BackupSettings />}
           </div>

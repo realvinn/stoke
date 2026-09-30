@@ -22,7 +22,7 @@
       "@shared/*": ["src/shared/*"]
     }
   },
-  "include": ["src/main/**/*.ts", "src/preload/**/*.ts", "src/shared/**/*.ts", "electron.vite.config.ts"],
+  "include": ["src/main/**/*.ts", "src/preload/**/*.ts", "src/shared/**/*.ts", "electron.vite.config.ts", "hub/**/*.ts"],
   // The one shared module that is browser-only. `src/shared` is normally the
   // code both processes compile, which is why this project has no DOM lib — but
   // voice.ts is MediaRecorder, AudioContext and OfflineAudioContext from top to

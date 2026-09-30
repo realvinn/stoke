@@ -1,0 +1,13 @@
+# /etc/systemd/system/stoke-hub-backup.timer — nightly, and on the next boot if
+# the NUC was off at 03:30 (Persistent).
+
+[Unit]
+Description=Nightly Stoke Hub backup
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+RandomizedDelaySec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

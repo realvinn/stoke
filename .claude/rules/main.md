@@ -11,6 +11,13 @@ paths:
   - "src/shared/secrets.ts"
   - "src/shared/setupFile.ts"
   - "src/renderer/src/components/BackupSettings.tsx"
+  - "src/shared/hub/*.ts"
+  - "scripts/verify-hub.mts"
+  - "hub/**/*.ts"
+  - "hub/build.mjs"
+  - "scripts/verify-hub-server.mts"
+  - "scripts/verify-hub-client.mts"
+  - "src/renderer/src/components/AccountSyncSettings.tsx"
 ---
 
 # Anywhere in the main process
@@ -340,3 +347,204 @@ matches more messages than the limit crowds every other chat out of the result.
 > run `optimize` only where its whole-index rewrite is affordable (`tidy` after a big pass). Its
 > sibling in the same fix: an eviction that deletes a chat's read positions must leave a cut
 > behind (`storeCutMs`), or the next pass admits, re-reads and evicts the same chats every time.
+
+## 139. `SshHost.id` is a per-machine counter, so two machines' `host-1` are usually two different servers
+
+**Found 2026-10-01, writing the Stoke Hub contract's host sync.** HostsSettings' `newHostId` mints
+`host-1`, `host-2`, … — the first free number in THIS machine's list — and its comment says the ids
+"only have to be unique inside this list and never leave settings.json". They left it anyway: the
+`.stoke-setup` export carries every host with its id, and `mergeSetup` (setupFile.ts) folds hosts in
+with `mergeById`. Measured against the shipped code with a synthetic pair of profiles: a Windows
+profile holding `host-1` = "NUC" (`nuc`) imported a Mac setup holding `host-1` = "VPS" (`vps`), and
+`planImport` returned `[["host-1","VPS","vps"]]` — the NUC gone — and previewed it as
+`SSH hosts: updates VPS`, which reads like an edit to a host the user has, not the loss of one.
+
+The rule: **never match an SSH host across machines by `SshHost.id`.** The hub's T3 items are keyed
+by a SYNC id (`h…`, `ID_BYTES.host` in `src/shared/hub/codec.ts`) that travels on the host
+(`SyncableHost.syncId`, hydrate keeps it because it spreads `...h`); `applySyncedSettings` matches
+by that, lets a local host with no sync id ADOPT one only when alias and command are both equal
+(the same server, known on both machines before either synced), and appends anything else under a
+free LOCAL id (`freeHostId`, the same rule as `newHostId`). `parseItemPath` refuses `t3/host/host-1`
+outright, and `verify:hub` holds the two-`host-1` case (`two machines' host-1 stay two hosts`).
+
+**Not fixed here:** `mergeSetup` still matches by id, so a `.stoke-setup` import can still replace a
+different host. The fix is the same rule — by `syncId`, else alias + command, else append with a
+free id — and needs its own `verify:secrets` case (the one above, which the old merge fails).
+
+## 140. A device id is a name anyone with the password can claim, so a hub device is ACTIVE only by id AND key
+
+**Found 2026-10-01, building the hub server (`hub/app.ts`).** A device picks its own id and posts
+it with its public keys at sign-in (`LoginRequest.device`); the session is bound to both. The
+obvious "is this device active" test — is `session.device_id` in the chain's active list — is
+wrong in a way no honest flow ever exercises: someone holding the password signs in FIRST under
+the id a real device is about to join with (a squatter: pending, since the chain does not list
+that id yet), the real device then joins with its own keys, and the squatter's session now names
+an active id. By id alone the hub hands it every active-only route — read all of the account's
+items and every change to them (ciphertext, but all of it), and PUT over them as that device:
+junk no device can open, which destroys the data as surely as reading it would expose it. The
+spec's promise (§7.1) that a guessed password "cannot read items" would be false.
+
+The rule, in three places:
+
+- `authenticate` counts a session active only when the chain lists its id WITH
+  `sign === session.sign_pub` (`Authed.active`).
+- `login` refuses an id the chain binds to another key, and any revoked id: a revoked device
+  comes back as a new identity or not at all.
+- `verify:hub-server` holds the squatter: sign in under C's id first, let C join by the Recovery
+  Kit, and the squatter's `GET /v1/items` must still be `pending` (and its next sign-in
+  `forbidden`). Measured by mutation: with the key match dropped
+  (`find((d) => d.id === session.device_id)`), that check was the ONLY failure in the whole suite.
+
+The same holds wherever else "is this device active" is decided — the Stoke-side sync engine, and
+the relay host judging who is attaching (which already verifies the handshake against the
+chain's key for that id): compare the chain's record by id AND key, never by id.
+
+The suite-level lesson from the same round: `verify:hub-server` went green on its first run, so
+every refusal in the server was mutated one at a time (`/tmp/.../mut/run.mjs`, eighteen of them:
+drop the replay check, the edge secret, the invite claim, the wraps rule, the account scope on
+relay ids, …) until each turned it red. Two did not at first, and both were real gaps: the only
+text-frame check was on a frame the relay had QUEUED before the host joined, which takes a
+different delivery path from a live one; and nothing ever logged a secret-named field, so the
+log's redaction was untested. A suite that passes first time has not yet shown it can fail.
+
+> **Checked against the code on 2026-10-01 (a review of the hub server)** — the rule had reached
+> only `authenticate`. The pairing routes still judged a PENDING device by id alone: `visiblePair`,
+> `pairReveal`, `pairRefuse` and `pairCreate`'s expiry loop compared the pair's `device_id` with the
+> session's, and refusals were counted per id. So a squatter signed in under a joining device's id
+> could read its pair, refuse it (its own mismatched reveal refused it too), expire it by opening
+> one of its own, and run the id's refusal count to three — the real device locked out of pairing
+> for the hour, and again the next hour. The SAS still kept a wrong key from joining: denial of
+> service, not compromise. A pair now stores the opening session's key (`device_sign`), `ownsPair`
+> compares id AND key, and refusals count per (id, key). `verify:hub-server` holds it: the squatter
+> gets 404 on B's pair and on its reveal and refuse, its own pair leaves B's open, and three
+> refusals under one key do not lock another. Mutated back to id alone, the squatter's reveal
+> refused B's pair and B's own pairing failed outright. Wraps got the same rule in the same review:
+> `chainAppend` takes them only from a device active before or after the entries, by id and key.
+
+> **Checked against the code on 2026-10-01 (a review of the hub client)** — "active by id AND key"
+> is only half the rule on the CLIENT, because there the chain itself is the hub's word. `verifyChain`
+> accepts any self-signed genesis for the account id, and a signing-in device posts its public keys in
+> the login body — so a compromised NUC, the Cloudflare edge or an http MITM could answer a device's
+> FIRST sign-in with a whole list of its own (its genesis, then an `add` of those keys, a `vk` commit
+> for a vault key it chose), and the device, listed by id and key, took the key, pulled a forged
+> `acct/pref/sync-keys {on:true}` and uploaded every portable API key under it in the same pass. Two
+> reset paths did the same to a device that already held a pin: a re-sign-in answered with another
+> account id threw the pin away, and the alarm's "Take the hub's copy" set `pinned = null`. The client
+> now counts itself active only where the served chain holds its own ANCHOR — the link of the entry
+> it entered through: its genesis, the `add` it took after the owner confirmed the code ON IT
+> (`joinConfirm`), or its Kit `add` — kept in hub-state.json and dropped only by `signOut`
+> (`isActiveIn`, `anchorHolds`). A list that names it without the anchor is the `chain` alarm; a
+> login answering another account is refused ("sign out first"); `setUrl` is refused while the
+> device belongs to an account; and "take the hub's copy" became `republish`, which accepts only an
+> earlier copy of the device's own list (`isPrefixOf`). `verify:hub-client` holds each through the
+> device's injected `fetch` playing the hub: mutated back, the fake vault, the fake approver, the
+> other account id, the lapsed-session `setUrl` and the republish over a different list each go red.
+
+## 141. The hub demands the Recovery Kit's wrap of every new epoch, and a device that could make one could open it
+
+**Found 2026-10-01, building the hub client's revoke (`HubService.rotate`).** Spec §4.6 says a
+revoke makes `VK_{e+1}`, "wraps it to every remaining active device and re-wraps the recovery
+copy" — and the server (`chainAppend`) refuses any revoke or rotate without a recovery wrap for the
+new epoch. A recovery wrap is AES-GCM under `RK = HKDF(Kit secret, account)`, so the revoking device
+must hold RK. The obvious way to make that painless is to keep RK on every device (sealed, or as a
+vault item). That quietly defeats revocation: RK never changes for the life of a Kit, and
+`GET /v1/vault/recovery` is a `session` route — a pending device may read it by design, because the
+wrap is useless without the Kit. A removed device that kept RK, plus the account password (a stolen
+laptop, or malware that saw it typed), signs in as a NEW pending device, fetches the recovery wrap
+of every later epoch and opens it. Spec §7.1's "cannot: anything after revocation" would be false.
+
+The rule: **never keep RK (or the Kit) on a device.** Removing a device asks for the Kit, typed and
+used once (`revokeDevice(target, { kit })`), or makes a NEW Kit in the same append (`{ newKit: true }`:
+a `revoke` then a `rotate` naming the new recovery key, wraps for the final epoch only, the new Kit
+shown and confirmed before anything is posted — `PendingKit.purpose: 'revoke'`). The panel says why
+it needs the Kit. The costs, accepted: revoking is impossible without the Kit or a new one, and a
+removed device holding RK from a Kit typed on it (the Kit join, `recover`) is exactly why the panel
+recommends a new Kit after joining that way.
+
+Held by `verify:hub-client` (`removing a device needs the Kit`, a wrong Kit refused; after the
+revoke, the removed device's sealed vault keys open none of the re-sealed items and the hub holds
+no wrap of the new epoch for it) and proven in two sandbox Stokes against the real server: after
+the revoke, `wraps` held epoch 2 for the remaining device only, every item sat at epoch 2, and a key
+added afterwards never reached the removed one.
+
+> **Checked against the code on 2026-10-01 (a review of the hub client)** — the typed Kit was the
+> PRIMARY Remove path, and it keeps the Kit: useless against a device that has had that Kit in hand.
+> A device added with it (`signer: 'recovery'`), the device that made it (shown there, and "Save as
+> file…" writes it into ~/Documents there), and a device that had it typed to remove another can each
+> open the new epoch's recovery wrap as a pending session with the password — while the panel told
+> the owner the removed device "cannot read anything synced from now on". `kitHandlers` reads those
+> devices off the verified chain (from the entry that set the current `recovery` key on); removing
+> one needs `{ newKit: true }`, and the Devices list offers only that for it (`kitSeen`). And the
+> spec's rotate after a Kit join is no longer a hint: `recover` checks the typed Kit, then makes a new
+> Kit, and only once that is confirmed posts the `add` and a `rotate` naming the new Kit in ONE append
+> (`postRecovery`) — the typed Kit never opens an epoch the joining device is in. Mutated back, the
+> refusal to remove C with the Kit C made, and C's "nothing posted before the new Kit", each go red.
+
+## 142. A pty's replay passes the hub's 1 MiB frame cap once it is JSON inside JSON, and a status is ordered only by the sender's own clock
+
+**Found 2026-10-01, building "Other machines" (the hub relay's host and guest, spec §6).** A remote
+tab speaks the phone's pty-socket protocol inside the encrypted channel, and the first thing a pty
+socket sends is `attached`, carrying the session's scrollback — up to `MAX_HISTORY` (512 K
+characters) — as a JSON string; the relay then wraps that JSON as the `data` of a `ws-msg`, a
+second JSON layer, and seals it as ONE hub frame. The hub closes any relay that sends a frame over
+`RELAY_MAX_FRAME_BYTES` (1 MiB) with 1009. Measured with node: 512 K characters of a Claude-like
+redraw stream (`ESC[2K ESC[1A …` with box drawing, what Ink writes all day) come to **1,234,730
+bytes** once wrapped — 2.36 bytes per character, because every ESC becomes `\u001b` and then
+`\\u001b`. Every long Claude session would have failed to attach, from any machine, with a close
+code that reads like a network fault. (A lighter sample, mostly text, came to 952 KB: under the cap,
+which is how a first test passes.) So every inner frame goes through `relayFrameParts`: past
+`RELAY_CHUNK_CHARS` (200 K UTF-16 units, at most ~600 KB sealed) it is sent as `part` frames the
+receiving `RelayChannel` joins before parsing, capped at `RELAY_MAX_MESSAGE_CHARS`, and a part never
+holds a part. `verify:hub-relay` sends a 1.5 MB replay (escapes, accents, emoji) and checks every
+sealed part is under the cap and the join is byte-for-byte.
+
+From the same round: **a presence status must carry a time only its SENDER moves forward.**
+`newerStatus` keeps the later of two statuses from one device, so a hub replaying an old one
+cannot roll the list back — and the first `HubRemote` stamped each status with its raw wall clock.
+Under `verify:hub-relay`'s fixed clock every `at` was equal, so the second status — the one that
+said "sharing" — was dropped without a word and the other machine kept "Not sharing its sessions";
+it showed only as an `until()` that quietly timed out. On a real clock the same drop happens to any
+two statuses sent inside one millisecond, and to every status after the sender's clock steps back
+(not reproduced live). `publish` now stamps `max(now, lastAt + 1)`, the hybrid clock items already
+use (`nextEditedAt`).
+
+The rules around the host that are easy to widen by accident, all in `src/shared/hub/remote.ts`
+and held by `verify:hub-relay` (dropping the scope check, the named-guest check, the host's
+active-device check or the sharing refusal each turned it red): a frame is served only after BOTH
+the grant's mode (`relayFrameVerdict`) and the answer's reach (`relayScopeVerdict`); "Allow once"
+reaches one session and NOT `/api/sessions`, whose rows carry every session's folder path (the
+presence summary carries folder names only); the host refuses an `hs1` whose guest is not the
+device the hub named, and takes no relay at all from a device its own chain does not hold as
+active (gotcha 140).
+
+> **Checked against the code on 2026-10-01 (a review of "Other machines")** — four gaps and a
+> misleading button, each now held by `verify:hub-relay` and each shown red by mutating its fix back:
+> - **The chain was read only at the handshake.** After it, `hostFrame` served every frame on the
+>   grant alone, and nothing told `HubRemote` when `refreshChain` installed a new verdict — so a
+>   guest removed from the host's chain kept its pty for as long as its relay stayed open, a waiting
+>   question could still be answered Always (storing a grant for it), and a tab kept typing into a
+>   host since removed (a stolen laptop). `refreshChain` (both branches) and the hub's "removed" bye
+>   now call `HubRemote.chainChanged()`: it ends every hosted relay and question whose guest the
+>   chain no longer holds BY THE KEY ITS HANDSHAKE PINNED (`RelayChannel.peerSignKey`, gotcha 140),
+>   every tab to a host it no longer holds (never reconnected), and deletes that device's Allow once
+>   and Always. `hostFrame`, `answer` and `serve` re-check too, so a frame that lands before the
+>   hook runs is refused.
+> - **Nothing sent the inner `ping`.** Both ends only answered one. The hub's idle close
+>   (`RELAY_IDLE_MS`, 10 min) counts forwarded frames only — its WebSocket pings do not move
+>   `lastActivity` — so a tab on a quiet session (Claude at its prompt, the owner reading) was closed
+>   every ten minutes, dropping keys typed during the reconnect. The guest pings every
+>   `RELAY_PING_MS` (4 min) and closes a channel with no pong inside `RELAY_PONG_WAIT_MS`.
+> - **The replay guard was the status on show**, which `presenceClosed` and an offline clear, so
+>   after a reconnect a hub could hand back any older status of the epoch (one from before sharing
+>   was unticked). The mark is per (device, epoch), kept for the process. An EQUAL `at` is taken: the
+>   hub hands every device's latest back on each connect, and refusing it (`<=`) blanked the list
+>   after every reconnect — the suite holds both directions.
+> - **Every status string was capped, the whole never.** 24 sessions of emoji and CJK titles and
+>   folder names (each at its cap) sealed to 30,955 characters, measured, past `HUB_LIMITS.statusBytes`
+>   (24,576); the hub's `parsePresenceClientFrame` dropped it silently and the sender recorded it as
+>   sent. `sealToFit` drops the last-listed sessions until `sealedStatusProblem` passes (18 fit).
+> - **"Always" was `{ kind: 'any' }`** — every relayed route, so starting agents, creating folders,
+>   every project path and every past conversation — under a button that said "open any session
+>   here without asking", in a question about one session. Both answers now reach only the session
+>   the relay attached to (`RelayScope` has no `any`); Always only stops the question. The guest
+>   never used anything wider, so nothing a remote tab does changed.
