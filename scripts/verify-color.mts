@@ -10,11 +10,14 @@
  * The maths is the first half. The second half points it at what actually
  * ships: every token in every built-in theme, on every ground app.css draws it
  * on, plus the accent matrix — any profile swatch can be active under any
- * theme, which is the pairing that shipped a 1.43:1 focus ring.
+ * theme, which is the pairing that shipped a 1.43:1 focus ring. Every coding
+ * agent's colour is held to the same bars, since any agent can be open under
+ * any theme.
  *
  *   node scripts/verify-color.mts
  */
 import { deriveAccent } from '../src/shared/accent.ts'
+import { agentColorTokens } from '../src/shared/agentColors.ts'
 import {
   apcaContrast,
   contrastRatio,
@@ -879,6 +882,38 @@ for (const t of BUILT_IN_THEMES) {
       `${t.id}/${src.id}: hover is visibly different from the fill`,
       Math.abs(toOklch(parseColor(tokens.accentHover)!).l - toOklch(parseColor(tokens.accent)!).l),
       0.015
+    )
+  }
+}
+
+console.log('\n-- agent colours: every agent seed as a foreground, on every theme --')
+/*
+ * `applyAppearance` writes `--agent-<id>-ink` for all eighteen agents through
+ * `agentColorTokens`, which is `deriveAccent` per seed — the same derivation as
+ * the accent matrix above, so the same three bars and the same kept/solved
+ * tolerance. The ink is the tab tag's text and 1px border, the 2px rule on the
+ * pane, the status-bar dot and the plan-limit chip's edge: text and graphics on
+ * `--bg` and on the sunken chrome. Called through the function applyAppearance
+ * calls, so what is asserted is what is painted.
+ */
+for (const t of BUILT_IN_THEMES) {
+  const page = parseColor(t.colors.bg)!
+  const sunken = parseColor(t.colors.bgSunken)!
+  for (const tok of agentColorTokens({}, t.appearance, t.colors.bg)) {
+    const ink = parseColor(tok.ink)!
+    const kept = tok.ink.toLowerCase() === tok.seed.toLowerCase()
+    const lcFloor = kept ? ACCENT_LC - AT_FLOOR_TOLERANCE : ACCENT_LC
+    const onBg = contrastRatio(ink, page)
+    const lcBg = Math.abs(apcaContrast(ink, page))
+    const onSunken = contrastRatio(ink, sunken)
+    const ok = onBg >= ACCENT_WCAG && lcBg >= lcFloor && onSunken >= RING_WCAG
+    if (!ok) failures++
+    console.log(
+      `${ok ? 'ok  ' : 'FAIL'} ${`${t.id}/${tok.key}: --agent-${tok.key}-ink ${tok.ink}`.padEnd(46)} ${`${onBg.toFixed(
+        2
+      )}/${lcBg.toFixed(1)}/${onSunken.toFixed(2)}`.padStart(10)}  (expected >= ${ACCENT_WCAG} / ${lcFloor}${
+        kept ? ' kept' : ' solved'
+      } / ${RING_WCAG})`
     )
   }
 }

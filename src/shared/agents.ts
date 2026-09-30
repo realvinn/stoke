@@ -44,6 +44,7 @@ import {
   type CodingCliId,
   type InstallPlatform
 } from './codingClis.ts'
+import { hydrateAgentColors, type AgentColors } from './agentColors.ts'
 
 export const OPENROUTER_OPENAI_BASE_URL = 'https://openrouter.ai/api/v1'
 
@@ -87,9 +88,33 @@ export interface AgentSettings {
    * is always `claude` (gotcha 19).
    */
   defaultCli: CodingCliId
+  /**
+   * The small tag on a tab whose agent is not the default one (`tabLabel`):
+   * whether it is drawn, and what it says per agent. With it off, the agent's
+   * colour and the tab's tooltip still tell a Codex tab from a Claude tab in
+   * the same folder (QA L16).
+   */
+  tag: AgentTag
+  /** The user's colour per agent, over `AGENT_SEEDS` (agentColors.ts). */
+  colors: AgentColors
 }
 
-export const DEFAULT_AGENTS: AgentSettings = { chosen: null, endpoints: {}, defaultCli: DEFAULT_CLI }
+export interface AgentTag {
+  show: boolean
+  /** Per agent; absent means the executable name (`agentTagText`). */
+  labels: Partial<Record<CodingCliId, string>>
+}
+
+/** A tag is a label on a 12rem tab, not a title: longer is cut, not wrapped. */
+export const AGENT_TAG_MAX = 16
+
+export const DEFAULT_AGENTS: AgentSettings = {
+  chosen: null,
+  endpoints: {},
+  defaultCli: DEFAULT_CLI,
+  tag: { show: true, labels: {} },
+  colors: {}
+}
 
 export const DEFAULT_ENDPOINT: AgentEndpoint = { mode: 'default', model: '', baseUrl: '', apiKey: '' }
 
@@ -115,9 +140,43 @@ export function hydrateEndpoint(raw: unknown): AgentEndpoint {
   }
 }
 
+/**
+ * One stored tag label, or '' for none: whitespace runs folded to a space,
+ * trimmed, and cut to `AGENT_TAG_MAX` characters (by code point, so an emoji
+ * is never split in half).
+ */
+export function cleanTagLabel(v: unknown): string {
+  if (typeof v !== 'string') return ''
+  return Array.from(v.replace(/\s+/g, ' ').trim()).slice(0, AGENT_TAG_MAX).join('').trim()
+}
+
+/**
+ * Repair the tag block. `show` is on unless it is literally `false`, so an
+ * older file (no block) and junk both keep the tag the app always drew; labels
+ * survive only for ids this build knows, and an empty one is not stored.
+ */
+export function hydrateAgentTag(raw: unknown): AgentTag {
+  const r = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as { show?: unknown; labels?: unknown }) : {}
+  const labels: Partial<Record<CodingCliId, string>> = {}
+  if (r.labels && typeof r.labels === 'object' && !Array.isArray(r.labels)) {
+    for (const [id, v] of Object.entries(r.labels)) {
+      const label = cleanTagLabel(v)
+      if (isCodingCliId(id) && label) labels[id] = label
+    }
+  }
+  return { show: r.show !== false, labels }
+}
+
+/** What an agent's tag says: the user's label, else its executable's name. */
+export function agentTagText(id: CodingCliId, labels: Partial<Record<CodingCliId, string>>): string {
+  return labels[id]?.trim() || cliFor(id).bins.posix[0]
+}
+
 export function hydrateAgents(raw: unknown): AgentSettings {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ...DEFAULT_AGENTS, endpoints: {} }
-  const r = raw as { chosen?: unknown; endpoints?: unknown; defaultCli?: unknown }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { ...DEFAULT_AGENTS, endpoints: {}, tag: hydrateAgentTag(undefined), colors: {} }
+  }
+  const r = raw as { chosen?: unknown; endpoints?: unknown; defaultCli?: unknown; tag?: unknown; colors?: unknown }
   // An array, deduplicated and filtered to ids this build knows. Anything else
   // — a string, an object, junk — is "never asked", which re-shows the picker
   // rather than hiding every agent on the strength of a bad value.
@@ -136,7 +195,13 @@ export function hydrateAgents(raw: unknown): AgentSettings {
   }
   // An id this build does not know — a newer build's agent, junk — is Claude
   // Code, the same answer `cliIdOf` gives a restored tab (codingClis.ts).
-  return { chosen, endpoints, defaultCli: cliIdOf(r.defaultCli) }
+  return {
+    chosen,
+    endpoints,
+    defaultCli: cliIdOf(r.defaultCli),
+    tag: hydrateAgentTag(r.tag),
+    colors: hydrateAgentColors(r.colors)
+  }
 }
 
 /**
