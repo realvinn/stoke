@@ -217,7 +217,6 @@ export class RegistryPoller {
         !pidMatched(t) && !this.everMatched.has(t.ptyId) && now - t.startedAt >= REGISTRY_FALLBACK_AFTER_MS
       const needAll = targets.some(fallsBack)
       const all = needAll ? await this.readAll(dir) : null
-      const parents = needAll && this.fs.processTable ? await this.processTable() : null
 
       // Sessions some target has provably by pid: a fallback may not take them.
       const claimed = new Set<string>()
@@ -225,6 +224,17 @@ export class RegistryPoller {
         const e = byPid.get(t.ptyId)
         if (pidMatched(t) && e?.sessionId) claimed.add(e.sessionId)
       }
+
+      /*
+       * The process table only for a fallback its id cannot answer: a
+       * `--continue` still on '' (gotcha 26), or a `/clear` that moved the
+       * process to an id Stoke does not hold yet. On Windows that table is a
+       * PowerShell start and a CIM query, and a `.cmd` pty is never matched by
+       * pid, so asking on every pass that merely fell back ran one a second for
+       * as long as any such tab was open, although the id already named it.
+       */
+      const needsDescent = (t: RegistryTarget): boolean => fallsBack(t) && pickEntry(t, null, all, claimed) === null
+      const parents = all && this.fs.processTable && targets.some(needsDescent) ? await this.processTable() : null
 
       for (const t of targets) {
         const descends =

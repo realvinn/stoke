@@ -435,6 +435,84 @@ async function scenario(): Promise<void> {
 await scenario()
 
 /*
+ * When the process table is asked for. On Windows it is a PowerShell start
+ * and a CIM query, and a `.cmd` pty (pid cmd.exe's) is never matched by pid,
+ * so every pass falls back for the whole life of the tab. The table used to
+ * be read on every such pass although the id already named the tab — one
+ * PowerShell a second for as long as the tab was open. Now only a fallback
+ * its id cannot answer asks: a `--continue` on '', or a `/clear` that moved
+ * the process to an id Stoke does not hold yet.
+ */
+async function descentScenario(): Promise<void> {
+  console.log('\nthe process table: read only when the id cannot answer (gotcha 92)')
+  const D = '22222222-3333-4444-8555-666666666601'
+  const E = '22222222-3333-4444-8555-666666666602'
+  const F = '22222222-3333-4444-8555-666666666603'
+  const reg = fakeRegistry(DIR)
+  let tables = 0
+  let table: Map<number, number> | null = new Map([
+    [5001, 500],
+    [6001, 600]
+  ])
+  const ptys = new Map<string, RegistryTarget>()
+  const rebinds: [string, string, string][] = []
+  const poller = new RegistryPoller(
+    () => DIR,
+    {
+      ...reg.fs,
+      processTable: async () => {
+        tables++
+        return table
+      }
+    },
+    () => [...ptys.values()],
+    {
+      rebind: (ptyId, sessionId, previous) => {
+        rebinds.push([ptyId, sessionId, previous])
+        const t = ptys.get(ptyId)
+        if (t) ptys.set(ptyId, { ...t, sessionId })
+      },
+      state: () => {}
+    }
+  )
+  const old = NOW - REGISTRY_FALLBACK_AFTER_MS - 1000
+
+  // A Windows `.cmd` tab: pty 500 is cmd.exe, claude is 5001 under it.
+  ptys.set('w1', { ptyId: 'w1', pid: 500, sessionId: D, cwd: '/w', startedAt: old })
+  reg.put(5001, { sessionId: D, cwd: '/w', startedAt: old + 1500, status: 'idle' })
+  await poller.pass(NOW)
+  await poller.pass(NOW)
+  check('a .cmd tab matched by the id it holds never asks for the process table', [poller.states().map((s) => s.sessionId), tables], [[D], 0])
+
+  // A --continue beside it: pty 600, no id, its claude 6001 on an id of its own.
+  ptys.set('w2', { ptyId: 'w2', pid: 600, sessionId: '', cwd: '/v', startedAt: old })
+  reg.put(6001, { sessionId: E, cwd: '/v', startedAt: old + 1500, status: 'idle' })
+  await poller.pass(NOW)
+  check('a --continue asks once, and descent names it (rebind from \'\')', [rebinds, tables], [[['w2', E, '']], 1])
+  await poller.pass(NOW)
+  await poller.pass(NOW)
+  check('once it holds that id, the table is not asked for again', tables, 1)
+
+  // A /clear in the first tab: same process, a new id Stoke does not hold.
+  reg.put(5001, { sessionId: F, cwd: '/w', startedAt: old + 1500, status: 'idle' })
+  await poller.pass(NOW)
+  check('a /clear on a .cmd tab asks, and descent follows it to the new id', [rebinds.at(-1), tables], [['w1', F, D], 2])
+  await poller.pass(NOW)
+  check('and then the id answers again', tables, 2)
+
+  // With no table (a CIM query that failed or timed out) descent cannot answer.
+  table = null
+  ptys.set('w3', { ptyId: 'w3', pid: 700, sessionId: '', cwd: '/u', startedAt: old })
+  reg.put(7001, { sessionId: C, cwd: '/u', startedAt: old + 1500, status: 'idle' })
+  const before = rebinds.length
+  await poller.pass(NOW)
+  await poller.pass(NOW)
+  check('with the table unreadable a --continue stays unnamed, and it keeps asking', [rebinds.length - before, tables], [0, 4])
+}
+
+await descentScenario()
+
+/*
  * What a tab's activity indicator shows (src/shared/activityView.ts, gotcha
  * 104): the hooks and this registry, decided in one pure function. The
  * full table, because every row is a state a real session reaches — measured
