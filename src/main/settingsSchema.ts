@@ -365,11 +365,16 @@ export function hydrateSettings(raw: unknown): Settings {
           // Same rule for the key fields: `keyEnrollRefused` silences an offer
           // and `keyEnrolled` claims a key is installed and working, so a
           // truthy leftover from a hand-edited file must not assert either.
+          // `persist` decides whether a tab's shell is started inside a
+          // managed tmux session on that machine, so only the literal
+          // `'tmux'` turns it on. A host saved before the field existed has
+          // none and reads as `'off'`: exactly the plain ssh it always ran.
           .map((h) => ({
             ...h,
             worklog: h.worklog === true,
             keyEnrollRefused: h.keyEnrollRefused === true,
-            keyEnrolled: h.keyEnrolled === true
+            keyEnrolled: h.keyEnrolled === true,
+            persist: h.persist === 'tmux' ? ('tmux' as const) : ('off' as const)
           }))
       : [],
     worklogGroups: Array.isArray(r.worklogGroups)

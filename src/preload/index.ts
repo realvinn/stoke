@@ -203,7 +203,9 @@ const api: StokeApi = {
     configHosts: () => ipcRenderer.invoke(CH.sshHosts),
     awaitingPassword: (ptyId: string) => ipcRenderer.invoke(CH.sshAwaitingPassword, ptyId),
     onPasswordPrompt: (cb) => on<[SshAuthPromptEvent]>(CH.sshAuthPrompt, cb),
-    onEnrollEvent: (cb) => on<[SshEnrollEvent]>(CH.sshEnrollEvent, cb)
+    onEnrollEvent: (cb) => on<[SshEnrollEvent]>(CH.sshEnrollEvent, cb),
+    remoteSessions: (hostId: string) => ipcRenderer.invoke(CH.sshRemoteSessions, hostId),
+    endRemoteSession: (hostId: string, name: string) => ipcRenderer.invoke(CH.sshEndRemoteSession, hostId, name)
   },
 
   activity: {

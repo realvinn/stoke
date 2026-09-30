@@ -24,7 +24,7 @@ import {
   spawnSpec
 } from './cli.ts'
 import { windowFromBanner } from './sessionFile.ts'
-import { buildSshArgs, sshExecutable } from './ssh.ts'
+import { sshExecutable, sshHostArgs } from './ssh.ts'
 // Relative and with the extension, like every other main-process import here:
 // this module is loaded directly under `node --experimental-strip-types`, which
 // resolves no aliases. The detector itself is pure and lives in shared/ so a
@@ -400,8 +400,10 @@ export class PtyManager {
      *
      * What does NOT carry over is anything that reads a transcript, because a
      * remote session's transcript lives on the far machine: no context meter and
-     * no Stoke-side resume. A multiplexer in `host.command` is the only resume
-     * such a session can have.
+     * no Stoke-side resume. What survives a dropped link is the SHELL, kept on
+     * the far machine: a host with `persist: 'tmux'` runs each tab inside its
+     * own managed tmux session (`opts.remoteSession`, `sshHostArgs`), and a
+     * reconnect reattaches to it (gotcha 126).
      */
     /*
      * Two independent reasons the instrumentation may be off, and they are not
@@ -526,10 +528,20 @@ export class PtyManager {
      * EXITS on a flag it does not recognise, so the failure is not a flag
      * being ignored, it is a session that never starts.
      */
+    /*
+     * An SSH tab's argv, or the reason it is refused. A host that keeps its
+     * shells running (`persist: 'tmux'`) gets the managed-session wrapper
+     * around its command, named by `opts.remoteSession`; a name or a command
+     * that cannot be handed to a remote shell safely refuses the launch with a
+     * sentence rather than connecting a tab that only LOOKS kept (gotcha 126).
+     * Decided before anything is written or spawned.
+     */
+    const hostPlan = remote ? sshHostArgs(opts.host!, opts.remoteSession) : null
+    if (hostPlan && !hostPlan.ok) throw new Error(hostPlan.message)
     const installFile = installing && process.platform === 'win32' ? join(tmpdir(), `stoke-install-${ptyId}.ps1`) : null
     if (installFile && script) await writeInstallerFile(installFile, script)
-    const args = remote
-      ? buildSshArgs(opts.host!)
+    const args = hostPlan?.ok
+      ? hostPlan.args
       : enrolling
         ? [...enrollCommand!.args]
         : installing

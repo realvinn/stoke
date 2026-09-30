@@ -32,6 +32,7 @@ import type {
   Settings,
   SshAuthPromptEvent,
   SshEnrollEvent,
+  RemoteSessionList,
   SshHost,
   StatusLineSnapshot,
   LiveSessionState,
@@ -101,6 +102,8 @@ import { claudeVoiceEnabled, isMicAccess, type MicAccess } from '../shared/voice
 import { transcribe } from './stt.ts'
 import { createProfile, planProfile } from './profiles.ts'
 import { readSshConfigHosts } from './ssh.ts'
+import { endRemoteSession, listRemoteSessions } from './sshSessions.ts'
+import { hostPersists, isSafeRemoteSessionName, mintRemoteSessionName } from '../shared/sshPersist.ts'
 import { shouldOfferKey } from '../shared/sshAuth.ts'
 import {
   consumeUpdateRestart,
@@ -643,6 +646,21 @@ async function launchSession(
   if (requested.enroll) return startEnrollSession(requested)
   const settings = getSettings()
   /*
+   * A phone starting a session on a host that keeps its shells sends no
+   * session name — the desktop mints one per tab in `startHostSession`, and a
+   * phone has no tab to keep it on. Named here, so the launch is a kept one
+   * (pty.ts refuses a persisting host without a name) and the desktop tab it
+   * becomes, told the name in `RemoteSessionStarted`, reconnects to it.
+   */
+  if (
+    origin === 'remote' &&
+    requested.host &&
+    hostPersists(requested.host) &&
+    !isSafeRemoteSessionName(requested.remoteSession)
+  ) {
+    requested = { ...requested, remoteSession: mintRemoteSessionName() }
+  }
+  /*
    * `--resume` or `--session-id`, decided here, against the disk, right before
    * the spawn — not by the renderer, whose idea of "has a transcript" is a
    * context reading that may not have ticked yet. A relaunch of a session
@@ -744,7 +762,8 @@ async function launchSession(
       permissionMode: opts.permissionMode ?? 'default',
       model: agentPlan ? agentPlan.model : (opts.model ?? ''),
       effort: opts.effort ?? 'default',
-      hostId: opts.host?.id ?? null
+      hostId: opts.host?.id ?? null,
+      ...(opts.host && opts.remoteSession ? { remoteSession: opts.remoteSession } : {})
     }
     send(CH.remoteSessionStarted, started)
   }
@@ -3139,6 +3158,26 @@ function registerIpc(): void {
   ipcMain.handle(CH.sshAwaitingPassword, (_e, ptyId: unknown) =>
     typeof ptyId === 'string' && ptyId ? (ptys?.awaitingPassword(ptyId) ?? false) : false
   )
+
+  /*
+   * The managed sessions on a host (`SshHost.persist`), and ending one. Both
+   * take the host by ID and look it up in settings here, so nothing the
+   * renderer sends becomes a destination; the name is whitelisted again inside
+   * `buildRemoteSessionKillArgs`. BatchMode both ways: a password host answers
+   * "cannot say" in seconds instead of prompting where nobody can type.
+   */
+  ipcMain.handle(CH.sshRemoteSessions, async (_e, hostId: unknown): Promise<RemoteSessionList> => {
+    const host = typeof hostId === 'string' ? getSettings().hosts.find((h) => h.id === hostId) : undefined
+    if (!host) return { ok: false, message: 'That machine is not in Settings.' }
+    if (!hostPersists(host)) return { ok: true, sessions: [] }
+    return listRemoteSessions(host)
+  })
+  ipcMain.handle(CH.sshEndRemoteSession, async (_e, hostId: unknown, name: unknown) => {
+    const host = typeof hostId === 'string' ? getSettings().hosts.find((h) => h.id === hostId) : undefined
+    if (!host) return { ok: false, message: 'That machine is not in Settings.' }
+    if (!isSafeRemoteSessionName(name)) return { ok: false, message: 'That is not a session Stoke started.' }
+    return endRemoteSession(host, name)
+  })
 
   /* ------------------------------------------------------------------ tabs */
   ipcMain.on(CH.tabsSave, (_e, state: StoredTabs) => {

@@ -22,11 +22,18 @@ import { existsSync, statSync } from 'node:fs'
 import { readFile, readdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { delimiter, dirname, isAbsolute, join } from 'node:path'
-import type { SshHost } from '@shared/types'
+import type { RemoteSessionInfo, SshHost } from '@shared/types'
 // Relative and with the extension, not the `@shared` alias: this module is run
 // directly by `verify-ssh.mts` under `node --experimental-strip-types`, which
 // resolves no aliases. A type-only import would be erased and could use either.
 import { buildRemoteInstallCommand, isEnrollableAlias } from '../shared/sshAuth.ts'
+import {
+  MANAGED_TMUX_SOCKET,
+  hostPersists,
+  isPersistableCommand,
+  isSafeRemoteSessionName,
+  persistRefusal
+} from '../shared/sshPersist.ts'
 
 const isWin = process.platform === 'win32'
 
@@ -353,10 +360,14 @@ export function sshExecutable(): string {
  * Options must precede the destination: ssh stops parsing them at the first
  * non-option argument, so a `-t` after the alias becomes part of the remote
  * command instead.
+ *
+ * `remoteCommand` replaces `host.command` when given — the managed-session
+ * wrapper (`buildPersistentCommand`), which carries the user's own command
+ * inside it verbatim. See `sshHostArgs`, which is what the pty actually calls.
  */
-export function buildSshArgs(host: SshHost): string[] {
+export function buildSshArgs(host: SshHost, remoteCommand?: string): string[] {
   const alias = host.alias.trim()
-  const command = host.command.trim()
+  const command = (remoteCommand ?? host.command).trim()
   const args: string[] = []
 
   /*
@@ -379,12 +390,280 @@ export function buildSshArgs(host: SshHost): string[] {
    */
   args.push('-e', 'none')
 
+  /*
+   * 5. **Keepalives, so a dead link ENDS rather than hangs.** Without them a
+   * connection whose other end vanished — a laptop that slept, wifi that
+   * changed, a NAT that forgot the flow — sits in `read()` until TCP gives
+   * up, which is hours, and the tab shows a frozen screen that looks alive.
+   * Every 15 s ssh asks the server over the encrypted channel; three missed
+   * answers end it with exit 255, which is what a managed session's tab
+   * reconnects on. Local options: nothing reaches the remote command, so this
+   * is not gotcha 19. A `ServerAliveInterval` in the user's own config is
+   * overridden for these tabs only — command-line options win over the file.
+   */
+  args.push('-o', `ServerAliveInterval=${SERVER_ALIVE_INTERVAL_S}`, '-o', `ServerAliveCountMax=${SERVER_ALIVE_COUNT_MAX}`)
+
   if (command) args.push('-t')
   if (alias.startsWith('-')) args.push('--')
   args.push(alias)
   if (command) args.push(command)
 
   return args
+}
+
+/** Seconds between keepalives, and how many may go unanswered. 15 x 3 = a dead link ends in ~45 s. */
+export const SERVER_ALIVE_INTERVAL_S = 15
+export const SERVER_ALIVE_COUNT_MAX = 3
+
+/* ------------------------------------------------- the managed remote session */
+
+/**
+ * The remote command that puts an SSH tab inside its own tmux session.
+ *
+ * Null when either input is not provably safe to hand to a shell: the name
+ * must pass `isSafeRemoteSessionName` and `host.command` must pass
+ * `isPersistableCommand`. Refuse, never escape — this string is parsed by the
+ * far machine's login shell, whatever that is, and then by tmux.
+ *
+ * The shape, and why each piece is there (each measured against real tmux
+ * 3.5a on Debian and 3.4 on Ubuntu — see gotcha 126):
+ *
+ * - **`sh -c '…'`.** The login shell parses the command first, and it may be
+ *   fish or tcsh: fish rejects `{ …; }` and `||` chains written for sh. Inside
+ *   single quotes every shell leaves the body alone, so the body is sh's. The
+ *   same reason `buildRemoteInstallCommand` does it.
+ * - **`command -v tmux || { …; exec "$SHELL" -l; }`.** No tmux on the machine
+ *   is not a failed connection: the tab gets the plain shell (or the user's
+ *   command) it would have had with persistence off, and one line saying the
+ *   shell ends with the connection this time.
+ * - **`-L stoke -f /dev/null`.** A private server with no config file: the
+ *   user's own tmux/byobu server and `~/.tmux.conf` are never read or touched,
+ *   and nothing of theirs (a prefix key, `mouse on`) changes a session they
+ *   never see as tmux.
+ * - **`-u`.** tmux writes `_` for every non-ASCII character when the remote
+ *   locale is not UTF-8 — and ssh does not always forward `LANG`. Stoke's
+ *   terminal is always UTF-8; Claude Code's box drawing depends on it.
+ * - **`set -s escape-time 10`.** tmux 3.4 holds a lone Esc for 500 ms to see
+ *   whether it starts a sequence, which makes Esc in Claude Code feel broken.
+ * - **`set -s set-clipboard on`.** An app inside the session (vim `"+y`,
+ *   nvim's osc52) reaches Stoke's clipboard; tmux's `external` default would
+ *   drop it (gotcha 29's table).
+ * - **`set -s terminal-overrides` (`MANAGED_TERMINAL_OVERRIDES`).** tmux stays
+ *   on the outer NORMAL screen and scrolls with newlines, so with one
+ *   full-width pane and no status line a scrolled line scrolls in Stoke's own
+ *   xterm too and lands in its scrollback: the wheel, a plain drag and Select
+ *   all work as they do locally, with no copy mode. `-s` REPLACES the array
+ *   rather than appending (`-ga`), because this runs on every reconnect and
+ *   `-ga` grew it by one entry each time. The limit: tmux draws SCREENS, not a
+ *   byte stream — a burst bigger than the screen in one read reaches the
+ *   terminal as the screen tmux last drew (`seq 1 3000` kept 148 lines live).
+ *   The capture below is what makes the whole history come back.
+ * - **`set -g status off`, `set -g mouse off`.** No chrome, and the wheel and
+ *   drags stay Stoke's. An app inside that asks for the mouse (claude) still
+ *   gets it: tmux forwards a pane's own mouse mode even with `mouse off`
+ *   (gotcha 10).
+ * - **`capture-pane -p -e -J -S - -E -1` first.** The session's own history,
+ *   printed into the fresh terminal a reconnect opens, before the attach
+ *   paints the screen below it (the terminal keeps it through tmux's clear:
+ *   `scrollOnEraseInDisplay`, TerminalView). Measured after `seq 1 3000`: all
+ *   2001 lines tmux still held came back, in order.
+ * - **`new-session -A -s <name> [command]`.** Attach if it exists, create it
+ *   if not: one command for first connect, reconnect and restore alike. The
+ *   user's command runs as the session's shell command, verbatim — never with
+ *   a flag added (gotcha 19) — and is ignored on an attach, as it should be.
+ */
+export function buildPersistentCommand(host: SshHost, name: string): string | null {
+  if (!isSafeRemoteSessionName(name)) return null
+  const command = host.command.trim()
+  if (!isPersistableCommand(command)) return null
+  const quoted = command ? ` "${command}"` : ''
+  const fallback = command ? `exec "$SHELL" -c "${command}"` : 'exec "$SHELL" -l'
+  const tmux = [
+    `exec tmux -u -L ${MANAGED_TMUX_SOCKET} -f /dev/null start-server`,
+    'set -s escape-time 10',
+    'set -s set-clipboard on',
+    `set -s terminal-overrides "${MANAGED_TERMINAL_OVERRIDES}"`,
+    'set -g status off',
+    'set -g mouse off',
+    `set -g history-limit ${MANAGED_HISTORY_LIMIT}`,
+    `new-session -A -s ${name}${quoted}`
+  ].join(' \\; ')
+  const body = [
+    'command -v tmux >/dev/null 2>&1 || {',
+    `printf "%s\\n" "${NO_TMUX_NOTICE}" >&2;`,
+    `${fallback}; };`,
+    /*
+     * The history first, then the attach. A reconnect or a restore opens a
+     * FRESH terminal, and tmux's attach redraws only the visible screen, so
+     * without this everything above it is gone from Stoke's scrollback. The
+     * session's own history (everything that scrolled off, up to tmux's
+     * `history-limit`) is printed as plain output, so it scrolls into the new
+     * terminal's scrollback before the attach paints the screen below it. No
+     * session yet (a first connect) or no server: nothing, silently.
+     *
+     * The capture has to end exactly where the attach's screen will begin,
+     * and the attach can RESIZE the pane to this pty's size first — which
+     * moves that line. Measured in the app, each of these doubled or dropped
+     * lines at the seam until it was accounted for:
+     * - No history: tmux clamps `-E -1` to the screen's first line, so a
+     *   session whose output had never scrolled showed its top line twice.
+     * - Shorter: tmux drops blank rows below the cursor first, and pushes
+     *   the rest into history — `cursor_y + 1 - rows` of them, after this
+     *   capture and off the new screen, so on neither (a 38-row pane
+     *   reattached at 36 lost two lines). Captured here, into the screen.
+     * - Taller: tmux pulls up to `rows - pane_height` lines back OUT of
+     *   history onto the screen, so they would show twice. Left out here.
+     * `stty size` is this pty's own size; `$(( ))` runs only once tmux has
+     * answered all three numbers, since dash dies on an empty operand.
+     */
+    `set -- $(tmux -L ${MANAGED_TMUX_SOCKET} display -p -t "=${name}:" "#{history_size} #{pane_height} #{cursor_y}" 2>/dev/null);`,
+    'r=$(stty size 2>/dev/null); r=${r%% *}; e=-1;',
+    'if [ -n "$3" ] && [ "${r:-0}" -gt 0 ] 2>/dev/null; then',
+    'if [ "$r" -lt "$2" ]; then p=$(($3 + 1 - r)); [ "$p" -gt 0 ] && e=$((p - 1)); fi;',
+    'if [ "$r" -gt "$2" ]; then q=$((r - $2)); [ "$q" -gt "$1" ] && q=$1; e=$((-1 - q)); fi;',
+    'fi;',
+    '[ -n "$3" ] && [ "$e" -ge "$((0 - $1))" ] &&',
+    `tmux -L ${MANAGED_TMUX_SOCKET} capture-pane -p -e -J -S - -E "$e" -t "=${name}:" 2>/dev/null;`,
+    tmux
+  ].join(' ')
+  return `sh -c '${body}'`
+}
+
+/**
+ * `smcup@:rmcup@` keeps tmux on the outer NORMAL screen; `indn@` makes it
+ * scroll by newlines. With the capability, a burst of output is scrolled with
+ * one `CSI n S`, which xterm.js carries out WITHOUT keeping the lines — so
+ * nothing reached Stoke's scrollback at all (measured: `seq 1 3000` left a
+ * 30-line buffer). With plain newlines each scrolled line is kept.
+ */
+export const MANAGED_TERMINAL_OVERRIDES = 'xterm*:smcup@:rmcup@:indn@'
+
+/**
+ * Lines of history each managed session keeps, which is also what a reconnect
+ * prints back into the new terminal before attaching. tmux's own 2000 is less
+ * than one long build log; 5000 is ~0.5 MB with colours, a second at worst
+ * over a slow link, once per reconnect.
+ */
+export const MANAGED_HISTORY_LIMIT = 5000
+
+/** Printed on a host with no tmux, where the tab falls back to a plain shell. */
+export const NO_TMUX_NOTICE =
+  'Stoke: tmux is not installed on this machine, so this shell will not survive a dropped connection.'
+
+/**
+ * The argv for an SSH tab: plain `buildSshArgs` for a host that does not
+ * persist, the managed-session wrapper for one that does.
+ *
+ * A persisting host with no valid session name, or with a command that cannot
+ * be wrapped, is REFUSED with a sentence rather than silently connected
+ * without persistence: a tab that looks kept and is not loses its work on the
+ * first dropped link, which is the one thing the setting promises against.
+ */
+export function sshHostArgs(
+  host: SshHost,
+  remoteSession?: string | null
+): { ok: true; args: string[] } | { ok: false; message: string } {
+  if (!hostPersists(host)) return { ok: true, args: buildSshArgs(host) }
+  const refusal = persistRefusal(host.command)
+  if (refusal) return { ok: false, message: refusal }
+  if (!isSafeRemoteSessionName(remoteSession)) {
+    return { ok: false, message: 'This tab has no valid kept-session name, so Stoke will not connect it.' }
+  }
+  const command = buildPersistentCommand(host, remoteSession)
+  if (!command) return { ok: false, message: 'Stoke could not build the kept-session command for this machine.' }
+  return { ok: true, args: buildSshArgs(host, command) }
+}
+
+/**
+ * `tmux -L stoke ls` with the fields the launcher shows, one session per line.
+ *
+ * Split on `|`, not a tab: tmux 3.4 printed each tab of an `-F` format as `_`
+ * to a client with no UTF-8 locale — which a BatchMode ssh, with no pty and
+ * no `LANG`, is (measured: `stoke-abab0007_1790748189_1_bash_/home/v`). No
+ * field before the path can hold a `|` (a whitelisted name, two numbers, a
+ * process name), and the path is last, so one containing `|` is rejoined.
+ * Run with BatchMode: a host that wants a password answers "cannot say",
+ * never a prompt nobody will see.
+ */
+export const REMOTE_SESSION_FORMAT =
+  '#{session_name}|#{session_activity}|#{session_attached}|#{pane_current_command}|#{pane_current_path}'
+
+/**
+ * A one-shot BatchMode ssh running `body` under `sh -c '…'`, or null.
+ *
+ * `sh -c` for the reason `buildPersistentCommand` gives: the login shell may be
+ * fish or tcsh, and tcsh reads `2>/dev/null` as an argument `2` plus a stdout
+ * redirect. The body is built here from fixed text and whitelisted names and
+ * never holds a single quote; one that did would be refused, not escaped.
+ * `ControlPath=none` so a multiplexed master (the user's own `ControlMaster`)
+ * cannot answer for a host that would otherwise ask for a password.
+ */
+function batchArgs(host: SshHost, body: string): string[] | null {
+  const alias = host.alias.trim()
+  if (!alias || alias.startsWith('-')) return null
+  if (body.includes("'")) return null
+  return [
+    '-o',
+    'BatchMode=yes',
+    '-o',
+    'ConnectTimeout=10',
+    '-o',
+    'ControlPath=none',
+    '-e',
+    'none',
+    alias,
+    `sh -c '${body}'`
+  ]
+}
+
+/**
+ * The argv that lists a host's managed sessions, or null for an alias that
+ * could be read as an option. A missing tmux, and a server with no sessions,
+ * both print nothing and exit 0 (`2>/dev/null; true`): "none running" rather
+ * than an error the launcher has to explain.
+ */
+export function buildRemoteSessionListArgs(host: SshHost): string[] | null {
+  // Double-quoted inside the sh body: `#{…}` would start a comment unquoted,
+  // and a bare `|` would be a pipe.
+  return batchArgs(host, `tmux -L ${MANAGED_TMUX_SOCKET} ls -F "${REMOTE_SESSION_FORMAT}" 2>/dev/null; true`)
+}
+
+/**
+ * The argv that ends one managed session ("End session" on close), or null
+ * when the name or alias is not provably safe. Only ever a session on Stoke's
+ * own socket: `-L stoke` is fixed here, so no name can reach a user's own
+ * tmux server, and `=` makes the target an exact match, never a prefix.
+ */
+export function buildRemoteSessionKillArgs(host: SshHost, name: string): string[] | null {
+  if (!isSafeRemoteSessionName(name)) return null
+  return batchArgs(host, `tmux -L ${MANAGED_TMUX_SOCKET} kill-session -t "=${name}"`)
+}
+
+/**
+ * Read what `tmux ls -F` printed with `REMOTE_SESSION_FORMAT`.
+ *
+ * Every row is text a remote machine sent, so a name that fails the whitelist
+ * is dropped rather than offered: it would be handed back to a shell on
+ * reattach. Activity is epoch SECONDS from tmux, kept as ms here.
+ */
+export function parseRemoteSessionList(stdout: string): RemoteSessionInfo[] {
+  const out: RemoteSessionInfo[] = []
+  for (const line of stdout.split(/\r?\n/)) {
+    if (!line.trim()) continue
+    const parts = line.split('|')
+    const [name = '', activity = '', attached = '', command = '', ...path] = parts
+    if (!isSafeRemoteSessionName(name)) continue
+    const secs = Number(activity)
+    const clients = Number(attached)
+    out.push({
+      name,
+      activity: Number.isFinite(secs) && secs > 0 ? secs * 1000 : null,
+      attached: Number.isFinite(clients) && clients > 0 ? clients : 0,
+      command,
+      path: path.join('|')
+    })
+  }
+  return out.sort((a, b) => (b.activity ?? 0) - (a.activity ?? 0))
 }
 
 /* ---------------------------------------------------------- key enrollment */
