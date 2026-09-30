@@ -9,12 +9,15 @@
  * 2. **Admit** the newest `perSource` of each source, then the newest `total`
  *    of those across all sources. Deciding the whole range up front is what
  *    keeps the total cap stable: evicting after the fact would re-read the
- *    evicted chats on the next pass and evict them again, every pass. A file
- *    already found to hold no chat takes no slot while it is unchanged
- *    (`holdsNoChat`). Cline's imported copies are folded here too — a copy
- *    whose original its own tool still has is counted as a duplicate and
- *    never stored (164 of 172 Cline sessions on the machine measured were
- *    copies).
+ *    evicted chats on the next pass and evict them again, every pass. The
+ *    store's size ceiling can only be learnt by reading, so it is the one cap
+ *    that does evict after the fact — and it is turned into admission too: the
+ *    newest mtime it evicted is remembered as a cut (`storeCutMs`) and nothing
+ *    at or below it is admitted again. A file already found to hold no chat
+ *    takes no slot while it is unchanged (`holdsNoChat`). Cline's imported
+ *    copies are folded here too — a copy whose original its own tool still
+ *    has is counted as a duplicate and never stored (164 of 172 Cline
+ *    sessions on the machine measured were copies).
  * 3. **Read** each admitted chat that changed — appended bytes only for a
  *    JSONL file (gotcha 103's cursor checks), the whole document or row
  *    otherwise — until the pass's byte or time budget runs out. A pass that
@@ -31,6 +34,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 import {
   CHAT_SOURCE_IDS,
+  CHAT_STORE_MAX_TEXT_MB,
   isChatSourceId,
   type ChatCap,
   type ChatIndexOptions,
@@ -57,13 +61,23 @@ import {
 
 const MIB = 1024 * 1024
 
-/** The store's hard ceiling: past it the oldest chats go, and the status says so. */
-export const STORE_MAX_BYTES = 1024 * MIB
+/**
+ * The store's hard ceiling, as chat TEXT: past it the oldest chats go, and the
+ * status says so. Text, not the database's pages (`evictToText` says why).
+ * A merged store is 1.73 bytes on disk per byte of text, measured on this
+ * machine's real chats (122 chats, 6,189 messages, 3.81 MB of text, 6.58 MB
+ * used after `optimize`; synthetic text measured 1.61–1.84), so 512 MB of text
+ * is about 0.9 GB on disk — "about 1 GB" in the disclosure. Between merges the
+ * file also carries deleted rows' tombstones, which FTS5's own automerge and
+ * `tidy`'s optimize after a big pass fold away.
+ */
+export const STORE_MAX_TEXT_BYTES = CHAT_STORE_MAX_TEXT_MB * MIB
 
 export interface PassPlan {
   env: SourceEnv
   options: ChatIndexOptions
-  maxStoreBytes?: number
+  /** The ceiling, for a suite; `STORE_MAX_TEXT_BYTES` otherwise. */
+  maxTextBytes?: number
 }
 
 export interface PassHooks {
@@ -116,6 +130,25 @@ export async function runPass(store: ChatStore, plan: PassPlan, hooks: PassHooks
   const fileBytes = Math.max(64, Math.floor(caps.fileMb * MIB))
   const chatBytes = Math.max(64, Math.floor(caps.chatKb * 1024))
   const redact = plan.options.redact
+  const maxTextBytes = plan.maxTextBytes ?? STORE_MAX_TEXT_BYTES
+
+  /*
+   * 0. What this pass is asked for. When it is not what the last pass was
+   * asked for — a source, a cap, the subagent switch — two memos stop being
+   * true: the files remembered as holding no chat (a Codex subagent's, while
+   * those were off) and the store's cut (the ceiling bound under other caps).
+   * Both go, so this pass works the answer out again. Only the user changes
+   * the options, so this cannot become the every-pass re-read the cut stops.
+   */
+  const passKey = JSON.stringify({ options: plan.options, maxTextBytes })
+  if (store.passKey() !== passKey) {
+    store.tx(() => {
+      store.forgetEmptyFiles()
+      store.setStoreCutMs(null)
+      store.setPassKey(passKey)
+    })
+  }
+  const cutMs = store.storeCutMs() ?? -Infinity
 
   /* 1. List. A source switched off leaves the store entirely. */
   const listed: { id: ChatSourceId; listing: Listing }[] = []
@@ -143,7 +176,8 @@ export async function runPass(store: ChatStore, plan: PassPlan, hooks: PassHooks
    *
    * Then the newest `perSource` of what is left of each source, then the
    * newest `total` across every source. Where the total cap cuts a source's
-   * range it is the cap that bound, and the status names it.
+   * range it is the cap that bound, and the status names it. The store's cut
+   * ends a source's range where it falls, and names itself the same way.
    */
   const originals = new Set(
     listed
@@ -159,12 +193,16 @@ export async function runPass(store: ChatStore, plan: PassPlan, hooks: PassHooks
       if (dup) duplicates++
       return !dup
     })
-    // Newest first, until `perSource` are in; one known to hold no chat takes no slot.
+    // Newest first, so the first candidate at or below the cut ends the range: every one after it is older.
     const admitted: Candidate[] = []
     let cappedBy: ChatCap | null = listing.atLeast ? 'discovery' : null
     for (const c of own) {
       if (admitted.length >= caps.perSource) {
         cappedBy = 'perSource'
+        break
+      }
+      if (c.mtimeMs <= cutMs) {
+        cappedBy = 'store'
         break
       }
       if (!holdsNoChat(store, c)) admitted.push(c)
@@ -304,8 +342,16 @@ export async function runPass(store: ChatStore, plan: PassPlan, hooks: PassHooks
     store.putSourceState(p.id, state)
   }
 
-  /* The store's own ceiling, a backstop past the count caps. */
-  for (const s of store.evictToBytes(plan.maxStoreBytes ?? STORE_MAX_BYTES)) store.setCappedBy(s, 'store')
+  /*
+   * The store's own ceiling, a backstop past the count caps. It evicts the
+   * oldest by admission key, and the newest key it evicted becomes the cut the
+   * next pass admits above. Without that the evicted chats — their read
+   * positions deleted with them — were admitted again, read whole and evicted
+   * again on every pass, each time up to the pass's whole byte and time budget.
+   */
+  const evicted = store.evictToText(maxTextBytes)
+  for (const s of evicted.sources) store.setCappedBy(s, 'store')
+  if (evicted.newestMs !== null) store.setStoreCutMs(Math.max(evicted.newestMs, cutMs))
   store.tidy(chatsUpdated > 50)
   const summary: ChatPassSummary = {
     startedMs: started,

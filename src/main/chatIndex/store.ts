@@ -397,26 +397,10 @@ export class ChatStore {
     return num(r?.n)
   }
 
-  /**
-   * Keep only the newest `max` chats across every source; the oldest by their
-   * last activity go first. Returns which sources lost chats, so the status can
-   * say the total cap is why.
-   */
-  evictToTotal(max: number): Set<ChatSourceId> {
-    const hit = new Set<ChatSourceId>()
-    const over = this.count() - max
-    if (over <= 0) return hit
-    const rows = this.q('SELECT id, source FROM chat ORDER BY COALESCE(updated_ms, 0) ASC, id ASC LIMIT ?').all(over) as {
-      id: unknown
-      source: unknown
-    }[]
-    this.tx(() => {
-      for (const r of rows) {
-        if (isChatSourceId(r.source)) hit.add(r.source)
-        this.deleteChat(num(r.id))
-      }
-    })
-    return hit
+  /** The chat text the store holds, in bytes — what its ceiling is measured in (`evictToText`). */
+  textBytes(): number {
+    const r = this.q('SELECT COALESCE(SUM(text_bytes), 0) AS n FROM chat').get() as { n?: unknown } | undefined
+    return num(r?.n)
   }
 
   /** Bytes on disk: the database and its WAL. */
@@ -433,24 +417,98 @@ export class ChatStore {
   }
 
   /**
-   * Hold the store under `maxBytes` of pages: evict the oldest chats a batch at
-   * a time until the used pages fit. Page counts rather than the file size, so
-   * freed pages count as freed without a VACUUM.
+   * Hold the store to `maxTextBytes` of chat text: evict the oldest chats until
+   * what is left fits, in one transaction.
+   *
+   * Measured in TEXT, not in the database's used pages, which is what this
+   * first did. FTS5 with external content does not free a deleted row's
+   * postings — the delete writes a tombstone beside them, and only a segment
+   * merge reclaims either. Measured with 200 synthetic chats: deleting half of
+   * them (text 11.22 → 5.86 MB) moved used pages 20.64 → 18.19 MB, and only an
+   * `optimize` brought them to 10.92; with a Zipf vocabulary, 7.77 → 5.54, and
+   * 3.89 after. So "evict until the pages fit" evicted two to four times what
+   * it needed to — in `verify:chat-sources`, 11 of 12 chats to shed 30% of the
+   * pages — and could evict EVERY chat with the pages still over, which, with
+   * the cut below remembered, would have left the index admitting nothing.
+   * Text is exactly each chat's share, and it is what the pages follow once
+   * merged.
+   *
+   * Oldest by the key the pass ADMITS on — the file's (or row's) mtime, kept on
+   * its `source_file` row — never by the chat's own last-message stamp: the two
+   * orders differ, and the cut is only a clean line through the listing if what
+   * went is exactly the listing's oldest. Returns which sources lost chats and
+   * the newest admission key that went, which the caller must remember as the
+   * cut (`setStoreCutMs`): `deleteChat` takes the read positions with the chat,
+   * so without it the next pass admits the same chats again, reads them whole
+   * and evicts them again.
    */
-  evictToBytes(maxBytes: number): Set<ChatSourceId> {
-    const hit = new Set<ChatSourceId>()
-    const used = (): number => {
-      const pc = this.db.prepare('PRAGMA page_count').get() as Record<string, unknown>
-      const fc = this.db.prepare('PRAGMA freelist_count').get() as Record<string, unknown>
-      const ps = this.db.prepare('PRAGMA page_size').get() as Record<string, unknown>
-      return (num(Object.values(pc)[0]) - num(Object.values(fc)[0])) * num(Object.values(ps)[0])
+  evictToText(maxTextBytes: number): { sources: Set<ChatSourceId>; newestMs: number | null } {
+    const sources = new Set<ChatSourceId>()
+    let newestMs: number | null = null
+    const over = this.textBytes() - maxTextBytes
+    if (over <= 0) return { sources, newestMs }
+    const oldest = this.q(
+      `SELECT c.id AS id, c.source AS source, c.text_bytes AS bytes, COALESCE(MAX(f.mtime_ms), 0) AS m
+       FROM chat c LEFT JOIN source_file f ON f.chat_id = c.id
+       GROUP BY c.id ORDER BY m ASC, c.id ASC`
+    )
+    const doomed: number[] = []
+    let freed = 0
+    for (const r of oldest.iterate() as Iterable<{ id: unknown; source: unknown; bytes: unknown; m: unknown }>) {
+      if (freed >= over) break
+      doomed.push(num(r.id))
+      freed += num(r.bytes)
+      if (isChatSourceId(r.source)) sources.add(r.source)
+      newestMs = Math.max(newestMs ?? -Infinity, num(r.m))
     }
-    let guard = 0
-    while (used() > maxBytes && this.count() > 0 && guard++ < 1000) {
-      const batch = Math.max(1, Math.ceil(this.count() / 20))
-      for (const s of this.evictToTotal(this.count() - batch)) hit.add(s)
-    }
-    return hit
+    this.tx(() => doomed.forEach((id) => this.deleteChat(id)))
+    return { sources, newestMs }
+  }
+
+  /* ------------------------------------------------------------- meta */
+
+  private getMeta(key: string): string | null {
+    const r = this.q('SELECT value FROM meta WHERE key = ?').get(key) as { value?: unknown } | undefined
+    return strOrNull(r?.value)
+  }
+
+  private putMeta(key: string, value: string | null): void {
+    if (value === null) this.q('DELETE FROM meta WHERE key = ?').run(key)
+    else this.q('INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, value)
+  }
+
+  /**
+   * The store's byte ceiling as a line through the listing: the newest
+   * admission key (file or row mtime) it has evicted. A pass admits nothing at
+   * or below it, so what the ceiling evicted stays out until it changes — a
+   * chat with new activity has a newer mtime and comes back in as the newest.
+   */
+  storeCutMs(): number | null {
+    const raw = this.getMeta('storeCutMs')
+    const v = raw === null ? NaN : Number(raw)
+    return Number.isFinite(v) ? v : null
+  }
+
+  setStoreCutMs(ms: number | null): void {
+    this.putMeta('storeCutMs', ms === null ? null : String(Math.round(ms)))
+  }
+
+  /** What the last pass was asked for (its options and ceiling), so a change can be told apart. */
+  passKey(): string | null {
+    return this.getMeta('passKey')
+  }
+
+  setPassKey(key: string): void {
+    this.putMeta('passKey', key)
+  }
+
+  /**
+   * Forget every file remembered as holding no chat (a subagent's while those
+   * were off, or nothing to index). They are read again on the next pass —
+   * what the options changed may have changed the answer.
+   */
+  forgetEmptyFiles(): void {
+    this.q('DELETE FROM source_file WHERE chat_id IS NULL').run()
   }
 
   /* ------------------------------------------------------------ state */

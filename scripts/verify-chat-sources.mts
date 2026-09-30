@@ -577,6 +577,57 @@ try {
     e.close()
   }
 
+  section('the store ceiling: what it evicts stays out until it changes')
+  {
+    // Twelve chats of ~30 KB of text each; the ceiling is set to 70% of their text.
+    const cHome = join(root, 'ceiling-home')
+    const cEnv: SourceEnv = { home: cHome, env: {}, platform: process.platform }
+    const cDir = join(cHome, '.claude', 'projects', '-tmp-ceiling')
+    const cFile = (n: number): string => join(cDir, `${uuid(n)}.jsonl`)
+    for (let n = 0; n < 12; n++) {
+      const para = (k: number): string => Array.from({ length: 400 }, (_, w) => `ceil${n}w${k}x${w}`).join(' ')
+      const recs: unknown[] = []
+      for (let k = 0; k < 3; k++) {
+        recs.push({ type: 'user', cwd: '/tmp/ceiling', message: { content: `question ${k} ${para(k)}` }, timestamp: iso(T0 + n * 60_000 + k) })
+        recs.push({ type: 'assistant', message: { content: [{ type: 'text', text: `reply ${k} ${para(k + 10)}` }] }, timestamp: iso(T0 + n * 60_000 + k) })
+      }
+      write(cFile(n), jl(recs), T0 + n * 60_000)
+    }
+    const cOpts = options({}, { perSource: 50 })
+    const full = ChatStore.open(join(root, 'ceiling-probe'))
+    await runPass(full, { env: cEnv, options: cOpts }, hooks())
+    const fullText = full.textBytes()
+    full.close()
+    const max = Math.floor(fullText * 0.7)
+    const c = ChatStore.open(join(root, 'ceiling-index'))
+    await runPass(c, { env: cEnv, options: cOpts, maxTextBytes: max }, hooks())
+    const kept = c.chatsOf('claude').map((r) => r.nativeId).sort()
+    const k = kept.length
+    const cSt = (): ChatSourceStatus => c.status('idle').sources.find((s) => s.id === 'claude')!
+    check(`the ceiling evicts, oldest first, and says so (kept ${k} of 12)`, [k, c.textBytes() <= max, kept, cSt().cappedBy], [
+      8,
+      true,
+      Array.from({ length: k }, (_, j) => uuid(12 - k + j)).sort(),
+      'store'
+    ])
+    const again = await runPass(c, { env: cEnv, options: cOpts, maxTextBytes: max }, hooks())
+    check('the next pass reads nothing: the evicted are not admitted, read and evicted again', [again.filesRead, again.bytesRead, c.count('claude')], [0, 0, k])
+    check('...and the status still names the ceiling', [cSt().cappedBy, sourceDisclosure(cSt(), cOpts.caps).includes('size ceiling (512 MB of chat text')], ['store', true])
+    // The oldest evicted chat gets new activity: it is the newest now, so it comes back and an older one goes.
+    appendFileSync(cFile(0), jl([{ type: 'user', cwd: '/tmp/ceiling', message: { content: 'back again capybaraword' }, timestamp: iso(T0 + 99 * 60_000) }]))
+    utimesSync(cFile(0), (T0 + 99 * 60_000) / 1000, (T0 + 99 * 60_000) / 1000)
+    const back = await runPass(c, { env: cEnv, options: cOpts, maxTextBytes: max }, hooks())
+    check('a changed evicted chat is read once and kept, under the ceiling', [back.filesRead, words(c, 'capybaraword'), c.textBytes() <= max, c.count('claude')], [1, [`claude:${uuid(0)}`], true, k])
+    const settled = await runPass(c, { env: cEnv, options: cOpts, maxTextBytes: max }, hooks())
+    check('...and the pass after reads nothing again', [settled.filesRead, settled.bytesRead], [0, 0])
+    // Changing what is asked for starts over once — a user's act, never every pass.
+    const newOpts = options({}, { perSource: 49 })
+    await runPass(c, { env: cEnv, options: newOpts, maxTextBytes: max }, hooks())
+    const afterChange = await runPass(c, { env: cEnv, options: newOpts, maxTextBytes: max }, hooks())
+    check('after an options change the ceiling settles again in one pass', [afterChange.filesRead, c.textBytes() <= max, c.count('claude'), cSt().cappedBy], [0, true, k, 'store'])
+    c.close()
+  }
+
   section('incremental: only appended bytes are read')
   const pass2 = await runPass(store, { env, options: options() }, hooks())
   check('an unchanged pass reads nothing', [pass2.bytesRead, pass2.filesRead], [0, 0])

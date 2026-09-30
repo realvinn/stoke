@@ -155,6 +155,14 @@ export const CHAT_CAP_DEFAULTS: ChatIndexCaps = {
   fileMb: 256
 }
 
+/**
+ * The store's own ceiling past every cap above, as chat TEXT — the eviction
+ * measure (`evictToText` and `STORE_MAX_TEXT_BYTES` in main say why text, and
+ * how it maps to about 1 GB on disk). Here so the disclosure names the same
+ * number the pass enforces.
+ */
+export const CHAT_STORE_MAX_TEXT_MB = 512
+
 /** What each cap may be set to. Everything outside is pulled back in, never refused. */
 export const CHAT_CAP_LIMITS: Record<keyof ChatIndexCaps, { min: number; max: number }> = {
   perSource: { min: 1, max: 100_000 },
@@ -391,7 +399,7 @@ export function sourceDisclosure(s: ChatSourceStatus, caps: ChatIndexCaps): stri
     parts.push(
       s.cappedBy === 'total'
         ? `Indexed ${formatCount(s.indexed)} of ${found} chats: the index is at its ${formatCount(caps.total)}-chat limit, so older ones are left out.`
-        : `Indexed ${formatCount(s.indexed)} of ${found} chats: the index reached its 1 GB ceiling, so the oldest were dropped.`
+        : `Indexed ${formatCount(s.indexed)} of ${found} chats: the index reached its size ceiling (${formatCount(CHAT_STORE_MAX_TEXT_MB)} MB of chat text, about 1 GB on disk), so the oldest were dropped.`
     )
   } else if (shortOfFound && (s.cappedBy === 'perSource' || own > caps.perSource)) {
     parts.push(`Indexed the newest ${formatCount(s.indexed)} of ${found} chats (the limit is ${formatCount(caps.perSource)} per tool).`)
