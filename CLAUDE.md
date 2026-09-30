@@ -130,8 +130,8 @@ One line per gotcha, grouped by where you would be working. The full entry is `#
 rule file named on the group line.
 
 **Anywhere in the main process** — `.claude/rules/main.md`
-- **12.** Keep the unpackaged `(dev)` userData override skipped when `--user-data-dir` is passed —
-  otherwise a test profile silently boots the wrong settings and looks fine doing it.
+- **12.** Skip the `(dev)` userData override when `--user-data-dir` is passed, or a test profile boots
+  the wrong settings; a file OUTSIDE userData is every Stoke's, merged per writer (`updateAccountIndex`).
 - **13.** Give `execFile` a `maxBuffer` well past 1 MB and pass prompts on stdin, never argv:
   `spawnSpec` runs `.cmd` installs through `cmd.exe /c`, which eats `& | ^ < >`.
 - **20.** Claim the item or set the guard BEFORE the first `await` in a poll, IPC handler or

@@ -696,7 +696,10 @@ npm run verify:accounts       # agent accounts: the home/key variable per agent,
                               # name against the sha256/NFC formula, the account folder and
                               # its links on synthetic trees with bystanders (gotcha 74), and
                               # the real build/bin/stoke's `account list|env` under every
-                              # POSIX shell, its output evaluated back
+                              # POSIX shell, its output evaluated back; the index shared by
+                              # several Stokes: a dev boot with no accounts writes nothing,
+                              # each writer's rows survive the others', a deleted userData's
+                              # are dropped, two concurrent writers both land (the lock)
 npm run verify:agents         # the coding agents: what is stored, what the launcher shows,
                               # the default agent and its fallback (`resolveDefaultAgent`),
                               # the tab tag and agent colours as stored (junk included), the
@@ -958,8 +961,11 @@ src/main/         Electron main process
                     output-styles into the default tree (junctions on Windows), so transcripts,
                     the registry and `--resume` stay one tree; never links, copies or creates
                     `.claude.json`/`.credentials.json`; copies settings.json and CLAUDE.md
-                    once. Codex links skills only. Writes `index.json` for the shim. No
-                    electron import: verify:accounts runs it on synthetic trees
+                    once. Codex links skills only. `updateAccountIndex` keeps this Stoke's
+                    part of `index.json` for the shim: every Stoke on the machine (installed,
+                    dev, a sandbox) shares that one file, so it is merged per userData under a
+                    `mkdir` lock, never rewritten from one settings file. No electron import:
+                    verify:accounts runs it on synthetic trees
   settingsSchema.ts defaults + hydrate, with no electron import so a suite can run it
   tabStore.ts       the tabs that were open at quit. Restoring is a relaunch
                     (`claude --resume`), never a reattach: a CLI child cannot outlive the app.
@@ -1200,7 +1206,9 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     another agent's one. A Claude account skips Settings › Providers (the
                     Default account's auth). `usageShareOf` keeps a second account's rate
                     limits out of the plan chip until usage is keyed per account.
-                    `accountIndexText` is the line-shaped JSON `stoke account list|env` reads
+                    `accountIndexText` is the line-shaped JSON `stoke account list|env` reads;
+                    `mergeAccountIndex` keeps every other writer's rows (its `writers` record),
+                    and a Stoke that never held an account never writes (`accountIndexNeedsWrite`)
   skills.ts         which skill folders each agent reads, and the report of who can see
                     which skill. `~/.agents/skills` is the one nearly all share; Claude Code
                     reads only `~/.claude/skills`. A report, never a sync — linking between
