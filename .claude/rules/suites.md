@@ -9,6 +9,7 @@ paths:
   - "src/renderer/src/lib/tabs.ts"
   - "src/shared/*.ts"
   - ".github/workflows/release.yml"
+  - ".github/workflows/ci.yml"
 ---
 
 # Verify-suite hygiene
@@ -138,3 +139,37 @@ Two corollaries worth carrying:
   typecheck and before build, so an edit verified by typechecking alone looks completely clean.
   That is gotcha 31's lesson pointing the other way: some things only a suite can see, and some
   things only the app can.
+
+## 113. A suite kept off an OS never learns it cannot pass there — rehearse its other branch before CI runs it
+
+**`verify:selection` could only pass on a Mac, and its own comments said it was portable.** It was
+kept out of CI from the day it was written (fcb4dc9, "needs a display"), so the only machine that
+ever ran it was a Mac. Its assertions had been rewritten to read the rule off `process.platform`
+(`isMac ? altKey : shiftKey`, gotcha 10) — but every DRAG it made was still an Option-drag, and only
+a Mac's xterm treats Option as the force-selection modifier. Off macOS each "selects while
+dragging" reading was `""`. Nobody could see it: the Mac run was green and nothing else ran it.
+
+Measured on 2026-09-30, before wiring it into the Linux gate under xvfb: loading xterm with
+`navigator.platform` overridden to `Linux x86_64` (xterm reads it once, at load, in
+`common/Platform.ts`) made **43 assertions fail**; the Mac run stayed 124/124. Had the gate simply
+been wired, its first push would have gone red for a reason that looks like xvfb, the sandbox or
+the runner, and none of it was.
+
+The fix is `selectingDrag(isMac, reporting)` — Option on macOS, Shift off it while the mouse is
+reported, no modifier when it is not — feeding the page AND the assertions, plus a check that holds
+the drag itself to the suite's force rule. Afterwards: 130/130 on the Mac, and 130/130 with xterm's
+platform read as Linux and as Win32. The old drag under the Linux read fails 43 again, so the
+rehearsal can tell the two apart.
+
+Two rules:
+
+1. **Before a suite joins a new OS's CI, run its off-platform branch once.** For xterm that is a
+   `<script>` defining `Navigator.prototype.platform` before `xterm.js` loads, plus the suite's own
+   platform flag — cheap, and it found this in one run. It is a rehearsal, not proof: only the
+   real runner is proof, which is what ci.yml's `verify` (Linux) and `portability` legs are for.
+2. **A missing reading is a failure, not a skip.** The two-row wrap check was
+   `if (!shim) continue`, so renaming its step would have deleted the check silently.
+
+The same shape one level up: `ci-verify.mjs` had never run on Windows either, and could not have —
+it started every suite with `execFileSync('npm')`, which cannot start `npm.cmd` there. Nothing
+showed it until a Windows leg was about to call it.

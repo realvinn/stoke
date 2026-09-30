@@ -42,9 +42,10 @@ restore, shortcuts, drop, fullscreen, browser-url, browser-profiles, safari-impo
 worklog-retry, worklog-recall, worklog-autoscan, ssh, remote, phone-ui, installer-art, install, welcome,
 selection — the `check` chain — plus extract and security, which
 need a live instance (`verify:security <url> <token> --access`). `verify:selection` opens a real
-Electron window and needs a display; `verify:context` reads this machine's real transcripts on
-purpose; CI skips both (`npm run verify:ci -- --list`). `STOKE_LIVE_USAGE=1` adds the account
-call to `verify:usage`.
+Electron window and needs a display (CI's Linux gate gives it `xvfb-run`); `verify:context` reads
+this machine's real transcripts on purpose, so CI skips it (`npm run verify:ci -- --list`).
+`.github/workflows/ci.yml` runs the gate on every push and PR. `STOKE_LIVE_USAGE=1` adds the
+account call to `verify:usage`.
 
 ## Layout
 
@@ -469,6 +470,8 @@ rule file named on the group line.
 - **78.** Import into a suite-loaded module only from `src/shared`, by relative path with the
   `.ts` extension — strip-types resolves no aliases, so an `@shared/...` specifier passes
   typecheck AND build and dies only when the suite runs.
+- **113.** Rehearse a suite's off-platform branch before a new OS's CI runs it, and fail a missing
+  reading: `verify:selection` Option-dragged everywhere (`selectingDrag`), so only a Mac could pass.
 
 ## Standing traps when driving the app
 
