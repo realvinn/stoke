@@ -1156,9 +1156,10 @@ console.log('\nthe Linux launcher, run rather than read')
     )
     const viaLauncher = run('1000', ['.']).argv ?? []
     check(
-      'launcher -> parser: `stoke .` is a session in the folder it was typed in',
+      // No agent named: the running app fills its default agent (`withDefaultCli`).
+      'launcher -> parser: `stoke .` is a session in the folder it was typed in, naming no agent',
       parseStokeArgs(['stoke', ...viaLauncher], { home, platform: 'linux' }),
-      { kind: 'session', cwd: where, cli: 'claude', launch: 'reuse' }
+      { kind: 'session', cwd: where, cli: null, launch: 'reuse' }
     )
     check(
       'root gets --no-sandbox, ahead of the request',

@@ -47,6 +47,7 @@ import {
   resolveFolder,
   stokeHelp,
   STOKE_CLI_MARKER,
+  withDefaultCli,
   type StokeCliRequest
 } from '../src/shared/stokeArgs.ts'
 import {
@@ -104,7 +105,8 @@ const shimArgv = (...typed: string[]): string[] => [
 const parse = (...typed: string[]): StokeCliRequest | null => parseStokeArgs(shimArgv(...typed), MAC)
 const kind = (r: StokeCliRequest | null): string => (r === null ? 'null' : r.kind)
 const msg = (r: StokeCliRequest | null): string => (r && r.kind === 'error' ? r.message : '')
-const session = (cwd: string, cli = 'claude', launch = 'reuse'): StokeCliRequest =>
+/** `cli` null is "the default agent": no --cli was typed, and only the running app knows which that is. */
+const session = (cwd: string, cli: string | null = null, launch = 'reuse'): StokeCliRequest =>
   ({ kind: 'session', cwd, cli, launch }) as StokeCliRequest
 
 // ---------------------------------------------------------------------------
@@ -142,7 +144,7 @@ console.log('\nevery command')
 check('`stoke` brings the window forward and starts nothing', parse(), { kind: 'focus' })
 check('`stoke .` is a session here, reusing a running tab', parse('.'), session(CWD))
 check('`stoke sub` resolves against the shell cwd', parse('sub'), session(`${CWD}/sub`))
-check('`stoke --new` always opens another tab, here', parse('--new'), session(CWD, 'claude', 'new'))
+check('`stoke --new` always opens another tab, here', parse('--new'), session(CWD, null, 'new'))
 check('`stoke --new x` and `stoke x --new` agree', parse('x', '--new'), parse('--new', 'x'))
 check('`stoke --cli codex` is a Codex session here', parse('--cli', 'codex'), session(CWD, 'codex'))
 check('`--cli=codex dir` is the same flag', parse('--cli=codex', 'dir'), session(`${CWD}/dir`, 'codex'))
@@ -153,12 +155,44 @@ check('`--open` adds the folder and starts nothing', parse('--open'), { kind: 'o
 check('`--open dir` likewise', parse('--open', 'dir'), { kind: 'open', cwd: `${CWD}/dir` })
 check('`stoke update` is the update request', parse('update'), { kind: 'update' })
 check('`stoke ./update` is a folder called update', parse('./update'), session(`${CWD}/update`))
-check('`stoke --new update` is a folder too: a command is only ever the first word', parse('--new', 'update'), session(`${CWD}/update`, 'claude', 'new'))
+check('`stoke --new update` is a folder too: a command is only ever the first word', parse('--new', 'update'), session(`${CWD}/update`, null, 'new'))
 check('`stoke update now` is refused rather than guessed at', kind(parse('update', 'now')), 'error')
 ok('install-cli reaching the app points at the Settings row', /Settings → Updates → Command line/.test(msg(parse('install-cli'))), msg(parse('install-cli')))
 check('uninstall-cli likewise is an error, not a session in a folder of that name', kind(parse('uninstall-cli')), 'error')
 check('--help that got past the shim is only a focus', parse('--help'), { kind: 'focus' })
 check('as is -v', parse('-v', '.'), { kind: 'focus' })
+
+console.log('\n  the default agent: named only by the running app')
+/*
+ * A bare `stoke .` used to be resolved to Claude Code right here, inside the
+ * SECOND instance, before any settings were read — so the default agent could
+ * never reach it. Unnamed now stays unnamed, and main fills it
+ * (`withDefaultCli`) from the setting.
+ */
+check('bare `stoke .` names no agent', (parse('.') as { cli?: unknown }).cli, null)
+check('nor does `stoke --new`', (parse('--new') as { cli?: unknown }).cli, null)
+check('`--cli` still names one', (parse('--cli', 'grok', '.') as { cli?: unknown }).cli, 'grok')
+check(
+  '`--continue` is ALWAYS Claude Code: it continues a Claude transcript, whatever the default',
+  (parse('--continue') as { cli?: unknown }).cli,
+  'claude'
+)
+check('withDefaultCli fills an unnamed agent', withDefaultCli(parse('.')!, 'codex'), session(CWD, 'codex'))
+check('and never overrides a named one', withDefaultCli(parse('--cli', 'grok')!, 'codex'), session(CWD, 'grok'))
+check('nor a --continue', withDefaultCli(parse('--continue')!, 'codex'), session(CWD, 'claude', 'continue'))
+check('and leaves every other kind alone', withDefaultCli({ kind: 'open', cwd: CWD }, 'codex'), { kind: 'open', cwd: CWD })
+check(
+  "an older build's explicit 'claude' for a bare `stoke .` is still a valid request",
+  requestFrom({ kind: 'session', cwd: '/a', cli: 'claude', launch: 'reuse' }, 'darwin'),
+  session('/a', 'claude')
+)
+check(
+  'a forwarded null agent survives the trip, for main to fill',
+  requestFrom({ kind: 'session', cwd: '/a', cli: null, launch: 'reuse' }, 'darwin'),
+  session('/a')
+)
+check('a MISSING agent key is not the same as null: refused', requestFrom({ kind: 'session', cwd: '/a', launch: 'reuse' }, 'darwin'), null)
+check('a forwarded --continue with no agent is refused', requestFrom({ kind: 'session', cwd: '/a', cli: null, launch: 'continue' }, 'darwin'), null)
 
 console.log('\n  the combinations that disagree, refused with a sentence')
 check('two folders', kind(parse('a', 'b')), 'error')

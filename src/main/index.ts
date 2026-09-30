@@ -46,6 +46,7 @@ import { clearWallpaper, mimeFor, storeWallpaper, WALLPAPER_SCHEME, wallpaperFil
 import {
   buildEnvPath,
   detectCodingClis,
+  findClaude,
   forgetIdentities,
   forgetLoginPath,
   loginShellPathValue,
@@ -72,6 +73,7 @@ import {
   folderProblem,
   parseStokeArgs,
   requestFrom,
+  withDefaultCli,
   withFolder,
   type FolderProblem,
   type StokeCliRequest
@@ -83,11 +85,13 @@ import { parseSession, readTranscript } from './sessionFile.ts'
 import { fetchRemoteTranscript } from './sshTranscript.ts'
 import { PtyManager, type StartResult } from './pty.ts'
 import { checkMicrophone } from './audio/defaultDevice.ts'
-import { CODING_CLIS, cliIdOf, isClaudeCode } from '../shared/codingClis.ts'
+import { CODING_CLIS, cliIdOf, isClaudeCode, type CodingCliId } from '../shared/codingClis.ts'
 import {
   agentLaunchPlan,
   httpUrlMcpConfig,
+  installedAgents,
   PI_PROVIDER_EXTENSION,
+  resolveDefaultAgent,
   visibleAgents,
   type LaunchPlan
 } from '../shared/agents.ts'
@@ -1054,6 +1058,25 @@ function rememberLaunchFolder(path: string): void {
   sendWatchStates()
 }
 
+/**
+ * The agent a `stoke` request that named none starts: the default agent,
+ * resolved the way the launcher's Start resolves it (`resolveDefaultAgent`), so
+ * `stoke .` and Start can never disagree, and a default that has since been
+ * uninstalled or unticked falls back rather than failing to spawn. A lookup
+ * that throws trusts the stored value; the spawn then says plainly if that
+ * agent is missing (`notFoundError`).
+ */
+async function launchDefaultCli(): Promise<CodingCliId> {
+  const s = getSettings()
+  try {
+    const [detection, claude] = await Promise.all([detectCodingClis(), findClaude(s.claudePath)])
+    const installed = installedAgents(detection.clis, claude !== null)
+    return resolveDefaultAgent(s.agents.defaultCli, visibleAgents(s.agents.chosen, installed))
+  } catch {
+    return s.agents.defaultCli
+  }
+}
+
 /** Check a request, then hand it over or queue it. Never throws. */
 function acceptLaunch(req: StokeCliRequest): void {
   // `stoke` on its own asks for the window and nothing else; the caller has
@@ -1072,6 +1095,9 @@ function acceptLaunch(req: StokeCliRequest): void {
           rememberLaunchFolder(real)
         }
       }
+      // `stoke .` with no --cli: the running app's default agent, filled here
+      // so the renderer only ever sees a request that names its agent.
+      if (checked.kind === 'session' && checked.cli === null) checked = withDefaultCli(checked, await launchDefaultCli())
       if (launchReady && win) send(CH.cliRequest, checked)
       else launchQueue.push(checked)
     })

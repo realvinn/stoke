@@ -373,7 +373,10 @@ marker is Chromium's switch terminator, so nothing typed can configure the brows
 the folder (async, with a deadline), adds it to the sidebar, and QUEUES the request until the
 renderer asks for it once tab restore has settled (`CH.cliPending`); after that it pushes
 (`CH.cliRequest`). App.tsx claims a (cli, folder) before its first await and holds the claim until
-that session's tab is in the list, so two quick `stoke .` cannot open two tabs.
+that session's tab is in the list, so two quick `stoke .` cannot open two tabs. A request with no
+`--cli` names no agent (`cli: null`; `--continue` is always `claude`): the second instance cannot
+know the default agent, so main fills it (`withDefaultCli`) from `settings.agents.defaultCli`,
+resolved the way the launcher's Start resolves it (`resolveDefaultAgent`).
 
 ## Renderer
 
