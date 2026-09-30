@@ -312,3 +312,16 @@ Two neighbours from the same round, both commented in `ChatStore.search`: an FTS
 subquery holding it is flattened into an aggregate — `WITH h AS MATERIALIZED (…)` keeps its FTS
 context — and grouping best-message-per-chat must happen in SQL before the limit, or one chat that
 matches more messages than the limit crowds every other chat out of the result.
+
+> **2026-09-30, the same store: FTS5 frees no page when a row is deleted.** The store's ceiling
+> first evicted "until the used pages fit" (`page_count - freelist_count`). With external content a
+> delete writes a tombstone into a NEW segment beside the old postings and frees neither until a
+> merge rewrites both. Measured with 200 synthetic chats: deleting half of them (text 11.22 → 5.86
+> MB) moved used pages 20.64 → 18.19 MB, and only `optimize` brought them to 10.92 (a Zipf
+> vocabulary: 7.77 → 5.54, then 3.89). So page-counted eviction took two to four times what it
+> needed — 11 of 12 chats to shed 30% in `verify:chat-sources` — and could empty the store with
+> the pages still over. Measure an FTS5 store by the text it holds (`evictToText`; merged, real
+> chats come to 1.73 disk bytes per text byte), never let a deleting loop wait on page counts, and
+> run `optimize` only where its whole-index rewrite is affordable (`tidy` after a big pass). Its
+> sibling in the same fix: an eviction that deletes a chat's read positions must leave a cut
+> behind (`storeCutMs`), or the next pass admits, re-reads and evicts the same chats every time.

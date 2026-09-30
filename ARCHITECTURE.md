@@ -648,8 +648,11 @@ npm run verify:chat-sources   # chat history, against synthetic fixtures for eve
                               # Cowork) under a fake home: tool output, reasoning, injected
                               # context, base64 and keys never indexed; caps enforced AND said;
                               # an append reads only its bytes; Cline's copies folded; snippets
-                              # per chat, accents and CJK; the worker keeps the main loop free;
-                              # Delete index leaves the bystander beside the store (gotcha 74)
+                              # per chat, accents and CJK; subagents on (every record a sidechain,
+                              # as real ones are); no empty chat stored; the FIRST cwd kept; the
+                              # store ceiling evicts once, never every pass; the worker keeps the
+                              # main loop free; Delete index leaves the bystander beside the store
+                              # (gotcha 74)
 npm run verify:cli            # finding the `claude` binary: the version-manager shim dirs,
                               # the probe's retry rule, and the two not-found messages.
                               # Hermetic - HOME is redirected into a temp tree (gotcha 52)
@@ -913,11 +916,14 @@ src/main/         Electron main process
     parse.ts          user + assistant words only, per source: no tool payloads, reasoning,
                       injected context, base64 or keys; Claude's rules are sessionFile.ts's own
     scan.ts           one pass: list everything, fold Cline's copies into originals their tool
-                      still has, admit the newest per source then in all, read what changed
-                      under the byte and time budget, prune only a complete listing
+                      still has, admit the newest per source then in all (a file holding no
+                      chat takes no slot; nothing at or below the store ceiling's remembered
+                      cut), read what changed under the byte and time budget, prune only a
+                      complete listing
     store.ts          node:sqlite + FTS5 in userData/chat-index (0700, files 0600). Search is
                       grouped per chat in SQL; a rowid bound to FTS5 must be an integer
-                      (gotcha 125)
+                      (gotcha 125). The ceiling is chat TEXT, evicted oldest by admission
+                      key: FTS5 frees no page when a row is deleted (`evictToText`)
   sessionIndex.ts   every session's title + first prompt, for search: one 256 KB chunk
                     from each end of a transcript, cached on mtime+size, top-level
                     `*.jsonl` only (never `<id>/subagents/`). Never `listSessions`, which
