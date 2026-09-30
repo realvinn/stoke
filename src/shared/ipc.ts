@@ -252,6 +252,12 @@ export const CH = {
    * may talk to it. Same rule the phone's `/api/transcribe` route follows.
    */
   transcribe: 'audio:transcribe',
+  /**
+   * Whether the speech server at `voice.sttUrl` answers: Settings → Voice's
+   * pill. Apart from `voiceState` because it is a network probe, and the
+   * terminal asks `voiceState` on every ⇧⌘D.
+   */
+  sttStatus: 'audio:sttStatus',
 
   // wallpaper
   /** Pick an image, copy it under userData, and set `settings.wallpaper.path`. */

@@ -791,8 +791,11 @@ function pushRemote(): void {
 let lastQr: { url: string; bg: string; qr: string } | null = null
 /*
  * Whether the speech sidecar answers, probed at most every 15s and only
- * while something is asking. Any HTTP answer counts — the sidecar 405s an
- * OPTIONS — and a refused connection is the whole signal.
+ * while something is asking — Settings → Voice's pill (`CH.sttStatus`) and the
+ * phone's `/api/host`. Any HTTP answer counts — the sidecar 405s an OPTIONS —
+ * and a refused connection is the whole signal. The address is always
+ * `voice.sttUrl`, read by the caller; the cache is keyed on it, so a new
+ * address is probed at once.
  */
 let sttProbe: { url: string; at: number; result: 'up' | 'down' } | null = null
 const probeStt = async (url: string): Promise<'up' | 'down' | 'unknown'> => {
@@ -874,8 +877,7 @@ const remoteState = async (): Promise<RemoteState> => {
     candidates: target.candidates,
     tailnet: tailnetAddress(),
     qr,
-    setup: tunnel.setupCommands(cfg.tunnelName, cfg.hostname, cfg.port),
-    stt: await probeStt(cfg.sttUrl)
+    setup: tunnel.setupCommands(cfg.tunnelName, cfg.hostname, cfg.port)
   }
 }
 
@@ -933,11 +935,17 @@ function remoteDeps(): RemoteDeps {
       }
     },
     sttStatus: async () => {
-      const url = getSettings().remote.sttUrl
+      const url = getSettings().voice.sttUrl
       if (!url.trim()) return 'off'
       const result = await probeStt(url)
       return result === 'up' ? 'ready' : 'down'
-    }
+    },
+    /*
+     * Read per call, like the desktop's `CH.transcribe` below, so an address
+     * changed in Settings → Voice reaches the phone's next clip without Phone
+     * access being turned off and on.
+     */
+    transcribe: (wav) => transcribe(getSettings().voice.sttUrl, wav)
   }
 }
 
@@ -2689,6 +2697,13 @@ function registerIpc(): void {
       browser?.setBookmarks(next.browser.bookmarks)
     }
     /*
+     * A new speech server is probed afresh rather than reported from the last
+     * address's 15s cache. Not a remote field and never a restart: both
+     * dictation paths read `voice.sttUrl` per call (`RemoteDeps.transcribe`,
+     * `CH.transcribe`), and Settings → Voice asks for its pill again itself.
+     */
+    if (prev.voice.sttUrl !== next.voice.sttUrl) sttProbe = null
+    /*
      * A running remote server reads its config once, at start. So ticking
      * "also listen on the local network", changing the port, or requiring
      * Access used to change nothing until the server was turned off and on —
@@ -2703,9 +2718,6 @@ function registerIpc(): void {
      */
     if (remote && shouldRestartRemote(prev.remote, next.remote, remote.status())) {
       await remote.start(next.remote)
-      pushRemote()
-    } else if (prev.remote.sttUrl !== next.remote.sttUrl) {
-      sttProbe = null
       pushRemote()
     } else if (prev.remote.reach !== next.remote.reach) {
       /*
@@ -3042,8 +3054,15 @@ function registerIpc(): void {
    * the address takes effect on the next dictation instead of the next launch.
    */
   ipcMain.handle(CH.transcribe, async (_e, wav: ArrayBuffer) => {
-    return transcribe(getSettings().remote?.sttUrl, new Uint8Array(wav))
+    return transcribe(getSettings().voice.sttUrl, new Uint8Array(wav))
   })
+  /*
+   * Settings → Voice's "running / not running" pill. Its own channel rather
+   * than a field of `voiceState`, which the terminal asks every time dictation
+   * is switched on: that answer is two local reads, and a probe can take its
+   * whole 800ms against an address that swallows packets.
+   */
+  ipcMain.handle(CH.sttStatus, () => probeStt(getSettings().voice.sttUrl))
 
   /* ------------------------------------------------------------- clipboard */
   /*

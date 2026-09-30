@@ -42,6 +42,8 @@ import {
   typingChunks,
   type PromptTrack
 } from '../src/shared/remotePhone.ts'
+import { createServer, type Server } from 'node:http'
+import { transcribe } from '../src/main/stt.ts'
 
 let failures = 0
 
@@ -597,6 +599,83 @@ check('no ?k: nothing to store', mayStoreKeyCookie(null, true), false)
   })(), 400)
   check('an agent whose transcripts Stoke cannot look up is not checked', resumeVerdict({ resume: true, sessionId: id, livePty: null, hasTranscript: null }).ok, true)
   check('a new session (no resume) is never refused on transcripts', resumeVerdict({ resume: false, sessionId: id, livePty: null, hasTranscript: false }).ok, true)
+}
+
+/*
+ * The phone's /api/transcribe answers 503 for "no speech server is set" and
+ * 502 for "one is set and failed", and it now takes that from the result of
+ * the call itself (`unset`) rather than from a copy of the address captured
+ * when the server started — the copy is what kept the phone on an old address
+ * until Phone access was turned off and on. What decides both is stt.ts, run
+ * here against fake sidecars on loopback port 0: hermetic, nothing shared, all
+ * closed before the tally.
+ */
+console.log('\nthe speech server, per call')
+{
+  const sidecar = (text: string): Promise<{ server: Server; url: string; bodies: number[] }> =>
+    new Promise((resolve) => {
+      const bodies: number[] = []
+      const server = createServer((req, res) => {
+        const chunks: Buffer[] = []
+        req.on('data', (c: Buffer) => chunks.push(c))
+        req.on('end', () => {
+          bodies.push(Buffer.concat(chunks).length)
+          if (req.url !== '/transcribe' || req.method !== 'POST') {
+            res.writeHead(404).end()
+            return
+          }
+          if (text === '!500') {
+            res.writeHead(500, { 'content-type': 'application/json' }).end('{"error":"model fell over"}')
+            return
+          }
+          res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ text: ` ${text} ` }))
+        })
+      })
+      server.listen(0, '127.0.0.1', () => {
+        const addr = server.address()
+        const port = typeof addr === 'object' && addr ? addr.port : 0
+        resolve({ server, url: `http://127.0.0.1:${port}`, bodies })
+      })
+    })
+  const close = (s: Server): Promise<void> => new Promise((r) => s.close(() => r()))
+  const wav = new Uint8Array(64).fill(7)
+
+  const a = await sidecar('from A')
+  const b = await sidecar('from B')
+  const broken = await sidecar('!500')
+  const gone = await sidecar('never')
+  await close(gone.server)
+
+  const none = await transcribe('', wav)
+  check(
+    'no address is `unset`, the 503 case, and names where to add one',
+    none.ok ? 'ok' : [none.unset, /Settings → Voice/.test(none.error)],
+    [true, true]
+  )
+  const blank = await transcribe('   ', wav)
+  check('nor is whitespace an address', blank.ok ? 'ok' : blank.unset, true)
+  check('the address is the argument, per call: A', await transcribe(a.url, wav), { ok: true, text: 'from A' })
+  check('then B, with nothing restarted in between', await transcribe(`${b.url}/`, wav), { ok: true, text: 'from B' })
+  check('each sidecar got the clip intact, once', [a.bodies, b.bodies], [[64], [64]])
+  const refused = await transcribe(gone.url, wav)
+  check(
+    'a refused connection is a failure but NOT unset — the 502 case — and says it is not the microphone',
+    refused.ok ? 'ok' : [refused.unset ?? null, /not the microphone/.test(refused.error), refused.error.includes(gone.url)],
+    [null, true, true]
+  )
+  const failed = await transcribe(broken.url, wav)
+  check(
+    "an upstream 500 passes the sidecar's own words through, and is not unset",
+    failed.ok ? 'ok' : [failed.unset ?? null, failed.error],
+    [null, 'Speech server: 500 {"error":"model fell over"}']
+  )
+  check('an empty clip is refused before any request', await transcribe(a.url, new Uint8Array(0)), {
+    ok: false,
+    error: 'Nothing was recorded.'
+  })
+  check('and sent nothing', a.bodies.length, 1)
+
+  await Promise.all([close(a.server), close(b.server), close(broken.server)])
 }
 
 console.log(failures ? `\n${failures} FAILED` : '\nall pass')

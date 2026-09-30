@@ -87,6 +87,13 @@ export interface VoiceState {
   claudeVoice: boolean
 }
 
+/**
+ * Whether the speech server at `voice.sttUrl` answers. `unknown` when no
+ * address is set, so there is nothing to ask. Probed at most every 15s per
+ * address.
+ */
+export type SttProbe = 'up' | 'down' | 'unknown'
+
 /** What is on the OS clipboard right now, read in one synchronous hop. */
 export interface ClipboardPeek {
   text: string
@@ -226,8 +233,6 @@ export interface RemoteState {
   qr: string | null
   /** One-time cloudflared commands the user runs themselves. */
   setup: string[]
-  /** Whether the speech sidecar answers at `remote.sttUrl`. Probed at most every 15s. */
-  stt: 'up' | 'down' | 'unknown'
 }
 
 /**
@@ -732,6 +737,8 @@ export interface StokeApi {
     requestMic(): Promise<VoiceState>
     /** Open the system's microphone privacy page. */
     openMicPrivacy(): void
+    /** Whether the speech server Stoke's dictation posts to is answering. */
+    sttStatus(): Promise<SttProbe>
     /**
      * A finished 16 kHz mono 16-bit PCM WAV in, a transcript out.
      *

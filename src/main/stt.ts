@@ -20,8 +20,14 @@
  * Errors are strings rather than thrown, because every caller has to render
  * one: the phone turns it into an HTTP status, the desktop into a banner. A
  * rejected promise would make both of them re-derive the same message.
+ *
+ * `unset` marks the one failure that is not this request's fault — no speech
+ * server is configured at all — so the phone's route can answer 503 rather
+ * than 502 from the same settings read the call itself used. It used to
+ * re-read a copy of the address captured when the phone server started, which
+ * is how the two could disagree.
  */
-export type SttResult = { ok: true; text: string } | { ok: false; error: string }
+export type SttResult = { ok: true; text: string } | { ok: false; error: string; unset?: true }
 
 /**
  * What a dictated clip may weigh. Matched by the sidecar, and by the remote
@@ -41,15 +47,19 @@ const TIMEOUT_MS = 120_000
 /**
  * POST a 16-bit PCM WAV and read the transcript back.
  *
- * `sttUrl` is the sidecar's base address; `/transcribe` is appended. An empty
- * or absent one is not an error state to log — it is the shipped default for
- * anyone who has not set a speech server up — so it answers with the sentence
- * that tells them so.
+ * `sttUrl` is the sidecar's base address (`Settings.voice.sttUrl`, read by
+ * the caller per call); `/transcribe` is appended. An empty or absent one is
+ * not an error state to log — it is how someone says they run no speech
+ * server — so it answers with the sentence that tells them where to add one.
  */
 export async function transcribe(sttUrl: string | undefined, wav: Uint8Array): Promise<SttResult> {
   const base = sttUrl?.trim()
   if (!base) {
-    return { ok: false, error: 'No speech server is set for Stoke’s dictation. Add one in Settings → Voice.' }
+    return {
+      ok: false,
+      error: 'No speech server is set for Stoke’s dictation. Add one in Settings → Voice.',
+      unset: true
+    }
   }
   if (wav.byteLength === 0) return { ok: false, error: 'Nothing was recorded.' }
   if (wav.byteLength > MAX_AUDIO_BYTES) return { ok: false, error: 'Recording too large.' }

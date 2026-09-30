@@ -5,11 +5,14 @@
 """
 The speech server Stoke's dictation talks to.
 
-Stoke never bundles this and never starts it. `remote.sttUrl` points at
-whatever is listening, and both dictation paths - the phone and the desktop -
-proxy through the main process to it, so the sidecar itself is never exposed
-to the network and needs no authentication of its own. That is also why it
-binds loopback by default: it has no auth, so it must not be reachable.
+Stoke never bundles this and never starts it. `voice.sttUrl` - Settings >
+Voice > Speech server - points at whatever is listening, and both dictation
+paths - the phone and the desktop - proxy through the main process to it,
+reading that address on every recording, so the sidecar itself is never
+exposed to the network and needs no authentication of its own. That is also
+why it binds loopback by default: it has no auth, so it must not be reachable.
+(Builds before the Voice section kept the address in `remote.sttUrl`, which
+Stoke now migrates and keeps as a mirror for one release.)
 
 Run it:
 
@@ -27,7 +30,7 @@ The wire contract is fixed by the callers, not chosen here:
     -> 400 {"error": "..."}       not audio this server can read
     -> 500 {"error": "..."}       transcription itself failed
 
-`src/main/remote/server.ts` posts exactly that and reads `text`;
+`src/main/stt.ts` posts exactly that and reads `text`, for both paths;
 `src/shared/voice.ts` produces exactly that WAV in the browser, because doing
 the conversion here would mean shipping ffmpeg. GET / answers a small JSON
 health blob so "is the sidecar up?" is answerable with curl.
@@ -182,7 +185,7 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--host", default="127.0.0.1", help="bind address (default: loopback only)")
-    ap.add_argument("--port", type=int, default=17890, help="matches remote.sttUrl's default")
+    ap.add_argument("--port", type=int, default=17890, help="matches voice.sttUrl's default")
     ap.add_argument(
         "--model",
         default="small.en",
