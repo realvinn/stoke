@@ -339,6 +339,8 @@ rule file named on the group line.
   pty: Fit to phone only, on a width change only, never while the composer has focus.
 - **111.** Give the phone server anything it does not bind as a per-call `RemoteDeps` read
   (`transcribe`), never `RemoteConfig`: that is a snapshot from `start()`, restarted only for bind keys.
+- **124.** Verify `Cf-Access-Jwt-Assertion` (`verifyAccessJwt`, `AccessKeySet`) against the team and AUD
+  in settings, never the token's `iss`/`jku`; RS256 pinned, key checked first, refetch cooldown-gated.
 
 **Claude Code's own config** — `.claude/rules/claude-config.md`
 - **37.** Turn Claude Code's Remote Control off with `remoteControlAtStartup: false` in

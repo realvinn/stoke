@@ -10,6 +10,7 @@ paths:
   - "scripts/verify-phone-ui.mts"
   - "src/shared/remotePhone.ts"
   - "src/shared/phoneUi.ts"
+  - "src/shared/cfAccess.ts"
 ---
 
 # Phone access and cloudflared
@@ -246,3 +247,48 @@ field never commits and the edit reads as "not saved" in working code. Dispatch
 `new FocusEvent('focusout', { bubbles: true })` on the input instead; React's `onBlur` listens for
 exactly that. Measured with fake sidecars on 17991/17992 and the phone server on loopback: the same
 running server answered `from A`, then `from B` after the Voice edit, with no restart between.
+
+## 124. A Cloudflare Access header is evidence only once its signature checks out, against a team Stoke already knows
+
+**Until 2026-09-30 "Require Cloudflare Access" passed any request carrying `Cf-Access-Jwt-Assertion`
+or `Cf-Access-Authenticated-User-Email` with any value at all.** The email header is not signed by
+anything, and `verify:security --access` forged exactly that to stand in for the edge — the proof,
+recorded in e327af4, which made three messages honest instead of fixing it because Stoke held no
+team domain or AUD to verify against. Measured against a sandbox instance before and after: with the
+team and AUD set, the forged email header gets 401 on every data route and both sockets (14 of the
+old matrix's 27 checks now fail by design); with the AUD cleared, the new `--access-configured`
+matrix fails 15 checks, every forgery passing as it used to.
+
+The rules, each a way a plausible version goes wrong:
+
+- **Pin where keys come from and who issued them from SETTINGS, never from the token.** The JWKS URL
+  is `https://<accessTeamDomain>/cdn-cgi/access/certs` and `iss` must equal `https://<team>`; `jku`,
+  `x5u`, an embedded `jwk` and the token's own `iss` are never followed. Trusting the first token's
+  `iss` (trust on first use) lets a forger pick the issuer and the keys.
+- **Pin `alg` to RS256 before any key is looked up** (RFC 8725 §3.1): `alg: none`, HS256 keyed with
+  the public PEM, and RS512 are each a refusal that never reaches `crypto.verify`. `aud` is an ARRAY
+  in Access tokens; `nbf` and `email` are absent on service tokens, so `nbf` is optional.
+- **Bound the refetch.** An unknown `kid` refetches at most once per `KID_COOLDOWN_MS` (30 s), one
+  fetch is ever in flight (claimed before the await, gotcha 20), and the bearer key is checked FIRST
+  so nothing without it reaches the verifier at all. `refresh()` itself must be single-flight, not
+  just `keyFor`: the server's start-time prefetch calls it directly beside a phone's request.
+- **Fail closed when verified, never silently degraded when not.** A key fetch that fails refuses
+  every token (`no-keys`), keeping a last-good set only up to `MAX_STALE_MS`. A settings file with
+  Access on but no team/AUD keeps the presence check so an upgrade does not lock a phone out, and
+  reports `presence-only` in amber — turning the box on from off looks the pair up first.
+- **Discovery needs browser headers.** Access with Managed OAuth answers a non-browser request with
+  `401 WWW-Authenticate … cloudflare-access-protected-resource`, not the login redirect whose `kid`
+  (the AUD) and `meta` (a JWT the team signed over the hostname) `discoverAccess` reads — and
+  `classifyHostname` used to call that 401 "reaches this machine". The redirect alone is never
+  trusted: `meta` must verify against the redirect's own team with `hostname` equal to ours.
+
+Stoke holds no Cloudflare API token (`cert.pem` is cloudflared's, never read, gotcha 58), which is
+why Look it up reads the edge rather than the API. **Unverified**: that the login redirect's `kid`
+is the application AUD tag (measured equal to `meta.aud`, undocumented — a wrong one fails closed
+as `aud` and the panel says so), that WebSocket upgrades through the tunnel carry the assertion
+(Cloudflare's origin-parameters page says "all L7"; the old check accepted either header, so a phone
+that worked before proves nothing about this one — if they do not, the terminal 401s), and custom
+team domains, which the clamp refuses until measured. None of this has met a real Access app:
+`verify:remote` holds the verifier against generated keys, and `verify:security --access-configured`
+the wiring against a sandbox pointed at a loopback JWKS by `STOKE_ACCESS_CERTS_URL` (unpackaged
+builds only, loopback only).
