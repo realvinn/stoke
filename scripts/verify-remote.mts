@@ -1436,6 +1436,17 @@ console.log('\nwhere a phone may browse (remoteFolderVerdict)')
     true
   )
   check(
+    'a drive root is out of bounds (403), not malformed (400) — the same answer `/` gets',
+    [
+      remoteFolderVerdict({ requested: 'C:\\', real: 'C:\\', bases: [{ path: 'C:\\Users\\v\\dev', kind: 'root' }] }, win),
+      verdict('/', '/')
+    ],
+    [
+      { ok: false, reason: 'outside' },
+      { ok: false, reason: 'outside' }
+    ]
+  )
+  check(
     'a too-shallow place handed straight to the verdict still counts for nothing',
     verdict('/Users/other/secret', '/Users/other/secret', [{ path: '/Users', kind: 'parent' }]).ok,
     false
