@@ -5,6 +5,7 @@ import { micAccessLine } from '@shared/voiceRoute'
 import { DEFAULT_STT_URL } from '@shared/voiceSettings'
 import { useDraft } from '../lib/useDraft'
 import { FieldHint } from './FieldHint'
+import { MicPicker } from './MicPicker'
 import { MicrophoneNotice } from './MicrophoneNotice'
 
 /*
@@ -25,7 +26,8 @@ import { MicrophoneNotice } from './MicrophoneNotice'
  *     runs, which is the one piece that needs setting up — and the one whose
  *     failure used to be mistaken for the first. Its address is edited here,
  *     in `settings.voice`; it used to sit under Phone access → Advanced with
- *     only a jump button on this page.
+ *     only a jump button on this page. So are the microphone it records from
+ *     and how long Space must be held before it does (`MicPicker`).
  */
 export function VoiceSettings({
   settings,
@@ -178,11 +180,14 @@ export function VoiceSettings({
       <div className="field">
         <span className="field-label">Stoke’s dictation</span>
         <span className="field-hint">
-          {isMac ? '⇧⌘D' : 'Ctrl+Shift+D'} in any tab, then hold Space; on the phone, hold the
-          microphone. For the tabs with no voice mode of their own — Codex, OpenCode, SSH sessions —
-          and for keeping audio on a machine you run: both are transcribed by your own speech server.
+          {isMac ? '⇧⌘D' : 'Ctrl+Shift+D'} in any tab, then hold Space — a quick tap still types a
+          space; on the phone, hold the microphone. For the tabs with no voice mode of their own —
+          Codex, OpenCode, SSH sessions — and for keeping audio on a machine you run: both are
+          transcribed by your own speech server.
         </span>
       </div>
+
+      <MicPicker voice={voice} patchVoice={patchVoice} />
 
       <div className="field">
         <span className="field-label">

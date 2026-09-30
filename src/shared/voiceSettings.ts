@@ -17,7 +17,28 @@ import type { VoiceSettings } from './types.ts'
  */
 export const DEFAULT_STT_URL = 'http://127.0.0.1:17890'
 
-export const VOICE_DEFAULTS: VoiceSettings = { sttUrl: DEFAULT_STT_URL }
+/**
+ * How long a Space press must last before Stoke's dictation records, and the
+ * range a hand-edited value is held to. 250ms sits above a typing tap (measured
+ * taps run 50–150ms) and well under the OS key-repeat delay a hold also proves
+ * itself by (`spaceHold`, voiceRoute.ts).
+ */
+export const DEFAULT_HOLD_MS = 250
+export const HOLD_MS_MIN = 150
+export const HOLD_MS_MAX = 800
+
+export const VOICE_DEFAULTS: VoiceSettings = {
+  sttUrl: DEFAULT_STT_URL,
+  holdMs: DEFAULT_HOLD_MS,
+  micDeviceId: null,
+  micLabel: ''
+}
+
+/** A hold threshold from anything: a finite number, rounded and clamped, else the default. */
+export function clampHoldMs(v: unknown): number {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return DEFAULT_HOLD_MS
+  return Math.min(HOLD_MS_MAX, Math.max(HOLD_MS_MIN, Math.round(v)))
+}
 
 /**
  * Repair a stored `voice` block, migrating the address from where it used to
@@ -49,5 +70,13 @@ export function clampVoice(raw: unknown, legacySttUrl?: unknown): VoiceSettings 
       : typeof legacySttUrl === 'string'
         ? legacySttUrl.trim()
         : VOICE_DEFAULTS.sttUrl
-  return { sttUrl }
+  /*
+   * The microphone is a pair or nothing. An id with no label still works (the
+   * label is only the fallback lookup), but a label with no id is a choice
+   * nobody can act on, so it is dropped rather than kept as a ghost the picker
+   * would show as "not connected" forever.
+   */
+  const micDeviceId = typeof r.micDeviceId === 'string' && r.micDeviceId.trim() ? r.micDeviceId : null
+  const micLabel = micDeviceId && typeof r.micLabel === 'string' ? r.micLabel.trim() : ''
+  return { sttUrl, holdMs: clampHoldMs(r.holdMs), micDeviceId, micLabel }
 }

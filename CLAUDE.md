@@ -171,7 +171,7 @@ rule file named on the group line.
   `auto` the CLI follows OSC 11, so set `term.options.theme` first, then send `CSI ?997;{1,2}n`
   only while mode 2031 is on.
 - **79.** Give a held Space one owner per tab (`spaceOwner`): Claude Code's `/voice` on a local
-  Claude tab, else Stoke's dictation, which must swallow the repeats too (`dictationKeyAction`).
+  Claude tab, else Stoke's dictation, whose `spaceHold` takes every repeat and records only a hold.
 
 **Keyboard chords** — `.claude/rules/keys.md`
 - **32.** Zoom-out must stay bare Cmd/Ctrl+`-` and refuse Shift: Ctrl+Shift+`-` is Ctrl+`_`, which

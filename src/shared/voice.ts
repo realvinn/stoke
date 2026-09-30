@@ -24,6 +24,9 @@
  * `tsconfig.web.json` gives `src/shared` no Node types.
  */
 
+import { isMissingDevice, notConnected, pickDevice, type MicDevice, type SavedMic } from './micDevice.ts'
+import { levelFromSamples, smoothLevel } from './voiceLevel.ts'
+
 const MIME_CANDIDATES = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/mp4']
 
 /** What Whisper wants. Resampling here saves the sidecar a conversion. */
@@ -97,11 +100,36 @@ async function toWav(blob: Blob): Promise<ArrayBuffer> {
 }
 
 export interface Recorder {
-  start(): Promise<void>
+  /**
+   * Opens the microphone and starts recording. Resolves null when `cancel()`
+   * (or another `start()`) came first — the microphone that finished opening
+   * after that is closed again at once, so nothing is left recording that
+   * nobody asked to keep on. Rejects when the microphone cannot be opened.
+   */
+  start(): Promise<RecordingInfo | null>
   /** Stops, converts and uploads. Returns the transcript, or '' if silent. */
   finish(): Promise<string>
   cancel(): void
   recording(): boolean
+}
+
+/** What a started recording is recording from. */
+export interface RecordingInfo {
+  /** The track's device label, or '' while the browser withholds names. */
+  label: string
+  /** Set when the chosen microphone could not be used and the default was. */
+  notice: string | null
+}
+
+export interface RecorderOptions {
+  /**
+   * Called on every animation frame while recording, with the smoothed input
+   * level 0..1 (`levelFromSamples`), and once with 0 when it stops. Drive a
+   * style through a ref from it, never React state: it is ~60 calls a second.
+   */
+  onLevel?: (level: number) => void
+  /** The saved microphone (`voice.micDeviceId`/`micLabel`), read at each start. */
+  device?: () => SavedMic | null
 }
 
 /**
@@ -128,48 +156,196 @@ export async function postTranscription(wav: ArrayBuffer): Promise<string> {
   return (data.text || '').trim()
 }
 
-export function createRecorder(upload: UploadWav): Recorder {
-  let recorder: MediaRecorder | null = null
-  let chunks: Blob[] = []
+/** What every recording asks the microphone for, whichever device it is. */
+const AUDIO = { channelCount: 1, echoCancellation: true, noiseSuppression: true }
+
+function stopStream(stream: MediaStream): void {
+  stream.getTracks().forEach((t) => t.stop())
+}
+
+/**
+ * Open the saved microphone, or the system default.
+ *
+ * The saved id is asked for EXACTLY — `ideal` would let the browser quietly
+ * substitute another input, and the user would dictate into a device they did
+ * not choose without being told. When it is gone (`OverconstrainedError`,
+ * `NotFoundError`), the devices are listed again and matched by label, since an
+ * OS or driver update can re-mint an id for the same device (`pickDevice`); if
+ * nothing matches, the default records this time and `notice` says so.
+ */
+export async function openMicrophone(saved: SavedMic | null): Promise<{ stream: MediaStream; notice: string | null }> {
+  const md = navigator.mediaDevices
+  const open = (deviceId: string | null): Promise<MediaStream> =>
+    md.getUserMedia({ audio: deviceId ? { ...AUDIO, deviceId: { exact: deviceId } } : { ...AUDIO } })
+
+  if (!saved?.id) return { stream: await open(null), notice: null }
+  try {
+    return { stream: await open(saved.id), notice: null }
+  } catch (err) {
+    if (!isMissingDevice(err)) throw err
+  }
+  const pick = pickDevice(await listDevices(), saved)
+  if (pick.deviceId && pick.deviceId !== saved.id) {
+    try {
+      return { stream: await open(pick.deviceId), notice: null }
+    } catch (err) {
+      if (!isMissingDevice(err)) throw err
+    }
+  }
+  return { stream: await open(null), notice: pick.notice ?? notConnected(saved.label) }
+}
+
+/** The devices the browser will name, as plain objects. */
+export async function listDevices(): Promise<MicDevice[]> {
+  const all = await navigator.mediaDevices.enumerateDevices()
+  return all.map((d) => ({ deviceId: d.deviceId, label: d.label, kind: d.kind }))
+}
+
+/**
+ * Ask for the microphone once and let it go, so the browser starts naming
+ * devices: enumerateDevices() returns blank labels until a grant. On macOS,
+ * before Stoke has ever been allowed, this is the moment the system asks.
+ */
+export async function revealDeviceNames(): Promise<void> {
+  stopStream(await navigator.mediaDevices.getUserMedia({ audio: true }))
+}
+
+/**
+ * Report a stream's input level every animation frame until the returned stop
+ * is called.
+ *
+ * The analyser is connected to the source and to NOTHING else — never to the
+ * context's destination, which would play the microphone back out of the
+ * speakers into itself. Chromium pulls an analyser with no outputs regardless.
+ * The context is closed on stop, so one per recording never accumulates.
+ */
+export function meterStream(stream: MediaStream, onLevel: (level: number) => void): () => void {
+  let ctx: AudioContext | null = null
+  let raf = 0
+  try {
+    ctx = audioContext()
+    const analyser = ctx.createAnalyser()
+    analyser.fftSize = 1024
+    ctx.createMediaStreamSource(stream).connect(analyser)
+    // A context made outside a gesture may start suspended; the keydown that
+    // got us here counts, but asking costs nothing.
+    void ctx.resume().catch(() => {})
+    const samples = new Float32Array(analyser.fftSize)
+    let level = 0
+    let last = performance.now()
+    const tick = (now: number): void => {
+      analyser.getFloatTimeDomainData(samples)
+      level = smoothLevel(level, levelFromSamples(samples), now - last)
+      last = now
+      onLevel(level)
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+  } catch {
+    // The line is a nicety. A browser that cannot build the graph still records.
+  }
+  return () => {
+    cancelAnimationFrame(raf)
+    if (ctx) void ctx.close().catch(() => {})
+    ctx = null
+    onLevel(0)
+  }
+}
+
+/**
+ * The level line with no recording behind it, for Settings' "Test microphone":
+ * opens the saved device exactly as a recording would, and uploads nothing.
+ */
+export async function testMicrophone(
+  saved: SavedMic | null,
+  onLevel: (level: number) => void
+): Promise<{ stop: () => void } & RecordingInfo> {
+  const { stream, notice } = await openMicrophone(saved)
+  const stopMeter = meterStream(stream, onLevel)
+  return {
+    label: stream.getAudioTracks()[0]?.label ?? '',
+    notice,
+    stop: () => {
+      stopMeter()
+      stopStream(stream)
+    }
+  }
+}
+
+interface Take {
+  rec: MediaRecorder
+  chunks: Blob[]
+  stopMeter: (() => void) | null
+}
+
+export function createRecorder(upload: UploadWav, opts: RecorderOptions = {}): Recorder {
+  let take: Take | null = null
+  /*
+   * Bumped by every cancel and every start. A start that was still waiting on
+   * getUserMedia when it moved has been superseded, and closes the microphone
+   * it was handed rather than overwriting the take — which used to leak a
+   * live stream, and with it the OS recording indicator, when Space was
+   * released during a permission prompt and pressed again.
+   */
+  let generation = 0
 
   const release = (): void => {
-    recorder?.stream.getTracks().forEach((t) => t.stop())
-    recorder = null
-    chunks = []
+    generation++
+    if (!take) return
+    take.stopMeter?.()
+    stopStream(take.rec.stream)
+    take = null
   }
 
   return {
-    recording: () => recorder?.state === 'recording',
+    recording: () => take?.rec.state === 'recording',
 
     async start() {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true }
-      })
-      // isTypeSupported can be optimistic, so fall back to the browser default
-      // rather than forcing a type it claims to know and then mishandles.
-      const mimeType = MIME_CANDIDATES.find((t) => MediaRecorder.isTypeSupported(t))
-      recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
-      chunks = []
-      recorder.ondataavailable = (e) => {
+      release()
+      const gen = generation
+      const { stream, notice } = await openMicrophone(opts.device?.() ?? null)
+      if (gen !== generation) {
+        stopStream(stream)
+        return null
+      }
+      let rec: MediaRecorder
+      try {
+        // isTypeSupported can be optimistic, so fall back to the browser default
+        // rather than forcing a type it claims to know and then mishandles.
+        const mimeType = MIME_CANDIDATES.find((t) => MediaRecorder.isTypeSupported(t))
+        rec = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
+      } catch (err) {
+        stopStream(stream)
+        throw err
+      }
+      const chunks: Blob[] = []
+      rec.ondataavailable = (e) => {
         if (e.data.size) chunks.push(e.data)
       }
-      recorder.start()
+      rec.start()
+      take = { rec, chunks, stopMeter: opts.onLevel ? meterStream(stream, opts.onLevel) : null }
+      return { label: stream.getAudioTracks()[0]?.label ?? '', notice }
     },
 
     cancel: release,
 
     async finish() {
-      const active = recorder
-      if (!active || active.state === 'inactive') {
+      const own = take
+      if (!own || own.rec.state === 'inactive') {
         release()
         return ''
       }
-
+      // Detached before the await, so a new start() while this one stops and
+      // uploads gets a take of its own instead of having this one released
+      // out from under it.
+      take = null
+      const { rec, chunks } = own
       const blob = await new Promise<Blob>((resolve) => {
-        active.onstop = () => resolve(new Blob(chunks, { type: active.mimeType || 'audio/webm' }))
-        active.stop()
+        rec.onstop = () => resolve(new Blob(chunks, { type: rec.mimeType || 'audio/webm' }))
+        rec.stop()
       })
-      release()
+      own.stopMeter?.()
+      stopStream(rec.stream)
 
       // Under about a tenth of a second is a mis-tap, not speech. Measured on
       // compressed bytes, so it is a floor rather than an exact duration; the

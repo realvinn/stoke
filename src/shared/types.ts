@@ -941,6 +941,32 @@ export interface VoiceSettings {
    * to say "no server" today.
    */
   sttUrl: string
+  /**
+   * How long Space must stay down, in ms, before Stoke's dictation opens the
+   * microphone; a shorter press types an ordinary space (`spaceHold`,
+   * voiceRoute.ts). 250 by default, clamped to 150–800 — below 150 a quick tap
+   * starts recording, above 800 the wait reads as broken.
+   */
+  holdMs: number
+  /**
+   * The input device Stoke's dictation records from, as a
+   * `MediaDeviceInfo.deviceId`, or null for the system default. Claude Code's
+   * `/voice` cannot be pointed at a device and always records from the system
+   * default; this changes only Stoke's own recorder.
+   *
+   * Written only by an explicit choice in Settings → Voice (gotcha 57): a
+   * device that has gone away is NOT cleared here, the recorder falls back to
+   * the default for that recording and says so, and plugging the device back in
+   * brings it back.
+   */
+  micDeviceId: string | null
+  /**
+   * The chosen device's label when it was chosen. Device ids are per-origin and
+   * can change after an OS or driver update, so a missing id is looked up again
+   * by this label before falling back to the default (`pickDevice`,
+   * shared/micDevice.ts). `''` with a null id.
+   */
+  micLabel: string
 }
 
 export interface Settings {

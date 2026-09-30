@@ -7,6 +7,10 @@ paths:
   - "src/shared/voiceRoute.ts"
   - "scripts/verify-voice.mts"
   - "src/renderer/src/components/VoiceSettings.tsx"
+  - "src/renderer/src/components/MicPicker.tsx"
+  - "src/shared/voice.ts"
+  - "src/shared/voiceLevel.ts"
+  - "src/shared/micDevice.ts"
 ---
 
 # Terminal: xterm selection, links, OSC
@@ -316,3 +320,32 @@ hold, repeats included. And **nothing covered voice** — no suite touched eithe
 `verify:voice` also reads `TerminalView.tsx` for the calls, gotcha 31's wire, and its wire checks
 were run against the old file from `HEAD` to confirm they fail there.
 
+> **Checked against the code on 2026-09-30** — `dictationKeyAction` is gone; the rule above stands
+> in a reducer. Once armed, the first Space keydown used to start a recording, so an armed tab could
+> not type a space: every tap opened the microphone (the OS indicator lit) and threw the clip away as
+> under 1 KB. `spaceHold` (voiceRoute.ts) is now idle → pending → starting → recording: the first
+> press only arms a `voice.holdMs` timer (250 ms, clamped 150–800) and the strip says "Keep
+> holding…"; the timer or an auto-repeat, whichever is first, starts the recorder; a release while
+> still pending types the space through `term.input(' ', true)` (onData, like typing), and any other
+> key pressed while Space is pending types the space first and then goes through, so fast "a b"
+> keeps its order. **Every Space repeat is still taken, in every phase** — `verify:voice` asserts it
+> per phase. A release while the microphone is still opening is `cancel`, and the recorder
+> (`createRecorder`) now closes a stream that finishes opening after a cancel or a second start
+> instead of overwriting its one slot — read from the old code (not reproduced), a press, a release
+> during the permission prompt and a second press left the first stream open with the OS indicator. The
+> phone's voice-mode Space runs the same reducer (`src/remote/session.ts`, default threshold).
+> Measured over CDP against the built app with Chromium's fake microphone: a 64 ms tap left `a b` in
+> the buffer, never showed "Listening" and made zero getUserMedia calls; a held Space with repeats
+> went Keep holding → Listening (level line `scaleX(0.367)`) → Transcribing → the fake speech
+> server's text in the buffer, with one getUserMedia call. The new wire checks were run against
+> HEAD's TerminalView, session.ts and VoiceSettings (`verify-voice.mts --wire <three files>`):
+> 12 FAILED, the four unchanged checks passed. Device names: in a fresh Electron 43 process with
+> Chromium's fake devices, `enumerateDevices()` named every input before any getUserMedia (Stoke
+> registers no permission-check handler) — unmeasured with real devices under macOS TCC, which is
+> why the picker keeps its "Show device names" fallback and `audio/defaultDevice.ts` still shells out.
+>
+> **And on 2026-09-30, in review:** Settings' Test meter (`MicPicker`) had the same one-slot bug
+> as the recorder, one level up. Its claim was a shared placeholder, so Test, Stop, Test during a slow
+> open kept one stream live after Stop and after closing Settings. It now claims with a fresh
+> object per press. Gotcha 20's 2026-09-30 note has the measurement, and `verify:voice` holds the
+> claim's shape (shown to fail against the old file).

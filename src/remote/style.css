@@ -1150,9 +1150,38 @@ a {
 }
 
 .composer {
+  position: relative;
   display: flex;
   align-items: flex-end;
   gap: 8px;
+}
+
+/*
+ * The recording volume: a 2px line along the composer's top edge, scaled from
+ * the left by the recorder's animation frame (session.ts). Shown only while
+ * recording, whether from the mic button or voice mode's held space.
+ */
+.mic-level {
+  position: absolute;
+  inset: -6px 0 auto;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--line);
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.composer:not([data-recording='true']) .mic-level {
+  display: none;
+}
+
+.mic-level-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform 60ms linear;
 }
 
 .composer-input {
@@ -2283,5 +2312,9 @@ a {
   .pill i,
   .skeleton i {
     opacity: 1;
+  }
+  /* The level is data: it stays live, only its easing goes (gotcha 72). */
+  .mic-level-fill {
+    transition: none;
   }
 }
