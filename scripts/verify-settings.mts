@@ -17,7 +17,7 @@ import {
   themeSlotFor
 } from '../src/shared/themes.ts'
 import { nextBoards } from '../src/renderer/src/lib/worklogBoards.ts'
-import { clampVoice, DEFAULT_STT_URL, VOICE_DEFAULTS } from '../src/shared/voiceSettings.ts'
+import { clampHoldMs, clampVoice, DEFAULT_STT_URL, HOLD_MS_MAX, HOLD_MS_MIN, VOICE_DEFAULTS } from '../src/shared/voiceSettings.ts'
 import type { WorklogTarget } from '../src/shared/types.ts'
 
 let failures = 0
@@ -481,7 +481,7 @@ check('and DEFAULT_SETTINGS agrees', DEFAULT_SETTINGS.selfUpdateAuto, true)
  * gives an OLDER build — which reads only `remote.sttUrl` — the same address.
  */
 console.log('\nthe speech server, moved from remote to voice')
-check('an untouched machine gets the documented sidecar port', hydrateSettings({}).voice, { sttUrl: 'http://127.0.0.1:17890' })
+check('an untouched machine gets the documented sidecar port', hydrateSettings({}).voice, { sttUrl: 'http://127.0.0.1:17890', holdMs: 250, micDeviceId: null, micLabel: '' })
 check('and DEFAULT_SETTINGS agrees with the shared default', DEFAULT_SETTINGS.voice, VOICE_DEFAULTS)
 check('the default IS the sidecar port, in one place', DEFAULT_STT_URL, 'http://127.0.0.1:17890')
 check(
@@ -525,13 +525,13 @@ check(
     const twice = hydrateSettings(JSON.parse(JSON.stringify(once)))
     return [twice.voice, twice.remote.sttUrl]
   })(),
-  [{ sttUrl: 'http://x:1' }, 'http://x:1']
+  [{ sttUrl: 'http://x:1', holdMs: 250, micDeviceId: null, micLabel: '' }, 'http://x:1']
 )
 check('junk in voice falls back to the mirror', hydrateSettings({ voice: 'banana', remote: { sttUrl: 'http://x:1' } }).voice.sttUrl, 'http://x:1')
 check('a number is not an address', hydrateSettings({ voice: { sttUrl: 42 } }).voice.sttUrl, 'http://127.0.0.1:17890')
 check('nor is a number in the old key', hydrateSettings({ remote: { sttUrl: 42 } }).voice.sttUrl, 'http://127.0.0.1:17890')
 check('an array is not a voice block', hydrateSettings({ voice: ['http://x:1'] }).voice.sttUrl, 'http://127.0.0.1:17890')
-check('null is not one either', hydrateSettings({ voice: null }).voice, { sttUrl: 'http://127.0.0.1:17890' })
+check('null is not one either', hydrateSettings({ voice: null }).voice, { sttUrl: 'http://127.0.0.1:17890', holdMs: 250, micDeviceId: null, micLabel: '' })
 check('an address is trimmed', hydrateSettings({ voice: { sttUrl: '  http://x:1/  ' } }).voice.sttUrl, 'http://x:1/')
 /*
  * Kept, not defaulted: "" is the only way to say "no speech server", and it is
@@ -544,7 +544,7 @@ check('including one migrated from the old key', hydrateSettings({ remote: { stt
 check(
   'the clamp rebuilds from named keys, so junk fields do not ride through',
   hydrateSettings({ voice: { sttUrl: 'http://x:1', provider: 'banana', __proto__x: 1 } }).voice,
-  { sttUrl: 'http://x:1' }
+  { sttUrl: 'http://x:1', holdMs: 250, micDeviceId: null, micLabel: '' }
 )
 check(
   'and every named key survives it',
@@ -555,6 +555,42 @@ check('clampVoice with nothing at all is the defaults', clampVoice(undefined), V
 ok(
   'and returns a fresh object, never the module constant',
   clampVoice(undefined) !== VOICE_DEFAULTS && hydrateSettings({}).voice !== DEFAULT_SETTINGS.voice
+)
+
+/*
+ * The hold threshold and the microphone joined the block with the hold-to-talk
+ * change. A hand-edited threshold is held to 150-800ms — under 150 a quick tap
+ * records, over 800 the wait reads as broken — and the microphone is an id with
+ * its label, or nothing.
+ */
+console.log('\nthe hold threshold and the microphone')
+check('a file from before them gets the defaults', hydrateSettings({ voice: { sttUrl: 'http://x:1' } }).voice, {
+  sttUrl: 'http://x:1',
+  holdMs: 250,
+  micDeviceId: null,
+  micLabel: ''
+})
+check('a threshold inside the range is kept, rounded', hydrateSettings({ voice: { holdMs: 399.6 } }).voice.holdMs, 400)
+check('too short is raised to the floor', clampHoldMs(20), HOLD_MS_MIN)
+check('too long is lowered to the ceiling', clampHoldMs(5000), HOLD_MS_MAX)
+check('a string is not a duration', clampHoldMs('300'), 250)
+check('nor is NaN', clampHoldMs(Number.NaN), 250)
+check(
+  'a chosen microphone survives with its label',
+  hydrateSettings({ voice: { micDeviceId: 'abc123', micLabel: ' USB Mic ' } }).voice,
+  { sttUrl: DEFAULT_STT_URL, holdMs: 250, micDeviceId: 'abc123', micLabel: 'USB Mic' }
+)
+check(
+  'a label with no id is dropped — nothing could act on it',
+  hydrateSettings({ voice: { micDeviceId: null, micLabel: 'USB Mic' } }).voice.micLabel,
+  ''
+)
+check('a blank id is the default', hydrateSettings({ voice: { micDeviceId: '  ', micLabel: 'x' } }).voice.micDeviceId, null)
+check('a non-string id is the default', hydrateSettings({ voice: { micDeviceId: 7 } }).voice.micDeviceId, null)
+check(
+  'a non-string label with a real id reads as no label',
+  hydrateSettings({ voice: { micDeviceId: 'abc', micLabel: 9 } }).voice.micLabel,
+  ''
 )
 
 console.log(`\n${failures ? `${failures} failure(s)` : 'all pass'}`)
