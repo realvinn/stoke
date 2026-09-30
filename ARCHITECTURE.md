@@ -294,6 +294,24 @@ Not done here, on purpose: the `nodeCliInspect`/`nodeOptions` fuses (design §6.
 statusLine shim runs as node (`runAsNode`, gotcha 108), and only a packaged build can prove a fuse
 change safe.
 
+## Stoke Hub (sync and remote between the owner's devices)
+
+Phases 2+ of the auth-hub plan, re-planned self-hosted first:
+`docs/superpowers/specs/2026-10-01-stoke-hub-selfhosted.md`. One small Node 24 service on the
+owner's NUC, reached as `https://stoke.vinn.dev/hub` through a separate edge Worker on the route
+`stoke.vinn.dev/hub/*` (the installer Worker is untouched) and a Cloudflare Tunnel, or directly on
+the LAN/tailnet. Email + password sign-in that opens nothing; per-device Ed25519/X25519 keys; a
+signed device list the hub cannot extend; a vault key per epoch; items sealed under opaque ids;
+pairing by a six-digit code both screens show; a Recovery Kit; relays carrying the phone API
+end-to-end encrypted between two devices, authorised on the host.
+
+What exists so far is the CONTRACT: `src/shared/hub/` (pure, both tsconfigs) and the node:crypto
+reference `src/main/hub/crypto.ts`, which imports only `node:crypto` and `src/shared` so the hub
+server can import it as is. `verify:hub` runs them against each other and pins test vectors over
+every label and byte layout — a changed label would strand every wrap and item already on a hub,
+so it must fail there first. The server, the client panel and sync engine, and the relay are built
+against it.
+
 ## Remote access
 
 `src/main/remote/server.ts` serves the mobile bundle plus a small API and a WebSocket that
@@ -656,6 +674,14 @@ npm run verify:secrets        # secrets at rest and the setup file, on a SYNTHET
                               # or an export; real scrypt/AES-GCM round trip, wrong passphrase,
                               # flipped byte, edited header, unknown KDF/cipher/format refused;
                               # import drops unknown keys, clamps, keeps local fields
+npm run verify:hub            # the Stoke Hub contract against its node:crypto reference: codecs,
+                              # a real signed device chain and 19 forged or broken ones refused,
+                              # vault wraps, the Recovery Kit, item sealing (moved, replayed,
+                              # relabelled, forged-path envelopes refused), the put rule, LWW
+                              # conflicts, pairing codes, the relay handshake and ciphers (MITM,
+                              # drop, replay, reflection), grants, signed requests, the hub URL
+                              # and edge rules, synced-settings folding (gotcha 139), and pinned
+                              # vectors that reproduce under Node/OpenSSL and Electron/BoringSSL
 npm run verify:claude-config  # writing Claude Code's OWN config: the allowlist, the refusals,
                               # and the ~/.claude.json lock. Runs against real files in a temp
                               # CLAUDE_CONFIG_DIR, never the user's (gotchas 38, 39)
@@ -1109,6 +1135,10 @@ src/main/         Electron main process
                     verify:secrets never touches the Keychain. basic_text is NOT protection
   setupFile.ts      sealing/opening a `.stoke-setup`: scrypt N=2^17 + AES-256-GCM, header as
                     AAD, node:crypto only
+  hub/crypto.ts     Stoke Hub's node:crypto reference: device keys, signed requests, vault
+                    wraps, the Recovery Kit, item seal/open under opaque ids, the pairing code,
+                    the relay handshake and `RelayCipher`, scrypt passwords. No electron import;
+                    the hub server imports it. verify:hub
   accounts.ts       an agent account's folder, `~/.stoke/accounts/<cli>-<slug>` (not userData:
                     dev and packaged differ, and the `stoke` command reads it with no app),
                     realpath'd once — Claude's Keychain item is named after that exact string
@@ -1411,6 +1441,16 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
   setupFile.ts      the `.stoke-setup` header and its refusals, what travels
                     (PORTABLE/PARTIAL/LOCAL_KEYS, a partition of Settings), the import merge
                     and preview (`planImport`), and the passphrase strength reading
+  hub/              the Stoke Hub wire contract, pure: codec.ts (base64url, Crockford base32,
+                    canonical JSON, ids), labels.ts (every signature/KDF/AAD label), protocol.ts
+                    (routes, bodies, errors, headers, presence, the request-signing text),
+                    auth.ts (email, password hash format, invites, throttle), chain.ts (the
+                    signed device list: `verifyChain`, `compareToPinned`), pairing.ts (commit,
+                    six-digit code, Recovery Kit format), items.ts (path grammar, T1_KEYS,
+                    envelope, `putVerdict`, `decideConflict`), relay.ts (handshake, frames,
+                    RELAY_ROUTES, grants), edge.ts (`hubUrlVerdict`, the edge Worker's rules,
+                    `edgeVerdict`), settings.ts (the T0 `hub` block, `applySyncedSettings`,
+                    `sshKeyTarget`)
   cfAccess.ts       Cloudflare Access without crypto: the team-domain and AUD clamps settings
                     hydrate through, the policy, the login-redirect parser Look it up reads,
                     the status and refusal words the panel shows. Gotcha 124

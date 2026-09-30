@@ -11,6 +11,8 @@ paths:
   - "src/shared/secrets.ts"
   - "src/shared/setupFile.ts"
   - "src/renderer/src/components/BackupSettings.tsx"
+  - "src/shared/hub/*.ts"
+  - "scripts/verify-hub.mts"
 ---
 
 # Anywhere in the main process
@@ -340,3 +342,26 @@ matches more messages than the limit crowds every other chat out of the result.
 > run `optimize` only where its whole-index rewrite is affordable (`tidy` after a big pass). Its
 > sibling in the same fix: an eviction that deletes a chat's read positions must leave a cut
 > behind (`storeCutMs`), or the next pass admits, re-reads and evicts the same chats every time.
+
+## 139. `SshHost.id` is a per-machine counter, so two machines' `host-1` are usually two different servers
+
+**Found 2026-10-01, writing the Stoke Hub contract's host sync.** HostsSettings' `newHostId` mints
+`host-1`, `host-2`, … — the first free number in THIS machine's list — and its comment says the ids
+"only have to be unique inside this list and never leave settings.json". They left it anyway: the
+`.stoke-setup` export carries every host with its id, and `mergeSetup` (setupFile.ts) folds hosts in
+with `mergeById`. Measured against the shipped code with a synthetic pair of profiles: a Windows
+profile holding `host-1` = "NUC" (`nuc`) imported a Mac setup holding `host-1` = "VPS" (`vps`), and
+`planImport` returned `[["host-1","VPS","vps"]]` — the NUC gone — and previewed it as
+`SSH hosts: updates VPS`, which reads like an edit to a host the user has, not the loss of one.
+
+The rule: **never match an SSH host across machines by `SshHost.id`.** The hub's T3 items are keyed
+by a SYNC id (`h…`, `ID_BYTES.host` in `src/shared/hub/codec.ts`) that travels on the host
+(`SyncableHost.syncId`, hydrate keeps it because it spreads `...h`); `applySyncedSettings` matches
+by that, lets a local host with no sync id ADOPT one only when alias and command are both equal
+(the same server, known on both machines before either synced), and appends anything else under a
+free LOCAL id (`freeHostId`, the same rule as `newHostId`). `parseItemPath` refuses `t3/host/host-1`
+outright, and `verify:hub` holds the two-`host-1` case (`two machines' host-1 stay two hosts`).
+
+**Not fixed here:** `mergeSetup` still matches by id, so a `.stoke-setup` import can still replace a
+different host. The fix is the same rule — by `syncId`, else alias + command, else append with a
+free id — and needs its own `verify:secrets` case (the one above, which the old merge fails).
