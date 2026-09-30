@@ -976,6 +976,15 @@ console.log('\nskills Claude Code is lent at launch: the projection, on a fake h
     const fromWt = await inRepo.prepare(wt)
     check('nor is a tab in a linked worktree of it', fromWt ? readdirSync(join(fromWt, 'skills')) : null, ['only-shared'])
     check('the two layers\' trims together leave nothing to lend, so no flag', await inRepo.prepare(legacy), null)
+    // The uid production passes: this process's own, which on POSIX owns the
+    // fixture; Node on Windows has none, and there the CLI never moves the
+    // layer either, so the repo's trim is not Claude's and is not honoured.
+    const byDefault = await new ClaudeSkillsProjector({ root, home, claudeDir: join(home, '.claude'), managedDir: null }).prepare(sub)
+    check(
+      "with the process's own uid, as a launch has it",
+      byDefault ? readdirSync(join(byDefault, 'skills')) : null,
+      process.platform === 'win32' ? ['only-shared', 'trimmed'] : ['only-shared']
+    )
   } finally {
     // In finally: a throw anywhere above must not leave a fixture behind.
     if (userData) rmSync(userData, { recursive: true, force: true })
