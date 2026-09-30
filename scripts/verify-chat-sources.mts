@@ -617,7 +617,28 @@ try {
   const passMs = performance.now() - t0
   clearInterval(probe)
   check('the pass ran in the worker and read the big file', (wpass?.bytesRead ?? 0) > 20 * 1024 * 1024, true)
-  check(`the main loop never waited on it (max gap ${maxGap.toFixed(1)} ms over a ${passMs.toFixed(0)} ms pass)`, maxGap < 100, true)
+  /*
+   * Relative, not a fixed number of ms: a loaded CI runner (or Windows' coarse
+   * timers) can stretch any one gap. The counterfactual is the same pass run on
+   * THIS thread, measured the same way: a 24 MB transcript is one synchronous
+   * read, and that is the stall the worker exists to keep off the main process.
+   */
+  const inThread = ChatStore.open(join(root, 'in-thread-index'))
+  let ownGap = 0
+  let ownLast = performance.now()
+  const ownProbe = setInterval(() => {
+    const now = performance.now()
+    ownGap = Math.max(ownGap, now - ownLast)
+    ownLast = now
+  }, 1)
+  await runPass(inThread, { env, options: options() }, { ...hooks(), now: Date.now, yieldTurn: () => new Promise((r) => setImmediate(r)) })
+  clearInterval(ownProbe)
+  inThread.close()
+  check(
+    `the main loop never waited on it (max gap ${maxGap.toFixed(1)} ms in the worker, ${ownGap.toFixed(1)} ms for the same pass on this thread)`,
+    maxGap < Math.max(50, passMs / 3) && maxGap * 3 < ownGap,
+    true
+  )
   check('a second scan while one runs is queued, not doubled', await Promise.all([host.scan({ env, options: options() }), host.scan({ env, options: options() })]).then((r) => r.filter((x) => x === null).length >= 1), true)
   check('search through the worker', (await host.search('wombat', 10)).map((h) => h.source), ['codex'])
   {
