@@ -153,6 +153,8 @@ import { createScratchDir, resolveDefaultCwd } from './workspace.ts'
 import { BrowserMcpServer } from './mcp/server.ts'
 import { connectTarget, generateToken, RemoteServer, tailnetAddress, type RemoteDeps } from './remote/server.ts'
 import { TunnelManager } from './remote/tunnel.ts'
+import { discoverAccess } from './remote/accessJwt.ts'
+import { ACCESS_STATUS_OFF, type AccessLookup } from '../shared/cfAccess.ts'
 import {
   originCertPath,
   probeSetup,
@@ -996,7 +998,8 @@ const remoteState = async (): Promise<RemoteState> => {
       error: null,
       clients: 0,
       addresses: [],
-      attachedByPty: {}
+      attachedByPty: {},
+      access: { ...ACCESS_STATUS_OFF }
     },
     tunnel: tun,
     url,
@@ -2722,6 +2725,22 @@ function registerIpc(): void {
     const state = await remoteState()
     send(CH.remoteChanged, state)
     return state
+  })
+
+  /*
+   * "Look it up": the Access team and AUD in front of the saved hostname. One
+   * lookup at a time — the promise is claimed before its first await (gotcha
+   * 20), so a double press joins the running probe rather than starting a
+   * second one. Returns the answer; the panel writes it (one writer, gotcha 57).
+   */
+  let accessLookup: Promise<AccessLookup> | null = null
+  ipcMain.handle(CH.remoteLookupAccess, () => {
+    if (accessLookup) return accessLookup
+    const hostname = getSettings().remote.hostname
+    accessLookup = discoverAccess(hostname).finally(() => {
+      accessLookup = null
+    })
+    return accessLookup
   })
 
   ipcMain.handle(CH.tunnelStart, async (_e, mode: 'named' | 'quick') => {

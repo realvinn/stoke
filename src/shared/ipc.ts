@@ -149,6 +149,13 @@ export const CH = {
    * active session" while a phone-started `claude` runs unseen.
    */
   remoteSessionStarted: 'remote:sessionStarted',
+  /**
+   * Settings › Phone access's "Look it up": the Access team and AUD in front of
+   * the public hostname, read from Access's own login redirect and checked
+   * against the team's signature (`discoverAccess`, gotcha 124). Returns them;
+   * the renderer is the one that saves them.
+   */
+  remoteLookupAccess: 'remote:lookupAccess',
   tunnelStart: 'tunnel:start',
   tunnelStop: 'tunnel:stop',
   /** Look for cloudflared again, after the user has installed it. */

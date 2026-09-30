@@ -457,6 +457,34 @@ check(
 )
 
 /*
+ * The Cloudflare Access team and application (gotcha 124). The team domain
+ * becomes the host of a URL main FETCHES keys from, and the `iss` a token must
+ * carry, so the raw `...r.remote` spread must never carry a hand-edited value
+ * there. A value that is not one hydrates as unset, which the panel reports as
+ * presence-only.
+ */
+console.log('\nthe Cloudflare Access team and AUD')
+{
+  const AUD = '0123456789abcdef'.repeat(4)
+  check('a machine that has never said has neither', [hydrateSettings({}).remote.accessTeamDomain, hydrateSettings({}).remote.accessAud], ['', ''])
+  check('and DEFAULT_SETTINGS agrees', [DEFAULT_SETTINGS.remote.accessTeamDomain, DEFAULT_SETTINGS.remote.accessAud], ['', ''])
+  check(
+    'a pasted team URL hydrates as its bare domain',
+    hydrateSettings({ remote: { accessTeamDomain: 'https://Team.cloudflareaccess.com/' } as never }).remote.accessTeamDomain,
+    'team.cloudflareaccess.com'
+  )
+  check('a path is dropped, not trimmed into a fetchable host', hydrateSettings({ remote: { accessTeamDomain: 'evil.com/x?' } as never }).remote.accessTeamDomain, '')
+  check(
+    'a lookalike suffix is dropped',
+    hydrateSettings({ remote: { accessTeamDomain: 'a.cloudflareaccess.com.evil.com' } as never }).remote.accessTeamDomain,
+    ''
+  )
+  check('a real AUD survives', hydrateSettings({ remote: { accessAud: AUD } as never }).remote.accessAud, AUD)
+  check('a non-hex AUD is dropped', hydrateSettings({ remote: { accessAud: 'x'.repeat(64) } as never }).remote.accessAud, '')
+  check('so is an array', hydrateSettings({ remote: { accessAud: [AUD] } as never }).remote.accessAud, '')
+}
+
+/*
  * What happens to open sessions after the CLI updates, and whether Stoke's own
  * update downloads by itself. `cliRelaunch: 'auto'` kills and restarts
  * processes unasked, so only the literal switches it on; `selfUpdateAuto`

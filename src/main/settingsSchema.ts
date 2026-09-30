@@ -14,6 +14,7 @@ import { DEFAULT_LIGHT_THEME_ID, DEFAULT_THEME_ID, validateTheme } from '../shar
 import { DEFAULT_WORKLOG_BOARDS, WORKLOG_TARGETS } from '../shared/worklog.ts'
 import { clampWelcomeSeen } from '../shared/welcome.ts'
 import { clampVoice, VOICE_DEFAULTS } from '../shared/voiceSettings.ts'
+import { clampAccessAud, clampAccessTeamDomain } from '../shared/cfAccess.ts'
 import {
   clampCurrentProfile,
   clampImportOffer,
@@ -90,6 +91,9 @@ export const DEFAULT_SETTINGS: Settings = {
     bindLan: false,
     bindTailscale: false,
     requireAccessHeader: false,
+    // Unknown until Look it up (or a paste) fills them. See cfAccess.ts.
+    accessTeamDomain: '',
+    accessAud: '',
     autoStartTunnel: false,
     tunnelName: 'stoke',
     // The mirror of `voice.sttUrl` an older build reads. Never read it here;
@@ -287,6 +291,14 @@ export function hydrateSettings(raw: unknown): Settings {
        * in a file.
        */
       reach: clampRemoteReach(r.remote?.reach),
+      /*
+       * Clamped, not spread: the team domain becomes the host of a URL main
+       * FETCHES and the `iss` a token must carry, so a hand-edited
+       * `"accessTeamDomain": "evil.example/x"` must hydrate as unset rather than
+       * reach either. Unset means presence-only, which the panel reports.
+       */
+      accessTeamDomain: clampAccessTeamDomain(r.remote?.accessTeamDomain),
+      accessAud: clampAccessAud(r.remote?.accessAud),
       /*
        * Kept in step with `voice.sttUrl` for one release, on every read and so
        * on every write (`setSettings` hydrates what it persists), so a file this

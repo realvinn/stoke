@@ -311,8 +311,30 @@ attaches to a PTY, replaying its scrollback first.
 - **A bearer token is required on every path**, on every listener, regardless of Cloudflare
   Access. If the tunnel is up and the Access policy is misconfigured or removed, that token is
   the only thing between the internet and a shell.
-- `requireAccessHeader` is the opt-in that additionally rejects anything arriving without
-  Cloudflare Access headers. It is enforced on the loopback listener **and on the LAN one**, and
+- `requireAccessHeader` is the opt-in that additionally requires Cloudflare Access. With
+  `accessTeamDomain` and `accessAud` set it **verifies** `Cf-Access-Jwt-Assertion`
+  (`remote/accessJwt.ts`, gotcha 124): RS256 only, signed by a key from
+  `https://<team>/cdn-cgi/access/certs` looked up by `kid`, `iss` equal to `https://<team>`,
+  `aud` containing the AUD tag, `exp` required and `nbf`/`iat` checked, 60 s of leeway. It fails
+  closed — a missing, forged or expired token is refused, and so is every request while the keys
+  cannot be fetched — and the unsigned `Cf-Access-Authenticated-User-Email` counts for nothing.
+  An Access refusal is **403** with `{error, refused: 'access'}` (`remoteRefusal`,
+  `RemoteAuthVerdict`), never the key's 401: the phone reads every 401 as "your key was replaced",
+  so a stale AUD, an unreachable JWKS or a skewed clock sent people to re-scan a key that worked.
+  The phone shows the computer's sentence (`accessRefusalForPhone`) instead, and `?k=` still sets
+  the cookie when the key matched and only Access refused, so the next call hears that reason.
+  The bearer key is checked first, so a keyless request never reaches the verifier or causes a
+  fetch. `AccessKeySet` holds one fetch in flight, refetches for an unknown `kid` at most every
+  30 s, retries an empty cache every 5 s, and keeps a last-good set through an outage for a day.
+  The team and AUD come from Settings › Phone access's **Look it up** (`discoverAccess`): a
+  browser-shaped request to the hostname, whose Access login redirect names the team and carries
+  the AUD as `kid` plus a `meta` JWT the team signed — trusted only once that signature and its
+  `hostname` check out — or from the two fields, pasted from Zero Trust. A settings file with
+  Access on and either field empty keeps the old PRESENCE check (anything that reaches the port
+  can add the header), reported as `access.mode: 'presence-only'` and said in amber beside Look it
+  up; turning the box on from off looks them up first. `STOKE_ACCESS_CERTS_URL` points an
+  unpackaged run at a loopback JWKS, which is how `verify:security --access-configured` runs.
+  It is enforced on the loopback listener **and on the LAN one**, and
   deliberately not on the dedicated tailnet listener: a request that reached the machine over
   the tailnet did not come through the tunnel and so can never carry those headers, and
   enforcing it there would 401 every device on the VPN, WebSocket upgrade included. The
@@ -711,7 +733,10 @@ npm run verify:ssh-enroll     # the password-prompt detector (POSIX and ConPTY-s
 npm run verify:remote         # phone access: where the link points and how it says it gets
                               # there, the LAN interface ranking, what a dead tunnel reports,
                               # and stt.ts against fake sidecars on loopback port 0: the
-                              # address per call, and `unset` (503) vs a failed server (502)
+                              # address per call, and `unset` (503) vs a failed server (502);
+                              # Cloudflare Access verification against keypairs it generates
+                              # and a fake JWKS: every forgery, rotation, the refetch budget,
+                              # outages, and Look it up's signed-redirect check (gotcha 124)
 npm run verify:phone-ui       # the phone UI's decisions: list sections, answer options read
                               # off the screen, the resize policy, queued sends, connect input
 npm run verify:installer-art  # the committed installer bitmaps: BMP3 headers decoded by hand,
@@ -746,6 +771,10 @@ npm run verify:selection      # a selecting drag survives letting go of the mous
 npm run verify:extract        # page extractor regression set
 npm run verify:usage          # plan limits from the statusLine payload; STOKE_LIVE_USAGE=1 adds the account call
 npm run verify:security <url> <token> --access   # remote server, against a running instance
+# Access VERIFIED, with no Cloudflare account (gotcha 124): serve a fake team's JWKS first,
+#   node scripts/verify-remote-security.mjs --serve-fake-access 7991 /tmp/x/access.json
+# start an unpackaged Stoke with STOKE_ACCESS_CERTS_URL and the team/AUD it prints, then
+npm run verify:security <url> <token> --access-configured /tmp/x/access.json
 ```
 
 Four more sit in the `check` chain without an entry above: `verify:activity` (the activity
@@ -996,6 +1025,10 @@ src/main/         Electron main process
                       does the tunnel exist, does a hostname point at it. The probe mutates
                       nothing and has a third answer, `unknown`, because the account lookup is
                       a live API call. Gotcha 58
+    accessJwt.ts      verifying Cloudflare Access's `Cf-Access-Jwt-Assertion`: RS256 against
+                      the team JWKS (`AccessKeySet`: single-flight, kid cooldown, staleness),
+                      the claims, and `discoverAccess` for Look it up. node:crypto only, fetch
+                      and clock injected, no electron import, so verify:remote runs it. 124
 src/preload/      contextBridge -> window.stoke
 src/renderer/     desktop React UI (all colour via CSS custom properties)
   src/components/BusyDialog.tsx  "a prompt is running — Force restart / Wait / Cancel", asked
@@ -1050,7 +1083,8 @@ src/remote/       mobile web UI, built separately to out/remote. Vanilla TS on o
                   340px session rail beside the session (never a stretched phone)
   main.ts           boot (key scrub, live theme), the router and the rail/pane layout
   api.ts            the phone contract's shapes, the fetch wrapper (a 401 is the Connect
-                    screen), /api/theme -> :root including derived accent-ink and meters
+                    screen; a 403 `refused: 'access'` is the computer's Access reason,
+                    `accessRefusalOf`), /api/theme -> :root including derived accent-ink and meters
   store.ts          the one session list: /ws/events pushes, a 5s poll while it is down
   list.ts           Needs you / Working / Idle / Ended rows, answerable from the list; reads
                     a waiting prompt's options by replaying the pty into an unopened xterm
@@ -1065,6 +1099,9 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
   setupFile.ts      the `.stoke-setup` header and its refusals, what travels
                     (PORTABLE/PARTIAL/LOCAL_KEYS, a partition of Settings), the import merge
                     and preview (`planImport`), and the passphrase strength reading
+  cfAccess.ts       Cloudflare Access without crypto: the team-domain and AUD clamps settings
+                    hydrate through, the policy, the login-redirect parser Look it up reads,
+                    the status and refusal words the panel shows. Gotcha 124
   remotePhone.ts    the phone contract's pure pieces: status mapping and sort, the ended
                     ring, `submitFrames` (typed, never bracketed for Claude: gotcha 86)
   phoneUi.ts        the phone UI's decisions: sections, answer-option parsing, the resize

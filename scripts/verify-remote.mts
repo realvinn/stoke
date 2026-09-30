@@ -27,8 +27,11 @@ import {
   isEndedExpired,
   isGatedRemotePath,
   isTerminalReport,
+  accessRefusalMessage,
   mayStoreKeyCookie,
   phoneHostDefaults,
+  refusalStatusLine,
+  remoteRefusal,
   phoneStatusFor,
   PROMPT_SETTLE_MS,
   resumeVerdict,
@@ -45,7 +48,31 @@ import {
 } from '../src/shared/remotePhone.ts'
 import { createServer, type Server } from 'node:http'
 import { join } from 'node:path'
+import { createHmac, generateKeyPairSync, sign, type KeyObject } from 'node:crypto'
 import { transcribe } from '../src/main/stt.ts'
+import {
+  ACCESS_LEEWAY_S,
+  AccessKeySet,
+  decodeAccessJwt,
+  discoverAccess,
+  EMPTY_RETRY_MS,
+  KID_COOLDOWN_MS,
+  keysTtlFrom,
+  MAX_ACCESS_TOKEN_CHARS,
+  MAX_JWKS_BYTES,
+  MAX_STALE_MS,
+  parseJwks,
+  verifyAccessJwt
+} from '../src/main/remote/accessJwt.ts'
+import {
+  accessCertsUrl,
+  accessPolicyOf,
+  accessRefusalForPhone,
+  type AccessRefusal,
+  clampAccessAud,
+  clampAccessTeamDomain,
+  parseAccessRedirect
+} from '../src/shared/cfAccess.ts'
 
 let failures = 0
 
@@ -582,9 +609,80 @@ console.log('\nthe connect link advertises the RUNNING server token, never a dri
 }
 
 // Review of PX-14: /?k=<anything> used to set the cookie with no check.
-check('a wrong ?k is never stored as the cookie', mayStoreKeyCookie('WRONGKEY', false), false)
-check('the right one is', mayStoreKeyCookie('RIGHTKEY', true), true)
-check('no ?k: nothing to store', mayStoreKeyCookie(null, true), false)
+check('a wrong ?k is never stored as the cookie', mayStoreKeyCookie('WRONGKEY', { ok: false, refused: 'key' }), false)
+check('the right one is', mayStoreKeyCookie('RIGHTKEY', { ok: true }), true)
+check('no ?k: nothing to store', mayStoreKeyCookie(null, { ok: true }), false)
+check('an empty ?k: nothing to store', mayStoreKeyCookie('', { ok: true }), false)
+/*
+ * Gotcha 124, review: an Access refusal withheld the cookie too, so the phone's
+ * next /api call carried no key, got 401, and said "This link's key isn't
+ * current" about a key that had just matched.
+ */
+check(
+  'the right key whose Access token this machine refused IS stored',
+  mayStoreKeyCookie('RIGHTKEY', { ok: false, refused: 'access', reason: 'no-keys' }),
+  true
+)
+
+console.log('\nan Access refusal is never told to the phone as a key problem (gotcha 124)')
+{
+  const REASONS: AccessRefusal[] = [
+    'missing',
+    'malformed',
+    'alg',
+    'no-keys',
+    'unknown-kid',
+    'signature',
+    'iss',
+    'aud',
+    'expired',
+    'not-yet-valid',
+    'type'
+  ]
+  check('an authorised request is not refused', [remoteRefusal({ ok: true }), refusalStatusLine({ ok: true })], [null, null])
+  const byKey = remoteRefusal({ ok: false, refused: 'key' })
+  check(
+    'a missing or wrong key is 401 with the old plain-text body (the phone shows Connect)',
+    [byKey?.status, byKey?.contentType, byKey?.body],
+    [401, 'text/plain; charset=utf-8', 'Unauthorized. Open the link from Stoke, which carries the key.']
+  )
+  check("the key's socket refusal is 401 too", refusalStatusLine({ ok: false, refused: 'key' }), 'HTTP/1.1 401 Unauthorized')
+  check("a 401 is never read as an Access refusal", accessRefusalMessage(byKey?.status, { error: 'x', refused: 'access' }), null)
+
+  // What the phone must NEVER say about a key that matched.
+  const keyStory = /replaced|not accepted|isn.t current|scan|copy the link/i
+  for (const reason of REASONS) {
+    const r = remoteRefusal({ ok: false, refused: 'access', reason })
+    let body: unknown = null
+    try {
+      body = JSON.parse(r?.body ?? '')
+    } catch {
+      /* judged below */
+    }
+    const text = accessRefusalMessage(r?.status, body)
+    check(
+      `Access '${reason}': 403, JSON, and the phone reads back the sentence it was sent`,
+      [r?.status, r?.contentType, text !== null && text === accessRefusalForPhone(reason)],
+      [403, 'application/json; charset=utf-8', true]
+    )
+    check(`  and that sentence tells no key story`, keyStory.test(text ?? ''), false)
+    check(
+      `  and its socket is refused 403, not 401`,
+      refusalStatusLine({ ok: false, refused: 'access', reason }),
+      'HTTP/1.1 403 Forbidden'
+    )
+  }
+  // The three causes the review named each get their own sentence, naming the machine's side.
+  check('a JWKS outage says the keys could not be fetched', /signing keys/.test(accessRefusalForPhone('no-keys')), true)
+  check('a stale AUD points at Look it up', /Look it up/.test(accessRefusalForPhone('aud')), true)
+  check('clock skew names the clock, both ways', [/clock/.test(accessRefusalForPhone('expired')), /clock/.test(accessRefusalForPhone('not-yet-valid'))], [true, true])
+  check('a request that skipped Access says so', /did not/.test(accessRefusalForPhone('missing')), true)
+  check('those four are different sentences', new Set(['no-keys', 'aud', 'expired', 'missing'].map((r) => accessRefusalForPhone(r as AccessRefusal))).size, 4)
+  // Every OTHER 403 keeps its own meaning: bypass mode is refused with an error and no `refused`.
+  check('a bypass-mode 403 is not an Access refusal', accessRefusalMessage(403, { error: 'bypassPermissions is not allowed from the phone' }), null)
+  check('nor is a 403 with no body', accessRefusalMessage(403, null), null)
+  check('nor an Access-shaped body with an empty sentence', accessRefusalMessage(403, { refused: 'access', error: '' }), null)
+}
 
 // Gotcha 92: "Resume conversation" must never quietly become a new one.
 {
@@ -704,6 +802,376 @@ console.log("\n/api/host's defaults (phone contract point 2)")
   )
   check('with no Claude on offer, the first agent that is', phoneHostDefaults(d, 'grok', ['codex', 'opencode']).cli, 'codex')
   check('an agent list carrying junk ids cannot become the default', phoneHostDefaults(d, 'grok', ['bash', 'codex']).cli, 'codex')
+}
+
+/*
+ * Cloudflare Access, verified (gotcha 124). The server used to pass any request
+ * carrying `Cf-Access-Jwt-Assertion` — or the unsigned email header — with any
+ * value at all. Everything below runs against keypairs generated here and a
+ * JWKS served by a fake fetch, on a fake clock: no network, no Cloudflare.
+ */
+console.log('\nCloudflare Access tokens are verified, not just present (gotcha 124)')
+{
+  const TEAM = 'stoke-verify.cloudflareaccess.com'
+  const AUD = 'd'.repeat(8) + '0123456789abcdef'.repeat(3) + '9'.repeat(8)
+  const policy = { teamDomain: TEAM, aud: AUD }
+  const CERTS = accessCertsUrl(TEAM)
+  const b64 = (o: unknown): string => Buffer.from(JSON.stringify(o)).toString('base64url')
+  const mint = (key: KeyObject, header: Record<string, unknown>, payload: Record<string, unknown>): string => {
+    const input = `${b64(header)}.${b64(payload)}`
+    return `${input}.${sign('sha256', Buffer.from(input), key).toString('base64url')}`
+  }
+  const pairA = generateKeyPairSync('rsa', { modulusLength: 2048 })
+  const pairB = generateKeyPairSync('rsa', { modulusLength: 2048 })
+  const attacker = generateKeyPairSync('rsa', { modulusLength: 2048 })
+  const jwk = (pub: KeyObject, kid: string): Record<string, unknown> => ({
+    ...(pub.export({ format: 'jwk' }) as Record<string, unknown>),
+    kid,
+    alg: 'RS256',
+    use: 'sig'
+  })
+
+  let clock = 1_900_000_000_000
+  const now = (): number => clock
+  const nowS = (): number => Math.floor(clock / 1000)
+  let published: unknown = { keys: [jwk(pairA.publicKey, 'kid-a')] }
+  let down = false
+  let asked: string[] = []
+  const fakeFetch = async (url: string): Promise<Response> => {
+    asked.push(url)
+    if (down) throw new TypeError('fetch failed', { cause: new Error('getaddrinfo ENOTFOUND') })
+    if (url !== CERTS) return new Response('not here', { status: 404 })
+    return new Response(JSON.stringify(published), {
+      status: 200,
+      headers: { 'content-type': 'application/json', 'cache-control': 'public, max-age=14400, must-revalidate' }
+    })
+  }
+  const keySet = (): AccessKeySet => new AccessKeySet({ certsUrl: CERTS, fetch: fakeFetch, now })
+  const claims = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+    aud: [AUD],
+    email: 'phone@example.com',
+    exp: nowS() + 600,
+    iat: nowS(),
+    nbf: nowS(),
+    iss: `https://${TEAM}`,
+    type: 'app',
+    sub: 'user-1',
+    ...over
+  })
+  const hdr = (over: Record<string, unknown> = {}): Record<string, unknown> => ({ alg: 'RS256', kid: 'kid-a', typ: 'JWT', ...over })
+  const reason = (v: { ok: boolean; reason?: string }): string => (v.ok ? 'ok' : (v.reason ?? '?'))
+  const verdictOf = async (token: unknown, keys: AccessKeySet): Promise<string> =>
+    reason(await verifyAccessJwt(token, policy, keys, now()))
+
+  const keys = keySet()
+  const good = mint(pairA.privateKey, hdr(), claims())
+  const v1 = await verifyAccessJwt(good, policy, keys, now())
+  check('a token Cloudflare signed for this application passes', [v1.ok, v1.ok && v1.subject], [true, 'phone@example.com'])
+  check('and cost exactly one JWKS fetch, from the team in settings', asked, [CERTS])
+  check('aud as a bare string passes too', await verdictOf(mint(pairA.privateKey, hdr(), claims({ aud: AUD })), keys), 'ok')
+  check('aud as a list that includes ours passes', await verdictOf(mint(pairA.privateKey, hdr(), claims({ aud: ['f'.repeat(64), AUD] })), keys), 'ok')
+  check('a second verify is served from the cache', asked.length, 1)
+
+  // Presence was the whole check before; now absence and forgery are both refusals.
+  check('no header at all is refused', await verdictOf(undefined, keys), 'missing')
+  check('nor is an empty one', await verdictOf('', keys), 'missing')
+  check('a header sent twice (Node hands over an array) is not a token', await verdictOf([good, good], keys), 'malformed')
+  check('the value verify:security used to forge is refused', await verdictOf('verify@localhost', keys), 'malformed')
+
+  console.log('  claims')
+  check('wrong aud is refused', await verdictOf(mint(pairA.privateKey, hdr(), claims({ aud: ['e'.repeat(64)] })), keys), 'aud')
+  check('no aud is refused', await verdictOf(mint(pairA.privateKey, hdr(), claims({ aud: undefined })), keys), 'aud')
+  check(
+    'another team as iss is refused, even signed by our key',
+    await verdictOf(mint(pairA.privateKey, hdr(), claims({ iss: 'https://evil.cloudflareaccess.com' })), keys),
+    'iss'
+  )
+  check('an iss without the scheme is refused', await verdictOf(mint(pairA.privateKey, hdr(), claims({ iss: TEAM })), keys), 'iss')
+  check('the team-wide org token is not an app token', await verdictOf(mint(pairA.privateKey, hdr(), claims({ type: 'org' })), keys), 'type')
+  check(
+    'expired by more than the leeway is refused',
+    await verdictOf(mint(pairA.privateKey, hdr(), claims({ exp: nowS() - ACCESS_LEEWAY_S - 1 })), keys),
+    'expired'
+  )
+  check(
+    'expired by less than the leeway still passes (clock skew)',
+    await verdictOf(mint(pairA.privateKey, hdr(), claims({ exp: nowS() - ACCESS_LEEWAY_S + 5 })), keys),
+    'ok'
+  )
+  check('a token with no exp is refused', await verdictOf(mint(pairA.privateKey, hdr(), claims({ exp: undefined })), keys), 'expired')
+  check('an exp that is not a number is refused', await verdictOf(mint(pairA.privateKey, hdr(), claims({ exp: String(nowS() + 600) })), keys), 'expired')
+  check(
+    'nbf in the future by more than the leeway is refused',
+    await verdictOf(mint(pairA.privateKey, hdr(), claims({ nbf: nowS() + ACCESS_LEEWAY_S + 5 })), keys),
+    'not-yet-valid'
+  )
+  check('nbf a few seconds ahead passes (clock skew)', await verdictOf(mint(pairA.privateKey, hdr(), claims({ nbf: nowS() + 20 })), keys), 'ok')
+  check(
+    'iat in the future by more than the leeway is refused',
+    await verdictOf(mint(pairA.privateKey, hdr(), claims({ iat: nowS() + ACCESS_LEEWAY_S + 5 })), keys),
+    'not-yet-valid'
+  )
+  {
+    // A service token has no nbf and no email (Cloudflare's Application token docs).
+    const service = claims({ nbf: undefined, email: undefined, sub: '', common_name: 'ci.access' })
+    const v = await verifyAccessJwt(mint(pairA.privateKey, hdr(), service), policy, keys, now())
+    check('a service token (no nbf, no email) passes, named by its common_name', [v.ok, v.ok && v.subject], [true, 'ci.access'])
+  }
+
+  console.log('  algorithm and signature')
+  {
+    const [h, p, s] = good.split('.')
+    check('a payload edited after signing is refused', await verdictOf(`${h}.${b64(claims({ email: 'someone-else@example.com' }))}.${s}`, keys), 'signature')
+    const sig = Buffer.from(s, 'base64url')
+    sig[10] ^= 0xff
+    check('a flipped signature byte is refused', await verdictOf(`${h}.${p}.${sig.toString('base64url')}`, keys), 'signature')
+    check('a truncated signature is refused', await verdictOf(`${h}.${p}.${sig.subarray(0, 128).toString('base64url')}`, keys), 'signature')
+    check('alg none is refused before any key is looked up', await verdictOf(`${b64(hdr({ alg: 'none' }))}.${p}.AAAA`, keys), 'alg')
+    check('alg none with the signature left off is not even a token', await verdictOf(`${b64(hdr({ alg: 'none' }))}.${p}.`, keys), 'malformed')
+    // The classic confusion: an HMAC keyed with the PUBLIC key, which anyone has.
+    const pem = pairA.publicKey.export({ format: 'pem', type: 'spki' })
+    const hsInput = `${b64(hdr({ alg: 'HS256' }))}.${p}`
+    check(
+      'HS256 keyed with the public key is refused',
+      await verdictOf(`${hsInput}.${createHmac('sha256', pem).update(hsInput).digest('base64url')}`, keys),
+      'alg'
+    )
+    const rs512Input = `${b64(hdr({ alg: 'RS512' }))}.${p}`
+    check(
+      'RS512, even signed by the real key, is refused: Access signs RS256',
+      await verdictOf(`${rs512Input}.${sign('sha512', Buffer.from(rs512Input), pairA.privateKey).toString('base64url')}`, keys),
+      'alg'
+    )
+    check('a critical header extension is refused, not ignored', await verdictOf(mint(pairA.privateKey, hdr({ crit: ['exp'] }), claims()), keys), 'malformed')
+    check("an attacker's key claiming the real kid fails the signature", await verdictOf(mint(attacker.privateKey, hdr(), claims()), keys), 'signature')
+    check(
+      'a jku pointing at the attacker is never followed',
+      [await verdictOf(mint(attacker.privateKey, hdr({ jku: 'https://evil.example/jwks' }), claims()), keys), asked.includes('https://evil.example/jwks')],
+      ['signature', false]
+    )
+    check('two parts are not a token', await verdictOf(`${h}.${p}`, keys), 'malformed')
+    check('base64url with a stray character is not a token', await verdictOf(`${h}.${p}!.${s}`, keys), 'malformed')
+    check('an oversize token is refused before decoding', await verdictOf(`${h}.${'A'.repeat(MAX_ACCESS_TOKEN_CHARS)}.AAAA`, keys), 'malformed')
+    check('a header that is JSON but not an object is not a token', await verdictOf(`${b64([1])}.${p}.AAAA`, keys), 'malformed')
+    check('decodeAccessJwt reads a real one', decodeAccessJwt(good)?.header.kid, 'kid-a')
+  }
+
+  console.log('  key rotation and the refetch budget')
+  {
+    asked = []
+    const signedByB = mint(pairB.privateKey, hdr({ kid: 'kid-b' }), claims())
+    check(
+      'an unknown kid right after a fetch is refused with no refetch (cooldown)',
+      [await verdictOf(mint(attacker.privateKey, hdr({ kid: 'kid-x' }), claims()), keys), asked.length],
+      ['unknown-kid', 0]
+    )
+    clock += KID_COOLDOWN_MS + 1
+    check(
+      'past the cooldown, an unknown kid refetches exactly once, then is refused',
+      [await verdictOf(mint(attacker.privateKey, hdr({ kid: 'kid-y' }), claims()), keys), asked.length],
+      ['unknown-kid', 1]
+    )
+    check(
+      'a second unknown kid inside the cooldown costs ZERO fetches',
+      [await verdictOf(mint(attacker.privateKey, hdr({ kid: 'kid-z' }), claims()), keys), asked.length],
+      ['unknown-kid', 1]
+    )
+    // Cloudflare rotates: B is published beside A.
+    published = { keys: [jwk(pairB.publicKey, 'kid-b'), jwk(pairA.publicKey, 'kid-a')] }
+    check('a rotated-in key inside the cooldown is not fetched yet', [await verdictOf(signedByB, keys), asked.length], ['unknown-kid', 1])
+    clock += KID_COOLDOWN_MS + 1
+    check('after the cooldown the new kid is fetched, and its token passes', [await verdictOf(mint(pairB.privateKey, hdr({ kid: 'kid-b' }), claims()), keys), asked.length], ['ok', 2])
+    check('the old key still verifies through its week of overlap', await verdictOf(mint(pairA.privateKey, hdr(), claims()), keys), 'ok')
+    published = { keys: [jwk(pairB.publicKey, 'kid-b')] }
+    clock += 60 * 60_000 + 1
+    // Past max-age: the answer comes from the cache and a refresh runs behind it.
+    await verdictOf(mint(pairB.privateKey, hdr({ kid: 'kid-b' }), claims()), keys)
+    await new Promise((r) => setTimeout(r, 20))
+    check('a key the team withdrew is dropped at the next refresh', await verdictOf(mint(pairA.privateKey, hdr(), claims()), keys), 'unknown-kid')
+  }
+
+  console.log('  one fetch at a time, and outages')
+  {
+    published = { keys: [jwk(pairA.publicKey, 'kid-a')] }
+    asked = []
+    const cold = keySet()
+    const token = mint(pairA.privateKey, hdr(), claims())
+    const verdicts = await Promise.all(Array.from({ length: 10 }, () => verifyAccessJwt(token, policy, cold, now())))
+    check('ten sockets on a cold cache share ONE fetch', [asked.length, verdicts.every((v) => v.ok)], [1, true])
+    // The server's start-time prefetch calls refresh() directly, beside a phone's keyFor.
+    asked = []
+    const prefetched = keySet()
+    await Promise.all([prefetched.refresh(), prefetched.refresh(), verifyAccessJwt(token, policy, prefetched, now())])
+    check('a prefetch, a second prefetch and a request at once: still one fetch', [asked.length, prefetched.fetches], [1, 1])
+
+    down = true
+    asked = []
+    const offline = keySet()
+    check('JWKS unreachable on a cold cache: refused as no-keys', await verdictOf(token, offline), 'no-keys')
+    check('and the failure names the URL it tried', offline.lastError?.startsWith(`Could not fetch ${CERTS}`), true)
+    check('an immediate retry is held back', [await verdictOf(token, offline), asked.length], ['no-keys', 1])
+    down = false
+    clock += EMPTY_RETRY_MS + 1
+    check(
+      'seconds later, with the network back, it recovers by itself',
+      [await verdictOf(mint(pairA.privateKey, hdr(), claims()), offline), offline.lastError],
+      ['ok', null]
+    )
+    down = true
+    clock += 2 * 60 * 60_000
+    check('a warm cache survives an outage past its max-age', await verdictOf(mint(pairA.privateKey, hdr(), claims()), offline), 'ok')
+    clock += MAX_STALE_MS
+    check('but not past the staleness limit: fail closed', await verdictOf(mint(pairA.privateKey, hdr(), claims()), offline), 'no-keys')
+    down = false
+  }
+
+  console.log('  what a JWKS answer may contain')
+  {
+    const ec = generateKeyPairSync('ec', { namedCurve: 'P-256' })
+    const weak = generateKeyPairSync('rsa', { modulusLength: 1024 })
+    const parsed = parseJwks(
+      JSON.stringify({
+        keys: [
+          { ...(ec.publicKey.export({ format: 'jwk' }) as object), kid: 'ec', alg: 'ES256' },
+          { ...jwk(pairA.publicKey, 'enc'), use: 'enc' },
+          { ...jwk(pairA.publicKey, 'rs512'), alg: 'RS512' },
+          jwk(weak.publicKey, 'weak'),
+          { kty: 'RSA', kid: 'junk', n: '!!', e: 'AQAB' },
+          jwk(pairA.publicKey, 'kid-a')
+        ]
+      })
+    )
+    check('only a 2048-bit-or-more RS256 signing key survives', [...parsed.keys()], ['kid-a'])
+    let threw = ''
+    try {
+      parseJwks('{"not":"keys"}')
+    } catch (e) {
+      threw = (e as Error).message
+    }
+    check('an answer with no keys list is an error, not an empty set', threw, 'the answer has no keys list')
+    published = { keys: [jwk(pairA.publicKey, 'kid-a')], padding: 'x'.repeat(MAX_JWKS_BYTES) }
+    const big = keySet()
+    await big.refresh()
+    check('an oversize answer is refused', [big.size, /over \d+ bytes/.test(big.lastError ?? '')], [0, true])
+    published = { keys: [jwk(pairA.publicKey, 'kid-a')] }
+    check('max-age is honoured, but never past an hour', keysTtlFrom('public, max-age=14400, must-revalidate'), 60 * 60_000)
+    check('nor under five minutes', keysTtlFrom('max-age=1'), 5 * 60_000)
+    check('and ten minutes when unsaid', keysTtlFrom(null), 10 * 60_000)
+  }
+
+  console.log('  settings: what a team domain and an AUD may be')
+  check('a pasted team URL is kept as its bare domain', clampAccessTeamDomain('  https://Team-1.cloudflareaccess.com/ '), 'team-1.cloudflareaccess.com')
+  check('a path is refused, not trimmed into something that fetches', clampAccessTeamDomain('evil.com/x?'), '')
+  check('a lookalike suffix is refused', clampAccessTeamDomain('a.cloudflareaccess.com.evil.com'), '')
+  check('a nested subdomain is refused', clampAccessTeamDomain('a.b.cloudflareaccess.com'), '')
+  check('a port is refused', clampAccessTeamDomain('team.cloudflareaccess.com:8443'), '')
+  check('plain http is refused', clampAccessTeamDomain('http://team.cloudflareaccess.com'), '')
+  check('a number is refused', clampAccessTeamDomain(42), '')
+  check('an AUD tag is kept, lowercased', clampAccessAud(` ${AUD.toUpperCase()} `), AUD)
+  check('63 hex characters is not one', clampAccessAud(AUD.slice(1)), '')
+  check('nor is anything not hex', clampAccessAud('g'.repeat(64)), '')
+  check(
+    'a policy needs both halves',
+    [accessPolicyOf({ accessTeamDomain: TEAM, accessAud: '' }), accessPolicyOf({ accessTeamDomain: '', accessAud: AUD })],
+    [null, null]
+  )
+  check('and with both, names them', accessPolicyOf({ accessTeamDomain: TEAM, accessAud: AUD }), policy)
+  check('a hand-edited file is clamped on its way to the policy too', accessPolicyOf({ accessTeamDomain: 'evil.example', accessAud: AUD }), null)
+
+  console.log("  Look it up: the team and AUD off Access's own login redirect")
+  {
+    const HOST = 'code.example.com'
+    const meta = (over: Record<string, unknown> = {}, key: KeyObject = pairA.privateKey, kid = 'kid-a'): string =>
+      mint(key, { alg: 'RS256', kid, typ: 'JWT' }, { type: 'meta', aud: AUD, hostname: HOST, iat: nowS(), exp: nowS() + 300, ...over })
+    const loginUrl = (m: string, kid = AUD, team = TEAM): string =>
+      `https://${team}/cdn-cgi/access/login/${HOST}?kid=${kid}&meta=${m}&redirect_url=%2Fapi%2Fhost`
+    check('the measured shape parses', parseAccessRedirect(loginUrl('a.b.c')), { teamDomain: TEAM, aud: AUD, meta: 'a.b.c' })
+    check('a host that is not *.cloudflareaccess.com is not Access', parseAccessRedirect(loginUrl('a.b.c', AUD, 'login.evil.example')), null)
+    check('a kid that is not 64 hex is not an AUD', parseAccessRedirect(loginUrl('a.b.c', 'abc')), null)
+    check('no meta, no answer', parseAccessRedirect(loginUrl('')), null)
+    check('another path on the team domain is not the login', parseAccessRedirect(`https://${TEAM}/elsewhere?kid=${AUD}&meta=a.b.c`), null)
+    check('nor is plain http', parseAccessRedirect(loginUrl('a.b.c').replace('https:', 'http:')), null)
+
+    let probed: { url: string; init?: RequestInit } | null = null
+    const edge = (answer: () => Response) => async (url: string, init?: RequestInit): Promise<Response> => {
+      if (url === CERTS) return fakeFetch(url)
+      probed = { url, init }
+      return answer()
+    }
+    const redirectTo = (location: string) => (): Response => new Response(null, { status: 302, headers: { location } })
+
+    const found = await discoverAccess(` ${HOST.toUpperCase()} `, { fetch: edge(redirectTo(loginUrl(meta()))), now })
+    check('a signed login redirect gives the team and AUD', found, { ok: true, teamDomain: TEAM, aud: AUD })
+    const seen = probed as { url: string; init?: RequestInit } | null
+    const sent = new Headers(seen?.init?.headers)
+    check(
+      'asked like a browser, redirect not followed (Managed OAuth answers curl with a 401 instead)',
+      [seen?.url, seen?.init?.redirect, sent.get('user-agent')?.startsWith('Mozilla/5.0'), sent.get('accept')?.startsWith('text/html')],
+      [`https://${HOST}/api/host`, 'manual', true, true]
+    )
+    const outcome = async (answer: () => Response): Promise<string> => {
+      const r = await discoverAccess(HOST, { fetch: edge(answer), now })
+      return r.ok ? 'saved' : 'refused'
+    }
+    check('meta naming another hostname is refused', await outcome(redirectTo(loginUrl(meta({ hostname: 'other.example.com' })))), 'refused')
+    check('meta whose aud is not the kid is refused', await outcome(redirectTo(loginUrl(meta({ aud: 'f'.repeat(64) })))), 'refused')
+    check('an expired meta is refused', await outcome(redirectTo(loginUrl(meta({ exp: nowS() - 3600 })))), 'refused')
+    check('a meta of another type is refused', await outcome(redirectTo(loginUrl(meta({ type: 'app' })))), 'refused')
+    check("a meta signed by someone else's key under the team's kid is refused", await outcome(redirectTo(loginUrl(meta({}, attacker.privateKey)))), 'refused')
+    check('a meta under a kid the team does not publish is refused', await outcome(redirectTo(loginUrl(meta({}, attacker.privateKey, 'kid-q')))), 'refused')
+    const plain = await discoverAccess(HOST, { fetch: edge(() => new Response('{}', { status: 200 })), now })
+    check('a hostname that answers without a sign-in has nothing to look up', [plain.ok, !plain.ok && /without a Cloudflare Access sign-in/.test(plain.error)], [false, true])
+    const oauth = await discoverAccess(HOST, {
+      fetch: edge(
+        () =>
+          new Response('', {
+            status: 401,
+            headers: { 'www-authenticate': 'Bearer realm="OAuth", resource_metadata="https://code.example.com/.well-known/cloudflare-access-protected-resource/"' }
+          })
+      ),
+      now
+    })
+    check("Access's OAuth 401 says so, and points at the paste fields", [oauth.ok, !oauth.ok && /OAuth sign-in/.test(oauth.error)], [false, true])
+    check('a redirect somewhere else is not Access', await outcome(redirectTo('https://example.com/login')), 'refused')
+    const unreachable = await discoverAccess(HOST, {
+      fetch: async () => {
+        throw new TypeError('fetch failed')
+      },
+      now
+    })
+    check('an unreachable hostname is a reason, not a throw', [unreachable.ok, !unreachable.ok && unreachable.error.startsWith('Could not reach')], [false, true])
+    const never = async (): Promise<Response> => {
+      throw new Error('fetched')
+    }
+    check('no hostname: nothing is fetched', await discoverAccess('  ', { fetch: never, now }), { ok: false, error: 'Set the public hostname first.' })
+    check('a URL is not a hostname', (await discoverAccess('https://x.example.com/a', { fetch: never, now })).ok, false)
+  }
+
+  console.log('  the setup check sees Access with Managed OAuth')
+  check(
+    "a 401 naming Access's protected-resource metadata is Access, not Stoke",
+    classifyHostname(401, null, '', 'Bearer realm="OAuth", resource_metadata="https://h/.well-known/cloudflare-access-protected-resource/"'),
+    'access'
+  )
+  check('a plain 401 is still our own server asking for the key', classifyHostname(401, null, '', null), 'ok')
+
+  console.log('  a policy change restarts a running server, dropping every socket')
+  {
+    const base = {
+      enabled: true,
+      port: 7921,
+      bindLan: false,
+      bindTailscale: false,
+      requireAccessHeader: true,
+      accessTeamDomain: TEAM,
+      accessAud: AUD,
+      hostname: 'h',
+      token: 't'
+    }
+    check('a new AUD restarts it', shouldRestartRemote(base, { ...base, accessAud: 'f'.repeat(64) }, { running: true, error: null }), true)
+    check('a new team restarts it', shouldRestartRemote(base, { ...base, accessTeamDomain: 'other.cloudflareaccess.com' }, { running: true, error: null }), true)
+    check('equal values after a hydrate do not', shouldRestartRemote(base, { ...base, accessAud: `${AUD}` }, { running: true, error: null }), false)
+  }
 }
 
 console.log(failures ? `\n${failures} FAILED` : '\nall pass')
