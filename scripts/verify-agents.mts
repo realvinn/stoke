@@ -817,20 +817,25 @@ console.log('\ninstalling')
       `status ${clean.status}: ${JSON.stringify((String(clean.stdout) + String(clean.stderr)).slice(-400))}`
     )
     /*
-     * Both streams, because the install tab is a terminal and shows both. The
-     * reason is Write-Host'd by the step's OWN PowerShell, and on Windows a
-     * PowerShell whose output another PowerShell is capturing hands that back
-     * as CLIXML on stderr — the first windows-latest run failed on exactly
-     * that, with the CLIXML tail as its only output — where Linux pwsh leaves
-     * it on stdout. The two tails are printed apart so a failure says which
-     * stream held what.
+     * "No winget" is simulated by a PATH without it, which holds only where
+     * there is no registry. On Windows the script re-reads the Machine and User
+     * PATH before every step (`Update-StokePath`, so a step sees what the one
+     * before it installed), and that finds the runner's real winget: the
+     * windows-latest run printed winget's own "No package found matching input
+     * criteria." So there it asserts what that machine can show — the step
+     * that cannot install fails, is named, and is never "Done." — and the
+     * no-winget-at-all branch stays proven on the Linux gate.
      */
     const run2Out = String(run2.stdout)
-    const run2Err = String(run2.stderr)
+    const noWingetHere = process.platform !== 'win32'
     ok(
-      'windows, run: a winget step on a machine with NO winget is a failure that says why, not a silent "installed"',
-      run2.status === 1 && /Did not install: NoWinget/.test(run2Out + run2Err) && /has no winget/.test(run2Out + run2Err),
-      `status ${run2.status}; stdout ${JSON.stringify(run2Out.slice(-300))}; stderr says "has no winget": ${/has no winget/.test(run2Err)}`
+      noWingetHere
+        ? 'windows, run: a winget step on a machine with NO winget is a failure that says why, not a silent "installed"'
+        : 'windows, run: a winget step that cannot install is a failure, named, never a silent "installed" (this machine has winget)',
+      run2.status === 1 &&
+        /Did not install: NoWinget/.test(run2Out) &&
+        (noWingetHere ? /has no winget/.test(run2Out) : !/Done\./.test(run2Out)),
+      `status ${run2.status}: ${JSON.stringify((run2Out + String(run2.stderr)).slice(-400))}`
     )
     ok(
       'windows, run: a failing step is named, the steps after it still run, and the script exits 1',
