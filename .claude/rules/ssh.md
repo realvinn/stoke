@@ -185,6 +185,31 @@ reports `escapechar none`.
 >   shell parses it first: fish rejects `{ …; }`. Run under sh, bash, zsh, dash and tcsh here. A
 >   Windows OpenSSH server has no `sh`; the failure says to run `ssh-copy-id` from Git Bash.
 
+> **Checked against the code on 2026-09-30, second pass (review of the merge).** The tail anchor
+> proves a prompt is on screen. It does not prove whose. The reconnect gate after an enrollment
+> (`PtyManager.awaitingPassword`) read the last 512 bytes of a tab's output, and a shell that had
+> logged in and then run `su` ends in `Password: ` (PAM's shape). Measured from bash 5.2:
+> `su\r\n ESC[?2004l \r` then `Password: `. One that ran `ssh other` ends in `v@other's password: `.
+> Both passed, so after every enrollment the renderer killed and reconnected them, on every tab of
+> the host. The gate now reads `SshLoginWatch` (sshAuth.ts), a one-way flag kept for the session's
+> whole life. It settles on the first of: something painting, the 16 KB budget, a finished line
+> after the first prompt that is not ssh's own chatter, or Enter on a line that is not a prompt,
+> not empty and not one of ssh's questions. That covers shells that paint nothing: dash, ash, bash
+> before 5.1. The same watch withholds the OFFER from a session already in (`sshOutputStep`). That
+> closes a false offer the detector made on its own: log in by key to a shell that paints nothing,
+> run `su` inside the first 16 KB, and the detector saw an exact PAM prompt. Measured with dash.
+> What remains is a host whose own `command` prompts before any shell runs (`su -`). That still
+> reads as "at the prompt", and there is nothing to lose there.
+> Proven on real bytes: a node-pty harness ran `/usr/bin/ssh` (OpenSSH 10.3) against a Debian sshd
+> on loopback, with `-F /dev/null` and nothing in `~/.ssh` touched. After login, bash 5.2 and dash
+> each ran `su` and a nested ssh, and a dash key login ran `su`. The old gate said true in all five
+> cases and the new one false. On the key-login `su` the detector alone fired and the new step did
+> not. Then in the built app: three restored tabs on one host. A stayed at ssh's prompt; B logged
+> in and ran `su`; C logged in and ran a nested ssh. `awaitingPassword` answered true, false,
+> false. After a real enrollment, A was reconnected by key and B and C kept their ptys. Two things
+> that run showed: ssh 10.3 ends its log lines `\r\r\n\r`, and it prints `key fingerprint is:`
+> with a colon. The pattern for that line now takes both forms.
+
 ## 109. An enrollment whose password prompt has no visible terminal can never complete
 
 **ssh reads a password from its controlling terminal and from nowhere else — not stdin, not an
@@ -212,6 +237,8 @@ into that tab installed exactly one `authorized_keys` line (700/600), `keyEnroll
 the source tab reconnected to a shell with no prompt. A wrong password left the tab open with ssh's
 own "Permission denied" and a Try again that then succeeded; an already-authenticated tab was not
 touched. `~/.ssh` was backed up first and restored byte-identical (19 files, same sha256 and modes).
+(That tab sat at a shell prompt. One that had run `su` or a nested ssh WAS killed. The second
+2026-09-30 note under 75 has the fix and the rerun.)
 
 The rule for anything that asks a human for a secret: **verify against a real prompt, not an
 injected fake**, and find the terminal the person will type into before writing the code that

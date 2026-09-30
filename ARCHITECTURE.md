@@ -357,7 +357,9 @@ a key, and "Set up key login" in Settings > SSH hosts does the same without wait
 one `IdentityFile` block to `~/.ssh/config`; then `ssh-copy-id` runs in a visible "Add key to …"
 tab, because ssh reads a password from its own terminal and nowhere else (gotcha 109). When that
 tab exits, a `BatchMode` login probe with the tab's own identities decides `keyEnrolled`, and a
-tab still sitting at `password:` is reconnected — never one whose user already got in.
+tab still sitting at ssh's own `password:` is reconnected — never one whose user already got in.
+"Never got in" is a one-way watch over the session's whole life (`SshLoginWatch`), not the end of
+its output: a logged-in shell that runs `su` or `ssh other` ends in the very same prompt shape.
 
 The queue (`queue.ts`) is the safety property. Rejections are kept as tombstones rather than
 deleted, so "no, don't log that" is permanent — and because proposal ids are the sha1 of the
@@ -595,7 +597,9 @@ npm run verify:worklog-autoscan # when a session is scanned without being asked
 npm run verify:ssh            # ssh argv, ~/.ssh/config parsing, the remote transcript fetch,
                               # the login probe and IdentityFile block against real `ssh -G`
 npm run verify:ssh-enroll     # the password-prompt detector (POSIX and ConPTY-shaped streams),
-                              # the offer table, the append-only config writer on synthetic
+                              # the login watch that gates a reconnect (a `su` or nested ssh
+                              # after login is never "at the prompt"), the offer table,
+                              # the append-only config writer on synthetic
                               # paths, the launch plan by id, prepare/finish with ssh faked,
                               # and the fallback command run under sh/bash/zsh/dash/tcsh
 npm run verify:remote         # phone access: where the link points and how it says it gets
@@ -1009,8 +1013,11 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     key passphrase or a sudo password, and whether to offer to enroll a
                     key. The tail anchor is the load-bearing rule; gotcha 75. Under ConPTY
                     (Windows) the stream is scrubbed first (`conptyScrub`) — unverified on
-                    Windows. `awaitingPasswordFromTail` decides whether a tab may be
-                    reconnected after enrolling; `buildRemoteInstallCommand` is the
+                    Windows. `SshLoginWatch` (`sshOutputStep`, `sshLoginInput`)
+                    follows each remote session until it shows a login, and
+                    `awaitingSshPassword` over it decides whether a tab may be
+                    reconnected after enrolling — and withholds the offer from a
+                    session already in; `buildRemoteInstallCommand` is the
                     no-ssh-copy-id body, wrapped in `sh -c '…'` for any login shell
   api.ts            the type of window.stoke, shared by preload and renderer
 scripts/          the verify-*.mts suites, make-icon.cjs

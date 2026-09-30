@@ -307,8 +307,9 @@ rule file named on the group line.
   text can read the clipboard.
 - **75.** Detect an ssh password prompt by the TAIL — a prompt has no trailing newline, so a server
   banner can never be one — plus `opts.host`, an escape byte closing the window (scrubbed first under
-  ConPTY), and fire-once (`sshAuthStep`). The parsed `user@host` is display-only; enroll by host id,
-  and only the no-`-i` login probe (`buildLoginProbeArgs`) may set `keyEnrolled`.
+  ConPTY), and fire-once (`sshAuthStep`). Judge "never got in" by the whole-life `SshLoginWatch`,
+  never the tail: `su` after a login ends in the same prompt. The parsed `user@host` is display-only;
+  enroll by host id, and only the no-`-i` login probe (`buildLoginProbeArgs`) may set `keyEnrolled`.
 - **109.** Run anything that asks for a password in a terminal the user can type into — key
   enrollment is an "Add key" tab (`LaunchOptions.enroll`) — and prove it against a real prompt.
 
