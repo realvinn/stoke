@@ -467,13 +467,16 @@ its output: a logged-in shell that runs `su` or `ssh other` ends in the very sam
 **Kept sessions** (`SshHost.persist: 'tmux'`, on for new hosts) are what replaces byobu. Each tab
 gets a name (`Tab.remoteSession`, `stoke-<8 hex>`, minted in `startHostSession`, saved in
 `tabs.json`) and runs inside its own invisible tmux session on a private socket, so the shell
-outlives the connection. ssh's keepalives end a dead link in about a minute with exit 255, which
-reconnects the tab by itself with backoff (`reconnectDecision`); Resume, Start again and a restart
-reattach by the same name; closing a kept tab asks Detach or End (`closeAsksDetach`), and End is a
-BatchMode `kill-session`; the launcher's folder switcher asks each kept host what is still running
-there. The screen stays on xterm's normal buffer, so the wheel and selection are Stoke's own, and
-every reconnect reprints the session's history into the new terminal before attaching (gotcha 126
-records what tmux does to scrollback, and the seam that has to be exact).
+outlives the connection. The session has no status bar and no prefix key (`prefix None`), so every
+key, Ctrl+B included, reaches the shell. ssh's keepalives end a dead link in about a minute with
+exit 255, which reconnects the tab by itself with backoff (`reconnectDecision`); the run of tries
+starts over only after a connection that got past auth — main's login watch, sent with the pty's
+exit — and lasted, never on uptime alone. Resume, Start again and a restart reattach by the same
+name; closing a kept tab asks Detach or End (`closeAsksDetach`), holding any pending reconnect while
+it asks, and End is a BatchMode `kill-session`; the launcher's folder switcher asks each kept host
+what is still running there. The screen stays on xterm's normal buffer, so the wheel and selection
+are Stoke's own, and every reconnect reprints the session's history into the new terminal before
+attaching (gotcha 126 records what tmux does to scrollback, and the seam that has to be exact).
 
 The queue (`queue.ts`) is the safety property. Rejections are kept as tombstones rather than
 deleted, so "no, don't log that" is permanent — and because proposal ids are the sha1 of the

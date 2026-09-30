@@ -308,3 +308,50 @@ Not measured: fish as the login shell ran the wrapper in the container but is no
 suite run (no fish here); mode 2031 / OSC 11 theme-follow through tmux (gotcha 42); a password
 host's reconnect (it prompts again in the tab, by design); Windows OpenSSH as the client; the phone
 starting a kept session (main mints the name in `launchSession`, unexercised).
+
+> **Checked against the code on 2026-09-30, review of the branch.** Three corrections, each measured.
+> - **"No chrome" left tmux's keys live.** `-f /dev/null` skips the user's config, not tmux's built-in
+>   table, so C-b stayed the prefix. Through a pty client running the shipped command on 3.5a and 3.4:
+>   `echo AB`, C-b, `X`, Enter printed `AB` (the shell never saw C-b); C-b [ put the pane in copy mode;
+>   C-b c made a second window; C-b d detached with exit 0, which `reconnectDecision` reads as "the
+>   shell ended", so the tab closed without asking Detach or End. `set -g prefix None` and
+>   `set -g prefix2 None` now: `AXB`, no mode, one window, still attached, on 3.5a, 3.4 and 3.0a
+>   (Ubuntu 20.04), and in the built app with real key events (`echo AXB` → `AXB`, `prefix=None`).
+>   The root table holds only mouse bindings, which `mouse off` forwards to the pane. **Never
+>   `unbind -a -T prefix`**, the obvious fix: once it has run the table is gone, so the next run
+>   against that server (every reconnect, every second tab) fails "table prefix doesn't exist", and
+>   tmux skips the rest of the `\;` sequence, `new-session` included. `-q` only hides it: still no
+>   session, and exit 0. Measured on 3.5a and 3.4. `verify:ssh` pins both options and no `unbind`.
+> - **Uptime is not "the link was up".** `decideHostExit` reset the try count once ssh had run 5 s.
+>   A tab's ssh has no ConnectTimeout, so a try at a host that drops SYNs waits out TCP
+>   (`net.inet.tcp.keepinit` is 75000 ms on macOS) and exits 255 long after 5 s: every failed try
+>   reset the count, the wait never passed 1 s and the 24-try cap never fired. The exit event now
+>   carries main's login watch (`loggedIn` = `SshLoginWatch.settled`; tmux's first paint settles it),
+>   and `reconnectDecision` starts a run over only for a try that logged in AND lasted
+>   `RECONNECT_MIN_UPTIME_MS`; a first try that never logged in stops however long it ran. Driven in
+>   the built app against a proxy that swallows the connection for 8 s: tries 2, 3, 4 at 2, 5 and
+>   10 s (the old rule: try 1 at 1 s each time), then the same shell (`$MARK` intact) once the host
+>   came back, and a drop after that lasting login went back to try 1 at 1 s. A new tab whose first
+>   try ran 8 s and never logged in got the plain card and no retry. **A password host does not
+>   loop** — measured with OpenSSH 10.3 against sshd with `LoginGraceTime 8`: ssh sits at an
+>   unanswered prompt past the grace time (it is blocked reading the tty), and exits 255 ("Connection
+>   closed by … port …") only once something is typed. That line settles the watch, so a reconnect
+>   after a late answer starts at try 1, with the user there to see the fresh prompt.
+> - **The Detach/End question did not hold the countdown.** It ran on under the dialog, and a
+>   reconnect replaced the tab with one on a new id, so the answer found nothing to close and the
+>   tab came back live after End. Raising the question now pauses the timer (`pauseReconnect`),
+>   `reconnectNow` refuses a session whose close is being asked, Cancel re-arms for the time the card
+>   still shows, and the answer finds the tab by id or else by session name. A replacement whose
+>   session tab was closed while its `pty.start` was in flight is killed, never appended
+>   (`startHostSession`, gotcha 51). Driven: 9 s and 12 s under the question past a 5 s and a 10 s
+>   countdown fired nothing (same pty, no try reached the proxy); Cancel tried at once; End closed
+>   the tab and the host reported `no server running`. End pressed 4 ms after Reconnect now (before
+>   the start's IPC reply) left no tab and no session behind. Not driven: Windows.
+
+**Testing kept sessions without touching `~/.ssh`.** macOS's ssh reads its config and known_hosts from
+the passwd home, but OrbStack's `Include ~/.orbstack/ssh/config` line expands `~` from `$HOME`. A
+sandbox launched with a scratch `HOME` therefore gets its own `<HOME>/.orbstack/ssh/config`: hosts
+with a scratch `UserKnownHostsFile` and a `ProxyCommand` script whose own command line names the
+scratch dir, so a link drop is `kill -TERM` of your own process (it takes its relay child down;
+ssh exits 255). Nothing in the real `~/.ssh` is written (it is still READ: the config, and any key a
+`Host *` block names); hash it before and after anyway.
