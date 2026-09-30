@@ -63,6 +63,7 @@ import { hubEndpoint } from '../src/shared/hub/edge.ts'
 import { formatRecoverySecret, parseRecoverySecret } from '../src/shared/hub/pairing.ts'
 import { HUB_HEADERS, HUB_LIMITS, readHubResponse } from '../src/shared/hub/protocol.ts'
 import { hs1Problem, RELAY_IDLE_MS, RELAY_MAX_FRAME_BYTES, RELAY_OPEN_TTL_MS, RELAYS_PER_ACCOUNT, type RelayHs1, type RelayHs2, type RelayHs3 } from '../src/shared/hub/relay.ts'
+import { RELAY_HIGH_WATER } from '../hub/sockets.ts'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const WIN = process.platform === 'win32'
@@ -340,7 +341,7 @@ async function commitFromChain(d: Dev, epoch: number): Promise<string> {
 
 async function main(): Promise<void> {
   hub = await startHub(
-    { dataDir: join(TMP, 'hub'), mount: '/hub', edge: { host: '127.0.0.1', port: 0 }, lan: { host: '127.0.0.1', port: 0 }, edgeSecret: SECRET, rate: { capacity: 100_000, refillPerSec: 1000 } },
+    { dataDir: join(TMP, 'hub'), mount: '/hub', edge: { host: '127.0.0.1', port: 0 }, lan: { host: '127.0.0.1', port: 0 }, edgeSecret: SECRET, rate: { capacity: 100_000, refillPerSec: 1000 }, pingMs: 60 * 60_000 },
     { now, log: new HubLog((l) => logLines.push(l), { now, level: 'debug' }), announce: (t) => announced.push(t) }
   )
   EDGE = `http://127.0.0.1:${hub.edgePort}/hub`
@@ -914,6 +915,67 @@ let liveItemId = ''
     presC.ws.send(big2)
     await presC.until(() => presC.closed)
     check('a presence frame over 64 KiB closes that socket (1009)', presC.closed?.code, 1009)
+  }
+
+  /* ------------------------------------------- the relay under load */
+  console.log('\nthe relay under load: flow control, and liveness a silent end cannot fake')
+  {
+    const r4 = (await call('POST', '/v1/relays', { host: A.id }, { dev: C })).body?.relay as string
+    const g4 = await mustOpen(`/v1/ws/relay/${r4}`, C, 'guest end')
+    const h4 = await mustOpen(`/v1/ws/relay/${r4}`, A, 'host end')
+    h4.ws.pause() // the host stops reading its side at all
+    const FRAMES = 64
+    const sent: string[] = []
+    for (let i = 0; i < FRAMES; i++) {
+      const f = randomU8(RELAY_MAX_FRAME_BYTES)
+      sent.push(sha256B64u(f))
+      g4.ws.send(Buffer.from(f), { binary: true })
+    }
+    // Let the hub take what it will: wait until the guest's own queue stops shrinking.
+    // That queue is coarse — Node hands a socket's whole backlog to libuv as ONE
+    // writev and counts all of it until the writev completes — so it says only
+    // whether the guest's write finished: with no flow control the hub reads it
+    // all and it drops to 0. The hub's own peak (below) is the exact figure.
+    let settled = -1
+    for (let i = 0; i < 50; i++) {
+      await new Promise((r) => setTimeout(r, 100))
+      if (g4.ws.bufferedAmount === settled) break
+      settled = g4.ws.bufferedAmount
+    }
+    const mib = (n: number): string => `${(n / 2 ** 20).toFixed(1)} MiB`
+    ok('with the host not reading, the hub stops reading the guest', logLines.some((l) => l.includes('"msg":"relay held"') && l.includes(r4)))
+    ok(`so the guest's write stalls on its own side (${mib(settled)} of ${FRAMES} MiB still pending there) instead of piling up in the hub`, settled > (FRAMES / 2) * 2 ** 20, mib(settled))
+    check('and the relay is still open: held, not dropped', [g4.closed, h4.closed], [null, null])
+    h4.ws.resume()
+    await h4.until(() => h4.frames.length >= FRAMES, 30_000)
+    check(`once the host reads again, all ${FRAMES} frames arrive, in order and intact`, h4.frames.map((f) => sha256B64u(new Uint8Array(f.data))), sent)
+    ok('and the hub read the guest again', logLines.some((l) => l.includes('"msg":"relay released"') && l.includes(r4)))
+    g4.ws.close(1000, 'done')
+    await h4.until(() => h4.closed)
+    const closed = logLines.find((l) => l.includes('"msg":"relay closed"') && l.includes(r4)) ?? '{}'
+    const peak = Number(JSON.parse(closed).peakBuffered)
+    ok(
+      `while ${FRAMES} MiB crossed a stalled host, the most the hub ever queued toward it was ${mib(peak)}`,
+      peak > RELAY_MAX_FRAME_BYTES && peak <= RELAY_HIGH_WATER + 2 * RELAY_MAX_FRAME_BYTES,
+      closed
+    )
+
+    const r5 = (await call('POST', '/v1/relays', { host: A.id }, { dev: C })).body?.relay as string
+    const g5 = await mustOpen(`/v1/ws/relay/${r5}`, C, 'guest end')
+    const h5 = await mustOpen(`/v1/ws/relay/${r5}`, A, 'host end')
+    h5.ws.pause() // reads nothing, so never sees a ping...
+    const beat = setInterval(() => h5.ws.pong(Buffer.from('still here')), 20) // ...but keeps saying pong
+    hub.ping()
+    await new Promise((r) => setTimeout(r, 400))
+    hub.ping()
+    await g5.until(() => g5.closed, 3000)
+    clearInterval(beat)
+    check('an end that reads nothing is cut at the next round, unsolicited pongs notwithstanding (the relay goes with it)', g5.closed?.reason, 'host left')
+    hub.ping()
+    await new Promise((r) => setTimeout(r, 400))
+    hub.ping()
+    await new Promise((r) => setTimeout(r, 200))
+    check('while a socket that reads echoes every ping and stays', [presA.closed, presA.ws.readyState], [null, WebSocket.OPEN])
   }
 
   /* ---------------------------------------------------- revocation */

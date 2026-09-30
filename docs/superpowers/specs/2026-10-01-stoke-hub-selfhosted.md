@@ -546,6 +546,11 @@ The guest G posts `POST /v1/relays {host}`; the hub checks both are active in th
 the host is online, mints `r…` (expires in 60 s if unopened) and sends the host a `relay` frame.
 Both open `GET <base>/v1/ws/relay/<relay>`; the hub pairs exactly one guest and one host socket and
 forwards frames verbatim — binary, ≤ 1 MiB, idle-closed after 10 min, at most 8 per account.
+It is **flow-controlled** (found in review, 2026-10-01): past 4 MiB queued toward one end the hub
+pauses reading the other until that end drains below 1 MiB, and closes the relay (1013) past
+16 MiB, so an end that never reads cannot make the hub buffer without limit. Liveness counts only
+a pong echoing the ping's random payload: an unsolicited pong (RFC 6455 allows one) cannot keep a
+socket that reads nothing alive.
 
 ### 6.3 The handshake (inside the relay, before any payload)
 

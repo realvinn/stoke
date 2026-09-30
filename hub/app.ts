@@ -127,6 +127,8 @@ export interface HubConfig {
   edgeSecret: string | null
   /** Requests per client IP: a bucket of `capacity`, refilled at `refillPerSec`. */
   rate?: { capacity: number; refillPerSec: number }
+  /** How often sockets are pinged (default `HUB_LIMITS.pingMs`); a suite sets it long and drives `ping()` itself. */
+  pingMs?: number
 }
 
 export interface HubDeps {
@@ -141,6 +143,8 @@ export interface HubHandle {
   lanPort: number | null
   /** Sweep aged rows and time out relays now, instead of on the minute (tests drive a fake clock with it). */
   tick(): void
+  /** Run the socket liveness round now, as the 25 s timer does: cut what did not answer the last ping, ping the rest. */
+  ping(): void
   /** Graceful: stop listening, say bye on every socket, let requests in flight finish, close the database. */
   close(): Promise<void>
 }
@@ -414,6 +418,8 @@ class HubServer {
   private readonly refusalLog = new LogThrottle(20)
   private readonly chains = new Map<string, ChainState | null>()
   private readonly alive = new WeakMap<WebSocket, boolean>()
+  /** The random payload of the last ping each socket was sent: only a pong echoing it counts. */
+  private readonly pinged = new WeakMap<WebSocket, Buffer>()
   private readonly servers: { listener: Listener; server: Server }[] = []
   private readonly wssPresence: WebSocketServer
   private readonly wssRelay: WebSocketServer
@@ -429,7 +435,7 @@ class HubServer {
     this.now = deps.now ?? Date.now
     this.log = deps.log ?? new HubLog((line) => process.stdout.write(`${line}\n`), { now: this.now })
     this.announce = deps.announce ?? ((text) => process.stdout.write(text))
-    this.relays = new RelayBroker({ now: this.now, log: this.log })
+    this.relays = new RelayBroker({ now: this.now, log: this.log, onResume: (ws) => this.alive.set(ws, true) })
     this.buckets = new RateBuckets(config.rate ?? DEFAULT_RATE)
     this.wssPresence = new WebSocketServer({ noServer: true, maxPayload: HUB_LIMITS.presenceFrameBytes, perMessageDeflate: false })
     this.wssRelay = new WebSocketServer({ noServer: true, maxPayload: RELAY_MAX_FRAME_BYTES, perMessageDeflate: false })
@@ -508,13 +514,14 @@ class HubServer {
       this.log.info('listening', { listener, host: at.host, port, mount: this.config.mount || '/', refusesAll: listener === 'edge' ? !secretOk : undefined })
     }
     this.timers.push(setInterval(() => this.tick(), SWEEP_MS))
-    this.timers.push(setInterval(() => this.pingAll(), HUB_LIMITS.pingMs))
+    this.timers.push(setInterval(() => this.pingAll(), this.config.pingMs ?? HUB_LIMITS.pingMs))
     for (const t of this.timers) t.unref()
     this.log.info('started', { version: HUB_SERVER_VERSION, protocol: HUB_PROTOCOL, accounts: this.store.accountCount() })
     return {
       edgePort: ports.edge ?? null,
       lanPort: ports.lan ?? null,
       tick: () => this.tick(),
+      ping: () => this.pingAll(),
       close: () => this.close()
     }
   }
@@ -539,21 +546,40 @@ class HubServer {
     this.relays.tick()
   }
 
+  /**
+   * A socket is alive while it answers our pings. Only a pong ECHOING the last
+   * ping's random payload counts (RFC 6455 §5.5.3: a pong answering a ping
+   * carries its data; every client library does this unasked). A pong
+   * without it is allowed by the RFC and was taken as proof of life (found in
+   * review, 2026-10-01): a peer that never read its side at all — the relay
+   * end the hub was buffering for — could stay "alive" by sending one every
+   * few seconds. It cannot echo bytes it never read.
+   */
   private watchAlive(ws: WebSocket): void {
     this.alive.set(ws, true)
-    ws.on('pong', () => this.alive.set(ws, true))
+    ws.on('pong', (data: Buffer) => {
+      const want = this.pinged.get(ws)
+      if (want && data.length === want.length && data.equals(want)) this.alive.set(ws, true)
+    })
   }
 
-  /** Ping every socket; one that did not answer the last ping is dead and is cut. */
+  /**
+   * Ping every socket; one that did not answer the last ping is dead and is cut.
+   * A relay end the broker PAUSED is skipped: we stopped reading it, so its
+   * pong sits unread, and the end it waits on is the one being judged.
+   */
   private pingAll(): void {
     for (const ws of [...this.wssPresence.clients, ...this.wssRelay.clients]) {
+      if (ws.isPaused) continue
       if (this.alive.get(ws) === false) {
         ws.terminate()
         continue
       }
       this.alive.set(ws, false)
+      const payload = Buffer.from(randomU8(8))
+      this.pinged.set(ws, payload)
       try {
-        ws.ping()
+        ws.ping(payload)
       } catch {
         ws.terminate()
       }

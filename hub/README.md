@@ -231,6 +231,12 @@ frame 64 KiB, a relay frame 1 MiB; 100 puts per request, 5,000 items and 32 acti
 account, 8 open relays per account. Sign-in locks an email for 15 minutes after 5 wrong
 passwords (doubling to 24 h) and an address after 30 failures.
 
+A relay is flow-controlled: once 4 MiB is queued toward an end that is not reading, the hub stops
+reading the other end until it drains (TCP then pushes back on the sender), and closes the relay
+past 16 MiB — so two devices cannot make the hub buffer without limit and bring it down for every
+account under `MemoryMax`. A socket that does not answer the hub's ping with its own payload is
+cut at the next 25-second round.
+
 ## What has not been proven
 
 Everything here ran on a Mac under Node 26, and under Electron's Node 24.18 (the NUC's major

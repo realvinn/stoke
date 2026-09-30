@@ -12,6 +12,17 @@
  *
  * Relays live in memory only. They are two live sockets; after a restart
  * there is nothing to resume, and the guest simply asks for a new one.
+ *
+ * Flow control (found in review, 2026-10-01): the relay used to hand every
+ * frame to `ws.send` on the other end however much was already queued there,
+ * so one end streaming while the other never read made the HUB buffer without
+ * limit — one account's two devices (or one compromised device) could fill
+ * the NUC's memory until systemd's MemoryMax killed the hub for everybody. Now
+ * a delivery that leaves more than RELAY_HIGH_WATER queued toward one end
+ * PAUSES the socket it came from — TCP then pushes back on the sender, whose
+ * own buffer grows instead of the hub's — and the send callbacks resume it
+ * once that end has drained below RELAY_LOW_WATER. RELAY_HARD_CAP closes the
+ * relay (1013) if frames already read past the pause ever push it that far.
  */
 import type { RawData, WebSocket } from 'ws'
 import type { PresenceServerFrame } from '../src/shared/hub/protocol.ts'
@@ -48,6 +59,13 @@ export interface PresenceConn {
   /** The app version its `hello` named, for the log. */
   app: string
 }
+
+/**
+ * Presence frames are small hints; this much queued toward one device means it
+ * is not reading them, so the socket is cut (it reconnects and re-reads state)
+ * rather than letting the hub hold an ever-growing queue for it.
+ */
+export const PRESENCE_MAX_BUFFERED = 1024 * 1024
 
 export class Presence {
   private readonly accounts = new Map<string, Map<string, PresenceConn>>()
@@ -86,7 +104,12 @@ export class Presence {
 
   private sendTo(conn: PresenceConn, frame: PresenceServerFrame): void {
     try {
-      if (conn.ws.readyState === conn.ws.OPEN) conn.ws.send(JSON.stringify(frame))
+      if (conn.ws.readyState !== conn.ws.OPEN) return
+      if (conn.ws.bufferedAmount > PRESENCE_MAX_BUFFERED) {
+        conn.ws.terminate()
+        return
+      }
+      conn.ws.send(JSON.stringify(frame))
     } catch {
       /* a dead socket is reaped by the ping loop */
     }
@@ -152,12 +175,26 @@ export interface Relay {
   /** Frames and bytes forwarded, for the close log line. Never their content. */
   frames: number
   bytes: number
+  /** Which end's socket the broker has paused because the OTHER end is not keeping up. */
+  held: Record<RelayRole, boolean>
+  /** The most ever queued toward either end, for the close log line: what flow control held it to. */
+  peakBuffered: number
   closed: boolean
 }
 
 /** What one end may send before the other has joined (the guest's hs1, typically). */
 const MAX_QUEUED_FRAMES = 32
 const MAX_QUEUED_BYTES = 2 * 1024 * 1024
+/** Queued toward one end past this, the other end's socket is paused. Four maximum frames. */
+export const RELAY_HIGH_WATER = 4 * 1024 * 1024
+/** ...and resumed once the slow end has drained below this. */
+export const RELAY_LOW_WATER = 1024 * 1024
+/** Past this (frames already read when the pause took hold), the relay is closed with 1013. */
+export const RELAY_HARD_CAP = 16 * 1024 * 1024
+
+function otherEnd(role: RelayRole): RelayRole {
+  return role === 'guest' ? 'host' : 'guest'
+}
 
 function byteLength(data: RawData): number {
   if (Array.isArray(data)) return data.reduce((n, b) => n + b.length, 0)
@@ -168,10 +205,17 @@ export class RelayBroker {
   private readonly relays = new Map<string, Relay>()
   private readonly now: () => number
   private readonly log: HubLog
+  private readonly onResume: (ws: WebSocket) => void
 
-  constructor(opts: { now: () => number; log: HubLog }) {
+  /**
+   * `onResume` is told when a paused end is read again: the hub's ping loop
+   * skips a socket it paused (it cannot read that end's pong) and must not then
+   * judge it by a ping it could not have answered.
+   */
+  constructor(opts: { now: () => number; log: HubLog; onResume?: (ws: WebSocket) => void }) {
     this.now = opts.now
     this.log = opts.log
+    this.onResume = opts.onResume ?? (() => {})
   }
 
   countFor(account: string): number {
@@ -197,6 +241,8 @@ export class RelayBroker {
       lastActivity: now,
       frames: 0,
       bytes: 0,
+      held: { guest: false, host: false },
+      peakBuffered: 0,
       closed: false
     }
     this.relays.set(id, relay)
@@ -226,7 +272,7 @@ export class RelayBroker {
       return
     }
     relay.sockets[role] = ws
-    const other: RelayRole = role === 'guest' ? 'host' : 'guest'
+    const other = otherEnd(role)
     ws.on('message', (data: RawData, isBinary: boolean) => this.forward(relay, other, data, isBinary))
     ws.on('close', (code: number, reason: Buffer) => this.closeRelay(relay, code, reason.toString('utf8') || `${role} left`))
     ws.on('error', () => this.closeRelay(relay, 1011, `${role} socket error`))
@@ -262,7 +308,35 @@ export class RelayBroker {
     relay.bytes += bytes
     ws.send(data, { binary }, (err) => {
       if (err) this.closeRelay(relay, 1011, 'could not deliver a frame')
+      else this.drained(relay, to)
     })
+    // What is queued toward `to` now: the socket's own write queue and ws's.
+    const queued = ws.bufferedAmount
+    if (queued > relay.peakBuffered) relay.peakBuffered = queued
+    if (queued > RELAY_HARD_CAP) this.closeRelay(relay, 1013, 'the other end is not reading')
+    else if (queued > RELAY_HIGH_WATER) this.hold(relay, otherEnd(to), queued)
+  }
+
+  /** Stop reading `end`: the end it sends to is not keeping up. */
+  private hold(relay: Relay, end: RelayRole, queued: number): void {
+    const src = relay.sockets[end]
+    if (relay.closed || relay.held[end] || !src) return
+    relay.held[end] = true
+    src.pause()
+    this.log.debug('relay held', { relay: relay.id, end, queued })
+  }
+
+  /** A frame toward `to` went out: if it has drained, read the end that was held for it again. */
+  private drained(relay: Relay, to: RelayRole): void {
+    const end = otherEnd(to)
+    const dest = relay.sockets[to]
+    const src = relay.sockets[end]
+    if (relay.closed || !relay.held[end] || !src || !dest) return
+    if (dest.bufferedAmount > RELAY_LOW_WATER) return
+    relay.held[end] = false
+    src.resume()
+    this.onResume(src)
+    this.log.debug('relay released', { relay: relay.id, end })
   }
 
   /** Close both ends with the same (sendable) code and forget the relay. */
@@ -280,6 +354,7 @@ export class RelayBroker {
       why: reason,
       frames: relay.frames,
       bytes: relay.bytes,
+      peakBuffered: relay.peakBuffered,
       ms: this.now() - relay.createdAt
     })
   }
