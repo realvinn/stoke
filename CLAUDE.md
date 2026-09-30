@@ -39,7 +39,7 @@ Every suite runs alone as `npm run verify:<name>`: context, statusline, unicode,
 profiles, settings, providers, claude-config, folders, search, color, theme-gen, activity,
 worklog-gate, tabs, launcher, registry,
 restore, shortcuts, drop, fullscreen, browser-url, browser-profiles, safari-import, chrome-import, voice, agents, campfire, cli, stoke-args, updates, targets, manifests, portable, winget, worklog-runner,
-worklog-retry, worklog-recall, worklog-autoscan, ssh, remote, phone-ui, installer-art, install, welcome,
+worklog-retry, worklog-recall, worklog-autoscan, ssh, ssh-enroll, remote, phone-ui, installer-art, install, welcome,
 selection — the `check` chain — plus extract and security, which
 need a live instance (`verify:security <url> <token> --access`). `verify:selection` opens a real
 Electron window and needs a display; `verify:context` reads this machine's real transcripts on
@@ -306,9 +306,11 @@ rule file named on the group line.
   is an ssh escape (`~.` hangs up); honour OSC 52 writes but refuse the `?` read, or any printed
   text can read the clipboard.
 - **75.** Detect an ssh password prompt by the TAIL — a prompt has no trailing newline, so a server
-  banner can never be one — plus `opts.host`, an escape byte closing the window, and fire-once
-  (`sshAuthStep`). The parsed `user@host` is display-only; enroll against `SshHost.alias`, and only
-  a `BatchMode` probe may set `keyEnrolled`.
+  banner can never be one — plus `opts.host`, an escape byte closing the window (scrubbed first under
+  ConPTY), and fire-once (`sshAuthStep`). The parsed `user@host` is display-only; enroll by host id,
+  and only the no-`-i` login probe (`buildLoginProbeArgs`) may set `keyEnrolled`.
+- **109.** Run anything that asks for a password in a terminal the user can type into — key
+  enrollment is an "Add key" tab (`LaunchOptions.enroll`) — and prove it against a real prompt.
 
 **Phone access** — `.claude/rules/phone.md`
 - **53.** Draw no QR for `connectTarget`'s `loopback` reach, mint the key only in start paths
