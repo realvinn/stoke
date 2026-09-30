@@ -175,8 +175,13 @@ type BusyPrompt =
   | { kind: 'relaunch'; tabId: string }
   | { kind: 'restart'; tabIds: string[] }
   | { kind: 'close'; tabId: string }
-  /** Closing a kept SSH tab: detach (the shell keeps running) or end it (gotcha 126). */
-  | { kind: 'detach'; tabId: string }
+  /**
+   * Closing a kept SSH tab: detach (the shell keeps running) or end it (gotcha
+   * 126). Carries the managed session's NAME as well as the tab id: a
+   * reconnect already in flight when the question went up replaces the tab
+   * with one whose id is its new pty's, and the name is what both share.
+   */
+  | { kind: 'detach'; tabId: string; remoteSession: string }
 
 /**
  * How long a relaunch waits for the old `claude` to exit before starting the
@@ -664,6 +669,11 @@ export function App(): React.JSX.Element {
   const [busyPrompt, setBusyPrompt] = useState<BusyPrompt | null>(null)
   const busyPromptRef = useRef<BusyPrompt | null>(null)
   busyPromptRef.current = busyPrompt
+  /** Is the Detach/End question up for this kept session right now? */
+  const detachAskedFor = (name: string): boolean => {
+    const p = busyPromptRef.current
+    return p?.kind === 'detach' && p.remoteSession === name
+  }
 
   /*
    * Stoke's own "Restart and install", deferred until no session is mid-turn.
@@ -748,7 +758,7 @@ export function App(): React.JSX.Element {
    * `reconnectTries` counts automatic tries in a row, reset only by a
    * connection that got in and lasted (`reconnectDecision`); `reconnectTimers`
    * holds the pending one, cleared by anything the user does to the tab first
-   * — Start again, Close, Stop.
+   * — Start again, Close, Stop — and paused while its close is being asked.
    */
   const hostStartedAtRef = useRef<Map<string, number>>(new Map())
   const reconnectTriesRef = useRef<Map<string, number>>(new Map())
@@ -760,6 +770,28 @@ export function App(): React.JSX.Element {
     reconnectTimersRef.current.delete(name)
     reconnectTriesRef.current.delete(name)
   }, [])
+  /** Schedule the automatic reconnect of one kept session, replacing any pending one. */
+  const armReconnect = (name: string, delayMs: number): void => {
+    const prior = reconnectTimersRef.current.get(name)
+    if (prior !== undefined) window.clearTimeout(prior)
+    reconnectTimersRef.current.set(
+      name,
+      window.setTimeout(() => {
+        reconnectTimersRef.current.delete(name)
+        void reconnectNowRef.current(name)
+      }, delayMs)
+    )
+  }
+  /**
+   * Hold a pending reconnect while the tab's Detach/End question is up: the
+   * timer goes, the run's count and the card's countdown stay, and Cancel
+   * re-arms it for the time the card still shows.
+   */
+  const pauseReconnect = (name: string): void => {
+    const timer = reconnectTimersRef.current.get(name)
+    if (timer !== undefined) window.clearTimeout(timer)
+    reconnectTimersRef.current.delete(name)
+  }
 
   /*
    * Launch options for the next session, DERIVED from the saved defaults rather
@@ -2136,7 +2168,8 @@ export function App(): React.JSX.Element {
         : undefined
       // A reattach starts at the terminal's real size where one is known
       // (`termSizeHint`, gotcha 126); 120x30 until the pane's own fit otherwise.
-      const ownPty = replaceTabId ? tabsRef.current.find((t) => t.id === replaceTabId)?.ptyId : undefined
+      const replacing = replaceTabId ? tabsRef.current.find((t) => t.id === replaceTabId) : undefined
+      const ownPty = replacing?.ptyId
       const size = (remoteSession ? termSizeHint(ownPty) : null) ?? { cols: 120, rows: 30 }
       try {
         const res = await window.stoke.pty.start({
@@ -2150,6 +2183,20 @@ export function App(): React.JSX.Element {
           cols: size.cols,
           rows: size.rows
         })
+        /*
+         * The session tab this start replaces in place (a reconnect, Resume,
+         * Start again) was closed while ssh started — a Detach or End answered
+         * mid-reconnect, say. `replaceOrAppend` would APPEND it back (gotcha
+         * 51): a live tab the user had just closed, and on a kept host a shell
+         * re-created by `new-session -A` after End killed it. Dropped instead,
+         * before ssh can have got anywhere. A New tab closed under a launch
+         * keeps the old behaviour: the launch still lands, as a new tab.
+         */
+        if (replacing?.kind === 'session' && !tabsRef.current.some((t) => t.id === replacing.id)) {
+          window.stoke.pty.kill(res.ptyId)
+          forgetPty(res.ptyId)
+          return false
+        }
         hostStartedAtRef.current.set(res.ptyId, Date.now())
         const tab: Tab = {
           id: res.ptyId,
@@ -2314,6 +2361,10 @@ export function App(): React.JSX.Element {
       const timer = reconnectTimersRef.current.get(name)
       if (timer !== undefined) window.clearTimeout(timer)
       reconnectTimersRef.current.delete(name)
+      // Its close is being asked (Detach / End): reconnecting now would replace
+      // the very tab the question is about. The answer closes it, or re-arms
+      // the countdown (`answerBusy`).
+      if (detachAskedFor(name)) return
       const tab = tabsRef.current.find((t) => t.remoteSession === name && t.status === 'exited')
       const host = tab ? settingsRef.current?.hosts.find((h) => h.id === tab.hostId) : undefined
       if (!tab || !host || !hostPersists(host)) return
@@ -2390,15 +2441,7 @@ export function App(): React.JSX.Element {
       return null
     }
     reconnectTriesRef.current.set(name, decision.attempt)
-    const prior = reconnectTimersRef.current.get(name)
-    if (prior !== undefined) window.clearTimeout(prior)
-    reconnectTimersRef.current.set(
-      name,
-      window.setTimeout(() => {
-        reconnectTimersRef.current.delete(name)
-        void reconnectNowRef.current(name)
-      }, decision.delayMs)
-    )
+    armReconnect(name, decision.delayMs)
     return { attempt: decision.attempt, at: Date.now() + decision.delayMs }
   }
   const reconnectNowRef = useRef(reconnectNow)
@@ -2920,8 +2963,18 @@ export function App(): React.JSX.Element {
        * registry), so this is the only question such a tab gets.
        */
       const host = settingsRef.current?.hosts.find((h) => h.id === tab.hostId)
-      if (closeAsksDetach(tab, hostPersists(host))) {
-        setBusyPrompt({ kind: 'detach', tabId: id })
+      if (closeAsksDetach(tab, hostPersists(host)) && tab.remoteSession) {
+        /*
+         * A countdown left running under the question would fire behind it:
+         * the reconnect replaces this tab with one on a new id, the answer then
+         * found nothing to close, and the tab came back live after the user
+         * chose End. Held until the answer; the ref is set now, not on the
+         * next render, so a reconnect already on its way refuses too.
+         */
+        pauseReconnect(tab.remoteSession)
+        const prompt: BusyPrompt = { kind: 'detach', tabId: id, remoteSession: tab.remoteSession }
+        busyPromptRef.current = prompt
+        setBusyPrompt(prompt)
         return
       }
       if (
@@ -3504,12 +3557,56 @@ export function App(): React.JSX.Element {
     installSelfUpdateNow()
   }, [tabs, live, installSelfUpdateNow])
 
+  /**
+   * The Detach/End question's answers (gotcha 126). The tab is found by id,
+   * else by its session name: a reconnect that was already on its way when the
+   * question went up replaces the tab with one on its new pty's id.
+   */
+  const answerDetach = (prompt: Extract<BusyPrompt, { kind: 'detach' }>, answer: 'force' | 'wait' | 'cancel'): void => {
+    const name = prompt.remoteSession
+    const tab =
+      tabsRef.current.find((t) => t.id === prompt.tabId) ?? tabsRef.current.find((t) => t.remoteSession === name)
+    if (!tab) return
+    if (answer === 'cancel') {
+      // The tab stays, so its countdown carries on from where the card shows it.
+      if (tab.status === 'exited' && tab.reconnect && !reconnectTimersRef.current.has(name)) {
+        armReconnect(name, Math.max(0, tab.reconnect.at - Date.now()))
+      }
+      return
+    }
+    // 'wait' is "Detach, keep running": only the local ssh goes.
+    if (answer === 'wait') {
+      closeTab(tab.id)
+      return
+    }
+    // 'force' is "End session": the tab goes at once, and the shell on the
+    // machine is ended by name over a BatchMode connection of its own.
+    const hostId = tab.hostId
+    closeTab(tab.id)
+    if (!hostId) return
+    void window.stoke.ssh.endRemoteSession(hostId, name).then((r) => {
+      if (!r.ok) {
+        setError(
+          `Could not end the session on that machine (${r.message}). It is still running there; the launcher lists it to reattach or end.`
+        )
+      }
+    })
+  }
+  const answerDetachRef = useRef(answerDetach)
+  answerDetachRef.current = answerDetach
+
   /** The busy dialog's three answers. */
   const answerBusy = useCallback(
     (answer: 'force' | 'wait' | 'cancel'): void => {
       const prompt = busyPromptRef.current
       setBusyPrompt(null)
-      if (!prompt || answer === 'cancel') return
+      busyPromptRef.current = null
+      if (!prompt) return
+      if (prompt.kind === 'detach') {
+        answerDetachRef.current(prompt, answer)
+        return
+      }
+      if (answer === 'cancel') return
       if (prompt.kind === 'restart') {
         if (answer === 'force') {
           installSelfUpdateNow()
@@ -3524,29 +3621,6 @@ export function App(): React.JSX.Element {
         // has nowhere to come back to the way a relaunch or a restart does,
         // and the session stays on the sidebar to resume later regardless.
         if (answer === 'force') closeTab(prompt.tabId)
-        return
-      }
-      if (prompt.kind === 'detach') {
-        const tab = tabsRef.current.find((t) => t.id === prompt.tabId)
-        if (!tab) return
-        // 'wait' is "Detach, keep running": only the local ssh goes.
-        if (answer === 'wait') {
-          closeTab(tab.id)
-          return
-        }
-        // 'force' is "End session": the tab goes at once, and the shell on the
-        // machine is ended by name over a BatchMode connection of its own.
-        const name = tab.remoteSession
-        const hostId = tab.hostId
-        closeTab(tab.id)
-        if (!name || !hostId) return
-        void window.stoke.ssh.endRemoteSession(hostId, name).then((r) => {
-          if (!r.ok) {
-            setError(
-              `Could not end the session on that machine (${r.message}). It is still running there; the launcher lists it to reattach or end.`
-            )
-          }
-        })
         return
       }
       const tab = tabsRef.current.find((t) => t.id === prompt.tabId)
@@ -4674,7 +4748,8 @@ export function App(): React.JSX.Element {
       )
     }
     if (busyPrompt.kind === 'detach') {
-      const tab = tabs.find((t) => t.id === busyPrompt.tabId)
+      const tab =
+        tabs.find((t) => t.id === busyPrompt.tabId) ?? tabs.find((t) => t.remoteSession === busyPrompt.remoteSession)
       const host = settings?.hosts.find((h) => h.id === tab?.hostId)
       const machine = host ? host.label.trim() || host.alias.trim() : 'the machine'
       /*
