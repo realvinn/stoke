@@ -21,6 +21,14 @@ import type { PtyManager, StartResult } from '../pty.ts'
 import type { Transcript } from '../sessionFile.ts'
 import { MAX_AUDIO_BYTES, type SttResult } from '../stt.ts'
 import { CODING_CLIS, type CodingCliId } from '../../shared/codingClis.ts'
+import {
+  accessCertsUrl,
+  accessPolicyOf,
+  ACCESS_STATUS_OFF,
+  type AccessRefusal,
+  type RemoteAccessStatus
+} from '../../shared/cfAccess.ts'
+import { AccessKeySet, verifyAccessJwt } from './accessJwt.ts'
 import { isTailnetAddress, tailnetAddress } from './link.ts'
 import {
   answerBytes,
@@ -249,26 +257,33 @@ export interface RemoteConfig {
    */
   bindTailscale: boolean
   /**
-   * Reject anything that does not carry Cloudflare Access headers.
+   * Refuse anything that did not come through Cloudflare Access.
    *
-   * Two things this is NOT, both of which the previous wording implied.
+   * Enforced on every listener but the dedicated tailnet one — with `bindLan`
+   * on there is one 0.0.0.0 listener, so LAN requests are held to it too.
+   * `authorize` says so at the point it decides.
    *
-   * It is not enforced "on the loopback listener only". The exemption is for
-   * the dedicated tailnet listener and nothing else — with `bindLan` on there
-   * is one 0.0.0.0 listener, so LAN requests are held to this too. `authorized`
-   * says so at the point it decides; this comment used to contradict it.
+   * With `accessTeamDomain` and `accessAud` set, this is verification: the
+   * `Cf-Access-Jwt-Assertion` header must be an RS256 token signed by that
+   * team's published keys, for that application, and in date (`accessJwt.ts`,
+   * gotcha 124). A missing, forged or expired one is refused — fail closed,
+   * including when the team's keys cannot be fetched. The unsigned
+   * `Cf-Access-Authenticated-User-Email` header counts for nothing.
    *
-   * And it is not authentication. The headers are checked for PRESENCE; the
-   * `Cf-Access-Jwt-Assertion` signature is never verified against Cloudflare's
-   * JWKS, because Stoke does not know the team domain or audience to verify it
-   * against. Anything that can open a socket to this port can set the header to
-   * any value it likes — Stoke's own `verify:security` script does exactly that
-   * to stand in for the edge. So this narrows *how* a request must be shaped,
-   * not *who* may make one, and the bearer token remains the only thing that
-   * actually authenticates. Treat it as defence in depth behind the tunnel, and
-   * do not let it justify a weaker token or a wider bind.
+   * Without them — a settings file from before verification shipped — it is
+   * still only a PRESENCE check, exactly as it used to be: anything that can
+   * open a socket to this port can set either header to any value. That state
+   * is reported as `access.mode: 'presence-only'` and Settings › Phone access
+   * says so beside a Look it up button, rather than degrading silently.
+   *
+   * Either way the bearer token is still required, and checked first. Access
+   * is who may reach the door; the key is still the door.
    */
   requireAccessHeader: boolean
+  /** `<team>.cloudflareaccess.com`: whose keys sign the token, and its `iss`. */
+  accessTeamDomain: string
+  /** The Access application's AUD tag; a token's `aud` must contain it. */
+  accessAud: string
   /*
    * No speech server here. It used to be `sttUrl`, captured with the rest of
    * this at start, so the phone kept the address it started with; it is read
@@ -285,6 +300,30 @@ export interface RemoteStatus {
   addresses: string[]
   /** How many phones are attached to each pty, so a tab can say one is watching. */
   attachedByPty: Record<string, number>
+  /** Whether Access tokens are verified, and the last thing that happened to one. */
+  access: RemoteAccessStatus
+}
+
+/**
+ * Where the running server fetches the team's signing keys.
+ *
+ * Always the team domain in settings — except in an UNPACKAGED run with
+ * `STOKE_ACCESS_CERTS_URL` naming a loopback http address, which is how
+ * `verify:security --access-configured` points a sandbox instance at a local
+ * fake JWKS without a Cloudflare account. A packaged build ignores the variable
+ * entirely, and even unpackaged it cannot point anywhere but this machine.
+ */
+function certsUrlFor(teamDomain: string): string {
+  const override = app.isPackaged ? '' : (process.env.STOKE_ACCESS_CERTS_URL ?? '').trim()
+  if (override) {
+    try {
+      const u = new URL(override)
+      if (u.protocol === 'http:' && (u.hostname === '127.0.0.1' || u.hostname === 'localhost')) return u.toString()
+    } catch {
+      /* not a URL: use the real one */
+    }
+  }
+  return accessCertsUrl(teamDomain)
 }
 
 const MIME: Record<string, string> = {
@@ -362,6 +401,14 @@ export class RemoteServer {
   private themeSig: string | null = null
   /** The pty size each attached socket was last told, `cols x rows` (`pushSizes`). */
   private toldSize = new WeakMap<WebSocket, string>()
+  /**
+   * The team's signing keys, while Access is verified. Kept across a restart
+   * that leaves the keys URL alone, so a port edit does not refetch them.
+   */
+  private accessKeys: AccessKeySet | null = null
+  /** What the panel is told about the last token refused and accepted. */
+  private accessRefused: { reason: AccessRefusal; at: number } | null = null
+  private accessAccepted: number | null = null
 
   private readonly deps: RemoteDeps
   /** Told whenever a client attaches or leaves, so the desktop can say so. */
@@ -390,7 +437,23 @@ export class RemoteServer {
       error: this.error,
       clients: this.clients.size,
       addresses: [...this.bound],
-      attachedByPty
+      attachedByPty,
+      access: this.accessStatus()
+    }
+  }
+
+  private accessStatus(): RemoteAccessStatus {
+    const cfg = this.config
+    if (!cfg || this.servers.length === 0 || !cfg.requireAccessHeader) return { ...ACCESS_STATUS_OFF }
+    const policy = accessPolicyOf(cfg)
+    const keys = policy ? this.accessKeys : null
+    return {
+      mode: policy ? 'verified' : 'presence-only',
+      teamDomain: policy?.teamDomain ?? '',
+      keys: keys?.size ?? 0,
+      keysError: keys?.lastError ?? null,
+      lastRefusal: this.accessRefused,
+      lastAccepted: this.accessAccepted
     }
   }
 
@@ -400,6 +463,22 @@ export class RemoteServer {
     this.config = config
     // Every phone that connects from here on fetches the theme it is given now.
     this.themeSig = this.themeSignature()
+    /*
+     * The key set for the policy this server checks. Fetched now, not awaited:
+     * an offline start must still bind, and a failure shows in the panel as
+     * `keysError` at once rather than on the first phone to knock. A request
+     * that arrives first joins the same fetch (`AccessKeySet.refresh`).
+     */
+    this.accessRefused = null
+    this.accessAccepted = null
+    const policy = config.requireAccessHeader ? accessPolicyOf(config) : null
+    if (policy) {
+      const url = certsUrlFor(policy.teamDomain)
+      if (this.accessKeys?.certsUrl !== url) this.accessKeys = new AccessKeySet({ certsUrl: url })
+      if (this.accessKeys.size === 0) void this.accessKeys.refresh()
+    } else {
+      this.accessKeys = null
+    }
 
     try {
       // Phone contract point 5: on, for both the pty socket and /ws/events —
@@ -798,8 +877,20 @@ export class RemoteServer {
     return isTailnetAddress(req.socket.localAddress ?? '')
   }
 
-  private authorized(req: IncomingMessage): boolean {
-    if (!this.config) return false
+  /**
+   * Whether this request may have data: the bearer key, then Cloudflare Access.
+   *
+   * Async because verifying an Access token can mean fetching the team's keys.
+   * The key is checked FIRST, and a request without it never reaches the
+   * verifier — so nothing that lacks the key can make Stoke fetch anything, and
+   * the unknown-`kid` refetch (cooldown-gated either way) is only reachable by
+   * someone who already holds it.
+   */
+  private async authorize(req: IncomingMessage): Promise<boolean> {
+    const cfg = this.config
+    if (!cfg) return false
+    const token = this.tokenFrom(req)
+    if (token === null || !safeEqual(token, cfg.token)) return false
 
     /*
      * Access headers are only meaningful on loopback, because that is the only
@@ -821,17 +912,33 @@ export class RemoteServer {
      * was always true, so every tailnet request 401'd, including the WebSocket
      * upgrade, and the terminal simply never opened.
      */
-    if (this.config.requireAccessHeader && !this.viaTailnet(req)) {
-      // Cloudflare Access injects these; their absence means the request did not
-      // come through the tunnel.
-      const hasAccess =
+    if (!cfg.requireAccessHeader || this.viaTailnet(req)) return true
+
+    const policy = accessPolicyOf(cfg)
+    if (!policy) {
+      /*
+       * `presence-only`: Access required, but no team or AUD to verify
+       * against — a settings file from before verification. This is the old
+       * check, kept so an upgrade does not lock a working phone out, and it
+       * proves nothing: either header can be set by anything that reaches the
+       * port. The status says `presence-only` and the panel says why.
+       */
+      return (
         req.headers['cf-access-jwt-assertion'] !== undefined ||
         req.headers['cf-access-authenticated-user-email'] !== undefined
-      if (!hasAccess) return false
+      )
     }
-
-    const token = this.tokenFrom(req)
-    return token !== null && safeEqual(token, this.config.token)
+    /*
+     * Verified: only the signed assertion counts. A missing one is a refusal
+     * (fail closed), and so is every way of getting it wrong, including this
+     * machine being unable to fetch the team's keys.
+     */
+    const keys = this.accessKeys ?? (this.accessKeys = new AccessKeySet({ certsUrl: certsUrlFor(policy.teamDomain) }))
+    const verdict = await verifyAccessJwt(req.headers['cf-access-jwt-assertion'], policy, keys, Date.now())
+    // Only the reason and the time are kept: never the token or its claims.
+    if (verdict.ok) this.accessAccepted = Date.now()
+    else this.accessRefused = { reason: verdict.reason, at: Date.now() }
+    return verdict.ok
   }
 
   /* --------------------------------------------------------------- http */
@@ -846,7 +953,13 @@ export class RemoteServer {
      * bare page with a plain-text body and no viewport meta (audit PX-14),
      * which is what an installed PWA opened to on iOS's separate cookie jar.
      */
-    if (isGatedRemotePath(url.pathname) && !this.authorized(req)) {
+    /*
+     * One verdict per request, computed at most once: `authorize` may verify an
+     * Access token (and fetch keys), and both the gate and the cookie below ask.
+     */
+    let verdict: Promise<boolean> | null = null
+    const authorized = (): Promise<boolean> => (verdict ??= this.authorize(req))
+    if (isGatedRemotePath(url.pathname) && !(await authorized())) {
       res.writeHead(401, { 'content-type': 'text/plain; charset=utf-8' })
       res.end('Unauthorized. Open the link from Stoke, which carries the key.')
       return
@@ -863,7 +976,7 @@ export class RemoteServer {
      * gets the shell with no cookie, and its Connect screen explains it.
      */
     const queryKey = url.searchParams.get('k')
-    const setCookie: Record<string, string> = queryKey && mayStoreKeyCookie(queryKey, this.authorized(req))
+    const setCookie: Record<string, string> = queryKey && mayStoreKeyCookie(queryKey, await authorized())
       ? {
           /*
            * The cookie is a shell credential, so it carries Secure and must
@@ -1392,12 +1505,24 @@ export class RemoteServer {
       socket.destroy()
       return
     }
-    if (!this.authorized(req)) {
-      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')
-      socket.destroy()
-      return
-    }
-    wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req))
+    /*
+     * The verdict can take a key fetch, and the socket is ours from the moment
+     * `upgrade` fires: nothing else is listening for its errors, so a client
+     * that resets it mid-await would otherwise be an uncaught 'error' on the
+     * main process. After the await it may be gone. A server stopped or
+     * restarted during the await closed this `wss`, which then answers the
+     * handshake 503 itself (ws 8 `completeUpgrade`).
+     */
+    socket.on('error', () => {})
+    void this.authorize(req).then((ok) => {
+      if (socket.destroyed) return
+      if (!ok) {
+        socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')
+        socket.destroy()
+        return
+      }
+      wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req))
+    })
   }
 
   private handleSocket(ws: WebSocket, req: IncomingMessage): void {

@@ -9,6 +9,13 @@ import type {
   UpdateInfo
 } from '@shared/api'
 import { clampPort, REMOTE_PORT_DEFAULT, type RemoteReachPreference } from '@shared/ui'
+import {
+  accessPolicyOf,
+  accessRefusalText,
+  clampAccessAud,
+  clampAccessTeamDomain,
+  type RemoteAccessStatus
+} from '@shared/cfAccess'
 import { channelLagNotice, updateButton, updateVerdict } from '../lib/updateVerdict'
 import { cliUpToDate, selfUpToDate } from '@shared/updateCheck'
 import { useDraft } from '../lib/useDraft'
@@ -67,6 +74,224 @@ export function reachLine(state: RemoteState): string {
 export function openOnPhoneHint(reach: RemoteReachPreference, tailnetAvailable: boolean): string {
   if (reach !== 'auto') return `Uses ${REACH_LABEL[reach]}`
   return `Picks ${tailnetAvailable ? 'Tailscale' : 'your Wi-Fi'}`
+}
+
+const clockTime = (at: number): string =>
+  new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+
+/**
+ * "Require Cloudflare Access", and the team and application it checks against.
+ *
+ * Until 2026-09-30 the checkbox was the whole feature and it checked only that
+ * an Access header was PRESENT — its own hint said Stoke "cannot verify their
+ * signature". With a team domain and AUD tag the server verifies every token
+ * (gotcha 124), so turning the box on now fetches them first (Look it up), and
+ * a file from before — required, but neither field — says so in amber with the
+ * same button beside it, rather than carrying on as a check that proves nothing.
+ *
+ * The two fields have one writer, this panel: main's lookup RETURNS them and
+ * this saves them (gotcha 57). The lookup is claimed in a ref before its await,
+ * so a double press cannot run two (gotcha 20).
+ */
+function AccessPolicy({
+  remote,
+  status,
+  accessUsable,
+  outsideTunnel,
+  patchRemote
+}: {
+  remote: Settings['remote']
+  /** The running server's reading; null while Phone access is off. */
+  status: RemoteAccessStatus | null
+  accessUsable: boolean
+  /** The link is not the tunnel, so Access would refuse it. */
+  outsideTunnel: boolean
+  patchRemote: (p: Partial<Settings['remote']>) => void
+}): React.JSX.Element {
+  const [looking, setLooking] = useState(false)
+  const [lookupError, setLookupError] = useState<string | null>(null)
+  const [fieldError, setFieldError] = useState<string | null>(null)
+  const claim = useRef(false)
+  const policy = accessPolicyOf(remote)
+  const hostname = remote.hostname.trim()
+
+  const teamField = useDraft(remote.accessTeamDomain, (v) => {
+    const team = clampAccessTeamDomain(v)
+    if (v.trim() && !team) {
+      setFieldError('A team domain looks like yourteam.cloudflareaccess.com.')
+      return
+    }
+    setFieldError(null)
+    setLookupError(null)
+    patchRemote({ accessTeamDomain: team })
+  })
+  const audField = useDraft(remote.accessAud, (v) => {
+    const aud = clampAccessAud(v)
+    if (v.trim() && !aud) {
+      setFieldError('An AUD tag is 64 characters of 0-9 and a-f.')
+      return
+    }
+    setFieldError(null)
+    setLookupError(null)
+    patchRemote({ accessAud: aud })
+  })
+
+  const lookUp = async (andRequire: boolean): Promise<void> => {
+    if (claim.current) return
+    claim.current = true
+    setLooking(true)
+    setLookupError(null)
+    try {
+      const found = await window.stoke.remote.lookupAccess()
+      if (found.ok) {
+        setFieldError(null)
+        patchRemote({
+          accessTeamDomain: found.teamDomain,
+          accessAud: found.aud,
+          ...(andRequire ? { requireAccessHeader: true } : {})
+        })
+      } else {
+        setLookupError(found.error)
+      }
+    } catch (err) {
+      setLookupError(err instanceof Error ? err.message : String(err))
+    } finally {
+      claim.current = false
+      setLooking(false)
+    }
+  }
+
+  const shown = accessUsable || remote.requireAccessHeader || policy !== null
+  const presenceOnly = remote.requireAccessHeader && policy === null
+
+  return (
+    <>
+      <label className="check-row">
+        <input
+          type="checkbox"
+          checked={remote.requireAccessHeader}
+          disabled={looking || (!accessUsable && !remote.requireAccessHeader)}
+          onChange={(e) => {
+            if (!e.target.checked) patchRemote({ requireAccessHeader: false })
+            else if (policy) patchRemote({ requireAccessHeader: true })
+            // Turning it on needs something to verify against: look it up first.
+            else void lookUp(true)
+          }}
+        />
+        <span>
+          <span className="field-label">Require Cloudflare Access</span>
+          <FieldHint
+            tone={remote.requireAccessHeader && outsideTunnel ? 'warning' : undefined}
+            more="Cloudflare Access signs a token for every request it lets through. Stoke checks that signature against your team's published keys, and that the token is for your Access application and still in date — a request without a valid one is refused even when it carries the key, and so is every request while Stoke cannot fetch those keys. The key is still required as well. This also blocks the Wi-Fi and Tailscale routes, which is why it is only offered once a named tunnel is running."
+          >
+            {looking
+              ? 'Looking up your Access application…'
+              : presenceOnly
+                ? 'Only answer requests carrying a Cloudflare Access header.'
+                : accessUsable || remote.requireAccessHeader
+                  ? 'Only answer requests Cloudflare Access signed for this hostname.'
+                  : 'Available once a named tunnel is running.'}
+          </FieldHint>
+        </span>
+      </label>
+
+      {shown && (
+        <div className="field" style={{ paddingLeft: 'var(--space-24)' }}>
+          {presenceOnly ? (
+            <FieldHint
+              tone="warning"
+              more="This was set up before Stoke could verify Access tokens. Until it knows your team domain and application AUD tag, it only checks that an Access header is there — and anything that can reach this port can add one. Look it up reads both from the Access login page in front of your hostname; you can also paste them from Zero Trust › Access › Applications › your app › Additional settings."
+            >
+              Access is required, but Stoke cannot verify it yet: it only checks that the header is
+              there.
+            </FieldHint>
+          ) : policy ? (
+            <span className="field-hint">
+              {remote.requireAccessHeader ? 'Verifying tokens from ' : 'Will verify tokens from '}
+              <span className="mono">{policy.teamDomain}</span> for application{' '}
+              <span className="mono" title={policy.aud}>
+                {policy.aud.slice(0, 8)}…
+              </span>
+              {status?.mode === 'verified' && status.lastAccepted !== null
+                ? ` · last signed-in request ${clockTime(status.lastAccepted)}`
+                : ''}
+            </span>
+          ) : (
+            <span className="field-hint">
+              Turning this on first looks up the Access application in front of{' '}
+              {hostname || 'your hostname'}, so Stoke can check Cloudflare&rsquo;s signature.
+            </span>
+          )}
+
+          {status?.mode === 'verified' && status.keysError && (
+            <span className="field-hint" data-tone="danger">
+              {status.keysError}. Requests through the tunnel are refused until Stoke can fetch
+              them.
+            </span>
+          )}
+          {status?.mode === 'verified' && status.lastRefusal && (
+            <span className="field-hint" data-tone="warning">
+              Refused at {clockTime(status.lastRefusal.at)}: {accessRefusalText(status.lastRefusal.reason)}.
+            </span>
+          )}
+          {lookupError && (
+            <span className="field-hint" data-tone="danger">
+              {lookupError}
+            </span>
+          )}
+
+          <div style={{ display: 'flex', gap: 'var(--space-8)', alignItems: 'center', flexWrap: 'wrap' }}>
+            <button
+              className="btn"
+              data-variant={presenceOnly ? 'primary' : undefined}
+              disabled={looking || !hostname}
+              title={hostname ? undefined : 'Set a public hostname first'}
+              onClick={() => void lookUp(false)}
+            >
+              {looking ? 'Looking up…' : policy ? 'Look it up again' : 'Look it up'}
+            </button>
+          </div>
+
+          <details className="field-detail" open={lookupError || fieldError ? true : undefined}>
+            <summary>Enter them by hand</summary>
+            <div
+              className="field-detail-body"
+              style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-8)', paddingTop: 'var(--space-8)' }}
+            >
+              <input
+                className="input mono"
+                aria-label="Cloudflare Access team domain"
+                placeholder="yourteam.cloudflareaccess.com"
+                spellCheck={false}
+                value={teamField.draft}
+                onChange={(e) => teamField.setDraft(e.target.value)}
+                onBlur={teamField.onBlur}
+                onKeyDown={teamField.onKeyDown}
+              />
+              <input
+                className="input mono"
+                aria-label="Cloudflare Access application AUD tag"
+                placeholder="Application Audience (AUD) tag"
+                spellCheck={false}
+                value={audField.draft}
+                onChange={(e) => audField.setDraft(e.target.value)}
+                onBlur={audField.onBlur}
+                onKeyDown={audField.onKeyDown}
+              />
+              {fieldError && (
+                <span className="field-hint" data-tone="danger">
+                  {fieldError}
+                </span>
+              )}
+              <span className="field-hint">
+                Zero Trust › Access › Applications › your app › Additional settings shows both.
+              </span>
+            </div>
+          </details>
+        </div>
+      )}
+    </>
+  )
 }
 
 /**
@@ -575,25 +800,13 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
             The link and the code above switch to the tunnel while it runs.
           </FieldHint>
 
-          <label className="check-row">
-            <input
-              type="checkbox"
-              checked={remote.requireAccessHeader}
-              disabled={!accessUsable && !remote.requireAccessHeader}
-              onChange={(e) => patchRemote({ requireAccessHeader: e.target.checked })}
-            />
-            <span>
-              <span className="field-label">Require Cloudflare Access</span>
-              <FieldHint
-                tone={remote.requireAccessHeader && reach !== 'tunnel' ? 'warning' : undefined}
-                more="Reject anything that does not carry the headers Cloudflare Access adds, which in practice means requests that did not come through the tunnel. Stoke checks that the headers are there; it cannot verify their signature, so this narrows what reaches the server rather than replacing the key — keep the key private either way. It also blocks the Wi-Fi and Tailscale routes, which is why it is only offered once a named tunnel is running."
-              >
-                {accessUsable || remote.requireAccessHeader
-                  ? 'Only answer requests that came through the tunnel.'
-                  : 'Available once a named tunnel is running.'}
-              </FieldHint>
-            </span>
-          </label>
+          <AccessPolicy
+            remote={remote}
+            status={running ? (state?.server.access ?? null) : null}
+            accessUsable={accessUsable}
+            outsideTunnel={reach !== 'tunnel'}
+            patchRemote={patchRemote}
+          />
 
           {tunnel && tunnel.log.length > 0 && (
             <details className="field-detail" open={tunnel.error ? true : undefined}>

@@ -1064,8 +1064,20 @@ export interface Settings {
      * it exposes the port to the tailnet only, never to the local network.
      */
     bindTailscale: boolean
-    /** Refuse requests that did not arrive through Cloudflare Access. */
+    /**
+     * Refuse requests that did not arrive through Cloudflare Access. With both
+     * fields below set, the Access token's signature is VERIFIED (gotcha 124);
+     * with either empty, only its presence is checked, and the panel says so.
+     */
     requireAccessHeader: boolean
+    /**
+     * The Cloudflare Access team in front of `hostname`, as
+     * `<team>.cloudflareaccess.com` (clamped: anything else hydrates as `''`).
+     * Its published keys are the only ones a token may be signed with.
+     */
+    accessTeamDomain: string
+    /** The Access application's AUD tag, 64 hex characters, or `''`. */
+    accessAud: string
     /** Start the named cloudflared tunnel when the remote server starts. */
     autoStartTunnel: boolean
     /** Name of the pre-created cloudflared tunnel to run. */

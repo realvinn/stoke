@@ -458,12 +458,29 @@ export interface RemoteBindFields {
   bindLan: boolean
   bindTailscale: boolean
   requireAccessHeader: boolean
+  /** Whose Access tokens are accepted (gotcha 124): a policy change drops every socket. */
+  accessTeamDomain: string
+  accessAud: string
   hostname: string
   token: string
 }
 
-/** What the server binds or checks: moving one needs a restart to take effect. */
-const REMOTE_BIND_KEYS = ['port', 'bindLan', 'bindTailscale', 'requireAccessHeader', 'hostname', 'token'] as const
+/**
+ * What the server binds or checks: moving one needs a restart to take effect.
+ * Every one is a string, number or boolean, so `!==` compares values — an array
+ * here would differ by reference after every hydrate and restart the server on
+ * each settings write, which is why the AUD is one string and not a list.
+ */
+const REMOTE_BIND_KEYS = [
+  'port',
+  'bindLan',
+  'bindTailscale',
+  'requireAccessHeader',
+  'accessTeamDomain',
+  'accessAud',
+  'hostname',
+  'token'
+] as const
 
 export function shouldRestartRemote(
   prev: RemoteBindFields,

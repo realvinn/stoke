@@ -150,7 +150,8 @@ const api: StokeApi = {
     tunnelLocate: () => ipcRenderer.invoke(CH.tunnelLocate),
     cloudflareSetup: () => ipcRenderer.invoke(CH.cloudflareSetup),
     cloudflareStep: (step, opts) => ipcRenderer.invoke(CH.cloudflareStep, step, opts),
-    onSessionStarted: (cb) => on<[Parameters<typeof cb>[0]]>(CH.remoteSessionStarted, cb)
+    onSessionStarted: (cb) => on<[Parameters<typeof cb>[0]]>(CH.remoteSessionStarted, cb),
+    lookupAccess: () => ipcRenderer.invoke(CH.remoteLookupAccess)
   },
 
   updates: {

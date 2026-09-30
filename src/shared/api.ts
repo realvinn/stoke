@@ -31,6 +31,7 @@ import type { StokeCliRequest } from './stokeArgs'
 import type { ClaudeLaunchDefaults } from './launch'
 import type { SecretStoreStatus } from './secrets'
 import type { SetupPreview } from './setupFile'
+import type { AccessLookup, RemoteAccessStatus } from './cfAccess'
 import type {
   ActivityReport,
   BrowserState,
@@ -208,6 +209,8 @@ export interface RemoteState {
     addresses: string[]
     /** Phones attached per pty id, so a tab can say one is watching. */
     attachedByPty: Record<string, number>
+    /** Whether Cloudflare Access tokens are verified, and what last happened to one. */
+    access: RemoteAccessStatus
   }
   tunnel: {
     installed: boolean
@@ -603,6 +606,12 @@ export interface StokeApi {
      * Phone contract point 10 / PX-9 / F3.
      */
     onSessionStarted(cb: (info: RemoteSessionStarted) => void): () => void
+    /**
+     * Find the Cloudflare Access team and application in front of the saved
+     * public hostname (`discoverAccess`). Writes nothing: the panel saves what
+     * it returns, so `remote` keeps one writer (gotcha 57).
+     */
+    lookupAccess(): Promise<AccessLookup>
   }
 
   updates: {
