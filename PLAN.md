@@ -591,22 +591,33 @@ and phase 1 needs no server.
 - The phone web UI is cleaner: one action, two-line rows, Running | Recent. It is also an
   installable PWA shell (gotcha 131).
 
-**Still open, roughly in order:**
-- Usage for every account: per-account Claude, the Codex rollouts, the OpenRouter key and
-  Cline's balance.
-- claude.ai / ChatGPT export import, and a read-only chat viewer.
-- The Chrome close-and-reopen flow when a profile copy is locked, plus a `v20` proof on the
-  owner's Windows PC.
-- The CI probe on each OS and Debian: a packaged app booted and driven, with sessions, several
-  agents, a browser cookie and SSH.
-- Smaller follow-ups — built on the `follow-ups` branch, not yet merged:
-  - The phone's New session shows what the chosen agent takes (`/api/host` `choices`), with an
-    account picker, and main holds a start to it (`phoneLaunchVerdict`).
-  - Web Push for the installed phone shell: into waiting, a new prompt, an exit (gotcha 136).
-    Not driven on a real phone or a real push service.
-  - A second Claude account is handed the Default account's user-scope MCP servers in a 0600
-    `--mcp-config`, URL-only for OAuth http servers, and its row in Settings says so.
-  - Left: the desktop's Phone access panel does not list subscribed phones yet.
+**Wave 5 — shipped:**
+- Usage covers every account and source Stoke can read honestly: Claude per account (its own
+  token and Keychain item), Codex from its rollouts, the OpenRouter key, Cline's balance
+  (micro-dollars, read-only token) and Kimi. The chip follows the tab's agent and account
+  (gotcha 132).
+- claude.ai and ChatGPT export zips import into chat history under the same caps, and a
+  read-only viewer opens any chat that cannot be resumed (gotcha 133).
+- ci.yml's non-gating probe boots the PACKAGED app on every target and drives it: sessions,
+  several agents, a browser login kept across a restart, and phone access. It also runs SSH on
+  Linux and macOS arm64, plus a bare Debian root install of the AppImage (gotcha 134).
+- Chrome on Windows. A copy locked by a running Chrome offers one graceful close (sign-out
+  style, via the Restart Manager) and a reopen. Chromium's source settles that `v20`
+  (app-bound) logins can NEVER be decrypted from a copy or over remote debugging, so those stay
+  sealed and are reported as such. Per-user installs write `v10`, which imports (gotcha 135).
+- The phone's New session shows each agent's own choices and an account picker. Web Push
+  covers the installed phone shell. A second Claude account gets the default account's
+  user-scope MCP servers (gotcha 136).
+
+**Still open:**
+- Real-world proofs no machine here could run:
+  - a real Windows PC for the Chrome close and reopen, and the statusLine shim under real
+    `claude`;
+  - a real phone and push service;
+  - a real second Claude or Codex account;
+  - a real Cline sign-in for its balance.
+- Make ci.yml's probe and portability legs gating once they have a green streak.
+- The desktop's Phone access panel does not list subscribed phones yet.
 
 ## Open work, in the order it is worth doing
 
