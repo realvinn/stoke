@@ -36,7 +36,7 @@ A `dist:*` exists per target and each MUST run on that target's own platform and
 (gotcha 67): `dist:win`, `dist:win:arm64`, `dist:mac`, `dist:mac:intel`, `dist:linux`.
 
 Every suite runs alone as `npm run verify:<name>`: context, statusline, unicode, usage,
-profiles, settings, providers, claude-config, folders, search, color, theme-gen, activity,
+profiles, settings, secrets, providers, claude-config, folders, search, color, theme-gen, activity,
 worklog-gate, tabs, launcher, registry,
 restore, shortcuts, drop, fullscreen, layers, browser-url, browser-profiles, safari-import, chrome-import, voice, agents, campfire, cli, stoke-args, updates, targets, manifests, portable, winget, worklog-runner,
 worklog-retry, worklog-recall, worklog-autoscan, ssh, ssh-enroll, remote, phone-ui, installer-art, install, welcome,
@@ -67,6 +67,8 @@ src/main/            Electron main process
                        safari.ts (Full Disk Access, binarycookies), index.ts (runImport). Values stay in main
   projects.ts, projectMeta.ts, profiles.ts, workspace.ts, workspaceRoots.ts   folders, sessions
   store.ts, settingsSchema.ts   settings persistence; defaults + hydrate (no electron import)
+  secrets.ts, setupFile.ts      keys sealed in secrets.json (settings.json holds ''; the paths are
+                       `SECRET_PATHS` in shared/secrets.ts); the passphrase-sealed `.stoke-setup`
   tabStore.ts          the tabs open at quit; restore is `--resume`, never a reattach
   activity.ts, activityGit.ts   the activity report, from transcripts + commit subjects
   ssh.ts, sshTranscript.ts      ~/.ssh/config + ssh argv; pulling a remote transcript back
@@ -154,6 +156,8 @@ rule file named on the group line.
   two sidebar rows for one folder.
 - **101.** Hand PowerShell its variable parts as data (a JSON plan, an env var), never inside `'…'`:
   U+2018–U+201B are single quotes too; a script written to disk must be ASCII for PowerShell 5.1.
+- **116.** Diff two settings only after hydrating both the same number of times, with keys sorted
+  (`planImport`, `stable`): `hydrateSettings` is not idempotent (`worklogBoards`' default targets).
 
 **Terminal** — `.claude/rules/terminal.md`
 - **5.** Never read the terminal from the DOM: WebGL paints a canvas, so `.xterm-rows` is empty.
@@ -514,6 +518,9 @@ rule file named on the group line.
 - **Resuming a real session to test something touches its transcript**: on exit the CLI appends
   `last-prompt`/`cost-state` records even with nothing typed, so the chat re-sorts as recent. Use
   a throwaway session, or a fake `claudePath` under a separate `--user-data-dir`.
+- **A sandbox holding keys opens `safeStorage`**, whose key is a real login-Keychain item (a dev
+  run's "stoke Safe Storage" exists on the owner's Mac). Pass `--use-mock-keychain`: measured under
+  Electron 43, encryption stays available and no Keychain item is created.
 
 ## Verification
 

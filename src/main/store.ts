@@ -1,14 +1,57 @@
-import { app } from 'electron'
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { app, safeStorage } from 'electron'
+import { mkdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { Settings } from '@shared/types'
 import { hydrateSettings } from './settingsSchema.ts'
+import { safeStorageBackend, SecretStore, writePrivateFile, type SecretStoreStatus } from './secrets.ts'
 
 let cache: Settings | null = null
 const listeners = new Set<(s: Settings) => void>()
 
+/**
+ * Where secrets go, once the app is ready (`initSecretStore`). Null before
+ * that, when `persist` writes settings.json exactly as it always has —
+ * `safeStorage` is not usable before `ready` on Windows and Linux.
+ */
+let secrets: SecretStore | null = null
+
 function file(): string {
   return join(app.getPath('userData'), 'settings.json')
+}
+
+/**
+ * Open the secret store and migrate a plaintext settings.json into it.
+ *
+ * Called once, first thing in `whenReady`, before any window or IPC exists.
+ * Anything still coalescing from before is written first, the old way: a
+ * write queued before the vault was read carries empty keys, and routing it
+ * through the vault afterwards would read as "every key was deleted".
+ *
+ * Fast on the common path: two small reads in userData, and the key store is
+ * consulted only when there is something to seal or open (secrets.ts
+ * `decide`). A failure leaves the store off for this run — today's behaviour —
+ * rather than taking settings down with it.
+ */
+export function initSecretStore(): void {
+  if (secrets) return
+  flushSettings()
+  const store = new SecretStore(app.getPath('userData'), safeStorageBackend(safeStorage, process.platform), process.platform)
+  const started = Date.now()
+  try {
+    const raw = store.load()
+    secrets = store
+    cache = hydrateSettings(raw)
+  } catch (err) {
+    console.error('[stoke] secret store unavailable; keys stay in settings.json', err)
+    return
+  }
+  const took = Date.now() - started
+  if (took > 50) console.warn(`[stoke] opening the secret store took ${took}ms`)
+}
+
+/** Where the keys live, for Settings. Null before `initSecretStore` ran. */
+export function secretStoreStatus(): SecretStoreStatus | null {
+  return secrets ? secrets.status() : null
 }
 
 export function getSettings(): Settings {
@@ -27,13 +70,22 @@ export function getSettings(): Settings {
   return cache
 }
 
-/** Write via a temp file + rename so a crash mid-write cannot truncate settings. */
+/**
+ * Write via a temp file + rename so a crash mid-write cannot truncate settings.
+ *
+ * Once the secret store is open, it does the writing: the secrets into
+ * secrets.json (only when one moved), then settings.json with them emptied.
+ * Still one synchronous call per coalesced write, so the coalescing below
+ * (gotcha 63) governs both files.
+ */
 function persist(s: Settings): void {
   const target = file()
   mkdirSync(dirname(target), { recursive: true })
-  const tmp = `${target}.tmp`
-  writeFileSync(tmp, JSON.stringify(s, null, 2), 'utf8')
-  renameSync(tmp, target)
+  if (secrets) {
+    secrets.save(s)
+    return
+  }
+  writePrivateFile(target, JSON.stringify(s, null, 2))
 }
 
 /**

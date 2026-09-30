@@ -29,6 +29,8 @@ import type { CreateProfileInput, ProfilePlan } from './profiles'
 import type { CodingCliDetection, CodingCliId } from './codingClis'
 import type { StokeCliRequest } from './stokeArgs'
 import type { ClaudeLaunchDefaults } from './launch'
+import type { SecretStoreStatus } from './secrets'
+import type { SetupPreview } from './setupFile'
 import type {
   ActivityReport,
   BrowserState,
@@ -355,6 +357,19 @@ export interface StokeCommandState {
   canRemove: boolean
 }
 
+/** Export a `.stoke-setup`: main shows the save dialog, seals and writes it. */
+export type SetupExportResult =
+  | { ok: true; path: string; keys: number }
+  | { ok: false; canceled?: boolean; message: string }
+
+/** Main's own open dialog; the renderer only ever learns the file's name. */
+export type SetupPickResult = { ok: true; name: string } | { ok: false; canceled?: boolean; message: string }
+
+/** The picked file, opened with a passphrase: what an import would change. Never a key. */
+export type SetupPreviewResult = { ok: true; preview: SetupPreview } | { ok: false; message: string }
+
+export type SetupApplyResult = { ok: true; settings: Settings; changed: number; keys: number } | { ok: false; message: string }
+
 /** The surface exposed to the renderer as `window.stoke`. */
 export interface StokeApi {
   platform: string
@@ -624,6 +639,20 @@ export interface StokeApi {
     get(): Promise<Settings>
     set(patch: Partial<Settings>): Promise<Settings>
     onChange(cb: (settings: Settings) => void): () => void
+  }
+
+  /**
+   * Settings › Backup & transfer. `status` is null before main has opened the
+   * secret store. The import is pick -> preview -> apply, with the decrypted
+   * file held in main throughout (see CH.setupImportPick).
+   */
+  backup: {
+    status(): Promise<SecretStoreStatus | null>
+    exportSetup(req: { passphrase: string; includeSecrets: boolean }): Promise<SetupExportResult>
+    pickImport(): Promise<SetupPickResult>
+    previewImport(passphrase: string): Promise<SetupPreviewResult>
+    applyImport(opts: { includeSecrets: boolean }): Promise<SetupApplyResult>
+    cancelImport(): Promise<void>
   }
 
   /**

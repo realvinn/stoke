@@ -187,6 +187,22 @@ export const CH = {
   settingsChanged: 'settings:changed',
 
   /*
+   * Settings › Backup & transfer: where the keys live (secrets.json sealed by
+   * safeStorage, or plaintext settings.json where no key store protects them),
+   * and the passphrase-sealed `.stoke-setup` file. The import is three steps so
+   * the decrypted payload never crosses to the renderer: pick (main's own open
+   * dialog; the renderer never names a path), preview (main holds the payload
+   * and returns only what would change), apply. See src/main/secrets.ts and
+   * src/shared/setupFile.ts.
+   */
+  secretsStatus: 'secrets:status',
+  setupExport: 'setup:export',
+  setupImportPick: 'setup:importPick',
+  setupImportPreview: 'setup:importPreview',
+  setupImportApply: 'setup:importApply',
+  setupImportCancel: 'setup:importCancel',
+
+  /*
    * Claude Code's own configuration, which is not Stoke's Settings. These read
    * and write ~/.claude/settings.json and one key in ~/.claude.json; see
    * src/main/claudeSettings.ts and src/main/claudeGlobalConfig.ts.

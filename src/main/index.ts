@@ -128,7 +128,18 @@ import { readSessionState, sessionStateFile, writeSessionState } from './worklog
 import { invalidateRecall, recall, scanOutcomeFor } from './worklog/recall.ts'
 import type { CreateProfileInput } from '@shared/profiles'
 import type { CliRunResult, RemoteState, StokeCommandState, VoiceState } from '@shared/api'
-import { flushSettings, getSettings, onSettingsChanged, setSettings } from './store.ts'
+import { flushSettings, getSettings, initSecretStore, onSettingsChanged, secretStoreStatus, setSettings } from './store.ts'
+import { hydrateSettings } from './settingsSchema.ts'
+import { defaultSetupName, openSetup, sealSetup } from './setupFile.ts'
+import {
+  buildSetupPayload,
+  judgePassphrase,
+  parseSetupEnvelope,
+  planImport,
+  portableSecrets,
+  SETUP_EXTENSION,
+  type SetupPayload
+} from '@shared/setupFile'
 import {
   gitBashPath,
   readSessionEvents,
@@ -2873,7 +2884,15 @@ function registerIpc(): void {
 
   /* -------------------------------------------------------------- settings */
   ipcMain.handle(CH.settingsGet, () => getSettings())
-  ipcMain.handle(CH.settingsSet, async (_e, patch: Partial<Settings>) => {
+  ipcMain.handle(CH.settingsSet, (_e, patch: Partial<Settings>) => commitSettings(patch))
+  /*
+   * A settings write and everything a moved field has to reach: the docked
+   * browser, the phone server, the window's own paint, the recall cache. One
+   * function because two paths write settings wholesale — Settings itself and
+   * an imported setup file — and an import that skipped these would leave a
+   * new theme unpainted and new bookmarks unshown until a restart.
+   */
+  async function commitSettings(patch: Partial<Settings>): Promise<Settings> {
     const prev = getSettings()
     const next = setSettings(patch)
     // A renamed or re-ordered profile list, a switch, or a bookmark list moved.
@@ -2950,6 +2969,144 @@ function registerIpc(): void {
     }
     send(CH.settingsChanged, next)
     return next
+  }
+
+  /* ------------------------------------------------- backup & transfer */
+  ipcMain.handle(CH.secretsStatus, () => secretStoreStatus())
+
+  /*
+   * One slot for the whole flow, claimed before the first await (gotcha 20):
+   * a second Export press while the first is still deriving its key would
+   * otherwise open a second save dialog, and an Apply pressed twice would fold
+   * the same file in twice.
+   */
+  let setupBusy = false
+  /** The file picked for import and, once unlocked, its payload. Main's only; never sent. */
+  let pendingImport: { name: string; text: string; payload: SetupPayload | null } | null = null
+  const SETUP_MAX_BYTES = 8 * 1024 * 1024
+  /*
+   * A test hook, the chrome.ts `STOKE_TEST_CHROME_SAFE_STORAGE` shape: an
+   * UNPACKAGED run may name the file both dialogs answer with, because a
+   * native save/open panel cannot be driven over CDP (gotcha 31 — the wire
+   * from the buttons to the file is only provable in the running app). A
+   * packaged build never reads it.
+   */
+  const testSetupFile = (): string | undefined =>
+    app.isPackaged ? undefined : process.env.STOKE_TEST_SETUP_FILE || undefined
+
+  ipcMain.handle(CH.setupExport, async (_e, req: { passphrase?: unknown; includeSecrets?: unknown }) => {
+    const passphrase = typeof req?.passphrase === 'string' ? req.passphrase : ''
+    const verdict = judgePassphrase(passphrase)
+    if (!verdict.acceptable) return { ok: false, message: verdict.hint }
+    if (setupBusy) return { ok: false, message: 'Already working on a setup file.' }
+    setupBusy = true
+    try {
+      const now = new Date()
+      const opts = {
+        title: 'Export Stoke setup',
+        defaultPath: join(app.getPath('documents'), defaultSetupName(now)),
+        filters: [{ name: 'Stoke setup', extensions: [SETUP_EXTENSION] }]
+      }
+      const seam = testSetupFile()
+      const res = seam
+        ? { canceled: false, filePath: seam }
+        : win
+          ? await dialog.showSaveDialog(win, opts)
+          : await dialog.showSaveDialog(opts)
+      if (res.canceled || !res.filePath) return { ok: false, canceled: true, message: '' }
+      const payload = buildSetupPayload(getSettings(), {
+        includeSecrets: req?.includeSecrets === true,
+        version: app.getVersion(),
+        platform: process.platform,
+        now
+      })
+      const text = await sealSetup(payload, passphrase)
+      await writeFile(res.filePath, text, { encoding: 'utf8', mode: 0o600 })
+      return { ok: true, path: res.filePath, keys: Object.keys(payload.secrets).length }
+    } catch (err) {
+      return { ok: false, message: `The setup file could not be written: ${err instanceof Error ? err.message : String(err)}` }
+    } finally {
+      setupBusy = false
+    }
+  })
+
+  ipcMain.handle(CH.setupImportPick, async () => {
+    if (setupBusy) return { ok: false, message: 'Already working on a setup file.' }
+    setupBusy = true
+    try {
+      const opts = {
+        title: 'Import Stoke setup',
+        properties: ['openFile' as const],
+        filters: [{ name: 'Stoke setup', extensions: [SETUP_EXTENSION] }]
+      }
+      const seam = testSetupFile()
+      const res = seam
+        ? { canceled: false, filePaths: [seam] }
+        : win
+          ? await dialog.showOpenDialog(win, opts)
+          : await dialog.showOpenDialog(opts)
+      const file = res.filePaths[0]
+      if (res.canceled || !file) return { ok: false, canceled: true, message: '' }
+      const info = await stat(file)
+      if (info.size > SETUP_MAX_BYTES) return { ok: false, message: 'That file is far too large to be a Stoke setup file.' }
+      const text = await readFile(file, 'utf8')
+      // Refuse a file that is not one, or that this build cannot open, BEFORE
+      // asking for a passphrase that could never work.
+      const envelope = parseSetupEnvelope(text)
+      if (!envelope.ok) return { ok: false, message: envelope.message }
+      pendingImport = { name: basename(file), text, payload: null }
+      return { ok: true, name: basename(file) }
+    } catch (err) {
+      return { ok: false, message: `That file could not be read: ${err instanceof Error ? err.message : String(err)}` }
+    } finally {
+      setupBusy = false
+    }
+  })
+
+  ipcMain.handle(CH.setupImportPreview, async (_e, passphrase: unknown) => {
+    const pending = pendingImport
+    if (!pending) return { ok: false, message: 'Choose a setup file first.' }
+    if (typeof passphrase !== 'string' || !passphrase) {
+      return { ok: false, message: 'Type the passphrase the file was made with.' }
+    }
+    if (setupBusy) return { ok: false, message: 'Already working on a setup file.' }
+    setupBusy = true
+    try {
+      const opened = await openSetup(pending.text, passphrase)
+      if (!opened.ok) return { ok: false, message: opened.message }
+      // Cancelled, or another file picked, while this one derived its key.
+      if (pendingImport !== pending) return { ok: false, message: 'That import was cancelled.' }
+      pending.payload = opened.payload
+      const { preview } = planImport(getSettings(), opened.payload, { includeSecrets: true }, hydrateSettings)
+      return { ok: true, preview }
+    } finally {
+      setupBusy = false
+    }
+  })
+
+  ipcMain.handle(CH.setupImportApply, async (_e, opts: { includeSecrets?: unknown }) => {
+    const payload = pendingImport?.payload
+    if (!payload) return { ok: false, message: 'Unlock a setup file first.' }
+    if (setupBusy) return { ok: false, message: 'Already working on a setup file.' }
+    setupBusy = true
+    try {
+      const includeSecrets = opts?.includeSecrets === true
+      // Against the settings as they are NOW, not at preview time: anything
+      // changed since is kept unless the file names it.
+      const { next, preview } = planImport(getSettings(), payload, { includeSecrets }, hydrateSettings)
+      const changed = preview.changes.length
+      pendingImport = null
+      const settings = await commitSettings(next)
+      return { ok: true, settings, changed, keys: includeSecrets ? Object.keys(portableSecrets(payload.secrets)).length : 0 }
+    } catch (err) {
+      return { ok: false, message: `The setup could not be applied: ${err instanceof Error ? err.message : String(err)}` }
+    } finally {
+      setupBusy = false
+    }
+  })
+
+  ipcMain.handle(CH.setupImportCancel, () => {
+    pendingImport = null
   })
 
   /* -------------------------------------------------------------- profiles */
@@ -3414,6 +3571,13 @@ if (!app.requestSingleInstanceLock(launchRequest ? { stokeCli: launchRequest } :
   })
 
   app.whenReady().then(() => {
+    /*
+     * Before anything reads a setting: open secrets.json and migrate any key
+     * still in plain text in settings.json (secrets.ts). `safeStorage` is not
+     * usable before `ready` on Windows and Linux, and the window's first paint
+     * and every IPC answer should already see the keys.
+     */
+    initSecretStore()
     protocol.handle(WALLPAPER_SCHEME, (request) => {
       const file = wallpaperFileFor(app.getPath('userData'), request.url)
       if (!file) return new Response('not found', { status: 404 })

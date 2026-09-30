@@ -4499,6 +4499,39 @@ summary.agent-picker-section:hover {
   justify-content: flex-end;
 }
 
+/*
+ * Settings › Backup & transfer: what an import would change, one row per
+ * setting. The label keeps its own column so a long detail ("adds devbox, vps,
+ * builder") wraps under itself rather than under the label, and `min-width: 0`
+ * on the detail lets it wrap at all (gotcha 14's flex floor).
+ */
+.backup-changes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--fs-xs);
+}
+
+.backup-changes > li {
+  display: grid;
+  grid-template-columns: minmax(8rem, max-content) minmax(0, 1fr);
+  gap: var(--space-8);
+}
+
+.backup-change-label {
+  color: var(--text);
+  font-weight: 550;
+}
+
+.backup-change-detail {
+  min-width: 0;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
 /* ----------------------------------------------------------- theme editor */
 
 /*
