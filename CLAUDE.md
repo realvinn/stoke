@@ -502,6 +502,8 @@ rule file named on the group line.
 - **`app.exit()` does not flush a piped stdout** — write the result to a file and read that back.
 - **110.** Call `require` synchronously in a main-process inspector evaluation: it is console API,
   gone once the evaluation returns, and a deferred call throws into Electron's modal error `NSAlert`.
+- **119.** Commit a driven settings field with its Enter path, never a synthetic `blur()`: with the
+  window behind another app (`document.hasFocus()` false) the blur commits nothing.
 - **Nested backticks inside a template literal end it early**, as a SyntaxError that points at the
   wrong place. Build anything injected into a page from an array of lines.
 - **A `.settings.json` missing from `$TMPDIR/stoke/statusline/` has two causes, both found and
