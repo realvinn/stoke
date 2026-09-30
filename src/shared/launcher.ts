@@ -344,6 +344,39 @@ export function launchAim(input: {
   return { path, pin: path }
 }
 
+/* ----------------------------------------------- Claude's launch options */
+
+/**
+ * Whether this card can start Claude Code, and so whether Claude's launch
+ * chips and the "Permissions are bypassed" warning must be on it.
+ *
+ * That is not the same as "Claude Code is what Start starts". With another
+ * agent as the default, Continue, ⌘Enter, a conversation row, its digit key
+ * and the caret menu's Claude Code item all still start `claude`, on the same
+ * permission mode, model and effort Start would have used (the tab's picks
+ * over Stoke's defaults). The first cut drew the chips only for a Claude
+ * primary, so a bypass default resumed a Claude conversation with
+ * `--dangerously-skip-permissions` from a card that said nothing about it
+ * (review of the default-agent change).
+ *
+ * `loading` counts because ⌘Enter before the list has loaded is a
+ * `claude --continue`. A broken Claude Code resumes nothing and is in no menu,
+ * so the only Claude launch left is a Claude Start, whose own alert blocks it.
+ */
+export function claudeLaunchesHere(input: {
+  primaryIsClaude: boolean
+  claudeBroken: boolean
+  /** How many Claude Code conversations the card lists, empty ones included. */
+  conversations: number
+  loading: boolean
+  /** Claude Code is one of the caret menu's other agents. */
+  claudeInMenu: boolean
+}): boolean {
+  if (input.primaryIsClaude) return true
+  if (input.claudeBroken) return false
+  return input.conversations > 0 || input.loading || input.claudeInMenu
+}
+
 /* ------------------------------------------------- activation-key bursts */
 
 /**

@@ -1,4 +1,4 @@
-import type { CodingCli, CodingCliId } from '@shared/codingClis'
+import { capsFor, isClaudeCode, type CodingCli, type CodingCliId } from '@shared/codingClis'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CliInfo, EffortLevel, PermissionMode, Project, SessionMeta, SshHost } from '@shared/types'
 import {
@@ -13,6 +13,7 @@ import {
   type ResolvedLaunch
 } from '@shared/launch'
 import {
+  claudeLaunchesHere,
   isActivationKey,
   launcherKey,
   newestConversation,
@@ -78,8 +79,25 @@ interface Props {
    * non-activation key has landed since (gotcha 93).
    */
   armedAt?: number | null
+  /**
+   * The agent Start starts: Settings › Coding agents › Default agent, already
+   * resolved against what is installed and chosen (`resolveDefaultAgent`).
+   */
+  primary: CodingCli
+  /**
+   * Whether a NON-Claude primary is installed, by detection; null while that is
+   * unknown, and always null for Claude Code, whose own probe is `cli`.
+   */
+  primaryInstalled: boolean | null
+  /** What detection says about a non-Claude primary (`cliStatusLine`), for its alert. */
+  primaryStatus: string
+  /** Run detection again — the non-Claude alert's Look again. */
+  onLookAgain: () => void
+  /** The other agents on offer: installed, chosen, and not the primary. */
   otherClis: CodingCli[]
   onStartCli: (id: CodingCliId) => void
+  /** Make this agent the one Start starts, from the caret menu. */
+  onMakeDefaultAgent: (id: CodingCliId) => void
   onAddAgents?: () => void
   onStart: () => void
   /** Continue this conversation, or — with null, while the list is still loading — the folder's latest. */
@@ -100,11 +118,13 @@ export function Launcher(props: Props): React.JSX.Element {
     openSessionIds,
     cli,
     overlayOpen,
-    otherClis
+    otherClis,
+    primary
   } = props
 
   const startRef = useRef<HTMLButtonElement>(null)
   const retryRef = useRef<HTMLButtonElement>(null)
+  const lookRef = useRef<HTMLButtonElement>(null)
   const locateRef = useRef<HTMLButtonElement>(null)
   const switcherRef = useRef<HTMLButtonElement>(null)
   const caretRef = useRef<HTMLButtonElement>(null)
@@ -133,10 +153,44 @@ export function Launcher(props: Props): React.JSX.Element {
   const holdingRef = useRef(holding)
   holdingRef.current = holding
 
-  const cliBroken = !!cli && !cli.ok
+  /*
+   * Two gates, because Start and the conversation list can be different agents.
+   * Start needs the PRIMARY: Claude Code by its own probe, any other agent by
+   * detection. The list, Continue and the digit keys resume Claude Code
+   * transcripts, so they need Claude Code whatever Start starts — and a broken
+   * Claude must not hold back a Codex Start.
+   */
+  const isClaude = isClaudeCode(primary.id)
+  const claudeBroken = !!cli && !cli.ok
+  const agentMissing = !isClaude && props.primaryInstalled === false
+  const primaryBroken = isClaude ? claudeBroken : agentMissing
   const missing = !!target && !target.exists
-  const canStart = !!target && !cliBroken && !missing
-  const bypass = launch.permissionMode.choice === 'bypassPermissions'
+  const canStart = !!target && !primaryBroken && !missing
+  const canResume = !!target && !claudeBroken && !missing
+  /*
+   * Claude's launch options mean nothing to another agent (CLI_CAPS), but this
+   * card starts Claude Code with them whatever Start starts: Continue, the
+   * rows, the digit keys and the caret menu's Claude Code all pass the chips'
+   * choice. So the chips, and above all the bypass warning, are drawn whenever
+   * the card can start Claude (`claudeLaunchesHere`), and are Claude's there.
+   */
+  const claudeInMenu = otherClis.some((c) => isClaudeCode(c.id))
+  const claudeHere = claudeLaunchesHere({
+    primaryIsClaude: isClaude,
+    claudeBroken,
+    conversations: sessions.length,
+    loading: sessionsLoading,
+    claudeInMenu
+  })
+  // Where those Claude sessions come from, for the note under another default.
+  const claudeRoutes = [
+    ...(sessions.length > 0 || sessionsLoading ? ['Continue', 'a conversation below'] : []),
+    ...(claudeInMenu ? ['Claude Code from the menu'] : [])
+  ]
+  const flags = capsFor(claudeHere ? 'claude' : primary.id).launchFlags
+  const showUltracode = claudeHere && flags.effort
+  const anyChip = flags.permissionMode || flags.model || flags.effort || showUltracode
+  const bypass = flags.permissionMode && launch.permissionMode.choice === 'bypassPermissions'
 
   // A new target starts with a clean list.
   useEffect(() => {
@@ -151,10 +205,17 @@ export function Launcher(props: Props): React.JSX.Element {
    * used to sit over a focused "Start here", and an Enter meant for the splash
    * started `claude` in the default folder behind it. `overlayOpen` is in the
    * deps so focus comes back when the overlay closes instead of falling to
-   * <body> (QA L7). A missing folder focuses Locate…, a broken CLI Retry.
+   * <body> (QA L7). A missing folder focuses Locate…, a broken Claude Code
+   * Retry, a missing other agent Look again.
    */
   const focusPrimary = (): void => {
-    const el = missing ? locateRef.current : cliBroken ? retryRef.current : startRef.current
+    const el = missing
+      ? locateRef.current
+      : primaryBroken
+        ? isClaude
+          ? retryRef.current
+          : lookRef.current
+        : startRef.current
     el?.focus()
   }
   /*
@@ -166,7 +227,7 @@ export function Launcher(props: Props): React.JSX.Element {
     if (overlayOpen || pop) return
     if (holdingRef.current && launcherHoldingFocus(armedAt)) cardRef.current?.focus()
     else focusPrimary()
-  }, [target?.path, overlayOpen, missing, cliBroken, !!target, armedAt])
+  }, [target?.path, overlayOpen, missing, primaryBroken, !!target, armedAt])
 
   const view = useMemo(
     () => sessionView(sessions, { query, showEmpty, all: showAll, limit: ROWS }),
@@ -201,7 +262,7 @@ export function Launcher(props: Props): React.JSX.Element {
         return
       case 'continue':
         e.preventDefault()
-        if (canStart && (newest || sessionsLoading)) props.onContinue(newest)
+        if (canResume && (newest || sessionsLoading)) props.onContinue(newest)
         return
       case 'agents':
         e.preventDefault()
@@ -217,7 +278,7 @@ export function Launcher(props: Props): React.JSX.Element {
         return
       case 'resume': {
         const s = view.shown[action.index]
-        if (!s || !canStart) return
+        if (!s || !canResume) return
         e.preventDefault()
         props.onResume(s)
         return
@@ -292,7 +353,7 @@ export function Launcher(props: Props): React.JSX.Element {
               requestAnimationFrame(focusPrimary)
             }}
             triggerRef={switcherRef}
-            scratchBlocked={cliBroken}
+            scratchBlocked={primaryBroken}
           />
           <span className="launcher-path mono">{target?.path ?? ' '}</span>
           {props.profileNote && (
@@ -335,10 +396,20 @@ export function Launcher(props: Props): React.JSX.Element {
           )}
         </div>
 
-        {cliBroken && (
+        {/*
+          Claude's alert blocks Start only when Claude is what Start starts;
+          with another default it is still drawn while there are Claude
+          conversations below, which it is then the reason for being unable
+          to resume. A Codex-only user sees no Claude alert at all.
+        */}
+        {claudeBroken && (isClaude || sessions.length > 0) && (
           <div className="launcher-alert" role="alert">
             <div className="launcher-alert-text">
-              <b>Claude Code isn&rsquo;t runnable</b>
+              <b>
+                {isClaude
+                  ? 'Claude Code isn’t runnable'
+                  : 'Claude Code isn’t runnable, so the conversations below can’t be resumed'}
+              </b>
               <span>{cli?.error}</span>
             </div>
             <div className="btn-row">
@@ -359,6 +430,25 @@ export function Launcher(props: Props): React.JSX.Element {
           </div>
         )}
 
+        {agentMissing && (
+          <div className="launcher-alert" role="alert">
+            <div className="launcher-alert-text">
+              <b>{primary.label} isn&rsquo;t installed</b>
+              <span>{props.primaryStatus}</span>
+            </div>
+            <div className="btn-row">
+              <button ref={lookRef} className="btn" onClick={props.onLookAgain}>
+                Look again
+              </button>
+              {props.onAddAgents && (
+                <button className="btn" data-variant="ghost" onClick={props.onAddAgents}>
+                  Choose agents…
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Row B: the primary actions, directly under the target. */}
         <div className="launcher-actions">
           <div className="split" data-disabled={!canStart || undefined}>
@@ -371,7 +461,7 @@ export function Launcher(props: Props): React.JSX.Element {
               onFocus={() => setPrimaryFocused(true)}
               onBlur={() => setPrimaryFocused(false)}
             >
-              Start Claude Code
+              Start {primary.label}
             </button>
             {agentMenu && (
               <div className="split-caret-wrap">
@@ -402,8 +492,25 @@ export function Launcher(props: Props): React.JSX.Element {
                         side: c.vendor,
                         onPick: () => props.onStartCli(c.id)
                       })),
+                      // What Start starts, changed from where it is used; the
+                      // same setting as Settings › Coding agents › Default agent.
+                      ...otherClis.map((c, i) => ({
+                        key: `default-${c.id}`,
+                        label: `Make ${c.label} the default`,
+                        side: '',
+                        separated: i === 0,
+                        onPick: () => props.onMakeDefaultAgent(c.id)
+                      })),
                       ...(props.onAddAgents
-                        ? [{ key: 'add', label: 'Add agents…', side: '', onPick: props.onAddAgents }]
+                        ? [
+                            {
+                              key: 'add',
+                              label: 'Add agents…',
+                              side: '',
+                              separated: otherClis.length > 0,
+                              onPick: props.onAddAgents
+                            }
+                          ]
                         : [])
                     ]}
                     note="The context ring and the worklog read Claude Code's files only. Some agents show their own update screen on first run."
@@ -420,10 +527,10 @@ export function Launcher(props: Props): React.JSX.Element {
               <button
                 className="btn launcher-continue"
                 onClick={() => props.onContinue(newest)}
-                disabled={!canStart}
-                title={`Continue this conversation (${window.stoke.platform === 'darwin' ? '⌘' : 'Ctrl+'}Enter)${
-                  openSessionIds.has(newest.id) ? ' — it is already open, so its tab is brought forward' : ''
-                }`}
+                disabled={!canResume}
+                title={`Continue this conversation${isClaude ? '' : ' in Claude Code'} (${
+                  window.stoke.platform === 'darwin' ? '⌘' : 'Ctrl+'
+                }Enter)${openSessionIds.has(newest.id) ? ' — it is already open, so its tab is brought forward' : ''}`}
               >
                 <span className="truncate">Continue &ldquo;{sessionTitle(newest)}&rdquo;</span>
                 <span className="launcher-continue-age">{relativeTime(newest.modified)}</span>
@@ -443,126 +550,168 @@ export function Launcher(props: Props): React.JSX.Element {
           )}
         </div>
 
-        {/* Row C: launch chips, resolved, for THIS launch (QA L10, L11). */}
-        <div className="launcher-chips" role="group" aria-label="Launch options">
-          <Chip
-            open={pop === 'mode'}
-            onOpen={(v) => setPop(v ? 'mode' : null)}
-            label={launch.permissionMode.label}
-            danger={bypass}
-            changed={launch.permissionMode.changed}
-            title={`Permission mode — ${sourceText(launch.permissionMode.source, claude.from.permissionMode)}`}
-          >
-            <Options
-              name="Permission mode"
-              value={launch.permissionMode.choice}
-              options={PERMISSION_MODES.map((m) => ({
-                id: m.id,
-                label:
-                  m.id === 'default'
-                    ? `Claude Code default · ${claude.permissionMode ? MODE_LABELS[claude.permissionMode] : 'Ask'}`
-                    : m.label,
-                hint: m.hint,
-                danger: m.danger
-              }))}
-              onPick={(id) => picked({ permissionMode: id as PermissionMode })}
-            />
-            <ChipFoot
-              source={sourceText(launch.permissionMode.source, claude.from.permissionMode)}
-              changed={launch.permissionMode.changed}
-              onMakeDefault={() => props.onMakeDefault('permissionMode')}
-            />
-          </Chip>
-
-          <Chip
-            open={pop === 'model'}
-            onOpen={(v) => setPop(v ? 'model' : null)}
-            label={launch.model.label}
-            changed={launch.model.changed}
-            title={`Model — ${sourceText(launch.model.source, claude.from.model)}`}
-          >
-            <Options
-              name="Model"
-              value={launch.model.choice}
-              options={MODEL_OPTIONS.map((m) => ({
-                id: m.id,
-                label: m.id === '' ? `Claude Code default · ${claude.model ? modelLabel(claude.model) : 'its own'}` : m.label
-              }))}
-              onPick={(id) => picked({ model: id })}
-            />
-            <ChipFoot
-              source={sourceText(launch.model.source, claude.from.model)}
-              changed={launch.model.changed}
-              onMakeDefault={() => props.onMakeDefault('model')}
-            />
-          </Chip>
-
-          <Chip
-            open={pop === 'effort'}
-            onOpen={(v) => setPop(v ? 'effort' : null)}
-            label={launch.effort.label}
-            changed={launch.effort.changed}
-            title={`Effort — ${
-              launch.ultracode.choice
-                ? 'Ultracode runs at Extra high'
-                : sourceText(launch.effort.source, launch.effort.settingsFrom)
-            }`}
-          >
-            <Options
-              name="Effort"
-              value={launch.effort.choice}
-              disabled={launch.ultracode.choice}
-              options={EFFORT_LEVELS.map((e) => ({
-                id: e.id,
-                label:
-                  e.id === 'default'
-                    ? `Claude Code default · ${launch.effort.settingsValue ? EFFORT_LABELS[launch.effort.settingsValue] : 'its own'}`
-                    : e.label
-              }))}
-              onPick={(id) => picked({ effort: id as EffortLevel })}
-            />
-            {launch.ultracode.choice && (
-              <p className="popover-text">Ultracode runs this session at Extra high; the pick comes back when it is off.</p>
+        {/*
+          Row C: launch chips, resolved, for THIS launch (QA L10, L11). Under
+          another default they are Claude Code's, for the Claude sessions this
+          card still starts, and the note says so.
+        */}
+        {!isClaude && (
+          <p className="launcher-agent-note">
+            {claudeHere ? (
+              <>
+                {primary.label} starts on its own settings; Claude Code&rsquo;s context ring and
+                worklog do not apply to it. The options below are for the Claude Code sessions
+                started here: {orList(claudeRoutes)}.
+              </>
+            ) : (
+              <>
+                {primary.label} starts on its own settings. Claude Code&rsquo;s launch options,
+                context ring and worklog do not apply to it.
+              </>
             )}
-            <ChipFoot
-              source={sourceText(launch.effort.source, launch.effort.settingsFrom)}
-              changed={launch.effort.changed}
-              onMakeDefault={() => props.onMakeDefault('effort')}
-            />
-          </Chip>
-
-          <Chip
-            open={pop === 'ultracode'}
-            onOpen={(v) => setPop(v ? 'ultracode' : null)}
-            label={launch.ultracode.choice ? 'Ultracode on' : 'Ultracode off'}
-            pressed={launch.ultracode.choice}
-            changed={launch.ultracode.changed}
-            title={ULTRACODE_HINT}
+          </p>
+        )}
+        {anyChip && (
+          <div
+            className="launcher-chips"
+            role="group"
+            aria-label={isClaude ? 'Launch options' : 'Claude Code launch options'}
           >
-            <Options
-              name="Ultracode"
-              value={launch.ultracode.choice ? 'on' : 'off'}
-              options={[
-                { id: 'off', label: 'Off' },
-                { id: 'on', label: 'On — Extra high effort plus workflows' }
-              ]}
-              onPick={(id) => picked({ ultracode: id === 'on' })}
-            />
-            <p className="popover-text">{ULTRACODE_HINT}</p>
-            <ChipFoot
-              source={launch.ultracode.source === 'launch' ? 'Changed for this launch only' : "Stoke's default"}
-              changed={launch.ultracode.changed}
-              onMakeDefault={() => props.onMakeDefault('ultracode')}
-            />
-          </Chip>
-        </div>
+            {flags.permissionMode && (
+              <Chip
+                open={pop === 'mode'}
+                onOpen={(v) => setPop(v ? 'mode' : null)}
+                label={launch.permissionMode.label}
+                danger={bypass}
+                changed={launch.permissionMode.changed}
+                title={`Permission mode — ${sourceText(launch.permissionMode.source, claude.from.permissionMode)}`}
+              >
+                <Options
+                  name="Permission mode"
+                  value={launch.permissionMode.choice}
+                  options={PERMISSION_MODES.map((m) => ({
+                    id: m.id,
+                    label:
+                      m.id === 'default'
+                        ? `Claude Code default · ${claude.permissionMode ? MODE_LABELS[claude.permissionMode] : 'Ask'}`
+                        : m.label,
+                    hint: m.hint,
+                    danger: m.danger
+                  }))}
+                  onPick={(id) => picked({ permissionMode: id as PermissionMode })}
+                />
+                <ChipFoot
+                  source={sourceText(launch.permissionMode.source, claude.from.permissionMode)}
+                  changed={launch.permissionMode.changed}
+                  onMakeDefault={() => props.onMakeDefault('permissionMode')}
+                />
+              </Chip>
+            )}
 
-        {/* Inline rather than a dialog: visible for as long as it is armed. */}
+            {flags.model && (
+              <Chip
+                open={pop === 'model'}
+                onOpen={(v) => setPop(v ? 'model' : null)}
+                label={launch.model.label}
+                changed={launch.model.changed}
+                title={`Model — ${sourceText(launch.model.source, claude.from.model)}`}
+              >
+                <Options
+                  name="Model"
+                  value={launch.model.choice}
+                  options={MODEL_OPTIONS.map((m) => ({
+                    id: m.id,
+                    label: m.id === '' ? `Claude Code default · ${claude.model ? modelLabel(claude.model) : 'its own'}` : m.label
+                  }))}
+                  onPick={(id) => picked({ model: id })}
+                />
+                <ChipFoot
+                  source={sourceText(launch.model.source, claude.from.model)}
+                  changed={launch.model.changed}
+                  onMakeDefault={() => props.onMakeDefault('model')}
+                />
+              </Chip>
+            )}
+
+            {flags.effort && (
+              <Chip
+                open={pop === 'effort'}
+                onOpen={(v) => setPop(v ? 'effort' : null)}
+                label={launch.effort.label}
+                changed={launch.effort.changed}
+                title={`Effort — ${
+                  launch.ultracode.choice
+                    ? 'Ultracode runs at Extra high'
+                    : sourceText(launch.effort.source, launch.effort.settingsFrom)
+                }`}
+              >
+                <Options
+                  name="Effort"
+                  value={launch.effort.choice}
+                  disabled={launch.ultracode.choice}
+                  options={EFFORT_LEVELS.map((e) => ({
+                    id: e.id,
+                    label:
+                      e.id === 'default'
+                        ? `Claude Code default · ${launch.effort.settingsValue ? EFFORT_LABELS[launch.effort.settingsValue] : 'its own'}`
+                        : e.label
+                  }))}
+                  onPick={(id) => picked({ effort: id as EffortLevel })}
+                />
+                {launch.ultracode.choice && (
+                  <p className="popover-text">Ultracode runs this session at Extra high; the pick comes back when it is off.</p>
+                )}
+                <ChipFoot
+                  source={sourceText(launch.effort.source, launch.effort.settingsFrom)}
+                  changed={launch.effort.changed}
+                  onMakeDefault={() => props.onMakeDefault('effort')}
+                />
+              </Chip>
+            )}
+
+            {showUltracode && (
+              <Chip
+                open={pop === 'ultracode'}
+                onOpen={(v) => setPop(v ? 'ultracode' : null)}
+                label={launch.ultracode.choice ? 'Ultracode on' : 'Ultracode off'}
+                pressed={launch.ultracode.choice}
+                changed={launch.ultracode.changed}
+                title={ULTRACODE_HINT}
+              >
+                <Options
+                  name="Ultracode"
+                  value={launch.ultracode.choice ? 'on' : 'off'}
+                  options={[
+                    { id: 'off', label: 'Off' },
+                    { id: 'on', label: 'On — Extra high effort plus workflows' }
+                  ]}
+                  onPick={(id) => picked({ ultracode: id === 'on' })}
+                />
+                <p className="popover-text">{ULTRACODE_HINT}</p>
+                <ChipFoot
+                  source={launch.ultracode.source === 'launch' ? 'Changed for this launch only' : "Stoke's default"}
+                  changed={launch.ultracode.changed}
+                  onMakeDefault={() => props.onMakeDefault('ultracode')}
+                />
+              </Chip>
+            )}
+          </div>
+        )}
+
+        {/*
+          Inline rather than a dialog: visible for as long as it is armed, and
+          under any default, since a resume here still takes the bypass.
+        */}
         {bypass && (
           <div className="launcher-alert" data-tone="danger">
             <div className="launcher-alert-text">
-              <b>Permissions are bypassed.</b>
-              <span>Claude will run commands and edit files without asking. Use it only where you trust the contents.</span>
+              <b>{isClaude ? 'Permissions are bypassed.' : 'Permissions are bypassed for Claude Code.'}</b>
+              <span>
+                {isClaude
+                  ? 'Claude will run commands and edit files without asking.'
+                  : `A Claude Code session started here will run commands and edit files without asking; ${primary.label} is not affected.`}{' '}
+                Use it only where you trust the contents.
+              </span>
             </div>
           </div>
         )}
@@ -572,7 +721,8 @@ export function Launcher(props: Props): React.JSX.Element {
           <section className="launcher-convs" aria-label="Conversations">
             <div className="launcher-convs-head">
               <span className="sidebar-group">
-                Conversations
+                {/* The list is Claude Code's transcripts whatever Start starts. */}
+                {isClaude ? 'Conversations' : 'Claude Code conversations'}
                 {!sessionsLoading && sessions.length > 0 && <span className="launcher-count"> {view.matched}</span>}
               </span>
               {sessions.length > 0 && (
@@ -614,7 +764,7 @@ export function Launcher(props: Props): React.JSX.Element {
                       className="session launcher-conv"
                       aria-current={open ? 'true' : undefined}
                       onClick={() => props.onResume(s)}
-                      disabled={cliBroken || missing}
+                      disabled={claudeBroken || missing}
                       title={`${s.firstPrompt ?? s.id}${open ? '\nOpen in a tab — this brings it forward' : ''}`}
                     >
                       <span className="launcher-conv-top">
@@ -671,6 +821,11 @@ export function Launcher(props: Props): React.JSX.Element {
 }
 
 /* ------------------------------------------------------------ small parts */
+
+/** "a", "a or b", "a, b or c". */
+function orList(items: readonly string[]): string {
+  return items.length > 1 ? `${items.slice(0, -1).join(', ')} or ${items[items.length - 1]}` : (items[0] ?? '')
+}
 
 /**
  * One launch chip: the resolved value, a dot when this launch differs from the
@@ -826,7 +981,7 @@ function Menu({
   onClose
 }: {
   label: string
-  items: { key: string; label: string; side: string; onPick: () => void }[]
+  items: { key: string; label: string; side: string; separated?: boolean; onPick: () => void }[]
   note?: string
   onClose: (refocus: boolean) => void
 }): React.JSX.Element {
@@ -862,6 +1017,7 @@ function Menu({
             key={it.key}
             role="menuitem"
             className="context-menu-item"
+            data-separated={it.separated || undefined}
             onClick={() => {
               onClose(false)
               it.onPick()

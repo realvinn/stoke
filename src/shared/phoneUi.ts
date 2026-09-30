@@ -729,3 +729,14 @@ export function groupProjects<T extends ProjectLike>(
     { id: 'all' as const, label: q ? 'Other matches' : 'All projects', rows: rest }
   ].filter((g) => g.rows.length > 0)
 }
+
+/**
+ * The agent the New session sheet opens on: the desktop's default agent
+ * (`/api/host`'s `defaults.cli`) when the sheet offers it, else the first agent
+ * offered — Claude Code, whenever it is, since the server lists in table order.
+ * An older desktop sends no `cli`, and gets that same first-agent answer.
+ */
+export function initialAgent(agents: readonly { id: string }[], defaultCli: string | undefined): string {
+  if (defaultCli && agents.some((a) => a.id === defaultCli)) return defaultCli
+  return agents[0]?.id ?? 'claude'
+}

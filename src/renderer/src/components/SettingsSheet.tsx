@@ -993,6 +993,7 @@ export function SettingsSheet({
                 settings={settings}
                 onPatch={onPatch}
                 detection={agents.detection}
+                claudeRunnable={cli?.ok === true}
                 onRefresh={agents.onRefresh}
                 onOpenPicker={agents.onOpenPicker}
                 onInstall={agents.onInstall}

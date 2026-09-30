@@ -20,13 +20,14 @@ import type { ContextWatcher } from '../context.ts'
 import type { PtyManager, StartResult } from '../pty.ts'
 import type { Transcript } from '../sessionFile.ts'
 import { MAX_AUDIO_BYTES, type SttResult } from '../stt.ts'
-import { CODING_CLIS } from '../../shared/codingClis.ts'
+import { CODING_CLIS, type CodingCliId } from '../../shared/codingClis.ts'
 import { isTailnetAddress, tailnetAddress } from './link.ts'
 import {
   answerBytes,
   answerVerdict,
   isGatedRemotePath,
   mayStoreKeyCookie,
+  phoneHostDefaults,
   phoneStatusFor,
   resumeVerdict,
   trackPrompt,
@@ -75,8 +76,9 @@ export type { ConnectTarget, Reach } from './link.ts'
  *    is on.
  * 2. `GET /api/host` adds `stt` ('ready'|'down'|'off'), `agents`
  *    (`[{id,name}]`, installed + chosen, Claude first), `defaults`
- *    (`{permissionMode,model,effort}` — bypass is never offered), and a
- *    hostname with no `.local`/`.localdomain` suffix.
+ *    (`{permissionMode,model,effort,cli}` — bypass is never offered; `cli` is
+ *    the desktop's default agent, always one of `agents` when any is listed),
+ *    and a hostname with no `.local`/`.localdomain` suffix.
  * 3. `GET /api/sessions` rows add `status`, `waitingFor`, `lastActivityAt`,
  *    `cli`, `agentName`, `project`, `title`, `endedAt`, `exitCode`. A session
  *    that exits on its own stays listed for `ENDED_RETENTION_MS` as `'ended'`
@@ -147,8 +149,12 @@ export interface RemoteDeps {
   recordedContextLimit: (sessionId: string) => number | null
   /** Installed + chosen agents, Claude first, in picker order. */
   agents: () => Promise<{ id: string; name: string }[]>
-  /** `settings.defaults`, with `bypassPermissions` never offered to the phone. */
-  defaults: () => { permissionMode: PermissionMode; model: string; effort: EffortLevel }
+  /**
+   * `settings.defaults` and the stored default agent, as they are. `/api/host`
+   * turns them into what the phone may be offered (`phoneHostDefaults`):
+   * `bypassPermissions` never is, and the agent is resolved against `agents`.
+   */
+  defaults: () => { permissionMode: PermissionMode; model: string; effort: EffortLevel; cli: CodingCliId }
   sttStatus: () => Promise<'ready' | 'down' | 'off'>
   /**
    * A dictated clip to text, through `stt.ts` with the speech server read from
@@ -900,6 +906,7 @@ export class RemoteServer {
        */
       if (url.pathname === '/api/host' && req.method === 'GET') {
         const [agents, stt] = await Promise.all([this.deps.agents(), this.deps.sttStatus()])
+        const defaults = this.deps.defaults()
         return this.json(
           res,
           {
@@ -907,7 +914,7 @@ export class RemoteServer {
             platform: process.platform,
             stt,
             agents,
-            defaults: this.deps.defaults()
+            defaults: phoneHostDefaults(defaults, defaults.cli, agents.map((a) => a.id))
           },
           setCookie
         )

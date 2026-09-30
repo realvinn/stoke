@@ -37,6 +37,8 @@
 import {
   CODING_CLIS,
   cliFor,
+  cliIdOf,
+  DEFAULT_CLI,
   isClaudeCode,
   isCodingCliId,
   type CodingCliId,
@@ -73,9 +75,21 @@ export interface AgentSettings {
   chosen: CodingCliId[] | null
   /** Per-agent endpoint. An absent entry is `default`: the CLI's own sign-in. */
   endpoints: Partial<Record<CodingCliId, AgentEndpoint>>
+  /**
+   * The agent a NEW session starts when nothing names one: the launcher's
+   * Start, the sidebar's new-session action, Start on launch, scratch, a bare
+   * `stoke .` and the phone's New session sheet. Never read as it is stored —
+   * always through `resolveDefaultAgent`, so an agent uninstalled or unticked
+   * since it was picked can never leave Start pointing at nothing.
+   *
+   * Only new sessions. A resume, a relaunch and `--continue` name a Claude Code
+   * transcript and stay Claude's (gotcha 81), and an SSH host's remote command
+   * is always `claude` (gotcha 19).
+   */
+  defaultCli: CodingCliId
 }
 
-export const DEFAULT_AGENTS: AgentSettings = { chosen: null, endpoints: {} }
+export const DEFAULT_AGENTS: AgentSettings = { chosen: null, endpoints: {}, defaultCli: DEFAULT_CLI }
 
 export const DEFAULT_ENDPOINT: AgentEndpoint = { mode: 'default', model: '', baseUrl: '', apiKey: '' }
 
@@ -102,8 +116,8 @@ export function hydrateEndpoint(raw: unknown): AgentEndpoint {
 }
 
 export function hydrateAgents(raw: unknown): AgentSettings {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { chosen: null, endpoints: {} }
-  const r = raw as { chosen?: unknown; endpoints?: unknown }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ...DEFAULT_AGENTS, endpoints: {} }
+  const r = raw as { chosen?: unknown; endpoints?: unknown; defaultCli?: unknown }
   // An array, deduplicated and filtered to ids this build knows. Anything else
   // — a string, an object, junk — is "never asked", which re-shows the picker
   // rather than hiding every agent on the strength of a bad value.
@@ -120,7 +134,9 @@ export function hydrateAgents(raw: unknown): AgentSettings {
       if (h.mode !== 'default' || h.model || h.baseUrl || h.apiKey) endpoints[id] = h
     }
   }
-  return { chosen, endpoints }
+  // An id this build does not know — a newer build's agent, junk — is Claude
+  // Code, the same answer `cliIdOf` gives a restored tab (codingClis.ts).
+  return { chosen, endpoints, defaultCli: cliIdOf(r.defaultCli) }
 }
 
 /**
@@ -132,6 +148,42 @@ export function visibleAgents(chosen: CodingCliId[] | null, installed: ReadonlyS
   return CODING_CLIS.map((c) => c.id).filter((id) =>
     chosen === null ? installed.has(id) : chosen.includes(id) && installed.has(id)
   )
+}
+
+/**
+ * Which agents count as installed: what the PATH lookup found, plus Claude
+ * Code whenever its own probe answered — `probeClaude` honours the explicit
+ * path in Settings, which the table-wide lookup does not, so a `claude` known
+ * only through that override would otherwise read as missing and hand Start
+ * to some other agent.
+ */
+export function installedAgents(
+  found: readonly { id: CodingCliId; path: string | null }[],
+  claudeRunnable: boolean
+): Set<CodingCliId> {
+  const out = new Set(found.filter((c) => c.path).map((c) => c.id))
+  if (claudeRunnable) out.add('claude')
+  return out
+}
+
+/**
+ * The agent a new session actually starts, from the stored default and what
+ * the launcher can offer (`visibleAgents`: installed AND chosen).
+ *
+ * The stored value wins when it is on offer. Otherwise Claude Code, when it is;
+ * otherwise the first agent on offer; otherwise Claude Code, whose own
+ * not-runnable message is the honest one to show. So a default whose agent was
+ * uninstalled or unticked never breaks Start — it falls back instead.
+ *
+ * `visible` null means "not known yet" (detection or Claude's probe has not
+ * answered): the stored value is trusted until it can be checked, rather than
+ * flashing Claude Code on the button for the first second of every launch.
+ */
+export function resolveDefaultAgent(defaultCli: CodingCliId, visible: readonly CodingCliId[] | null): CodingCliId {
+  if (visible === null) return defaultCli
+  if (visible.includes(defaultCli)) return defaultCli
+  if (visible.includes(DEFAULT_CLI)) return DEFAULT_CLI
+  return visible[0] ?? DEFAULT_CLI
 }
 
 /* ------------------------------------------------------------ launching */

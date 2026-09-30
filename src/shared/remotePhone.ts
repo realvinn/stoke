@@ -10,6 +10,9 @@
  */
 
 import type { RegistryStatus } from './claudeRegistry.ts'
+import type { EffortLevel, PermissionMode } from './types.ts'
+import { resolveDefaultAgent } from './agents.ts'
+import { isCodingCliId, type CodingCliId } from './codingClis.ts'
 
 /** What the phone shows for a session, distinct from the CLI's own vocabulary. */
 export type PhoneSessionStatus = 'waiting' | 'busy' | 'idle' | 'ended' | 'unknown'
@@ -516,4 +519,37 @@ export function isGatedRemotePath(pathname: string): boolean {
 /** A machine's hostname, without the local-network suffix mDNS often adds. */
 export function stripLocalHostnameSuffix(host: string): string {
   return host.replace(/\.(local|localdomain)$/i, '')
+}
+
+/** `/api/host`'s `defaults` — phone contract point 2. */
+export interface PhoneHostDefaults {
+  permissionMode: PermissionMode
+  model: string
+  effort: EffortLevel
+  /**
+   * The agent the New session sheet starts on: the desktop's default agent
+   * (Settings › Coding agents), resolved against the agents this reply offers
+   * so it is always one of them. Added beside the other three rather than
+   * renaming anything — the contract's names are load-bearing.
+   */
+  cli: CodingCliId
+}
+
+/**
+ * What the phone's New session sheet starts from. Bypass is never offered to
+ * the phone, so a desktop default of `bypassPermissions` reads as `default`
+ * here; and the default agent falls back the way the launcher's does
+ * (`resolveDefaultAgent`) when the stored one is not among `agentIds`.
+ */
+export function phoneHostDefaults(
+  d: { permissionMode: PermissionMode; model: string; effort: EffortLevel },
+  defaultCli: CodingCliId,
+  agentIds: readonly string[]
+): PhoneHostDefaults {
+  return {
+    permissionMode: d.permissionMode === 'bypassPermissions' ? 'default' : d.permissionMode,
+    model: d.model,
+    effort: d.effort,
+    cli: resolveDefaultAgent(defaultCli, agentIds.filter(isCodingCliId))
+  }
 }

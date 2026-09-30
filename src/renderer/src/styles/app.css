@@ -2622,6 +2622,16 @@ mark.hit {
   gap: var(--space-8);
 }
 
+/* Row C's note under another default agent: that it takes none of Claude
+   Code's launch options, and — when the card can still start Claude — that the
+   chips below it are Claude's (`claudeLaunchesHere`). */
+.launcher-agent-note {
+  margin: 0;
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
 .chip-wrap {
   position: relative;
 }

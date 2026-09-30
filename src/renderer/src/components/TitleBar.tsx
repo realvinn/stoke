@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { capsFor, cliIdOf } from '@shared/codingClis'
 import type { ContextSnapshot } from '@shared/types'
 import type { WorklogButtonState } from '@shared/worklog'
 import { UsageChip } from './UsageMeter'
@@ -296,7 +297,16 @@ export function TitleBar({
                   kind={tab.kind}
                   context={ctx}
                   status={tab.status}
-                  permissionMode={tab.permissionMode}
+                  /*
+                   * Only a CLI that takes Claude's flags is in a permission
+                   * mode (the status bar's pill reads the same `capsFor`).
+                   * A Codex tab records the launch choice it was handed but
+                   * never ran with it, and drew bypass beads on its ring
+                   * under a bypass default.
+                   */
+                  permissionMode={
+                    capsFor(cliIdOf(tab.cliId)).launchFlags.permissionMode ? tab.permissionMode : 'default'
+                  }
                   watched={watchedSessions.has(tab.sessionId)}
                 />
                 {editingId === tab.id ? (

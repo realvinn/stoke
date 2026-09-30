@@ -1,6 +1,6 @@
-import { capsFor, cliFor, DEFAULT_CLI, isClaudeCode } from '@shared/codingClis'
+import { capsFor, cliFor, cliStatusLine, DEFAULT_CLI, isClaudeCode } from '@shared/codingClis'
 import type { CodingCliDetection, CodingCliId } from '@shared/codingClis'
-import { visibleAgents } from '@shared/agents'
+import { installedAgents, resolveDefaultAgent, visibleAgents } from '@shared/agents'
 import { nextReveal, REVEAL_ENTRY_GRACE_MS } from '@shared/fullScreenReveal'
 import type { RevealInfo, RevealInput, RevealState } from '@shared/fullScreenReveal'
 import { AgentPicker } from './components/AgentPicker'
@@ -241,6 +241,49 @@ export function App(): React.JSX.Element {
   }, [])
   /** Detection threw: no first-run picker is coming, so nothing waits for one. */
   const [agentDetectFailed, setAgentDetectFailed] = useState(false)
+
+  /*
+   * The agent a NEW session starts — Settings › Coding agents › Default agent,
+   * resolved against what the launcher can offer (installed AND chosen) so an
+   * agent uninstalled or unticked since can never leave Start pointing at
+   * nothing. Derived at render, never copied into state (gotcha 57): the
+   * setting has two writers (Settings and the launcher's "Make … the default"),
+   * and a copy would go stale under the other one.
+   *
+   * Claude Code counts as installed when its own probe answered, which honours
+   * Settings' explicit path; the table-wide lookup does not. Until both that
+   * probe and detection have answered, the stored default is trusted rather
+   * than flashing another agent's name on Start for the first second.
+   *
+   * Only the four NEW-session paths start it (onStart, startDefault,
+   * startScratch, the sidebar's new session). A resume, a relaunch and Continue
+   * name a Claude Code transcript and stay Claude's (gotcha 81); an SSH host is
+   * always `claude` (gotcha 19).
+   */
+  const installedAgentIds = useMemo(
+    () => installedAgents(agentDetection?.clis ?? [], cli?.ok === true),
+    [agentDetection, cli]
+  )
+  const visibleAgentIds = useMemo(
+    () => visibleAgents(settings?.agents.chosen ?? null, installedAgentIds),
+    [settings?.agents.chosen, installedAgentIds]
+  )
+  const agentsKnown = cli !== null && (agentDetection !== null || agentDetectFailed)
+  const primaryCli = resolveDefaultAgent(
+    settings?.agents.defaultCli ?? DEFAULT_CLI,
+    agentsKnown ? visibleAgentIds : null
+  )
+  /**
+   * Whether the primary agent can start: Claude Code by its own probe, any other
+   * agent by detection. Null while that answer is still coming.
+   */
+  const primaryReady: boolean | null = isClaudeCode(primaryCli)
+    ? cli
+      ? cli.ok
+      : null
+    : agentDetection
+      ? installedAgentIds.has(primaryCli)
+      : null
   /** The agent picker: opened by hand, or once on a launch that has never answered it. */
   const [agentPickerOpen, setAgentPickerOpen] = useState(false)
 
@@ -2012,22 +2055,24 @@ export function App(): React.JSX.Element {
   const resumeTabForRef = useRef(resumeTabFor)
   resumeTabForRef.current = resumeTabFor
 
-  /** Quick start with no project: run in the configured default folder. */
+  /** Quick start with no project: run the default agent in the configured default folder. */
   const startDefault = useCallback((): void => {
     if (!defaultCwd) return
     void startSession({
       cwd: defaultCwd,
+      cli: primaryCli,
       name: baseName(defaultCwd),
       replaceTabId: activeNewTabId ?? undefined
     })
-  }, [defaultCwd, startSession, activeNewTabId])
+  }, [defaultCwd, startSession, activeNewTabId, primaryCli])
 
-  /** Quick start in a fresh throwaway folder. */
+  /** Quick start of the default agent in a fresh throwaway folder. */
   const startScratch = useCallback(async (launch?: LaunchChoice): Promise<void> => {
     try {
       const dir = await window.stoke.workspace.createScratch()
       await startSession({
         cwd: dir,
+        cli: primaryCli,
         name: `Scratch ${baseName(dir)}`,
         replaceTabId: activeNewTabId ?? undefined,
         ...(launch ?? {})
@@ -2037,7 +2082,7 @@ export function App(): React.JSX.Element {
     } catch (e) {
       setError(ipcErrorMessage(e))
     }
-  }, [startSession, refreshProjects, activeNewTabId])
+  }, [startSession, refreshProjects, activeNewTabId, primaryCli])
 
   /*
    * Bring back the tabs from the last run, paused.
@@ -2219,7 +2264,10 @@ export function App(): React.JSX.Element {
       return
     }
 
-    const claim = launchKey(req.cli, cwd)
+    // Main fills an unnamed agent before sending (`withDefaultCli`); this is
+    // the backstop for a request that somehow arrived without one.
+    const reqCli = req.cli ?? primaryCli
+    const claim = launchKey(reqCli, cwd)
     if (req.launch !== 'new') {
       // RUNNING only, as `resumeSession` decides: a paused or ended tab in the
       // same folder has its own Resume, and focusing it would look like a
@@ -2229,7 +2277,7 @@ export function App(): React.JSX.Element {
           t.kind === 'session' &&
           t.status === 'running' &&
           !t.hostId &&
-          t.cliId === req.cli &&
+          t.cliId === reqCli &&
           pathKey(t.cwd, rules) === key
       )
       if (open) {
@@ -2244,7 +2292,7 @@ export function App(): React.JSX.Element {
     const front = tabsRef.current.find((t) => t.id === activeTabIdRef.current)
     const ok = await startSession({
       cwd,
-      cli: req.cli,
+      cli: reqCli,
       name: project?.label ?? project?.name ?? baseName(cwd),
       continueLast: req.launch === 'continue',
       replaceTabId: front?.kind === 'new' ? front.id : undefined
@@ -2322,7 +2370,7 @@ export function App(): React.JSX.Element {
     // once it has resolved with nothing to restore, so gating on it alone —
     // even as a dependency — does not stop this effect from running during
     // the window before the IPC round trip comes back: if `startOnLaunch`,
-    // `defaultCwd` and `cli?.ok` all become true first, `restoreCount > 0`
+    // `defaultCwd` and the agent's readiness all become true first, `restoreCount > 0`
     // reads false (not yet populated), the guard below passes, and
     // `autoStarted.current` latches — so when the restore *does* land moments
     // later this effect re-runs but exits immediately on the ref, unable to
@@ -2334,14 +2382,26 @@ export function App(): React.JSX.Element {
     if (!restoreSettled) return
     // And after the `stoke` queue has been read, which may veto it the same way.
     if (!launchSettled) return
-    if (!settings?.startOnLaunch || !defaultCwd || !cli?.ok) return
+    // The DEFAULT agent's readiness, once the default itself is settled
+    // (`agentsKnown`): gating on Claude's probe alone would start an agent
+    // that is not there, or hold back one that is while Claude is missing.
+    if (!settings?.startOnLaunch || !defaultCwd || !agentsKnown || primaryReady !== true) return
     // Restored tabs are what the user had; opening a session on top of them is
     // an extra nobody asked for — whether they are still paused or have been
     // resumed already (see `restoredSessions`).
     if (restoreCount > 0 || restoredSessions.current) return
     autoStarted.current = true
     startDefault()
-  }, [restoreSettled, launchSettled, settings?.startOnLaunch, defaultCwd, cli, startDefault, restoreCount])
+  }, [
+    restoreSettled,
+    launchSettled,
+    settings?.startOnLaunch,
+    defaultCwd,
+    agentsKnown,
+    primaryReady,
+    startDefault,
+    restoreCount
+  ])
 
   /**
    * Append a New Project tab and select it.
@@ -3211,17 +3271,25 @@ export function App(): React.JSX.Element {
   }, [refreshAgents])
 
   /*
-   * The launcher's agent row: what the picker chose, installed, and not Claude
-   * — Claude Code is not an "other agent", it is what every other control on
-   * the launcher already means. Before the picker has been answered, every
-   * installed agent, which is exactly what the row showed before it existed.
+   * The launcher's agent menu: what the picker chose and is installed, minus
+   * the agent Start already starts. Claude Code is in it whenever it is not the
+   * default. Before the picker has been answered, every installed agent, which
+   * is exactly what the row showed before it existed.
    */
-  const otherClis = useMemo(() => {
-    const installed = new Set(agentDetection?.clis.filter((c) => c.path).map((c) => c.id) ?? [])
-    return visibleAgents(settings?.agents.chosen ?? null, installed)
-      .filter((id) => !isClaudeCode(id))
-      .map((id) => cliFor(id))
-  }, [agentDetection, settings?.agents.chosen])
+  const otherClis = useMemo(
+    () => visibleAgentIds.filter((id) => id !== primaryCli).map((id) => cliFor(id)),
+    [visibleAgentIds, primaryCli]
+  )
+
+  /** "Make X the default" — the whole `agents` block, since `setSettings` merges shallowly. */
+  const makeDefaultAgent = useCallback(
+    (id: CodingCliId): void => {
+      const cur = settingsRef.current
+      if (!cur || cur.agents.defaultCli === id) return
+      void patchSettings({ agents: { ...cur.agents, defaultCli: id } })
+    },
+    [patchSettings]
+  )
 
 
   /** Open a tab that installs these agents, from the vendors' own commands. */
@@ -3793,9 +3861,9 @@ export function App(): React.JSX.Element {
           void openFolder()
           return
         case 'scratch':
-          // Scratch starts `claude` at once, so it needs what Start needs; the
-          // switcher shows the row disabled, and this is the backstop.
-          if (cli && !cli.ok) return
+          // Scratch starts the default agent at once, so it needs what Start
+          // needs; the switcher shows the row disabled, and this is the backstop.
+          if (primaryReady === false) return
           void startScratch(launchNow.choice)
           return
         case 'host': {
@@ -3811,7 +3879,7 @@ export function App(): React.JSX.Element {
         }
       }
     },
-    [selectProject, openFolder, startScratch, startHostSession, activeNewTabId, launchNow, cli]
+    [selectProject, openFolder, startScratch, startHostSession, activeNewTabId, launchNow, primaryReady]
   )
 
   /**
@@ -4113,6 +4181,8 @@ export function App(): React.JSX.Element {
                 onStartNew={(p) =>
                   void startSession({
                     cwd: p.path,
+                    // A new session, so the default agent — not a resume.
+                    cli: primaryCli,
                     // The label, when the folder has one. It is what the user
                     // renamed this project to and what every list already
                     // shows; the tab strip was the one place still saying the
@@ -4410,7 +4480,20 @@ export function App(): React.JSX.Element {
               onSetCliPath={() => openSettings('updates')}
               overlayOpen={shellInert}
               armedAt={launcherArmedAt}
+              primary={cliFor(primaryCli)}
+              primaryInstalled={isClaudeCode(primaryCli) ? null : primaryReady}
+              primaryStatus={
+                isClaudeCode(primaryCli)
+                  ? ''
+                  : cliStatusLine(
+                      cliFor(primaryCli),
+                      agentDetection?.clis.find((c) => c.id === primaryCli),
+                      agentDetection?.probeFailed ?? false
+                    )
+              }
+              onLookAgain={() => refreshAgents(true)}
               otherClis={otherClis}
+              onMakeDefaultAgent={makeDefaultAgent}
               onAddAgents={() => setAgentPickerOpen(true)}
               onStartCli={(id) => {
                 if (!launchTarget) return
@@ -4418,13 +4501,21 @@ export function App(): React.JSX.Element {
                   cwd: launchTarget.path,
                   cli: id,
                   name: launchTarget.label,
-                  replaceTabId: activeNewTabId ?? undefined
+                  replaceTabId: activeNewTabId ?? undefined,
+                  /*
+                   * Claude Code from the menu takes the chips' choice, as Start
+                   * would: it is on screen (with the bypass warning) whenever
+                   * Claude is in this menu. Without it startSession fell back to
+                   * Stoke's defaults and dropped this tab's own picks.
+                   */
+                  ...(isClaudeCode(id) ? launchNow.choice : {})
                 })
               }}
               onStart={() => {
                 if (!launchTarget) return
                 void startSession({
                   cwd: launchTarget.path,
+                  cli: primaryCli,
                   name: launchTarget.label,
                   replaceTabId: activeNewTabId ?? undefined,
                   ...launchNow.choice

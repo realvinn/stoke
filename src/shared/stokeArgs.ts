@@ -35,7 +35,7 @@
  * asks the disk (`src/main/index.ts`, `checkLaunchRequest`), and turns a
  * missing one into the `error` request built by `folderProblem` below.
  */
-import { CODING_CLIS, DEFAULT_CLI, isCodingCliId, type CodingCliId } from './codingClis.ts'
+import { CODING_CLIS, isCodingCliId, type CodingCliId } from './codingClis.ts'
 
 /** The argument that makes an argv a request. Nothing without it ever is. */
 export const STOKE_CLI_MARKER = '--stoke-cli'
@@ -51,8 +51,13 @@ export type StokeCliRequest =
    * CLI when there is one; `new` always opens another; `continue` is Claude
    * Code's `--continue`, which also reuses a running tab rather than putting a
    * second `claude` on the same transcript.
+   *
+   * `cli` is null when none was typed: "the default agent", a setting only the
+   * RUNNING app knows. Main fills it (`withDefaultCli`) before the renderer
+   * sees the request. `--continue` is always `claude` — it continues a Claude
+   * Code transcript, whatever the default is.
    */
-  | { kind: 'session'; cwd: string; cli: CodingCliId; launch: 'reuse' | 'new' | 'continue' }
+  | { kind: 'session'; cwd: string; cli: CodingCliId | null; launch: 'reuse' | 'new' | 'continue' }
   /** Add the folder to the sidebar and select it in a New tab. Starts nothing. */
   | { kind: 'open'; cwd: string }
   /** Settings → Updates, and a check. Never installs and never quits. */
@@ -296,9 +301,21 @@ export function parseStokeArgs(argv: readonly string[], ctx: ArgContext): StokeC
   return {
     kind: 'session',
     cwd: folder.path,
-    cli: cli ?? DEFAULT_CLI,
+    // Unnamed stays unnamed: the default agent is a setting of the running app,
+    // which this parser — run by a second instance, before any settings are
+    // read — cannot know. `--continue` names Claude Code's own transcript.
+    cli: cli ?? (cont ? 'claude' : null),
     launch: fresh ? 'new' : cont ? 'continue' : 'reuse'
   }
+}
+
+/**
+ * `req` with an unnamed CLI filled in — the one place a `stoke` request picks
+ * up the default agent. A request that named one, and every other kind, comes
+ * back unchanged.
+ */
+export function withDefaultCli(req: StokeCliRequest, cli: CodingCliId): StokeCliRequest {
+  return req.kind === 'session' && req.cli === null ? { ...req, cli } : req
 }
 
 /**
@@ -328,7 +345,9 @@ export function requestFrom(v: unknown, platform: string): StokeCliRequest | nul
       return folder(r.cwd) ? { kind: 'open', cwd: r.cwd } : null
     case 'session': {
       if (!folder(r.cwd)) return null
-      if (!isCodingCliId(r.cli)) return null
+      // null is "the default agent" (a bare `stoke .`); an older build sends
+      // 'claude' there instead, which is still a valid request.
+      if (r.cli !== null && !isCodingCliId(r.cli)) return null
       if (r.launch !== 'reuse' && r.launch !== 'new' && r.launch !== 'continue') return null
       if (r.launch === 'continue' && r.cli !== 'claude') return null
       return { kind: 'session', cwd: r.cwd, cli: r.cli, launch: r.launch }

@@ -30,6 +30,7 @@ import {
   scrollToColumn,
   groupProjects,
   groupSessionRows,
+  initialAgent,
   isTerminalReport,
   middleTruncate,
   modeFromScreen,
@@ -431,6 +432,20 @@ check(
   groupProjects(projects, 'CHAR', now).flatMap((g) => g.rows.map((p) => p.name)),
   ['charlie']
 )
+
+/*
+ * The New session sheet used to open on `agents[0]` — Claude Code by table
+ * order — whatever the desktop's default agent was.
+ */
+console.log("\nthe New session sheet's agent (defaults.cli)")
+{
+  const offered = [{ id: 'claude' }, { id: 'codex' }, { id: 'grok' }]
+  check("opens on the desktop's default agent", initialAgent(offered, 'codex'), 'codex')
+  check('a default the sheet does not offer: the first it does', initialAgent(offered, 'opencode'), 'claude')
+  check('an older desktop sends no cli: the first agent, as before', initialAgent(offered, undefined), 'claude')
+  check('no Claude on offer: the first agent that is', initialAgent([{ id: 'codex' }, { id: 'pi' }], undefined), 'codex')
+  check('nothing on offer at all: Claude Code, never an empty agent', initialAgent([], 'codex'), 'claude')
+}
 
 /*
  * Review of PX-12: the list drew tappable numbers before its read of the

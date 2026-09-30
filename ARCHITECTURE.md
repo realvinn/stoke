@@ -378,7 +378,10 @@ marker is Chromium's switch terminator, so nothing typed can configure the brows
 the folder (async, with a deadline), adds it to the sidebar, and QUEUES the request until the
 renderer asks for it once tab restore has settled (`CH.cliPending`); after that it pushes
 (`CH.cliRequest`). App.tsx claims a (cli, folder) before its first await and holds the claim until
-that session's tab is in the list, so two quick `stoke .` cannot open two tabs.
+that session's tab is in the list, so two quick `stoke .` cannot open two tabs. A request with no
+`--cli` names no agent (`cli: null`; `--continue` is always `claude`): the second instance cannot
+know the default agent, so main fills it (`withDefaultCli`) from `settings.agents.defaultCli`,
+resolved the way the launcher's Start resolves it (`resolveDefaultAgent`).
 
 ## Renderer
 
@@ -562,6 +565,7 @@ npm run verify:chrome-import  # Chrome's cookie crypto and row mapping, on value
                               # itself the way Chrome does (gotcha 107)
 npm run verify:safari-import  # Safari's binarycookies and XML plists, on synthetic files
 npm run verify:agents         # the coding agents: what is stored, what the launcher shows,
+                              # the default agent and its fallback (`resolveDefaultAgent`),
                               # each CLI's exact launch plan (endpoint, MCP, continue) with
                               # every key in env and none in argv, and the install script —
                               # only table ids survive into a command
@@ -910,7 +914,11 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     flags and env for one process, keys only in env — and never written
                     into the agent's own config, gotcha 38's rule for tools that rewrite
                     their files. `installScript` builds a tab's shell script from the table
-                    and ids it validates, so the renderer can never contribute command text
+                    and ids it validates, so the renderer can never contribute command text.
+                    `defaultCli` is the agent NEW sessions start (Start, the sidebar, Start on
+                    launch, scratch, `stoke .`, the phone); `resolveDefaultAgent` falls back
+                    to Claude Code, then the first agent on offer, when it is not installed
+                    and chosen. Resume, relaunch and Continue stay Claude's (gotcha 81)
   skills.ts         which skill folders each agent reads, and the report of who can see
                     which skill. `~/.agents/skills` is the one nearly all share; Claude Code
                     reads only `~/.claude/skills`. A report, never a sync — linking between
@@ -950,7 +958,9 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
   launcher.ts       the new-session page's pure half: same-name disambiguation, the
                     folder switcher's groups, which conversations list, the keyboard map,
                     the pinned launch aim (`launchAim`), the activation-key burst rule
-                    (`pressAllowed`), and the agent picker's sections and scoped Select all
+                    (`pressAllowed`), the agent picker's sections and scoped Select all, and
+                    whether a card can start Claude Code (`claudeLaunchesHere`) — then its
+                    chips and bypass warning show whatever the default agent is
   welcome.ts        whether the first-run campfire plays, from two strings: the version whose
                     splash was last watched and the version running now. A semver comparison
                     and the clamp that repairs the stored value, together in one file because

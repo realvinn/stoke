@@ -24,6 +24,7 @@ import {
 } from '../src/shared/launch.ts'
 import {
   choiceKey,
+  claudeLaunchesHere,
   disambiguate,
   flatChoices,
   folderChoices,
@@ -549,6 +550,42 @@ check(
 check(
   'with nothing installed there is nothing to select',
   selectAllInstalled(new Set<string>(), [], new Set()).checked,
+  false
+)
+
+/* ------------------------------------------- Claude's chips, any primary */
+
+console.log("\nClaude's chips and bypass warning show wherever the card can start Claude")
+const codexCard = { primaryIsClaude: false, claudeBroken: false, conversations: 0, loading: false, claudeInMenu: false }
+check('a Claude primary always shows them', claudeLaunchesHere({ ...codexCard, primaryIsClaude: true }), true)
+check(
+  'a Claude primary shows them even while Claude is broken (Start is blocked, not hidden)',
+  claudeLaunchesHere({ ...codexCard, primaryIsClaude: true, claudeBroken: true }),
+  true
+)
+check(
+  'a Codex primary with Claude conversations listed shows them — Continue and the rows start claude',
+  claudeLaunchesHere({ ...codexCard, conversations: 3 }),
+  true
+)
+check(
+  'a Codex primary with Claude Code in the caret menu shows them',
+  claudeLaunchesHere({ ...codexCard, claudeInMenu: true }),
+  true
+)
+check(
+  'a Codex primary while the list loads shows them — ⌘Enter is a claude --continue',
+  claudeLaunchesHere({ ...codexCard, loading: true }),
+  true
+)
+check(
+  'a Codex primary with no conversations, no Claude in the menu and the list loaded hides them',
+  claudeLaunchesHere(codexCard),
+  false
+)
+check(
+  'a broken Claude under a Codex primary hides them: it can be neither resumed nor picked',
+  claudeLaunchesHere({ ...codexCard, claudeBroken: true, conversations: 3, loading: true }),
   false
 )
 

@@ -282,6 +282,8 @@ rule file named on the group line.
   ended); only an explicit close (`kill`/`stop`) deletes at once.
 - **99.** Set a child's PATH with `setPathKey` (Windows' inherited `Path` otherwise stays first, stale),
   re-read the registry PATH on win32 (`windowsRegistryPath`), and never pick a `WindowsApps` claude.
+- **112.** Fake an agent for a driven sandbox with a scratch `SHELL` and `HOME`, never only a stub dir
+  first on PATH: `buildEnvPath` puts the login shell's PATH (your rc, `~/.local/bin`) ahead of it.
 
 **Worklog** — `.claude/rules/worklog.md`
 - **15.** Keep the worklog scan `--safe-mode` and read boards in `recall.ts`'s own run: safe mode

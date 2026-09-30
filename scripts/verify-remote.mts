@@ -28,6 +28,7 @@ import {
   isGatedRemotePath,
   isTerminalReport,
   mayStoreKeyCookie,
+  phoneHostDefaults,
   phoneStatusFor,
   PROMPT_SETTLE_MS,
   resumeVerdict,
@@ -676,6 +677,29 @@ console.log('\nthe speech server, per call')
   check('and sent nothing', a.bodies.length, 1)
 
   await Promise.all([close(a.server), close(b.server), close(broken.server)])
+}
+
+console.log("\n/api/host's defaults (phone contract point 2)")
+{
+  const d = { permissionMode: 'acceptEdits', model: 'opus', effort: 'high' } as const
+  check(
+    'the three contract fields are unchanged, and cli is ADDED beside them',
+    phoneHostDefaults(d, 'claude', ['claude', 'codex']),
+    { permissionMode: 'acceptEdits', model: 'opus', effort: 'high', cli: 'claude' }
+  )
+  check(
+    'bypass is still never offered to the phone',
+    phoneHostDefaults({ ...d, permissionMode: 'bypassPermissions' }, 'claude', ['claude']).permissionMode,
+    'default'
+  )
+  check("the desktop's default agent, when the phone is offered it", phoneHostDefaults(d, 'codex', ['claude', 'codex']).cli, 'codex')
+  check(
+    'a default the phone is NOT offered (uninstalled, unticked) falls back as Start does: Claude Code',
+    phoneHostDefaults(d, 'grok', ['claude', 'codex']).cli,
+    'claude'
+  )
+  check('with no Claude on offer, the first agent that is', phoneHostDefaults(d, 'grok', ['codex', 'opencode']).cli, 'codex')
+  check('an agent list carrying junk ids cannot become the default', phoneHostDefaults(d, 'grok', ['bash', 'codex']).cli, 'codex')
 }
 
 console.log(failures ? `\n${failures} FAILED` : '\nall pass')

@@ -17,6 +17,7 @@
  */
 import {
   agentLaunchPlan,
+  DEFAULT_AGENTS,
   DEFAULT_ENDPOINT,
   endpointProblem,
   ENV_CUSTOM_BASE_URL,
@@ -27,6 +28,7 @@ import {
   hydrateAgents,
   hydrateEndpoint,
   httpUrlMcpConfig,
+  installedAgents,
   INSTALL_SCRIPT_ENV,
   installScript,
   installSteps,
@@ -36,6 +38,7 @@ import {
   NO_KEY,
   OPENROUTER_OPENAI_BASE_URL,
   PI_PROVIDER_EXTENSION,
+  resolveDefaultAgent,
   tomlString,
   visibleAgents,
   windowsInstallerArgs,
@@ -45,6 +48,7 @@ import {
 import { CLI_CAPS, CODING_CLIS, type CodingCliId } from '../src/shared/codingClis.ts'
 import { SHARED_SKILLS_DIR, SKILL_DIRS, skillReport } from '../src/shared/skills.ts'
 import { scanSkills } from '../src/main/skillsScan.ts'
+import { DEFAULT_SETTINGS, hydrateSettings } from '../src/main/settingsSchema.ts'
 import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
@@ -97,7 +101,7 @@ function keysOnlyInEnv(name: string, r: ReturnType<typeof plan>): void {
 }
 
 console.log('\nwhat is stored')
-check('nothing stored is never asked', hydrateAgents(undefined), { chosen: null, endpoints: {} })
+check('nothing stored is never asked', hydrateAgents(undefined), { chosen: null, endpoints: {}, defaultCli: 'claude' })
 check('junk is never asked, not "nothing chosen"', hydrateAgents({ chosen: 'codex' }).chosen, null)
 check('an empty choice is kept — it means "show none"', hydrateAgents({ chosen: [] }).chosen, [])
 check(
@@ -122,6 +126,27 @@ check(
   {}
 )
 
+console.log('\nthe default agent, as stored')
+/*
+ * The clamp rule (CLAUDE.md): a field the hydrator does not name comes back
+ * undefined, and an undefined agent id here would be `startSession` deciding
+ * what to spawn from a value nothing validated.
+ */
+check('Claude Code when nothing is stored', DEFAULT_AGENTS.defaultCli, 'claude')
+check('an agent this build knows is kept', hydrateAgents({ defaultCli: 'codex' }).defaultCli, 'codex')
+check('an id this build does not know is Claude Code, not dropped', hydrateAgents({ defaultCli: 'banana' }).defaultCli, 'claude')
+check('junk of the wrong type is Claude Code', hydrateAgents({ defaultCli: 42 }).defaultCli, 'claude')
+check('an older file with no such key is Claude Code', hydrateAgents({ chosen: ['codex'] }).defaultCli, 'claude')
+check('a non-object agents block keeps a default', hydrateAgents('junk').defaultCli, 'claude')
+check(
+  'it survives the whole settings round trip',
+  hydrateSettings(JSON.parse(JSON.stringify({ ...DEFAULT_SETTINGS, agents: { ...DEFAULT_SETTINGS.agents, defaultCli: 'grok' } })))
+    .agents.defaultCli,
+  'grok'
+)
+check("DEFAULT_SETTINGS names it, so a fresh file is not undefined", DEFAULT_SETTINGS.agents.defaultCli, 'claude')
+check('and a settings file with no agents block hydrates it', hydrateSettings({}).agents.defaultCli, 'claude')
+
 console.log('\nwhat the launcher shows')
 {
   const installed = new Set<CodingCliId>(['claude', 'codex', 'opencode'])
@@ -129,6 +154,47 @@ console.log('\nwhat the launcher shows')
   check('after: what was chosen AND is installed', visibleAgents(['codex', 'pi'], installed), ['codex'])
   check('in table order, not click order', visibleAgents(['opencode', 'codex'], installed), ['codex', 'opencode'])
 }
+
+console.log('\nwhat counts as installed')
+check(
+  'a found path counts, a missing one does not',
+  [...installedAgents([{ id: 'codex', path: '/bin/codex' }, { id: 'grok', path: null }], false)],
+  ['codex']
+)
+check(
+  "Claude Code counts when ITS probe answered — the one that honours Settings' explicit path",
+  [...installedAgents([{ id: 'claude', path: null }, { id: 'codex', path: '/bin/codex' }], true)].sort(),
+  ['claude', 'codex']
+)
+check(
+  'and not when it did not, whatever the lookup says',
+  [...installedAgents([{ id: 'claude', path: null }], false)],
+  []
+)
+
+console.log('\nwhat Start starts (resolveDefaultAgent)')
+/*
+ * The rule that keeps a stale default from ever breaking Start: the stored
+ * agent when it is on offer, else Claude Code when it is, else the first on
+ * offer, else Claude Code (whose own not-runnable message is the honest one).
+ */
+for (const [name, stored, visible, want] of [
+  ['not known yet: the stored value is trusted, not flashed to Claude', 'codex', null, 'codex'],
+  ['installed and chosen: the stored value', 'codex', ['claude', 'codex'], 'codex'],
+  ['the default itself, when it is on offer', 'claude', ['claude', 'codex'], 'claude'],
+  ['an UNINSTALLED default falls back to Claude Code', 'codex', ['claude', 'opencode'], 'claude'],
+  ['an uninstalled default with no Claude on offer: the first agent on offer', 'grok', ['codex', 'opencode'], 'codex'],
+  ['Claude unticked, default still Claude: the first agent on offer', 'claude', ['codex'], 'codex'],
+  ['an EMPTY choice ("show none"): Claude Code, never nothing', 'codex', [], 'claude'],
+  ['nothing installed at all: Claude Code', 'claude', [], 'claude']
+] as [string, CodingCliId, CodingCliId[] | null, CodingCliId][]) {
+  check(name, resolveDefaultAgent(stored, visible), want)
+}
+check(
+  'end to end: a chosen Codex that is no longer installed falls back through visibleAgents',
+  resolveDefaultAgent('codex', visibleAgents(['claude', 'codex'], installedAgents([{ id: 'codex', path: null }], true))),
+  'claude'
+)
 
 console.log('\nrefusing a launch that would not work')
 check('the default needs nothing', endpointProblem('codex', DEFAULT_ENDPOINT, ''), null)
