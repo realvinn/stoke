@@ -29,6 +29,7 @@ import { Spinner } from './Spinner'
 import { compactTokens, relativeTime } from '../lib/format'
 import { launcherActivationAllowed, launcherHoldingFocus, onDeliberate } from '../lib/pressBurst'
 import { EFFORT_LEVELS, PERMISSION_MODES, ULTRACODE_HINT } from '../lib/permissions'
+import { useFloatingLayer } from '../lib/floatingLayers'
 
 /** Where the next session runs. */
 export interface LaunchTarget {
@@ -853,6 +854,7 @@ function Chip({
 }): React.JSX.Element {
   const ref = useRef<HTMLButtonElement>(null)
   const popRef = useRef<HTMLDivElement>(null)
+  useFloatingLayer(popRef, open)
   useEffect(() => {
     if (!open) return
     const first =
@@ -986,6 +988,8 @@ function Menu({
   onClose: (refocus: boolean) => void
 }): React.JSX.Element {
   const ref = useRef<HTMLDivElement>(null)
+  // Mounted only while open.
+  useFloatingLayer(ref, true)
   useEffect(() => {
     ref.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus()
   }, [])

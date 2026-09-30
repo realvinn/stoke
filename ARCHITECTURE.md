@@ -568,6 +568,9 @@ npm run verify:drop           # what a dropped file types: quoting per platform,
 npm run verify:fullscreen     # the macOS full-screen menu bar: how far it reaches (notch,
                               # never-hide, failed reads) and when the shell moves under it
                               # and back, replayed from measured pointer events (gotcha 105)
+npm run verify:layers         # nothing floats behind the docked browser: the overlap rule,
+                              # and every component that draws a popover, menu or dialog
+                              # registers it or is an overlayOpen overlay (gotcha 14)
 npm run verify:browser-url    # what the docked browser will load: file://, javascript:,
                               # data: refused to a tool call, file:// kept for the address
                               # bar, and localhost:3000 not mistaken for a scheme
@@ -913,6 +916,9 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
   src/lib/pressBurst.ts  the window's one record of the Enter/Space burst in progress,
                     registered first from main.tsx; the agent picker and a launcher armed by
                     the splash or picker closing ask it `activationAllowed`. Gotcha 88
+  src/lib/floatingLayers.ts  every open popover, menu and picker (`useFloatingLayer`), and
+                    whether one lies over `.browser-hole` (`useBrowserCovered`), which App
+                    hides the docked browser for. verify:layers. Gotcha 14
   src/lib/projectSearch.ts  the one matcher the sidebar search and the Cmd+K palette share:
                     label/name/path, session title and first prompt, ranked by tier then
                     recency, with highlight ranges. No runtime imports, so verify:search
@@ -978,6 +984,8 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     window (main measures the inputs), and the pointer rule that moves the
                     shell below them and back. Pure, geometry passed in, so
                     verify:fullscreen replays the measured events. Gotcha 105
+  floating.ts       `coversBrowser`: whether any floating layer's rect overlaps the docked
+                    browser's. Pure, so verify:layers runs it. Gotcha 14
   campfire.ts       the fire the one-line installer burns while it downloads: twelve frames
                     over a constant hearth, which one a progress value shows, the four
                     colour tiers and the segment encoding the shell draws from, and the

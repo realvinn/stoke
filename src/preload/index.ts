@@ -110,6 +110,7 @@ const api: StokeApi = {
     setBounds: (rect: Rect) => ipcRenderer.send(CH.browserSetBounds, rect),
     show: (url?: string) => ipcRenderer.send(CH.browserShow, url),
     hide: () => ipcRenderer.send(CH.browserHide),
+    snapshot: () => ipcRenderer.invoke(CH.browserSnapshot) as Promise<string | null>,
     navigate: (url: string) => ipcRenderer.send(CH.browserNavigate, url),
     back: () => ipcRenderer.send(CH.browserBack),
     forward: () => ipcRenderer.send(CH.browserForward),

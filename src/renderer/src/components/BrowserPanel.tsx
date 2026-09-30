@@ -36,6 +36,11 @@ interface Props {
   offerImport: boolean
   /** The offer was answered either way; it is not shown again. */
   onAnswerImport: (accepted: boolean) => void
+  /**
+   * A still of the page, drawn in the hole while the view is hidden under a
+   * popover or an overlay (gotcha 14), so the browser does not look gone.
+   */
+  still: string | null
 }
 
 /** --dur-slow is 240ms; follow the shell's slide a little past its end. */
@@ -61,7 +66,8 @@ export function BrowserPanel({
   currentProfile,
   onManageProfiles,
   offerImport,
-  onAnswerImport
+  onAnswerImport,
+  still
 }: Props): React.JSX.Element {
   const holeRef = useRef<HTMLDivElement>(null)
   const profileLabel = profiles.find((p) => p.id === currentProfile)?.label ?? 'Default'
@@ -483,7 +489,9 @@ export function BrowserPanel({
         </div>
       )}
 
-      <div className="browser-hole" ref={holeRef} />
+      <div className="browser-hole" ref={holeRef}>
+        {still && <img className="browser-still" src={still} alt="" aria-hidden="true" draggable={false} />}
+      </div>
     </section>
   )
 }

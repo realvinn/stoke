@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { StatusLineSnapshot, UsageSnapshot, UsageWindow } from '@shared/types'
 import { keepUsage, mergeUsageWindows, statusLineWindows } from '@shared/statusLine'
+import { useFloatingLayer } from '../lib/floatingLayers'
 import {
   clock,
   countdown,
@@ -92,6 +93,8 @@ export function UsageChip(): React.JSX.Element | null {
   const [now, setNow] = useState(() => Date.now())
   const [open, setOpen] = useState(false)
   const panelRef = useRef<HTMLDivElement>(null)
+  // The panel drops from the title bar over the docked browser (gotcha 14).
+  useFloatingLayer(panelRef, open)
   const chipRef = useRef<HTMLButtonElement>(null)
 
   /*

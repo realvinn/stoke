@@ -99,6 +99,7 @@ export const CH = {
   browserSetBounds: 'browser:setBounds',
   browserShow: 'browser:show',
   browserHide: 'browser:hide',
+  browserSnapshot: 'browser:snapshot',
   browserNavigate: 'browser:navigate',
   browserBack: 'browser:back',
   browserForward: 'browser:forward',

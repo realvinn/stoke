@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { Project, ProjectMeta } from '@shared/types'
 import { IconFolder } from './Icons'
+import { useFloatingLayer } from '../lib/floatingLayers'
 
 /**
  * An emoji and a display name for one folder.
@@ -68,6 +69,7 @@ export function ProjectMetaPicker({
   const suppressNextCommit = useRef(false)
 
   const popRef = useRef<HTMLDivElement>(null)
+  useFloatingLayer(popRef, open)
   // Opens below the row by default. `.sidebar-scroll` clips anything past its
   // own box, so on a long list a row near the bottom pushed the popover's
   // label field and both action buttons past the visible area, unreachable.

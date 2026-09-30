@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { useFloatingLayer } from '../lib/floatingLayers'
 
 export interface MenuItem {
   label: string
@@ -40,6 +41,9 @@ interface Props {
  */
 export function ContextMenu({ x, y, items, header, footer, onClose }: Props): React.JSX.Element {
   const ref = useRef<HTMLDivElement>(null)
+  // Mounted only while open. A tab's menu drops over the docked browser, and a
+  // terminal's can reach it near the column's edge (gotcha 14).
+  useFloatingLayer(ref, true)
 
   useEffect(() => {
     const el = ref.current

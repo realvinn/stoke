@@ -3180,6 +3180,19 @@ mark.hit {
   flex: 1;
   min-height: 0;
   background: var(--bg-elevated);
+  position: relative;
+}
+
+/* The page as it was, while the view is hidden under a popover or an overlay
+   (gotcha 14). Same box as the view it stands in for, so nothing moves. */
+.browser-still {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  pointer-events: none;
+  user-select: none;
 }
 
 /* --------------------------------------------------------------- worklog */

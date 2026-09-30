@@ -19,6 +19,13 @@ paths:
   - "src/shared/ring.ts"
   - "src/shared/fullScreenReveal.ts"
   - "scripts/verify-fullscreen.mts"
+  - "src/renderer/src/lib/floatingLayers.ts"
+  - "src/shared/floating.ts"
+  - "src/renderer/src/components/UsageMeter.tsx"
+  - "src/renderer/src/components/PhonePopover.tsx"
+  - "src/renderer/src/components/FolderSwitcher.tsx"
+  - "src/renderer/src/components/ProjectMetaPicker.tsx"
+  - "scripts/verify-layers.mts"
 ---
 
 # CSS and layout traps
@@ -49,6 +56,18 @@ a one-line prompt strip made the app grow 600px and clip the launcher. A nowrap 
 needs `flex: 1 1 0%` **and** `min-width: 0` on the text for it to ellipsis rather than
 push — and neither helps until the grid column can shrink. Found by measuring over CDP; no
 amount of reading the CSS would have shown it.
+
+> **Checked against the code on 2026-09-30** — a popover is an overlay too, and z-index is no
+> answer: the view is a native layer above the page, not a stacking context in it. The phone
+> popover was fixed alone in 1c93b7a by threading its `open` up to App, and the usage panel,
+> the launcher's chips and agent menu, the folder switcher, the project icon picker, every
+> right-click menu and the post-update splash all still painted behind the browser — reported
+> for the usage panel. Now every floating layer calls `useFloatingLayer(ref, open)`
+> (`lib/floatingLayers.ts`) and App hides the view while one overlaps `.browser-hole`
+> (`coversBrowser`, src/shared/floating.ts): geometry, not "anything open", so a terminal menu
+> on the far side leaves the browser up. The full-screen overlays stay on `overlayOpen`.
+> `verify:layers` fails on any `.tsx` that draws a `.popover`, `.context-menu`, dialog or menu
+> without registering, and on an `overlayOpen` that loses one of its overlays.
 
 ## 22. A CSS token rename only fails loudly if the old name is gone
 

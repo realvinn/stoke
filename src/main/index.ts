@@ -2400,6 +2400,7 @@ function registerIpc(): void {
   ipcMain.on(CH.browserSetBounds, (_e, rect: Rect) => browser?.setBounds(rect))
   ipcMain.on(CH.browserShow, (_e, url?: string) => browser?.show(url))
   ipcMain.on(CH.browserHide, () => browser?.hide())
+  ipcMain.handle(CH.browserSnapshot, () => browser?.snapshot() ?? null)
   ipcMain.on(CH.browserNavigate, (_e, url: string) => browser?.navigate(url))
   ipcMain.on(CH.browserBack, () => browser?.back())
   ipcMain.on(CH.browserForward, () => browser?.forward())

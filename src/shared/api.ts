@@ -505,6 +505,13 @@ export interface StokeApi {
     setBounds(rect: Rect): void
     show(url?: string): void
     hide(): void
+    /**
+     * A still of the page as it is on screen, as a JPEG data URL, or null when
+     * there is no page to show. Taken just before the view hides for a popover
+     * or an overlay, so the panel shows the page under it instead of a blank
+     * (gotcha 14).
+     */
+    snapshot(): Promise<string | null>
     navigate(url: string): void
     back(): void
     forward(): void

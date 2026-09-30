@@ -9,6 +9,7 @@ import {
 } from '@shared/launcher'
 import { IconChevron, IconFolder, IconPlus } from './Icons'
 import { relativeTime } from '../lib/format'
+import { useFloatingLayer } from '../lib/floatingLayers'
 
 /*
  * Where the next session runs: the launcher's title, as a button that opens a
@@ -67,6 +68,8 @@ export function FolderSwitcher({
   const listId = useId()
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
+  const popRef = useRef<HTMLDivElement>(null)
+  useFloatingLayer(popRef, open)
 
   const groups = useMemo(
     () => folderChoices({ projects, defaultCwd, hosts, query }),
@@ -146,7 +149,7 @@ export function FolderSwitcher({
       {open && (
         <>
           <div className="popover-backdrop" onClick={() => close(false)} />
-          <div className="popover switcher-pop" onKeyDown={onKeyDown}>
+          <div className="popover switcher-pop" ref={popRef} onKeyDown={onKeyDown}>
             <input
               ref={inputRef}
               className="input"

@@ -48,6 +48,7 @@ import {
   type DraftTrack
 } from '@shared/activityView'
 import { pressClock } from './lib/pressBurst'
+import { useBrowserCovered } from './lib/floatingLayers'
 import type { StokeCliRequest } from '@shared/stokeArgs'
 import { activeThemeId, resolveTheme } from '@shared/themes'
 import { worklogButtonState } from '@shared/worklog'
@@ -179,6 +180,15 @@ const RELAUNCH_EXIT_CAP_MS = 3000
 
 /** How long a first run keeps the shell inert waiting for agent detection to open the picker. */
 const FIRST_RUN_WAIT_MS = 5000
+
+/**
+ * The docked browser's still (gotcha 14): how long a popover waits for the
+ * photo before the view hides regardless — the popover is behind the view until
+ * then — and how long the still stays after the view is shown again, so the
+ * panel never shows blank between the two.
+ */
+const BROWSER_STILL_WAIT_MS = 150
+const BROWSER_STILL_LINGER_MS = 150
 
 const EMPTY_BROWSER: BrowserState = {
   url: '',
@@ -564,10 +574,11 @@ export function App(): React.JSX.Element {
   const enrollSourceRef = useRef<string | null>(null)
 
   const [paletteOpen, setPaletteOpen] = useState(false)
-  // The phone popover is open. Not part of `overlayOpen` (it makes nothing
-  // inert), but the docked browser must hide while it is up or its QR paints
-  // behind the WebContentsView (gotcha 14).
-  const [phonePopoverOpen, setPhonePopoverOpen] = useState(false)
+  // A popover, menu or picker is open over the docked browser. Not part of
+  // `overlayOpen` (it makes nothing inert), but the browser must hide while it
+  // is up or the WebContentsView paints over it (gotcha 14,
+  // lib/floatingLayers.ts).
+  const layerOverBrowser = useBrowserCovered()
   const [settingsOpen, setSettingsOpen] = useState(false)
   /** Where the sheet opens. Set by whoever asked for it, cleared with the sheet. */
   const [settingsSection, setSettingsSection] = useState<SectionId | undefined>(undefined)
@@ -3563,21 +3574,60 @@ export function App(): React.JSX.Element {
   )
 
   // The WebContentsView paints above the DOM, so it must be detached while a
-  // palette or settings sheet — or the phone popover, whose QR would otherwise
-  // hide behind it — is open, or it would cover them (gotcha 14).
+  // palette or settings sheet is open, or while any smaller floating layer —
+  // a popover, a menu, a picker — lies over it, or it would cover them
+  // (gotcha 14).
+  //
+  // Hidden for one of those, the panel would go blank, which reads as the
+  // browser having gone — reported the first time the usage panel hid it. So
+  // the view is photographed first (`browserStill`) and the panel shows that
+  // still until the view is back over it. The photo has to come BEFORE the
+  // hide: a hidden view is resized to the agent's viewport, not the panel's.
+  const [browserStill, setBrowserStill] = useState<string | null>(null)
+  const stillSeq = useRef(0)
+  const viewShown = useRef(false)
   useEffect(() => {
     if (!settings) return
-    if (browserOpen && !overlayOpen && !phonePopoverOpen) {
+    const seq = ++stillSeq.current
+    if (browserOpen && !overlayOpen && !layerOverBrowser) {
       if (seededBrowser.current) {
         window.stoke.browser.show()
       } else {
         seededBrowser.current = true
         window.stoke.browser.show(settings.browser.lastUrl || settings.browser.homepage)
       }
-    } else {
+      viewShown.current = true
+      // Keep the still a moment, until the view has painted back over it.
+      const t = setTimeout(() => {
+        if (stillSeq.current === seq) setBrowserStill(null)
+      }, BROWSER_STILL_LINGER_MS)
+      return () => clearTimeout(t)
+    }
+    const hide = (): void => {
+      if (stillSeq.current !== seq || !viewShown.current) return
+      viewShown.current = false
       window.stoke.browser.hide()
     }
-  }, [browserOpen, overlayOpen, phonePopoverOpen, settings])
+    // Closed, or already hidden (a settings patch re-runs this under an open
+    // sheet): nothing to photograph, and the still already up stays up.
+    if (!browserOpen || !viewShown.current) {
+      if (!browserOpen) setBrowserStill(null)
+      viewShown.current = false
+      window.stoke.browser.hide()
+      return
+    }
+    // A slow capture must not leave the layer behind the view: hide anyway.
+    const t = setTimeout(hide, BROWSER_STILL_WAIT_MS)
+    void window.stoke.browser.snapshot().then(
+      (url) => {
+        if (stillSeq.current !== seq) return
+        if (url) setBrowserStill(url)
+        hide()
+      },
+      () => hide()
+    )
+    return () => clearTimeout(t)
+  }, [browserOpen, overlayOpen, layerOverBrowser, settings])
 
   // Remember the last page, so reopening the panel returns you to it.
   useEffect(() => {
@@ -4408,7 +4458,6 @@ export function App(): React.JSX.Element {
         onOpenPalette={() => setPaletteOpen(true)}
         onOpenSettings={() => openSettings()}
         onOpenPhoneSettings={() => openSettings('remote')}
-        onPhonePopoverOpenChange={setPhonePopoverOpen}
         labelFor={(t) => {
           if (t.kind !== 'new') return tabLabel(t, null)
           // The tab in front names what its launcher is aimed at, fallback
@@ -4849,6 +4898,7 @@ export function App(): React.JSX.Element {
                 profiles={settings?.browser.profiles ?? []}
                 currentProfile={settings?.browser.currentProfile ?? 'default'}
                 onManageProfiles={() => openSettings('browser')}
+                still={browserStill}
                 offerImport={
                   (platform === 'darwin' || platform === 'win32') && settings?.browser.importOffer === 'unasked'
                 }

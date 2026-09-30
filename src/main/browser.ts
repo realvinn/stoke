@@ -656,6 +656,25 @@ export class EmbeddedBrowser {
   }
 
   /**
+   * The page as the user sees it, for the panel to show while the view hides
+   * under a popover or an overlay (gotcha 14) — a blank panel read as the
+   * browser having gone. Only while shown: a hidden view is resized to
+   * `DEFAULT_VIEWPORT` for the agent, and a still of that is not what was on
+   * screen. JPEG, because it is a backdrop under a popover, not a record.
+   */
+  async snapshot(): Promise<string | null> {
+    const tab = this.active()
+    if (!tab || !this.userVisible || tab.view.webContents.isDestroyed()) return null
+    try {
+      const image = await tab.view.webContents.capturePage()
+      if (image.isEmpty()) return null
+      return `data:image/jpeg;base64,${image.toJPEG(82).toString('base64')}`
+    } catch {
+      return null
+    }
+  }
+
+  /**
    * The address bar, and only the address bar. `allowLocalFiles` is granted
    * here because the actor is a person who typed the path; the MCP `open` tool
    * calls `normalizeUrl` without it.

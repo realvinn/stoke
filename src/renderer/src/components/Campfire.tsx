@@ -1,4 +1,5 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
+import { useFloatingLayer } from '../lib/floatingLayers'
 import { WELCOME_DISMISS_MS, type WelcomeReason } from '@shared/welcome'
 
 /*
@@ -79,6 +80,10 @@ function headingFor(reason: WelcomeReason, version: string): { title: string; su
 }
 
 export function Campfire({ reason, version, onDismiss }: CampfireProps): React.JSX.Element {
+  // Full screen, and shown after an update — when a docked browser restored
+  // from the last run would otherwise cover its right side (gotcha 14).
+  const rootRef = useRef<HTMLDivElement>(null)
+  useFloatingLayer(rootRef, true)
   /*
    * Three ways out, and the timer is the one that matters: a splash whose only
    * exit is a gesture is a splash that can be left on screen by someone who
@@ -132,6 +137,7 @@ export function Campfire({ reason, version, onDismiss }: CampfireProps): React.J
      * that screen readers flatten to one label.
      */
     <div
+      ref={rootRef}
       className="campfire"
       role="dialog"
       aria-modal="true"

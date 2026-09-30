@@ -38,7 +38,7 @@ A `dist:*` exists per target and each MUST run on that target's own platform and
 Every suite runs alone as `npm run verify:<name>`: context, statusline, unicode, usage,
 profiles, settings, providers, claude-config, folders, search, color, theme-gen, activity,
 worklog-gate, tabs, launcher, registry,
-restore, shortcuts, drop, fullscreen, browser-url, browser-profiles, safari-import, chrome-import, voice, agents, campfire, cli, stoke-args, updates, targets, manifests, portable, winget, worklog-runner,
+restore, shortcuts, drop, fullscreen, layers, browser-url, browser-profiles, safari-import, chrome-import, voice, agents, campfire, cli, stoke-args, updates, targets, manifests, portable, winget, worklog-runner,
 worklog-retry, worklog-recall, worklog-autoscan, ssh, ssh-enroll, remote, phone-ui, installer-art, install, welcome,
 selection — the `check` chain — plus extract and security, which
 need a live instance (`verify:security <url> <token> --access`). `verify:selection` opens a real
@@ -365,8 +365,8 @@ rule file named on the group line.
   padding, not half — `align-self` centres the margin box, so half lands a pixel off.
 - **14.** Never overlay the docked browser (its `WebContentsView` paints over all DOM): a panel
   that must stay visible is a `.body-row` column; a full-width strip goes inside `.main-col`,
-  never a fourth `.app` row. Keep `.app`'s `grid-template-columns: minmax(0, 1fr)`, or nowrap flex
-  text widens the whole shell.
+  never a fourth `.app` row; a popover or menu calls `useFloatingLayer` (verify:layers). Keep
+  `.app`'s `grid-template-columns: minmax(0, 1fr)`, or nowrap flex text widens the whole shell.
 - **22.** Rename a CSS token rather than renumber it in place, then grep the old name to zero
   across `src/`, `.tsx` `style={{ }}` objects included — a missed use then collapses visibly
   instead of silently changing size.
