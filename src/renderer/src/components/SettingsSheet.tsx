@@ -275,7 +275,8 @@ export function SettingsSheet({
     (next: SettingsLocation, row?: SettingsRowTarget | null, focus = false): void => {
       const up = ancestorsOf(next)
       if (up.length) onExpand(up, true)
-      setLoc(next)
+      // The same page keeps its object, so going where you already are moves nothing.
+      setLoc((cur) => (sameLocation(cur, next) ? cur : next))
       if (row) setJump({ row, focus, seq: seqRef.current++ })
     },
     [onExpand]
@@ -295,11 +296,16 @@ export function SettingsSheet({
    * Without this a tall section scrolled halfway down leaves the next one
    * opening mid-content, which reads as a section with its heading missing
    * rather than as retained scroll position. A jump scrolls again after this.
+   *
+   * Keyed on the page's node id, a string, not the `loc` object: a press on the
+   * menu row of the page already on show, or a search pick on it, is not a
+   * page change, and resetting then threw away the reader's place (and made a
+   * pick snap to the top before scrolling back down to its row).
    */
   const paneRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     paneRef.current?.scrollTo({ top: 0 })
-  }, [loc])
+  }, [current])
 
   // Show the row a jump named, once its page has drawn it (settingsJump.ts).
   useEffect(() => {
@@ -315,7 +321,7 @@ export function SettingsSheet({
   const [active, setActive] = useState(0)
   const searchRef = useRef<HTMLInputElement>(null)
   const resultsRef = useRef<HTMLDivElement>(null)
-  const entries = useMemo(() => settingsEntries({ agents: menuAgents }), [agentsKey])
+  const entries = useMemo(() => settingsEntries({ agents: menuAgents, platform: window.stoke.platform }), [agentsKey])
   const hits = useMemo(() => searchSettings(entries, query).slice(0, RESULT_LIMIT), [entries, query])
   const searching = query.trim() !== ''
 
@@ -616,8 +622,8 @@ export function SettingsSheet({
                 placeholder="Search settings"
                 aria-label="Search settings"
                 role="combobox"
-                aria-expanded={searching}
-                aria-controls="settings-search-results"
+                aria-expanded={searching && hits.length > 0}
+                aria-controls={searching && hits.length > 0 ? 'settings-search-results' : undefined}
                 aria-autocomplete="list"
                 aria-activedescendant={searching && hits[active] ? `settings-hit-${active}` : undefined}
                 value={query}
@@ -626,18 +632,24 @@ export function SettingsSheet({
                 onChange={(e) => setQuery(e.target.value)}
                 onKeyDown={onSearchKey}
               />
+              {/*
+                Mounted for the sheet's whole life and empty with no query, so
+                the first count is a CHANGE a screen reader announces — a live
+                region mounted with its text already in it is usually skipped.
+                Outside the listbox, which may hold only options.
+              */}
+              <span className="sr-only" role="status" aria-live="polite">
+                {!searching ? '' : hits.length === 0 ? 'No matching settings' : `${hits.length} matching settings`}
+              </span>
             </div>
 
-            {searching ? (
+            {searching && hits.length === 0 ? (
+              // The same track as the results, so nothing moves; not a listbox, as it lists nothing.
+              <div className="settings-results">
+                <p className="settings-results-empty">Nothing in Settings matches &ldquo;{query.trim()}&rdquo;.</p>
+              </div>
+            ) : searching ? (
               <div className="settings-results" id="settings-search-results" role="listbox" aria-label="Matching settings" ref={resultsRef}>
-                <span className="sr-only" role="status" aria-live="polite">
-                  {hits.length === 0 ? 'No matching settings' : `${hits.length} matching settings`}
-                </span>
-                {hits.length === 0 && (
-                  <p className="settings-results-empty">
-                    Nothing in Settings matches &ldquo;{query.trim()}&rdquo;.
-                  </p>
-                )}
                 {hits.map((h, i) => {
                   const here = sameLocation(h.entry.loc, loc)
                   return (

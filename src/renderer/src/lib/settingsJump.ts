@@ -18,6 +18,8 @@ export const FLASH_MS = 1600
 const FALLBACK_AFTER_MS = 250
 /** How long to look at all. */
 const GIVE_UP_MS = 1500
+/** How many frames a row just uncovered by opening a disclosure may take to stop moving. */
+const SETTLE_FRAMES = 8
 
 const FOCUSABLE_IN_ROW =
   'input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), summary, [tabindex]:not([tabindex="-1"])'
@@ -66,6 +68,23 @@ export function flashSettingRow(
   const started = performance.now()
   let frame = 0
   let done = false
+  const show = (el: HTMLElement): void => {
+    if (done) return
+    done = true
+    /*
+     * The middle of the pane, unless the row is taller than the pane: centred,
+     * the theme editor (a fallback while a theme is being edited) had its
+     * heading and first field scrolled off the top.
+     */
+    const block = el.getBoundingClientRect().height > pane.clientHeight ? 'start' : 'center'
+    el.scrollIntoView({ block, behavior: prefersReducedMotion() ? 'auto' : 'smooth' })
+    flash(el)
+    if (opts.focus) {
+      const control = el.matches(FOCUSABLE_IN_ROW) ? el : el.querySelector<HTMLElement>(FOCUSABLE_IN_ROW)
+      // preventScroll: the scroll above is smooth, and focus() would jump it.
+      ;(control ?? pane).focus({ preventScroll: true })
+    }
+  }
   const attempt = (): void => {
     if (done) return
     const waited = performance.now() - started
@@ -74,20 +93,36 @@ export function flashSettingRow(
       if (waited < GIVE_UP_MS) frame = requestAnimationFrame(attempt)
       return
     }
-    done = true
     // A row folded inside a closed disclosure (Phone access › Advanced) is
     // not on screen to scroll to until every <details> around it is open.
+    let opened = false
     for (let d = el.closest('details'); d; d = d.parentElement?.closest('details') ?? null) {
-      if (!d.open) d.open = true
+      if (!d.open) {
+        d.open = true
+        opened = true
+      }
     }
-    if (el.tagName === 'DETAILS' && !(el as HTMLDetailsElement).open) (el as HTMLDetailsElement).open = true
-    el.scrollIntoView({ block: 'center', behavior: prefersReducedMotion() ? 'auto' : 'smooth' })
-    flash(el)
-    if (opts.focus) {
-      const control = el.matches(FOCUSABLE_IN_ROW) ? el : el.querySelector<HTMLElement>(FOCUSABLE_IN_ROW)
-      // preventScroll: the scroll above is smooth, and focus() would jump it.
-      ;(control ?? pane).focus({ preventScroll: true })
+    if (el.tagName === 'DETAILS' && !(el as HTMLDetailsElement).open) {
+      ;(el as HTMLDetailsElement).open = true
+      opened = true
     }
+    /*
+     * And a disclosure just opened is not laid out in full at once. Measured on
+     * Phone access (2026-10-01), a jump to the Access row inside the closed
+     * tunnel disclosure: at the scroll, one frame after `open = true`, the row
+     * still sat at the disclosure's summary with the pane 758px tall — the
+     * contents came in a frame later, 1542px — so the centred scroll stopped
+     * at 85 of 869 and left the row 650px below the pane. So wait until the
+     * row stays put for a frame (`SETTLE_FRAMES` at most), then scroll.
+     */
+    if (opened) frame = requestAnimationFrame(() => settle(el, null, SETTLE_FRAMES))
+    else show(el)
+  }
+  const settle = (el: HTMLElement, last: number | null, left: number): void => {
+    if (done) return
+    const top = el.getBoundingClientRect().top
+    if (top === last || left <= 0) show(el)
+    else frame = requestAnimationFrame(() => settle(el, top, left - 1))
   }
   frame = requestAnimationFrame(attempt)
   return () => {
