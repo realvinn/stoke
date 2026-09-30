@@ -44,7 +44,7 @@ export function CommandPalette({ projects, settingsAgents, onPick, onPickSetting
   }, [])
 
   const agentsKey = settingsAgents.join(',')
-  const entries = useMemo(() => settingsEntries({ agents: settingsAgents }), [agentsKey])
+  const entries = useMemo(() => settingsEntries({ agents: settingsAgents, platform: window.stoke.platform }), [agentsKey])
   const rows = useMemo(
     () => paletteRows(rankForPalette(projects, query), searchSettings(entries, query).slice(0, SETTINGS_IN_PALETTE)),
     [projects, entries, query]

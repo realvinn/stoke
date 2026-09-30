@@ -392,6 +392,12 @@ export interface SettingRow {
   fallback?: string
   /** For `agent.*` rows: which agents' pages draw it. Absent means every agent. */
   agents?: (id: CodingCliId) => boolean
+  /**
+   * The platforms (`window.stoke.platform`) whose sheet draws it at all. Absent
+   * means every one. A search on any other leaves it out rather than land on a
+   * page where it can never be.
+   */
+  platforms?: readonly string[]
 }
 
 const notClaude = (id: CodingCliId): boolean => id !== 'claude'
@@ -405,14 +411,16 @@ const hasCustomEndpoint = (id: CodingCliId): boolean =>
  */
 export const SETTING_ROWS: readonly SettingRow[] = [
   // Appearance
-  { id: 'appearance.follow-system', page: 'appearance', label: 'Follow my system', keywords: ['dark mode', 'light mode', 'auto theme', 'system appearance', 'night'] },
-  { id: 'appearance.theme', page: 'appearance', label: 'Theme', keywords: ['colour scheme', 'palette', 'dark', 'light', 'colours'] },
-  { id: 'appearance.make-theme', page: 'appearance', label: 'Make your own theme', keywords: ['custom theme', 'theme editor', 'duplicate theme', 'accent colour'] },
+  // Both drawn only while no theme is being edited; the editor is where a jump lands then.
+  { id: 'appearance.follow-system', page: 'appearance', label: 'Follow my system', keywords: ['dark mode', 'light mode', 'auto theme', 'system appearance', 'night'], fallback: 'appearance.make-theme' },
+  { id: 'appearance.theme', page: 'appearance', label: 'Theme', keywords: ['colour scheme', 'palette', 'dark', 'light', 'colours'], fallback: 'appearance.make-theme' },
+  // Also the editor's own controls, drawn in its place while a theme is edited.
+  { id: 'appearance.make-theme', page: 'appearance', label: 'Make your own theme', keywords: ['custom theme', 'theme editor', 'duplicate theme', 'accent colour', 'theme name', 'hue', 'page colour', 'tint', 'colour notation', 'true black', 'oled'] },
   { id: 'appearance.claude-theme', page: 'appearance', label: 'Draw Claude Code in this theme’s colours', keywords: ['ansi', 'claude theme', 'terminal colours'] },
   { id: 'appearance.wallpaper', page: 'appearance', label: 'Wallpaper', keywords: ['background image', 'blur', 'dim', 'panel opacity', 'picture', 'photo'] },
   { id: 'appearance.brand', page: 'appearance', label: 'Show the Stoke mark in the title bar', keywords: ['logo', 'brand', 'title bar'] },
   { id: 'appearance.interface-scale', page: 'appearance', label: 'Interface scale', keywords: ['zoom', 'ui size', 'bigger', 'smaller', 'text size'] },
-  { id: 'appearance.zoom-keys', page: 'appearance', label: 'Zoom keys change', keywords: ['zoom', 'shortcut', 'cmd plus', 'ctrl plus'] },
+  { id: 'appearance.zoom-keys', page: 'appearance', label: 'Zoom keys change', keywords: ['zoom', 'keyboard shortcut', 'cmd plus', 'ctrl plus'] },
   { id: 'appearance.full-screen', page: 'appearance', label: 'Menu bar in full screen', keywords: ['fullscreen', 'menu bar', 'tabs', 'macos'] },
 
   // Terminal
@@ -439,9 +447,10 @@ export const SETTING_ROWS: readonly SettingRow[] = [
   // Agents › Agent manager
   { id: 'agents.default', page: 'agents', label: 'Default agent', keywords: ['new session', 'start', 'default cli', 'choose agents', 'look again', 'detect'] },
   { id: 'agents.list', page: 'agents', label: 'Your agents', keywords: ['installed', 'colour', 'agent colours', 'show in launcher', 'hide agent', 'launcher'] },
-  { id: 'agents.more', page: 'agents', label: 'More agents', keywords: ['install', 'download', 'not installed', 'add agent', 'get'] },
+  // Drawn only while some agent is not installed.
+  { id: 'agents.more', page: 'agents', label: 'More agents', keywords: ['install', 'download', 'not installed', 'add agent', 'get'], fallback: 'agents.list' },
   { id: 'agents.tags', page: 'agents', label: 'Show agent tags on tabs', keywords: ['tab tag', 'tabs', 'label'] },
-  { id: 'agents.skills', page: 'agents', label: 'Skills', keywords: ['skill.md', 'shared skills', 'plugins', 'lend'] },
+  { id: 'agents.skills', page: 'agents', label: 'Skills', keywords: ['skill.md', 'shared skills', 'plugins', 'lend claude code the shared skills'] },
 
   // Agents › <an agent>
   { id: 'agent.endpoint', page: 'agent', label: 'Where it sends requests', keywords: ['endpoint', 'openrouter', 'provider', 'base url'], agents: notClaude },
@@ -449,7 +458,8 @@ export const SETTING_ROWS: readonly SettingRow[] = [
   { id: 'agent.model', page: 'agent', label: 'Default model', keywords: ['model'], agents: notClaude },
   { id: 'agent.accounts', page: 'agent', label: 'Accounts', keywords: ['sign in', 'login', 'account', 'api key', 'work account', 'second account'] },
   { id: 'agent.tools', page: 'agent', label: 'Tools (MCP)', keywords: ['mcp', 'servers', 'tools', 'browser tools'] },
-  { id: 'agent.look', page: 'agent', label: 'Colour and tab tag', keywords: ['colour', 'tab tag', 'tag', 'label'] },
+  // Drawn as "In the tab strip".
+  { id: 'agent.look', page: 'agent', label: 'Colour and tab tag', keywords: ['colour', 'tab tag', 'tag', 'label', 'tab strip'] },
 
   // Agents › Claude Code › Launch defaults
   { id: 'claude-launch.permissions', page: 'claude-launch', label: 'Default permissions', keywords: ['permission mode', 'bypass', 'plan mode', 'accept edits', 'yolo', 'dangerously skip'] },
@@ -467,7 +477,13 @@ export const SETTING_ROWS: readonly SettingRow[] = [
 
   // Chat history
   { id: 'chats.enabled', page: 'chats', label: 'Keep a searchable copy of my AI chats', keywords: ['chat history', 'index chats', 'on', 'off'] },
-  { id: 'chats.sources', page: 'chats', label: 'Where Stoke looks', keywords: ['sources', 'codex', 'chatgpt', 'claude.ai', 'tools'] },
+  // Also holds "Include subagent chats" and "Leave out anything that looks like an API key".
+  {
+    id: 'chats.sources',
+    page: 'chats',
+    label: 'Where Stoke looks',
+    keywords: ['sources', 'codex', 'chatgpt', 'claude.ai', 'tools', 'include subagent chats', 'leave out anything that looks like an api key', 'redact', 'secrets', 'api key', 'private key']
+  },
   { id: 'chats.imported', page: 'chats', label: 'Imported chats', keywords: ['import', 'export', 'chatgpt export', 'claude.ai export', 'zip'] },
   { id: 'chats.limits', page: 'chats', label: 'Limits', keywords: ['how much', 'size', 'cap', 'preset'] },
   { id: 'chats.index', page: 'chats', label: 'The index', keywords: ['database', 'sqlite', 'rebuild', 'delete copy', 'storage'] },
@@ -475,7 +491,7 @@ export const SETTING_ROWS: readonly SettingRow[] = [
   // Voice
   { id: 'voice.mic-access', page: 'voice', label: 'Microphone access', keywords: ['permission', 'privacy', 'allow microphone'], fallback: 'voice.microphone' },
   { id: 'voice.claude-voice', page: 'voice', label: 'Claude Code’s /voice', keywords: ['/voice', 'voice mode', 'hold space'] },
-  { id: 'voice.dictation', page: 'voice', label: 'Stoke’s dictation', keywords: ['dictate', 'speech to text', 'shortcut'] },
+  { id: 'voice.dictation', page: 'voice', label: 'Stoke’s dictation', keywords: ['dictate', 'speech to text', 'keyboard shortcut'] },
   { id: 'voice.microphone', page: 'voice', label: 'Microphone for Stoke’s dictation', keywords: ['mic', 'input device', 'audio', 'test microphone'] },
   { id: 'voice.hold', page: 'voice', label: 'Hold Space for', keywords: ['hold threshold', 'push to talk', 'space bar'] },
   { id: 'voice.service', page: 'voice', label: 'Speech service', keywords: ['transcription', 'provider', 'whisper', 'stt', 'speech to text'] },
@@ -490,12 +506,23 @@ export const SETTING_ROWS: readonly SettingRow[] = [
   { id: 'projects.hidden', page: 'projects', label: 'Hidden projects', keywords: ['hide', 'unhide', 'show again'] },
 
   // SSH hosts
-  { id: 'hosts.list', page: 'hosts', label: 'Remote machines', keywords: ['ssh hosts', 'add host', 'server', 'alias', 'ssh config'] },
+  /*
+   * Also every machine's own controls, each inside its row's disclosure: its
+   * name and alias, the command it runs on connect, keeping its sessions
+   * running (tmux), writing up its work, and the key offer.
+   */
+  {
+    id: 'hosts.list',
+    page: 'hosts',
+    label: 'Remote machines',
+    keywords: ['ssh hosts', 'add host', 'server', 'alias', 'ssh config', 'command on connect', 'keep sessions running', 'kept session', 'persistent', 'tmux', 'byobu', 'write up work done', 'worklog', 'offer to add a key', 'asks for a password']
+  },
   { id: 'hosts.key-enroll', page: 'hosts', label: 'When a remote asks for a password', keywords: ['ssh key', 'key login', 'password', 'ssh-copy-id'] },
 
   // Browser
   { id: 'browser.profiles', page: 'browser', label: 'Browser profiles', keywords: ['logins', 'cookies', 'site data', 'profile'] },
-  { id: 'browser.import', page: 'browser', label: 'Import from other browsers', keywords: ['chrome', 'safari', 'edge', 'arc', 'brave', 'cookies', 'logins', 'bookmarks'] },
+  // macOS and Windows only (BrowserSettings); `platforms` keeps it out of a Linux search.
+  { id: 'browser.import', page: 'browser', label: 'Import from other browsers', keywords: ['chrome', 'safari', 'edge', 'arc', 'brave', 'cookies', 'logins', 'bookmarks'], platforms: ['darwin', 'win32'], fallback: 'browser.profiles' },
 
   // Worklog
   { id: 'worklog.agent', page: 'worklog', label: 'Worklog agent', keywords: ['review', 'notion', 'clickup', 'profiles'] },
@@ -507,11 +534,13 @@ export const SETTING_ROWS: readonly SettingRow[] = [
   // Phone access
   { id: 'remote.enabled', page: 'remote', label: 'Open on phone', keywords: ['phone access', 'turn on', 'qr code', 'link', 'turn off'] },
   { id: 'remote.reach', page: 'remote', label: 'Reach it from', keywords: ['wifi', 'lan', 'tailscale', 'tunnel', 'anywhere'] },
-  { id: 'remote.tunnel', page: 'remote', label: 'Cloudflare tunnel', keywords: ['cloudflared', 'named tunnel', 'hostname', 'domain'] },
+  // Drawn as "Reach it from outside your network", a disclosure that also holds the tunnel log.
+  { id: 'remote.tunnel', page: 'remote', label: 'Cloudflare tunnel', keywords: ['cloudflared', 'named tunnel', 'hostname', 'domain', 'reach it from outside your network', 'tunnel log'] },
   { id: 'remote.hostname', page: 'remote', label: 'Public hostname', keywords: ['domain', 'url'], fallback: 'remote.tunnel' },
   { id: 'remote.tunnel-name', page: 'remote', label: 'Tunnel name', keywords: ['cloudflared name'], fallback: 'remote.tunnel' },
   { id: 'remote.tunnel-auto', page: 'remote', label: 'Start the tunnel whenever phone access is on', keywords: ['auto start tunnel'], fallback: 'remote.tunnel' },
-  { id: 'remote.access', page: 'remote', label: 'Require Cloudflare Access', keywords: ['zero trust', 'jwt', 'sso', 'access policy'], fallback: 'remote.tunnel' },
+  // Also holds the team domain and AUD tag fields.
+  { id: 'remote.access', page: 'remote', label: 'Require Cloudflare Access', keywords: ['zero trust', 'jwt', 'sso', 'access policy', 'team domain', 'aud', 'audience tag', 'application audience'], fallback: 'remote.tunnel' },
   { id: 'remote.port', page: 'remote', label: 'Port', keywords: ['server port', 'listen'] },
   { id: 'remote.key', page: 'remote', label: 'Phone access key', keywords: ['token', 'bearer', 'new key', 'secret'] },
 
@@ -527,7 +556,7 @@ export const SETTING_ROWS: readonly SettingRow[] = [
 
   // Backup & transfer
   { id: 'backup.storage', page: 'backup', label: 'Where your keys live', keywords: ['keychain', 'secrets', 'encryption', 'api keys', 'safe storage'] },
-  { id: 'backup.export', page: 'backup', label: 'Export this setup', keywords: ['backup', 'setup file', 'passphrase', 'another computer', 'transfer'] },
+  { id: 'backup.export', page: 'backup', label: 'Export this setup', keywords: ['backup', 'setup file', 'passphrase', 'another computer', 'transfer', 'include api keys'] },
   { id: 'backup.import', page: 'backup', label: 'Import a setup', keywords: ['restore', 'setup file', 'transfer'] }
 ]
 
@@ -595,6 +624,8 @@ export interface SettingsEntry {
 export interface SettingsContext {
   /** The agents with a page in the menu (`navAgents`); Claude Code at least. */
   agents: readonly CodingCliId[]
+  /** `window.stoke.platform`, for rows drawn only on some (`SettingRow.platforms`). Absent: every row. */
+  platform?: string
 }
 
 /**
@@ -606,8 +637,9 @@ export interface SettingsContext {
 export function settingsEntries(ctx: SettingsContext): SettingsEntry[] {
   const out: SettingsEntry[] = []
   const listed = new Set<CodingCliId>(ctx.agents.length ? ctx.agents : ['claude'])
+  const drawnHere = (r: SettingRow): boolean => !r.platforms || !ctx.platform || r.platforms.includes(ctx.platform)
   const rowsOf = (page: SettingsPageId): SettingRow[] =>
-    page === 'claude-settings' ? claudeSettingRows() : SETTING_ROWS.filter((r) => r.page === page)
+    page === 'claude-settings' ? claudeSettingRows() : SETTING_ROWS.filter((r) => r.page === page && drawnHere(r))
   const pageEntry = (loc: SettingsLocation, label: string, keywords: readonly string[], hint: string): void => {
     const path = pathOf(loc)
     out.push({ key: `page:${nodeIdOf(loc)}`, loc, row: null, fallback: null, label, path: path.slice(0, -1), keywords, hint })
@@ -632,7 +664,7 @@ export function settingsEntries(ctx: SettingsContext): SettingsEntry[] {
         const loc: SettingsLocation = { page: 'agent', agent: c.id }
         pageEntry(loc, c.label, [c.vendor, ...c.bins.posix, 'agent'], c.blurb)
         for (const r of SETTING_ROWS) {
-          if (r.page !== 'agent' || (r.agents && !r.agents(c.id))) continue
+          if (r.page !== 'agent' || (r.agents && !r.agents(c.id)) || !drawnHere(r)) continue
           rowEntry(loc, r, [c.label])
         }
       }
@@ -706,11 +738,11 @@ function foldPlain(text: string): string {
 
 /*
  * Words spelled two ways. British spelling is the sheet's own, and a search for
- * "color" should not come back empty because of it.
+ * "color" should not come back empty because of it. Singular only: a plural is
+ * folded to its singular first (`singulars`).
  */
 const SPELLINGS: Record<string, string> = {
   color: 'colour',
-  colors: 'colours',
   gray: 'grey',
   customize: 'customise',
   behavior: 'behaviour',
@@ -722,8 +754,8 @@ const SPELLINGS: Record<string, string> = {
 
 /*
  * What people type for something the sheet names differently. Each query word
- * on the left also tries the words on the right; the match is scored as a
- * synonym, a step below the word itself.
+ * on the left — or its singular — also tries the words on the right; the match
+ * is scored as a synonym, a step below the word itself.
  */
 const SYNONYMS: Record<string, readonly string[]> = {
   mic: ['microphone'],
@@ -732,7 +764,6 @@ const SYNONYMS: Record<string, readonly string[]> = {
   light: ['theme'],
   apikey: ['api key'],
   key: ['api key', 'token'],
-  keys: ['api key', 'token'],
   token: ['key'],
   password: ['key', 'passphrase'],
   zoom: ['scale'],
@@ -747,7 +778,6 @@ const SYNONYMS: Record<string, readonly string[]> = {
   mobile: ['phone'],
   phone: ['mobile', 'remote'],
   notification: ['notify'],
-  notifications: ['notify'],
   alert: ['notify'],
   voice: ['dictation', 'microphone', 'speech'],
   dictate: ['dictation'],
@@ -759,18 +789,50 @@ const SYNONYMS: Record<string, readonly string[]> = {
   server: ['host', 'remote'],
   machine: ['host', 'remote'],
   colour: ['accent'],
-  colours: ['accent'],
   mcp: ['tools'],
   secret: ['key'],
-  secrets: ['key']
+  keyboard: ['shortcut']
 }
 
-/** The ways one query word can be written, the word itself first. */
-function variants(word: string): string[] {
-  const out = [word]
-  const alt = SPELLINGS[word] ?? Object.keys(SPELLINGS).find((k) => SPELLINGS[k] === word)
-  if (alt) out.push(alt)
+/**
+ * What a plural word would be in the singular, for a word of four letters or
+ * more: "fonts" is font, "boxes" box, "entries" entry, "cookies" cookie. Every
+ * row is named in the singular ("Font", "Theme", "ssh key"), and a query word
+ * has to land as the start of a word, so without this "fonts" and "ssh keys"
+ * found nothing at all. A guess, not a dictionary: a wrong one ("status" to
+ * "statu") only ever tries a prefix of the word typed, which matches wherever
+ * the word itself would.
+ */
+function singulars(word: string): string[] {
+  if (word.length < 4 || !word.endsWith('s') || word.endsWith('ss')) return []
+  const out = [word.slice(0, -1)]
+  if (/(?:s|x|z|ch|sh)es$/.test(word)) out.push(word.slice(0, -2))
+  if (word.endsWith('ies')) out.push(`${word.slice(0, -3)}y`)
   return out
+}
+
+function spelledOtherwise(word: string): string | undefined {
+  return SPELLINGS[word] ?? Object.keys(SPELLINGS).find((k) => SPELLINGS[k] === word)
+}
+
+/**
+ * The ways one query word can be written, the word itself first: its other
+ * spelling, then its singulars and theirs. "colors" is colors, colours,
+ * color, colour.
+ */
+function variants(word: string): string[] {
+  const out = new Set<string>([word])
+  for (const w of [word, ...singulars(word)]) {
+    out.add(w)
+    const alt = spelledOtherwise(w)
+    if (alt) out.add(alt)
+  }
+  return [...out]
+}
+
+/** Every synonym of every way the word can be written ("keys" gets key's). */
+function synonymsOf(word: string): string[] {
+  return [...new Set(variants(word).flatMap((w) => SYNONYMS[w] ?? []))]
 }
 
 /** Where `word` starts a word in `text` (after a space, punctuation, or the start). */
@@ -806,16 +868,22 @@ const WORD_FIELD = { label: 5, keyword: 4, synonym: 3, path: 2, hint: 1 } as con
  * Rank every entry against `query`. Every word of the query must land
  * somewhere in the entry — its label, a keyword, the menu path above it, or
  * (for a page) its description — as the start of a word, or anywhere for a
- * word of three letters or more. Entries whose whole query is a phrase in the
- * label or a keyword rank first (`SETTING_SCORES`); the rest rank by their
- * weakest word, so "font size" finds Font size before a row that only
- * mentions size. Ties keep the sheet's own order.
+ * word of four letters or more (at three, "aud" was inside every "Claude" and
+ * "mic" inside "Dynamic"). A plural also tries its singular, and a little
+ * word that lands nowhere is passed over (`STOP_WORDS`). Entries whose whole
+ * query is a phrase in the label or a keyword rank first (`SETTING_SCORES`);
+ * the rest rank by their weakest word, so "font size" finds Font size before
+ * a row that only mentions size. Ties go to the query as typed over its
+ * singular, then keep the sheet's own order.
  */
 export function searchSettings(entries: readonly SettingsEntry[], query: string): SettingsHit[] {
   const q = foldPlain(query)
   if (!q) return []
   const words = q.split(' ')
-  const hits: { hit: SettingsHit; order: number }[] = []
+  const phrases = phraseVariants(words)
+  // Little words may be passed over only beside a word that is not one.
+  const carried = words.some((w) => !STOP_WORDS.has(w))
+  const hits: { hit: SettingsHit; order: number; literal: boolean }[] = []
   entries.forEach((entry, order) => {
     const label = fold(entry.label)
     const keywords = entry.keywords.map(foldPlain)
@@ -823,18 +891,26 @@ export function searchSettings(entries: readonly SettingsEntry[], query: string)
     const hint = foldPlain(entry.hint)
     let score = 0
     let ranges: Range[] = []
+    /*
+     * Whether the best phrase was the query as typed. Only a tie-break: "keys"
+     * lists "Zoom keys change" before "Anthropic API key", which only its
+     * singular found, though both are a phrase in the label.
+     */
+    let literal = false
 
-    // The whole query as one phrase, in each of its spellings.
-    for (const phrase of phraseVariants(q)) {
+    // The whole query as one phrase, in each of its spellings and numbers.
+    for (const phrase of phrases) {
       let s = 0
       if (label.text === phrase) s = SETTING_SCORES.exact
       else if (label.text.startsWith(phrase)) s = SETTING_SCORES.labelPrefix
       else if (wordStart(label.text, phrase) >= 0) s = SETTING_SCORES.labelPhrase
       else if (keywords.includes(phrase)) s = SETTING_SCORES.keywordExact
       else if (keywords.some((k) => wordStart(k, phrase) >= 0)) s = SETTING_SCORES.keywordPhrase
-      else if (phrase.length >= 3 && label.text.includes(phrase)) s = SETTING_SCORES.labelSubstring
+      else if (phrase.length >= 4 && label.text.includes(phrase)) s = SETTING_SCORES.labelSubstring
+      // The query as typed is the first phrase, so a tie keeps it.
       if (s > score) {
         score = s
+        literal = phrase === q
         const at = label.text.indexOf(phrase)
         ranges = at >= 0 ? [toOriginal(label, at, at + phrase.length)] : []
       }
@@ -845,39 +921,69 @@ export function searchSettings(entries: readonly SettingsEntry[], query: string)
        * Word by word: every word must land, and the weakest decides. The
        * others break a tie, a little: "codex model" finds Codex's Default
        * model (model in the label) before its Custom endpoint (model only in
-       * a keyword), though Codex is a keyword to both.
+       * a keyword), though Codex is a keyword to both. A little word ("on",
+       * "this") that lands nowhere is passed over rather than failing the
+       * row, so a label typed out whole — "Keep sessions running on this
+       * machine" — finds its row by the words that carry it.
        */
       let weakest: number = WORD_FIELD.label
       let sum = 0
+      let counted = 0
       const found: [number, number][] = []
       for (const w of words) {
         const best = bestField(w, label.text, keywords, path, hint)
         if (!best) {
+          if (STOP_WORDS.has(w) && carried) continue
           weakest = 0
           break
         }
         weakest = Math.min(weakest, best.field)
         sum += best.field
+        counted++
         if (best.at >= 0) found.push([best.at, best.at + best.length])
       }
-      if (weakest > 0) {
-        score = SETTING_SCORES.words - 10 + weakest * 2 + (sum / words.length - weakest) / 2
+      if (weakest > 0 && counted > 0) {
+        score = SETTING_SCORES.words - 10 + weakest * 2 + (sum / counted - weakest) / 2
         ranges = merge(found.map(([s, e]) => toOriginal(label, s, e)))
       }
     }
 
-    if (score > 0) hits.push({ hit: { entry, score, ranges }, order })
+    if (score > 0) hits.push({ hit: { entry, score, ranges }, order, literal })
   })
-  hits.sort((a, b) => b.hit.score - a.hit.score || a.order - b.order)
+  hits.sort((a, b) => b.hit.score - a.hit.score || Number(b.literal) - Number(a.literal) || a.order - b.order)
   return hits.map((h) => h.hit)
 }
 
-function phraseVariants(q: string): string[] {
-  const words = q.split(' ')
-  const out = new Set<string>([q])
-  const swapped = words.map((w) => variants(w)[1] ?? w).join(' ')
-  out.add(swapped)
-  return [...out]
+/*
+ * Words that say nothing about which setting is meant. Never dropped from a
+ * phrase, and never when they land; only a word-by-word match passes over one
+ * that lands nowhere.
+ */
+const STOP_WORDS: ReadonlySet<string> = new Set([
+  'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'do', 'for', 'from', 'how', 'i', 'in', 'is', 'it', 'its',
+  'me', 'my', 'of', 'on', 'or', 'that', 'the', 'this', 'to', 'what', 'when', 'where', 'which', 'with', 'you', 'your'
+])
+
+/*
+ * A cap on the combinations, which multiply: four words of four ways each
+ * would be 256 phrases per row per keystroke, and a query that long is a
+ * phrase in no row anyway — it is found word by word.
+ */
+const PHRASE_LIMIT = 64
+
+/**
+ * The query as a phrase, in every combination of each word's variants — so
+ * "api keys" is also "api key", which is a phrase in "Anthropic API key", and
+ * "keyboard colors" is also "keyboard colour". The query as typed first.
+ */
+function phraseVariants(words: readonly string[]): string[] {
+  let out = ['']
+  for (const w of words) {
+    const next: string[] = []
+    for (const head of out) for (const v of variants(w)) if (next.length < PHRASE_LIMIT) next.push(head ? `${head} ${v}` : v)
+    out = next
+  }
+  return [...new Set(out)]
 }
 
 function bestField(
@@ -890,20 +996,24 @@ function bestField(
   const lands = (text: string, w: string): number => {
     const s = wordStart(text, w)
     if (s >= 0) return s
-    return w.length >= 3 ? text.indexOf(w) : -1
+    return w.length >= 4 ? text.indexOf(w) : -1
   }
   for (const w of variants(word)) {
     const at = lands(label, w)
     if (at >= 0) return { field: WORD_FIELD.label, at, length: w.length }
   }
   for (const w of variants(word)) if (keywords.some((k) => lands(k, w) >= 0)) return { field: WORD_FIELD.keyword, at: -1, length: 0 }
-  for (const syn of SYNONYMS[word] ?? []) {
-    const at = lands(label, syn)
+  /*
+   * A synonym is a whole word somebody else would type, so it lands only where
+   * a word starts: "mic" for "microphone" is not the middle of "Dynamic".
+   */
+  for (const syn of synonymsOf(word)) {
+    const at = wordStart(label, syn)
     if (at >= 0) return { field: WORD_FIELD.synonym, at, length: syn.length }
-    if (keywords.some((k) => lands(k, syn) >= 0)) return { field: WORD_FIELD.synonym, at: -1, length: 0 }
+    if (keywords.some((k) => wordStart(k, syn) >= 0)) return { field: WORD_FIELD.synonym, at: -1, length: 0 }
   }
   for (const w of variants(word)) if (lands(path, w) >= 0) return { field: WORD_FIELD.path, at: -1, length: 0 }
-  for (const w of variants(word)) if (w.length >= 3 && lands(hint, w) >= 0) return { field: WORD_FIELD.hint, at: -1, length: 0 }
+  for (const w of variants(word)) if (w.length >= 4 && lands(hint, w) >= 0) return { field: WORD_FIELD.hint, at: -1, length: 0 }
   return null
 }
 
