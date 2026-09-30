@@ -29,7 +29,13 @@
  * Which suites need one is derived too — a `check` suite whose script starts
  * Electron opens windows — so a new Electron suite gets a display, or an
  * honest skip, with no edit here. On Linux without a DISPLAY it runs under
- * `xvfb-run -a`; with neither it is skipped and says so. verify:selection was
+ * `xvfb-run -a`; with neither it is skipped and says so, and it is skipped
+ * too where Electron's sandbox cannot start (sandboxProblem). Because the
+ * route follows the runner, every workflow that calls this inherits it: the
+ * image already had xvfb-run, so wiring the display for ci.yml alone would
+ * have started the suite in release.yml's gate too, without the sysctl that
+ * lets Electron start there. verify:targets holds the two gates to one step
+ * list for that reason. verify:selection was
  * kept out of CI from the day it was written (fcb4dc9, "needs a display"), and
  * so ran only on a Mac — which is how it came to pass only there while its own
  * comments called it portable (gotcha 113).
@@ -40,7 +46,7 @@
  *                                              would resolve it, from here
  */
 import { execFileSync, execSync } from 'node:child_process'
-import { accessSync, constants, readFileSync } from 'node:fs'
+import { accessSync, constants, readFileSync, statSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { delimiter, dirname, join } from 'node:path'
 
@@ -130,27 +136,93 @@ function onPath(name) {
   return null
 }
 
+/** A kernel knob's value, trimmed, or null where this kernel has no such knob. */
+function readKnob(file) {
+  try {
+    return readFileSync(file, 'utf8').trim()
+  } catch {
+    return null
+  }
+}
+
+/** Where npm unpacks Chromium's setuid sandbox helper. */
+const SANDBOX_HELPER = join(root, 'node_modules', 'electron', 'dist', 'chrome-sandbox')
+
+/**
+ * Why Electron's sandbox cannot start on this Linux machine, or null.
+ *
+ * Chromium sandboxes in an unprivileged user namespace first and falls back to
+ * the setuid helper. Where the kernel refuses the namespace and the helper is
+ * not setuid root — the one npm unpacks never is — Electron aborts before a
+ * line of the suite runs, naming chrome-sandbox and mode 4755. GitHub's
+ * ubuntu-24.04 image refuses it (actions/runner-images#11489), which is why
+ * both CI gates relax the knob first. As root Electron will not start without
+ * --no-sandbox at all (gotcha 76). Each is a fact about the runner, like the
+ * display, so a runner that has xvfb-run but not the rest gets an honest skip
+ * rather than a red gate — the release gate had exactly that shape once.
+ */
+function sandboxProblem() {
+  if (process.getuid?.() === 0) {
+    return 'this is running as root, and Electron refuses to start as root without --no-sandbox (gotcha 76). Run the suites as an ordinary user.'
+  }
+  const refused = [
+    {
+      knob: '/proc/sys/kernel/apparmor_restrict_unprivileged_userns',
+      refuses: '1',
+      what: 'AppArmor refuses unprivileged user namespaces (kernel.apparmor_restrict_unprivileged_userns=1)',
+      fix: "sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0, as both CI gates' \"Let Electron's sandbox start\" step does",
+    },
+    {
+      knob: '/proc/sys/kernel/unprivileged_userns_clone',
+      refuses: '0',
+      what: 'unprivileged user namespaces are off (kernel.unprivileged_userns_clone=0)',
+      fix: 'sudo sysctl -w kernel.unprivileged_userns_clone=1',
+    },
+  ].find(({ knob, refuses }) => readKnob(knob) === refuses)
+  if (!refused) return null
+  let helper = 'is not there'
+  try {
+    const st = statSync(SANDBOX_HELPER)
+    if (st.uid === 0 && (st.mode & 0o4000) !== 0) return null
+    helper = 'is not setuid root'
+  } catch {
+    /* no helper at all: the fallback has nothing to run */
+  }
+  return (
+    `${refused.what}, and the fallback, ${SANDBOX_HELPER}, ${helper}, so Electron's sandbox cannot start and it ` +
+    `would abort before the suite runs. Relax the knob (${refused.fix}), or make the helper root-owned with mode 4755.`
+  )
+}
+
 /**
  * How a suite that needs a display runs on `platform`: as is, under
  * `xvfb-run -a`, or not at all — each with the reason `--list` prints.
  *
  * macOS and Windows runners have a desktop session, so a window opens. Linux
  * uses a DISPLAY (or Wayland socket) when one is set, which is a developer's
- * desktop; a CI runner sets neither, and that is the case xvfb is for.
+ * desktop; a CI runner sets neither, and that is the case xvfb is for. On
+ * Linux a display is not enough: Electron's sandbox has to be able to start.
+ *
+ * Every fact here — PATH, the environment, the kernel's knobs — is THIS
+ * machine's, so `--platform linux` from a Mac shows the Linux branch taken
+ * with a Mac's facts, which is what lets a shim on PATH rehearse it.
  */
 function displayRoute() {
   if (platform === 'darwin' || platform === 'win32') {
     return { how: 'run', why: 'the desktop session is the display' }
   }
-  if (process.env.DISPLAY || process.env.WAYLAND_DISPLAY) {
-    return { how: 'run', why: `a display is set (${process.env.DISPLAY ? `DISPLAY=${process.env.DISPLAY}` : 'WAYLAND_DISPLAY'})` }
+  const display = process.env.DISPLAY || process.env.WAYLAND_DISPLAY
+  const xvfb = display ? null : onPath('xvfb-run')
+  if (!display && !xvfb) {
+    return {
+      how: 'skip',
+      why: 'no DISPLAY and no xvfb-run on PATH. It opens a real Electron window; install xvfb (both CI gates do).',
+    }
   }
-  const xvfb = onPath('xvfb-run')
+  const sandbox = sandboxProblem()
+  if (sandbox) return { how: 'skip', why: sandbox }
   if (xvfb) return { how: 'xvfb', why: `no DISPLAY, so it runs under ${xvfb} -a` }
-  return {
-    how: 'skip',
-    why: 'no DISPLAY and no xvfb-run on PATH. It opens a real Electron window; install xvfb (the CI workflow does).',
-  }
+  return { how: 'run', why: `a display is set (${process.env.DISPLAY ? `DISPLAY=${process.env.DISPLAY}` : 'WAYLAND_DISPLAY'})` }
 }
 
 /** Each suite in chain order, with how it runs here and, where not plainly, why. */
