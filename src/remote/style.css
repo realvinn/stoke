@@ -2019,6 +2019,36 @@ button.crumb:hover {
   color: var(--text-faint);
 }
 
+.field-hint[hidden] {
+  display: none;
+}
+
+/* A value shown and not chosen here: another agent's model, set on the desktop. */
+.field-static {
+  display: flex;
+  align-items: center;
+  min-height: var(--tap);
+  padding: 0 var(--space-12);
+  border-radius: var(--radius-12);
+  background: var(--bg-sunken);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.field-note {
+  margin: 0 4px;
+  font-size: 13px;
+  color: var(--text-faint);
+}
+
+/* An account that cannot start: listed, with its reason in the tooltip and under the group. */
+.seg-btn:disabled {
+  opacity: 0.45;
+  text-decoration: line-through;
+}
+
 /* ------------------------------------------------------------- history */
 
 .hlist {

@@ -11,9 +11,11 @@
 
 import type { RegistryStatus } from './claudeRegistry.ts'
 import type { EffortLevel, PermissionMode } from './types.ts'
-import { resolveDefaultAgent } from './agents.ts'
+import { launchModel, resolveDefaultAgent, type AgentEndpoint } from './agents.ts'
+import { accountProblem, accountsOf, DEFAULT_ACCOUNT_ID, resolveLaunchAccount, type AgentAccount } from './accounts.ts'
 import { accessRefusalForPhone, type AccessRefusal } from './cfAccess.ts'
-import { isCodingCliId, type CodingCliId } from './codingClis.ts'
+import { capsFor, cliFor, isClaudeCode, isCodingCliId, type CodingCliId } from './codingClis.ts'
+import { MODEL_OPTIONS, modelLabel } from './launch.ts'
 import { isInside, normalizePath, pathKey, type PathRules } from './paths.ts'
 
 /** What the phone shows for a session, distinct from the CLI's own vocabulary. */
@@ -668,6 +670,190 @@ export function phoneHostDefaults(
     effort: d.effort,
     cli: resolveDefaultAgent(defaultCli, agentIds.filter(isCodingCliId))
   }
+}
+
+/* ------------------------------------------- what each agent takes, per launch */
+
+/*
+ * The New session sheet's confirm step drew Claude Code's four permission
+ * modes, five models and six efforts for EVERY start, and hid them only for an
+ * agent other than Claude — so a Codex start showed nothing of the model it
+ * would run, and a Claude start offered a list the desktop's launcher had
+ * outgrown (no 1M variants). `/api/host` now serves each agent's own choices
+ * (`choices`, phone contract point 2), built here from the same facts a launch
+ * reads, and `POST /api/sessions` holds a start to them (`phoneLaunchVerdict`).
+ */
+
+/** One chip on the confirm step. */
+export interface PhoneChoice {
+  id: string
+  label: string
+  /** A line under the group while this one is picked (a permission mode's meaning). */
+  hint?: string
+  /** Why this one cannot start right now (an account with no key); the chip is drawn disabled. */
+  problem?: string
+}
+
+/** What one agent takes when the phone starts it (`/api/host` `choices[<agent id>]`). */
+export interface PhoneAgentChoices {
+  /** Permission modes the phone may offer, bypass never; empty when the agent takes none (`CLI_CAPS`). */
+  modes: PhoneChoice[]
+  /**
+   * The models. For Claude Code the aliases its `--model` accepts; for another
+   * agent the ONE model its launch will run (`launchModel`: its endpoint's, or
+   * its Default model where Stoke can pass one), which the phone shows and
+   * cannot change — it is Settings › Agents' to decide (`modelFixed`).
+   */
+  models: PhoneChoice[]
+  modelFixed: boolean
+  /** Effort levels; empty when the agent takes none. */
+  efforts: PhoneChoice[]
+  /** Default first, then the agent's own accounts (shared/accounts.ts). A picker only when more than one. */
+  accounts: PhoneChoice[]
+  /** The account a start that names none runs on (`resolveLaunchAccount`). */
+  account: string
+}
+
+/** Claude Code's permission modes as the phone offers them. Bypass is not here, and never will be. */
+export const PHONE_MODES: readonly PhoneChoice[] = [
+  { id: 'default', label: 'Ask', hint: 'Asks before each tool use.' },
+  { id: 'plan', label: 'Plan', hint: 'Researches and proposes; touches no files.' },
+  { id: 'acceptEdits', label: 'Edits', hint: 'File edits apply; other tools still ask.' },
+  { id: 'auto', label: 'Auto', hint: 'Decides when to ask by how risky the action is.' }
+]
+
+/** `--effort`'s levels, plus Default (no flag). */
+export const PHONE_EFFORTS: readonly PhoneChoice[] = [
+  { id: 'default', label: 'Default' },
+  { id: 'low', label: 'Low' },
+  { id: 'medium', label: 'Medium' },
+  { id: 'high', label: 'High' },
+  { id: 'xhigh', label: 'Extra high' },
+  { id: 'max', label: 'Max' }
+]
+
+/** What the launch reads, per agent — settings as they are, read per call (gotcha 111). */
+export interface PhoneLaunchFacts {
+  endpoints: Partial<Record<CodingCliId, AgentEndpoint>>
+  accounts: Record<string, AgentAccount>
+  defaultAccount: Partial<Record<CodingCliId, string>>
+  /** The desktop's default Claude model (`settings.defaults.model`), offered even when it is no alias. */
+  defaultModel: string
+}
+
+/** One agent's choices. */
+export function agentChoicesFor(id: CodingCliId, facts: PhoneLaunchFacts): PhoneAgentChoices {
+  const caps = capsFor(id)
+  const claude = isClaudeCode(id)
+  let models: PhoneChoice[]
+  if (claude) {
+    models = MODEL_OPTIONS.map((m) => ({ id: m.id, label: m.label }))
+    const d = facts.defaultModel.trim()
+    if (d && !models.some((m) => m.id === d)) models.push({ id: d, label: modelLabel(d) })
+  } else {
+    const m = launchModel(id, facts.endpoints[id])
+    models = [{ id: m, label: m || `Chosen by ${cliFor(id).label}` }]
+  }
+  const mode = claude ? 'default' : (facts.endpoints[id]?.mode ?? 'default')
+  const accounts: PhoneChoice[] = [{ id: DEFAULT_ACCOUNT_ID, label: 'Default' }]
+  for (const a of accountsOf(id, facts.accounts)) {
+    const problem = accountProblem(a, mode)
+    accounts.push(problem ? { id: a.id, label: a.label, problem } : { id: a.id, label: a.label })
+  }
+  const resolved = resolveLaunchAccount({ cli: id, requested: null, accounts: facts.accounts, defaults: facts.defaultAccount })
+  return {
+    modes: caps.launchFlags.permissionMode ? PHONE_MODES.map((m) => ({ ...m })) : [],
+    models,
+    modelFixed: !claude,
+    efforts: caps.launchFlags.effort ? PHONE_EFFORTS.map((e) => ({ ...e })) : [],
+    accounts,
+    account: resolved.ok ? resolved.accountId : DEFAULT_ACCOUNT_ID
+  }
+}
+
+/**
+ * Every offered agent's choices, keyed by id, and always Claude Code's — a
+ * start that names no agent (a Resume, an older phone) is Claude's. Ids this
+ * build does not know are skipped.
+ */
+export function phoneAgentChoices(agentIds: readonly string[], facts: PhoneLaunchFacts): Record<string, PhoneAgentChoices> {
+  const out: Record<string, PhoneAgentChoices> = {}
+  for (const id of ['claude', ...agentIds]) {
+    if (isCodingCliId(id) && !out[id]) out[id] = agentChoicesFor(id, facts)
+  }
+  return out
+}
+
+/**
+ * A remote machine's start: Claude Code on the far side, run by the host's own
+ * command with nothing added (gotcha 19) — so no mode, model, effort or
+ * account the phone could pick would reach it.
+ */
+export function hostChoices(): PhoneAgentChoices {
+  return {
+    modes: [],
+    models: [{ id: '', label: 'The remote machine’s own' }],
+    modelFixed: true,
+    efforts: [],
+    accounts: [{ id: DEFAULT_ACCOUNT_ID, label: 'Default' }],
+    account: DEFAULT_ACCOUNT_ID
+  }
+}
+
+export type PhoneLaunchVerdict =
+  | { ok: true; permissionMode: PermissionMode; model: string; effort: EffortLevel; accountId: string | undefined }
+  | { ok: false; status: 400; error: string }
+
+/**
+ * Whether a phone's start asks only for what this agent takes, and what it runs
+ * with. Held in main, from the same choices `/api/host` served — the phone's
+ * sheet is a convenience, never the check. `label` names the agent in a refusal.
+ *
+ * Absent values are the agent's defaults. For an agent that takes no mode or
+ * effort, only `default` (or nothing) passes; for one whose model is fixed,
+ * only that model (or nothing). An account must be one of this agent's, and
+ * one that can start: a key account with no key is refused here with its own
+ * sentence instead of a bare 500 from the launch. Bypass is refused before
+ * this, with its own 403.
+ */
+export function phoneLaunchVerdict(
+  body: { permissionMode?: unknown; model?: unknown; effort?: unknown; accountId?: unknown } | null,
+  choices: PhoneAgentChoices,
+  label: string
+): PhoneLaunchVerdict {
+  const bad = (error: string): PhoneLaunchVerdict => ({ ok: false, status: 400, error })
+  const given = (v: unknown): boolean => v !== undefined && v !== null
+  const mode = given(body?.permissionMode) ? body?.permissionMode : 'default'
+  if (typeof mode !== 'string') return bad('permissionMode must be a string.')
+  if (choices.modes.length) {
+    if (!choices.modes.some((m) => m.id === mode)) return bad('That permission mode is not one Stoke offers the phone.')
+  } else if (mode !== 'default') return bad(`${label} takes no permission mode from Stoke.`)
+
+  const effort = given(body?.effort) ? body?.effort : 'default'
+  if (typeof effort !== 'string') return bad('effort must be a string.')
+  if (choices.efforts.length) {
+    if (!choices.efforts.some((e) => e.id === effort)) return bad('That effort is not one Stoke offers.')
+  } else if (effort !== 'default') return bad(`${label} takes no effort level from Stoke.`)
+
+  const model = given(body?.model) ? body?.model : ''
+  if (typeof model !== 'string') return bad('model must be a string.')
+  let runs = model
+  if (choices.modelFixed) {
+    const fixed = choices.models[0]?.id ?? ''
+    if (model !== '' && model !== fixed) {
+      return bad(`${label} runs ${choices.models[0]?.label ?? 'its own model'}, set in Stoke’s Settings › Agents; the phone cannot change it.`)
+    }
+    // The launch reads the agent's own model from settings; nothing is passed.
+    runs = ''
+  } else if (!choices.models.some((m) => m.id === model)) return bad('That model is not one Stoke offers.')
+
+  const asked = body?.accountId
+  if (given(asked) && typeof asked !== 'string') return bad('accountId must be a string.')
+  const accountId = typeof asked === 'string' && asked !== '' ? asked : undefined
+  const pick = choices.accounts.find((a) => a.id === (accountId ?? choices.account))
+  if (accountId !== undefined && !pick) return bad(`That account is not one of ${label}’s.`)
+  if (pick?.problem) return bad(pick.problem)
+  return { ok: true, permissionMode: mode as PermissionMode, model: runs, effort: effort as EffortLevel, accountId }
 }
 
 /* ------------------------------------------------ folders a phone may reach */

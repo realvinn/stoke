@@ -55,8 +55,14 @@ import {
   splitMarkdown,
   statusPill,
   submitText,
+  initialPicks,
+  phoneChoicesFor,
+  showsAccountPicker,
+  startFields,
+  startProblem,
   type ResizeInput
 } from '../src/shared/phoneUi.ts'
+import type { PhoneAgentChoices } from '../src/shared/remotePhone.ts'
 
 let failures = 0
 
@@ -696,6 +702,67 @@ console.log("\nthe New session sheet's agent (defaults.cli)")
   check('an older desktop sends no cli: the first agent, as before', initialAgent(offered, undefined), 'claude')
   check('no Claude on offer: the first agent that is', initialAgent([{ id: 'codex' }, { id: 'pi' }], undefined), 'codex')
   check('nothing on offer at all: Claude Code, never an empty agent', initialAgent([], 'codex'), 'claude')
+}
+
+/*
+ * The confirm step drew Claude's modes, models and efforts whatever the agent,
+ * and sent them only for Claude — so a Codex start never said which model it
+ * would run. It now draws what `/api/host`'s `choices` says the agent takes,
+ * and sends only that (`startFields`), which main holds it to.
+ */
+console.log("\nthe confirm step shows what the chosen agent takes (choices)")
+{
+  const served: Record<string, PhoneAgentChoices> = {
+    claude: phoneChoicesFor(undefined, 'claude', { defaultModel: 'opus' }),
+    codex: {
+      modes: [],
+      models: [{ id: 'gpt-6.1-sol', label: 'gpt-6.1-sol' }],
+      modelFixed: true,
+      efforts: [],
+      accounts: [
+        { id: 'default', label: 'Default' },
+        { id: 'codex-work', label: 'Work' },
+        { id: 'codex-spare', label: 'Spare', problem: 'Spare has no key yet.' }
+      ],
+      account: 'codex-work'
+    }
+  }
+  const d = { permissionMode: 'plan', model: 'opus', effort: 'high' }
+  const claude = phoneChoicesFor(served, 'claude')
+  const codex = phoneChoicesFor(served, 'codex')
+  check("Claude opens on the desktop's defaults", initialPicks(claude, d), { mode: 'plan', model: 'opus', effort: 'high', account: 'default' })
+  check(
+    "Codex opens on its own model and its default account — never Claude's model or mode",
+    initialPicks(codex, d),
+    { mode: 'default', model: 'gpt-6.1-sol', effort: 'default', account: 'codex-work' }
+  )
+  check(
+    'a Claude start sends mode, model and effort, and no cli (Claude is the default)',
+    startFields('claude', claude, initialPicks(claude, d)),
+    { permissionMode: 'plan', model: 'opus', effort: 'high' }
+  )
+  check(
+    'a Codex start sends its agent and its account, and none of Claude’s chips',
+    startFields('codex', codex, initialPicks(codex, d)),
+    { cli: 'codex', accountId: 'codex-work' }
+  )
+  check('the account picker shows only with more than Default', [showsAccountPicker(codex), showsAccountPicker(claude)], [true, false])
+  check(
+    'an account that cannot start turns Start off, with its reason',
+    [startProblem(codex, { ...initialPicks(codex, d), account: 'codex-spare' }), startProblem(codex, initialPicks(codex, d))],
+    ['Spare has no key yet.', null]
+  )
+  const host = phoneChoicesFor(served, 'claude', { host: true })
+  check(
+    'a remote machine: no chips at all, and nothing but where it runs is sent (gotcha 19)',
+    [host.modes.length, host.efforts.length, host.modelFixed, startFields('claude', host, initialPicks(host, d), true)],
+    [0, 0, true, {}]
+  )
+  check(
+    "a desktop too old to serve choices: Claude's own lists (1M included), and another agent shows its model as its own",
+    [phoneChoicesFor(undefined, 'claude').models.length, phoneChoicesFor(undefined, 'codex').models, phoneChoicesFor(undefined, 'codex').modes.length],
+    [8, [{ id: '', label: 'Chosen by Codex CLI' }], 0]
+  )
 }
 
 /*

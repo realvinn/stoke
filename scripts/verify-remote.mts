@@ -30,6 +30,12 @@ import {
   accessRefusalMessage,
   mayStoreKeyCookie,
   phoneHostDefaults,
+  agentChoicesFor,
+  hostChoices,
+  phoneAgentChoices,
+  phoneLaunchVerdict,
+  type PhoneAgentChoices,
+  type PhoneLaunchFacts,
   refusalStatusLine,
   remoteRefusal,
   phoneStatusFor,
@@ -57,6 +63,7 @@ import {
   type FolderBase
 } from '../src/shared/remotePhone.ts'
 import { isInside, pathRulesFor } from '../src/shared/paths.ts'
+import { CLI_CAPS } from '../src/shared/codingClis.ts'
 import { browseRemoteFolder, listSubfolders, resolveFolderBases } from '../src/main/remote/folders.ts'
 import { createServer, type Server } from 'node:http'
 import { join } from 'node:path'
@@ -1003,6 +1010,97 @@ console.log("\n/api/host's defaults (phone contract point 2)")
   )
   check('with no Claude on offer, the first agent that is', phoneHostDefaults(d, 'grok', ['codex', 'opencode']).cli, 'codex')
   check('an agent list carrying junk ids cannot become the default', phoneHostDefaults(d, 'grok', ['bash', 'codex']).cli, 'codex')
+}
+
+/*
+ * What each agent takes (`/api/host` `choices`, `POST /api/sessions`'s
+ * `phoneLaunchVerdict`). The phone drew Claude's modes, models and efforts for
+ * every start, and hid them for any other agent without saying what it would
+ * run; the server accepted any model string for Claude (straight to argv) and
+ * any mode for Codex (dropped silently). Both halves are held here.
+ */
+console.log("\n/api/host's choices per agent, and the start held to them (phone contract points 2, 8)")
+{
+  const home = '/Users/v/.stoke/accounts'
+  const facts: PhoneLaunchFacts = {
+    endpoints: {
+      codex: { mode: 'default', model: 'gpt-6.1-sol', baseUrl: '', apiKey: '' },
+      grok: { mode: 'openrouter', model: 'x-ai/grok-5', baseUrl: '', apiKey: '' }
+    },
+    accounts: {
+      'codex-work': { id: 'codex-work', cli: 'codex', label: 'Work', kind: 'login', home: `${home}/codex-work`, apiKey: '' },
+      'grok-spare': { id: 'grok-spare', cli: 'grok', label: 'Spare', kind: 'key', apiKey: '', home: '' },
+      'claude-2': { id: 'claude-2', cli: 'claude', label: 'Second', kind: 'login', home: `${home}/claude-2`, apiKey: '' }
+    },
+    defaultAccount: { codex: 'codex-work' },
+    defaultModel: 'claude-opus-5[1m]'
+  }
+  const all = phoneAgentChoices(['claude', 'codex', 'grok', 'aider', 'bash'], facts)
+  check('keyed by every offered agent this build knows, junk ids skipped', Object.keys(all), ['claude', 'codex', 'grok', 'aider'])
+  check('Claude Code is always there, even when the offer names no Claude', Object.keys(phoneAgentChoices(['codex'], facts)), ['claude', 'codex'])
+  const claude = all.claude
+  check("Claude's modes: the four the phone may offer, never bypass", claude.modes.map((m) => m.id), ['default', 'plan', 'acceptEdits', 'auto'])
+  check(
+    "Claude's models: the launcher's alias list, 1M variants included, plus the desktop's own default model when it is no alias",
+    claude.models.map((m) => m.id),
+    ['', 'opus', 'opus[1m]', 'sonnet', 'sonnet[1m]', 'haiku', 'fable', 'fable[1m]', 'claude-opus-5[1m]']
+  )
+  check("…and they are Claude's to choose", claude.modelFixed, false)
+  check("Claude's efforts", claude.efforts.map((e) => e.id), ['default', 'low', 'medium', 'high', 'xhigh', 'max'])
+  check('Claude with a second account: Default first, then it', claude.accounts.map((a) => a.id), ['default', 'claude-2'])
+  const codex = all.codex
+  check(
+    "Codex: no permission mode, no effort (CLI_CAPS says it takes neither)",
+    [codex.modes.length, codex.efforts.length, CLI_CAPS.codex.launchFlags.permissionMode, CLI_CAPS.codex.launchFlags.effort],
+    [0, 0, false, false]
+  )
+  check("Codex: the one model its launch runs — its Default model — and fixed", [codex.models, codex.modelFixed], [[{ id: 'gpt-6.1-sol', label: 'gpt-6.1-sol' }], true])
+  check("Codex's account picker: Default and Work, and a start naming none is Work (its default account)", [codex.accounts.map((a) => a.id), codex.account], [['default', 'codex-work'], 'codex-work'])
+  check("Grok on OpenRouter: the endpoint's model", all.grok.models[0].id, 'x-ai/grok-5')
+  check(
+    'a key account beside an endpoint that brings its own key is listed with its reason, never silently offered',
+    all.grok.accounts.map((a) => [a.id, typeof a.problem === 'string']),
+    [['default', false], ['grok-spare', true]]
+  )
+  check('an agent with no model flag and no endpoint: its own choice, said so', all.aider.models, [{ id: '', label: 'Chosen by Aider' }])
+  check('with no accounts there is no picker', all.aider.accounts.map((a) => a.id), ['default'])
+  check('only ids, labels, hints, models and reasons leave: no home, no key', JSON.stringify(all).includes(home) || JSON.stringify(all).includes('apiKey'), false)
+
+  const verdict = (body: Record<string, unknown> | null, c: PhoneAgentChoices, label = 'Codex CLI') => {
+    const v = phoneLaunchVerdict(body, c, label)
+    return v.ok ? [v.permissionMode, v.model, v.effort, v.accountId ?? null] : [v.status, v.error]
+  }
+  check('Claude: nothing asked is the defaults', verdict(null, claude, 'Claude Code'), ['default', '', 'default', null])
+  check('Claude: a listed mode, model and effort pass as asked', verdict({ permissionMode: 'plan', model: 'opus[1m]', effort: 'xhigh' }, claude), ['plan', 'opus[1m]', 'xhigh', null])
+  check("Claude: the desktop's own default model passes", verdict({ model: 'claude-opus-5[1m]' }, claude)[1], 'claude-opus-5[1m]')
+  check('Claude: a model that is no offered alias is refused (it went to argv as it came)', verdict({ model: 'opus --dangerously-skip-permissions' }, claude)[0], 400)
+  check('Claude: an effort off the list is refused', verdict({ effort: 'ultra' }, claude)[0], 400)
+  check('Claude: a mode off the list is refused', verdict({ permissionMode: 'dontAsk' }, claude)[0], 400)
+  check('Claude: a non-string value is refused', verdict({ model: 7 }, claude)[0], 400)
+  check('Codex: nothing asked runs its own model on its default account (main resolves it)', verdict({}, codex), ['default', '', 'default', null])
+  check("Codex: its own model named back is fine, and passes nothing (the launch reads settings)", verdict({ model: 'gpt-6.1-sol' }, codex), ['default', '', 'default', null])
+  check(
+    'Codex: a permission mode is refused, with who takes none',
+    verdict({ permissionMode: 'plan' }, codex),
+    [400, 'Codex CLI takes no permission mode from Stoke.']
+  )
+  check('Codex: `default` as the mode (what an older phone sent for Claude) is not a request', verdict({ permissionMode: 'default', effort: 'default' }, codex)[0], 'default')
+  check('Codex: an effort is refused', verdict({ effort: 'high' }, codex)[0], 400)
+  check('Codex: another model is refused, naming the one it runs', verdict({ model: 'gpt-5' }, codex), [400, 'Codex CLI runs gpt-6.1-sol, set in Stoke’s Settings › Agents; the phone cannot change it.'])
+  check('Codex: its own account and Default pass', [verdict({ accountId: 'codex-work' }, codex)[3], verdict({ accountId: 'default' }, codex)[3]], ['codex-work', 'default'])
+  check("Codex: another agent's account is refused", verdict({ accountId: 'claude-2' }, codex), [400, 'That account is not one of Codex CLI’s.'])
+  check('an account id that is junk is refused, not shape-checked and dropped', verdict({ accountId: '../../x' }, codex)[0], 400)
+  check(
+    "Grok: its key account with no key — or beside OpenRouter — is a 400 with that account's own sentence",
+    verdict({ accountId: 'grok-spare' }, all.grok, 'Grok Build')[0],
+    400
+  )
+  const spareDefault = agentChoicesFor('grok', { ...facts, defaultAccount: { grok: 'grok-spare' } })
+  check('and a start naming none, whose default account cannot start, is refused the same way', verdict({}, spareDefault, 'Grok Build')[0], 400)
+  const host = hostChoices()
+  check("a remote machine takes nothing the phone could pick (gotcha 19)", [host.modes.length, host.efforts.length, host.modelFixed, host.accounts.map((a) => a.id)], [0, 0, true, ['default']])
+  check('a remote start with a mode is refused', verdict({ permissionMode: 'plan' }, host, 'A remote machine')[0], 400)
+  check('a remote start with nothing extra passes', verdict({}, host, 'A remote machine'), ['default', '', 'default', null])
 }
 
 /*

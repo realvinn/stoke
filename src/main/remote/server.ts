@@ -42,7 +42,11 @@ import {
   answerVerdict,
   isGatedRemotePath,
   mayStoreKeyCookie,
+  phoneAgentChoices,
   phoneHostDefaults,
+  phoneLaunchVerdict,
+  hostChoices,
+  type PhoneLaunchFacts,
   refusalStatusLine,
   remoteRefusal,
   type RemoteAuthVerdict,
@@ -105,7 +109,13 @@ export type { ConnectTarget, Reach } from './link.ts'
  *    (`[{id,name}]`, installed + chosen, Claude first), `defaults`
  *    (`{permissionMode,model,effort,cli}` — bypass is never offered; `cli` is
  *    the desktop's default agent, always one of `agents` when any is listed),
- *    and a hostname with no `.local`/`.localdomain` suffix.
+ *    and a hostname with no `.local`/`.localdomain` suffix. `choices` (added,
+ *    nothing renamed) is each offered agent's own confirm step, keyed by id and
+ *    always including `claude` (`phoneAgentChoices`): `{modes, models,
+ *    modelFixed, efforts, accounts, account}`, each a list of `{id, label,
+ *    hint?, problem?}` — empty where `CLI_CAPS` says the agent takes none, the
+ *    one model another agent's launch will run with `modelFixed`, and Default
+ *    first in `accounts`.
  * 3. `GET /api/sessions` rows add `status`, `waitingFor`, `lastActivityAt`,
  *    `cli`, `agentName`, `project`, `title`, `endedAt`, `exitCode`. A session
  *    that exits on its own stays listed for `ENDED_RETENTION_MS` as `'ended'`
@@ -136,7 +146,11 @@ export type { ConnectTarget, Reach } from './link.ts'
  *    every new prompt, and when a later registry reading re-confirms one after
  *    input (`trackPrompt`).
  * 8. `POST /api/sessions` accepts `{cwd, cli?, permissionMode?, model?,
- *    effort?}`; `cli` must be an installed agent; bypass stays 403;
+ *    effort?, accountId?}`; `cli` must be an installed agent; bypass stays 403;
+ *    the rest must be what `choices[cli]` offers (`phoneLaunchVerdict`, 400 with
+ *    the reason otherwise): no mode or effort for an agent that takes none, no
+ *    model but its own for one whose model is fixed, an account of that agent's
+ *    that can start;
  *    `knownCwd` compares realpaths on both sides (F6), keyed by this OS's
  *    `pathKey` (case folds on macOS and Windows, never on Linux).
  *    Instead of `cwd` it takes `hostId` — an SSH host from Settings, looked up
@@ -208,6 +222,14 @@ export interface RemoteDeps {
    * `bypassPermissions` never is, and the agent is resolved against `agents`.
    */
   defaults: () => { permissionMode: PermissionMode; model: string; effort: EffortLevel; cli: CodingCliId }
+  /**
+   * What a launch reads per agent — endpoints, accounts, each agent's default
+   * account, the desktop's default Claude model — read per call (gotcha 111).
+   * `/api/host` turns it into `choices` and `POST /api/sessions` holds a start
+   * to them (`phoneAgentChoices`, `phoneLaunchVerdict`). Never a key: only
+   * the ids, labels and models those two need leave this process.
+   */
+  launchFacts: () => PhoneLaunchFacts
   sttStatus: () => Promise<'ready' | 'down' | 'off'>
   /**
    * A dictated clip to text, through `stt.ts` with the provider, key and
@@ -1127,7 +1149,11 @@ export class RemoteServer {
             platform: process.platform,
             stt,
             agents,
-            defaults: phoneHostDefaults(defaults, defaults.cli, agents.map((a) => a.id))
+            defaults: phoneHostDefaults(defaults, defaults.cli, agents.map((a) => a.id)),
+            choices: phoneAgentChoices(
+              agents.map((a) => a.id),
+              this.deps.launchFacts()
+            )
           },
           setCookie
         )
@@ -1392,6 +1418,27 @@ export class RemoteServer {
         }
 
         /*
+         * What the start asks the agent for must be what that agent takes
+         * (`choices`, phone contract points 2 and 8): Codex is handed no
+         * permission mode and runs the model Settings › Agents gives it, and a
+         * remote machine's `claude` takes nothing at all (gotcha 19). Read from
+         * settings on this request, the same facts `/api/host` served. The
+         * account is checked here too, so a key account with no key is a 400
+         * with its own sentence rather than a bare 500 from the launch.
+         */
+        if (host && body?.accountId !== undefined && body.accountId !== DEFAULT_ACCOUNT_ID) {
+          return this.json(res, { error: 'A remote machine starts on its own sign-in.' }, setCookie, 400)
+        }
+        const agentId = (cli ?? 'claude') as CodingCliId
+        const choices = host ? hostChoices() : phoneAgentChoices([agentId], this.deps.launchFacts())[agentId]
+        const launch = phoneLaunchVerdict(
+          body as Record<string, unknown> | null,
+          choices,
+          host ? 'A remote machine' : (CODING_CLIS.find((c) => c.id === agentId)?.label ?? agentId)
+        )
+        if (!launch.ok) return this.json(res, { error: launch.error }, setCookie, launch.status)
+
+        /*
          * One transcript, one `claude`. A Resume on a session that is running
          * in another pty (a desktop tab, another phone, this phone's own
          * previous Resume) used to start a second process on it: the desktop
@@ -1426,15 +1473,17 @@ export class RemoteServer {
 
         /*
          * The account to start on (shared/accounts.ts), when the phone names
-         * one: only an id's SHAPE is checked here. Main resolves it against
-         * settings and refuses one that is gone or belongs to another agent
-         * (`resolveLaunchAccount`) by throwing, which this route answers like
-         * any other launch refusal: a bare 500, the sentence in the log. Absent
-         * is the agent's default account, as on the desktop. An SSH start
-         * carries none.
+         * one: already held to this agent's own accounts above
+         * (`phoneLaunchVerdict`). Main resolves it against settings again and
+         * refuses one that went in between (`resolveLaunchAccount`) by
+         * throwing, which this route answers like any other launch refusal: a
+         * bare 500, the sentence in the log. Absent is the agent's default
+         * account, as on the desktop. An SSH start carries none.
          */
         const accountId =
-          !host && (body?.accountId === DEFAULT_ACCOUNT_ID || isAccountId(body?.accountId)) ? (body?.accountId as string) : undefined
+          !host && launch.accountId !== undefined && (launch.accountId === DEFAULT_ACCOUNT_ID || isAccountId(launch.accountId))
+            ? launch.accountId
+            : undefined
 
         const started = await this.deps.startSession({
           cwd,
@@ -1446,9 +1495,9 @@ export class RemoteServer {
           // would instead try to create a session that already exists.
           sessionId: resumeId ?? undefined,
           resume: resuming && resumeId !== null,
-          permissionMode: requested,
-          model: typeof body?.model === 'string' ? body.model : '',
-          effort: body?.effort ?? 'default',
+          permissionMode: launch.permissionMode,
+          model: launch.model,
+          effort: launch.effort,
           cols: 100,
           rows: 30
         })

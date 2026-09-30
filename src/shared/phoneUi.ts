@@ -10,7 +10,16 @@
 
 import { folderChoices, type FolderChoice, type FolderGroup, type HostLike, type ProjectLike } from './launcher.ts'
 import { basenameOf, pathKey, pathRulesFor } from './paths.ts'
-import { MAX_FOLDER_NAME, newFolderNameProblem, sortSessionRows, type PhoneSessionStatus } from './remotePhone.ts'
+import {
+  agentChoicesFor,
+  hostChoices,
+  MAX_FOLDER_NAME,
+  newFolderNameProblem,
+  sortSessionRows,
+  type PhoneAgentChoices,
+  type PhoneSessionStatus
+} from './remotePhone.ts'
+import { isCodingCliId } from './codingClis.ts'
 
 /* ------------------------------------------------------------ the list */
 
@@ -960,4 +969,77 @@ export { MAX_FOLDER_NAME, newFolderNameProblem }
 export function initialAgent(agents: readonly { id: string }[], defaultCli: string | undefined): string {
   if (defaultCli && agents.some((a) => a.id === defaultCli)) return defaultCli
   return agents[0]?.id ?? 'claude'
+}
+
+/* ------------------------------------------- the confirm step, per agent */
+
+/**
+ * The confirm step's choices for one agent: what `/api/host` served for it,
+ * or — from a desktop too old to serve `choices` — the table's own answer with
+ * no endpoint and no account (Claude's lists; another agent's model is its
+ * own). A remote machine always gets `hostChoices`: its `claude` takes nothing
+ * the phone could pick (gotcha 19).
+ */
+export function phoneChoicesFor(
+  served: Readonly<Record<string, PhoneAgentChoices>> | undefined,
+  cli: string,
+  opts: { host?: boolean; defaultModel?: string } = {}
+): PhoneAgentChoices {
+  if (opts.host) return hostChoices()
+  const hit = served?.[cli]
+  if (hit) return hit
+  const id = isCodingCliId(cli) ? cli : 'claude'
+  return agentChoicesFor(id, { endpoints: {}, accounts: {}, defaultAccount: {}, defaultModel: opts.defaultModel ?? '' })
+}
+
+/** What the confirm step has picked. */
+export interface PhonePicks {
+  mode: string
+  model: string
+  effort: string
+  account: string
+}
+
+/**
+ * The picks a sheet opens on: the desktop's defaults where this agent offers
+ * them (`/api/host`'s `defaults` are Claude's), else the agent's first — and
+ * the account a start naming none would run on.
+ */
+export function initialPicks(
+  c: PhoneAgentChoices,
+  defaults: { permissionMode?: string; model?: string; effort?: string } | undefined
+): PhonePicks {
+  const has = (list: readonly { id: string }[], v: string | undefined): v is string => v !== undefined && list.some((x) => x.id === v)
+  return {
+    mode: has(c.modes, defaults?.permissionMode) ? defaults.permissionMode : (c.modes[0]?.id ?? 'default'),
+    model: !c.modelFixed && has(c.models, defaults?.model) ? defaults.model : (c.models[0]?.id ?? ''),
+    effort: has(c.efforts, defaults?.effort) ? defaults.effort : (c.efforts[0]?.id ?? 'default'),
+    account: c.account
+  }
+}
+
+/** Whether the account picker shows: Default and at least one account of the agent's own. */
+export function showsAccountPicker(c: PhoneAgentChoices): boolean {
+  return c.accounts.length > 1
+}
+
+/** Why Start is off with these picks (the picked account cannot start), or null. */
+export function startProblem(c: PhoneAgentChoices, picks: PhonePicks): string | null {
+  return c.accounts.find((a) => a.id === picks.account)?.problem ?? null
+}
+
+/**
+ * What `POST /api/sessions` is sent beyond where it runs: only what this agent
+ * takes. No mode, effort or model for an agent that takes none (the server
+ * refuses one), and an account only when there was a choice to make — absent,
+ * main starts the agent's own default account, which is the same one.
+ */
+export function startFields(cli: string, c: PhoneAgentChoices, picks: PhonePicks, host = false): Record<string, string> {
+  const out: Record<string, string> = {}
+  if (!host && cli !== 'claude') out.cli = cli
+  if (c.modes.length) out.permissionMode = picks.mode
+  if (!c.modelFixed) out.model = picks.model
+  if (c.efforts.length) out.effort = picks.effort
+  if (showsAccountPicker(c)) out.accountId = picks.account
+  return out
 }

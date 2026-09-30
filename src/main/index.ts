@@ -1547,6 +1547,20 @@ function remoteDeps(): RemoteDeps {
         cli: s.agents.defaultCli
       }
     },
+    /**
+     * Per call (gotcha 111): an endpoint model or an account changed on the
+     * desktop is what the phone's next sheet shows, and what its next start
+     * is held to. `phoneAgentChoices` sends on ids, labels and models only.
+     */
+    launchFacts: () => {
+      const s = getSettings()
+      return {
+        endpoints: s.agents.endpoints,
+        accounts: s.accounts,
+        defaultAccount: s.agents.defaultAccount,
+        defaultModel: s.defaults.model
+      }
+    },
     sttStatus: async () => {
       const s = await sttStatusNow()
       return s === 'up' || s === 'ready' ? 'ready' : s
