@@ -97,6 +97,7 @@ import {
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
+import { gitBashPath } from '../src/main/statusLine.ts'
 
 let failures = 0
 
@@ -680,11 +681,19 @@ console.log('\ninstalling')
       'darwin'
     ) ?? ''
     ok('the synthetic script runs no table command', !/https:\/\//.test(fake))
-    const r = spawnSync('/bin/bash', ['-c', fake], { encoding: 'utf8', timeout: 20_000, cwd: tmpdir() })
+    // A POSIX script wants a POSIX bash. Windows has none at /bin/bash — the
+    // first Windows CI run died here reading `r.stdout` off an ENOENT — but it
+    // has Git Bash wherever Claude Code does, found the way the CLI finds it.
+    // None at all is a FAIL that says so, not a skip (gotcha 113).
+    const bash = process.platform === 'win32' ? gitBashPath() : '/bin/bash'
+    const r = bash ? spawnSync(bash, ['-c', fake], { encoding: 'utf8', timeout: 20_000, cwd: tmpdir() }) : null
+    const out = String(r?.stdout ?? '')
     ok(
       'a failed download fails its step, the next step still runs, and the script exits 1 naming it',
-      r.status === 1 && /Did not install:.*Unreachable/.test(r.stdout) && /Installing.*Harmless/s.test(r.stdout),
-      `status ${r.status}: ${JSON.stringify(r.stdout.slice(-240))}`
+      r?.status === 1 && /Did not install:.*Unreachable/.test(out) && /Installing.*Harmless/s.test(out),
+      r
+        ? `${bash}: status ${r.status}${r.error ? ` (${r.error.message})` : ''}: ${JSON.stringify(out.slice(-240))}`
+        : 'no bash here to run a POSIX script with'
     )
   }
   const win = installScript(['codex', 'copilot'], 'win32') ?? ''
@@ -752,9 +761,17 @@ console.log('\ninstalling')
    * synthetic one is EXECUTED, with `powershell.exe` stood in for by a
    * function. Synthetic steps only, never a table command (the rule above).
    */
-  const pwsh = [process.env.STOKE_PWSH, ...(process.env.PATH ?? '').split(delimiter).map((d) => d && join(d, 'pwsh'))].find(
+  // `pwsh.exe` on Windows: looking only for `pwsh` found none on the one OS
+  // guaranteed to have PowerShell, so the scripts went unparsed there.
+  const pwshName = process.platform === 'win32' ? 'pwsh.exe' : 'pwsh'
+  const pwsh = [process.env.STOKE_PWSH, ...(process.env.PATH ?? '').split(delimiter).map((d) => d && join(d, pwshName))].find(
     (p): p is string => !!p && existsSync(p)
   )
+  if (!pwsh && process.env.GITHUB_ACTIONS === 'true') {
+    // Every GitHub runner image ships PowerShell 7, so none here is a broken
+    // lookup rather than a machine without it (gotcha 113).
+    ok('a GitHub runner has PowerShell 7 to parse the Windows scripts with', false, `looked for ${pwshName} on PATH`)
+  }
   if (!pwsh) {
     console.log('  NOTE  no PowerShell here (set STOKE_PWSH to one): the Windows scripts are read above, not parsed or run. CI runs them.')
   } else {

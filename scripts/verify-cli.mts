@@ -58,8 +58,10 @@ function check(name: string, got: unknown, want: unknown): void {
   if (!ok) console.log(`        got:  ${JSON.stringify(got)}\n        want: ${JSON.stringify(want)}`)
 }
 
+const isWin = process.platform === 'win32'
 const sandbox = mkdtempSync(join(tmpdir(), 'stoke-verify-cli-'))
 const realHome = process.env.HOME
+const realProfile = process.env.USERPROFILE
 const realPath = process.env.PATH
 const realShell = process.env.SHELL
 
@@ -69,6 +71,10 @@ const realShell = process.env.SHELL
 // ---------------------------------------------------------------------------
 
 process.env.HOME = sandbox
+// os.homedir() reads USERPROFILE on Windows, never HOME, so until the first
+// Windows CI run this "hermetic" tree was the runner's own profile there and
+// every home-relative expectation below missed.
+if (isWin) process.env.USERPROFILE = sandbox
 delete process.env.MISE_DATA_DIR
 delete process.env.ASDF_DATA_DIR
 delete process.env.FNM_DIR
@@ -110,10 +116,15 @@ delete process.env.XDG_DATA_HOME
 
 // A shim dir has to outrank the system dirs, or a stale /usr/local/bin/claude
 // left by an older install would win over the one the user actually manages.
+// Windows has no /usr/local/bin; its stale copy is an old `npm i -g`, in npm's
+// global folder. Both indexes must be found: -1 < n would pass on a list that
+// holds neither (gotcha 113), which is how this check passed nowhere on Windows.
 const dirs = extraSearchDirs()
+const staleDir = isWin ? join(process.env.APPDATA ?? join(sandbox, 'AppData', 'Roaming'), 'npm') : '/usr/local/bin'
+const shimAt = dirs.indexOf(join(sandbox, '.local', 'share', 'mise', 'shims'))
 check(
-  'shim dirs are searched before /usr/local/bin',
-  dirs.indexOf(join(sandbox, '.local', 'share', 'mise', 'shims')) < dirs.indexOf('/usr/local/bin'),
+  `shim dirs are searched before ${isWin ? "npm's global folder" : '/usr/local/bin'}`,
+  shimAt !== -1 && dirs.indexOf(staleDir) !== -1 && shimAt < dirs.indexOf(staleDir),
   true
 )
 
@@ -187,8 +198,10 @@ check(
 
 const shims = join(sandbox, '.local', 'share', 'mise', 'shims')
 mkdirSync(shims, { recursive: true })
-const fake = join(shims, 'claude')
-writeFileSync(fake, '#!/bin/sh\necho "9.9.9 (Claude Code)"\n')
+// A .cmd on Windows, which is what a shim there is and what `spawnSpec` runs
+// through cmd.exe; a `#!/bin/sh` file is neither found nor runnable there.
+const fake = join(shims, isWin ? 'claude.cmd' : 'claude')
+writeFileSync(fake, isWin ? '@echo 9.9.9 (Claude Code)\r\n' : '#!/bin/sh\necho "9.9.9 (Claude Code)"\n')
 chmodSync(fake, 0o755)
 
 // An empty dir as PATH, so nothing the host machine happens to have installed
@@ -201,7 +214,15 @@ process.env.SHELL = join(sandbox, 'no-such-shell')
 
 const found = await findClaude(null)
 check('a failed login-shell probe no longer hides a version-manager install', found, fake)
-check('and the failure is recorded, so the message can name it', loginPathProbeFailed(), true)
+// Windows probes no login shell — its PATH is re-read from the registry
+// (gotcha 99) — so there is no failure to record, and none may be claimed.
+check(
+  isWin
+    ? 'on Windows no login shell is probed, so no probe failure is claimed'
+    : 'and the failure is recorded, so the message can name it',
+  loginPathProbeFailed(),
+  !isWin
+)
 
 // End to end, through the same --version call the CLI chip reads.
 const info = await probeClaude(null)
@@ -218,6 +239,7 @@ chmodSync(override, 0o755)
 check('an explicit path in Settings still outranks the search', await findClaude(override), override)
 
 process.env.HOME = realHome
+if (isWin) process.env.USERPROFILE = realProfile
 process.env.PATH = realPath
 process.env.SHELL = realShell
 
