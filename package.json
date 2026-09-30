@@ -78,6 +78,7 @@
     "dist:linux": "npm run build && node scripts/targets.mjs --build linux-x64",
     "targets": "node scripts/targets.mjs --list",
     "deploy:install": "npx --yes wrangler@4 deploy",
+    "deploy:hub-edge": "npx --yes wrangler@4 deploy -c wrangler.hub-edge.jsonc",
     "verify:theme-gen": "node --experimental-strip-types scripts/verify-theme-gen.mts"
   },
   "dependencies": {

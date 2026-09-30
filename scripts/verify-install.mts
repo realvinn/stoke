@@ -56,6 +56,9 @@ import {
   routeFor,
   type InstallerBody
 } from '../worker/route.ts'
+import { edgeTarget } from '../src/shared/hub/edge.ts'
+import { readHubResponse } from '../src/shared/hub/protocol.ts'
+import { forwardHttp } from '../worker/hub-edge.ts'
 import { parseStokeArgs, stokeHelp } from '../src/shared/stokeArgs.ts'
 import { LINUX_WRAPPER_MARK } from '../src/shared/stokeCommand.ts'
 import { shArtBlock, ps1ArtBlock, extractBlock } from './gen-installer-art.mts'
@@ -269,6 +272,159 @@ ok(
     /status:\s*301/.test(workerCode) &&
     /location:\s*secure/.test(workerCode)
 )
+
+// ---------------------------------------------------------------------------
+console.log('\nstoke.vinn.dev/hub/* is the hub edge Worker’s, and nothing the installer serves moved')
+// ---------------------------------------------------------------------------
+/*
+ * The hub (hub/, spec docs/superpowers/specs/2026-10-01-stoke-hub-selfhosted.md
+ * §2) is reached at https://stoke.vinn.dev/hub through a SECOND Worker on the
+ * route `stoke.vinn.dev/hub/*`, which Cloudflare runs before the hostname's
+ * custom-domain Worker. So the installer Worker is not changed at all — it
+ * still fetches nothing and holds no secret, which the checks above assert —
+ * and the only way this can go wrong is in configuration: the edge deployed
+ * under the installer's name (it would replace the installer), as a custom
+ * domain (it would take the whole hostname), or on a pattern that swallows an
+ * installer path. Every one of those is a line in a .jsonc, so they are held
+ * here, next to the matrix they would break. Cloudflare's own precedence
+ * (route before custom domain) is cited, not measured: nothing is deployed.
+ */
+function parseJsonc(text: string): any {
+  let out = ''
+  let inString = false
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]
+    if (inString) {
+      out += c
+      if (c === '\\') out += text[++i] ?? ''
+      else if (c === '"') inString = false
+    } else if (c === '"') {
+      inString = true
+      out += c
+    } else if (c === '/' && text[i + 1] === '/') {
+      while (i < text.length && text[i] !== '\n') i++
+      out += '\n'
+    } else if (c === '/' && text[i + 1] === '*') {
+      i = text.indexOf('*/', i + 2) + 1
+    } else out += c
+  }
+  return JSON.parse(out.replace(/,(\s*[}\]])/g, '$1'))
+}
+const installCfgText = readFileSync(join(root, 'wrangler.jsonc'), 'utf8')
+const installCfg = parseJsonc(installCfgText)
+const edgeCfg = parseJsonc(readFileSync(join(root, 'wrangler.hub-edge.jsonc'), 'utf8'))
+const edgeSource = readFileSync(join(root, 'worker', 'hub-edge.ts'), 'utf8')
+const edgeCode = edgeSource.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+check('the edge Worker has its own name, never the installer’s (deploying as stoke-install would replace it)', [edgeCfg.name, installCfg.name], ['stoke-hub-edge', 'stoke-install'])
+check('it deploys worker/hub-edge.ts', edgeCfg.main, 'worker/hub-edge.ts')
+check('on ONE route, stoke.vinn.dev/hub/*, in the vinn.dev zone', edgeCfg.routes, [{ pattern: 'stoke.vinn.dev/hub/*', zone_name: 'vinn.dev' }])
+ok('never as a custom domain, which would take the whole hostname from the installer', !(edgeCfg.routes ?? []).some((r: any) => r.custom_domain))
+check('the installer is still the custom domain stoke.vinn.dev, serving worker/index.ts', [installCfg.routes, installCfg.main], [[{ pattern: 'stoke.vinn.dev', custom_domain: true }], 'worker/index.ts'])
+const HUB_ORIGIN = edgeCfg.vars?.HUB_ORIGIN as string
+ok('the origin is an https tunnel hostname that is not stoke.vinn.dev itself (that would loop)', /^https:\/\//.test(HUB_ORIGIN ?? '') && new URL(HUB_ORIGIN).host !== 'stoke.vinn.dev', HUB_ORIGIN)
+ok('the edge secret is not a var in the file (wrangler secret put)', !('HUB_EDGE_SECRET' in (edgeCfg.vars ?? {})))
+ok('the installer Worker, its routing and its config never mention the hub', !/HUB_EDGE_SECRET|HUB_ORIGIN|hub-edge|shared\/hub/.test(workerCode + readFileSync(join(root, 'worker', 'route.ts'), 'utf8') + installCfgText))
+ok('the edge imports no installer body, so deploying it can never change what curl | sh runs', !/install\/|\.sh'|\.ps1'|\.html'/.test(edgeCode))
+ok('it sends WebSocket upgrades to the bridge, which answers 101 from a WebSocketPair', /upgrade[\s\S]*forwardSocket/.test(edgeCode) && /WebSocketPair/.test(edgeCode) && /status:\s*101/.test(edgeCode))
+
+console.log('\n  who answers which URL once both Workers are deployed')
+/*
+ * Cloudflare's route pattern `stoke.vinn.dev/hub/*`: this host, a path that
+ * starts `/hub/` (the `*` is the rest, possibly empty), query not considered.
+ * What it matches goes to the edge Worker, whose own `edgeTarget` must then
+ * forward it with path and query intact (a device's signature covers both);
+ * what it does not match goes to the installer, whose answer must be what it
+ * was before the hub existed.
+ */
+const routeTakes = (url: string): boolean => {
+  const u = new URL(url)
+  return u.host === 'stoke.vinn.dev' && u.pathname.startsWith('/hub/')
+}
+const ORIGIN = 'https://hub-origin.vinn.dev'
+const HUB_MATRIX: [string, 'edge' | InstallerBody, Record<string, string>][] = [
+  ['https://stoke.vinn.dev/', 'sh', { 'user-agent': CURL }],
+  ['https://stoke.vinn.dev/', 'html', { 'user-agent': CHROME, 'sec-fetch-mode': 'navigate' }],
+  ['https://stoke.vinn.dev/?sh', 'sh', {}],
+  ['https://stoke.vinn.dev/install.sh', 'sh', {}],
+  ['https://stoke.vinn.dev/install.ps1', 'ps1', {}],
+  ['https://stoke.vinn.dev/', 'ps1', { 'user-agent': PWSH7 }],
+  ['https://stoke.vinn.dev/hub', 'html', { 'user-agent': CHROME, 'sec-fetch-mode': 'navigate' }],
+  ['https://stoke.vinn.dev/hubba', 'html', {}],
+  ['https://stoke.vinn.dev/hub/', 'edge', {}],
+  ['https://stoke.vinn.dev/hub/v1/health', 'edge', { 'user-agent': CURL }],
+  ['https://stoke.vinn.dev/hub/v1/items?since=3&limit=500', 'edge', {}],
+  ['https://stoke.vinn.dev/hub/v1/ws/presence', 'edge', { upgrade: 'websocket' }],
+  ['https://stoke.vinn.dev/hub/v1/pair/pabc/reveal', 'edge', {}]
+]
+for (const [url, want, headers] of HUB_MATRIX) {
+  const u = new URL(url)
+  if (want === 'edge') {
+    check(`${u.pathname}${u.search}: the edge Worker, forwarded with path and query intact`, [routeTakes(url), edgeTarget(url, ORIGIN)], [true, `${ORIGIN}${u.pathname}${u.search}`])
+  } else {
+    check(`${u.pathname}${u.search}${headers['user-agent'] ? ` (${headers['user-agent'].split(/[/ ]/)[0]})` : ''}: still the installer's ${want}`, [routeTakes(url), edgeTarget(url, ORIGIN), routeFor(url, headers).body], [false, null, want])
+  }
+}
+
+console.log('\n  what the edge Worker sends, and what it refuses (worker/hub-edge.ts, run under node)')
+{
+  const calls: { input: string; init: RequestInit }[] = []
+  const stub = async (input: string, init: RequestInit): Promise<Response> => {
+    calls.push({ input, init })
+    return new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } })
+  }
+  const SECRET = 'e'.repeat(43)
+  const env = { HUB_ORIGIN: ORIGIN, HUB_EDGE_SECRET: SECRET }
+  const body = '{"email":"a@b.co","password":"not a real one"}'
+  const r = await forwardHttp(
+    new Request('https://stoke.vinn.dev/hub/v1/auth/login?x=1', {
+      method: 'POST',
+      body,
+      headers: {
+        'content-type': 'application/json',
+        authorization: 'Bearer sht_x',
+        'x-stoke-sig': 'sig',
+        'x-stoke-hub-edge': 'forged-by-the-client',
+        'x-stoke-client-ip': '6.6.6.6',
+        'cf-connecting-ip': '203.0.113.5',
+        connection: 'keep-alive',
+        'keep-alive': 'timeout=5',
+        host: 'stoke.vinn.dev'
+      }
+    }),
+    env,
+    stub
+  )
+  const sent = calls[0]
+  const h = (sent?.init.headers ?? []) as [string, string][]
+  const all = (name: string): string[] => h.filter(([k]) => k === name).map(([, v]) => v)
+  check('it forwards to the origin with the path and query exactly as sent', [r.status, calls.length, sent?.input, sent?.init.method], [200, 1, `${ORIGIN}/hub/v1/auth/login?x=1`, 'POST'])
+  check('the body crosses byte for byte', sent ? Buffer.from(sent.init.body as ArrayBuffer).toString('utf8') : null, body)
+  check('the secret is added once, and the client’s own copy dropped', all('x-stoke-hub-edge'), [SECRET])
+  check('the client IP is Cloudflare’s reading, never the client’s claim', all('x-stoke-client-ip'), ['203.0.113.5'])
+  check('the signature and the bearer pass through untouched', [all('authorization'), all('x-stoke-sig')], [['Bearer sht_x'], ['sig']])
+  check('hop-by-hop headers, host and content-length are not forwarded', ['connection', 'keep-alive', 'host', 'content-length'].map((k) => all(k).length), [0, 0, 0, 0])
+  const refusals: [string, Request, Record<string, string | undefined>, number, string][] = [
+    ['plain http (a token must not cross in the clear)', new Request('http://stoke.vinn.dev/hub/v1/health'), env, 403, 'forbidden'],
+    ['a path outside /hub/ (a route is a pattern, not a promise)', new Request('https://stoke.vinn.dev/install.sh'), env, 404, 'not-found'],
+    ['no secret configured', new Request('https://stoke.vinn.dev/hub/v1/health'), { HUB_ORIGIN: ORIGIN }, 503, 'server-error'],
+    ['a secret shorter than the hub accepts', new Request('https://stoke.vinn.dev/hub/v1/health'), { HUB_ORIGIN: ORIGIN, HUB_EDGE_SECRET: 'short' }, 503, 'server-error'],
+    ['an http origin on the internet', new Request('https://stoke.vinn.dev/hub/v1/health'), { HUB_ORIGIN: 'http://hub-origin.vinn.dev', HUB_EDGE_SECRET: SECRET }, 503, 'server-error'],
+    ['an origin that is this Worker’s own hostname (a loop)', new Request('https://stoke.vinn.dev/hub/v1/health'), { HUB_ORIGIN: 'https://stoke.vinn.dev', HUB_EDGE_SECRET: SECRET }, 503, 'server-error'],
+    ['a method the hub has no route for', new Request('https://stoke.vinn.dev/hub/v1/items', { method: 'PUT', body: '{}' }), env, 404, 'not-found'],
+    ['a body over 1 MiB', new Request('https://stoke.vinn.dev/hub/v1/items', { method: 'POST', body: 'x'.repeat(1024 * 1024 + 1) }), env, 413, 'too-large']
+  ]
+  for (const [name, req, e, status, code] of refusals) {
+    const before = calls.length
+    const res = await forwardHttp(req, e, stub)
+    const read = readHubResponse(res.status, res.headers.get('content-type'), await res.text())
+    check(`refuses ${name}, as a hub error, forwarding nothing`, [res.status, !read.ok && read.error.error, calls.length - before], [status, code, 0])
+  }
+  const down = await forwardHttp(new Request('https://stoke.vinn.dev/hub/v1/health'), env, async () => {
+    throw new TypeError('fetch failed')
+  })
+  const downRead = readHubResponse(down.status, down.headers.get('content-type'), await down.text())
+  check('an origin that does not answer is a 502 a Stoke can read', [down.status, !downRead.ok && downRead.error.error], [502, 'server-error'])
+}
 
 // ---------------------------------------------------------------------------
 console.log('\nthe truncation guard')
