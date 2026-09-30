@@ -13,7 +13,7 @@ import type { RegistryStatus } from './claudeRegistry.ts'
 import type { EffortLevel, PermissionMode } from './types.ts'
 import { resolveDefaultAgent } from './agents.ts'
 import { isCodingCliId, type CodingCliId } from './codingClis.ts'
-import { isInside, normalizePath, type PathRules } from './paths.ts'
+import { isInside, normalizePath, pathKey, type PathRules } from './paths.ts'
 
 /** What the phone shows for a session, distinct from the CLI's own vocabulary. */
 export type PhoneSessionStatus = 'waiting' | 'busy' | 'idle' | 'ended' | 'unknown'
@@ -563,7 +563,8 @@ export function phoneHostDefaults(
  * the folder holding a known project — never anywhere else on the disk. The
  * bearer key is the whole defence (Cloudflare Access is checked for presence
  * only, never verified — `RemoteConfig.requireAccessHeader`), so a leaked key
- * must not become "list and create folders anywhere".
+ * must not become "list and create folders anywhere" — nor able to get there a
+ * folder at a time by adding the places themselves (`remoteFolderBases`).
  */
 
 /** Why a folder is reachable: which of the three places it is under. */
@@ -603,6 +604,12 @@ export function parentFolder(p: string, rules: PathRules): string {
   return n.slice(0, cut) || rules.sep
 }
 
+/** `p` normalised when it may be a place — absolute and deep enough — else ''. */
+function placePath(p: unknown, rules: PathRules): string {
+  const path = normalizePath(typeof p === 'string' ? p : '', rules)
+  return path && isAbsoluteFor(path, rules) && folderDepth(path) >= MIN_FOLDER_BASE_DEPTH ? path : ''
+}
+
 /**
  * The places a phone may reach, in order: project roots, the default folder,
  * then the folder holding each known project. Pass REAL paths (resolved
@@ -610,20 +617,48 @@ export function parentFolder(p: string, rules: PathRules): string {
  * symlinked root can point anywhere. Too-shallow places are dropped, and a
  * place inside another is folded into it — browsing the outer one reaches it,
  * and a flat list of every project's parent would be a second sidebar.
+ *
+ * A project lends the folder holding it only when that project is not itself
+ * a place, since a phone can make a place a project (gotcha 121): Start here
+ * on a place's own folder adds it (`POST /api/projects`), and its parent was
+ * then a place on the next listing — one folder up per tap, to the depth
+ * floor: the home folder, a whole volume, the app's data folder from its
+ * scratch root. So a project inside (or equal to) a root or the default folder
+ * lends nothing — anything it could lend is inside that place already, or is
+ * the place's own parent — and neither does one that is the folder holding
+ * another project. Everything a phone may add is inside a place already, so
+ * its adds can shrink the places (a project that gains a project inside it
+ * stops lending) but never widen them; verify:remote holds that for every add
+ * in every small configuration.
  */
 export function remoteFolderBases(
   input: { roots: readonly string[]; defaultCwd: string; projects: readonly string[] },
   rules: PathRules
 ): FolderBase[] {
+  const named: FolderBase[] = [
+    ...input.roots.map((path): FolderBase => ({ path: placePath(path, rules), kind: 'root' })),
+    { path: placePath(input.defaultCwd, rules), kind: 'default' }
+  ]
+  const fixed = named.filter((b) => b.path)
+  const projects = input.projects
+    .map((p) => normalizePath(typeof p === 'string' ? p : '', rules))
+    .filter((p) => p && isAbsoluteFor(p, rules))
+  // The folders holding a project: each is a place already, or too shallow to be one.
+  const holders = new Set<string>()
+  for (const p of projects) {
+    const up = pathKey(parentFolder(p, rules), rules)
+    if (up && up !== pathKey(p, rules)) holders.add(up)
+  }
+  const lends = (p: string): boolean =>
+    !holders.has(pathKey(p, rules)) && !fixed.some((b) => isInside(b.path, p, rules))
   const candidates: FolderBase[] = [
-    ...input.roots.map((path): FolderBase => ({ path, kind: 'root' })),
-    { path: input.defaultCwd, kind: 'default' },
-    ...input.projects.map((p): FolderBase => ({ path: parentFolder(p, rules), kind: 'parent' }))
+    ...fixed,
+    ...projects.filter(lends).map((p): FolderBase => ({ path: parentFolder(p, rules), kind: 'parent' }))
   ]
   const kept: FolderBase[] = []
   for (const c of candidates) {
-    const path = normalizePath(typeof c.path === 'string' ? c.path : '', rules)
-    if (!path || !isAbsoluteFor(path, rules) || folderDepth(path) < MIN_FOLDER_BASE_DEPTH) continue
+    const path = placePath(c.path, rules)
+    if (!path) continue
     // Already reachable through one kept earlier: the same folder, or inside it.
     if (kept.some((k) => isInside(k.path, path, rules))) continue
     // Wider than some kept earlier: it takes the first one's place, the rest go.

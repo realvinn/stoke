@@ -46,7 +46,7 @@ import {
   migrateSymlinkedProjectKeys
 } from '../src/main/projects.ts'
 import { defaultCwdCandidates, resolveDefaultCwd } from '../src/main/workspaceRoots.ts'
-import { addRemoteProject, resolveFolderBases } from '../src/main/remote/folders.ts'
+import { addRemoteProject, browseRemoteFolder, resolveFolderBases } from '../src/main/remote/folders.ts'
 import { ContextWatcher } from '../src/main/context.ts'
 import {
   advanceCursor,
@@ -683,6 +683,67 @@ try {
   const empty = await addRemoteProject({}, phoneDeps)
   check('a body naming nothing: 400', empty.ok ? 'added' : empty.status, 400)
   check('none of the refusals remembered anything', remembered.length, before)
+
+  /*
+   * Review finding on gotcha 121: Start here on a place's OWN folder adds it
+   * as a project, and the folder holding it used to become a place on the
+   * next listing — one folder up per tap, until the depth floor (the home
+   * folder, a volume, `/private/var` from a temp project). So: a real, deep
+   * temp tree, the phone's own add route, every place tapped for three rounds,
+   * and the places recomputed from the grown project list each time, exactly
+   * as `RemoteServer.folderBases` does. They must not move.
+   */
+  console.log('\nStart here on a place itself never widens the places')
+  const tower = join(tmp, 'tower')
+  const climbRoot = join(tower, 'root')
+  const climbRootLink = join(tower, 'root-link')
+  const climbDefault = join(tower, 'home', 'default')
+  const climbWork = join(tower, 'deep', 'work')
+  mkdirSync(climbRoot, { recursive: true })
+  mkdirSync(climbDefault, { recursive: true })
+  mkdirSync(join(climbWork, 'app'), { recursive: true })
+  symlinkSync(climbRoot, climbRootLink)
+  // The project list the places come from: one Claude already knows, plus
+  // whatever the phone adds (what `listProjects` returns once it is remembered).
+  const known: string[] = [join(climbWork, 'app')]
+  const climbDeps = {
+    bases: () =>
+      resolveFolderBases({ roots: [climbRootLink], defaultCwd: climbDefault, projects: known, platform: process.platform }),
+    platform: process.platform,
+    remember: (realPath: string): string => {
+      if (!known.includes(realPath)) known.push(realPath)
+      return realPath
+    }
+  }
+  const placesNow = async (): Promise<string[][]> => (await climbDeps.bases()).map((b) => [b.kind, b.path])
+  const startPlaces = await placesNow()
+  check(
+    'three places: the root (by its real path), the default folder, the folder holding the project',
+    startPlaces,
+    [['root', climbRoot], ['default', climbDefault], ['parent', climbWork]]
+  )
+  const taps: string[] = []
+  for (let round = 0; round < 3; round++) {
+    for (const place of await climbDeps.bases()) {
+      const tap = await addRemoteProject({ path: place.path }, climbDeps)
+      taps.push(tap.ok ? tap.body.path : `refused ${tap.status}`)
+    }
+  }
+  check(
+    'Start here on each place, three rounds: every tap is allowed, and adds that place',
+    taps,
+    [...startPlaces, ...startPlaces, ...startPlaces].map(([, path]) => path)
+  )
+  check('the three places are projects now', known.slice(1), [climbRoot, climbDefault, climbWork])
+  check('and the places have not moved', await placesNow(), startPlaces)
+  const above = await browseRemoteFolder(tower, await climbDeps.bases(), process.platform)
+  check('the folder above them all is still 403', above.ok ? 'served' : above.status, 403)
+  const madeAbove = await addRemoteProject({ parent: tower, name: 'planted' }, climbDeps)
+  check(
+    'and nothing can be created there',
+    [madeAbove.ok ? 'added' : madeAbove.status, existsSync(join(tower, 'planted'))],
+    [403, false]
+  )
 } finally {
   rmSync(tmp, { recursive: true, force: true })
 }

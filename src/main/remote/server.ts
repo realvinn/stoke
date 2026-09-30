@@ -132,8 +132,10 @@ export type { ConnectTarget, Reach } from './link.ts'
  *     (`{path, base, up, folders: [{name,path}], truncated}`, at most
  *     `MAX_LISTED_FOLDERS`, dot-folders skipped). Only inside a place
  *     `remoteFolderVerdict` allows — a project root, the default folder, or a
- *     folder holding a known project — judged on the realpath; anything else
- *     is 403 whether or not it exists. With no `path` it lists those places
+ *     folder holding a known project that is not itself a place (so adding
+ *     a place never widens them, `remoteFolderBases`) — judged on the
+ *     realpath; anything else is 403 whether or not it exists. With no
+ *     `path` it lists those places
  *     (`path: null`, each folder with a `kind`).
  * 13. `POST /api/projects {path}` adds a folder inside a place as a project,
  *     realpath'd first (gotcha 91); `{parent, name}` creates `name` (one

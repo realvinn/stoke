@@ -615,7 +615,8 @@ npm run verify:folders        # folder metadata: trimming, caps, added folders, 
                               # truncate/rename/rewrite, the watcher end to end, and
                               # listSessions re-parsing only what changed (gotcha 103); and a
                               # phone's Start here / New folder under a real symlinked place,
-                              # remembered by its realpath and listed once (gotcha 91)
+                              # remembered by its realpath and listed once (gotcha 91), and
+                              # Start here on every place, three rounds, moving no place (121)
 npm run verify:search         # sidebar + palette search: tiers, recency, highlight ranges on
                               # accented text, the label in both surfaces; and the session
                               # index against real files in a temp dir - a 40 MB transcript
@@ -721,8 +722,10 @@ npm run verify:remote         # phone access: where the link points and how it s
                               # and stt.ts against fake sidecars on loopback port 0: the
                               # address per call, and `unset` (503) vs a failed server (502);
                               # where a phone may browse (`remoteFolderVerdict`: a sibling
-                              # prefix, a symlink out, `..`, case per OS, too-shallow places)
-                              # and /api/folders against a real temp tree (gotcha 121)
+                              # prefix, a symlink out, `..`, case per OS, too-shallow places),
+                              # that no phone add widens the places (every add, every
+                              # configuration of a small tree) and /api/folders against a
+                              # real temp tree (gotcha 121)
 npm run verify:phone-ui       # the phone UI's decisions: list sections, answer options read
                               # off the screen, the resize policy, queued sends, connect input,
                               # the New session picker (the desktop's `folderChoices`), the

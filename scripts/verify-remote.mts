@@ -51,7 +51,7 @@ import {
   remoteFolderVerdict,
   type FolderBase
 } from '../src/shared/remotePhone.ts'
-import { pathRulesFor } from '../src/shared/paths.ts'
+import { isInside, pathRulesFor } from '../src/shared/paths.ts'
 import { browseRemoteFolder, listSubfolders, resolveFolderBases } from '../src/main/remote/folders.ts'
 import { createServer, type Server } from 'node:http'
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
@@ -823,6 +823,90 @@ console.log('\nthe places themselves (remoteFolderBases)')
     bases([], '', ['C:\\Users\\v', 'C:\\Users\\v\\dev\\app'], pathRulesFor('win32')),
     [['parent', 'C:\\Users\\v\\dev']]
   )
+
+  /*
+   * Review finding on gotcha 121: a phone can make a place a project (Start
+   * here on the place's own folder, or a session in the default folder), and
+   * every project's parent was a place — so each tap climbed one folder, to
+   * the depth floor. A project that is itself a place lends nothing now.
+   */
+  check('Start here on a root makes it a project, and adds nothing above it', bases(['/Volumes/X/a/b'], '', ['/Volumes/X/a/b']), [
+    ['root', '/Volumes/X/a/b']
+  ])
+  check('nor does the default folder once a session there makes it a project', bases([], '/Users/v/dev', ['/Users/v/dev']), [
+    ['default', '/Users/v/dev']
+  ])
+  check(
+    'nor does the folder holding a project, added as one itself',
+    bases([], '', ['/private/var/folders/ab/cd/T/job', '/private/var/folders/ab/cd/T']),
+    [['parent', '/private/var/folders/ab/cd/T']]
+  )
+  check(
+    'nor the scratch root, which a scratch session makes a place',
+    bases([], '', ['/Users/v/Library/Stoke/scratch/2026-09-30', '/Users/v/Library/Stoke/scratch']),
+    [['parent', '/Users/v/Library/Stoke/scratch']]
+  )
+  check(
+    'what that costs: a project that gains one inside it stops lending (narrower, never wider)',
+    bases([], '', ['/Users/v/dev/foo', '/Users/v/dev/foo/sub']),
+    [['parent', '/Users/v/dev/foo']]
+  )
+  {
+    // The climb itself: tap Start here on every place, round after round.
+    let projects = ['/Volumes/X/a/b/c/app', '/Users/v/dev/personal/stoke', '/private/var/folders/ab/cd/T/job']
+    const roots = ['/Users/v/work/clients/acme']
+    const defaultCwd = '/Users/v/dev/personal'
+    const start = bases(roots, defaultCwd, projects)
+    const seen: string[][][] = []
+    for (let round = 0; round < 6; round++) {
+      const places = remoteFolderBases({ roots, defaultCwd, projects }, mac)
+      projects = [...new Set([...projects, ...places.map((b) => b.path)])]
+      seen.push(bases(roots, defaultCwd, projects))
+    }
+    check('Start here on every place, six rounds: the places never move', seen, Array(6).fill(start))
+  }
+  {
+    /*
+     * And for every add a phone can make, in every configuration of a small
+     * tree: the folders a phone can add are exactly those inside a place (its
+     * own `POST /api/projects` judge), and after the add every place must be
+     * inside one that was there before.
+     */
+    const tree = [
+      '/Users/v',
+      '/Users/v/dev',
+      '/Users/v/dev/a',
+      '/Users/v/dev/a/sub',
+      '/Users/v/dev/b',
+      '/Users/v/work',
+      '/Users/v/work/x',
+      '/Users/v/work/x/y',
+      '/Volumes/X',
+      '/Volumes/X/p',
+      '/Volumes/X/p/q'
+    ]
+    let configs = 0
+    let adds = 0
+    let widened: unknown = null
+    for (const roots of [[], ['/Users/v/work/x']]) {
+      for (const defaultCwd of ['', '/Users/v/dev', '/Volumes/X/p']) {
+        for (let mask = 0; mask < 1 << tree.length; mask++) {
+          const projects = tree.filter((_, i) => mask & (1 << i))
+          const before = remoteFolderBases({ roots, defaultCwd, projects }, mac)
+          configs++
+          for (const add of tree) {
+            if (projects.includes(add)) continue
+            if (!remoteFolderVerdict({ requested: add, real: add, bases: before }, mac).ok) continue
+            adds++
+            const after = remoteFolderBases({ roots, defaultCwd, projects: [...projects, add] }, mac)
+            const wider = after.find((a) => !before.some((b) => isInside(b.path, a.path, mac)))
+            if (wider && !widened) widened = { roots, defaultCwd, projects, add, before, after }
+          }
+        }
+      }
+    }
+    check(`no phone add widens the places (${adds} adds over ${configs} configurations)`, widened, null)
+  }
 }
 
 /*
