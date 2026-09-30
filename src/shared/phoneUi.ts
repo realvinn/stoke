@@ -377,14 +377,22 @@ export function decideResize(input: ResizeInput): ResizeDecision {
   }
 
   if (!input.proposed) return keep
-  if (input.composerFocused && input.reason !== 'toggle') return { ...keep, deferred: true }
+  /*
+   * The width test comes first, and holds for the blur too. It used to apply to
+   * `observe` alone, after the focus test: so any box change while typing — the
+   * composer growing a line, the key row coming out — deferred, and the blur
+   * then fitted rows to the smaller box and sent them. Measured on the phone
+   * screen (390x844, Fit): focus, four lines, blur sent 50x43 → 50x39, a
+   * SIGWINCH for a height change, the one thing this function exists to refuse.
+   */
   if (
-    input.reason === 'observe' &&
+    (input.reason === 'observe' || input.reason === 'blur') &&
     input.fitWidth !== null &&
     Math.abs(input.width - input.fitWidth) < Math.max(1, input.cellWidth)
   ) {
     return keep
   }
+  if (input.composerFocused && input.reason !== 'toggle') return { ...keep, deferred: true }
   const next = { cols: Math.max(20, input.proposed.cols), rows: Math.max(8, input.proposed.rows) }
   return {
     send: same(next, input.pty) ? null : next,

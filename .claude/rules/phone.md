@@ -213,6 +213,18 @@ height change.
 > re-runs `relayout('observe')`, which still never sends a resize on its own. Measured: an open
 > 1440 view went from 30 to 25 rows when a second socket fitted the pty to 90x25.
 
+> **Checked against the code on 2026-09-30** (the phone clean-up). "Never while the composer has
+> focus (deferred to its blur)" deferred EVERY box change while focused, not just a width change:
+> `decideResize` tested focus before width, and applied the width test to `observe` only — so the
+> `blur` it deferred to fitted rows to whatever the box was then and sent them. Growing the
+> composer to four lines and blurring sent `{type:'resize'}` 50x43 → 50x39 at 390x844 in Fit (and
+> 97x14 → 97x11 at 844x390): a SIGWINCH for a height change. The measurement above ("growing the
+> composer ... while focused sent nothing") was true and stopped one event short. It bit harder
+> once the key row came out on focus (`keyRowShown`), because then a focus and a blur alone
+> changed the height. The width test now runs first and holds for `blur` too; measured after:
+> focus, four lines, the key row toggled, blur — no resize frame at either size, and at rest
+> `.term-wrap` scrollHeight === clientHeight (731 = 731, 288 = 288). `verify:phone-ui` holds it.
+
 ## 111. The phone server's config is a snapshot taken at start; a setting it does not bind must be a per-call dep
 
 **Found 2026-09-30, moving the speech server from Phone access to Settings → Voice.** `RemoteServer`

@@ -261,6 +261,26 @@ check(
   (({ send, deferred }) => ({ send, deferred }))(decideResize({ ...base, width: 700, composerFocused: true })),
   { send: null, deferred: true }
 )
+// Measured on the cleaned-up session screen: focus (the key row comes out),
+// four lines, blur → {type:'resize'} 50x43 → 50x39. A height change, sent late.
+check(
+  'a height change while typing is not deferred to the blur: it never counts',
+  decideResize({ ...base, composerFocused: true, proposed: { cols: 52, rows: 33 } }),
+  { send: null, local: { cols: 52, rows: 41 }, fitWidth: 382, deferred: false }
+)
+check(
+  'and the blur itself, with the width unchanged, sends nothing however short the box got',
+  decideResize({ ...base, reason: 'blur', proposed: { cols: 52, rows: 33 } }).send,
+  null
+)
+check(
+  'a rotation while typing is deferred, then sent on the blur, rows measured then',
+  [
+    decideResize({ ...base, width: 820, composerFocused: true, proposed: { cols: 112, rows: 18 } }).deferred,
+    decideResize({ ...base, reason: 'blur', width: 820, proposed: { cols: 112, rows: 18 } }).send
+  ],
+  [true, { cols: 112, rows: 18 }]
+)
 check(
   'a sub-cell width wobble sends nothing',
   decideResize({ ...base, width: 386 }).send,
