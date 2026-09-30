@@ -666,7 +666,9 @@ npm run verify:agents         # the coding agents: what is stored, what the laun
                               # --warning on every theme, when colour is painted at all,
                               # each CLI's exact launch plan (endpoint, MCP, continue) with
                               # every key in env and none in argv, the Default model's exact
-                              # argv per agent on its own sign-in (`modelArgs`), model ids
+                              # argv per agent on its own sign-in (`modelArgs`), a pre-format-2
+                              # file's default-mode leftovers cleared once and never again
+                              # (`upgradeEndpoint`), model ids
                               # that could reach cmd.exe or pose as a flag refused at hydrate,
                               # endpointProblem and launch, and the install script —
                               # only table ids survive into a command; the shared-skills
@@ -1096,10 +1098,13 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     and ids it validates, so the renderer can never contribute command text.
                     `defaultCli` is the agent NEW sessions start (Start, the sidebar, Start on
                     launch, scratch, `stoke .`, the phone); `resolveDefaultAgent` falls back
-                    to Claude Code, then the first agent on offer, when it is not installed.
-                    `endpoint.model` is also the Default model on an agent's own sign-in,
-                    passed only through its table flag; `isModelId` gates it everywhere
+                    to Claude Code, then the first agent on offer, when it is not installed
                     and chosen. Resume, relaunch and Continue stay Claude's (gotcha 81).
+                    `endpoint.model` is also the Default model on an agent's own sign-in,
+                    passed only through its table flag; `isModelId` gates it everywhere.
+                    The block's `format` (`AGENTS_FORMAT`, 2) clears every default-mode
+                    model in a file from before it, once — hidden leftovers of a mode switch
+                    then — and `mergeSetup` does the same for an old setup file's endpoints.
                     `tag` (show, labels) and `colors` are hydrated here too
   agentColors.ts    each coding agent's colour: `AGENT_SEEDS`, the user's override, and
                     `agentColorTokens` — deriveAccent per seed, which applyAppearance writes

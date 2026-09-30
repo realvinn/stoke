@@ -18,6 +18,8 @@
 import {
   AGENT_TAG_MAX,
   agentLaunchPlan,
+  AGENTS_FORMAT,
+  agentsFormatOf,
   agentTagText,
   cleanTagLabel,
   DEFAULT_AGENTS,
@@ -47,6 +49,7 @@ import {
   PI_PROVIDER_EXTENSION,
   resolveDefaultAgent,
   tomlString,
+  upgradeEndpoint,
   visibleAgents,
   windowsInstallerArgs,
   type AgentEndpoint,
@@ -155,7 +158,8 @@ check('nothing stored is never asked', hydrateAgents(undefined), {
   defaultCli: 'claude',
   shareSkillsToClaude: true,
   tag: { show: true, labels: {} },
-  colors: {}
+  colors: {},
+  format: AGENTS_FORMAT
 })
 check('junk is never asked, not "nothing chosen"', hydrateAgents({ chosen: 'codex' }).chosen, null)
 check('an empty choice is kept — it means "show none"', hydrateAgents({ chosen: [] }).chosen, [])
@@ -781,7 +785,7 @@ console.log('\nmodel ids: nothing that is not one reaches argv (cmd.exe reads & 
   )
   check(
     'a default model survives hydrate for an agent with no endpoint of its own (Gemini)',
-    hydrateAgents({ endpoints: { gemini: { mode: 'default', model: 'gemini-2.5-pro' } } }).endpoints,
+    hydrateAgents({ endpoints: { gemini: { mode: 'default', model: 'gemini-2.5-pro' } }, format: AGENTS_FORMAT }).endpoints,
     { gemini: { mode: 'default', model: 'gemini-2.5-pro', baseUrl: '', apiKey: '' } }
   )
 
@@ -816,6 +820,65 @@ console.log('\nmodel ids: nothing that is not one reaches argv (cmd.exe reads & 
       JSON.stringify(argv)
     )
   }
+}
+
+console.log('\na file from before the Default model: its default-mode models are leftovers, cleared once (AGENTS_FORMAT)')
+{
+  /*
+   * Before format 2 a model on an agent's own sign-in did nothing and was never
+   * drawn, and switching back from OpenRouter kept the OpenRouter id. So the
+   * reviewer's case — Codex tried on OpenRouter, then set back — is stored as
+   * exactly this, and must not launch `codex -m anthropic/claude-sonnet-5` on a
+   * ChatGPT sign-in after the upgrade.
+   */
+  const leftover: AgentEndpoint = { ...DEFAULT_ENDPOINT, model: 'anthropic/claude-sonnet-5' }
+  const before = { chosen: ['codex'], endpoints: { codex: leftover } }
+
+  check(
+    'the format a block names: none, junk and fractions are 1; a whole number ≥ 1 is itself',
+    [undefined, null, '2', 0, -1, 1.5, NaN, 1, 2, 3].map(agentsFormatOf),
+    [1, 1, 1, 1, 1, 1, 1, 1, 2, 3]
+  )
+  check('this build writes format 2', AGENTS_FORMAT, 2)
+
+  check('upgradeEndpoint from 1: a default-mode model is cleared', upgradeEndpoint(leftover, 1), DEFAULT_ENDPOINT)
+  check('from 2 it is kept — it was set through the Default model field', upgradeEndpoint(leftover, 2), leftover)
+  check('an OpenRouter model is never a leftover', upgradeEndpoint(or(), 1), or())
+  check('nor a custom endpoint’s', upgradeEndpoint(custom(), 1), custom())
+  check(
+    'a default endpoint keeps its base URL and key: they reach nothing on its own sign-in, and Settings keeps them across a mode switch',
+    upgradeEndpoint({ ...custom(), mode: 'default' }, 1),
+    { ...custom(), mode: 'default', model: '' }
+  )
+
+  const up = hydrateAgents(before)
+  check('hydrate: the leftover is gone, and with it the whole stored entry', up.endpoints, {})
+  check('and the block now says format 2, so the upgrade runs once', up.format, AGENTS_FORMAT)
+  check('so Codex launches on its own sign-in with no model flag', planOk(plan('codex', up.endpoints.codex)), { args: [], env: {}, model: '' })
+  check(
+    'counterfactual: the same entry in a format-2 file IS the Default model — which is what the upgrade prevents for old files',
+    planOk(plan('codex', hydrateAgents({ ...before, format: 2 }).endpoints.codex)).args,
+    ['-m', 'anthropic/claude-sonnet-5']
+  )
+  check('a second hydrate changes nothing (gotcha 116)', hydrateAgents(up), up)
+  check(
+    'a Default model chosen after the upgrade survives every later read',
+    hydrateAgents({ ...up, endpoints: { codex: { ...DEFAULT_ENDPOINT, model: 'gpt-6.1-sol' } } }).endpoints,
+    { codex: { ...DEFAULT_ENDPOINT, model: 'gpt-6.1-sol' } }
+  )
+  check(
+    'only default-mode models go: OpenRouter and custom endpoints come through untouched',
+    hydrateAgents({ endpoints: { codex: leftover, opencode: or('z-ai/glm-5'), aider: custom() } }).endpoints,
+    { opencode: or('z-ai/glm-5'), aider: custom() }
+  )
+  check(
+    'a newer build’s format is not upgraded again, and is written back as this build’s',
+    [hydrateAgents({ ...before, format: 3 }).endpoints, hydrateAgents({ ...before, format: 3 }).format],
+    [{ codex: leftover }, AGENTS_FORMAT]
+  )
+  check('a junk format is 1, and upgraded', hydrateAgents({ ...before, format: '2' }).endpoints, {})
+  check('no agents block at all is this build’s format', [hydrateAgents(undefined).format, hydrateAgents('junk').format], [2, 2])
+  check('the default settings carry it', DEFAULT_SETTINGS.agents.format, AGENTS_FORMAT)
 }
 
 console.log('\nidentity: a file named after the agent is not always the agent')

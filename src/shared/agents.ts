@@ -66,7 +66,10 @@ export interface AgentEndpoint {
    * confirmed flag (`CodingCli.modelArgs`); blank lets the agent choose. One
    * field for both, never a second "default model" beside it (gotcha 57), so a
    * mode change clears it: an id means something only to the endpoint it was
-   * chosen for. Only ever an id `isModelId` accepts, since it reaches argv.
+   * chosen for — and a file from before format 2 has its default-mode models
+   * cleared on the first read (`AGENTS_FORMAT`, `upgradeEndpoint`), because
+   * those were exactly such leftovers. Only ever an id `isModelId` accepts,
+   * since it reaches argv.
    */
   model: string
   /** A custom endpoint's base URL — the `/v1` root of an OpenAI-style API. */
@@ -116,6 +119,12 @@ export interface AgentSettings {
   tag: AgentTag
   /** The user's colour per agent, over `AGENT_SEEDS` (agentColors.ts). */
   colors: AgentColors
+  /**
+   * The shape this block was written in (`AGENTS_FORMAT`). Absent in every
+   * file from before it existed, which reads as 1. Always this build's number
+   * once hydrated, so the upgrade it keys runs once per file.
+   */
+  format: number
 }
 
 export interface AgentTag {
@@ -127,13 +136,51 @@ export interface AgentTag {
 /** A tag is a label on a 12rem tab, not a title: longer is cut, not wrapped. */
 export const AGENT_TAG_MAX = 16
 
+/**
+ * The shape `agents` is stored in, written into the block (`format`) so that
+ * a file from an earlier build can be told apart on its first read here.
+ *
+ *   1  (no number) A model on an agent's OWN sign-in did nothing. Settings
+ *      never drew the field there, and switching an endpoint from OpenRouter
+ *      or a custom endpoint back to "Its own sign-in" kept the model it had.
+ *   2  That model is the agent's Default model, passed at launch through the
+ *      agent's own flag (`CodingCli.modelArgs`) and named in the status bar.
+ *
+ * So a format-1 default-mode model is a leftover nobody could see, not a
+ * choice: kept, a Codex once tried on OpenRouter would launch on its ChatGPT
+ * sign-in as `codex -m anthropic/claude-sonnet-5`. `upgradeEndpoint` clears it.
+ * A file an older build rewrote loses the number (its hydrate names no such
+ * key) and is upgraded again, which is right: that build's mode switch keeps
+ * the model too.
+ */
+export const AGENTS_FORMAT = 2
+
+/** The format a stored `agents.format` names; anything but a whole number ≥ 1 is 1. */
+export function agentsFormatOf(raw: unknown): number {
+  return typeof raw === 'number' && Number.isInteger(raw) && raw >= 1 ? raw : 1
+}
+
+/**
+ * One hydrated endpoint, brought from format `from` up to `AGENTS_FORMAT`.
+ *
+ * Only the model: a default-mode endpoint's base URL and key reach neither
+ * argv nor the environment (every `agentLaunchPlan` case is gated on the
+ * mode), and Settings keeps them across a mode switch on purpose, so "custom,
+ * then own sign-in, then custom" does not make the user retype a key.
+ */
+export function upgradeEndpoint(ep: AgentEndpoint, from: number): AgentEndpoint {
+  if (from < 2 && ep.mode === 'default' && ep.model) return { ...ep, model: '' }
+  return ep
+}
+
 export const DEFAULT_AGENTS: AgentSettings = {
   chosen: null,
   endpoints: {},
   defaultCli: DEFAULT_CLI,
   shareSkillsToClaude: true,
   tag: { show: true, labels: {} },
-  colors: {}
+  colors: {},
+  format: AGENTS_FORMAT
 }
 
 export const DEFAULT_ENDPOINT: AgentEndpoint = { mode: 'default', model: '', baseUrl: '', apiKey: '' }
@@ -220,10 +267,21 @@ export function agentTagText(id: CodingCliId, labels: Partial<Record<CodingCliId
 }
 
 export function hydrateAgents(raw: unknown): AgentSettings {
+  // No block at all is a fresh install or a file from before agents: no
+  // endpoint to upgrade, so it is simply this build's format.
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     return { ...DEFAULT_AGENTS, endpoints: {}, tag: hydrateAgentTag(undefined), colors: {} }
   }
-  const r = raw as { chosen?: unknown; endpoints?: unknown; defaultCli?: unknown; shareSkillsToClaude?: unknown; tag?: unknown; colors?: unknown }
+  const r = raw as {
+    chosen?: unknown
+    endpoints?: unknown
+    defaultCli?: unknown
+    shareSkillsToClaude?: unknown
+    tag?: unknown
+    colors?: unknown
+    format?: unknown
+  }
+  const from = agentsFormatOf(r.format)
   // An array, deduplicated and filtered to ids this build knows. Anything else
   // — a string, an object, junk — is "never asked", which re-shows the picker
   // rather than hiding every agent on the strength of a bad value.
@@ -236,7 +294,7 @@ export function hydrateAgents(raw: unknown): AgentSettings {
       // Claude's endpoint is Settings › Providers; an entry here would be a
       // second writer for the same thing (gotcha 57).
       if (!isCodingCliId(id) || isClaudeCode(id)) continue
-      const h = hydrateEndpoint(ep)
+      const h = upgradeEndpoint(hydrateEndpoint(ep), from)
       if (h.mode !== 'default' || h.model || h.baseUrl || h.apiKey) endpoints[id] = h
     }
   }
@@ -250,7 +308,10 @@ export function hydrateAgents(raw: unknown): AgentSettings {
     // setting existed has no key, and reads as the default.
     shareSkillsToClaude: r.shareSkillsToClaude !== false,
     tag: hydrateAgentTag(r.tag),
-    colors: hydrateAgentColors(r.colors)
+    colors: hydrateAgentColors(r.colors),
+    // Upgraded above, so this build's number whatever was read — a newer
+    // build's included, since only this build's fields survived the hydrate.
+    format: AGENTS_FORMAT
   }
 }
 

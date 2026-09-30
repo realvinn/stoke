@@ -647,6 +647,44 @@ console.log('\nagents: a default model, and Claude Code’s launch defaults, thr
       .agents.endpoints,
     {}
   )
+  /*
+   * A settings.json from before the Default model existed: no `agents.format`.
+   * Its default-mode models are leftovers the old page hid (a mode switch back
+   * from OpenRouter kept the id), so the first read clears them — and only
+   * them — and every later read, including after the user sets one on
+   * purpose, leaves the block alone.
+   */
+  const preUpgrade = JSON.parse(JSON.stringify({ ...DEFAULT_SETTINGS, agents: { ...DEFAULT_SETTINGS.agents } }))
+  delete preUpgrade.agents.format
+  preUpgrade.agents.endpoints = {
+    codex: { mode: 'default', model: 'anthropic/claude-sonnet-5', baseUrl: '', apiKey: '' },
+    pi: { mode: 'default', model: 'z-ai/glm-5', baseUrl: 'http://127.0.0.1:11434/v1', apiKey: 'sk-local' },
+    grok: { mode: 'openrouter', model: 'x-ai/grok-5', baseUrl: '', apiKey: '' },
+    opencode: { mode: 'custom', model: 'qwen3-coder', baseUrl: 'http://127.0.0.1:11434/v1', apiKey: '' }
+  }
+  const upgraded = roundTrip(preUpgrade)
+  check(
+    'a pre-upgrade file: default-mode models cleared, a leftover URL and key kept, OpenRouter and custom untouched',
+    upgraded.agents.endpoints,
+    {
+      pi: { mode: 'default', model: '', baseUrl: 'http://127.0.0.1:11434/v1', apiKey: 'sk-local' },
+      grok: { mode: 'openrouter', model: 'x-ai/grok-5', baseUrl: '', apiKey: '' },
+      opencode: { mode: 'custom', model: 'qwen3-coder', baseUrl: 'http://127.0.0.1:11434/v1', apiKey: '' }
+    }
+  )
+  check('and it is written back as format 2', upgraded.agents.format, 2)
+  check('a second pass changes nothing (gotcha 116)', roundTrip(upgraded).agents, upgraded.agents)
+  const chosenLater = roundTrip({
+    ...upgraded,
+    agents: { ...upgraded.agents, endpoints: { ...upgraded.agents.endpoints, codex: { mode: 'default', model: 'gpt-6.1-sol', baseUrl: '', apiKey: '' } } }
+  })
+  check(
+    'a Default model set after the upgrade survives the next write and the next launch’s read',
+    roundTrip(chosenLater).agents.endpoints.codex,
+    { mode: 'default', model: 'gpt-6.1-sol', baseUrl: '', apiKey: '' }
+  )
+  check('a file with no agents block at all is format 2', roundTrip({ themeId: DEFAULT_SETTINGS.themeId }).agents.format, 2)
+
   const defaults = { permissionMode: 'plan', model: 'opus', effort: 'high', ultracode: true }
   check(
     'Claude Code’s four launch defaults round-trip where they always lived',

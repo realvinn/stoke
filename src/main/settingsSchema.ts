@@ -152,7 +152,9 @@ export const DEFAULT_SETTINGS: Settings = {
     defaultCli: DEFAULT_AGENTS.defaultCli,
     shareSkillsToClaude: DEFAULT_AGENTS.shareSkillsToClaude,
     tag: { show: true, labels: {} },
-    colors: {}
+    colors: {},
+    // Nothing stored to upgrade (agents.ts AGENTS_FORMAT).
+    format: DEFAULT_AGENTS.format
   },
   // Never seen. Every existing settings file also has no such key and therefore
   // reads as this, which is right: the first launch after an upgrade is exactly
