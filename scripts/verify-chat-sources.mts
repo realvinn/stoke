@@ -147,7 +147,7 @@ section('opening a hit')
     'notice'
   ])
   check('a subagent transcript is never resumed', chatOpenAction({ source: 'claude', nativeId: 'a/b', cwd: '/w', subagent: true }, ctx).kind, 'notice')
-  const base = { endpoint: DEFAULT_ENDPOINT, openrouterKey: '', continueLast: true, mcp: null, piExtensionPath: null }
+  const base = { endpoint: DEFAULT_ENDPOINT, openrouterKey: '', continueLast: true, mcp: [] }
   const codex = agentLaunchPlan({ ...base, id: 'codex', resumeId: '019f456c-d3fd-7e83-927d-f3b8ad5ac6cf' })
   check('codex reopens by id, and the id wins over continue', codex.ok ? codex.plan.args : codex, ['resume', '019f456c-d3fd-7e83-927d-f3b8ad5ac6cf'])
   const oc = agentLaunchPlan({ ...base, id: 'opencode', resumeId: 'ses_abc123' })
