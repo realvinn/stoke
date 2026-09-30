@@ -128,8 +128,9 @@ export function ProvidersSettings({ providers, onChange }: Props): React.JSX.Ele
       <span className="field-hint">
         Stoke launches the real <span className="mono">claude</span> CLI. Keys here are
         injected into that process&rsquo;s environment so a Start-menu launch still works —
-        shell-profile exports do not reach a GUI app. Keys stay in this machine&rsquo;s{' '}
-        <span className="mono">settings.json</span>; they are never uploaded by Stoke.
+        shell-profile exports do not reach a GUI app. Keys stay on this machine and are never
+        uploaded by Stoke; where the system has a key store they are encrypted at rest in{' '}
+        <span className="mono">secrets.json</span> (Settings › Backup &amp; transfer says which).
       </span>
       <span className="field-hint">{providersSummary(p)}</span>
 

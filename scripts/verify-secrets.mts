@@ -1,18 +1,21 @@
 /*
- * Secrets at rest.
+ * Secrets at rest and the portable setup file.
  *
  * Everything here runs against a SYNTHETIC userData under the OS temp dir and
  * an INJECTED key store, never the real Keychain and never a real profile
  * (gotcha 74: fake every input — the directory as well as the backend — and
- * prove a bystander survives).
+ * prove a bystander survives). The setup file is sealed with the real
+ * node:crypto scrypt and AES-256-GCM at the shipped parameters, so a round
+ * trip here is the same work an export does.
  *
  *   node scripts/verify-secrets.mts
  */
 import { mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { hydrateSettings } from '../src/main/settingsSchema.ts'
+import { DEFAULT_SETTINGS, hydrateSettings } from '../src/main/settingsSchema.ts'
 import { SecretStore, type SecretBackend } from '../src/main/secrets.ts'
+import { openSetup, sealSetup } from '../src/main/setupFile.ts'
 import {
   applySecrets,
   collectSecrets,
@@ -23,6 +26,20 @@ import {
   secretPathsIn,
   SECRET_PATHS
 } from '../src/shared/secrets.ts'
+import {
+  buildSetupPayload,
+  judgePassphrase,
+  LOCAL_KEYS,
+  mergeSetup,
+  parseSetupEnvelope,
+  PARTIAL_KEYS,
+  PORTABLE_KEYS,
+  planImport,
+  previewSetup,
+  SETUP_KDF_DEFAULTS,
+  type SetupPayload
+} from '../src/shared/setupFile.ts'
+import type { Settings } from '../src/shared/types.ts'
 
 let failures = 0
 function check(name: string, got: unknown, want: unknown): void {
@@ -329,6 +346,185 @@ console.log('\na profile with no keys never asks the key store')
   check('no call to isEncryptionAvailable, encrypt or decrypt', calls, { available: 0, encrypt: 0, decrypt: 0 })
   ok('and settings.json is written normally', JSON.parse(read(join(dir, 'settings.json'))).fontSize === 14)
 }
+
+/* ========================================================= the setup file */
+console.log('\nwhat travels in a setup file')
+{
+  const all = Object.keys(DEFAULT_SETTINGS).sort()
+  const sorted = [...PORTABLE_KEYS, ...Object.keys(PARTIAL_KEYS), ...LOCAL_KEYS].sort()
+  check('portable, partial and local keys partition every setting exactly', sorted, all)
+  const current = hydrateSettings(plaintextSettings())
+  const bare = buildSetupPayload(current, { includeSecrets: false, version: '0.0.0', platform: 'darwin', now: new Date(0) })
+  check('without the tick, no key is in the payload', hasCanary(JSON.stringify(bare)), [])
+  ok('no machine-local path travels', !JSON.stringify(bare).includes('/Users/someone/code') && !JSON.stringify(bare).includes('/opt/claude'))
+  ok('nor the remote block', !('remote' in bare.settings))
+  check('a host travels without this device’s keyEnrolled', (bare.settings.hosts as Record<string, unknown>[])[0].keyEnrolled, undefined)
+  const withKeys = buildSetupPayload(current, { includeSecrets: true, version: '0.0.0', platform: 'darwin', now: new Date(0) })
+  check('with the tick, the four portable keys travel', Object.keys(withKeys.secrets).sort(), [
+    'agents.endpoints.codex.apiKey',
+    'providers.anthropicApiKey',
+    'providers.customAuthToken',
+    'providers.openrouterApiKey'
+  ])
+  ok('but never the phone access key', !JSON.stringify(withKeys).includes(CANARY.phone))
+}
+
+console.log('\nsealing and opening (scrypt N=2^17, AES-256-GCM)')
+{
+  const current = hydrateSettings(plaintextSettings())
+  const payload = buildSetupPayload(current, { includeSecrets: true, version: '0.9.97', platform: 'darwin', now: new Date(0) })
+  const pass = 'ember kindling orbit lantern'
+  const text = await sealSetup(payload, pass)
+  const env = JSON.parse(text)
+  check('the header names the format and the shipped KDF', [env.format, env.v, env.kdf.alg, env.kdf.N, env.kdf.r, env.kdf.p, env.aead], [
+    'stoke-setup',
+    1,
+    'scrypt',
+    SETUP_KDF_DEFAULTS.N,
+    8,
+    1,
+    'AES-256-GCM'
+  ])
+  check('no canary appears in the exported file', hasCanary(text), [])
+  const opened = await openSetup(text, pass)
+  check('round trip: the payload comes back exactly', opened.ok ? opened.payload : opened, payload)
+  const nfd = await openSetup(await sealSetup(payload, 'caf\u00e9 lantern orbit'), 'cafe\u0301 lantern orbit')
+  ok('the passphrase is NFC-normalised (a Mac’s NFD opens a file made with NFC)', nfd.ok)
+
+  const wrong = await openSetup(text, 'ember kindling orbit lanterns')
+  check('a wrong passphrase is refused', wrong.ok ? 'opened' : wrong.reason, 'wrong-passphrase')
+
+  const body = Buffer.from(env.ciphertext, 'base64')
+  body[Math.floor(body.length / 2)] ^= 0x01
+  const flipped = await openSetup(JSON.stringify({ ...env, ciphertext: body.toString('base64') }), pass)
+  check('one flipped ciphertext byte is refused (GCM tag)', flipped.ok ? 'opened' : flipped.reason, 'wrong-passphrase')
+
+  const tag = Buffer.from(env.ciphertext, 'base64')
+  tag[tag.length - 1] ^= 0x80
+  const badTag = await openSetup(JSON.stringify({ ...env, ciphertext: tag.toString('base64') }), pass)
+  check('a flipped tag byte is refused', badTag.ok ? 'opened' : badTag.reason, 'wrong-passphrase')
+
+  // The header is the AAD: an edit that still derives a valid-looking key must fail too.
+  const nonce = Buffer.from(env.nonce, 'base64')
+  nonce[0] ^= 0x01
+  const headerEdit = await openSetup(JSON.stringify({ ...env, nonce: nonce.toString('base64') }), pass)
+  check('an edited header is refused', headerEdit.ok ? 'opened' : headerEdit.reason, 'wrong-passphrase')
+
+  const refuse = async (label: string, mutate: (e: Record<string, unknown>) => unknown, want: string): Promise<void> => {
+    const r = await openSetup(JSON.stringify(mutate(structuredClone(env))), pass)
+    check(label, r.ok ? 'opened' : r.reason, want)
+  }
+  await refuse('an unknown KDF is refused before deriving', (e) => ({ ...e, kdf: { ...(e.kdf as object), alg: 'argon2id' } }), 'unknown-kdf')
+  await refuse('an N past the memory ceiling is refused', (e) => ({ ...e, kdf: { ...(e.kdf as object), N: 1 << 22 } }), 'unknown-kdf')
+  await refuse('an N that is not a power of two is refused', (e) => ({ ...e, kdf: { ...(e.kdf as object), N: 100000 } }), 'unknown-kdf')
+  await refuse('a different cipher is refused', (e) => ({ ...e, aead: 'ChaCha20-Poly1305' }), 'unknown-cipher')
+  await refuse('another format is refused', (e) => ({ ...e, format: 'something-else' }), 'not-a-setup-file')
+  await refuse('a newer version is refused, and says so', (e) => ({ ...e, v: 2 }), 'newer-version')
+  check('garbage is not a setup file', (parseSetupEnvelope('not json') as { reason?: string }).reason, 'not-a-setup-file')
+}
+
+console.log('\nimporting: merge through hydrate, unknown keys dropped, values clamped')
+{
+  const current = hydrateSettings({
+    ...plaintextSettings(),
+    hosts: [
+      { id: 'h1', label: 'Box', alias: 'box', command: '', keyEnrolled: true },
+      { id: 'mine', label: 'Only here', alias: 'mine', command: '' }
+    ],
+    browser: { bookmarks: ['https://a.example'] },
+    defaults: { permissionMode: 'default', model: '', effort: 'default', ultracode: false }
+  })
+  const incoming: SetupPayload = {
+    kind: 'stoke-setup-payload',
+    createdAt: '2026-09-30T00:00:00.000Z',
+    from: { version: '0.9.97', platform: 'win32' },
+    settings: {
+      evil: 'dropped',
+      claudePath: 'C:\\evil\\claude.exe',
+      remote: { token: 'stolen', enabled: true, bindLan: true },
+      projectRoots: ['C:\\code'],
+      fontSize: 999,
+      themeId: 42,
+      hosts: [
+        { id: 'h1', label: 'Box renamed', alias: 'box', command: 'byobu', keyEnrolled: false },
+        { id: 'h2', label: 'New VPS', alias: 'vps', command: '', keyEnrolled: true }
+      ],
+      browser: { bookmarks: ['https://b.example'], lastUrl: 'https://leak.example', width: 9999 },
+      defaults: { permissionMode: 'bypassPermissions', model: 'opus', effort: 'high', ultracode: true },
+      providers: { claudeAuth: 'anthropic', anthropicApiKey: '', openrouterApiKey: '', customBaseUrl: '', customAuthToken: '' },
+      agents: { chosen: ['claude', 'opencode'], endpoints: { opencode: { mode: 'openrouter', model: 'm', baseUrl: '', apiKey: '' } } }
+    },
+    secrets: {
+      'providers.anthropicApiKey': 'sk-ant-FROM-FILE',
+      'remote.token': 'stolen-token',
+      'agents.endpoints.__proto__.apiKey': 'pwned',
+      claudePath: '/evil'
+    }
+  }
+  const keep = mergeSetup(current, incoming, { includeSecrets: false })
+  const kept = hydrateSettings(keep.raw)
+  ok('an unknown key is dropped', !('evil' in kept))
+  check('local-only fields keep this machine’s values', [kept.claudePath, kept.projectRoots, kept.remote.token, kept.remote.bindLan], [
+    '/opt/claude',
+    ['/Users/someone/code'],
+    CANARY.phone,
+    false
+  ])
+  check('fontSize is clamped by hydrate', kept.fontSize, hydrateSettings({ fontSize: 999 }).fontSize)
+  check('a non-string theme id falls back to the default', kept.themeId, DEFAULT_SETTINGS.themeId)
+  check('hosts are merged by id, the local-only one kept', kept.hosts.map((h) => h.id), ['h1', 'mine', 'h2'])
+  check('an existing host takes the file’s fields but keeps this device’s keyEnrolled', [kept.hosts[0].label, kept.hosts[0].keyEnrolled], [
+    'Box renamed',
+    true
+  ])
+  check('a new host is never marked enrolled here', kept.hosts[2].keyEnrolled, false)
+  check('bookmarks are a union', kept.browser.bookmarks, ['https://a.example', 'https://b.example'])
+  check('browser window state does not travel', [kept.browser.lastUrl, kept.browser.width], [current.browser.lastUrl, current.browser.width])
+  check('bypass permissions is not imported unconfirmed', kept.defaults.permissionMode, 'default')
+  check('but the rest of the defaults are', [kept.defaults.model, kept.defaults.effort], ['opus', 'high'])
+  check('and the skip is reported', keep.skipped.map((s) => s.key), ['defaults.permissionMode'])
+  check('without the tick, every current key is kept', collectSecrets(kept), collectSecrets(current))
+  check('agents: chosen is a union, a new endpoint arrives', [kept.agents.chosen, Object.keys(kept.agents.endpoints).sort()], [
+    ['claude', 'codex', 'opencode'],
+    ['codex', 'opencode']
+  ])
+  check('and the existing codex endpoint key survives an import without keys', kept.agents.endpoints.codex?.apiKey, CANARY.codex)
+
+  const take = hydrateSettings(mergeSetup(current, incoming, { includeSecrets: true }).raw)
+  check('with the tick, the file’s portable key replaces the current one', take.providers.anthropicApiKey, 'sk-ant-FROM-FILE')
+  check('but a phone key in a crafted file is ignored', take.remote.token, CANARY.phone)
+  ok('and a __proto__ secret pollutes nothing', ({} as Record<string, unknown>).apiKey === undefined)
+  check('and a non-secret path in the secrets map is not written', take.claudePath, '/opt/claude')
+
+  const preview = previewSetup(current, take, incoming, keep.skipped)
+  ok('the preview carries no key, from either side', !/CANARY|FROM-FILE|stolen/.test(JSON.stringify(preview)))
+  check('it lists the file’s keys by name and action', preview.secrets.map((s) => `${s.label}:${s.action}`), ['Anthropic API key:replace'])
+  ok('and names what would change', preview.changes.some((c) => c.key === 'hosts' && /New VPS/.test(c.detail)))
+}
+
+console.log('\nan import of an identical setup changes nothing')
+{
+  // A fresh profile that has never written a setting, importing a file made
+  // from another fresh profile: hydrate is not idempotent on worklogBoards
+  // (default targets survive the first pass, not the second), which made the
+  // preview report a change that was not one. Found driving the app.
+  const fresh = hydrateSettings(null)
+  const file = buildSetupPayload(fresh, { includeSecrets: false, version: 'x', platform: 'darwin', now: new Date(0) })
+  check('fresh into fresh: no changes', planImport(hydrateSettings(null), file, { includeSecrets: false }, hydrateSettings).preview.changes, [])
+  const busy = hydrateSettings(plaintextSettings())
+  const own = buildSetupPayload(busy, { includeSecrets: true, version: 'x', platform: 'darwin', now: new Date(0) })
+  const plan = planImport(busy, own, { includeSecrets: true }, hydrateSettings)
+  check('a setup into itself: no changes', plan.preview.changes, [])
+  check('and every key reads as the same', plan.preview.secrets.map((s) => s.action), ['same', 'same', 'same', 'same'])
+}
+
+console.log('\npassphrase strength')
+check('empty is not acceptable', judgePassphrase('').acceptable, false)
+check('a short one is not acceptable', judgePassphrase('Tr0ub4dor').acceptable, false)
+check('a common prefix is not acceptable', judgePassphrase('password123456').acceptable, false)
+check('one repeated character is not acceptable', judgePassphrase('aaaaaaaaaaaaaaaa').acceptable, false)
+check('four unrelated words are acceptable', judgePassphrase('correct horse battery staple').acceptable, true)
+check('a long mixed passphrase is strong', judgePassphrase('Lantern-Orbit-73-kindling!').score >= 3, true)
 
 for (const d of scratch) rmSync(d, { recursive: true, force: true })
 

@@ -43,6 +43,7 @@ import { ThemeEditor } from './ThemeEditor'
 import { RemoteSettings, SelfUpdateSettings, StokeCommandSettings, UpdatesSettings } from './RemoteSettings'
 import { VoiceSettings } from './VoiceSettings'
 import { AgentsSettings } from './AgentsSettings'
+import { BackupSettings } from './BackupSettings'
 import type { CodingCliDetection, CodingCliId } from '@shared/codingClis'
 import { WorklogSettings } from './WorklogSettings'
 import {
@@ -131,6 +132,7 @@ export type SectionId =
   | 'worklog'
   | 'remote'
   | 'updates'
+  | 'backup'
 
 interface Section {
   id: SectionId
@@ -193,7 +195,12 @@ const GROUPS: { title: string; sections: Section[] }[] = [
        * it, so the one setting most likely to be needed in a hurry (the app
        * cannot find claude) sat behind the least descriptive label in the list.
        */
-      { id: 'updates', label: 'Updates', hint: 'Stoke, the CLI, and where it lives' }
+      { id: 'updates', label: 'Updates', hint: 'Stoke, the CLI, and where it lives' },
+      {
+        id: 'backup',
+        label: 'Backup & transfer',
+        hint: 'Where your API keys are kept, and a passphrase-sealed file that moves this setup to another computer'
+      }
     ]
   }
 ]
@@ -1017,6 +1024,8 @@ export function SettingsSheet({
             {section === 'voice' && (
               <VoiceSettings settings={settings} onPatch={onPatch} />
             )}
+
+            {section === 'backup' && <BackupSettings />}
 
           </div>
         </div>

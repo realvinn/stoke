@@ -174,6 +174,15 @@ const api: StokeApi = {
     onChange: (cb) => on<[Settings]>(CH.settingsChanged, cb)
   },
 
+  backup: {
+    status: () => ipcRenderer.invoke(CH.secretsStatus),
+    exportSetup: (req) => ipcRenderer.invoke(CH.setupExport, req),
+    pickImport: () => ipcRenderer.invoke(CH.setupImportPick),
+    previewImport: (passphrase: string) => ipcRenderer.invoke(CH.setupImportPreview, passphrase),
+    applyImport: (opts) => ipcRenderer.invoke(CH.setupImportApply, opts),
+    cancelImport: () => ipcRenderer.invoke(CH.setupImportCancel)
+  },
+
   claudeConfig: {
     read: () => ipcRenderer.invoke(CH.claudeConfigRead),
     set: (key: string, value: boolean | string | number | undefined) =>
