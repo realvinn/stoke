@@ -608,10 +608,20 @@ await step('typing reaches the session, and its hooks land', async () => {
   check('main polled them and the renderer got the Stop (activity dot)', !!seen, JSON.stringify(seen).slice(0, 300))
   const transcript = join(home, '.claude', 'projects', proj.replace(/[^A-Za-z0-9]/g, '-'), `${claudeSession}.jsonl`)
   check('the transcript is on disk where a resume will look for it', existsSync(transcript), transcript)
-  const states = await ev<Array<{ ptyId?: string; status?: string }>>('window.stoke.session.states()').catch(() => [])
-  const mine = states.find((s) => s.ptyId === t.ptyId)
-  console.log(`  (registry: ${mine ? `matched the tab, status ${mine.status}` : `no entry for the tab${isWin ? ' — expected on Windows, where the pty child is cmd.exe, not the stub' : ''}`})`)
-  if (!isWin) check('the CLI registry entry was matched to the tab by pid (gotcha 80)', !!mine, JSON.stringify(states).slice(0, 400))
+  // POSIX matches by pid (the launcher execs the stub). On Windows the pty's
+  // child is cmd.exe running the .cmd launcher, so only the fallback can match:
+  // the one entry in the folder whose process descends from the pty (gotcha 92),
+  // which no run had ever exercised on Windows.
+  let states: Array<{ ptyId?: string; status?: string }> = []
+  const mine = await waitFor('the registry entry to be matched to the tab', async () => {
+    states = await ev<Array<{ ptyId?: string; status?: string }>>('window.stoke.session.states()')
+    return states.find((s) => s.ptyId === t.ptyId) ?? null
+  }, 20_000).catch(() => null)
+  check(
+    `the CLI registry entry was matched to the tab ${isWin ? 'through a .cmd launcher, by descent (gotcha 92)' : 'by pid (gotcha 80)'}`,
+    !!mine,
+    JSON.stringify(states).slice(0, 400)
+  )
 })
 
 /* --------------------------------------------------------------- agents */
@@ -657,11 +667,20 @@ await step('the docked browser logs in, and keeps it to its own profile', async 
   await ev('document.querySelector(\'button[title^="Toggle browser"]\').click(), true')
   const page = await waitFor('the docked browser to load the login page', () => connectBrowserPage(port, (u: string) => u.startsWith(`${site.base}/login`)), 45_000, 500)
   check('the panel opened the homepage from settings', true, page.page.url)
-  await page.evaluate('document.querySelector("#go").click(), true').catch(() => undefined)
+  // The target shows up as soon as the URL commits, before the form is parsed:
+  // wait for the button, and press it again if the page is still the form.
+  await waitFor('the login form\'s button', () => page.evaluate('!!document.querySelector("#go")'), 20_000)
+  let presses = 0
   const who = await waitFor('/whoami after the form posts', async () => {
+    const where = await page.evaluate('location.pathname').catch(() => '')
+    if (where === '/login' && presses < 3) {
+      presses++
+      await page.evaluate('(document.querySelector("#go")?.click(), true)').catch(() => undefined)
+      return null
+    }
     const text = await page.evaluate('location.pathname === "/whoami" ? document.body.innerText : ""').catch(() => '')
     return typeof text === 'string' && text.includes('authed') ? text : null
-  }, 20_000)
+  }, 30_000, 1000)
   check('the form logged the browser in: /whoami says authed', /"authed":\s*true/.test(who), who)
   try {
     await page.screenshot(join(shots, '04-browser-page.png'))
@@ -832,8 +851,9 @@ await step('a graceful quit reaches every session and seals the cookie', async (
   }, 15_000).catch(() => exitMarkers())
   const reached = AGENTS.filter((id) => markers.some((n) => n === `exit-${id}-${tabs[id]?.pid}`))
   const detail = `${markers.length - markersBefore} new marker(s): ${markers.join(', ')}`
-  if (isWin) console.log(`  (exit markers on Windows: ${reached.join(', ') || 'none'} — conpty may end a console child before its handler runs; recorded, not asserted)`)
-  else check('every agent process was told (its SIGHUP/SIGTERM exit marker)', reached.length === AGENTS.length, detail)
+  // On Windows it is conpty's close that reaches node as SIGHUP; measured on
+  // windows-latest and windows-11-arm, every stub wrote its marker.
+  check('every agent process was told (its SIGHUP/SIGTERM exit marker)', reached.length === AGENTS.length, detail)
   const saved = existsSync(join(ud, 'tabs.json')) ? (JSON.parse(readFileSync(join(ud, 'tabs.json'), 'utf8')) as { tabs: Array<{ cliId: string; sessionId: string; kind: string }> }) : null
   const kinds = (saved?.tabs ?? []).filter((t) => t.kind === 'session').map((t) => t.cliId).sort()
   check('the tabs were saved for restore', AGENTS.every((a) => kinds.includes(a)), JSON.stringify(saved?.tabs ?? null).slice(0, 600))
@@ -886,8 +906,9 @@ await step('relaunch: the tabs come back, and resume what they were', async () =
   }, 30_000).catch(() => 0)
   check('the three agent tabs came back paused', paused >= 3, `${paused} paused`)
   await shot('09-restored')
-  // Every paused LOCAL tab, by its own Resume: an SSH tab's card says "host"
-  // and is left for the SSH step, which reattaches it on purpose.
+  // Every paused LOCAL tab, by its own Resume. An SSH tab is left for the SSH
+  // step, which reattaches it on purpose: its card names the host, or — a kept
+  // one — "the machine", under a Reattach button.
   const count = await ev<number>('document.querySelectorAll(".tablist .tab").length')
   for (let i = 0; i < count; i++) {
     await ev(`document.querySelectorAll(".tablist .tab")[${i}]?.click(), true`)
@@ -898,7 +919,7 @@ await step('relaunch: the tabs come back, and resume what they were', async () =
         '  const pane = document.querySelector(".term-pane:not([hidden])")',
         '  const note = pane?.querySelector(".paused-note")?.textContent ?? ""',
         '  const b = pane?.querySelector(".paused-actions .btn[data-variant=primary]")',
-        '  if (!b || /host/i.test(note)) return false',
+        '  if (!b || /host|machine/i.test(note) || /Reattach/.test(b.textContent)) return false',
         '  b.click()',
         '  return true',
         '})()'
