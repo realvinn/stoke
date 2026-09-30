@@ -20,6 +20,15 @@
  *
  * So the selection appears while dragging and vanishes on release.
  *
+ * Off macOS the selecting drag is a different gesture, so every drag below is
+ * made with the one this platform's xterm acts on (`selectingDrag`): Option on
+ * macOS, Shift elsewhere while the mouse is reported, no modifier when it is
+ * not. The suite used to Option-drag everywhere, which only a Mac's xterm
+ * treats as a selection — so it passed on exactly one platform and 43 of its
+ * assertions failed off it, measured with xterm's platform read as Linux. That
+ * is a defect in the suite (CLAUDE.md, Verification), and it mattered the
+ * moment CI started running this under xvfb (gotcha 113).
+ *
  *   npm run verify:selection
  */
 import { app, BrowserWindow } from 'electron'
@@ -31,6 +40,36 @@ import { isButtonlessMotionReport } from '../src/renderer/src/lib/mouseReport.ts
 
 const XTERM_DIR = fileURLToPath(new URL('../node_modules/@xterm/xterm/', import.meta.url))
 
+/*
+ * What the page's xterm will believe about the platform. xterm reads
+ * `navigator.platform` once, at load, and in an Electron renderer that is the
+ * platform the process runs on — so this and the page agree by construction.
+ */
+const IS_MAC = process.platform === 'darwin'
+
+interface Modifiers {
+  altKey: boolean
+  shiftKey: boolean
+}
+
+/*
+ * The drag a user makes to select here, as it reaches xterm.
+ *
+ *   macOS           Option, always: `shouldForceSelection` is `altKey` with
+ *                   reporting on, and with it off Option is not column-select
+ *                   because `macOptionClickForcesSelection` gates that away.
+ *                   It is also the modifier `altClickMovesCursor` reads, which
+ *                   is the collision this suite exists for.
+ *   elsewhere, on   Shift — `shouldForceSelection` is `event.shiftKey` there
+ *                   and `TerminalView`'s shim leaves the real event alone.
+ *   elsewhere, off  no modifier. Selection is enabled, a plain drag selects,
+ *                   and a kept Shift would take the extend branch and select
+ *                   nothing (gotcha 10); the shim strips it for that reason.
+ */
+function selectingDrag(isMac: boolean, reporting: boolean): Modifiers {
+  return isMac ? { altKey: true, shiftKey: false } : { altKey: false, shiftKey: reporting }
+}
+
 interface Step {
   name: string
   selection: string
@@ -40,6 +79,10 @@ interface Step {
 interface Run {
   mouseEventsActive?: boolean
   altClickMovesCursor: boolean
+  /** Whether this case turns mouse reporting on — decided by its `modes`. */
+  reporting: boolean
+  /** The modifiers every selecting drag in this case carried. */
+  drag: Modifiers
   label: string
   steps: Step[]
   error?: string
@@ -53,7 +96,7 @@ interface Run {
  * backtick terminates the outer literal early and throws a SyntaxError before
  * a line of it runs (CLAUDE.md, standing traps).
  */
-function page(altClickMovesCursor: boolean, modes: string): string {
+function page(altClickMovesCursor: boolean, modes: string, drag: Modifiers): string {
   return [
     '<!doctype html><html><head>',
     `<link rel="stylesheet" href="${XTERM_DIR}css/xterm.css">`,
@@ -70,6 +113,10 @@ function page(altClickMovesCursor: boolean, modes: string): string {
     'function cells() { const n = document.querySelector(".xterm-selection"); return n ? n.children.length : -1 }',
     'function record(term, name) { steps.push({ name, selection: sel(term), cells: cells() }) }',
     '',
+    // The selecting drag's modifiers, decided outside the page by
+    // `selectingDrag` so the assertions read the same answer.
+    `const DRAG = ${JSON.stringify(drag)}`,
+    '',
     // Coordinates always come from the screen element; the dispatch target may
     // be the document, because that is where xterm listens for the mousemove
     // and mouseup that continue a drag past the terminal's own bounds.
@@ -79,8 +126,8 @@ function page(altClickMovesCursor: boolean, modes: string): string {
     '    bubbles: true, cancelable: true, view: window,',
     '    clientX: r.left + x, clientY: r.top + y,',
     '    button: 0, buttons: type === "mouseup" ? 0 : 1,',
-    '    altKey: true, detail: 1',
-    '  }, opts || {}))',
+    '    detail: 1',
+    '  }, DRAG, opts || {}))',
     '  target.dispatchEvent(ev)',
     '  return ev',
     '}',
@@ -129,9 +176,9 @@ function page(altClickMovesCursor: boolean, modes: string): string {
     // selects happily, and every assertion below passes while testing nothing.
     // A plain drag must select NOTHING for the rest of this to mean anything.
     '  results.mouseEventsActive = !!document.querySelector(".enable-mouse-events")',
-    '  mouse(screen, "mousedown", 10, 8, { altKey: false })',
-    '  mouse(document, "mousemove", 240, 8, { altKey: false })',
-    '  mouse(document, "mouseup", 240, 8, { altKey: false })',
+    '  mouse(screen, "mousedown", 10, 8, { altKey: false, shiftKey: false })',
+    '  mouse(document, "mousemove", 240, 8, { altKey: false, shiftKey: false })',
+    '  mouse(document, "mouseup", 240, 8, { altKey: false, shiftKey: false })',
     '  await new Promise(r => setTimeout(r, 60))',
     '  record(term, "control: plain drag")',
     '  term.clearSelection()',
@@ -158,8 +205,8 @@ function page(altClickMovesCursor: boolean, modes: string): string {
     // you let go of it. Under button-event or any-event tracking the terminal
     // reports motion to the application, and every such report is user input.
     '    if (opts.thenMove) {',
-    '      mouse(document, "mousemove", 300, 8, { altKey: false, buttons: 0 })',
-    '      mouse(screen, "mousemove", 320, 8, { altKey: false, buttons: 0 })',
+    '      mouse(document, "mousemove", 300, 8, { altKey: false, shiftKey: false, buttons: 0 })',
+    '      mouse(screen, "mousemove", 320, 8, { altKey: false, shiftKey: false, buttons: 0 })',
     '      await new Promise(r => setTimeout(r, 80))',
     '    }',
     '    if (opts.thenKey) {',
@@ -170,9 +217,9 @@ function page(altClickMovesCursor: boolean, modes: string): string {
     '    record(term, name + " [released]")',
     '  }',
     '',
-    '  await drag("a long option-drag", { to: 240 })',
+    '  await drag("a long selecting drag", { to: 240 })',
     // The altClickMovesCursor window: <=1 char selected, released inside 500ms.
-    '  await drag("a tiny quick option-drag", { to: 14, hold: 4 })',
+    '  await drag("a tiny quick selecting drag", { to: 14, hold: 4 })',
     // What the real app does that this harness otherwise does not: the TUI
     // redraws after the gesture.
     '  await drag("then the app redraws", { to: 240, thenWrite: "\\u001b[2K\\rredrawn prompt > " })',
@@ -191,19 +238,23 @@ function page(altClickMovesCursor: boolean, modes: string): string {
      * checks the shape of what came back: a NORMAL selection runs to the end of
      * the first line and wraps, a COLUMN selection would take the same narrow
      * x-range out of both rows and never include the first line's tail.
+     *
+     * Made with DRAG, which on macOS is exactly that retold clone (Alt, no
+     * Shift). Off macOS the shim never adds Alt, so the drag that reaches
+     * xterm is DRAG there too, and the same wrap is what it must produce.
      */
     '  term.clearSelection()',
     '  term.write("\\u001b[2J\\u001b[3J\\u001b[H")',
     '  term.write("the quick brown fox jumps over the lazy dog\\r\\n")',
     '  term.write("second line of text to drag across\\r\\n")',
     '  await new Promise(r => setTimeout(r, 80))',
-    '  mouse(screen, "mousedown", 200, 8, { shiftKey: false, altKey: true })',
+    '  mouse(screen, "mousedown", 200, 8)',
     '  await new Promise(r => setTimeout(r, 16))',
-    '  mouse(document, "mousemove", 60, 26, { shiftKey: false, altKey: true })',
+    '  mouse(document, "mousemove", 60, 26)',
     '  await new Promise(r => setTimeout(r, 16))',
-    '  mouse(document, "mouseup", 60, 26, { shiftKey: false, altKey: true })',
+    '  mouse(document, "mouseup", 60, 26)',
     '  await new Promise(r => setTimeout(r, 60))',
-    '  record(term, "alt across two rows")',
+    '  record(term, "drag across two rows")',
     '',
     /*
      * The two clones side by side: the one the shim used to dispatch and the one
@@ -257,7 +308,11 @@ async function runCase(
   modes = '\\u001b[?1000h\\u001b[?1002h\\u001b[?1006h'
 ): Promise<Run> {
   const file = join(dir, `${label.replace(/\W+/g, '-')}.html`)
-  await writeFile(file, page(altClickMovesCursor, modes), 'utf8')
+  // Every case but the plain-shell one writes some mode that takes the mouse;
+  // the control below measures whether it really did.
+  const reporting = modes !== ''
+  const drag = selectingDrag(IS_MAC, reporting)
+  await writeFile(file, page(altClickMovesCursor, modes, drag), 'utf8')
 
   const win = new BrowserWindow({
     show: false,
@@ -268,7 +323,7 @@ async function runCase(
   try {
     await win.loadFile(file)
     const out = (await win.webContents.executeJavaScript('window.__run')) as Run
-    return { ...out, label, altClickMovesCursor }
+    return { ...out, label, altClickMovesCursor, reporting, drag }
   } finally {
     win.destroy()
   }
@@ -355,7 +410,7 @@ async function main(): Promise<void> {
      * nothing at all.
      */
     const control = run.steps.find((s) => s.name.startsWith('control'))
-    const reporting = !run.label.startsWith('no mouse reporting')
+    const reporting = run.reporting
     check(
       `${run.label}: mouse reporting is ${reporting ? 'on' : 'off'}, as this case intends`,
       run.mouseEventsActive === reporting,
@@ -402,9 +457,20 @@ async function main(): Promise<void> {
      * which by this repo's own standard is a defect in the suite rather than a
      * fact about the machine.
      */
-    const isMac = process.platform === 'darwin'
+    const isMac = IS_MAC
     const forces = (shiftKey: boolean, altKey: boolean): boolean =>
       reporting ? (isMac ? altKey : shiftKey) : !shiftKey
+
+    /*
+     * The drag every case below was made with is itself held to that rule, so
+     * `selectingDrag` cannot drift into a gesture this platform's xterm ignores
+     * — which is what the suite's old Option-everywhere drag was off macOS.
+     */
+    check(
+      `${run.label}: the selecting drag (${JSON.stringify(run.drag)}) is one xterm forces here`,
+      forces(run.drag.shiftKey, run.drag.altKey),
+      ''
+    )
 
     for (const [name, shiftKey, altKey] of [
       ['shift only', true, false],
@@ -433,12 +499,17 @@ async function main(): Promise<void> {
      * is only ever Alt (macOS, reporting on) or no modifier (reporting off).
      * The copy-mode clone that carried Shift off macOS went with copy mode.
      */
-    const shimAlt = reporting && isMac
-    const shimStep = run.steps.find(
-      (s) => s.name === (shimAlt ? 'alt only' : 'neither modifier')
-    )
+    /*
+     * So what reaches xterm from a user's Shift-drag is: the Alt clone (macOS,
+     * reporting on), the no-modifier clone (reporting off, any platform), or
+     * the real Shift-drag itself (off macOS, reporting on — no clone). This
+     * used to test the no-modifier clone in that last cell too, which selects
+     * nothing there and is not what reaches xterm.
+     */
+    const reaching = !reporting ? 'neither modifier' : isMac ? 'alt only' : 'shift only'
+    const shimStep = run.steps.find((s) => s.name === reaching)
     check(
-      `${run.label}: the clone the shim dispatches here does select`,
+      `${run.label}: the Shift-drag as it reaches xterm here (${reaching}) does select`,
       !!shimStep && shimStep.selection.length > 0,
       shimStep ? `got ${JSON.stringify(shimStep.selection)}` : 'no reading'
     )
@@ -482,7 +553,12 @@ async function main(): Promise<void> {
        * every other.
        */
 
-      if (!run.altClickMovesCursor) {
+      /*
+       * `altClickMovesCursor` reads `event.altKey` on mouseup, so it can only
+       * break a drag that carries Alt — macOS's. Off macOS the selecting drag
+       * has no Alt, the default is harmless to it, and it must survive.
+       */
+      if (!run.altClickMovesCursor || !run.drag.altKey) {
         check(`${run.label}: ${name} survives letting go`, survived, detail)
         continue
       }
@@ -513,12 +589,14 @@ async function main(): Promise<void> {
    * and every run in this suite sets it.
    */
   for (const run of out) {
-    const shim = run.steps.find((s) => s.name === 'alt across two rows')
-    if (!shim) continue
+    // An errored run is already counted; any other run missing this reading is
+    // a failure, not a skip — a renamed step must not make the check vanish.
+    if (run.error) continue
+    const shim = run.steps.find((s) => s.name === 'drag across two rows')
     check(
-      `${run.label}: the retold drag wraps the line rather than cutting a column`,
-      shim.selection.includes('lazy dog'),
-      JSON.stringify(shim.selection)
+      `${run.label}: the selecting drag wraps the line rather than cutting a column`,
+      !!shim && shim.selection.includes('lazy dog'),
+      shim ? JSON.stringify(shim.selection) : 'no reading'
     )
   }
 
