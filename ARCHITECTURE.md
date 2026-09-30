@@ -682,7 +682,9 @@ npm run verify:chat-sources   # chat history, against synthetic fixtures for eve
                               # deflated, ZIP64) read back, and escaping names, bombs, lying and
                               # oversize headers refused; claude.ai and ChatGPT branch trees keep
                               # only the branch shown; a re-import updates in place; caps said;
-                              # imports survive passes and Rebuild, not Delete index; the viewer
+                              # imports survive passes and Rebuild, not Delete index; a pass
+                              # holds imports to caps lowered after them; an import stopped
+                              # part-way says so (and Rebuild never stops one); the viewer
                               # re-reads a subagent's file at open time
 npm run verify:cli            # finding the `claude` binary: the version-manager shim dirs,
                               # the probe's retry rule, and the two not-found messages.
@@ -976,7 +978,8 @@ src/main/         Electron main process
                       before its first await, a second ask queued once (gotcha 20)
     worker.ts         the worker thread (its own bundle via `?modulePath`): the store's only
                       writer and the only reader of any source; yields between chats so a
-                      search is answered mid-pass
+                      search is answered mid-pass. A pass and an import each have their own
+                      stop flag: Rebuild stops only the pass
     sources.ts        where each tool keeps its chats (named roots only, overrides honoured),
                       listing newest first under discovery's cap, and SYNC reads — the libuv
                       pool is shared with pty writes. JSONL is read from the last offset with
@@ -986,7 +989,8 @@ src/main/         Electron main process
     scan.ts           one pass: list everything, fold Cline's copies into originals their tool
                       still has, admit the newest per source then in all (a file holding no
                       chat takes no slot; nothing at or below the store ceiling's remembered
-                      cut; imports take their room under the total first), read what changed
+                      cut; imports, held to THIS pass's caps, take their room under the total
+                      first), read what changed
                       under the byte and time budget, prune only a complete listing — never
                       an import
     store.ts          node:sqlite + FTS5 in userData/chat-index (0700, files 0600). Search is
@@ -1002,7 +1006,8 @@ src/main/         Electron main process
                       (`current_leaf_message_uuid`, `current_node`), their own titles and times
     importer.ts       an export into the store: recognised by content, ranked newest first,
                       held to `perSource` and `total`, keyed by the conversation's own id so a
-                      re-import updates in place; disclosed per file (`importDisclosure`)
+                      re-import updates in place; disclosed per file (`importDisclosure`),
+                      a stop part-way included (`ok: false`, "stopped after K of N")
     viewer.ts         one chat for the read-only viewer: a local one re-read from its tool's
                       own file or database at open time (only inside that tool's root), the
                       store's copy for an import or an original that is gone
@@ -1242,7 +1247,7 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
   src/components/ChatHistorySettings.tsx  Settings › Chat history: the switch, each source with
                     what was found and the sentence naming any cap that bound, the presets and
                     six caps (committed on blur/Enter, gotcha 63), Index now, Rebuild (imports
-                    kept), Delete; "Import an export…" and a drop zone (Files only, gotcha 59)
+                    kept), Delete (waits for a running import); "Import an export…" and a drop zone (Files only, gotcha 59)
                     with each import, what it left in the index, and its Remove
   src/components/ChatViewer.tsx  the read-only chat viewer: a `.body-row` column beside the main
                     one, never an overlay (gotcha 14) — messages in order with who and when, the
