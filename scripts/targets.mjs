@@ -40,6 +40,8 @@
  * Usage:
  *   node scripts/targets.mjs --list             human-readable
  *   node scripts/targets.mjs --matrix           one line of JSON for $GITHUB_OUTPUT
+ *   node scripts/targets.mjs --probe-matrix     the same targets, as ci.yml's probe legs
+ *   node scripts/targets.mjs --debian-matrix    the probe's Debian container legs
  *   node scripts/targets.mjs --args mac-arm64   the electron-builder flags
  *   node scripts/targets.mjs --build mac-arm64  run electron-builder with them
  */
@@ -167,6 +169,80 @@ export function matrixJson() {
   })
 }
 
+/*
+ * The CI probe (scripts/probe-e2e.mts, ci.yml's `probe` job): every target
+ * above is also packaged with `--dir` on its own runner and DRIVEN — a session,
+ * several agents, a browser login, a quit and a relaunch. Derived from TARGETS,
+ * never a list of its own (gotchas 62, 67): a target added above is probed on
+ * the next push with no edit to the workflow, and verify:targets holds ci.yml
+ * to reading this.
+ *
+ * Only what differs per target is written here: whether the leg can reach a
+ * real sshd. Linux runners have Docker, so the Linux leg runs a Debian sshd
+ * container (.github/probe/sshd.Dockerfile). macOS arm64 runners have no
+ * nested virtualisation (no Docker), and a loopback sshd there, or OpenSSH
+ * Server on Windows, has never been set up on these images — named rather than
+ * silently absent.
+ */
+export const PROBE_SSH = {
+  'linux-x64': 'a Debian bookworm sshd container on 127.0.0.1:2222 (key user, password-only user, tmux)',
+}
+
+/** Why a probe leg has no SSH checks. */
+export const PROBE_NO_SSH = {
+  win32: 'no sshd on the Windows images without Add-WindowsCapability (slow, and hung on windows-11-arm); not set up yet',
+  darwin: 'no Docker on macOS runners; a loopback sshd via sysadminctl users is not set up yet',
+}
+
+/** The `{ include: [...] }` for the probe job: one leg per target, on the target's own runner. */
+export function probeMatrixJson() {
+  return JSON.stringify({
+    include: TARGETS.map(({ key, name, runner, args, platform, arch }) => ({
+      key,
+      name,
+      runner,
+      args: args.join(' '),
+      platform,
+      arch,
+      ssh: key in PROBE_SSH,
+    })),
+  })
+}
+
+/*
+ * "Terminal-only systems like Debian": Stoke is a GUI, so on a server-style
+ * Debian what can be proven is the one-line installer's real install, as root,
+ * in a bare `debian:bookworm` container, and the installed AppImage booting
+ * under xvfb — with FUSE, and without it (Docker has no /dev/fuse unless it is
+ * handed one), where the wrapper must still start it or say why (gotcha 76).
+ * The AppImage is the PUBLISHED linux-x64 build: install.sh reads the release
+ * feed, and nothing may point a shipped installer elsewhere.
+ */
+export const DEBIAN_LEGS = [
+  {
+    key: 'debian-fuse',
+    name: 'Debian bookworm · FUSE',
+    image: 'debian:bookworm',
+    // FUSE inside Docker needs the device, the capability to mount, and an
+    // AppArmor profile that does not `deny mount`. The shm size is Chromium's:
+    // Docker's 64 MB default /dev/shm is what its renderers crash on.
+    options: '--shm-size=1g --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor:unconfined',
+    fuse: true,
+  },
+  {
+    key: 'debian-nofuse',
+    name: 'Debian bookworm · no FUSE',
+    image: 'debian:bookworm',
+    options: '--shm-size=1g',
+    fuse: false,
+  },
+]
+
+/** The `{ include: [...] }` for the Debian job. */
+export function debianMatrixJson() {
+  return JSON.stringify({ include: DEBIAN_LEGS })
+}
+
 /** The `@lydell/node-pty-<platform>-<arch>` a build for this target must contain. */
 export function ptyPackageFor(target) {
   return `@lydell/node-pty-${target.platform}-${target.arch}`
@@ -189,6 +265,14 @@ function resolve(key) {
 function main(argv) {
   if (argv.includes('--matrix')) {
     process.stdout.write(matrixJson() + '\n')
+    return
+  }
+  if (argv.includes('--probe-matrix')) {
+    process.stdout.write(probeMatrixJson() + '\n')
+    return
+  }
+  if (argv.includes('--debian-matrix')) {
+    process.stdout.write(debianMatrixJson() + '\n')
     return
   }
 

@@ -6,7 +6,7 @@
 # hand, or by the release it was about to block. This runs the same gate on
 # every branch as soon as the commit lands.
 #
-# One gating job and two that are not:
+# One gating job and the rest that are not:
 #
 #   verify       ubuntu-latest: typecheck, `npm run verify:ci`, build — the
 #                same job as release.yml's `verify`, step for step
@@ -21,6 +21,20 @@
 #                this Linux gate. They are non-gating because nobody has seen
 #                them green yet; the first runs are how to find out which
 #                suites are portable. Make them gating once they have a streak.
+#   probe        every release target (`node scripts/targets.mjs
+#                --probe-matrix`, never a list of its own — gotchas 62, 67),
+#                packaged with `--dir` on its own native runner and DRIVEN over
+#                CDP by scripts/probe-e2e.mts: a Claude session from the `stoke`
+#                command, two more agents beside it, typing, the statusLine and
+#                hooks, a docked-browser login kept to its own profile, the
+#                browser MCP read by an agent, phone access and its security
+#                matrix, a graceful quit, a relaunch that resumes — and on the
+#                Linux leg a real Debian sshd. Every agent is a stub
+#                (scripts/probe/fake-agent.mjs): paid CLIs cannot sign in here.
+#   debian       a bare `debian:bookworm` container, as root: this branch's
+#                one-line installer, the launcher's --no-sandbox, and the
+#                published AppImage booting under xvfb, with FUSE and without.
+#                Both probe jobs are non-gating until they have a green streak.
 #
 # `npm run verify:ci -- --list` prints what a push runs, and
 # `npm run verify:ci -- --list --platform linux` what this job resolves.
@@ -131,3 +145,219 @@ jobs:
       # --keep-going: this leg exists to show WHICH suites are not portable, and
       # stopping at the first red one hid the rest behind it for a push each.
       - run: npm run verify:ci -- --keep-going
+
+  # The probe's legs, computed rather than written down: one per release target
+  # (targets.mjs TARGETS), and the Debian container legs (DEBIAN_LEGS).
+  # verify:targets holds both jobs below to reading these outputs.
+  probe-matrix:
+    name: Probe matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.targets.outputs.matrix }}
+      debian: ${{ steps.targets.outputs.debian }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: targets
+        run: |
+          echo "matrix=$(node scripts/targets.mjs --probe-matrix)" >> "$GITHUB_OUTPUT"
+          echo "debian=$(node scripts/targets.mjs --debian-matrix)" >> "$GITHUB_OUTPUT"
+
+  # A PACKAGED Stoke, driven. Not a copy of the app's logic: the build a release
+  # ships for this target (`--dir`, so no installer), launched with CDP, and every
+  # check made against what it did. What each check proves is in the header of
+  # scripts/probe-e2e.mts; screenshots, the app's own logs and every stub agent's
+  # record are uploaded whatever happens. Non-gating until it has a green streak:
+  # a flaky probe must not block a push nobody can fix from here.
+  probe:
+    name: Probe · ${{ matrix.name }} (non-gating)
+    needs: probe-matrix
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.probe-matrix.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    continue-on-error: true
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      # The Debian sshd's password-only user. A throwaway for a container that
+      # lives for one job on the runner's loopback; not a secret, and this
+      # workflow reads none (it runs for pull requests).
+      STOKE_PROBE_SSH_PASSWORD: probe-Pass-1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+
+      # The target's own flags, from targets.mjs like every build of it. On a
+      # Mac a REAL ad-hoc signature (gotcha 24): with no identity to find,
+      # electron-builder skips signing and Apple silicon refuses the bundle.
+      - name: Package this target (targets.mjs flags, --dir)
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: |
+          set -eu
+          sign=''
+          if [ "$RUNNER_OS" = macOS ]; then sign='-c.mac.identity=-'; fi
+          npx electron-builder $(node scripts/targets.mjs --args ${{ matrix.key }}) --dir $sign --publish never
+
+      # The two things no build error shows: the terminal binary is this
+      # runner's (gotcha 67), and the fuses (gotcha 108).
+      - run: node scripts/assert-packaged-pty.mjs ${{ matrix.key }}
+      - run: node scripts/assert-cookie-fuse.mjs release
+
+      - name: Find the packaged app
+        run: |
+          set -eu
+          case "$RUNNER_OS" in
+            macOS) app=$(find release -maxdepth 2 -type d -name Stoke.app | head -n 1) ;;
+            *) app=$(find release -maxdepth 1 -type d -name '*-unpacked' | head -n 1) ;;
+          esac
+          test -n "$app"
+          abs="$PWD/$app"
+          if [ "$RUNNER_OS" = Windows ]; then abs=$(cygpath -w "$abs"); fi
+          echo "PROBE_APP=$abs" >> "$GITHUB_ENV"
+          echo "packaged: $abs"
+
+      # Ubuntu 24.04 refuses the unprivileged user namespace Chromium's sandbox
+      # wants, and the unpacked chrome-sandbox is not setuid root — the same
+      # sysctl the verify gate relaxes. And a display.
+      - name: Let Electron's sandbox start, and give it a display
+        if: runner.os == 'Linux'
+        run: |
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          if ! command -v xvfb-run >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends xvfb
+          fi
+          command -v xvfb-run
+
+      # A real sshd, of the kind SSH tabs are for: Debian, reached by key or by
+      # password, tmux installed (.github/probe/sshd.Dockerfile). ssh reads the
+      # passwd home's ~/.ssh and never $HOME, so the Host entries go in the
+      # RUNNER's own ~/.ssh/config — a throwaway VM — which is why the probe
+      # refuses --ssh anywhere but here.
+      - name: A Debian sshd to connect to (key user, password-only user)
+        if: matrix.ssh
+        run: |
+          set -eu
+          D="$RUNNER_TEMP/sshd"
+          mkdir -p "$D"
+          ssh-keygen -q -t ed25519 -N '' -f "$D/client_key"
+          docker build -q -t stoke-probe-sshd --build-arg PROBE_PASSWORD="$STOKE_PROBE_SSH_PASSWORD" -f .github/probe/sshd.Dockerfile "$D"
+          docker run -d --name stoke-probe-sshd -p 127.0.0.1:2222:22 stoke-probe-sshd
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          cat >> ~/.ssh/config <<EOF
+          Host stoke-key
+            HostName 127.0.0.1
+            Port 2222
+            User stokekey
+            IdentityFile $D/client_key
+            IdentitiesOnly yes
+            StrictHostKeyChecking accept-new
+            UserKnownHostsFile $D/known_hosts
+          Host stoke-pw
+            HostName 127.0.0.1
+            Port 2222
+            User stokepw
+            StrictHostKeyChecking accept-new
+            UserKnownHostsFile $D/known_hosts
+          EOF
+          chmod 600 ~/.ssh/config
+          ls -la ~/.ssh
+          for i in $(seq 60); do
+            if ssh -o BatchMode=yes -o ConnectTimeout=5 stoke-key true 2>/dev/null; then break; fi
+            sleep 0.5
+          done
+          ssh -o BatchMode=yes stoke-key 'echo key login ok; tmux -V'
+          # The password user must have no working key before the probe enrolls one.
+          if ssh -o BatchMode=yes -o ConnectTimeout=5 stoke-pw true 2>/dev/null; then
+            echo 'stoke-pw let a key in before any enrollment' >&2
+            exit 1
+          fi
+          echo 'stoke-pw refuses BatchMode, as it should'
+
+      - name: Drive it (scripts/probe-e2e.mts)
+        run: |
+          set -u
+          ssh=''
+          if [ '${{ matrix.ssh }}' = 'true' ]; then ssh='--ssh'; fi
+          if [ "$RUNNER_OS" = Linux ]; then
+            xvfb-run -a -s '-screen 0 1600x1000x24' node scripts/probe-e2e.mts --app "$PROBE_APP" --work "$RUNNER_TEMP/probe" $ssh
+          else
+            node scripts/probe-e2e.mts --app "$PROBE_APP" --work "$RUNNER_TEMP/probe" $ssh
+          fi
+
+      - name: The sshd's own log
+        if: always() && matrix.ssh
+        run: docker logs stoke-probe-sshd 2>&1 | tail -n 80 || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: probe-${{ matrix.key }}
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/probe/shots
+            ${{ runner.temp }}/probe/logs
+            ${{ runner.temp }}/probe/agents
+            ${{ runner.temp }}/probe/probe-summary.json
+            ${{ runner.temp }}/probe/ud/tabs.json
+
+  # "Terminal-only systems like Debian": a bare debian:bookworm as root — the
+  # one-line installer from THIS branch (served locally, the Worker's own
+  # route), the launcher it writes, and the published AppImage booting under
+  # xvfb with FUSE and without (scripts/probe/debian.sh). Only what a person
+  # needs to paste the one-liner is installed first, plus Electron's libraries.
+  debian:
+    name: Probe · ${{ matrix.name }} (non-gating)
+    needs: probe-matrix
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.probe-matrix.outputs.debian) }}
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ matrix.image }}
+      options: ${{ matrix.options }}
+    continue-on-error: true
+    timeout-minutes: 30
+    steps:
+      - name: What the one-liner needs, and what Electron needs to draw
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            curl ca-certificates git procps xvfb xauth \
+            libasound2 libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 xdg-utils libatspi2.0-0 libsecret-1-0 libgbm1 \
+            ${{ matrix.fuse && 'fuse3' || '' }}
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      # ws, for cdp-eval.mjs. No Electron download and no native builds: the
+      # app under test is the AppImage the installer fetches.
+      - run: npm ci --ignore-scripts
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+      - name: Install as root, and boot it (scripts/probe/debian.sh)
+        run: sh scripts/probe/debian.sh ${{ matrix.fuse && 'fuse' || 'nofuse' }} "$RUNNER_TEMP/debian"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: probe-${{ matrix.key }}
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/debian/*.log
+            ${{ runner.temp }}/debian/*.png
+            ${{ runner.temp }}/debian/*.err
+            ${{ runner.temp }}/debian/*.out
