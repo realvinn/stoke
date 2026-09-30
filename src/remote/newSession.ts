@@ -4,9 +4,10 @@
  * tap of any of 61 unsearchable full-width cards, with no agent, mode, model
  * or effort choice. Now: pick a folder (search, Pinned, Recent, All), then
  * confirm with the choices the desktop's launcher has, defaulted from
- * `settings.defaults` (phone contract points 2 and 8). Bypass is never offered.
+ * `settings.defaults` (phone contract points 2 and 8), on the desktop's
+ * default agent (`defaults.cli`). Bypass is never offered.
  */
-import { groupProjects, middleTruncate, plural, relativeTime } from '@shared/phoneUi'
+import { groupProjects, initialAgent, middleTruncate, plural, relativeTime } from '@shared/phoneUi'
 import { api, folderName, host, loadHost, type ProjectRow } from './api'
 import { el, failure, humanError, icon, openSheet, skeleton, toast } from './dom'
 import { pendingMeta } from './session'
@@ -140,7 +141,8 @@ export function openNewSession(): void {
     sheet.setTitle(name, pickFolder)
     const agents = host?.agents?.length ? host.agents : [{ id: 'claude', name: 'Claude Code' }]
     const defaults = host?.defaults ?? { permissionMode: 'default', model: '', effort: 'default' }
-    let cli = agents[0].id
+    // The desktop's default agent, when this sheet offers it.
+    let cli = initialAgent(agents, defaults.cli)
     let mode = MODES.some((m) => m.id === defaults.permissionMode) ? defaults.permissionMode : 'default'
     let model = MODELS.some((m) => m.id === defaults.model) ? defaults.model : ''
     let effort = EFFORTS.some((e) => e.id === defaults.effort) ? defaults.effort : 'default'

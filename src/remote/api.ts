@@ -47,7 +47,8 @@ export interface HostInfo {
   platform: string
   stt: 'ready' | 'down' | 'off'
   agents: { id: string; name: string }[]
-  defaults: { permissionMode: string; model: string; effort: string }
+  /** `cli` is the desktop's default agent; absent from a desktop older than it. */
+  defaults: { permissionMode: string; model: string; effort: string; cli?: string }
 }
 
 export interface ProjectRow {

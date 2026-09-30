@@ -28,6 +28,7 @@ import {
   isGatedRemotePath,
   isTerminalReport,
   mayStoreKeyCookie,
+  phoneHostDefaults,
   phoneStatusFor,
   PROMPT_SETTLE_MS,
   resumeVerdict,
@@ -597,6 +598,29 @@ check('no ?k: nothing to store', mayStoreKeyCookie(null, true), false)
   })(), 400)
   check('an agent whose transcripts Stoke cannot look up is not checked', resumeVerdict({ resume: true, sessionId: id, livePty: null, hasTranscript: null }).ok, true)
   check('a new session (no resume) is never refused on transcripts', resumeVerdict({ resume: false, sessionId: id, livePty: null, hasTranscript: false }).ok, true)
+}
+
+console.log("\n/api/host's defaults (phone contract point 2)")
+{
+  const d = { permissionMode: 'acceptEdits', model: 'opus', effort: 'high' } as const
+  check(
+    'the three contract fields are unchanged, and cli is ADDED beside them',
+    phoneHostDefaults(d, 'claude', ['claude', 'codex']),
+    { permissionMode: 'acceptEdits', model: 'opus', effort: 'high', cli: 'claude' }
+  )
+  check(
+    'bypass is still never offered to the phone',
+    phoneHostDefaults({ ...d, permissionMode: 'bypassPermissions' }, 'claude', ['claude']).permissionMode,
+    'default'
+  )
+  check("the desktop's default agent, when the phone is offered it", phoneHostDefaults(d, 'codex', ['claude', 'codex']).cli, 'codex')
+  check(
+    'a default the phone is NOT offered (uninstalled, unticked) falls back as Start does: Claude Code',
+    phoneHostDefaults(d, 'grok', ['claude', 'codex']).cli,
+    'claude'
+  )
+  check('with no Claude on offer, the first agent that is', phoneHostDefaults(d, 'grok', ['codex', 'opencode']).cli, 'codex')
+  check('an agent list carrying junk ids cannot become the default', phoneHostDefaults(d, 'grok', ['bash', 'codex']).cli, 'codex')
 }
 
 console.log(failures ? `\n${failures} FAILED` : '\nall pass')

@@ -923,13 +923,17 @@ function remoteDeps(): RemoteDeps {
         name: CODING_CLIS.find((c) => c.id === id)?.label ?? id
       }))
     },
-    /** bypassPermissions is never offered to the phone — see /api/host's doc comment. */
+    /**
+     * As stored. /api/host strips bypassPermissions (never offered to the
+     * phone) and resolves the agent against its own list (`phoneHostDefaults`).
+     */
     defaults: () => {
-      const d = getSettings().defaults
+      const s = getSettings()
       return {
-        permissionMode: d.permissionMode === 'bypassPermissions' ? 'default' : d.permissionMode,
-        model: d.model,
-        effort: d.effort
+        permissionMode: s.defaults.permissionMode,
+        model: s.defaults.model,
+        effort: s.defaults.effort,
+        cli: s.agents.defaultCli
       }
     },
     sttStatus: async () => {
