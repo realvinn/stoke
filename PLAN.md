@@ -565,16 +565,44 @@ and phase 1 needs no server.
 - Also shipped, reported between waves: every popover and menu hides the docked browser while
   it lies over it, and a still of the page shows meanwhile (gotcha 14's note, verify:layers).
 
+**Wave 3 — shipped:**
+- Settings › Agents has a page per agent. Claude's launch defaults are on its page, and there is
+  a Default model for the 12 agents whose flag is confirmed (gotcha 119).
+- The phone can browse, create and start sessions in allowed folders, scratch and SSH hosts;
+  the allow-list cannot widen itself (gotcha 121).
+- The Windows CI leg passes all 48 suites, after fixing two real Windows bugs (gotcha 123).
+- Cloudflare Access JWTs are verified, and a refusal is a 403 (gotcha 124).
+
+**Wave 4 — shipped:**
+- Chat history indexes local AI chats in a worker, with disclosed caps. Sources are Claude
+  Code, Codex, OpenCode, Cline (copies deduped), Cowork and Zed. It has an offer card, Settings ›
+  Chat history, and search "In conversations" (gotcha 125).
+- SSH tabs on kept hosts live in an invisible per-tab tmux. They reconnect, reattach on restore,
+  and ask Detach or End; byobu is no longer needed (gotcha 126).
+- Multiple accounts per agent, each with its own home via the vendor's env var, plus
+  `stoke account list|add|env` (gotcha 127).
+- Speech-to-text through OpenAI, Groq, Deepgram, ElevenLabs, Mistral, AssemblyAI, Gemini, or
+  any OpenAI-compatible server, with keys in the vault (gotcha 128).
+- One MCP server model: Claude's own servers are mirrored at launch and ticked per agent on
+  its page (gotcha 129).
+- Chrome logins on Windows via the user's own `chrome.exe` over a debug pipe on a profile copy.
+  PROVEN only for `v10` rows on the CI runner; `v20` (app-bound) from a copy still needs a real
+  Windows machine (gotcha 130).
+- The phone web UI is cleaner: one action, two-line rows, Running | Recent. It is also an
+  installable PWA shell (gotcha 131).
+
 **Still open, roughly in order:**
-- Agents settings pages.
-- The chat import.
-- Phone folders, then the web UI pass and the PWA.
-- Managed tmux in place of byobu.
-- Multi-account plus usage for every account.
-- STT API providers.
-- The MCP model.
-- Chrome logins on Windows, via the user's own `chrome.exe` over CDP.
-- The CI probe on each OS and Debian.
+- Usage for every account: per-account Claude, the Codex rollouts, the OpenRouter key and
+  Cline's balance.
+- claude.ai / ChatGPT export import, and a read-only chat viewer.
+- The Chrome close-and-reopen flow when a profile copy is locked, plus a `v20` proof on the
+  owner's Windows PC.
+- The CI probe on each OS and Debian: a packaged app booted and driven, with sessions, several
+  agents, a browser cookie and SSH.
+- Smaller follow-ups:
+  - The phone's model and effort lists served per agent.
+  - Web Push.
+  - A second Claude account seeing the default account's user-scope MCP servers.
 
 ## Open work, in the order it is worth doing
 
