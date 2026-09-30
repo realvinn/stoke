@@ -81,13 +81,16 @@ xvfb_pid=$!
 export DISPLAY=:99
 sleep 1
 
-# Every process of an installed Stoke: the AppImage runtime, a FUSE mount's
-# daemon, the app from its mount (/tmp/.mount_*) or its extraction
-# (/tmp/appimage_extracted_*), and Chromium's helpers.
-stoke_procs() { ps -eo pid=,ppid=,args= | grep -E 'stoke\.AppImage|\.mount_stoke|appimage_extracted' | grep -v -e grep -e 'ps -eo' ; }
+# Every LIVE process of an installed Stoke: the AppImage runtime, a FUSE
+# mount's daemon, the app from its mount (/tmp/.mount_*) or its extraction
+# (/tmp/appimage_extracted_*), and Chromium's helpers. A zombie is not one:
+# the FUSE daemon exits once the app does, is reparented to the container's
+# PID 1 — which is not an init and never reaps — and stays `<defunct>` (seen on
+# the first FUSE run), holding nothing.
+stoke_procs() { ps -eo pid=,ppid=,stat=,args= | awk '$3 !~ /^Z/' | grep -E 'stoke\.AppImage|\.mount_stoke|appimage_extracted' | grep -v -e grep -e 'ps -eo' ; }
 # The browser process: carries --no-sandbox, is not a helper (--type=), and is
 # not the AppImage runtime itself (its command line starts with the .AppImage).
-browser_pid() { stoke_procs | awk '/--no-sandbox/ && !/--type=/ { if ($3 !~ /stoke\.AppImage$/) { print $1; exit } }'; }
+browser_pid() { stoke_procs | awk '/--no-sandbox/ && !/--type=/ { if ($4 !~ /stoke\.AppImage$/) { print $1; exit } }'; }
 
 # Start the installed command as root and judge it: $1 a file-safe slug, $2 the
 # label, then the command. The launcher returns within a second (it detaches
@@ -119,7 +122,7 @@ start_and_judge() {
     if [ -n "$(stoke_procs)" ]; then
       fail "$label: SIGTERM to the app left Stoke processes behind after 30 s"
       note "$(stoke_procs | cut -c1-200 | tr '\n' '|')"
-      note "(tree when started: $(cut -c1-160 "$W/procs-$label.txt" | tr '\n' '|'))"
+      note "(tree when started: $(cut -c1-160 "$W/procs-$slug.txt" | tr '\n' '|'))"
       stoke_procs | awk '{print $1}' | while read -r p; do kill -TERM "$p" 2>/dev/null; done
     else
       pass "$label: and every Stoke process went on SIGTERM to the app"
@@ -146,6 +149,15 @@ if [ "$mode" = nofuse ]; then
   echo
   echo "the installer's own no-FUSE remedies, as root"
   note "install.sh says: $(grep -A1 'refuses to start with a FUSE error' "$W/install.log" | tr '\n' ' ' | sed 's/  */ /g')"
+  # AppRun adds --no-sandbox by itself when `unshare -Ur true` fails, which it
+  # does inside Docker but NOT as root on a real host (gotcha 76) — so here a
+  # --no-sandbox on the command line may be AppRun's, not the launcher's.
+  # verify:install holds the launcher's own root branch for that reason.
+  if unshare -Ur true 2>/dev/null; then
+    note 'unshare -Ur true succeeds here, as on a real root host: any --no-sandbox below is the launcher'"'"'s'
+  else
+    note 'unshare -Ur true fails in this container, so AppRun adds --no-sandbox itself: the checks below cannot tell whose it is'
+  fi
   if start_and_judge env-extract 'APPIMAGE_EXTRACT_AND_RUN=1 stoke' env APPIMAGE_EXTRACT_AND_RUN=1 "$bin"; then :; else
     fail "APPIMAGE_EXTRACT_AND_RUN=1 stoke did not stay up (exit $launch_status): $(head -c 600 "$W/launcher-env-extract.err" | tr '\n' ' ')"
   fi
