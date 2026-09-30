@@ -81,6 +81,8 @@ import {
   serversForLaunch,
   specFromClaudeEntry,
   STOKE_BROWSER_SERVER,
+  summarize,
+  urlInArgvProblem,
   vibeConfiguredServers,
   vibeMcpEnv,
   withMcpTick,
@@ -204,7 +206,22 @@ const DOCS: McpServerSpec = {
   bearer: HTTP_BEARER
 }
 const TWO = [GITHUB, DOCS]
-const MCP_SECRETS = [MCP.token, STDIO_SECRET, HTTP_BEARER, HEADER_SECRET]
+/*
+ * The fourth place a credential lives: the URL itself. Hosted servers take
+ * their key in the query (Tavily `?tavilyApiKey=`, Exa `?exaApiKey=`), and
+ * Codex's only route for a URL is argv.
+ */
+const URL_SECRET = 'url-KEY-secret-0004'
+const KEYED: McpServerSpec = {
+  name: 'search',
+  transport: 'http',
+  command: '',
+  args: [],
+  env: {},
+  url: `https://mcp.search.example/mcp/?searchApiKey=${URL_SECRET}`,
+  headers: {}
+}
+const MCP_SECRETS = [MCP.token, STDIO_SECRET, HTTP_BEARER, HEADER_SECRET, URL_SECRET]
 const FILES_AT = '/u/Stoke/agents/mcp'
 const fileFor = (name: string): string => `${FILES_AT}/${name}`
 const or = (model = 'anthropic/claude-sonnet-5'): AgentEndpoint => ({ ...DEFAULT_ENDPOINT, mode: 'openrouter', model })
@@ -1805,6 +1822,27 @@ console.log('\nMCP servers: one model, an adapter per agent (mcpServers.ts)')
   const noFile = plan('qwen', undefined, { mcp: ALL, mcpFileFor: null })
   check('qwen with no file store: no flag naming nothing', planOk(noFile).args, [])
   check('and every server is reported, not dropped silently', (noFile.ok ? noFile.plan.mcpSkipped ?? [] : []).map((s) => s.name), ['stoke', 'github', 'docs'])
+
+  // A key in a URL: every agent with a route, and not one of them puts it in argv.
+  for (const c of CODING_CLIS.filter((x) => CLI_CAPS[x.id].mcp !== 'none')) {
+    keysOnlyInEnv(
+      `${c.id} with a key in a server's URL`,
+      plan(c.id, undefined, { mcp: [...ALL, KEYED], mcpFileFor: fileFor, piMcpExtensionPath: PI_MCP_PATH })
+    )
+  }
+  const codexKeyed = plan('codex', undefined, { mcp: [...ALL, KEYED] })
+  check(
+    'codex: the keyed URL is skipped and said, the rest handed as before',
+    [planOk(codexKeyed).args, (codexKeyed.ok ? codexKeyed.plan.mcpSkipped ?? [] : []).map((s) => s.name)],
+    [planOk(codex).args, ['search']]
+  )
+  ok(
+    'codex: and the reason names the URL and points at its own config.toml',
+    /URL.*query string.*config\.toml/.test((codexKeyed.ok ? codexKeyed.plan.mcpSkipped ?? [] : [])[0]?.reason ?? ''),
+    JSON.stringify(codexKeyed.ok ? codexKeyed.plan.mcpSkipped : null)
+  )
+  const qwenKeyed = planOk(plan('qwen', undefined, { mcp: [KEYED], mcpFileFor: fileFor }))
+  check('qwen: the keyed URL is fine in its 0600 file, not argv', JSON.parse(qwenKeyed.files?.[0]?.content ?? '{}').mcpServers.search.httpUrl, KEYED.url)
 }
 
 console.log('\nMCP: names, secrets and collisions')
@@ -1827,8 +1865,43 @@ console.log('\nMCP: names, secrets and collisions')
   check('an unset ${VAR} refuses the server rather than handing on the literal', unset.ok ? null : unset.reason, 'it needs ${NOPE}, which is not set')
   check('a line break in a value refuses the server', specFromClaudeEntry('x', { command: 'a', env: { K: 'v\nw' } }).ok, false)
 
-  const refusedUrl = codexMcp([{ ...DOCS, url: 'https://x/mcp?a=1&b=2' }], [])
-  check('codex: an & in a URL that reaches argv is refused (cmd.exe, gotcha 13)', [refusedUrl.args, refusedUrl.skipped.map((s) => s.name)], [[], ['docs']])
+  const refusedUrl = codexMcp([{ ...DOCS, url: 'https://x/100%25/mcp' }], [])
+  check('codex: a % in a URL that reaches argv is refused (cmd.exe, gotcha 13)', [refusedUrl.args, refusedUrl.skipped.map((s) => s.name)], [[], ['docs']])
+  ok('and for that reason, not the URL-key one', /cmd\.exe/.test(refusedUrl.skipped[0]?.reason ?? ''), refusedUrl.skipped[0]?.reason)
+
+  // A URL that may carry a key never reaches Codex's argv (urlInArgvProblem).
+  const http = (url: string, over: Partial<McpServerSpec> = {}): McpServerSpec => ({ ...KEYED, url, ...over })
+  for (const [why, url] of [
+    ['a query string (Tavily’s ?tavilyApiKey=)', 'https://mcp.tavily.example/mcp/?tavilyApiKey=tvly-abc'],
+    ['a query with no & at all, which cmd.exe never flagged', 'https://mcp.exa.example/mcp?exaApiKey=k'],
+    ['a user name and password', 'https://user:pass@mcp.example.com/mcp'],
+    ['a key-like path segment', 'https://mcp.example.com/s/Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5/mcp'],
+    ['a capability UUID in the path', 'https://mcp.example.com/server/0f8fad5b-d9cb-469f-a165-70867728950e/mcp']
+  ] as const) {
+    ok(`urlInArgvProblem: ${why}`, urlInArgvProblem(http(url)) !== null)
+    const out = codexMcp([http(url)], [])
+    check(`codex: refused — ${why}`, [out.args, out.skipped.map((s) => s.name)], [[], ['search']])
+  }
+  for (const url of [
+    'https://api.githubcopilot.com/mcp/',
+    'https://mcp.deepwiki.com/mcp',
+    'https://mcp.vercel.com',
+    'https://observability.mcp.cloudflare.com/mcp',
+    MCP.url
+  ]) {
+    ok(`urlInArgvProblem: a plain endpoint passes — ${url}`, urlInArgvProblem(http(url)) === null)
+  }
+  const fromEnv = specFromClaudeEntry('keyed', { type: 'http', url: 'https://mcp.example.com/k/${SHORT_KEY}/mcp' }, { SHORT_KEY: 'abc' })
+  check('a URL built from ${VAR} is marked, whatever it expanded to', fromEnv.ok ? [fromEnv.spec.url, fromEnv.spec.urlFromEnv] : null, ['https://mcp.example.com/k/abc/mcp', true])
+  check('and Codex is never handed it', fromEnv.ok ? codexMcp([fromEnv.spec], []).skipped.map((s) => s.name) : null, ['keyed'])
+  const literal = specFromClaudeEntry('plain', { type: 'http', url: 'https://mcp.example.com/mcp' })
+  check('a literal URL is not marked', literal.ok ? literal.spec.urlFromEnv : 'refused', undefined)
+  check('a stdio server is never judged by URL', urlInArgvProblem(GITHUB), null)
+  check(
+    'the Settings summary carries the reason (never the URL) so Codex’s row can say it',
+    [summarize(KEYED).detail, typeof summarize(KEYED).urlProblem, JSON.stringify(summarize(KEYED)).includes(URL_SECRET)],
+    ['https://mcp.search.example', 'string', false]
+  )
   const ownPath = codexMcp([{ ...GITHUB, env: { PATH: '/evil' } }], [])
   check('codex: a server may not set a variable Codex itself runs on', [ownPath.args, ownPath.skipped.map((s) => s.name)], [[], ['github']])
   const clash = codexMcp([GITHUB, { ...GITHUB, name: 'github2', env: { GITHUB_PERSONAL_ACCESS_TOKEN: 'other' } }], [])

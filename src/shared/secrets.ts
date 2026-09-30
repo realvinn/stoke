@@ -53,11 +53,16 @@ export const SECRET_PATHS: readonly SecretPathSpec[] = [
   { pattern: 'providers.customAuthToken', label: 'Custom gateway token', portable: true },
   { pattern: 'agents.endpoints.*.apiKey', label: 'endpoint key', portable: true },
   /*
-   * An MCP server Stoke itself holds (shared/mcpServers.ts): every value that
-   * can carry a credential — a stdio server's environment, an http server's
-   * headers and its bearer. Its command, arguments and URL are not secret
-   * channels (the server's own process table shows them) and stay in
-   * settings.json. Claude Code's own servers are never stored at all.
+   * An MCP server Stoke itself holds (shared/mcpServers.ts): the values that
+   * carry a credential by design — a stdio server's environment, an http
+   * server's headers and its bearer. Its command and arguments are not secret
+   * channels (the server's own process table shows them). Its URL can be — a
+   * hosted server may take its key in the query — but it is not sealed: the
+   * vault empties a sealed value it cannot open, and an http server with no
+   * URL is dropped whole at hydrate, taking its sealed headers with it. It
+   * stays in settings.json, which is owner-only once the vault is up, and it
+   * never reaches argv (`urlInArgvProblem`). Claude Code's own servers are
+   * never stored at all.
    */
   { pattern: 'agents.mcp.extra.*.env.*', label: 'MCP server variable', portable: true },
   { pattern: 'agents.mcp.extra.*.headers.*', label: 'MCP server header', portable: true },

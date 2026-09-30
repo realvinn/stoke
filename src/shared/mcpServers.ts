@@ -33,9 +33,13 @@
  *
  * Secrets — an env value, a header, a bearer — travel only in the environment
  * or in an owner-only file, never in argv, where `ps` shows them to every
- * process on the machine. A command's arguments and a URL are not secret
- * channels: the server process itself carries them in ITS argv whoever starts
- * it, so they may appear in an agent's `-c` flags too.
+ * process on the machine. A stdio server's command and arguments are not a
+ * secret channel: the server process carries them in ITS argv whoever starts
+ * it, so they may appear in Codex's `-c` flags too. An http server's URL IS
+ * one — hosted servers take their key in it (`?tavilyApiKey=…`,
+ * `?exaApiKey=…`) and no local process ever shows it — so Codex, the one agent
+ * whose only route for a URL is argv, is refused any URL that may carry one
+ * (`urlInArgvProblem`).
  *
  * Claude's OAuth sign-ins to its servers (`mcpOAuth` in its credentials) are
  * never read or copied (gotcha 36). An http server with no headers is passed as
@@ -57,8 +61,14 @@ export interface McpServerSpec {
   args: string[]
   /** stdio: the server's environment. Values may be secrets. */
   env: Record<string, string>
-  /** http: the streamable-HTTP endpoint. */
+  /** http: the streamable-HTTP endpoint. May carry a credential (`urlInArgvProblem`). */
   url: string
+  /**
+   * http: the URL was filled in from a `${VAR}` Claude Code expands — which is
+   * how a key gets into one — so it is treated as secret wherever it would
+   * reach argv. Set only by `specFromClaudeEntry`, and only when true.
+   */
+  urlFromEnv?: true
   /** http: request headers. Values may be secrets. */
   headers: Record<string, string>
   /**
@@ -244,7 +254,9 @@ export function specFromClaudeEntry(
     if (missing.length) return { ok: false, reason: `it needs \${${missing[0]}}, which is not set` }
     if (!isHttpUrl(url)) return { ok: false, reason: 'its URL is not http(s)' }
     if (!headers) return { ok: false, reason: 'its headers have a name or value Stoke will not pass on' }
-    return { ok: true, spec: { name, transport: 'http', command: '', args: [], env: {}, url, headers } }
+    const spec: McpServerSpec = { name, transport: 'http', command: '', args: [], env: {}, url, headers }
+    if (url !== raw.url) spec.urlFromEnv = true
+    return { ok: true, spec }
   }
   if (type === 'sse') return { ok: false, reason: 'it uses the older SSE transport, which the other agents are not handed' }
   return { ok: false, reason: type ? `its transport “${type}” is not one Stoke passes on` : 'it names neither a command nor a URL' }
@@ -529,6 +541,47 @@ const AGENT_OWN_ENV = /^(PATH|HOME|USER|LOGNAME|SHELL|TERM|TMPDIR|TEMP|TMP|LANG|
  */
 const CMD_SYNTAX = /[&|^<>%!"\r\n]/
 
+/** A path segment that reads as a key or a capability id: long, and both letters and digits. */
+function looksLikeKey(segment: string): boolean {
+  let s = segment
+  try {
+    s = decodeURIComponent(segment)
+  } catch {
+    // Keep the raw text: a malformed escape is still judged by its length.
+  }
+  return s.length >= 24 && /[0-9]/.test(s) && /[A-Za-z]/.test(s)
+}
+
+/**
+ * Why an http server's URL may carry a credential, or null — for the route
+ * that would put it in argv (Codex's `-c …url=`, which has no variable form
+ * for a URL, unlike its bearer and headers).
+ *
+ * Hosted servers take their key in the URL: in the query (Tavily
+ * `https://mcp.tavily.com/mcp/?tavilyApiKey=<key>`, Exa
+ * `https://mcp.exa.ai/mcp?exaApiKey=<key>`), in userinfo, or as a long opaque
+ * path segment; and Claude Code documents `${VAR}` in `url`, which is how a key
+ * from the environment gets there (`urlFromEnv`). None of those holds a
+ * character `CMD_SYNTAX` refuses, so that check alone let them through.
+ * A false hit costs one server in Codex, said in the skip reason; a miss puts
+ * a key in the process table. Every http URL in the owner's real
+ * `~/.claude.json` (11, 2026-09-30) passes.
+ */
+export function urlInArgvProblem(spec: McpServerSpec): string | null {
+  if (spec.transport !== 'http') return null
+  if (spec.urlFromEnv) return 'its URL is filled in from a ${…} variable, which is how a key gets into one'
+  let u: URL
+  try {
+    u = new URL(spec.url)
+  } catch {
+    return 'its URL cannot be read'
+  }
+  if (u.username || u.password) return 'its URL carries a user name or password'
+  if (u.search || u.hash) return 'its URL has a query string, where hosted servers take their API key'
+  if (u.pathname.split('/').some(looksLikeKey)) return 'its URL path holds what looks like a key'
+  return null
+}
+
 export interface McpEmit {
   args: string[]
   env: Record<string, string>
@@ -549,10 +602,13 @@ export interface McpEmit {
  *          (`AGENT_OWN_ENV`, or one the endpoint plan set), cannot both be
  *          honoured, so the later server is skipped and said.
  *   http   `url`, `bearer_token_env_var`, and `env_http_headers = {<header> =
- *          <var>}` — each value in a Stoke-named variable.
+ *          <var>}` — each value in a Stoke-named variable. The URL itself has
+ *          no variable form, so one that may carry a key is refused
+ *          (`urlInArgvProblem`) and the user is pointed at Codex's own config.
  *
- * A name Codex's own config.toml already defines (`own`) is skipped: `-c` on
- * it would MERGE into the user's entry, not replace it.
+ * A name Codex's own config already defines (`own`: its config.toml and the
+ * folder's `.codex/config.toml`) is skipped: `-c` on it would MERGE into the
+ * user's entry, not replace it.
  */
 export function codexMcp(
   servers: readonly McpServerSpec[],
@@ -565,7 +621,15 @@ export function codexMcp(
   const ownSet = new Set(own)
   servers.forEach((spec, i) => {
     if (ownSet.has(spec.name)) {
-      skipped.push({ name: spec.name, reason: 'Codex’s own config.toml defines a server with this name' })
+      skipped.push({ name: spec.name, reason: 'Codex’s own configuration defines a server with this name' })
+      return
+    }
+    const urlProblem = urlInArgvProblem(spec)
+    if (urlProblem) {
+      skipped.push({
+        name: spec.name,
+        reason: `${urlProblem}, and Codex takes a URL only as a launch argument, which every process on this machine can read. Add it to Codex’s own config.toml instead`
+      })
       return
     }
     const inArgv = [spec.command, ...spec.args, spec.url, ...Object.keys(spec.headers)]
@@ -940,6 +1004,8 @@ export interface McpServerSummary {
   transport: McpTransport
   /** The command's program, or the URL's origin: enough to recognise, nothing secret. */
   detail: string
+  /** Why its URL may carry a key (`urlInArgvProblem`) — so Codex, which could take it only in argv, is never handed it. */
+  urlProblem?: string
 }
 
 export interface McpCatalog {
@@ -968,13 +1034,17 @@ export function summarize(spec: McpServerSpec): McpServerSummary {
       detail = ''
     }
   }
-  return { name: spec.name, transport: spec.transport, detail }
+  const urlProblem = urlInArgvProblem(spec)
+  return { name: spec.name, transport: spec.transport, detail, ...(urlProblem ? { urlProblem } : {}) }
 }
 
 /**
- * Settings' view of `~/.claude.json`: the user scope, and every project's
- * local-scope servers, folded by name. No `.mcp.json` — that is per folder and
- * only exists at launch — and no env value, argument or header ever leaves main.
+ * Settings' view of Claude Code's servers: the user scope, every project's
+ * local-scope servers, and every known folder's project scope (`projectMcp`,
+ * keyed like `projects`), each folded by name — a name listed in an earlier
+ * scope is not listed again, since a tick is a name. A project server counts
+ * only where Claude Code may run it (approved, not turned off), the same
+ * test a launch applies. No env value, argument or header ever leaves main.
  */
 export function mcpCatalog(
   claudeJson: unknown,
