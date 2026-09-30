@@ -551,13 +551,22 @@ and phase 1 needs no server.
 - The speech server moved to Settings › Voice, and the phone reads it per call (gotcha 111).
 - `.github/workflows/ci.yml` runs the suite gate on every push and PR (gotcha 113).
 
+**Wave 2 — shipped to `windows-install`:**
+- A colour per agent (`agentColors.ts`, `--agent-<id>-*`, painted only when more than one agent
+  is in view), and the tab tag switchable and renamable per agent (gotcha 114).
+- Stoke's dictation: a tap types a space and a hold records (`spaceHold`). Adds a volume line
+  and a microphone picker with label fallback (gotchas 79, 115).
+- API keys and the phone key are sealed in `secrets.json` via safeStorage, and Settings ›
+  Backup & transfer exports and imports a passphrase-sealed `.stoke-setup` (gotcha 116).
+- `~/.agents/skills` are lent to local Claude sessions as a `--plugin-dir` plugin, trimmed by
+  the project's `skillOverrides` (gotcha 117).
+- The hidden status line prints an empty line rather than nothing, so no blank row sits under
+  the input box (gotcha 118).
+- Also shipped, reported between waves: every popover and menu hides the docked browser while
+  it lies over it, and a still of the page shows meanwhile (gotcha 14's note, verify:layers).
+
 **Still open, roughly in order:**
-- The agent tag toggle and titles, plus per-agent colours.
 - Agents settings pages.
-- Voice: the hold threshold, the level line and the mic picker.
-- Secrets in safeStorage, and setup export/import.
-- Skills shared into Claude.
-- The status-line gap.
 - The chat import.
 - Phone folders, then the web UI pass and the PWA.
 - Managed tmux in place of byobu.
