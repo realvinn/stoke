@@ -185,6 +185,12 @@ export function claudeLineWorthParsing(line: string): boolean {
  * is the subagent's thread. Skipping sidechains there indexed nothing at all:
  * every subagent transcript became an empty chat row that still took a slot
  * under the caps. In a subagent's own file the sidechain IS the conversation.
+ *
+ * The folder is the FIRST cwd a user record carries — where the session was
+ * started, the folder its transcript is filed under, and what `projects.ts`'s
+ * `cwdFromTranscript` and the session list use. A `cd` during the session
+ * moves later records' cwd; resuming from there is not the same session's
+ * folder (the CLI refuses a conversation "from a different directory").
  */
 export function foldClaudeLine(fold: Fold, line: string, redact: boolean, subagentFile = false): void {
   if (!claudeLineWorthParsing(line)) return
@@ -202,7 +208,7 @@ export function foldClaudeLine(fold: Fold, line: string, redact: boolean, subage
   const msg = rec.message as { content?: unknown; model?: unknown } | undefined
   const content = msg?.content
   if (rec.type === 'user') {
-    if (typeof rec.cwd === 'string' && rec.cwd) fold.meta.cwd = rec.cwd
+    if (typeof rec.cwd === 'string' && rec.cwd && fold.meta.cwd === null) fold.meta.cwd = rec.cwd
     if (typeof rec.gitBranch === 'string' && rec.gitBranch) fold.meta.gitBranch = rec.gitBranch
     if (Array.isArray(content) && content.some((b) => b && typeof b === 'object' && (b as { type?: unknown }).type === 'tool_result')) return
     const text = textOf(content)?.trim() ?? ''
@@ -239,6 +245,8 @@ export function isInjectedBlock(text: string): boolean {
  * `event_msg` copies of the same turns are skipped so nothing is indexed
  * twice — and `developer` turns never. `session_meta` gives the folder, the
  * start time, and whether the thread is a subagent's (`source.subagent`).
+ * The folder is the first one seen, as for Claude: a later `turn_context`
+ * that moved does not move where the thread started.
  */
 export function foldCodexLine(fold: Fold, line: string, redact: boolean): void {
   if (!codexLineWorthParsing(line)) return
@@ -247,7 +255,7 @@ export function foldCodexLine(fold: Fold, line: string, redact: boolean): void {
   const p = (rec.payload ?? {}) as Record<string, unknown>
   const at = stamp(rec.timestamp)
   if (rec.type === 'session_meta') {
-    if (typeof p.cwd === 'string' && p.cwd) fold.meta.cwd = p.cwd
+    if (typeof p.cwd === 'string' && p.cwd && fold.meta.cwd === null) fold.meta.cwd = p.cwd
     const started = stamp(p.timestamp)
     if (started !== null) note(fold.meta, started)
     const src = p.source
@@ -256,7 +264,7 @@ export function foldCodexLine(fold: Fold, line: string, redact: boolean): void {
   }
   if (rec.type === 'turn_context') {
     if (typeof p.model === 'string' && p.model) fold.meta.model = p.model
-    if (typeof p.cwd === 'string' && p.cwd) fold.meta.cwd = p.cwd
+    if (typeof p.cwd === 'string' && p.cwd && fold.meta.cwd === null) fold.meta.cwd = p.cwd
     return
   }
   if (rec.type !== 'response_item' || p.type !== 'message') return

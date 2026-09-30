@@ -501,9 +501,9 @@ try {
     // One conversation that says a word hundreds of times must not crowd out the others.
     const crowd = ChatStore.open(join(root, 'crowd-index'))
     const meta = { title: null, firstPrompt: null, cwd: '/w', gitBranch: null, model: null, createdMs: T0, updatedMs: T0 }
-    const loud = crowd.upsertChat('claude', 'loud', meta, { subagent: false, dedupeKey: null })
+    const loud = crowd.upsertChat('claude', 'loud', meta, { subagent: false, dedupeKey: null, whole: true })
     crowd.appendMessages(loud, Array.from({ length: 600 }, (_, k) => ({ role: 'assistant' as const, text: `crowdword crowdword again ${k}`, atMs: T0 })))
-    const quiet = crowd.upsertChat('codex', 'quiet', meta, { subagent: false, dedupeKey: null })
+    const quiet = crowd.upsertChat('codex', 'quiet', meta, { subagent: false, dedupeKey: null, whole: true })
     crowd.appendMessages(quiet, [{ role: 'user', text: 'one crowdword here', atMs: T0 }])
     check('one hit per chat, and a loud chat cannot crowd a quiet one out', crowd.search('crowdword').map((h) => h.nativeId).sort(), ['loud', 'quiet'])
     crowd.close()
@@ -547,6 +547,7 @@ try {
       ]),
       T0 + 30 * 60_000
     )
+    // A session that `cd`s: its folder is the one it started in, which is where it resumes from.
     write(
       eFile(2),
       jl([
@@ -561,6 +562,7 @@ try {
     const eOpts = options({}, { perSource: 2 })
     await runPass(e, { env: eEnv, options: eOpts }, hooks())
     check('the empty transcript is read but never stored as a chat', [e.hasChat('claude', uuid(1)), e.hasChat('claude', uuid(2))], [false, true])
+    check('a whole read keeps the FIRST cwd, not the one a cd left', e.search('gerbilword')[0]?.cwd, '/tmp/empty-proj')
     await runPass(e, { env: eEnv, options: eOpts }, hooks())
     check('...and on the next pass its slot goes to the next-newest real chat', e.chatsOf('claude').map((c) => c.nativeId).sort(), [uuid(2), uuid(3)])
     const still = await runPass(e, { env: eEnv, options: eOpts }, hooks())
@@ -580,8 +582,9 @@ try {
   check('an unchanged pass reads nothing', [pass2.bytesRead, pass2.filesRead], [0, 0])
   const target = claudeFile(27)
   const beforeMsgs = store.messages(store.chatId('claude', uuid(27))!).length
+  // The appended turn ran after a `cd`: the chat's folder must stay the one it started in.
   const addition = jl([
-    { type: 'user', message: { content: 'appended question platypusfish' }, cwd: '/tmp/proj-a', timestamp: iso(T0 + 27 * 60_000 + 5000) },
+    { type: 'user', message: { content: 'appended question platypusfish' }, cwd: '/tmp/proj-a/moved', timestamp: iso(T0 + 27 * 60_000 + 5000) },
     { type: 'assistant', message: { content: [{ type: 'text', text: 'appended answer' }] }, timestamp: iso(T0 + 27 * 60_000 + 6000) }
   ])
   appendFileSync(target, addition)
@@ -590,6 +593,7 @@ try {
   check('the append costs its own bytes plus the one-byte newline check', pass3.bytesRead, Buffer.byteLength(addition) + 1)
   check('...folds exactly two new messages, no duplicates', store.messages(store.chatId('claude', uuid(27))!).length - beforeMsgs, 2)
   check('...and they are searchable', words(store, 'platypusfish'), [`claude:${uuid(27)}`])
+  check('...and an append never moves the chat’s folder (the first cwd is where it resumes)', store.search('platypusfish')[0]?.cwd, '/tmp/proj-a')
   // A partial last line is not folded until its newline arrives, and then once.
   appendFileSync(target, JSON.stringify({ type: 'user', message: { content: 'halfline kiwiword' }, timestamp: iso(T0) }))
   await runPass(store, { env, options: options() }, hooks())

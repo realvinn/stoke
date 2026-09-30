@@ -243,8 +243,9 @@ export async function runPass(store: ChatStore, plan: PassPlan, hooks: PassHooks
             continue
           }
           const meta = mergeMeta(ex.fold.meta, c.meta)
+          const whole = ex.mode === 'replace'
           const known = store.chatId(p.id, c.nativeId)
-          if (ex.fold.messages.length === 0 && !meta.title && (ex.mode === 'replace' || known === null)) {
+          if (ex.fold.messages.length === 0 && !meta.title && (whole || known === null)) {
             /*
              * Nothing to search: no message and no title. Never stored — an
              * empty chat row answers no search and would still count as
@@ -267,8 +268,8 @@ export async function runPass(store: ChatStore, plan: PassPlan, hooks: PassHooks
           const drop = new Set(planTrim(ex.fold.messages.map((m) => Buffer.byteLength(m.text, 'utf8')), chatBytes))
           const messages = drop.size ? ex.fold.messages.filter((_, k) => !drop.has(k)) : ex.fold.messages
           store.tx(() => {
-            const chatId = store.upsertChat(p.id, c.nativeId, meta, { subagent: c.subagent || ex.fold.subagent, dedupeKey: c.dedupeKey })
-            if (ex.mode === 'replace') store.clearMessages(chatId)
+            const chatId = store.upsertChat(p.id, c.nativeId, meta, { subagent: c.subagent || ex.fold.subagent, dedupeKey: c.dedupeKey, whole })
+            if (whole) store.clearMessages(chatId)
             store.appendMessages(chatId, messages)
             store.trimChat(chatId, chatBytes)
             if (ex.truncated || drop.size) store.markTruncated(chatId)

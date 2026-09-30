@@ -238,20 +238,28 @@ export class ChatStore {
    * Create or update a chat's row. A field the new read does not know (an
    * append that carried no title) keeps what the store had: `COALESCE` with the
    * old value, never a blank over a good one.
+   *
+   * The first prompt and the folder are the chat's FIRST ones, so an append
+   * never moves them: an appended run's first user record is only the newest
+   * turn's, and its cwd is wherever a `cd` left the session, not the folder the
+   * session was started in and is resumed from (`foldClaudeLine`). A `whole`
+   * read — the file from byte 0, or a whole document or row — says what the
+   * chat's first ones are, so it wins.
    */
   upsertChat(
     source: ChatSourceId,
     nativeId: string,
     meta: ChatMeta,
-    flags: { subagent: boolean; dedupeKey: string | null }
+    flags: { subagent: boolean; dedupeKey: string | null; whole: boolean }
   ): number {
+    const first = (col: string): string => (flags.whole ? `COALESCE(excluded.${col}, chat.${col})` : `COALESCE(chat.${col}, excluded.${col})`)
     this.q(
       `INSERT INTO chat(source, native_id, title, first_prompt, cwd, git_branch, model, created_ms, updated_ms, subagent, dedupe_key)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(source, native_id) DO UPDATE SET
          title = COALESCE(excluded.title, chat.title),
-         first_prompt = COALESCE(chat.first_prompt, excluded.first_prompt),
-         cwd = COALESCE(excluded.cwd, chat.cwd),
+         first_prompt = ${first('first_prompt')},
+         cwd = ${first('cwd')},
          git_branch = COALESCE(excluded.git_branch, chat.git_branch),
          model = COALESCE(excluded.model, chat.model),
          created_ms = MIN(COALESCE(chat.created_ms, excluded.created_ms), COALESCE(excluded.created_ms, chat.created_ms)),
