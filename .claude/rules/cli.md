@@ -13,6 +13,9 @@ paths:
   - "src/shared/codingClis.ts"
   - "scripts/verify-agents.mts"
   - "scripts/probe-clis.mts"
+  - "src/shared/skills.ts"
+  - "src/main/skillsProject.ts"
+  - "src/main/skillsScan.ts"
 ---
 
 # Finding and running `claude`
@@ -411,3 +414,68 @@ too); `claudePath` set to the stub. A scratch HOME is also what keeps `~/.claude
 and `~/.codex` untouched, and lets a fixture transcript under `<scratch HOME>/.claude/projects` feed
 the launcher's conversation list. Check `launches.log`-style output from the stubs, not the tab: a
 real `codex` and a stub both paint something.
+
+## 117. A plugin's skills ignore `skillOverrides`, so whatever is lent through `--plugin-dir` has to be trimmed by the lender
+
+**Claude Code applies a project's skill trims to its own skills and never to a plugin's.** Read out of
+the 2.1.285 binary, the resolver behind every listing is `if(e.type!=="prompt"||e.source==="plugin")
+return"on"`, and `/skills` in a live session shows each plugin skill as `locked by plugin` with no
+toggle. The owner turns skills off per project (`skillOverrides` in `.claude/settings.local.json`),
+so a shared skill lent to a session as the `stoke-shared` plugin would have walked straight past
+every one of those trims, silently, and spent the context they exist to save.
+`claudeProjection(scans, overrides)` therefore takes the overrides the CLI would merge for the
+launch folder (`skillOverridesFor`: user < project < local, where "local" is NOT just the cwd's
+file — see the note below) and leaves out any skill whose value is anything but `"on"`:
+`name-only` and `user-invocable-only` cannot be expressed for a plugin skill, and dropping it is
+the direction that respects a decision to spend less. The key may be the bare name or
+`stoke-shared:<name>`. A trim takes out the FOLDER under every shared name that links to it, and
+the `stoke-shared:` name from every entry that flattens to it: the projection lends one name per
+folder, so a trim that skipped only its own entry handed the folder to the next alias (found
+2026-09-30 — trimming `only-shared` lent it as `second-name`).
+
+Four more facts from the same binary, each of which decides a line in `skillsProject.ts`:
+
+- **The flag.** `--plugin-dir <path>`: "Load a plugin from a directory or .zip for this session
+  only", repeatable. A folder with `.claude-plugin/plugin.json` at its root is one plugin; the
+  name must match `^[a-z0-9]+(-[a-z0-9]+)*$` or a path-loaded plugin is refused.
+- **The name a skill gets** is `<plugin>:<FOLDER name>`, with anything outside `[A-Za-z0-9_-]`
+  turned into `-`. The frontmatter `name` does not rename it. So `a.b` and `a-b` collide, and
+  a shared `pdf` is `/stoke-shared:pdf`, never `/pdf`.
+- **Links are followed.** The plugin loader accepts `isDirectory() || isSymbolicLink()` children
+  of `skills/`, which is what lets a set be links (junctions on Windows) rather than copies.
+- **`disableSideloadFlags` in managed settings refuses `--plugin-dir` at STARTUP** ("This machine's
+  managed settings (disableSideloadFlags) refused the launch"): every Claude tab would fail to
+  start, gotcha 19's shape. The projector reads `managed-settings.json` and `managed-settings.d/`
+  and passes no flag when either sets it. MDM-delivered and server-managed policy are not
+  readable from here, which is what the Settings checkbox (`agents.shareSkillsToClaude`) is for.
+
+**How it was proven live without touching the real skill folders.** Stoke ran with a scratch
+`HOME` (so its projection read a fixture `~/.agents/skills`), and `claudePath` was a stub that put
+the REAL `HOME` back and `exec`ed the real `claude`, refusing `-p`, `update`, `doctor` and the rest,
+so exactly one interactive session reached the real CLI, signed in. The stub's argv log showed
+`--plugin-dir <ud>/agents/claude-skills/aad60d0fd82209e5`; `/skills` filtered to `stoke` listed
+exactly `stoke-shared:stoke-proof-alpha`. The fixture the project trimmed was absent, and so was
+the one the scratch `~/.claude/skills` already linked. Two traps in that setup:
+
+- **The Settings row still showed the real `~/.local/bin/claude`.** Detection searches the
+  inherited `process.env.PATH`, not just the scratch home's (gotcha 112). Only the stub's own log
+  proves which binary a launch ran.
+- **A real session leaves more than its transcript.** The CLI itself wrote a `projects` entry
+  for the scratch folder into `~/.claude.json` and one `~/.claude/history.jsonl` line per slash
+  command typed. Neither is Stoke's to remove (gotcha 38). Delete only the
+  `~/.claude/projects/<encoded folder>` directory, and only after listing it.
+
+> **Checked against the code on 2026-09-30** (review, before merge). The first cut read the local
+> layer only from `<cwd>/.claude/settings.local.json`. 2.1.285 reads it from the cwd's CANONICAL
+> git root: `u2t`'s `case"localSettings"` returns `v2(cwd, canonicalGitRoot)`, the nearest folder
+> holding a `.git` (dir or file) — for a linked worktree, followed through `gitdir`/`commondir` and
+> the `gitdir` back-pointer to the MAIN worktree's top. It stays at the cwd when there is no repo,
+> the root is the cwd, the root is the real `$HOME`, or the root, its `.git` or its `.claude` is not
+> owned by the euid; and always where there are no uids ("canonicalization is POSIX-only"). When it
+> moves, the cwd's own file is still read as a LOWER legacy layer (`Mre`, merged first in the
+> cascade, telemetry `tengu_dead_probe_legacy_local_settings`). The project layer is not moved: it
+> stays `<cwd>/.claude/settings.json`. So a Claude tab in `.claude/worktrees/<x>` got all 56 of this
+> repo's trims on Claude's own skills while the projection saw none and lent every shared skill —
+> exactly the bypass above. `localSettingsFiles` mirrors that resolution; verify:agents builds the
+> repo, the subfolder, the worktree and a repo AT a fake home with real `git`, and the pre-fix
+> projector lent the trimmed skill from both the subfolder and the worktree.

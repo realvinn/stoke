@@ -586,7 +586,9 @@ npm run verify:agents         # the coding agents: what is stored, what the laun
                               # the default agent and its fallback (`resolveDefaultAgent`),
                               # each CLI's exact launch plan (endpoint, MCP, continue) with
                               # every key in env and none in argv, and the install script —
-                              # only table ids survive into a command
+                              # only table ids survive into a command; the shared-skills
+                              # projection and its plugin folder on a fake home and userData
+                              # (bystanders survive, links are never followed)
 npm run verify:voice          # who owns a held Space: Claude Code's /voice or Stoke's
                               # dictation, and that dictation swallows the REPEATS too;
                               # what a refused microphone is called; and the wire from
@@ -842,8 +844,19 @@ src/main/         Electron main process
   sshTranscript.ts  pulls a remote session's JSONL back, so SSH sessions can be read
   agent.ts          headless `claude -p` runner (prompt on stdin, json out)
   skillsScan.ts     lists the skills in every folder an agent reads, with each one's real
-                    path, so a symlink is told apart from a copy that drifts. Read-only;
-                    `home` is a parameter so verify:agents runs it on a fake tree
+                    path, so a symlink is told apart from a copy that drifts, plus Claude
+                    Code's plugin skills (`installed_plugins.json`, user scope, enabled)
+                    as `<plugin>:<skill>`. Read-only; `home` is a parameter so
+                    verify:agents runs it on a fake tree
+  skillsProject.ts  lends a local Claude session the `~/.agents/skills` entries it would
+                    not otherwise see: `--plugin-dir <userData>/agents/claude-skills/<set>`,
+                    a `stoke-shared` plugin of links (junctions on win32), one folder per
+                    distinct set, never rewritten once built, filtered by the `skillOverrides`
+                    Claude reads for the launch folder (Claude ignores those for plugin skills;
+                    `localSettingsFiles` finds the local layer at the git root, as the CLI
+                    does, under the cwd's own legacy copy). Serialised
+                    (gotcha 20), under a deadline, never throws; deletes only its own names,
+                    link by link, never recursively. Not SSH, not headless (gotchas 19, 15)
   stt.ts            the one place Stoke talks to the speech sidecar. Both the desktop and
                     the phone route through it, because "only main may reach it" is the
                     sidecar's whole authentication story. Both callers read `voice.sttUrl`
@@ -967,7 +980,10 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
   skills.ts         which skill folders each agent reads, and the report of who can see
                     which skill. `~/.agents/skills` is the one nearly all share; Claude Code
                     reads only `~/.claude/skills`. A report, never a sync — linking between
-                    folders would hand agents that read both every skill twice
+                    folders would hand agents that read both every skill twice.
+                    `claudeProjection` is the one launch-time exception (skillsProject.ts);
+                    visibility counts a skill by real path too, so a link under another
+                    name is not "missing"
   voiceRoute.ts     who owns a held Space bar in a tab — Claude Code's /voice or Stoke's
                     dictation — and the words for a refused microphone. On macOS a CLI in a
                     Stoke pty records AS Stoke (TCC's responsible process), so Stoke's one

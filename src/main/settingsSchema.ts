@@ -144,7 +144,12 @@ export const DEFAULT_SETTINGS: Settings = {
   // Never asked: the first launch shows the agent picker, and until it is
   // answered the launcher offers every agent that is installed, as it always has.
   // New sessions start Claude Code until another agent is made the default.
-  agents: { chosen: null, endpoints: {}, defaultCli: DEFAULT_AGENTS.defaultCli },
+  agents: {
+    chosen: null,
+    endpoints: {},
+    defaultCli: DEFAULT_AGENTS.defaultCli,
+    shareSkillsToClaude: DEFAULT_AGENTS.shareSkillsToClaude
+  },
   // Never seen. Every existing settings file also has no such key and therefore
   // reads as this, which is right: the first launch after an upgrade is exactly
   // one of the two moments the campfire is for.

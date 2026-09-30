@@ -15,6 +15,15 @@
  * does — and never a sync. Copying or linking between these folders on the
  * user's behalf would give the agents that read both folders every skill twice.
  *
+ * The one exception is made at launch, not on disk: Claude Code is the only
+ * agent that ignores the shared folder, so `claudeProjection` picks the shared
+ * skills it would not otherwise see and Stoke hands them to that one process as
+ * a plugin (`--plugin-dir`, skillsProject.ts) built of links inside Stoke's own
+ * userData. Nothing is written into any agent's folder, nothing is copied, and a
+ * Claude Code run outside Stoke is exactly as it was. (`claude import` is the
+ * CLI's own answer, and it COPIES the shared folder into `~/.claude/skills` —
+ * the drifting copies this report counts.)
+ *
  * The folders are each agent's home-level skill directories, from its docs and
  * checked against its --help or source on 2026-09-19. Project-level folders
  * (`.agents/skills` in the repo, `.claude/skills`, …) exist too and follow the
@@ -66,6 +75,98 @@ export interface SkillDirScan {
   skills: { name: string; real: string }[]
 }
 
+/**
+ * The skills Claude Code's installed plugins carry, as one pseudo-folder of a
+ * scan. Not a folder anyone reads — `skillsScan.ts` builds it from
+ * `~/.claude/plugins/installed_plugins.json` — and every name in it is already
+ * namespaced the way Claude invokes it (`superpowers:brainstorming`), so it can
+ * never be mistaken for a same-named skill in a folder. Only Claude Code sees
+ * these; they are the half of the "invisible to others" list a folder scan
+ * alone misses.
+ */
+export const CLAUDE_PLUGIN_SKILLS = '~/.claude/plugins'
+
+const CLAUDE_SKILLS_DIR = '~/.claude/skills'
+
+/**
+ * The plugin Stoke hands Claude Code at launch (`--plugin-dir`) to carry the
+ * shared folder's skills. Claude names a plugin's skills `<plugin>:<folder>`,
+ * so a shared `pdf` is invoked as `/stoke-shared:pdf`, not `/pdf`. Kebab-case
+ * because the CLI refuses a path-loaded plugin whose name is not (2.1.285).
+ */
+export const CLAUDE_SHARED_PLUGIN = 'stoke-shared'
+
+/** What Claude calls a plugin skill's folder: anything outside `[A-Za-z0-9_-]` becomes `-`. */
+export function pluginSkillName(folder: string): string {
+  return folder.replace(/[^a-zA-Z0-9_-]/g, '-')
+}
+
+/** Does this folder read as a skill Claude Code can see, by name or by the folder it is? */
+function claudeSees(dir: string): boolean {
+  return dir === CLAUDE_SKILLS_DIR || dir === CLAUDE_PLUGIN_SKILLS
+}
+
+/**
+ * The skills in `~/.agents/skills` that Claude Code would NOT otherwise see —
+ * the set Stoke projects into one launch as the `stoke-shared` plugin.
+ *
+ * A shared skill is left out when Claude already has it:
+ *   - by NAME in `~/.claude/skills` (a link there, or a same-named skill of its
+ *     own, which wins — two skills answering one name is the drift the report
+ *     warns about, not something to add a third copy of);
+ *   - by REAL PATH anywhere Claude reads, plugins included, so a link under
+ *     another name is one skill, not two.
+ * Two shared entries resolving to one folder are projected once, by name order,
+ * and so are two whose names Claude would flatten to the same `stoke-shared:`
+ * name.
+ *
+ * `overrides` is the merged `skillOverrides` Claude reads for the launch's
+ * folder (`skillOverridesFor` in main: the local layer is the git root's). Claude
+ * Code applies that setting to its own skills only — its resolver returns "on"
+ * for any skill whose source is a plugin (read out of 2.1.285; gotcha 117) —
+ * so a per-project trim of a shared skill would be bypassed by the projection
+ * unless it is honoured here. Any value but "on" leaves the skill out: "name-only" and
+ * "user-invocable-only" cannot be expressed for a plugin skill, and a trim is a
+ * decision to spend less context, so the conservative reading is not to add it.
+ * The key may be the bare name or the namespaced one.
+ *
+ * A trim takes out the FOLDER, under every shared name that links to it, and
+ * the name Claude would show, from every entry that flattens to it. The dedupe
+ * above picks one name per folder and per `stoke-shared:` name; a trim that
+ * only skipped its own entry left the next one free to take that place, so
+ * trimming `pdf` lent the same folder as `pdf-alias` instead.
+ */
+export function claudeProjection(
+  scans: readonly SkillDirScan[],
+  overrides: Readonly<Record<string, unknown>> = {}
+): { name: string; real: string }[] {
+  const shared = scans.find((s) => s.dir === SHARED_SKILLS_DIR)?.skills ?? []
+  const claudeNames = new Set(scans.filter((s) => s.dir === CLAUDE_SKILLS_DIR).flatMap((s) => s.skills.map((k) => k.name)))
+  const claudeReals = new Set(scans.filter((s) => claudeSees(s.dir)).flatMap((s) => s.skills.map((k) => k.real)))
+  const trimmed = (name: string): boolean => {
+    for (const key of [name, `${CLAUDE_SHARED_PLUGIN}:${pluginSkillName(name)}`]) {
+      const v = Object.prototype.hasOwnProperty.call(overrides, key) ? overrides[key] : undefined
+      if (v !== undefined && v !== 'on') return true
+    }
+    return false
+  }
+  const cut = shared.filter((k) => trimmed(k.name))
+  const cutReals = new Set(cut.map((k) => k.real))
+  const cutFlat = new Set(cut.map((k) => pluginSkillName(k.name)))
+  const out: { name: string; real: string }[] = []
+  const reals = new Set<string>()
+  const flat = new Set<string>()
+  for (const k of [...shared].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
+    if (claudeNames.has(k.name) || claudeReals.has(k.real)) continue
+    if (cutReals.has(k.real) || cutFlat.has(pluginSkillName(k.name))) continue
+    if (reals.has(k.real) || flat.has(pluginSkillName(k.name))) continue
+    reals.add(k.real)
+    flat.add(pluginSkillName(k.name))
+    out.push({ name: k.name, real: k.real })
+  }
+  return out
+}
+
 export interface SkillReport {
   /** Distinct skills found anywhere. */
   total: number
@@ -75,9 +176,19 @@ export interface SkillReport {
   partial: { name: string; dirs: string[]; missing: CodingCliId[] }[]
   /** The same skill name in more than one folder — the copies that drift. */
   duplicated: { name: string; dirs: string[] }[]
+  /**
+   * Shared skills Claude Code sees only because Stoke projects them at launch
+   * (`claudeProjection`, machine-wide: a project's own trims can take more out).
+   * Empty when sharing is off.
+   */
+  projected: string[]
 }
 
-export function skillReport(scans: readonly SkillDirScan[], agents: readonly CodingCliId[]): SkillReport {
+export function skillReport(
+  scans: readonly SkillDirScan[],
+  agents: readonly CodingCliId[],
+  opts: { shareToClaude?: boolean } = {}
+): SkillReport {
   const where = new Map<string, string[]>()
   const reals = new Map<string, Set<string>>()
   for (const s of scans) {
@@ -86,21 +197,39 @@ export function skillReport(scans: readonly SkillDirScan[], agents: readonly Cod
       reals.set(k.name, (reals.get(k.name) ?? new Set()).add(k.real))
     }
   }
-  const sees = (id: CodingCliId, dirs: string[]): boolean => dirs.some((d) => SKILL_DIRS[id].includes(d))
+  const lending = opts.shareToClaude ? claudeProjection(scans) : []
+  const projected = lending.map((k) => k.name)
+  /*
+   * Visible by FOLDER, or by REAL PATH: a skill linked under another name, or
+   * the same folder reached through a plugin, is the same skill, and an agent
+   * that has it under one name is not missing it under the other. Claude also
+   * reads its plugins, and what Stoke lends it at launch.
+   */
+  const readsDir = (id: CodingCliId, dir: string): boolean =>
+    SKILL_DIRS[id].includes(dir) || (id === 'claude' && dir === CLAUDE_PLUGIN_SKILLS)
+  const realsFor = new Map<CodingCliId, Set<string>>()
+  for (const id of agents) {
+    const set = new Set(scans.filter((s) => readsDir(id, s.dir)).flatMap((s) => s.skills.map((k) => k.real)))
+    if (id === 'claude') for (const k of lending) set.add(k.real)
+    realsFor.set(id, set)
+  }
+  const sees = (id: CodingCliId, name: string): boolean => {
+    if (where.get(name)!.some((d) => readsDir(id, d))) return true
+    const mine = realsFor.get(id)!
+    return [...reals.get(name)!].some((r) => mine.has(r))
+  }
   // An agent with no skill folders at all (Aider) is not "missing" anything.
   const readers = agents.filter((id) => SKILL_DIRS[id].length > 0)
   const names = [...where.keys()].sort()
   return {
     total: names.length,
-    perAgent: agents.map((id) => ({ id, visible: names.filter((n) => sees(id, where.get(n)!)).length })),
+    perAgent: agents.map((id) => ({ id, visible: names.filter((n) => sees(id, n)).length })),
     partial: names
-      .map((name) => {
-        const dirs = where.get(name)!
-        return { name, dirs, missing: readers.filter((id) => !sees(id, dirs)) }
-      })
+      .map((name) => ({ name, dirs: where.get(name)!, missing: readers.filter((id) => !sees(id, name)) }))
       .filter((r) => r.missing.length > 0),
     // Two folders holding the same skill through a link is one skill; two real
     // folders with the same name are two copies, and the next edit splits them.
-    duplicated: names.filter((n) => reals.get(n)!.size > 1).map((name) => ({ name, dirs: where.get(name)! }))
+    duplicated: names.filter((n) => reals.get(n)!.size > 1).map((name) => ({ name, dirs: where.get(name)! })),
+    projected
   }
 }

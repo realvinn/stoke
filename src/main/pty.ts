@@ -377,7 +377,15 @@ export class PtyManager {
      * by `prepareEnroll` from the host settings holds under that id. Never from
      * the renderer: without it an enroll launch is refused rather than guessed.
      */
-    enrollCommand: { file: string; args: string[] } | null = null
+    enrollCommand: { file: string; args: string[] } | null = null,
+    /**
+     * The shared-skills plugin for a local Claude Code session
+     * (`ClaudeSkillsProjector.prepare`), or null. Pushed only when the session
+     * is `instrumented`: an SSH tab's `claude` is on another machine and must
+     * get no flag it may not know (gotcha 19), and another agent is another
+     * binary. Headless runs (agent.ts) never come through here (gotcha 15).
+     */
+    claudePluginDir: string | null = null
   ): Promise<StartResult> {
     /*
      * A remote session is the same machinery with a different argv: ssh instead
@@ -530,6 +538,10 @@ export class PtyManager {
     // Only meaningful locally: the flags belong to claude, and a remote session
     // is running ssh. The remote's own CLI config governs there.
     if (mcpConfigPath && instrumented) args.push('--mcp-config', mcpConfigPath)
+    // The skills in ~/.agents/skills that Claude Code does not read on its own,
+    // as a plugin for this process only (skillsProject.ts). Same gate, same
+    // reason: a local Claude session, never ssh and never another CLI.
+    if (claudePluginDir && instrumented) args.push('--plugin-dir', claudePluginDir)
 
     // Ultracode and the statusLine wrapper both need nothing here: buildArgs
     // has already folded them into the single `--settings <file>` above. Do
