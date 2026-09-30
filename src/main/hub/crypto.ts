@@ -52,7 +52,7 @@ import {
   type ItemEnvelope,
   type ItemPlaintext
 } from '../../shared/hub/items.ts'
-import { HUB_LABELS, itemIdInfo, itemKeyInfo, recoveryWrapAad, vkWrapInfo } from '../../shared/hub/labels.ts'
+import { HUB_LABELS, itemIdInfo, itemKeyInfo, recoveryWrapAad, vkCommitInfo, vkWrapInfo } from '../../shared/hub/labels.ts'
 import { pairCommitText, pairSasText, sasDigits } from '../../shared/hub/pairing.ts'
 import { HUB_HEADERS, REQUEST_NONCE_BYTES, REQUEST_SKEW_MS, requestSigningText, type RecoveryWrap, type VaultWrap } from '../../shared/hub/protocol.ts'
 import {
@@ -279,9 +279,37 @@ export function newVaultKey(): Uint8Array {
 }
 
 /**
+ * The commitment to `VK_epoch` that the chain entry opening the epoch signs
+ * (`ChainEntry.vk`: genesis, revoke, rotate). HKDF under its own label, so it
+ * reveals nothing of the key or of the item keys HKDF derives from it under
+ * other labels.
+ *
+ * Why it exists: a wrap (below) is an anonymous box. It proves only that
+ * SOMEBODY sealed a key to a device's PUBLIC box key — which the hub, the
+ * Cloudflare edge or anyone on a plain-http LAN path can do, with a key of
+ * their choosing. Found in review (2026-10-01): with nothing to compare an
+ * unwrapped key to, a joining device, or one fetching a new epoch after a
+ * revoke, would take a planted key and seal its API and SSH keys under it.
+ * The chain is signed by devices the hub cannot impersonate, so the key an
+ * epoch's entry commits to is the only one a device will accept.
+ */
+export function vaultKeyCommit(vk: Uint8Array, f: { account: string; epoch: number }): string {
+  return b64uEncode(hkdf(need(vk, VAULT_KEY_BYTES, 'a vault key'), new Uint8Array(0), vkCommitInfo(f), 32))
+}
+
+/** Whether `vk` is the key `commit` vouches for at this account and epoch. Constant time; a malformed commit is false. */
+export function vaultKeyMatches(vk: Uint8Array, f: { account: string; epoch: number }, commit: string): boolean {
+  const want = b64uDecode(commit)
+  if (!want || want.length !== 32 || vk.length !== VAULT_KEY_BYTES) return false
+  return timingSafeEqual(b64uDecode(vaultKeyCommit(vk, f)) as Uint8Array, want)
+}
+
+/**
  * `VK_epoch` sealed to one device's X25519 key: an ephemeral key agreement,
  * HKDF over the shared secret salted with both public keys, AES-256-GCM with
- * the same labelled info as AAD. `opts` exist for test vectors only.
+ * the same labelled info as AAD. `opts` exist for test vectors only. Anyone
+ * can make one of these: the reader's `unwrapVaultKey` checks the key inside
+ * against the chain's commitment, which is what makes it trustworthy.
  */
 export function wrapVaultKey(
   vk: Uint8Array,
@@ -299,8 +327,14 @@ export function wrapVaultKey(
   return { v: 1, eph: ephPub, nonce: b64uEncode(nonce), ct: b64uEncode(gcmSeal(key, nonce, vk, utf8(info))) }
 }
 
-/** The vault key, or null when this wrap was not made for this device, account and epoch. */
-export function unwrapVaultKey(wrap: VaultWrap, f: { account: string; epoch: number; device: string; boxPriv: string }): Uint8Array | null {
+/**
+ * The vault key, or null when this wrap was not made for this device, account
+ * and epoch — or when the key inside is not the one `commit` vouches for.
+ * `commit` is `vkCommits[epoch]` of the chain this device VERIFIED
+ * (`verifyChain`), never a value the hub served beside the wrap: a planted key
+ * is refused here, not used. Null either way is an alarm, not a retry.
+ */
+export function unwrapVaultKey(wrap: VaultWrap, f: { account: string; epoch: number; device: string; boxPriv: string; commit: string }): Uint8Array | null {
   try {
     if (wrap?.v !== 1 || !isB64u(wrap.eph, 32)) return null
     const priv = xPrivate(f.boxPriv)
@@ -311,7 +345,7 @@ export function unwrapVaultKey(wrap: VaultWrap, f: { account: string; epoch: num
     const info = vkWrapInfo(f)
     const key = hkdf(shared, concat(b64uDecode(wrap.eph) as Uint8Array, need(b64uDecode(publicOf(priv)), 32, 'box')), info, 32)
     const vk = gcmOpen(key, nonce, ct, utf8(info))
-    return vk && vk.length === VAULT_KEY_BYTES ? vk : null
+    return vk && vk.length === VAULT_KEY_BYTES && vaultKeyMatches(vk, f, f.commit) ? vk : null
   } catch {
     return null
   }
@@ -342,12 +376,18 @@ export function sealRecoveryWrap(vk: Uint8Array, wrapKey: Uint8Array, f: { accou
   return { v: 1, nonce: b64uEncode(nonce), ct: b64uEncode(gcmSeal(wrapKey, nonce, need(vk, 32, 'a vault key'), utf8(recoveryWrapAad(f)))) }
 }
 
-export function openRecoveryWrap(wrap: RecoveryWrap, wrapKey: Uint8Array, f: { account: string; epoch: number }): Uint8Array | null {
+/**
+ * The vault key the Kit's wrap holds, or null — including when it is not the
+ * key `commit` (the verified chain's `vkCommits[epoch]`) vouches for. The hub
+ * cannot seal to the Kit's key, but a wrap is still data it serves: the same
+ * check as `unwrapVaultKey`, so no path takes a key the chain did not name.
+ */
+export function openRecoveryWrap(wrap: RecoveryWrap, wrapKey: Uint8Array, f: { account: string; epoch: number; commit: string }): Uint8Array | null {
   const nonce = b64uDecode(wrap?.nonce ?? '')
   const ct = b64uDecode(wrap?.ct ?? '')
   if (wrap?.v !== 1 || !nonce || !ct) return null
   const vk = gcmOpen(wrapKey, nonce, ct, utf8(recoveryWrapAad(f)))
-  return vk && vk.length === VAULT_KEY_BYTES ? vk : null
+  return vk && vk.length === VAULT_KEY_BYTES && vaultKeyMatches(vk, f, f.commit) ? vk : null
 }
 
 /* ------------------------------------------------------------ items */

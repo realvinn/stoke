@@ -317,9 +317,21 @@ Account:   VK_e     32 random bytes, epoch e = 1, 2, …   (never on the hub unw
            RS       Recovery Secret, 16 random bytes      (the Recovery Kit only)
 Derived:   itemKey_e = HKDF(VK_e, info = item-key {account, epoch})       AES-256-GCM key
            idKey_e   = HKDF(VK_e, info = item-id  {account, epoch})       HMAC key for item ids
+           vk_e      = HKDF(VK_e, info = vk-commit {account, epoch})      public: signed into the chain
            RK        = HKDF(RS, salt = account, info = recovery-wrap)     wraps VK_e
            rsign     = Ed25519 from seed HKDF(RS, salt = account, info = recovery-sign)
 ```
+
+**Why `vk_e` exists (found in review, 2026-10-01, before any hub held data).** A wrap of `VK_e` to a
+device is an ephemeral X25519 box: it proves only that *somebody* sealed a key to that device's
+PUBLIC box key — which the hub, the Cloudflare edge or anyone on a plain-http LAN path can do, with
+a key of their own choosing. Without something to compare against, a device joining (§4.4 step 5)
+or fetching a new epoch after a revoke (§4.6) would take a planted key and seal its API and SSH keys
+under it, and the planter could forge items it would apply. So the entry that OPENS each epoch
+(genesis, revoke, rotate) carries `vk_e`, covered by its signature, and `unwrapVaultKey` /
+`openRecoveryWrap` take the verified chain's `vkCommits[e]` and refuse any other key. The hub cannot
+sign a chain entry, and `vk_e` reveals nothing of `VK_e` or of the keys derived from it under other
+labels.
 
 **Where the private keys live:** `<userData>/hub-device.json`, mode 0600, each private key sealed
 by `safeStorage` with the path-bound prefix `sealedText` already uses. A run whose key store
@@ -336,13 +348,14 @@ An append-only chain, one row per entry, verified in full by every client (`veri
 src/shared/hub/chain.ts, with the signature and digest functions injected):
 
 ```
-ChainEntry = { v: 1, account, seq, prev, kind, epoch, ts, signer, device?, target?, recovery?, sig }
+ChainEntry = { v: 1, account, seq, prev, kind, epoch, ts, signer, device?, target?, recovery?, vk?, sig }
   kind      'genesis' | 'add' | 'revoke' | 'rotate'
   prev      '' for genesis, else chainLinkHash(entry[seq-1])   (b64url SHA-256, sig included)
   signer    a device id active at that point, or 'recovery'
   device    { id, label, platform, sign, box, caps, addedAt }   (genesis, add)
   target    the revoked device id                               (revoke)
   recovery  b64url Ed25519 public key of rsign                  (genesis; rotate may replace it)
+  vk        b64url vk_e, the commitment to the new epoch's key  (genesis, revoke, rotate; never add)
   sig       Ed25519 over chainSigningText(entry without sig)
 ```
 
@@ -377,7 +390,8 @@ hub exactly one guess at a 1-in-a-million code:
    `add` entry for N and uploads `wrap(VK_e → box_N)` in one `POST /v1/chain`; the hub marks the
    pair `approved`.
 5. N fetches the chain, verifies it, checks the `add` names exactly its own keys and is signed by
-   the E whose keys entered the code, pins the head, unwraps VK_e, and syncs.
+   the E whose keys entered the code, pins the head, unwraps VK_e — refusing it unless it matches
+   the chain's `vkCommits[e]` (§4.2) — and syncs.
 
 Why it holds: N commits to its keys and nonce before anyone learns `nE`, and `nE` arrives before N
 reveals, so a hub that substitutes keys toward either side must fix its own values before the last
@@ -393,16 +407,16 @@ characters + one mod-37 check symbol, in groups of four (`formatRecoverySecret`)
 type back one group before continuing. The hub stores `recoveryWrap = AES-GCM(RK, VK_e)` per epoch
 and the chain holds `rsign`'s public key. **Recovery path** (no device left): sign in as a pending
 device, type the Kit (`parseRecoverySecret` tolerates case, spaces and look-alikes, and the check
-symbol catches a typo before any crypto runs), fetch the recovery wrap, unwrap `VK_e`, sign an
-`add` for yourself with `signer: 'recovery'`, and then **rotate** (a Kit that has been typed may
-have been seen). Lose every device and the Kit and the data is gone; the panel says so in those
+symbol catches a typo before any crypto runs), verify the chain, fetch the recovery wrap, unwrap
+`VK_e` against the chain's `vkCommits[e]`, sign an `add` for yourself with `signer: 'recovery'`,
+and then **rotate** (a Kit that has been typed may have been seen). Lose every device and the Kit and the data is gone; the panel says so in those
 words, as the old design's §6.6 did.
 
 ### 4.6 Revocation rotates the vault key
 
-From any active device (or the recovery key): make `VK_{e+1}`, wrap it to every remaining active
-device and re-wrap the recovery copy, then post the `revoke` entry **with** those wraps in one
-request — the hub applies both or neither and deletes the revoked device's sessions at once. The
+From any active device (or the recovery key): make `VK_{e+1}`, commit to it in the entry (`vk`),
+wrap it to every remaining active device and re-wrap the recovery copy, then post the `revoke`
+entry **with** those wraps in one request — the hub applies both or neither and deletes the revoked device's sessions at once. The
 revoker then re-seals every item under epoch e+1 (kilobytes: settings, keys, hosts) and prunes the
 old epoch. The hub refuses any put whose epoch is not the account's current one (`stale-epoch`), so
 a device that was offline fetches its new wrap and retries. The panel lists **what the revoked
@@ -593,7 +607,7 @@ reattach is today.
 
 | Adversary | Can | Cannot |
 |---|---|---|
-| **The NUC or the hub process compromised** (or its disk stolen) | Read ciphertext, item counts and sizes, device labels/platforms/public keys, emails, scrypt password hashes, session-token hashes, relay timing. Delete or withhold data; roll it back. | Decrypt anything (no key material on it), add a device (signed chain + a pairing code on a device the owner holds), MITM a relay (pinned device keys), forge an item (GCM under VK, id-bound path). Rollback is detected (§4.3, §5.2). |
+| **The NUC or the hub process compromised** (or its disk stolen) | Read ciphertext, item counts and sizes, device labels/platforms/public keys, emails, scrypt password hashes, session-token hashes, relay timing. Delete or withhold data; roll it back. | Decrypt anything (no key material on it), plant a vault key it knows (every unwrapped key must match the commitment its epoch's signed entry carries, §4.2), add a device (signed chain + a pairing code on a device the owner holds), MITM a relay (pinned device keys), forge an item (GCM under VK, id-bound path). Rollback is detected (§4.3, §5.2). |
 | **Cloudflare, or the Cloudflare account** (TLS terminates at the edge) | See what passes the edge in the clear: bearer tokens, ciphertext, metadata. Drop or delay requests. | Use a token it saw (every request is signed by a key only the device has, and a nonce is refused twice), write, pair, relay as a device, or read content. |
 | **Edge secret leaked** | Talk to the tunnel hostname as if forwarded; forge `x-stoke-client-ip` (weakens per-IP throttling). | Anything an account and a device key are needed for. |
 | **Password guessed or phished** | Sign in as a pending device: read the device list (labels, platforms, public keys) and the recovery wrap (useless without the Kit), ask to pair. | Read items (the items routes are active-only), decrypt, or join: a pair needs approval and the matching code on an active device, and every pending request shows on every device. |

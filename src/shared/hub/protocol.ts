@@ -324,7 +324,11 @@ export interface ChainResponse {
   entries: ChainEntry[]
 }
 
-/** A vault key wrapped to one device (crypto.ts `wrapVaultKey`). */
+/**
+ * A vault key wrapped to one device (crypto.ts `wrapVaultKey`). Anyone can
+ * make one for a public box key, so it is trusted only once the key inside
+ * matches the epoch's commitment in the verified chain (`ChainEntry.vk`).
+ */
 export interface VaultWrap {
   v: 1
   /** b64url ephemeral X25519 public key. */

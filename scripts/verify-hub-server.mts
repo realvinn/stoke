@@ -52,6 +52,7 @@ import {
   signRequest,
   signText,
   unwrapVaultKey,
+  vaultKeyCommit,
   wrapVaultKey,
   type DeviceKeys
 } from '../src/main/hub/crypto.ts'
@@ -323,6 +324,18 @@ function wrapFor(vk: Uint8Array, account: string, epoch: number, d: Dev): { devi
   return { device: d.id, wrap: wrapVaultKey(vk, { account, epoch, device: d.id, boxPub: d.keys.boxPub }) }
 }
 
+/**
+ * What a device does before it trusts any wrap: fetch the chain, verify it
+ * itself, and take the epoch's vault-key commitment from THAT — never from
+ * anything the hub says beside the wrap. '' (which matches no key) when the
+ * chain does not verify.
+ */
+async function commitFromChain(d: Dev, epoch: number): Promise<string> {
+  const c = await call('GET', '/v1/chain', undefined, { dev: d })
+  const v = verifyChain(c.body?.entries ?? [], nodeChainCrypto, { account: d.account })
+  return v.ok ? (v.vkCommits[epoch] ?? '') : ''
+}
+
 /* =================================================================== */
 
 async function main(): Promise<void> {
@@ -488,7 +501,7 @@ async function main(): Promise<void> {
   const KIT = formatRecoverySecret(RS)
   secretsSeen.push(KIT, Buffer.from(VK1).toString('base64url'))
   const R1 = recoveryKeys(RS, ACCOUNT)
-  const g0 = entry(ACCOUNT, null, { kind: 'genesis', epoch: 1, signer: A.id, device: recordOf(A), recovery: R1.signPub }, A.keys.signPriv)
+  const g0 = entry(ACCOUNT, null, { kind: 'genesis', epoch: 1, signer: A.id, device: recordOf(A), recovery: R1.signPub, vk: vaultKeyCommit(VK1, { account: ACCOUNT, epoch: 1 }) }, A.keys.signPriv)
   const B = newDevice('Windows PC', 'win32')
   {
     const noWraps = await call('POST', '/v1/chain', { entries: [g0] }, { dev: A })
@@ -521,7 +534,7 @@ async function main(): Promise<void> {
     const v = verifyChain(chain.body?.entries ?? [], nodeChainCrypto, { account: ACCOUNT })
     ok('the served chain verifies on the device, to the same head', v.ok && v.head === genesis.body?.head)
     const wrap = await call('GET', '/v1/vault/wrap', undefined, { dev: A })
-    const vk = wrap.status === 200 ? unwrapVaultKey(wrap.body.wrap, { account: ACCOUNT, epoch: 1, device: A.id, boxPriv: A.keys.boxPriv }) : null
+    const vk = wrap.status === 200 ? unwrapVaultKey(wrap.body.wrap, { account: ACCOUNT, epoch: 1, device: A.id, boxPriv: A.keys.boxPriv, commit: await commitFromChain(A, 1) }) : null
     ok('the device unwraps the vault key it uploaded', !!vk && Buffer.from(vk).equals(Buffer.from(VK1)))
   }
 
@@ -619,7 +632,7 @@ let liveItemId = ''
     const relogin = await login(B, OWNER_EMAIL, OWNER_PW)
     check('the new device is active from its next sign-in', relogin.body?.state, 'active')
     const wrapB = await call('GET', '/v1/vault/wrap', undefined, { dev: B })
-    const vkB = unwrapVaultKey(wrapB.body?.wrap, { account: ACCOUNT, epoch: 1, device: B.id, boxPriv: B.keys.boxPriv })
+    const vkB = unwrapVaultKey(wrapB.body?.wrap, { account: ACCOUNT, epoch: 1, device: B.id, boxPriv: B.keys.boxPriv, commit: await commitFromChain(B, 1) })
     ok('it unwraps the same vault key', !!vkB && Buffer.from(vkB).equals(Buffer.from(VK1)))
     const feed = await call('GET', '/v1/items?since=0', undefined, { dev: B })
     const mine = feed.body?.items?.find((s: any) => s.envelope.id === keyItemId)
@@ -677,7 +690,7 @@ let liveItemId = ''
     const rw = await call('GET', '/v1/vault/recovery', undefined, { dev: C })
     check('a pending device may fetch the recovery wrap (useless without the Kit)', rw.status, 200)
     const typed = parseRecoverySecret(KIT.toLowerCase().replace(/-/g, ' '))
-    const vk = typed.ok ? openRecoveryWrap(rw.body?.wrap, recoveryKeys(typed.secret, ACCOUNT).wrapKey, { account: ACCOUNT, epoch: 1 }) : null
+    const vk = typed.ok ? openRecoveryWrap(rw.body?.wrap, recoveryKeys(typed.secret, ACCOUNT).wrapKey, { account: ACCOUNT, epoch: 1, commit: await commitFromChain(C, 1) }) : null
     ok('the Kit, typed back in lower case, opens it', !!vk && Buffer.from(vk).equals(Buffer.from(VK1)))
     chainNow = (await call('GET', '/v1/chain', undefined, { dev: C })).body?.entries ?? []
     const addC = entry(ACCOUNT, chainNow[chainNow.length - 1], { kind: 'add', epoch: 1, signer: 'recovery', device: recordOf(C) }, R1.signPriv)
@@ -688,7 +701,7 @@ let liveItemId = ''
     check('the squatter’s session stays pending: active means the listed id AND the key it signed in with', [sqItems.status, sqItems.body?.error], [403, 'pending'])
     const sqAgain = await login(squatter, OWNER_EMAIL, OWNER_PW)
     check('and it cannot sign in under that id again', [sqAgain.status, sqAgain.body?.error], [403, 'forbidden'])
-    const rot = entry(ACCOUNT, addC, { kind: 'rotate', epoch: 2, signer: C.id, recovery: R2.signPub }, C.keys.signPriv)
+    const rot = entry(ACCOUNT, addC, { kind: 'rotate', epoch: 2, signer: C.id, recovery: R2.signPub, vk: vaultKeyCommit(VK2, { account: ACCOUNT, epoch: 2 }) }, C.keys.signPriv)
     const partial = await call('POST', '/v1/chain', { entries: [rot], wraps: { epoch: 2, devices: [wrapFor(VK2, ACCOUNT, 2, C)], recovery: sealRecoveryWrap(VK2, R2.wrapKey, { account: ACCOUNT, epoch: 2 }) } }, { dev: C })
     check('a rotate that leaves active devices without the new key is refused', [partial.status, new RegExp(`${A.id}.*${B.id}|${B.id}.*${A.id}`).test(partial.body?.message ?? '')], [400, true])
     const full = await call(
@@ -702,8 +715,25 @@ let liveItemId = ''
     const stale = await call('POST', '/v1/items', { puts: [{ baseVersion: 0, envelope: sealItem(K1, { version: 1, author: A.id, path: 't1/settings/terminal', editedAt: clock, deleted: false, value: {} }) }] }, { dev: A })
     check('a put under the old epoch is now stale-epoch', [stale.body?.results?.[0]?.error, stale.body?.results?.[0]?.epoch], ['stale-epoch', 2])
     const w2 = await call('GET', '/v1/vault/wrap', undefined, { dev: A })
-    const vk2 = unwrapVaultKey(w2.body?.wrap, { account: ACCOUNT, epoch: 2, device: A.id, boxPriv: A.keys.boxPriv })
+    const vk2 = unwrapVaultKey(w2.body?.wrap, { account: ACCOUNT, epoch: 2, device: A.id, boxPriv: A.keys.boxPriv, commit: await commitFromChain(A, 2) })
     ok('the first device fetches its epoch-2 wrap', !!vk2 && Buffer.from(vk2).equals(Buffer.from(VK2)))
+    {
+      // A compromised NUC — or anything that can answer GET /v1/vault/wrap —
+      // boxes a key IT knows to A's PUBLIC key. Written straight into the
+      // database, as the hub process itself could.
+      const planted = newVaultKey()
+      const db = new DatabaseSync(join(TMP, 'hub', 'hub.db'), { timeout: 5000 })
+      const where = 'WHERE account_id = ? AND epoch = 2 AND device_id = ?'
+      const original = (db.prepare(`SELECT wrap_json FROM wraps ${where}`).get(ACCOUNT, A.id) as { wrap_json: string }).wrap_json
+      db.prepare(`UPDATE wraps SET wrap_json = ? ${where}`).run(JSON.stringify(wrapVaultKey(planted, { account: ACCOUNT, epoch: 2, device: A.id, boxPub: A.keys.boxPub })), ACCOUNT, A.id)
+      const served = await call('GET', '/v1/vault/wrap', undefined, { dev: A })
+      const commit2 = await commitFromChain(A, 2)
+      check('a wrap the hub planted (its own key, boxed to the device’s public key) is refused', unwrapVaultKey(served.body?.wrap, { account: ACCOUNT, epoch: 2, device: A.id, boxPriv: A.keys.boxPriv, commit: commit2 }), null)
+      const wouldHave = unwrapVaultKey(served.body?.wrap, { account: ACCOUNT, epoch: 2, device: A.id, boxPriv: A.keys.boxPriv, commit: vaultKeyCommit(planted, { account: ACCOUNT, epoch: 2 }) })
+      ok('it opens fine as a box: only the signed commitment in the chain tells it apart', !!wouldHave && Buffer.from(wouldHave).equals(Buffer.from(planted)))
+      db.prepare(`UPDATE wraps SET wrap_json = ? ${where}`).run(original, ACCOUNT, A.id)
+      db.close()
+    }
     const K2 = itemKeys(VK2, ACCOUNT, 2)
     const resealed = await call('POST', '/v1/items', { puts: [{ baseVersion: 0, envelope: sealItem(K2, { version: 1, author: A.id, path: keyPath, editedAt: clock, deleted: false, value: CANARY }) }] }, { dev: A })
     check('re-seals under epoch 2 (a new opaque id)', [resealed.body?.results?.[0]?.ok, resealed.body?.results?.[0]?.id !== keyItemId], [true, true])
@@ -733,7 +763,7 @@ let liveItemId = ''
     check('the member signs in to an empty account', dl.body?.state, 'new-account')
     const vkD = newVaultKey()
     const rD = recoveryKeys(randomU8(16), D.account)
-    const gD = entry(D.account, null, { kind: 'genesis', epoch: 1, signer: D.id, device: recordOf(D), recovery: rD.signPub }, D.keys.signPriv)
+    const gD = entry(D.account, null, { kind: 'genesis', epoch: 1, signer: D.id, device: recordOf(D), recovery: rD.signPub, vk: vaultKeyCommit(vkD, { account: D.account, epoch: 1 }) }, D.keys.signPriv)
     const gd = await call('POST', '/v1/chain', { entries: [gD], wraps: { epoch: 1, devices: [wrapFor(vkD, D.account, 1, D)], recovery: sealRecoveryWrap(vkD, rD.wrapKey, { account: D.account, epoch: 1 }) } }, { dev: D })
     check('and starts its own chain', gd.status, 200)
     const dItems = await call('GET', '/v1/items?since=0', undefined, { dev: D })
@@ -853,7 +883,7 @@ let liveItemId = ''
     const presB = await mustOpen('/v1/ws/presence', B, 'the device to revoke is online')
     const VK3 = newVaultKey()
     const prev = chainNow[chainNow.length - 1]
-    const rev = entry(ACCOUNT, prev, { kind: 'revoke', epoch: 3, signer: A.id, target: B.id }, A.keys.signPriv)
+    const rev = entry(ACCOUNT, prev, { kind: 'revoke', epoch: 3, signer: A.id, target: B.id, vk: vaultKeyCommit(VK3, { account: ACCOUNT, epoch: 3 }) }, A.keys.signPriv)
     const withB = await call(
       'POST',
       '/v1/chain',

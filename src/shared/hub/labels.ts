@@ -30,6 +30,8 @@ export const HUB_LABELS = {
   pairSas: 'stoke-hub/v1/pair-sas',
   /** HKDF info and GCM AAD for the vault key wrapped to one device. */
   vkWrap: 'stoke-hub/v1/vk-wrap',
+  /** HKDF info for the commitment to one epoch's vault key that the chain entry opening the epoch signs. */
+  vkCommit: 'stoke-hub/v1/vk-commit',
   /** HKDF info (salt: account) for the Recovery Kit's wrapping key, and the wrap's AAD. */
   recoveryWrap: 'stoke-hub/v1/recovery-wrap',
   /** HKDF info (salt: account) for the Recovery Kit's Ed25519 seed. */
@@ -59,6 +61,16 @@ export type HubLabel = (typeof HUB_LABELS)[keyof typeof HUB_LABELS]
 /** HKDF info AND GCM AAD for `VK_epoch` wrapped to `device`'s X25519 key. */
 export function vkWrapInfo(f: { account: string; epoch: number; device: string }): string {
   return labelled(HUB_LABELS.vkWrap, { account: f.account, epoch: f.epoch, device: f.device })
+}
+
+/**
+ * HKDF info for `ChainEntry.vk`, the commitment to `VK_epoch` (crypto.ts
+ * `vaultKeyCommit`). A wrap is an anonymous box anyone holding a device's
+ * PUBLIC key can make, of any key they choose; this commitment, signed into
+ * the chain the hub cannot extend, is what says which key an epoch's is.
+ */
+export function vkCommitInfo(f: { account: string; epoch: number }): string {
+  return labelled(HUB_LABELS.vkCommit, { account: f.account, epoch: f.epoch })
 }
 
 /** GCM AAD for `VK_epoch` wrapped by the Recovery Kit's key. */

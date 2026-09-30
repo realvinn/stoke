@@ -55,8 +55,23 @@ export interface ChainEntry {
   target?: string
   /** genesis (required), rotate (optional): the Recovery Kit's Ed25519 public key. */
   recovery?: string
+  /**
+   * genesis, revoke, rotate (required; never on an add): b64url commitment to
+   * the vault key of the epoch this entry opens (crypto.ts `vaultKeyCommit`).
+   * A vault-key wrap is an anonymous box — anyone holding a device's public
+   * box key can make one, of a key they chose — so a device refuses any key
+   * it unwraps that this signed value does not vouch for. Without it the hub
+   * could plant a key it knows on every device that joins or fetches a new
+   * epoch, and read everything they seal after.
+   */
+  vk?: string
   /** b64url Ed25519 signature over `chainSigningText(entry)`. */
   sig: string
+}
+
+/** The kinds that open an epoch, and so must commit to its vault key. */
+export function opensEpoch(kind: ChainKind): boolean {
+  return kind === 'genesis' || kind === 'revoke' || kind === 'rotate'
 }
 
 export const MAX_LABEL_CHARS = 64
@@ -110,8 +125,11 @@ export function chainEntryProblem(e: unknown): string | null {
   if (!isNonNegInt(e.ts)) return 'bad ts'
   if (e.signer !== 'recovery' && !isId('device', e.signer)) return 'bad signer'
   if (!isB64u(e.sig, 64)) return 'bad signature encoding'
-  const allowed = new Set(['v', 'account', 'seq', 'prev', 'kind', 'epoch', 'ts', 'signer', 'device', 'target', 'recovery', 'sig'])
+  const allowed = new Set(['v', 'account', 'seq', 'prev', 'kind', 'epoch', 'ts', 'signer', 'device', 'target', 'recovery', 'vk', 'sig'])
   if (Object.keys(e).some((k) => !allowed.has(k))) return 'unknown field'
+  if (opensEpoch(e.kind as ChainKind)) {
+    if (!isB64u(e.vk, 32)) return `${e.kind as string} without a vault key commitment`
+  } else if (e.vk !== undefined) return 'vault key commitment on an add'
   const needsDevice = e.kind === 'genesis' || e.kind === 'add'
   if (needsDevice) {
     const p = deviceRecordProblem(e.device)
@@ -144,6 +162,13 @@ export type ChainVerdict =
       revoked: string[]
       /** The recovery key in force. */
       recovery: string
+      /**
+       * `vkCommits[e]`: the commitment to epoch e's vault key, from the entry
+       * that opened e. Hand it to `unwrapVaultKey`/`openRecoveryWrap`, which
+       * refuse a key it does not vouch for — take it from THIS verified chain,
+       * never from anything the hub says beside it.
+       */
+      vkCommits: Record<number, string>
     }
   | { ok: false; at: number; reason: string }
 
@@ -159,6 +184,8 @@ export type ChainVerdict =
  * - `add` introduces an id never seen before (active or revoked) and keeps
  *   the epoch; `revoke` removes an active device and increments the epoch;
  *   `rotate` increments the epoch and may replace the recovery key;
+ * - genesis, revoke and rotate each commit to the vault key of the epoch they
+ *   open (`vk`, returned as `vkCommits`); an add carries none;
  * - a device may not be added whose signing key an earlier device used, so
  *   one key is never two devices.
  */
@@ -169,6 +196,7 @@ export function verifyChain(entries: readonly unknown[], crypto: ChainCrypto, op
   const seenKeys = new Set<string>()
   const revoked: string[] = []
   const links: string[] = []
+  const vkCommits: Record<number, string> = {}
   let recovery = ''
   let epoch = 0
   let account = ''
@@ -189,6 +217,7 @@ export function verifyChain(entries: readonly unknown[], crypto: ChainCrypto, op
       account = e.account
       recovery = e.recovery as string
       epoch = 1
+      vkCommits[1] = e.vk as string
       active.set(d.id, d)
       seen.add(d.id)
       seenKeys.add(d.sign)
@@ -220,11 +249,13 @@ export function verifyChain(entries: readonly unknown[], crypto: ChainCrypto, op
         active.delete(t)
         revoked.push(t)
         epoch = e.epoch
+        vkCommits[epoch] = e.vk as string
         break
       }
       case 'rotate': {
         if (e.epoch !== epoch + 1) return { ok: false, at: i, reason: 'rotate must increment the epoch' }
         epoch = e.epoch
+        vkCommits[epoch] = e.vk as string
         if (e.recovery) recovery = e.recovery
         break
       }
@@ -239,7 +270,8 @@ export function verifyChain(entries: readonly unknown[], crypto: ChainCrypto, op
     epoch,
     active: [...active.values()],
     revoked,
-    recovery
+    recovery,
+    vkCommits
   }
 }
 
