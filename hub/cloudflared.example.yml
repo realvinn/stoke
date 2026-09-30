@@ -1,0 +1,20 @@
+# /etc/cloudflared/config.yml on the NUC — the tunnel the edge Worker forwards
+# into (hub/README.md, step 4). Replace <TUNNEL-ID> with what
+# `cloudflared tunnel create stoke-hub` printed.
+#
+# Point it at the EDGE listener (127.0.0.1:8787), never the LAN one: the edge
+# listener is the one that demands the Worker's secret. The hub refuses
+# Cloudflare-forwarded requests on the LAN listener and logs why, so a wrong
+# port here fails loudly rather than opening a door.
+#
+# Do not set `access: required: true` here until a request forwarded by the
+# Worker has been measured passing it (spec §2.3).
+
+tunnel: stoke-hub
+credentials-file: /etc/cloudflared/<TUNNEL-ID>.json
+
+ingress:
+  - hostname: hub-origin.vinn.dev
+    path: ^/hub/
+    service: http://127.0.0.1:8787
+  - service: http_status:404

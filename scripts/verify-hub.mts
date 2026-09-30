@@ -43,6 +43,7 @@ import {
   signText,
   UNMATCHABLE_PASSWORD_HASH,
   unwrapVaultKey,
+  vaultKeyCommit,
   verifyPassword,
   verifyRequest,
   verifyText,
@@ -355,10 +356,14 @@ function entry(prev: ChainEntry | null, fields: Omit<ChainEntry, 'v' | 'account'
   return { ...bare, sig: signText(signPriv, chainSigningText(bare)) }
 }
 
-const g0 = entry(null, { kind: 'genesis', epoch: 1, signer: DA.id, device: DA, recovery: R1.signPub }, KA.signPriv)
+/** Each epoch's vault key, and the commitment to it the entry opening that epoch signs. */
+const EPOCH_VK: Record<number, Uint8Array> = { 1: bytes(32, 150), 2: bytes(32, 151), 3: bytes(32, 152) }
+const vkOf = (epoch: number): string => vaultKeyCommit(EPOCH_VK[epoch], { account: ACCOUNT, epoch })
+
+const g0 = entry(null, { kind: 'genesis', epoch: 1, signer: DA.id, device: DA, recovery: R1.signPub, vk: vkOf(1) }, KA.signPriv)
 const e1 = entry(g0, { kind: 'add', epoch: 1, signer: DA.id, device: DB }, KA.signPriv)
-const e2 = entry(e1, { kind: 'revoke', epoch: 2, signer: DA.id, target: DB.id }, KA.signPriv)
-const e3 = entry(e2, { kind: 'rotate', epoch: 3, signer: 'recovery', recovery: R2.signPub }, R1.signPriv)
+const e2 = entry(e1, { kind: 'revoke', epoch: 2, signer: DA.id, target: DB.id, vk: vkOf(2) }, KA.signPriv)
+const e3 = entry(e2, { kind: 'rotate', epoch: 3, signer: 'recovery', recovery: R2.signPub, vk: vkOf(3) }, R1.signPriv)
 const e4 = entry(e3, { kind: 'add', epoch: 3, signer: 'recovery', device: DC }, R2.signPriv)
 const CHAIN = [g0, e1, e2, e3, e4]
 
@@ -373,6 +378,7 @@ console.log('\nchain: a real chain verifies')
     check('the recovery key in force is the rotated one', v.recovery, R2.signPub)
     check('the head is the last link', v.head, sha256B64u(chainLinkText(e4)))
     check('wraps a revoke/rotate must carry: every active vault device', wrapsRequiredAfter(v), [DA.id, DC.id])
+    check('every epoch’s vault-key commitment, from the entry that opened it', v.vkCommits, { 1: vkOf(1), 2: vkOf(2), 3: vkOf(3) })
   }
 }
 
@@ -393,16 +399,22 @@ console.log('\nchain: what the hub cannot do')
   fail('the OLD recovery key after a rotate', [...CHAIN, entry(e4, { kind: 'add', epoch: 3, signer: 'recovery', device: DX }, R1.signPriv)], 'bad signature')
   fail('re-add a revoked id', [g0, e1, e2, entry(e2, { kind: 'add', epoch: 2, signer: DA.id, device: DB }, KA.signPriv)], 'device id used before')
   fail('one signing key as two devices', [g0, entry(g0, { kind: 'add', epoch: 1, signer: DA.id, device: { ...DX, sign: KA.signPub } }, KA.signPriv)], 'signing key used before')
-  fail('a revoke that keeps the epoch', [g0, e1, entry(e1, { kind: 'revoke', epoch: 1, signer: DA.id, target: DB.id }, KA.signPriv)], 'revoke must increment the epoch')
+  fail('a revoke that keeps the epoch', [g0, e1, entry(e1, { kind: 'revoke', epoch: 1, signer: DA.id, target: DB.id, vk: vkOf(1) }, KA.signPriv)], 'revoke must increment the epoch')
   fail('an add that moves the epoch', [g0, entry(g0, { kind: 'add', epoch: 2, signer: DA.id, device: DB }, KA.signPriv)], 'add changed the epoch')
-  fail('a genesis signed by somebody else', [entry(null, { kind: 'genesis', epoch: 1, signer: DA.id, device: DA, recovery: R1.signPub }, KB.signPriv)], 'bad signature')
-  fail('a genesis that is not self-signed', [entry(null, { kind: 'genesis', epoch: 1, signer: DB.id, device: DA, recovery: R1.signPub }, KB.signPriv)], 'genesis is not self-signed')
-  fail('a second genesis', [g0, entry(g0, { kind: 'genesis', epoch: 1, signer: DX.id, device: DX, recovery: R1.signPub }, KX.signPriv)], 'second genesis')
+  fail('a genesis signed by somebody else', [entry(null, { kind: 'genesis', epoch: 1, signer: DA.id, device: DA, recovery: R1.signPub, vk: vkOf(1) }, KB.signPriv)], 'bad signature')
+  fail('a genesis that is not self-signed', [entry(null, { kind: 'genesis', epoch: 1, signer: DB.id, device: DA, recovery: R1.signPub, vk: vkOf(1) }, KB.signPriv)], 'genesis is not self-signed')
+  fail('a second genesis', [g0, entry(g0, { kind: 'genesis', epoch: 1, signer: DX.id, device: DX, recovery: R1.signPub, vk: vkOf(1) }, KX.signPriv)], 'second genesis')
+  // The vault-key commitment: what makes a wrap the hub serves checkable at all.
+  fail('a genesis that commits to no vault key', [entry(null, { kind: 'genesis', epoch: 1, signer: DA.id, device: DA, recovery: R1.signPub }, KA.signPriv)], 'genesis without a vault key commitment')
+  fail('a revoke that commits to no vault key', [g0, e1, entry(e1, { kind: 'revoke', epoch: 2, signer: DA.id, target: DB.id }, KA.signPriv)], 'revoke without a vault key commitment')
+  fail('a rotate that commits to no vault key', [g0, entry(g0, { kind: 'rotate', epoch: 2, signer: DA.id }, KA.signPriv)], 'rotate without a vault key commitment')
+  fail('an add that carries one (an add keeps the epoch and its key)', [g0, entry(g0, { kind: 'add', epoch: 1, signer: DA.id, device: DB, vk: vkOf(1) }, KA.signPriv)], 'vault key commitment on an add')
+  fail('the commitment swapped for the hub’s own after signing', [{ ...g0, vk: vaultKeyCommit(bytes(32, 66), { account: ACCOUNT, epoch: 1 }) }], 'bad signature')
   fail('another account’s chain', [{ ...g0, account: idFromBytes('account', bytes(10, 201)) }], 'another account')
   fail('an unknown field', [{ ...g0, extra: 1 }], 'unknown field')
   fail('a float timestamp', [{ ...g0, ts: 1.5 }], 'bad ts')
   fail('an empty chain', [], 'empty chain')
-  fail('a device record with the same bytes for both keys', [entry(null, { kind: 'genesis', epoch: 1, signer: DA.id, device: { ...DA, box: DA.sign }, recovery: R1.signPub }, KA.signPriv)], 'device: signing and box keys are the same bytes')
+  fail('a device record with the same bytes for both keys', [entry(null, { kind: 'genesis', epoch: 1, signer: DA.id, device: { ...DA, box: DA.sign }, recovery: R1.signPub, vk: vkOf(1) }, KA.signPriv)], 'device: signing and box keys are the same bytes')
 }
 
 console.log('\nchain: pinning')
@@ -423,18 +435,35 @@ console.log('\nvault key wrapped to a device')
 {
   const vk = newVaultKey()
   const f = { account: ACCOUNT, epoch: 3, device: DC.id }
+  const commit = vaultKeyCommit(vk, { account: ACCOUNT, epoch: 3 })
   const wrap = wrapVaultKey(vk, { ...f, boxPub: KC.boxPub })
-  const back = unwrapVaultKey(wrap, { ...f, boxPriv: KC.boxPriv })
+  const back = unwrapVaultKey(wrap, { ...f, boxPriv: KC.boxPriv, commit })
   ok('the device it was wrapped to opens it', !!back && Buffer.from(back).equals(Buffer.from(vk)))
-  check('another device’s key does not', unwrapVaultKey(wrap, { ...f, boxPriv: KA.boxPriv }), null)
-  check('the same key under another device id does not (id is bound)', unwrapVaultKey(wrap, { ...f, device: DA.id, boxPriv: KC.boxPriv }), null)
-  check('another epoch does not', unwrapVaultKey(wrap, { ...f, epoch: 2, boxPriv: KC.boxPriv }), null)
-  check('another account does not', unwrapVaultKey(wrap, { ...f, account: idFromBytes('account', bytes(10, 1)), boxPriv: KC.boxPriv }), null)
+  check('another device’s key does not', unwrapVaultKey(wrap, { ...f, boxPriv: KA.boxPriv, commit }), null)
+  check('the same key under another device id does not (id is bound)', unwrapVaultKey(wrap, { ...f, device: DA.id, boxPriv: KC.boxPriv, commit }), null)
+  check('another epoch does not', unwrapVaultKey(wrap, { ...f, epoch: 2, boxPriv: KC.boxPriv, commit }), null)
+  check('another account does not', unwrapVaultKey(wrap, { ...f, account: idFromBytes('account', bytes(10, 1)), boxPriv: KC.boxPriv, commit }), null)
   const ct = b64uDecode(wrap.ct) as Uint8Array
   ct[0] ^= 1
-  check('a flipped byte does not', unwrapVaultKey({ ...wrap, ct: b64uEncode(ct) }, { ...f, boxPriv: KC.boxPriv }), null)
+  check('a flipped byte does not', unwrapVaultKey({ ...wrap, ct: b64uEncode(ct) }, { ...f, boxPriv: KC.boxPriv, commit }), null)
   throws('wrapping to an all-zero (low-order) key throws', () => wrapVaultKey(vk, { ...f, boxPub: b64uEncode(new Uint8Array(32)) }))
-  check('a malformed wrap is null, never a throw', unwrapVaultKey({ v: 1, eph: 'x', nonce: '', ct: '' }, { ...f, boxPriv: KC.boxPriv }), null)
+  check('a malformed wrap is null, never a throw', unwrapVaultKey({ v: 1, eph: 'x', nonce: '', ct: '' }, { ...f, boxPriv: KC.boxPriv, commit }), null)
+
+  // A wrap is an anonymous box: the hub (or anyone on the path) can seal a key
+  // of its own choosing to this device's PUBLIC key, and GCM opens it fine.
+  const planted = newVaultKey()
+  const plantedWrap = wrapVaultKey(planted, { ...f, boxPub: KC.boxPub })
+  check('a wrap of ANOTHER vault key, made to this very device, is refused against the chain’s commitment', unwrapVaultKey(plantedWrap, { ...f, boxPriv: KC.boxPriv, commit }), null)
+  const underItsOwn = unwrapVaultKey(plantedWrap, { ...f, boxPriv: KC.boxPriv, commit: vaultKeyCommit(planted, { account: ACCOUNT, epoch: 3 }) })
+  ok('and it is the commitment that refuses it: the box itself opens for anyone who made it', !!underItsOwn && Buffer.from(underItsOwn).equals(Buffer.from(planted)))
+  check('a commitment to the right key at another epoch does not vouch', unwrapVaultKey(wrap, { ...f, boxPriv: KC.boxPriv, commit: vaultKeyCommit(vk, { account: ACCOUNT, epoch: 2 }) }), null)
+  check('nor one for another account', unwrapVaultKey(wrap, { ...f, boxPriv: KC.boxPriv, commit: vaultKeyCommit(vk, { account: idFromBytes('account', bytes(10, 1)), epoch: 3 }) }), null)
+  check('a malformed commitment is refusal, never a throw', unwrapVaultKey(wrap, { ...f, boxPriv: KC.boxPriv, commit: 'x' }), null)
+  const ik = itemKeys(vk, ACCOUNT, 3)
+  ok(
+    'the commitment is none of the key, the item key or the id key',
+    ![b64uEncode(vk), b64uEncode(ik.sealKey), b64uEncode(ik.idKey)].includes(commit)
+  )
 }
 
 console.log('\nthe Recovery Kit')
@@ -454,10 +483,13 @@ console.log('\nthe Recovery Kit')
   check('the same secret and account give the same keys', again.signPub, R1.signPub)
   ok('another account gives other keys', recoveryKeys(RS1, idFromBytes('account', bytes(10, 5))).signPub !== R1.signPub)
   const vk = newVaultKey()
+  const commit = vaultKeyCommit(vk, { account: ACCOUNT, epoch: 1 })
   const w = sealRecoveryWrap(vk, R1.wrapKey, { account: ACCOUNT, epoch: 1 })
-  ok('the Kit opens its wrap', Buffer.from(openRecoveryWrap(w, R1.wrapKey, { account: ACCOUNT, epoch: 1 }) ?? []).equals(Buffer.from(vk)))
-  check('another epoch’s wrap does not open as this one', openRecoveryWrap(w, R1.wrapKey, { account: ACCOUNT, epoch: 2 }), null)
-  check('another Kit does not', openRecoveryWrap(w, R2.wrapKey, { account: ACCOUNT, epoch: 1 }), null)
+  ok('the Kit opens its wrap', Buffer.from(openRecoveryWrap(w, R1.wrapKey, { account: ACCOUNT, epoch: 1, commit }) ?? []).equals(Buffer.from(vk)))
+  check('another epoch’s wrap does not open as this one', openRecoveryWrap(w, R1.wrapKey, { account: ACCOUNT, epoch: 2, commit }), null)
+  check('another Kit does not', openRecoveryWrap(w, R2.wrapKey, { account: ACCOUNT, epoch: 1, commit }), null)
+  const other = sealRecoveryWrap(newVaultKey(), R1.wrapKey, { account: ACCOUNT, epoch: 1 })
+  check('a Kit wrap of a key the chain did not commit to is refused too', openRecoveryWrap(other, R1.wrapKey, { account: ACCOUNT, epoch: 1, commit }), null)
   ok('the recovery signing key signs as the chain expects', verifyText(R1.signPub, 'x', signText(R1.signPriv, 'x')))
 }
 
@@ -924,6 +956,7 @@ console.log('\npinned vectors (a change here strands every wrap and item already
     boxPub: K.boxPub,
     signature: signText(K.signPriv, 'stoke-hub vector'),
     genesisLink: sha256B64u(chainLinkText(g0)),
+    vkCommit: vaultKeyCommit(vk, { account: ACCOUNT, epoch: 1 }),
     vkWrap: canonicalJson(wrap),
     recoverySignPub: rk.signPub,
     recoveryWrap: canonicalJson(rwrap),
@@ -943,6 +976,13 @@ console.log('\npinned vectors (a change here strands every wrap and item already
    * ephemeral key above is fixed, so each value is a pure function of the
    * labels, the canonical JSON and the byte layouts. Re-pin ONLY for a
    * deliberate protocol v2, never to make the suite pass.
+   *
+   * Re-pinned once, deliberately, on 2026-10-01 before any hub held data:
+   * genesis, revoke and rotate now carry `vk`, the commitment to their
+   * epoch's vault key (a review found a wrap alone let the hub plant a key it
+   * knows). `genesisLink` moved because g0 gained that field and `vkCommit`
+   * is new; every other value — the wraps, the item, the relay, the code —
+   * came out byte-identical, so no sealed format changed.
    */
   const PINNED: Record<string, string> = {
     account: 'as37xdqf4xfsfj007',
@@ -950,7 +990,8 @@ console.log('\npinned vectors (a change here strands every wrap and item already
     signPub: '5AMJmM_VrRcjwWn5VqoLnrhhm1mSvWEsKvQo68efjfA',
     boxPub: 'c-eZcckRAClyNjKoC3B79PYsEldjNG4ehxjWwNzDqjo',
     signature: 'ylIttXBMVY7ZopfhE8Ipd3ebxEjJhOurVB12Iho63MvctsmDxRV5pUk9E88liEMQ48FB-8EeAAioS2xpfTtiAw',
-    genesisLink: '843twFT3-OzdWDG2ATsXVRF74AxWgcKNDXmOnsmQ_bA',
+    genesisLink: 'q76ZBSLZZM6yaeebavWojxsfVV_RvteVhkWpmtVKAtM',
+    vkCommit: '2-IKPYypQj9Oawv8Ox84COtJuufajl31Nl2m3wnR-JU',
     vkWrap: '{"ct":"SpxRoj_bbqx2HHJMSd3Uix3LEVe6HSsHNAjl47EBmih-Zg61VIxRIn6KgkfEZJnR","eph":"rp1aCT3yLydAm-SflswNNZjcZ31qD1GtHSsSTnwTWX4","nonce":"CA8WHSQrMjlAR05V","v":1}',
     recoverySignPub: 'IDQ6hRq4fQP7DKDQIttWr9SL65XSS6TicMZsMoOd2CY',
     recoveryWrap: '{"ct":"jrm2ZUM2eiveC2JUh7LzEGRIiOE45EIaWwmEqdxlxC0hOltcR61LgfJpBs0kp6AB","nonce":"CRAXHiUsMzpBSE9W","v":1}',
@@ -968,6 +1009,9 @@ console.log('\npinned vectors (a change here strands every wrap and item already
   } else {
     for (const [k, v] of Object.entries(got)) check(`vector ${k}`, v, PINNED[k])
   }
+  check('the vector genesis commits to the vector key', g0.vk, got.vkCommit)
+  const opened = unwrapVaultKey(wrap, { account: ACCOUNT, epoch: 1, device: DA.id, boxPriv: K.boxPriv, commit: g0.vk as string })
+  ok('and the vector wrap opens under that commitment', !!opened && Buffer.from(opened).equals(Buffer.from(vk)))
   check('SHA-256("abc") is the FIPS 180-2 value', Buffer.from(sha256('abc')).toString('hex'), 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad')
   ok('keys generated for real are fresh each time', generateDeviceKeys().signPub !== generateDeviceKeys().signPub)
 }

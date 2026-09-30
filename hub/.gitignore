@@ -1,0 +1,6 @@
+# The edge secret compose.yaml reads, and anything a local run leaves behind.
+edge-secret
+dist/
+*.db
+*.db-wal
+*.db-shm
