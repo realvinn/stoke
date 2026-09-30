@@ -633,6 +633,49 @@ await step('typing reaches the session, and its hooks land', async () => {
   )
 })
 
+/**
+ * What the descent fallback stands on here, measured beside it so a red
+ * above says WHY (gotcha 92): the query `readProcessTable` runs, timed twice
+ * against its 5 s deadline, PowerShell's own start-up, the same query asking
+ * for two properties only, and the stub's ancestry by name. Printed, never
+ * checked — the checks above are what Stoke did with it.
+ */
+function windowsProcessTableReport(stubPid: number): void {
+  const ps = (command: string): { ms: number; out: string; status: number | null; error: string } => {
+    const t0 = Date.now()
+    const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], {
+      encoding: 'utf8',
+      timeout: 60_000,
+      windowsHide: true,
+      maxBuffer: 16 * 1024 * 1024
+    })
+    return { ms: Date.now() - t0, out: String(r.stdout ?? ''), status: r.status, error: r.error ? r.error.message : '' }
+  }
+  const row = (p: string): string => `"$($_.ProcessId) $($_.ParentProcessId)${p}"`
+  const stokes = ps(`Get-CimInstance Win32_Process | ForEach-Object { ${row('')} }`)
+  const again = ps(`Get-CimInstance Win32_Process | ForEach-Object { ${row('')} }`)
+  const bare = ps('exit 0')
+  const two = ps(`Get-CimInstance -ClassName Win32_Process -Property ProcessId,ParentProcessId | ForEach-Object { ${row('')} }`)
+  const named = ps(`Get-CimInstance Win32_Process | ForEach-Object { ${row(' $($_.Name)')} }`)
+  const rows = new Map<number, { ppid: number; name: string }>()
+  for (const line of named.out.split(/\r?\n/)) {
+    const m = /^(\d+) (\d+) (.*)$/.exec(line.trim())
+    if (m) rows.set(Number(m[1]), { ppid: Number(m[2]), name: m[3] })
+  }
+  const chain: string[] = []
+  for (let at: number | undefined = stubPid, hops = 0; at && hops < 6; hops++) {
+    chain.push(`${at} ${rows.get(at)?.name ?? '?'}`)
+    at = rows.get(at)?.ppid
+  }
+  const lines = (s: string): number => s.split(/\r?\n/).filter((l) => l.trim()).length
+  console.log(
+    `  (process table, readProcessTable's own query: ${stokes.ms} ms, then ${again.ms} ms — its deadline is 5000 ms; ` +
+      `${lines(stokes.out)} rows, exit ${stokes.status}${stokes.error ? `, ${stokes.error}` : ''})`
+  )
+  console.log(`  (powershell.exe starting and exiting: ${bare.ms} ms; the query with -Property ProcessId,ParentProcessId: ${two.ms} ms)`)
+  console.log(`  (the stub's ancestry: ${chain.join(' <- ')})`)
+}
+
 /*
  * A tab Stoke launches holding NO id: `stoke <folder> --continue` is
  * `claude --continue`, which picks its own conversation after launch, so the
@@ -662,6 +705,7 @@ await step('a `stoke <folder> --continue` tab: Stoke holds no id and learns it f
   )
   await ev('(window.__probeRebinds = [], window.stoke.session.onRebind((r) => window.__probeRebinds.push(r)), true)')
   const taken = Object.keys(await buffers())
+  const asked = Date.now()
   const code = await stokeCli(projContinue, '--continue')
   check('the request was handed over', code === 0, `exit ${code}`)
   const ptyId = await termShowing('STOKE-PROBE claude continued', 'the continued Claude stub\'s banner', 45_000, taken)
@@ -676,6 +720,7 @@ await step('a `stoke <folder> --continue` tab: Stoke holds no id and learns it f
     rebinds = await ev<typeof rebinds>('window.__probeRebinds')
     return rebinds.find((r) => r.ptyId === ptyId && r.sessionId === stubId) ?? null
   }, 30_000).catch(() => null)
+  if (moved) console.log(`  (rebound ${((Date.now() - asked) / 1000).toFixed(1)} s after the request, at most one poll late)`)
   check(
     isWin
       ? 'Stoke held no id, so only descent could name it: the CIM process table was read and descendsFrom walked cmd.exe to the stub (gotcha 92)'
@@ -686,6 +731,7 @@ await step('a `stoke <folder> --continue` tab: Stoke holds no id and learns it f
   check('and the tab was rebound from \'\' to the id the CLI chose (gotcha 26)', moved?.previous === '', JSON.stringify(moved))
   const state = (await ev<Array<{ ptyId?: string; sessionId?: string }>>('window.stoke.session.states()')).find((s) => s.ptyId === ptyId)
   check('session.states() reads the continued tab on that id', state?.sessionId === stubId, JSON.stringify(state ?? null))
+  if (isWin) windowsProcessTableReport(pid)
   await shot('02b-continued-session')
   // Closed through the tab's own ×: an idle Claude tab closes without asking
   // (gotcha 90), and its process is told.
