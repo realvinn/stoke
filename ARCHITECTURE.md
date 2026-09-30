@@ -689,11 +689,13 @@ npm run verify:secrets        # secrets at rest and the setup file, on a SYNTHET
                               # flipped byte, edited header, unknown KDF/cipher/format refused;
                               # import drops unknown keys, clamps, keeps local fields
 npm run verify:hub            # the Stoke Hub contract against its node:crypto reference: codecs,
-                              # a real signed device chain and 19 forged or broken ones refused,
-                              # vault wraps, the Recovery Kit, item sealing (moved, replayed,
-                              # relabelled, forged-path envelopes refused), the put rule, LWW
-                              # conflicts, pairing codes, the relay handshake and ciphers (MITM,
-                              # drop, replay, reflection), grants, signed requests, the hub URL
+                              # a real signed device chain and 24 forged or broken ones refused,
+                              # vault wraps (a wrap of any key but the one the epoch's signed
+                              # entry commits to refused), the Recovery Kit, item sealing
+                              # (moved, replayed, relabelled, forged-path envelopes refused),
+                              # the put rule, LWW conflicts, pairing codes, the relay
+                              # handshake and ciphers (MITM, drop, replay, reflection),
+                              # grants, signed requests, the hub URL
                               # and edge rules, synced-settings folding (gotcha 139), and pinned
                               # vectors that reproduce under Node/OpenSSL and Electron/BoringSSL
 npm run verify:claude-config  # writing Claude Code's OWN config: the allowlist, the refusals,
@@ -897,7 +899,11 @@ npm run verify:hub-server     # the hub SERVER over real sockets on a temp data 
                               # epochs, pairing by the six digits, the Recovery Kit join and a
                               # rotate, a squatter on a not-yet-listed id kept pending, a second
                               # account kept apart, the relay (frames byte-for-byte, another
-                              # account refused, 1 MiB cap, idle and unjoined timeouts),
+                              # account refused, 1 MiB cap, idle and unjoined timeouts, flow
+                              # control under a host that reads nothing, pongs that must echo),
+                              # a wrap planted in hub.db refused by the device, wraps never
+                              # replaced and only from a member, pairs by id AND key, an active
+                              # device's proven sign-in past a stranger's email lock,
                               # revocation, size caps, the rate bucket, the edge Worker in front
                               # of it, logs and the SQLite file free of every planted secret,
                               # graceful shutdown, and the `stoke-hub` command from source and
