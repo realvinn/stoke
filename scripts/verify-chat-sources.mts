@@ -1241,6 +1241,35 @@ try {
     check('an import is held to the total too, and says which cap', [rt.ok && rt.record.cappedBy, one.importedCount(), words(one, 'capword4')], ['total', 1, ['export-claude:cap-4']])
     one.close()
     cs.close()
+
+    /*
+     * Caps lowered AFTER an import: the pass holds the imports to its own caps
+     * before it works out the room left for local chats. Without that, 7
+     * imports under a total of 5 left a room of 0 and the pass pruned every
+     * local chat, while all 7 imports stayed, over both new caps.
+     */
+    const low = ChatStore.open(join(root, 'import-lowered'))
+    const claudeOnly = { sources: Object.fromEntries(Object.keys(CHAT_INDEX_DEFAULTS.sources).map((id) => [id, id === 'claude'])) as ChatIndexOptions['sources'] }
+    const high = options(claudeOnly, { perSource: 10, total: 20 })
+    const hr = await importExport(low, { path: capZip, options: high, maxTextBytes: BIG_TEXT }, importHooks())
+    await importExport(low, { path: chatgptZip, options: high, maxTextBytes: BIG_TEXT }, importHooks())
+    await runPass(low, { env, options: high }, hooks())
+    check('under the caps they were imported under: 5 + 2 imports and 10 local chats', [low.importedCount('export-claude'), low.importedCount('export-chatgpt'), low.count() - low.importedCount()], [5, 2, 10])
+    const lowered = options(claudeOnly, { perSource: 2, total: 5 })
+    await runPass(low, { env, options: lowered }, hooks())
+    check(
+      'caps lowered: the imports are cut to 2 per tool, and local chats keep the room the total leaves (5 − 4 = 1)',
+      [low.importedCount('export-claude'), low.importedCount('export-chatgpt'), low.count() - low.importedCount(), low.status('idle').sources.find((s) => s.id === 'claude')!.cappedBy],
+      [2, 2, 1, 'total']
+    )
+    check('...the newest of each import stays', [words(low, 'capword4'), words(low, 'capword3'), words(low, 'capword2'), words(low, 'newbranchreplyword')], [['export-claude:cap-4'], ['export-claude:cap-3'], [], ['export-chatgpt:cg-1']])
+    const lowRec = low.status('idle').imports.find((r) => hr.ok && r.id === hr.record.id)
+    check(
+      '...and the import says the rest has since left the index',
+      lowRec && importDisclosure(lowRec, lowered.caps),
+      'Imported all 5 conversations. 3 have since left the index — a newer import of the same conversations, the per-tool or total limit, or the index’s size ceiling.'
+    )
+    low.close()
   }
 
   section('the viewer: a local chat read again from its source, an import from the store')
