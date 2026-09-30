@@ -34,10 +34,28 @@
  *   node scripts/windows-e2e.mts chrome-read <profileDir> <chromeExe> <name> <value>
  *       Drives Stoke's OWN Windows cookie reader (chromeCookiesWin.ts) against a
  *       COPY of <profileDir>, launching <chromeExe> headless so Chrome decrypts
- *       its own app-bound (v20) jar, and asserts the cookie <name> comes back
- *       with value <value> and HttpOnly true. Proves the seal is resolved on the
- *       one platform where it matters. Prints the counts; exits 1 if the cookie
- *       is missing or its value did not decrypt.
+ *       its own jar, and asserts the cookie <name> comes back with value <value>.
+ *       A v10 (plain DPAPI) row only: a v20 app-bound row can never come back
+ *       from a copy (gotcha 130) — that is `chrome-sealed`. Prints the counts;
+ *       exits 1 if the cookie is missing or its value did not decrypt.
+ *
+ *   node scripts/windows-e2e.mts chrome-sealed <profileDir> <chromeExe> <name>
+ *       The same reader against a profile whose cookie <name> is a v20 row, and
+ *       the assertion gotcha 130 predicts from Chromium's source: it does NOT
+ *       come back, the reader reports it sealed (`cookieError`), and it does NOT
+ *       offer to close the browser for it (`needsClose`). Exits 1 otherwise —
+ *       a v20 row that DID decrypt from a copy means gotcha 130 is wrong.
+ *
+ *   node scripts/windows-e2e.mts chrome-close <browserId> <chromeExe>
+ *       Stoke's own close (`closeBrowserForImport`: the Restart Manager, the way
+ *       a sign-out ends the browser — gotcha 135) against the instance that owns
+ *       the browser's DEFAULT profile root. Prints the script's report; exits 1
+ *       unless it was running and really exited (`closed`).
+ *
+ *   node scripts/windows-e2e.mts chrome-reopen <chromeExe>
+ *       Stoke's own reopen (`reopenBrowser`: no arguments, cwd the browser's
+ *       folder), then waits up to 20 s for a main process of <chromeExe> to be
+ *       running. Exits 1 if none appears.
  *
  *   node scripts/windows-e2e.mts pty-path
  *       Spawns `cmd /d /c echo %PATH%` through the real node-pty twice: with the
@@ -200,6 +218,62 @@ if (cmd === 'swap-files') {
   // A non-default --user-data-dir makes Chrome write v10, so this proves the
   // mechanism, not the v20 seal (gotcha 130).
   console.log(`the cookie was read back decrypted (scheme recorded by the seed step)`)
+} else if (cmd === 'chrome-sealed') {
+  const [profileDir, chromeExe, name] = rest
+  if (!profileDir || !chromeExe || !name) fail('usage: chrome-sealed <profileDir> <chromeExe> <name>')
+  const { readChromeCookiesWin } = await import('../src/main/browserImport/chromeCookiesWin.ts')
+  const { CHROMIUM_BROWSERS } = await import('../src/main/browserImport/chromiumProfiles.ts')
+  const chrome = CHROMIUM_BROWSERS.find((b) => b.id === 'chrome')
+  if (!chrome) fail('no chrome entry')
+  const read = await readChromeCookiesWin(chrome, profileDir, { exePath: chromeExe })
+  console.log(`read ${read.cookies.length} cookie(s), ${read.skipped} skipped; needsClose ${read.needsClose === true}`)
+  console.log(`reader said: ${read.cookieError ?? '(nothing)'}`)
+  if (read.cookies.some((c) => c.name === name)) {
+    fail(`the v20 cookie "${name}" DID come back from a copy — Chromium's source says it cannot; gotcha 130 needs correcting`)
+  }
+  if (read.needsClose) fail(read.cookieError ?? 'the copy was locked — the browser was still running')
+  if (!read.cookieError || !/app-bound/.test(read.cookieError)) fail('the sealed v20 row was dropped SILENTLY — no cookieError reported it')
+  console.log('the v20 row stayed sealed and was reported, with no close offered — as gotcha 130 predicts')
+} else if (cmd === 'chrome-close') {
+  const [id, chromeExe] = rest
+  const { closeBrowserForImport } = await import('../src/main/browserImport/chromeCookiesWin.ts')
+  const { CHROMIUM_BROWSERS, chromiumRoot } = await import('../src/main/browserImport/chromiumProfiles.ts')
+  const { homedir } = await import('node:os')
+  const browser = CHROMIUM_BROWSERS.find((b) => b.id === (id ?? 'chrome'))
+  if (!browser) fail(`no such browser id: ${id}`)
+  const root = chromiumRoot(browser, 'win32', process.env, homedir())
+  if (!root) fail(`${browser.name} has no Windows profile root`)
+  const out = await closeBrowserForImport(browser, root, chromeExe ? { exePath: chromeExe } : {})
+  console.log(`close report: ${JSON.stringify(out.report)}`)
+  console.log(`closed ${out.closed}${out.stillOpen ? `; still open: ${out.stillOpen}` : ''}`)
+  if (!out.closed) fail(`${browser.name} was not closed by the Restart Manager path`)
+} else if (cmd === 'chrome-reopen') {
+  const [chromeExe] = rest
+  if (!chromeExe) fail('usage: chrome-reopen <chromeExe>')
+  const { reopenBrowser } = await import('../src/main/browserImport/chromeCookiesWin.ts')
+  const { execFileSync } = await import('node:child_process')
+  reopenBrowser(chromeExe)
+  // The exe travels in the environment, never spliced into the script (gotcha 101).
+  const count = (): number => {
+    const outText = execFileSync(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        "@(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq $env:STOKE_E2E_EXE -and ([string]$_.CommandLine) -notmatch ' --type=' }).Count"
+      ],
+      { encoding: 'utf8', env: { ...process.env, STOKE_E2E_EXE: chromeExe } }
+    )
+    return Number(outText.trim()) || 0
+  }
+  let running = 0
+  for (let i = 0; i < 40 && running === 0; i++) {
+    running = count()
+    if (!running) await new Promise((r) => setTimeout(r, 500))
+  }
+  console.log(`main processes of ${chromeExe} after the reopen: ${running}`)
+  if (!running) fail('the reopen did not start the browser')
 } else {
-  fail('usage: node scripts/windows-e2e.mts swap-files|wait-result|classify|registry-path|pty-path|chrome-locate|chrome-read …')
+  fail('usage: node scripts/windows-e2e.mts swap-files|wait-result|classify|registry-path|pty-path|chrome-locate|chrome-read|chrome-sealed|chrome-close|chrome-reopen …')
 }

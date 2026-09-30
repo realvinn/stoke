@@ -688,13 +688,20 @@ jobs:
   # Storage.getCookies (plaintext, HttpOnly included) over CDP, map and assert.
   # This job seeds a throwaway profile on the runner's real Chrome, closes it,
   # then runs Stoke's own reader (chromeCookiesWin.ts) and asserts the cookie
-  # comes back decrypted. IMPORTANT — what this does NOT prove: the seed writes to
-  # a NON-default --user-data-dir, where Chrome turns app-bound encryption OFF, so
-  # the seeded cookie is v10 (plain DPAPI), not v20. The cookie-prefix step records
-  # the tag; a non-v20 tag means the app-bound (v20) seal was NOT exercised here.
-  # Decrypting a v20 cookie from a copied dir is still UNPROVEN (gotcha 130); the
-  # reader now reports any v20 row Chrome drops rather than reading short silently.
-  # windows-latest ships Chrome, its path in the App Paths registry key.
+  # comes back decrypted. That seed writes to a NON-default --user-data-dir, where
+  # Chromium's own support-level check (GetAppBoundEncryptionSupportLevel ->
+  # kNotUsingDefaultUserDataDir) turns app-bound encryption off, so the cookie is
+  # v10 (plain DPAPI) — and the same check means a v20 row can NEVER be decrypted
+  # from a copy (gotcha 130). windows-latest ships Chrome, its path in App Paths.
+  #
+  # Two more steps at the end, both best-effort (continue-on-error — they have not
+  # run yet, and a first run should inform, not break, the job): one records the
+  # runner's app-bound facts (install level, elevation service, policy, Local
+  # State's key); the other seeds a login on the DEFAULT profile of the headed
+  # Chrome — where a system-level install does write v20 — closes it with Stoke's
+  # own Restart Manager close (gotcha 135), asserts the v20 row stays sealed and
+  # is REPORTED by the reader (never offered a close), then reopens Chrome with
+  # Stoke's reopen and closes it again.
   chrome-import:
     name: Chrome login import · x64
     runs-on: windows-latest
@@ -786,6 +793,99 @@ jobs:
           node scripts/windows-e2e.mts chrome-read "$env:SEED_PROFILE" "$env:CHROME_EXE" sid "$env:SID"
           if ($LASTEXITCODE -ne 0) { throw 'the seeded cookie did not come back decrypted' }
           "read back the seeded login on Chrome $env:CHROME_VERSION"
+
+      # The runner's app-bound facts, read-only. Chromium writes v20 only for a
+      # SYSTEM-level install (a per-user one returns kNotSystemLevel: "No service.
+      # No App-Bound APIs"), on the DEFAULT user-data dir, with no policy turning it
+      # off; the v10 seed above is already explained by its non-default dir. This
+      # records which of those hold here, for the step below. Never fatal.
+      - name: The runner's app-bound-encryption facts (install level, service, policy, Local State)
+        if: always()
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          "=== install level (v20 needs a system-level install) ==="
+          if ($env:CHROME_EXE -like "$env:ProgramFiles*" -or $env:CHROME_EXE -like "${env:ProgramFiles(x86)}*") { "system-level: $env:CHROME_EXE" } else { "per-user (no elevation service, writes v10): $env:CHROME_EXE" }
+          "=== GoogleChromeElevationService (v20 decryption calls into it) ==="
+          cmd /c "sc query GoogleChromeElevationService" 2>&1 | Out-String
+          cmd /c "sc qc GoogleChromeElevationService" 2>&1 | Out-String
+          "=== ApplicationBoundEncryptionEnabled policy (DWORD 0 would disable v20) ==="
+          foreach ($p in 'HKLM:\SOFTWARE\Policies\Google\Chrome', 'HKCU:\SOFTWARE\Policies\Google\Chrome') {
+            if (Test-Path $p) { "$p :"; (Get-ItemProperty $p | Format-List | Out-String) } else { "$p : (absent)" }
+          }
+          "=== Local State os_crypt of the REAL default Chrome dir ==="
+          $def = Join-Path $env:LOCALAPPDATA 'Google\Chrome\User Data\Local State'
+          if (Test-Path $def) {
+            $abe = (Get-Content -Raw $def | ConvertFrom-Json).os_crypt.app_bound_encrypted_key
+            if ($abe) {
+              $bytes = [Convert]::FromBase64String($abe)
+              "app_bound_encrypted_key: present, $($bytes.Length) bytes, prefix $([Text.Encoding]::ASCII.GetString($bytes[0..3]))"
+            } else { "app_bound_encrypted_key: ABSENT — no v20 key minted (ABE not active for this install)" }
+          } else { "no default-dir Local State — Chrome has not run on its default profile here" }
+          "=== Local State os_crypt of the SEEDED (non-default) dir ==="
+          $seedLs = Join-Path (Split-Path $env:SEED_PROFILE) 'Local State'
+          if (Test-Path $seedLs) {
+            $abe2 = (Get-Content -Raw $seedLs | ConvertFrom-Json).os_crypt.app_bound_encrypted_key
+            "seeded-dir app_bound_encrypted_key: $(if ($abe2) { 'present' } else { 'absent' }) — a non-default dir is kNotUsingDefaultUserDataDir, so v10 (gotcha 130)"
+          } else { "no seeded-dir Local State" }
+
+      # The owner's flow on a REAL default profile. Seed a login on the headed
+      # Chrome's default dir (v20 on a system-level install), close it with
+      # STOKE'S close (the Restart Manager, gotcha 135 — the first run of it on
+      # real Windows), and read it through Stoke's reader: from Chromium's source
+      # the v20 row must stay sealed and be REPORTED, with no close offered
+      # (gotcha 130). Then Stoke's reopen, and one more close. Never fatal until
+      # it has run once; every outcome is printed.
+      - name: A real v20 login on the default profile — close, sealed read, reopen
+        if: always()
+        continue-on-error: true
+        shell: pwsh
+        env:
+          PORT: '8798'
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $default = Join-Path $env:LOCALAPPDATA 'Google\Chrome\User Data'
+          $seedUrl = "http://127.0.0.1:$env:PORT/seed"
+          Start-Process -FilePath node -ArgumentList 'scripts/probe/login-server.mjs' -WindowStyle Hidden `
+            -RedirectStandardOutput (Join-Path $env:RUNNER_TEMP 'login2.log') -RedirectStandardError (Join-Path $env:RUNNER_TEMP 'login2.err')
+          $up = $false
+          for ($i = 0; $i -lt 40; $i++) { try { $null = Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:$env:PORT/whoami"; $up = $true; break } catch { Start-Sleep -Milliseconds 250 } }
+          if (-not $up) { "the second login server never came up — skipping the v20 attempt"; exit 0 }
+          # Headed (there is an interactive desktop) against the DEFAULT dir (no
+          # --user-data-dir), so a system-level Chrome uses app-bound encryption.
+          $p = Start-Process -FilePath $env:CHROME_EXE -PassThru -ArgumentList @('--no-first-run', '--no-default-browser-check', '--disable-sync', '--profile-directory=Default', $seedUrl)
+          Start-Sleep -Seconds 8
+          # Stoke's own close. If it fails, fall back to the one window's close so
+          # the rest of the step can still run — never force-killed.
+          node scripts/windows-e2e.mts chrome-close chrome "$env:CHROME_EXE"
+          if ($LASTEXITCODE -eq 0) { '::notice title=Restart Manager close::Stoke closed the default Chrome the way a sign-out does (gotcha 135)' }
+          else {
+            '::warning title=Restart Manager close failed::see the report above; falling back to CloseMainWindow for this step'
+            [void]$p.CloseMainWindow()
+            if (-not $p.WaitForExit(30000)) { 'Chrome did not close — leaving it, never force-killed'; exit 0 }
+          }
+          $db = Join-Path $default 'Default\Network\Cookies'
+          if (-not (Test-Path $db)) { $db = Join-Path $default 'Default\Cookies' }
+          if (-not (Test-Path $db)) { 'no default-profile cookie DB was written — cannot test v20 here'; exit 0 }
+          $peek = Join-Path $env:RUNNER_TEMP 'default-cookies.sqlite'
+          Copy-Item $db $peek -Force
+          $tags = node scripts/probe/cookie-prefix.mjs $peek
+          $tags
+          if ($tags -match 'tag=v20') {
+            'DEFAULT-DIR SEAL: v20 — app-bound encryption is active for this install'
+            node scripts/windows-e2e.mts chrome-sealed (Join-Path $default 'Default') "$env:CHROME_EXE" sid
+            if ($LASTEXITCODE -eq 0) { '::notice title=v20 stays sealed::a real v20 row stayed sealed from a copy and was reported, no close offered (gotcha 130)' }
+            else { '::warning title=v20 read not as predicted::see above — gotcha 130 needs revisiting' }
+          } else {
+            'DEFAULT-DIR SEAL: not v20 — see the install-level and service facts above (a per-user install never writes v20).'
+          }
+          # Stoke's reopen, then close it again, so the runner is left as it was.
+          node scripts/windows-e2e.mts chrome-reopen "$env:CHROME_EXE"
+          if ($LASTEXITCODE -eq 0) {
+            Start-Sleep -Seconds 5
+            node scripts/windows-e2e.mts chrome-close chrome "$env:CHROME_EXE"
+          }
 
   winget:
     name: winget manifest · x64

@@ -5,36 +5,51 @@ import { tmpdir } from 'node:os'
 import { basename, dirname, join, win32 as winPath } from 'node:path'
 import { promisify } from 'node:util'
 import { WebSocket } from 'ws'
-import { appPathMatchesBrowser, cdpCookieToImported, cookieIdentity, sealedCookiesMissed } from './chromeCookies.ts'
-import type { CdpCookie } from './chromeCookies.ts'
+import {
+  appPathMatchesBrowser,
+  browserCloseScript,
+  BROWSER_CLOSE_DEADLINE_MS,
+  cdpCookieToImported,
+  closeStuckMessage,
+  closeVerdict,
+  cookieIdentity,
+  lockedCopyReport,
+  parseCloseReport,
+  reopenArgs,
+  RESTART_MANAGER_SOURCE,
+  sealedCookiesMissed,
+  sealedReport
+} from './chromeCookies.ts'
+import type { CdpCookie, CloseReport } from './chromeCookies.ts'
 import type { ChromiumBrowser } from './chromiumProfiles.ts'
 import type { ImportBrowserId, ImportedCookie } from './types.ts'
 
 /*
- * Windows Chrome-family logins, without cracking the seal.
+ * Windows Chrome-family logins, without cracking the seal — and without the ones
+ * the seal keeps.
  *
- * Since Chrome 127 the cookie key is wrapped with DPAPI + app-bound encryption
- * (a v20 tag), unwrappable only by the browser's own signed binary through its
- * elevation service — a wall no third-party app, Electron included, can climb.
- * So Stoke does not try: it asks the user's OWN chrome.exe to do the decrypting,
- * on the user's own machine, and reads the plaintext back over CDP. The browser
- * itself is the only thing that can open its jar, and here it opens it for its
- * owner, who asked.
+ * Stoke never decrypts a Windows cookie itself: it has the user's OWN browser exe
+ * open a copy of the profile and reads the plaintext back over CDP. That hands
+ * over every plain-DPAPI (v10) row. It can NEVER hand over an app-bound (v20)
+ * row, by Chromium's design (gotcha 130): app-bound decryption is available only
+ * in the DEFAULT user-data dir (`kNotUsingDefaultUserDataDir` for any other), and
+ * remote debugging — port or pipe — is refused on the default dir. v20 is what a
+ * system-level Chrome (Program Files, elevation service installed) writes; a
+ * per-user install has no service and writes v10, as do other browsers that
+ * never adopted it. So the v20 rows are counted and reported, never lost
+ * silently.
  *
  * The flow (all on the user's machine, own profile, own consent):
  *   1. Locate the browser's real .exe from the registry App Paths or a standard
- *      install dir — never a WindowsApps alias (gotcha 99), which is a Store
- *      stub that would fail the elevation service's path check anyway.
+ *      install dir — never a WindowsApps alias (gotcha 99).
  *   2. Copy the minimum — `Local State` (carries the wrapped key) and the
  *      profile's `Network/Cookies` (+ its -wal/-journal) — into a throwaway
- *      user-data-dir. The INTENT is that the ABE key is bound to the machine, the
- *      Windows user and the exe path, not the profile directory, so the copy
- *      still decrypts — UNPROVEN for v20 on real Windows (see gotcha 130); step 5
- *      reports any app-bound row the browser then refuses to hand back.
+ *      user-data-dir. On Windows Chromium holds the cookie DB under an EXCLUSIVE
+ *      lock while the profile is open, so a running browser makes this fail
+ *      (`lockedCopyReport` → the panel offers to close it, `closeBrowserForImport`,
+ *      once per browser around the whole import — gotcha 135).
  *   3. Launch that .exe HEADLESS against the copy with a loopback debugging
- *      port. Chrome 136+ ignores the debug flag on the DEFAULT dir; a non-standard
- *      --user-data-dir is exactly why the copy is required (and why the copy
- *      never needs the user's live Chrome closed — a separate instance, own lock).
+ *      port (allowed there because the dir is not the default one).
  *   4. `Storage.getCookies` returns already-decrypted values, HttpOnly included,
  *      which map to `ImportedCookie` by the same gotcha-107 rules as the SQLite
  *      path (host-only → no domain, samesite, 30-day session expiry, skip CHIPS).
@@ -86,19 +101,24 @@ async function isFile(p: string): Promise<boolean> {
   }
 }
 
-/**
- * The exe path from the registry's App Paths, HKLM then HKCU, or null. Read
- * through PowerShell (never reg.exe, which mangles non-ASCII — gotcha 99); the
- * exe NAME travels in the environment, not spliced into the script (gotcha 101).
- */
-async function appPathsExe(exeName: string): Promise<string | null> {
-  const ps = join(
+/** Windows PowerShell 5.1's own path — the interpreter Stoke drives for every Windows probe. */
+function powershellPath(): string {
+  return join(
     process.env.SystemRoot ?? process.env.SYSTEMROOT ?? 'C:\\Windows',
     'System32',
     'WindowsPowerShell',
     'v1.0',
     'powershell.exe'
   )
+}
+
+/**
+ * The exe path from the registry's App Paths, HKLM then HKCU, or null. Read
+ * through PowerShell (never reg.exe, which mangles non-ASCII — gotcha 99); the
+ * exe NAME travels in the environment, not spliced into the script (gotcha 101).
+ */
+async function appPathsExe(exeName: string): Promise<string | null> {
+  const ps = powershellPath()
   const script = [
     '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8',
     '$n = $env:STOKE_EXE_NAME',
@@ -152,6 +172,103 @@ export async function locateChromiumExe(browser: Pick<ChromiumBrowser, 'id' | 'w
     }
   }
   return null
+}
+
+/**
+ * How long the whole close script may run: Stoke's own wait for the processes to
+ * go, plus room for `Add-Type` to compile and `RmShutdown` to deliver its
+ * messages (it blocks until the app answers). Past it, PowerShell is killed and
+ * the verdict is `timeout` — the browser is not reopened, since its state is
+ * unknown.
+ */
+const CLOSE_SCRIPT_GRACE_MS = 60_000
+
+export interface BrowserCloseOutcome {
+  /** The browser's exe, when it could be found. */
+  exePath: string | null
+  /** It was running and has really exited: reopen it once the reads are done. */
+  closed: boolean
+  /** Why it is still holding its files, fit to show; its logins are then NOT read. */
+  stillOpen?: string
+  /** The script's own report, for the Windows e2e (`windows-e2e.mts chrome-close`). */
+  report: CloseReport
+}
+
+/**
+ * End the browser that owns the profile root `root` the way a Windows sign-out
+ * does, so its whole session — every window — is kept for its next start
+ * (gotcha 135), then wait (bounded) for its processes to be gone. Called ONCE per
+ * browser per import, only on the user's explicit second press (`runImport`'s
+ * lease). All variable data travels in the environment (gotcha 101); the scripts
+ * are constants (`browserCloseScript`, `RESTART_MANAGER_SOURCE`). Never throws and
+ * never force-kills: anything it cannot prove closed is a `stillOpen` message.
+ */
+export async function closeBrowserForImport(
+  browser: ChromiumBrowser,
+  root: string,
+  opts: { exePath?: string; deadlineMs?: number } = {}
+): Promise<BrowserCloseOutcome> {
+  const empty: CloseReport = { started: null, windows: null, rm: null, remaining: null, error: null }
+  const exePath = opts.exePath ?? (await locateChromiumExe(browser).catch(() => null))
+  // No exe, nothing to close by — the read reports the missing program itself.
+  if (!exePath) return { exePath: null, closed: false, report: empty }
+  const deadlineMs = opts.deadlineMs ?? BROWSER_CLOSE_DEADLINE_MS
+  let stdout = ''
+  let timedOut = false
+  try {
+    const run = execFileAsync(powershellPath(), ['-NoProfile', '-NonInteractive', '-Command', browserCloseScript()], {
+      timeout: deadlineMs + CLOSE_SCRIPT_GRACE_MS,
+      encoding: 'utf8',
+      windowsHide: true,
+      maxBuffer: 4 * 1024 * 1024,
+      env: {
+        ...process.env,
+        STOKE_BROWSER_EXE: exePath,
+        STOKE_BROWSER_ROOT: root,
+        STOKE_CLOSE_DEADLINE: String(deadlineMs),
+        STOKE_RM_SOURCE: RESTART_MANAGER_SOURCE
+      }
+    })
+    run.child.stdin?.end()
+    stdout = (await run).stdout
+  } catch (err) {
+    // `killed` before anything else: a timeout has no exit code (gotcha 25).
+    const e = err as { killed?: boolean; stdout?: string }
+    timedOut = e.killed === true
+    stdout = typeof e.stdout === 'string' ? e.stdout : ''
+  }
+  const report = parseCloseReport(stdout)
+  const verdict = closeVerdict(report, timedOut)
+  return {
+    exePath,
+    closed: verdict.closed,
+    ...(verdict.stuck ? { stillOpen: closeStuckMessage(browser.name, verdict.stuck) } : {}),
+    report
+  }
+}
+
+/**
+ * Reopen the user's browser after Stoke borrowed it: no arguments, so it brings
+ * back every profile that was open and — if the user's own setting says so —
+ * their windows and tabs (`reopenArgs`). Detached and unref'd so it outlives the
+ * import; started in the browser's own folder, never Stoke's, because a process
+ * whose working directory is inside Stoke's install folder can keep the portable
+ * update's whole-folder rename from happening (gotcha 96). Best-effort: a failure
+ * just means the user reopens it themselves.
+ */
+export function reopenBrowser(exePath: string): void {
+  try {
+    const child = spawn(exePath, reopenArgs(), {
+      cwd: dirname(exePath),
+      windowsHide: false,
+      stdio: 'ignore',
+      detached: true
+    })
+    child.once('error', () => {})
+    child.unref()
+  } catch {
+    /* the user can reopen it themselves */
+  }
 }
 
 /** Copy one file, retrying a transient Windows sharing violation; a persistent one is a locked profile. */
@@ -334,38 +451,50 @@ async function withBrowserWs<T>(wsUrl: string, fn: (send: (method: string, param
 export interface WinReadOptions {
   /** Override the located executable (the CI e2e passes the runner's Chrome). */
   exePath?: string
+  /**
+   * Stoke already asked this browser to close for this import (the user's second
+   * press — `runImport` closes each browser once, around all its profiles). A copy
+   * that is STILL locked is then reported without offering the close again.
+   */
+  afterClose?: boolean
+}
+
+export interface WinReadResult {
+  cookies: ImportedCookie[]
+  skipped: number
+  cookieError?: string
+  /** The copy was locked by the running browser: closing it for a moment would let the read happen. */
+  needsClose?: boolean
 }
 
 /**
  * Read one Windows Chrome-family profile's cookies by driving the browser's own
- * binary. Returns already-decrypted, mapped cookies; a `cookieError` is set (with
- * the cookies that DID come over) when some app-bound logins could not be
- * decrypted — never a silent short read (gotcha 130). Throws an Error whose
- * message is fit to show the user (bookmarks still import around it), or a
- * `ProfileLockedError` when the profile files cannot be copied.
+ * binary against a copy. Returns already-decrypted, mapped cookies; a
+ * `cookieError` is set (with the cookies that DID come over) when app-bound rows
+ * stayed sealed (`sealedReport` — no copy can open them, gotcha 130) or the copy
+ * was locked (`lockedCopyReport`, which alone sets `needsClose`) — never a silent
+ * short read. It never closes or reopens the browser itself: that happens once
+ * per browser around the whole import (`closeBrowserForImport`). Throws only for
+ * a hard failure whose message is fit to show the user (bookmarks still import
+ * around it).
  */
 export async function readChromeCookiesWin(
   browser: ChromiumBrowser,
   profileDir: string,
   opts: WinReadOptions = {}
-): Promise<{ cookies: ImportedCookie[]; skipped: number; cookieError?: string }> {
+): Promise<WinReadResult> {
   const exePath = opts.exePath ?? (await locateChromiumExe(browser))
   if (!exePath) {
     throw new Error(`Stoke could not find ${browser.name}'s program on this PC, so it could not open its logins.`)
   }
-
   let copy: { copyDir: string; profileName: string; cookieCopyPath: string }
   try {
     copy = await copyProfile(profileDir)
   } catch (err) {
-    // A locked copy is the one case where the user must close their own browser.
-    // Stoke asks — it never forces it to quit (the repo-wide "never force-kill").
-    if (err instanceof ProfileLockedError) {
-      throw new Error(
-        `${browser.name} is holding its logins open, so Stoke could not copy them. Close ${browser.name} completely, then import again — Stoke never forces it to quit.`
-      )
-    }
-    throw err
+    if (!(err instanceof ProfileLockedError)) throw err
+    // Held by the running browser (Chromium's exclusive lock). Stoke never
+    // force-quits it: it offers the close once, and only once (no loop).
+    return { cookies: [], skipped: 0, ...lockedCopyReport(browser.name, opts.afterClose === true) }
   }
   const { copyDir, profileName, cookieCopyPath } = copy
   // Ground truth BEFORE the browser reopens the copy: which rows are app-bound.
@@ -419,15 +548,12 @@ export async function readChromeCookiesWin(
       // Graceful close flushes the browser and ends its child processes.
       await send('Browser.close').catch(() => {})
     })
-    // A v20 row the browser did not return is a login it could not decrypt here.
-    // Report it (with whatever DID come over) instead of a silent success — the
-    // failure a copied, non-default profile dir can cause on real Windows.
+    // A v20 row the browser did not return is one it could not decrypt in a copy —
+    // which, by Chromium's design, is every v20 row (gotcha 130). Report it (with
+    // whatever DID come over) instead of a silent success, and never offer a
+    // close for it: no close, retry or clean copy can unseal it.
     const sealed = dbRows ? sealedCookiesMissed(dbRows, cdpIdentities) : 0
-    const cookieError =
-      sealed > 0
-        ? `${sealed} ${sealed === 1 ? 'login is' : 'logins are'} sealed with app-bound encryption that ${browser.name} would not open for Stoke on this PC, so ${sealed === 1 ? 'it' : 'they'} stayed behind. Any others came over; you stay signed in in ${browser.name}.`
-        : undefined
-    return { cookies, skipped, cookieError }
+    return { cookies, skipped, ...sealedReport(browser.name, sealed) }
   } finally {
     if (child) {
       // A graceful Browser.close ends the whole tree; give it a moment, then insist.

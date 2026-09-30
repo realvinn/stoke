@@ -1079,10 +1079,13 @@ src/main/         Electron main process
                     node:sqlite), chromeCookies.ts (the macOS v10 crypto and BOTH row mappings — the
                     SQLite row and the CDP cookie — pure), chromeCookiesWin.ts (the Windows login
                     path: locate the browser's exe, copy the profile, launch it headless and read
-                    decrypted cookies over CDP — gotchas 130/99, lazy), chromiumProfiles.ts (where
+                    decrypted cookies over CDP; a copy locked by the running browser offers one
+                    close-and-reopen, done the way a sign-out ends it (Restart Manager), once per
+                    browser — gotchas 130/135/99/101, lazy), chromiumProfiles.ts (where
                     each browser keeps its profiles on macOS/Windows, pure and platform-parameterised
-                    — bookmarks import on both, logins on macOS (proven) and Windows (mechanism
-                    proven for v10; v20 app-bound decrypt-in-a-copy unproven — gotcha 130),
+                    — bookmarks import on both, logins on macOS (proven) and Windows (v10 rows,
+                    proven in CI; never v20 — Chromium unseals app-bound rows only in the default
+                    dir, which refuses debugging — gotcha 130),
                     safari.ts + safariCookies.ts + plist.ts (Full Disk Access, binarycookies,
                     Bookmarks.plist), index.ts (scan, runImport). Gotcha 107
   workspace.ts      default folder + scratch folders
@@ -1689,6 +1692,11 @@ scripts/          the verify-*.mts suites, make-icon.cjs
   windows-e2e.mts   the Windows workflow's hands for the steps that must use Stoke's own
                     code: writing the swap helper's files, waiting on its result, the
                     registry-PATH re-read and one-key terminal env checks (gotcha 99)
+  windows-chrome-probe.mts  owner-run, on a real Windows PC: measures what a login import
+                    brings over from the real Chrome profile — its install level, per-domain
+                    v10/v20 counts and which came back (the source predicts every v10, no v20 —
+                    gotcha 130). Read-only against the profile; counts only, never a value. Not
+                    in check — it needs real Chrome
   assert-nsis-payload.mjs  opens each built *-setup.exe with the full 7-Zip, extracts the
                     embedded app-<arch>.7z and fails on a filter the installer's own nsis7z
                     (19.00) cannot decode — the v0.9.9 arm64 installer installed nothing

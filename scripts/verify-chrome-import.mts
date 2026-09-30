@@ -9,17 +9,28 @@
 import { createCipheriv, createHash } from 'node:crypto'
 import {
   appPathMatchesBrowser,
+  browserCloseScript,
+  BROWSER_CLOSE_DEADLINE_MS,
   CHROME_EPOCH_OFFSET,
   cdpCookieToImported,
   chromeKey,
   chromeRowToCookie,
   chromeTimeToUnix,
+  closeStuckMessage,
+  closeVerdict,
   cookieIdentity,
   decryptChromeValue,
+  groupKeysByBrowser,
+  lockedCopyReport,
+  parseCloseReport,
+  reopenArgs,
+  RESTART_MANAGER_SOURCE,
   sealedCookiesMissed,
+  sealedReport,
   SESSION_COOKIE_DAYS,
   type CdpCookie,
-  type ChromeCookieRow
+  type ChromeCookieRow,
+  type CloseStuck
 } from '../src/main/browserImport/chromeCookies.ts'
 import { CHROMIUM_BROWSERS, chromiumRoot } from '../src/main/browserImport/chromiumProfiles.ts'
 
@@ -301,6 +312,131 @@ console.log('\nWindows: a v20 login the browser did not hand back is reported, n
     0
   )
   check('no v20 rows at all → 0 sealed', sealedCookiesMissed([{ host_key: 'a.com', name: 'x', tag: 'v10' }], new Set()), 0)
+}
+
+console.log('\nWindows: what a sealed or locked read tells the user (gotcha 130)')
+{
+  // Sealed v20 rows can never come from a copy — Chromium refuses app-bound
+  // decryption outside the default user-data dir — so they must NEVER offer a
+  // close (it would shut the user's browser for nothing), and the message must
+  // not blame a running browser the copy just proved was not holding the file.
+  const one = sealedReport('Chrome', 1)
+  const many = sealedReport('Chrome', 3)
+  check('no sealed rows → no error at all', sealedReport('Chrome', 0), {})
+  check('sealed rows never ask for a close (no needsClose key)', 'needsClose' in one || 'needsClose' in many, false)
+  check('the sealed message counts them', many.cookieError?.startsWith('3 logins could not come over'), true)
+  check('the singular reads as one login', one.cookieError?.startsWith('1 login could not come over'), true)
+  check('the sealed message names app-bound encryption', /app-bound encryption/.test(many.cookieError ?? ''), true)
+  check('the sealed message never says "while … was running"', /running/i.test(many.cookieError ?? ''), false)
+  check('the sealed message never offers to close the browser', /close/i.test(many.cookieError ?? ''), false)
+  // A locked copy is the ONE case a close helps (Chromium's exclusive cookie-DB
+  // lock on Windows). Offered once; after a close was tried, never again.
+  check('a locked copy offers the close', lockedCopyReport('Edge', false).needsClose, true)
+  check('a locked copy after a close does not offer it again (no loop)', 'needsClose' in lockedCopyReport('Edge', true), false)
+  check('the locked message names the browser', /^Edge is open/.test(lockedCopyReport('Edge', false).cookieError), true)
+  check('the after-close message never promises a force', /never forces/.test(lockedCopyReport('Edge', true).cookieError), true)
+}
+
+console.log('\nWindows: closing the browser like a sign-out, once per browser (gotcha 135)')
+{
+  // The close script's variable parts travel in the environment, never spliced
+  // into the text (gotcha 101), and it carries no double quote for Windows'
+  // command-line quoting to mangle. Pure ASCII for Windows PowerShell 5.1.
+  const script = browserCloseScript()
+  check('the close script is pure ASCII', /^[\x00-\x7f]*$/.test(script), true)
+  check('the close script carries no double quote', script.includes('"'), false)
+  check('no smart quotes sneaked into the script (gotcha 101)', /[‘’‚‛]/.test(script), false)
+  for (const v of ['STOKE_BROWSER_EXE', 'STOKE_BROWSER_ROOT', 'STOKE_CLOSE_DEADLINE', 'STOKE_RM_SOURCE']) {
+    check(`it reads ${v} from the environment`, script.includes(`$env:${v}`), true)
+  }
+  check(
+    'it NEVER force-kills (no Stop-Process/taskkill/Kill/-Force)',
+    /Stop-Process|taskkill|\.Kill\(|-Force/i.test(script),
+    false
+  )
+  // Window by window loses every window but the last from the session: Chromium
+  // commits a window's close at once while another window of the profile is open.
+  check('it never closes window by window (no CloseMainWindow — loses all but the last window)', script.includes('CloseMainWindow'), false)
+  check('it hands the close to the Restart Manager', script.includes('[StokeRestartManager]::Shutdown('), true)
+  check(
+    'it finds processes by CIM ExecutablePath (a 32-bit PS cannot read a 64-bit .Path — gotcha 94)',
+    script.includes('Get-CimInstance Win32_Process') && script.includes('ExecutablePath'),
+    true
+  )
+  check('it leaves other --user-data-dir instances alone (scoped to this root)', script.includes('--user-data-dir') && script.includes('$root'), true)
+  check('the main process is the one with no --type=', script.includes("-notmatch ' --type='"), true)
+  for (const k of ['started=', 'windows=', 'rm=', 'remaining=', 'error=']) {
+    check(`it reports ${k}<…>`, script.includes(`'${k}'`), true)
+  }
+
+  // The C# is compiled by Windows PowerShell 5.1's Add-Type: C# 5, no later syntax.
+  const cs = RESTART_MANAGER_SOURCE
+  check('the Restart Manager source is pure ASCII', /^[\x00-\x7f]*$/.test(cs), true)
+  check('it asks with flags 0 — never RmForceShutdown', /RmShutdown\(session, 0, IntPtr\.Zero\)/.test(cs) && !/Force/.test(cs), true)
+  check('it never kills a process itself', /\.Kill\(|TerminateProcess/.test(cs), false)
+  check('it always ends its Restart Manager session', /finally\s*\{\s*RmEndSession\(session\);/.test(cs), true)
+  check('C# 5 only: no interpolated strings', cs.includes('$"'), false)
+  check('C# 5 only: no ?. operator', cs.includes('?.'), false)
+  check('C# 5 only: no out var', /out var /.test(cs), false)
+  check('C# 5 only: no => members', cs.includes('=>'), false)
+  check('braces balance in the C#', (cs.match(/\{/g) ?? []).length === (cs.match(/\}/g) ?? []).length, true)
+  check('the class the script calls is the class the C# defines', cs.includes('public static class StokeRestartManager'), true)
+
+  // The report → verdict. Reopen only a browser that ran AND exited.
+  const r = (o: Partial<ReturnType<typeof parseCloseReport>>) => ({ started: null, windows: null, rm: null, remaining: null, error: null, ...o })
+  check(
+    'the report parses, CRLF and all',
+    parseCloseReport('started=1\r\nwindows=2\r\nrm=0\r\nremaining=0\r\n'),
+    { started: 1, windows: 2, rm: 0, remaining: 0, error: null }
+  )
+  check('an error line parses', parseCloseReport('started=1\r\nerror=MethodInvocationException\r\n').error, 'MethodInvocationException')
+  check('not running → nothing to close, nothing to reopen', closeVerdict(r({ started: 0, remaining: 0 }), false), { closed: false })
+  check('ran and exited → reopen it', closeVerdict(r({ started: 1, windows: 1, rm: 0, remaining: 0 }), false), { closed: true })
+  check(
+    'ran, had a window, still running → refused, never reopened',
+    closeVerdict(r({ started: 1, windows: 1, rm: 351, remaining: 7 }), false),
+    { closed: false, stuck: 'refused' }
+  )
+  check(
+    'ran with no window, still running → background mode',
+    closeVerdict(r({ started: 1, windows: 0, rm: 0, remaining: 3 }), false),
+    { closed: false, stuck: 'background' }
+  )
+  check('Add-Type refused → blocked', closeVerdict(r({ started: 1, windows: 1, error: 'PSInvalidOperationException' }), false), { closed: false, stuck: 'blocked' })
+  check('no report at all → blocked, never reopened', closeVerdict(parseCloseReport(''), false), { closed: false, stuck: 'blocked' })
+  check('the script outran its wait → timeout, never reopened', closeVerdict(r({ started: 1, windows: 1 }), true), { closed: false, stuck: 'timeout' })
+  check(
+    'the remaining count decides — a clean rm code with processes left is still not closed',
+    closeVerdict(r({ started: 1, windows: 1, rm: 0, remaining: 2 }), false).closed,
+    false
+  )
+  const stuck: CloseStuck[] = ['background', 'refused', 'blocked', 'timeout']
+  for (const k of stuck) {
+    const m = closeStuckMessage('Chrome', k)
+    check(`the ${k} message names the browser and promises no tabs`, m.includes('Chrome') && !/tab/i.test(m), true)
+  }
+  check('the background message points at the icon by the clock', /icon by the clock/.test(closeStuckMessage('Chrome', 'background')), true)
+
+  // Reopen with NOTHING: every profile that was open comes back, not just one;
+  // no --user-data-dir, so it is the user's real instance.
+  check('reopen passes no arguments at all', reopenArgs(), [])
+  check('the close deadline is a sane, bounded wait', BROWSER_CLOSE_DEADLINE_MS > 0 && BROWSER_CLOSE_DEADLINE_MS <= 60_000, true)
+
+  // One close per browser, around all its profiles — never one per profile.
+  const browserOf = (k: string): string | null => (k.startsWith('?') ? null : k.split('/')[0])
+  check(
+    'profiles group by browser, first-seen order kept',
+    groupKeysByBrowser(['chrome/Default', 'edge/Default', 'chrome/Profile 1', 'safari/default', 'edge/Profile 2'], browserOf),
+    [
+      { browser: 'chrome', keys: ['chrome/Default', 'chrome/Profile 1'] },
+      { browser: 'edge', keys: ['edge/Default', 'edge/Profile 2'] },
+      { browser: 'safari', keys: ['safari/default'] }
+    ]
+  )
+  check('unknown keys share one run', groupKeysByBrowser(['?a', 'chrome/x', '?b'], browserOf), [
+    { browser: null, keys: ['?a', '?b'] },
+    { browser: 'chrome', keys: ['chrome/x'] }
+  ])
 }
 
 console.log('\nprofile roots, per platform')
