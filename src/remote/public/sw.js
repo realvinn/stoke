@@ -11,8 +11,14 @@
  *   - the manifest and the icons.
  * Never /api/* and never /ws: every byte of session data, and the key that
  * guards it, goes to the computer every time. A navigation carrying `?k=` is
- * fetched as it is (the server sets the cookie on that response), and the
- * shell is stored under one fixed key, so a key never lands in Cache Storage.
+ * fetched as it is (the server sets the cookie on that response), and what is
+ * kept of it is a NEW Response holding only its bytes, status and headers
+ * (`keepShell`). A fixed cache key is not enough: a stored Response keeps its
+ * own URL list, so the network's answer to Connect's `/?k=<key>` navigation,
+ * put under `index.html`, read back as `https://host/?k=<key>` from `.url` to
+ * any script on the origin — the key the HttpOnly cookie exists to hide. An
+ * asset or icon asked for with a query is left to the network, so the only
+ * URLs this worker ever stores are bare file URLs.
  *
  * Versioned: vite.remote.config.ts stamps BUILD (a hash of the bundle) and the
  * file list into the copy in out/remote, so every new bundle is a new script
@@ -71,13 +77,23 @@ self.addEventListener('activate', (event) => {
   )
 })
 
-/** The network's shell, stored under the one fixed key; the stored one if the network fails or stalls. */
+/**
+ * Keeps the network's shell under `key` as a Response with NO URL: its bytes,
+ * status and headers, rebuilt. `res` came back for the navigation's own URL,
+ * `?k=<key>` included, and Cache Storage stores a response's URL list with it.
+ */
+async function keepShell(cache, key, res) {
+  const body = await res.blob()
+  await cache.put(key, new Response(body, { status: res.status, statusText: res.statusText, headers: res.headers }))
+}
+
+/** The network's shell, kept under the one fixed key with no URL; the kept one if the network fails or stalls. */
 async function shell(request) {
   const cache = await caches.open(CACHE)
   const key = scopeUrl('index.html')
   const network = fetch(request).then((res) => {
     if (res.ok && (res.headers.get('content-type') || '').includes('text/html')) {
-      void cache.put(key, res.clone())
+      keepShell(cache, key, res.clone()).catch(() => {})
     }
     return res
   })
@@ -112,5 +128,7 @@ self.addEventListener('fetch', (event) => {
   if (url.origin !== self.location.origin) return
   const kind = route(url.pathname, new URL(self.registration.scope).pathname, request.mode === 'navigate')
   if (kind === 'shell') event.respondWith(shell(request))
-  else if (kind === 'asset' || kind === 'static') event.respondWith(cacheFirst(request))
+  // A file asked for with a query is not one of the exact files this worker keeps:
+  // `cacheFirst` would store that URL, query and all, so the network has it.
+  else if ((kind === 'asset' || kind === 'static') && !url.search) event.respondWith(cacheFirst(request))
 })

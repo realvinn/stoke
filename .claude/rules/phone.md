@@ -405,10 +405,13 @@ traps, each of which ships a phone stuck on an old or broken shell with every su
   after the build and activation deletes every other `stoke-shell-*` one. `verify:remote` checks
   both markers exist in the source.
 - **What the worker must never touch.** `/api/*` and `/ws*` (every byte of session data, and the
-  key — `route` returns null for them before anything else), a `?k=` navigation's URL (the shell is
-  stored under ONE fixed key, `index.html`, so the key never lands in Cache Storage), and an HTML
-  answer for an asset (never kept as that asset). The shell is network-first with a
-  `SHELL_WAIT_MS` stall, so an update is on screen at the next load even under the OLD worker.
+  key — `route` returns null for them before anything else), a `?k=` navigation's URL, and an HTML
+  answer for an asset (never kept as that asset). The URL is the subtle one: **a cached Response
+  keeps its own URL list, whatever key it is filed under** (Chromium's CacheStorage stores
+  `url_list`), so filing the shell under ONE fixed key, `index.html`, still kept the key — see the
+  note below. `keepShell` stores a NEW Response of the shell's bytes, status and headers, whose URL
+  is empty; a file asked for with a query is left to the network. The shell is network-first with
+  a `SHELL_WAIT_MS` stall, so an update is on screen at the next load even under the OLD worker.
 
 Registered only when `window.isSecureContext` — https through the tunnel, or localhost. A plain
 http LAN or tailnet link cannot have one and runs exactly as before, so no phone depends on it.
@@ -419,3 +422,19 @@ shell with "Can't reach your computer"; after a rebuild the FIRST load ran the n
 `stoke-shell-f331132be8cb`. `verify:remote` runs `sw.js` itself in a `node:vm` sandbox (routes,
 the fetch handler, offline, the `?k=` key, activation). **Not driven:** a real phone, iOS's
 home-screen install (its own cookie jar still opens on Connect), and an https tunnel origin.
+
+> **Checked against the code on 2026-09-30** (review of the branch that added it). The first
+> version filed the shell under the fixed `index.html` key and called that "the key never lands in
+> Cache Storage". It did land: Connect's `location.replace('/?k=…')` runs under the worker, the
+> network's answer was `put` as it came, and a stored Response keeps its URL list. Measured in
+> Chromium (Playwright) against a sandbox on 127.0.0.1: after that navigation,
+> `(await (await caches.open('stoke-shell-f1a079a021a3')).match('/index.html')).url` was
+> `http://127.0.0.1:17547/?k=<the key>` — readable by any script on the origin, the very thing the
+> HttpOnly cookie is for. With `keepShell` the same run reads `''` (cache `stoke-shell-6770cfe65e56`,
+> no entry of seven carrying the key) and the offline reload still paints "Can't reach your
+> computer". The suite could not see it because its network stub was a `new Response()`, whose
+> `url` is `''`, and it checked only cache KEYS: **stub a fetch with a Response whose `url` is the
+> URL fetched and survives `clone()`** (`fromNetwork` in `verify:remote`), and assert on the
+> stored response, not just the key it is filed under. Against the old `sw.js` that suite now fails
+> three checks. A phone that stored the key under an earlier build loses it when the next build's
+> worker activates (every other `stoke-shell-*` cache is deleted); that upgrade was not driven.

@@ -766,7 +766,8 @@ npm run verify:remote         # phone access: where the link points and how it s
                               # real temp tree (gotcha 121); the public shell's static answers
                               # (a missing file is a 404, never the shell; only hashed /assets
                               # immutable) and public/sw.js run in a vm sandbox: never /api or
-                              # /ws, offline paints the kept shell, a `?k=` is never cached,
+                              # /ws, offline paints the kept shell, the kept shell has no URL
+                              # (a network stub whose `url` survives clone, so a `?k=` shows),
                               # activation drops only Stoke's other builds
 npm run verify:phone-ui       # the phone UI's decisions: list sections, answer options read
                               # off the screen, the resize policy (a height change never
@@ -1133,8 +1134,9 @@ src/remote/       mobile web UI, built separately to out/remote. Vanilla TS on o
   main.ts           boot (key scrub, live theme, service worker in a secure context only), the
                     router and the rail/pane layout; home is Running | Recent (`homeSegmentFor`),
                     `#/history` being Recent, so the bar carries one action, New
-  public/sw.js      the installable shell's service worker. Network-first index.html (kept under
-                    one fixed key, so a `?k=` never lands in Cache Storage), cache-first for the
+  public/sw.js      the installable shell's service worker. Network-first index.html, kept under
+                    one fixed key as a URL-less copy (`keepShell`: a stored Response keeps its URL,
+                    so Connect's `?k=` navigation would), cache-first for the
                     content-hashed /assets and the icons, never /api or /ws. vite.remote.config.ts
                     stamps BUILD and the file list into the copy in out/remote, so each bundle is
                     a new worker whose activation drops the old build's cache. verify:remote runs

@@ -534,6 +534,8 @@ check(
   )
   const ORIGIN = 'https://phone.example'
   const listeners = new Map<string, (event: unknown) => void>()
+  // Holds the Response itself, URL and all, as Cache Storage does: `put` keeps a
+  // response's URL list whatever key it is filed under, and `match` hands it back.
   const store = new Map<string, Response>()
   const cacheNames = new Set<string>()
   let network: (url: string) => Promise<Response> = () => Promise.reject(new TypeError('offline'))
@@ -543,6 +545,23 @@ check(
     match: async (r: string | { url: string }) => store.get(keyOf(r))?.clone(),
     put: async (r: string | { url: string }, res: Response) => void store.set(keyOf(r), res),
     addAll: async () => {}
+  }
+  /*
+   * What `fetch` really answers: a Response whose `url` is the URL it fetched,
+   * through every `clone()`. A synthetic `new Response()` has `url === ''`, so a
+   * suite that stubs the network with one can never see a URL kept in the cache —
+   * which is how "a ?k= key never lands in Cache Storage" passed here while the
+   * worker stored the `?k=` navigation's own response, key in its `.url`.
+   */
+  const fromNetwork = (url: string, res: Response): Response => {
+    const clone = res.clone.bind(res)
+    Object.defineProperty(res, 'url', { value: url })
+    Object.defineProperty(res, 'clone', { value: () => fromNetwork(url, clone()) })
+    return res
+  }
+  // `keepShell` reads the body before it stores anything: let that finish.
+  const settle = async (): Promise<void> => {
+    for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r))
   }
   const sandbox: Record<string, unknown> = {
     self: {
@@ -607,28 +626,45 @@ check(
     [true, true, true, true]
   )
   const html = (body: string): Response => new Response(body, { headers: { 'content-type': 'text/html; charset=utf-8' } })
-  network = async () => html('<p>new shell</p>')
+  network = async (url) => fromNetwork(url, html('<p>new shell</p>'))
   const online = await fire('GET', `${ORIGIN}/?k=SECRETKEY`, 'navigate')!
   check('online, the shell comes from the network (a Stoke update lands on the next load)', await online.text(), '<p>new shell</p>')
-  await new Promise((r) => setImmediate(r))
+  await settle()
   check(
-    'and is kept under the one fixed key: a ?k= key never lands in Cache Storage',
-    [...store.keys()].map((k) => [k, k.includes('SECRETKEY')]),
-    [[`${ORIGIN}/index.html`, false]]
+    "and is kept under the one fixed key with no URL: neither the key nor the stored response's .url carries the ?k=",
+    [...store.entries()].map(([k, res]) => [k, k.includes('SECRETKEY'), res.url]),
+    [[`${ORIGIN}/index.html`, false, '']]
+  )
+  check(
+    "the page itself gets the network's own response, untouched",
+    online.url,
+    `${ORIGIN}/?k=SECRETKEY`
   )
   network = () => Promise.reject(new TypeError('Failed to fetch'))
   const offline = await fire('GET', `${ORIGIN}/`, 'navigate')!
   check('offline, the kept shell paints (Connect, or "can\'t reach")', await offline.text(), '<p>new shell</p>')
+  check(
+    'with its status and content type, and still no URL',
+    [offline.status, offline.headers.get('content-type'), offline.url],
+    [200, 'text/html; charset=utf-8', '']
+  )
   store.clear()
   const nothing = await fire('GET', `${ORIGIN}/`, 'navigate')!
   check('offline with nothing kept is a network error, never an invented page', nothing.type, 'error')
 
   fetched = []
-  network = async () => new Response('export {}', { headers: { 'content-type': 'text/javascript' } })
+  network = async (url) => fromNetwork(url, new Response('export {}', { headers: { 'content-type': 'text/javascript' } }))
   await (await fire('GET', `${ORIGIN}/assets/index-abc.js`)!).text()
-  await new Promise((r) => setImmediate(r))
+  await settle()
   await (await fire('GET', `${ORIGIN}/assets/index-abc.js`)!).text()
   check('a hashed asset is fetched once, then served from the cache', fetched, [`${ORIGIN}/assets/index-abc.js`])
+  check(
+    'a file asked for with a query is left to the network, so no stored URL ever carries one',
+    [fire('GET', `${ORIGIN}/icon-192.png?k=SECRETKEY`), fire('GET', `${ORIGIN}/assets/index-abc.js?k=SECRETKEY`)].map(
+      (p) => p === null
+    ),
+    [true, true]
+  )
   network = async () => html('<!doctype html>')
   await fire('GET', `${ORIGIN}/assets/index-gone.js`)
   await new Promise((r) => setImmediate(r))
