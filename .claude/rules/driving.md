@@ -165,3 +165,25 @@ Related, and also only a driving artefact: **`scrollIntoView` on anything inside
 sheet scrolls the `.settings-modal` itself**, which is `overflow: hidden` — the header and the
 close button slide out of the dialog and stay out, in every later screenshot. A user cannot
 reach that state. Scroll `.settings-pane`'s own `scrollTop` instead.
+
+## 128. A sandbox that dictates in a Claude tab inherits the owner's `/voice`, and a worktree agent may not move `HOME` to escape it
+
+**Stoke's dictation in a local Claude tab is decided by the owner's real `~/.claude/settings.json`.**
+`spaceOwner` (voiceRoute.ts, gotcha 79) gives Space to Claude Code's `/voice` whenever
+`voiceEnabled`/`voice.enabled` is on there, and ⇧⌘D then shows `CLI_OWNS_SPACE` instead of arming.
+Read on 2026-09-30 while proving the speech providers: this Mac's file has `"voiceEnabled": true`,
+so a sandbox Claude tab would have refused Stoke's dictation — inferred from the code and that read;
+the refusal itself was not reproduced, the isolation below was used instead. Gotcha 112's answer, a
+scratch `HOME`, is not available to an agent in an isolated git worktree: the harness refuses any
+command that sets `HOME` ("injecting git configuration whose effect on where git writes can't be
+verified"), and a wrapper script to get round it would be dodging a guard, not isolating.
+
+What worked, measured: launch with **`CLAUDE_CONFIG_DIR=<scratch dir>`** in front of the Electron
+binary (the harness allows it), plus `claudePath` pointed at a stub and `--use-mock-keychain`.
+`claudeConfigDir`/`claudeSettingsPath` (claudePaths.ts) honour it, so Settings → Voice read Claude
+Code's `/voice` as **off**, ⇧⌘D armed the strip ("Hold Space to speak…"), and a held Space went
+Listening → Transcribing → text. It also points `~/.claude.json` and the stub's own config at the
+scratch dir, so nothing of the owner's Claude config is read for ownership or written. It does NOT
+move `~/.local/bin` or the login shell's PATH, so it is enough only for a Claude tab (whose
+`claudePath` override wins before any search) — any other agent still needs gotcha 112's `SHELL` +
+`HOME`, from outside a worktree.

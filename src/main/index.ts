@@ -103,7 +103,8 @@ import {
   type LaunchPlan
 } from '../shared/agents.ts'
 import { claudeVoiceEnabled, isMicAccess, type MicAccess } from '../shared/voiceRoute.ts'
-import { transcribe } from './stt.ts'
+import { testSpeechService, transcribe } from './stt.ts'
+import { sttConfigFrom, sttConfigOf, sttReadiness } from '../shared/speechProviders.ts'
 import { createProfile, planProfile } from './profiles.ts'
 import { readSshConfigHosts } from './ssh.ts'
 import { endRemoteSession, listRemoteSessions } from './sshSessions.ts'
@@ -1322,27 +1323,36 @@ function pushRemote(): void {
  */
 let lastQr: { url: string; bg: string; qr: string } | null = null
 /*
- * Whether the speech sidecar answers, probed at most every 15s and only
- * while something is asking — Settings → Voice's pill (`CH.sttStatus`) and the
- * phone's `/api/host`. Any HTTP answer counts — the sidecar 405s an OPTIONS —
- * and a refused connection is the whole signal. The address is always
- * `voice.sttUrl`, read by the caller; the cache is keyed on it, so a new
- * address is probed at once.
+ * Whether a speech server Stoke can reach for free answers — the sidecar, or a
+ * custom OpenAI-compatible one — probed at most every 15s and only while
+ * something is asking: Settings → Voice's pill (`CH.sttStatus`) and the phone's
+ * `/api/host`. Any HTTP answer counts — the sidecar 405s an OPTIONS — and a
+ * refused connection is the whole signal. `url` is the full route
+ * (`sttReadiness`), read by the caller from settings; the cache is keyed on it,
+ * so a new address is probed at once.
  */
 let sttProbe: { url: string; at: number; result: 'up' | 'down' } | null = null
-const probeStt = async (url: string): Promise<'up' | 'down' | 'unknown'> => {
-  const base = url.trim().replace(/\/$/, '')
-  if (!base) return 'unknown'
-  if (sttProbe && sttProbe.url === base && Date.now() - sttProbe.at < 15_000) return sttProbe.result
+const probeStt = async (url: string): Promise<'up' | 'down'> => {
+  if (sttProbe && sttProbe.url === url && Date.now() - sttProbe.at < 15_000) return sttProbe.result
   let result: 'up' | 'down'
   try {
-    await fetch(`${base}/transcribe`, { method: 'OPTIONS', signal: AbortSignal.timeout(800) })
+    await fetch(url, { method: 'OPTIONS', signal: AbortSignal.timeout(800) })
     result = 'up'
   } catch {
     result = 'down'
   }
-  sttProbe = { url: base, at: Date.now(), result }
+  sttProbe = { url, at: Date.now(), result }
   return result
+}
+
+/*
+ * Dictation's readiness for whichever provider is chosen. A hosted provider is
+ * never probed — the only question it answers is a request, which is the Test
+ * button's, on a press — so it is `ready` with a key and `off` without one.
+ */
+const sttStatusNow = async (): Promise<'up' | 'down' | 'ready' | 'off'> => {
+  const r = sttReadiness(sttConfigOf(getSettings().voice))
+  return r.kind === 'probe' ? probeStt(r.url) : r.kind
 }
 
 const remoteState = async (): Promise<RemoteState> => {
@@ -1472,17 +1482,16 @@ function remoteDeps(): RemoteDeps {
       }
     },
     sttStatus: async () => {
-      const url = getSettings().voice.sttUrl
-      if (!url.trim()) return 'off'
-      const result = await probeStt(url)
-      return result === 'up' ? 'ready' : 'down'
+      const s = await sttStatusNow()
+      return s === 'up' || s === 'ready' ? 'ready' : s
     },
     /*
-     * Read per call, like the desktop's `CH.transcribe` below, so an address
-     * changed in Settings → Voice reaches the phone's next clip without Phone
-     * access being turned off and on.
+     * Read per call, like the desktop's `CH.transcribe` below, so a provider,
+     * key or address changed in Settings → Voice reaches the phone's next clip
+     * without Phone access being turned off and on. The phone never sees the
+     * key: it posts audio here, and only this process sends it on.
      */
-    transcribe: (wav) => transcribe(getSettings().voice.sttUrl, wav),
+    transcribe: (wav) => transcribe(sttConfigOf(getSettings().voice), wav),
     projectRoots: () => getSettings().projectRoots,
     hosts: () => getSettings().hosts,
     /*
@@ -3338,12 +3347,18 @@ function registerIpc(): void {
       browser?.setBookmarks(next.browser.bookmarks)
     }
     /*
-     * A new speech server is probed afresh rather than reported from the last
+     * A new speech service is probed afresh rather than reported from the last
      * address's 15s cache. Not a remote field and never a restart: both
-     * dictation paths read `voice.sttUrl` per call (`RemoteDeps.transcribe`,
+     * dictation paths read `voice` per call (`RemoteDeps.transcribe`,
      * `CH.transcribe`), and Settings → Voice asks for its pill again itself.
      */
-    if (prev.voice.sttUrl !== next.voice.sttUrl) sttProbe = null
+    if (
+      prev.voice.sttUrl !== next.voice.sttUrl ||
+      prev.voice.provider !== next.voice.provider ||
+      prev.voice.baseUrl !== next.voice.baseUrl
+    ) {
+      sttProbe = null
+    }
     /*
      * A running remote server reads its config once, at start. So ticking
      * "also listen on the local network", changing the port, or requiring
@@ -3854,24 +3869,44 @@ function registerIpc(): void {
 
   /*
    * Desktop dictation. The renderer records and encodes the WAV — it has the
-   * microphone and the audio APIs — but does not reach the speech server, which
-   * has no authentication of its own. Same boundary the phone's
-   * `/api/transcribe` route enforces, and `stt.ts` is the single implementation
-   * behind both.
+   * microphone and the audio APIs — but does not reach the speech service: the
+   * sidecar has no authentication of its own, and a provider's key is sent only
+   * from here. Same boundary the phone's `/api/transcribe` route enforces, and
+   * `stt.ts` is the single implementation behind both.
    *
    * The settings read happens per call rather than being captured, so changing
-   * the address takes effect on the next dictation instead of the next launch.
+   * the provider, key or address takes effect on the next dictation instead of
+   * the next launch.
    */
   ipcMain.handle(CH.transcribe, async (_e, wav: ArrayBuffer) => {
-    return transcribe(getSettings().voice.sttUrl, new Uint8Array(wav))
+    return transcribe(sttConfigOf(getSettings().voice), new Uint8Array(wav))
   })
   /*
-   * Settings → Voice's "running / not running" pill. Its own channel rather
-   * than a field of `voiceState`, which the terminal asks every time dictation
-   * is switched on: that answer is two local reads, and a probe can take its
-   * whole 800ms against an address that swallows packets.
+   * Settings → Voice's pill. Its own channel rather than a field of
+   * `voiceState`, which the terminal asks every time dictation is switched on:
+   * that answer is two local reads, and a probe can take its whole 800ms
+   * against an address that swallows packets.
    */
-  ipcMain.handle(CH.sttStatus, () => probeStt(getSettings().voice.sttUrl))
+  ipcMain.handle(CH.sttStatus, () => sttStatusNow())
+  /*
+   * Settings → Voice's Test. It tests the panel's drafts (`sttConfigFrom`
+   * repairs whatever crossed IPC), so a key pasted a moment ago is the key
+   * tested, and it never transcribes: a model listing proves a key for free.
+   * One at a time, claimed BEFORE the first await (gotcha 20) — the button is
+   * disabled while it runs, but a second press is refused here too.
+   */
+  let voiceTesting = false
+  ipcMain.handle(CH.voiceTest, async (_e, raw: unknown) => {
+    if (voiceTesting) return { ok: false, tone: 'warning', message: 'A test is already running.' }
+    voiceTesting = true
+    try {
+      return await testSpeechService(sttConfigFrom(raw))
+    } finally {
+      voiceTesting = false
+      // A test is the moment someone has just started their server; let the pill ask again.
+      sttProbe = null
+    }
+  })
 
   /* ------------------------------------------------------------- clipboard */
   /*

@@ -14,9 +14,40 @@
  * Nothing covered voice at all before this, so the wire is checked too: a pure
  * function that nobody calls is gotcha 31's green run over a broken feature.
  *
+ * Also the speech providers (shared/speechProviders.ts, main/stt.ts): every
+ * provider's URL, auth header and body, the transcript each one answers with,
+ * the refusals, and the shipped dispatcher against a fake on loopback port 0.
+ *
  *   node scripts/verify-voice.mts
  */
 import { readFileSync } from 'node:fs'
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
+import type { AddressInfo } from 'node:net'
+import { testSpeechService, transcribe } from '../src/main/stt.ts'
+import {
+  audioDestination,
+  base64Of,
+  buildSttRequest,
+  classifySttError,
+  describeSttFailure,
+  GEMINI_TRANSCRIBE_PROMPT,
+  isRefusal,
+  keyCheckRequest,
+  readTranscript,
+  redactKey,
+  sttErrorCodes,
+  sttReadiness,
+  upstreamMessage,
+  STOKE_MAX_AUDIO_BYTES,
+  STT_PROVIDER_IDS,
+  STT_PROVIDERS,
+  WAV_BYTES_PER_SECOND,
+  wavSeconds,
+  type SttConfig,
+  type SttProviderId,
+  type SttRefusal,
+  type SttRequest
+} from '../src/shared/speechProviders.ts'
 import {
   audioInputs,
   isMissingDevice,
@@ -351,6 +382,567 @@ console.log('\nthe permission line in Settings')
   check('and refuses anything else', isMicAccess('allowed'), false)
 }
 
+/*
+ * Speech providers. Every hosted API and the custom server take the same WAV
+ * but want it differently — a raw body, a multipart field called `file` or
+ * `audio`, base64 inside JSON — behind five different auth headers. The
+ * builder is pure, so the whole matrix is held here field by field; then the
+ * shipped `stt.ts` is driven against a loopback fake, so FormData and Blob are
+ * the real encoding, not a description of it. No real directory is touched and
+ * no request leaves 127.0.0.1 (gotcha 74): hosted URLs reach the fake through
+ * `fetchImpl`, which only swaps the origin.
+ */
+console.log('\nspeech providers: the request each one gets')
+const KEY = 'sk-CANARY-7f3e9a1b2c'
+const wav = (() => {
+  const b = new Uint8Array(44 + 3200)
+  b.set([0x52, 0x49, 0x46, 0x46], 0) // "RIFF", so a bytes-intact check has a header to find
+  for (let i = 44; i < b.length; i++) b[i] = (i * 31) & 0xff
+  return b
+})()
+const cfg = (provider: SttProviderId, over: Partial<SttConfig> = {}): SttConfig => ({
+  provider,
+  model: '',
+  baseUrl: '',
+  sttUrl: '',
+  key: provider === 'sidecar' || provider === 'custom' ? '' : KEY,
+  ...over
+})
+function built(c: SttConfig, w: Uint8Array = wav): SttRequest {
+  const r = buildSttRequest(c, w)
+  if (isRefusal(r)) throw new Error(`${c.provider} refused: ${r.error}`)
+  return r
+}
+const fieldsOf = (r: SttRequest): string[] =>
+  r.body.kind === 'multipart' ? r.body.parts.map((p) => ('file' in p ? `${p.name}=<${p.type} ${p.filename}>` : `${p.name}=${p.value}`)) : []
+{
+  const expect: Record<Exclude<SttProviderId, 'sidecar' | 'custom'>, { url: string; auth: [string, string]; kind: string; fields: string[] }> = {
+    openai: {
+      url: 'https://api.openai.com/v1/audio/transcriptions',
+      auth: ['authorization', `Bearer ${KEY}`],
+      kind: 'multipart',
+      fields: ['file=<audio/wav dictation.wav>', 'model=gpt-transcribe', 'response_format=json']
+    },
+    groq: {
+      url: 'https://api.groq.com/openai/v1/audio/transcriptions',
+      auth: ['authorization', `Bearer ${KEY}`],
+      kind: 'multipart',
+      fields: ['file=<audio/wav dictation.wav>', 'model=whisper-large-v3-turbo', 'response_format=json']
+    },
+    deepgram: {
+      url: 'https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&detect_language=true',
+      auth: ['authorization', `Token ${KEY}`],
+      kind: 'raw',
+      fields: []
+    },
+    elevenlabs: {
+      url: 'https://api.elevenlabs.io/v1/speech-to-text',
+      auth: ['xi-api-key', KEY],
+      kind: 'multipart',
+      fields: ['model_id=scribe_v2', 'file=<audio/wav dictation.wav>', 'tag_audio_events=false']
+    },
+    mistral: {
+      url: 'https://api.mistral.ai/v1/audio/transcriptions',
+      auth: ['authorization', `Bearer ${KEY}`],
+      kind: 'multipart',
+      fields: ['file=<audio/wav dictation.wav>', 'model=voxtral-mini-latest']
+    },
+    assemblyai: {
+      url: 'https://sync.assemblyai.com/v1/transcribe',
+      auth: ['authorization', KEY],
+      kind: 'multipart',
+      fields: ['audio=<audio/wav dictation.wav>']
+    },
+    gemini: {
+      url: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent',
+      auth: ['x-goog-api-key', KEY],
+      kind: 'json',
+      fields: []
+    }
+  }
+  for (const [id, want] of Object.entries(expect) as [keyof typeof expect, (typeof expect)[keyof typeof expect]][]) {
+    const r = built(cfg(id))
+    check(`${id}: POST to its documented URL`, [r.method, r.url], ['POST', want.url])
+    check(`${id}: the key in its own header, its own scheme`, r.headers[want.auth[0]], want.auth[1])
+    check(`${id}: body kind`, r.body.kind, want.kind)
+    if (want.kind === 'multipart') check(`${id}: multipart field names and order`, fieldsOf(r), want.fields)
+  }
+  check('assemblyai: the model rides in X-AAI-Model, which its sync endpoint requires', built(cfg('assemblyai')).headers['x-aai-model'], 'universal-3-5-pro')
+  const dg = built(cfg('deepgram'))
+  check('deepgram: the raw WAV, as audio/wav', [dg.headers['content-type'], dg.body.kind === 'raw' && dg.body.bytes === wav], ['audio/wav', true])
+  ok('multipart never sets its own content-type — fetch must write the boundary', ['openai', 'groq', 'elevenlabs', 'mistral', 'assemblyai'].every((id) => !('content-type' in built(cfg(id as SttProviderId)).headers)))
+
+  const gem = built(cfg('gemini'))
+  const gv = gem.body.kind === 'json' ? (gem.body.value as { contents: { parts: Record<string, unknown>[] }[]; generationConfig: Record<string, unknown> }) : null
+  const inline = gv?.contents[0].parts.find((p) => 'inlineData' in p)?.inlineData as { mimeType: string; data: string } | undefined
+  check('gemini: the WAV as base64 inlineData, audio/wav', [inline?.mimeType, inline ? Buffer.from(inline.data, 'base64').equals(Buffer.from(wav)) : false], ['audio/wav', true])
+  check('gemini: a general model is told to transcribe, at temperature 0', [gv?.contents[0].parts[0].text, gv?.generationConfig], [GEMINI_TRANSCRIBE_PROMPT, { temperature: 0 }])
+  const ded = built(cfg('gemini', { model: 'models/gemini-3.5-transcribe' }))
+  const dv = ded.body.kind === 'json' ? (ded.body.value as { contents: { parts: unknown[] }[]; generationConfig: unknown }) : null
+  check('gemini: the transcribe model gets audio only, with its transcription config', [ded.url.endsWith('/models/gemini-3.5-transcribe:generateContent'), dv?.contents[0].parts.length, dv?.generationConfig], [true, 1, { audioTranscriptionConfig: { languageCodes: [] } }])
+
+  // A model id is the user's to pick, and still goes where each provider reads it.
+  check('a chosen model reaches the multipart field', fieldsOf(built(cfg('openai', { model: 'whisper-1' })))[1], 'model=whisper-1')
+  check('and Deepgram’s query, encoded', new URL(built(cfg('deepgram', { model: 'nova-3-medical' })).url).searchParams.get('model'), 'nova-3-medical')
+
+  const side = built(cfg('sidecar', { sttUrl: 'http://127.0.0.1:17890/' }))
+  check('sidecar: today’s request exactly — raw WAV at /transcribe, no auth', [side.url, side.headers, side.body.kind], [
+    'http://127.0.0.1:17890/transcribe',
+    { 'content-type': 'audio/wav' },
+    'raw'
+  ])
+  check('custom: trailing slashes normalised', built(cfg('custom', { baseUrl: 'http://box:8000/v1///' })).url, 'http://box:8000/v1/audio/transcriptions')
+  check('custom: a bare origin gains /v1, as speaches serves it', built(cfg('custom', { baseUrl: 'http://127.0.0.1:8000' })).url, 'http://127.0.0.1:8000/v1/audio/transcriptions')
+  check('custom: no key, no Authorization header at all', built(cfg('custom', { baseUrl: 'http://x/v1' })).headers, {})
+  check('custom: a key goes as Bearer', built(cfg('custom', { baseUrl: 'http://x/v1', key: KEY })).headers.authorization, `Bearer ${KEY}`)
+  check('custom: an unset model is whisper-1', fieldsOf(built(cfg('custom', { baseUrl: 'http://x/v1' })))[1], 'model=whisper-1')
+
+  const everyUrl = STT_PROVIDER_IDS.flatMap((id) => {
+    const c = cfg(id, { key: KEY, sttUrl: 'http://127.0.0.1:17890', baseUrl: 'http://127.0.0.1:8000/v1' })
+    return [built(c).url, keyCheckRequest(c)?.url ?? '']
+  })
+  ok('no key ever appears in any provider’s URL — request or key check', everyUrl.every((u) => !u.includes(KEY)), everyUrl.filter((u) => u.includes(KEY)).join(', '))
+  check('the sidecar never sends a key, even if one is on the config', built(cfg('sidecar', { sttUrl: 'http://s', key: KEY })).headers, { 'content-type': 'audio/wav' })
+}
+
+console.log('\nspeech providers: refused before anything is sent')
+{
+  const refusal = (c: SttConfig, w: Uint8Array = wav): SttRefusal | null => {
+    const r = buildSttRequest(c, w)
+    return isRefusal(r) ? r : null
+  }
+  check('no key for a hosted provider is `unset` (the phone’s 503), and names Settings → Voice', (() => {
+    const r = refusal(cfg('openai', { key: '  ' }))
+    return [r?.unset, /No OpenAI key/.test(r?.error ?? ''), /Settings → Voice/.test(r?.error ?? '')]
+  })(), [true, true, true])
+  check('no custom address is unset too', refusal(cfg('custom'))?.unset, true)
+  check('an address that is not http(s) is a mistake, not unset', (() => {
+    const r = refusal(cfg('custom', { baseUrl: '127.0.0.1:8000/v1' }))
+    return [r?.unset ?? null, /http:\/\/ or https:\/\//.test(r?.error ?? '')]
+  })(), [null, true])
+  ok('a key with a newline in it is refused before fetch could throw on the header', /character no key contains/.test(refusal(cfg('groq', { key: 'gsk_a\nb' }))?.error ?? ''))
+  ok('and that refusal does not print the key', !(refusal(cfg('groq', { key: `${KEY}\n` + 'x' }))?.error ?? '').includes(KEY))
+  const bytesFor = (seconds: number): Uint8Array => new Uint8Array(44 + seconds * WAV_BYTES_PER_SECOND)
+  check('AssemblyAI takes exactly 120 s', refusal(cfg('assemblyai'), bytesFor(120)), null)
+  check('and refuses 121 s by length, in words', refusal(cfg('assemblyai'), bytesFor(121))?.error, 'Recording too long for AssemblyAI: 2 min 1 s, and it takes at most 2 min per clip.')
+  check('and 120 s is what its duration maths says', wavSeconds(bytesFor(120).byteLength), 120)
+  const gemMax = STT_PROVIDERS.gemini.maxBytes
+  ok('Gemini’s cap keeps the base64 request under its 20 MB limit', Math.ceil(gemMax / 3) * 4 + 4096 < 20_000_000, String(gemMax))
+  check('and a clip over it is refused', /too large for Gemini/.test(refusal(cfg('gemini'), new Uint8Array(gemMax + 1))?.error ?? ''), true)
+  ok(
+    'OpenAI’s cap leaves room under 26,214,400 for the WHOLE multipart body, not just the file',
+    STT_PROVIDERS.openai.maxBytes + 4096 < 26_214_400 && STT_PROVIDERS.openai.maxBytes < STOKE_MAX_AUDIO_BYTES
+  )
+  check('the sidecar keeps its own 25 MiB and its old sentence', refusal(cfg('sidecar', { sttUrl: 'http://s' }), new Uint8Array(STOKE_MAX_AUDIO_BYTES + 1))?.error, 'Recording too large.')
+  check('an empty clip is still "Nothing was recorded."', refusal(cfg('openai'), new Uint8Array(0))?.error, 'Nothing was recorded.')
+}
+
+console.log('\nspeech providers: reading the transcript back')
+check('the OpenAI family: .text, trimmed', readTranscript('openai', { text: ' hello there ' }), 'hello there')
+check('groq, mistral, elevenlabs, assemblyai, custom, sidecar: the same', (['groq', 'mistral', 'elevenlabs', 'assemblyai', 'custom', 'sidecar'] as const).map((p) => readTranscript(p, { text: 'x' })), ['x', 'x', 'x', 'x', 'x', 'x'])
+check('deepgram: results.channels[0].alternatives[0].transcript', readTranscript('deepgram', { results: { channels: [{ alternatives: [{ transcript: ' dg text ', confidence: 0.9 }] }] } }), 'dg text')
+check('deepgram with no alternatives is empty, not a throw', readTranscript('deepgram', { results: { channels: [{ alternatives: [] }] } }), '')
+check('deepgram with no channels', readTranscript('deepgram', { results: {} }), '')
+check('gemini: every text part of the first candidate, joined', readTranscript('gemini', { candidates: [{ content: { parts: [{ text: 'one ' }, { text: 'two\n' }] } }] }), 'one two')
+check('gemini with no candidates (a blocked prompt) is empty', readTranscript('gemini', { promptFeedback: { blockReason: 'OTHER' } }), '')
+check('a missing text is empty', readTranscript('openai', {}), '')
+check('a non-string text is empty', readTranscript('openai', { text: 7 }), '')
+check('a non-object answer is empty', [readTranscript('openai', null), readTranscript('deepgram', 'x'), readTranscript('gemini', [])], ['', '', ''])
+
+console.log('\nspeech providers: what a failure says')
+{
+  check('401: the key was refused, by provider name, in the provider’s own words', describeSttFailure('openai', 401, '{"error":{"message":"Incorrect API key"}}'), 'The OpenAI key was refused (401: Incorrect API key). Check it in Settings → Voice.')
+  check(
+    'the provider’s sentence is found in each vendor’s error shape',
+    [
+      upstreamMessage('{"error":{"message":"a"}}'),
+      upstreamMessage('{"err_code":"X","err_msg":"b"}'),
+      upstreamMessage('{"detail":{"status":"s","message":"c"}}'),
+      upstreamMessage('{"detail":"d"}'),
+      upstreamMessage('{"error":"e"}'),
+      upstreamMessage('<html>f</html>'),
+      upstreamMessage('{"weird":1}')
+    ],
+    ['a', 'b', 'c', 'd', 'e', '<html>f</html>', '{"weird":1}']
+  )
+  ok('403 is the key too', /^The Deepgram key was refused \(403/.test(describeSttFailure('deepgram', 403, '')))
+  ok('Gemini says a bad key with a 400 and API_KEY_INVALID', /^The Gemini key was refused \(400/.test(describeSttFailure('gemini', 400, '{"error":{"status":"INVALID_ARGUMENT","details":[{"reason":"API_KEY_INVALID"}]}}')))
+  ok('but a Gemini 400 about anything else is not the key', !/key was refused/.test(describeSttFailure('gemini', 400, '{"error":{"message":"Unsupported MIME type"}}')))
+  ok('402 is out of credit', /out of credit/.test(describeSttFailure('deepgram', 402, '{"err_code":"ASR_PAYMENT_REQUIRED"}')))
+  ok('OpenAI’s 429 credit_balance_exhausted is credit, not rate', /out of credit/.test(describeSttFailure('openai', 429, '{"error":{"code":"credit_balance_exhausted"}}')))
+  check('a plain 429 is rate-limited, with the Retry-After it sent', describeSttFailure('groq', 429, 'slow down', { retryAfter: '7' }), 'Groq is rate-limiting this key (429). Try again in 7 s.')
+  ok('Groq’s 498 is capacity, read as rate', /rate-limiting/.test(describeSttFailure('groq', 498, '')))
+  check('413 is too large', describeSttFailure('openai', 413, 'Maximum content size limit (26214400) exceeded'), 'The recording is too large for OpenAI (413).')
+  ok('a 5xx is the provider’s side', /had a problem on its side \(503/.test(describeSttFailure('elevenlabs', 503, '')))
+  check('the sidecar keeps its own words, exactly as the phone has always shown them', describeSttFailure('sidecar', 500, '{"error":"model fell over"}'), 'Speech server: 500 {"error":"model fell over"}')
+  const echoed = describeSttFailure('openai', 401, `Incorrect API key provided: ${KEY}. You can find your API key at …`, { key: KEY })
+  ok('a key the provider echoes back is cut out before it reaches a banner', !echoed.includes(KEY) && echoed.includes('[key]'), echoed)
+  check('redactKey leaves text alone when there is no key to cut', redactKey('abc', ''), 'abc')
+  ok('upstream text is capped', describeSttFailure('mistral', 400, 'x'.repeat(5000)).length < 300)
+}
+
+/*
+ * Real 429 bodies. Groq's is a free-tier TPM reply quoted from a user's post
+ * (org id shortened); its whisper replies carry the same tail on the ASPH/RPM
+ * limits. Gemini's per-minute one is google/langextract#50's, its per-day one
+ * UKGovernmentBEIS/inspect_ai#5526's, both verbatim. OpenAI's insufficient_quota
+ * is verbatim from its community forum. OpenAI's throttle with a billing link
+ * is the reported shape for an account with no payment method (not re-found
+ * verbatim; its `code` is what the classifier reads, and that is documented).
+ */
+const GROQ_429_TPM = JSON.stringify({
+  error: {
+    message:
+      'Rate limit reached for model `mistral-saba-24b` in organization `org_01…` service tier `on_demand` on tokens per minute (TPM): Limit 6000, Used 4747, Requested 1691. Please try again in 4.375s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing',
+    type: 'tokens',
+    code: 'rate_limit_exceeded'
+  }
+})
+const OPENAI_429_RATE = JSON.stringify({
+  error: {
+    message:
+      'Rate limit reached for whisper-1 in organization org-… on requests per min (RPM): Limit 3, Used 3, Requested 1. Please try again in 20s. Visit https://platform.openai.com/account/rate-limits to learn more. You can increase your rate limit by adding a payment method to your account at https://platform.openai.com/account/billing.',
+    type: 'requests',
+    param: null,
+    code: 'rate_limit_exceeded'
+  }
+})
+const OPENAI_429_INSUFFICIENT_QUOTA = JSON.stringify({
+  error: {
+    message:
+      'You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.',
+    type: 'insufficient_quota',
+    param: null,
+    code: 'insufficient_quota'
+  }
+})
+const GEMINI_HELP = {
+  '@type': 'type.googleapis.com/google.rpc.Help',
+  links: [{ description: 'Learn more about Gemini API quotas', url: 'https://ai.google.dev/gemini-api/docs/rate-limits' }]
+}
+const GEMINI_429_PER_MINUTE = JSON.stringify({
+  error: {
+    code: 429,
+    message:
+      'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits.',
+    status: 'RESOURCE_EXHAUSTED',
+    details: [
+      {
+        '@type': 'type.googleapis.com/google.rpc.QuotaFailure',
+        violations: [
+          {
+            quotaMetric: 'generativelanguage.googleapis.com/generate_content_free_tier_requests',
+            quotaId: 'GenerateRequestsPerMinutePerProjectPerModel-FreeTier',
+            quotaDimensions: { location: 'global', model: 'gemini-2.5-flash' },
+            quotaValue: '10'
+          }
+        ]
+      },
+      GEMINI_HELP,
+      { '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay: '15s' }
+    ]
+  }
+})
+const GEMINI_429_PER_DAY = JSON.stringify({
+  error: {
+    code: 429,
+    message:
+      'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits.\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20\nPlease retry in 34.074824224s.',
+    status: 'RESOURCE_EXHAUSTED',
+    details: [
+      {
+        '@type': 'type.googleapis.com/google.rpc.QuotaFailure',
+        violations: [
+          {
+            quotaMetric: 'generativelanguage.googleapis.com/generate_content_free_tier_requests',
+            quotaId: 'GenerateRequestsPerDayPerProjectPerModel-FreeTier',
+            quotaDimensions: { location: 'global', model: 'gemini-2.5-flash' },
+            quotaValue: '20'
+          }
+        ]
+      },
+      { '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay: '34s' }
+    ]
+  }
+})
+
+console.log('\nspeech providers: a 429 is judged by its code, never by the word "billing"')
+{
+  // Every throttle below mentions billing in its prose; the old /…|billing/
+  // word match called all three "out of credit".
+  check(
+    'the old word match really did call them credit — the bodies are the ones that bit',
+    [GROQ_429_TPM, OPENAI_429_RATE, GEMINI_429_PER_MINUTE].map((b) => /credit_balance|insufficient_quota|spend_limit|billing/i.test(b)),
+    [true, true, true]
+  )
+  check(
+    'the codes come from the structured fields, not the prose',
+    [
+      sttErrorCodes(GROQ_429_TPM),
+      sttErrorCodes(GEMINI_429_PER_MINUTE),
+      sttErrorCodes('{"detail":{"type":"rate_limit_error","code":"system_busy","status":"system_busy"}}'),
+      sttErrorCodes('{"err_code":"ASR_PAYMENT_REQUIRED"}'),
+      sttErrorCodes('not json'),
+      sttErrorCodes('{"error":"billing"}')
+    ],
+    [['rate_limit_exceeded', 'tokens'], ['resource_exhausted'], ['system_busy', 'rate_limit_error', 'system_busy'], ['asr_payment_required'], [], []]
+  )
+  check(
+    'Groq’s free tier, throttled, whose sentence links console.groq.com/settings/billing, is rate — with its Retry-After',
+    describeSttFailure('groq', 429, GROQ_429_TPM, { retryAfter: '5' }),
+    'Groq is rate-limiting this key (429). Try again in 5 s.'
+  )
+  check(
+    'OpenAI’s rate_limit_exceeded is rate even when its sentence sends you to the billing page',
+    describeSttFailure('openai', 429, OPENAI_429_RATE, { retryAfter: '20' }),
+    'OpenAI is rate-limiting this key (429). Try again in 20 s.'
+  )
+  check(
+    'Gemini’s per-minute RESOURCE_EXHAUSTED ("check your plan and billing details") is rate, with the wait from RetryInfo — it sends no Retry-After',
+    describeSttFailure('gemini', 429, GEMINI_429_PER_MINUTE),
+    'Gemini is rate-limiting this key (429). Try again in 15 s.'
+  )
+  check(
+    'a Retry-After header, when there is one, outranks the body’s retryDelay',
+    describeSttFailure('gemini', 429, GEMINI_429_PER_MINUTE, { retryAfter: '3' }),
+    'Gemini is rate-limiting this key (429). Try again in 3 s.'
+  )
+  check(
+    'Gemini’s DAILY quota is neither credit nor "try again in 34 s" (its retryDelay is not when a day’s quota returns)',
+    describeSttFailure('gemini', 429, GEMINI_429_PER_DAY),
+    "Gemini has used up this key's daily quota (429). It resets once a day."
+  )
+  check(
+    'OpenAI’s insufficient_quota is credit, and says so in OpenAI’s own words',
+    describeSttFailure('openai', 429, OPENAI_429_INSUFFICIENT_QUOTA),
+    'OpenAI refused the request: the account is out of credit or over a spending limit (429: You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.).'
+  )
+  check(
+    'each of OpenAI’s documented money codes is credit, with its sentence',
+    [
+      ['credit_balance_exhausted', 'Your organization has no prepaid credits remaining.'],
+      ['organization_spend_limit_exceeded', 'Your organization reached its enforced spend limit.'],
+      ['project_spend_limit_exceeded', 'Your project reached its enforced spend limit.'],
+      ['organization_usage_limit_exceeded', 'Your organization reached its OpenAI-assigned usage limit.']
+    ].map(([code, message]) => describeSttFailure('openai', 429, JSON.stringify({ error: { message, type: 'invalid_request_error', code } }))),
+    [
+      'OpenAI refused the request: the account is out of credit or over a spending limit (429: Your organization has no prepaid credits remaining.).',
+      'OpenAI refused the request: the account is out of credit or over a spending limit (429: Your organization reached its enforced spend limit.).',
+      'OpenAI refused the request: the account is out of credit or over a spending limit (429: Your project reached its enforced spend limit.).',
+      'OpenAI refused the request: the account is out of credit or over a spending limit (429: Your organization reached its OpenAI-assigned usage limit.).'
+    ]
+  )
+  check(
+    'a specific money code outranks the generic rate_limit_error class beside it (a guard: this pairing is not documented)',
+    classifySttError('openai', 429, '{"error":{"message":"Your organization has no prepaid credits remaining.","type":"rate_limit_error","code":"credit_balance_exhausted"}}'),
+    'credit'
+  )
+  ok('OpenAI’s slow_down is rate', /rate-limiting/.test(describeSttFailure('openai', 429, '{"error":{"message":"Your request rate increased too quickly.","type":"rate_limit_error","code":"slow_down"}}')))
+  ok('ElevenLabs’ system_busy (in detail) is rate', /rate-limiting/.test(describeSttFailure('elevenlabs', 429, '{"detail":{"type":"rate_limit_error","code":"system_busy","message":"The system is currently busy. Try again later.","status":"system_busy"}}')))
+  ok('a word in the prose alone decides nothing: "insufficient_quota" as text is still rate', /rate-limiting/.test(describeSttFailure('mistral', 429, '{"message":"see insufficient_quota and billing"}')))
+  check('a 429 that is not JSON is rate', classifySttError('custom', 429, '<html>billing</html>'), 'rate')
+  check('the credit codes decide only a 429: a 400 carrying one is not money', classifySttError('openai', 400, '{"error":{"code":"insufficient_quota"}}'), 'other')
+}
+
+console.log('\nspeech providers: the key test never transcribes')
+{
+  const kc = (id: SttProviderId, over: Partial<SttConfig> = {}): string | null => keyCheckRequest(cfg(id, over))?.url ?? null
+  check('each provider’s free check is a listing', STT_PROVIDER_IDS.map((id) => kc(id, { baseUrl: 'http://127.0.0.1:8000' })), [
+    null,
+    'https://api.openai.com/v1/models',
+    'https://api.groq.com/openai/v1/models',
+    'https://api.deepgram.com/v1/projects',
+    'https://api.elevenlabs.io/v1/models',
+    'https://api.mistral.ai/v1/models',
+    'https://api.assemblyai.com/v2/transcript?limit=1',
+    'https://generativelanguage.googleapis.com/v1beta/models',
+    'http://127.0.0.1:8000/v1/models'
+  ])
+  check('the check carries the same auth header as the request', keyCheckRequest(cfg('deepgram'))?.headers, { authorization: `Token ${KEY}` })
+  check('no key, no check', kc('openai', { key: '' }), null)
+  check('readiness: a hosted provider with a key is ready, never probed', sttReadiness(cfg('openai')), { kind: 'ready' })
+  check('without one it is off', sttReadiness(cfg('openai', { key: '' })), { kind: 'off' })
+  check('the sidecar is probed at /transcribe', sttReadiness(cfg('sidecar', { sttUrl: 'http://127.0.0.1:17890/' })), { kind: 'probe', url: 'http://127.0.0.1:17890/transcribe' })
+  check('a custom server at its transcriptions route', sttReadiness(cfg('custom', { baseUrl: 'http://127.0.0.1:8000' })), { kind: 'probe', url: 'http://127.0.0.1:8000/v1/audio/transcriptions' })
+  check('an empty address is off', [sttReadiness(cfg('sidecar')), sttReadiness(cfg('custom'))], [{ kind: 'off' }, { kind: 'off' }])
+}
+
+console.log('\nspeech providers: where the audio goes, said honestly')
+{
+  const d = (c: SttConfig) => audioDestination(c)
+  ok('a hosted provider always leaves the machine, named', d(cfg('openai')).leaves && d(cfg('openai')).line.startsWith('Audio leaves this machine for OpenAI'))
+  ok('and names the host it goes to', d(cfg('deepgram')).line.includes('api.deepgram.com'))
+  check('a loopback sidecar stays', d(cfg('sidecar', { sttUrl: 'http://127.0.0.1:17890' })).leaves, false)
+  check('localhost and ::1 too', [d(cfg('custom', { baseUrl: 'http://localhost:8000/v1' })).leaves, d(cfg('custom', { baseUrl: 'http://[::1]:8000/v1' })).leaves], [false, false])
+  ok('a server on another machine leaves, and names it', d(cfg('sidecar', { sttUrl: 'http://box.tailnet.ts.net:17890' })).leaves && d(cfg('sidecar', { sttUrl: 'http://box.tailnet.ts.net:17890' })).line.includes('box.tailnet.ts.net'))
+  check('nothing set says nothing is sent', d(cfg('custom')).line, 'Nothing is sent until an address is set.')
+}
+
+console.log('\nbase64 for Gemini’s inlineData')
+{
+  const sizes = [0, 1, 2, 3, 4, 5, 47, 48, 49, 3 * 16_384 - 1, 3 * 16_384, 3 * 16_384 + 1, 200_001]
+  const bad = sizes.filter((n) => {
+    const b = new Uint8Array(n)
+    for (let i = 0; i < n; i++) b[i] = (i * 7919 + 13) & 0xff
+    return base64Of(b) !== Buffer.from(b).toString('base64')
+  })
+  check('matches Node’s encoder at every tail length and across chunk edges', bad, [])
+}
+
+/*
+ * The shipped stt.ts against a fake on 127.0.0.1:0. Hosted URLs keep their
+ * paths and queries; `via` only swaps the origin, so what arrives is exactly
+ * what the provider would have been sent.
+ */
+console.log('\nspeech providers: through stt.ts, against a loopback fake')
+{
+  type Seen = { method: string; path: string; headers: IncomingMessage['headers']; body: Buffer }
+  const seen: Seen[] = []
+  const answers: ((s: Seen, res: ServerResponse) => void)[] = []
+  const server = createServer((req, res) => {
+    const chunks: Buffer[] = []
+    req.on('data', (c: Buffer) => chunks.push(c))
+    req.on('end', () => {
+      const s = { method: req.method ?? '', path: req.url ?? '', headers: req.headers, body: Buffer.concat(chunks) }
+      seen.push(s)
+      const answer = answers.shift()
+      if (answer) answer(s, res)
+      else res.writeHead(500).end('no answer queued')
+    })
+  })
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()))
+  const port = (server.address() as AddressInfo).port
+  const origin = `http://127.0.0.1:${port}`
+  const via: typeof fetch = (input, init) => fetch(String(input).replace(/^https?:\/\/[^/]+/, origin), init)
+  const json = (status: number, body: unknown, headers: Record<string, string> = {}) => (_s: Seen, res: ServerResponse) =>
+    res.writeHead(status, { 'content-type': 'application/json', ...headers }).end(typeof body === 'string' ? body : JSON.stringify(body))
+
+  /** A minimal multipart reader, on Buffers so the audio bytes are compared as bytes. */
+  function parts(s: Seen): { name: string; filename: string | null; type: string | null; data: Buffer }[] {
+    const m = /boundary=(?:"([^"]+)"|([^;]+))/.exec(String(s.headers['content-type']))
+    if (!m) return []
+    const delim = Buffer.from(`--${m[1] ?? m[2]}`)
+    const out: { name: string; filename: string | null; type: string | null; data: Buffer }[] = []
+    let at = s.body.indexOf(delim)
+    while (at >= 0) {
+      const start = at + delim.length
+      if (s.body.subarray(start, start + 2).toString() === '--') break
+      const next = s.body.indexOf(delim, start)
+      if (next < 0) break
+      const chunk = s.body.subarray(start + 2, next - 2) // CRLF after the delimiter, CRLF before the next
+      const split = chunk.indexOf('\r\n\r\n')
+      const head = chunk.subarray(0, split).toString('utf8')
+      out.push({
+        name: /name="([^"]*)"/.exec(head)?.[1] ?? '',
+        filename: /filename="([^"]*)"/.exec(head)?.[1] ?? null,
+        type: /content-type:\s*([^\r\n]+)/i.exec(head)?.[1]?.trim() ?? null,
+        data: chunk.subarray(split + 4)
+      })
+      at = next
+    }
+    return out
+  }
+
+  // A custom OpenAI-compatible server: multipart file + model, bytes intact, Bearer only when a key is set.
+  answers.push(json(200, { text: ' from custom ' }))
+  const custom = await transcribe(cfg('custom', { baseUrl: `${origin}/v1/`, key: KEY }), wav)
+  check('custom: the transcript comes back', custom, { ok: true, text: 'from custom' })
+  const cs = seen.at(-1)!
+  const cp = parts(cs)
+  check('custom: POST to /v1/audio/transcriptions', [cs.method, cs.path], ['POST', '/v1/audio/transcriptions'])
+  check('custom: multipart carries file and model (and json)', cp.map((p) => p.name), ['file', 'model', 'response_format'])
+  const filePart = cp.find((p) => p.name === 'file')
+  check('custom: the file part is dictation.wav, audio/wav', [filePart?.filename, filePart?.type], ['dictation.wav', 'audio/wav'])
+  ok('custom: the WAV arrives byte for byte', !!filePart && filePart.data.equals(Buffer.from(wav)), `${filePart?.data.length} vs ${wav.length}`)
+  check('custom: model and the key as Bearer', [cp.find((p) => p.name === 'model')?.data.toString(), cs.headers.authorization], ['whisper-1', `Bearer ${KEY}`])
+
+  // Deepgram: the raw body, the Token scheme, the query intact.
+  answers.push(json(200, { results: { channels: [{ alternatives: [{ transcript: 'from deepgram' }] }] } }))
+  check('deepgram: the transcript comes back', await transcribe(cfg('deepgram'), wav, { fetchImpl: via }), { ok: true, text: 'from deepgram' })
+  const ds = seen.at(-1)!
+  check('deepgram: /v1/listen with its query', ds.path, '/v1/listen?model=nova-3&smart_format=true&detect_language=true')
+  check('deepgram: a raw audio/wav body, not multipart, bytes intact', [ds.headers['content-type'], ds.body.equals(Buffer.from(wav))], ['audio/wav', true])
+  check('deepgram: Authorization: Token', ds.headers.authorization, `Token ${KEY}`)
+  answers.push(json(200, { results: { channels: [{ alternatives: [] }] } }))
+  check('deepgram with no alternatives is an empty transcript, not an error', await transcribe(cfg('deepgram'), wav, { fetchImpl: via }), { ok: true, text: '' })
+
+  // AssemblyAI: the part is `audio`, the auth is the bare key, the model a header.
+  answers.push(json(200, { text: 'from assembly', words: [] }))
+  check('assemblyai: the transcript comes back', await transcribe(cfg('assemblyai'), wav, { fetchImpl: via }), { ok: true, text: 'from assembly' })
+  const as = seen.at(-1)!
+  check('assemblyai: /v1/transcribe, bare key, X-AAI-Model', [as.path, as.headers.authorization, as.headers['x-aai-model']], ['/v1/transcribe', KEY, 'universal-3-5-pro'])
+  check('assemblyai: one part, `audio`, bytes intact', parts(as).map((p) => [p.name, p.type, p.data.equals(Buffer.from(wav))]), [['audio', 'audio/wav', true]])
+
+  // Gemini: JSON with the base64 audio; the key in x-goog-api-key and nowhere in the path.
+  answers.push(json(200, { candidates: [{ content: { parts: [{ text: 'from gemini\n' }] } }] }))
+  check('gemini: the transcript comes back', await transcribe(cfg('gemini'), wav, { fetchImpl: via }), { ok: true, text: 'from gemini' })
+  const gs = seen.at(-1)!
+  const gbody = JSON.parse(gs.body.toString('utf8')) as { contents: { parts: { inlineData?: { data: string } }[] }[] }
+  check('gemini: x-goog-api-key, JSON, key not in the path', [gs.headers['x-goog-api-key'], gs.headers['content-type'], gs.path.includes(KEY)], [KEY, 'application/json', false])
+  ok('gemini: the base64 decodes to the WAV', Buffer.from(gbody.contents[0].parts.find((p) => p.inlineData)?.inlineData?.data ?? '', 'base64').equals(Buffer.from(wav)))
+
+  // ElevenLabs and OpenAI: their field names and headers, through real FormData.
+  answers.push(json(200, { text: 'from eleven', language_code: 'en' }))
+  await transcribe(cfg('elevenlabs'), wav, { fetchImpl: via })
+  const es = seen.at(-1)!
+  check('elevenlabs: model_id, file, tag_audio_events; xi-api-key', [parts(es).map((p) => p.name), es.headers['xi-api-key'], es.headers.authorization ?? null], [['model_id', 'file', 'tag_audio_events'], KEY, null])
+
+  // Failures, in the words the strip shows.
+  answers.push(json(401, { error: { message: `Incorrect API key provided: ${KEY}` } }))
+  const refused = await transcribe(cfg('openai'), wav, { fetchImpl: via })
+  check(
+    'a 401 says the OpenAI key was refused, and prints no key',
+    refused.ok ? 'ok' : [/^The OpenAI key was refused \(401/.test(refused.error), refused.error.includes(KEY), refused.unset ?? null],
+    [true, false, null]
+  )
+  answers.push(json(429, GROQ_429_TPM, { 'retry-after': '12' }))
+  const limited = await transcribe(cfg('groq'), wav, { fetchImpl: via })
+  check('Groq’s real 429 (billing link and all) with Retry-After says when to try again', limited.ok ? 'ok' : limited.error, 'Groq is rate-limiting this key (429). Try again in 12 s.')
+  answers.push(json(429, GEMINI_429_PER_MINUTE))
+  const geminiLimited = await transcribe(cfg('gemini'), wav, { fetchImpl: via })
+  check('Gemini’s per-minute 429 through stt.ts: rate, the wait read from its body', geminiLimited.ok ? 'ok' : geminiLimited.error, 'Gemini is rate-limiting this key (429). Try again in 15 s.')
+  answers.push(json(429, OPENAI_429_INSUFFICIENT_QUOTA))
+  const broke = await testSpeechService(cfg('openai'), { fetchImpl: via })
+  check('Test: OpenAI’s insufficient_quota is out of credit, in red', [broke.ok, broke.tone, /^OpenAI refused the request: the account is out of credit/.test(broke.message)], [false, 'danger', true])
+  answers.push(() => {}) // a server that takes the request and never answers
+  const t0 = Date.now()
+  const hung = await transcribe(cfg('custom', { baseUrl: `${origin}/v1` }), wav, { timeoutMs: 300 })
+  check(
+    'a hang is a timeout, said as one, and says it is not the microphone',
+    hung.ok ? 'ok' : [/no answer within 0 s|no answer within/.test(hung.error), /not the microphone/.test(hung.error), Date.now() - t0 < 5000],
+    [true, true, true]
+  )
+  const before = seen.length
+  const nokey = await transcribe(cfg('openai', { key: '' }), wav, { fetchImpl: via })
+  check('no key: unset, and nothing was sent', [nokey.ok ? 'ok' : nokey.unset, seen.length - before], [true, 0])
+
+  // The Test button: a listing, never a transcription.
+  answers.push(json(200, { data: [{ id: 'whisper-1' }] }))
+  const good = await testSpeechService(cfg('custom', { baseUrl: `${origin}/v1`, key: KEY }))
+  const gt = seen.at(-1)!
+  check('Test: GET /v1/models with the key, no body', [gt.method, gt.path, gt.headers.authorization, gt.body.length], ['GET', '/v1/models', `Bearer ${KEY}`, 0])
+  check('and a 200 is a working key', [good.ok, good.tone], [true, 'success'])
+  answers.push(json(401, { error: 'bad key' }))
+  const badKey = await testSpeechService(cfg('openai'), { fetchImpl: via })
+  check('Test: a 401 is the key refused, in red', [badKey.ok, badKey.tone, /^The OpenAI key was refused/.test(badKey.message)], [false, 'danger', true])
+  check('Test hit the listing, not transcriptions', seen.at(-1)!.path, '/v1/models')
+  answers.push(json(404, 'Not Found'))
+  const noList = await testSpeechService(cfg('custom', { baseUrl: `${origin}/v1` }))
+  check('Test: a custom server with no /models answered, which is a warning, not a failure', [noList.ok, noList.tone], [true, 'warning'])
+  answers.push(json(401, { detail: { status: 'missing_permissions', message: 'The API key you used is missing the permission models_read' } }))
+  const scoped = await testSpeechService(cfg('elevenlabs'), { fetchImpl: via })
+  check('Test: an ElevenLabs key scoped to speech only is known, not refused', [scoped.ok, scoped.tone], [true, 'warning'])
+  answers.push((_s, res) => res.writeHead(405).end())
+  const probe = await testSpeechService(cfg('sidecar', { sttUrl: origin }))
+  check('Test: the sidecar is probed with OPTIONS; any answer is up', [probe.ok, seen.at(-1)!.method, seen.at(-1)!.path], [true, 'OPTIONS', '/transcribe'])
+  const n = seen.length
+  const emptyTest = await testSpeechService(cfg('deepgram', { key: '' }), { fetchImpl: via })
+  check('Test with no key sends nothing and says what is missing', [emptyTest.ok, seen.length - n, /No Deepgram key/.test(emptyTest.message)], [false, 0, true])
+
+  server.closeAllConnections()
+  await new Promise<void>((r) => server.close(() => r()))
+}
+
 console.log('\nthe wire: TerminalView and the phone really route through these')
 /*
  * Regexes over the shipped source, so they can be pointed at any revision:
@@ -419,6 +1011,31 @@ console.log('\nthe wire: TerminalView and the phone really route through these')
     'a superseded failure clears nothing and shows nothing',
     /\.catch\([\s\S]{0,200}if \(claimRef\.current !== mine\) return\s*\n\s*claimRef\.current = null/.test(micUi)
   )
+
+  /*
+   * The providers' wire (gotcha 31): a dispatcher nobody calls with the chosen
+   * provider is a green suite over dictation that still only reaches the
+   * sidecar. Always read from the working copy.
+   */
+  const mainSrc = readFileSync(new URL('../src/main/index.ts', import.meta.url), 'utf8')
+  const speechUi = readFileSync(new URL('../src/renderer/src/components/SpeechServiceSettings.tsx', import.meta.url), 'utf8')
+  check(
+    'desktop dictation and the phone both transcribe through sttConfigOf, read per call',
+    (mainSrc.match(/transcribe\(sttConfigOf\(getSettings\(\)\.voice\)/g) ?? []).length,
+    2
+  )
+  ok('no caller still hands stt.ts a bare address', !/transcribe\(getSettings\(\)\.voice\.sttUrl/.test(mainSrc))
+  ok('the pill and the phone’s status ask sttReadiness, never a paid probe', /sttReadiness\(sttConfigOf\(getSettings\(\)\.voice\)\)/.test(mainSrc))
+  ok(
+    'main’s Test claims before its first await and refuses a second (gotcha 20)',
+    /if \(voiceTesting\) return[^\n]*\n\s*voiceTesting = true\s*\n\s*try \{\s*\n\s*return await testSpeechService\(sttConfigFrom\(raw\)\)/.test(mainSrc)
+  )
+  ok(
+    'Settings’ Test claims before the IPC call and sends the drafts on screen',
+    /if \(testingRef\.current\) return\s*\n\s*testingRef\.current = true[\s\S]{0,900}\.voiceTest\(cfg\)/.test(speechUi) && /key: keyField\.draft/.test(speechUi)
+  )
+  ok('the honest line is audioDestination’s, from the saved voice block', /audioDestination\(sttConfigOf\(voice\)\)/.test(speechUi))
+  ok('Settings → Voice renders the speech service', /<SpeechServiceSettings voice=\{voice\} patchVoice=\{patchVoice\}/.test(settingsUi))
 }
 
 console.log(failures ? `\n${failures} FAILED` : '\nall pass')

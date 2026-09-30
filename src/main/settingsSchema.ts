@@ -102,7 +102,9 @@ export const DEFAULT_SETTINGS: Settings = {
     // hydrateSettings rewrites it from `voice` every time. See types.ts.
     sttUrl: VOICE_DEFAULTS.sttUrl
   },
-  voice: { ...VOICE_DEFAULTS },
+  // Through the clamp rather than a spread: `keys` is an object, and a spread
+  // would share VOICE_DEFAULTS' own with every settings object.
+  voice: clampVoice(undefined),
   activeProfile: null,
   profiles: [],
   hosts: [],

@@ -204,8 +204,9 @@ export interface RemoteDeps {
   defaults: () => { permissionMode: PermissionMode; model: string; effort: EffortLevel; cli: CodingCliId }
   sttStatus: () => Promise<'ready' | 'down' | 'off'>
   /**
-   * A dictated clip to text, through `stt.ts` with the speech server read from
-   * settings on THIS call (`voice.sttUrl`).
+   * A dictated clip to text, through `stt.ts` with the provider, key and
+   * address read from settings on THIS call (`sttConfigOf(voice)`). The key
+   * stays in main: the phone posts audio, never credentials.
    *
    * A dep rather than an address in `RemoteConfig`, because the config is
    * captured when the server starts and the speech server is not a field the
@@ -1264,7 +1265,9 @@ export class RemoteServer {
 
       /*
        * Dictation. The phone records, converts to 16-bit PCM WAV in the browser
-       * and posts the bytes here; we forward them to the speech sidecar. The
+       * and posts the bytes here; we forward them to the chosen speech service
+       * — the sidecar, a custom server, or a hosted provider with the key only
+       * main holds. The
        * conversion has to happen on the phone because the sidecar validates the
        * RIFF header and rejects anything that is not 16-bit PCM WAV, and doing
        * it here would mean shipping ffmpeg.

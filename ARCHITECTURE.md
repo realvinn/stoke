@@ -233,7 +233,8 @@ account, no server.
 
 **Where keys live.** Through 0.9.97 every key Stoke held sat in plain text in
 `<userData>/settings.json`: `providers.{anthropicApiKey, openrouterApiKey, customAuthToken}`,
-`agents.endpoints[*].apiKey`, and `remote.token` — the phone bearer, which grants a shell. They
+`agents.endpoints[*].apiKey`, and `remote.token` — the phone bearer, which grants a shell (and
+now `voice.keys.*`, one speech-to-text key per provider). They
 now live in `<userData>/secrets.json` (mode 0600) as `{ v: 1, backend, items: { <settings path>:
 base64(safeStorage ciphertext) } }`, and settings.json keeps an empty string in each place.
 `src/shared/secrets.ts` holds `SECRET_PATHS`, the one registry of secret paths (`*` matches one
@@ -350,11 +351,14 @@ attaches to a PTY, replaying its scrollback first.
   127.0.0.1. `remote:openOnPhone` is the one-press path: it picks the tailnet when Tailscale is
   up and the LAN otherwise, mints a key if there is none, starts, and pushes `settingsChanged`.
   A running server is restarted from the `settings:set` handler when a bound field changes.
-- **Dictation is proxied, and its address is read per clip.** `/api/transcribe` hands the
-  phone's WAV to `RemoteDeps.transcribe`, which calls `stt.ts` with `voice.sttUrl` (Settings →
-  Voice) as it stands now. The server's own config, captured at start, holds nothing about
-  speech: it used to hold the address, and since the speech server is not a bound field the
-  phone kept the old one until Phone access was turned off and on.
+- **Dictation is proxied, and its provider is read per clip.** `/api/transcribe` hands the
+  phone's WAV to `RemoteDeps.transcribe`, which calls `stt.ts` with `sttConfigOf(voice)`
+  (Settings → Voice) as it stands now — the sidecar, a custom server, or a hosted provider
+  whose key only main holds; the phone never sees it. The server's own config, captured at
+  start, holds nothing about speech: it used to hold the address, and since the speech server
+  is not a bound field the phone kept the old one until Phone access was turned off and on.
+  `/api/host`'s `stt` is `sttReadiness`: a server is probed, a hosted provider is `ready` with a
+  key and `off` without — never a paid call.
 - **The phone reflows the desktop terminal by default, and puts it back.** `Fit` is on unless
   the user turned it off, so opening a session from a phone fits the PTY to the phone's screen
   and the desktop's xterm follows. The server remembers the desktop's own size the first time a
@@ -745,10 +749,20 @@ npm run verify:voice          # who owns a held Space: Claude Code's /voice or S
                               # taken in every phase); the level line's dBFS maths; the
                               # microphone pick (exact id, then label, then the default
                               # with a notice) and the virtual-cable names; what a refused
-                              # microphone is called; and the wire from TerminalView, the
-                              # phone and Settings to those rules, with the Test meter's
-                              # per-press claim (gotcha 20) — `--wire <files>` runs it
-                              # against another revision (gotcha 79)
+                              # microphone is called; the speech providers — each one's
+                              # URL, auth header and body (`buildSttRequest`), no key in
+                              # any URL, its transcript path (`readTranscript`), the size
+                              # and length refusals, the failure wording (key refused,
+                              # credit, daily quota, rate, too large; keys redacted), a
+                              # 429 told apart by its structured code and never its prose,
+                              # on real Groq, OpenAI and Gemini bodies that link billing
+                              # while only throttling, the free key checks — and the
+                              # shipped `stt.ts` against a fake on loopback port 0
+                              # (multipart bytes intact, Deepgram's raw body, 401, real
+                              # 429s, a hang); and the wire from TerminalView, the
+                              # phone, main and Settings to those rules, with the Test
+                              # meter's per-press claim (gotcha 20) — `--wire <files>`
+                              # runs it against another revision (gotcha 79)
 npm run verify:campfire       # the installer's campfire: the locked alphabet that lets one
                               # copy of the art live in a POSIX string and a PowerShell
                               # here-string, a hearth that never moves, the stage boundaries,
@@ -1085,11 +1099,21 @@ src/main/         Electron main process
                     does, under the cwd's own legacy copy). Serialised
                     (gotcha 20), under a deadline, never throws; deletes only its own names,
                     link by link, never recursively. Not SSH, not headless (gotchas 19, 15)
-  stt.ts            the one place Stoke talks to the speech sidecar. Both the desktop and
-                    the phone route through it, because "only main may reach it" is the
-                    sidecar's whole authentication story. Both callers read `voice.sttUrl`
-                    per call (`CH.transcribe`, `RemoteDeps.transcribe`), and `unset` is what
-                    turns "no server set" into the phone's 503 rather than a 502
+  stt.ts            the one place Stoke sends a recording to be transcribed — the sidecar,
+                    a custom OpenAI-compatible server, or a hosted provider. Both the
+                    desktop and the phone route through it, because "only main may reach
+                    it" is the sidecar's whole authentication story and a provider's key
+                    must never leave main. It sends what `buildSttRequest`
+                    (shared/speechProviders.ts) describes, with global fetch/FormData/Blob
+                    (no SDK), and words each failure (key refused, out of credit,
+                    daily quota used, rate-limited, too large; "not the microphone" when
+                    nothing answered). A 429 is money only by its structured code
+                    (`sttErrorCodes`): a throttled free tier's own sentence links the
+                    billing page, so a word match called it out of credit.
+                    Both callers read `sttConfigOf(voice)` per call (`CH.transcribe`,
+                    `RemoteDeps.transcribe`); `unset` (no address, no key) is what turns
+                    "not set up" into the phone's 503 rather than a 502.
+                    `testSpeechService` is Settings' Test: a model listing, never billed
   audio/            reads the Windows default capture device, to warn about virtual
                     cables — by `isVirtualCapture` (shared/micDevice.ts), the same rule the
                     Voice picker applies to a device picked for Stoke's dictation
@@ -1165,6 +1189,12 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     "More agents" folded. Claude Code's page holds its four launch defaults
                     (moved from Sessions, still `settings.defaults`, gotcha 57) and the way to
                     Providers and Claude Code's own config — never an endpoint
+  src/components/SpeechServiceSettings.tsx  Settings → Voice's speech service: the provider
+                    picker, the sidecar's address or a custom server's base URL, the model
+                    (a list plus "Another model…", free text for custom), a key per provider
+                    with Show, the Test button (`CH.voiceTest`, claimed before its await,
+                    sends the drafts on screen) and the one honest line of where audio goes
+                    (`audioDestination`). The pill is `CH.sttStatus` (`sttReadiness`)
   src/components/MicPicker.tsx  Settings → Voice's microphone for Stoke's dictation (System
                     default + the audio inputs, refreshed on devicechange, "Show device names"
                     when the browser withholds them), a Test meter that records nothing, and
@@ -1292,11 +1322,22 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     id, else the same label under a re-minted id, else the default with a
                     notice), the pseudo-device filter, and `isVirtualCapture`, moved here
                     from main so a PICKED cable warns too. Claude's /voice has no device
+  speechProviders.ts  where Stoke's dictation can send a clip: `STT_PROVIDERS` (sidecar,
+                    OpenAI, Groq, Deepgram, ElevenLabs, Mistral, AssemblyAI, Gemini, custom
+                    OpenAI-compatible) with each one's URL, default model and list, auth
+                    scheme, body kind (raw WAV, multipart, base64 JSON), transcript path
+                    and byte/second caps; `buildSttRequest` (a declarative request, key in
+                    a header only), `readTranscript`, `keyCheckRequest` (a free listing),
+                    `sttReadiness`, `describeSttFailure` (key-redacted) and
+                    `audioDestination`. Pure; `stt.ts` sends what it builds, verify:voice
+                    holds the matrix
   voiceSettings.ts  the `voice` settings block (Settings → Voice): VOICE_DEFAULTS,
-                    DEFAULT_STT_URL, the hold threshold (`holdMs`, 150-800) and the chosen
+                    DEFAULT_STT_URL, the speech provider (`provider`, `model`, `baseUrl`,
+                    `keys` — one per provider, sealed as `voice.keys.*` in SECRET_PATHS),
+                    the hold threshold (`holdMs`, 150-800) and the chosen
                     microphone (`micDeviceId` + `micLabel`), and `clampVoice`, which
-                    rebuilds it from named keys and migrates the speech server from the
-                    old `remote.sttUrl`. hydrate keeps
+                    rebuilds it from named keys (an unknown provider is the sidecar) and
+                    migrates the speech server from the old `remote.sttUrl`. hydrate keeps
                     `remote.sttUrl` as a write-only mirror for one release, for older builds.
                     A new voice field needs its default AND a clampVoice line in one change
   drop.ts           what a file dropped on the terminal types: the per-platform quoting,

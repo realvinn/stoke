@@ -309,16 +309,25 @@ export const CH = {
   micPrivacy: 'audio:micPrivacy',
   /**
    * A dictated clip, in. The renderer records and encodes the WAV but never
-   * reaches the speech server itself — the sidecar has no auth, so only main
-   * may talk to it. Same rule the phone's `/api/transcribe` route follows.
+   * reaches the speech service itself — the sidecar has no auth, and a hosted
+   * provider's key is sent only by main. Same rule the phone's
+   * `/api/transcribe` route follows.
    */
   transcribe: 'audio:transcribe',
   /**
-   * Whether the speech server at `voice.sttUrl` answers: Settings → Voice's
-   * pill. Apart from `voiceState` because it is a network probe, and the
-   * terminal asks `voiceState` on every ⇧⌘D.
+   * Whether dictation is ready: Settings → Voice's pill. The sidecar or a
+   * custom server is probed; a hosted provider is ready when it has a key —
+   * never a paid call (`sttReadiness`). Apart from `voiceState` because it can
+   * be a network probe, and the terminal asks `voiceState` on every ⇧⌘D.
    */
   sttStatus: 'audio:sttStatus',
+  /**
+   * Settings → Voice's Test button: prove the configured provider and key
+   * with a request no plan bills (a model listing; the sidecar's probe). Takes
+   * the panel's drafts, so it tests what is on screen. One at a time — main
+   * claims it before its first await (gotcha 20).
+   */
+  voiceTest: 'audio:voiceTest',
 
   // wallpaper
   /** Pick an image, copy it under userData, and set `settings.wallpaper.path`. */

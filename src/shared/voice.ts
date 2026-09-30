@@ -3,15 +3,20 @@
  *
  * Push-to-talk rather than continuous: the Web Speech API is the obvious
  * alternative and is wrong here twice over - Chrome sends the audio to Google,
- * and on iOS it breaks outright once the site is added to the home screen.
- * Recording locally and handing the bytes to Stoke keeps the audio on hardware
- * the user owns, and Stoke forwards it to the speech sidecar.
+ * whoever the user would have chosen, and on iOS it breaks outright once the
+ * site is added to the home screen. Recording locally and handing the bytes to
+ * Stoke leaves the choice of where audio goes with the user: Stoke's main
+ * process forwards it to the speech service picked in Settings → Voice - the
+ * sidecar or an OpenAI-compatible server they run, which keeps it on hardware
+ * they own, or a hosted provider with their own key, which does not, and that
+ * panel says so (`audioDestination`, speechProviders.ts).
  *
  * The conversion to 16-bit PCM WAV happens here, in the browser, because the
- * sidecar validates the RIFF header and rejects anything else. Doing it on the
- * client also sidesteps the container split - Safari records mp4/aac, Chrome
- * records webm/opus - since `decodeAudioData` reads both and we re-encode from
- * raw samples either way.
+ * sidecar validates the RIFF header and rejects anything else - and every
+ * hosted provider takes that same WAV, so nothing is re-encoded per provider.
+ * Doing it on the client also sidesteps the container split - Safari records
+ * mp4/aac, Chrome records webm/opus - since `decodeAudioData` reads both and we
+ * re-encode from raw samples either way.
  *
  * It lives in `src/shared` rather than beside either caller because the two
  * differ only in how the finished WAV *travels*: the phone POSTs it to

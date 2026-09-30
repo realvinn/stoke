@@ -518,6 +518,8 @@ rule file named on the group line.
   gone once the evaluation returns, and a deferred call throws into Electron's modal error `NSAlert`.
 - **119.** Commit a driven settings field with its Enter path, never a synthetic `blur()`: with the
   window behind another app (`document.hasFocus()` false) the blur commits nothing.
+- **128.** Give a sandbox that dictates in a Claude tab `CLAUDE_CONFIG_DIR=<scratch>` (worktree agents
+  may not set `HOME`): the owner's `/voice` is on, so `spaceOwner` would hand Space to Claude Code.
 - **Nested backticks inside a template literal end it early**, as a SyntaxError that points at the
   wrong place. Build anything injected into a page from an array of lines.
 - **A `.settings.json` missing from `$TMPDIR/stoke/statusline/` has two causes, both found and

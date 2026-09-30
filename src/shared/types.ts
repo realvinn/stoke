@@ -9,6 +9,7 @@ import type { AgentAccount } from './accounts.ts'
 import type { FullScreenReveal, RemoteReachPreference, ZoomTarget } from './ui.ts'
 import type { BrowserProfile, ImportOffer } from './browserProfiles.ts'
 import type { ChatIndexMode, ChatIndexOptions } from './chatIndex.ts'
+import type { SttProviderId } from './speechProviders.ts'
 
 /* ------------------------------------------------------------------ launch */
 
@@ -1016,6 +1017,26 @@ export interface VoiceSettings {
    */
   sttUrl: string
   /**
+   * Who transcribes: `sidecar` (the server at `sttUrl`, today's and the
+   * default), a hosted API with the key in `keys`, or `custom` — any
+   * OpenAI-compatible server at `baseUrl`. The wire format of each is
+   * `STT_PROVIDERS` (shared/speechProviders.ts); only main sends it.
+   */
+  provider: SttProviderId
+  /** The provider's model id, or `''` for its default (`STT_PROVIDERS[p].defaultModel`). */
+  model: string
+  /**
+   * A custom server's base URL, ending in `/v1` (a bare origin gains it).
+   * `''` means not set up. Only `custom` reads it; the sidecar has `sttUrl`.
+   */
+  baseUrl: string
+  /**
+   * One key per provider, so switching away and back keeps each. Secrets:
+   * `voice.keys.*` is in SECRET_PATHS, so they are sealed in secrets.json and
+   * settings.json holds `''`. Sent only in a header, by main (`stt.ts`).
+   */
+  keys: Partial<Record<SttProviderId, string>>
+  /**
    * How long Space must stay down, in ms, before Stoke's dictation opens the
    * microphone; a shorter press types an ordinary space (`spaceHold`,
    * voiceRoute.ts). 250 by default, clamped to 150–800 — below 150 a quick tap
@@ -1168,7 +1189,7 @@ export interface Settings {
      */
     sttUrl: string
   }
-  /** Stoke's dictation: where speech is transcribed. See VoiceSettings. */
+  /** Stoke's dictation: who transcribes, with which key, and the microphone. See VoiceSettings. */
   voice: VoiceSettings
   /**
    * Which profile's projects to show, by `Project.group`. Null shows all.
