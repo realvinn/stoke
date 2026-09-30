@@ -4269,6 +4269,17 @@ summary.agent-picker-section:hover {
   max-width: 24rem;
 }
 
+/* The gear that says a palette row is a setting, not a folder. */
+.palette-item-kind {
+  display: grid;
+  place-items: center;
+}
+
+.palette-item-kind svg {
+  width: 0.875rem;
+  height: 0.875rem;
+}
+
 /*
  * An agent's accounts (shared/accounts.ts): Default, then one row each — the
  * radio says which one new sessions start on, the dot is its colour.

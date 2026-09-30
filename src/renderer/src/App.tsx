@@ -72,7 +72,7 @@ import { ChatViewer, type ChatViewTarget } from './components/ChatViewer'
 import { PausedSession } from './components/PausedSession'
 import { Resizer } from './components/Resizer'
 import { SettingsSheet, type SettingsRowTarget } from './components/SettingsSheet'
-import { ancestorsOf, resolveSettingsTarget, type SettingsTarget } from '@shared/settingsIndex'
+import { ancestorsOf, navAgents, resolveSettingsTarget, type SettingsTarget } from '@shared/settingsIndex'
 import { Sidebar } from './components/Sidebar'
 import { StatusBar } from './components/StatusBar'
 import { TerminalView } from './components/TerminalView'
@@ -5783,9 +5783,14 @@ export function App(): React.JSX.Element {
       {paletteOpen && (
         <CommandPalette
           projects={projects}
+          settingsAgents={navAgents(installedAgentIds)}
           onPick={(p) => {
             setPaletteOpen(false)
             selectInNewTab(p.path)
+          }}
+          onPickSetting={(hit) => {
+            setPaletteOpen(false)
+            openSettings(hit.entry.loc, hit.entry.row ? { id: hit.entry.row, fallback: hit.entry.fallback } : null)
           }}
           onClose={() => setPaletteOpen(false)}
         />
