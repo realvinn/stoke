@@ -1,0 +1,23 @@
+# BuildKit reads <Dockerfile>.dockerignore beside the Dockerfile. The context is
+# the repo root; the build needs package-lock.json, src/shared, src/main/hub and
+# hub/ — and must NEVER see hub/edge-secret (compose.yaml's secret file), which
+# `COPY hub` would otherwise put into the builder's layers.
+hub/edge-secret
+hub/dist
+hub/*.db
+hub/*.db-wal
+hub/*.db-shm
+.git
+.claude
+node_modules
+out
+dist
+release
+build
+docs
+install
+scripts
+worker
+src/renderer
+src/remote
+src/preload

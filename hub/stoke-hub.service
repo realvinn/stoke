@@ -1,0 +1,66 @@
+# /etc/systemd/system/stoke-hub.service — Stoke Hub on the NUC (hub/README.md).
+#
+# Runs the one-file bundle (npm run build:hub -> /opt/stoke-hub/stoke-hub.mjs)
+# as its own user. systemd makes /var/lib/stoke-hub (StateDirectory, 0700) and
+# hands its path to the hub as STATE_DIRECTORY; the edge secret arrives as a
+# credential file (LoadCredential), never on the command line or in the
+# environment of the unit.
+#
+# NOT loaded on any machine yet: written against systemd's documentation.
+
+[Unit]
+Description=Stoke Hub (sync and remote for Stoke)
+Documentation=https://github.com/realvinn/stoke/blob/main/hub/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=stoke-hub
+Group=stoke-hub
+StateDirectory=stoke-hub
+StateDirectoryMode=0700
+UMask=0077
+
+# The edge listener cloudflared forwards to. Loopback only: the secret check is
+# what guards it, and nothing but cloudflared on this machine should reach it.
+Environment=STOKE_HUB_LISTEN=127.0.0.1:8787
+# The optional LAN/tailnet listener (no secret). Uncomment to use the hub from
+# home before the tunnel exists, or through `tailscale serve`.
+#Environment=STOKE_HUB_LAN=0.0.0.0:8788
+EnvironmentFile=-/etc/stoke-hub/hub.env
+LoadCredential=hub-edge-secret:/etc/stoke-hub/edge-secret
+
+ExecStart=/usr/bin/node --disable-warning=ExperimentalWarning /opt/stoke-hub/stoke-hub.mjs serve
+# SIGTERM is a graceful stop: requests in flight finish (up to 10 s), every
+# socket is told bye, the database is checkpointed and closed.
+KillSignal=SIGTERM
+TimeoutStopSec=20
+Restart=on-failure
+RestartSec=5
+
+# Hardening. MemoryDenyWriteExecute stays off: V8's JIT needs W+X pages.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+# scrypt is 128 MiB a run, two at a time; this leaves room and caps a runaway.
+MemoryMax=1G
+
+[Install]
+WantedBy=multi-user.target

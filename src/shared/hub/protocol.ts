@@ -288,6 +288,15 @@ export interface SignupResponse {
   role: 'owner' | 'member'
 }
 
+/**
+ * `POST /v1/auth/login`. A device the account's chain already lists as active
+ * SHOULD sign it like any request (the four `x-stoke-*` headers of spec §3.4,
+ * no bearer, by the key the chain holds for `device.id`): the hub then judges
+ * the attempt by that device's own lockout (`DEVICE_THROTTLE`), which only
+ * its key can trip, instead of the email's, which anyone who knows the address
+ * can. A proof that does not verify — or a device the chain does not list — is
+ * simply not a proof: the email's lockout applies, and nothing says why.
+ */
 export interface LoginRequest {
   email: string
   password: string
@@ -324,7 +333,11 @@ export interface ChainResponse {
   entries: ChainEntry[]
 }
 
-/** A vault key wrapped to one device (crypto.ts `wrapVaultKey`). */
+/**
+ * A vault key wrapped to one device (crypto.ts `wrapVaultKey`). Anyone can
+ * make one for a public box key, so it is trusted only once the key inside
+ * matches the epoch's commitment in the verified chain (`ChainEntry.vk`).
+ */
 export interface VaultWrap {
   v: 1
   /** b64url ephemeral X25519 public key. */
@@ -347,8 +360,14 @@ export interface RecoveryWrap {
  * - add: `wraps` for the current epoch = the added device.
  * - revoke/rotate: `wraps` for the new epoch = every device active after it
  *   (`wrapsRequiredAfter`), plus `recovery`.
+ * A wrap is stored once and never replaced: one for a device (or the Kit)
+ * that already holds one at that epoch must be byte-identical, else 409
+ * `conflict`. Only a device active before or after the entries — by id AND
+ * the key it signed in with — may supply any (else 403 `forbidden`); a
+ * pending session may post bare entries only.
  * Republishing after a restore (spec §7.3) is the same call with entries the
- * hub no longer has and no wraps.
+ * hub no longer has, plus — from a device those entries leave active — the
+ * wraps the restored hub lacks for any epoch they open.
  */
 export interface ChainAppendRequest {
   entries: ChainEntry[]

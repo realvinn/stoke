@@ -52,8 +52,8 @@ machine.
   — a route on a hostname runs *before* that hostname's Custom Domain Worker (Cloudflare docs,
   §2.2) — and forwards HTTP and WebSocket upgrades to `https://hub-origin.vinn.dev`, a Cloudflare
   Tunnel hostname served by `cloudflared` on the NUC, adding a shared secret header the hub
-  requires. The hub URL is a setting (`hub.url`), so `http://nuc.local:8787/hub` or a Tailscale
-  address works before any of that exists.
+  requires. The hub URL is a setting (`hub.url`), so `http://nuc.local:8788/hub` (the LAN
+  listener, §2.3) or a Tailscale address works before any of that exists.
 - **(b) Accounts.** Email + password, scrypt `N=2^17, r=8, p=1` on the hub; the first account
   comes from a one-time invite the hub prints on first start; further accounts from invites the
   owner mints. Sessions are opaque bearer tokens bound to one device key, and every
@@ -94,7 +94,7 @@ machine.
                                                                                                  │  node:sqlite)│
    everything else on stoke.vinn.dev ─► Custom Domain Worker "stoke-install" (unchanged)        └──────────────┘
                                                                                                    ▲
- Stoke on the LAN / tailnet ── http://nuc.local:8787/hub  or  https://nuc.<tailnet>.ts.net/hub ───┘ (LAN listener,
+ Stoke on the LAN / tailnet ── http://nuc.local:8788/hub  or  https://nuc.<tailnet>.ts.net/hub ───┘ (LAN listener,
                                                                                                      no edge secret)
 ```
 
@@ -109,7 +109,9 @@ machine.
   Custom Domain and a route exist for the same hostname, the route runs first, and "Any Workers
   running on routes before your Custom Domain can optionally call the Worker registered on your
   Custom Domain by issuing `fetch(request)`." So `stoke.vinn.dev/hub/*` reaches the edge Worker and
-  every other path reaches the installer, with no change to `worker/route.ts` or `verify:install`.
+  every other path reaches the installer, with no change to `worker/route.ts` or
+  `worker/index.ts`. `verify:install` holds the split: the two wrangler configs (names, the one
+  route, never a custom domain), who answers which URL, and the edge Worker's forwarding.
 - **No new certificate or DNS record for the public name.** A route rides on the existing proxied
   `stoke.vinn.dev` record, so gotcha 77's ~30-minute NXDOMAIN gap does not apply to it. It DOES
   apply to `hub-origin.vinn.dev`, the tunnel hostname `cloudflared tunnel route dns` creates: if it
@@ -147,6 +149,16 @@ Cited, not measured (nothing was deployed):
 
 ### 2.3 Worker → origin authentication
 
+- **Two listeners, two ports.** The edge listener is `127.0.0.1:8787` and the optional LAN
+  listener defaults to port **8788**. An earlier draft of this document gave the LAN URL as
+  `:8787`, which works only if the LAN listener binds the NUC's own LAN address, not
+  `0.0.0.0`: beside a listening `127.0.0.1:8787`, a wildcard bind on the same port is accepted
+  on macOS (measured with node: it binds) but, as far as Linux's `SO_REUSEADDR` rules go,
+  refused there with `EADDRINUSE` (UNVERIFIED: no Linux machine here). Either way it is a trap
+  for the first person to follow §7.4, so the ports are simply different. The LAN listener
+  also refuses any request carrying Cloudflare's headers (`cf-ray`, `cf-connecting-ip`,
+  `cf-worker`) or Tailscale Funnel's, and either edge header: those mean a tunnel was pointed at
+  the port that asks for no secret, i.e. the public internet reaching it.
 - **The hub requires `x-stoke-hub-edge: <secret>` on its edge listener** (loopback, which
   `cloudflared` targets), compared in constant time. The edge Worker deletes any client-supplied
   copy of that header, and of `x-stoke-client-ip`, before adding its own; the secret is a Worker
@@ -231,10 +243,22 @@ Two counters, both kept by the hub, both judged by `throttleVerdict`/`recordLogi
 | Key | Rule | Then |
 |---|---|---|
 | Normalised email (known or not) | 5 failures inside 15 min | locked 15 min, doubling per repeat lockout, capped at 24 h; a success clears it |
+| An active device's PROVEN sign-in (below), instead of the email | the same | the same, on `device:<account>:<id>`; a proven success clears only this |
 | Client IP (`x-stoke-client-ip` from the edge, else the socket's) | 30 failures inside 15 min | refused 15 min |
 
 Refusals are HTTP 429 `{error: 'locked' | 'rate-limited', retryAfterMs}`. Invite redemption and
 signup share the IP counter.
+
+**The owner's own devices are not locked out by a stranger (found in review, 2026-10-01).** The
+email lock is judged before the password and refuses the right one too, so anyone who knows the
+address could send five guesses every quarter-hour and keep every device from signing in again,
+the lock doubling to a day; per-IP counters do not stop a distributed sender. So a device the
+account's chain already lists signs its sign-in like any request (§3.4's four headers, no bearer,
+by the key the chain holds for its id): verified, within the skew and with a fresh nonce, the
+attempt is judged by that device's own counter, which only its key can trip, and a success there
+leaves the email locked for everyone else. Anything short of a proof is simply the email's case.
+What remains: a NEW device cannot sign in while the email is locked (`stoke-hub reset-password`
+clears it; an attacker can lock it again).
 
 ### 3.4 Every request after login is device-signed
 
@@ -263,10 +287,14 @@ Tables the server agent creates (names are a suggestion; the rows are the contra
 used_by)`, `sessions(token_hash, account_id, device_id, sign_pub, created_at, seen_at, expires_at)`,
 `chain(account_id, seq, entry_json, link_hash)`, `wraps(account_id, epoch, device_id, wrap_json)`,
 `recovery(account_id, epoch, wrap_json)`, `items(account_id, id, version, epoch, envelope_json,
-seq)`, `pairs(id, account_id, state, …, expires_at)`, `relays(id, account_id, guest, host,
-created_at)`, `login_failures(key, count, first_at, locked_until, lockouts)`, `nonces(device_id,
-nonce, seen_at)`. Every content row is keyed by `account_id`; nothing is shared between accounts,
-so a public multi-tenant service later is a deployment change, not a data-model change.
+seq)`, `pairs(id, account_id, state, …, expires_at)`, `login_failures(key, count, first_at,
+locked_until, lockouts)`, `nonces(device_id, nonce, seen_at)`. Every content row is keyed by
+`account_id`; nothing is shared between accounts, so a public multi-tenant service later is a
+deployment change, not a data-model change. **Relays are not a table** (an earlier draft listed
+`relays(id, account_id, guest, host, created_at)`): a relay is two live sockets, meaningless
+after a restart, so the server (`hub/sockets.ts`) holds them in memory and a guest simply asks
+for a new one. Login-failure keys are `email:<sha256 of the normalised email>` and
+`ip:<address>`, so the table never lists what strangers typed.
 
 ---
 
@@ -301,9 +329,21 @@ Account:   VK_e     32 random bytes, epoch e = 1, 2, …   (never on the hub unw
            RS       Recovery Secret, 16 random bytes      (the Recovery Kit only)
 Derived:   itemKey_e = HKDF(VK_e, info = item-key {account, epoch})       AES-256-GCM key
            idKey_e   = HKDF(VK_e, info = item-id  {account, epoch})       HMAC key for item ids
+           vk_e      = HKDF(VK_e, info = vk-commit {account, epoch})      public: signed into the chain
            RK        = HKDF(RS, salt = account, info = recovery-wrap)     wraps VK_e
            rsign     = Ed25519 from seed HKDF(RS, salt = account, info = recovery-sign)
 ```
+
+**Why `vk_e` exists (found in review, 2026-10-01, before any hub held data).** A wrap of `VK_e` to a
+device is an ephemeral X25519 box: it proves only that *somebody* sealed a key to that device's
+PUBLIC box key — which the hub, the Cloudflare edge or anyone on a plain-http LAN path can do, with
+a key of their own choosing. Without something to compare against, a device joining (§4.4 step 5)
+or fetching a new epoch after a revoke (§4.6) would take a planted key and seal its API and SSH keys
+under it, and the planter could forge items it would apply. So the entry that OPENS each epoch
+(genesis, revoke, rotate) carries `vk_e`, covered by its signature, and `unwrapVaultKey` /
+`openRecoveryWrap` take the verified chain's `vkCommits[e]` and refuse any other key. The hub cannot
+sign a chain entry, and `vk_e` reveals nothing of `VK_e` or of the keys derived from it under other
+labels.
 
 **Where the private keys live:** `<userData>/hub-device.json`, mode 0600, each private key sealed
 by `safeStorage` with the path-bound prefix `sealedText` already uses. A run whose key store
@@ -320,13 +360,14 @@ An append-only chain, one row per entry, verified in full by every client (`veri
 src/shared/hub/chain.ts, with the signature and digest functions injected):
 
 ```
-ChainEntry = { v: 1, account, seq, prev, kind, epoch, ts, signer, device?, target?, recovery?, sig }
+ChainEntry = { v: 1, account, seq, prev, kind, epoch, ts, signer, device?, target?, recovery?, vk?, sig }
   kind      'genesis' | 'add' | 'revoke' | 'rotate'
   prev      '' for genesis, else chainLinkHash(entry[seq-1])   (b64url SHA-256, sig included)
   signer    a device id active at that point, or 'recovery'
   device    { id, label, platform, sign, box, caps, addedAt }   (genesis, add)
   target    the revoked device id                               (revoke)
   recovery  b64url Ed25519 public key of rsign                  (genesis; rotate may replace it)
+  vk        b64url vk_e, the commitment to the new epoch's key  (genesis, revoke, rotate; never add)
   sig       Ed25519 over chainSigningText(entry without sig)
 ```
 
@@ -361,7 +402,8 @@ hub exactly one guess at a 1-in-a-million code:
    `add` entry for N and uploads `wrap(VK_e → box_N)` in one `POST /v1/chain`; the hub marks the
    pair `approved`.
 5. N fetches the chain, verifies it, checks the `add` names exactly its own keys and is signed by
-   the E whose keys entered the code, pins the head, unwraps VK_e, and syncs.
+   the E whose keys entered the code, pins the head, unwraps VK_e — refusing it unless it matches
+   the chain's `vkCommits[e]` (§4.2) — and syncs.
 
 Why it holds: N commits to its keys and nonce before anyone learns `nE`, and `nE` arrives before N
 reveals, so a hub that substitutes keys toward either side must fix its own values before the last
@@ -377,16 +419,16 @@ characters + one mod-37 check symbol, in groups of four (`formatRecoverySecret`)
 type back one group before continuing. The hub stores `recoveryWrap = AES-GCM(RK, VK_e)` per epoch
 and the chain holds `rsign`'s public key. **Recovery path** (no device left): sign in as a pending
 device, type the Kit (`parseRecoverySecret` tolerates case, spaces and look-alikes, and the check
-symbol catches a typo before any crypto runs), fetch the recovery wrap, unwrap `VK_e`, sign an
-`add` for yourself with `signer: 'recovery'`, and then **rotate** (a Kit that has been typed may
-have been seen). Lose every device and the Kit and the data is gone; the panel says so in those
+symbol catches a typo before any crypto runs), verify the chain, fetch the recovery wrap, unwrap
+`VK_e` against the chain's `vkCommits[e]`, sign an `add` for yourself with `signer: 'recovery'`,
+and then **rotate** (a Kit that has been typed may have been seen). Lose every device and the Kit and the data is gone; the panel says so in those
 words, as the old design's §6.6 did.
 
 ### 4.6 Revocation rotates the vault key
 
-From any active device (or the recovery key): make `VK_{e+1}`, wrap it to every remaining active
-device and re-wrap the recovery copy, then post the `revoke` entry **with** those wraps in one
-request — the hub applies both or neither and deletes the revoked device's sessions at once. The
+From any active device (or the recovery key): make `VK_{e+1}`, commit to it in the entry (`vk`),
+wrap it to every remaining active device and re-wrap the recovery copy, then post the `revoke`
+entry **with** those wraps in one request — the hub applies both or neither and deletes the revoked device's sessions at once. The
 revoker then re-seals every item under epoch e+1 (kilobytes: settings, keys, hosts) and prunes the
 old epoch. The hub refuses any put whose epoch is not the account's current one (`stale-epoch`), so
 a device that was offline fetches its new wrap and retries. The panel lists **what the revoked
@@ -516,6 +558,11 @@ The guest G posts `POST /v1/relays {host}`; the hub checks both are active in th
 the host is online, mints `r…` (expires in 60 s if unopened) and sends the host a `relay` frame.
 Both open `GET <base>/v1/ws/relay/<relay>`; the hub pairs exactly one guest and one host socket and
 forwards frames verbatim — binary, ≤ 1 MiB, idle-closed after 10 min, at most 8 per account.
+It is **flow-controlled** (found in review, 2026-10-01): past 4 MiB queued toward one end the hub
+pauses reading the other until that end drains below 1 MiB, and closes the relay (1013) past
+16 MiB, so an end that never reads cannot make the hub buffer without limit. Liveness counts only
+a pong echoing the ping's random payload: an unsolicited pong (RFC 6455 allows one) cannot keep a
+socket that reads nothing alive.
 
 ### 6.3 The handshake (inside the relay, before any payload)
 
@@ -577,7 +624,7 @@ reattach is today.
 
 | Adversary | Can | Cannot |
 |---|---|---|
-| **The NUC or the hub process compromised** (or its disk stolen) | Read ciphertext, item counts and sizes, device labels/platforms/public keys, emails, scrypt password hashes, session-token hashes, relay timing. Delete or withhold data; roll it back. | Decrypt anything (no key material on it), add a device (signed chain + a pairing code on a device the owner holds), MITM a relay (pinned device keys), forge an item (GCM under VK, id-bound path). Rollback is detected (§4.3, §5.2). |
+| **The NUC or the hub process compromised** (or its disk stolen) | Read ciphertext, item counts and sizes, device labels/platforms/public keys, emails, scrypt password hashes, session-token hashes, relay timing. Delete or withhold data; roll it back. | Decrypt anything (no key material on it), plant a vault key it knows (every unwrapped key must match the commitment its epoch's signed entry carries, §4.2), add a device (signed chain + a pairing code on a device the owner holds), MITM a relay (pinned device keys), forge an item (GCM under VK, id-bound path). Rollback is detected (§4.3, §5.2). |
 | **Cloudflare, or the Cloudflare account** (TLS terminates at the edge) | See what passes the edge in the clear: bearer tokens, ciphertext, metadata. Drop or delay requests. | Use a token it saw (every request is signed by a key only the device has, and a nonce is refused twice), write, pair, relay as a device, or read content. |
 | **Edge secret leaked** | Talk to the tunnel hostname as if forwarded; forge `x-stoke-client-ip` (weakens per-IP throttling). | Anything an account and a device key are needed for. |
 | **Password guessed or phished** | Sign in as a pending device: read the device list (labels, platforms, public keys) and the recovery wrap (useless without the Kit), ask to pair. | Read items (the items routes are active-only), decrypt, or join: a pair needs approval and the matching code on an active device, and every pending request shows on every device. |
@@ -603,13 +650,22 @@ this device**: the device re-posts the chain entries it holds (each still carrie
 signatures, so the hub accepts them as ordinary appends extending its head) and re-puts items
 whose local version is newer. Nothing is decided silently.
 
+An entry that opens an epoch the restored hub holds no wraps for needs them again, and the hub
+takes wraps **only from a device active before or after the entries** (by id and signed-in key)
+and **never replaces one** (found in review, 2026-10-01): otherwise a password holder, who may read
+the chain as a pending session, could republish first with wraps of its own for every device and
+a junk Kit wrap. So the republishing device re-wraps `VK_e` to each device active at that epoch
+and re-posts the Kit's wrap, which it cannot make (it has no RK) — the client keeps a copy of the
+Kit's wrap for every epoch it holds (ciphertext, fetched beside its own) for exactly this.
+
 ### 7.4 What the owner runs (none of this is automated or deployed by this change)
 
 1. **On the NUC:** Node 24; the hub from this repo as a systemd service under its own user, data
    directory 0700 (e.g. `/var/lib/stoke-hub`), edge listener `127.0.0.1:8787`, optional LAN
    listener. Read the bootstrap invite from `journalctl -u stoke-hub`.
 2. **Before any routing (LAN or tailnet):** in Stoke, Settings › Hub › URL
-   `http://nuc.local:8787/hub` or `https://nuc.<tailnet>.ts.net/hub`; sign up with the invite.
+   `http://nuc.local:8788/hub` (the LAN listener, `STOKE_HUB_LAN=0.0.0.0:8788`) or
+   `https://nuc.<tailnet>.ts.net/hub`; sign up with the invite.
 3. **cloudflared on the NUC:** a named tunnel (`cloudflared tunnel create stoke-hub`), ingress
    `hub-origin.vinn.dev → http://127.0.0.1:8787`, `cloudflared tunnel route dns stoke-hub
    hub-origin.vinn.dev`, run as a service. Gotchas 58 and 77 apply.

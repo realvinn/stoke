@@ -30,13 +30,16 @@ npm run dist:mac   # dmg + zip, arm64 (the zip is what auto-update installs). MU
 npm run targets    # every platform a release builds, its runner and its flags (targets.mjs)
 npm run deploy:install   # the stoke.vinn.dev Worker, by hand after `npx wrangler login`.
                    # A release needs no deploy: the scripts resolve the version at run time
+npm run hub        # the Stoke Hub server from source (hub/README.md is the NUC runbook);
+                   # build:hub bundles it to hub/dist/stoke-hub.mjs, deploy:hub-edge ships the
+                   # stoke.vinn.dev/hub/* Worker by hand. Nothing here is ever deployed by CI
 ```
 
 A `dist:*` exists per target and each MUST run on that target's own platform and arch
 (gotcha 67): `dist:win`, `dist:win:arm64`, `dist:mac`, `dist:mac:intel`, `dist:linux`.
 
 Every suite runs alone as `npm run verify:<name>`: context, statusline, unicode, usage,
-profiles, settings, secrets, hub, providers, claude-config, folders, search, chat-sources, color, theme-gen, activity,
+profiles, settings, secrets, hub, hub-server, providers, claude-config, folders, search, chat-sources, color, theme-gen, activity,
 worklog-gate, tabs, launcher, registry,
 restore, shortcuts, drop, fullscreen, layers, browser-url, browser-profiles, safari-import, chrome-import, voice, agents, accounts, campfire, cli, stoke-args, updates, targets, manifests, portable, winget, worklog-runner,
 worklog-retry, worklog-recall, worklog-autoscan, ssh, ssh-enroll, remote, phone-ui, installer-art, install, welcome,
@@ -106,7 +109,10 @@ build/bin/           the `stoke` command shipped inside the app: `stoke` (macOS 
                      what they send; only an argv carrying `--stoke-cli` is ever a request
 worker/              the Cloudflare Worker at stoke.vinn.dev: route.ts decides which of the
                      three bodies a request gets (pure, so verify:install holds the matrix) and
-                     index.ts serves it from install/, embedded at deploy time
+                     index.ts serves it from install/, embedded at deploy time. hub-edge.ts is a
+                     SECOND Worker (wrangler.hub-edge.jsonc) on the route stoke.vinn.dev/hub/*
+hub/                 the Stoke Hub server the owner runs on the NUC (Node 24, node:sqlite, ws):
+                     app.ts routes, store.ts SQLite, sockets.ts presence + relay, server.ts CLI
 ```
 
 ## Conventions
@@ -169,6 +175,8 @@ rule file named on the group line.
   binds every JS number as REAL, and FTS5 ignores `rowid = <real>` silently (`ChatStore.search`).
 - **139.** Never match an SSH host across machines by `SshHost.id`, a per-machine counter (`newHostId`): match
   by `syncId`, else equal alias + command (`applySyncedSettings`). `mergeSetup` still matches by id.
+- **140.** Count a hub device ACTIVE only when the chain lists its id WITH the key its session signed in with
+  (`authenticate`): a password-holder can squat an id before the real device joins. `login` refuses a bound id.
 
 **Terminal** — `.claude/rules/terminal.md`
 - **5.** Never read the terminal from the DOM: WebGL paints a canvas, so `.xterm-rows` is empty.

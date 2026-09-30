@@ -145,6 +145,16 @@ export const EMAIL_THROTTLE: ThrottleRule = {
   maxLockMs: 24 * 60 * 60_000
 }
 
+/**
+ * Per device, for a sign-in that PROVES it comes from a device the account's
+ * chain lists as active (signed like any request, by the key the chain holds
+ * for that id). Such an attempt is judged by this counter INSTEAD of the
+ * email's: only the holder of the device's key can trip it, whereas anyone who
+ * knows the address can trip the email's, and did lock the owner's own devices
+ * out (found in review, 2026-10-01). The same numbers as the email's.
+ */
+export const DEVICE_THROTTLE: ThrottleRule = EMAIL_THROTTLE
+
 /** Per client IP (the edge's `x-stoke-client-ip`, else the socket's). */
 export const IP_THROTTLE: ThrottleRule = {
   windowMs: 15 * 60_000,
