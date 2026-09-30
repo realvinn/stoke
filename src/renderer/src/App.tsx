@@ -2680,12 +2680,14 @@ export function App(): React.JSX.Element {
    * Main has proved (or failed to prove) the enrollment, after its tab exited.
    *
    * On a verified success the "Add key" tab has done its job and is closed, and
-   * the tab that asked for the password is reconnected — but only a tab with
-   * nothing to lose: one still sitting at `password:` (asked of main, which
-   * reads the pty's own tail), or the one that raised the offer if its ssh has
-   * already given up. A tab whose user typed the password meanwhile is an
-   * authenticated session, and killing it to "help" would lose whatever runs
-   * there. On failure everything stays: the enroll tab holds ssh's own words.
+   * the tabs on that host that asked for the password are reconnected — but
+   * only a tab with nothing to lose: one that never got in and still sits at
+   * ssh's own `password:`, or the one that raised the offer if its ssh has
+   * already given up. "Never got in" is main's to answer (`awaitingPassword`),
+   * from a watch over the session's whole life rather than the end of its
+   * output: a logged-in shell that has since run `su` or `ssh other` ends in
+   * the very same prompt shape, and killing it to "help" would lose whatever
+   * runs there. On failure everything stays: the enroll tab holds ssh's words.
    */
   const enrollFinished = useCallback(
     async (e: SshEnrollEvent): Promise<void> => {

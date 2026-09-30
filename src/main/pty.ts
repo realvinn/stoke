@@ -30,12 +30,14 @@ import { buildSshArgs, sshExecutable } from './ssh.ts'
 // resolves no aliases. The detector itself is pure and lives in shared/ so a
 // suite can replay a byte stream against it with no PTY at all (gotcha 75).
 import {
-  SSH_AUTH_TAIL_BYTES,
-  awaitingPasswordFromTail,
+  awaitingSshPassword,
   newSshAuthScan,
-  sshAuthStep,
+  newSshLoginWatch,
+  sshLoginInput,
+  sshOutputStep,
   type SshAuthPrompt,
-  type SshAuthScan
+  type SshAuthScan,
+  type SshLoginWatch
 } from '../shared/sshAuth.ts'
 import { claimSessionFiles, releaseSessionFiles } from './statusLine.ts'
 import type { RegistryTarget } from '../shared/claudeRegistry.ts'
@@ -160,12 +162,15 @@ interface Session {
    */
   sshAuth: SshAuthScan | null
   /**
-   * The last `SSH_AUTH_TAIL_BYTES` this session printed, kept for a remote
-   * session only and for its whole life (the scan window above closes early).
-   * `awaitingPassword` reads it: after a key is enrolled, a tab still sitting
-   * at `password:` may be reconnected, and one whose user got in may not.
+   * Whether this remote session is still inside its authentication, or null
+   * for a session that is not remote (the same `opts.host` gate as `sshAuth`).
+   * Fed every output chunk and every input write until it settles, one-way,
+   * on the first sign of a login (`sshLoginOutput`/`sshLoginInput`).
+   * `awaitingPassword` reads it: after a key is enrolled, a tab still at ssh's
+   * own `password:` may be reconnected, and one whose user got in — even one
+   * now sitting at a `su` or nested-ssh prompt — may not.
    */
-  authTail: string
+  login: SshLoginWatch | null
   startedAt: number
   /** Last pty output, or the last registry state change reported via `touch`. */
   lastActivityAt: number
@@ -631,7 +636,7 @@ export class PtyManager {
       bannerScanned: 0,
       hostId: opts.host?.id ?? null,
       sshAuth: opts.host ? newSshAuthScan() : null,
-      authTail: '',
+      login: opts.host ? newSshLoginWatch() : null,
       startedAt: now,
       lastActivityAt: now,
       cols: Math.max(20, opts.cols || 120),
@@ -684,15 +689,20 @@ export class PtyManager {
        * fired — ssh asks three times by default and the user is offered a key
        * once. Nothing here reads a password: it is typed with echo off, so it
        * is not in this stream at all.
+       *
+       * `sshOutputStep` also follows the login itself (`session.login`), for
+       * the reconnect gate and to withhold the offer from a session that has
+       * already shown it got in: its prompt is `su`'s or a nested ssh's, a
+       * different password, which gotcha 75 exists to leave alone. ConPTY
+       * re-renders every frame as VT, so on Windows the stream is scrubbed
+       * before the escape rule applies (sshAuth.ts, `conptyScrub`).
        */
-      if (session.sshAuth) {
-        // ConPTY re-renders every frame as VT, so on Windows the stream is
-        // scrubbed before the escape rule applies (sshAuth.ts, `conptyScrub`).
-        const { next, fire } = sshAuthStep(session.sshAuth, data, { conpty: process.platform === 'win32' })
-        session.sshAuth = next
-        if (fire && session.hostId) this.onSshAuth(ptyId, session.hostId, fire)
+      if (session.sshAuth && session.login) {
+        const step = sshOutputStep(session.sshAuth, session.login, data, { conpty: process.platform === 'win32' })
+        session.sshAuth = step.scan
+        session.login = step.login
+        if (step.offer && session.hostId) this.onSshAuth(ptyId, session.hostId, step.offer)
       }
-      if (session.hostId) session.authTail = (session.authTail + data).slice(-SSH_AUTH_TAIL_BYTES)
       this.onData(ptyId, data)
       for (const fn of this.subscribers) fn(ptyId, data)
     })
@@ -741,25 +751,35 @@ export class PtyManager {
     if (!s || s.exited) return
     try {
       s.proc.write(data)
-      if (data && !isTerminalReport(data)) s.lastInputAt = Date.now()
+      if (data && !isTerminalReport(data)) {
+        s.lastInputAt = Date.now()
+        this.noteLoginInput(s, data)
+      }
     } catch {
       /* process died between the renderer's keystroke and here */
     }
   }
 
+  /** Every write a person (or the phone) made reaches the login watch. */
+  private noteLoginInput(s: Session, data: string): void {
+    if (s.login && !s.login.settled) s.login = sshLoginInput(s.login, data, { conpty: process.platform === 'win32' })
+  }
+
   /**
-   * Is this SSH session sitting at a password prompt right now?
+   * Is this SSH session sitting at ssh's own password prompt, never having
+   * got in?
    *
-   * False for anything that is not a live remote session, and false unless the
-   * last thing it printed is provably a prompt (`awaitingPasswordFromTail`).
-   * The renderer asks before reconnecting a tab after a key was enrolled: a
-   * tab at `password:` has nothing to lose, a tab whose user typed the password
-   * meanwhile is an authenticated session that must never be killed.
+   * False for anything that is not a live remote session, and false once the
+   * session has shown any sign of a login (`awaitingSshPassword` over the
+   * whole-life `login` watch, not over the last bytes printed). The renderer
+   * asks before reconnecting a tab after a key was enrolled: a tab at ssh's
+   * `password:` has nothing to lose; a tab whose user got in has, even when it
+   * now sits at a `su` or nested-ssh `Password:` that looks exactly the same.
    */
   awaitingPassword(ptyId: string): boolean {
     const s = this.sessions.get(ptyId)
-    if (!s || s.exited || !s.hostId) return false
-    return awaitingPasswordFromTail(s.authTail, { conpty: process.platform === 'win32' })
+    if (!s || s.exited || !s.login) return false
+    return awaitingSshPassword(s.login, { conpty: process.platform === 'win32' })
   }
 
   /** When input last reached this pty (`Session.lastInputAt`), or null. */
@@ -808,6 +828,7 @@ export class PtyManager {
       try {
         cur.proc.write(data)
         cur.lastInputAt = Date.now()
+        this.noteLoginInput(cur, data)
         return true
       } catch {
         return false

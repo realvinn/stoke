@@ -307,20 +307,188 @@ export function sshAuthStep(
   return { next, fire }
 }
 
-/**
- * Is this session sitting at a password prompt RIGHT NOW?
+/*
+ * ------------------------------------------------ still logging in?
  *
- * `tail` is the last few hundred bytes the session printed, raw. Asked once,
- * after an enrollment succeeded, to decide whether the tab that raised the
- * offer may be reconnected: a tab still at `password:` has nothing to lose, a
- * tab whose user typed the password meanwhile is an authenticated session that
- * must never be killed to "help". The answer errs quiet — anything that is not
- * provably a prompt at the end of the output is "no".
+ * After a key is enrolled the renderer reconnects the SSH tabs on that host
+ * that are still sitting at ssh's password prompt, so they come back on the
+ * key (`PtyManager.awaitingPassword`). "Still sitting at the prompt" is
+ * killing a session, so it has to mean the session never got in — and the
+ * end of the output cannot say that. A logged-in shell that runs `su` ends in
+ * `Password: `; one that runs `ssh other` ends in `v@other's password: `.
+ * Both are exact prompt shapes, both follow a successful login, and a check
+ * that read only the tail (the first version of this gate did) killed them.
+ *
+ * So the question is asked of the session's whole history, as a one-way flag:
+ * `settled` means the session is past authentication, or can no longer be
+ * shown not to be. It is set by the first of:
+ *
+ *   1. Something painting — an escape byte, or under ConPTY a painting DECSET.
+ *      ssh prints no escape before auth (gotcha 75), and bash 5.1+, zsh,
+ *      fish, `claude`, tmux and byobu all emit one at once. The same signal
+ *      that closes `sshAuthStep`'s window.
+ *   2. Output past `SSH_AUTH_SCAN_LIMIT`: authentication is the first breath of
+ *      a connection, and past that budget nothing is proved.
+ *   3. After the first password prompt, a finished line that is not ssh's own
+ *      pre-auth chatter (`isPreAuthLine`): a MOTD, `Last login:`, a shell
+ *      prompt with a command on it — for the shells that paint nothing (dash,
+ *      ash, bash before 5.1 as on RHEL 8).
+ *   4. Enter typed on a line that is not empty, not a password prompt and not
+ *      one of ssh's own pre-auth questions (host key, passphrase, PIN). That is
+ *      a command typed at a shell, and it catches the session that logged in
+ *      by key and so never had a prompt to anchor rule 3 on.
+ *
+ * The session is waiting for a password only while it is not settled AND its
+ * current line is a prompt. Every doubtful case settles, because the wrong
+ * "yes" kills a session and the wrong "no" leaves one tab asking once more.
  */
-export function awaitingPasswordFromTail(tail: string, opts: SshAuthStepOptions = {}): boolean {
-  if (!opts.conpty) return detectSshPasswordPrompt(tail) !== null
-  const { text } = conptyScrub(tail)
-  return detectSshPasswordPrompt(conptyTail(text)) !== null
+
+/** Questions ssh itself asks before authentication, answered with Enter. */
+const SSH_QUESTIONS: RegExp[] = [
+  /^Are you sure you want to continue connecting \(yes\/no(?:\/\[fingerprint\])?\)\?/,
+  /^Please type 'yes', 'no' or the fingerprint:/,
+  /^Enter passphrase for key '/,
+  /^Bad passphrase, try again for /,
+  /^Enter PIN for /
+]
+
+/**
+ * Finished lines ssh prints between a password prompt and a login: the newline
+ * after the (unechoed) password, the retry notice, and — through a ProxyJump,
+ * where the jump host's prompt comes first — the target's host-key exchange.
+ * The prompt line itself is recognised separately (`detectSshPasswordPrompt`).
+ */
+const PRE_AUTH_LINES: RegExp[] = [
+  /^Permission denied, please try again\.$/,
+  /^The authenticity of host '.*' can't be established\.$/,
+  // OpenSSH 10.3 prints `ED25519 key fingerprint is: SHA256:…` (measured);
+  // older releases have no colon.
+  /^\S+ key fingerprint is:? \S+$/,
+  /^This (?:host )?key is not known by any other names\.?$/,
+  /^Warning: Permanently added .* to the list of known hosts\.$/,
+  ...SSH_QUESTIONS
+]
+
+/** One session's authentication, followed for as long as it can be proved. */
+export interface SshLoginWatch {
+  /** Output bytes seen. */
+  seen: number
+  /** A password prompt has been seen (or answered). Rule 3 applies from here. */
+  prompted: boolean
+  /** One-way: past authentication, or not provably still in it. */
+  settled: boolean
+  /** The current, unterminated line — scrubbed under ConPTY. */
+  line: string
+  /** ConPTY only: an escape sequence cut off at the end of the last chunk. */
+  pending?: string
+}
+
+export function newSshLoginWatch(): SshLoginWatch {
+  return { seen: 0, prompted: false, settled: false, line: '' }
+}
+
+function settle(state: SshLoginWatch, seen = state.seen): SshLoginWatch {
+  return { seen, prompted: state.prompted, settled: true, line: '' }
+}
+
+function promptOn(line: string, opts: SshAuthStepOptions): SshAuthPrompt | null {
+  return detectSshPasswordPrompt(opts.conpty ? conptyTail(line) : line)
+}
+
+/** A finished line ssh could print before a login — see `PRE_AUTH_LINES`. */
+function isPreAuthLine(line: string): boolean {
+  const bare = line.replace(/[ \t]+$/, '')
+  return bare === '' || PRE_AUTH_LINES.some((re) => re.test(bare))
+}
+
+/**
+ * Fold one chunk of a session's OUTPUT into its login watch. Pure, and a no-op
+ * once settled, so a logged-in session pays one boolean per chunk.
+ */
+export function sshLoginOutput(state: SshLoginWatch, chunk: string, opts: SshAuthStepOptions = {}): SshLoginWatch {
+  if (state.settled) return state
+  // Rule 2, judged on what had ALREADY been seen: a prompt in the chunk that
+  // crosses the budget is still one, exactly as `sshAuthStep` fires on it.
+  if (state.seen >= SSH_AUTH_SCAN_LIMIT) return settle(state)
+  const seen = state.seen + chunk.length
+  let text = chunk
+  let pending = ''
+  if (opts.conpty) {
+    const scrubbed = conptyScrub((state.pending ?? '') + chunk)
+    if (scrubbed.painting) return settle(state, seen)
+    text = scrubbed.text
+    pending = scrubbed.rest
+  }
+  if (text.includes(ESC)) return settle(state, seen) // rule 1
+
+  let line = state.line
+  let prompted = state.prompted
+  let from = 0
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]
+    if (c !== '\r' && c !== '\n') continue
+    const done = line + text.slice(from, i)
+    from = i + 1
+    line = ''
+    // An answered prompt: the password is not echoed, so the line that the
+    // newline finishes is the prompt itself. Set here too, not only at the end
+    // of a chunk, so a prompt and what followed it arriving together still
+    // count from the prompt on.
+    if (promptOn(done, opts)) {
+      prompted = true
+      continue
+    }
+    if (prompted && !isPreAuthLine(done)) return settle(state, seen) // rule 3
+  }
+  line = (line + text.slice(from)).slice(-SSH_AUTH_TAIL_BYTES)
+  if (!prompted && promptOn(line, opts)) prompted = true
+  const next: SshLoginWatch = { seen, prompted, settled: false, line }
+  if (pending) next.pending = pending
+  return next
+}
+
+/**
+ * Fold one write of the user's INPUT into the watch (rule 4). Only an Enter
+ * counts, and no automatic terminal report (`isTerminalReport`) carries one.
+ * Judged against the line as it stands when the key arrives: at a shell prompt
+ * that is the prompt and whatever of the command has echoed — never empty.
+ */
+export function sshLoginInput(state: SshLoginWatch, data: string, opts: SshAuthStepOptions = {}): SshLoginWatch {
+  if (state.settled || !/[\r\n]/.test(data)) return state
+  const line = state.line.trim()
+  if (!line) return state // Enter pressed while it connects
+  if (promptOn(state.line, opts)) return state // the password, typed at ssh's prompt
+  if (SSH_QUESTIONS.some((re) => re.test(line))) return state // "yes" to a host key, a passphrase
+  return settle(state)
+}
+
+/**
+ * Is this session sitting at ssh's OWN password prompt, never having got in?
+ * The gate in front of killing a tab to reconnect it — see the rules above.
+ */
+export function awaitingSshPassword(state: SshLoginWatch, opts: SshAuthStepOptions = {}): boolean {
+  return !state.settled && promptOn(state.line, opts) !== null
+}
+
+/**
+ * One output chunk of a remote session, as `pty.ts` folds it: both reducers,
+ * and the prompt to offer a key for, if any.
+ *
+ * The offer is `sshAuthStep`'s, withheld once the login watch has settled. The
+ * detector alone reads a window of bytes; a session that logged in by key into
+ * a shell that paints nothing (dash, ash, bash before 5.1) and then runs `su`
+ * inside that window shows it a PAM `Password: ` exactly like ssh's own. The
+ * watch has seen the command typed before it (rule 4) and says so.
+ */
+export function sshOutputStep(
+  scan: SshAuthScan,
+  login: SshLoginWatch,
+  chunk: string,
+  opts: SshAuthStepOptions = {}
+): { scan: SshAuthScan; login: SshLoginWatch; offer: SshAuthPrompt | null } {
+  const nextLogin = sshLoginOutput(login, chunk, opts)
+  const { next, fire } = sshAuthStep(scan, chunk, opts)
+  return { scan: next, login: nextLogin, offer: fire && !nextLogin.settled ? fire : null }
 }
 
 /** What `shouldOfferKey` is deciding over. */

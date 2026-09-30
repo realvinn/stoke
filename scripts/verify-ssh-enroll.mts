@@ -26,15 +26,21 @@ import { promisify } from 'node:util'
 import {
   SSH_AUTH_SCAN_LIMIT,
   SSH_AUTH_TAIL_BYTES,
-  awaitingPasswordFromTail,
+  awaitingSshPassword,
   buildRemoteInstallCommand,
   conptyScrub,
   detectSshPasswordPrompt,
   isEnrollableAlias,
   isSafePublicKeyLine,
   newSshAuthScan,
+  newSshLoginWatch,
   shouldOfferKey,
-  sshAuthStep
+  sshAuthStep,
+  sshLoginInput,
+  sshOutputStep,
+  type SshAuthPrompt,
+  type SshAuthStepOptions,
+  type SshLoginWatch
 } from '../src/shared/sshAuth.ts'
 import {
   appendIdentityBlock,
@@ -359,25 +365,215 @@ for (const [label, enable] of [
 /* ------------------------------------------------ awaiting a password NOW */
 
 /*
- * Asked after an enrollment succeeds, before the tab that raised the offer is
+ * Asked after an enrollment succeeds, before a tab on that host is killed and
  * reconnected. "Yes" kills that tab's ssh, so every doubtful case is "no".
+ *
+ * Replayed through the production reducers exactly as `PtyManager` feeds them:
+ * a string is an output chunk (`sshOutputStep`, which is `onData`), `{ in }` a
+ * write the user made (`sshLoginInput`, which is `write`/`submit`). The first
+ * version of this gate read only the end of the output, so a tab that had
+ * logged in and then ran `su` or `ssh other` — both of which end in an exact
+ * prompt shape — was killed like one that had never got in.
  */
-console.log('\nis the tab still at the prompt?')
+console.log('\nis the tab still at ssh’s own prompt?')
 
-ok('a tab sitting at the prompt: yes', awaitingPasswordFromTail("banner\r\nv@web's password: "))
+type Replay = (string | { in: string })[]
+
+function replay(steps: Replay, opts: SshAuthStepOptions = {}): { login: SshLoginWatch; offers: SshAuthPrompt[] } {
+  let scan = newSshAuthScan()
+  let login = newSshLoginWatch()
+  const offers: SshAuthPrompt[] = []
+  for (const s of steps) {
+    if (typeof s === 'string') {
+      const r = sshOutputStep(scan, login, s, opts)
+      scan = r.scan
+      login = r.login
+      if (r.offer) offers.push(r.offer)
+    } else {
+      login = sshLoginInput(login, s.in, opts)
+    }
+  }
+  return { login, offers }
+}
+
+const awaiting = (steps: Replay, opts: SshAuthStepOptions = {}): boolean =>
+  awaitingSshPassword(replay(steps, opts).login, opts)
+
+// As OpenSSH 10.3 prints it (measured against a real sshd): note the colon
+// after "is", which older releases do not print — `OLD_FINGERPRINT` below.
+const HOST_KEY_QUESTION: Replay = [
+  "The authenticity of host 'web (10.0.0.5)' can't be established.\r\n",
+  'ED25519 key fingerprint is: SHA256:a7OV5UAKzgpFKfbV4VeK5l8F2LSDrSxLvHGEYZ2IEEE\r\n',
+  'This key is not known by any other names.\r\n',
+  'Are you sure you want to continue connecting (yes/no/[fingerprint])? ',
+  'yes', // cooked mode: the local tty echoes the answer
+  { in: '\r' },
+  '\r\n',
+  "Warning: Permanently added 'web' (ED25519) to the list of known hosts.\r\n"
+]
+// What a logged-in bash 5.1+ prints: its prompt turns bracketed paste on, and
+// Enter turns it off again before the command runs.
+const BASH_PROMPT = `${ESC}[?2004hv@web:~$ `
+const BASH_ENTER = `\r\n${ESC}[?2004l\r`
+
+// -- still logging in: a reconnect loses nothing, so yes.
+ok('a tab sitting at the prompt: yes', awaiting(["v@web's password: "]))
+ok('behind a pre-auth banner: yes', awaiting(['Do not share your password with anyone.\r\n', "v@web's password: "]))
 ok(
   'after a wrong password and the re-ask: yes',
-  awaitingPasswordFromTail("v@web's password: \r\nPermission denied, please try again.\r\nv@web's password: ")
+  awaiting(["v@web's password: ", { in: 'hunter1\r' }, '\r\n', 'Permission denied, please try again.\r\n', "v@web's password: "])
 )
 ok(
-  'the user typed it and got a shell: no — never kill an authenticated session',
-  !awaitingPasswordFromTail("v@web's password: \r\nWelcome to Ubuntu 24.04\r\nv@web:~$ ")
+  'the same with the line ends ssh 10.3 really printed (`\\r\\r\\n\\r`, measured): yes',
+  awaiting([
+    "\rv@127.0.0.1's password: ",
+    { in: 'nope\r' },
+    '\r\n',
+    'Permission denied, please try again.\r\r\n\r',
+    "v@127.0.0.1's password: "
+  ])
 )
-ok('a TUI painting: no', !awaitingPasswordFromTail(`v@web's password: \r\n${ESC}[?1049h${ESC}[H`))
-ok('nothing printed: no', !awaitingPasswordFromTail(''))
+ok(
+  'the same, arriving as one chunk: yes',
+  awaiting(["v@web's password: \r\nPermission denied, please try again.\r\nv@web's password: "])
+)
+ok('a first connection, host key answered "yes": yes', awaiting([...HOST_KEY_QUESTION, "v@web's password: "]))
+ok('Enter pressed while it connects: yes', awaiting([{ in: '\r' }, '\r\n', "v@web's password: "]))
+ok(
+  'a key passphrase answered, then the password: yes',
+  awaiting(["Enter passphrase for key '/Users/v/.ssh/id_ed25519': ", { in: 'pp\r' }, '\r\n', "v@web's password: "])
+)
+ok(
+  "through a ProxyJump, the jump host's password then the target's host key: yes",
+  awaiting(["v@jump's password: ", { in: 'pw\r' }, '\r\n', ...HOST_KEY_QUESTION, "v@web's password: "])
+)
+{
+  const OLD_FINGERPRINT = 'ED25519 key fingerprint is SHA256:a7OV5UAKzgpFKfbV4VeK5l8F2LSDrSxLvHGEYZ2IEEE.\r\n'
+  ok(
+    '  and with an older OpenSSH, whose fingerprint line has no colon: yes',
+    awaiting([
+      "v@jump's password: ",
+      { in: 'pw\r' },
+      '\r\n',
+      ...HOST_KEY_QUESTION.map((s) => (typeof s === 'string' && s.includes('fingerprint is:') ? OLD_FINGERPRINT : s)),
+      "v@web's password: "
+    ])
+  )
+}
+ok('keyboard-interactive: yes', awaiting(['(v@web) Password: ']))
 ok(
   'under ConPTY, a repainted prompt: yes',
-  awaitingPasswordFromTail(`${CONPTY_HELLO}${ESC}[H(v@web) Password:${ESC}[1;19H`, { conpty: true })
+  awaiting([`${CONPTY_HELLO}${ESC}[H(v@web) Password:${ESC}[1;19H`], { conpty: true })
+)
+ok(
+  "a terminal report is not typing — xterm's focus and colour-scheme replies: yes",
+  awaiting(["v@web's password: ", { in: `${ESC}[I` }, { in: `${ESC}[?997;1n` }])
+)
+ok(
+  'a host whose own command is `su -`, logged in by key: yes — no shell ever ran, a reconnect loses nothing',
+  awaiting(['Password: '])
+)
+
+// -- got in: whatever it is sitting at now, never killed.
+ok(
+  'the user typed it and got a shell: no',
+  !awaiting(["v@web's password: ", { in: 'pw\r' }, '\r\n', 'Welcome to Ubuntu 24.04\r\n', 'v@web:~$ '])
+)
+ok(
+  'logged in, then `su` at a bash 5.1+ prompt: no',
+  !awaiting([
+    "v@web's password: ",
+    { in: 'pw\r' },
+    '\r\n',
+    'Linux web 6.1.0-25-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.1.106-3 x86_64\r\n',
+    BASH_PROMPT,
+    'su',
+    { in: '\r' },
+    BASH_ENTER,
+    'Password: '
+  ])
+)
+ok(
+  'logged in, then a nested `ssh other` at a dash prompt that paints nothing: no',
+  !awaiting(["v@web's password: ", { in: 'pw\r' }, '\r\n', '$ ', 'ssh other', { in: '\r' }, '\r\n', "v@other's password: "])
+)
+ok(
+  '  and the same with no keystroke seen — the finished line alone settles it (rule 3): no',
+  !awaiting(["v@web's password: ", '\r\n', '$ ssh other\r\n', "v@other's password: "])
+)
+ok(
+  'logged in, a MOTD with no escape in it, then a prompt printed with nothing typed: no',
+  !awaiting(["v@web's password: ", { in: 'pw\r' }, '\r\n', 'Last login: Tue Sep 30 10:00:00 2026 from 10.0.0.1\r\n', 'Password: '])
+)
+ok(
+  'logged in BY KEY to bash 4.4 (RHEL 8: no bracketed paste), then `su -`: no',
+  !awaiting(['Last login: Tue Sep 30 10:00:00 2026 from 10.0.0.1\r\n', '[v@web ~]$ ', 'su -', { in: '\r' }, '\r\n', 'Password: '])
+)
+ok(
+  '  and with Enter arriving before the echo did: no',
+  !awaiting(['[v@web ~]$ ', { in: 'su -\r' }, 'su -\r\n', 'Password: '])
+)
+ok(
+  'under ConPTY, a DECSET that means a shell is drawing: no',
+  !awaiting([CONPTY_HELLO, "v@web's password:", { in: 'pw\r' }, '\r\n', `${ESC}[?2004h`, 'v@web:~$ '], { conpty: true })
+)
+ok(
+  'under ConPTY with that DECSET swallowed, `su` typed at the shell still settles it: no',
+  !awaiting(
+    [CONPTY_HELLO, "v@web's password:", { in: 'pw\r' }, '\r\n', 'v@web:~$ ', 'su', { in: '\r' }, '\r\n', 'Password:'],
+    { conpty: true }
+  )
+)
+ok('a TUI painting: no', !awaiting(["v@web's password: ", '\r\n', `${ESC}[?1049h${ESC}[H`]))
+ok('nothing printed: no', !awaiting([]))
+ok(
+  `past the ${SSH_AUTH_SCAN_LIMIT}-byte budget, nothing is proved: no`,
+  !awaiting([`${'x'.repeat(SSH_AUTH_SCAN_LIMIT)}\r\n`, "v@web's password: "])
+)
+{
+  const settled = replay(["v@web's password: ", '\r\n', BASH_PROMPT]).login
+  ok('once settled, it stays settled', settled.settled)
+  ok(
+    '  so a prompt of the exact ssh shape later still reads no',
+    !awaitingSshPassword(replay(["v@web's password: ", '\r\n', BASH_PROMPT, 'exit\r\n', "v@web's password: "]).login)
+  )
+}
+
+/*
+ * The offer uses the same watch: the detector alone reads a window of bytes,
+ * and a key login into a shell that paints nothing shows it `su`'s prompt
+ * inside that window, in exactly ssh's shape — gotcha 75's "a DIFFERENT
+ * password". `sshOutputStep` is what `PtyManager` runs, so this is the rule
+ * as it ships, not a copy of it.
+ */
+console.log('\nthe offer, through the same step PtyManager runs')
+
+check('a plain prompt is offered once', replay(["v@web's password: "]).offers.length, 1)
+check(
+  'ssh asking three times is still one offer',
+  replay([
+    "v@web's password: ",
+    '\r\n',
+    'Permission denied, please try again.\r\n',
+    "v@web's password: ",
+    '\r\n',
+    'Permission denied, please try again.\r\n',
+    "v@web's password: "
+  ]).offers.length,
+  1
+)
+check('a first connection (host key answered) is offered', replay([...HOST_KEY_QUESTION, "v@web's password: "]).offers.length, 1)
+check('Enter pressed while it connects does not cost the offer', replay([{ in: '\r' }, '\r\n', "v@web's password: "]).offers.length, 1)
+check(
+  'a key login into bash 4.4, then `su -`: never offered',
+  replay(['Last login: Tue Sep 30 10:00:00 2026 from 10.0.0.1\r\n', '[v@web ~]$ ', 'su -', { in: '\r' }, '\r\n', 'Password: ']).offers
+    .length,
+  0
+)
+check(
+  'a key login, then a nested `ssh other`: never offered',
+  replay(['$ ', 'ssh other', { in: '\r' }, '\r\n', "v@other's password: "]).offers.length,
+  0
 )
 
 /* --------------------------------------------------------- shouldOfferKey */
