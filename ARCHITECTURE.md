@@ -387,8 +387,10 @@ It is an installable PWA shell: a manifest, and a service worker (`public/sw.js`
 in a secure context — the tunnel's https, or localhost; browsers refuse one on a plain-http LAN or
 tailnet link, and that page runs as it always did. The worker caches the shell and the hashed
 bundle so the app opens at once and paints Connect or "can't reach" with no network, and never
-touches /api or /ws. Web Push is not built: it would need VAPID keys minted in start paths, a
-content-free payload and an https origin.
+touches /api or /ws. It also takes Web Push (`notify.ts`, main's `remote/push.ts`): a content-free
+"Needs you" or "Finished" on `pushFor`'s edges, sent only where the page is a secure context; the
+phone re-sends its subscription at every start and sheet open, so the sheet's On is the computer's
+answer rather than the browser's (gotcha 136).
 
 ## The worklog agent
 
@@ -1210,8 +1212,10 @@ src/main/         Electron main process
                       private half sealed in secrets.json), the ES256 JWT, the RFC 8291
                       `aes128gcm` message (verify:remote holds it to the RFC's Appendix A
                       vector) and `sendPush` (404/410 forget the phone). WHEN a session pushes
-                      is `pushFor`, WHAT it says `pushPayload` (content-free), WHERE it may go
-                      `pushEndpointOk` (the real push services only), all in remotePhone.ts. 136
+                      is `pushFor` (a new prompt is the registry's own stamp, `samePrompt`, never
+                      the answer id `trackPrompt` re-mints after input), WHAT it says
+                      `pushPayload` (content-free), WHERE it may go `pushEndpointOk` (the real
+                      push services only), all in remotePhone.ts. 136
 src/preload/      contextBridge -> window.stoke
 src/renderer/     desktop React UI (all colour via CSS custom properties)
   src/components/BusyDialog.tsx  "a prompt is running — Force restart / Wait / Cancel", asked
@@ -1312,6 +1316,9 @@ src/remote/       mobile web UI, built separately to out/remote. Vanilla TS on o
                     one fixed model, an account picker), and main holds a start to the same
                     (`phoneLaunchVerdict`)
   notify.ts         the home bar's bell: Web Push on or off for this phone, and a test send.
+                    On is the computer's answer: a held subscription is re-sent at every start
+                    and sheet open (`confirm`, an upsert), and a 410 — its push service refused
+                    it — drops the browser's copy and reads Off with the reason.
                     Says which thing is missing where it cannot (`pushAvailability`: a plain
                     http LAN/tailnet link above all, iOS outside the Home Screen app, blocked);
                     a tapped notification with the shell open is routed by the worker's

@@ -359,8 +359,8 @@ rule file named on the group line.
   the token's `iss`/`jku`; RS256 pinned, key checked first; refuse 403 (`remoteRefusal`), never the key's 401.
 - **131.** 404 a missing file, never the SPA shell (`staticMissAnswer`); keep `sw.js`'s stamp markers
   (`stampServiceWorker`), off /api and /ws, and its shell URL-less (`keepShell`): a cached Response keeps its `?k=`.
-- **136.** POST pushes only to a real push service (`pushEndpointOk`) under the key in force (`keyTag`); prove the
-  crypto by RFC 8291's vector; drive with a stubbed `PushManager` + `ServiceWorker.deliverPushMessage`, never FCM.
+- **136.** POST pushes only to a real push service (`pushEndpointOk`) under the key in force (`keyTag`); a new prompt is
+  `samePrompt`, never a re-minted answer id; On is the computer's word (`confirm`); RFC 8291's vector; never FCM.
 
 **Claude Code's own config** — `.claude/rules/claude-config.md`
 - **37.** Turn Claude Code's Remote Control off with `remoteControlAtStartup: false` in

@@ -479,3 +479,46 @@ each of which a plausible first version gets wrong with every suite green:
   `navigator.serviceWorker`), the bell's sheet says to use the tunnel's https link and offers no
   button (`pushAvailability`). **Not driven:** a real phone, a real push service, iOS's Home
   Screen app, and a notification tap (the vm sandbox in `verify:remote` covers `notificationclick`).
+
+> **Checked against the code on 2026-09-30** (review of the branch that added it). Two of the
+> claims above held only for the run that was measured.
+> - **"None while a prompt sat for 8 s" was a run with no input.** `pushFor` fired on a new
+>   `promptId`, and `trackPrompt` mints a new one for the SAME prompt once input reached the pty
+>   and a reading `PROMPT_SETTLE_MS` later still says waiting — right for the answer route, wrong
+>   for "is this a new prompt?". `PtyManager.write` counts every write but a terminal report, and
+>   a mouse report is not one, so an arrow key in a permission menu, a wheel scroll or each pause
+>   while typing an answer at the desk sent another high-urgency "Needs you". `PushState` now
+>   carries the prompt's registry identity (`pushStateOf`; `samePrompt` compares `waitingFor` and
+>   `statusUpdatedAt`, which the CLI moves only when it writes a status). Driven against the built
+>   app with a stub `claude` whose prompt waited while the desk sent an arrow key, `y`, `e`, `s`
+>   and an SGR wheel report: the phone row's `promptId` changed five times and the fake service
+>   got nothing; then exactly "Needs you" (the second prompt) and "Finished". `verify:remote`
+>   builds its states from `trackPrompt` with input between readings; keyed on the answer id,
+>   three of its checks fail.
+> - **The sheet's "On" was the browser's word, not the computer's.** It read On whenever the
+>   browser held a subscription made with the current VAPID key, and only Turn on ever POSTed
+>   one — so a replaced phone key (the owner re-scans the same phone), the ninth subscription
+>   evicting the oldest, and a 404/410 drop each left it On while nothing arrived. Measured for
+>   the first two against the old server state: the browser still held its subscription (the
+>   old sheet's whole test for On) while the test route answered 404 "This phone is not
+>   subscribed."; the old sheet itself was not driven. The
+>   phone now re-sends a held subscription at every start and every sheet open (`confirm`, an
+>   upsert that needs the current key, so a locked-out phone cannot enrol itself back), and main
+>   remembers what a push service refused (`rememberGonePush`, by endpoint AND key, so a fresh
+>   subscription at a reused endpoint passes) and answers its re-send 410, which drops the
+>   browser's copy and reads Off with the reason. Driven: after a new key and a re-scan the boot
+>   re-send moved the record to the new `keyTag` and a test arrived; after eight other
+>   subscriptions evicted it, opening the sheet put it back and a test arrived; after the fake
+>   service answered 410 the sheet read Off, the browser's copy was gone, and Turn on made a new
+>   one that received.
+> - **Driving it: grant notifications in a browser context of your own.** In headless Chrome for
+>   Testing, `Browser.grantPermissions` on the DEFAULT context left `Notification.permission`
+>   `default` (then `denied` after one `requestPermission`); `chrome-headless-shell` read `denied`
+>   after the same default-context grant (a context of its own was not tried there).
+>   `Target.createBrowserContext`, the grant with that `browserContextId`, then
+>   `Target.createTarget` in it read `granted`. Know that the browser talks to Google's GCM by
+>   itself: the run launched with `--disable-background-networking` still logged three
+>   `registration_request.cc` errors (`DEPRECATED_ENDPOINT`), as the run without it had. That is
+>   Chrome's own registration, not a subscription of Stoke's — `subscribe` was stubbed and every
+>   endpoint Stoke POSTed to was the loopback fake — but it is a call to a real Google endpoint,
+>   and no flag tried stopped it.
