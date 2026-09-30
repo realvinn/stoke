@@ -39,7 +39,7 @@ A `dist:*` exists per target and each MUST run on that target's own platform and
 (gotcha 67): `dist:win`, `dist:win:arm64`, `dist:mac`, `dist:mac:intel`, `dist:linux`.
 
 Every suite runs alone as `npm run verify:<name>`: context, statusline, unicode, usage,
-profiles, settings, secrets, hub, hub-server, hub-client, providers, claude-config, folders, search, chat-sources, color, theme-gen, activity,
+profiles, settings, secrets, hub, hub-server, hub-client, hub-relay, providers, claude-config, folders, search, chat-sources, color, theme-gen, activity,
 worklog-gate, tabs, launcher, registry,
 restore, shortcuts, drop, fullscreen, layers, browser-url, browser-profiles, safari-import, chrome-import, voice, agents, accounts, campfire, cli, stoke-args, updates, targets, manifests, portable, winget, worklog-runner,
 worklog-retry, worklog-recall, worklog-autoscan, ssh, ssh-enroll, remote, phone-ui, installer-art, install, welcome,
@@ -87,7 +87,8 @@ src/main/            Electron main process
   hub/                 Stoke Hub: crypto.ts, the node:crypto reference (no electron import, so the
                        hub server on the NUC imports it too), and the desktop client (service.ts,
                        files.ts, http.ts, sshKeys.ts; rules in shared/hub/client.ts), lazily loaded
-                       for Settings › Account & sync. Spec: docs/superpowers/specs/2026-10-01-*
+                       for Settings › Account & sync. remote.ts + channel.ts are "Other machines"
+                       (the E2E relay; rules in shared/hub/remote.ts). Spec: docs/superpowers/specs/2026-10-01-*
 src/preload/         contextBridge -> window.stoke
 src/renderer/        desktop React UI (all colour via CSS custom properties)
 src/remote/          mobile web UI, built separately to out/remote
@@ -181,6 +182,8 @@ rule file named on the group line.
   the client only where the chain holds its own anchor (`isActiveIn`): a hub can build a list around posted keys.
 - **141.** Never keep the Recovery Kit's wrap key on a device: a revoke needs the Kit typed, or a new Kit when the
   target has had it (`kitHandlers`); a Kit join replaces the Kit in the same append (`postRecovery`).
+- **142.** Send every hub relay frame through `relayFrameParts` (a 512 K pty replay is 1.23 MB as JSON in JSON, over the
+  1 MiB cap), stamp a presence status `max(now, lastAt + 1)`, and serve a relayed frame only past BOTH verdicts.
 
 **Terminal** — `.claude/rules/terminal.md`
 - **5.** Never read the terminal from the DOM: WebGL paints a canvas, so `.xterm-rows` is empty.

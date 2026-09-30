@@ -352,8 +352,25 @@ has had the current Kit in hand (`kitHandlers`: made it, joined with it, or had 
 another) is removed only with a new Kit. A hub gone back in time is republished to from a device
 (§7.3), and only over a list that is an earlier copy of the device's own (`isPrefixOf`); the pin and
 the anchor go only with sign-out. Every walk of the change feed is paged and bounded (`feedStep`),
-and every answer is read under a 16 MiB cap. Still to build: the relay's host and guest sides (spec
-H3), and `SshReach` on T3 hosts.
+and every answer is read under a 16 MiB cap. Still to build: `SshReach` on T3 hosts.
+
+REMOTE between the owner's devices ("Other machines", spec §6, H3) is `hub/remote.ts` inside the
+service, playing both parts. Over presence each device sends a STATUS sealed under the epoch's
+presence key (from the vault key; the hub keeps the last one per connected device in memory and
+forwards it blind): its name, platform and — only while its owner ticked "Let my other devices see
+and open my sessions" there (`hub.shareSessions`, default off) — a summary of its sessions, a
+project's folder NAME and a title, never a path. A GUEST opens one as a remote tab: a relay from the
+hub, `RelayChannel` (`hub/channel.ts`: the handshake against keys its own verified chain holds, then
+AES-GCM with a counter per direction; any dropped, repeated, reordered or edited frame closes it),
+an `attach` naming the session, then the phone's own pty-socket protocol. The HOST decides
+(`attachDecision`): not sharing or no such session refuses; an Always grant (`hub.grants`, T0) or a
+live Allow once serves; anything else asks the owner in a strip — Allow once / Always / Deny,
+refused after 60 s. Allow once reaches that one session only (`relayScopeVerdict`: not even the
+session list, whose rows carry paths) and outlives a dropped relay by two minutes. Every relayed
+request and socket runs the phone server's own handlers (`api`, `relaySocket`) in a second
+`RemoteServer` that is never started — so it binds nothing and works with Phone access off — after
+the grant's mode (`relayFrameVerdict`) and the answer's reach. Large frames go as `part`s: a full
+pty replay measures past the hub's 1 MiB frame cap (gotcha 142).
 
 ## Remote access
 
@@ -958,6 +975,19 @@ npm run verify:hub-client     # the hub CLIENT: what each tier offers and what n
                               # revoker, carried forward by the rest), an old-epoch item a removed
                               # device forged, a feed that never ends. Twenty-three fixes mutated
                               # back one at a time each turn it red
+npm run verify:hub-relay      # "Other machines": two RelayChannels through an in-memory relay
+                              # that plays the hub — forwarding, and dropping, repeating,
+                              # reordering, reflecting and rewriting frames, swapping the host's
+                              # ephemeral key, answering as the host with its own key, naming
+                              # the wrong guest, a removed device: each closes the channel; a
+                              # 1.5 MB replay cut into parts under the 1 MiB cap and joined byte
+                              # for byte. The sealed status (relabelled, re-epoched, edited: no
+                              # open; another machine's text cut to size; a pinned vector). The
+                              # host's rules (attachDecision, the Allow once grace, the scope).
+                              # Then two HubRemotes through a fake hub with a fake pty: list,
+                              # ask, Allow once / Always / Deny, type and see the echo, revoke,
+                              # Disconnect, sharing off, a raw guest reaching outside its scope,
+                              # and a canary no relayed byte carries in the clear
 npm run verify:install        # the one-line installer and the endpoint that serves it: the whole
                               # User-Agent matrix through the Worker's routing rule (PowerShell
                               # before anything browser-shaped, and HTML as the fallback), the
@@ -1238,6 +1268,13 @@ src/main/         Electron main process
   hub/sshKeys.ts    ~/.ssh key pairs by their .pub, one private key read on share, a received
                     key written `wx` 0600 and an IdentityFile appended (`ssh -G -F` when the
                     config is not the passwd home's). Paths injectable
+  hub/channel.ts    one end of an E2E relay: the handshake against keys THIS device's chain
+                    holds, per-direction AES-GCM with counters, `part` frames. Transport
+                    agnostic, no electron import. verify:hub-relay
+  hub/remote.ts     "Other machines" (HubRemote): the sealed presence status, remote tabs (the
+                    guest), and relays asked of this machine (the host: the owner's question,
+                    grants, the scope, relayed requests and sockets through the phone server's
+                    handlers). No electron import. verify:hub-relay
   accounts.ts       an agent account's folder, `~/.stoke/accounts/<cli>-<slug>` (not userData:
                     dev and packaged differ, and the `stoke` command reads it with no app),
                     realpath'd once — Claude's Keychain item is named after that exact string
@@ -1385,7 +1422,11 @@ src/main/         Electron main process
     inject/extract.js runs IN the page; markdown + refs + find. No deps.
   remote/           phone access
     server.ts         loopback HTTP + WebSocket, token auth, tailnet listener, and
-                      /api/theme so the phone paints the desktop's own palette
+                      /api/theme so the phone paints the desktop's own palette. Its routes
+                      (`api`) and socket handlers also serve the hub relay, from a second
+                      instance main never starts (`relayRequest`, `relaySocket`)
+    socket.ts         `PhoneSocket`, the part of `ws` the handlers use, and `VirtualSocket`,
+                      a relayed one. No electron import
     folders.ts        the phone's folder routes minus HTTP: the places it may reach
                       (realpath'd, `remoteFolderBases`), one folder's subfolders under the
                       deadline, and Start here / New folder as a project. Every WHERE is
@@ -1416,6 +1457,14 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     before the relaunch pill or "Restart and install" kills a turn in flight.
                     Wait is the focused button. In `overlayOpen`, so the docked browser comes
                     off the window while it is up (gotcha 14). Gotcha 82
+  src/components/OtherMachines.tsx  the sidebar's "Other machines" group: the owner's other
+                    signed-in desktops online now and, where their owner shares them, their
+                    sessions; a click opens one as a remote tab. A group, never an overlay
+  src/components/RemoteTerminal.tsx  a remote tab: the other machine's pty through the relay,
+                    held at that pty's grid (decideResize `native`, gotcha 87), never typing
+                    xterm's own reports, under a banner saying whose it is and the link's state
+  src/components/RemoteHostStrip.tsx  on the host, `.main-col` strips: "Let <device> open
+                    <session>?" Allow once / Always / Deny, and who is attached, Disconnect
   src/components/SshKeyPrompt.tsx  "E2E box asked for a password. Set up key login?" — a
                     `.main-col` row, never an overlay (gotcha 14). Add a key opens the
                     "Add key to …" tab (App's `startSshEnroll`); the strip then reports
@@ -1448,8 +1497,10 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     address, sign-in or invite sign-up, the vault and its Recovery Kit (shown once,
                     file or print, a group typed back), joining by the code or the Kit, what syncs,
                     SSH keys (share one, install by a press), conflict notes, devices (rename,
-                    remove with the Kit), a new Kit, sign-out. Draws main's `HubView` and presses
-                    `window.stoke.hub`; never writes `settings.hub`, never sees a key
+                    remove with the Kit), Other machines (the share tick, the devices always
+                    allowed, Disconnect), a new Kit, sign-out. Draws main's `HubView` and
+                    `HubRemoteView` and presses `window.stoke.hub`; never writes `settings.hub`,
+                    never sees a key
   src/components/SpeechServiceSettings.tsx  Settings → Voice's speech service: the provider
                     picker, the sidecar's address or a custom server's base URL, the model
                     (a list plus "Another model…", free text for custom), a key per provider
@@ -1553,7 +1604,9 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     signed device list: `verifyChain`, `compareToPinned`), pairing.ts (commit,
                     six-digit code, Recovery Kit format), items.ts (path grammar, T1_KEYS,
                     envelope, `putVerdict`, `decideConflict`), relay.ts (handshake, frames,
-                    RELAY_ROUTES, grants), edge.ts (`hubUrlVerdict`, the edge Worker's rules,
+                    `attach` and `part`, RELAY_ROUTES, grants), remote.ts ("Other machines": the
+                    status a device seals, `attachDecision`, `relayScopeVerdict`, the Allow once
+                    grace, the views), edge.ts (`hubUrlVerdict`, the edge Worker's rules,
                     `edgeVerdict`), settings.ts (the T0 `hub` block, `applySyncedSettings`,
                     `sshKeyTarget`), client.ts (the desktop client's rules: `localValues`,
                     `planSync`, `incomingFrom`, `sshKeyInstallPlan`, hub-state.json's shape, the

@@ -479,3 +479,40 @@ added afterwards never reached the removed one.
 > Kit, and only once that is confirmed posts the `add` and a `rotate` naming the new Kit in ONE append
 > (`postRecovery`) — the typed Kit never opens an epoch the joining device is in. Mutated back, the
 > refusal to remove C with the Kit C made, and C's "nothing posted before the new Kit", each go red.
+
+## 142. A pty's replay passes the hub's 1 MiB frame cap once it is JSON inside JSON, and a status is ordered only by the sender's own clock
+
+**Found 2026-10-01, building "Other machines" (the hub relay's host and guest, spec §6).** A remote
+tab speaks the phone's pty-socket protocol inside the encrypted channel, and the first thing a pty
+socket sends is `attached`, carrying the session's scrollback — up to `MAX_HISTORY` (512 K
+characters) — as a JSON string; the relay then wraps that JSON as the `data` of a `ws-msg`, a
+second JSON layer, and seals it as ONE hub frame. The hub closes any relay that sends a frame over
+`RELAY_MAX_FRAME_BYTES` (1 MiB) with 1009. Measured with node: 512 K characters of a Claude-like
+redraw stream (`ESC[2K ESC[1A …` with box drawing, what Ink writes all day) come to **1,234,730
+bytes** once wrapped — 2.36 bytes per character, because every ESC becomes `\u001b` and then
+`\\u001b`. Every long Claude session would have failed to attach, from any machine, with a close
+code that reads like a network fault. (A lighter sample, mostly text, came to 952 KB: under the cap,
+which is how a first test passes.) So every inner frame goes through `relayFrameParts`: past
+`RELAY_CHUNK_CHARS` (200 K UTF-16 units, at most ~600 KB sealed) it is sent as `part` frames the
+receiving `RelayChannel` joins before parsing, capped at `RELAY_MAX_MESSAGE_CHARS`, and a part never
+holds a part. `verify:hub-relay` sends a 1.5 MB replay (escapes, accents, emoji) and checks every
+sealed part is under the cap and the join is byte-for-byte.
+
+From the same round: **a presence status must carry a time only its SENDER moves forward.**
+`newerStatus` keeps the later of two statuses from one device, so a hub replaying an old one
+cannot roll the list back — and the first `HubRemote` stamped each status with its raw wall clock.
+Under `verify:hub-relay`'s fixed clock every `at` was equal, so the second status — the one that
+said "sharing" — was dropped without a word and the other machine kept "Not sharing its sessions";
+it showed only as an `until()` that quietly timed out. On a real clock the same drop happens to any
+two statuses sent inside one millisecond, and to every status after the sender's clock steps back
+(not reproduced live). `publish` now stamps `max(now, lastAt + 1)`, the hybrid clock items already
+use (`nextEditedAt`).
+
+The rules around the host that are easy to widen by accident, all in `src/shared/hub/remote.ts`
+and held by `verify:hub-relay` (dropping the scope check, the named-guest check, the host's
+active-device check or the sharing refusal each turned it red): a frame is served only after BOTH
+the grant's mode (`relayFrameVerdict`) and the answer's reach (`relayScopeVerdict`); "Allow once"
+reaches one session and NOT `/api/sessions`, whose rows carry every session's folder path (the
+presence summary carries folder names only); the host refuses an `hs1` whose guest is not the
+device the hub named, and takes no relay at all from a device its own chain does not hold as
+active (gotcha 140).

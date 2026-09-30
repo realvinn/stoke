@@ -605,6 +605,20 @@ Server → device frames (`PresenceServerFrame`): `welcome` (online device ids),
 (protocol, app version), `ping`. Reconnect with backoff 1 s → 60 s, jittered; on every (re)connect
 pull the chain and items, since frames are only hints.
 
+> **Built 2026-10-01 (H3, `src/main/hub/remote.ts`).** Presence also carries each device's
+> **status** — `{t:'status', status: SealedStatus | null}` up, `{t:'status', device, status}` down —
+> for the "Other machines" list: its name, platform and, only while its owner ticked "Let my other
+> devices see and open my sessions" on THAT device (`hub.shareSessions`, default **off**; it replaced
+> the never-read `remoteHost`, default on, under a new name so no stored default can read as on), a
+> summary of its running sessions: `ptyId`, the project's folder NAME (never a path), title, status,
+> agent, context. It is sealed under `presenceKey(VK_e)` (HKDF, label `presence-key`) with AAD
+> `presence-status {account, epoch, device}`, so the hub forwards it blind, cannot hand one device's
+> status to another as its own, and a device removed by a revoke cannot read the next epoch's. The hub
+> holds the last one per connected device in memory only (never logged or stored), hands the others'
+> to a device that comes online, and forwards a withdrawal as `null`. A reader opens only the current
+> epoch's, only for a device its verified chain holds as active and the hub says is online, and keeps
+> the later of two by `at`, which the sender moves forward itself (`max(now, lastAt + 1)`, gotcha 142).
+
 ### 6.2 Opening a relay
 
 The guest G posts `POST /v1/relays {host}`; the hub checks both are active in the same account and
@@ -638,6 +652,12 @@ After `hs3` every frame is binary: AES-256-GCM under the direction's key, nonce
 counters from 0, strictly sequential (a WebSocket is ordered; a gap or repeat is a closed relay).
 The plaintext is JSON (`RelayInnerFrame`):
 
+- guest first: `attach {ptyId}` — the session this relay is for, which the host's question names
+  (built 2026-10-01);
+- `part {data, more?}`: a piece of the next frame's JSON text; the receiver joins them before parsing
+  (`relayFrameParts`). A pty's replay is 1.23 MB as JSON inside JSON for 512 K characters of Ink
+  redraws, past the 1 MiB cap (gotcha 142);
+
 - host first: `ready {mode, host: {label, platform}}` or `refused {reason}` and close;
 - `req {id, method, path, body?}` → `res {id, status, body}` — the phone API, unchanged;
 - `ws-open {id, path}`, `ws-msg {id, data}`, `ws-close {id, code?, reason?}` — `/ws/events` and
@@ -660,6 +680,22 @@ the hub works with Phone access off and binds nothing new. The relay can carry o
   refuses in `view` every non-GET request and every `input`, `submit` and `resize` pty frame.
 - Every attach shows in the title bar while it lasts and in a log; one click drops all remote
   guests. A revoked device is refused because it is no longer in the chain the host verifies.
+
+> **Built 2026-10-01 (H3).** The switch is `hub.shareSessions`, default OFF (above), and it is the
+> master switch: off refuses every relay whatever `grants` says. The question is a strip in the
+> host's main column (never an overlay, gotcha 14) naming the device, its platform, its key
+> fingerprint and the SESSION: "Let <device> open <session> on this computer?" — **Allow once**,
+> **Always**, **Deny** — refused after `RELAY_ASK_MS`. Always stores `{mode: 'full'}` in `hub.grants`;
+> Allow once stores nothing and is scoped (`relayScopeVerdict`): that session's pty socket and prompt
+> answer, the host's name and theme — not other ptys, not `/api/sessions` (its rows carry folder
+> paths), no transcripts, history, folders or new sessions — and it outlives a dropped relay by
+> `ONCE_GRACE_MS` (2 min) so a reattach does not ask again. Every frame is judged by the grant's mode
+> AND the answer's reach before the phone server's own handlers run it, in a `RemoteServer` instance
+> that is never started. The `view` mode exists in the contract; the question offers only full
+> control. The indicator is a strip on the host ("<device> is attached to <session> here", with
+> Disconnect, which also drops every Allow once), a banner and tab mark on the guest, and Settings ›
+> Account & sync lists Always grants with Take back. A remote tab never resizes the host's pty (the
+> phone's `decideResize` in `native` layout) and never types xterm's own reports.
 
 ### 6.6 What the relay (and the hub) sees, and failure
 
@@ -753,7 +789,10 @@ Kit's wrap for every epoch it holds (ciphertext, fetched beside its own) for exa
 | `src/shared/hub/chain.ts` | `ChainEntry`, `verifyChain`, `compareToPinned`, the signing and link texts |
 | `src/shared/hub/pairing.ts` | pair states, commit and SAS texts, `sasDigits`, the Recovery Kit format |
 | `src/shared/hub/items.ts` | path grammar, `T1_KEYS`, envelope shape, AAD/plaintext, `putVerdict`, `decideConflict`, `nextEditedAt`, `versionRegression` |
-| `src/shared/hub/relay.ts` | handshake frames and texts, `relayNonce`, `relayFrameAad`, inner frames, `RELAY_ROUTES`, grants, `relayFrameVerdict` |
+| `src/shared/hub/relay.ts` | handshake frames and texts, `relayNonce`, `relayFrameAad`, inner frames (`attach`, `part`), `RELAY_ROUTES`, grants, `relayFrameVerdict` |
+| `src/shared/hub/remote.ts` | the sealed status's plaintext and its parser, `attachDecision`, `relayScopeVerdict`, the Allow once grace, the "Other machines" views |
+| `src/main/hub/channel.ts` | `RelayChannel`: one end of a relay, handshake to frames, transport agnostic |
+| `src/main/hub/remote.ts` | `HubRemote`: status publish/open, the guest's remote tabs, the host's question and grants |
 | `src/shared/hub/edge.ts` | `hubUrlVerdict`, `hubEndpoint`, the edge Worker's forwarding rules, the hub's `edgeVerdict` |
 | `src/shared/hub/settings.ts` | `HubSettings`, defaults and hydrate, `t1ValuesFrom`/`t2ValuesFrom`, `hostPayloadFor`, `applySyncedSettings` (T1/T2/T3 folding, host adoption), `sshKeyTarget`, `SshKeyPayload` |
 | `src/main/hub/crypto.ts` | the node:crypto reference: device keys, sign/verify, vault wraps, recovery, item seal/open, relay handshake and ciphers, scrypt |
@@ -777,7 +816,7 @@ imports only `node:crypto` and `src/shared`.
 | **H0** (this change) | This spec, the contract, the crypto reference, `verify:hub` | `npm run check` green |
 | **H1** server | `stoke-hub` on Node 24 + `node:sqlite`: bootstrap, accounts, sessions, signed requests, chain, wraps, items, pairing, presence; `invite`, `backup`, `reset-password` subcommands; LAN listener | Two sandbox Stokes pair over a loopback hub and converge a setting; a DB dump holds no planted canary |
 | **H2** client | Settings › Hub: URL, sign in/up, devices, pair/approve with the code, Recovery Kit, revoke, sync switches, conflict notes, T4 picker | An API key and an SSH key typed on one sandbox arrive on another; revocation rotates — **met 2026-10-01** (Settings › Account & sync, `src/main/hub/service.ts`, `verify:hub-client`; two sandbox Stokes on a loopback hub). Not built: republishing after a restore (§7.3), `SshReach` on hosts |
-| **H3** relay | Presence, relays, host grants and dialog, an "Other machines" list attaching through the phone client | A second sandbox lists and types into the first's stub session through the hub |
+| **H3** relay | Presence, relays, host grants and dialog, an "Other machines" list attaching through the phone client | A second sandbox lists and types into the first's stub session through the hub — **met 2026-10-01** (sidebar › Other machines, remote tabs, the host's strip; `verify:hub-relay`; two sandbox Stokes on a loopback hub, a stub claude on A: B listed it once A ticked the box, A asked, Allow once, B typed a canary and saw the stub's echo, A showed B attached; the canary was in neither the hub's log nor its database). Not built: phone through the hub, a view-only answer in the question |
 | **H4** edge | `stoke-hub-edge` Worker + owner steps (§7.4) | The owner's two machines sync through `https://stoke.vinn.dev/hub` |
 | Later | Phone through the hub (WebCrypto keys, no vault), direct WebRTC, public multi-tenant | — |
 
