@@ -8,7 +8,9 @@
  * both tsconfigs, and the node project has no DOM lib).
  */
 
-import { sortSessionRows, type PhoneSessionStatus } from './remotePhone.ts'
+import { folderChoices, type FolderChoice, type FolderGroup, type HostLike, type ProjectLike } from './launcher.ts'
+import { basenameOf, pathKey, pathRulesFor } from './paths.ts'
+import { MAX_FOLDER_NAME, newFolderNameProblem, sortSessionRows, type PhoneSessionStatus } from './remotePhone.ts'
 
 /* ------------------------------------------------------------ the list */
 
@@ -699,36 +701,106 @@ export function middleTruncate(text: string, max: number): string {
   return `${text.slice(0, head)}…${text.slice(text.length - (keep - head))}`
 }
 
-/** The project picker's groups — audit PX-11. */
-export interface ProjectLike {
+/* ------------------------------------------------------ where to start */
+
+/** One `/api/projects` row, as far as the picker needs it (phone contract point 11). */
+export interface PickerProject {
   path: string
   name: string
+  /** The name the user gave it; absent from a desktop older than point 11. */
+  label?: string | null
   pinned: boolean
-  lastActivityAt: number | null
+  exists: boolean
   sessionCount: number
+  lastActivityAt: number | null
 }
 
-export function groupProjects<T extends ProjectLike>(
-  projects: readonly T[],
-  query: string,
-  now: number
-): { id: 'pinned' | 'recent' | 'all'; label: string; rows: T[] }[] {
-  const q = query.trim().toLowerCase()
-  const match = (p: T): boolean => !q || p.name.toLowerCase().includes(q) || p.path.toLowerCase().includes(q)
-  const byRecent = (a: T, b: T): number => (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0)
-  const week = 7 * 24 * 60 * 60 * 1000
-  const found = projects.filter(match)
-  const pinned = found.filter((p) => p.pinned).sort(byRecent)
-  const recent = found.filter((p) => !p.pinned && p.lastActivityAt !== null && now - p.lastActivityAt <= week).sort(byRecent)
-  const rest = found
-    .filter((p) => !p.pinned && !recent.includes(p))
-    .sort((a, b) => a.name.localeCompare(b.name))
-  return [
-    { id: 'pinned' as const, label: 'Pinned', rows: pinned },
-    { id: 'recent' as const, label: 'Recent', rows: recent },
-    { id: 'all' as const, label: q ? 'Other matches' : 'All projects', rows: rest }
-  ].filter((g) => g.rows.length > 0)
+/** What the phone labels the desktop's "Open folder…": it browses instead of opening a dialog. */
+export const BROWSE_LABEL = 'Browse folders…'
+
+/**
+ * The New session sheet's first step: the desktop switcher's own list
+ * (`folderChoices` — Recent projects, Elsewhere: Default folder and Scratch
+ * session, Remote machines, then Browse), so a phone and the desktop offer
+ * the same places in the same order. The old picker (PX-11) grouped only the
+ * projects the server sent, and it sent sixty.
+ *
+ * A project that IS the default folder is listed once, as the default folder
+ * — macOS lists `/tmp/x` as `/private/tmp/x`, so either spelling counts.
+ */
+export function phonePickerGroups(input: {
+  projects: readonly PickerProject[]
+  defaultCwd: string
+  hosts: readonly HostLike[]
+  query: string
+  platform: string
+}): FolderGroup[] {
+  const rules = pathRulesFor(input.platform)
+  const def = pathKey(input.defaultCwd, rules)
+  const isDefault = (p: string): boolean => {
+    const k = pathKey(p, rules)
+    return !!def && (k === def || k === `/private${def}` || `/private${k}` === def)
+  }
+  const projects: ProjectLike[] = input.projects
+    .filter((p) => !isDefault(p.path))
+    .map((p) => ({
+      path: p.path,
+      name: p.name,
+      label: p.label ?? null,
+      exists: p.exists,
+      pinned: p.pinned,
+      sessionCount: p.sessionCount,
+      lastModified: p.lastActivityAt
+    }))
+  return folderChoices({ projects, defaultCwd: input.defaultCwd, hosts: input.hosts, query: input.query }).map((g) => ({
+    ...g,
+    items: g.items.map((c): FolderChoice => (c.kind === 'open' ? { ...c, label: BROWSE_LABEL } : c))
+  }))
 }
+
+/** One step of the Browse breadcrumb. */
+export interface Crumb {
+  label: string
+  path: string
+}
+
+/**
+ * The Browse step's breadcrumb: the place (`/api/folders`' `base`) and then
+ * each folder below it down to `path` — never above the place, where the phone
+ * may not go. Separator-agnostic: the desktop may be Windows.
+ */
+export function breadcrumb(path: string, base: string): Crumb[] {
+  const strip = (p: string): string => p.replace(/[\\/]+$/, '') || p
+  const p = strip(path.trim())
+  const b = strip(base.trim())
+  const sep = b.includes('\\') && !b.includes('/') ? '\\' : '/'
+  const head: Crumb = { label: basenameOf(b) || b, path: b }
+  if (!p || p === b) return [head]
+  const prefix = b.endsWith(sep) ? b : b + sep
+  if (!p.startsWith(prefix)) return [{ label: basenameOf(p) || p, path: p }]
+  let at = b
+  return [
+    head,
+    ...p
+      .slice(prefix.length)
+      .split(/[\\/]+/)
+      .filter(Boolean)
+      .map((seg) => {
+        at = at.endsWith(sep) ? at + seg : at + sep + seg
+        return { label: seg, path: at }
+      })
+  ]
+}
+
+/**
+ * The New folder field's hint: nothing while it is empty (the button is
+ * simply off), else why the server would refuse the name, else null.
+ */
+export function newFolderHint(name: string): string | null {
+  return name.trim() ? newFolderNameProblem(name) : null
+}
+
+export { MAX_FOLDER_NAME, newFolderNameProblem }
 
 /**
  * The agent the New session sheet opens on: the desktop's default agent

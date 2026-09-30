@@ -17,6 +17,7 @@
  */
 import {
   appendFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   realpathSync,
@@ -45,6 +46,7 @@ import {
   migrateSymlinkedProjectKeys
 } from '../src/main/projects.ts'
 import { defaultCwdCandidates, resolveDefaultCwd } from '../src/main/workspaceRoots.ts'
+import { addRemoteProject, browseRemoteFolder, resolveFolderBases } from '../src/main/remote/folders.ts'
 import { ContextWatcher } from '../src/main/context.ts'
 import {
   advanceCursor,
@@ -629,6 +631,125 @@ try {
     'and the row is gone, not merged back in from a surviving stale key',
     removedRow,
     undefined
+  )
+
+  /*
+   * The phone's Start here / New folder (phone contract point 13) is one more
+   * door a folder comes in by, so gotcha 91 applies to it: a folder picked or
+   * created under a SYMLINKED place must be remembered by its real path. The
+   * one-row check alone could not fail — `listProjects` collapses a symlinked
+   * key on read — so what `remember` was handed is asserted exactly.
+   */
+  console.log('\na folder added from a phone (POST /api/projects)')
+  const phoneRoot = join(tmp, 'phone-root')
+  mkdirSync(phoneRoot)
+  const phoneLink = join(tmp, 'phone-link')
+  symlinkSync(phoneRoot, phoneLink)
+  const escapeTarget = join(tmp, 'phone-elsewhere')
+  mkdirSync(escapeTarget)
+  symlinkSync(escapeTarget, join(phoneRoot, 'out'))
+  writeFileSync(join(phoneRoot, 'afile'), 'x')
+  let phoneSettings = listSettings({})
+  const remembered: string[] = []
+  const phoneDeps = {
+    // The place is Settings' root, stored under its symlinked spelling.
+    bases: () => resolveFolderBases({ roots: [phoneLink], defaultCwd: '', projects: [], platform: process.platform }),
+    platform: process.platform,
+    remember: (realPath: string): string => {
+      remembered.push(realPath)
+      phoneSettings = { ...phoneSettings, ...manualProjectPatch(phoneSettings, realPath, nativeRules) } as Settings
+      return realPath
+    }
+  }
+  const fresh = join(phoneRoot, 'fresh')
+  const made = await addRemoteProject({ parent: phoneLink, name: ' fresh ' }, phoneDeps)
+  check('New folder under a symlinked place: created, and reported by its real path', made.ok ? [made.body.path, made.body.created] : made, [fresh, true])
+  check('the folder is really there', statSync(fresh).isDirectory(), true)
+  const twice = await addRemoteProject({ parent: phoneLink, name: 'fresh' }, phoneDeps)
+  check('a second tap finds it there: success, not an error (gotcha 20)', twice.ok ? [twice.body.path, twice.body.created] : twice, [fresh, false])
+  const byLink = await addRemoteProject({ path: join(phoneLink, 'fresh') }, phoneDeps)
+  check('Start here on the symlinked spelling lands on the same real path', byLink.ok ? byLink.body.path : byLink, fresh)
+  check('remember was only ever handed the real path', remembered, [fresh, fresh, fresh])
+  const phoneListed = await listProjects(listSettings({ projectMeta: phoneSettings.projectMeta }))
+  check(
+    'and the sidebar lists it once, under the real path',
+    phoneListed.filter((x) => x.path === fresh || x.path === join(phoneLink, 'fresh')).map((x) => x.path),
+    [fresh]
+  )
+  const before = remembered.length
+  const outside = await addRemoteProject({ parent: tmp, name: 'nope' }, phoneDeps)
+  check('a parent outside every place: 403, and nothing is created', [outside.ok ? 'added' : outside.status, existsSync(join(tmp, 'nope'))], [403, false])
+  const out = await addRemoteProject({ parent: phoneLink, name: 'out' }, phoneDeps)
+  check('a name that is a symlink out of the place: 403 once resolved', out.ok ? 'added' : out.status, 403)
+  const fileInWay = await addRemoteProject({ parent: phoneLink, name: 'afile' }, phoneDeps)
+  check('a file already has that name: 409', fileInWay.ok ? 'added' : fileInWay.status, 409)
+  const climb = await addRemoteProject({ parent: phoneLink, name: '../climbed' }, phoneDeps)
+  check('a name with a separator: 400, nothing created', [climb.ok ? 'added' : climb.status, existsSync(join(tmp, 'climbed'))], [400, false])
+  const traversal = await addRemoteProject({ path: `${phoneLink}/../phone-elsewhere` }, phoneDeps)
+  check('a path with ..: 400', traversal.ok ? 'added' : traversal.status, 400)
+  const empty = await addRemoteProject({}, phoneDeps)
+  check('a body naming nothing: 400', empty.ok ? 'added' : empty.status, 400)
+  check('none of the refusals remembered anything', remembered.length, before)
+
+  /*
+   * Review finding on gotcha 121: Start here on a place's OWN folder adds it
+   * as a project, and the folder holding it used to become a place on the
+   * next listing — one folder up per tap, until the depth floor (the home
+   * folder, a volume, `/private/var` from a temp project). So: a real, deep
+   * temp tree, the phone's own add route, every place tapped for three rounds,
+   * and the places recomputed from the grown project list each time, exactly
+   * as `RemoteServer.folderBases` does. They must not move.
+   */
+  console.log('\nStart here on a place itself never widens the places')
+  const tower = join(tmp, 'tower')
+  const climbRoot = join(tower, 'root')
+  const climbRootLink = join(tower, 'root-link')
+  const climbDefault = join(tower, 'home', 'default')
+  const climbWork = join(tower, 'deep', 'work')
+  mkdirSync(climbRoot, { recursive: true })
+  mkdirSync(climbDefault, { recursive: true })
+  mkdirSync(join(climbWork, 'app'), { recursive: true })
+  symlinkSync(climbRoot, climbRootLink)
+  // The project list the places come from: one Claude already knows, plus
+  // whatever the phone adds (what `listProjects` returns once it is remembered).
+  const known: string[] = [join(climbWork, 'app')]
+  const climbDeps = {
+    bases: () =>
+      resolveFolderBases({ roots: [climbRootLink], defaultCwd: climbDefault, projects: known, platform: process.platform }),
+    platform: process.platform,
+    remember: (realPath: string): string => {
+      if (!known.includes(realPath)) known.push(realPath)
+      return realPath
+    }
+  }
+  const placesNow = async (): Promise<string[][]> => (await climbDeps.bases()).map((b) => [b.kind, b.path])
+  const startPlaces = await placesNow()
+  check(
+    'three places: the root (by its real path), the default folder, the folder holding the project',
+    startPlaces,
+    [['root', climbRoot], ['default', climbDefault], ['parent', climbWork]]
+  )
+  const taps: string[] = []
+  for (let round = 0; round < 3; round++) {
+    for (const place of await climbDeps.bases()) {
+      const tap = await addRemoteProject({ path: place.path }, climbDeps)
+      taps.push(tap.ok ? tap.body.path : `refused ${tap.status}`)
+    }
+  }
+  check(
+    'Start here on each place, three rounds: every tap is allowed, and adds that place',
+    taps,
+    [...startPlaces, ...startPlaces, ...startPlaces].map(([, path]) => path)
+  )
+  check('the three places are projects now', known.slice(1), [climbRoot, climbDefault, climbWork])
+  check('and the places have not moved', await placesNow(), startPlaces)
+  const above = await browseRemoteFolder(tower, await climbDeps.bases(), process.platform)
+  check('the folder above them all is still 403', above.ok ? 'served' : above.status, 403)
+  const madeAbove = await addRemoteProject({ parent: tower, name: 'planted' }, climbDeps)
+  check(
+    'and nothing can be created there',
+    [madeAbove.ok ? 'added' : madeAbove.status, existsSync(join(tower, 'planted'))],
+    [403, false]
   )
 } finally {
   rmSync(tmp, { recursive: true, force: true })

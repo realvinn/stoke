@@ -1612,6 +1612,96 @@ a {
   font-weight: 650;
 }
 
+/* The name alone ellipsises; the hint and the tag keep their room. */
+.prow-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Which of two same-named projects this is (`disambiguate`). */
+.prow-hint {
+  flex-shrink: 1;
+  min-width: 0;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-faint);
+}
+
+/* ------------------------------------------------------------- browse */
+
+.crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 4px;
+  margin: 0 0 6px;
+  font-size: 14px;
+}
+
+.crumb {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+button.crumb:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.crumb[aria-current='page'] {
+  color: var(--text);
+}
+
+.crumb-sep {
+  color: var(--text-faint);
+}
+
+.browse-note {
+  margin: 10px 8px 0;
+  font-size: 13px;
+  color: var(--text-faint);
+}
+
+.newfolder {
+  margin-bottom: 8px;
+}
+
+.field-input {
+  min-height: var(--tap);
+  padding: 0 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  /* 16px or iOS zooms the page into the field. */
+  font-size: 16px;
+  outline: none;
+}
+
+.field-input:focus {
+  border-color: var(--accent-ink);
+}
+
+.field-error {
+  margin: 0 4px 8px;
+  font-size: 13px;
+  color: var(--danger);
+}
+
 .confirm {
   display: flex;
   flex-direction: column;

@@ -1231,7 +1231,9 @@ export function App(): React.JSX.Element {
           ultracode: false,
           status: 'running',
           exitCode: null,
-          hostId: null,
+          // A phone's SSH start: main sent the alias as `cwd` and the host's
+          // label as `name`, as `startHostSession` builds its own tab (gotcha 18).
+          hostId: info.hostId ?? null,
           selectedPath: null,
           expandedPath: null
         }
@@ -1308,6 +1310,25 @@ export function App(): React.JSX.Element {
       offSshEnroll()
     }
   }, [refreshProjects])
+
+  /*
+   * The sidebar's list is read from main, not from `settings`, so a folder
+   * written from somewhere other than this window — a phone's Browse or New
+   * folder (`POST /api/projects`), a `stoke .` — waited for a window focus to
+   * appear. Keyed on what `listProjects` reads from settings, compared as a
+   * string: every push is a fresh object, and a slider's pushes must not
+   * re-list. The first settings to arrive are skipped; boot lists already.
+   */
+  const projectSourcesKey = settings
+    ? JSON.stringify([settings.projectMeta, settings.projectRoots, settings.hiddenProjects, settings.pinnedProjects])
+    : null
+  const projectSourcesSeen = useRef<string | null>(null)
+  useEffect(() => {
+    if (projectSourcesKey === null) return
+    const first = projectSourcesSeen.current === null
+    projectSourcesSeen.current = projectSourcesKey
+    if (!first) void refreshProjects()
+  }, [projectSourcesKey, refreshProjects])
 
   // The configured folder can change in Settings; re-resolve when it does so
   // the launcher and Settings hint never disagree.

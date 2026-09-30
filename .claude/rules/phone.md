@@ -248,6 +248,62 @@ field never commits and the edit reads as "not saved" in working code. Dispatch
 exactly that. Measured with fake sidecars on 17991/17992 and the phone server on loopback: the same
 running server answered `from A`, then `from B` after the Voice edit, with no restart between.
 
+## 121. "A known project's parent" includes `/Users` and `/` on real machines, so the phone's folder allow-list needs a floor
+
+**Found 2026-09-30, building the phone's Browse and New folder (phone contract points 12, 13).** The
+decision was that a phone may browse and create folders only under Settings' project roots, the
+default folder, and the folder holding each known project — never anywhere else, because the bearer
+key is the whole defence (Access headers are presence-checked, never verified). Read literally, the
+third source is not narrow. Claude Code records a project wherever `claude` was ever run, and on
+the owner's machine that includes the home folder itself (`paths.ts` records `/Users/thevinh` as a
+registered project). Its parent is `/Users` — every account on the machine — and a project run at
+`/` or a drive root has the whole disk as its parent. A leaked key would then list and create
+folders anywhere the desktop user can write.
+
+So `remoteFolderBases` drops any place shallower than `MIN_FOLDER_BASE_DEPTH` (two folders below the
+root, a drive letter not counted: `/Users/v` passes, `/Users`, `/`, `C:\Users` do not), folds a
+place inside another into it, and is computed from REAL paths. `remoteFolderVerdict` judges the
+REQUESTED path's shape first (`isPlainFolderPath`: absolute, no `.`/`..`, no NUL — refused before
+anything resolves it) and then its realpath: a symlink inside a root that points out is outside,
+and an out-of-place path answers 403 whether or not it exists, so the route is no existence probe.
+Case folds only where the OS does (`pathKey`) — the old `knownCwd` lower-cased unconditionally, so
+on Linux a case variant of a known project passed as it. A new folder's name is one segment
+(`newFolderNameProblem`), and an `EEXIST` is judged again as an existing folder, so a pre-planted
+symlink of that name is refused rather than remembered.
+
+`verify:remote` holds the rules and runs `/api/folders` against a real temp tree (symlink out,
+sibling prefix `…/projects-old`, a file, a dot-folder, 205 subfolders); mutating `isInside`'s
+separator test turns three of them red. `verify:folders` holds the add path under a real symlinked
+place. The live half — every refusal over HTTP, and that no refused request launched anything — is
+`verify:security` against a running sandbox (43/43 on 2026-09-30, with a stub `claude` whose launch
+log stayed empty through them).
+
+> **Checked against the code on 2026-09-30** (review of the branch that added it). The floor was not
+> enough: **the phone could widen its own allow-list, one folder per tap.** Start here on a place's
+> OWN folder is allowed (`isInside` counts a place as inside itself) and adds it as a project
+> (`addRemoteProject` → `manualProjectPatch`); the next `/api/folders` listing then made that
+> project's parent a place and folded the old one into it. Tap again, climb again, down to the
+> floor: the home folder, a whole volume (`/Volumes/X`, `/mnt/c`), and — from the scratch root, a
+> place once any scratch session has history — the app's own data folder and every folder above it.
+> A session in the default folder widened it once with no add at all, since Claude then records the
+> folder as a project. Now `remoteFolderBases` lets a project lend its parent only when it is not
+> itself a place: one inside (or equal to) a root or the default folder lends nothing, and neither
+> does one that is the folder holding another project. Everything a phone may add is inside a place
+> already, so an add can shrink the places but never widen them. The price is a narrowing, never a
+> widening: a project that gains a project inside it stops lending (`~/dev/foo` plus `~/dev/foo/sub`
+> offers `~/dev/foo`, not `~/dev`, unless a sibling lends `~/dev`), and a default folder or root
+> with history no longer offers its parent. The reviewer's first wording — a project *inside* any
+> place lends nothing — was not taken: two sibling projects are each inside the other's parent, so
+> neither would lend and `~/dev` would vanish. Nor was "only projects with history, or not added by
+> hand, lend": a session in the added place gives it history in one more request, and
+> `addedManually` cannot tell a phone's add from `stoke .`'s, so every folder opened by hand would
+> stop lending. A marker of the phone's own could tell them apart, but would still miss the default
+> folder, which a session makes a project with no add at all. `verify:remote` checks every add in
+> every configuration of an 11-folder tree (44,352 adds over 12,288 configurations) and fails with
+> either half of the rule removed; `verify:folders` taps every place of a real temp tree for three
+> rounds through the add route itself and asserts the places never move and the folder above them
+> stays 403.
+
 ## 124. A Cloudflare Access header is evidence only once its signature checks out, against a team Stoke already knows
 
 **Until 2026-09-30 "Require Cloudflare Access" passed any request carrying `Cf-Access-Jwt-Assertion`

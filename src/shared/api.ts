@@ -254,6 +254,12 @@ export interface RemoteSessionStarted {
   permissionMode: PermissionMode
   model: string
   effort: EffortLevel
+  /**
+   * The SSH host a phone started this on, by id, else null. `cwd` is then the
+   * host's alias, as `startHostSession` sets it (gotcha 18). Optional so an
+   * older main's push still types.
+   */
+  hostId?: string | null
 }
 
 export interface SelfUpdateState {

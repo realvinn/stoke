@@ -54,10 +54,31 @@ export interface HostInfo {
 export interface ProjectRow {
   path: string
   name: string
+  /** The name the user gave it, or null; absent from a desktop older than point 11. */
+  label?: string | null
+  /** The parent path telling two same-named projects apart, '' when unique. */
+  hint?: string
   sessionCount: number
   lastActivityAt: number | null
   pinned: boolean
   exists: boolean
+}
+
+/** `GET /api/projects` — phone contract point 11 added `hosts` and `roots`. */
+export interface ProjectsReply {
+  defaultCwd: string
+  projects: ProjectRow[]
+  hosts?: { id: string; label: string; alias: string }[]
+  roots?: string[]
+}
+
+/** `GET /api/folders` — phone contract point 12. `path: null` is the places list. */
+export interface FolderListing {
+  path: string | null
+  base: string | null
+  up: string | null
+  folders: { name: string; path: string; kind?: 'root' | 'default' | 'parent' }[]
+  truncated: boolean
 }
 
 export interface HistoryRow {

@@ -28,7 +28,11 @@ import {
   desktopFont,
   fontToFit,
   scrollToColumn,
-  groupProjects,
+  BROWSE_LABEL,
+  breadcrumb,
+  newFolderHint,
+  newFolderNameProblem,
+  phonePickerGroups,
   groupSessionRows,
   initialAgent,
   isTerminalReport,
@@ -411,27 +415,150 @@ check('relative time', [relativeTime(1000, 1000 + 30_000), relativeTime(0, 5), r
 ])
 check('a long path keeps both ends', middleTruncate('/Users/me/dev/personal/some/deep/project', 24), '/Users/me/de…eep/project')
 check('a short path is untouched', middleTruncate('/tmp/a', 24), '/tmp/a')
-const now = 30 * 86_400_000
-const projects = [
-  { path: '/a', name: 'alpha', pinned: false, lastActivityAt: now - 86_400_000, sessionCount: 1 },
-  { path: '/b', name: 'beta', pinned: true, lastActivityAt: null, sessionCount: 0 },
-  { path: '/c', name: 'charlie', pinned: false, lastActivityAt: now - 20 * 86_400_000, sessionCount: 3 },
-  { path: '/z', name: 'zulu', pinned: false, lastActivityAt: now - 3600_000, sessionCount: 2 }
-]
-check(
-  'pinned, then the last 7 days newest first, then everything else by name',
-  groupProjects(projects, '', now).map((g) => [g.label, g.rows.map((p) => p.name)]),
-  [
-    ['Pinned', ['beta']],
-    ['Recent', ['zulu', 'alpha']],
-    ['All projects', ['charlie']]
-  ]
-)
-check(
-  'search matches name or path',
-  groupProjects(projects, 'CHAR', now).flatMap((g) => g.rows.map((p) => p.name)),
-  ['charlie']
-)
+/*
+ * The picker is the desktop switcher's own list (`folderChoices`), so a phone
+ * and the desktop offer the same places in the same order. It used to group
+ * only the projects the server sent — sixty — so a 61st was unreachable.
+ */
+console.log('\nthe New session picker: the desktop switcher’s list (phone contract point 11)')
+{
+  const now = 30 * 86_400_000
+  const row = (path: string, name: string, extra: Record<string, unknown> = {}) => ({
+    path,
+    name,
+    label: null,
+    pinned: false,
+    exists: true,
+    sessionCount: 1,
+    lastActivityAt: now - 3600_000,
+    ...extra
+  })
+  // Seventy projects, the oldest last: the one past the old 60 cap is `p69`.
+  const many = Array.from({ length: 70 }, (_, i) => row(`/Users/v/dev/p${i}`, `p${i}`, { lastActivityAt: now - i * 60_000 }))
+  const hosts = [{ id: 'h1', label: 'Box', alias: 'box' }]
+  const base = { defaultCwd: '/Users/v/dev', hosts, query: '', platform: 'darwin' }
+  const groups = phonePickerGroups({ ...base, projects: many })
+  const shape = (gs: ReturnType<typeof phonePickerGroups>) => gs.map((g) => [g.title, g.items.map((c) => c.kind)])
+  check(
+    'Recent projects (eight), Elsewhere (Default, Scratch), Remote machines, then Browse',
+    shape(groups),
+    [
+      ['Recent projects', Array(8).fill('project')],
+      ['Elsewhere', ['default', 'scratch']],
+      ['Remote machines', ['host']],
+      ['', ['open']]
+    ]
+  )
+  check('newest first, as the desktop ranks them', groups[0].items.slice(0, 2).map((c) => (c as { label: string }).label), ['p0', 'p1'])
+  check('the desktop’s “Open folder…” is Browse on a phone', groups.at(-1)?.items[0], { kind: 'open', label: BROWSE_LABEL })
+  check(
+    'a search reaches the project past the old cap of sixty',
+    phonePickerGroups({ ...base, projects: many, query: 'p69' })[0]?.items.map((c) => (c as { path: string }).path),
+    ['/Users/v/dev/p69']
+  )
+  check(
+    'pinned first, then most recent',
+    phonePickerGroups({
+      ...base,
+      projects: [row('/a/x', 'x', { lastActivityAt: now }), row('/a/y', 'y', { pinned: true, lastActivityAt: now - 86_400_000 })]
+    })[0].items.map((c) => (c as { label: string }).label),
+    ['y', 'x']
+  )
+  check(
+    'a label wins over the folder name, and two same-named projects get a hint',
+    phonePickerGroups({
+      ...base,
+      projects: [row('/Users/v/work/app', 'app'), row('/Users/v/personal/app', 'app'), row('/Users/v/x', 'x', { label: 'Bench' })]
+    })[0].items.map((c) => [(c as { label: string }).label, (c as { hint: string }).hint]),
+    [
+      ['app', 'work'],
+      ['app', 'personal'],
+      ['Bench', '']
+    ]
+  )
+  check(
+    'the default folder is listed once, as the default — /private spelling included',
+    shape(
+      phonePickerGroups({ ...base, defaultCwd: '/tmp/d', projects: [row('/private/tmp/d', 'd'), row('/tmp/e', 'e')] })
+    ),
+    [
+      ['Recent projects', ['project']],
+      ['Elsewhere', ['default', 'scratch']],
+      ['Remote machines', ['host']],
+      ['', ['open']]
+    ]
+  )
+  check(
+    'a missing folder is offered but marked, as on the desktop',
+    (phonePickerGroups({ ...base, projects: [row('/a/gone', 'gone', { exists: false })] })[0].items[0] as { missing: boolean }).missing,
+    true
+  )
+  check(
+    'no match: Browse is still there, the way out',
+    shape(phonePickerGroups({ ...base, projects: many, query: 'zzz-nothing' })),
+    [['', ['open']]]
+  )
+  check(
+    'a host is found by its alias too',
+    shape(phonePickerGroups({ ...base, projects: [], query: 'box' })),
+    [
+      ['Remote machines', ['host']],
+      ['', ['open']]
+    ]
+  )
+  check(
+    'an older desktop (no label, no hosts) still lists',
+    shape(
+      phonePickerGroups({
+        ...base,
+        hosts: [],
+        projects: [{ path: '/a/q', name: 'q', pinned: false, exists: true, sessionCount: 0, lastActivityAt: null }]
+      })
+    ),
+    [
+      ['Recent projects', ['project']],
+      ['Elsewhere', ['default', 'scratch']],
+      ['', ['open']]
+    ]
+  )
+}
+
+console.log('\nthe Browse breadcrumb starts at the place, never above it')
+{
+  check('at the place itself: one crumb', breadcrumb('/Users/v/dev', '/Users/v/dev'), [{ label: 'dev', path: '/Users/v/dev' }])
+  check('two folders down', breadcrumb('/Users/v/dev/work/app', '/Users/v/dev'), [
+    { label: 'dev', path: '/Users/v/dev' },
+    { label: 'work', path: '/Users/v/dev/work' },
+    { label: 'app', path: '/Users/v/dev/work/app' }
+  ])
+  check('a trailing separator changes nothing', breadcrumb('/Users/v/dev/work/', '/Users/v/dev/'), [
+    { label: 'dev', path: '/Users/v/dev' },
+    { label: 'work', path: '/Users/v/dev/work' }
+  ])
+  check('a Windows desktop', breadcrumb('C:\\Users\\v\\dev\\app', 'C:\\Users\\v\\dev'), [
+    { label: 'dev', path: 'C:\\Users\\v\\dev' },
+    { label: 'app', path: 'C:\\Users\\v\\dev\\app' }
+  ])
+  check('a sibling that only shares a prefix is not under the place', breadcrumb('/Users/v/dev-old/x', '/Users/v/dev'), [
+    { label: 'x', path: '/Users/v/dev-old/x' }
+  ])
+}
+
+console.log('\nNew folder names (one segment, what every desktop OS can hold)')
+{
+  check('a plain name is fine', newFolderNameProblem('my-app'), null)
+  check('spaces inside are fine, and the ends are trimmed', newFolderNameProblem('  side project  '), null)
+  check('empty says so', newFolderNameProblem('   '), 'Give the folder a name.')
+  const refused = ['a/b', 'a\\b', '..', '.', '.hidden', 'con', 'LPT1.txt', 'a:b', 'what?', 'ends.', 'tab\there', 'x'.repeat(121)]
+  check(
+    'a separator, . or .., a dot-name, a Windows-reserved name or character, a control character, too long: each refused',
+    refused.filter((n) => newFolderNameProblem(n) === null),
+    []
+  )
+  check('the field says nothing while it is empty', newFolderHint(''), null)
+  check('and says why as soon as a name will not do', newFolderHint('a/b'), 'A folder name cannot contain / or \\.')
+  check('a non-string (a crafted body) is refused, not thrown on', newFolderNameProblem(42), 'Give the folder a name.')
+}
 
 /*
  * The New session sheet used to open on `agents[0]` — Claude Code by table

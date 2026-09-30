@@ -14,6 +14,7 @@ import type { EffortLevel, PermissionMode } from './types.ts'
 import { resolveDefaultAgent } from './agents.ts'
 import { accessRefusalForPhone, type AccessRefusal } from './cfAccess.ts'
 import { isCodingCliId, type CodingCliId } from './codingClis.ts'
+import { isInside, normalizePath, pathKey, type PathRules } from './paths.ts'
 
 /** What the phone shows for a session, distinct from the CLI's own vocabulary. */
 export type PhoneSessionStatus = 'waiting' | 'busy' | 'idle' | 'ended' | 'unknown'
@@ -639,4 +640,183 @@ export function phoneHostDefaults(
     effort: d.effort,
     cli: resolveDefaultAgent(defaultCli, agentIds.filter(isCodingCliId))
   }
+}
+
+/* ------------------------------------------------ folders a phone may reach */
+
+/*
+ * Where a phone may browse and create folders (`GET /api/folders`, `POST
+ * /api/projects`): only under a Settings project root, the default folder, or
+ * the folder holding a known project — never anywhere else on the disk. The
+ * bearer key is the whole defence (Cloudflare Access is checked for presence
+ * only, never verified — `RemoteConfig.requireAccessHeader`), so a leaked key
+ * must not become "list and create folders anywhere" — nor able to get there a
+ * folder at a time by adding the places themselves (`remoteFolderBases`).
+ */
+
+/** Why a folder is reachable: which of the three places it is under. */
+export type FolderBaseKind = 'root' | 'default' | 'parent'
+
+export interface FolderBase {
+  path: string
+  kind: FolderBaseKind
+}
+
+/**
+ * A base shallower than this is dropped. A project in the home folder makes
+ * its parent `/Users` (or `/home`, `C:\Users`) — every account on the machine
+ * — and one at a drive root would make its parent the whole disk. Two folders
+ * below the root, a drive letter not counted, is the first depth that is
+ * somebody's own.
+ */
+export const MIN_FOLDER_BASE_DEPTH = 2
+
+/** Is `p` absolute under these rules: a drive or UNC path on Windows, `/…` elsewhere? */
+export function isAbsoluteFor(p: string, rules: PathRules): boolean {
+  if (rules.sep === '\\') return /^[A-Za-z]:[\\/]/.test(p) || /^[\\/]{2}[^\\/]/.test(p)
+  return p.startsWith('/')
+}
+
+/** How many folders deep `p` is below its filesystem root; a drive letter is not a folder. */
+export function folderDepth(p: string): number {
+  const segs = p.split(/[\\/]+/).filter(Boolean)
+  return /^[A-Za-z]:$/.test(segs[0] ?? '') ? segs.length - 1 : segs.length
+}
+
+/** The folder holding `p` under these rules, or '' when it has none. */
+export function parentFolder(p: string, rules: PathRules): string {
+  const n = normalizePath(p, rules)
+  const cut = n.lastIndexOf(rules.sep)
+  if (cut < 0) return ''
+  return n.slice(0, cut) || rules.sep
+}
+
+/** `p` normalised when it may be a place — absolute and deep enough — else ''. */
+function placePath(p: unknown, rules: PathRules): string {
+  const path = normalizePath(typeof p === 'string' ? p : '', rules)
+  return path && isAbsoluteFor(path, rules) && folderDepth(path) >= MIN_FOLDER_BASE_DEPTH ? path : ''
+}
+
+/**
+ * The places a phone may reach, in order: project roots, the default folder,
+ * then the folder holding each known project. Pass REAL paths (resolved
+ * through symlinks): nesting and depth only mean something on those, since a
+ * symlinked root can point anywhere. Too-shallow places are dropped, and a
+ * place inside another is folded into it — browsing the outer one reaches it,
+ * and a flat list of every project's parent would be a second sidebar.
+ *
+ * A project lends the folder holding it only when that project is not itself
+ * a place, since a phone can make a place a project (gotcha 121): Start here
+ * on a place's own folder adds it (`POST /api/projects`), and its parent was
+ * then a place on the next listing — one folder up per tap, to the depth
+ * floor: the home folder, a whole volume, the app's data folder from its
+ * scratch root. So a project inside (or equal to) a root or the default folder
+ * lends nothing — anything it could lend is inside that place already, or is
+ * the place's own parent — and neither does one that is the folder holding
+ * another project. Everything a phone may add is inside a place already, so
+ * its adds can shrink the places (a project that gains a project inside it
+ * stops lending) but never widen them; verify:remote holds that for every add
+ * in every small configuration.
+ */
+export function remoteFolderBases(
+  input: { roots: readonly string[]; defaultCwd: string; projects: readonly string[] },
+  rules: PathRules
+): FolderBase[] {
+  const named: FolderBase[] = [
+    ...input.roots.map((path): FolderBase => ({ path: placePath(path, rules), kind: 'root' })),
+    { path: placePath(input.defaultCwd, rules), kind: 'default' }
+  ]
+  const fixed = named.filter((b) => b.path)
+  const projects = input.projects
+    .map((p) => normalizePath(typeof p === 'string' ? p : '', rules))
+    .filter((p) => p && isAbsoluteFor(p, rules))
+  // The folders holding a project. A project that is one of them sits in or above a
+  // place already, and its own parent is exactly the climb, so it lends nothing.
+  const holders = new Set<string>()
+  for (const p of projects) {
+    const up = pathKey(parentFolder(p, rules), rules)
+    if (up && up !== pathKey(p, rules)) holders.add(up)
+  }
+  const lends = (p: string): boolean =>
+    !holders.has(pathKey(p, rules)) && !fixed.some((b) => isInside(b.path, p, rules))
+  const candidates: FolderBase[] = [
+    ...fixed,
+    ...projects.filter(lends).map((p): FolderBase => ({ path: parentFolder(p, rules), kind: 'parent' }))
+  ]
+  const kept: FolderBase[] = []
+  for (const c of candidates) {
+    const path = placePath(c.path, rules)
+    if (!path) continue
+    // Already reachable through one kept earlier: the same folder, or inside it.
+    if (kept.some((k) => isInside(k.path, path, rules))) continue
+    // Wider than some kept earlier: it takes the first one's place, the rest go.
+    const swallowed = kept.map((k, i) => (isInside(path, k.path, rules) ? i : -1)).filter((i) => i >= 0)
+    if (swallowed.length) {
+      kept[swallowed[0]] = { path, kind: c.kind }
+      for (const i of swallowed.slice(1).reverse()) kept.splice(i, 1)
+    } else {
+      kept.push({ path, kind: c.kind })
+    }
+  }
+  return kept
+}
+
+export type RemoteFolderVerdict = { ok: true; base: FolderBase } | { ok: false; reason: 'malformed' | 'outside' }
+
+/**
+ * A plain absolute path: a string, absolute under these rules, with no NUL
+ * and no `.` or `..` segment. Checked before a path ever reaches `realpath`,
+ * so no answer depends on how the disk resolves a traversal.
+ */
+export function isPlainFolderPath(p: unknown, rules: PathRules): p is string {
+  if (typeof p !== 'string') return false
+  const t = p.trim()
+  if (!t || t.includes('\0') || !isAbsoluteFor(t, rules)) return false
+  return !t.split(/[\\/]+/).some((s) => s === '..' || s === '.')
+}
+
+/**
+ * May a phone reach this folder? `requested` is what it sent; `real` is that
+ * path resolved through symlinks by the caller (the typed path when it does
+ * not exist). The REAL path is what is judged, so a symlink inside a root that
+ * points out of it is outside. `requested` must be a plain absolute path
+ * (`isPlainFolderPath`). Case folds only where the OS does (`isInside`,
+ * `pathKey`): on Linux `/home/v/Dev` is not `/home/v/dev`.
+ */
+export function remoteFolderVerdict(
+  input: { requested: unknown; real: string; bases: readonly FolderBase[] },
+  rules: PathRules
+): RemoteFolderVerdict {
+  if (!isPlainFolderPath(input.requested, rules)) return { ok: false, reason: 'malformed' }
+  const real = normalizePath(typeof input.real === 'string' ? input.real : '', rules)
+  if (!real || !isAbsoluteFor(real, rules)) return { ok: false, reason: 'malformed' }
+  const base = input.bases.find(
+    (b) => folderDepth(normalizePath(b.path, rules)) >= MIN_FOLDER_BASE_DEPTH && isInside(b.path, real, rules)
+  )
+  return base ? { ok: true, base } : { ok: false, reason: 'outside' }
+}
+
+/** The longest folder name `newFolderNameProblem` accepts. */
+export const MAX_FOLDER_NAME = 120
+
+/**
+ * Why `name` cannot be a new folder's name, or null when it can. One segment
+ * only — no separator, no `.`/`..` — so `POST /api/projects {parent, name}` can
+ * only ever create a child of a folder already allowed. It also refuses what
+ * Windows cannot hold, since the desktop may be Windows, and a leading dot,
+ * which `/api/folders` would hide. Judged on the trimmed name, which is the
+ * one created.
+ */
+export function newFolderNameProblem(name: unknown): string | null {
+  if (typeof name !== 'string' || !name.trim()) return 'Give the folder a name.'
+  const n = name.trim()
+  if (n === '.' || n === '..') return 'Pick a real name, not . or ..'
+  if (/[\\/]/.test(n)) return 'A folder name cannot contain / or \\.'
+  if (/[\u0000-\u001f\u007f]/.test(n)) return 'That name has a control character in it.'
+  if (/[<>:"|?*]/.test(n)) return 'A folder name cannot contain < > : " | ? or *.'
+  if (n.startsWith('.')) return 'A name that starts with a dot would be hidden.'
+  if (n.endsWith('.')) return 'A folder name cannot end with a dot.'
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i.test(n)) return 'That name is reserved on Windows.'
+  if (n.length > MAX_FOLDER_NAME) return `Keep the name under ${MAX_FOLDER_NAME} characters.`
+  return null
 }
