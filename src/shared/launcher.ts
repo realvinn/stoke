@@ -79,6 +79,35 @@ export interface HostLike {
   id: string
   label: string
   alias: string
+  /** `SshHost.persist`: only a host that keeps its shells has sessions to list. */
+  persist?: 'tmux' | 'off'
+}
+
+/**
+ * A Stoke-managed session still running on a host (`RemoteSessionInfo`, plus
+ * the host it is on), as the launcher offers it for reattach.
+ */
+export interface RunningLike {
+  hostId: string
+  name: string
+  /** Last activity, epoch ms, or null. */
+  activity: number | null
+  /** What the pane runs, for display (`bash`, `claude`). */
+  command: string
+  /** The pane's directory on the far machine, for display. */
+  path: string
+  /** A tab in THIS window already holds it: choosing it selects that tab. */
+  openHere: boolean
+}
+
+/** What asking one host came back with: its sessions, or why it could not say. */
+export interface RunningOnHost {
+  hostId: string
+  sessions: readonly RunningLike[]
+  /** Set when the host could not be asked (unreachable, a password host). */
+  error?: string
+  /** The question is still out: a BatchMode connect can take seconds. */
+  pending?: boolean
 }
 
 export type FolderChoice =
@@ -96,6 +125,16 @@ export type FolderChoice =
   | { kind: 'scratch'; label: string }
   | { kind: 'open'; label: string }
   | { kind: 'host'; id: string; label: string; alias: string }
+  /** A managed session still running on a host: choosing it reattaches (gotcha 126). */
+  | {
+      kind: 'remote-session'
+      hostId: string
+      name: string
+      /** What it runs and where, for the row: `bash · /srv/app`. */
+      label: string
+      activity: number | null
+      openHere: boolean
+    }
 
 export interface FolderGroup {
   title: string
@@ -127,6 +166,11 @@ export function folderChoices(input: {
   hosts: readonly HostLike[]
   query: string
   limit?: number
+  /**
+   * What each host that keeps its shells answered when asked what is still
+   * running there. Omitted (the phone, a host not asked yet) lists nothing.
+   */
+  running?: readonly RunningOnHost[]
 }): FolderGroup[] {
   const q = input.query.trim().toLowerCase()
   const ranked = rankProjects(input.projects)
@@ -158,6 +202,39 @@ export function folderChoices(input: {
   if (projects.length) out.push({ title: q ? 'Projects' : 'Recent projects', items: projects })
   if (places.length) out.push({ title: 'Elsewhere', items: places })
   if (hosts.length) out.push({ title: 'Remote machines', items: hosts })
+  /*
+   * "Running on <machine>": the kept shells a tab can reattach to, one group
+   * per host, in the hosts' own order. A host that could not be asked says so
+   * in its title with no rows — a password host cannot answer BatchMode, and
+   * silence would read as "nothing running", which may be false.
+   */
+  for (const h of input.hosts) {
+    if (h.persist !== 'tmux') continue
+    const answer = input.running?.find((r) => r.hostId === h.id)
+    if (!answer) continue
+    const name = h.label || h.alias
+    if (answer.pending) {
+      if (!q || hit(q, name, h.alias)) out.push({ title: `Running on ${name} — asking…`, items: [] })
+      continue
+    }
+    if (answer.error) {
+      if (!q || hit(q, name, h.alias)) out.push({ title: `Running on ${name} — could not ask: ${answer.error}`, items: [] })
+      continue
+    }
+    const items = answer.sessions
+      .filter((s) => !q || hit(q, name, h.alias, s.name, s.command, s.path))
+      .map(
+        (s): FolderChoice => ({
+          kind: 'remote-session',
+          hostId: h.id,
+          name: s.name,
+          label: [s.command, s.path].filter(Boolean).join(' · ') || s.name,
+          activity: s.activity,
+          openHere: s.openHere
+        })
+      )
+    if (items.length) out.push({ title: `Running on ${name}`, items })
+  }
   out.push({ title: '', items: [{ kind: 'open', label: 'Open folder…' }] })
   return out
 }
@@ -176,6 +253,8 @@ export function choiceKey(c: FolderChoice): string {
       return `d:${c.path}`
     case 'host':
       return `h:${c.id}`
+    case 'remote-session':
+      return `r:${c.hostId}:${c.name}`
     default:
       return c.kind
   }

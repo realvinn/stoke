@@ -382,7 +382,13 @@ export function paneOrder<T extends { id: string; kind: string }>(list: readonly
  * a folder named after the alias" is the one answer that must never be given.
  */
 export type RestartPlan =
-  | { kind: 'host'; hostId: string }
+  /**
+   * `remoteSession` is the tab's own managed session, so Start again on a kept
+   * SSH tab REATTACHES to the shell that is still running on the machine
+   * rather than opening a new one beside it. Absent for a host that does not
+   * keep its shells, and for a tab opened before it did.
+   */
+  | { kind: 'host'; hostId: string; remoteSession?: string }
   | { kind: 'local'; cwd: string; cli: CodingCliId }
   /** An install tab runs its installs again, never the first agent in its list. */
   | { kind: 'install'; ids: CodingCliId[] }
@@ -397,6 +403,7 @@ export function restartPlan(
     cliId?: CodingCliId
     installing?: CodingCliId[]
     enrollHostId?: string
+    remoteSession?: string
   },
   hostIds: string[]
 ): RestartPlan {
@@ -417,12 +424,15 @@ export function restartPlan(
       : { kind: 'impossible', reason: 'That host is no longer in Settings, so there is no key to add.' }
   }
   if (tab.hostId) {
-    return hostIds.includes(tab.hostId)
-      ? { kind: 'host', hostId: tab.hostId }
-      : {
-          kind: 'impossible',
-          reason: 'That host is no longer in Settings, so there is nothing to reconnect to.'
-        }
+    if (!hostIds.includes(tab.hostId)) {
+      return {
+        kind: 'impossible',
+        reason: 'That host is no longer in Settings, so there is nothing to reconnect to.'
+      }
+    }
+    return tab.remoteSession
+      ? { kind: 'host', hostId: tab.hostId, remoteSession: tab.remoteSession }
+      : { kind: 'host', hostId: tab.hostId }
   }
   /*
    * The CLI travels with the plan. Without it "Start again" on an exited Codex
@@ -430,6 +440,99 @@ export function restartPlan(
    * tab that still says Codex.
    */
   return { kind: 'local', cwd: tab.cwd, cli: cliIdOf(tab.cliId) }
+}
+
+/**
+ * How long to wait before each automatic reconnect of a kept SSH tab, by
+ * attempt. Quick at first — a wifi hop or a wake from sleep usually needs one
+ * try — then settling at 30 s, so a machine that is down for a while is asked
+ * twice a minute rather than hammered.
+ */
+export const RECONNECT_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 20_000, 30_000] as const
+
+/** Past this many tries in a row the tab stops and says so: about ten minutes of trying. */
+export const RECONNECT_MAX_ATTEMPTS = 24
+
+/**
+ * A connection that ended this soon after it started, on its FIRST try, never
+ * got anywhere — a typo'd alias, a host that is off — and is left on its exit
+ * card rather than retried: retrying cannot fix it, and a card cycling through
+ * reconnects hides ssh's own words about why.
+ */
+export const RECONNECT_MIN_UPTIME_MS = 5_000
+
+/** ssh's own exit status for its own failures: the link dropped, the host is unreachable. */
+export const SSH_LINK_FAILURE = 255
+
+export type ReconnectDecision =
+  | { kind: 'reconnect'; attempt: number; delayMs: number }
+  | { kind: 'stop'; reason: string }
+
+/**
+ * Should a kept SSH tab whose process just exited reconnect by itself?
+ *
+ * Only ssh's own failure (exit 255) is a dropped link. Exit 0 is the shell
+ * ending — `exit`, or the user's command finishing — and the session is gone
+ * on the far side too, so there is nothing to go back to. Any other status is
+ * the remote command's own, and retrying would only repeat it.
+ *
+ * Pure, and separate from the timer that acts on it, for gotcha 31's reason:
+ * the decision is the part a suite can hold, and the wire to it is a closure.
+ * `attempt` is how many automatic reconnects have already run in a row (0 for
+ * a tab that was up); `ranMs` how long this process lived.
+ */
+export function reconnectDecision(input: {
+  exitCode: number | null
+  /** The tab has a managed session, and its host still keeps its shells. */
+  persisted: boolean
+  hostKnown: boolean
+  attempt: number
+  ranMs: number
+}): ReconnectDecision {
+  if (!input.hostKnown) return { kind: 'stop', reason: 'That host is no longer in Settings.' }
+  if (!input.persisted) return { kind: 'stop', reason: 'This tab does not keep its shell running.' }
+  if (input.exitCode !== SSH_LINK_FAILURE) {
+    return {
+      kind: 'stop',
+      reason: input.exitCode === 0 ? 'The shell ended.' : `The remote command exited with ${input.exitCode ?? 'a signal'}.`
+    }
+  }
+  if (input.attempt === 0 && input.ranMs < RECONNECT_MIN_UPTIME_MS) {
+    return { kind: 'stop', reason: 'The connection never came up, so trying again by itself would not help.' }
+  }
+  if (input.attempt >= RECONNECT_MAX_ATTEMPTS) {
+    return { kind: 'stop', reason: `Stopped after ${RECONNECT_MAX_ATTEMPTS} tries.` }
+  }
+  const delayMs = RECONNECT_DELAYS_MS[Math.min(input.attempt, RECONNECT_DELAYS_MS.length - 1)]
+  return { kind: 'reconnect', attempt: input.attempt + 1, delayMs }
+}
+
+/**
+ * Closing a tab: close it outright, or ask "Detach, keep running" / "End
+ * session" first?
+ *
+ * Asked for a kept SSH tab whose shell may still be running on the machine —
+ * connected, paused (restored, not yet reattached), or ended by a dropped link
+ * — because closing the TAB no longer ends the SHELL, and which of the two the
+ * user meant is not something Stoke can guess: detaching keeps a long job
+ * running, ending it frees the machine. A kept tab that ended with 0 has no
+ * shell left, and closes at once like any other.
+ */
+export function closeAsksDetach(
+  tab: {
+    kind: 'session' | 'new'
+    status: 'running' | 'exited' | 'paused'
+    exitCode: number | null
+    hostId: string | null
+    remoteSession?: string
+    enrollHostId?: string
+  },
+  hostPersists: boolean
+): boolean {
+  if (tab.kind !== 'session' || !tab.hostId || !tab.remoteSession || tab.enrollHostId) return false
+  if (!hostPersists) return false
+  if (tab.status === 'exited' && tab.exitCode === 0) return false
+  return true
 }
 
 /**

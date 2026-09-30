@@ -300,6 +300,65 @@ check(
   8
 )
 
+/*
+ * Gotcha 126: "Running on <machine>" — the kept shells a New tab can reattach
+ * to, from each host that keeps its shells. A host that could not be asked
+ * says so in its title rather than reading as "nothing running".
+ */
+{
+  const kept = [
+    { id: 'h1', label: 'VPS', alias: 'vps', persist: 'tmux' as const },
+    { id: 'h2', label: 'Pi', alias: 'pi', persist: 'tmux' as const },
+    { id: 'h3', label: 'Old', alias: 'old', persist: 'off' as const }
+  ]
+  const s = (name: string, over: Record<string, unknown> = {}) => ({
+    hostId: 'h1',
+    name,
+    activity: 1_000,
+    command: 'bash',
+    path: '/srv/app',
+    openHere: false,
+    ...over
+  })
+  const running = [
+    { hostId: 'h1', sessions: [s('stoke-00000001'), s('stoke-00000002', { command: 'claude', openHere: true })] },
+    { hostId: 'h2', sessions: [], error: 'Permission denied (publickey,password).' },
+    { hostId: 'h3', sessions: [s('stoke-00000009', { hostId: 'h3' })] }
+  ]
+  const g = folderChoices({ projects: [], defaultCwd: '', hosts: kept, query: '', running })
+  check(
+    'a group per kept host, after the machines, before Open',
+    g.map((x) => x.title),
+    ['Elsewhere', 'Remote machines', 'Running on VPS', 'Running on Pi — could not ask: Permission denied (publickey,password).', '']
+  )
+  check(
+    'each row is a reattach of that session, keyed by host and name',
+    g[2].items.map(choiceKey),
+    ['r:h1:stoke-00000001', 'r:h1:stoke-00000002']
+  )
+  check(
+    'it says what runs where, and whether a tab here has it',
+    g[2].items.map((c) => (c.kind === 'remote-session' ? [c.label, c.openHere] : null)),
+    [['bash · /srv/app', false], ['claude · /srv/app', true]]
+  )
+  check('a host that does not keep its shells lists nothing, whatever it answered', g.some((x) => x.title.includes('Old')), false)
+  check(
+    'a host still being asked says so',
+    folderChoices({ projects: [], defaultCwd: '', hosts: kept, query: '', running: [{ hostId: 'h1', sessions: [], pending: true }] }).map((x) => x.title),
+    ['Elsewhere', 'Remote machines', 'Running on VPS — asking…', '']
+  )
+  check(
+    'a query finds a session by what it runs',
+    flatChoices(folderChoices({ projects: [], defaultCwd: '', hosts: kept, query: 'claude', running })).map(choiceKey),
+    ['r:h1:stoke-00000002', 'open']
+  )
+  check(
+    'no answers yet (the phone, or not asked) is no group at all',
+    folderChoices({ projects: [], defaultCwd: '', hosts: kept, query: '' }).map((x) => x.title),
+    ['Elsewhere', 'Remote machines', '']
+  )
+}
+
 /* ---------------------------------------------------------- conversations */
 
 console.log('\nthe conversation list (QA L12)')

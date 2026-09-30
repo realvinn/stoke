@@ -53,6 +53,7 @@ import { useBrowserCovered } from './lib/floatingLayers'
 import type { StokeCliRequest } from '@shared/stokeArgs'
 import { activeThemeId, resolveTheme } from '@shared/themes'
 import { worklogButtonState } from '@shared/worklog'
+import { hostPersists, isSafeRemoteSessionName, mintRemoteSessionName } from '@shared/sshPersist'
 import { BrowserPanel } from './components/BrowserPanel'
 import { BusyDialog } from './components/BusyDialog'
 import { CommandPalette } from './components/CommandPalette'
@@ -84,7 +85,7 @@ import { matchShortcut, typeThroughKey } from './lib/shortcuts'
 import { newTab } from './lib/newTab'
 import { profileIdForCwd } from './lib/projectProfile'
 import { fromStored, screensFrom, toStored } from './lib/restore'
-import { focusTerm, screenOf } from './lib/termRegistry'
+import { focusTerm, screenOf, termSizeHint } from './lib/termRegistry'
 import {
   autoRelaunchKey,
   autoRelaunchStep,
@@ -104,6 +105,9 @@ import {
   replaceOrAppend,
   adoptRemoteTab,
   restartPlan,
+  reconnectDecision,
+  closeAsksDetach,
+  RECONNECT_MIN_UPTIME_MS,
   tabLabel,
   tabsToClose,
   type CloseSide,
@@ -172,6 +176,8 @@ type BusyPrompt =
   | { kind: 'relaunch'; tabId: string }
   | { kind: 'restart'; tabIds: string[] }
   | { kind: 'close'; tabId: string }
+  /** Closing a kept SSH tab: detach (the shell keeps running) or end it (gotcha 126). */
+  | { kind: 'detach'; tabId: string }
 
 /**
  * How long a relaunch waits for the old `claude` to exit before starting the
@@ -732,6 +738,29 @@ export function App(): React.JSX.Element {
   }, [])
 
   /*
+   * Automatic reconnect of kept SSH tabs (gotcha 126), keyed by the tab's
+   * managed session NAME rather than its id: every reconnect makes a new pty,
+   * and `startHostSession` gives the tab that pty's id, so an id does not
+   * survive the very thing being counted. The name is the one constant.
+   *
+   * `hostStartedAt` is when each SSH pty was started, so an exit can tell "the
+   * link dropped after a while" (reconnect) from "never came up" (leave it).
+   * `reconnectTries` counts automatic tries in a row, reset once a connection
+   * lasts; `reconnectTimers` holds the pending one, cleared by anything the
+   * user does to the tab first — Start again, Close, Stop.
+   */
+  const hostStartedAtRef = useRef<Map<string, number>>(new Map())
+  const reconnectTriesRef = useRef<Map<string, number>>(new Map())
+  const reconnectTimersRef = useRef<Map<string, number>>(new Map())
+  const cancelReconnect = useCallback((name: string | undefined): void => {
+    if (!name) return
+    const timer = reconnectTimersRef.current.get(name)
+    if (timer !== undefined) window.clearTimeout(timer)
+    reconnectTimersRef.current.delete(name)
+    reconnectTriesRef.current.delete(name)
+  }, [])
+
+  /*
    * Launch options for the next session, DERIVED from the saved defaults rather
    * than mirrored into state beside them.
    *
@@ -1234,9 +1263,13 @@ export function App(): React.JSX.Element {
           // A phone's SSH start: main sent the alias as `cwd` and the host's
           // label as `name`, as `startHostSession` builds its own tab (gotcha 18).
           hostId: info.hostId ?? null,
+          // A phone's start on a host that keeps its shells: the name main
+          // gave it, so this tab reconnects and restores to the same shell.
+          ...(info.hostId && isSafeRemoteSessionName(info.remoteSession) ? { remoteSession: info.remoteSession } : {}),
           selectedPath: null,
           expandedPath: null
         }
+        if (tab.hostId && tab.remoteSession) hostStartedAtRef.current.set(tab.ptyId, Date.now())
         return adoptRemoteTab(list, tab).list
       })
     })
@@ -1755,9 +1788,18 @@ export function App(): React.JSX.Element {
            * exit card over a session that is merely being moved.
            */
           if (relaunchingRef.current.has(t.id)) return
+          /*
+           * A kept SSH tab whose link dropped comes back by itself (gotcha
+           * 126): `hostExitRef` decides, and when it schedules a reconnect the
+           * tab still goes to `exited`, carrying `reconnect` so its card counts
+           * down instead of offering Start again.
+           */
+          const reconnect = t.hostId && t.remoteSession ? hostExitRef.current(t, code) : null
           setTabs((list) =>
             list.map((x) =>
-              x.ptyId === t.ptyId ? { ...x, status: 'exited' as const, exitCode: code } : x
+              x.ptyId === t.ptyId
+                ? { ...x, status: 'exited' as const, exitCode: code, ...(reconnect ? { reconnect } : {}) }
+                : x
             )
           )
           // An install tab has just changed what is on this machine.
@@ -1829,6 +1871,12 @@ export function App(): React.JSX.Element {
     }, 500)
     return () => window.clearTimeout(id)
   }, [tabs, activeTabId, contexts, restoredScreens])
+
+  /** The managed sessions the tabs here hold, for the launcher's "open in a tab". */
+  const openRemoteSessions = useMemo(
+    () => tabs.flatMap((t) => (t.kind === 'session' && t.remoteSession ? [t.remoteSession] : [])),
+    [tabs]
+  )
 
   /** The New Project tab a launch should consume, or null to append. */
   const activeNewTabId = useMemo(() => {
@@ -2059,23 +2107,49 @@ export function App(): React.JSX.Element {
         effort?: EffortLevel
         /** See `focusAfterStart`. Omitted means focus, as every single start does. */
         focus?: boolean
+        /**
+         * The managed session to REATTACH to — the tab's own, on a reconnect,
+         * Resume, Start again or restore, or one the launcher lists as still
+         * running. Omitted for a new tab, which gets a fresh name. Ignored on a
+         * host that does not keep its shells.
+         */
+        remoteSession?: string
       }
     ): Promise<boolean> => {
       setError(null)
       const permissionMode = overrides?.permissionMode ?? mode
       const sessionModel = overrides?.model ?? model
       const sessionEffort = overrides?.effort ?? effort
+      /*
+       * One name per tab, minted here the first time and carried from then on
+       * (gotcha 126): every later start of this tab sends the same one, so the
+       * far machine's `new-session -A` attaches to the shell that kept running
+       * instead of starting another. A name that fails the whitelist is
+       * replaced rather than sent — main would refuse it anyway.
+       */
+      const wanted = overrides?.remoteSession
+      const remoteSession = hostPersists(host)
+        ? isSafeRemoteSessionName(wanted)
+          ? wanted
+          : mintRemoteSessionName()
+        : undefined
+      // A reattach starts at the terminal's real size where one is known
+      // (`termSizeHint`, gotcha 126); 120x30 until the pane's own fit otherwise.
+      const ownPty = replaceTabId ? tabsRef.current.find((t) => t.id === replaceTabId)?.ptyId : undefined
+      const size = (remoteSession ? termSizeHint(ownPty) : null) ?? { cols: 120, rows: 30 }
       try {
         const res = await window.stoke.pty.start({
           cwd: defaultCwd || '.',
           host,
+          ...(remoteSession ? { remoteSession } : {}),
           permissionMode,
           model: sessionModel,
           effort: sessionEffort,
           appearance: launchAppearance(),
-          cols: 120,
-          rows: 30
+          cols: size.cols,
+          rows: size.rows
         })
+        hostStartedAtRef.current.set(res.ptyId, Date.now())
         const tab: Tab = {
           id: res.ptyId,
           kind: 'session' as const,
@@ -2096,6 +2170,7 @@ export function App(): React.JSX.Element {
           status: 'running',
           exitCode: null,
           hostId: host.id,
+          ...(remoteSession ? { remoteSession } : {}),
           selectedPath: null,
           expandedPath: null
         }
@@ -2168,7 +2243,10 @@ export function App(): React.JSX.Element {
             permissionMode: tab.permissionMode,
             model: tab.model,
             effort: tab.effort,
-            focus
+            focus,
+            // A restored kept tab reattaches to the shell that kept running
+            // on the machine while Stoke was closed (gotcha 126).
+            remoteSession: tab.remoteSession
           })
             .then((ok) => {
               if (ok) dropRestoredScreen(tab.id)
@@ -2215,6 +2293,126 @@ export function App(): React.JSX.Element {
   )
   const resumeTabForRef = useRef(resumeTabFor)
   resumeTabForRef.current = resumeTabFor
+
+  /*
+   * Reconnect one kept SSH tab to its own managed session, now. The timer's
+   * target, and "Reconnect now" on the card.
+   *
+   * Found by NAME in the live list, never by the id the timer was scheduled
+   * with: the tab may have been restarted, reconnected by hand or closed in
+   * the meantime, and a timer that acted on a stale tab would append a second
+   * one (`replaceOrAppend` appends when its id is gone — gotcha 51). Claimed
+   * with `claimStart` before the await, so a timer and a press cannot both
+   * start one (gotcha 20). The dead pty is dropped from main's ended ring at
+   * once (`pty.kill` on an exited session deletes it): the tab replaces it,
+   * and a flapping link must not fill the phone's list with ended rows
+   * (gotcha 84).
+   */
+  const reconnectNow = useCallback(
+    async (name: string): Promise<void> => {
+      const timer = reconnectTimersRef.current.get(name)
+      if (timer !== undefined) window.clearTimeout(timer)
+      reconnectTimersRef.current.delete(name)
+      const tab = tabsRef.current.find((t) => t.remoteSession === name && t.status === 'exited')
+      const host = tab ? settingsRef.current?.hosts.find((h) => h.id === tab.hostId) : undefined
+      if (!tab || !host || !hostPersists(host)) return
+      if (!claimStart(tab.id)) return
+      try {
+        if (tab.ptyId) {
+          window.stoke.pty.kill(tab.ptyId)
+          forgetPty(tab.ptyId)
+          hostStartedAtRef.current.delete(tab.ptyId)
+          hostExitSeenRef.current.delete(tab.ptyId)
+        }
+        const ok = await startHostSession(host, tab.id, {
+          permissionMode: tab.permissionMode,
+          model: tab.model,
+          effort: tab.effort,
+          focus: activeTabIdRef.current === tab.id,
+          remoteSession: name
+        })
+        // A start main refused (a command that can no longer be wrapped): stop
+        // counting down and leave the card with the error, not a loop.
+        if (!ok) {
+          reconnectTriesRef.current.delete(name)
+          setTabs((list) => list.map((t) => (t.id === tab.id ? { ...t, reconnect: undefined } : t)))
+        }
+      } finally {
+        releaseStart(tab.id)
+      }
+    },
+    [claimStart, releaseStart, startHostSession]
+  )
+
+  /**
+   * A kept SSH tab's process exited: schedule a reconnect, or not.
+   * Returns what to show on the tab while it waits, or null for the ordinary
+   * exit card. `reconnectDecision` (lib/tabs.ts) is the rule; this is the wire.
+   */
+  const hostExitRef = useRef<(t: Tab, code: number) => { attempt: number; at: number } | null>(() => null)
+  // One decision per pty: `attachExit` replays a recorded exit to a sink that
+  // re-attaches before the tab's `exited` state has rendered, and a second
+  // decision would count one drop as two tries.
+  const hostExitSeenRef = useRef<Map<string, { attempt: number; at: number } | null>>(new Map())
+  hostExitRef.current = (t: Tab, code: number): { attempt: number; at: number } | null => {
+    const name = t.remoteSession
+    if (!name) return null
+    if (hostExitSeenRef.current.has(t.ptyId)) return hostExitSeenRef.current.get(t.ptyId) ?? null
+    const result = decideHostExit(t, name, code)
+    hostExitSeenRef.current.set(t.ptyId, result)
+    return result
+  }
+  const decideHostExit = (t: Tab, name: string, code: number): { attempt: number; at: number } | null => {
+    const host = settingsRef.current?.hosts.find((h) => h.id === t.hostId)
+    const started = hostStartedAtRef.current.get(t.ptyId)
+    hostStartedAtRef.current.delete(t.ptyId)
+    const ranMs = started ? Date.now() - started : 0
+    // A connection that lasted is a fresh start: its drop is try 1 again.
+    if (ranMs >= RECONNECT_MIN_UPTIME_MS) reconnectTriesRef.current.delete(name)
+    const decision = reconnectDecision({
+      exitCode: code,
+      persisted: hostPersists(host),
+      hostKnown: !!host,
+      attempt: reconnectTriesRef.current.get(name) ?? 0,
+      ranMs
+    })
+    if (decision.kind === 'stop') {
+      reconnectTriesRef.current.delete(name)
+      return null
+    }
+    reconnectTriesRef.current.set(name, decision.attempt)
+    const prior = reconnectTimersRef.current.get(name)
+    if (prior !== undefined) window.clearTimeout(prior)
+    reconnectTimersRef.current.set(
+      name,
+      window.setTimeout(() => {
+        reconnectTimersRef.current.delete(name)
+        void reconnectNowRef.current(name)
+      }, decision.delayMs)
+    )
+    return { attempt: decision.attempt, at: Date.now() + decision.delayMs }
+  }
+  const reconnectNowRef = useRef(reconnectNow)
+  reconnectNowRef.current = reconnectNow
+
+  /** "Reconnect now" on a reconnecting tab's card. */
+  const reconnectTabNow = useCallback(
+    (tab: Tab): void => {
+      if (tab.remoteSession) void reconnectNow(tab.remoteSession)
+    },
+    [reconnectNow]
+  )
+
+  /** "Stop" on a reconnecting tab's card: no more tries; the ordinary exit card stays. */
+  const stopReconnect = useCallback(
+    (tabId: string): void => {
+      const tab = tabsRef.current.find((t) => t.id === tabId)
+      if (!tab) return
+      cancelReconnect(tab.remoteSession)
+      setTabs((list) => list.map((t) => (t.id === tabId ? { ...t, reconnect: undefined } : t)))
+    },
+    [cancelReconnect]
+  )
 
   /** Quick start with no project: run the default agent in the configured default folder. */
   const startDefault = useCallback((): void => {
@@ -2637,6 +2835,10 @@ export function App(): React.JSX.Element {
         window.stoke.pty.kill(tab.ptyId)
         forgetPty(tab.ptyId)
       }
+      // A closed tab reconnects to nothing: its countdown goes with it.
+      cancelReconnect(tab.remoteSession)
+      hostStartedAtRef.current.delete(tab.ptyId)
+      hostExitSeenRef.current.delete(tab.ptyId)
       dropRestoredScreen(id)
       /*
        * The three session-keyed maps are pruned with it.
@@ -2676,7 +2878,7 @@ export function App(): React.JSX.Element {
         setActiveTabId(nextId)
       }
     },
-    [dropRestoredScreen, dropSessionState, syncPending]
+    [dropRestoredScreen, dropSessionState, syncPending, cancelReconnect]
   )
 
   /**
@@ -2701,6 +2903,18 @@ export function App(): React.JSX.Element {
     (id: string): void => {
       const tab = tabsRef.current.find((t) => t.id === id)
       if (!tab) return
+      /*
+       * A kept SSH tab's shell outlives the tab (gotcha 126), so closing it
+       * asks which the user meant: detach — the shell keeps running and the
+       * launcher lists it to reattach — or end it on the machine. The busy
+       * check below never applies to an SSH tab (its `claude` writes no local
+       * registry), so this is the only question such a tab gets.
+       */
+      const host = settingsRef.current?.hosts.find((h) => h.id === tab.hostId)
+      if (closeAsksDetach(tab, hostPersists(host))) {
+        setBusyPrompt({ kind: 'detach', tabId: id })
+        return
+      }
       if (
         tab.kind === 'session' &&
         tab.status === 'running' &&
@@ -2848,7 +3062,8 @@ export function App(): React.JSX.Element {
             permissionMode: t.permissionMode,
             model: t.model,
             effort: t.effort,
-            focus: t.id === sourceTabId
+            focus: t.id === sourceTabId,
+            remoteSession: t.remoteSession
           })
         } finally {
           relaunchingRef.current.delete(t.id)
@@ -2945,6 +3160,8 @@ export function App(): React.JSX.Element {
        */
       if (!claimStart(tab.id)) return
       if (tab.kind === 'session' && tab.ptyId) forgetPty(tab.ptyId)
+      // A press beats the countdown: no automatic try may follow this one.
+      cancelReconnect(tab.remoteSession)
 
       const hosts = settings?.hosts ?? []
       const plan = restartPlan(tab, hosts.map((h) => h.id))
@@ -2964,7 +3181,9 @@ export function App(): React.JSX.Element {
         void startHostSession(host, tab.id, {
           permissionMode: tab.permissionMode,
           model: tab.model,
-          effort: tab.effort
+          effort: tab.effort,
+          // Start again on a kept tab reattaches its own shell (gotcha 126).
+          remoteSession: plan.remoteSession
         }).finally(() => releaseStart(tab.id))
         return
       }
@@ -3001,7 +3220,7 @@ export function App(): React.JSX.Element {
         ultracode: tab.ultracode
       }).finally(() => releaseStart(tab.id))
     },
-    [settings, startSession, startHostSession, startSshEnroll, claimStart, releaseStart, defaultCwd]
+    [settings, startSession, startHostSession, startSshEnroll, claimStart, releaseStart, defaultCwd, cancelReconnect]
   )
 
   /**
@@ -3296,6 +3515,29 @@ export function App(): React.JSX.Element {
         // has nowhere to come back to the way a relaunch or a restart does,
         // and the session stays on the sidebar to resume later regardless.
         if (answer === 'force') closeTab(prompt.tabId)
+        return
+      }
+      if (prompt.kind === 'detach') {
+        const tab = tabsRef.current.find((t) => t.id === prompt.tabId)
+        if (!tab) return
+        // 'wait' is "Detach, keep running": only the local ssh goes.
+        if (answer === 'wait') {
+          closeTab(tab.id)
+          return
+        }
+        // 'force' is "End session": the tab goes at once, and the shell on the
+        // machine is ended by name over a BatchMode connection of its own.
+        const name = tab.remoteSession
+        const hostId = tab.hostId
+        closeTab(tab.id)
+        if (!name || !hostId) return
+        void window.stoke.ssh.endRemoteSession(hostId, name).then((r) => {
+          if (!r.ok) {
+            setError(
+              `Could not end the session on that machine (${r.message}). It is still running there; the launcher lists it to reattach or end.`
+            )
+          }
+        })
         return
       }
       const tab = tabsRef.current.find((t) => t.id === prompt.tabId)
@@ -4246,6 +4488,29 @@ export function App(): React.JSX.Element {
           }
           return
         }
+        case 'remote-session': {
+          /*
+           * A shell still running on the machine (gotcha 126). A tab here that
+           * already holds it is brought forward — two tabs on one session
+           * would show the same shell twice — and anything else reattaches it
+           * in this New tab's place.
+           */
+          const holder = tabsRef.current.find((t) => t.remoteSession === c.name && t.hostId === c.hostId)
+          if (holder) {
+            setActiveTabId(holder.id)
+            return
+          }
+          const host = settingsRef.current?.hosts.find((h) => h.id === c.hostId)
+          if (host) {
+            void startHostSession(host, activeNewTabId ?? undefined, {
+              permissionMode: launchNow.choice.permissionMode,
+              model: launchNow.choice.model,
+              effort: launchNow.choice.effort,
+              remoteSession: c.name
+            })
+          }
+          return
+        }
       }
     },
     [selectProject, openFolder, startScratch, startHostSession, activeNewTabId, launchNow, primaryReady]
@@ -4395,6 +4660,39 @@ export function App(): React.JSX.Element {
           )}
           <p>
             <strong>Wait</strong> relaunches it on {target} the moment it goes idle.
+          </p>
+        </BusyDialog>
+      )
+    }
+    if (busyPrompt.kind === 'detach') {
+      const tab = tabs.find((t) => t.id === busyPrompt.tabId)
+      const host = settings?.hosts.find((h) => h.id === tab?.hostId)
+      const machine = host ? host.label.trim() || host.alias.trim() : 'the machine'
+      /*
+       * BusyDialog's three slots, read for this question: Wait is the safe,
+       * focused answer ("Detach, keep running" loses nothing), Force the one
+       * that ends something, Cancel keeps the tab.
+       */
+      return (
+        <BusyDialog
+          title={`Close ${quote(tab)}?`}
+          forceLabel="End session"
+          waitLabel="Detach, keep running"
+          waitHint={`Close the tab; the shell keeps running on ${machine}, and the launcher lists it to reattach`}
+          onForce={() => answerBusy('force')}
+          onWait={() => answerBusy('wait')}
+          onCancel={() => answerBusy('cancel')}
+        >
+          <p>
+            This tab&rsquo;s shell runs in a session that is kept on {machine}, so closing the tab does
+            not have to end it.
+          </p>
+          <p>
+            <strong>Detach, keep running</strong> closes the tab and leaves everything running there.
+            Open it again from the launcher, under &ldquo;Running on {machine}&rdquo;.
+          </p>
+          <p>
+            <strong>End session</strong> closes the tab and ends the shell and whatever it is running.
           </p>
         </BusyDialog>
       )
@@ -4855,6 +5153,8 @@ export function App(): React.JSX.Element {
                   onOpenUrl={openUrl}
                   onRestart={restartTab}
                   onClose={requestCloseTab}
+                  onReconnectNow={reconnectTabNow}
+                  onStopReconnect={stopReconnect}
                 />
               )
             )}
@@ -4870,7 +5170,7 @@ export function App(): React.JSX.Element {
             <Launcher
               key={activeTab.id}
               target={launchTarget}
-              switcher={{ projects: scopedProjects, defaultCwd, hosts: settings?.hosts ?? [] }}
+              switcher={{ projects: scopedProjects, defaultCwd, hosts: settings?.hosts ?? [], openSessions: openRemoteSessions }}
               onChoose={chooseFolder}
               onOpenFolder={() => void openFolder()}
               onHide={(path) => {

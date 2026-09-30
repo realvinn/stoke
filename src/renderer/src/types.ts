@@ -102,6 +102,21 @@ export interface Tab {
    */
   hostId: string | null
   /**
+   * The Stoke-managed tmux session this SSH tab lives in, on a host that keeps
+   * its shells (`SshHost.persist`). Minted once when the tab is first opened
+   * (`startHostSession`) and carried through every reconnect, Resume, Start
+   * again and restart restore, so each one reattaches to the same shell.
+   * Persisted (`StoredTab.remoteSession`). Absent on every other tab.
+   */
+  remoteSession?: string
+  /**
+   * Set while a kept SSH tab whose link dropped (ssh exit 255) is waiting to
+   * reconnect by itself: which attempt is next and when it fires. Cleared by a
+   * successful reconnect, a manual Start again or Close, or giving up. Never
+   * persisted — a restore reattaches paused, as every other tab restores.
+   */
+  reconnect?: { attempt: number; at: number }
+  /**
    * Per-tab launcher selection, so several New Project tabs can be open at once
    * without both pointing at whatever was clicked last. Null on a session tab.
    */

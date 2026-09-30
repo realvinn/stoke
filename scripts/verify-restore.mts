@@ -347,6 +347,46 @@ console.log('\nconverting between the tab list and the snapshot')
   check('and an active Add-key tab falls back to the first tab', snap.activeIndex, 0)
 }
 {
+  /*
+   * Gotcha 126: a kept SSH tab's shell never died with Stoke, so its restore
+   * is a REATTACH, by the session name it carried. The name is what a restore
+   * sends to a remote shell, so it is whitelisted on the way in from disk.
+   */
+  const base = {
+    kind: 'session' as const, cliId: 'claude' as const, permissionMode: 'default' as const, model: '',
+    effort: 'default' as const, ultracode: false, exitCode: null, selectedPath: null, expandedPath: null
+  }
+  const live: Tab[] = [
+    { ...base, id: 'k', ptyId: 'k', sessionId: '', cwd: 'vps', projectName: 'VPS', title: 'VPS', status: 'running', hostId: 'h1', remoteSession: 'stoke-0badc0de' },
+    { ...base, id: 'p', ptyId: 'p', sessionId: '', cwd: 'vps', projectName: 'VPS', title: 'VPS', status: 'running', hostId: 'h1' },
+    { ...base, id: 'l', ptyId: 'l', sessionId: 's', cwd: '/w', projectName: 'w', title: 'w', status: 'running', hostId: null, remoteSession: 'stoke-0badc0de' }
+  ]
+  const snap = toStored(live, 'k', {}, (t) => t.id, NOW)
+  check('a kept SSH tab saves its session name', snap.tabs[0]?.remoteSession, 'stoke-0badc0de')
+  check('a plain SSH tab saves none, and its stored form is unchanged', 'remoteSession' in (snap.tabs[1] ?? {}), false)
+  check('a local tab never carries one', 'remoteSession' in (snap.tabs[2] ?? {}), false)
+  check('it survives the disk round trip', normaliseTabs(JSON.parse(JSON.stringify(snap)), NOW).tabs[0]?.remoteSession, 'stoke-0badc0de')
+  const back = fromStored(normaliseTabs(JSON.parse(JSON.stringify(snap)), NOW))
+  check('and comes back on the paused tab, so Resume reattaches', [back.tabs[0]?.status, back.tabs[0]?.remoteSession], ['paused', 'stoke-0badc0de'])
+  for (const bad of ['a;rm -rf ~', "x'y", '-x', 'a.b', '', 42]) {
+    check(
+      `a hand-edited name is dropped on read: ${JSON.stringify(bad)}`,
+      'remoteSession' in (normaliseTabs(state({ tabs: [tab({ hostId: 'h1', cwd: 'vps', remoteSession: bad as string })] }), NOW).tabs[0] ?? {}),
+      false
+    )
+  }
+  check(
+    'and a name on a LOCAL tab on disk is dropped too',
+    'remoteSession' in (normaliseTabs(state({ tabs: [tab({ remoteSession: 'stoke-0badc0de' })] }), NOW).tabs[0] ?? {}),
+    false
+  )
+  check(
+    'the reconnect countdown is never saved',
+    JSON.stringify(toStored([{ ...live[0], reconnect: { attempt: 2, at: NOW } }], 'k', {}, (t) => t.id, NOW)).includes('reconnect'),
+    false
+  )
+}
+{
   const back = fromStored({ version: 1, savedAt: NOW, activeIndex: 0, tabs: [] })
   check('an empty snapshot restores nothing and selects nothing', [back.tabs.length, back.activeId], [0, null])
 }

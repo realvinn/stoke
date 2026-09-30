@@ -42,6 +42,10 @@ export function toStored(
       effort: t.effort,
       ultracode: t.ultracode,
       hostId: t.hostId,
+      // Only on a kept SSH tab, so every other tab's stored form is unchanged.
+      // The name is what makes a restore a REATTACH to the shell that kept
+      // running on the machine while Stoke was closed.
+      ...(t.hostId && t.remoteSession ? { remoteSession: t.remoteSession } : {}),
       selectedPath: t.selectedPath,
       expandedPath: t.expandedPath,
       lastActiveAt: now,
@@ -93,6 +97,7 @@ export function fromStored(state: StoredTabs): { tabs: Tab[]; activeId: string |
     status: s.kind === 'session' ? 'paused' : 'running',
     exitCode: null,
     hostId: s.hostId,
+    ...(s.hostId && s.remoteSession ? { remoteSession: s.remoteSession } : {}),
     selectedPath: s.selectedPath,
     expandedPath: s.expandedPath
   }))

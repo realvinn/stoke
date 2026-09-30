@@ -52,7 +52,13 @@ interface Props {
   /** Null while projects are still loading and nothing is selected. */
   target: LaunchTarget | null
   /** The folder switcher's inputs: profile-scoped projects, the default folder, the hosts. */
-  switcher: { projects: readonly ProjectLike[]; defaultCwd: string; hosts: readonly SshHost[] }
+  switcher: {
+    projects: readonly ProjectLike[]
+    defaultCwd: string
+    hosts: readonly SshHost[]
+    /** Managed session names the tabs here hold (gotcha 126), for "open in a tab". */
+    openSessions?: readonly string[]
+  }
   onChoose: (choice: FolderChoice) => void
   onOpenFolder: () => void
   onHide?: (path: string) => void
@@ -354,6 +360,7 @@ export function Launcher(props: Props): React.JSX.Element {
             projects={switcher.projects}
             defaultCwd={switcher.defaultCwd}
             hosts={switcher.hosts}
+            openSessions={switcher.openSessions}
             open={pop === 'switcher'}
             onOpenChange={(v) => setPop(v ? 'switcher' : null)}
             onChoose={(c) => {
