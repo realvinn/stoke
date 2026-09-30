@@ -195,13 +195,21 @@ else
   fail "no renderer answered on CDP (got '${platform}')"
   note "$(tail -n 20 "$W/stoke.log" | tr '\n' ' ' | head -c 2000)"
 fi
-# The browser process: the oldest one carrying our user-data-dir.
-main=$(pgrep -o -f -- "--user-data-dir=$W/ud" 2>/dev/null | head -n 1)
-for p in $main $app_pid; do kill -TERM "$p" 2>/dev/null; done
+# Quit it the way the probe quits everything: SIGTERM to the APP, never to the
+# AppImage runtime around it. With extract-and-run the runtime keeps the app as
+# a child, and a TERM to the runtime alone left the app running with PID 1 as
+# its parent (the first no-FUSE run) — so the target is the browser process.
+main=$(browser_pid)
+stoke_procs >"$W/procs-boot.txt"
+kill -TERM "${main:-$app_pid}" 2>/dev/null
 n=0
 while [ -n "$(stoke_procs)" ] && [ $n -lt 150 ]; do sleep 0.2; n=$((n + 1)); done
 if [ -n "$(stoke_procs)" ]; then
-  note "still running 30 s after SIGTERM: $(stoke_procs | cut -c1-160 | tr '\n' '|')"
+  fail "SIGTERM to the booted app (pid ${main:-none}) left Stoke processes behind after 30 s"
+  note "$(stoke_procs | cut -c1-160 | tr '\n' '|')"
+  stoke_procs | awk '{print $1}' | while read -r p; do kill -TERM "$p" 2>/dev/null; done
+else
+  pass "and it quit on SIGTERM, every process with it (pid ${main:-none})"
 fi
 kill -TERM "$xvfb_pid" 2>/dev/null
 
