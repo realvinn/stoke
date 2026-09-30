@@ -45,8 +45,9 @@ permissions:
   contents: write
 
 jobs:
-  # Step for step the same job as ci.yml's `verify`, which has already run on
-  # the commit this tag names. verify:targets fails if the two differ by a
+  # Step for step the same job as ci.yml's `verify`, which every branch push
+  # also runs, so the commit this tag names has normally been through it
+  # already. verify:targets fails if the two differ by a
   # single step, because they once did: ci.yml gained xvfb and the sandbox
   # sysctl, this job gained neither, and since ubuntu-latest already ships
   # xvfb-run, verify:ci would have started the window suite here too — into an
