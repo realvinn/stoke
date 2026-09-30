@@ -1016,6 +1016,20 @@ let liveItemId = ''
       closed
     )
 
+    const r6 = (await call('POST', '/v1/relays', { host: A.id }, { dev: C })).body?.relay as string
+    const g6 = await mustOpen(`/v1/ws/relay/${r6}`, C, 'guest end')
+    const h6 = await mustOpen(`/v1/ws/relay/${r6}`, A, 'host end')
+    h6.ws.pause()
+    for (let i = 0; i < 16; i++) g6.ws.send(Buffer.from(randomU8(RELAY_MAX_FRAME_BYTES)), { binary: true })
+    const held6 = await waitFor(() => logLines.some((l) => l.includes('"msg":"relay held"') && l.includes(r6)), 5000)
+    h6.ws.terminate()
+    const t6 = performance.now()
+    await g6.until(() => g6.closed, 10_000)
+    ok(
+      `when the stalled end goes, the end the hub was holding closes at once (${(performance.now() - t6).toFixed(0)} ms), not after ws’s 30 s close timer`,
+      held6 && g6.closed !== null && performance.now() - t6 < 5000
+    )
+
     const r5 = (await call('POST', '/v1/relays', { host: A.id }, { dev: C })).body?.relay as string
     const g5 = await mustOpen(`/v1/ws/relay/${r5}`, C, 'guest end')
     const h5 = await mustOpen(`/v1/ws/relay/${r5}`, A, 'host end')

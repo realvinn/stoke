@@ -345,6 +345,9 @@ export class RelayBroker {
     relay.closed = true
     this.relays.delete(relay.id)
     relay.queue.length = 0
+    // An end we paused could not read the peer's close frame, and would sit out ws's
+    // 30 s close timer: read it again (forward drops anything more, the relay is closed).
+    for (const end of ['guest', 'host'] as const) if (relay.held[end]) relay.sockets[end]?.resume()
     closeQuietly(relay.sockets.guest, code, reason)
     closeQuietly(relay.sockets.host, code, reason)
     this.log.info('relay closed', {
