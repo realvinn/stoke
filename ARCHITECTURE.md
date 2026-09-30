@@ -588,8 +588,9 @@ npm run verify:voice          # who owns a held Space: Claude Code's /voice or S
                               # microphone pick (exact id, then label, then the default
                               # with a notice) and the virtual-cable names; what a refused
                               # microphone is called; and the wire from TerminalView, the
-                              # phone and Settings to those rules — `--wire <files>` runs
-                              # it against another revision (gotcha 79)
+                              # phone and Settings to those rules, with the Test meter's
+                              # per-press claim (gotcha 20) — `--wire <files>` runs it
+                              # against another revision (gotcha 79)
 npm run verify:campfire       # the installer's campfire: the locked alphabet that lets one
                               # copy of the art live in a POSIX string and a PowerShell
                               # here-string, a hearth that never moves, the stage boundaries,

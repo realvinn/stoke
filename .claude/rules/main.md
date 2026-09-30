@@ -37,6 +37,20 @@ interval; without a reentrancy guard *and* claiming the session before the await
 overlapping passes each started a paid scan for the same session. Setting the claim after
 the await is not enough — that is the window.
 
+> **Checked against the code on 2026-09-30** — a claim must say WHOSE it is, not just that one
+> exists, wherever the claim can be dropped while its await is pending (a Stop, a restart, an
+> unmount). Settings → Voice's Test meter (`MicPicker`) claimed with a shared placeholder
+> (`stopTestRef.current = () => {}`), and its `.then` kept the stream whenever the ref was non-null.
+> A Stop during the open cleared it and the next Test set a new placeholder, so the first open read
+> the second's claim as its own and both installed: Test, Stop, Test left a microphone stream and its
+> AudioContext running after Stop AND after closing Settings. Measured over CDP against the built app
+> with Chromium's fake microphone, in four orderings including none added: 1 live track and 1 open
+> context before the fix, 0 and 0 after. The `.catch` had the mirror bug — an older start's failure
+> cleared a newer claim, orphaning the newer stream and showing an error for a test already stopped.
+> The fix is a fresh object per start (`const mine = { stop: null }; claimRef.current = mine`), and
+> every continuation acts only while `claimRef.current === mine`; `createRecorder`'s `generation`
+> counter is the same idea. Truthiness cannot tell two starts apart.
+
 ## 25. `execFile`'s error packs three unrelated things into `code`
 
 **`execFile`'s error packs three unrelated things into `code`.** A POSIX errno string when the

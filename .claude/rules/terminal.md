@@ -343,3 +343,9 @@ were run against the old file from `HEAD` to confirm they fail there.
 > Chromium's fake devices, `enumerateDevices()` named every input before any getUserMedia (Stoke
 > registers no permission-check handler) — unmeasured with real devices under macOS TCC, which is
 > why the picker keeps its "Show device names" fallback and `audio/defaultDevice.ts` still shells out.
+>
+> **And on 2026-09-30, in review:** Settings' Test meter (`MicPicker`) had the same one-slot bug
+> as the recorder, one level up. Its claim was a shared placeholder, so Test, Stop, Test during a slow
+> open kept one stream live after Stop and after closing Settings. It now claims with a fresh
+> object per press. Gotcha 20's 2026-09-30 note has the measurement, and `verify:voice` holds the
+> claim's shape (shown to fail against the old file).
