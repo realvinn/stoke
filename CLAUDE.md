@@ -167,6 +167,8 @@ rule file named on the group line.
   (`planImport`, `stable`): `hydrateSettings` is not idempotent (`worklogBoards`' default targets).
 - **125.** Bind a rowid to an FTS5 table as an integer (`CAST(? AS INTEGER)` or a BigInt): node:sqlite
   binds every JS number as REAL, and FTS5 ignores `rowid = <real>` silently (`ChatStore.search`).
+- **139.** Never match an SSH host across machines by `SshHost.id`, a per-machine counter (`newHostId`): match
+  by `syncId`, else equal alias + command (`applySyncedSettings`). `mergeSetup` still matches by id.
 
 **Terminal** — `.claude/rules/terminal.md`
 - **5.** Never read the terminal from the DOM: WebGL paints a canvas, so `.xterm-rows` is empty.
