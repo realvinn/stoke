@@ -3,13 +3,17 @@
  * both mode 0600, both T0 (never synced, never exported):
  *
  * - `hub-device.json`: this device's id and label, its Ed25519 and X25519
- *   private keys, and the session token — each secret sealed by the OS key
+ *   private keys, the session token, and the key hub-state.json's value
+ *   digests are HMACs under (`digestKey`) — each secret sealed by the OS key
  *   store (`safeStorage`, through the same `SecretBackend` secrets.json uses)
  *   with the path-bound prefix `sealedText` puts on every sealed value, so an
  *   item copied onto another slot opens as nothing (spec §4.2).
- * - `hub-state.json`: the verified device chain and its pin, the item records
- *   and cursor, conflict notes, account preferences, and the vault key of each
- *   epoch — sealed the same way. Nothing in it is a value in the clear.
+ * - `hub-state.json`: the verified device chain, its pin and this device's
+ *   anchor in it, the item records and cursor, conflict notes, account
+ *   preferences, and the vault key of each epoch — sealed the same way. No
+ *   value is in it in the clear, and no plain digest of one: records carry
+ *   HMACs under `digestKey`, so a short secret cannot be guessed offline from
+ *   the file (it is not sealed as a whole).
  *
  * The token lives here and not in Settings (`hub.token` stays ''), because
  * Settings travel to the renderer whole and a session is not something the
@@ -43,6 +47,12 @@ export interface HubDevice {
   email: string
   tokenExpiresAt: number
   createdAt: number
+  /**
+   * 32 random bytes, b64url: the HMAC key of every value digest in
+   * hub-state.json (`valueDigest`). '' when the file predates it: the service
+   * makes one, and compares every record afresh.
+   */
+  digestKey: string
 }
 
 const DEVICE_FILE_VERSION = 1
@@ -52,6 +62,7 @@ const SLOT = {
   sign: 'hub.device.sign',
   box: 'hub.device.box',
   token: 'hub.session',
+  digest: 'hub.device.digest',
   vk: (account: string, epoch: number) => `hub.vault.${account}.${epoch}`
 } as const
 
@@ -135,6 +146,7 @@ export class HubFiles {
     const boxPriv = this.take(SLOT.box, r.boxPriv, sealed)
     if (!signPriv || !boxPriv || !isB64u(signPriv, 32) || !isB64u(boxPriv, 32)) return null
     const token = this.take(SLOT.token, r.token, sealed) ?? ''
+    const digestKey = this.take(SLOT.digest, r.digestKey, sealed) ?? ''
     return {
       id: r.id,
       label: typeof r.label === 'string' ? r.label : '',
@@ -144,7 +156,8 @@ export class HubFiles {
       account: isId('account', r.account) ? r.account : '',
       email: typeof r.email === 'string' ? r.email : '',
       tokenExpiresAt: typeof r.tokenExpiresAt === 'number' ? r.tokenExpiresAt : 0,
-      createdAt: typeof r.createdAt === 'number' ? r.createdAt : 0
+      createdAt: typeof r.createdAt === 'number' ? r.createdAt : 0,
+      digestKey: isB64u(digestKey, 32) ? digestKey : ''
     }
   }
 
@@ -152,6 +165,7 @@ export class HubFiles {
     const sign = this.put(SLOT.sign, d.keys.signPriv)
     const box = this.put(SLOT.box, d.keys.boxPriv)
     const token = this.put(SLOT.token, d.token)
+    const digest = this.put(SLOT.digest, d.digestKey)
     const body = {
       v: DEVICE_FILE_VERSION,
       id: d.id,
@@ -163,6 +177,7 @@ export class HubFiles {
       signPriv: sign.text,
       boxPriv: box.text,
       token: token.text,
+      digestKey: digest.text,
       account: d.account,
       email: d.email,
       tokenExpiresAt: d.tokenExpiresAt,

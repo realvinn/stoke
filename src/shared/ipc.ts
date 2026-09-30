@@ -275,6 +275,8 @@ export const CH = {
   hubNewKit: 'hub:new-kit',
   hubJoinStart: 'hub:join-start',
   hubJoinCancel: 'hub:join-cancel',
+  /** The owner's answer on the JOINING device: do both screens show the same six digits? */
+  hubJoinConfirm: 'hub:join-confirm',
   hubRecover: 'hub:recover',
   hubApproveStart: 'hub:approve-start',
   hubApproveConfirm: 'hub:approve-confirm',
@@ -285,7 +287,11 @@ export const CH = {
   hubRename: 'hub:rename',
   hubRevoke: 'hub:revoke',
   hubDismissNotes: 'hub:dismiss-notes',
-  hubTrust: 'hub:trust',
+  /** After a hub went back in time: put back, from this device, what it lost (spec §7.3). */
+  hubRepublish: 'hub:republish',
+  /** A synced change that would run something here: apply it on this computer, or keep this computer's. */
+  hubApplyHeld: 'hub:apply-held',
+  hubKeepHeld: 'hub:keep-held',
   hubLocalKeys: 'hub:local-keys',
   hubShareKey: 'hub:share-key',
   hubUnshareKey: 'hub:unshare-key',

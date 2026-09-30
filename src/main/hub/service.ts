@@ -15,8 +15,21 @@
  * - A chain is trusted only as verified HERE (`verifyChain`) and compared with
  *   what this device pinned (`compareToPinned`): a rollback or a fork is an
  *   alarm and nothing is written until the owner acts (spec §4.3). A device is
- *   active only by id AND key (gotcha 140). A vault key is taken only when it
- *   matches the chain's commitment for its epoch (spec §4.2).
+ *   active only by id AND key (gotcha 140), and only in a chain that holds its
+ *   own ANCHOR — the entry through which it entered: its genesis, the `add` it
+ *   took after the owner confirmed the code HERE, or its Kit `add`. A hub can
+ *   build a whole chain that lists a device by the keys it posted at sign-in;
+ *   it cannot make that chain hold this device's anchor. The pin and the
+ *   anchor go only with sign-out; a hub gone back in time is republished to,
+ *   never re-trusted (spec §7.3). A vault key is taken only when it matches
+ *   the chain's commitment for its epoch (spec §4.2).
+ * - Only items sealed under the CURRENT epoch are applied. Every later epoch
+ *   was opened by a revoke or a rotate, to shut someone out, and whoever was
+ *   shut out still holds the old keys; an older item this device already
+ *   agreed on is carried forward (re-sealed), anything else is ignored.
+ * - A synced change that would change what runs here (an MCP server's
+ *   command, a host's command) is held until the owner applies it on this
+ *   computer (`heldChangesFor`).
  * - Settings arrive through `deps.commit` (index.ts `commitSettings`, the path
  *   an import takes), so a synced theme repaints and synced bookmarks reach the
  *   browser; the hub's own `hub` block is written only here (gotcha 57).
@@ -44,10 +57,15 @@ import {
   type DeviceRecord
 } from '../../shared/hub/chain.ts'
 import {
+  anchorHolds,
   DEFAULT_HUB_URL,
   emptyHubState,
   emptyHubView,
+  feedStep,
   incomingFrom,
+  isPrefixOf,
+  ITEMS_PAGE,
+  kitHandlers,
   localValues,
   MAX_CONFLICT_NOTES,
   MAX_DEVICE_NAME_CHARS,
@@ -57,6 +75,7 @@ import {
   SYNC_DEBOUNCE_MS,
   valueDigest,
   type HubAlarm,
+  type HubHeldView,
   type HubLocalKeyView,
   type HubResult,
   type HubLocalState,
@@ -69,7 +88,7 @@ import {
   type SyncScope,
   syncLabel
 } from '../../shared/hub/client.ts'
-import { idFromBytes, isId, isRecord } from '../../shared/hub/codec.ts'
+import { b64uDecode, idFromBytes, isId, isRecord } from '../../shared/hub/codec.ts'
 import { hubSocketUrl, hubUrlVerdict } from '../../shared/hub/edge.ts'
 import { decideConflict, conflictNote, itemLabel, nextEditedAt, parseItemPath, versionRegression, type ItemEnvelope, type StoredItem } from '../../shared/hub/items.ts'
 import { formatRecoverySecret, isPairRecord, parseRecoverySecret, type PairRecord } from '../../shared/hub/pairing.ts'
@@ -82,11 +101,12 @@ import {
   type VaultWrap
 } from '../../shared/hub/protocol.ts'
 import { keyFingerprint } from '../../shared/hub/relay.ts'
-import { applySyncedSettings, sshKeyPayloadProblem, type SshKeyPayload, type SyncableHost } from '../../shared/hub/settings.ts'
+import { applySyncedSettings, runsCode, sshKeyPayloadProblem, type SshKeyPayload, type SyncableHost } from '../../shared/hub/settings.ts'
 import type { SecretBackend } from '../secrets.ts'
 import type { ExecRun } from '../sshEnroll.ts'
 import {
   generateDeviceKeys,
+  hmacB64u,
   itemKeys,
   newVaultKey,
   nodeChainCrypto,
@@ -158,8 +178,14 @@ interface PendingKit {
   kit: string
   /** 1-based group the owner must type back. */
   group: number
-  purpose: 'genesis' | 'revoke' | 'rotate'
+  /**
+   * `recover`: this device is joining with the Kit it was just typed; the Kit
+   * it typed is retired in the same append (`postRecovery`, spec §4.5).
+   */
+  purpose: 'genesis' | 'revoke' | 'rotate' | 'recover'
   target: string | null
+  /** `recover`: the Kit that was typed, used once more to sign the `add`. */
+  typed: Uint8Array | null
   made: number
 }
 
@@ -169,6 +195,12 @@ interface Joining {
   record: DeviceRecord
   state: PairRecord['state']
   code: string | null
+  /**
+   * The owner pressed "The codes match" HERE. Numeric comparison protects
+   * this device only if the owner compares on it: until then an approval is
+   * never taken, whoever the hub says approved (spec §4.4).
+   */
+  confirmed: boolean
   approver: { id: string; sign: string; box: string; label: string } | null
   expiresAt: number
   message: string | null
@@ -186,6 +218,8 @@ class Stop extends Error {}
 const PAIR_POLL_MS = 1500
 const REVOKED_SENTENCE =
   'This device was removed from your hub account. What it synced stays on this computer; sign out to forget its hub keys, then sign in again to join as a new device.'
+const UNANCHORED_SENTENCE =
+  'The hub’s device list says this computer is in the vault, but this computer never joined it: no pairing code was confirmed here and no Recovery Kit was used here. A hub that built a vault of its own would look like this, so nothing was taken or synced. If you approved this computer from another one and Stoke restarted before you confirmed the code here, remove it there, then sign out here and join again.'
 const LOGOUT_TIMEOUT_MS = 5000
 
 function cleanLabel(text: string, fallback: string): string {
@@ -237,6 +271,8 @@ export class HubService {
   private socketOpening: boolean
   private revokeReport: HubView['revokeReport']
   private vkCache: Map<number, Uint8Array>
+  private keysCache: Map<number, ItemKeys>
+  private digestKey: { text: string; bytes: Uint8Array } | null
   private offSettings: (() => void) | null
   private started: boolean
 
@@ -273,6 +309,8 @@ export class HubService {
     this.socketOpening = false
     this.revokeReport = null
     this.vkCache = new Map()
+    this.keysCache = new Map()
+    this.digestKey = null
     this.offSettings = null
     this.started = false
   }
@@ -366,6 +404,36 @@ export class HubService {
   }
 
   /**
+   * The digest every value is compared by: an HMAC under this device's own
+   * key (finding: a plain SHA-256 of a short secret in the unsealed state file
+   * is a guess anyone who can read the file can check offline).
+   */
+  private readonly digest = (text: string): string => {
+    const d = this.me()
+    if (this.digestKey?.text !== d.digestKey) this.digestKey = { text: d.digestKey, bytes: b64uDecode(d.digestKey) ?? new Uint8Array(0) }
+    if (this.digestKey.bytes.length !== 32) throw new Stop('This device’s hub keys are incomplete. Sign out and in again.')
+    return hmacB64u(this.digestKey.bytes, text)
+  }
+
+  /**
+   * A device file from before the digest key gets one now. Every stored digest
+   * was made without it, so the records are compared afresh — the hub's copy
+   * wins the first meeting, never a silent push (`planSync`).
+   */
+  private ensureDigestKey(): void {
+    const d = this.dev
+    if (!d || d.digestKey) return
+    d.digestKey = randomB64u(32)
+    this.saveDevice()
+    if (this.state) {
+      this.state.records = {}
+      this.state.stamps = {}
+      this.state.held = {}
+      this.saveState()
+    }
+  }
+
+  /**
    * A signed request as this device. `session` (the default) carries the
    * bearer; `proof` signs with no bearer (an active device's sign-in, spec
    * §3.3); `none` is unsigned. A refused session is handled here, once, for
@@ -409,6 +477,7 @@ export class HubService {
           this.verdict = v.ok ? v : null
         }
       }
+      this.ensureDigestKey()
     })
     this.emit()
     if (this.signedIn()) this.syncSoon(2000)
@@ -426,9 +495,20 @@ export class HubService {
 
   /* ======================================================== the view */
 
+  /**
+   * In the vault: the chain lists this device by id AND key (gotcha 140), AND
+   * holds the entry this device entered through (`anchor`). Without the
+   * anchor a verified chain proves only that its own entries sign each other.
+   */
   private isActiveIn(v: ChainOk | null): boolean {
     const d = this.dev
-    return !!v && !!d && v.active.some((a) => a.id === d.id && a.sign === d.keys.signPub)
+    return !!v && !!d && anchorHolds(v.links, this.state?.anchor) && v.active.some((a) => a.id === d.id && a.sign === d.keys.signPub)
+  }
+
+  /** The device record the chain gave `id` when it joined, or null. */
+  private recordOf(id: string): DeviceRecord | null {
+    for (const e of this.state?.chain ?? []) if ((e.kind === 'genesis' || e.kind === 'add') && e.device?.id === id) return e.device
+    return null
   }
 
   private phase(): HubView['phase'] {
@@ -465,6 +545,7 @@ export class HubService {
     v.counts = this.state ? recordCounts(this.state.records) : v.counts
     v.epoch = this.verdict?.epoch ?? 0
     const me = this.dev?.id
+    const kitSeen = this.state ? kitHandlers(this.state.chain) : []
     v.devices = (this.verdict?.active ?? []).map((d) => ({
       id: d.id,
       label: this.deviceName(d.id, d.label),
@@ -472,7 +553,8 @@ export class HubService {
       addedAt: d.addedAt,
       me: d.id === me,
       online: d.id === me ? true : this.online.includes(d.id),
-      fingerprint: keyFingerprint(d.sign)
+      fingerprint: keyFingerprint(d.sign),
+      kitSeen: kitSeen.includes(d.id)
     }))
     v.pairs = this.pairs
       .filter((p) => p.state === 'waiting' || p.state === 'nonce' || p.state === 'revealed')
@@ -492,6 +574,7 @@ export class HubService {
           pair: this.joining.pair,
           state: this.joining.state,
           code: this.joining.code,
+          confirmed: this.joining.confirmed,
           expiresAt: this.joining.expiresAt,
           approver: this.joining.approver ? this.deviceName(this.joining.approver.id, this.joining.approver.label) : null,
           message: this.joining.message
@@ -515,7 +598,8 @@ export class HubService {
           installedAs: k.name,
           hosts: aliasesFor(keyId)
         })),
-        ...Object.entries(st.offered).map(([keyId, k]) => ({
+        // A key this device shared is listed once, as its own, whoever re-sealed it since.
+        ...Object.entries(st.offered).filter(([keyId]) => !st.shared[keyId]).map(([keyId, k]) => ({
           keyId,
           name: k.name,
           fingerprint: k.fingerprint,
@@ -529,9 +613,32 @@ export class HubService {
       ]
     }
     v.alarm = this.state?.alarm ?? null
+    v.held = this.heldView()
     v.kitPending = this.pendingKit !== null
     v.revokeReport = this.revokeReport
     return v
+  }
+
+  /** Held changes, one card per group, newest first. */
+  private heldView(): HubHeldView[] {
+    const groups = new Map<string, HubHeldView>()
+    for (const h of Object.values(this.state?.held ?? {})) {
+      const g = groups.get(h.group)
+      if (g) {
+        g.lines.push(...h.lines)
+        g.at = Math.max(g.at, h.at)
+        continue
+      }
+      const host = /^t3\/host\/(.+)$/.exec(h.group)?.[1]
+      groups.set(h.group, {
+        group: h.group,
+        label: host ? `SSH host ${this.hostName(host)}` : 'MCP servers (Settings › Agents)',
+        from: h.author ? this.deviceName(h.author, this.labelFromChain(h.author)) : 'another device',
+        lines: [...h.lines],
+        at: h.at
+      })
+    }
+    return [...groups.values()].sort((a, b) => b.at - a.at)
   }
 
   private labelFromChain(id: string): string {
@@ -549,11 +656,16 @@ export class HubService {
 
   /* ======================================================== address */
 
-  /** Where the hub is. Refused while signed in: a session belongs to one hub. */
+  /**
+   * Where the hub is. Refused while this device belongs to an account — not
+   * only while a session is live: its keys, anchor and pinned device list are
+   * that hub's, and a session that merely lapsed must not become a way to
+   * point them at another.
+   */
   async setUrl(text: string): Promise<HubResult<{ url: string; warning: string | null }>> {
     const t = typeof text === 'string' ? text.trim() : ''
-    if (this.signedIn() && t !== this.settings().hub.url) {
-      return { ok: false, message: 'Sign out of this hub before pointing Stoke at another.' }
+    if ((this.signedIn() || !!this.dev?.account) && t !== this.settings().hub.url) {
+      return { ok: false, message: 'Sign out of this hub before pointing Stoke at another: this computer’s hub keys and vault belong to the account there.' }
     }
     if (t === '') {
       await this.commitHub({ url: '' })
@@ -593,6 +705,7 @@ export class HubService {
     if (loaded) {
       this.dev = loaded
       if (label && !loaded.account) loaded.label = cleanLabel(label, this.deps.hostname)
+      this.ensureDigestKey()
       return loaded
     }
     const keys = generateDeviceKeys()
@@ -605,7 +718,8 @@ export class HubService {
       account: '',
       email: '',
       tokenExpiresAt: 0,
-      createdAt: this.now()
+      createdAt: this.now(),
+      digestKey: randomB64u(32)
     }
     return this.dev
   }
@@ -651,10 +765,19 @@ export class HubService {
       const account = typeof res.accountId === 'string' ? res.accountId : ''
       if (!token || !isId('account', account)) return { ok: false, message: 'The hub answered the sign-in without a session.' }
       if (dev.account && dev.account !== account) {
-        // Another account on this hub: its records and keys are not this one's.
-        this.state = null
-        this.verdict = null
-        this.vkCache.clear()
+        /*
+         * This device belongs to another account: its anchor, pinned list and
+         * vault keys are that account's. Throwing them away here is what let a
+         * hub that answered "unauthorized" and then another account id start
+         * this device over in a vault of its making. Only signing out does.
+         */
+        void hubRequest({ fetch: this.deps.fetch ?? fetch, now: this.now }, base, 'POST', '/v1/auth/logout', {}, { device: dev.id, signPriv: dev.keys.signPriv, token }).catch(
+          () => undefined
+        )
+        return {
+          ok: false,
+          message: 'That sign-in belongs to a different account from the one this computer is set up for. Sign out here first (below), then sign in to the other account.'
+        }
       }
       dev.token = token
       dev.account = account
@@ -731,7 +854,7 @@ export class HubService {
    * A list that does not verify, is shorter than the pinned one, or differs at
    * a pinned entry is an alarm, and nothing after it runs.
    */
-  private async refreshChain(): Promise<ChainOk | null> {
+  private async refreshChain(opts: { entering?: boolean } = {}): Promise<ChainOk | null> {
     const st = this.st()
     const res = await this.req('GET', '/v1/chain')
     const entries = Array.isArray(res.entries) ? res.entries : []
@@ -746,6 +869,17 @@ export class HubService {
     const cmp = compareToPinned(st.pinned, ok.links)
     if (cmp === 'rollback') this.raise('rollback', `The hub’s device list is shorter than the one this device last saw (${ok.seq + 1} entries, not ${(st.pinned?.seq ?? 0) + 1}). A restored backup looks like this; so does a hub going back in time. Nothing was synced.`)
     if (cmp === 'fork') this.raise('fork', 'The hub’s device list differs from the one this device last saw, at an entry both have. Nothing was synced.')
+    if (st.anchor && !anchorHolds(ok.links, st.anchor)) {
+      this.raise('fork', 'The hub’s device list does not hold the entry this computer joined the vault through. Nothing was synced.')
+    }
+    /*
+     * A list that names this device when this device never entered it is a
+     * vault somebody else built around the keys it posted at sign-in. Not
+     * while a join or a Kit recovery is being finished here: those set the
+     * anchor from exactly this list, after their own checks.
+     */
+    const me = this.dev
+    if (!st.anchor && !opts.entering && !this.joining && me && ok.active.some((d) => d.id === me.id)) this.raise('chain', UNANCHORED_SENTENCE)
     st.chain = entries as ChainEntry[]
     st.pinned = { seq: ok.seq, head: ok.head }
     this.verdict = ok
@@ -801,7 +935,26 @@ export class HubService {
     this.saveState()
   }
 
-  private keysCache = new Map<number, ItemKeys>()
+  /**
+   * Forget the vault keys of epochs before `epoch` once nothing here still
+   * needs them: every record is sealed under it. An older key opens only what
+   * was sealed before a revoke or a rotate, which is never applied (`pull`);
+   * it is kept only while this device may still have to carry its own agreed
+   * values forward (`resealStale`).
+   */
+  private dropOldVaultKeys(epoch: number): void {
+    const st = this.st()
+    if (Object.values(st.records).some((r) => r.epoch < epoch)) return
+    let dropped = false
+    for (const e of Object.keys(st.vaultKeys)) {
+      if (Number(e) >= epoch) continue
+      delete st.vaultKeys[e]
+      dropped = true
+    }
+    for (const e of [...this.vkCache.keys()]) if (e < epoch) this.vkCache.delete(e)
+    for (const e of [...this.keysCache.keys()]) if (e < epoch) this.keysCache.delete(e)
+    if (dropped) this.saveState()
+  }
 
   private async keysFor(v: ChainOk, epoch: number): Promise<ItemKeys | null> {
     const hit = this.keysCache.get(epoch)
@@ -828,12 +981,12 @@ export class HubService {
 
   /* ======================================================== the vault and its Kit */
 
-  private makeKit(purpose: PendingKit['purpose'], target: string | null): { kit: string; group: number } {
+  private makeKit(purpose: PendingKit['purpose'], target: string | null, typed: Uint8Array | null = null): { kit: string; group: number } {
     const secret = randomU8(16)
     const kit = formatRecoverySecret(secret)
     // Groups after `RK1-`: six of four characters and a last of three. Ask for a full one.
     const group = 1 + (randomU8(1)[0] % 6)
-    this.pendingKit = { secret, kit, group, purpose, target, made: this.now() }
+    this.pendingKit = { secret, kit, group, purpose, target, typed, made: this.now() }
     return { kit, group }
   }
 
@@ -908,10 +1061,24 @@ export class HubService {
       const got = (typed ?? '').toUpperCase().replace(/[\s-]+/g, '').replace(/O/g, '0').replace(/[IL]/g, '1')
       if (got !== want) return { ok: false, message: `That is not group ${k.group} of your Recovery Kit. Check the copy you saved.` }
       if (k.purpose === 'genesis') await this.postGenesis(k)
+      else if (k.purpose === 'recover') await this.postRecovery(k)
       else await this.postRotation(k)
       this.pendingKit = null
       return { ok: true }
     })
+  }
+
+  /**
+   * The anchor of an entry this device made itself, set BEFORE it is posted:
+   * if the answer is lost the entry may still have landed, and a device that
+   * started the vault must not come back unanchored in its own vault. An
+   * anchor the hub never took only means "not in the vault" until the next
+   * attempt replaces it.
+   */
+  private anchorAt(e: ChainEntry): void {
+    const st = this.st()
+    st.anchor = { seq: e.seq, link: sha256B64u(chainLinkText(e)) }
+    this.saveState()
   }
 
   private async postGenesis(k: PendingKit): Promise<void> {
@@ -921,12 +1088,13 @@ export class HubService {
     const r = recoveryKeys(k.secret, account)
     const g0 = this.entry(null, null, { kind: 'genesis', epoch: 1, signer: me.id, device: this.record(), recovery: r.signPub, vk: vaultKeyCommit(vk, { account, epoch: 1 }) }, me.keys.signPriv)
     const recovery = sealRecoveryWrap(vk, r.wrapKey, { account, epoch: 1 })
+    this.anchorAt(g0)
     await this.req('POST', '/v1/chain', {
       entries: [g0],
       wraps: { epoch: 1, devices: [{ device: me.id, wrap: wrapVaultKey(vk, { account, epoch: 1, device: me.id, boxPub: me.keys.boxPub }) }], recovery }
     })
     this.loginState = 'active'
-    const v = await this.refreshChain()
+    const v = await this.refreshChain({ entering: true })
     if (!v || !this.isActiveIn(v)) throw new Stop('The vault was created, but the hub’s device list does not show this device in it.')
     this.storeVaultKey(1, vk)
     this.st().recoveryWraps['1'] = recovery
@@ -949,7 +1117,7 @@ export class HubService {
       const res = await this.req('POST', '/v1/pair', { commit, device: { id: record.id, label: record.label, platform: record.platform } })
       const pair = typeof res.pair === 'string' ? res.pair : ''
       if (!isId('pair', pair)) return { ok: false, message: 'The hub did not open a request.' }
-      this.joining = { pair, nonce, record, state: 'waiting', code: null, approver: null, expiresAt: Number(res.expiresAt) || this.now() + 10 * 60_000, message: null }
+      this.joining = { pair, nonce, record, state: 'waiting', code: null, confirmed: false, approver: null, expiresAt: Number(res.expiresAt) || this.now() + 10 * 60_000, message: null }
       this.pollPairs()
       return { ok: true }
     })
@@ -970,7 +1138,13 @@ export class HubService {
     })
   }
 
-  /** One look at this device's own request: reveal once the approver answered; take the key once approved. */
+  /** Whether an approver the hub names is the device the verified chain holds, keys and all (gotcha 140). */
+  private async approverHolds(a: { id: string; sign: string; box: string }): Promise<boolean> {
+    const v = await this.refreshChain()
+    return !!v && v.active.some((d) => d.id === a.id && d.sign === a.sign && d.box === a.box)
+  }
+
+  /** One look at this device's own request: reveal once the approver answered; take the key once approved AND confirmed here. */
   private async joinTick(): Promise<void> {
     const j = this.joining
     if (!j) return
@@ -978,23 +1152,18 @@ export class HubService {
     if (!isPairRecord(rec)) return
     j.state = rec.state
     j.expiresAt = rec.expiresAt
-    if (rec.state === 'nonce' && rec.approver && rec.nonceE) {
-      // The approver must be a device the verified chain lists, keys and all (gotcha 140).
-      const v = await this.refreshChain()
-      const a = rec.approver
-      if (!v || !v.active.some((d) => d.id === a.id && d.sign === a.sign && d.box === a.box)) {
+    const answeredBy = (rec.state === 'nonce' || (rec.state === 'revealed' && !j.code)) && rec.approver && rec.nonceE ? rec.approver : null
+    if (answeredBy && rec.nonceE) {
+      if (!(await this.approverHolds(answeredBy))) {
         j.message = 'The request was answered by a device this account’s list does not hold. It was refused.'
         await this.req('POST', `/v1/pair/${j.pair}/refuse`, {}).catch(() => undefined)
         j.state = 'refused'
         return
       }
-      await this.req('POST', `/v1/pair/${j.pair}/reveal`, { device: j.record, nonce: j.nonce })
-      j.approver = { id: a.id, sign: a.sign, box: a.box, label: a.label }
-      j.code = pairCode({ account: this.account(), pair: j.pair, device: j.record, approver: a, nonceN: j.nonce, nonceE: rec.nonceE })
+      if (rec.state === 'nonce') await this.req('POST', `/v1/pair/${j.pair}/reveal`, { device: j.record, nonce: j.nonce })
+      j.approver = { id: answeredBy.id, sign: answeredBy.sign, box: answeredBy.box, label: answeredBy.label }
+      j.code = pairCode({ account: this.account(), pair: j.pair, device: j.record, approver: answeredBy, nonceN: j.nonce, nonceE: rec.nonceE })
       j.state = 'revealed'
-    } else if (rec.state === 'revealed' && !j.code && rec.approver && rec.nonceE) {
-      j.approver = { id: rec.approver.id, sign: rec.approver.sign, box: rec.approver.box, label: rec.approver.label }
-      j.code = pairCode({ account: this.account(), pair: j.pair, device: j.record, approver: rec.approver, nonceN: j.nonce, nonceE: rec.nonceE })
     } else if (rec.state === 'approved') {
       await this.finishJoin(j)
     } else if (rec.state === 'refused') {
@@ -1005,22 +1174,63 @@ export class HubService {
   }
 
   /**
-   * The approver's `add` landed: check it names exactly this device's keys and
-   * was signed by the device whose keys entered the code, pin the list, and
-   * take the vault key it vouches for (spec §4.4 step 5).
+   * The owner's answer on THIS device to "does the other one show the same six
+   * digits?". Yes: the join finishes once the other device has added this one
+   * (now, if it already has). No: the request is refused and nothing is taken.
+   */
+  joinConfirm(match: boolean): Promise<HubResult> {
+    return this.action(match ? 'Joining…' : 'Refusing…', async () => {
+      const j = this.joining
+      if (!j?.code || !j.approver) return { ok: false, message: 'There is no code to confirm yet.' }
+      if (!match) {
+        const added = j.state === 'approved'
+        await this.req('POST', `/v1/pair/${j.pair}/refuse`, {}).catch(() => undefined)
+        j.state = 'refused'
+        j.message = added
+          ? 'You said the codes differ, so this computer took nothing. The other device already added it: remove it there, then sign out here and check the hub.'
+          : 'You said the codes differ, so the request was refused and nothing was taken. Refuse it on the other device too.'
+        return { ok: true }
+      }
+      j.confirmed = true
+      if (j.state === 'approved') await this.finishJoin(j)
+      else this.pollPairs()
+      return { ok: true }
+    })
+  }
+
+  /**
+   * The approver's `add` landed and the owner confirmed the code here: check
+   * the `add` names exactly this device's keys and was signed by the device
+   * whose keys entered the code, anchor this device at it, and take the vault
+   * key the list vouches for (spec §4.4 step 5).
    */
   private async finishJoin(j: Joining): Promise<void> {
-    const v = await this.refreshChain()
+    if (!j.confirmed) return
+    const v = await this.refreshChain({ entering: true })
     const me = this.me()
+    const a = j.approver
     const add = v ? this.st().chain.find((e) => e.kind === 'add' && e.device?.id === me.id) : null
-    if (!v || !add || add.device?.sign !== me.keys.signPub || add.device.box !== me.keys.boxPub || (j.approver && add.signer !== j.approver.id)) {
-      j.message = 'The hub says the request was approved, but the device list does not add this device with its own keys. Nothing was taken.'
+    const signer = add ? this.recordOf(add.signer) : null
+    if (
+      !v ||
+      !a ||
+      !add ||
+      add.device?.sign !== me.keys.signPub ||
+      add.device.box !== me.keys.boxPub ||
+      add.signer !== a.id ||
+      signer?.sign !== a.sign ||
+      signer.box !== a.box
+    ) {
+      j.message = 'The hub says the request was approved, but the device list does not add this device with its own keys, signed by the device whose code you confirmed. Nothing was taken.'
       j.state = 'refused'
       return
     }
+    const st = this.st()
+    st.anchor = { seq: add.seq, link: v.links[add.seq] }
+    this.saveState()
     const vk = await this.vaultKey(v, v.epoch)
     if (!vk) {
-      j.message = 'This device is in the list, but the hub has no vault key for it yet. Try again in a moment.'
+      j.message = 'This device is in the list, but the hub has no vault key for it yet. Stoke tries again in a moment.'
       return
     }
     this.joining = null
@@ -1030,11 +1240,14 @@ export class HubService {
 
   /**
    * Join with the Recovery Kit, from a signed-in device the list does not hold
-   * (spec §4.5): open the Kit's wrap of the current epoch — against the
-   * chain's commitment — and add this device, signed by the Kit.
+   * (spec §4.5). The Kit is checked against the list and its wrap of the
+   * current epoch opened — against the chain's commitment — but nothing is
+   * posted yet: a Kit that has been typed may have been seen, so a NEW Kit is
+   * made first, shown, and confirmed like the first one, and the `add` goes up
+   * with the `rotate` that retires the typed Kit (`postRecovery`).
    */
-  recover(kitText: string): Promise<HubResult> {
-    return this.action('Opening the vault with your Recovery Kit…', async () => {
+  recover(kitText: string): Promise<HubResult<{ kit: string; group: number }>> {
+    return this.action<{ kit: string; group: number }>('Opening the vault with your Recovery Kit…', async () => {
       if (this.phase() !== 'locked') return { ok: false, message: 'This device is not waiting to join a vault.' }
       const p = this.files.keyStore()
       if (!p.protected) return { ok: false, message: `${p.why} Stoke will not keep a vault key where it would be readable.` }
@@ -1048,20 +1261,51 @@ export class HubService {
       const res = await this.req('GET', `/v1/vault/recovery?epoch=${v.epoch}`)
       const vk = openRecoveryWrap(res.wrap as RecoveryWrap, r.wrapKey, { account, epoch: v.epoch, commit: v.vkCommits[v.epoch] })
       if (!vk) return { ok: false, message: 'The Kit is right, but the vault key the hub holds for it does not match the device list. Nothing was taken.' }
-      const me = this.me()
-      const add = this.entry(v, null, { kind: 'add', epoch: v.epoch, signer: 'recovery', device: this.record() }, r.signPriv)
-      await this.req('POST', '/v1/chain', {
-        entries: [add],
-        wraps: { epoch: v.epoch, devices: [{ device: me.id, wrap: wrapVaultKey(vk, { account, epoch: v.epoch, device: me.id, boxPub: me.keys.boxPub }) }] }
-      })
-      const after = await this.refreshChain()
-      if (!after || !this.isActiveIn(after)) return { ok: false, message: 'The hub took the entry, but the device list does not show this device.' }
-      this.storeVaultKey(v.epoch, vk)
-      this.st().recoveryWraps[String(v.epoch)] = res.wrap as RecoveryWrap
-      this.loginState = 'active'
-      this.syncSoon(50)
-      return { ok: true }
+      return { ok: true, ...this.makeKit('recover', null, parsed.secret) }
     })
+  }
+
+  /**
+   * The new Kit is confirmed: post this device's `add`, signed with the typed
+   * Kit, and a `rotate` naming the new Kit, in ONE append — so the typed Kit
+   * never opens an epoch this device is in, and nothing is posted at all if
+   * the owner walks away first. Then everything is re-sealed under the new key.
+   */
+  private async postRecovery(k: PendingKit): Promise<void> {
+    if (!k.typed) throw new Stop('The Recovery Kit you typed is no longer in memory. Type it again.')
+    const account = this.account()
+    const me = this.me()
+    const st = this.st()
+    const v = await this.refreshChain()
+    if (!v) throw new Stop('This account has no vault any more.')
+    const old = recoveryKeys(k.typed, account)
+    if (old.signPub !== v.recovery) throw new Stop('The Recovery Kit you typed was replaced while the new one was being saved. Nothing was posted; start again with the current Kit.')
+    const res = await this.req('GET', `/v1/vault/recovery?epoch=${v.epoch}`)
+    const vkOld = openRecoveryWrap(res.wrap as RecoveryWrap, old.wrapKey, { account, epoch: v.epoch, commit: v.vkCommits[v.epoch] })
+    if (!vkOld) throw new Stop('The vault key the hub holds for the Kit does not match the device list. Nothing was posted.')
+    const add = this.entry(v, null, { kind: 'add', epoch: v.epoch, signer: 'recovery', device: this.record() }, old.signPriv)
+    const kit = recoveryKeys(k.secret, account)
+    const epoch = v.epoch + 1
+    const vk = newVaultKey()
+    const rot = this.entry(v, add, { kind: 'rotate', epoch, signer: me.id, recovery: kit.signPub, vk: vaultKeyCommit(vk, { account, epoch }) }, me.keys.signPriv)
+    const after = verifyChain([...st.chain, add, rot], nodeChainCrypto, { account })
+    if (!after.ok) throw new Stop(`That change would not verify (${after.reason}).`)
+    const devices = wrapsRequiredAfter(after).map((id) => {
+      const d = after.active.find((x) => x.id === id) as DeviceRecord
+      return { device: id, wrap: wrapVaultKey(vk, { account, epoch, device: id, boxPub: d.box }) }
+    })
+    const recovery = sealRecoveryWrap(vk, kit.wrapKey, { account, epoch })
+    this.anchorAt(add)
+    await this.req('POST', '/v1/chain', { entries: [add, rot], wraps: { epoch, devices, recovery } })
+    const now = await this.refreshChain({ entering: true })
+    if (!now || now.epoch !== epoch || !this.isActiveIn(now)) throw new Stop('The hub took the entries, but its device list does not show this device in the vault.')
+    this.storeVaultKey(epoch, vk)
+    st.recoveryWraps[String(epoch)] = recovery
+    this.loginState = 'active'
+    this.saveState()
+    await this.reseal(now, itemKeys(vkOld, account, v.epoch))
+    this.dropOldVaultKeys(epoch)
+    this.syncSoon(50)
   }
 
   /* ======================================================== approving */
@@ -1148,7 +1392,7 @@ export class HubService {
   private pollPairs(): void {
     if (this.pairTimer) return
     const busy = (): boolean =>
-      (this.joining !== null && ['waiting', 'nonce', 'revealed'].includes(this.joining.state)) ||
+      (this.joining !== null && (['waiting', 'nonce', 'revealed'].includes(this.joining.state) || (this.joining.state === 'approved' && this.joining.confirmed))) ||
       [...this.approving.values()].some((a) => !a.code) ||
       this.pairs.some((p) => p.state !== 'approved' && this.approving.has(p.pair))
     const tick = (): void => {
@@ -1203,6 +1447,18 @@ export class HubService {
       if (target === this.me().id) return { ok: false, message: 'Remove this device from another one, or sign out here.' }
       if (!v.active.some((d) => d.id === target)) return { ok: false, message: 'That device is not in the vault.' }
       if ('newKit' in how) return { ok: true, ...this.makeKit('revoke', target) }
+      /*
+       * The typed Kit keeps the Kit — useless against a device that has had it
+       * in hand: it could open the new epoch's recovery wrap as a pending
+       * session with the password (gotcha 141). The chain says who has.
+       */
+      if (kitHandlers(this.st().chain).includes(target)) {
+        const label = this.deviceName(target, this.labelFromChain(target))
+        return {
+          ok: false,
+          message: `${label} has had your current Recovery Kit — it was made there or typed there — so it could open anything sealed for that Kit. Remove it with a new Kit instead.`
+        }
+      }
       const parsed = parseRecoverySecret(how.kit)
       if (!parsed.ok) return { ok: false, message: parsed.message }
       if (recoveryKeys(parsed.secret, this.account()).signPub !== v.recovery) return { ok: false, message: 'That Recovery Kit is not this account’s current one.' }
@@ -1269,9 +1525,10 @@ export class HubService {
     this.st().recoveryWraps[String(epoch)] = recovery
     this.saveState()
     await this.reseal(now, oldKeys)
+    this.dropOldVaultKeys(epoch)
     if (f.target) {
       const label = this.deviceName(f.target, this.labelFromChain(f.target))
-      this.revokeReport = { device: label, ...heldBefore }
+      this.revokeReport = { device: label, ...heldBefore, commands: runsCode(this.settings()) }
     }
   }
 
@@ -1288,59 +1545,87 @@ export class HubService {
   }
 
   /**
-   * Every item the hub holds, re-sealed under the new epoch's keys, then the
-   * old epochs pruned (spec §4.6). Values, edit times and tombstones travel
-   * as they were; the author becomes this device, which signs the puts.
+   * Walk the change feed from `since`, `ITEMS_PAGE` items a page, each step
+   * judged (`feedStep`) before the next request: a hub that keeps saying
+   * "more" without moving on is an error, never a loop inside the queue every
+   * other hub action waits behind. `each` returning true ends the walk.
+   */
+  private async walkFeed(since: number, each: (s: StoredItem) => Promise<boolean | void> | boolean | void): Promise<number> {
+    let pages = 0
+    for (;;) {
+      const page = await this.req('GET', `/v1/items?since=${since}&limit=${ITEMS_PAGE}`)
+      pages++
+      let done = false
+      for (const s of (Array.isArray(page.items) ? page.items : []) as StoredItem[]) {
+        if (!isRecord(s) || !isRecord(s.envelope) || typeof s.envelope.id !== 'string') continue
+        if ((await each(s)) === true) {
+          done = true
+          break
+        }
+      }
+      const step = feedStep(since, page, pages)
+      if ('error' in step) throw new HubRequestError('server-error', step.error, 0)
+      since = step.next
+      if (done || !step.more) return since
+    }
+  }
+
+  /**
+   * Every item sealed under the epoch this change closed, re-sealed under the
+   * new epoch's keys, then the old epochs pruned (spec §4.6). Values, edit
+   * times and tombstones travel as they were; the author becomes this device,
+   * which signs the puts (the hub insists). Anything under an even older epoch
+   * was shut out by an earlier change, and is carried forward only where this
+   * device had agreed on exactly that value.
    */
   private async reseal(v: ChainOk, oldKeys: ItemKeys): Promise<void> {
     const keys = await this.keysFor(v, v.epoch)
     if (!keys) throw new Stop('The new vault key is not available.')
-    const latest = new Map<string, { item: RemoteItem; env: ItemEnvelope }>()
-    let since = 0
-    for (;;) {
-      const page = await this.req('GET', `/v1/items?since=${since}`)
-      for (const s of (Array.isArray(page.items) ? page.items : []) as StoredItem[]) {
-        const env = s.envelope
-        const k = env.epoch === oldKeys.epoch ? oldKeys : await this.keysFor(v, env.epoch)
-        if (!k) continue
-        const opened = openItem(k, env)
-        if (!opened.ok) continue
-        const cur = latest.get(opened.item.path)
-        if (cur && (cur.env.epoch > env.epoch || (cur.env.epoch === env.epoch && cur.env.version >= env.version))) continue
-        latest.set(opened.item.path, { item: this.remoteOf(env, opened.item), env })
-      }
-      since = Number(page.next) || since
-      if (page.more !== true) break
-    }
-    const puts: { path: string; item: RemoteItem; baseVersion: number; envelope: ItemEnvelope }[] = []
-    for (const [path, { item, env }] of latest) {
-      if (env.epoch === v.epoch) continue
-      const envelope = sealItem(keys, { version: 1, author: this.me().id, path, editedAt: item.editedAt, deleted: item.deleted, value: item.value })
-      puts.push({ path, item, baseVersion: 0, envelope })
-    }
     const st = this.st()
-    for (let i = 0; i < puts.length; i += HUB_LIMITS.putsPerRequest) {
-      const batch = puts.slice(i, i + HUB_LIMITS.putsPerRequest)
-      const res = await this.req('POST', '/v1/items', { puts: batch.map((p) => ({ baseVersion: p.baseVersion, envelope: p.envelope })) })
-      const results = Array.isArray(res.results) ? res.results : []
-      batch.forEach((p, idx) => {
-        const r = results[idx] as { ok?: boolean; version?: number } | undefined
-        if (!r?.ok) return
-        const old = st.records[p.path]
-        st.records[p.path] = {
-          id: p.envelope.id,
-          epoch: v.epoch,
-          version: r.version ?? 1,
-          hash: p.item.hash,
-          localHash: old?.localHash ?? p.item.hash,
-          editedAt: p.item.editedAt,
-          author: this.me().id,
-          deleted: p.item.deleted
-        }
-      })
-    }
+    const latest = new Map<string, RemoteItem>()
+    await this.walkFeed(0, async (s) => {
+      const env = s.envelope
+      if (env.epoch >= v.epoch) return
+      const k = env.epoch === oldKeys.epoch ? oldKeys : await this.keysFor(v, env.epoch)
+      const opened = k ? openItem(k, env) : null
+      if (!opened?.ok) return
+      const item = this.remoteOf(env, opened.item)
+      if (env.epoch !== oldKeys.epoch && st.records[item.path]?.hash !== item.hash) return
+      const cur = latest.get(item.path)
+      if (cur && (cur.epoch > item.epoch || (cur.epoch === item.epoch && cur.version >= item.version))) return
+      latest.set(item.path, item)
+    })
+    await this.putResealed([...latest.values()], v, keys)
     await this.req('POST', '/v1/items/prune', { epochBelow: v.epoch })
     this.saveState()
+  }
+
+  /**
+   * Put items, as they are, under the current epoch's keys (version 1, over
+   * nothing). A put another device beat is left to it. A record moves only
+   * where this device had agreed on exactly that value: a path it never
+   * agreed on, or agreed on differently, is left for the pull, which applies
+   * it by the ordinary rules instead of taking it as already agreed.
+   */
+  private async putResealed(items: RemoteItem[], v: ChainOk, keys: ItemKeys): Promise<void> {
+    const st = this.st()
+    const me = this.me().id
+    for (let i = 0; i < items.length; i += HUB_LIMITS.putsPerRequest) {
+      const batch = items.slice(i, i + HUB_LIMITS.putsPerRequest).map((item) => ({
+        item,
+        envelope: sealItem(keys, { version: 1, author: me, path: item.path, editedAt: item.editedAt, deleted: item.deleted, value: item.value })
+      }))
+      const res = await this.req('POST', '/v1/items', { puts: batch.map((b) => ({ baseVersion: 0, envelope: b.envelope })) })
+      const results = Array.isArray(res.results) ? res.results : []
+      batch.forEach((b, idx) => {
+        const r = results[idx] as { ok?: boolean; version?: number } | undefined
+        if (!r?.ok) return
+        st.seen[b.envelope.id] = Math.max(st.seen[b.envelope.id] ?? 0, b.envelope.version)
+        const old = st.records[b.item.path]
+        if (!old || old.hash !== b.item.hash) return
+        st.records[b.item.path] = { ...old, id: b.envelope.id, epoch: v.epoch, version: r.version ?? 1, editedAt: b.item.editedAt, author: me, deleted: b.item.deleted }
+      })
+    }
   }
 
   /* ======================================================== sync */
@@ -1386,21 +1671,83 @@ export class HubService {
   }
 
   /**
-   * After an alarm the owner has checked (a hub restored from a backup): take
-   * the hub's list and items as the truth from here. What this device holds
-   * is compared afresh; where both have a value the hub's wins.
+   * After a hub went back in time (a restored backup): put back what it lost
+   * FROM this device (spec §7.3). The hub's device list is taken only if it
+   * is an earlier copy of this device's own (`isPrefixOf`); the entries it is
+   * missing are posted again — their signatures are still good, so they are
+   * ordinary appends — with the wraps the restored hub no longer holds. Then
+   * items: where the hub serves an older version of something this device has
+   * seen, this device's own value goes up over it, and whatever the hub lost
+   * altogether goes up as new. Nothing the hub served is taken on trust: no
+   * pin is dropped, and a different list is refused, never re-trusted.
    */
-  trustHub(): Promise<HubResult> {
-    return this.action('Starting over from the hub’s copy…', async () => {
+  republish(): Promise<HubResult> {
+    return this.action('Republishing from this computer…', async () => {
       const st = this.st()
+      const kind = st.alarm?.kind
+      if (kind !== 'rollback' && kind !== 'version') {
+        return { ok: false, message: 'Only a hub that went back in time can be put right from here. For this, sign out here and look at the hub first.' }
+      }
+      const account = this.account()
+      const mine = verifyChain(st.chain, nodeChainCrypto, { account })
+      if (!mine.ok || !this.isActiveIn(mine)) return { ok: false, message: 'This computer’s own copy of the device list does not show it in the vault, so it has nothing to republish.' }
+      const res = await this.req('GET', '/v1/chain')
+      const entries = Array.isArray(res.entries) ? (res.entries as unknown[]) : []
+      let served: ChainOk | null = null
+      if (entries.length) {
+        const sv = verifyChain(entries, nodeChainCrypto, { account })
+        if (!sv.ok) return { ok: false, message: `The hub’s device list does not check out (entry ${sv.at}: ${sv.reason}). Nothing was sent.` }
+        served = sv
+      }
+      if (!isPrefixOf(served?.links ?? [], mine.links)) {
+        return { ok: false, message: 'The hub’s device list is not an earlier copy of this computer’s, so republishing cannot put it right. Nothing was sent. Sign out here and look at the hub.' }
+      }
+      const missing = st.chain.slice(served ? served.seq + 1 : 0)
+      if (missing.length) {
+        const epoch = mine.epoch
+        const vk = await this.vaultKey(mine, epoch)
+        if (!vk) return { ok: false, message: 'This computer does not hold the current vault key, so it cannot hand it back to the hub.' }
+        // A new epoch among the missing entries: every device's wrap and the Kit's. Otherwise only the devices the hub lost.
+        const opens = (served?.epoch ?? 0) < epoch
+        const need = wrapsRequiredAfter(mine).filter((id) => opens || !served?.active.some((d) => d.id === id))
+        const devices = need.map((id) => {
+          const d = mine.active.find((x) => x.id === id) as DeviceRecord
+          return { device: id, wrap: wrapVaultKey(vk, { account, epoch, device: id, boxPub: d.box }) }
+        })
+        const recovery = opens ? st.recoveryWraps[String(epoch)] : undefined
+        if (opens && !recovery) {
+          return { ok: false, message: `The hub also lost the Recovery Kit’s copy of the key for epoch ${epoch}, and this computer has none to give back. Republish from the computer that made the latest change to the device list.` }
+        }
+        await this.req('POST', '/v1/chain', { entries: missing, wraps: { epoch, devices, ...(recovery ? { recovery } : {}) } })
+      }
       st.alarm = null
-      st.pinned = null
-      st.chain = []
-      st.records = {}
-      st.seen = {}
+      const v = await this.refreshChain()
+      if (!v || v.head !== mine.head) throw new Stop('The hub took the entries back, but its device list still differs from this computer’s.')
+      // Items: this device's value over any the hub serves older than it has seen.
+      const seenBefore = { ...st.seen }
+      const served2 = new Map<string, RemoteItem>()
+      const keys = await this.keysFor(v, v.epoch)
+      if (!keys) throw new Stop('This computer does not hold the current vault key.')
+      await this.walkFeed(0, (s) => {
+        const env = s.envelope
+        if (env.epoch !== v.epoch) return
+        if ((st.seen[env.id] ?? 0) > env.version) st.seen[env.id] = env.version
+        const opened = openItem(keys, env)
+        if (!opened.ok) return
+        const item = this.remoteOf(env, opened.item)
+        const cur = served2.get(item.path)
+        if (!cur || cur.version < item.version) served2.set(item.path, item)
+      })
+      for (const [path, rec] of Object.entries(st.records)) {
+        if (parseItemPath(path)?.tier === 't4') continue
+        const s = served2.get(path)
+        if (!s) delete st.records[path]
+        else if (s.hash !== rec.hash && (seenBefore[s.id] ?? 0) > s.version) st.records[path] = { ...rec, id: s.id, epoch: s.epoch, version: s.version, hash: s.hash, localHash: '' }
+      }
       st.cursor = 0
       this.saveState()
       await this.pass()
+      if (this.lastError) return { ok: false, message: this.lastError.message }
       return { ok: true }
     })
   }
@@ -1451,7 +1798,7 @@ export class HubService {
     const tombstones = Object.entries(st.records).filter(([path, r]) => !r.deleted && !local.has(path) && /^t[23]\//.test(path))
     const entries: [string, LocalValue][] = [...local, ...tombstones.map(([path]): [string, LocalValue] => [path, { deleted: true, value: null }])]
     for (const [path, lv] of entries) {
-      const hash = valueDigest(sha256B64u, lv)
+      const hash = valueDigest(this.digest, lv)
       const rec = st.records[path]
       if (rec && rec.localHash === hash) {
         delete st.stamps[path]
@@ -1474,7 +1821,7 @@ export class HubService {
       author: env.author,
       deleted: item.deleted,
       value: item.value,
-      hash: valueDigest(sha256B64u, { deleted: item.deleted, value: item.value })
+      hash: valueDigest(this.digest, { deleted: item.deleted, value: item.value })
     }
   }
 
@@ -1484,43 +1831,67 @@ export class HubService {
   }
 
   /**
-   * The change feed since the cursor, opened. T4 items are listed (metadata
-   * only) and recorded here, never planned: a key is installed by a press.
+   * The change feed since the cursor, opened. Only items sealed under the
+   * CURRENT epoch are taken (`delta`): every later epoch was opened by a
+   * revoke or a rotate, and whoever it shut out still holds the older keys —
+   * so an older item may be a rollback the hub kept or a forgery by a removed
+   * device, and is never applied. One this device had agreed on, value for
+   * value, is carried forward (`stale`, for `resealStale`), which finishes a
+   * re-seal its revoker never did. T4 items are listed (metadata only) and
+   * recorded here, never planned: a key is installed by a press.
    */
-  private async pull(v: ChainOk): Promise<{ delta: Map<string, RemoteItem>; next: number }> {
+  private async pull(v: ChainOk): Promise<{ delta: Map<string, RemoteItem>; stale: Map<string, RemoteItem>; next: number }> {
     const st = this.st()
     const delta = new Map<string, RemoteItem>()
-    let since = st.cursor
-    for (;;) {
-      const page = await this.req('GET', `/v1/items?since=${since}`)
-      for (const s of (Array.isArray(page.items) ? page.items : []) as StoredItem[]) {
-        const env = s.envelope
-        if (!isRecord(env) || typeof env.id !== 'string') continue
-        if (versionRegression(st.seen[env.id], env.version)) {
-          this.raise('version', `The hub served an older version of an item than this device has already seen (${env.version} after ${st.seen[env.id]}). A restored or tampered hub looks like this. Nothing was synced.`)
-        }
-        st.seen[env.id] = Math.max(st.seen[env.id] ?? 0, env.version)
-        const keys = await this.keysFor(v, env.epoch)
-        if (!keys) continue
-        const opened = openItem(keys, env)
-        if (!opened.ok) {
-          this.log(`hub: an item did not open (${opened.reason})`)
-          continue
-        }
-        const item = this.remoteOf(env, opened.item)
-        const p = parseItemPath(item.path)
-        if (p?.tier === 't4') {
-          this.noteSshKey(p.keyId, item)
-          continue
-        }
-        const cur = delta.get(item.path)
-        if (cur && (cur.epoch > item.epoch || (cur.epoch === item.epoch && cur.version >= item.version))) continue
-        delta.set(item.path, item)
+    const stale = new Map<string, RemoteItem>()
+    const next = await this.walkFeed(st.cursor, async (s) => {
+      const env = s.envelope
+      if (versionRegression(st.seen[env.id], env.version)) {
+        this.raise('version', `The hub served an older version of an item than this device has already seen (${env.version} after ${st.seen[env.id]}). A restored or tampered hub looks like this. Nothing was synced.`)
       }
-      since = Number(page.next) || since
-      if (page.more !== true) break
-    }
-    return { delta, next: since }
+      st.seen[env.id] = Math.max(st.seen[env.id] ?? 0, env.version)
+      if (env.epoch < v.epoch) {
+        // Opened only while this device still holds records from before (else there is nothing it could carry forward).
+        if (!Object.values(st.records).some((r) => r.epoch < v.epoch)) return
+        const k = await this.keysFor(v, env.epoch)
+        const opened = k ? openItem(k, env) : null
+        if (!opened?.ok) return
+        const item = this.remoteOf(env, opened.item)
+        const rec = st.records[item.path]
+        if (rec && rec.epoch < v.epoch && rec.hash === item.hash) stale.set(item.path, item)
+        else this.log(`hub: ignored an item sealed under epoch ${env.epoch}, before the vault key last changed (${v.epoch})`)
+        return
+      }
+      const keys = await this.keysFor(v, env.epoch)
+      if (!keys) return
+      const opened = openItem(keys, env)
+      if (!opened.ok) {
+        this.log(`hub: an item did not open (${opened.reason})`)
+        return
+      }
+      const item = this.remoteOf(env, opened.item)
+      const p = parseItemPath(item.path)
+      if (p?.tier === 't4') {
+        this.noteSshKey(p.keyId, item)
+        return
+      }
+      const cur = delta.get(item.path)
+      if (cur && cur.version >= item.version) return
+      delta.set(item.path, item)
+    })
+    for (const path of delta.keys()) stale.delete(path)
+    return { delta, stale, next }
+  }
+
+  /**
+   * Carry forward, under the current epoch, the items the hub still holds only
+   * under an older one AND that this device had agreed on value for value —
+   * the part of a revoke's re-seal its revoker did not get to (`pull`).
+   */
+  private async resealStale(stale: Map<string, RemoteItem>, v: ChainOk, keys: ItemKeys): Promise<void> {
+    const st = this.st()
+    const items = [...stale.values()].filter((item) => (st.records[item.path]?.epoch ?? v.epoch) < v.epoch)
+    if (items.length) await this.putResealed(items, v, keys)
   }
 
   private noteSshKey(keyId: string, item: RemoteItem): void {
@@ -1532,9 +1903,11 @@ export class HubService {
       delete st.offered[keyId]
       return
     }
-    if (item.author === this.me().id && st.shared[keyId]) return
+    // A key this device shared stays its own, whoever re-sealed it since (a revoke re-seals everything as the revoker).
+    if (st.shared[keyId]) return
     const k = item.value as SshKeyPayload
-    st.offered[keyId] = { name: k.name, fingerprint: k.fingerprint, comment: k.comment, passphrase: k.passphrase, from: item.author, at: item.editedAt }
+    const from = typeof k.sharedBy === 'string' && isId('device', k.sharedBy) ? k.sharedBy : item.author
+    st.offered[keyId] = { name: k.name, fingerprint: k.fingerprint, comment: k.comment, passphrase: k.passphrase, from, at: item.editedAt }
   }
 
   /**
@@ -1568,7 +1941,8 @@ export class HubService {
       if (!keys) throw new Stop('This device is in the vault, but the hub has no vault key for it at the current epoch.')
       await this.refreshPairs().catch((err) => this.log('hub: could not list join requests', err))
       const st = this.state
-      const { delta, next } = await this.pull(v)
+      const { delta, stale, next } = await this.pull(v)
+      await this.resealStale(stale, v, keys)
       let scope = this.scope()
       const plan = (): ReturnType<typeof planSync> => {
         const remote = new Map(delta)
@@ -1582,7 +1956,7 @@ export class HubService {
           me: this.me().id,
           now: this.now(),
           lastEditedAt: st.lastEditedAt,
-          digest: sha256B64u,
+          digest: this.digest,
           stamps: st.stamps,
           label: (path) => syncLabel(path, { host: (id) => this.hostName(id) })
         })
@@ -1610,6 +1984,9 @@ export class HubService {
       const second = plan()
       for (const r of second.adopt) this.adopt(r)
       await this.upload(second.upload, v, keys)
+      // A held change the vault has moved on from (a newer value, or this device's own went up over it) is no longer waiting.
+      for (const [path, h] of Object.entries(st.held)) if (st.records[path]?.hash !== h.hash) delete st.held[path]
+      this.dropOldVaultKeys(v.epoch)
       st.lastSyncAt = this.now()
       this.failures = 0
       this.lastError = null
@@ -1661,40 +2038,98 @@ export class HubService {
     delete st.stamps[r.path]
   }
 
-  /** Fold items into Settings (and the account prefs), then record what THIS device now holds for each. */
-  private async apply(items: RemoteItem[], scope: SyncScope): Promise<void> {
+  /**
+   * Fold items into Settings (and the account prefs), then record what THIS
+   * device now holds for each. An item that would change what runs here is
+   * not folded in (`applySyncedSettings`' `held`) unless `allowHeld` — the
+   * owner pressed Apply on this computer — and is listed in `held` instead;
+   * its record still moves, to "the hub holds that, this device keeps its
+   * own", so it is neither applied again nor pushed back over the account's.
+   */
+  private async apply(items: RemoteItem[], scope: SyncScope, opts: { allowHeld?: boolean } = {}): Promise<void> {
     if (!items.length) return
     const st = this.st()
     const { incoming, prefs, keyRefs } = incomingFrom(items)
     if (prefs.syncKeys) st.prefs.syncKeys = prefs.syncKeys
     if (prefs.deviceNames) st.prefs.deviceNames = prefs.deviceNames
     Object.assign(st.keyRefs, keyRefs)
+    let held: string[] = []
     if (incoming.settings || incoming.hosts || incoming.secrets) {
       this.applying = true
       try {
         // Built from the settings as they are NOW, with no await before the commit.
-        const res = applySyncedSettings(this.settings(), incoming)
+        const res = applySyncedSettings(this.settings(), incoming, { allowHeld: opts.allowHeld === true })
         await this.deps.commit(res.raw as unknown as Partial<Settings>)
         for (const s of res.skipped) this.log(`hub: not applied ${s.key}: ${s.why}`)
+        for (const h of res.held) {
+          const r = items.find((i) => i.path === h.path)
+          if (r) st.held[h.path] = { group: h.group, hash: r.hash, lines: h.lines, author: r.author, at: this.now() }
+        }
+        held = res.held.map((h) => h.path)
       } finally {
         this.applying = false
       }
     }
     const after = localValues({ settings: this.deps.hydrate(this.settings()), scope, prefs: st.prefs, keyRefs: st.keyRefs })
     for (const r of items) {
+      if (!held.includes(r.path)) delete st.held[r.path]
       const lv = after.get(r.path) ?? { deleted: true, value: null }
       st.records[r.path] = {
         id: r.id,
         epoch: r.epoch,
         version: r.version,
         hash: r.hash,
-        localHash: valueDigest(sha256B64u, lv),
+        localHash: valueDigest(this.digest, lv),
         editedAt: r.editedAt,
         author: r.author,
         deleted: r.deleted
       }
       delete st.stamps[r.path]
     }
+  }
+
+  /**
+   * Apply a held change on this computer: every held item of `group`, fetched
+   * again and applied only if the hub still holds exactly what was listed.
+   */
+  applyHeld(group: string): Promise<HubResult> {
+    return this.action('Applying…', async () => {
+      const v = this.verdict
+      if (!v || !this.isActiveIn(v)) return { ok: false, message: 'Join the vault first.' }
+      const st = this.st()
+      const want = new Map(Object.entries(st.held).filter(([, h]) => h.group === group).map(([path, h]) => [path, h.hash]))
+      if (!want.size) return { ok: false, message: 'Nothing is waiting there any more.' }
+      const keys = await this.keysFor(v, v.epoch)
+      if (!keys) return { ok: false, message: 'This device does not hold the vault key.' }
+      const found = new Map<string, RemoteItem>()
+      await this.walkFeed(0, (s) => {
+        if (s.envelope.epoch !== v.epoch) return
+        const opened = openItem(keys, s.envelope)
+        if (!opened.ok || want.get(opened.item.path) === undefined) return
+        const item = this.remoteOf(s.envelope, opened.item)
+        const cur = found.get(item.path)
+        if (item.hash === want.get(item.path) && (!cur || cur.version < item.version)) found.set(item.path, item)
+      })
+      for (const path of want.keys()) if (!found.has(path)) delete st.held[path]
+      if (!found.size) {
+        this.saveState()
+        return { ok: false, message: 'The vault has moved on since this was listed. Sync again to see what it holds now.' }
+      }
+      await this.apply([...found.values()], this.scope(), { allowHeld: true })
+      this.saveState()
+      return { ok: true }
+    })
+  }
+
+  /** Keep this computer's own value: the listing goes; the next change on either side is synced as usual. */
+  keepHeld(group: string): HubResult {
+    const st = this.state
+    if (st) {
+      for (const [path, h] of Object.entries(st.held)) if (h.group === group) delete st.held[path]
+      this.saveState()
+    }
+    this.emit()
+    return { ok: true }
   }
 
   /** Hosts this device has that the hub has never seen get a sync id (gotcha 139): after apply, so a known one is adopted instead. */
@@ -1789,8 +2224,10 @@ export class HubService {
     return this.action<{ keyId: string }>('Sharing the key…', async () => {
       const v = this.verdict
       if (!v || !this.isActiveIn(v)) return { ok: false, message: 'Join the vault first.' }
-      const payload = await readKeyForShare(this.ssh.dir, name)
-      if ('error' in payload) return { ok: false, message: payload.error }
+      const read = await readKeyForShare(this.ssh.dir, name)
+      if ('error' in read) return { ok: false, message: read.error }
+      // Who shared it travels inside the sealed value: the envelope's author changes whenever a revoke re-seals.
+      const payload: SshKeyPayload = { ...read, sharedBy: this.me().id }
       const st = this.st()
       const already = Object.entries(st.shared).find(([, s]) => s.fingerprint === payload.fingerprint)
       if (already) return { ok: false, message: `${name} is already shared.` }
@@ -1807,7 +2244,7 @@ export class HubService {
       const path = `t4/ssh-key/${keyId}`
       const editedAt = nextEditedAt(this.now(), st.lastEditedAt)
       st.lastEditedAt = editedAt
-      const hash = valueDigest(sha256B64u, { deleted: false, value: payload })
+      const hash = valueDigest(this.digest, { deleted: false, value: payload })
       await this.upload([{ path, local: { deleted: false, value: payload }, hash, editedAt, over: null }], v, keys)
       if (!st.records[path]) return { ok: false, message: 'The hub did not take the key.' }
       st.shared[keyId] = { name: payload.name, fingerprint: payload.fingerprint, comment: payload.comment, passphrase: payload.passphrase, path: keyPath, at: this.now() }
@@ -1835,7 +2272,7 @@ export class HubService {
       const editedAt = nextEditedAt(this.now(), st.lastEditedAt)
       st.lastEditedAt = editedAt
       const tomb = { deleted: true, value: null }
-      await this.upload([{ path, local: tomb, hash: valueDigest(sha256B64u, tomb), editedAt, over: this.synth(path, rec) }], v, keys)
+      await this.upload([{ path, local: tomb, hash: valueDigest(this.digest, tomb), editedAt, over: this.synth(path, rec) }], v, keys)
       delete st.shared[keyId]
       delete st.offered[keyId]
       for (const h of Object.keys(st.keyRefs)) st.keyRefs[h] = st.keyRefs[h].filter((k) => k !== keyId)
@@ -1859,19 +2296,18 @@ export class HubService {
       const rec = st.records[path]
       const offered = st.offered[keyId]
       if (!isId('sshKey', keyId) || !rec || rec.deleted || !offered) return { ok: false, message: 'That key is not shared any more.' }
-      let payload: SshKeyPayload | null = null
-      let since = 0
-      for (;;) {
-        const page = await this.req('GET', `/v1/items?since=${since}`)
-        for (const s of (Array.isArray(page.items) ? page.items : []) as StoredItem[]) {
-          if (s.envelope.id !== rec.id) continue
-          const k = await this.keysFor(v, s.envelope.epoch)
-          const opened = k ? openItem(k, s.envelope) : null
-          if (opened?.ok && opened.item.path === path && !opened.item.deleted && !sshKeyPayloadProblem(opened.item.value)) payload = opened.item.value as SshKeyPayload
-        }
-        since = Number(page.next) || since
-        if (payload || page.more !== true) break
-      }
+      const got: { payload: SshKeyPayload | null } = { payload: null }
+      await this.walkFeed(0, async (s) => {
+        if (s.envelope.id !== rec.id) return
+        const k = await this.keysFor(v, s.envelope.epoch)
+        const opened = k ? openItem(k, s.envelope) : null
+        if (!opened?.ok || opened.item.path !== path || opened.item.deleted || sshKeyPayloadProblem(opened.item.value)) return
+        // Exactly the key the list showed: same slot, same value (a key sealed under an older epoch only if it was listed so).
+        if (this.remoteOf(s.envelope, opened.item).hash !== rec.hash) return
+        got.payload = opened.item.value as SshKeyPayload
+        return true
+      })
+      const payload = got.payload
       if (!payload) return { ok: false, message: 'The vault no longer holds that key.' }
       const from = this.deviceName(offered.from, this.labelFromChain(offered.from))
       const res = await installReceivedKey(this.ssh, keyId, payload, this.settings().hosts as SyncableHost[], st.keyRefs, from, this.deps.exec)

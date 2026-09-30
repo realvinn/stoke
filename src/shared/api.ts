@@ -810,7 +810,10 @@ export interface StokeApi {
     newKit(): Promise<HubResult<{ kit: string; group: number }>>
     joinStart(): Promise<HubResult>
     joinCancel(): Promise<HubResult>
-    recover(kit: string): Promise<HubResult>
+    /** On the joining device: the owner says whether both screens show the same six digits. */
+    joinConfirm(match: boolean): Promise<HubResult>
+    /** Checks the Kit and makes the new one that replaces it (shown, then `confirmKit`); nothing is posted yet. */
+    recover(kit: string): Promise<HubResult<{ kit: string; group: number }>>
     approveStart(pair: string): Promise<HubResult>
     approveConfirm(pair: string): Promise<HubResult>
     refuse(pair: string): Promise<HubResult>
@@ -820,7 +823,9 @@ export interface StokeApi {
     rename(deviceId: string, name: string): Promise<HubResult>
     revoke(deviceId: string, how: { kit: string } | { newKit: true }): Promise<HubResult<{ kit?: string; group?: number }>>
     dismissNotes(): Promise<HubResult>
-    trustHub(): Promise<HubResult>
+    republish(): Promise<HubResult>
+    applyHeld(group: string): Promise<HubResult>
+    keepHeld(group: string): Promise<HubResult>
     localKeys(): Promise<HubLocalKeyView[]>
     shareKey(name: string): Promise<HubResult<{ keyId: string }>>
     unshareKey(keyId: string): Promise<HubResult>

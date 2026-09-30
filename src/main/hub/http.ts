@@ -34,10 +34,45 @@ export interface HubAuth {
 export interface HubHttpDeps {
   fetch: typeof fetch
   now: () => number
+  /** For the suite: a smaller cap than `HUB_RESPONSE_MAX_BYTES`. */
+  maxBytes?: number
 }
 
 /** A request's whole budget. The hub answers in milliseconds; a sign-in runs one scrypt (~0.5 s). */
 export const HUB_REQUEST_TIMEOUT_MS = 20_000
+
+/**
+ * The most of an answer read before giving up on it. The largest legitimate
+ * one is a page of the change feed: `ITEMS_PAGE` (64) items of at most 128 KiB
+ * of plaintext each, about 11 MiB as base64 JSON. A hub that sends more is
+ * cut off here instead of growing main's memory without bound.
+ */
+export const HUB_RESPONSE_MAX_BYTES = 16 * 1024 * 1024
+
+/** A body read to the end, or refused past `cap` bytes (declared or counted). */
+async function readCapped(res: Response, cap: number): Promise<string> {
+  const declared = Number(res.headers.get('content-length'))
+  const tooBig = (): HubRequestError => new HubRequestError('too-large', `The hub sent an answer larger than ${Math.round(cap / (1024 * 1024))} MiB, so it was not read.`, res.status)
+  if (Number.isFinite(declared) && declared > cap) {
+    await res.body?.cancel().catch(() => undefined)
+    throw tooBig()
+  }
+  if (!res.body) return ''
+  const reader = res.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    total += value.byteLength
+    if (total > cap) {
+      await reader.cancel().catch(() => undefined)
+      throw tooBig()
+    }
+    chunks.push(value)
+  }
+  return Buffer.concat(chunks).toString('utf8')
+}
 
 /** The sentence for a code the hub sent with no message worth showing. */
 function sentenceFor(code: HubErrorCode, fallback: string): string {
@@ -94,7 +129,13 @@ export async function hubRequest(
     }
     throw new HubRequestError('offline', `Could not reach the hub at ${host}: ${why}.`, 0)
   }
-  const answer = await res.text()
+  let answer: string
+  try {
+    answer = await readCapped(res, deps.maxBytes ?? HUB_RESPONSE_MAX_BYTES)
+  } catch (err) {
+    if (err instanceof HubRequestError) throw err
+    throw new HubRequestError('offline', `The hub’s answer broke off: ${err instanceof Error ? err.message : String(err)}.`, 0)
+  }
   const read = readHubResponse(res.status, res.headers.get('content-type'), answer)
   if (read.ok) return read.body
   const code = read.error.error

@@ -16,6 +16,7 @@
 import type { Settings } from '../types.ts'
 import { isB64u, isId, isNonNegInt, isRecord, stableJson } from './codec.ts'
 import { chainEntryProblem, type ChainEntry, type PinnedChain } from './chain.ts'
+import { HUB_LIMITS } from './protocol.ts'
 import {
   conflictNote,
   decideConflict,
@@ -128,9 +129,13 @@ export function localValues(f: {
 }
 
 /**
- * The digest a value is compared by: the same bytes on every device for the
- * same value (keys sorted at every depth, gotcha 116), and never the value
- * itself, so hub-state.json holds no key in the clear.
+ * The digest a value is compared by: the same bytes for the same value (keys
+ * sorted at every depth, gotcha 116), and never the value itself, so
+ * hub-state.json holds no key in the clear. The service hands in a KEYED
+ * digest (HMAC under a per-device key sealed in hub-device.json): a plain
+ * SHA-256 of a short secret — an MCP variable, a header — in an unsealed
+ * file is a guess checked offline. Digests never leave the device, so the
+ * key may differ on every one.
  */
 export function valueDigest(digest: (text: string) => string, v: LocalValue): string {
   return digest(stableJson({ deleted: v.deleted, value: v.deleted ? null : v.value }))
@@ -471,6 +476,106 @@ export interface ReceivedKeyRecord {
 
 export type HubAlarm = { kind: 'rollback' | 'fork' | 'version' | 'chain' | 'key'; message: string; at: number }
 
+/**
+ * Where THIS device entered the chain: the link hash of its own genesis, of
+ * the `add` it accepted after the owner confirmed the pairing code here, or of
+ * the `add` it signed with the Recovery Kit. A verified chain proves only that
+ * its entries sign each other — a hub can build a whole one, genesis and all,
+ * that lists this device by the public keys it posted at sign-in. So a device
+ * counts itself in a vault only when the served chain holds this exact link
+ * at this seq (`anchorHolds`), and the anchor is dropped only by signing out.
+ */
+export interface ChainAnchor {
+  seq: number
+  link: string
+}
+
+export function anchorHolds(links: readonly string[], anchor: ChainAnchor | null | undefined): boolean {
+  return !!anchor && links[anchor.seq] === anchor.link
+}
+
+/**
+ * Whether a served chain (its link hashes) is an EARLIER copy of the one this
+ * device holds — every served entry the held one at its seq. The only chain a
+ * device republishes over after a hub went back in time (spec §7.3); anything
+ * else is a different list, and re-trusting it would be taking the hub's word.
+ */
+export function isPrefixOf(served: readonly string[], held: readonly string[]): boolean {
+  return served.length <= held.length && served.every((link, i) => link === held[i])
+}
+
+/**
+ * The devices that have had the CURRENT Recovery Kit in hand, by the chain:
+ * the one that made it (genesis, or the `rotate` that named it — the Kit was
+ * shown there, and "Save as file…" wrote it there), every device added with it
+ * (`signer: 'recovery'`: it was typed there), and every device that signed a
+ * revoke or rotate after it without replacing it (it was typed there too).
+ * Any of them could open a new epoch's recovery wrap with it, so removing one
+ * needs a NEW Kit (gotcha 141).
+ */
+export function kitHandlers(chain: readonly ChainEntry[]): string[] {
+  let from = -1
+  for (let i = chain.length - 1; i >= 0; i--) {
+    if (chain[i].recovery) {
+      from = i
+      break
+    }
+  }
+  if (from < 0) return []
+  const out = new Set<string>()
+  if (chain[from].signer !== 'recovery') out.add(chain[from].signer)
+  for (const e of chain.slice(from + 1)) {
+    if (e.kind === 'add' && e.signer === 'recovery' && e.device) out.add(e.device.id)
+    if ((e.kind === 'revoke' || e.kind === 'rotate') && e.signer !== 'recovery') out.add(e.signer)
+  }
+  return [...out].sort()
+}
+
+/**
+ * A synced change that would change what runs on this computer (an MCP
+ * server's command, a host's command), held back until the owner applies it
+ * HERE (`applySyncedSettings`' `held`). Only the digest of what the hub holds
+ * is kept; Apply fetches the item again and applies it only if it still is
+ * that value.
+ */
+export interface HeldRecord {
+  /** One Apply per group: `agents`, or a host's item path. */
+  group: string
+  hash: string
+  /** What it runs, spelled out. Never a secret value (a variable is named, not shown). */
+  lines: string[]
+  author: string
+  at: number
+}
+
+/* ------------------------------------------------ the change feed */
+
+/**
+ * Items per page the client asks for. Small enough that a page of the
+ * largest items the contract allows (128 KiB of plaintext each) stays under
+ * `HUB_RESPONSE_MAX_BYTES` in http.ts.
+ */
+export const ITEMS_PAGE = 64
+
+/** Pages one walk of the feed may take: every item an account may hold, twice over. */
+export const MAX_FEED_PAGES = Math.ceil((2 * HUB_LIMITS.itemsPerAccount) / ITEMS_PAGE)
+
+/**
+ * One step of a walk of the change feed, judged before the next request: a
+ * hub that says `more` must move the cursor forward, and a walk ends within
+ * `MAX_FEED_PAGES`. Otherwise it is a hub error, never another request — the
+ * walk runs inside the one queue every hub action waits behind.
+ */
+export function feedStep(since: number, page: Record<string, unknown>, pages: number): { next: number; more: boolean } | { error: string } {
+  const next = page.next === undefined ? since : page.next
+  if (typeof next !== 'number' || !Number.isSafeInteger(next) || next < 0) return { error: 'The hub answered a page of changes without a usable cursor.' }
+  const more = page.more === true
+  if (more && next <= since) return { error: 'The hub said there were more changes but did not move past the ones it had sent.' }
+  if (next < since) return { error: 'The hub’s change feed went backwards.' }
+  if (more && pages >= MAX_FEED_PAGES) return { error: `The hub kept saying there were more changes after ${MAX_FEED_PAGES} pages.` }
+  return { next, more }
+}
+
 /** Everything the client keeps between syncs apart from its keys (hub-device.json). */
 export interface HubLocalState {
   v: typeof HUB_STATE_VERSION
@@ -479,6 +584,8 @@ export interface HubLocalState {
   /** The chain as last verified (public: device records and signatures). */
   chain: ChainEntry[]
   pinned: PinnedChain | null
+  /** Where this device entered `chain` (`ChainAnchor`); null until it joins. */
+  anchor: ChainAnchor | null
   /** The change feed's cursor. */
   cursor: number
   records: Record<string, SyncedRecord>
@@ -500,6 +607,8 @@ export interface HubLocalState {
   shared: Record<string, SharedKeyRecord>
   offered: Record<string, OfferedKeyRecord>
   received: Record<string, ReceivedKeyRecord>
+  /** Changes that would run something, held until applied here (item path → what). */
+  held: Record<string, HeldRecord>
   alarm: HubAlarm | null
   lastSyncAt: number | null
 }
@@ -510,6 +619,7 @@ export function emptyHubState(account: string): HubLocalState {
     account,
     chain: [],
     pinned: null,
+    anchor: null,
     cursor: 0,
     records: {},
     seen: {},
@@ -523,6 +633,7 @@ export function emptyHubState(account: string): HubLocalState {
     shared: {},
     offered: {},
     received: {},
+    held: {},
     alarm: null,
     lastSyncAt: null
   }
@@ -574,6 +685,7 @@ export function hydrateHubState(raw: unknown, account: string): HubLocalState {
   if (!isRecord(raw) || raw.v !== HUB_STATE_VERSION || raw.account !== account) return out
   if (Array.isArray(raw.chain) && raw.chain.every((e) => chainEntryProblem(e) === null)) out.chain = raw.chain as ChainEntry[]
   if (isRecord(raw.pinned) && isNonNegInt(raw.pinned.seq) && isB64u(raw.pinned.head, 32)) out.pinned = { seq: raw.pinned.seq, head: raw.pinned.head }
+  if (isRecord(raw.anchor) && isNonNegInt(raw.anchor.seq) && isB64u(raw.anchor.link, 32)) out.anchor = { seq: raw.anchor.seq, link: raw.anchor.link }
   out.cursor = num(raw.cursor)
   if (isRecord(raw.records)) {
     for (const [path, r] of Object.entries(raw.records)) {
@@ -638,6 +750,18 @@ export function hydrateHubState(raw: unknown, account: string): HubLocalState {
       }
     }
   }
+  if (isRecord(raw.held)) {
+    for (const [path, h] of Object.entries(raw.held)) {
+      if (!parseItemPath(path) || !isRecord(h) || typeof h.group !== 'string' || typeof h.hash !== 'string' || !Array.isArray(h.lines)) continue
+      out.held[path] = {
+        group: str(h.group, 256),
+        hash: str(h.hash, 128),
+        lines: h.lines.filter((l): l is string => typeof l === 'string').slice(0, 32).map((l) => l.slice(0, 1000)),
+        author: isId('device', h.author) ? h.author : '',
+        at: num(h.at)
+      }
+    }
+  }
   if (isRecord(raw.alarm) && typeof raw.alarm.message === 'string' && ['rollback', 'fork', 'version', 'chain', 'key'].includes(raw.alarm.kind as string)) {
     out.alarm = { kind: raw.alarm.kind as HubAlarm['kind'], message: str(raw.alarm.message, 1000), at: num(raw.alarm.at) }
   }
@@ -667,6 +791,8 @@ export interface HubDeviceView {
   online: boolean
   /** A short fingerprint of its signing key, for telling two devices of one name apart. */
   fingerprint: string
+  /** It made the current Recovery Kit, or had it typed on it (`kitHandlers`): removing it needs a new Kit. */
+  kitSeen: boolean
 }
 
 /** A request from a new device, as an ACTIVE device sees it. */
@@ -687,9 +813,21 @@ export interface HubJoinView {
   pair: string
   state: PairState
   code: string | null
+  /** The owner said on THIS device that the codes match; until then nothing is taken, approved or not. */
+  confirmed: boolean
   expiresAt: number
   approver: string | null
   message: string | null
+}
+
+/** A held change as the panel lists it: one card per group, one Apply. */
+export interface HubHeldView {
+  group: string
+  label: string
+  /** The device whose change it is. */
+  from: string
+  lines: string[]
+  at: number
 }
 
 export interface HubSshKeyView {
@@ -741,10 +879,15 @@ export interface HubView {
   notes: ConflictNote[]
   sshKeys: HubSshKeyView[]
   alarm: HubAlarm | null
+  /** Synced changes that would run something here, waiting for Apply. */
+  held: HubHeldView[]
   /** A new vault (or a new Kit) is waiting for its Recovery Kit to be confirmed. */
   kitPending: boolean
-  /** After removing a device: what it held, to rotate by hand. */
-  revokeReport: { device: string; keys: string[]; sshKeys: string[] } | null
+  /**
+   * After removing a device: what it held, to rotate by hand, and what synced
+   * here runs something — it could have changed those before it was removed.
+   */
+  revokeReport: { device: string; keys: string[]; sshKeys: string[]; commands: string[] } | null
 }
 
 /** A fresh, empty view (the panel's first paint before main answers). */
@@ -770,6 +913,7 @@ export function emptyHubView(): HubView {
     notes: [],
     sshKeys: [],
     alarm: null,
+    held: [],
     kitPending: false,
     revokeReport: null
   }

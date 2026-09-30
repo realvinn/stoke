@@ -131,10 +131,12 @@ export function AccountSyncSettings(): React.JSX.Element {
       {view.phase === 'signed-out' && <SignIn view={view} />}
       {view.kitPending && <KitPanel />}
       {view.phase === 'new-account' && !view.kitPending && <CreateVault view={view} />}
-      {view.phase === 'locked' && <Join view={view} />}
+      {view.phase === 'locked' && view.alarm && <Alarm view={view} />}
+      {view.phase === 'locked' && !view.kitPending && <Join view={view} />}
       {view.phase === 'active' && (
         <>
           {view.alarm && <Alarm view={view} />}
+          {view.held.length > 0 && <Held view={view} />}
           {view.pairs.length > 0 && <Requests view={view} />}
           <Syncing view={view} now={now} />
           {view.notes.length > 0 && <Conflicts view={view} />}
@@ -143,7 +145,7 @@ export function AccountSyncSettings(): React.JSX.Element {
           <RecoveryKit view={view} />
         </>
       )}
-      {view.phase !== 'off' && view.phase !== 'signed-out' && <SignOut view={view} />}
+      {view.phase !== 'off' && (view.phase !== 'signed-out' || view.device !== null) && <SignOut view={view} />}
     </>
   )
 }
@@ -429,10 +431,16 @@ function KitPanel(): React.JSX.Element {
   return (
     <div className="field" data-hub="kit">
       <span className="field-label">{kit.purpose === 'genesis' ? 'Your Recovery Kit' : 'Your new Recovery Kit'}</span>
+      {kit.purpose === 'recover' && (
+        <span className="field-hint" data-tone="warning" data-hub="kit-recover">
+          The Kit you typed opens the vault, but a Kit that has been typed may have been seen — so this computer joins with a
+          new one, and the one you typed stops working. Nothing is sent until you confirm the new Kit below.
+        </span>
+      )}
       <span className="field-hint">
         Write it down, print it, or save it somewhere offline. With it and your hub password, anyone can open your vault;
         without it, losing every device loses the vault — the hub cannot open it either.
-        {kit.purpose !== 'genesis' && ' Your old Kit stops working once this one is confirmed.'}
+        {kit.purpose !== 'genesis' && kit.purpose !== 'recover' && ' Your old Kit stops working once this one is confirmed.'}
       </span>
       <div className="hub-kit mono" data-hub="kit-text" aria-label="Recovery Kit">
         {groups.map((g, i) => (
@@ -481,7 +489,11 @@ function KitPanel(): React.JSX.Element {
           data-hub="kit-confirm"
           onClick={() => run('confirm', () => window.stoke.hub.confirmKit(typed))}
         >
-          <Busy on={busy === 'confirm'} idle={kit.purpose === 'genesis' ? 'I have saved it — create the vault' : 'I have saved it — replace the Kit'} working="Sealing…" />
+          <Busy
+            on={busy === 'confirm'}
+            idle={kit.purpose === 'genesis' ? 'I have saved it — create the vault' : kit.purpose === 'recover' ? 'I have saved it — join the vault' : 'I have saved it — replace the Kit'}
+            working="Sealing…"
+          />
         </button>
         <button
           className="btn"
@@ -511,7 +523,7 @@ function Join({ view }: { view: HubView }): React.JSX.Element {
   const [useKit, setUseKit] = useState(false)
   const { busy, note, run } = useRun()
   const j = view.join
-  const waiting = j && (j.state === 'waiting' || j.state === 'nonce' || j.state === 'revealed')
+  const waiting = j && (j.state === 'waiting' || j.state === 'nonce' || j.state === 'revealed' || j.state === 'approved')
   return (
     <div className="field" data-hub="join">
       <span className="field-label">Join your vault</span>
@@ -529,11 +541,43 @@ function Join({ view }: { view: HubView }): React.JSX.Element {
           {j.code ? (
             <>
               <span className="field-hint">
-                {j.approver ? `${j.approver} answered. ` : ''}Check that it shows the same six digits, then approve there:
+                {j.approver ? `${j.approver} answered. ` : ''}
+                {j.confirmed
+                  ? 'You confirmed the code here.'
+                  : j.state === 'approved'
+                    ? 'It has added this computer. Check that it showed exactly these six digits:'
+                    : 'Does it show exactly these six digits?'}
               </span>
               <span className="hub-code mono" data-hub="join-code">
                 {j.code}
               </span>
+              {j.confirmed ? (
+                <span className="field-hint" data-hub="join-confirmed">
+                  <Spinner /> {j.message ?? `Waiting for ${j.approver ?? 'the other device'} to add this computer — press “They match” there too.`}
+                </span>
+              ) : (
+                <>
+                  <span className="field-hint">
+                    Confirm on both computers. This one takes nothing until you do, whatever the hub says — the code is how you
+                    know the other side is really your device.
+                  </span>
+                  <div className="btn-row">
+                    <button
+                      className="btn"
+                      data-variant="primary"
+                      disabled={busy !== null}
+                      aria-busy={busy === 'match' || undefined}
+                      data-hub="join-match"
+                      onClick={() => run('match', () => window.stoke.hub.joinConfirm(true))}
+                    >
+                      <Busy on={busy === 'match'} idle="The codes match" working="Joining…" />
+                    </button>
+                    <button className="btn" data-variant="danger" disabled={busy !== null} data-hub="join-mismatch" onClick={() => run('mismatch', () => window.stoke.hub.joinConfirm(false))}>
+                      They don’t
+                    </button>
+                  </div>
+                </>
+              )}
             </>
           ) : (
             <span className="field-hint">
@@ -584,8 +628,8 @@ function Join({ view }: { view: HubView }): React.JSX.Element {
             onChange={(e) => setKit(e.target.value)}
           />
           <span className="field-hint">
-            Typed on this computer only. Afterwards, make a new Kit from the vault: a Kit that has been typed may have been
-            seen.
+            Typed on this computer only. It is checked, then Stoke makes a new Kit to replace it: a Kit that has been typed may
+            have been seen.
           </span>
           <div className="btn-row">
             <button
@@ -594,7 +638,7 @@ function Join({ view }: { view: HubView }): React.JSX.Element {
               disabled={busy !== null || kit.trim() === ''}
               aria-busy={busy === 'recover' || undefined}
               data-hub="recover"
-              onClick={() => run('recover', () => window.stoke.hub.recover(kit), () => ({ tone: 'success', text: 'In the vault. Make a new Recovery Kit below when you can.' }))}
+              onClick={() => run('recover', () => window.stoke.hub.recover(kit))}
             >
               <Busy on={busy === 'recover'} idle="Open the vault" working="Opening…" />
             </button>
@@ -610,22 +654,83 @@ function Join({ view }: { view: HubView }): React.JSX.Element {
 
 function Alarm({ view }: { view: HubView }): React.JSX.Element {
   const { busy, note, run } = useRun()
+  const kind = view.alarm?.kind
+  const wentBack = kind === 'rollback' || kind === 'version'
   return (
-    <div className="field" data-hub="alarm">
+    <div className="field" data-hub="alarm" data-kind={kind}>
       <span className="field-label">Sync stopped</span>
       <span className="field-hint" data-tone="danger">
         {view.alarm?.message}
       </span>
-      <FieldHint
-        more="Take the hub’s copy only if you know why it changed — you restored the hub from a backup, say. Stoke then compares everything afresh, and where both sides have a value the hub’s wins. If you did not expect this, sign out here and look at the hub first."
-      >
-        Nothing is sent or applied until you decide.
-      </FieldHint>
-      <div className="btn-row">
-        <button className="btn" data-variant="danger" disabled={busy !== null} aria-busy={busy === 'trust' || undefined} onClick={() => run('trust', () => window.stoke.hub.trustHub())}>
-          <Busy on={busy === 'trust'} idle="Take the hub’s copy" working="Starting over…" />
-        </button>
-      </div>
+      {wentBack ? (
+        <>
+          <FieldHint
+            more="Republish only if you know why the hub went back — you restored it from a backup, say. This computer posts back the device-list entries the hub lost (only if the hub’s list is an earlier copy of this computer’s; any other list is refused), and puts its own values over any the hub serves older. Nothing the hub serves is taken on trust."
+          >
+            Nothing is sent or applied until you decide.
+          </FieldHint>
+          <div className="btn-row">
+            <button
+              className="btn"
+              data-variant="danger"
+              disabled={busy !== null}
+              aria-busy={busy === 'republish' || undefined}
+              data-hub="republish"
+              onClick={() => run('republish', () => window.stoke.hub.republish(), () => ({ tone: 'success', text: 'Republished. The hub holds this computer’s copy again.' }))}
+            >
+              <Busy on={busy === 'republish'} idle="Republish from this computer" working="Republishing…" />
+            </button>
+          </div>
+        </>
+      ) : (
+        <span className="field-hint">
+          Nothing is sent or applied. There is nothing to put right from here: sign out on this computer (below), look at the
+          hub, and join again if you still trust it.
+        </span>
+      )}
+      <Status note={note} />
+    </div>
+  )
+}
+
+function Held({ view }: { view: HubView }): React.JSX.Element {
+  const { busy, note, run } = useRun()
+  return (
+    <div className="field" data-hub="held">
+      <span className="field-label">Waiting for you on this computer</span>
+      <span className="field-hint">
+        These synced changes would change what runs here, so they are not applied until you say so on this computer. Apply
+        only what you set up yourself.
+      </span>
+      {view.held.map((h) => (
+        <div key={h.group} className="settings-item-card" data-hub="held-item" data-group={h.group} style={{ display: 'flex', flexDirection: 'column' }}>
+          <span>
+            <strong>{h.label}</strong> <span className="field-hint">from {h.from}, {clock(h.at)}</span>
+          </span>
+          <ul className="backup-changes">
+            {h.lines.map((line, i) => (
+              <li key={i}>
+                <span className="backup-change-detail mono">{line}</span>
+              </li>
+            ))}
+          </ul>
+          <div className="btn-row">
+            <button
+              className="btn"
+              data-variant="primary"
+              disabled={busy !== null}
+              aria-busy={busy === `apply-${h.group}` || undefined}
+              data-hub="held-apply"
+              onClick={() => run(`apply-${h.group}`, () => window.stoke.hub.applyHeld(h.group), () => ({ tone: 'success', text: `${h.label}: applied on this computer.` }))}
+            >
+              <Busy on={busy === `apply-${h.group}`} idle="Apply on this computer" working="Applying…" />
+            </button>
+            <button className="btn" data-variant="ghost" disabled={busy !== null} data-hub="held-keep" onClick={() => run(`keep-${h.group}`, () => window.stoke.hub.keepHeld(h.group))}>
+              Keep this computer’s
+            </button>
+          </div>
+        </div>
+      ))}
       <Status note={note} />
     </div>
   )
@@ -943,6 +1048,35 @@ function Devices({ view }: { view: HubView }): React.JSX.Element {
                 Cancel
               </button>
             </span>
+          ) : removing === d.id && d.kitSeen ? (
+            <>
+              <span className="field-hint" data-hub="revoke-kit-seen">
+                Removing {d.label} changes the vault key and re-seals everything under the new one. Your current Recovery Kit was
+                made or typed on {d.label}, so it could open a key sealed for that Kit: removing it makes a new Kit too, shown once
+                before anything is sent.
+              </span>
+              <span className="btn-row">
+                <button
+                  className="btn"
+                  data-variant="danger"
+                  disabled={busy !== null}
+                  aria-busy={busy === 'revoke-new' || undefined}
+                  data-hub="revoke-new-kit"
+                  onClick={() =>
+                    run('revoke-new', async () => {
+                      const r = await window.stoke.hub.revoke(d.id, { newKit: true })
+                      if (r.ok) setRemoving(null)
+                      return r
+                    })
+                  }
+                >
+                  <Busy on={busy === 'revoke-new'} idle={`Remove ${d.label} and make a new Kit`} working="Making it…" />
+                </button>
+                <button className="btn" data-variant="ghost" onClick={() => setRemoving(null)}>
+                  Cancel
+                </button>
+              </span>
+            </>
           ) : removing === d.id ? (
             <>
               <span className="field-hint">
@@ -1024,6 +1158,9 @@ function Devices({ view }: { view: HubView }): React.JSX.Element {
           {view.revokeReport.device} is out, and cannot read anything synced from now on. It could read what was in the vault
           before: rotate {view.revokeReport.keys.length ? view.revokeReport.keys.join(', ') : 'no API keys'} at their provider
           {view.revokeReport.sshKeys.length ? `, and take ${view.revokeReport.sshKeys.join(', ')} off the servers it opens` : ''}.
+          {view.revokeReport.commands.length
+            ? ` It could also have changed what these run, on every computer: check ${view.revokeReport.commands.join('; ')}.`
+            : ''}
         </span>
       )}
       <Status note={note} />
