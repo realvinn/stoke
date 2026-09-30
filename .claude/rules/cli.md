@@ -380,3 +380,34 @@ Node (its `fresh-node` job).
 >   `STOKE_INSTALL_SCRIPT` into a script block, which execution policy does not govern; measured
 >   under pwsh, the script's own `exit N` and a `throw` (1) still reach the process exit code. The
 >   file is also removed in `kill()`, not only from `proc.onExit`, which a quit does not reliably run.
+
+## 112. A stub first on PATH does not fake an agent: the login shell's PATH comes first
+
+**Driving the built app against a fake `codex` by prepending the stub's folder to the launch PATH
+would have started the REAL Codex.** `buildEnvPath` (cli.ts) is the search path for every agent
+lookup and every child's PATH, and it is built as: the login shell's PATH, THEN `process.env.PATH`,
+then `extraSearchDirs()`. The login shell is `$SHELL -ilc`, which runs the user's own rc — and an rc
+prepends `~/.local/bin`, where the vendor installers put `codex` and `claude`. Measured 2026-09-30,
+launching zsh the way the probe does with `PATH=<stub dir>:/usr/bin:/bin:/usr/sbin:/sbin`:
+
+```
+~/.local/bin          <- the first entries the probe answered
+~/.pyenv/shims
+codex  -> ~/.local/bin/codex     (the real one)
+claude -> ~/.local/bin/claude
+```
+
+`locateAgent` takes the first match in that order, so the stub loses to the real binary. Claude
+Code alone is safe from it, and only through `claudePath`: an explicit override wins before any
+search. Every other agent has no override.
+
+What isolates, and was used for the default-agent proof: launch the Electron binary with `env -i`
+and **`SHELL` pointing at a stand-in that runs its command with no rc** (`shift; exec /bin/sh -c
+"$1"`), so the probe answers exactly the launch PATH (`login-path.json` in the userData then reads
+`<stub dir>:/usr/bin:/bin:/usr/sbin:/sbin`); **`HOME` scratch**, because `extraSearchDirs()` and
+`shimDirs()` are all HOME-relative (`~/.local/bin`, mise/asdf/fnm shims) and would otherwise find the
+real binaries next; stub `claude` and `codex` both in the stub dir (detection searches for `claude`
+too); `claudePath` set to the stub. A scratch HOME is also what keeps `~/.claude`, `~/.claude.json`
+and `~/.codex` untouched, and lets a fixture transcript under `<scratch HOME>/.claude/projects` feed
+the launcher's conversation list. Check `launches.log`-style output from the stubs, not the tab: a
+real `codex` and a stub both paint something.
