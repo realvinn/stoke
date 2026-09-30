@@ -285,6 +285,9 @@ export const PARTIAL_KEYS = {
  * - `uiScale`, `sidebarWidth`: this display and this window.
  * - `activeProfile`: a view filter that follows the tab in front.
  * - `welcomeSeenVersion`: whether THIS install has shown the first-run splash.
+ * - `chatIndex`, `chatIndexOptions`: consent to copy THIS machine's chat text
+ *   into a local index, and which of its tools and how much. A yes given on one
+ *   computer is not a yes on another, and the offer there must still be asked.
  *
  * `verify:secrets` asserts PORTABLE_KEYS, PARTIAL_KEYS and LOCAL_KEYS
  * partition every key of DEFAULT_SETTINGS exactly, so a new setting fails the
@@ -302,7 +305,9 @@ export const LOCAL_KEYS = [
   'remote',
   'sidebarWidth',
   'activeProfile',
-  'welcomeSeenVersion'
+  'welcomeSeenVersion',
+  'chatIndex',
+  'chatIndexOptions'
 ] as const satisfies readonly (keyof Settings)[]
 
 function cloneJson<T>(v: T): T {

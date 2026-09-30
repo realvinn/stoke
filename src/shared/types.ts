@@ -7,6 +7,7 @@ import type { ProviderSettings } from './providers.ts'
 import type { AgentSettings } from './agents.ts'
 import type { FullScreenReveal, RemoteReachPreference, ZoomTarget } from './ui.ts'
 import type { BrowserProfile, ImportOffer } from './browserProfiles.ts'
+import type { ChatIndexMode, ChatIndexOptions } from './chatIndex.ts'
 
 /* ------------------------------------------------------------------ launch */
 
@@ -51,6 +52,13 @@ export interface LaunchOptions {
   resume?: boolean
   /** Continue the most recent session in cwd (`--continue`). */
   continueLast?: boolean
+  /**
+   * Another agent's session to reopen by its own id — a chat found by chat
+   * search (`chatOpenAction`). Main passes it through that agent's
+   * `resumeArgs` only; it is never a Claude flag, and a CLI with no verified
+   * by-id resume refuses the launch rather than starting something else.
+   */
+  agentResumeId?: string
   /** With resume/continue, branch to a new session id instead of reusing. */
   forkSession?: boolean
   permissionMode: PermissionMode
@@ -1233,6 +1241,14 @@ export interface Settings {
    * is the recoverable direction.
    */
   welcomeSeenVersion: string | null
+  /**
+   * Chat history: whether Stoke keeps a searchable copy of the text of every AI
+   * chat it can find on this machine. `unasked` shows the offer card once, to
+   * new and existing users alike; see shared/chatIndex.ts.
+   */
+  chatIndex: ChatIndexMode
+  /** Which sources, and the caps. Repaired by `clampChatIndexOptions`. */
+  chatIndexOptions: ChatIndexOptions
 }
 
 /* --------------------------------------------------------------- browser */

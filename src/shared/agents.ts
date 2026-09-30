@@ -45,6 +45,7 @@ import {
   DEFAULT_CLI,
   isClaudeCode,
   isCodingCliId,
+  isSafeResumeId,
   type CodingCliId,
   type InstallPlatform
 } from './codingClis.ts'
@@ -386,6 +387,13 @@ export interface LaunchPlanInput {
   openrouterKey: string
   /** Continue the latest session in the folder, where the CLI can. */
   continueLast: boolean
+  /**
+   * Reopen this one session, where the CLI can be handed an id (`resumeArgs`)
+   * — a chat found by search. Wins over `continueLast`. An id `isSafeResumeId`
+   * refuses, or a CLI with no `resumeArgs`, refuses the launch rather than
+   * starting something the user did not pick.
+   */
+  resumeId?: string | null
   /** Stoke's browser MCP server, when it is up, for the CLIs that take one per launch. */
   mcp: { url: string; token: string } | null
   /**
@@ -654,7 +662,11 @@ export function agentLaunchPlan(input: LaunchPlanInput): LaunchPlanResult {
     }
   }
 
-  if (continueLast && cli.continueArgs) args.push(...cli.continueArgs)
+  if (input.resumeId) {
+    if (!cli.resumeArgs) return { ok: false, message: `${cli.label} cannot reopen a chat by its id.` }
+    if (!isSafeResumeId(input.resumeId)) return { ok: false, message: `That ${cli.label} chat id is not one Stoke will pass on.` }
+    args.push(...cli.resumeArgs(input.resumeId))
+  } else if (continueLast && cli.continueArgs) args.push(...cli.continueArgs)
   return { ok: true, plan: { args, env, model } }
 }
 
