@@ -604,7 +604,13 @@ console.log('\nthe packaged-app probe (ci.yml) reads its legs from targets.mjs')
   ok('and the fuses (gotcha 108)', /assert-cookie-fuse\.mjs release/.test(probeRuns))
   ok('and then drives the packaged app with probe-e2e.mts', /node scripts\/probe-e2e\.mts --app "\$PROBE_APP"/.test(probeRuns))
   ok('under a display on Linux, with the sandbox knob relaxed first', /xvfb-run -a[^\n]*probe-e2e\.mts/.test(probeRuns) && /sysctl -w kernel\.apparmor_restrict_unprivileged_userns=0/.test(probeRuns))
-  ok('--ssh only on a leg the matrix says has an sshd', /matrix\.ssh/.test(probeRuns) && (ciStepsOf('probe').find((s) => /sshd to connect to/.test(s.name ?? ''))?.if ?? '') === 'matrix.ssh')
+  const sshdSteps = ciStepsOf('probe').filter((s) => /sshd to connect to/.test(s.name ?? ''))
+  ok(
+    '--ssh only on a leg the matrix says has an sshd, and an sshd set up for each OS that has one',
+    /matrix\.ssh/.test(probeRuns) &&
+      sshdSteps.length === new Set(TARGETS.filter((t) => t.key in PROBE_SSH).map((t) => t.platform)).size &&
+      sshdSteps.every((s) => String(s.if ?? '').startsWith('matrix.ssh && '))
+  )
   const upload = ciStepsOf('probe').find((s) => String(s.uses ?? '').startsWith('actions/upload-artifact'))
   check('and uploads what it saw even when it fails', [upload?.if, /probe\/shots/.test(String(upload?.with?.path ?? ''))], ['always()', true])
 

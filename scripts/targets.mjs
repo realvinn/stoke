@@ -179,19 +179,21 @@ export function matrixJson() {
  *
  * Only what differs per target is written here: whether the leg can reach a
  * real sshd. Linux runners have Docker, so the Linux leg runs a Debian sshd
- * container (.github/probe/sshd.Dockerfile). macOS arm64 runners have no
- * nested virtualisation (no Docker), and a loopback sshd there, or OpenSSH
- * Server on Windows, has never been set up on these images — named rather than
+ * container (.github/probe/sshd.Dockerfile). macOS runners have no nested
+ * virtualisation (no Docker), so the arm64 Mac leg runs the runner's own sshd
+ * on loopback with two throwaway accounts (scripts/probe/sshd-mac.sh). OpenSSH
+ * Server on Windows has never been set up on these images — named rather than
  * silently absent.
  */
 export const PROBE_SSH = {
   'linux-x64': 'a Debian bookworm sshd container on 127.0.0.1:2222 (key user, password-only user, tmux)',
+  'mac-arm64': "the runner's own /usr/sbin/sshd on 127.0.0.1:2222, two sysadminctl accounts, tmux from Homebrew",
 }
 
 /** Why a probe leg has no SSH checks. */
 export const PROBE_NO_SSH = {
   win32: 'no sshd on the Windows images without Add-WindowsCapability (slow, and hung on windows-11-arm); not set up yet',
-  darwin: 'no Docker on macOS runners; a loopback sshd via sysadminctl users is not set up yet',
+  darwin: "the Intel Mac: the arm64 leg already runs Apple's ssh client against a loopback sshd, and the client is the same build",
 }
 
 /** The `{ include: [...] }` for the probe job: one leg per target, on the target's own runner. */

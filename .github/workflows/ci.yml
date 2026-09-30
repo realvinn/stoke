@@ -246,7 +246,7 @@ jobs:
       # RUNNER's own ~/.ssh/config — a throwaway VM — which is why the probe
       # refuses --ssh anywhere but here.
       - name: A Debian sshd to connect to (key user, password-only user)
-        if: matrix.ssh
+        if: matrix.ssh && runner.os == 'Linux'
         run: |
           set -eu
           D="$RUNNER_TEMP/sshd"
@@ -286,6 +286,12 @@ jobs:
           fi
           echo 'stoke-pw refuses BatchMode, as it should'
 
+      # No Docker on a Mac runner: the runner's own sshd on loopback, with two
+      # throwaway accounts, is how Apple's ssh client meets a real server.
+      - name: A loopback sshd to connect to (macOS; key user, password-only user)
+        if: matrix.ssh && runner.os == 'macOS'
+        run: sh scripts/probe/sshd-mac.sh "$RUNNER_TEMP/sshd"
+
       - name: Drive it (scripts/probe-e2e.mts)
         run: |
           set -u
@@ -299,7 +305,9 @@ jobs:
 
       - name: The sshd's own log
         if: always() && matrix.ssh
-        run: docker logs stoke-probe-sshd 2>&1 | tail -n 80 || true
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then docker logs stoke-probe-sshd 2>&1 | tail -n 80 || true
+          else sudo tail -n 80 "$RUNNER_TEMP/sshd/sshd.log" || true; fi
 
       - uses: actions/upload-artifact@v4
         if: always()
