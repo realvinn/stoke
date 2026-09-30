@@ -276,3 +276,29 @@ separator test turns three of them red. `verify:folders` holds the add path unde
 place. The live half — every refusal over HTTP, and that no refused request launched anything — is
 `verify:security` against a running sandbox (43/43 on 2026-09-30, with a stub `claude` whose launch
 log stayed empty through them).
+
+> **Checked against the code on 2026-09-30** (review of the branch that added it). The floor was not
+> enough: **the phone could widen its own allow-list, one folder per tap.** Start here on a place's
+> OWN folder is allowed (`isInside` counts a place as inside itself) and adds it as a project
+> (`addRemoteProject` → `manualProjectPatch`); the next `/api/folders` listing then made that
+> project's parent a place and folded the old one into it. Tap again, climb again, down to the
+> floor: the home folder, a whole volume (`/Volumes/X`, `/mnt/c`), and — from the scratch root, a
+> place once any scratch session has history — the app's own data folder and every folder above it.
+> A session in the default folder widened it once with no add at all, since Claude then records the
+> folder as a project. Now `remoteFolderBases` lets a project lend its parent only when it is not
+> itself a place: one inside (or equal to) a root or the default folder lends nothing, and neither
+> does one that is the folder holding another project. Everything a phone may add is inside a place
+> already, so an add can shrink the places but never widen them. The price is a narrowing, never a
+> widening: a project that gains a project inside it stops lending (`~/dev/foo` plus `~/dev/foo/sub`
+> offers `~/dev/foo`, not `~/dev`, unless a sibling lends `~/dev`), and a default folder or root
+> with history no longer offers its parent. The reviewer's first wording — a project *inside* any
+> place lends nothing — was not taken: two sibling projects are each inside the other's parent, so
+> neither would lend and `~/dev` would vanish. Nor was "only projects with history, or not added by
+> hand, lend": a session in the added place gives it history in one more request, and
+> `addedManually` cannot tell a phone's add from `stoke .`'s, so every folder opened by hand would
+> stop lending. A marker of the phone's own could tell them apart, but would still miss the default
+> folder, which a session makes a project with no add at all. `verify:remote` checks every add in
+> every configuration of an 11-folder tree (44,352 adds over 12,288 configurations) and fails with
+> either half of the rule removed; `verify:folders` taps every place of a real temp tree for three
+> rounds through the add route itself and asserts the places never move and the folder above them
+> stays 403.
