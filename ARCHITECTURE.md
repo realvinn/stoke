@@ -706,10 +706,13 @@ npm run verify:agents         # the coding agents: what is stored, what the laun
                               # projection and its plugin folder on a fake home and userData
                               # (bystanders survive, links are never followed); every MCP
                               # adapter's exact plan on a stdio-with-secret + http-with-bearer
-                              # fixture (no secret in argv), unsafe server names refused,
+                              # fixture (no secret in argv, a key in a URL included),
+                              # each agent's own server names from its user and folder
+                              # config (never replaced), unsafe server names refused,
                               # Claude's list from a ~/.claude.json fixture (disabledMcpServers,
                               # .mcp.json approvals, the canonical-root key and the parent
-                              # chain, gotcha 129), the ticks' hydrate, and the 0600 files
+                              # chain, gotcha 129), Settings' project-scope rows under the
+                              # same trust gate, the ticks' hydrate, and the 0600 files
 npm run verify:voice          # who owns a held Space: Claude Code's /voice or Stoke's
                               # dictation; `spaceHold` (a tap types a space and never
                               # opens the microphone, a hold records, every REPEAT is
@@ -1016,8 +1019,11 @@ src/main/         Electron main process
                     never written, gotcha 38), cached on mtime and size, and only when a
                     non-default tick needs it; files the folder under its canonical git root
                     (`claudeProjectKey`) and reads `.mcp.json` along every parent, approvals
-                    only once trusted (gotcha 129); reads the names Codex's config.toml, Kimi's
-                    mcp.json and Vibe's config.toml define so none is replaced. `McpFileStore`
+                    only once trusted (gotcha 129); reads the names each agent's own config
+                    defines, its user file and the launch folder's layers (`ownMcpSources`:
+                    Codex, OpenCode, Kilo, Qwen, Copilot, Kimi, Vibe), so none is replaced or
+                    merged into; Settings' list adds every known folder's approved `.mcp.json`
+                    servers (`readMcpCatalog`). `McpFileStore`
                     writes the Qwen/Copilot/Kimi/Claude files owner-only under
                     `<userData>/agents/mcp/`, content-named, and sweeps only its own names once
                     per run. Not SSH, not headless (gotchas 19, 15)
@@ -1186,6 +1192,7 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     that hands it over at launch: Codex `-c mcp_servers.*` (secrets by
                     variable name), OpenCode/Kilo inline config, Vibe's `VIBE_MCP_SERVERS`,
                     Pi through a constant extension, Qwen/Copilot/Kimi/Claude as 0600 files.
+                    A URL that may carry a key never reaches Codex's argv (`urlInArgvProblem`).
                     The list is Claude Code's own (`claudeMcpServers`), read at every launch
                     and never stored; settings hold only per-agent ticks (`agents.mcp.perAgent`,
                     default: Stoke's browser alone) and Stoke-held servers (`extra`, secrets

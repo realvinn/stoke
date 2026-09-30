@@ -530,3 +530,28 @@ servers, or one the folder turned off.
 verify:agents builds a repo, a subfolder and a linked worktree under a scratch home, and the
 pre-fix lookup (the realpath instead of the key) turns four of its checks red. Live, a stub Codex
 started in `app/src` was handed `app`'s local-scope `local-db` and not its disabled `turned-off`.
+
+> **Checked against the code on 2026-09-30** (review, before merge). Three more places the mirror
+> disagreed with what it claimed, none visible to a suite whose fixture could not show them:
+> - **An http server's URL is a secret channel, and Codex's only route for one is argv.** The
+>   header argued "the server process carries it in ITS argv whoever starts it", which is true of a
+>   stdio command and false of a URL: no local process ever shows one. Hosted servers take their key
+>   there (Tavily `?tavilyApiKey=`, Exa `?exaApiKey=`), Claude Code documents `${VAR}` in `url`, and
+>   neither holds a `CMD_SYNTAX` character, so `-c mcp_servers.<n>.url=` put the key in the process
+>   table. `keysOnlyInEnv` passed because the fixture's URL held no secret. `urlInArgvProblem` refuses
+>   a URL with a query, userinfo, a key-like path segment, or one filled from `${…}` (`urlFromEnv`);
+>   none of the owner's 11 real http URLs trips it. The fixture now carries a URL canary through every
+>   agent's plan; with the refusal removed, nine checks go red.
+> - **"A name the agent's own config defines is skipped, never replaced" held for three agents of
+>   seven.** OpenCode 1.18.31 folds `OPENCODE_CONFIG_CONTENT` over every user and folder layer with
+>   remeda's `mergeDeep` (read out of the Homebrew binary), so a same-named `mcp.<n>` was MERGED
+>   into the user's; Kilo 7.8.1, its fork, layers `KILO_CONFIG_CONTENT` the same way. Qwen 0.24.7's
+>   `assembleMcpServers` spreads
+>   `--mcp-config` last (REPLACED), Copilot 1.0.89's `--additional-mcp-config` "augments" its
+>   mcp-config.json in native code, and each also reads the launch FOLDER's config — as do Codex
+>   (`.codex/config.toml`, `project_root_markers = [".git"]`) and Vibe (the nearest
+>   `.vibe/config.toml`). `ownMcpSources` lists every one of those files, read, never run; the
+>   pre-fix reading turns twelve checks red.
+> - **Settings never listed project scope**, so a `.mcp.json`-only server could not be ticked.
+>   `readMcpCatalog` reads the `.mcp.json` chain of every `projects` key, each distinct file once,
+>   and applies the launch's trust gate; dropping that gate turns a check red.
