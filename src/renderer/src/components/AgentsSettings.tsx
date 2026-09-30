@@ -8,6 +8,8 @@ import {
   type CodingCliId
 } from '@shared/codingClis'
 import {
+  AGENT_TAG_MAX,
+  cleanTagLabel,
   DEFAULT_ENDPOINT,
   endpointProblem,
   installedAgents,
@@ -21,7 +23,9 @@ import {
 import type { Settings } from '@shared/types'
 import { SHARED_SKILLS_DIR, skillReport, type SkillDirScan } from '@shared/skills'
 import { cliFor } from '@shared/codingClis'
+import { AGENT_SEEDS, agentSeed } from '@shared/agentColors'
 import { Spinner } from './Spinner'
+import { ColorField } from './ColorField'
 
 /*
  * Settings › Coding agents: which agents show in the launcher, installing the
@@ -79,7 +83,16 @@ export function AgentsSettings({
     })
   }
 
-  const patchAgents = (next: AgentSettings): void => onPatch({ agents: next })
+  /*
+   * The ref moves with the patch, not only on the next render: two commits in
+   * one tick — a field flushed on unmount beside one committed on blur — would
+   * otherwise each spread the SAME stale block, and the second would put the
+   * first one's change back.
+   */
+  const patchAgents = (next: AgentSettings): void => {
+    agentsRef.current = next
+    onPatch({ agents: next })
+  }
 
   const installed = new Set(detection?.clis.filter((c) => c.path).map((c) => c.id) ?? [])
   const shown = (id: CodingCliId): boolean =>
@@ -102,6 +115,23 @@ export function AgentsSettings({
   const offered = visibleAgents(agents.chosen, installedAgents(detection?.clis ?? [], claudeRunnable))
   const defaultOptions = offered.includes(agents.defaultCli) ? offered : [agents.defaultCli, ...offered]
   const startsInstead = detection ? resolveDefaultAgent(agents.defaultCli, offered) : agents.defaultCli
+
+  /** An agent's colour; null or its own seed clears the override. */
+  const setColor = (id: CodingCliId, hex: string | null): void => {
+    const colors = { ...agentsRef.current.colors }
+    if (!hex || hex.toLowerCase() === AGENT_SEEDS[id]) delete colors[id]
+    else colors[id] = hex.toLowerCase()
+    patchAgents({ ...agentsRef.current, colors })
+  }
+
+  /** An agent's tab tag; blank, or its executable's own name, clears it. */
+  const setTagLabel = (id: CodingCliId, raw: string): void => {
+    const label = cleanTagLabel(raw)
+    const labels = { ...agentsRef.current.tag.labels }
+    if (!label || label === cliFor(id).bins.posix[0]) delete labels[id]
+    else labels[id] = label
+    patchAgents({ ...agentsRef.current, tag: { ...agentsRef.current.tag, labels } })
+  }
 
   const setEndpoint = (id: CodingCliId, ep: AgentEndpoint): void => {
     const endpoints = { ...agentsRef.current.endpoints }
@@ -142,6 +172,24 @@ export function AgentsSettings({
           </span>
         )}
       </div>
+
+      <label className="check-row">
+        <input
+          type="checkbox"
+          checked={agents.tag.show}
+          onChange={(e) =>
+            patchAgents({ ...agentsRef.current, tag: { ...agentsRef.current.tag, show: e.target.checked } })
+          }
+        />
+        <span>
+          <span className="field-label">Show agent tags on tabs</span>
+          <span className="field-hint">
+            A tab running an agent other than the default says which, in a small tag named below.
+            Off, the tab keeps a rule in the agent&rsquo;s colour and its tooltip still names it.
+            Colours show once more than one agent is in use.
+          </span>
+        </span>
+      </label>
 
       <div className="field">
         <span className="field-label">Coding agents</span>
@@ -190,6 +238,11 @@ export function AgentsSettings({
             onShown={(on) => setShown(c.id, on)}
             endpoint={agents.endpoints[c.id] ?? DEFAULT_ENDPOINT}
             onEndpoint={(ep) => setEndpoint(c.id, ep)}
+            color={agentSeed(c.id, agents.colors)}
+            colorOverridden={agents.colors[c.id] !== undefined}
+            onColor={(hex) => setColor(c.id, hex)}
+            tagLabel={agents.tag.labels[c.id] ?? ''}
+            onTagLabel={(label) => setTagLabel(c.id, label)}
             openrouterKey={settings.providers.openrouterApiKey}
             installCommand={installSteps([c.id], platform)[0]?.command ?? null}
             onInstall={() => {
@@ -217,7 +270,12 @@ function AgentRow({
   onEndpoint,
   openrouterKey,
   installCommand,
-  onInstall
+  onInstall,
+  color,
+  colorOverridden,
+  onColor,
+  tagLabel,
+  onTagLabel
 }: {
   cli: CodingCli
   path: string | null
@@ -230,6 +288,14 @@ function AgentRow({
   openrouterKey: string
   installCommand: string | null
   onInstall: () => void
+  /** The colour it is drawn in: the user's, else its seed. */
+  color: string
+  colorOverridden: boolean
+  /** Null resets to the seed. */
+  onColor: (hex: string | null) => void
+  /** The stored tab tag, '' for the executable's name. */
+  tagLabel: string
+  onTagLabel: (label: string) => void
 }): React.JSX.Element {
   const claude = isClaudeCode(cli.id)
   const canEndpoint = cli.endpoints.openrouter || cli.endpoints.custom !== null
@@ -313,6 +379,17 @@ function AgentRow({
         )
       ) : null}
 
+      {(path || shown) && (
+        <AgentLook
+          cli={cli}
+          color={color}
+          colorOverridden={colorOverridden}
+          onColor={onColor}
+          tagLabel={tagLabel}
+          onTagLabel={onTagLabel}
+        />
+      )}
+
       {!claude && (
         <span className="field-hint">
           {caps.resume === 'continue'
@@ -387,6 +464,81 @@ function AgentRow({
           Uses its own sign-in; it has no way to be pointed at another endpoint from outside.
         </span>
       )}
+    </div>
+  )
+}
+
+/*
+ * How an agent looks in the strip: its colour and its tab tag. Only for an
+ * agent that is installed or ticked — the rest cannot have a tab to colour.
+ *
+ * The tag commits on blur and Enter, and is flushed on unmount through a ref,
+ * because Escape closes the sheet by unmounting it and delivers no blur
+ * (gotcha 63); the colour field does the same through `commitOnUnmount`.
+ */
+function AgentLook({
+  cli,
+  color,
+  colorOverridden,
+  onColor,
+  tagLabel,
+  onTagLabel
+}: {
+  cli: CodingCli
+  color: string
+  colorOverridden: boolean
+  onColor: (hex: string | null) => void
+  tagLabel: string
+  onTagLabel: (label: string) => void
+}): React.JSX.Element {
+  const [draft, setDraft] = useState(tagLabel)
+  const editing = useRef(false)
+  const latest = useRef({ draft, tagLabel, onTagLabel })
+  latest.current = { draft, tagLabel, onTagLabel }
+  useEffect(() => {
+    if (!editing.current) setDraft(tagLabel)
+  }, [tagLabel])
+  const commit = (): void => {
+    editing.current = false
+    const { draft: d, tagLabel: stored, onTagLabel: set } = latest.current
+    if (d.trim() !== stored) set(d)
+  }
+  useEffect(() => () => commit(), [])
+
+  return (
+    <div className="agent-look">
+      <span className="agent-look-row">
+        <span className="agent-look-label">Colour</span>
+        <ColorField
+          value={color}
+          notation="hex"
+          label={`${cli.label} colour`}
+          onChange={(hex) => onColor(hex)}
+          commitOnUnmount
+        />
+        {colorOverridden && (
+          <button className="btn" data-variant="ghost" onClick={() => onColor(null)}>
+            Reset
+          </button>
+        )}
+      </span>
+      <label className="agent-look-row">
+        <span className="agent-look-label">Tab tag</span>
+        <input
+          className="input mono"
+          value={draft}
+          placeholder={cli.bins.posix[0]}
+          maxLength={AGENT_TAG_MAX}
+          spellCheck={false}
+          aria-label={`${cli.label} tab tag`}
+          onChange={(e) => {
+            editing.current = true
+            setDraft(e.target.value)
+          }}
+          onBlur={commit}
+          onKeyDown={(e) => e.key === 'Enter' && commit()}
+        />
+      </label>
     </div>
   )
 }
