@@ -142,8 +142,8 @@ export function ColorPicker({
   const mapRef = useRef<HTMLDivElement>(null)
   useFloatingLayer(popRef, true)
 
-  const latest = useRef({ hex, onPreview, onCommit, onClose, anchor })
-  latest.current = { hex, onPreview, onCommit, onClose, anchor }
+  const latest = useRef({ hex, typed, onPreview, onCommit, onClose, anchor })
+  latest.current = { hex, typed, onPreview, onCommit, onClose, anchor }
 
   /** Set once the pick is kept or reverted; nothing after that commits. */
   const done = useRef(false)
@@ -156,7 +156,10 @@ export function ColorPicker({
 
   /**
    * Keep or revert, once. `pick` overrides the working value for the one
-   * caller that has a newer one than the last render (Enter in the hex field).
+   * caller that has a newer one than the last render (Enter in the hex field);
+   * a hex still being typed counts too, when it parses — an outside click
+   * lands before the field's own blur, so "#abc" typed and clicked away from
+   * would otherwise be dropped for the colour before it.
    * Focus goes back to the swatch only for a close the user made here —
    * Enter, Escape, Done, Cancel — never for a click somewhere else, which is
    * where they meant focus to go.
@@ -165,7 +168,7 @@ export function ColorPicker({
     if (done.current) return
     done.current = true
     const now = latest.current
-    const kept = pick ?? now.hex
+    const kept = pick ?? (now.typed !== null ? parseTyped(now.typed) : null) ?? now.hex
     if (keep) {
       if (!sameColor(kept, original.current)) now.onCommit(kept)
     } else if (previewed.current) {
@@ -186,9 +189,10 @@ export function ColorPicker({
     return () => {
       if (done.current) return
       const now = latest.current
-      if (!sameColor(now.hex, original.current)) {
+      const kept = (now.typed !== null ? parseTyped(now.typed) : null) ?? now.hex
+      if (!sameColor(kept, original.current)) {
         done.current = true
-        now.onCommit(now.hex)
+        now.onCommit(kept)
       }
     }
   }, [])
