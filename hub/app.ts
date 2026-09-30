@@ -631,9 +631,11 @@ class HubServer {
   /**
    * The session, the device's signature over this exact request, a nonce
    * never seen from that device, and — for `active`/`owner` routes — a chain
-   * that lists this device WITH THE KEY IT SIGNED IN WITH. Matching the id
-   * alone would let anyone with the password sign in under an active device's
-   * id with their own keys and be taken for it.
+   * that lists this device WITH THE KEY IT SIGNED IN WITH (gotcha 140). `login`
+   * already refuses an id the chain binds to another key; this is for the id
+   * the chain did NOT list yet: a password-holder signs in under it first, the
+   * real device joins with its own keys, and by id alone the squatter's
+   * session would then be taken for that device.
    */
   private authenticate(need: HubAuth, method: string, pathV1: string, headers: Record<string, string | undefined>, body: Buffer): Authed | null {
     if (need === 'public') return null
