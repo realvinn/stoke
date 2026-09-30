@@ -56,6 +56,13 @@ export interface ImportedCookie {
 export interface ReadWhat {
   cookies: boolean
   bookmarks: boolean
+  /**
+   * Windows only: the user has consented to Stoke closing their browser for a
+   * moment (its files were locked, or some app-bound logins would not decrypt),
+   * copying the logins, then reopening it. Off by default and never taken
+   * without an explicit second press in the import panel.
+   */
+  closeReopen?: boolean
 }
 
 export interface ReadResult {
@@ -70,6 +77,14 @@ export interface ReadResult {
    * failure on one half never throws the other half away.
    */
   cookieError?: string
+  /**
+   * Windows only: this read's `cookieError` is one that closing and reopening
+   * the browser could resolve — the profile files were locked by a running
+   * browser, or some app-bound logins came back sealed and a clean, fully
+   * flushed copy might do better. The panel may then offer the close-and-reopen
+   * button. Never set once a close-and-reopen was already tried (no loop).
+   */
+  needsClose?: boolean
 }
 
 export interface BrowserSource {
@@ -91,4 +106,9 @@ export interface ImportReport {
   error?: string
   /** The bookmarks came, the logins did not: why. */
   cookieError?: string
+  /**
+   * Windows only: the panel may offer to close and reopen the browser to get
+   * these logins (a locked profile, or app-bound rows a clean copy might read).
+   */
+  needsChromeClose?: boolean
 }

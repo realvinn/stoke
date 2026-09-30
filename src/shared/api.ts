@@ -22,6 +22,8 @@ export interface ImportResult {
   error?: string
   /** The bookmarks came, the logins did not: why. */
   cookieError?: string
+  /** Windows: the panel may offer to close and reopen the browser to get these logins. */
+  needsChromeClose?: boolean
 }
 import type { SkillDirScan } from './skills'
 import type { McpCatalog } from './mcpServers'
@@ -664,7 +666,10 @@ export interface StokeApi {
      * bookmarks into the shared list. Counts only come back; null while an
      * import is already running.
      */
-    importRun(keys: string[], what: { cookies: boolean; bookmarks: boolean }): Promise<ImportResult[] | null>
+    importRun(
+      keys: string[],
+      what: { cookies: boolean; bookmarks: boolean; closeReopen?: boolean }
+    ): Promise<ImportResult[] | null>
     /** System Settings > Privacy & Security > Full Disk Access, for Safari. */
     openFullDiskAccess(): void
     /** Rename a browser profile, against the settings main holds now. */

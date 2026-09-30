@@ -279,10 +279,14 @@ export const chromeSource: BrowserSource = {
       if (process.platform === 'win32' && b.winExe) {
         // The browser decrypts its own app-bound jar; Stoke reads the plaintext
         // back. Loaded here, not at the top: `ws` and the launch code only ever
-        // matter for a Windows login import (gotcha 40).
+        // matter for a Windows login import (gotcha 40). `closeReopen` is the
+        // user's consent to close and reopen the browser (locked files, or
+        // sealed logins) — off unless they pressed the second time.
         const { readChromeCookiesWin } = await import('./chromeCookiesWin.ts')
-        const { cookies, skipped, cookieError } = await readChromeCookiesWin(b, dir)
-        return { cookies, skippedCookies: skipped, bookmarks, cookieError }
+        const { cookies, skipped, cookieError, needsClose } = await readChromeCookiesWin(b, dir, {
+          closeAndReopen: what.closeReopen === true
+        })
+        return { cookies, skippedCookies: skipped, bookmarks, cookieError, needsClose }
       }
       // Linux, or a Windows browser whose binary Stoke does not know: bookmarks
       // stand, logins are reported left behind.

@@ -274,3 +274,64 @@ export function sealedCookiesMissed(
   }
   return sealed
 }
+
+/**
+ * How long Stoke waits for a gracefully-closed browser to quit before it gives
+ * up — it NEVER force-kills it (the repo-wide rule). On a timeout it reports the
+ * browser is still holding the files and asks the user to close it themselves.
+ */
+export const BROWSER_CLOSE_DEADLINE_MS = 20_000
+
+/**
+ * A constant PowerShell script that gracefully closes the browser whose full
+ * executable path is in `$env:STOKE_BROWSER_EXE`, then waits up to
+ * `$env:STOKE_CLOSE_DEADLINE` ms for its processes to exit.
+ *
+ * This is the close half of the flow the owner asked for on Windows: when the
+ * profile files are locked by a running browser, Stoke offers to close it for a
+ * moment, copy the logins, and reopen it. Everything variable travels in the
+ * ENVIRONMENT, never spliced into the script (gotcha 101: a curly apostrophe in
+ * a profile path is a PowerShell single quote), and the whole body is pure
+ * ASCII so Windows PowerShell 5.1 cannot misread it. It never `Stop-Process` /
+ * `-Force` (gotcha 94's rule): `CloseMainWindow()` is what clicking a window's
+ * × does, so the browser saves its session and can restore it on reopen. It
+ * re-issues the close each pass because one browser process owns several
+ * top-level windows and closing one moves the main handle to the next.
+ * Processes are found with `Get-CimInstance Win32_Process` (a 32-bit PowerShell
+ * cannot read a 64-bit process's `.Path` — gotcha 94), matched on
+ * `ExecutablePath`. It prints `started=<n>` (how many were running at entry, so
+ * the caller reopens only a browser it actually closed) and `remaining=<n>`
+ * (0 means the browser closed).
+ */
+export function browserCloseScript(): string {
+  return [
+    "$ErrorActionPreference = 'SilentlyContinue'",
+    '$exe = $env:STOKE_BROWSER_EXE',
+    '$deadline = [int]$env:STOKE_CLOSE_DEADLINE',
+    'function StokeBrowserPids { @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq $exe } | ForEach-Object { $_.ProcessId }) }',
+    "[Console]::Out.WriteLine('started=' + @(StokeBrowserPids).Count)",
+    '$until = (Get-Date).AddMilliseconds($deadline)',
+    'while ($true) {',
+    '  $ids = @(StokeBrowserPids)',
+    '  if ($ids.Count -eq 0) { break }',
+    '  if ((Get-Date) -ge $until) { break }',
+    '  foreach ($procId in $ids) {',
+    '    $p = Get-Process -Id $procId -ErrorAction SilentlyContinue',
+    '    if ($p -and $p.MainWindowHandle -ne 0) { [void]$p.CloseMainWindow() }',
+    '  }',
+    '  Start-Sleep -Milliseconds 300',
+    '}',
+    "[Console]::Out.WriteLine('remaining=' + @(StokeBrowserPids).Count)"
+  ].join('\n')
+}
+
+/**
+ * The argv to reopen the user's browser on the profile it had open. No
+ * `--user-data-dir`, so it uses the real default profile root — the browser
+ * reopens the user's normal session and, IF the user's own "continue where you
+ * left off" setting says so, restores the tabs it had. Stoke does not force that
+ * setting; the UI says the tabs come back only when the browser is set to.
+ */
+export function reopenArgs(profileName: string): string[] {
+  return [`--profile-directory=${profileName}`]
+}

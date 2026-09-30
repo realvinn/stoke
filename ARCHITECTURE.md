@@ -1018,7 +1018,8 @@ src/main/         Electron main process
                     node:sqlite), chromeCookies.ts (the macOS v10 crypto and BOTH row mappings — the
                     SQLite row and the CDP cookie — pure), chromeCookiesWin.ts (the Windows login
                     path: locate the browser's exe, copy the profile, launch it headless and read
-                    decrypted cookies over CDP — gotchas 130/99, lazy), chromiumProfiles.ts (where
+                    decrypted cookies over CDP; a locked/sealed read offers a graceful
+                    close-and-reopen — gotchas 130/99/101/94, lazy), chromiumProfiles.ts (where
                     each browser keeps its profiles on macOS/Windows, pure and platform-parameterised
                     — bookmarks import on both, logins on macOS (proven) and Windows (mechanism
                     proven for v10; v20 app-bound decrypt-in-a-copy unproven — gotcha 130),
@@ -1583,6 +1584,10 @@ scripts/          the verify-*.mts suites, make-icon.cjs
   windows-e2e.mts   the Windows workflow's hands for the steps that must use Stoke's own
                     code: writing the swap helper's files, waiting on its result, the
                     registry-PATH re-read and one-key terminal env checks (gotcha 99)
+  windows-chrome-probe.mts  owner-run, on a real Windows PC: proves whether v20 app-bound
+                    cookies decrypt from a copy of the real Chrome profile (gotcha 130).
+                    Read-only against the profile; prints only per-domain v10/v20 counts,
+                    never a value. Not in check — it needs real Chrome
   assert-nsis-payload.mjs  opens each built *-setup.exe with the full 7-Zip, extracts the
                     embedded app-<arch>.7z and fails on a filter the installer's own nsis7z
                     (19.00) cannot decode — the v0.9.9 arm64 installer installed nothing

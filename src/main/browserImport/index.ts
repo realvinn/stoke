@@ -181,7 +181,10 @@ export async function runImport(keys: string[], what: ReadWhat, deps: ImportDeps
           cookies: set,
           skippedCookies: read.skippedCookies + failed,
           bookmarks: read.bookmarks.length,
-          ...(cookieError ? { cookieError } : {})
+          ...(cookieError ? { cookieError } : {}),
+          // Only offer close-and-reopen for a real login read, never when the
+          // build itself refused logins (loginsRefused) — closing fixes nothing.
+          ...(read.needsClose && !loginsRefused ? { needsChromeClose: true } : {})
         })
       } catch (err) {
         reports.push({

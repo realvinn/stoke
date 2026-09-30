@@ -214,3 +214,38 @@ browser" scheme — the cookie store's location is the browser's to decide, not 
 >   **The v20 read-back itself is still UNPROVEN on real Windows** — the CI job only ever exercised `v10`
 >   (see the honest-proof paragraph under gotcha 107). Treat Windows logins as best-effort until a v20
 >   cookie is shown decrypting from a copied dir.
+
+> **The close-and-reopen flow, 2026-09-30 — the owner's own description, now built.** The copy usually
+> needs no close (a hot copy of the live jar is consistent), but two cases do, and both are the owner's
+> "pull the data, close the browser, reopen it": the files are LOCKED by a running browser so the copy
+> cannot be made (`ProfileLockedError`), or some app-bound rows came back sealed and a clean, fully
+> flushed copy might read where a hot one did not (honest — not a promise; a v20 row a copied non-default
+> dir genuinely cannot decrypt stays sealed either way). `readChromeCookiesWin` no longer THROWS on a
+> locked copy: it returns `{ cookieError, needsClose: true }` (bookmarks still import), and the panel then
+> offers ONE explicit second press. With the user's consent (`opts.closeAndReopen`, threaded from
+> `ReadWhat.closeReopen` → the `importRun` IPC → the `needsChromeClose` report field), the reader closes
+> the browser GRACEFULLY first (`closeBrowserGracefully` runs the constant `browserCloseScript`; the exe
+> path travels in `$env:STOKE_BROWSER_EXE`, never spliced in — gotcha 101; found by
+> `Get-CimInstance Win32_Process` on `ExecutablePath` since a 32-bit PowerShell cannot read a 64-bit
+> `.Path` — gotcha 94; `CloseMainWindow()` re-issued each pass because ONE browser process owns several
+> top-level windows and closing one moves the main handle to the next; NEVER `Stop-Process`/`-Force`),
+> waits a bounded `BROWSER_CLOSE_DEADLINE_MS`, copies, reads, and reopens the browser in a `finally`
+> (`reopenBrowser` → `chrome.exe --profile-directory=<name>`, no `--user-data-dir`, so the user's real
+> session and its tabs come back IF their browser is set to restore them — Stoke does not force that
+> setting, and the UI says so). If the copy is STILL locked after closing, Stoke tells the user to close
+> it themselves and does not offer to try again (`needsClose` false — no loop). The close/reopen path
+> itself is UNVERIFIED on real Windows from this round (a Mac cannot run it); only its pure parts
+> (`browserCloseScript` is ASCII, carries no path, never force-kills; `reopenArgs`) are held by
+> `verify:chrome-import`.
+
+> **Proving v20 for real, 2026-09-30.** `scripts/windows-chrome-probe.mts` is for the OWNER to run on
+> their own Windows PC against their real Chrome (where v20 rows always exist, unlike the CI runner's
+> non-default seed). It is READ-ONLY (copies what it needs, as the reader does), drives the browser to
+> decrypt from a copy, and prints ONLY COUNTS — per registrable domain, how many v10/v20 rows and how
+> many v20 came back decrypted — never a cookie name or value. Its Verdict line is the answer gotcha 130
+> is missing. `windows.yml`'s `chrome-import` job gained two best-effort steps (continue-on-error): one
+> gathers the ABE evidence (`sc query GoogleChromeElevationService`, the `ApplicationBoundEncryptionEnabled`
+> policy, the default dir's `Local State` `os_crypt.app_bound_encrypted_key`) so "why v10 not v20" has
+> data; the other seeds the REAL default profile (where Chrome uses ABE), closes it, and if the tag is
+> v20 runs the reader against a copy to prove the decrypt. Neither can fail the suite; if the runner's
+> Chrome has no active elevation service it writes v10 again and the step says so.

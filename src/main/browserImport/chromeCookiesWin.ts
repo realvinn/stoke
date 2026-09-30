@@ -5,7 +5,15 @@ import { tmpdir } from 'node:os'
 import { basename, dirname, join, win32 as winPath } from 'node:path'
 import { promisify } from 'node:util'
 import { WebSocket } from 'ws'
-import { appPathMatchesBrowser, cdpCookieToImported, cookieIdentity, sealedCookiesMissed } from './chromeCookies.ts'
+import {
+  appPathMatchesBrowser,
+  browserCloseScript,
+  BROWSER_CLOSE_DEADLINE_MS,
+  cdpCookieToImported,
+  cookieIdentity,
+  reopenArgs,
+  sealedCookiesMissed
+} from './chromeCookies.ts'
 import type { CdpCookie } from './chromeCookies.ts'
 import type { ChromiumBrowser } from './chromiumProfiles.ts'
 import type { ImportBrowserId, ImportedCookie } from './types.ts'
@@ -86,19 +94,24 @@ async function isFile(p: string): Promise<boolean> {
   }
 }
 
-/**
- * The exe path from the registry's App Paths, HKLM then HKCU, or null. Read
- * through PowerShell (never reg.exe, which mangles non-ASCII — gotcha 99); the
- * exe NAME travels in the environment, not spliced into the script (gotcha 101).
- */
-async function appPathsExe(exeName: string): Promise<string | null> {
-  const ps = join(
+/** Windows PowerShell 5.1's own path — the interpreter Stoke drives for every Windows probe. */
+function powershellPath(): string {
+  return join(
     process.env.SystemRoot ?? process.env.SYSTEMROOT ?? 'C:\\Windows',
     'System32',
     'WindowsPowerShell',
     'v1.0',
     'powershell.exe'
   )
+}
+
+/**
+ * The exe path from the registry's App Paths, HKLM then HKCU, or null. Read
+ * through PowerShell (never reg.exe, which mangles non-ASCII — gotcha 99); the
+ * exe NAME travels in the environment, not spliced into the script (gotcha 101).
+ */
+async function appPathsExe(exeName: string): Promise<string | null> {
+  const ps = powershellPath()
   const script = [
     '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8',
     '$n = $env:STOKE_EXE_NAME',
@@ -152,6 +165,47 @@ export async function locateChromiumExe(browser: Pick<ChromiumBrowser, 'id' | 'w
     }
   }
   return null
+}
+
+/**
+ * Ask the browser at `exePath` to close every top-level window gracefully, then
+ * wait (bounded) for its processes to exit. Returns whether it was RUNNING at
+ * entry — so the caller reopens only a browser it actually closed (never opens
+ * one the user had already shut). All variable data travels in the environment
+ * (gotcha 101); the script is a constant (`browserCloseScript`). A close probe
+ * that cannot run reports "not running" (false), so a failure never reopens.
+ */
+async function closeBrowserGracefully(exePath: string, deadlineMs: number): Promise<boolean> {
+  try {
+    const run = execFileAsync(powershellPath(), ['-NoProfile', '-NonInteractive', '-Command', browserCloseScript()], {
+      timeout: deadlineMs + 10_000,
+      encoding: 'utf8',
+      windowsHide: true,
+      maxBuffer: 4 * 1024 * 1024,
+      env: { ...process.env, STOKE_BROWSER_EXE: exePath, STOKE_CLOSE_DEADLINE: String(deadlineMs) }
+    })
+    run.child.stdin?.end()
+    const { stdout } = await run
+    const m = /started=(\d+)/.exec(stdout)
+    return m ? Number(m[1]) > 0 : false
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Reopen the user's browser on `profileName` after Stoke borrowed it. Detached
+ * and unref'd so it outlives this import, with no `--user-data-dir` so it opens
+ * the user's normal session (and restores its tabs if the browser is set to).
+ * Best-effort: a failure just means the user reopens it themselves.
+ */
+function reopenBrowser(exePath: string, profileName: string): void {
+  try {
+    const child = spawn(exePath, reopenArgs(profileName), { windowsHide: false, stdio: 'ignore', detached: true })
+    child.unref()
+  } catch {
+    /* the user can reopen it themselves */
+  }
 }
 
 /** Copy one file, retrying a transient Windows sharing violation; a persistent one is a locked profile. */
@@ -334,38 +388,78 @@ async function withBrowserWs<T>(wsUrl: string, fn: (send: (method: string, param
 export interface WinReadOptions {
   /** Override the located executable (the CI e2e passes the runner's Chrome). */
   exePath?: string
+  /**
+   * The user consented to Stoke closing the browser first (its files were
+   * locked, or app-bound logins would not decrypt), then reopening it after the
+   * read. Off by default — taken only on an explicit second press.
+   */
+  closeAndReopen?: boolean
+}
+
+export interface WinReadResult {
+  cookies: ImportedCookie[]
+  skipped: number
+  cookieError?: string
+  /** True when the `cookieError` is one closing and reopening the browser could resolve. */
+  needsClose?: boolean
 }
 
 /**
  * Read one Windows Chrome-family profile's cookies by driving the browser's own
  * binary. Returns already-decrypted, mapped cookies; a `cookieError` is set (with
  * the cookies that DID come over) when some app-bound logins could not be
- * decrypted — never a silent short read (gotcha 130). Throws an Error whose
- * message is fit to show the user (bookmarks still import around it), or a
- * `ProfileLockedError` when the profile files cannot be copied.
+ * decrypted or the profile files were locked — never a silent short read
+ * (gotcha 130). `needsClose` marks the cases the close-and-reopen flow could
+ * resolve. With `opts.closeAndReopen`, the browser is gracefully closed first
+ * and reopened afterwards (never force-killed). Throws only for a hard failure
+ * whose message is fit to show the user (bookmarks still import around it).
  */
 export async function readChromeCookiesWin(
   browser: ChromiumBrowser,
   profileDir: string,
   opts: WinReadOptions = {}
-): Promise<{ cookies: ImportedCookie[]; skipped: number; cookieError?: string }> {
+): Promise<WinReadResult> {
   const exePath = opts.exePath ?? (await locateChromiumExe(browser))
   if (!exePath) {
     throw new Error(`Stoke could not find ${browser.name}'s program on this PC, so it could not open its logins.`)
   }
 
+  // The flow the owner asked for: with the user's consent, close the browser for
+  // a moment, copy the logins from a clean/unlocked profile, then reopen it. The
+  // reopen runs however the read ends (finally), so a failure never leaves the
+  // browser shut. Nothing here force-kills it.
+  let closedARunningBrowser = false
+  if (opts.closeAndReopen) {
+    closedARunningBrowser = await closeBrowserGracefully(exePath, BROWSER_CLOSE_DEADLINE_MS)
+  }
+  try {
+    return await readCopyAndDecrypt(browser, profileDir, exePath, opts.closeAndReopen === true)
+  } finally {
+    // Reopen only what we actually closed — never open a browser the user had shut.
+    if (closedARunningBrowser) reopenBrowser(exePath, basename(profileDir))
+  }
+}
+
+/** Copy the profile, launch the browser headless against the copy, and read its cookies over CDP. */
+async function readCopyAndDecrypt(
+  browser: ChromiumBrowser,
+  profileDir: string,
+  exePath: string,
+  closedFirst: boolean
+): Promise<WinReadResult> {
   let copy: { copyDir: string; profileName: string; cookieCopyPath: string }
   try {
     copy = await copyProfile(profileDir)
   } catch (err) {
-    // A locked copy is the one case where the user must close their own browser.
-    // Stoke asks — it never forces it to quit (the repo-wide "never force-kill").
-    if (err instanceof ProfileLockedError) {
-      throw new Error(
-        `${browser.name} is holding its logins open, so Stoke could not copy them. Close ${browser.name} completely, then import again — Stoke never forces it to quit.`
-      )
-    }
-    throw err
+    if (!(err instanceof ProfileLockedError)) throw err
+    // The files are held by a running browser. Stoke never force-quits it: if it
+    // has not already asked (closedFirst), it offers the close-and-reopen flow;
+    // if it just asked and the files are STILL held, it tells the user to close
+    // the browser themselves and does not offer to try again (no loop).
+    const cookieError = closedFirst
+      ? `${browser.name} is still holding its logins even after Stoke asked it to close. Close every ${browser.name} window yourself, then import again — Stoke never forces it to quit.`
+      : `${browser.name} is holding its logins open, so Stoke could not copy them. Stoke can close ${browser.name} for a moment and bring it back, or you can close it yourself and import again — it never forces it to quit.`
+    return { cookies: [], skipped: 0, cookieError, needsClose: !closedFirst }
   }
   const { copyDir, profileName, cookieCopyPath } = copy
   // Ground truth BEFORE the browser reopens the copy: which rows are app-bound.
@@ -423,11 +517,15 @@ export async function readChromeCookiesWin(
     // Report it (with whatever DID come over) instead of a silent success — the
     // failure a copied, non-default profile dir can cause on real Windows.
     const sealed = dbRows ? sealedCookiesMissed(dbRows, cdpIdentities) : 0
-    const cookieError =
-      sealed > 0
-        ? `${sealed} ${sealed === 1 ? 'login is' : 'logins are'} sealed with app-bound encryption that ${browser.name} would not open for Stoke on this PC, so ${sealed === 1 ? 'it' : 'they'} stayed behind. Any others came over; you stay signed in in ${browser.name}.`
-        : undefined
-    return { cookies, skipped, cookieError }
+    if (sealed === 0) return { cookies, skipped }
+    // Offer the close-and-reopen retry once: a browser closed cleanly leaves a
+    // fully flushed profile, which a hot copy (WAL mid-write) is not, and which
+    // MAY read where the running copy did not. Honest, not a promise — a v20 row
+    // a copied non-default dir genuinely cannot decrypt stays sealed either way.
+    const cookieError = closedFirst
+      ? `${sealed} ${sealed === 1 ? 'login is' : 'logins are'} sealed with app-bound encryption that ${browser.name} would not open for Stoke on this PC, so ${sealed === 1 ? 'it' : 'they'} stayed behind. Any others came over; you stay signed in in ${browser.name}.`
+      : `${sealed} ${sealed === 1 ? 'login' : 'logins'} could not be handed over while ${browser.name} was running. Stoke can close ${browser.name} for a moment and try once more; some may still stay behind, and you stay signed in in ${browser.name} regardless.`
+    return { cookies, skipped, cookieError, needsClose: !closedFirst }
   } finally {
     if (child) {
       // A graceful Browser.close ends the whole tree; give it a moment, then insist.

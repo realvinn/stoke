@@ -3033,9 +3033,13 @@ function registerIpc(): void {
   })
   ipcMain.handle(CH.browserImportRun, async (_e, keys: unknown, what: unknown) => {
     const list = Array.isArray(keys) ? keys.filter((k): k is string => typeof k === 'string') : []
-    const w = (what ?? {}) as { cookies?: unknown; bookmarks?: unknown }
+    const w = (what ?? {}) as { cookies?: unknown; bookmarks?: unknown; closeReopen?: unknown }
     const { runImport } = await import('./browserImport/index.ts')
-    return runImport(list, { cookies: w.cookies === true, bookmarks: w.bookmarks === true }, { getSettings, writeBrowser })
+    return runImport(
+      list,
+      { cookies: w.cookies === true, bookmarks: w.bookmarks === true, closeReopen: w.closeReopen === true },
+      { getSettings, writeBrowser }
+    )
   })
   ipcMain.on(CH.browserOpenFullDiskAccess, () => {
     void shell.openExternal('x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles')

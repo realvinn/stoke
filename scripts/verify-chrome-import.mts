@@ -9,6 +9,8 @@
 import { createCipheriv, createHash } from 'node:crypto'
 import {
   appPathMatchesBrowser,
+  browserCloseScript,
+  BROWSER_CLOSE_DEADLINE_MS,
   CHROME_EPOCH_OFFSET,
   cdpCookieToImported,
   chromeKey,
@@ -16,6 +18,7 @@ import {
   chromeTimeToUnix,
   cookieIdentity,
   decryptChromeValue,
+  reopenArgs,
   sealedCookiesMissed,
   SESSION_COOKIE_DAYS,
   type CdpCookie,
@@ -301,6 +304,38 @@ console.log('\nWindows: a v20 login the browser did not hand back is reported, n
     0
   )
   check('no v20 rows at all → 0 sealed', sealedCookiesMissed([{ host_key: 'a.com', name: 'x', tag: 'v10' }], new Set()), 0)
+}
+
+console.log('\nWindows: the graceful close-and-reopen flow (owner-requested)')
+{
+  // The close script's variable parts travel in the environment, never spliced
+  // into the text (gotcha 101: a curly apostrophe in a profile path is a
+  // PowerShell single quote), so a path can never end up inside it. And the
+  // whole body must be pure ASCII — Windows PowerShell 5.1 misreads a non-ASCII
+  // script (gotcha 8/101). And it must never force-kill (gotcha 94).
+  const script = browserCloseScript()
+  check('the close script is pure ASCII', /^[\x00-\x7f]*$/.test(script), true)
+  check('the close script reads the exe from the environment, not a literal', script.includes('$env:STOKE_BROWSER_EXE'), true)
+  check('the close script reads its deadline from the environment', script.includes('$env:STOKE_CLOSE_DEADLINE'), true)
+  check('the close script closes gently — CloseMainWindow, as clicking × does', script.includes('CloseMainWindow'), true)
+  check(
+    'the close script NEVER force-kills (no Stop-Process/taskkill/Kill/-Force)',
+    /Stop-Process|taskkill|\.Kill\(|-Force/i.test(script),
+    false
+  )
+  check(
+    'it finds processes by CIM ExecutablePath (a 32-bit PS cannot read a 64-bit .Path — gotcha 94)',
+    script.includes('Get-CimInstance Win32_Process') && script.includes('ExecutablePath'),
+    true
+  )
+  check('it reports the starting count so the caller reopens only what it closed', script.includes("'started='"), true)
+  check('it reports how many are still running as remaining=<n>', script.includes("'remaining='"), true)
+  check('no smart quotes sneaked into the script (gotcha 101)', /[‘’‚‛]/.test(script), false)
+  // Reopen uses the real default profile root (no --user-data-dir) so the user's
+  // own session — and its tabs, if the browser is set to restore them — come back.
+  check('reopen names the profile and nothing more', reopenArgs('Profile 1'), ['--profile-directory=Profile 1'])
+  check('reopen passes NO --user-data-dir (uses the real default root)', reopenArgs('Default').some((a) => a.includes('user-data-dir')), false)
+  check('the close deadline is a sane, bounded wait', BROWSER_CLOSE_DEADLINE_MS > 0 && BROWSER_CLOSE_DEADLINE_MS <= 60_000, true)
 }
 
 console.log('\nprofile roots, per platform')

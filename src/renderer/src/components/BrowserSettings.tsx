@@ -218,14 +218,17 @@ function ImportFromBrowsers({ profiles }: { profiles: BrowserProfile[] }): React
       })
   }
 
-  const run = (): void => {
+  // `closeReopen` is the Windows-only second press: the user has agreed Stoke may
+  // close their browser for a moment to hand over locked or sealed logins, then
+  // reopen it. Off on the first Import; never taken without this explicit press.
+  const run = (closeReopen = false): void => {
     if (runningRef.current || chosen.size === 0) return
     runningRef.current = true
     setRunning(true)
     setResults(null)
     setBusyNote(null)
     void window.stoke.browser
-      .importRun([...chosen], { cookies: cookies && canLogins, bookmarks })
+      .importRun([...chosen], { cookies: cookies && canLogins, bookmarks, closeReopen })
       .then((r) => {
         if (r) setResults(r)
         // Null is main refusing a second run: say so rather than do nothing.
@@ -236,6 +239,10 @@ function ImportFromBrowsers({ profiles }: { profiles: BrowserProfile[] }): React
         setRunning(false)
       })
   }
+
+  // Windows: a result asks for the browser to be closed and reopened when its
+  // files were locked, or some app-bound logins would not decrypt while it ran.
+  const needsClose = isWin && (results?.some((r) => r.needsChromeClose) ?? false)
 
   const nameOf = (s: ImportSource): string => (s.name === s.browserName ? s.name : `${s.browserName} · ${s.name}`)
   const intoOf = (key: string): string | null => profiles.find((p) => p.origin === key)?.label ?? null
@@ -392,7 +399,7 @@ function ImportFromBrowsers({ profiles }: { profiles: BrowserProfile[] }): React
               data-variant="primary"
               disabled={running || chosen.size === 0 || (!(cookies && canLogins) && !bookmarks)}
               aria-busy={running}
-              onClick={run}
+              onClick={() => run()}
             >
               {running && <Spinner />}
               {running ? 'Importing…' : `Import ${chosen.size} profile${chosen.size === 1 ? '' : 's'}`}
@@ -409,6 +416,28 @@ function ImportFromBrowsers({ profiles }: { profiles: BrowserProfile[] }): React
               {scanning ? 'Looking…' : 'Look again'}
             </button>
           </div>
+          {needsClose && (
+            <div className="settings-item import-source-extra">
+              <FieldHint>
+                Your browser needs to close for a moment so it can hand over those logins; your tabs come back when it
+                reopens, if your browser is set to restore them. Stoke closes it gently — it never forces it — and reopens
+                it as soon as it has the logins.
+              </FieldHint>
+              <div className="settings-item-actions">
+                <button
+                  className="btn"
+                  data-variant="primary"
+                  data-size="sm"
+                  disabled={running}
+                  aria-busy={running}
+                  onClick={() => run(true)}
+                >
+                  {running && <Spinner />}
+                  {running ? 'Closing and reading…' : 'Close the browser, get the logins, reopen it'}
+                </button>
+              </div>
+            </div>
+          )}
           {busyNote && <span className="field-hint">{busyNote}</span>}
         </>
       )}

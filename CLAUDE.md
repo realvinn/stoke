@@ -237,7 +237,9 @@ rule file named on the group line.
 - **130.** To decrypt Windows cookies, drive the browser's OWN exe headless against a COPY of the profile
   (`chromeCookiesWin.ts`; validate the App Paths hit is this browser's exe not another channel's, not WindowsApps — 99);
   mirror the source's `Network/Cookies`-vs-`Cookies` path or `Storage.getCookies` returns empty; report v20 rows it drops
-  (`sealedCookiesMissed`) — never a silent short read (v20 decrypt-in-a-copy is unproven on real Windows).
+  (`sealedCookiesMissed`) — never a silent short read (v20 decrypt-in-a-copy is unproven on real Windows). A locked/sealed
+  read returns `needsClose`, not a throw; on a second press close the browser gracefully (`browserCloseScript`,
+  `CloseMainWindow`, never force-kill) and reopen it (`reopenArgs`). `scripts/windows-chrome-probe.mts` proves v20 on real hardware.
 
 **statusLine and context meter** — `.claude/rules/statusline.md`
 - **2.** Take the context window from the statusLine payload, not the model id (transcripts drop
