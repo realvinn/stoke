@@ -956,7 +956,7 @@ npm run verify:hub-client     # the hub CLIENT: what each tier offers and what n
                               # back in time (republish) or replaced (refused), a Kit join whose
                               # post never lands, a re-seal interrupted half-way (owed by the
                               # revoker, carried forward by the rest), an old-epoch item a removed
-                              # device forged, a feed that never ends. Twenty-two fixes mutated
+                              # device forged, a feed that never ends. Twenty-three fixes mutated
                               # back one at a time each turn it red
 npm run verify:install        # the one-line installer and the endpoint that serves it: the whole
                               # User-Agent matrix through the Worker's routing rule (PowerShell

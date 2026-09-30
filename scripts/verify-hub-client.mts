@@ -885,8 +885,11 @@ try {
   )
   const cKit = (cRec as { ok: true; kit: string; group: number }).kit
   secretsSeen.push(cKit)
-  check('confirming it joins C and retires the typed Kit, in one append', (await C.svc.confirmKit(kitGroup(cRec as { kit: string; group: number }))).ok, true)
+  C.intercept = (url, init) => (v1(url) === '/v1/items' && init.method === 'POST' ? json({ error: 'server-error', message: 'The hub fell over.' }, 500) : null)
+  check('confirming it joins C and retires the typed Kit, in one append (the hub then falls over during the re-seal)', (await C.svc.confirmKit(kitGroup(cRec as { kit: string; group: number }))).ok, true)
+  C.intercept = null
   await until('C syncs', () => C.svc.view().lastSyncAt !== null)
+  check('C finishes the re-seal it owed with the Kit’s key it kept for it: the hub holds the new epoch only', [...new Set(itemEpochs())], [epoch0 + 1])
   check('C has the account’s settings and key', [C.settings().themeId, C.settings().providers.anthropicApiKey], ['rose', CANARY_KEY])
   const aBack = await A.svc.republish()
   check('republishing after the list moved on takes it (it extends this computer’s own) and clears the alarm', [aBack.ok, A.svc.view().alarm, A.svc.view().epoch], [true, null, epoch0 + 1])

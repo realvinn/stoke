@@ -1306,6 +1306,8 @@ export class HubService {
     const now = await this.refreshChain({ entering: true })
     if (!now || now.epoch !== epoch || !this.isActiveIn(now)) throw new Stop('The hub took the entries, but its device list does not show this device in the vault.')
     this.storeVaultKey(epoch, vk)
+    // The Kit's key for the epoch just closed, as its commitment vouched for it: an owed re-seal needs it, and no wrap of it was ever made for this device.
+    this.storeVaultKey(v.epoch, vkOld)
     st.recoveryWraps[String(epoch)] = recovery
     this.loginState = 'active'
     this.saveState()
