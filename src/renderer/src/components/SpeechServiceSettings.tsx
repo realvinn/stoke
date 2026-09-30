@@ -158,7 +158,7 @@ export function SpeechServiceSettings({
 
   return (
     <>
-      <div className="field">
+      <div className="field" data-setting="voice.service">
         <label className="field-label" htmlFor="voice-provider">
           Speech service{' '}
           {pill && (
@@ -186,7 +186,7 @@ export function SpeechServiceSettings({
       </div>
 
       {provider === 'sidecar' && (
-        <div className="field">
+        <div className="field" data-setting="voice.server">
           <label className="field-label" htmlFor="voice-stt-url">
             Speech server address
           </label>
@@ -219,7 +219,7 @@ export function SpeechServiceSettings({
       )}
 
       {provider === 'custom' && (
-        <div className="field">
+        <div className="field" data-setting="voice.base-url">
           <label className="field-label" htmlFor="voice-base-url">
             Server address
           </label>
@@ -251,7 +251,7 @@ export function SpeechServiceSettings({
       )}
 
       {provider !== 'sidecar' && (
-        <div className="field">
+        <div className="field" data-setting="voice.model">
           <label className="field-label" htmlFor="voice-model">
             Model
           </label>
@@ -308,7 +308,7 @@ export function SpeechServiceSettings({
       )}
 
       {provider !== 'sidecar' && (
-        <div className="field">
+        <div className="field" data-setting="voice.key">
           <label className="field-label" htmlFor="voice-key">
             {provider === 'custom' ? 'Key (optional)' : `${spec.name} API key`}
           </label>
@@ -356,7 +356,7 @@ export function SpeechServiceSettings({
         </div>
       )}
 
-      <div className="field">
+      <div className="field" data-setting="voice.test">
         <div style={{ display: 'flex', gap: 'var(--space-8)', alignItems: 'center', flexWrap: 'wrap' }}>
           <button className="btn" disabled={testing} aria-busy={testing} onClick={runTest}>
             {testing && <Spinner />}

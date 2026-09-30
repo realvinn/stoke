@@ -305,7 +305,7 @@ export function ThemeEditor({
         {/*
           Above the cards, because it changes what clicking one of them means.
         */}
-        <label className="field theme-follow">
+        <label className="field theme-follow" data-setting="appearance.follow-system">
           <span className="theme-follow-text">
             <span className="field-label">Follow my system</span>
             <span className="field-hint">
@@ -346,42 +346,48 @@ export function ThemeEditor({
           />
         </label>
 
-        {groups.map(
-          (g) =>
-            g.themes.length > 0 && (
-              <div className="field" key={g.title}>
-                <span className="field-label">{g.title}</span>
-                <div className="theme-grid">
-                  {g.themes.map((t) => (
-                    <ThemeCard
-                      key={t.id}
-                      theme={t}
-                      active={isActive(t)}
-                      custom={!t.builtIn}
-                      onSelect={() => onPatch(pick(t))}
-                      onDuplicate={() => start(t, true)}
-                      onEdit={t.builtIn ? undefined : () => start(t, false)}
-                      onDelete={t.builtIn ? undefined : () => setConfirming(t.id)}
-                    />
-                  ))}
-                </div>
-                {g.title === 'Yours' && confirming && (
-                  <div className="theme-confirm">
-                    <span className="field-hint">
-                      Delete {customs.find((t) => t.id === confirming)?.name ?? confirming}? This cannot be undone.
-                    </span>
-                    <button className="btn" data-size="sm" data-variant="danger" onClick={() => remove(confirming)}>
-                      Delete
-                    </button>
-                    <button className="btn" data-size="sm" data-variant="ghost" onClick={() => setConfirming(null)}>
-                      Keep
-                    </button>
+        {/*
+          One marked block for the three card groups, so a search for "theme"
+          lands on the cards rather than on whichever group happens to be first.
+        */}
+        <div className="settings-stack" data-setting="appearance.theme">
+          {groups.map(
+            (g) =>
+              g.themes.length > 0 && (
+                <div className="field" key={g.title}>
+                  <span className="field-label">{g.title}</span>
+                  <div className="theme-grid">
+                    {g.themes.map((t) => (
+                      <ThemeCard
+                        key={t.id}
+                        theme={t}
+                        active={isActive(t)}
+                        custom={!t.builtIn}
+                        onSelect={() => onPatch(pick(t))}
+                        onDuplicate={() => start(t, true)}
+                        onEdit={t.builtIn ? undefined : () => start(t, false)}
+                        onDelete={t.builtIn ? undefined : () => setConfirming(t.id)}
+                      />
+                    ))}
                   </div>
-                )}
-              </div>
-            )
-        )}
-        <div className="field">
+                  {g.title === 'Yours' && confirming && (
+                    <div className="theme-confirm">
+                      <span className="field-hint">
+                        Delete {customs.find((t) => t.id === confirming)?.name ?? confirming}? This cannot be undone.
+                      </span>
+                      <button className="btn" data-size="sm" data-variant="danger" onClick={() => remove(confirming)}>
+                        Delete
+                      </button>
+                      <button className="btn" data-size="sm" data-variant="ghost" onClick={() => setConfirming(null)}>
+                        Keep
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )
+          )}
+        </div>
+        <div className="field" data-setting="appearance.make-theme">
           <span className="field-label">Make your own</span>
           <span className="field-hint">
             Duplicate any theme above and change it, or start fresh. A theme is a hue, a tint, a page
@@ -458,7 +464,7 @@ export function ThemeEditor({
   const pageMax = PAGE_CHROMA_MAX[seed.appearance]
 
   return (
-    <div className="field theme-editor">
+    <div className="field theme-editor" data-setting="appearance.make-theme">
       <span className="field-label">Editing {seed.name}</span>
       {guessed && (
         <span className="field-hint" data-tone="warning">

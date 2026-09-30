@@ -166,7 +166,7 @@ export function MicPicker({
 
   return (
     <>
-      <div className="field">
+      <div className="field" data-setting="voice.microphone">
         <label className="field-label" htmlFor="voice-mic">
           Microphone for Stoke’s dictation
         </label>
@@ -264,7 +264,7 @@ export function MicPicker({
         )}
       </div>
 
-      <div className="field">
+      <div className="field" data-setting="voice.hold">
         <label className="field-label" htmlFor="voice-hold">
           Hold Space for
         </label>

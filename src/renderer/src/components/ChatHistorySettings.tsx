@@ -171,7 +171,7 @@ export function ChatHistorySettings({ settings, onPatch, status, detection }: Pr
   const lastPass = status?.lastPass
   return (
     <>
-      <div className="field">
+      <div className="field" data-setting="chats.enabled">
         <span className="field-label">Chat history</span>
         <label className="check-row">
           <input
@@ -223,7 +223,7 @@ export function ChatHistorySettings({ settings, onPatch, status, detection }: Pr
         )}
       </div>
 
-      <div className="field">
+      <div className="field" data-setting="chats.sources">
         <span className="field-label">Where Stoke looks</span>
         <FieldHint>Only these places, newest chats first. {capsSentence(opts.caps)}</FieldHint>
         <div className="chat-sources">
@@ -279,7 +279,7 @@ export function ChatHistorySettings({ settings, onPatch, status, detection }: Pr
         </label>
       </div>
 
-      <div className="field">
+      <div className="field" data-setting="chats.imported">
         <span className="field-label">Imported chats</span>
         <FieldHint
           more={
@@ -344,7 +344,7 @@ export function ChatHistorySettings({ settings, onPatch, status, detection }: Pr
         )}
       </div>
 
-      <div className="field">
+      <div className="field" data-setting="chats.limits">
         <span className="field-label">Limits</span>
         <div className="segmented chat-presets" role="group" aria-label="How much to index">
           {(Object.keys(PRESET_LABELS) as ChatPreset[]).map((id) => (
@@ -372,7 +372,7 @@ export function ChatHistorySettings({ settings, onPatch, status, detection }: Pr
         </div>
       </div>
 
-      <div className="field">
+      <div className="field" data-setting="chats.index">
         <span className="field-label">The index</span>
         <FieldHint>
           <span className="mono">{status?.storePath ?? 'chat-index/index.sqlite in Stoke’s data folder'}</span>

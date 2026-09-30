@@ -166,7 +166,7 @@ function AccessPolicy({
 
   return (
     <>
-      <label className="check-row">
+      <label className="check-row" data-setting="remote.access">
         <input
           type="checkbox"
           checked={remote.requireAccessHeader}
@@ -399,7 +399,7 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
 
   return (
     <>
-      <div className="field">
+      <div className="field" data-setting="remote.enabled">
         <span className="field-label">
           Phone access{' '}
           <span className="pill" data-tone={running ? 'success' : undefined}>
@@ -623,7 +623,7 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
         )}
       </div>
 
-      <div className="field">
+      <div className="field" data-setting="remote.reach">
         <span className="field-label">Reach it from</span>
         <div className="segmented" role="group" aria-label="How the phone reaches this machine">
           <button
@@ -676,6 +676,7 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
 
       <details
         className="field-detail"
+        data-setting="remote.tunnel"
         /*
          * F4: `tunnelOpen || undefined` handed the DOM the attribute exactly
          * when it was false — `undefined` means "React does not manage this",
@@ -694,7 +695,7 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
           </span>
         </summary>
         <div className="field-detail-body" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-12)', paddingTop: 'var(--space-8)' }}>
-          <div className="field">
+          <div className="field" data-setting="remote.hostname">
             <span className="field-label">Public hostname</span>
             <input
               className="input mono"
@@ -711,7 +712,7 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
             </span>
           </div>
 
-          <div className="field">
+          <div className="field" data-setting="remote.tunnel-name">
             <span className="field-label">Tunnel name</span>
             <input
               className="input mono"
@@ -753,7 +754,7 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
             />
           )}
 
-          <label className="check-row">
+          <label className="check-row" data-setting="remote.tunnel-auto">
             <input
               type="checkbox"
               checked={remote.autoStartTunnel}
@@ -824,7 +825,7 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
       <details className="field-detail">
         <summary>Advanced</summary>
         <div className="field-detail-body" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-12)', paddingTop: 'var(--space-8)' }}>
-          <div className="field">
+          <div className="field" data-setting="remote.port">
             <span className="field-label">Port</span>
             <input
               className="input"
@@ -854,7 +855,7 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
             terminal. A change there reaches the phone&rsquo;s next recording.
           </span>
 
-          <div className="field">
+          <div className="field" data-setting="remote.key">
             <span className="field-label">Key</span>
             {confirmKey ? (
               <div style={{ display: 'flex', gap: 'var(--space-8)', alignItems: 'center', flexWrap: 'wrap' }}>
@@ -950,7 +951,7 @@ export function SelfUpdateSettings({
   const managed = kind?.kind === 'managed' ? kind : null
 
   return (
-    <div className="field">
+    <div className="field" data-setting="updates.stoke">
       <span className="field-label">
         Stoke{' '}
         {state.availableVersion && (
@@ -1079,7 +1080,7 @@ export function SelfUpdateSettings({
       )}
 
       {state.supported && (
-        <label className="check-row">
+        <label className="check-row" data-setting="updates.background">
           <input
             type="checkbox"
             checked={autoDownload}
@@ -1109,7 +1110,7 @@ export function SelfUpdateSettings({
       )}
 
       {state.supported && (
-        <label className="check-row">
+        <label className="check-row" data-setting="updates.beta">
           <input
             type="checkbox"
             checked={betaUpdates}
@@ -1199,7 +1200,7 @@ export function StokeCommandSettings(): React.JSX.Element {
     ) : null
 
   return (
-    <div className="field">
+    <div className="field" data-setting="updates.command">
       <span className="field-label">Command line {pill}</span>
       <span className="field-hint">
         <span className="mono">stoke .</span> in a terminal opens that folder here;{' '}
@@ -1471,7 +1472,7 @@ export function UpdatesSettings({
   const cliOk = cliUpToDate(info, Date.now())
 
   return (
-    <div className="field">
+    <div className="field" data-setting="updates.cli">
       {/* "Claude Code CLI", not "Claude Code": the sheet is one flat column and
           the Claude Code *settings* panel below would otherwise repeat this
           exact heading a few hundred pixels down. This one is about the
@@ -1600,7 +1601,7 @@ export function UpdatesSettings({
         </span>
       )}
 
-      <label className="check-row">
+      <label className="check-row" data-setting="updates.cli-auto">
         <input
           type="checkbox"
           checked={autoUpdate}
@@ -1639,7 +1640,7 @@ export function UpdatesSettings({
         no swapping it underneath a live process — so this is a real choice,
         not a detail of the update above.
       */}
-      <div className="field">
+      <div className="field" data-setting="updates.cli-relaunch">
         <span className="field-label">After the CLI updates</span>
         <div className="segmented" role="group" aria-label="After the CLI updates">
           {RELAUNCH_MODES.map((m) => (

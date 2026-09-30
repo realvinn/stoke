@@ -23,10 +23,32 @@ import {
   WALLPAPER_OPACITY_MIN,
   clampWallpaper
 } from '@shared/ui'
+import { installedAgents } from '@shared/agents'
+import {
+  ancestorsOf,
+  navAgents,
+  navTree,
+  nodeIdOf,
+  pathOf,
+  resolveSettingsTarget,
+  sameLocation,
+  searchSettings,
+  settingsEntries,
+  visibleHolder,
+  visibleNodes,
+  type NavNode,
+  type SettingsHit,
+  type SettingsLocation,
+  type SettingsTarget,
+  type VisibleNode
+} from '@shared/settingsIndex'
 import { FieldHint } from './FieldHint'
 import { IconClose } from './Icons'
-import { useEffect, useRef, useState } from 'react'
+import { Highlight } from './Highlight'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useDraft } from '../lib/useDraft'
+import { agentMark } from '../lib/agentColor'
+import { flashSettingRow, markSettingHits } from '../lib/settingsJump'
 import { HostsSettings } from './HostsSettings'
 import { BrowserSettings } from './BrowserSettings'
 import { ProfilesSettings } from './ProfilesSettings'
@@ -35,7 +57,7 @@ import { ProvidersSettings } from './ProvidersSettings'
 import { ThemeEditor } from './ThemeEditor'
 import { RemoteSettings, SelfUpdateSettings, StokeCommandSettings, UpdatesSettings } from './RemoteSettings'
 import { VoiceSettings } from './VoiceSettings'
-import { AgentsSettings } from './AgentsSettings'
+import { AgentManager, AgentSettingsPage, ClaudeLaunchDefaults, type AgentPagesProps } from './AgentsSettings'
 import { BackupSettings } from './BackupSettings'
 import { ChatHistorySettings } from './ChatHistorySettings'
 import type { ChatDetection, ChatIndexStatus } from '@shared/chatIndex'
@@ -83,137 +105,38 @@ const NOTIFICATION_MODES: { id: NotificationMode; label: string; hint: string }[
   { id: 'off', label: 'Off', hint: 'Never. The dot in the tab strip still shows' }
 ]
 
-/**
+/*
  * The settings menu.
  *
  * This used to be one 26rem drawer holding every section end to end, and the
  * problem was not that it was long — it was that length was the only structure
- * it had. Nineteen unrelated controls in one scroll means the way to find the
- * SSH host list is to recognise it going past, and the way to know whether you
- * have seen everything is to have reached the bottom. Splitting it into named
- * sections costs a click and buys an answer to "where is X" that does not
- * involve scrolling.
+ * it had. Splitting it into named sections cost a click and bought an answer to
+ * "where is X" that did not involve scrolling; the groups run from what you
+ * change to what merely reports.
  *
- * The rows are grouped by what they are about, and the groups run from what you
- * change to what merely reports. That replaced an order chosen by how often a
- * section is opened, which sounds reasonable and reads as arbitrary: frequency
- * is invisible from the menu, so the only thing a reader could see was Updates
- * sitting fourth, between Projects and Claude Code, with nothing to explain
- * why. Ten adjacent rows have no structure a reader can recover, so adjacency
- * alone could not carry the grouping — the headings are the change, and the
- * reorder follows from them.
+ * Two things now answer "where is X" faster than reading the menu:
+ *
+ * - A search box at the top of the menu. It finds any page or row by what it
+ *   is called, what people call it instead, and where it is
+ *   (shared/settingsIndex.ts), lists them in the menu's place while there is a
+ *   query, and jumps to the row — scrolled into the middle of the pane, any
+ *   closed disclosure around it opened, and flashed. Cmd+K finds the same rows.
+ * - A tree rather than a flat list. Agents opens to the Agent manager and each
+ *   installed agent; Claude Code opens to its launch defaults, its settings
+ *   file and its provider and keys, which were three separate rows (and a
+ *   pointer in Sessions) before. The old section ids all still land
+ *   (`resolveSettingsTarget`).
  *
  * `hint` is the nav item's tooltip and does the job a subtitle would without
  * making every row two lines tall.
  */
-export type SectionId =
-  | 'appearance'
-  | 'terminal'
-  | 'profiles'
-  | 'sessions'
-  | 'claude'
-  | 'agents'
-  | 'chats'
-  | 'providers'
-  | 'voice'
-  | 'projects'
-  | 'hosts'
-  | 'browser'
-  | 'worklog'
-  | 'remote'
-  | 'updates'
-  | 'backup'
 
-interface Section {
-  id: SectionId
-  label: string
-  hint: string
+/** A row to scroll to and flash when the page opens (from the palette). */
+export interface SettingsRowTarget {
+  id: string
+  /** Where to land when `id` is not drawn right now. */
+  fallback: string | null
 }
-
-/*
- * Profiles sits under Appearance rather than beside Projects because its
- * visible effect is the accent colour on the tab strip and the sidebar chip;
- * the scan root it also carries is the half nobody comes looking for. Updates
- * and Advanced are last together for the same reason they are one group: both
- * are read far more often than they are written.
- */
-const GROUPS: { title: string; sections: Section[] }[] = [
-  {
-    title: 'Appearance',
-    sections: [
-      { id: 'appearance', label: 'Appearance', hint: 'Theme, and how big everything is' },
-      { id: 'terminal', label: 'Terminal', hint: 'Font, line height, cursor, and the frame' },
-      { id: 'profiles', label: 'Profiles', hint: 'Per-folder colours and scan roots' }
-    ]
-  },
-  {
-    title: 'Configuration',
-    sections: [
-      { id: 'sessions', label: 'Sessions', hint: 'Where a new session opens, and what it tells you' },
-      /*
-       * One Agents area for every agent Stoke runs, Claude Code included —
-       * the default one, and each one's model, endpoint, colour and tag. The
-       * id stays 'agents': other panels open it by id.
-       */
-      {
-        id: 'agents',
-        label: 'Agents',
-        hint: 'Claude Code, Codex, Grok and the rest: the default agent, and each one’s model, endpoint, colour and tab tag'
-      },
-      { id: 'claude', label: 'Claude Code', hint: "Claude Code's own configuration" },
-      {
-        id: 'chats',
-        label: 'Chat history',
-        hint: 'A searchable copy of your AI chats: which tools, how much, and where the copy is'
-      },
-      { id: 'providers', label: 'Providers', hint: 'Claude Code’s API keys and gateway, and the shared OpenRouter key' },
-      {
-        id: 'voice',
-        label: 'Voice',
-        hint: 'The microphone, Claude Code’s /voice, and Stoke’s dictation and who transcribes it'
-      },
-      { id: 'projects', label: 'Projects', hint: 'Which folders the sidebar scans' },
-      { id: 'hosts', label: 'SSH hosts', hint: 'Remote machines to open sessions on' },
-      { id: 'browser', label: 'Browser', hint: 'Profiles for the docked browser, each with its own logins' }
-    ]
-  },
-  {
-    title: 'Integrations',
-    sections: [
-      { id: 'worklog', label: 'Worklog', hint: 'The Notion / ClickUp review queue' },
-      { id: 'remote', label: 'Phone access', hint: 'Reaching this window from a phone' }
-    ]
-  },
-  {
-    title: 'System',
-    sections: [
-      /*
-       * "Advanced" held exactly one input — where the `claude` executable is —
-       * and that is the same subject this section already covers: which CLI you
-       * have and how it updates. A whole nav row for one path box also made the
-       * menu ten items long, and a row named "Advanced" tells nobody what is in
-       * it, so the one setting most likely to be needed in a hurry (the app
-       * cannot find claude) sat behind the least descriptive label in the list.
-       */
-      { id: 'updates', label: 'Updates', hint: 'Stoke, the CLI, and where it lives' },
-      {
-        id: 'backup',
-        label: 'Backup & transfer',
-        hint: 'Where your API keys are kept, and a passphrase-sealed file that moves this setup to another computer'
-      }
-    ]
-  }
-]
-
-/*
- * The flat list the keyboard nav walks. It is DERIVED from `GROUPS` rather than
- * maintained beside it, because `onNavKey` finds the element to focus by
- * indexing `querySelectorAll('[role="tab"]')` with an index it computed from
- * this array — so the two orders are not merely expected to agree, arrow keys
- * focus the wrong row the moment they do not. Deriving it makes them the same
- * order by construction.
- */
-const SECTIONS: Section[] = GROUPS.flatMap((g) => g.sections)
 
 interface Props {
   settings: Settings
@@ -240,7 +163,7 @@ interface Props {
   onPreviewTheme: (theme: Theme | null) => void
   /**
    * The coding-agent detection App already holds, and the three things the
-   * Agents section can ask App to do. App owns them because the picker,
+   * Agents pages can ask App to do. App owns them because the picker,
    * the launcher row and an install tab all read the same detection.
    */
   agents: {
@@ -255,10 +178,21 @@ interface Props {
     onPreviewColor: (id: CodingCliId, hex: string | null) => void
   }
   /**
-   * Which section to open on. Three other panels say "open Settings" and used
-   * to land on Appearance regardless of what they were talking about.
+   * Which page to open on. Other panels say "open Settings" and used to land on
+   * Appearance regardless of what they were talking about. Absent means a plain
+   * open: Appearance, with the search box focused.
    */
-  initialSection?: SectionId
+  initialSection?: SettingsTarget
+  /** A row on that page to scroll to and flash — a pick from the command palette. */
+  initialRow?: SettingsRowTarget | null
+  /**
+   * Which of the menu's nodes are open (Agents, Claude Code). App's, not the
+   * sheet's: the sheet is remounted on every open, and the menu should come
+   * back the way it was left for as long as the app runs.
+   */
+  expanded: readonly string[]
+  /** Open or close menu nodes. A functional update in App, so two in one tick both land. */
+  onExpand: (ids: readonly string[], open: boolean) => void
   /**
    * "Restart and install" for Stoke's own update. App's, not a direct IPC call,
    * because only App knows whether a turn is running anywhere — and restarting
@@ -286,6 +220,9 @@ interface Props {
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])'
 
+/** How many results the menu lists for one query. More than fit is a query that needs another word. */
+const RESULT_LIMIT = 40
+
 export function SettingsSheet({
   settings,
   profiles,
@@ -296,6 +233,9 @@ export function SettingsSheet({
   onProfileCreated,
   onPreviewTheme,
   initialSection,
+  initialRow,
+  expanded,
+  onExpand,
   agents,
   onRestartToUpdate,
   sshKeys,
@@ -303,50 +243,178 @@ export function SettingsSheet({
   onClose
 }: Props): React.JSX.Element {
   const themes: Theme[] = [...BUILT_IN_THEMES, ...settings.customThemes]
-  const [section, setSection] = useState<SectionId>(initialSection ?? 'appearance')
-  /*
-   * Which agent's page Agents shows. Held here rather than inside
-   * AgentsSettings so Sessions' "Open Agents › Claude Code" can land on
-   * Claude's page; null shows the default agent's.
-   */
-  const [agentPage, setAgentPage] = useState<CodingCliId | null>(null)
+  const [loc, setLoc] = useState<SettingsLocation>(() => resolveSettingsTarget(initialSection))
 
   /*
-   * The scrolling pane, reset to the top on every section change.
+   * The agents the menu lists: Claude Code, then every installed one — plus
+   * the agent whose page is open, if it is not installed, so the page on
+   * screen always has a row. A string key, so the tree and the search entries
+   * are rebuilt only when that list changes, not on every detection push.
+   */
+  const installed = installedAgents(agents.detection?.clis ?? [], cli?.ok === true)
+  const menuAgents = navAgents(installed, loc.page === 'agent' ? (loc.agent ?? null) : null)
+  const agentsKey = menuAgents.join(',')
+  const tree = useMemo(() => navTree(menuAgents), [agentsKey])
+  const open = useMemo(() => new Set(expanded), [expanded])
+  const visible = useMemo(() => visibleNodes(tree, open), [tree, open])
+  const holder = visibleHolder(visible, loc)
+  const current = nodeIdOf(loc)
+
+  /*
+   * A pending jump: the row to show once the page it is on has rendered. A
+   * sequence number, so jumping to the row already flashed flashes it again.
+   */
+  const [jump, setJump] = useState<{ row: SettingsRowTarget; focus: boolean; seq: number } | null>(() =>
+    initialRow ? { row: initialRow, focus: true, seq: 0 } : null
+  )
+  const seqRef = useRef(1)
+
+  /**
+   * The one way the sheet moves: to a page, with its menu ancestors opened so
+   * its row is on screen, and optionally to a row on it.
+   */
+  const go = useCallback(
+    (next: SettingsLocation, row?: SettingsRowTarget | null, focus = false): void => {
+      const up = ancestorsOf(next)
+      if (up.length) onExpand(up, true)
+      // The same page keeps its object, so going where you already are moves nothing.
+      setLoc((cur) => (sameLocation(cur, next) ? cur : next))
+      if (row) setJump({ row, focus, seq: seqRef.current++ })
+    },
+    [onExpand]
+  )
+
+  // The page opened on may sit under a node that was closed since.
+  useEffect(() => {
+    const up = ancestorsOf(loc)
+    if (up.length && up.some((id) => !open.has(id))) onExpand(up, true)
+    // Only on open: after that, closing Agents over the page on show is allowed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  /*
+   * The scrolling pane, reset to the top on every page change.
    *
    * Without this a tall section scrolled halfway down leaves the next one
    * opening mid-content, which reads as a section with its heading missing
-   * rather than as retained scroll position.
+   * rather than as retained scroll position. A jump scrolls again after this.
+   *
+   * Keyed on the page's node id, a string, not the `loc` object: a press on the
+   * menu row of the page already on show, or a search pick on it, is not a
+   * page change, and resetting then threw away the reader's place (and made a
+   * pick snap to the top before scrolling back down to its row).
    */
   const paneRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     paneRef.current?.scrollTo({ top: 0 })
-  }, [section])
+  }, [current])
+
+  // Show the row a jump named, once its page has drawn it (settingsJump.ts).
+  useEffect(() => {
+    if (!jump) return
+    const pane = paneRef.current
+    if (!pane) return
+    return flashSettingRow(pane, jump.row.id, jump.row.fallback, { focus: jump.focus })
+  }, [jump])
+
+  /* ------------------------------------------------------------- search */
+
+  const [query, setQuery] = useState('')
+  const [active, setActive] = useState(0)
+  const searchRef = useRef<HTMLInputElement>(null)
+  const resultsRef = useRef<HTMLDivElement>(null)
+  const entries = useMemo(() => settingsEntries({ agents: menuAgents, platform: window.stoke.platform }), [agentsKey])
+  const hits = useMemo(() => searchSettings(entries, query).slice(0, RESULT_LIMIT), [entries, query])
+  const searching = query.trim() !== ''
+
+  useEffect(() => {
+    setActive(0)
+  }, [query])
+
+  // Keep the active result inside the list's scroll viewport.
+  useEffect(() => {
+    const el = resultsRef.current?.querySelector<HTMLElement>(`[data-index="${active}"]`)
+    el?.scrollIntoView({ block: 'nearest' })
+  }, [active])
+
+  /*
+   * While there is a query, every row of the page on show that it matches is
+   * marked, so the pane answers "which one is it" as well as the list does.
+   */
+  useEffect(() => {
+    const pane = paneRef.current
+    if (!pane) return
+    const rows = new Set(
+      searching ? hits.filter((h) => h.entry.row && sameLocation(h.entry.loc, loc)).map((h) => h.entry.row as string) : []
+    )
+    return markSettingHits(pane, rows)
+  }, [hits, loc, searching])
+
+  const pick = (hit: SettingsHit | undefined, focus: boolean): void => {
+    if (!hit) return
+    const row = hit.entry.row ? { id: hit.entry.row, fallback: hit.entry.fallback } : null
+    go(hit.entry.loc, row, focus)
+  }
+
+  const onSearchKey = (e: React.KeyboardEvent<HTMLInputElement>): void => {
+    if (e.key === 'ArrowDown' && hits.length) {
+      e.preventDefault()
+      setActive((i) => Math.min(hits.length - 1, i + 1))
+    } else if (e.key === 'ArrowUp' && hits.length) {
+      e.preventDefault()
+      setActive((i) => Math.max(0, i - 1))
+    } else if (e.key === 'Enter') {
+      e.preventDefault()
+      // Enter goes to the row and puts the keyboard on its control, which is
+      // what the search was for; Cmd+F comes back to the query.
+      pick(hits[active], true)
+    } else if (e.key === 'Escape' && query) {
+      /*
+       * Escape clears a query before it closes anything. Stopped here so App's
+       * window listener, which closes the sheet on Escape, never sees it; with
+       * the box already empty it goes through and closes the sheet as before.
+       */
+      e.preventDefault()
+      e.stopPropagation()
+      setQuery('')
+    }
+  }
+
+  /* ------------------------------------------------------- focus and Tab */
 
   /*
    * Focus moves into the dialog when it opens, and Tab stays inside it.
    *
    * `aria-modal` is a promise to assistive technology and nothing else: it
-   * does not move focus and it does not stop Tab walking out. So the sheet
-   * opened with focus still on whatever launched it — the gear button, or the
-   * terminal — and the first Tab went into the title bar *behind* the
-   * backdrop, where the ring is invisible under a dimmed overlay and Enter
-   * activates something the user cannot see. Keyboard-only, the sheet was
-   * unreachable without first tabbing through the entire window.
-   *
-   * The selected section rather than the first focusable, so the sheet opens
-   * announcing where it is — which matters most for `initialSection`, where
-   * something else chose the section on the user's behalf.
+   * does not move focus and it does not stop Tab walking out. A plain open
+   * puts the keyboard in the search box, since typing is the fastest way to
+   * anything here; an open aimed at a page puts it on that page's menu row, so
+   * the sheet announces where something else chose to bring you; an open aimed
+   * at a row puts it on the row's control (the jump effect does that).
    */
   const modalRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     const root = modalRef.current
-    if (!root) return
-    const selected = root.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')
+    if (!root || initialRow) return
+    if (!initialSection) {
+      searchRef.current?.focus()
+      return
+    }
+    const selected = root.querySelector<HTMLElement>('[role="treeitem"][tabindex="0"]')
     ;(selected ?? root).focus()
+    // Once, on open.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const trapTab = (e: React.KeyboardEvent): void => {
+  const onModalKey = (e: React.KeyboardEvent): void => {
+    // Cmd+F / Ctrl+F: back to the search box from anywhere in the sheet.
+    const primary = window.stoke.platform === 'darwin' ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey
+    if (primary && !e.altKey && !e.shiftKey && e.code === 'KeyF') {
+      e.preventDefault()
+      searchRef.current?.focus()
+      searchRef.current?.select()
+      return
+    }
     if (e.key !== 'Tab') return
     const root = modalRef.current
     if (!root) return
@@ -358,21 +426,125 @@ export function SettingsSheet({
     if (items.length === 0) return
     const first = items[0]
     const last = items[items.length - 1]
-    const active = document.activeElement
-    if (!e.shiftKey && active === last) {
+    const activeEl = document.activeElement
+    if (!e.shiftKey && activeEl === last) {
       e.preventDefault()
       first.focus()
-    } else if (e.shiftKey && (active === first || active === root)) {
+    } else if (e.shiftKey && (activeEl === first || activeEl === root)) {
       e.preventDefault()
       last.focus()
     }
   }
 
+  /* ---------------------------------------------------------------- tree */
+
   /*
-   * Offer the Host aliases the user already has rather than making them retype
-   * connection details. Read once when the sheet opens; ~/.ssh/config is not
-   * something that changes while it is on screen.
+   * The menu's one tab stop (a roving tabindex): the row last focused while it
+   * is still on screen, else the row that holds the page on show.
    */
+  const [focusId, setFocusId] = useState<string | null>(null)
+  const tabStop = focusId && visible.some((v) => v.node.id === focusId) ? focusId : (holder ?? visible[0]?.node.id)
+  const treeRef = useRef<HTMLDivElement>(null)
+
+  const focusNode = (id: string): void => {
+    treeRef.current?.querySelector<HTMLElement>(`[data-node="${id}"]`)?.focus()
+  }
+
+  const toggle = (id: string): void => onExpand([id], !open.has(id))
+
+  /**
+   * A click or Enter on a row. Agents only opens and closes. Claude Code is a
+   * page AND a parent: the first press goes to its page and opens it, a press
+   * on it while its page is on show opens or closes it.
+   */
+  const activate = (node: NavNode): void => {
+    if (!node.loc) {
+      toggle(node.id)
+      return
+    }
+    if (node.children) {
+      if (sameLocation(node.loc, loc)) toggle(node.id)
+      else {
+        go(node.loc)
+        if (!open.has(node.id)) onExpand([node.id], true)
+      }
+      return
+    }
+    go(node.loc)
+  }
+
+  /*
+   * A tree's keys (WAI-ARIA's tree pattern): Up and Down walk the rows on
+   * screen and wrap, as the old flat menu did; Right opens a closed parent or
+   * steps into an open one; Left closes an open one or steps out to its
+   * parent; Home and End go to the ends. Moving onto a page shows it — focus
+   * follows selection, so a screen reader hears the page it moved to. A
+   * printable key starts a search, which is the type-ahead worth having here.
+   */
+  const onTreeKey = (e: React.KeyboardEvent): void => {
+    const id = (e.target as HTMLElement).closest<HTMLElement>('[data-node]')?.dataset.node
+    const i = visible.findIndex((v) => v.node.id === id)
+    if (i < 0) return
+    const here = visible[i]
+    const moveTo = (v: VisibleNode | undefined): void => {
+      if (!v) return
+      focusNode(v.node.id)
+      if (v.node.loc && !sameLocation(v.node.loc, loc)) go(v.node.loc)
+    }
+    switch (e.key) {
+      case 'ArrowDown':
+        e.preventDefault()
+        moveTo(visible[(i + 1) % visible.length])
+        return
+      case 'ArrowUp':
+        e.preventDefault()
+        moveTo(visible[(i - 1 + visible.length) % visible.length])
+        return
+      case 'Home':
+        e.preventDefault()
+        moveTo(visible[0])
+        return
+      case 'End':
+        e.preventDefault()
+        moveTo(visible[visible.length - 1])
+        return
+      case 'ArrowRight':
+        if (!here.node.children) return
+        e.preventDefault()
+        if (!open.has(here.node.id)) onExpand([here.node.id], true)
+        else moveTo(visible[i + 1])
+        return
+      case 'ArrowLeft':
+        e.preventDefault()
+        if (here.node.children && open.has(here.node.id)) onExpand([here.node.id], false)
+        else if (here.parent) moveTo(visible.find((v) => v.node.id === here.parent))
+        return
+      case 'Enter':
+      case ' ':
+        e.preventDefault()
+        activate(here.node)
+        return
+    }
+    if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      e.preventDefault()
+      setQuery((q) => q + e.key)
+      searchRef.current?.focus()
+    }
+  }
+
+  const agentProps: AgentPagesProps = {
+    settings,
+    onPatch,
+    detection: agents.detection,
+    claudeRunnable: cli?.ok === true,
+    onRefresh: agents.onRefresh,
+    onOpenPicker: agents.onOpenPicker,
+    onInstall: agents.onInstall,
+    onSignIn: agents.onSignIn,
+    onGo: (next) => go(next),
+    onPreviewColor: agents.onPreviewColor
+  }
+
   /*
    * The default folder, committed on blur rather than per keystroke. Typed into
    * character by character it wrote a settings file — and a round trip to disk
@@ -391,6 +563,11 @@ export function SettingsSheet({
    */
   const [scaleDraft, setScaleDraft] = useState<string | null>(null)
 
+  /*
+   * Offer the Host aliases the user already has rather than making them retype
+   * connection details. Read once when the sheet opens; ~/.ssh/config is not
+   * something that changes while it is on screen.
+   */
   const [sshAliases, setSshAliases] = useState<string[]>([])
   useEffect(() => {
     let live = true
@@ -403,42 +580,15 @@ export function SettingsSheet({
   }, [])
 
   /*
-   * Escape is NOT bound here. App.tsx already owns it for every overlay
-   * ("closes whichever overlay is on top", App.tsx:1266) and unmounts this
-   * component outright — which several sections below depend on: WorklogSettings
-   * and RemoteSettings each flush a draft field on unmount precisely because
-   * React delivers no blur to a node that is disappearing. A second listener
-   * here would close by the same route and change nothing, but it would put the
-   * ordering of two handlers in the way of a rule that currently has one owner.
+   * Escape is NOT bound here for closing. App.tsx already owns it for every
+   * overlay ("closes whichever overlay is on top") and unmounts this component
+   * outright — which several sections below depend on: WorklogSettings and
+   * RemoteSettings each flush a draft field on unmount precisely because React
+   * delivers no blur to a node that is disappearing. The one Escape handled
+   * here is the search box's, which clears a query and stops there.
    */
 
-  /**
-   * Arrow keys move between sections, which is what a tablist is expected to
-   * do and is the difference between a menu and ten buttons that happen to be
-   * stacked. Home/End jump to the ends; the roving `tabIndex` below is what
-   * keeps Tab itself moving out of the nav and into the pane rather than
-   * through all ten.
-   */
-  const onNavKey = (e: React.KeyboardEvent): void => {
-    const i = SECTIONS.findIndex((s) => s.id === section)
-    const to =
-      e.key === 'ArrowDown' || e.key === 'ArrowRight'
-        ? (i + 1) % SECTIONS.length
-        : e.key === 'ArrowUp' || e.key === 'ArrowLeft'
-          ? (i - 1 + SECTIONS.length) % SECTIONS.length
-          : e.key === 'Home'
-            ? 0
-            : e.key === 'End'
-              ? SECTIONS.length - 1
-              : -1
-    if (to < 0) return
-    e.preventDefault()
-    setSection(SECTIONS[to].id)
-    // Focus follows selection, so the reader of a screen reader hears the
-    // section they just moved to rather than being told nothing happened.
-    const nav = e.currentTarget as HTMLElement
-    nav.querySelectorAll<HTMLElement>('[role="tab"]')[to]?.focus()
-  }
+  const crumbs = pathOf(loc)
 
   return (
     <>
@@ -450,7 +600,7 @@ export function SettingsSheet({
         aria-label="Settings"
         ref={modalRef}
         tabIndex={-1}
-        onKeyDown={trapTab}
+        onKeyDown={onModalKey}
       >
         <div className="settings-head">
           <h2>Settings</h2>
@@ -461,62 +611,178 @@ export function SettingsSheet({
         </div>
 
         <div className="settings-cols">
-          {/*
-           * One `tablist` per group, not one for the whole menu. A `tablist`'s
-           * only permitted owned elements are tabs, so a heading placed inside
-           * the old single list would have had to be hidden from assistive
-           * technology to stay valid — which is the grouping, deleted for
-           * exactly the readers who cannot see the indentation that would
-           * otherwise convey it. A tablist per group makes each heading a real
-           * accessible name instead. The keydown handler stays on the `nav`
-           * above all four, so arrow keys still walk the ten rows as one run
-           * and wrap end to end; `onNavKey` reads `currentTarget`, which is the
-           * nav rather than the group the event started in.
-           */}
-          <nav className="settings-nav" aria-label="Settings sections" onKeyDown={onNavKey}>
-            {GROUPS.map((g) => {
-              const titleId = `settings-group-${g.title.toLowerCase()}`
-              return (
-                <div className="settings-nav-group" key={g.title}>
-                  <div className="settings-nav-group-title" id={titleId}>
-                    {g.title}
-                  </div>
-                  <div role="tablist" aria-orientation="vertical" aria-labelledby={titleId}>
-                    {g.sections.map((s) => (
-                      <button
-                        key={s.id}
-                        role="tab"
-                        id={`settings-tab-${s.id}`}
-                        aria-controls={`settings-pane-${s.id}`}
-                        aria-selected={section === s.id}
-                        // Roving tabIndex: exactly one nav item is in the tab
-                        // order, so Tab from the close button lands on the
-                        // current section and the next Tab leaves the nav
-                        // entirely.
-                        tabIndex={section === s.id ? 0 : -1}
-                        title={s.hint}
-                        onClick={() => setSection(s.id)}
-                      >
-                        {s.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )
-            })}
+          <nav className="settings-nav" aria-label="Settings sections">
+            {/*
+              A combobox over the results list below it. The list replaces the
+              menu while there is a query, in the same column, so nothing else
+              in the sheet moves as you type.
+            */}
+            <div className="settings-search">
+              <input
+                ref={searchRef}
+                className="input settings-search-input"
+                type="search"
+                placeholder="Search settings"
+                aria-label="Search settings"
+                role="combobox"
+                aria-expanded={searching && hits.length > 0}
+                aria-controls={searching && hits.length > 0 ? 'settings-search-results' : undefined}
+                aria-autocomplete="list"
+                aria-activedescendant={searching && hits[active] ? `settings-hit-${active}` : undefined}
+                value={query}
+                spellCheck={false}
+                autoComplete="off"
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={onSearchKey}
+              />
+              {/*
+                Mounted for the sheet's whole life and empty with no query, so
+                the first count is a CHANGE a screen reader announces — a live
+                region mounted with its text already in it is usually skipped.
+                Outside the listbox, which may hold only options.
+              */}
+              <span className="sr-only" role="status" aria-live="polite">
+                {!searching ? '' : hits.length === 0 ? 'No matching settings' : `${hits.length} matching settings`}
+              </span>
+            </div>
+
+            {searching && hits.length === 0 ? (
+              // The same track as the results, so nothing moves; not a listbox, as it lists nothing.
+              <div className="settings-results">
+                <p className="settings-results-empty">Nothing in Settings matches &ldquo;{query.trim()}&rdquo;.</p>
+              </div>
+            ) : searching ? (
+              <div className="settings-results" id="settings-search-results" role="listbox" aria-label="Matching settings" ref={resultsRef}>
+                {hits.map((h, i) => {
+                  const here = sameLocation(h.entry.loc, loc)
+                  return (
+                    <button
+                      key={h.entry.key}
+                      id={`settings-hit-${i}`}
+                      data-index={i}
+                      className="settings-result"
+                      role="option"
+                      aria-selected={i === active}
+                      data-here={here ? 'true' : undefined}
+                      tabIndex={-1}
+                      onMouseEnter={() => setActive(i)}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => {
+                        setActive(i)
+                        pick(h, false)
+                      }}
+                      {...(h.entry.loc.page === 'agent' && !h.entry.row ? agentMark(h.entry.loc.agent) : {})}
+                    >
+                      <span className="settings-result-label">
+                        {h.entry.loc.page === 'agent' && !h.entry.row && <span className="agent-tab-dot" aria-hidden="true" />}
+                        {/*
+                          Its own span: the label row is a flex box (for the
+                          dot), and a flex box makes every text run and <mark>
+                          an item of its own, so its gap landed between "SSH"
+                          and " hosts".
+                        */}
+                        <span>
+                          <Highlight text={h.entry.label} ranges={h.ranges} />
+                        </span>
+                      </span>
+                      <span className="settings-result-path">
+                        {h.entry.path.length ? h.entry.path.join(' › ') : h.entry.row ? '' : 'Section'}
+                      </span>
+                    </button>
+                  )
+                })}
+              </div>
+            ) : (
+              /*
+               * One `tree` per group, for the reason there was one `tablist`
+               * per group before: a heading inside a single tree would have
+               * to be hidden from assistive technology to stay valid, which
+               * deletes the grouping for exactly the readers who cannot see
+               * the indentation. The rows are flat siblings with
+               * `aria-level`/`aria-setsize`/`aria-posinset` rather than nested
+               * groups, so the arrow keys walk the DOM order and the order on
+               * screen as one list; the key handler sits on the wrapper above
+               * all four trees, so they still read as one run.
+               */
+              <div className="settings-tree" ref={treeRef} onKeyDown={onTreeKey}>
+                {tree.map((g) => {
+                  const titleId = `settings-group-${g.title.toLowerCase()}`
+                  return (
+                    <div className="settings-nav-group" key={g.title}>
+                      <div className="settings-nav-group-title" id={titleId}>
+                        {g.title}
+                      </div>
+                      <div role="tree" aria-labelledby={titleId}>
+                        {visible
+                          .filter((v) => v.group === g.title)
+                          .map((v) => {
+                            const isCurrent = v.node.id === current
+                            const mark = v.node.agent ? agentMark(v.node.agent) : {}
+                            return (
+                              <button
+                                key={v.node.id}
+                                role="treeitem"
+                                data-node={v.node.id}
+                                id={`settings-node-${v.node.id.replace(':', '-')}`}
+                                aria-level={v.level}
+                                aria-setsize={v.setSize}
+                                aria-posinset={v.posInSet}
+                                aria-expanded={v.node.children ? open.has(v.node.id) : undefined}
+                                aria-selected={v.node.loc ? isCurrent : undefined}
+                                aria-current={isCurrent ? 'page' : undefined}
+                                data-holds={!isCurrent && holder === v.node.id ? 'true' : undefined}
+                                tabIndex={v.node.id === tabStop ? 0 : -1}
+                                title={v.node.hint}
+                                data-agent={mark['data-agent']}
+                                style={{ ...mark.style, ['--nav-level' as string]: v.level }}
+                                onFocus={() => setFocusId(v.node.id)}
+                                onClick={() => activate(v.node)}
+                              >
+                                {v.node.children && (
+                                  <span
+                                    className="settings-nav-caret"
+                                    aria-hidden="true"
+                                    onClick={(e) => {
+                                      // The caret only opens and closes, even on Claude Code.
+                                      e.stopPropagation()
+                                      toggle(v.node.id)
+                                    }}
+                                  />
+                                )}
+                                {v.node.agent && <span className="agent-tab-dot" aria-hidden="true" />}
+                                <span className="settings-nav-label">{v.node.label}</span>
+                              </button>
+                            )
+                          })}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
           </nav>
 
           <div
             className="settings-pane"
             ref={paneRef}
-            role="tabpanel"
-            id={`settings-pane-${section}`}
-            aria-labelledby={`settings-tab-${section}`}
+            role="region"
+            id="settings-pane"
+            aria-label={crumbs.join(' › ')}
             // Focusable so the pane itself can be scrolled from the keyboard
             // when the section it holds is all read-only text.
             tabIndex={0}
           >
-            {section === 'appearance' && (
+            {crumbs.length > 1 && (
+              <div className="settings-crumbs" aria-hidden="true">
+                {crumbs.map((c, i) => (
+                  <span key={c + i} className="settings-crumb">
+                    {c}
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {loc.page === 'appearance' && (
               <>
                 <ThemeEditor
                   settings={settings}
@@ -536,7 +802,7 @@ export function SettingsSheet({
                   exists on one of your machines and not another — and nobody
                   can search for a row that is not there. The hint says so.
                 */}
-                <label className="check-row">
+                <label className="check-row" data-setting="appearance.brand">
                   <input
                     type="checkbox"
                     checked={settings.showBrand}
@@ -552,7 +818,7 @@ export function SettingsSheet({
                   </span>
                 </label>
 
-                <div className="field">
+                <div className="field" data-setting="appearance.interface-scale">
                   <span className="field-label">Interface scale</span>
                   {/*
                     min/max are advisory inside React's onChange — the browser will
@@ -619,7 +885,7 @@ export function SettingsSheet({
                   terminal scales only its font, an editor scales everything, and
                   Stoke is an editor-shaped app full of terminal-shaped content.
                 */}
-                <div className="field">
+                <div className="field" data-setting="appearance.zoom-keys">
                   <span className="field-label">Zoom keys change</span>
                   <div
                     className="segmented"
@@ -644,7 +910,7 @@ export function SettingsSheet({
                 </div>
 
                 {/* Offered everywhere, like the brand row above, and for the same reason. */}
-                <div className="field">
+                <div className="field" data-setting="appearance.full-screen">
                   <span className="field-label">Menu bar in full screen</span>
                   <div
                     className="segmented"
@@ -671,38 +937,32 @@ export function SettingsSheet({
               </>
             )}
 
-            {section === 'terminal' && (
+            {loc.page === 'terminal' && (
               <TerminalSettingsPane settings={settings} onPatch={onPatch} />
             )}
 
-            {section === 'sessions' && (
+            {loc.page === 'sessions' && (
               <>
                 {/*
                   Claude Code's four launch defaults — permissions, model,
-                  effort, Ultracode — live on its page under Agents now, beside
-                  every other agent's default model. Still `settings.defaults`,
-                  still one writer (gotcha 57); this says where they went.
+                  effort, Ultracode — are a page of their own under Agents ›
+                  Claude Code now. Still `settings.defaults`, still one writer
+                  (gotcha 57); this says where they went.
                 */}
                 <div className="field">
                   <span className="field-label">Launch defaults</span>
                   <span className="field-hint">
-                    Claude Code&rsquo;s default permissions, model, effort and Ultracode are on its
-                    page under Agents, beside every other agent&rsquo;s default model.
+                    Claude Code&rsquo;s default permissions, model, effort and Ultracode are under
+                    Agents › Claude Code, beside every other agent&rsquo;s default model.
                   </span>
                   <div style={{ display: 'flex', gap: 'var(--space-8)' }}>
-                    <button
-                      className="btn"
-                      onClick={() => {
-                        setAgentPage('claude')
-                        setSection('agents')
-                      }}
-                    >
-                      Open Agents › Claude Code
+                    <button className="btn" onClick={() => go({ page: 'claude-launch' })}>
+                      Open Agents › Claude Code › Launch defaults
                     </button>
                   </div>
                 </div>
 
-                <div className="field">
+                <div className="field" data-setting="sessions.default-folder">
                   <span className="field-label">Default folder</span>
                   <div style={{ display: 'flex', gap: 'var(--space-8)' }}>
                     <input
@@ -730,7 +990,7 @@ export function SettingsSheet({
                   </span>
                 </div>
 
-                <label className="check-row">
+                <label className="check-row" data-setting="sessions.start-on-launch">
                   <input
                     type="checkbox"
                     checked={settings.startOnLaunch}
@@ -745,7 +1005,7 @@ export function SettingsSheet({
                   </span>
                 </label>
 
-                <div className="field">
+                <div className="field" data-setting="sessions.notifications">
                   <span className="field-label">Notify me when Claude finishes</span>
                   <div className="segmented" role="group" aria-label="Notifications">
                     {NOTIFICATION_MODES.map((n) => (
@@ -765,7 +1025,7 @@ export function SettingsSheet({
                   </span>
                 </div>
 
-                <label className="check-row">
+                <label className="check-row" data-setting="sessions.status-line">
                   <input
                     type="checkbox"
                     checked={settings.hideStatusLine}
@@ -804,15 +1064,15 @@ export function SettingsSheet({
               </>
             )}
 
-            {section === 'browser' && <BrowserSettings browser={settings.browser} />}
+            {loc.page === 'browser' && <BrowserSettings browser={settings.browser} />}
 
-            {section === 'chats' && (
+            {loc.page === 'chats' && (
               <ChatHistorySettings settings={settings} onPatch={onPatch} status={chats.status} detection={chats.detection} />
             )}
 
-            {section === 'projects' && (
+            {loc.page === 'projects' && (
               <>
-                <div className="field">
+                <div className="field" data-setting="projects.roots">
                   <span className="field-label">Scanned folders</span>
                   {settings.projectRoots.length === 0 && (
                     <span className="field-hint">
@@ -846,7 +1106,7 @@ export function SettingsSheet({
                   </button>
                 </div>
 
-                <div className="field">
+                <div className="field" data-setting="projects.hidden">
                   <span className="field-label">Hidden projects</span>
                   {settings.hiddenProjects.length > 0 ? (
                     <>
@@ -900,7 +1160,7 @@ export function SettingsSheet({
               </>
             )}
 
-            {section === 'updates' && (
+            {loc.page === 'updates' && (
               <>
                 <SelfUpdateSettings
                   betaUpdates={settings.betaUpdates}
@@ -920,20 +1180,28 @@ export function SettingsSheet({
               </>
             )}
 
-            {section === 'claude' && <ClaudeCodeSettings cliVersion={cli?.version ?? null} />}
+            {loc.page === 'agents' && <AgentManager {...agentProps} />}
 
-          {section === 'providers' && (
-            <ProvidersSettings
-              providers={settings.providers}
-              onChange={(providers) => onPatch({ providers })}
-            />
-          )}
+            {loc.page === 'agent' && (
+              <AgentSettingsPage key={loc.agent ?? 'claude'} {...agentProps} agent={loc.agent ?? 'claude'} />
+            )}
 
-            {section === 'profiles' && (
+            {loc.page === 'claude-launch' && <ClaudeLaunchDefaults settings={settings} onPatch={onPatch} />}
+
+            {loc.page === 'claude-settings' && <ClaudeCodeSettings cliVersion={cli?.version ?? null} />}
+
+            {loc.page === 'providers' && (
+              <ProvidersSettings
+                providers={settings.providers}
+                onChange={(providers) => onPatch({ providers })}
+              />
+            )}
+
+            {loc.page === 'profiles' && (
               <ProfilesSettings settings={settings} onPatch={onPatch} onCreated={onProfileCreated} />
             )}
 
-            {section === 'worklog' && (
+            {loc.page === 'worklog' && (
               <WorklogSettings
                 profiles={profiles}
                 worklogGroups={settings.worklogGroups}
@@ -945,7 +1213,7 @@ export function SettingsSheet({
               />
             )}
 
-            {section === 'hosts' && (
+            {loc.page === 'hosts' && (
               <HostsSettings
                 hosts={settings.hosts}
                 suggestions={sshAliases}
@@ -957,32 +1225,11 @@ export function SettingsSheet({
               />
             )}
 
-            {section === 'remote' && <RemoteSettings settings={settings} onPatch={onPatch} />}
+            {loc.page === 'remote' && <RemoteSettings settings={settings} onPatch={onPatch} />}
 
-            {section === 'agents' && (
-              <AgentsSettings
-                settings={settings}
-                onPatch={onPatch}
-                detection={agents.detection}
-                claudeRunnable={cli?.ok === true}
-                onRefresh={agents.onRefresh}
-                onOpenPicker={agents.onOpenPicker}
-                onInstall={agents.onInstall}
-                page={agentPage}
-                onPage={setAgentPage}
-                onOpenProviders={() => setSection('providers')}
-                onOpenClaudeConfig={() => setSection('claude')}
-                onSignIn={agents.onSignIn}
-                onPreviewColor={agents.onPreviewColor}
-              />
-            )}
+            {loc.page === 'voice' && <VoiceSettings settings={settings} onPatch={onPatch} />}
 
-            {section === 'voice' && (
-              <VoiceSettings settings={settings} onPatch={onPatch} />
-            )}
-
-            {section === 'backup' && <BackupSettings />}
-
+            {loc.page === 'backup' && <BackupSettings />}
           </div>
         </div>
       </div>
@@ -1011,7 +1258,7 @@ function ClaudePathField({
 }): React.JSX.Element {
   const path = useDraft(settings.claudePath ?? '', (v) => onPatch({ claudePath: v.trim() || null }))
   return (
-    <div className="field">
+    <div className="field" data-setting="updates.cli-path">
       <span className="field-label">Claude CLI path</span>
       <input
         className="input mono"
@@ -1060,7 +1307,7 @@ function TerminalSettingsPane({
   const fontField = useDraft(settings.fontFamily, (v) => onPatch({ fontFamily: v.trim() || settings.fontFamily }))
   return (
     <>
-      <div className="field">
+      <div className="field" data-setting="terminal.font">
         <span className="field-label">Font</span>
         <input
           className="input mono"
@@ -1073,8 +1320,8 @@ function TerminalSettingsPane({
         <span className="field-hint">A CSS font stack. The first installed family wins.</span>
       </div>
 
-      <label className="theme-editor-row">
-        <span>Size</span>
+      <label className="theme-editor-row" data-setting="terminal.font-size">
+        <span>Font size</span>
         <input
           type="range"
           min={FONT_SIZE_MIN}
@@ -1086,7 +1333,7 @@ function TerminalSettingsPane({
         <output className="mono">{settings.fontSize}px</output>
       </label>
 
-      <label className="theme-editor-row">
+      <label className="theme-editor-row" data-setting="terminal.line-height">
         <span>Line height</span>
         <input
           type="range"
@@ -1103,7 +1350,7 @@ function TerminalSettingsPane({
         joined at any value.
       </span>
 
-      <label className="theme-editor-row">
+      <label className="theme-editor-row" data-setting="terminal.letter-spacing">
         <span>Letter spacing</span>
         <input
           type="range"
@@ -1116,7 +1363,7 @@ function TerminalSettingsPane({
         <output className="mono">{t.letterSpacing}px</output>
       </label>
 
-      <div className="theme-editor-row">
+      <div className="theme-editor-row" data-setting="terminal.cursor">
         <span>Cursor</span>
         <div className="segmented" role="group" aria-label="Cursor shape">
           {(['bar', 'block', 'underline'] as const).map((c) => (
@@ -1131,7 +1378,7 @@ function TerminalSettingsPane({
         </label>
       </div>
 
-      <div className="theme-editor-row">
+      <div className="theme-editor-row" data-setting="terminal.bold-weight">
         <span>Bold weight</span>
         <div className="segmented" role="group" aria-label="Bold weight">
           <button aria-pressed={t.boldWeight === 600} onClick={() => patchTerm({ boldWeight: 600 })}>
@@ -1144,7 +1391,7 @@ function TerminalSettingsPane({
         <span />
       </div>
 
-      <div className="theme-editor-row">
+      <div className="theme-editor-row" data-setting="terminal.contrast">
         <span>Text contrast</span>
         <div className="segmented" role="group" aria-label="Minimum contrast">
           <button aria-pressed={t.contrastBoost === 1} onClick={() => patchTerm({ contrastBoost: 1 })}>
@@ -1164,14 +1411,14 @@ function TerminalSettingsPane({
         palette, so it is off unless you want it.
       </span>
 
-      <label className="check-row">
+      <label className="check-row" data-setting="terminal.smooth-scroll">
         <input type="checkbox" checked={t.smoothScroll} onChange={(e) => patchTerm({ smoothScroll: e.target.checked })} />
         <span>
           <span className="field-label">Smooth scrolling</span>
         </span>
       </label>
 
-      <label className="check-row">
+      <label className="check-row" data-setting="terminal.frame">
         <input type="checkbox" checked={t.frame} onChange={(e) => patchTerm({ frame: e.target.checked })} />
         <span>
           <span className="field-label">Frame the terminal</span>
@@ -1183,7 +1430,7 @@ function TerminalSettingsPane({
         </span>
       </label>
 
-      <label className="theme-editor-row">
+      <label className="theme-editor-row" data-setting="terminal.padding">
         <span>Inner padding</span>
         <input
           type="range"
@@ -1250,7 +1497,7 @@ function ClaudeThemeToggle({ appearance }: { appearance: 'dark' | 'light' }): Re
   }
 
   return (
-    <label className="check-row">
+    <label className="check-row" data-setting="appearance.claude-theme">
       <input type="checkbox" checked={on} onChange={(e) => void toggle(e.target.checked)} />
       <span>
         <span className="field-label">Draw Claude Code in this theme&rsquo;s colours</span>
@@ -1286,7 +1533,7 @@ function WallpaperField({
   const [error, setError] = useState<string | null>(null)
   const patchW = (p: Partial<Settings['wallpaper']>): void => onPatch({ wallpaper: clampWallpaper({ ...w, ...p }) })
   return (
-    <div className="field">
+    <div className="field" data-setting="appearance.wallpaper">
       <span className="field-label">Wallpaper</span>
       <span className="field-hint">
         An image behind everything, with the page and panels drawn translucent over it. Dim and

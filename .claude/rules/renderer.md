@@ -21,6 +21,13 @@ paths:
   - "scripts/verify-launcher.mts"
   - "src/shared/activityView.ts"
   - "src/renderer/src/components/TitleBar.tsx"
+  - "src/renderer/src/components/*Settings.tsx"
+  - "src/renderer/src/components/ThemeEditor.tsx"
+  - "src/renderer/src/components/MicPicker.tsx"
+  - "src/renderer/src/components/CommandPalette.tsx"
+  - "src/renderer/src/lib/settingsJump.ts"
+  - "src/shared/settingsIndex.ts"
+  - "scripts/verify-settings-search.mts"
 ---
 
 # React state traps
@@ -489,3 +496,82 @@ state**, until a render has passed. Gotcha 31's `settingsRef` advice (a listener
 through the ref, not its deps) still holds; this is its limit: the ref is fresh as of the last
 render, not as of the last push. No suite can see it — the lookup is inside an `await` in a click
 handler (gotcha 31's class) — and a unit test with a synchronous fake would have passed.
+
+## 138. Settings search can land only on a row the sheet marks, and the menu's old ids are a contract
+
+**A Settings row is two things now: a `data-setting="<page>.<name>"` mark on the element the sheet
+draws, and an entry in `SETTING_ROWS` (shared/settingsIndex.ts).** Built 2026-10-01, when the owner
+asked to search Settings and to have Agents open into the installed agents with Claude Code's three
+pages under it. Search — the box over the menu and Cmd+K alike — reads the index, because the
+sheet mounts only the page on show and the palette mounts no sheet at all, so nothing but a table can
+find a row on a page that is not open. A jump then looks for the mark. A row added to a panel and
+not the index is unfindable; one renamed in one and not the other lands on nothing (the pane scrolls
+to the top and flashes nothing, which reads as "search is broken"). `verify:settings-search` reads
+every `.tsx` for `data-setting="…"`/`settingId="…"` and fails both ways — shown to fail with one mark
+renamed (two FAILs, one per direction) — and fails a mark placed in a component that does not draw
+its row's page. A computed mark is allowed only for the four families it pins
+(`claudeSettingRowId(spec.key)` ×2, `…(WORKFLOW_SIZE_KEY)`, `agentRowId(cli.id)`, SecretRow's
+`settingId`), each listed by the index from the same table.
+
+Four things a suite cannot see — the first two designed in and confirmed by driving the built app,
+the last two found only by its screenshots:
+
+- **A row that exists only in some states needs a `fallback`.** "Anthropic API key" is drawn only
+  in that auth mode, so on a fresh profile (auth `default`) there is no such element to land on.
+  Driven: Enter on "api key" landed on Auth mode (`SettingRow.fallback`, taken after
+  `FALLBACK_AFTER_MS`), flashed it and focused its select — the control that makes the key field
+  appear.
+- **Rows draw after the page's first commit** (Updates waits for main; a row can sit inside a closed
+  `<details>`), so `flashSettingRow` looks every frame for up to 1.5 s, opens every `<details>`
+  around the row (the tunnel one is controlled — its `onToggle` follows), scrolls with
+  `block: 'center'`, and focuses the control with `preventScroll`, since a plain `focus()` jumps
+  the smooth scroll.
+- **A flex row makes every text run and `<mark>` an item of its own**, so the result label's `gap`
+  (there for the agent dot) was painted between "SSH" and " hosts". The highlighted text is wrapped
+  in one span. Only a screenshot showed it.
+- **Chromium's own search-field clear button is UA blue whatever the theme**; it is a mask over
+  `--text-muted` now.
+
+**The old section ids are a contract**, not an implementation detail: App, `stoke update`, the phone
+popover, the chat offer and the browser panel open Settings by id, and three of them moved —
+`providers` is Agents › Claude Code › Provider & keys, `claude` (the old Claude Code section, and
+`claudecode`) is Claude Code settings, `agents` is the Agent manager. `resolveSettingsTarget` is the
+one place an id becomes a page, and opening one opens its ancestors in the menu. The suite reads
+every `openSettings('<id>')` in the renderer and fails one that would fall back to Appearance;
+driven against the built app by calling App's own `openSettings` through its fiber with
+`'providers'`, `'claude'` and `'agents'`, each landed with Agents and Claude Code opened.
+
+The expanded menu nodes live in App (`settingsExpanded`, one writer, gotcha 57), because the sheet
+is remounted on every open; the selected page does not, so Cmd+, and the gear open Appearance with
+the search box focused.
+
+> **Checked against the code on 2026-10-01 (review round).** Five things the first cut missed, each
+> now held by `verify:settings-search` and each shown to fail with its fix reverted:
+> - **A control inside a marked row is as unfindable as an unmarked row, and passed every mark
+>   check**, which compares only rows that have marks: "Leave out anything that looks like an API
+>   key", a host's "Command on connect" and "Keep sessions running", the Access team domain and AUD
+>   tag, the theme editor's "True black". A new control inside a row puts its label (or what people
+>   call it) in that row's `keywords`; the suite searches every label a settings component draws — a
+>   field label, a check row's text, a `<summary>`, a slider row's name — and fails one that finds
+>   nothing on its own page, bar a short excuse list that must stay current. Its check-row pattern
+>   crosses the `<input>` lazily: an `onChange={(e) => …}` holds a `>`.
+> - **Plurals found nothing** ("fonts", "themes", "ssh keys"): a query word must start a word in the
+>   target, and every row is named in the singular. `variants` adds `singulars`, a phrase tries every
+>   combination (`phraseVariants`), synonyms are looked up for each variant and land only where a
+>   word starts, a word lands mid-word only at four letters ("aud" was inside every "Claude"), and a
+>   little word that lands nowhere (`STOP_WORDS`) is passed over, so a label typed out whole works.
+> - **A disclosure the jump opens is not laid out for a frame or two.** Driven with a trusted Enter
+>   on "aud tag": at the scroll, one frame after `open = true`, the pane was still 758px tall with
+>   the row at the tunnel disclosure's summary; the contents arrived next frame (1542px), so the
+>   centred scroll stopped at 85 of 869 with the row 650px below the pane. An in-page synthetic
+>   Enter hid it, because the sampling script forced a layout every frame. `settle` waits for the
+>   row to stay put for a frame (at most `SETTLE_FRAMES`); a row taller than the pane scrolls to its
+>   top.
+> - **Three more rows are drawn only sometimes** and now say where to land: the theme cards and
+>   Follow my system (not while a theme is edited: the editor), More agents (not once every agent is
+>   installed: Your agents), Import from other browsers (macOS and Windows only, `platforms`, so a
+>   Linux search leaves it out).
+> - **The pane's scroll reset ran on every `go`**, keyed on the `loc` object: a press on the page
+>   already on show went to the top, and a search pick there snapped to 0 and smooth-scrolled back
+>   (driven on the previous build: 600 → 0, and 900 → 0 → 698). Keyed on the page id now, and `go`
+>   keeps the object for the same place: 600 stays 600, 900 → 698 directly.

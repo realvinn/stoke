@@ -851,7 +851,7 @@ check(
 
 console.log('\nrefusing a launch that would not work')
 check('the default needs nothing', endpointProblem('codex', DEFAULT_ENDPOINT, ''), null)
-ok('OpenRouter with no key says where the key goes', /Settings › Providers/.test(endpointProblem('codex', or(), '') ?? ''))
+ok('OpenRouter with no key says where the key goes', (endpointProblem('codex', or(), '') ?? '').includes('Settings › Agents › Claude Code › Provider & keys'))
 ok('OpenRouter with no model says so', /no model/.test(endpointProblem('grok', or(''), KEY) ?? ''))
 check(
   'and names the section by its name now — Agents, not Coding agents',

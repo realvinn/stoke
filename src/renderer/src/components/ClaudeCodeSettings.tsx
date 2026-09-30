@@ -5,9 +5,11 @@ import {
   CLAUDE_SETTING_GROUPS,
   WORKFLOW_SIZES,
   WORKFLOW_SIZE_DEFAULT,
+  WORKFLOW_SIZE_KEY,
   type ClaudeSettingSpec,
   type ClaudeSettingValue
 } from '@shared/claudeConfig'
+import { claudeSettingRowId } from '@shared/settingsIndex'
 
 /**
  * The Claude Code version whose settings schema these controls were transcribed
@@ -203,7 +205,7 @@ export function ClaudeCodeSettings({ cliVersion }: Props): React.JSX.Element {
               onCommit={(value) => void apply(spec.key, () => bridge.set(spec.key, value))}
             />
           ) : (
-            <div className="cc-row" key={spec.key}>
+            <div className="cc-row" key={spec.key} data-setting={claudeSettingRowId(spec.key)}>
               <span className="cc-text">
                 <span className="field-label">{spec.label}</span>
                 {/*
@@ -305,7 +307,7 @@ function WorkflowSizeRow({
   const current = state?.workflowSize ?? UNSET
 
   return (
-    <div className="cc-row">
+    <div className="cc-row" data-setting={claudeSettingRowId(WORKFLOW_SIZE_KEY)}>
       <span className="cc-text">
         <span className="field-label">Dynamic workflow size</span>
         <span className="field-hint">
@@ -400,7 +402,7 @@ function IntegerRow({
   )
 
   return (
-    <div className="cc-row">
+    <div className="cc-row" data-setting={claudeSettingRowId(spec.key)}>
       <span className="cc-text">
         <span className="field-label">{spec.label}</span>
         <span className="field-hint">{spec.hint}</span>

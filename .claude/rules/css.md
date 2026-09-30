@@ -251,6 +251,12 @@ a frame of a moving one.
 > user with the OS setting actually boots into, and it needs no race against a splash that is
 > only up for `WELCOME_DISMISS_MS`.
 
+> **2026-10-01** — `Emulation.setEmulatedMedia` lasts only as long as the CDP session that sent
+> it. Driving with one `cdp-eval.mjs`-style connection per step (connect, send, close), the emulation
+> set in one step was gone by the next: `matchMedia('(prefers-reduced-motion: reduce)').matches`
+> read `false` and the Settings flash ran its animation. Emulate and measure inside ONE session, or
+> use the flag — which is what the settings-search flash was proven under (gotcha 138).
+
 > **Checked against the code on 2026-09-30** — an override that tries to KEEP an animation under
 > reduced motion is dead too. `.spinner`'s block re-declared `animation: spin 700ms linear
 > infinite`, meaning to leave it turning; a normal declaration cannot beat the global block's

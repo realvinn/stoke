@@ -45,7 +45,7 @@ export function BackupSettings(): React.JSX.Element {
 function KeyStorage({ status }: { status: SecretStoreStatus | null | 'loading' }): React.JSX.Element {
   if (status === 'loading') {
     return (
-      <div className="field">
+      <div className="field" data-setting="backup.storage">
         <span className="field-label">Where your keys live</span>
         <span className="field-hint">Asking the key store…</span>
       </div>
@@ -53,7 +53,7 @@ function KeyStorage({ status }: { status: SecretStoreStatus | null | 'loading' }
   }
   const stranded = status?.stranded ?? []
   return (
-    <div className="field" data-backup="storage">
+    <div className="field" data-backup="storage" data-setting="backup.storage">
       <span className="field-label">
         Where your keys live{' '}
         {status && (
@@ -90,8 +90,8 @@ function KeyStorage({ status }: { status: SecretStoreStatus | null | 'loading' }
       {stranded.length > 0 && (
         <span className="field-hint" data-tone="warning">
           {stranded.length === 1 ? 'One saved key' : `${stranded.length} saved keys`} could not be opened on this run (
-          {stranded.map((p) => secretLabel(p)).join(', ')}). They are kept, not deleted: type a key again in Providers
-          or Agents to replace it.
+          {stranded.map((p) => secretLabel(p)).join(', ')}). They are kept, not deleted: type the key again where it is
+          set (Agents › Claude Code › Provider &amp; keys, an agent&rsquo;s own page, or Voice) to replace it.
         </span>
       )}
       <FieldHint>
@@ -146,7 +146,7 @@ function ExportSetup(): React.JSX.Element {
   const tone = pass ? (verdict.score >= 3 ? 'success' : verdict.acceptable ? undefined : 'warning') : undefined
 
   return (
-    <div className="field" data-backup="export">
+    <div className="field" data-backup="export" data-setting="backup.export">
       <span className="field-label">Export this setup</span>
       <span className="field-hint">
         One file to carry to another computer: theme, fonts, terminal, session defaults, profiles, SSH hosts, coding
@@ -306,7 +306,7 @@ function ImportSetup({ onImported }: { onImported: () => void }): React.JSX.Elem
   const made = preview?.createdAt ? new Date(preview.createdAt) : null
 
   return (
-    <div className="field" data-backup="import">
+    <div className="field" data-backup="import" data-setting="backup.import">
       <span className="field-label">Import a setup</span>
       <span className="field-hint">
         A setup file is merged into this computer’s: SSH hosts, themes and profiles are added to yours, and anything

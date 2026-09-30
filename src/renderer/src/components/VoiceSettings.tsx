@@ -103,7 +103,7 @@ export function VoiceSettings({
   return (
     <>
       {access && access !== 'not-applicable' && (
-        <div className="field">
+        <div className="field" data-setting="voice.mic-access">
           <span className="field-label">
             Microphone access{' '}
             <span
@@ -152,7 +152,7 @@ export function VoiceSettings({
 
       <MicrophoneNotice />
 
-      <div className="field">
+      <div className="field" data-setting="voice.claude-voice">
         <span className="field-label">
           Claude Code’s /voice{' '}
           {state && (
@@ -168,7 +168,7 @@ export function VoiceSettings({
         </span>
       </div>
 
-      <div className="field">
+      <div className="field" data-setting="voice.dictation">
         <span className="field-label">Stoke’s dictation</span>
         <span className="field-hint">
           {isMac ? '⇧⌘D' : 'Ctrl+Shift+D'} in any tab, then hold Space — a quick tap still types a
