@@ -33,8 +33,15 @@ export const T1_KEYS: readonly string[] = [
   ...Object.keys(PARTIAL_KEYS)
 ]
 
-/** Account-wide preferences, synced like any item. */
-export const ACCOUNT_PREFS = ['sync-keys'] as const
+/**
+ * Account-wide preferences, synced like any item.
+ * - `sync-keys`: `{ on: boolean }`, whether T2 API keys sync at all (the owner ticks it once).
+ * - `device-names`: `{ names: { [deviceId]: string } }`, what the owner renamed devices to.
+ *   A chain entry's `label` is signed at join and cannot change, so a rename is
+ *   a vault item every device reads over it (added by the desktop client,
+ *   2026-10-01; the hub never parses paths, so this needs no server change).
+ */
+export const ACCOUNT_PREFS = ['sync-keys', 'device-names'] as const
 export type AccountPref = (typeof ACCOUNT_PREFS)[number]
 
 export type ItemPath =
@@ -103,7 +110,7 @@ export function itemLabel(path: string, names: { host?: (id: string) => string; 
     case 't4':
       return `SSH key ${names.sshKey?.(p.keyId) ?? p.keyId}`
     case 'acct':
-      return 'Sync API keys'
+      return p.pref === 'sync-keys' ? 'Sync API keys' : 'Device names'
   }
 }
 

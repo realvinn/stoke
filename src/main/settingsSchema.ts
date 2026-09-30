@@ -18,6 +18,8 @@ import { CHAT_INDEX_DEFAULTS, clampChatIndex, clampChatIndexOptions } from '../s
 import { clampVoice, VOICE_DEFAULTS } from '../shared/voiceSettings.ts'
 import { clampAccessAud, clampAccessTeamDomain } from '../shared/cfAccess.ts'
 import { hydrateRemotePush } from '../shared/remotePhone.ts'
+import { HUB_SETTINGS_DEFAULTS, hydrateHubSettings } from '../shared/hub/settings.ts'
+import { isId } from '../shared/hub/codec.ts'
 import {
   clampCurrentProfile,
   clampImportOffer,
@@ -184,7 +186,10 @@ export const DEFAULT_SETTINGS: Settings = {
   // Chat history) says yes. Existing files have no key and read as this too,
   // which is what shows them the offer once.
   chatIndex: 'unasked',
-  chatIndexOptions: clampChatIndexOptions(CHAT_INDEX_DEFAULTS)
+  chatIndexOptions: clampChatIndexOptions(CHAT_INDEX_DEFAULTS),
+  // No hub until one is set up in Settings › Account & sync. A fresh copy so
+  // nothing can mutate the shared constant (hydrate rebuilds it anyway).
+  hub: hydrateHubSettings(HUB_SETTINGS_DEFAULTS)
 }
 
 /**
@@ -396,13 +401,20 @@ export function hydrateSettings(raw: unknown): Settings {
           // managed tmux session on that machine, so only the literal
           // `'tmux'` turns it on. A host saved before the field existed has
           // none and reads as `'off'`: exactly the plain ssh it always ran.
-          .map((h) => ({
-            ...h,
-            worklog: h.worklog === true,
-            keyEnrollRefused: h.keyEnrollRefused === true,
-            keyEnrolled: h.keyEnrolled === true,
-            persist: h.persist === 'tmux' ? ('tmux' as const) : ('off' as const)
-          }))
+          .map((h) => {
+            // A hub sync id is kept only when it is one (`h` + base32): it
+            // names an item on the hub, and a hand-edited junk id would be
+            // refused by `parseItemPath` at every sync (gotcha 139).
+            const { syncId, ...rest } = h
+            return {
+              ...rest,
+              ...(isId('host', syncId) ? { syncId } : {}),
+              worklog: h.worklog === true,
+              keyEnrollRefused: h.keyEnrollRefused === true,
+              keyEnrolled: h.keyEnrolled === true,
+              persist: h.persist === 'tmux' ? ('tmux' as const) : ('off' as const)
+            }
+          })
       : [],
     worklogGroups: Array.isArray(r.worklogGroups)
       ? r.worklogGroups.filter((g): g is string => typeof g === 'string')
@@ -457,6 +469,8 @@ export function hydrateSettings(raw: unknown): Settings {
     chatIndex: clampChatIndex(r.chatIndex),
     chatIndexOptions: clampChatIndexOptions(r.chatIndexOptions),
     // Rebuilt from named keys, junk and unsafe homes dropped (accounts.ts).
-    accounts: hydrateAccounts(r.accounts)
+    accounts: hydrateAccounts(r.accounts),
+    // Rebuilt from named keys (shared/hub/settings.ts); a junk block reads as no hub.
+    hub: hydrateHubSettings(r.hub)
   }
 }
