@@ -3,15 +3,19 @@
  * read back. Everything done earlier lives in Claude Code's own transcripts,
  * which is usually what someone opening this on a phone is after.
  *
+ * The projects are home's Recent segment (`mountRecent`, `homeSegmentFor`),
+ * not a screen of their own: the topbar keeps one action, New. A project's
+ * sessions and a conversation are still pages, reached from it.
+ *
  * A session running right now is marked Live and opens rather than resumes
  * (PX-10: Resume on a live session forked it with a second `claude --resume`).
  * The read-back opens at the newest message and folds tool-only turns (PX-15).
  */
-import { collapseTurns, middleTruncate, plural, relativeTime, splitMarkdown, toolsLabel } from '@shared/phoneUi'
+import { collapseTurns, plural, recentProjects, relativeTime, splitMarkdown, toolsLabel } from '@shared/phoneUi'
 import { api, folderName, resumeSession, type HistoryRow, type ProjectRow, type TurnRow } from './api'
-import { confirmSheet, el, failure, humanError, icon, iconButton, skeleton, toast } from './dom'
+import { confirmSheet, el, failure, humanError, icon, iconButton, newButton, skeleton, toast } from './dom'
 import { meterMini } from './list'
-import { openNewSession, pathRoom } from './newSession'
+import { openNewSession } from './newSession'
 import { pendingMeta } from './session'
 
 export interface Page {
@@ -38,40 +42,69 @@ const transcriptHref = (id: string, cwd: string): string => `#/history/t/${encod
 
 /* ------------------------------------------------------------ projects */
 
-export function mountHistory(): Page {
-  const { root, body } = page('History', '#/')
-  const search = el('input', { type: 'search', class: 'search', placeholder: 'Search projects', 'aria-label': 'Search projects' })
+export interface Recent {
+  root: HTMLElement
+  /** Mark the project whose sessions the laptop pane shows. */
+  setSelected: (path: string | null) => void
+  /** Ask the computer again: a session may have ended into history since. */
+  refresh: () => void
+}
+
+/**
+ * Recent: every project with a past conversation, newest first, searchable.
+ * One row a project — its name (and the parent that tells two same-named ones
+ * apart), then how many conversations and when — as a link to its sessions.
+ */
+export function mountRecent(opts: { compact: boolean }): Recent {
+  const search = el('input', {
+    type: 'search',
+    class: 'search',
+    placeholder: 'Search projects',
+    'aria-label': 'Search projects',
+    autocomplete: 'off',
+    enterkeyhint: 'search'
+  })
   const list = el('div', { class: 'picker' })
-  body.append(el('div', { class: 'content' }, el('label', { class: 'search-wrap' }, icon('search', 18), search), list))
-  let projects: ProjectRow[] = []
+  const root = el('div', { class: 'recent', 'data-compact': opts.compact ? 'true' : undefined }, el('label', { class: 'search-wrap' }, icon('search', 18), search), list)
+  let projects: ProjectRow[] | null = null
+  let selected: string | null = null
 
   const draw = (): void => {
-    const q = search.value.trim().toLowerCase()
+    if (!projects) return
     const now = Date.now()
-    const rows = projects
-      .filter((p) => p.sessionCount > 0)
-      .filter((p) => !q || p.name.toLowerCase().includes(q) || p.path.toLowerCase().includes(q))
-      .sort((a, b) => (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0))
+    const rows = recentProjects(projects, search.value)
     if (!rows.length) {
       list.replaceChildren(
-        el('div', { class: 'empty small' }, el('p', { class: 'empty-text' }, q ? `No project matches “${search.value}”.` : 'No past sessions on this machine yet.'))
+        el(
+          'div',
+          { class: 'empty small' },
+          el('p', { class: 'empty-text' }, search.value.trim() ? `No project matches “${search.value.trim()}”.` : 'No past sessions on this machine yet.')
+        )
       )
       return
     }
     list.replaceChildren(
-      ...rows.map((p) =>
-        el(
-          'a',
-          { class: 'prow', href: historyHref(p.path) },
-          el('span', { class: 'prow-icon' }, icon(p.pinned ? 'pin' : 'folder', 18)),
+      el(
+        'div',
+        { class: 'group' },
+        ...rows.map((p) =>
           el(
-            'span',
-            { class: 'prow-text' },
-            el('span', { class: 'prow-name' }, p.name),
-            el('span', { class: 'prow-path' }, middleTruncate(p.path, pathRoom())),
-            el('span', { class: 'prow-meta' }, [plural(p.sessionCount, 'session'), relativeTime(p.lastActivityAt, now)].filter(Boolean).join(' · '))
-          ),
-          el('span', { class: 'prow-go' }, icon('chevron', 18))
+            'a',
+            { class: 'prow', href: historyHref(p.path), title: p.path, 'aria-current': p.path === selected ? 'page' : undefined },
+            el('span', { class: 'prow-icon' }, icon(p.pinned ? 'pin' : 'folder', 18)),
+            el(
+              'span',
+              { class: 'prow-text' },
+              el(
+                'span',
+                { class: 'prow-name' },
+                el('span', { class: 'prow-label' }, p.label || p.name),
+                p.hint ? el('span', { class: 'prow-hint' }, p.hint) : null
+              ),
+              el('span', { class: 'prow-meta' }, [plural(p.sessionCount, 'session'), relativeTime(p.lastActivityAt, now)].filter(Boolean).join(' · '))
+            ),
+            el('span', { class: 'prow-go' }, icon('chevron', 18))
+          )
         )
       )
     )
@@ -79,23 +112,33 @@ export function mountHistory(): Page {
   search.addEventListener('input', draw)
 
   const load = (): void => {
-    list.replaceChildren(skeleton(5))
+    if (!projects) list.replaceChildren(skeleton(5))
     api<{ projects: ProjectRow[] }>('/api/projects')
       .then((d) => {
         projects = d.projects
         draw()
       })
-      .catch((err) => list.replaceChildren(failure('Could not load history', humanError(err), load)))
+      .catch((err) => {
+        if (!projects) list.replaceChildren(failure('Could not load your projects', humanError(err), load))
+      })
   }
   load()
-  return { root, destroy: () => {} }
+  return {
+    root,
+    setSelected: (path) => {
+      if (path === selected) return
+      selected = path
+      draw()
+    },
+    refresh: load
+  }
 }
 
 /* --------------------------------------------------- one project's sessions */
 
 export function mountProjectHistory(cwd: string): Page {
   // A new conversation where the old ones are, without re-finding the folder.
-  const here = iconButton('plus', 'New session here', { class: 'icon-btn', 'data-variant': 'primary' })
+  const here = newButton('New session here')
   here.addEventListener('click', () => openNewSession({ cwd, name: folderName(cwd) }))
   const { root, body } = page(folderName(cwd), '#/history', [here])
   const content = el('div', { class: 'content' })
@@ -134,14 +177,14 @@ export function mountProjectHistory(cwd: string): Page {
           content.replaceChildren(el('div', { class: 'empty small' }, el('p', { class: 'empty-text' }, 'No conversations in this project yet.')))
           return
         }
-        const nodes: HTMLElement[] = [el('div', { class: 'hlist' }, ...real.map((s) => sessionRow(s, now)))]
+        const nodes: HTMLElement[] = real.length ? [el('div', { class: 'group hlist' }, ...real.map((s) => sessionRow(s, now)))] : []
         if (empty.length) {
           nodes.push(
             el(
               'details',
               { class: 'empties' },
               el('summary', {}, `Empty sessions (${empty.length})`),
-              el('div', { class: 'hlist' }, ...empty.map((s) => sessionRow(s, now)))
+              el('div', { class: 'group hlist' }, ...empty.map((s) => sessionRow(s, now)))
             )
           )
         }

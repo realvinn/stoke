@@ -37,6 +37,8 @@ import {
   resumeVerdict,
   shouldRestartRemote,
   sortSessionRows,
+  staticCacheControl,
+  staticMissAnswer,
   stripLocalHostnameSuffix,
   SUBMIT_CHUNK,
   SubmitQueue,
@@ -59,7 +61,8 @@ import { browseRemoteFolder, listSubfolders, resolveFolderBases } from '../src/m
 import { createServer, type Server } from 'node:http'
 import { join } from 'node:path'
 import { createHmac, generateKeyPairSync, sign, type KeyObject } from 'node:crypto'
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { runInNewContext } from 'node:vm'
 import { tmpdir } from 'node:os'
 import { transcribe } from '../src/main/stt.ts'
 import {
@@ -498,6 +501,190 @@ check('the shell is public', isGatedRemotePath('/'), false)
 check('assets are public', isGatedRemotePath('/assets/app.js'), false)
 check('the manifest is public', isGatedRemotePath('/manifest.webmanifest'), false)
 check('an unmatched path falls to the public SPA shell, not to a 401', isGatedRemotePath('/session/abc'), false)
+check('the service worker is public too: a phone must load it before it has a key', isGatedRemotePath('/sw.js'), false)
+
+console.log('\nthe phone shell: static answers, caching, and the service worker')
+// A missing FILE used to get index.html with a 200: a module loader ran HTML as
+// a script, and a service worker asking for /sw.js from a build without one
+// would have registered the shell as its script.
+check(
+  'a path naming no file is a page, and gets the shell',
+  ['/', '/session/abc', '/index.html', '/history/p/x/'].map(staticMissAnswer),
+  ['shell', 'shell', 'shell', 'shell']
+)
+check(
+  'a missing file is a 404: an old bundle hash, the worker, an icon, anything with an extension',
+  ['/assets/index-OLDHASH.js', '/sw.js', '/icon-999.png', '/manifest.webmanifest', '/favicon.ICO'].map(staticMissAnswer),
+  ['not-found', 'not-found', 'not-found', 'not-found', 'not-found']
+)
+check(
+  'hashed /assets/ are kept for good; the shell, the worker and the manifest are revalidated',
+  ['/assets/index-DtCA4skw.js', '/', '/index.html', '/sw.js', '/manifest.webmanifest', '/icon-192.png'].map((p) =>
+    staticCacheControl(p).includes('immutable')
+  ),
+  [true, false, false, false, false, false]
+)
+
+{
+  const swSource = readFileSync(new URL('../src/remote/public/sw.js', import.meta.url), 'utf8')
+  check(
+    "sw.js keeps both markers vite.remote.config.ts stamps (without them the worker never changes, so never updates)",
+    [swSource.split("'__STOKE_BUILD__'").length - 1, swSource.split('/* __STOKE_PRECACHE__ */ []').length - 1],
+    [1, 1]
+  )
+  const ORIGIN = 'https://phone.example'
+  const listeners = new Map<string, (event: unknown) => void>()
+  // Holds the Response itself, URL and all, as Cache Storage does: `put` keeps a
+  // response's URL list whatever key it is filed under, and `match` hands it back.
+  const store = new Map<string, Response>()
+  const cacheNames = new Set<string>()
+  let network: (url: string) => Promise<Response> = () => Promise.reject(new TypeError('offline'))
+  let fetched: string[] = []
+  const keyOf = (r: string | { url: string }): string => (typeof r === 'string' ? r : r.url)
+  const cache = {
+    match: async (r: string | { url: string }) => store.get(keyOf(r))?.clone(),
+    put: async (r: string | { url: string }, res: Response) => void store.set(keyOf(r), res),
+    addAll: async () => {}
+  }
+  /*
+   * What `fetch` really answers: a Response whose `url` is the URL it fetched,
+   * through every `clone()`. A synthetic `new Response()` has `url === ''`, so a
+   * suite that stubs the network with one can never see a URL kept in the cache —
+   * which is how "a ?k= key never lands in Cache Storage" passed here while the
+   * worker stored the `?k=` navigation's own response, key in its `.url`.
+   */
+  const fromNetwork = (url: string, res: Response): Response => {
+    const clone = res.clone.bind(res)
+    Object.defineProperty(res, 'url', { value: url })
+    Object.defineProperty(res, 'clone', { value: () => fromNetwork(url, clone()) })
+    return res
+  }
+  // `keepShell` reads the body before it stores anything: let that finish.
+  const settle = async (): Promise<void> => {
+    for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r))
+  }
+  const sandbox: Record<string, unknown> = {
+    self: {
+      addEventListener: (type: string, fn: (event: unknown) => void) => listeners.set(type, fn),
+      registration: { scope: `${ORIGIN}/` },
+      location: { origin: ORIGIN },
+      clients: { claim: async () => {} },
+      skipWaiting: async () => {}
+    },
+    caches: {
+      open: async (name: string) => (cacheNames.add(name), cache),
+      keys: async () => [...cacheNames],
+      delete: async (name: string) => cacheNames.delete(name)
+    },
+    fetch: (r: string | { url: string }) => {
+      fetched.push(keyOf(r))
+      return network(keyOf(r))
+    },
+    URL,
+    Response,
+    Promise,
+    // The shell's stall timer must not hold this suite open for its 4s.
+    setTimeout: (fn: () => void, ms: number) => setTimeout(fn, ms).unref()
+  }
+  runInNewContext(swSource, sandbox)
+  const route = sandbox.route as (pathname: string, scopePath: string, navigate: boolean) => string | null
+  check(
+    'never /api or /ws: every byte of session data, and the key, goes to the computer every time',
+    ['/api', '/api/sessions', '/api/theme', '/ws', '/ws/events'].map((p) => route(p, '/', true)),
+    [null, null, null, null, null]
+  )
+  check('nor the worker itself', route('/sw.js', '/', false), null)
+  check(
+    'the shell, the hashed assets and the manifest and icons are its only business',
+    ['/', '/index.html', '/assets/index-x.js', '/manifest.webmanifest', '/icon-192.png', '/icon-180.png'].map((p) => route(p, '/', false)),
+    ['shell', 'shell', 'asset', 'static', 'static', 'static']
+  )
+  check(
+    'an SPA page is the shell only as a navigation; any other file is left alone',
+    [route('/session/abc', '/', true), route('/session/abc', '/', false), route('/notes.txt', '/', true)],
+    ['shell', null, null]
+  )
+  check(
+    'under a path scope, /api below it is still left alone, and nothing outside the scope is touched',
+    [route('/stoke/api/sessions', '/stoke/', false), route('/stoke/', '/stoke/', true), route('/other/', '/stoke/', true)],
+    [null, 'shell', null]
+  )
+
+  const fire = (method: string, url: string, mode = 'no-cors'): Promise<Response> | null => {
+    let answered: Promise<Response> | null = null
+    listeners.get('fetch')?.({ request: { method, url, mode }, respondWith: (p: Promise<Response>) => (answered = p) })
+    return answered
+  }
+  check(
+    'the fetch handler never answers /api, /ws, a POST or another origin',
+    [
+      fire('GET', `${ORIGIN}/api/sessions`),
+      fire('GET', `${ORIGIN}/ws?ptyId=x`),
+      fire('POST', `${ORIGIN}/`, 'navigate'),
+      fire('GET', 'https://elsewhere.example/assets/a.js')
+    ].map((p) => p === null),
+    [true, true, true, true]
+  )
+  const html = (body: string): Response => new Response(body, { headers: { 'content-type': 'text/html; charset=utf-8' } })
+  network = async (url) => fromNetwork(url, html('<p>new shell</p>'))
+  const online = await fire('GET', `${ORIGIN}/?k=SECRETKEY`, 'navigate')!
+  check('online, the shell comes from the network (a Stoke update lands on the next load)', await online.text(), '<p>new shell</p>')
+  await settle()
+  check(
+    "and is kept under the one fixed key with no URL: neither the key nor the stored response's .url carries the ?k=",
+    [...store.entries()].map(([k, res]) => [k, k.includes('SECRETKEY'), res.url]),
+    [[`${ORIGIN}/index.html`, false, '']]
+  )
+  check(
+    "the page itself gets the network's own response, untouched",
+    online.url,
+    `${ORIGIN}/?k=SECRETKEY`
+  )
+  network = () => Promise.reject(new TypeError('Failed to fetch'))
+  const offline = await fire('GET', `${ORIGIN}/`, 'navigate')!
+  check('offline, the kept shell paints (Connect, or "can\'t reach")', await offline.text(), '<p>new shell</p>')
+  check(
+    'with its status and content type, and still no URL',
+    [offline.status, offline.headers.get('content-type'), offline.url],
+    [200, 'text/html; charset=utf-8', '']
+  )
+  store.clear()
+  const nothing = await fire('GET', `${ORIGIN}/`, 'navigate')!
+  check('offline with nothing kept is a network error, never an invented page', nothing.type, 'error')
+
+  fetched = []
+  network = async (url) => fromNetwork(url, new Response('export {}', { headers: { 'content-type': 'text/javascript' } }))
+  await (await fire('GET', `${ORIGIN}/assets/index-abc.js`)!).text()
+  await settle()
+  await (await fire('GET', `${ORIGIN}/assets/index-abc.js`)!).text()
+  check('a hashed asset is fetched once, then served from the cache', fetched, [`${ORIGIN}/assets/index-abc.js`])
+  check(
+    'a file asked for with a query is left to the network, so no stored URL ever carries one',
+    [fire('GET', `${ORIGIN}/icon-192.png?k=SECRETKEY`), fire('GET', `${ORIGIN}/assets/index-abc.js?k=SECRETKEY`)].map(
+      (p) => p === null
+    ),
+    [true, true]
+  )
+  network = async () => html('<!doctype html>')
+  await fire('GET', `${ORIGIN}/assets/index-gone.js`)
+  await new Promise((r) => setImmediate(r))
+  check(
+    "HTML answering for an asset (an older server's SPA fallback) is never kept as that asset",
+    store.has(`${ORIGIN}/assets/index-gone.js`),
+    false
+  )
+
+  cacheNames.clear()
+  cacheNames.add('stoke-shell-oldbuild').add('stoke-shell-__STOKE_BUILD__').add('someone-elses')
+  let activated: Promise<unknown> | null = null
+  listeners.get('activate')?.({ waitUntil: (p: Promise<unknown>) => (activated = p) })
+  await activated
+  check(
+    "activating drops every other build's cache and leaves caches that are not Stoke's",
+    [...cacheNames].sort(),
+    ['someone-elses', 'stoke-shell-__STOKE_BUILD__']
+  )
+}
 
 check('a .local suffix is stripped', stripLocalHostnameSuffix('macbookpro.local'), 'macbookpro')
 check('so is .localdomain', stripLocalHostnameSuffix('desktop.localdomain'), 'desktop')

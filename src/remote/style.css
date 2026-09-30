@@ -59,6 +59,23 @@
   --safe-right: env(safe-area-inset-right, 0px);
   --bar-h: 52px;
   --tap: 44px;
+
+  /*
+   * The 4px scale: the desktop's --space-* names (app.css), in px because the
+   * phone has no interface scale to follow. Spacing on the surfaces the clean-up
+   * touched comes from here; a literal in between is a deliberate optical fix.
+   */
+  --space-4: 4px;
+  --space-8: 8px;
+  --space-12: 12px;
+  --space-16: 16px;
+  --space-24: 24px;
+  --space-32: 32px;
+  --space-48: 48px;
+  /* One radius per size of thing: a chip, a control, a container. */
+  --radius-8: 8px;
+  --radius-12: 12px;
+  --radius-16: 16px;
   color-scheme: dark;
 }
 
@@ -173,9 +190,22 @@ a {
 
 .btn-sm {
   min-height: 36px;
-  padding: 0 14px;
+  padding: 0 var(--space-12);
   font-size: 14px;
-  border-radius: 10px;
+  border-radius: var(--radius-8);
+}
+
+/*
+ * The bar's one primary action, labelled ("New"): it was a bare accent circle
+ * beside a History icon of equal weight. 36px tall inside the 52px bar, with
+ * the tap area held at --tap by the bar's own height around it.
+ */
+.btn-pill {
+  min-height: 36px;
+  gap: var(--space-4);
+  padding: 0 var(--space-16) 0 var(--space-12);
+  border-radius: 999px;
+  font-size: 14px;
 }
 
 .icon-btn {
@@ -204,18 +234,6 @@ a {
   background: var(--surface-active);
 }
 
-.icon-btn[data-variant='primary'] {
-  color: var(--accent-contrast);
-  background: var(--accent);
-  border-radius: 50%;
-  margin-left: 4px;
-}
-
-.icon-btn[data-variant='primary']:hover {
-  background: var(--accent-hover);
-  color: var(--accent-contrast);
-}
-
 /* --------------------------------------------------------- page chrome */
 
 .page {
@@ -228,16 +246,22 @@ a {
 .topbar {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-4);
   flex-shrink: 0;
   min-height: calc(var(--bar-h) + var(--safe-top));
-  padding: var(--safe-top) calc(10px + var(--safe-right)) 0 calc(6px + var(--safe-left));
+  padding: var(--safe-top) calc(var(--space-12) + var(--safe-right)) 0 calc(var(--space-4) + var(--safe-left));
   background: var(--bg);
   border-bottom: 1px solid var(--line);
 }
 
+/* Home's bar sits on the segments below it: one surface, no rule between. */
+.home .topbar,
+.rail .topbar {
+  border-bottom: none;
+}
+
 .topbar-title {
-  margin: 0 0 0 4px;
+  margin: 0 0 0 var(--space-4);
   font-size: 17px;
   font-weight: 650;
   min-width: 0;
@@ -253,36 +277,85 @@ a {
 .brand {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-8);
   min-width: 0;
-  padding-left: 8px;
+  padding-left: var(--space-8);
 }
 
 .brand-mark {
-  width: 26px;
-  height: 26px;
-  border-radius: 8px;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
   flex-shrink: 0;
   display: block;
 }
 
 .brand-name {
-  font-size: 18px;
+  font-size: 17px;
   font-weight: 700;
   letter-spacing: -0.01em;
 }
 
+/* Which computer, as quiet text beside the name rather than a second outlined chip. */
 .machine {
   min-width: 0;
   max-width: 40vw;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  padding: 2px 8px;
+  color: var(--text-faint);
+  font-size: 13px;
+}
+
+.machine::before {
+  content: '·';
+  margin-right: var(--space-8);
+}
+
+/*
+ * Home's two segments, Running | Recent (`homeSegmentFor`). History used to be
+ * a second button in the bar beside New; it is this segment now, so the bar
+ * carries one action. Links, so Back walks between them.
+ */
+.segbar {
+  flex-shrink: 0;
+  padding: 0 calc(var(--space-12) + var(--safe-right)) var(--space-8) calc(var(--space-12) + var(--safe-left));
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+}
+
+.segbar .seg {
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+.segbar .seg-btn {
+  flex: 1 1 0;
+  min-height: 36px;
+}
+
+.seg-count {
+  min-width: 18px;
+  padding: 0 5px;
   border-radius: 999px;
-  border: 1px solid var(--line);
+  background: var(--surface);
   color: var(--text-muted);
   font-size: 12px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  line-height: 18px;
+}
+
+.seg-btn[aria-current='page'] .seg-count {
+  background: var(--surface-hover);
+}
+
+/* A prompt waiting while Recent is open: the one thing Running's label must still say. */
+.seg-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--status-waiting);
 }
 
 .scroll {
@@ -296,15 +369,16 @@ a {
   width: 100%;
   max-width: 720px;
   margin: 0 auto;
-  padding: 8px calc(12px + var(--safe-right)) calc(28px + var(--safe-bottom)) calc(12px + var(--safe-left));
+  padding: var(--space-8) calc(var(--space-12) + var(--safe-right)) calc(var(--space-32) + var(--safe-bottom))
+    calc(var(--space-12) + var(--safe-left));
 }
 
 .link-strip {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-8);
   flex-shrink: 0;
-  padding: 8px 14px;
+  padding: var(--space-8) var(--space-16);
   background: color-mix(in srgb, var(--warning) 14%, var(--bg));
   color: var(--text);
   border-bottom: 1px solid color-mix(in srgb, var(--warning) 35%, transparent);
@@ -385,14 +459,13 @@ a {
 .slist {
   display: flex;
   flex-direction: column;
-  gap: 8px;
 }
 
 .section-head {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin: 14px 4px 2px;
+  gap: var(--space-8);
+  margin: var(--space-24) var(--space-4) var(--space-8);
   font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.06em;
@@ -400,8 +473,10 @@ a {
   color: var(--text-faint);
 }
 
-.section-head:first-child {
-  margin-top: 6px;
+/* Only the first heading of a list sits close; every section head is its own section's first child. */
+.slist > .ssection:first-child .section-head,
+.picker > .section-head:first-child {
+  margin-top: var(--space-8);
 }
 
 .section-head[data-section='needs'] {
@@ -409,95 +484,110 @@ a {
 }
 
 .section-count {
+  min-width: 18px;
   font-weight: 600;
   letter-spacing: 0;
+  text-align: center;
   padding: 0 6px;
   border-radius: 999px;
   background: var(--surface);
   color: var(--text-muted);
 }
 
-.srow {
-  border-radius: 14px;
+/*
+ * A grouped list: one surface per section, its rows divided by a hairline.
+ * Every row used to be a card of its own, each with its border and its gap,
+ * so a screen of five sessions was five boxes and ten rules; the group is one.
+ */
+.group {
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-16);
   border: 1px solid var(--line);
   background: var(--card);
   overflow: hidden;
 }
 
-.srow[data-status='waiting'] {
-  border-color: color-mix(in srgb, var(--status-waiting) 45%, transparent);
-  background: color-mix(in srgb, var(--status-waiting) 7%, var(--card));
+.group > * + * {
+  border-top: 1px solid var(--line);
+}
+
+/* A prompt waiting: the one section tinted, so it reads before a word does. */
+.ssection[data-section='needs'] .group {
+  border-color: color-mix(in srgb, var(--status-waiting) 40%, transparent);
+  background: color-mix(in srgb, var(--status-waiting) 6%, var(--card));
+}
+
+.ssection[data-section='needs'] .group > * + * {
+  border-top-color: color-mix(in srgb, var(--status-waiting) 25%, transparent);
 }
 
 .srow[data-status='ended'] {
   opacity: 0.62;
 }
 
+/*
+ * Two lines: what the session is doing, then where and when (`rowMeta`), with
+ * the context meter at the edge of the second. The pill takes the first line's
+ * edge only for news the heading cannot carry (`rowPillShown`).
+ */
 .srow-main {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  min-height: 72px;
-  padding: 12px 14px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    'title pill'
+    'meta meter';
+  align-items: center;
+  column-gap: var(--space-12);
+  row-gap: var(--space-4);
+  min-height: 64px;
+  padding: var(--space-12) var(--space-16);
   transition: background 0.12s ease;
 }
 
-.srow-main:hover {
-  background: color-mix(in srgb, var(--surface-hover) 50%, transparent);
+@media (hover: hover) {
+  .srow-main:hover {
+    background: color-mix(in srgb, var(--surface-hover) 50%, transparent);
+  }
 }
 
-.srow-top {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-.srow-project {
-  font-size: 15.5px;
-  font-weight: 650;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.srow-where {
-  flex-shrink: 0;
-  padding: 0 6px;
-  border-radius: 6px;
-  background: var(--surface);
-  color: var(--text-muted);
-  font-size: 11.5px;
-  font-family: var(--mono);
-}
-
-.srow-gap {
-  flex: 1;
+.srow-main:active {
+  background: color-mix(in srgb, var(--surface-active) 50%, transparent);
 }
 
 .srow-title {
-  color: var(--text-muted);
-  font-size: 14px;
+  grid-area: title;
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.srow-main[data-pill='false'] .srow-title {
+  grid-column: 1 / -1;
+}
+
+.srow-main > .pill {
+  grid-area: pill;
+  justify-self: end;
 }
 
 .srow-meta {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  color: var(--text-faint);
-  font-size: 12.5px;
-}
-
-.srow-time {
-  flex: 1;
+  grid-area: meta;
   min-width: 0;
+  color: var(--text-muted);
+  font-size: 13px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.srow-main > .meter-wrap,
+.srow-main > .meter-label {
+  grid-area: meter;
+  justify-self: end;
 }
 
 .meter-wrap {
@@ -508,7 +598,7 @@ a {
 }
 
 .meter {
-  width: 56px;
+  width: 40px;
   height: 4px;
   border-radius: 2px;
   background: var(--border-subtle);
@@ -541,11 +631,11 @@ a {
 
 /* The answers on a waiting row: one tap from the list (PX-12, contract 7). */
 .srow-answers {
-  padding: 0 12px 12px;
+  padding: 0 var(--space-16) var(--space-16);
 }
 
 .srow-question {
-  margin: -2px 2px 8px;
+  margin: 0 0 var(--space-8);
   font-size: 13.5px;
   color: var(--text);
   overflow: hidden;
@@ -555,7 +645,7 @@ a {
 }
 
 .srow-note {
-  margin: -2px 2px 8px;
+  margin: 0 0 var(--space-8);
   font-size: 12.5px;
   color: var(--text-muted);
 }
@@ -563,13 +653,12 @@ a {
 .chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--space-8);
 }
 
 .chips[data-long='true'] {
   flex-direction: column;
   align-items: stretch;
-  gap: 6px;
 }
 
 .chips[data-long='true'] .answer {
@@ -583,8 +672,8 @@ a {
 .answer {
   min-height: var(--tap);
   max-width: 100%;
-  padding: 0 14px;
-  border-radius: 11px;
+  padding: 0 var(--space-12);
+  border-radius: var(--radius-12);
   border: 1px solid var(--border);
   background: var(--surface);
   color: var(--text);
@@ -747,10 +836,10 @@ a {
 .sbar {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-4);
   flex-shrink: 0;
   min-height: calc(var(--bar-h) + var(--safe-top));
-  padding: var(--safe-top) calc(4px + var(--safe-right)) 0 calc(2px + var(--safe-left));
+  padding: var(--safe-top) calc(var(--space-4) + var(--safe-right)) 0 calc(var(--space-4) + var(--safe-left));
   background: var(--bg);
   border-bottom: 1px solid var(--line);
 }
@@ -760,18 +849,13 @@ a {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  padding: 0 4px;
+  gap: 1px;
+  padding: 0 var(--space-4);
 }
 
-.sbar-line {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
+/* What the session is doing, as the list's first line reads. */
 .sbar-project {
-  font-size: 15.5px;
+  font-size: 15px;
   font-weight: 650;
   min-width: 0;
   overflow: hidden;
@@ -779,29 +863,83 @@ a {
   white-space: nowrap;
 }
 
+/*
+ * Where, its state and its context, in one quiet line. The state was a filled
+ * pill and the context a chip of its own beside Stop: three shapes competing
+ * for a 52px bar. Now they are words, and colour only where it means something.
+ */
 .sbar-sub {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  min-width: 0;
   font-size: 12.5px;
   color: var(--text-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
+  overflow: hidden;
 }
 
-.ctx-chip {
-  flex-shrink: 0;
-  padding: 2px 7px;
-  border-radius: 7px;
-  font-family: var(--mono);
-  font-size: 12px;
-  background: var(--surface);
-  color: var(--success);
+/* The place gives way last-but-one: never below a few letters of its name. */
+.sbar-where {
+  flex: 0 1 auto;
+  min-width: 4em;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-.ctx-chip[data-level='mid'] {
+
+.sbar-status {
+  --tone: var(--status-unknown);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  color: var(--tone);
+  font-weight: 600;
+}
+
+.sbar-status i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.sbar-status[data-tone='waiting'] {
+  --tone: var(--status-waiting);
+}
+.sbar-status[data-tone='busy'] {
+  --tone: var(--status-busy);
+}
+.sbar-status[data-tone='idle'] {
+  --tone: var(--status-idle);
+}
+.sbar-status[data-tone='ended'] {
+  --tone: var(--status-ended);
+}
+
+.sbar-status[data-tone='busy'] i {
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+/* Context is news only once it runs high: quiet until then. */
+.sbar-ctx {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+}
+.sbar-ctx[data-level='mid'] {
   color: var(--warning);
 }
-.ctx-chip[data-level='high'],
-.ctx-chip[data-level='full'] {
+.sbar-ctx[data-level='high'],
+.sbar-ctx[data-level='full'] {
   color: var(--danger);
+}
+
+/* The state's own dot separates it from the place; the context gets a middle dot. */
+.sbar-ctx::before {
+  content: '·';
+  margin-right: var(--space-8);
+  color: var(--text-faint);
 }
 
 .stop-btn {
@@ -811,8 +949,8 @@ a {
   flex-shrink: 0;
   height: 36px;
   margin: 0 2px;
-  padding: 0 12px;
-  border-radius: 10px;
+  padding: 0 var(--space-12);
+  border-radius: var(--radius-8);
   border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent);
   background: color-mix(in srgb, var(--danger) 12%, transparent);
   color: var(--danger);
@@ -820,32 +958,41 @@ a {
   font-weight: 650;
 }
 
+/*
+ * "Fit to phone?": one row, the question on the left and two small buttons on
+ * the right. It was three lines of prose over two full-width buttons, the
+ * biggest thing on the screen for a choice made once.
+ */
 .banner {
   display: flex;
-  flex-direction: column;
-  gap: 10px;
+  align-items: center;
+  gap: var(--space-12);
   flex-shrink: 0;
-  padding: 12px 14px;
+  padding: var(--space-8) var(--space-12) var(--space-8) var(--space-16);
   background: var(--bg-elevated);
   border-bottom: 1px solid var(--line);
-  font-size: 13.5px;
+  font-size: 12.5px;
   color: var(--text-muted);
+}
+
+.banner-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
 }
 
 .banner strong {
   color: var(--text);
+  font-size: 13.5px;
+  font-weight: 600;
 }
 
 .banner-actions {
   display: flex;
-  gap: 8px;
-  justify-content: flex-end;
-}
-
-.banner-actions .btn {
-  flex: 1;
-  min-height: 40px;
-  font-size: 14px;
+  flex-shrink: 0;
+  gap: var(--space-8);
 }
 
 /*
@@ -879,8 +1026,9 @@ a {
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 8px calc(8px + var(--safe-right)) calc(8px + var(--safe-bottom)) calc(8px + var(--safe-left));
+  gap: var(--space-8);
+  padding: var(--space-8) calc(var(--space-8) + var(--safe-right)) calc(var(--space-8) + var(--safe-bottom))
+    calc(var(--space-8) + var(--safe-left));
   background: var(--bg);
   border-top: 1px solid var(--line);
 }
@@ -888,27 +1036,66 @@ a {
 .dock-row {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-}
-
-.dock[data-waiting='true'] .keys {
-  display: none;
+  gap: var(--space-8);
 }
 
 .tray {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-8);
+}
+
+/* The question, with Cancel at its edge rather than a full-width row of its own. */
+.tray-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  min-width: 0;
 }
 
 .tray-q {
-  padding: 0 4px;
+  flex: 1;
+  min-width: 0;
+  padding: 0 var(--space-4);
   font-size: 14px;
   font-weight: 600;
   overflow: hidden;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
+}
+
+.tray-cancel {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  min-height: 36px;
+  padding: 0 var(--space-12) 0 var(--space-4);
+  border-radius: var(--radius-8);
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.tray-cancel .tray-key {
+  min-width: 26px;
+  height: 26px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+@media (hover: hover) {
+  .tray-cancel:hover:not(:disabled) {
+    background: var(--surface-hover);
+    color: var(--text);
+  }
+}
+
+.tray-cancel:disabled {
+  opacity: 0.55;
 }
 
 .tray-options {
@@ -919,10 +1106,10 @@ a {
 .tray-btn {
   display: flex;
   align-items: center;
-  gap: 10px;
-  min-height: 48px;
-  padding: 6px 12px 6px 8px;
-  border-radius: 12px;
+  gap: var(--space-12);
+  min-height: var(--tap);
+  padding: 6px var(--space-12) 6px 6px;
+  border-radius: var(--radius-12);
   border: 1px solid var(--border);
   background: var(--surface);
   color: var(--text);
@@ -931,20 +1118,20 @@ a {
   font-weight: 550;
 }
 
-.tray-btn:hover:not(:disabled) {
-  background: var(--surface-hover);
+/* Hover only where there is one, and never over the accent fill (it went grey under a mouse). */
+@media (hover: hover) {
+  .tray-btn:not([data-variant='primary']):hover:not(:disabled) {
+    background: var(--surface-hover);
+  }
+  .tray-btn[data-variant='primary']:hover:not(:disabled) {
+    background: var(--accent-hover);
+  }
 }
 
 .tray-btn[data-variant='primary'] {
   background: var(--accent);
   border-color: transparent;
   color: var(--accent-contrast);
-}
-
-.tray-btn[data-variant='quiet'] {
-  background: transparent;
-  color: var(--text-muted);
-  min-height: var(--tap);
 }
 
 .tray-btn:disabled {
@@ -1149,11 +1336,56 @@ a {
   color: var(--danger);
 }
 
+/*
+ * The composer: the key-row toggle, the field with the mic inside it (as a
+ * keyboard's own dictation key sits), and Send. Four round controls of equal
+ * weight were one too many; the mic belongs to the text it writes.
+ */
 .composer {
   position: relative;
   display: flex;
   align-items: flex-end;
-  gap: 8px;
+  gap: var(--space-8);
+}
+
+.keys-toggle {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: var(--tap);
+  height: var(--tap);
+  border-radius: 50%;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.keys-toggle[aria-expanded='true'] {
+  background: var(--surface-active);
+  color: var(--text);
+}
+
+@media (hover: hover) {
+  .keys-toggle:hover {
+    background: var(--surface-hover);
+    color: var(--text);
+  }
+}
+
+.composer-field {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: flex-end;
+  border-radius: 22px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  transition: border-color 0.12s ease;
+}
+
+.composer-field:focus-within {
+  border-color: var(--accent-ink);
 }
 
 /*
@@ -1184,24 +1416,21 @@ a {
   transition: transform 60ms linear;
 }
 
+/* Inside the field's 1px border: 20px line + 11px + 11px = --tap - 2. */
 .composer-input {
   flex: 1;
   min-width: 0;
-  min-height: var(--tap);
+  min-height: calc(var(--tap) - 2px);
   max-height: 132px;
-  padding: 11px 14px;
-  border-radius: 22px;
-  border: 1px solid var(--border);
-  background: var(--surface);
+  padding: 11px var(--space-4) 11px var(--space-16);
+  border-radius: 21px;
+  border: none;
+  background: transparent;
   /* 16px exactly: under that iOS zooms the page on focus. */
   font-size: 16px;
   line-height: 20px;
   resize: none;
   outline: none;
-}
-
-.composer-input:focus {
-  border-color: var(--accent-ink);
 }
 
 .composer-input::placeholder {
@@ -1221,18 +1450,24 @@ a {
   color: var(--text-muted);
 }
 
-.mic[data-state='off'] {
-  color: var(--text-faint);
-  border-style: dashed;
+/* The mic inside the field: no ring of its own until it records. */
+.composer-field .mic {
+  width: calc(var(--tap) - 2px);
+  height: calc(var(--tap) - 2px);
+  border-color: transparent;
+  background: transparent;
 }
 
-.mic[data-state='recording'] {
+.composer-field .mic[data-state='off'] {
+  color: var(--text-faint);
+}
+
+.composer-field .mic[data-state='recording'] {
   background: var(--danger);
-  border-color: transparent;
   color: var(--bg);
 }
 
-.mic[data-state='working'] {
+.composer-field .mic[data-state='working'] {
   opacity: 0.6;
 }
 
@@ -1447,9 +1682,9 @@ a {
 
 .seg {
   display: flex;
-  gap: 4px;
-  padding: 4px;
-  border-radius: 12px;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  border-radius: var(--radius-12);
   background: var(--bg-sunken);
 }
 
@@ -1464,21 +1699,33 @@ a {
 
 .seg-btn {
   flex: 1 1 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-8);
   /* A whole touch target (44px on touch, 36px under pointer: fine); 40px was
      short of it on every New session row (phone QA). */
   min-height: var(--tap);
-  padding: 0 12px;
-  border-radius: 9px;
+  padding: 0 var(--space-12);
+  border-radius: var(--radius-8);
   border: none;
   background: transparent;
   color: var(--text-muted);
   font-size: 14px;
   font-weight: 600;
   white-space: nowrap;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+@media (hover: hover) {
+  .seg-btn:hover:not([aria-pressed='true'], [aria-checked='true'], [aria-current='page']) {
+    color: var(--text);
+  }
 }
 
 .seg-btn[aria-pressed='true'],
-.seg-btn[aria-checked='true'] {
+.seg-btn[aria-checked='true'],
+.seg-btn[aria-current='page'] {
   background: var(--surface-active);
   color: var(--text);
   box-shadow: 0 1px 2px rgb(0 0 0 / 0.2);
@@ -1528,26 +1775,52 @@ a {
   flex-direction: column;
 }
 
-.picker .section-head {
-  margin-top: 16px;
-}
-
 .prow {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-12);
   width: 100%;
-  min-height: 64px;
-  padding: 10px 8px;
-  border-radius: 12px;
+  min-height: 60px;
+  padding: 10px var(--space-8);
+  border-radius: var(--radius-12);
   border: none;
   background: transparent;
   color: var(--text);
   text-align: left;
 }
 
-.prow:hover:not(:disabled) {
-  background: var(--surface-hover);
+/*
+ * A row inside a group: the group has the corners, the row the whole width.
+ * The rule between rows is restated here because `.prow`'s own `border: none`
+ * (gotcha 47) comes later than `.group`'s and would win at equal weight.
+ */
+.group > .prow {
+  border-radius: 0;
+  padding: 10px var(--space-12);
+}
+
+.group > * + .prow {
+  border-top: 1px solid var(--line);
+}
+
+/* Two groups in one list (a titled one, then Browse): apart, not fused. */
+.picker > .group + .group {
+  margin-top: var(--space-12);
+}
+
+@media (hover: hover) {
+  .prow:hover:not(:disabled) {
+    background: var(--surface-hover);
+  }
+}
+
+.prow:active:not(:disabled) {
+  background: var(--surface-active);
+}
+
+/* In a sheet the group is drawn by its rule alone: a darker card on the sheet read as a hole. */
+.sheet .group {
+  background: transparent;
 }
 
 .prow:disabled {
@@ -1756,14 +2029,19 @@ button.crumb:hover {
 .hrow {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 12px 8px;
-  border-bottom: 1px solid var(--line);
+  gap: var(--space-4);
+  padding: var(--space-12) var(--space-16);
   border-radius: 0;
 }
 
-.hrow:hover {
-  background: var(--surface-hover);
+@media (hover: hover) {
+  .hrow:hover {
+    background: var(--surface-hover);
+  }
+}
+
+.hrow:active {
+  background: var(--surface-active);
 }
 
 .hrow-top {
@@ -2056,10 +2334,10 @@ button.crumb:hover {
   .key {
     height: 32px;
   }
-  /* 36px = 20px line + 7px + 7px padding + 2px border. The touch padding
-     (11px) needed 44px and clipped the placeholder in a 36px box. */
+  /* 36px = 20px line + 7px + 7px padding + the field's 2px border. The touch
+     padding (11px) needed 44px and clipped the placeholder in a 36px box. */
   .composer-input {
-    padding: 7px 14px;
+    padding: 7px var(--space-4) 7px 14px;
   }
 }
 
@@ -2076,8 +2354,12 @@ button.crumb:hover {
     padding: 0 2px;
     font-size: 12px;
   }
-  .srow-meta .meter {
-    width: 40px;
+  .srow-main {
+    padding-left: var(--space-12);
+    padding-right: var(--space-12);
+  }
+  .srow-main > .meter-wrap .meter {
+    display: none;
   }
 }
 
@@ -2089,8 +2371,20 @@ button.crumb:hover {
   :root {
     --bar-h: 40px;
   }
-  .sbar-sub {
+  /* One line: the title, then the state and the context beside it; the place drops. */
+  .sbar-title {
+    flex-direction: row;
+    align-items: center;
+    gap: var(--space-12);
+  }
+  .sbar-where {
     display: none;
+  }
+  .sbar-ctx::before {
+    content: none;
+  }
+  .sbar-sub {
+    flex-shrink: 0;
   }
   .dock {
     padding-top: 6px;
@@ -2143,12 +2437,17 @@ button.crumb:hover {
   .tray-label {
     -webkit-line-clamp: 1;
   }
-  .banner {
-    flex-direction: row;
-    align-items: center;
+  .tray-q {
+    -webkit-line-clamp: 1;
   }
-  .banner-actions .btn {
-    flex: 0 0 auto;
+  .banner {
+    padding-top: var(--space-4);
+    padding-bottom: var(--space-4);
+  }
+  .banner-text {
+    flex-direction: row;
+    align-items: baseline;
+    gap: var(--space-8);
   }
 }
 
@@ -2184,28 +2483,21 @@ button.crumb:hover {
   }
   .content {
     max-width: 980px;
-    padding-left: 24px;
-    padding-right: 24px;
+    padding-left: var(--space-24);
+    padding-right: var(--space-24);
   }
-  .home .slist {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 10px;
-  }
-  .home .section-head {
-    grid-column: 1 / -1;
+  /*
+   * Home stays one column, level with the segments above it. It was a
+   * two-column grid of cards that left holes wherever a section had an odd
+   * count; a list of two-line rows reads down, not across.
+   */
+  .home .content {
+    max-width: 768px;
   }
   .empty-actions {
     flex-direction: row;
     max-width: none;
     justify-content: center;
-  }
-  .banner {
-    flex-direction: row;
-    align-items: center;
-  }
-  .banner-actions .btn {
-    flex: 0 0 auto;
   }
   .tray-options {
     grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -2245,7 +2537,12 @@ button.crumb:hover {
     flex: 1;
     min-height: 0;
     overflow-y: auto;
-    padding: 4px 10px 16px;
+    padding: 0 var(--space-8) var(--space-16);
+  }
+  .rail .segbar {
+    padding-left: var(--space-12);
+    padding-right: var(--space-12);
+    background: transparent;
   }
   .pane-wrap {
     min-width: 0;
@@ -2269,13 +2566,28 @@ button.crumb:hover {
     padding-left: 12px;
   }
 
-  .slist[data-compact] {
+  /*
+   * The rail's lists are selectable rows on the rail itself, not cards: the
+   * selection is the surface, and a card around it would be a second one.
+   */
+  .slist[data-compact] .group,
+  .slist[data-compact] .ssection[data-section='needs'] .group,
+  .recent[data-compact] .group {
     gap: 2px;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+    overflow: visible;
+  }
+  .slist[data-compact] .group > * + *,
+  .slist[data-compact] .ssection[data-section='needs'] .group > * + *,
+  .recent[data-compact] .group > * + * {
+    border-top: none;
   }
   .slist[data-compact] .srow {
     border: 1px solid transparent;
-    background: transparent;
-    border-radius: 10px;
+    border-radius: var(--radius-12);
+    overflow: hidden;
   }
   .slist[data-compact] .srow[data-status='waiting'] {
     background: color-mix(in srgb, var(--status-waiting) 8%, transparent);
@@ -2286,16 +2598,17 @@ button.crumb:hover {
   }
   .slist[data-compact] .srow-main {
     min-height: 0;
-    padding: 9px 10px;
-  }
-  .slist[data-compact] .srow-project {
-    font-size: 14.5px;
+    padding: 10px var(--space-12);
+    row-gap: 2px;
   }
   .slist[data-compact] .srow-title {
-    font-size: 13px;
+    font-size: 14px;
+  }
+  .slist[data-compact] .srow-meta {
+    font-size: 12.5px;
   }
   .slist[data-compact] .srow-answers {
-    padding: 0 10px 10px;
+    padding: 0 var(--space-12) var(--space-12);
   }
   .slist[data-compact] .answer {
     min-height: 32px;
@@ -2303,7 +2616,27 @@ button.crumb:hover {
     font-size: 13px;
   }
   .slist[data-compact] .section-head {
-    margin: 12px 8px 4px;
+    margin: var(--space-16) var(--space-12) var(--space-4);
+  }
+  .slist[data-compact] .ssection:first-child .section-head {
+    margin-top: var(--space-8);
+  }
+  .recent[data-compact] .prow {
+    min-height: 0;
+    padding: var(--space-8) var(--space-12) var(--space-8) var(--space-8);
+    border-radius: var(--radius-12);
+  }
+  .recent[data-compact] .prow[aria-current='page'] {
+    background: var(--surface-active);
+  }
+  .recent[data-compact] .prow-icon {
+    width: 32px;
+    height: 32px;
+    border-radius: var(--radius-8);
+  }
+  .recent[data-compact] .search-wrap {
+    margin-top: var(--space-8);
+    background: var(--bg);
   }
 
   /* On a laptop every key fits on one slim row; real keys work in the terminal too. */
@@ -2400,6 +2733,7 @@ button.crumb:hover {
   }
   /* Rests visible, never mid-fade (gotcha 72). */
   .pill i,
+  .sbar-status i,
   .skeleton i {
     opacity: 1;
   }

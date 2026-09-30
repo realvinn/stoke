@@ -380,7 +380,15 @@ attaches to a PTY, replaying its scrollback first.
 The mobile UI (`src/remote/`) is a separate Vite build because it is a plain web app, not an
 Electron surface. Input goes through a normal `<textarea>` rather than the terminal: typing
 into an xterm on a soft keyboard is miserable and autocorrect fights the TUI. A key row
-supplies `esc`, `tab`, arrows and `ctrl-c`, which phone keyboards lack.
+supplies `esc`, `tab`, arrows and `ctrl-c`, which phone keyboards lack; it comes out while the
+composer has focus, and otherwise waits behind one toggle (`keyRowShown`).
+
+It is an installable PWA shell: a manifest, and a service worker (`public/sw.js`) registered only
+in a secure context — the tunnel's https, or localhost; browsers refuse one on a plain-http LAN or
+tailnet link, and that page runs as it always did. The worker caches the shell and the hashed
+bundle so the app opens at once and paints Connect or "can't reach" with no network, and never
+touches /api or /ws. Web Push is not built: it would need VAPID keys minted in start paths, a
+content-free payload and an https origin.
 
 ## The worklog agent
 
@@ -813,11 +821,18 @@ npm run verify:remote         # phone access: where the link points and how it s
                               # prefix, a symlink out, `..`, case per OS, too-shallow places),
                               # that no phone add widens the places (every add, every
                               # configuration of a small tree) and /api/folders against a
-                              # real temp tree (gotcha 121)
+                              # real temp tree (gotcha 121); the public shell's static answers
+                              # (a missing file is a 404, never the shell; only hashed /assets
+                              # immutable) and public/sw.js run in a vm sandbox: never /api or
+                              # /ws, offline paints the kept shell, the kept shell has no URL
+                              # (a network stub whose `url` survives clone, so a `?k=` shows),
+                              # activation drops only Stoke's other builds
 npm run verify:phone-ui       # the phone UI's decisions: list sections, answer options read
-                              # off the screen, the resize policy, queued sends, connect input,
+                              # off the screen, the resize policy (a height change never
+                              # resizes, not even on the blur), queued sends, connect input,
                               # the New session picker (the desktop's `folderChoices`), the
-                              # Browse breadcrumb and New folder names
+                              # Browse breadcrumb and New folder names, home's segments, the
+                              # two-line row, and when the key row is out
 npm run verify:installer-art  # the committed installer bitmaps: BMP3 headers decoded by hand,
                               # exact dimensions, that neither the bitmaps nor the dmg PNGs are a
                               # well-formed blank, that the generator, electron-builder.yml and
@@ -1257,17 +1272,30 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
 src/remote/       mobile web UI, built separately to out/remote. Vanilla TS on one `el()`
                   builder, hash-routed; below 1024px one screen at a time, from 1024px a
                   340px session rail beside the session (never a stretched phone)
-  main.ts           boot (key scrub, live theme), the router and the rail/pane layout
+  main.ts           boot (key scrub, live theme, service worker in a secure context only), the
+                    router and the rail/pane layout; home is Running | Recent (`homeSegmentFor`),
+                    `#/history` being Recent, so the bar carries one action, New
+  public/sw.js      the installable shell's service worker. Network-first index.html, kept under
+                    one fixed key as a URL-less copy (`keepShell`: a stored Response keeps its URL,
+                    so Connect's `?k=` navigation would), cache-first for the
+                    content-hashed /assets and the icons, never /api or /ws. vite.remote.config.ts
+                    stamps BUILD and the file list into the copy in out/remote, so each bundle is
+                    a new worker whose activation drops the old build's cache. verify:remote runs
+                    it in a vm sandbox
   api.ts            the phone contract's shapes, the fetch wrapper (a 401 is the Connect
                     screen; a 403 `refused: 'access'` is the computer's Access reason,
                     `accessRefusalOf`), /api/theme -> :root including derived accent-ink and meters
   store.ts          the one session list: /ws/events pushes, a 5s poll while it is down
-  list.ts           Needs you / Working / Idle / Ended rows, answerable from the list; reads
+  list.ts           Needs you / Working / Idle / Ended groups of two-line rows (title; `rowMeta`),
+                    a pill only for news (`rowPillShown`: a prompt's kind, Ended, and Running
+                    for another agent filed under Idle), answerable from the list; reads
                     a waiting prompt's options by replaying the pty into an unopened xterm
-  session.ts        terminal, status pill, answer tray, keys, composer (queued sends),
-                    Fit to phone via decideResize (gotcha 87), ended banner
-  newSession.ts, history.ts, connect.ts, dom.ts   the new-session sheet, history and
-                    read-back, the paste-your-link screen, the builder/icons/sheets
+  session.ts        terminal, a two-line header (title; place, state, context), answer tray,
+                    keys behind one toggle (`keyRowShown`), composer with the mic in its field
+                    (queued sends), Fit to phone via decideResize (gotcha 87), ended banner
+  newSession.ts, history.ts, connect.ts, dom.ts   the new-session sheet, Recent (`mountRecent`),
+                    a project's sessions and read-back, the paste-your-link screen, the
+                    builder/icons/sheets
 src/shared/       types, IPC channel names, themes, profiles, colour maths
   secrets.ts        `SECRET_PATHS`, the one registry of which settings are secrets (a new
                     secret is one line here), the move between settings and a path->value

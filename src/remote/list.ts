@@ -4,9 +4,16 @@
  * with a waiting session answerable from the list itself (audit PX-2, PX-12;
  * phone contract points 3 and 7).
  *
+ * A row is two lines: what the session is doing (its title), then where and
+ * when (`rowMeta`), with the context meter at the edge. The status pill is
+ * only there when it says something the section heading does not
+ * (`rowPillShown`): the kind of prompt waiting, that it ended, or Running for
+ * another agent, which Stoke cannot read and files under Idle.
+ *
  * Rows are keyed and patched, never rebuilt wholesale: `/ws/events` pushes
  * every ~250ms while a session prints, and replacing a row under a thumb that
- * is mid-tap on one of its answer buttons eats the tap.
+ * is mid-tap on one of its answer buttons eats the tap. Sections are keyed
+ * the same way, and a row or a section moves only when the order changed.
  */
 import { Terminal } from '@xterm/xterm'
 import { contextLevel, contextPercent } from '@shared/contextLevel'
@@ -14,7 +21,8 @@ import {
   answerChoices,
   groupSessionRows,
   parseAnswerOptions,
-  relativeTime,
+  rowMeta,
+  rowPillShown,
   statusPill,
   type AnswerOption,
   type ParsedPrompt,
@@ -53,15 +61,6 @@ export function pill(status: SessionRow['status'], waitingFor: string | null): H
 
 export function rowTitle(r: SessionRow): string {
   return r.title || r.context?.title || (r.status === 'ended' ? 'Ended session' : 'New session')
-}
-
-function activity(r: SessionRow, now: number): string {
-  if (r.status === 'ended') {
-    const code = r.exitCode !== null && r.exitCode !== 0 ? ` · exit ${r.exitCode}` : ''
-    return `ended ${relativeTime(r.endedAt, now)}${code}`
-  }
-  if (r.status === 'busy') return `working · ${relativeTime(r.lastActivityAt ?? r.startedAt, now).replace(' ago', '')}`
-  return `active ${relativeTime(r.lastActivityAt ?? r.startedAt, now)}`
 }
 
 /* -------------------------------------------------------- reading a prompt */
@@ -167,6 +166,9 @@ interface Mounted {
   sig: string
 }
 
+/** Heading ids stay unique however many lists mount (the rail and home can swap). */
+let listSeq = 0
+
 export interface SessionList {
   update: (rows: SessionRow[] | null, error?: unknown) => void
   setSelected: (ptyId: string | null) => void
@@ -183,44 +185,43 @@ export function mountSessionList(
   }
 ): SessionList {
   const mounted = new Map<string, Mounted>()
-  const headings = new Map<string, HTMLElement>()
+  const sections = new Map<string, { root: HTMLElement; head: HTMLElement; rows: HTMLElement }>()
   let selected: string | null = null
   let last: SessionRow[] | null = null
   let state: 'loading' | 'empty' | 'error' | 'rows' | null = null
   const list = el('div', { class: 'slist', 'data-compact': opts.compact ? 'true' : undefined })
+  const seq = ++listSeq
 
-  const heading = (id: string, label: string, count: number): HTMLElement => {
-    let h = headings.get(id)
-    if (!h) {
-      h = el('h2', { class: 'section-head', 'data-section': id })
-      headings.set(id, h)
+  /** One section: its heading and the group its rows sit in, created once per id. */
+  const section = (id: string, label: string, count: number): { root: HTMLElement; rows: HTMLElement } => {
+    let s = sections.get(id)
+    if (!s) {
+      const head = el('h2', { class: 'section-head', 'data-section': id, id: `section-${seq}-${id}` })
+      const rows = el('div', { class: 'group', role: 'list' })
+      s = { root: el('section', { class: 'ssection', 'data-section': id, 'aria-labelledby': head.id }, head, rows), head, rows }
+      sections.set(id, s)
     }
-    h.replaceChildren(el('span', {}, label), el('span', { class: 'section-count' }, String(count)))
-    return h
+    const text = `${label}${count}`
+    if (s.head.textContent !== text) {
+      s.head.replaceChildren(el('span', {}, label), el('span', { class: 'section-count' }, String(count)))
+    }
+    return s
   }
 
+  /** The second line, with the folder's own name when the server sent no project. */
+  const metaOf = (r: SessionRow, now: number): string => rowMeta({ ...r, project: r.project || folderName(r.cwd) }, now)
+
   const build = (r: SessionRow, now: number): HTMLElement => {
-    const where = r.host ? `ssh ${r.host}` : r.agentName && r.cli !== 'claude' ? r.agentName : null
+    const pillShown = rowPillShown(r.status)
     const main = el(
       'a',
-      { class: 'srow-main', href: `#/s/${encodeURIComponent(r.ptyId)}` },
-      el(
-        'div',
-        { class: 'srow-top' },
-        el('span', { class: 'srow-project' }, r.project || folderName(r.cwd)),
-        where ? el('span', { class: 'srow-where' }, where) : null,
-        el('span', { class: 'srow-gap' }),
-        pill(r.status, r.waitingFor)
-      ),
-      el('div', { class: 'srow-title' }, rowTitle(r)),
-      el(
-        'div',
-        { class: 'srow-meta' },
-        el('span', { class: 'srow-time' }, activity(r, now)),
-        r.context?.ready ? meterMini(r.context.contextTokens, r.context.contextLimit) : null
-      )
+      { class: 'srow-main', href: `#/s/${encodeURIComponent(r.ptyId)}`, 'data-pill': String(pillShown) },
+      el('span', { class: 'srow-title' }, rowTitle(r)),
+      pillShown ? pill(r.status, r.waitingFor) : null,
+      el('span', { class: 'srow-meta' }, metaOf(r, now)),
+      r.context?.ready ? meterMini(r.context.contextTokens, r.context.contextLimit) : null
     )
-    const node = el('article', { class: 'srow', 'data-status': r.status }, main)
+    const node = el('article', { class: 'srow', 'data-status': r.status, role: 'listitem' }, main)
     if (r.status === 'waiting') node.append(answers(r))
     return node
   }
@@ -297,20 +298,21 @@ export function mountSessionList(
       r.title,
       r.context?.title,
       r.context?.ready ? contextPercent(r.context.contextTokens, r.context.contextLimit) : null,
-      r.host,
-      r.agentName,
-      activity(r, now),
-      r.exitCode
+      metaOf(r, now)
     ])
 
   const render = (): void => {
     const rows = last ?? []
     const now = Date.now()
     const seen = new Set<string>()
-    const ordered: HTMLElement[] = []
-    for (const section of groupSessionRows(rows)) {
-      ordered.push(heading(section.id, section.label, section.rows.length))
-      for (const r of section.rows) {
+    const shown = new Set<string>()
+    const order: HTMLElement[] = []
+    for (const group of groupSessionRows(rows)) {
+      const s = section(group.id, group.label, group.rows.length)
+      shown.add(group.id)
+      order.push(s.root)
+      const inGroup: HTMLElement[] = []
+      for (const r of group.rows) {
         seen.add(r.ptyId)
         const sig = signature(r, now)
         let m = mounted.get(r.ptyId)
@@ -323,7 +325,12 @@ export function mountSessionList(
         m.node.toggleAttribute('data-selected', r.ptyId === selected)
         if (r.ptyId === selected) m.node.querySelector('a')?.setAttribute('aria-current', 'page')
         else m.node.querySelector('a')?.removeAttribute('aria-current')
-        ordered.push(m.node)
+        inGroup.push(m.node)
+      }
+      // Reorder only when the order actually changed, so focus is not disturbed.
+      const children = [...s.rows.children]
+      if (children.length !== inGroup.length || children.some((n, i) => n !== inGroup[i])) {
+        s.rows.replaceChildren(...inGroup)
       }
     }
     for (const [id, m] of mounted) {
@@ -332,13 +339,13 @@ export function mountSessionList(
         mounted.delete(id)
       }
     }
+    for (const id of [...sections.keys()]) if (!shown.has(id)) sections.delete(id)
     // Drop every cached prompt that is no longer the one its row shows.
     const current = new Set(rows.filter((r) => r.status === 'waiting').map(promptKey))
     for (const k of [...prompts.keys()]) if (!current.has(k)) prompts.delete(k)
-    // Reorder only when the order actually changed, so focus is not disturbed.
     const children = [...list.children]
-    if (children.length !== ordered.length || children.some((n, i) => n !== ordered[i])) {
-      list.replaceChildren(...ordered)
+    if (children.length !== order.length || children.some((n, i) => n !== order[i])) {
+      list.replaceChildren(...order)
     }
   }
 

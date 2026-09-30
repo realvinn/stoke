@@ -2,6 +2,8 @@
 paths:
   - "src/main/remote/*.ts"
   - "src/remote/*.ts"
+  - "src/remote/public/sw.js"
+  - "vite.remote.config.ts"
   - "src/renderer/src/components/CloudflareSetup.tsx"
   - "src/renderer/src/components/PhonePopover.tsx"
   - "src/renderer/src/components/RemoteSettings.tsx"
@@ -213,6 +215,18 @@ height change.
 > re-runs `relayout('observe')`, which still never sends a resize on its own. Measured: an open
 > 1440 view went from 30 to 25 rows when a second socket fitted the pty to 90x25.
 
+> **Checked against the code on 2026-09-30** (the phone clean-up). "Never while the composer has
+> focus (deferred to its blur)" deferred EVERY box change while focused, not just a width change:
+> `decideResize` tested focus before width, and applied the width test to `observe` only — so the
+> `blur` it deferred to fitted rows to whatever the box was then and sent them. Growing the
+> composer to four lines and blurring sent `{type:'resize'}` 50x43 → 50x39 at 390x844 in Fit (and
+> 97x14 → 97x11 at 844x390): a SIGWINCH for a height change. The measurement above ("growing the
+> composer ... while focused sent nothing") was true and stopped one event short. It bit harder
+> once the key row came out on focus (`keyRowShown`), because then a focus and a blur alone
+> changed the height. The width test now runs first and holds for `blur` too; measured after:
+> focus, four lines, the key row toggled, blur — no resize frame at either size, and at rest
+> `.term-wrap` scrollHeight === clientHeight (731 = 731, 288 = 288). `verify:phone-ui` holds it.
+
 ## 111. The phone server's config is a snapshot taken at start; a setting it does not bind must be a per-call dep
 
 **Found 2026-09-30, moving the speech server from Phone access to Settings → Voice.** `RemoteServer`
@@ -368,3 +382,59 @@ builds only, loopback only).
 > `Unexpected response code: 403`. A browser cannot read a refused handshake's status, which is why
 > the session view's strip takes its sentence from the store's poll. Not driven: that strip over a
 > live pty, and `no-keys` (a last-good set outlives a JWKS outage by design).
+
+## 131. A service worker on the phone shell pins whatever it first caches, so the server must stop lying about missing files first
+
+**Found 2026-09-30, making the phone shell an installable PWA.** A service worker is the one piece
+of the phone UI that outlives a Stoke update: whatever it caches it serves until a NEW worker
+script replaces it, and a browser installs a new one only when the bytes of `sw.js` change. Four
+traps, each of which ships a phone stuck on an old or broken shell with every suite green:
+
+- **The static handler answered every missing path with `index.html` and a 200** (the SPA
+  fallback). A browser that asks for `/assets/index-<old hash>.js` after an update, or for `/sw.js`
+  from a build that has none, got HTML dressed as a script: the module loader runs it and fails,
+  and a worker registration or `cache.put` KEEPS it. `staticMissAnswer` (`remotePhone.ts`) now
+  sends the shell only for a path that names no file; anything with an extension is a 404.
+- **The bundle had fixed names** (`assets/index.js`), so an update could not be told from the
+  build before it by URL, and any cache of it was a staleness bug. Names are content-hashed now
+  (vite.remote.config.ts), `/assets/*` is `immutable`, and everything else is `no-cache`
+  (`staticCacheControl`) — `sw.js` included, or the browser's own HTTP cache delays the update check.
+- **An unchanged `sw.js` never updates.** `stampServiceWorker` (vite.remote.config.ts) writes the
+  build's hash and file list into the copy in out/remote at `'__STOKE_BUILD__'` and
+  `/* __STOKE_PRECACHE__ */ []`, and FAILS the build if either marker is gone; the cache is named
+  after the build and activation deletes every other `stoke-shell-*` one. `verify:remote` checks
+  both markers exist in the source.
+- **What the worker must never touch.** `/api/*` and `/ws*` (every byte of session data, and the
+  key — `route` returns null for them before anything else), a `?k=` navigation's URL, and an HTML
+  answer for an asset (never kept as that asset). The URL is the subtle one: **a cached Response
+  keeps its own URL list, whatever key it is filed under** (Chromium's CacheStorage stores
+  `url_list`), so filing the shell under ONE fixed key, `index.html`, still kept the key — see the
+  note below. `keepShell` stores a NEW Response of the shell's bytes, status and headers, whose URL
+  is empty; a file asked for with a query is left to the network. The shell is network-first with
+  a `SHELL_WAIT_MS` stall, so an update is on screen at the next load even under the OLD worker.
+
+Registered only when `window.isSecureContext` — https through the tunnel, or localhost. A plain
+http LAN or tailnet link cannot have one and runs exactly as before, so no phone depends on it.
+Measured in Chromium against a sandbox on 127.0.0.1: registered and controlling at scope `/`,
+precached the seven stamped files under `stoke-shell-98104baa3bfe`; an offline reload painted the
+shell with "Can't reach your computer"; after a rebuild the FIRST load ran the new
+`index-B9AqmGWx.js` through the old worker, and by the second the only cache was
+`stoke-shell-f331132be8cb`. `verify:remote` runs `sw.js` itself in a `node:vm` sandbox (routes,
+the fetch handler, offline, the `?k=` key, activation). **Not driven:** a real phone, iOS's
+home-screen install (its own cookie jar still opens on Connect), and an https tunnel origin.
+
+> **Checked against the code on 2026-09-30** (review of the branch that added it). The first
+> version filed the shell under the fixed `index.html` key and called that "the key never lands in
+> Cache Storage". It did land: Connect's `location.replace('/?k=…')` runs under the worker, the
+> network's answer was `put` as it came, and a stored Response keeps its URL list. Measured in
+> Chromium (Playwright) against a sandbox on 127.0.0.1: after that navigation,
+> `(await (await caches.open('stoke-shell-f1a079a021a3')).match('/index.html')).url` was
+> `http://127.0.0.1:17547/?k=<the key>` — readable by any script on the origin, the very thing the
+> HttpOnly cookie is for. With `keepShell` the same run reads `''` (cache `stoke-shell-6770cfe65e56`,
+> no entry of seven carrying the key) and the offline reload still paints "Can't reach your
+> computer". The suite could not see it because its network stub was a `new Response()`, whose
+> `url` is `''`, and it checked only cache KEYS: **stub a fetch with a Response whose `url` is the
+> URL fetched and survives `clone()`** (`fromNetwork` in `verify:remote`), and assert on the
+> stored response, not just the key it is filed under. Against the old `sw.js` that suite now fails
+> three checks. A phone that stored the key under an earlier build loses it when the next build's
+> worker activates (every other `stoke-shell-*` cache is deleted); that upgrade was not driven.

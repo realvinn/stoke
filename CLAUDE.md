@@ -357,6 +357,8 @@ rule file named on the group line.
   than `MIN_FOLDER_BASE_DEPTH`; a project that is itself a place lends no parent (`remoteFolderBases`).
 - **124.** Verify `Cf-Access-Jwt-Assertion` (`verifyAccessJwt`) against the team and AUD in settings, never
   the token's `iss`/`jku`; RS256 pinned, key checked first; refuse 403 (`remoteRefusal`), never the key's 401.
+- **131.** 404 a missing file, never the SPA shell (`staticMissAnswer`); keep `sw.js`'s stamp markers
+  (`stampServiceWorker`), off /api and /ws, and its shell URL-less (`keepShell`): a cached Response keeps its `?k=`.
 
 **Claude Code's own config** — `.claude/rules/claude-config.md`
 - **37.** Turn Claude Code's Remote Control off with `remoteControlAtStartup: false` in

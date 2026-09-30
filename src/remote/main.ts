@@ -1,8 +1,9 @@
 import './style.css'
+import { homeSegmentFor, runningBadge, type HomeSegment } from '@shared/phoneUi'
 import { accessRefusalOf, AuthError, loadHost, loadTheme, machineName, setAuthFailureHandler, showMachine, host } from './api'
 import { mountConnect } from './connect'
-import { el, failure, humanError, icon, iconButton, skeleton } from './dom'
-import { mountHistory, mountProjectHistory, mountTranscript, type Page } from './history'
+import { el, failure, humanError, icon, newButton, skeleton } from './dom'
+import { mountProjectHistory, mountRecent, mountTranscript, type Recent } from './history'
 import { mountSessionList, type SessionList } from './list'
 import { openNewSession } from './newSession'
 import { mountSession } from './session'
@@ -11,12 +12,14 @@ import { store } from './store'
 /**
  * Stoke on a phone — and in a laptop's browser.
  *
- * Screens: Connect (no key), Sessions (home), Session (terminal), New session
- * (a sheet), History. Below 1024px it is one screen at a time; from 1024px it
- * is a real two-pane layout — the session list as a 320px rail and the session
- * beside it at the pty's own size — rather than a phone stretched to 1440px
- * (audit PX-16). Routes live in the hash, so the browser's and Android's back
- * gestures work and a reload lands where you were.
+ * Screens: Connect (no key), home (Running | Recent), Session (terminal), New
+ * session (a sheet), a project's past sessions and one conversation. Below
+ * 1024px it is one screen at a time; from 1024px it is a real two-pane layout
+ * — home as a 340px rail and the session (or the project) beside it at the
+ * pty's own size — rather than a phone stretched to 1440px (audit PX-16).
+ * Routes live in the hash, so the browser's and Android's back gestures work
+ * and a reload lands where you were. `#/history` is home's Recent segment:
+ * the old History screen's address, kept so a bookmark or a Back still lands.
  */
 
 const app = document.getElementById('app') as HTMLDivElement
@@ -46,18 +49,52 @@ function brand(): HTMLElement {
   return el(
     'div',
     { class: 'brand' },
-    el('img', { class: 'brand-mark', src: './icon-192.png', alt: '', width: 26, height: 26 }),
+    el('img', { class: 'brand-mark', src: './icon-192.png', alt: '', width: 24, height: 24 }),
     el('span', { class: 'brand-name' }, 'Stoke'),
     showMachine() && host ? el('span', { class: 'machine', title: host.machine }, host.machine) : null
   )
 }
 
+/** The one action the home bar carries (the History button became the Recent segment). */
 function topbarActions(): HTMLElement[] {
-  const history = iconButton('history', 'History')
-  history.addEventListener('click', () => (location.hash = '#/history'))
-  const create = iconButton('plus', 'New session', { class: 'icon-btn', 'data-variant': 'primary' })
+  const create = newButton('New session')
   create.addEventListener('click', () => openNewSession())
-  return [history, create]
+  return [create]
+}
+
+/**
+ * Running | Recent. Links, not buttons: each is a route (`#/`, `#/history`),
+ * so Back walks between them and a reload keeps the one you were on. While
+ * Recent is open, Running says how many sessions wait on you.
+ */
+function segmentBar(active: HomeSegment): HTMLElement {
+  const count = el('span', { class: 'seg-count' })
+  const dot = el('span', { class: 'seg-dot', 'aria-hidden': 'true', hidden: true })
+  // Plain links marked `aria-current`, not ARIA tabs: each one navigates, and a tab promises arrow keys and a panel.
+  const tab = (id: HomeSegment, href: string, label: string, ...extra: HTMLElement[]): HTMLElement =>
+    el(
+      'a',
+      { class: 'seg-btn', href, 'aria-current': active === id ? 'page' : undefined, 'data-segment': id },
+      el('span', {}, label),
+      ...extra
+    )
+  const running = tab('running', '#/', 'Running', count, dot)
+  const bar = el(
+    'nav',
+    { class: 'segbar', 'aria-label': 'Sessions' },
+    el('div', { class: 'seg' }, running, tab('recent', '#/history', 'Recent'))
+  )
+  const paint = (): void => {
+    const b = runningBadge(store.rows)
+    count.textContent = b.live ? String(b.live) : ''
+    count.hidden = b.live === 0
+    dot.hidden = active === 'running' || b.needsYou === 0
+    running.setAttribute('aria-label', b.needsYou && active !== 'running' ? `Running, ${b.needsYou} need you` : 'Running')
+  }
+  paint()
+  const off = store.subscribe(paint)
+  bar.addEventListener('stoke:destroy', () => off())
+  return bar
 }
 
 /** The global "can't reach your computer" strip, driven by the session store. */
@@ -94,7 +131,7 @@ function linkStrip(): HTMLElement {
 function emptyState(): HTMLElement {
   const start = el('button', { type: 'button', class: 'btn', 'data-variant': 'primary' }, icon('plus', 18), 'Start a session')
   start.addEventListener('click', () => openNewSession())
-  const hist = el('a', { class: 'btn', href: '#/history' }, icon('history', 18), 'Resume from history')
+  const hist = el('a', { class: 'btn', href: '#/history' }, icon('history', 18), 'Resume a recent one')
   return el(
     'div',
     { class: 'empty' },
@@ -136,46 +173,65 @@ interface Mounted {
   destroy: () => void
 }
 
-function mountHome(): Mounted {
+/** Home on a phone or a tablet: the bar, the segments, then Running's list or Recent. */
+function mountHome(segment: HomeSegment): Mounted {
   const body = el('div', { class: 'content' })
   const strip = linkStrip()
+  const segs = segmentBar(segment)
   const root = el(
     'section',
-    { class: 'page home' },
+    { class: 'page home', 'data-segment': segment },
     el('header', { class: 'topbar' }, brand(), el('span', { class: 'spacer' }), ...topbarActions()),
+    segs,
     strip,
-    el('main', { class: 'scroll', 'aria-label': 'Sessions' }, body)
+    el('main', { class: 'scroll', 'aria-label': segment === 'running' ? 'Running sessions' : 'Recent projects' }, body)
   )
-  const list = mountList(body, false)
+  const list = segment === 'running' ? mountList(body, false) : null
+  if (segment === 'recent') body.append(mountRecent({ compact: false }).root)
   return {
     root,
     destroy: () => {
-      list.destroy()
+      list?.destroy()
       strip.dispatchEvent(new Event('stoke:destroy'))
+      segs.dispatchEvent(new Event('stoke:destroy'))
     }
   }
 }
 
 function mountRoute(route: Route, wide: boolean): Mounted {
   switch (route.name) {
-    case 'session': {
-      const s = mountSession(route.ptyId, { wide, onBack: () => (location.hash = '#/') })
-      return s
-    }
+    case 'session':
+      return mountSession(route.ptyId, { wide, onBack: () => (location.hash = '#/') })
     case 'history':
-      return mountHistory() as Page
+      return wide ? mountPlaceholder('recent') : mountHome('recent')
     case 'project':
       return mountProjectHistory(route.cwd)
     case 'transcript':
       return mountTranscript(route.id, route.cwd)
     default:
-      return wide ? mountPlaceholder() : mountHome()
+      return wide ? mountPlaceholder('running') : mountHome('running')
   }
 }
 
-/** The laptop pane with nothing picked: point at what needs you. */
-function mountPlaceholder(): Mounted {
+/** The laptop pane with nothing picked: point at what needs you, or at the projects. */
+function mountPlaceholder(segment: HomeSegment): Mounted {
   const box = el('div', { class: 'placeholder' })
+  if (segment === 'recent') {
+    box.replaceChildren(
+      el(
+        'div',
+        { class: 'empty' },
+        el('div', { class: 'empty-mark', 'aria-hidden': 'true' }, icon('history', 28)),
+        el('p', { class: 'empty-title' }, 'Pick a project'),
+        el(
+          'p',
+          { class: 'empty-text' },
+          `Every project on ${machineName()} with a past conversation is on the left. Open one to read back or resume its sessions.`
+        )
+      )
+    )
+    return { root: el('section', { class: 'page' }, box), destroy: () => {} }
+  }
   const paint = (): void => {
     const rows = store.rows
     if (rows && rows.length === 0) {
@@ -202,7 +258,17 @@ function mountPlaceholder(): Mounted {
 
 let current: Mounted | null = null
 let currentKey = ''
-let rail: { root: HTMLElement; list: SessionList; pane: HTMLElement; strip: HTMLElement } | null = null
+/** The laptop rail: the bar, the segments, and both lists — the route's segment decides which shows. */
+let rail: {
+  pane: HTMLElement
+  strip: HTMLElement
+  segs: HTMLElement
+  segment: HomeSegment
+  list: SessionList
+  listBox: HTMLElement
+  recent: Recent | null
+  recentBox: HTMLElement
+} | null = null
 let connectMode = false
 
 function teardown(): void {
@@ -212,8 +278,29 @@ function teardown(): void {
   if (rail) {
     rail.list.destroy()
     rail.strip.dispatchEvent(new Event('stoke:destroy'))
+    rail.segs.dispatchEvent(new Event('stoke:destroy'))
     rail = null
   }
+}
+
+/** Point the rail at a segment: the bar's state, and the one list that belongs to it. */
+function showRailSegment(segment: HomeSegment): void {
+  if (!rail) return
+  if (rail.segment !== segment) {
+    const segs = segmentBar(segment)
+    rail.segs.dispatchEvent(new Event('stoke:destroy'))
+    rail.segs.replaceWith(segs)
+    rail.segs = segs
+    rail.segment = segment
+    // Back on Recent: ask again, a session may have ended into history since.
+    if (segment === 'recent') rail.recent?.refresh()
+  }
+  if (segment === 'recent' && !rail.recent) {
+    rail.recent = mountRecent({ compact: true })
+    rail.recentBox.append(rail.recent.root)
+  }
+  rail.listBox.hidden = segment !== 'running'
+  rail.recentBox.hidden = segment !== 'recent'
 }
 
 function render(): void {
@@ -224,25 +311,31 @@ function render(): void {
   if (key === currentKey) return
 
   if (wide) {
+    const segment = homeSegmentFor(route.name)
     if (!rail) {
       teardown()
       const listBox = el('div', { class: 'rail-list' })
+      const recentBox = el('div', { class: 'rail-list', hidden: true })
       const strip = linkStrip()
+      const segs = segmentBar(segment)
       const pane = el('div', { class: 'pane' })
       const aside = el(
         'aside',
         { class: 'rail', 'aria-label': 'Sessions' },
         el('header', { class: 'topbar' }, brand(), el('span', { class: 'spacer' }), ...topbarActions()),
+        segs,
         strip,
-        el('nav', { class: 'rail-scroll', 'aria-label': 'Running sessions' }, listBox)
+        el('nav', { class: 'rail-scroll', 'aria-label': 'Sessions and projects' }, listBox, recentBox)
       )
       app.replaceChildren(el('div', { class: 'split' }, aside, el('main', { class: 'pane-wrap' }, pane)))
-      rail = { root: aside, list: mountList(listBox, true), pane, strip }
+      rail = { list: mountList(listBox, true), listBox, recent: null, recentBox, pane, strip, segs, segment }
     }
+    showRailSegment(segment)
     current?.destroy()
     current = mountRoute(route, true)
     rail.pane.replaceChildren(current.root)
     rail.list.setSelected(route.name === 'session' ? route.ptyId : null)
+    rail.recent?.setSelected(route.name === 'project' || route.name === 'transcript' ? route.cwd : null)
   } else {
     teardown()
     current = mountRoute(route, false)
@@ -259,6 +352,20 @@ function showConnect(): void {
   teardown()
   document.title = 'Connect · Stoke'
   app.replaceChildren(mountConnect({ linkKey: openedWithKey }))
+}
+
+/**
+ * The shell's service worker (public/sw.js): an installable app that opens at
+ * once and paints Connect or "can't reach" with no network. Only in a secure
+ * context — https through the tunnel, or localhost — because a browser refuses
+ * one anywhere else; a plain-http LAN link runs exactly as before. It never
+ * sees /api or /ws, so no session data is ever cached.
+ */
+function registerServiceWorker(): void {
+  if (!window.isSecureContext || !('serviceWorker' in navigator)) return
+  navigator.serviceWorker.register('./sw.js', { scope: './' }).catch(() => {
+    /* a refused registration leaves the page as it always was */
+  })
 }
 
 /*
@@ -282,6 +389,8 @@ async function boot(): Promise<void> {
     here.searchParams.delete('k')
     window.history.replaceState(null, '', `${here.pathname}${here.search}${here.hash}`)
   }
+  // Before the first request: Connect and an offline shell both deserve one.
+  registerServiceWorker()
   setAuthFailureHandler(showConnect)
   try {
     await loadTheme()
