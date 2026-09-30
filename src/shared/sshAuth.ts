@@ -5,8 +5,9 @@
  * Everything here is pure and imports nothing, so `verify:ssh-enroll` can
  * replay a scripted byte stream and enumerate the whole decision table with no
  * host, no network and no PTY. That is the entire reason the module exists
- * separately from `src/main/ssh.ts`: the impure half is ten lines in `pty.ts`
- * and a spawn in `sshEnroll.ts`, and neither is where the bugs live.
+ * separately from `src/main/ssh.ts`: the impure half is a few lines in
+ * `pty.ts` and the key/config/probe work in `sshEnroll.ts`, and neither is
+ * where the detection bugs live.
  *
  * No `node:` import and no browser API may appear in this file — it is compiled
  * by both tsconfigs (gotcha 27).
@@ -52,6 +53,8 @@ export interface SshAuthScan {
   fired: boolean
   /** The last `SSH_AUTH_TAIL_BYTES` of output, for prompts split across chunks. */
   tail: string
+  /** ConPTY only: an escape sequence cut off at the end of the last chunk. */
+  pending?: string
 }
 
 /**
@@ -149,6 +152,102 @@ export function detectSshPasswordPrompt(tail: string): SshAuthPrompt | null {
   return null
 }
 
+/*
+ * ------------------------------------------------------------ ConPTY
+ *
+ * On Windows the escape rule above cannot work, and not because ssh changes:
+ * node-pty runs every session under ConPTY, which does not pass the child's
+ * bytes through. It keeps its own screen buffer and RE-RENDERS it as VT — so
+ * the very first frame, before ssh has printed a character, already carries
+ * `CSI ?25l`, `CSI 2J`, `CSI H`, an `OSC 0` window title naming ssh.exe, and on
+ * current builds `CSI ?9001h CSI ?1004h` (ConPTY asking its host for
+ * win32-input-mode and focus events). Under the POSIX rule that first frame
+ * closes the window for good and no Windows prompt is ever seen.
+ *
+ * So on ConPTY the stream is scrubbed first (`conptyScrub`): OSC strings and
+ * CSI sequences are removed, and only the handful of DECSETs that mean "a
+ * program on the far side has started drawing" still close the window —
+ * alternate screen, mouse tracking, bracketed paste. That keeps gotcha 75's
+ * rule (something painting ends detection) with a definition of "painting"
+ * that ConPTY's own furniture does not meet. `?1004h` and `?9001h` are
+ * deliberately NOT closers: ConPTY emits them itself.
+ *
+ * UNVERIFIED on a real Windows machine: the stream shape is taken from what
+ * ConPTY is documented and reported to emit, not measured here (no Windows run
+ * in this round). If ConPTY turns out to emit `?2004h` on its own, detection on
+ * Windows is dead again — a false negative, the safe direction — and the
+ * "Set up key login" button in Settings still works without it.
+ */
+
+/** DECSET modes whose enabling means a far-side program is drawing. */
+const PAINTING_MODES = new Set([
+  '47',
+  '1047',
+  '1049', // alternate screen: tmux, byobu, vim, less
+  '1000',
+  '1002',
+  '1003',
+  '1005',
+  '1006',
+  '1015', // mouse tracking and its encodings
+  '2004' // bracketed paste: bash 5.1+ and zsh 5.1+ at their first prompt, claude
+])
+
+/** One complete CSI sequence: parameters, intermediates, final byte. */
+const CSI_RE = /\u001b\[([0-?]*)[ -/]*[@-~]/g
+/** One complete OSC string, terminated by BEL or ST. */
+const OSC_RE = /\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g
+/** Any other complete escape: charset designation, keypad mode, RI, DECSC… — never `[` or `]`. */
+const ESC_OTHER_RE = /\u001b(?:[()*+\-./][ -~]|[0-Z\\^-~])/g
+/**
+ * An escape sequence split across two chunks is held for the next one, up to
+ * this many characters. Longer than any real CSI; an OSC title longer than it
+ * is dropped rather than held forever.
+ */
+const PENDING_CAP = 256
+
+/**
+ * A ConPTY chunk as the text ssh wrote, whether it enabled a mode that only a
+ * far-side program would, and any escape sequence cut off at its end.
+ *
+ * Pure, so `verify:ssh-enroll` can replay a ConPTY-shaped stream on a Mac.
+ * Cursor moves are dropped rather than turned into spaces or newlines: a guess
+ * at layout that put a line break AFTER a prompt would hide it, and one that
+ * joined a banner line to the prompt below it only costs a missed offer.
+ */
+export function conptyScrub(chunk: string): { text: string; painting: boolean; rest: string } {
+  let painting = false
+  let text = chunk.replace(OSC_RE, '')
+  text = text.replace(CSI_RE, (seq, params: string) => {
+    if (seq.endsWith('h') && params.startsWith('?')) {
+      for (const mode of params.slice(1).split(';')) if (PAINTING_MODES.has(mode)) painting = true
+    }
+    return ''
+  })
+  text = text.replace(ESC_OTHER_RE, '')
+  // Whatever escape is left is incomplete: it was cut at the chunk boundary.
+  const cut = text.indexOf(ESC)
+  if (cut < 0) return { text, painting, rest: '' }
+  const rest = text.slice(cut)
+  return { text: text.slice(0, cut), painting, rest: rest.length <= PENDING_CAP ? rest : '' }
+}
+
+/**
+ * ConPTY paints cells, not the bytes ssh wrote, so the trailing space of
+ * `user@host's password: ` may never be emitted. Normalise the unterminated
+ * line to exactly one trailing space after a colon so the full-match patterns
+ * above still apply unchanged.
+ */
+function conptyTail(tail: string): string {
+  const trimmed = tail.replace(/[ \t]+$/, '')
+  return trimmed.endsWith(':') ? `${trimmed} ` : trimmed
+}
+
+/** Options for one stream: `conpty` on Windows, where node-pty runs ConPTY. */
+export interface SshAuthStepOptions {
+  conpty?: boolean
+}
+
 /**
  * Fold one chunk of output into the window.
  *
@@ -161,33 +260,67 @@ export function detectSshPasswordPrompt(tail: string): SshAuthPrompt | null {
  * The window closes, permanently, on the first of:
  *   - an escape byte, meaning something is now drawing to the screen. `claude`,
  *     `tmux` and `byobu` all emit one in their first frame, so in practice this
- *     shuts the detector before any remote program can print the word.
+ *     shuts the detector before any remote program can print the word. Under
+ *     ConPTY (`opts.conpty`), only a painting DECSET does — see `conptyScrub`.
  *   - `SSH_AUTH_SCAN_LIMIT` bytes.
  *   - a prompt being reported. ssh asks three times by default
  *     (`numberofpasswordprompts 3`); the user is offered a key once.
  */
 export function sshAuthStep(
   state: SshAuthScan,
-  chunk: string
+  chunk: string,
+  opts: SshAuthStepOptions = {}
 ): { next: SshAuthScan; fire: SshAuthPrompt | null } {
   if (!state.open) return { next: state, fire: null }
 
   const scanned = state.scanned + chunk.length
-  const tail = (state.tail + chunk).slice(-SSH_AUTH_TAIL_BYTES)
+  let text = chunk
+  let pending: string | undefined
+  if (opts.conpty) {
+    const scrubbed = conptyScrub((state.pending ?? '') + chunk)
+    if (scrubbed.painting) {
+      const tail = (state.tail + scrubbed.text).slice(-SSH_AUTH_TAIL_BYTES)
+      return { next: { scanned, open: false, fired: state.fired, tail }, fire: null }
+    }
+    text = scrubbed.text
+    pending = scrubbed.rest
+  }
+  const tail = (state.tail + text).slice(-SSH_AUTH_TAIL_BYTES)
 
   /*
    * Checked before the detector, not after, so a chunk that contains BOTH an
    * escape sequence and something prompt-shaped reports nothing. Within one
    * chunk there is no way to tell which came first without tracking offsets,
-   * and the safe answer is the quiet one.
+   * and the safe answer is the quiet one. (Under ConPTY `text` is already
+   * scrubbed, so this only catches an escape the scrub did not recognise.)
    */
-  if (chunk.includes(ESC)) {
+  if (text.includes(ESC)) {
     return { next: { scanned, open: false, fired: state.fired, tail }, fire: null }
   }
 
-  const fire = detectSshPasswordPrompt(tail)
+  const fire = detectSshPasswordPrompt(opts.conpty ? conptyTail(tail) : tail)
   const open = fire === null && scanned < SSH_AUTH_SCAN_LIMIT
-  return { next: { scanned, open, fired: state.fired || fire !== null, tail }, fire }
+  const next: SshAuthScan = { scanned, open, fired: state.fired || fire !== null, tail }
+  // Only a ConPTY stream carries a cut-off escape between chunks, and only
+  // while it holds one — a POSIX state keeps its original four fields.
+  if (pending) next.pending = pending
+  return { next, fire }
+}
+
+/**
+ * Is this session sitting at a password prompt RIGHT NOW?
+ *
+ * `tail` is the last few hundred bytes the session printed, raw. Asked once,
+ * after an enrollment succeeded, to decide whether the tab that raised the
+ * offer may be reconnected: a tab still at `password:` has nothing to lose, a
+ * tab whose user typed the password meanwhile is an authenticated session that
+ * must never be killed to "help". The answer errs quiet — anything that is not
+ * provably a prompt at the end of the output is "no".
+ */
+export function awaitingPasswordFromTail(tail: string, opts: SshAuthStepOptions = {}): boolean {
+  if (!opts.conpty) return detectSshPasswordPrompt(tail) !== null
+  const { text } = conptyScrub(tail)
+  return detectSshPasswordPrompt(conptyTail(text)) !== null
 }
 
 /** What `shouldOfferKey` is deciding over. */
@@ -271,17 +404,31 @@ export function isSafePublicKeyLine(line: string): boolean {
  * anywhere.
  *
  * Returns null rather than escaping anything. See `isSafePublicKeyLine`.
+ *
+ * **Wrapped in `sh -c '…'`, because ssh hands this to the remote LOGIN shell,
+ * which is whatever the user has.** Unwrapped, the body's `{ …; }` group is a
+ * syntax error in fish and the `$(…)` a different thing in csh, so the install
+ * failed on exactly the hosts whose owners had chosen a shell. The body holds
+ * no single quote of its own (the key is whitelisted and goes in double
+ * quotes), so one outer pair survives sh, bash, zsh, dash, fish and tcsh alike.
+ * A Windows OpenSSH server, whose login shell is cmd or PowerShell, has no `sh`
+ * at all: that fails with ssh's own "not recognized", and the enrollment's
+ * failure message says to run `ssh-copy-id` from Git Bash instead.
  */
 export function buildRemoteInstallCommand(pubkeyLine: string): string | null {
   const key = pubkeyLine.trim()
   if (!isSafePublicKeyLine(key)) return null
-  return [
+  const body = [
     'cd',
     'umask 077',
     'mkdir -p .ssh',
     '{ [ -z "$(tail -1c .ssh/authorized_keys 2>/dev/null)" ] || echo >> .ssh/authorized_keys; }',
-    `printf '%s\\n' '${key}' >> .ssh/authorized_keys`,
+    `printf "%s\\n" "${key}" >> .ssh/authorized_keys`,
     'chmod 700 .ssh',
     'chmod 600 .ssh/authorized_keys'
   ].join(' && ')
+  // Belt and braces: the whitelist already guarantees this, and a body that
+  // could close the outer quote must never be sent.
+  if (body.includes("'")) return null
+  return `sh -c '${body}'`
 }

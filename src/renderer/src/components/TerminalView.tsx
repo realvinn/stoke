@@ -1371,7 +1371,27 @@ export function TerminalView({
           </span>
         </div>
       )}
-      {tab.status === 'exited' && tab.installing?.length ? (
+      {tab.status === 'exited' && tab.enrollHostId ? (
+        /*
+         * An "Add key to …" tab's exit is ssh-copy-id finishing, not a session
+         * ending. The verdict is main's probe, a moment later, on the strip
+         * above; on a verified success App closes this tab by itself. What
+         * stays is a failure, with ssh's own words above this card.
+         */
+        <div className="term-exit" role="status">
+          <span>
+            {tab.exitCode === 0
+              ? 'Finished — checking that ssh now gets in without a password…'
+              : `The key was not added${tab.exitCode !== null ? ` (exit ${tab.exitCode})` : ''} — ssh says why above.`}
+          </span>
+          <button className="btn" data-variant="primary" onClick={() => onRestart(tab)}>
+            Try again
+          </button>
+          <button className="btn" data-variant="ghost" onClick={() => onClose(tab.id)}>
+            Close tab
+          </button>
+        </div>
+      ) : tab.status === 'exited' && tab.installing?.length ? (
         /*
          * An install tab's exit is the install's result, not a session ending.
          * The script exits non-zero when any agent failed (agents.ts), so a

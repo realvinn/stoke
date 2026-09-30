@@ -75,6 +75,17 @@ export interface LaunchOptions {
    */
   host?: SshHost
   /**
+   * Set up key login for this host instead of running anything else: the tab
+   * runs `ssh-copy-id` (or its plain-ssh fallback) and the user types the
+   * password there, once.
+   *
+   * Only the id crosses this boundary — like `install`, the command is built
+   * in main (`planEnrollLaunch`, `prepareEnroll` in sshEnroll.ts) from the host
+   * settings holds under that id, and every other field of the request is
+   * ignored for such a launch. The tab it opens is never saved for restore.
+   */
+  enroll?: { hostId: string }
+  /**
    * Which way round this window's colours are, for `COLORFGBG`.
    *
    * A backstop, not the mechanism. Claude Code follows the terminal on its own
@@ -636,7 +647,7 @@ export type SshKeyEnroll = 'ask' | 'auto' | 'off'
 export interface SshAuthPromptEvent {
   ptyId: string
   hostId: string
-  /** 'ask' opens the offer; 'auto' opens the enrollment pane straight away. */
+  /** 'ask' opens the offer; 'auto' opens the enrollment tab straight away. */
   offer: 'ask' | 'auto'
   /**
    * The `user@host` ssh printed, for display only — it is text the far end
@@ -647,13 +658,20 @@ export interface SshAuthPromptEvent {
   host: string
 }
 
-/** Progress of one enrollment, from the moment the user presses Add a key. */
+/**
+ * Progress of one enrollment, from the moment the user presses Add a key.
+ *
+ * `installing` is the stage the enrollment tab is open in, waiting for the
+ * user to type the password there; the tool's own output is in that tab, not
+ * here. `done` and `failed` come from main after the tab's process exits and
+ * the login probe has run.
+ */
 export interface SshEnrollEvent {
   hostId: string
   stage: 'starting' | 'generating' | 'installing' | 'verifying' | 'done' | 'failed'
-  /** A line to show the user. Tool output verbatim where there is any. */
+  /** A line to show the user. */
   message: string
-  /** Set on 'done'. False means installed but pubkey auth still does not work. */
+  /** Set on 'done'. False means installed but plain `ssh <alias>` still does not get in on a key. */
   ok?: boolean
 }
 

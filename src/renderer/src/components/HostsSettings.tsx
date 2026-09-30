@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { SshHost, SshKeyEnroll } from '@shared/types'
+import { isEnrollableAlias } from '@shared/sshAuth'
 import { FieldHint } from './FieldHint'
 import { IconClose, IconPlus } from './Icons'
 
@@ -11,6 +12,13 @@ interface Props {
   /** `Settings.sshKeyEnroll`. The only copy — never mirrored into state. */
   keyEnroll: SshKeyEnroll
   onChangeKeyEnroll: (value: SshKeyEnroll) => void
+  /**
+   * Set up key login for this host now: App closes the sheet and opens the
+   * "Add key to …" tab (`startSshEnroll`), where the password is typed.
+   */
+  onSetUpKey: (hostId: string) => void
+  /** The host an enrollment is running for, or null. One at a time. */
+  enrollingHostId: string | null
 }
 
 /**
@@ -109,7 +117,9 @@ export function HostsSettings({
   suggestions,
   onChange,
   keyEnroll,
-  onChangeKeyEnroll
+  onChangeKeyEnroll,
+  onSetUpKey,
+  enrollingHostId
 }: Props): React.JSX.Element {
   /*
    * Text fields are local drafts, committed on blur or Enter.
@@ -315,14 +325,23 @@ export function HostsSettings({
                 <span className="mono">ssh-copy-id</span> for that host.
               </p>
               <p>
-                <b>Your password never reaches Stoke.</b> The install is a connection like any
-                other, so it asks for the password itself and you type it there. Stoke holds no
-                password at any point, in any setting, which is also why the automatic setting
-                cannot be silent.
+                <b>Your password never reaches Stoke.</b> The install opens its own tab, &ldquo;Add
+                key to &hellip;&rdquo;, which asks for the password itself, and you type it there,
+                once. Stoke holds no password at any point, in any setting, which is also why the
+                automatic setting cannot be silent.
               </p>
               <p>
-                Nothing is installed on a machine that has not asked for a password, and nothing at
-                all while this is set to <b>Do nothing</b>.
+                Stoke uses the key <span className="mono">ssh</span> already picks for that host, or
+                makes <span className="mono">~/.ssh/id_ed25519</span>. When your ssh config would not
+                offer that key to the host, it adds one <span className="mono">Host</span> block
+                naming it at the end of <span className="mono">~/.ssh/config</span> (backed up to{' '}
+                <span className="mono">config.stoke.bak</span> first) and changes nothing else.
+                Then it connects once with <span className="mono">BatchMode</span> to prove a plain{' '}
+                <span className="mono">ssh</span> gets in without a password.
+              </p>
+              <p>
+                Nothing is offered at all while this is set to <b>Do nothing</b>. &ldquo;Set up key
+                login&rdquo; on a machine below works either way.
               </p>
             </>
           }
@@ -511,6 +530,33 @@ export function HostsSettings({
                   )}
                 </span>
               </label>
+
+              {/*
+                The way in that needs no password prompt first. Uses the
+                COMMITTED alias (what a tab would connect to), not a draft still
+                being typed; main looks the host up by id anyway.
+              */}
+              <div className="settings-item-actions">
+                <button
+                  className="btn"
+                  data-size="sm"
+                  disabled={!isEnrollableAlias(host.alias.trim()) || enrollingHostId !== null}
+                  onClick={() => onSetUpKey(host.id)}
+                  aria-label={`Set up key login for ${name}`}
+                >
+                  {enrollingHostId === host.id ? 'Setting up key login…' : 'Set up key login'}
+                </button>
+                {host.alias.trim() !== '' && !isEnrollableAlias(host.alias.trim()) ? (
+                  <span className="field-hint">
+                    Stoke will not hand this alias to <span className="mono">ssh-copy-id</span>. Run it
+                    yourself.
+                  </span>
+                ) : (
+                  <span className="field-hint">
+                    Opens a tab that asks for this machine&rsquo;s password once.
+                  </span>
+                )}
+              </div>
 
               {/* In the body, not the summary. A button inside a <summary>
                   toggles the disclosure on its way through unless it calls

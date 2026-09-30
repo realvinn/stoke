@@ -385,10 +385,18 @@ export type RestartPlan =
   | { kind: 'local'; cwd: string; cli: CodingCliId }
   /** An install tab runs its installs again, never the first agent in its list. */
   | { kind: 'install'; ids: CodingCliId[] }
+  /** An "Add key to …" tab sets up key login again, never opens a session on the host. */
+  | { kind: 'enroll'; hostId: string }
   | { kind: 'impossible'; reason: string }
 
 export function restartPlan(
-  tab: { cwd: string; hostId?: string | null; cliId?: CodingCliId; installing?: CodingCliId[] },
+  tab: {
+    cwd: string
+    hostId?: string | null
+    cliId?: CodingCliId
+    installing?: CodingCliId[]
+    enrollHostId?: string
+  },
   hostIds: string[]
 ): RestartPlan {
   /*
@@ -397,6 +405,16 @@ export function restartPlan(
    * the install may just have failed to put on the machine.
    */
   if (tab.installing?.length) return { kind: 'install', ids: [...tab.installing] }
+  /*
+   * Before the host branch, because an enrollment tab carries its host's
+   * `hostId` too: read as a host tab, "Try again" would open a plain session on
+   * the machine whose key it failed to install, asking for the same password.
+   */
+  if (tab.enrollHostId) {
+    return hostIds.includes(tab.enrollHostId)
+      ? { kind: 'enroll', hostId: tab.enrollHostId }
+      : { kind: 'impossible', reason: 'That host is no longer in Settings, so there is no key to add.' }
+  }
   if (tab.hostId) {
     return hostIds.includes(tab.hostId)
       ? { kind: 'host', hostId: tab.hostId }

@@ -30,6 +30,8 @@ import { buildSshArgs, sshExecutable } from './ssh.ts'
 // resolves no aliases. The detector itself is pure and lives in shared/ so a
 // suite can replay a byte stream against it with no PTY at all (gotcha 75).
 import {
+  SSH_AUTH_TAIL_BYTES,
+  awaitingPasswordFromTail,
   newSshAuthScan,
   sshAuthStep,
   type SshAuthPrompt,
@@ -150,11 +152,18 @@ interface Session {
    * git credential helper, every `ssh-add` passphrase and every "password" the
    * CLI itself prints is excluded with no matching whatsoever. Do not widen it.
    *
-   * Null too for the enrollment PTY, which is not a session at all — it lives
-   * in sshEnroll.ts and never reaches this map — because ssh-copy-id's own
-   * password prompt would otherwise offer to fix itself, forever.
+   * Null too for the key-enrollment tab (`opts.enroll`), which runs
+   * `ssh-copy-id` with no `opts.host`: its own password prompt is the one the
+   * user is there to answer, and scanning it would offer to fix itself, forever.
    */
   sshAuth: SshAuthScan | null
+  /**
+   * The last `SSH_AUTH_TAIL_BYTES` this session printed, kept for a remote
+   * session only and for its whole life (the scan window above closes early).
+   * `awaitingPassword` reads it: after a key is enrolled, a tab still sitting
+   * at `password:` may be reconnected, and one whose user got in may not.
+   */
+  authTail: string
   startedAt: number
   /** Last pty output, or the last registry state change reported via `touch`. */
   lastActivityAt: number
@@ -316,7 +325,7 @@ export class PtyManager {
    * session was launched against; `prompt` carries the far end's text for
    * display only. Whether to offer anything at all is index.ts's decision
    * (`shouldOfferKey` against the settings), and installing anything at all
-   * needs a user press (`CH.sshEnroll`).
+   * needs a user press (a `pty:start` with `opts.enroll`, which opens a tab).
    */
   private readonly onSshAuth: (ptyId: string, hostId: string, prompt: SshAuthPrompt) => void
 
@@ -349,7 +358,13 @@ export class PtyManager {
      * endpoint, its MCP servers, its continue flag — built by `agentLaunchPlan`
      * in main from settings. Ignored for Claude Code, SSH and installs.
      */
-    agentPlan: LaunchPlan | null = null
+    agentPlan: LaunchPlan | null = null,
+    /**
+     * The program an SSH key-enrollment tab runs (`opts.enroll`), built in main
+     * by `prepareEnroll` from the host settings holds under that id. Never from
+     * the renderer: without it an enroll launch is refused rather than guessed.
+     */
+    enrollCommand: { file: string; args: string[] } | null = null
   ): Promise<StartResult> {
     /*
      * A remote session is the same machinery with a different argv: ssh instead
@@ -377,26 +392,40 @@ export class PtyManager {
     const cliId = cliIdOf(opts.cli)
     const remote = !!opts.host
     /*
+     * A key-enrollment tab runs `ssh-copy-id` (or plain ssh appending the key)
+     * against a host, in a terminal the user can type the password into — the
+     * whole point: ssh reads a password from its tty and nowhere else (gotcha
+     * 109). It is not `remote`: it gets no `opts.host`, so no password scan
+     * (its prompt is the one being answered), no statusLine files and no
+     * transcript. The command is main's (`enrollCommand`); `opts.enroll`
+     * carries only the host id it was built from.
+     */
+    const enrolling = !remote && !!opts.enroll
+    if (enrolling && !enrollCommand) throw new Error('An SSH key enrollment is started by main, from settings.')
+    /*
      * An install tab runs the vendors' own install commands in a shell instead
      * of a CLI. The script is built here, in main, from the shared table and
      * ids it validates — `opts.install` carries ids, never command text.
      */
-    const script = !remote && opts.install?.length ? installScript(opts.install, process.platform) : null
-    if (!remote && opts.install?.length && !script) {
+    const script =
+      !remote && !enrolling && opts.install?.length ? installScript(opts.install, process.platform) : null
+    if (!remote && !enrolling && opts.install?.length && !script) {
       throw new Error('Stoke has no install command for those agents on this platform. Their websites say how.')
     }
     const installing = script !== null
-    const instrumented = !remote && !installing && isClaudeCode(cliId)
+    const instrumented = !remote && !installing && !enrolling && isClaudeCode(cliId)
 
     const exe = remote
       ? sshExecutable()
-      : installing
-        ? await installerShell()
-        : await findCli(cliId, isClaudeCode(cliId) ? claudePathOverride : null)
+      : enrolling
+        ? enrollCommand!.file
+        : installing
+          ? await installerShell()
+          : await findCli(cliId, isClaudeCode(cliId) ? claudePathOverride : null)
     if (!exe) throw new Error(notFoundError(loginPathProbeFailed(), cliId))
     // An install has no project; it runs from home so a vendor script that
-    // writes relative to the cwd lands somewhere harmless.
-    const cwd = installing ? homedir() : opts.cwd
+    // writes relative to the cwd lands somewhere harmless. An enrollment too.
+    const cwd = installing || enrolling ? homedir() : opts.cwd
 
     /*
      * The folder has to exist, and node-pty will not tell us if it does not.
@@ -474,11 +503,13 @@ export class PtyManager {
     if (installFile && script) await writeInstallerFile(installFile, script)
     const args = remote
       ? buildSshArgs(opts.host!)
-      : installing
-        ? installerArgs(script, installFile)
-        : instrumented
-          ? buildArgs({ ...opts, sessionId }, settingsFile)
-          : [...(agentPlan?.args ?? [])]
+      : enrolling
+        ? [...enrollCommand!.args]
+        : installing
+          ? installerArgs(script, installFile)
+          : instrumented
+            ? buildArgs({ ...opts, sessionId }, settingsFile)
+            : [...(agentPlan?.args ?? [])]
 
     // Hand the session Stoke's own browser tools. A file path rather than an
     // inline JSON string: quoting JSON through a shell differs per platform and
@@ -591,6 +622,7 @@ export class PtyManager {
       bannerScanned: 0,
       hostId: opts.host?.id ?? null,
       sshAuth: opts.host ? newSshAuthScan() : null,
+      authTail: '',
       startedAt: now,
       lastActivityAt: now,
       cols: Math.max(20, opts.cols || 120),
@@ -645,10 +677,13 @@ export class PtyManager {
        * is not in this stream at all.
        */
       if (session.sshAuth) {
-        const { next, fire } = sshAuthStep(session.sshAuth, data)
+        // ConPTY re-renders every frame as VT, so on Windows the stream is
+        // scrubbed before the escape rule applies (sshAuth.ts, `conptyScrub`).
+        const { next, fire } = sshAuthStep(session.sshAuth, data, { conpty: process.platform === 'win32' })
         session.sshAuth = next
         if (fire && session.hostId) this.onSshAuth(ptyId, session.hostId, fire)
       }
+      if (session.hostId) session.authTail = (session.authTail + data).slice(-SSH_AUTH_TAIL_BYTES)
       this.onData(ptyId, data)
       for (const fn of this.subscribers) fn(ptyId, data)
     })
@@ -701,6 +736,21 @@ export class PtyManager {
     } catch {
       /* process died between the renderer's keystroke and here */
     }
+  }
+
+  /**
+   * Is this SSH session sitting at a password prompt right now?
+   *
+   * False for anything that is not a live remote session, and false unless the
+   * last thing it printed is provably a prompt (`awaitingPasswordFromTail`).
+   * The renderer asks before reconnecting a tab after a key was enrolled: a
+   * tab at `password:` has nothing to lose, a tab whose user typed the password
+   * meanwhile is an authenticated session that must never be killed.
+   */
+  awaitingPassword(ptyId: string): boolean {
+    const s = this.sessions.get(ptyId)
+    if (!s || s.exited || !s.hostId) return false
+    return awaitingPasswordFromTail(s.authTail, { conpty: process.platform === 'win32' })
   }
 
   /** When input last reached this pty (`Session.lastInputAt`), or null. */

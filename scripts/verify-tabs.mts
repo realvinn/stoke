@@ -200,6 +200,22 @@ check(
   restartPlan({ cwd: '/Users/x', hostId: null, cliId: 'codex', installing: ['codex', 'pi'] }, []),
   { kind: 'install', ids: ['codex', 'pi'] }
 )
+/*
+ * An "Add key to …" tab carries its host's `hostId` too (so its `cwd` is read
+ * as an alias, gotcha 18). Read as a host tab, "Try again" on a failed key
+ * install would open a plain session on that machine, asking for the same
+ * password — so the enroll branch comes first.
+ */
+check(
+  'an Add-key tab sets up key login again — never opens a session on the host',
+  restartPlan({ cwd: 'vps', hostId: 'host-1', enrollHostId: 'host-1' }, ['host-1']),
+  { kind: 'enroll', hostId: 'host-1' }
+)
+check(
+  'and one whose host was deleted is impossible',
+  restartPlan({ cwd: 'vps', hostId: 'host-9', enrollHostId: 'host-9' }, ['host-1']).kind,
+  'impossible'
+)
 check(
   'a corrupted cli id restarts as Claude Code rather than spawning it',
   restartPlan({ cwd: '/tmp/x', hostId: null, cliId: 'banana' as never }, []),

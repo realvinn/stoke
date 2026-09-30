@@ -19,14 +19,16 @@
  *   node scripts/verify-ssh-enroll.mts
  */
 import { execFile } from 'node:child_process'
-import { mkdtemp, mkdir, readFile, rm, writeFile, chmod, stat } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile, chmod, stat, symlink, lstat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import {
   SSH_AUTH_SCAN_LIMIT,
   SSH_AUTH_TAIL_BYTES,
+  awaitingPasswordFromTail,
   buildRemoteInstallCommand,
+  conptyScrub,
   detectSshPasswordPrompt,
   isEnrollableAlias,
   isSafePublicKeyLine,
@@ -35,14 +37,26 @@ import {
   sshAuthStep
 } from '../src/shared/sshAuth.ts'
 import {
+  appendIdentityBlock,
   buildCopyIdArgs,
   buildEnrollFallbackArgs,
+  buildIdentityBlock,
+  buildLoginProbeArgs,
   buildPubkeyProbeArgs,
+  identityFilesFromSshG,
+  sshConfigHostPattern,
   sshCopyIdExecutable,
   sshExecutable
 } from '../src/main/ssh.ts'
+import {
+  appendToSshConfig,
+  finishEnroll,
+  planEnrollLaunch,
+  prepareEnroll,
+  type ExecResult
+} from '../src/main/sshEnroll.ts'
 import { hydrateSettings } from '../src/main/settingsSchema.ts'
-import type { SshHost, SshKeyEnroll } from '../src/shared/types.ts'
+import type { LaunchOptions, SshEnrollEvent, SshHost, SshKeyEnroll } from '../src/shared/types.ts'
 
 const execFileAsync = promisify(execFile)
 
@@ -245,6 +259,127 @@ check(
   null
 )
 
+/* ------------------------------------------------------------ ConPTY */
+
+/*
+ * On Windows node-pty runs ConPTY, which re-renders its screen as VT from the
+ * first frame — before ssh has printed anything. Under the POSIX rule (first
+ * escape byte closes the window) no Windows prompt could ever be seen. These
+ * streams are ConPTY-SHAPED: the sequences ConPTY is documented and reported
+ * to emit, replayed on this Mac. Not a measurement of a real Windows run.
+ */
+console.log('\nthe scan window under ConPTY (replayed shape, not measured on Windows)')
+
+const CONPTY_HELLO =
+  `${ESC}[?9001h${ESC}[?1004h${ESC}[?25l${ESC}[2J${ESC}[m${ESC}[H` +
+  `${ESC}]0;C:\\WINDOWS\\System32\\OpenSSH\\ssh.exe\u0007${ESC}[?25h`
+
+{
+  // The exact case the POSIX rule loses: ConPTY's own first frame.
+  const posix = sshAuthStep(newSshAuthScan(), CONPTY_HELLO)
+  ok('without the ConPTY option, its first frame closes the window (why Windows never fired)', !posix.next.open)
+
+  let s = newSshAuthScan()
+  const fires: unknown[] = []
+  const stream = [
+    CONPTY_HELLO,
+    // ConPTY paints cells: the trailing space of "password: " may never come,
+    // and the cursor is parked with a CUP afterwards.
+    `${ESC}[?25l${ESC}[H`,
+    "v@web's password:",
+    `${ESC}[1;19H${ESC}[?25h`
+  ]
+  for (const chunk of stream) {
+    const r = sshAuthStep(s, chunk, { conpty: true })
+    s = r.next
+    fires.push(r.fire)
+  }
+  check('a ConPTY-shaped prompt stream fires exactly once', fires.filter(Boolean).length, 1)
+  check('naming the prompt the remote printed', fires.find(Boolean), { kind: 'password', user: 'v', host: 'web' })
+  const again = sshAuthStep(
+    s,
+    `\r\nPermission denied, please try again.\r\n${ESC}[?25lv@web's password:${ESC}[?25h`,
+    { conpty: true }
+  )
+  check('and ssh asking again does not fire again', again.fire, null)
+}
+
+{
+  // A PAM prompt, split mid-escape across chunks: the cut-off sequence is held
+  // for the next chunk rather than leaking "[?25" into the line.
+  let s = newSshAuthScan()
+  let fired: unknown = null
+  for (const chunk of [CONPTY_HELLO, `${ESC}[?2`, '5l(v@web) Password:', `${ESC}[?25h`]) {
+    const r = sshAuthStep(s, chunk, { conpty: true })
+    s = r.next
+    fired = fired ?? r.fire
+  }
+  check('a PAM prompt with an escape split across chunks still fires', fired, {
+    kind: 'kbdinteractive',
+    user: 'v',
+    host: 'web'
+  })
+}
+
+for (const [label, enable] of [
+  ['the alternate screen (tmux, byobu)', `${ESC}[?1049h`],
+  ['mouse tracking', `${ESC}[?1000h${ESC}[?1006h`],
+  ['bracketed paste (bash and zsh at their first prompt, claude)', `${ESC}[?2004h`]
+] as const) {
+  const painted = sshAuthStep(sshAuthStep(newSshAuthScan(), CONPTY_HELLO, { conpty: true }).next, enable, {
+    conpty: true
+  })
+  ok(`under ConPTY, ${label} still closes the window (gotcha 75's rule)`, !painted.next.open)
+  check(
+    '  so a prompt-shaped line afterwards is ignored',
+    sshAuthStep(painted.next, 'Password: ', { conpty: true }).fire,
+    null
+  )
+}
+
+{
+  // ConPTY asks its host for these itself; they must not count as painting.
+  const own = conptyScrub(`${ESC}[?9001h${ESC}[?1004h${ESC}[?25l`)
+  ok("ConPTY's own ?9001h and ?1004h are not a far-side program painting", !own.painting)
+  check('and scrub to nothing', own.text, '')
+  check(
+    'a banner line under ConPTY is still not a prompt — the newline anchor holds',
+    sshAuthStep(sshAuthStep(newSshAuthScan(), CONPTY_HELLO, { conpty: true }).next, 'Do not share your password with anyone.\r\n', {
+      conpty: true
+    }).fire,
+    null
+  )
+  check(
+    'nor is sudo, scrubbed or not',
+    sshAuthStep(newSshAuthScan(), `${ESC}[?25l[sudo] password for v: `, { conpty: true }).fire,
+    null
+  )
+}
+
+/* ------------------------------------------------ awaiting a password NOW */
+
+/*
+ * Asked after an enrollment succeeds, before the tab that raised the offer is
+ * reconnected. "Yes" kills that tab's ssh, so every doubtful case is "no".
+ */
+console.log('\nis the tab still at the prompt?')
+
+ok('a tab sitting at the prompt: yes', awaitingPasswordFromTail("banner\r\nv@web's password: "))
+ok(
+  'after a wrong password and the re-ask: yes',
+  awaitingPasswordFromTail("v@web's password: \r\nPermission denied, please try again.\r\nv@web's password: ")
+)
+ok(
+  'the user typed it and got a shell: no — never kill an authenticated session',
+  !awaitingPasswordFromTail("v@web's password: \r\nWelcome to Ubuntu 24.04\r\nv@web:~$ ")
+)
+ok('a TUI painting: no', !awaitingPasswordFromTail(`v@web's password: \r\n${ESC}[?1049h${ESC}[H`))
+ok('nothing printed: no', !awaitingPasswordFromTail(''))
+ok(
+  'under ConPTY, a repainted prompt: yes',
+  awaitingPasswordFromTail(`${CONPTY_HELLO}${ESC}[H(v@web) Password:${ESC}[1;19H`, { conpty: true })
+)
+
 /* --------------------------------------------------------- shouldOfferKey */
 
 /*
@@ -401,16 +536,35 @@ const probe = buildPubkeyProbeArgs(host, '/home/v/.ssh/id_ed25519')
 ok('buildPubkeyProbeArgs returns an argv', probe !== null)
 if (probe) {
   ok(
-    // The probe is the only thing that may set keyEnrolled, and it may never
-    // prompt: BatchMode is what guarantees it either succeeds on the key or
-    // exits non-zero.
-    'BatchMode=yes, so the probe can never prompt',
+    // Only ever used to WORD a failure of the login probe below, but it must
+    // never prompt either: BatchMode is what guarantees it either succeeds on
+    // the key or exits non-zero.
+    'BatchMode=yes, so the -i probe can never prompt',
     probe.includes('BatchMode=yes'),
     probe.join(' ')
   )
   ok('and it is a real option, before the alias', probe.indexOf('BatchMode=yes') < probe.indexOf('web'))
 }
 check('null for a leading-dash alias', buildPubkeyProbeArgs(dashHost, '/home/v/.ssh/id_ed25519'), null)
+
+/*
+ * The probe that may set keyEnrolled asks what the TAB will do next time, so
+ * it has the tab's identities, not one forced with -i. The first version used
+ * the -i form, and a key minted as ~/.ssh/stoke_ed25519 — not a default name,
+ * never in the config — passed it while every new tab still asked for a
+ * password.
+ */
+const login = buildLoginProbeArgs(host)
+ok('buildLoginProbeArgs returns an argv', login !== null)
+if (login) {
+  ok('the login probe has no -i', !login.includes('-i'), login.join(' '))
+  ok('and no IdentitiesOnly', !login.some((a) => /identitiesonly/i.test(a)), login.join(' '))
+  ok('BatchMode=yes, so it can never prompt', login.includes('BatchMode=yes'), login.join(' '))
+  ok('publickey only, so a keyboard-interactive host does not count', login.includes('PreferredAuthentications=publickey'))
+  ok('ControlPath=none, so a multiplexed master cannot answer for it', login.includes('ControlPath=none'))
+  check('the alias then exit, last', login.slice(-2), ['web', 'exit'])
+}
+check('null for a leading-dash alias', buildLoginProbeArgs(dashHost), null)
 
 /* ------------------------------------------ the remote install command, run */
 
@@ -422,8 +576,21 @@ check('and for empty input', buildRemoteInstallCommand(''), null)
 const installCmd = buildRemoteInstallCommand(`  ${KEY_WITH_COMMENT}  `)
 ok('a safe line round-trips into a command', installCmd !== null)
 ok(
-  'carrying the trimmed key, quoted',
-  installCmd !== null && installCmd.includes(`'${KEY_WITH_COMMENT}'`),
+  'carrying the trimmed key, double-quoted inside the sh -c body',
+  installCmd !== null && installCmd.includes(`"${KEY_WITH_COMMENT}"`),
+  installCmd ?? 'null'
+)
+ok(
+  // The remote LOGIN shell parses this first, and it is whatever the user has:
+  // fish rejects `{ …; }` and csh reads `$(` differently. One outer `sh -c '…'`
+  // with no single quote inside survives all of them.
+  "wrapped as sh -c '…', so the login shell never parses the body",
+  installCmd !== null && installCmd.startsWith("sh -c '") && installCmd.endsWith("'"),
+  installCmd ?? 'null'
+)
+ok(
+  'with exactly two single quotes, the outer pair',
+  installCmd !== null && (installCmd.match(/'/g) ?? []).length === 2,
   installCmd ?? 'null'
 )
 
@@ -435,7 +602,8 @@ ok(
  */
 async function runInstall(
   cmd: string,
-  seed?: { content: string; mode: number }
+  seed?: { content: string; mode: number },
+  shell = 'sh'
 ): Promise<{ text: string; dirMode: number; fileMode: number }> {
   const home = await mkdtemp(join(tmpdir(), 'stoke-enroll-'))
   try {
@@ -447,7 +615,8 @@ async function runInstall(
       await writeFile(join(home, '.ssh', 'authorized_keys'), seed.content)
       await chmod(join(home, '.ssh', 'authorized_keys'), seed.mode)
     }
-    await execFileAsync('sh', ['-c', cmd], { env: { ...process.env, HOME: home }, cwd: home })
+    // Run by `shell -c`, the way sshd hands a command to the login shell.
+    await execFileAsync(shell, ['-c', cmd], { env: { ...process.env, HOME: home }, cwd: home })
     const text = await readFile(join(home, '.ssh', 'authorized_keys'), 'utf8')
     const dirMode = (await stat(join(home, '.ssh'))).mode & 0o777
     const fileMode = (await stat(join(home, '.ssh', 'authorized_keys'))).mode & 0o777
@@ -498,9 +667,335 @@ if (installCmd && process.platform !== 'win32') {
     twice.text.split('\n').filter(Boolean).length,
     3
   )
+
+  /*
+   * The login shells a VPS actually has. Each is only run where it is
+   * installed — a missing one is a SKIP, printed, never a silent pass.
+   */
+  for (const shell of ['/bin/bash', '/bin/zsh', '/bin/dash', '/usr/bin/fish', '/opt/homebrew/bin/fish', '/bin/tcsh']) {
+    let present = true
+    try {
+      await stat(shell)
+    } catch {
+      present = false
+    }
+    if (!present) {
+      console.log(`  SKIP  as the login shell: ${shell} is not installed here`)
+      continue
+    }
+    const r = await runInstall(installCmd, { content: OLD, mode: 0o644 }, shell)
+    check(`as the login shell, ${shell} installs it as a whole line`, r.text, `${OLD}\n${KEY_WITH_COMMENT}\n`)
+  }
 } else {
   console.log('  SKIP  running the command needs a POSIX sh')
 }
+
+/* ------------------------------------------- the key, saved in the config */
+
+/*
+ * Plain `ssh <alias>` — what every tab runs — only offers keys its config
+ * names (or the default names). A key it would not offer is appended as one
+ * `Host` / `IdentityFile` block: append-only, never an edit, and refused for
+ * anything that cannot be written safely.
+ */
+console.log('\nthe IdentityFile block')
+
+check('the Host pattern for an alias is the alias', sshConfigHostPattern('web'), 'web')
+check('for user@host it is the host part ssh matches on', sshConfigHostPattern('v@203.0.113.9'), '203.0.113.9')
+for (const bad of ['-oProxyCommand=x', 'a b', 'web*', '!web', 'ssh://v@web:2222', 'v@[2001:db8::1]', '']) {
+  check(`no Host pattern for ${JSON.stringify(bad)}`, sshConfigHostPattern(bad), null)
+}
+check('no block for a refused alias', buildIdentityBlock('-oProxyCommand=x', '/k'), null)
+check('no block for a path with a %, which ssh would expand', buildIdentityBlock('web', '/home/v/%u/key'), null)
+check('nor one with a quote', buildIdentityBlock('web', '/home/v/"key'), null)
+check('nor one with a newline, which would be a second directive', buildIdentityBlock('web', '/k\nProxyCommand x'), null)
+{
+  const block = buildIdentityBlock('web', '/Users/Jo Smith/.ssh/stoke_ed25519')
+  ok('a path with a space is quoted', block !== null && block.includes('IdentityFile "/Users/Jo Smith/.ssh/stoke_ed25519"'), block ?? 'null')
+  const lines = (block ?? '').split('\n')
+  check('the block is a comment, Host, IdentityFile — nothing else', lines.filter(Boolean).length, 3)
+
+  const cases: [string, string][] = [
+    ['an empty file', ''],
+    ['a file ending in a newline', 'Host a\n  User x\n'],
+    ['a file with no final newline', 'Host a\n  User x'],
+    ['a CRLF file', 'Host a\r\n  User x\r\n']
+  ]
+  for (const [label, existing] of cases) {
+    const next = appendIdentityBlock(existing, block ?? '')
+    ok(`appending to ${label} keeps every existing byte as a prefix`, next.startsWith(existing), JSON.stringify(next))
+    ok(`  and the Host line starts a line of its own`, /(^|\n)Host web\r?\n/.test(next), JSON.stringify(next))
+  }
+  ok('a CRLF file stays CRLF', !/[^\r]\n/.test(appendIdentityBlock('Host a\r\n', block ?? '')))
+}
+
+/*
+ * The writer, on synthetic paths only (gotcha 74): a temp dir standing in for
+ * ~/.ssh, never the real one.
+ */
+const sandbox = await mkdtemp(join(tmpdir(), 'stoke-enroll-cfg-'))
+try {
+  const block = buildIdentityBlock('web', join(sandbox, 'stoke_ed25519')) ?? ''
+
+  {
+    const file = join(sandbox, 'config')
+    // Not valid UTF-8, no final newline: a decode/re-encode would change it.
+    const original = Buffer.concat([Buffer.from('Host a\n  User caf'), Buffer.from([0xe9]), Buffer.from('\n# end')])
+    await writeFile(file, original)
+    await chmod(file, 0o600)
+    // A backup the USER made. Stoke's own is `.stoke.bak`, so this must survive.
+    await writeFile(`${file}.bak`, 'mine')
+    const r = await appendToSshConfig(file, block)
+    const after = await readFile(file)
+    ok('the original bytes are a byte-for-byte prefix of the new file', after.subarray(0, original.length).equals(original))
+    ok('and the block follows them', after.subarray(original.length).toString('utf8').includes('Host web'))
+    ok('the previous file is kept as config.stoke.bak, exactly', (await readFile(`${file}.stoke.bak`)).equals(original))
+    check("the user's own config.bak is untouched", await readFile(`${file}.bak`, 'utf8'), 'mine')
+    check('the mode is kept at 600 — ssh refuses a config others can write', ((await stat(file)).mode & 0o777).toString(8), '600')
+    // Beside the REAL path: macOS's $TMPDIR is itself behind /var -> /private/var.
+    check('it reports the backup it made, beside the resolved file', r.backup, `${await realpath(file)}.stoke.bak`)
+  }
+
+  {
+    // A dotfiles setup: ~/.ssh/config is a symlink into a repo.
+    const real = join(sandbox, 'dotfiles-config')
+    const link = join(sandbox, 'linked-config')
+    await writeFile(real, 'Host a\n')
+    await symlink(real, link)
+    await appendToSshConfig(link, block)
+    ok('a symlinked config stays a symlink', (await lstat(link)).isSymbolicLink())
+    ok('and its target gained the block', (await readFile(real, 'utf8')).includes('Host web'))
+  }
+
+  {
+    const fresh = join(sandbox, 'nested', 'config')
+    await appendToSshConfig(fresh, block)
+    check('a missing config is created holding just the block', await readFile(fresh, 'utf8'), block)
+    check('at 600', ((await stat(fresh)).mode & 0o777).toString(8), '600')
+  }
+} finally {
+  await rm(sandbox, { recursive: true, force: true })
+}
+
+/* ---------------------------------------------- the launch plan, by id only */
+
+console.log('\nthe enroll launch plan never takes argv from the renderer')
+
+{
+  const hosts: SshHost[] = [{ id: 'h1', label: 'web', alias: 'web', command: 'byobu', worklog: false }]
+  // Everything a compromised or buggy renderer could put in the request.
+  const hostile = {
+    cwd: '/etc',
+    cli: 'codex',
+    install: ['codex'],
+    host: { id: 'h1', label: 'x', alias: 'evil.example', command: 'rm -rf ~' },
+    extraArgs: ['-oProxyCommand=sh'],
+    addDirs: ['/'],
+    sessionId: 'x',
+    resume: true,
+    permissionMode: 'bypassPermissions',
+    model: 'x',
+    effort: 'max',
+    cols: 132,
+    rows: 40,
+    enroll: { hostId: 'h1' }
+  } as unknown as LaunchOptions
+  const plan = planEnrollLaunch(hostile, hosts)
+  ok('a known host id plans', plan.ok)
+  if (plan.ok) {
+    check('the host is the one settings holds under that id', plan.host, hosts[0])
+    check('and the options are built from scratch: id and size only', plan.opts, {
+      cwd: '',
+      permissionMode: 'default',
+      model: '',
+      effort: 'default',
+      cols: 132,
+      rows: 40,
+      enroll: { hostId: 'h1' }
+    })
+  }
+  check('an unknown id is refused', planEnrollLaunch({ ...hostile, enroll: { hostId: 'nope' } }, hosts).ok, false)
+  check('no id is refused', planEnrollLaunch({ ...hostile, enroll: undefined }, hosts).ok, false)
+}
+
+/* ------------------------------------------ prepare and finish, faked ssh */
+
+/*
+ * The orchestrator end to end with every program faked and every path in a
+ * temp dir: which key, whether the config is written, what the tab runs, and
+ * what the proof runs. The fake `ssh -G` reads the synthetic config, so "the
+ * key is now listed" is decided by what was actually written.
+ */
+console.log('\nprepare and finish, with ssh faked and ~/.ssh synthetic')
+
+const DEFAULT_IDS = ['id_rsa', 'id_ecdsa', 'id_ecdsa_sk', 'id_ed25519', 'id_ed25519_sk']
+
+async function withSandbox(
+  seed: (sshDir: string) => Promise<void>,
+  probes: { login: boolean; direct: boolean },
+  run: (ctx: {
+    sshDir: string
+    configFile: string
+    calls: { file: string; args: string[] }[]
+    events: SshEnrollEvent[]
+    deps: Parameters<typeof prepareEnroll>[1]
+  }) => Promise<void>
+): Promise<void> {
+  const home = await mkdtemp(join(tmpdir(), 'stoke-enroll-home-'))
+  const sshDir = join(home, '.ssh')
+  const configFile = join(sshDir, 'config')
+  await mkdir(sshDir, { recursive: true })
+  await seed(sshDir)
+  const calls: { file: string; args: string[] }[] = []
+  const events: SshEnrollEvent[] = []
+  const exec = async (file: string, args: string[]): Promise<ExecResult> => {
+    calls.push({ file, args })
+    if (args[0] === '-G') {
+      // Real ssh prints the defaults unless the config names a file. This fake
+      // reads the synthetic config for the IdentityFile lines Stoke wrote.
+      let text = ''
+      try {
+        text = await readFile(configFile, 'utf8')
+      } catch {
+        /* none */
+      }
+      const named = [...text.matchAll(/IdentityFile "([^"]+)"/g)].map((m) => m[1])
+      const lines = [...DEFAULT_IDS.map((n) => `identityfile ~/.ssh/${n}`), ...named.map((p) => `identityfile ${p}`)]
+      return { ok: true, stdout: `host ${args[1]}\n${lines.join('\n')}\n`, stderr: '', error: null }
+    }
+    if (args.includes('-t') && args.includes('ed25519')) {
+      const target = args[args.indexOf('-f') + 1]
+      await writeFile(target, 'PRIVATE')
+      await writeFile(`${target}.pub`, `${KEY} Stoke`)
+      return { ok: true, stdout: '', stderr: '', error: null }
+    }
+    if (args.includes('BatchMode=yes')) {
+      const direct = args.includes('-i')
+      const pass = direct ? probes.direct : probes.login
+      return pass
+        ? { ok: true, stdout: '', stderr: '', error: null }
+        : { ok: false, stdout: '', stderr: 'v@web: Permission denied (publickey).', error: 'exit 255' }
+    }
+    return { ok: false, stdout: '', stderr: `unexpected ${file} ${args.join(' ')}`, error: 'unexpected' }
+  }
+  try {
+    await run({
+      sshDir,
+      configFile,
+      calls,
+      events,
+      deps: { exec, sshDir, configFile, home, copyId: '/usr/bin/ssh-copy-id', emit: (e) => events.push(e) }
+    })
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+}
+
+const webHost: SshHost = { id: 'h1', label: 'web', alias: 'web', command: '', worklog: false }
+
+await withSandbox(
+  async (d) => {
+    await writeFile(join(d, 'id_ed25519'), 'PRIVATE')
+    await writeFile(join(d, 'id_ed25519.pub'), `${KEY} v@laptop`)
+  },
+  { login: true, direct: true },
+  async ({ sshDir, configFile, calls, events, deps }) => {
+    const prep = await prepareEnroll(webHost, deps)
+    ok('a key ssh already offers is reused', prep.ok && prep.keyPath === join(sshDir, 'id_ed25519'))
+    ok('no ssh-keygen ran', !calls.some((c) => c.args.includes('ed25519')))
+    let wrote = true
+    try {
+      await stat(configFile)
+    } catch {
+      wrote = false
+    }
+    ok('and no config was written — ssh already offers it', !wrote)
+    if (prep.ok) {
+      check('the tab runs ssh-copy-id with that key', prep.command.file, '/usr/bin/ssh-copy-id')
+      check('  built from the settings alias', prep.command.args.at(-1), 'web')
+      ok('  EscapeChar=none, since a password is typed there (gotcha 29)', prep.command.args.includes('EscapeChar=none'))
+      const done = await finishEnroll(webHost, prep.keyPath, 0, false, deps)
+      ok('a passing login probe is a success', done.ok)
+      const loginCall = calls.find((c) => c.args.includes('BatchMode=yes'))
+      ok('and that probe carried no -i', !!loginCall && !loginCall.args.includes('-i'), loginCall?.args.join(' '))
+      ok('the last event is done, ok', events.at(-1)?.stage === 'done' && events.at(-1)?.ok === true)
+    }
+  }
+)
+
+await withSandbox(
+  async () => {},
+  { login: true, direct: true },
+  async ({ sshDir, configFile, calls, deps }) => {
+    const prep = await prepareEnroll(webHost, deps)
+    ok('with no key at all, id_ed25519 is made — a default name', prep.ok && prep.keyPath === join(sshDir, 'id_ed25519'))
+    const keygen = calls.find((c) => c.args.includes('ed25519'))
+    ok('  with an empty passphrase on argv, never a real one', !!keygen && keygen.args[keygen.args.indexOf('-N') + 1] === '')
+    let wrote = true
+    try {
+      await stat(configFile)
+    } catch {
+      wrote = false
+    }
+    ok('  and no config write: ssh offers id_ed25519 by default', !wrote)
+  }
+)
+
+await withSandbox(
+  async (d) => {
+    // Somebody's key, with no public half: never overwritten, never read.
+    await writeFile(join(d, 'id_ed25519'), 'SOMEONE ELSES')
+    await writeFile(join(d, 'config'), 'Host *\n  ServerAliveInterval 30')
+  },
+  { login: true, direct: true },
+  async ({ sshDir, configFile, deps }) => {
+    const before = await readFile(configFile, 'utf8')
+    const prep = await prepareEnroll(webHost, deps)
+    const key = join(sshDir, 'stoke_ed25519')
+    ok('an id_ed25519 with no .pub is left alone and stoke_ed25519 is made', prep.ok && prep.keyPath === key)
+    check('  the existing private key is untouched', await readFile(join(sshDir, 'id_ed25519'), 'utf8'), 'SOMEONE ELSES')
+    const after = await readFile(configFile, 'utf8')
+    ok('  the config gained a block for it — plain ssh would not offer that name', after.includes(`IdentityFile "${key}"`))
+    ok('  appended: the old config is an exact prefix', after.startsWith(before))
+    check('  and backed up first', await readFile(`${configFile}.stoke.bak`, 'utf8'), before)
+    ok('  and ssh -G was asked again to confirm it is now offered', identityFilesFromSshG(`identityfile ${key}`).includes(key))
+  }
+)
+
+await withSandbox(
+  async (d) => {
+    await writeFile(join(d, 'id_ed25519'), 'PRIVATE')
+    await writeFile(join(d, 'id_ed25519.pub'), `${KEY} v@laptop`)
+  },
+  { login: false, direct: true },
+  async ({ sshDir, events, deps }) => {
+    const done = await finishEnroll(webHost, join(sshDir, 'id_ed25519'), 0, false, deps)
+    ok('server accepts the key but plain ssh does not offer it: NOT enrolled', !done.ok && done.installed)
+    ok('  and it says which half is wrong', /does not offer/.test(done.message), done.message)
+    check('  reported as done, not ok', [events.at(-1)?.stage, events.at(-1)?.ok], ['done', false])
+  }
+)
+
+await withSandbox(
+  async () => {},
+  { login: false, direct: false },
+  async ({ sshDir, events, deps }) => {
+    const done = await finishEnroll(webHost, join(sshDir, 'id_ed25519'), 127, true, deps)
+    ok('a fallback that failed on a non-POSIX login shell is not enrolled', !done.ok && !done.installed)
+    ok('  and says to run ssh-copy-id from Git Bash', /Git Bash/.test(done.message), done.message)
+    check('  reported as failed', events.at(-1)?.stage, 'failed')
+  }
+)
+
+await withSandbox(
+  async () => {},
+  { login: true, direct: true },
+  async ({ calls, events, deps }) => {
+    const bad = await prepareEnroll({ ...webHost, alias: '-oProxyCommand=sh' }, deps)
+    ok('an option-shaped alias is refused before anything runs', !bad.ok && calls.length === 0)
+    check('  with a failed event for the strip', events.at(-1)?.stage, 'failed')
+  }
+)
 
 /* -------------------------------------------------------------- hydration */
 

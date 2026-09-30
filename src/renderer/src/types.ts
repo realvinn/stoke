@@ -42,6 +42,14 @@ export interface Tab {
    * first agent in the list.
    */
   installing?: CodingCliId[]
+  /**
+   * Set on an "Add key to …" tab: it runs `ssh-copy-id` for this host
+   * (`SshHost.id`) so the user can type the password once, and it is never
+   * saved for restore (`toStored` drops it) — a restart must not bring back an
+   * install that asks for a password. `hostId` is set too, so everything that
+   * treats `cwd` as an alias rather than a folder (gotcha 18) still does.
+   */
+  enrollHostId?: string
   /** Empty string on a `new` tab, which has no process. */
   ptyId: string
   /** Claude Code session id — the key the context meter watches. Empty on `new`. */

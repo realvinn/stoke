@@ -655,12 +655,18 @@ export interface StokeApi {
   ssh: {
     /** Host aliases read from the user's own ~/.ssh/config, for the picker. */
     configHosts(): Promise<string[]>
-    /**
-     * Install a key on this host. The only caller is the Add-a-key button:
-     * there is deliberately no path from the detector to here, so nothing can
-     * be installed without a press.
+    /*
+     * Setting up key login is `pty.start({ enroll: { hostId }, … })`: it opens
+     * a tab running ssh-copy-id, which the user types the password into. Its
+     * callers are the offer strip's Add-a-key button, Settings' "Set up key
+     * login", and an 'auto' offer the user opted into in Settings.
      */
-    enroll(hostId: string): Promise<void>
+    /**
+     * Whether this SSH tab is still sitting at a password prompt — asked before
+     * a tab is reconnected after its host was enrolled. Never true for a tab
+     * whose user has already got in.
+     */
+    awaitingPassword(ptyId: string): Promise<boolean>
     /** A remote asked a session for a password. Returns an unsubscribe. */
     onPasswordPrompt(cb: (e: SshAuthPromptEvent) => void): () => void
     /** Progress of an enrollment in flight. Returns an unsubscribe. */
