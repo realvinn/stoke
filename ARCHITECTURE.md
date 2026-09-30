@@ -612,10 +612,10 @@ npm run verify:welcome        # the first-run campfire: which (lastSeen, current
                               # statically — and, from the other end of the same feature, that
                               # build/installer.nsh still defines customWelcomePage and
                               # electron-builder.yml still names it through `include`
-npm run verify:selection      # Option-drag selection survives letting go of the mouse.
-                              # Opens a real Electron window, so it needs a display
-                              # and is one of the two `check` suites CI skips
-                              # (the other is verify:context)
+npm run verify:selection      # a selecting drag survives letting go of the mouse —
+                              # Option on macOS, Shift elsewhere, no modifier at a
+                              # shell. Opens a real Electron window, so it needs a
+                              # display: CI's Linux gate runs it under xvfb-run
 npm run verify:extract        # page extractor regression set
 npm run verify:usage          # plan limits from the statusLine payload; STOKE_LIVE_USAGE=1 adds the account call
 npm run verify:security <url> <token> --access   # remote server, against a running instance
@@ -625,8 +625,9 @@ Four more sit in the `check` chain without an entry above: `verify:activity` (th
 report's active time and lines written — a session's wall-clock span is not time worked),
 `verify:restore` (the tab-restore store: what survives a quit, what is trimmed, what a corrupt
 file does), `verify:targets` (that every runner in the release matrix is native for the arch it
-builds, that the `dist:*` scripts and the workflow both read `scripts/targets.mjs`, and that
-every platform/arch node-pty publishes is built or named as deliberately unbuilt) and
+builds, that the `dist:*` scripts and the workflow both read `scripts/targets.mjs`, that
+every platform/arch node-pty publishes is built or named as deliberately unbuilt, and that
+ci.yml's everyday gate is release.yml's gate step for step, run on every push) and
 `verify:manifests` (the update-manifest merger and the publish gate, asserted against the real
 published v0.9.4 manifests, against electron-builder's own `writeUpdateInfoFiles`, and against
 electron-updater's own `findFile`/`filterFilesForArch`). And `verify:portable`: which kind of
@@ -638,14 +639,35 @@ The two `.mjs` suites want a live instance rather than a fixture, which is why `
 run them: `verify:extract` drives the page extractor through Stoke's own MCP endpoint, and
 `verify:security` is pointed at a running remote server with a URL and a token.
 
-CI runs the `check` chain minus two, and the list is derived rather than transcribed:
+**CI runs on every push, every pull request and once a night** (`.github/workflows/ci.yml`),
+not only on a release tag, which until 2026-09-30 was the only time a suite ran in CI. Its
+`verify` job on ubuntu-latest is the gate — typecheck, `npm run verify:ci`, build — and it is
+release.yml's `verify` job step for step, which still gates every release on its own:
+`verify:targets` parses both files and fails if a single step differs, and names on its own
+each gate's xvfb and sandbox steps and its timeout. Beside it, a non-gating
+`portability` job runs typecheck and `verify:ci` on macos-14 and windows-latest, because a suite
+that passes on only one OS is a defect in the suite and nothing had ever run them off a Mac and
+that one Linux gate. Those legs are allowed to fail until they have a green streak.
+
+`verify:ci` runs the `check` chain minus one, and the list is derived rather than transcribed:
 `scripts/ci-verify.mjs` reads the chain out of `package.json` and fails on a stale exclusion
-(`npm run verify:ci -- --list` prints the plan). `verify:selection` needs a display. And
-**`verify:context` deliberately reads the real transcripts under `~/.claude/projects`**: that is
-the reason it exists, not an oversight. It asserts the context maths, the window inference and
-the live watcher path against actual sessions on the machine, so on a clean runner the directory
-is simply not there and the suite throws. Teaching it to synthesise its own fixtures would
-delete the only thing it is for, so it runs on a developer's machine and is skipped in CI.
+(`npm run verify:ci -- --list` prints the plan; add `--platform linux` to see the Linux gate's
+from another machine). A suite whose script starts Electron needs a display, and that is decided
+per runner rather than excluded: macOS and Windows have one, Linux uses a set `DISPLAY` or else
+wraps the suite in `xvfb-run -a`, and only with neither is it skipped, saying why. A display is
+not enough on Linux: where the kernel refuses unprivileged user namespaces (Ubuntu 24.04's
+AppArmor knob, which GitHub's image leaves on) and Chromium's setuid helper is not setuid root,
+Electron aborts before the suite runs, so that is skipped too, with the sysctl that fixes it
+(`sandboxProblem`). Both gates relax that knob and have xvfb, so `verify:selection` runs in
+both. The route follows the runner, not the workflow, and that is why the two gates are held
+to one step list: ubuntu-latest already ships `xvfb-run`, so when only ci.yml had the sysctl,
+release.yml's gate would have started the suite without it and failed the job every installer
+build waits on. The one exclusion is **`verify:context`, which deliberately reads the real
+transcripts under `~/.claude/projects`**: that is the reason it exists, not an oversight. It
+asserts the context maths, the window inference and the live watcher path against actual
+sessions on the machine, so on a clean runner the directory is simply not there and the suite
+throws. Teaching it to synthesise its own fixtures would delete the only thing it is for, so it
+runs on a developer's machine and is skipped in CI.
 
 Beyond that, verification has been done by driving the running app over CDP — launching with
 `--remote-debugging-port`, clicking through real flows and capturing screenshots. That is how
@@ -979,7 +1001,12 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
   api.ts            the type of window.stoke, shared by preload and renderer
 scripts/          the verify-*.mts suites, make-icon.cjs
   ci-verify.mjs     derives CI's suite list from the `check` chain and fails on a stale
-                    exclusion. `npm run verify:ci -- --list` prints the plan
+                    exclusion. A suite that starts Electron gets a display per runner
+                    (xvfb-run -a on a Linux one without), never an exclusion, and
+                    skips it, saying why, on a Linux runner where Electron's sandbox
+                    cannot start (`sandboxProblem`: the userns knobs, root). Runs
+                    suites through the shell on Windows, where npm is npm.cmd.
+                    `npm run verify:ci -- --list [--platform linux]` prints the plan
   targets.mjs       the ONE list of what a release builds: key, job name, runner,
                     electron-builder flags, and the platform/arch the runner must be.
                     The release workflow reads its matrix from it (`--matrix`) and every

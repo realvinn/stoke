@@ -1,0 +1,131 @@
+# The everyday gate: every push, every pull request, and once a night.
+#
+# Until this file, nothing ran on an ordinary push. release.yml's `verify` job
+# is the only place the suites ran in CI, and it runs on a `v*` tag — so a
+# commit that broke a suite was found by whoever next ran `npm run check` by
+# hand, or by the release it was about to block. This runs the same gate on
+# every branch as soon as the commit lands.
+#
+# One gating job and two that are not:
+#
+#   verify       ubuntu-latest: typecheck, `npm run verify:ci`, build — the
+#                same job as release.yml's `verify`, step for step
+#                (verify:targets fails if one step differs). xvfb and the
+#                sandbox sysctl are set up, so the one `check` suite that opens
+#                a window (verify:selection) runs rather than being skipped:
+#                scripts/ci-verify.mjs decides that per runner and prints why.
+#   portability  macOS and Windows, typecheck + `npm run verify:ci`, allowed to
+#                fail. A suite that passes on only one OS is a defect in the
+#                suite, not a fact about the machine (CLAUDE.md, Verification),
+#                and until now nothing ever ran them anywhere but a Mac and
+#                this Linux gate. They are non-gating because nobody has seen
+#                them green yet; the first runs are how to find out which
+#                suites are portable. Make them gating once they have a streak.
+#
+# `npm run verify:ci -- --list` prints what a push runs, and
+# `npm run verify:ci -- --list --platform linux` what this job resolves.
+#
+# Scheduled runs happen only on the default branch, so the nightly one starts
+# only once this file is on `main`.
+name: CI
+
+on:
+  # Every branch, and deliberately no `paths:` filter: an everyday gate that a
+  # push can dodge by touching the "wrong" files is the gap this closes. No
+  # `tags:` either — a tag is release.yml's, and it runs this same gate first.
+  push:
+    branches: ['**']
+  pull_request:
+  # The runner image moves under an unchanged commit. Off the hour, because
+  # GitHub delays or drops schedules at :00 under load.
+  schedule:
+    - cron: '41 16 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same ref supersedes the run still going for the old one.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      # These two steps are copied, byte for byte, into release.yml's `verify`,
+      # and verify:targets fails if the jobs differ by one step: ci-verify.mjs
+      # decides the window suite's route from the RUNNER, so a gate that has
+      # xvfb-run but not the sysctl below would start Electron and abort.
+      #
+      # A display for the suite that opens a real Electron window. The
+      # ubuntu-24.04 image already ships xvfb (runner-images'
+      # Ubuntu2404-Readme.md lists it), so the install is a fallback for an
+      # image that stops shipping it, and the last line fails the step if there
+      # is still no xvfb-run. Without it, ci-verify.mjs would skip the suite
+      # and say why; with it, the suite runs under `xvfb-run -a`.
+      - name: Install xvfb
+        run: |
+          if ! command -v xvfb-run >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends xvfb
+          fi
+          command -v xvfb-run
+
+      # Ubuntu 24.04 lets AppArmor refuse unprivileged user namespaces, the
+      # sandbox Chromium tries first. Its fallback is the setuid helper, and the
+      # one npm unpacks into node_modules/electron/dist is not setuid root, so
+      # Electron aborts before a line of the suite runs. GitHub's image keeps
+      # the restriction on: actions/runner-images#11489 asked for it off and
+      # was closed pointing at this very sysctl as the workaround. Relaxed on
+      # this throwaway VM only, and only where the knob exists; the suite keeps
+      # its sandbox. ci-verify.mjs reads the knob again before it starts the
+      # suite, and skips it, saying why, where the sandbox still cannot start.
+      - name: Let Electron's sandbox start
+        run: |
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      # Every `check` suite, derived from package.json's chain rather than
+      # listed here (gotcha 62): a second list is how three suites once went
+      # unenforced for a release. What is skipped, and why, is printed first.
+      - run: npm run verify:ci
+
+      - run: npm run build
+
+  portability:
+    name: Verify on ${{ matrix.os }} (non-gating)
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-latest]
+    runs-on: ${{ matrix.os }}
+    # Red on the job, green on the run: the point is to SEE which suites are
+    # not portable, not to block a push on a leg nobody has seen pass.
+    continue-on-error: true
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      # macOS and Windows runners have a desktop session, so verify:selection
+      # runs as it does on a developer's machine (ci-verify.mjs, displayRoute).
+      - run: npm run verify:ci
