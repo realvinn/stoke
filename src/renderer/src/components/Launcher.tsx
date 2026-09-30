@@ -30,6 +30,7 @@ import { compactTokens, relativeTime } from '../lib/format'
 import { launcherActivationAllowed, launcherHoldingFocus, onDeliberate } from '../lib/pressBurst'
 import { EFFORT_LEVELS, PERMISSION_MODES, ULTRACODE_HINT } from '../lib/permissions'
 import { useFloatingLayer } from '../lib/floatingLayers'
+import { agentMark } from '../lib/agentColor'
 
 /** Where the next session runs. */
 export interface LaunchTarget {
@@ -491,6 +492,8 @@ export function Launcher(props: Props): React.JSX.Element {
                         key: c.id,
                         label: c.label,
                         side: c.vendor,
+                        // Its colour, as its tab and pane will wear it.
+                        agent: c.id,
                         onPick: () => props.onStartCli(c.id)
                       })),
                       // What Start starts, changed from where it is used; the
@@ -983,7 +986,7 @@ function Menu({
   onClose
 }: {
   label: string
-  items: { key: string; label: string; side: string; separated?: boolean; onPick: () => void }[]
+  items: { key: string; label: string; side: string; separated?: boolean; agent?: string; onPick: () => void }[]
   note?: string
   onClose: (refocus: boolean) => void
 }): React.JSX.Element {
@@ -1022,11 +1025,13 @@ function Menu({
             role="menuitem"
             className="context-menu-item"
             data-separated={it.separated || undefined}
+            {...agentMark(it.agent)}
             onClick={() => {
               onClose(false)
               it.onPick()
             }}
           >
+            {it.agent && <span className="agent-dot" aria-hidden="true" />}
             <span>{it.label}</span>
             {it.side && <span className="context-menu-key">{it.side}</span>}
           </button>

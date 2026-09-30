@@ -779,7 +779,10 @@ body {
   background: var(--bg);
 }
 
-/* The agent a non-Claude tab runs, so `proj-a` and `proj-a` are not one label twice (QA L16). */
+/*
+ * The agent a tab runs when it is not the default one, so `proj-a` and `proj-a`
+ * are not one label twice (QA L16).
+ */
 .tab-agent {
   flex-shrink: 0;
   padding: 0 var(--space-4);
@@ -788,6 +791,74 @@ body {
   font-family: var(--mono);
   font-size: var(--fs-xs);
   color: var(--text-muted);
+}
+
+/*
+ * Agent colour (shared/agentColors.ts). `agentMark` points `--agent-ink`,
+ * `--agent-text` and `--agent-fill` at the marked agent's tokens inline; these
+ * are what a marked surface falls back to without that mapping, so a read never
+ * resolves to nothing (app.css declares no other fallback for a colour token).
+ */
+[data-agent] {
+  --agent-ink: var(--text-muted);
+  --agent-text: var(--text-muted);
+  --agent-fill: var(--text-faint);
+}
+
+/*
+ * Painted only while more than one agent is in view. The border is a graphic
+ * (3:1), so the ink; the label is text on the title bar's sunken chrome or a
+ * hovered tab, where the ink — solved against the page — measured 3.87:1 on
+ * every light theme, so the text token, held to 4.5:1 on all three grounds.
+ */
+:root[data-agent-paint] .tab-agent[data-agent] {
+  border-color: var(--agent-ink);
+  color: var(--agent-text);
+}
+
+/*
+ * With tags off, the agent stays on the tab as a rule along its foot, in the
+ * same ink — the top rule is the selection's and the profile's, so the agent
+ * takes the other edge. Nothing at all while only one agent is in view.
+ */
+.tab-agent-rule {
+  display: none;
+}
+
+:root[data-agent-paint] .tab-agent-rule[data-agent] {
+  display: block;
+  position: absolute;
+  left: var(--space-8);
+  right: var(--space-8);
+  bottom: 0;
+  height: 2px;
+  border-radius: var(--r-full);
+  background: var(--agent-ink);
+  pointer-events: none;
+}
+
+/*
+ * The agent's dot beside its model or name in the status bar and beside it in
+ * the launcher's agent menu. A graphic on the chrome, so the ink (4.5:1 on the
+ * page) rather than the fill.
+ */
+.agent-dot {
+  display: none;
+}
+
+:root[data-agent-paint] [data-agent] > .agent-dot {
+  display: inline-block;
+  flex: none;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: var(--r-full);
+  background: var(--agent-ink);
+}
+
+/* In a menu item the label sits on the text baseline; the dot is centred on it. */
+.context-menu-item > .agent-dot {
+  align-self: center;
+  margin-right: calc(var(--space-8) - var(--space-16));
 }
 
 .tab-label {
@@ -2085,7 +2156,37 @@ mark.hit {
  * swallow the drop event that has to reach the pane underneath it.
  */
 .term-pane[data-drop] .term-host {
-  box-shadow: inset 0 0 0 2px var(--accent-ink);
+  --pane-drop-ring: inset 0 0 0 2px var(--accent-ink);
+}
+
+/*
+ * The card's shadow is three layers with one owner each — the drop ring above,
+ * the agent's rule below, the frame further down — composed here rather than
+ * each rule setting `box-shadow` outright. Set outright, the frame's rule (the
+ * same specificity, later in the file) replaced the drop ring on every framed
+ * pane, and an agent rule would have replaced the frame. Front to back: the
+ * ring over the rule over the frame.
+ */
+.term-host,
+.paused-screen {
+  --pane-drop-ring: 0 0 transparent;
+  --pane-agent-rule: 0 0 transparent;
+  --pane-frame: 0 0 transparent;
+  box-shadow: var(--pane-drop-ring), var(--pane-agent-rule), var(--pane-frame);
+}
+
+/*
+ * Whose terminal this is: a 2px rule in the agent's ink along the top of the
+ * card, while more than one agent is in view (`data-agent-paint`, written by
+ * applyAppearance). An inset shadow, never a border — a border on
+ * `.term-host` is inside the height FitAddon measures and would cost a row —
+ * and no background layer, so a wallpaper still shows through one surface
+ * (gotcha 54). Ink, not fill: a 2px rule is a stroke on the page (gotcha 44).
+ * The tab's top rule, the cursor and the selection stay the profile's.
+ */
+:root[data-agent-paint] .term-pane[data-agent] .term-host,
+:root[data-agent-paint] .term-pane[data-agent] .paused-screen {
+  --pane-agent-rule: inset 0 2px 0 0 var(--agent-ink);
 }
 
 .term-host {
@@ -2129,9 +2230,7 @@ mark.hit {
 :root[data-term-frame='true'] .term-host,
 :root[data-term-frame='true'] .paused-screen {
   background: var(--bg);
-  box-shadow:
-    inset 0 0 0 1px var(--border-subtle),
-    var(--shadow-md);
+  --pane-frame: inset 0 0 0 1px var(--border-subtle), var(--shadow-md);
 }
 
 /* The floating strips sit inside the card rather than on its rim. */
@@ -3982,6 +4081,33 @@ summary.agent-picker-section:hover {
   max-width: 28rem;
 }
 
+/* An agent's colour and tab tag, one labelled row each. */
+.agent-look {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-8);
+  max-width: 28rem;
+}
+
+.agent-look-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  min-width: 0;
+}
+
+.agent-look-label {
+  flex: none;
+  width: 4.5rem;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+
+.agent-look-row > .input {
+  flex: 1;
+  min-width: 0;
+}
+
 .palette {
   position: fixed;
   top: 12vh;
@@ -5394,6 +5520,15 @@ summary.agent-picker-section:hover {
 .usage-chip[data-stale] {
   opacity: 0.7;
   border-style: dashed;
+}
+
+/*
+ * Whose limits these are: Claude Code's, in Claude Code's colour, while another
+ * agent is in view. A rule down the chip's leading edge rather than its border,
+ * which the warning and critical tones already own.
+ */
+:root[data-agent-paint] .usage-chip[data-agent] {
+  box-shadow: inset 2px 0 0 0 var(--agent-ink);
 }
 
 .usage-mini {

@@ -16,6 +16,7 @@ paths:
   - "scripts/verify-settings.mts"
   - "scripts/verify-theme-gen.mts"
   - "src/shared/meter.ts"
+  - "src/shared/agentColors.ts"
 ---
 
 # Palette and accents
@@ -160,6 +161,20 @@ there is a **~7 L\* dead band** (roughly L\* 66-78 by hue) where neither near-wh
 near-ink reaches Lc 60 on a fill, so a filled button has no legible label at any ink; three
 shipped swatches sit in it. The fill is nudged out rather than the label accepted, by less
 than the 0.04 perceptual distance this repo already calls "the same colour".
+
+> **Checked against the code on 2026-09-30** — an ink is text-safe on `--bg` ONLY. `deriveAccent`
+> solves it against the page on purpose, so on a light theme it lands a hair over 4.5:1 there and
+> about 3.9:1 on `--bg-sunken`, the title bar and status bar. The first cut of agent colour painted
+> the tab tag's LABEL in `--agent-<id>-ink`, and an unselected tab's tag sits on the sunken title
+> bar: every agent on Daylight, Paper and Mist measured 3.87–3.91:1 (4.19 on a hovered tab), where
+> the `--text-muted` it replaced measured 6.0. `verify:color` stayed green because it held the ink
+> to 3:1 on sunken, the graphics floor, while its own comment listed "the tab tag's text" as a use.
+> Borders, rules and dots are graphics and 3:1 is right for them; text is not. The tag's label now
+> has its own `--agent-<id>-text` (`textInk` in agentColors.ts): the ink wherever it already clears
+> 4.5:1 on `--bg`, `--bg-sunken` and `--surface-hover` — every dark theme, byte for byte — else the
+> seed re-solved against the worst of the three (Daylight Codex `#526ac5` → `#495fba`, 4.53:1 on
+> the title bar, measured in the built app). Before painting any `-ink` token as `color:` on the
+> chrome, check which floor its suite holds it to on THAT ground.
 
 ## 65. `--accent-contrast` is chosen for the solid fill and painted on the hover fill too
 

@@ -1,6 +1,7 @@
 import { capsFor, cliFor, cliStatusLine, DEFAULT_CLI, isClaudeCode } from '@shared/codingClis'
 import type { CodingCliDetection, CodingCliId } from '@shared/codingClis'
 import { installedAgents, resolveDefaultAgent, visibleAgents } from '@shared/agents'
+import { paintAgentColors, type AgentColors } from '@shared/agentColors'
 import { nextReveal, REVEAL_ENTRY_GRACE_MS } from '@shared/fullScreenReveal'
 import type { RevealInfo, RevealInput, RevealState } from '@shared/fullScreenReveal'
 import { AgentPicker } from './components/AgentPicker'
@@ -1432,9 +1433,29 @@ export function App(): React.JSX.Element {
     [settings?.activeProfile, availableProfiles]
   )
 
+  /*
+   * Agent colour (shared/agentColors.ts), painted only while more than one
+   * agent is in view: offered by the launcher, open in a tab, or the default.
+   * An install tab runs a shell, not an agent. Derived at render (gotcha 57).
+   *
+   * The overrides go in by value (a JSON key) rather than by object identity:
+   * every settings push hydrates a fresh `agents` block, and re-deriving
+   * eighteen agents' tokens on each slider tick elsewhere in Settings would be
+   * work for nothing.
+   */
+  const openAgentIds = useMemo(
+    () => tabs.filter((t) => t.kind === 'session' && !t.installing?.length).map((t) => t.cliId),
+    [tabs]
+  )
+  const agentPaint = paintAgentColors(primaryCli, visibleAgentIds, openAgentIds)
+  const agentColorsKey = JSON.stringify(settings?.agents.colors ?? {})
+
   useEffect(() => {
-    applyAppearance(theme, activeProfile)
-  }, [theme, activeProfile])
+    applyAppearance(theme, activeProfile, {
+      colors: JSON.parse(agentColorsKey) as AgentColors,
+      paint: agentPaint
+    })
+  }, [theme, activeProfile, agentColorsKey, agentPaint])
 
   const wallpaper = settings?.wallpaper ?? null
   useEffect(() => {
@@ -3557,6 +3578,21 @@ export function App(): React.JSX.Element {
     [patchSettings]
   )
 
+  /** The tab menu's "Hide/Show agent tags" — the same setting as Settings › Coding agents. */
+  const toggleAgentTags = useCallback((): void => {
+    const cur = settingsRef.current
+    if (!cur) return
+    void patchSettings({ agents: { ...cur.agents, tag: { ...cur.agents.tag, show: !cur.agents.tag.show } } })
+  }, [patchSettings])
+
+  /** What `tabLabel` needs to decide a tab's agent tag. */
+  const agentTagShown = settings?.agents.tag.show ?? true
+  const agentTagLabels = settings?.agents.tag.labels
+  const tagOptions = useMemo(
+    () => ({ show: agentTagShown, labels: agentTagLabels ?? {}, primary: primaryCli }),
+    [agentTagShown, agentTagLabels, primaryCli]
+  )
+
 
   /** Open a tab that installs these agents, from the vendors' own commands. */
   const installAgents = useCallback(
@@ -4460,14 +4496,16 @@ export function App(): React.JSX.Element {
         onOpenSettings={() => openSettings()}
         onOpenPhoneSettings={() => openSettings('remote')}
         labelFor={(t) => {
-          if (t.kind !== 'new') return tabLabel(t, null)
+          if (t.kind !== 'new') return tabLabel(t, null, tagOptions)
           // The tab in front names what its launcher is aimed at, fallback
           // included; one behind names its own selection, if it has one.
-          if (t.id === activeTabId) return tabLabel(t, launchTarget?.label ?? null)
+          if (t.id === activeTabId) return tabLabel(t, launchTarget?.label ?? null, tagOptions)
           const at = t.selectedPath ?? aimPins[t.id] ?? null
           const aimed = at ? projects.find((p) => p.path === at) : null
-          return tabLabel(t, at ? (aimed ? (aimed.label ?? aimed.name) : baseName(at)) : null)
+          return tabLabel(t, at ? (aimed ? (aimed.label ?? aimed.name) : baseName(at)) : null, tagOptions)
         }}
+        agentTagsShown={agentTagShown}
+        onToggleAgentTags={toggleAgentTags}
         settingsOpen={settingsOpen}
       />
 

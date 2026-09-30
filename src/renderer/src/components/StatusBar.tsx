@@ -5,6 +5,7 @@ import { modelLabel, shortPath } from '../lib/format'
 import { PERMISSION_LABELS } from '../lib/permissions'
 import { MODE_LABELS, sessionMode } from '@shared/launch'
 import { versionNumber, type RelaunchPlan } from '../lib/tabs'
+import { agentMark } from '../lib/agentColor'
 import type { ActivityView } from '@shared/activityView'
 import type { Tab } from '../types'
 
@@ -334,7 +335,17 @@ export function StatusBar({
         "default", which is not a fact about this session — it is the absence of
         one, printed in the row where every other item is something you set.
       */}
-      {!installTab && caps.launchFlags.model && model && <span className="status-item">{modelLabel(model)}</span>}
+      {/*
+        Marked with the tab's agent, so while more than one agent is in view
+        the model carries the same colour as the tab's tag and its pane's rule —
+        whose model this is, at a glance.
+      */}
+      {!installTab && caps.launchFlags.model && model && (
+        <span className="status-item" {...agentMark(cliIdOf(tab.cliId))}>
+          <span className="agent-dot" aria-hidden="true" />
+          {modelLabel(model)}
+        </span>
+      )}
 
       {!installTab && caps.launchFlags.effort && tab.effort !== 'default' && (
         <span className="status-item">effort: {tab.effort}</span>
@@ -411,8 +422,10 @@ export function StatusBar({
         ) : (
           <span
             className="status-item"
+            {...agentMark(cliIdOf(tab.cliId))}
             title="Stoke reads context usage from Claude Code's own status line, which this CLI does not write."
           >
+            <span className="agent-dot" aria-hidden="true" />
             {cliFor(cliIdOf(tab.cliId)).label} — no context reading
           </span>
         )

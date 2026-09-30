@@ -400,6 +400,8 @@ rule file named on the group line.
   `--force-prefers-reduced-motion` and a screenshot.
 - **105.** Keep the tabs out from under macOS's full-screen reveal (menu bar + title strip, 62px on
   macOS 27) by sliding `.app` with `top`, never a row (`nextReveal`, `revealInsetFor`).
+- **114.** Add a terminal-card shadow as a `--pane-*` layer of `.term-host`'s one `box-shadow`, never
+  a `box-shadow` of its own: set outright, the frame's rule hid the drop ring on every framed pane.
 
 **React state** — `.claude/rules/renderer.md`
 - **31.** `npm run check` cannot see a side effect inside a closure, or the wire from real input

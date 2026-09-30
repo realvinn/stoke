@@ -10,8 +10,9 @@
  * same reason. An `@shared/...` specifier here typechecks and builds perfectly
  * and dies the moment the suite runs.
  */
-import { cliFor, cliIdOf, isClaudeCode } from '../../../shared/codingClis.ts'
+import { cliFor, cliIdOf, DEFAULT_CLI, isClaudeCode } from '../../../shared/codingClis.ts'
 import type { CodingCliId } from '../../../shared/codingClis.ts'
+import { agentTagText } from '../../../shared/agents.ts'
 
 /**
  * Which tab id to select once `closedId` is gone, or null when the list empties.
@@ -896,6 +897,19 @@ export function newTabToReuse(
   return tabs.find((t) => t.kind === 'new' && !t.launch)?.id ?? null
 }
 
+/** Settings › Coding agents' tag options, plus the agent Start starts. */
+export interface AgentTagOptions {
+  /** Draw the tag at all (`agents.tag.show`). */
+  show: boolean
+  /** The user's name per agent (`agents.tag.labels`); absent is the executable. */
+  labels: Partial<Record<CodingCliId, string>>
+  /** The default agent (`resolveDefaultAgent`): its tabs are the unmarked ones. */
+  primary: CodingCliId
+}
+
+/** What the strip drew before the tag had settings: always on, bin names, Claude the default. */
+const TAG_DEFAULTS: AgentTagOptions = { show: true, labels: {}, primary: DEFAULT_CLI }
+
 /**
  * The words a tab shows in the strip.
  *
@@ -903,18 +917,32 @@ export function newTabToReuse(
  * not two identical "New session" labels; a tab running another agent keeps
  * its title and `agentTag` names the agent, because a Codex tab and a Claude
  * tab in one folder were both just `proj-a` (QA L16).
+ *
+ * "Another agent" is another than the DEFAULT one, not "not Claude Code": with
+ * Codex the default, the Codex tabs are the ordinary ones and a Claude tab is
+ * the one that needs saying. `agent` is that tab's agent whether or not the tag
+ * is drawn — with tags off, its colour and the tooltip still carry it. An
+ * install tab runs a shell, not an agent, and is never marked.
  */
 export function tabLabel(
   tab: { kind: string; title: string; customTitle?: string; cliId: CodingCliId; installing?: readonly string[] },
-  newTarget: string | null
-): { text: string; agentTag: string | null } {
+  newTarget: string | null,
+  opts: AgentTagOptions = TAG_DEFAULTS
+): { text: string; agentTag: string | null; agent: CodingCliId | null } {
   // A name the user typed wins over the ai-title, on every kind of tab; cleared
   // to blank it falls through to what the label was before (`tabLabel` gets the
   // trimmed value, so whitespace-only never counts as a name).
   const custom = tab.customTitle?.trim()
-  if (tab.kind === 'new') return { text: custom || (newTarget ? `New · ${newTarget}` : tab.title), agentTag: null }
-  const tag = isClaudeCode(tab.cliId) || tab.installing?.length ? null : cliFor(tab.cliId).bins.posix[0]
-  return { text: custom || tab.title, agentTag: tag }
+  if (tab.kind === 'new') {
+    return { text: custom || (newTarget ? `New · ${newTarget}` : tab.title), agentTag: null, agent: null }
+  }
+  const id = cliIdOf(tab.cliId)
+  const agent = tab.installing?.length || id === opts.primary ? null : id
+  return {
+    text: custom || tab.title,
+    agentTag: agent && opts.show ? agentTagText(agent, opts.labels) : null,
+    agent
+  }
 }
 
 /**

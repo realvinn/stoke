@@ -14,7 +14,7 @@
  * The parsing and formatting live in `@shared/notation` so a suite can assert
  * them without rendering anything.
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { format, parseNotation, type Notation } from '@shared/notation'
 
 interface Props {
@@ -22,9 +22,16 @@ interface Props {
   notation: Notation
   label: string
   onChange: (hex: string) => void
+  /**
+   * Commit a parseable draft that differs from `value` when the field
+   * unmounts. Escape closes the Settings sheet by unmounting it and delivers no
+   * blur, so a colour typed there and never blurred was lost (gotcha 63). Opt-in
+   * so the theme editor, whose draft is its own, keeps its behaviour.
+   */
+  commitOnUnmount?: boolean
 }
 
-export function ColorField({ value, notation, label, onChange }: Props): React.JSX.Element {
+export function ColorField({ value, notation, label, onChange, commitOnUnmount }: Props): React.JSX.Element {
   /*
    * A draft, not a controlled field on `value`.
    *
@@ -36,6 +43,18 @@ export function ColorField({ value, notation, label, onChange }: Props): React.J
    */
   const [draft, setDraft] = useState(() => format(value, notation))
   const [bad, setBad] = useState(false)
+
+  const latest = useRef({ draft, value, onChange, commitOnUnmount })
+  latest.current = { draft, value, onChange, commitOnUnmount }
+  useEffect(
+    () => () => {
+      const { draft: d, value: v, onChange: set, commitOnUnmount: flush } = latest.current
+      if (!flush) return
+      const hex = parseNotation(d)
+      if (hex && hex.toLowerCase() !== v.toLowerCase()) set(hex)
+    },
+    []
+  )
 
   // Re-sync when the value or the notation changes from outside: switching
   // notation must rewrite the field, and a seed change must move it.

@@ -26,6 +26,7 @@ import { isButtonlessMotionReport } from '../lib/mouseReport'
 import { matchShortcut } from '../lib/shortcuts'
 import { registerTerm, screenOf, unregisterTerm } from '../lib/termRegistry'
 import { terminalTheme } from '../lib/theme'
+import { agentMark, paneAgent } from '../lib/agentColor'
 import type { Tab } from '../types'
 import { ContextMenu } from './ContextMenu'
 
@@ -1380,6 +1381,9 @@ export function TerminalView({
     <div
       className="term-pane"
       hidden={!active}
+      /* Whose pane this is: a 2px rule in the agent's colour along the top of
+         the card while more than one agent is in view (app.css). */
+      {...agentMark(paneAgent(tab))}
       data-drop={dropping || undefined}
       onDragEnter={onDragEnter}
       onDragOver={onDragOver}

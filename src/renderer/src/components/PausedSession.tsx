@@ -1,5 +1,6 @@
 import { capsFor, cliFor } from '@shared/codingClis'
 import type { Tab } from '../types'
+import { agentMark, paneAgent } from '../lib/agentColor'
 
 interface Props {
   tab: Tab
@@ -44,7 +45,7 @@ export function PausedSession({
   // What this tab's CLI can do about coming back — see CLI_CAPS.resume.
   const caps = capsFor(tab.cliId)
   return (
-    <div className="term-pane" hidden={!active}>
+    <div className="term-pane" hidden={!active} {...agentMark(paneAgent(tab))}>
       <pre className="paused-screen" aria-hidden="true">
         {screen}
       </pre>

@@ -144,11 +144,15 @@ export const DEFAULT_SETTINGS: Settings = {
   // Never asked: the first launch shows the agent picker, and until it is
   // answered the launcher offers every agent that is installed, as it always has.
   // New sessions start Claude Code until another agent is made the default.
+  // Agent tags on (what the strip always drew) with no renamed labels, and every
+  // agent in its seed colour (agentColors.ts).
   agents: {
     chosen: null,
     endpoints: {},
     defaultCli: DEFAULT_AGENTS.defaultCli,
-    shareSkillsToClaude: DEFAULT_AGENTS.shareSkillsToClaude
+    shareSkillsToClaude: DEFAULT_AGENTS.shareSkillsToClaude,
+    tag: { show: true, labels: {} },
+    colors: {}
   },
   // Never seen. Every existing settings file also has no such key and therefore
   // reads as this, which is right: the first launch after an upgrade is exactly

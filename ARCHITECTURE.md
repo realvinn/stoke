@@ -627,7 +627,8 @@ npm run verify:tabs           # which tab is selected after one is closed, where
                               # preview is exactly the reorder it commits, and that no
                               # reorder moves a terminal pane. And the relaunch: the plan
                               # (the registry's id and version over the tab's, busy, fresh),
-                              # Wait and the automatic relaunch, and what counts as a draft
+                              # Wait and the automatic relaunch, and what counts as a draft.
+                              # And the agent tag: hidden, renamed, keyed on the default agent
 npm run verify:launcher       # the new-session page: each launch value resolved through
                               # tab, Stoke and Claude Code's files (the machine the QA ran
                               # on, modelSettings included, reads what the banner said),
@@ -660,6 +661,9 @@ npm run verify:chrome-import  # Chrome's cookie crypto and row mapping, on value
 npm run verify:safari-import  # Safari's binarycookies and XML plists, on synthetic files
 npm run verify:agents         # the coding agents: what is stored, what the launcher shows,
                               # the default agent and its fallback (`resolveDefaultAgent`),
+                              # the tab tag and agent colours as stored (junk included), the
+                              # palette's distances from each other, the meter, --danger and
+                              # --warning on every theme, when colour is painted at all,
                               # each CLI's exact launch plan (endpoint, MCP, continue) with
                               # every key in env and none in argv, and the install script —
                               # only table ids survive into a command; the shared-skills
@@ -682,7 +686,9 @@ npm run verify:campfire       # the installer's campfire: the locked alphabet th
                               # and the shipped art blocks against the generator. Also runs
                               # the block through sh, bash, zsh and dash for real
 npm run verify:color          # colour maths: contrast, APCA, oklch; every theme's tokens, the
-                              # accent matrix, the meter colours and the bypass mark at 3:1
+                              # accent matrix, every agent's ink on every theme and its tag
+                              # text at 4.5:1 on the tab strip's three grounds, the meter
+                              # colours and the bypass mark at 3:1
 npm run verify:theme-gen      # the theme generator: that a five-field seed reproduces every
                               # built-in byte-for-byte, that no slider position can breach a
                               # contrast floor, and that a saved seed survives hydration
@@ -1023,7 +1029,12 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     `relaunchPlan`, `pendingRelaunchStep` (Wait), `autoRelaunchStep`
                     (`cliRelaunch: 'auto'`) and `looksTyped` (what counts as a draft); and
                     the launcher's: `continuePlan` (Continue resumes by id, never a twin),
-                    `newTabToReuse`, `tabLabel`
+                    `newTabToReuse`, `tabLabel` (the agent tag: shown or not, the user's
+                    label, on tabs whose agent is not the default one)
+  src/lib/agentColor.ts  `agentMark(key)`: `data-agent` plus `--agent-ink`/`-text`/`-fill`
+                    pointed at that key's tokens, inline, so a new agent or account needs
+                    no stylesheet line. `paneAgent`: an install or key-enrolment tab is no
+                    agent's
   src/lib/pressBurst.ts  the window's one record of the Enter/Space burst in progress,
                     registered first from main.tsx; the agent picker and a launcher armed by
                     the splash or picker closing ask it `activationAllowed`. Gotcha 88
@@ -1077,7 +1088,15 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     `defaultCli` is the agent NEW sessions start (Start, the sidebar, Start on
                     launch, scratch, `stoke .`, the phone); `resolveDefaultAgent` falls back
                     to Claude Code, then the first agent on offer, when it is not installed
-                    and chosen. Resume, relaunch and Continue stay Claude's (gotcha 81)
+                    and chosen. Resume, relaunch and Continue stay Claude's (gotcha 81).
+                    `tag` (show, labels) and `colors` are hydrated here too
+  agentColors.ts    each coding agent's colour: `AGENT_SEEDS`, the user's override, and
+                    `agentColorTokens` — deriveAccent per seed, which applyAppearance writes
+                    as `--agent-<key>-ink`/`-text`/`-fill` and the suites assert; `-text` is
+                    the ink re-solved where it misses 4.5:1 on the tab strip. Clear of the meter,
+                    --danger and --warning by measurement; painted only while more than one
+                    agent is in view (`paintAgentColors`). Keyed by string so an account can
+                    add `claude-work`
   skills.ts         which skill folders each agent reads, and the report of who can see
                     which skill. `~/.agents/skills` is the one nearly all share; Claude Code
                     reads only `~/.claude/skills`. A report, never a sync — linking between

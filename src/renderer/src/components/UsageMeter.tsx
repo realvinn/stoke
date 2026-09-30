@@ -12,6 +12,7 @@ import {
   tone,
   worstTone
 } from '@shared/usageView'
+import { agentMark } from '../lib/agentColor'
 
 /**
  * How often the account reading is refreshed with nothing else happening.
@@ -249,6 +250,10 @@ export function UsageChip(): React.JSX.Element | null {
       <button
         ref={chipRef}
         className="usage-chip"
+        /* Claude Code's plan limits — the only agent Stoke reads usage for — so
+           while another agent is in view the chip wears Claude Code's colour,
+           the same as its tabs and its model in the status bar. */
+        {...agentMark('claude')}
         data-tone={rows.length ? worst : 'none'}
         data-stale={stale || undefined}
         aria-expanded={open}

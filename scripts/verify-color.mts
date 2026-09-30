@@ -10,11 +10,14 @@
  * The maths is the first half. The second half points it at what actually
  * ships: every token in every built-in theme, on every ground app.css draws it
  * on, plus the accent matrix — any profile swatch can be active under any
- * theme, which is the pairing that shipped a 1.43:1 focus ring.
+ * theme, which is the pairing that shipped a 1.43:1 focus ring. Every coding
+ * agent's colour is held to the same bars, since any agent can be open under
+ * any theme.
  *
  *   node scripts/verify-color.mts
  */
 import { deriveAccent } from '../src/shared/accent.ts'
+import { AGENT_TEXT_WCAG, agentColorTokens } from '../src/shared/agentColors.ts'
 import {
   apcaContrast,
   contrastRatio,
@@ -881,6 +884,89 @@ for (const t of BUILT_IN_THEMES) {
       0.015
     )
   }
+}
+
+console.log('\n-- agent colours: every agent seed as a foreground, on every theme --')
+/*
+ * `applyAppearance` writes `--agent-<id>-ink` for all eighteen agents through
+ * `agentColorTokens`, which is `deriveAccent` per seed — the same derivation as
+ * the accent matrix above, so the same three bars and the same kept/solved
+ * tolerance. The ink is a GRAPHIC: the tab tag's 1px border, the rule along a
+ * tab's foot, the 2px rule on the pane, the status-bar and launcher dots and
+ * the plan-limit chip's edge. So 4.5:1 and Lc on `--bg`, and WCAG 1.4.11's 3:1
+ * on the chrome — the sunken title bar and status bar, and a hovered tab.
+ * Called through the function applyAppearance calls, so what is asserted is
+ * what is painted.
+ *
+ * The tag's TEXT is not the ink, and this section used to say it was while
+ * checking it at 3:1: on every light theme the ink measured 3.87-3.91:1 on the
+ * title bar, where every unselected tab's tag sits — 54 of these 216 rows under
+ * the 4.5:1 text floor, all three light themes, every agent. The text is its
+ * own token now, asserted in the next section.
+ */
+for (const t of BUILT_IN_THEMES) {
+  const page = parseColor(t.colors.bg)!
+  const sunken = parseColor(t.colors.bgSunken)!
+  const hover = parseColor(t.colors.surfaceHover)!
+  for (const tok of agentColorTokens({}, t.appearance, t.colors)) {
+    const ink = parseColor(tok.ink)!
+    const kept = tok.ink.toLowerCase() === tok.seed.toLowerCase()
+    const lcFloor = kept ? ACCENT_LC - AT_FLOOR_TOLERANCE : ACCENT_LC
+    const onBg = contrastRatio(ink, page)
+    const lcBg = Math.abs(apcaContrast(ink, page))
+    const onChrome = Math.min(contrastRatio(ink, sunken), contrastRatio(ink, hover))
+    const ok = onBg >= ACCENT_WCAG && lcBg >= lcFloor && onChrome >= RING_WCAG
+    if (!ok) failures++
+    console.log(
+      `${ok ? 'ok  ' : 'FAIL'} ${`${t.id}/${tok.key}: --agent-${tok.key}-ink ${tok.ink}`.padEnd(46)} ${`${onBg.toFixed(
+        2
+      )}/${lcBg.toFixed(1)}/${onChrome.toFixed(2)}`.padStart(10)}  (expected >= ${ACCENT_WCAG} / ${lcFloor}${
+        kept ? ' kept' : ' solved'
+      } / ${RING_WCAG})`
+    )
+  }
+}
+
+console.log('\n-- agent colours: the tab tag\'s text on every ground under it --')
+/*
+ * `--agent-<id>-text` is `color:` on `.tab-agent`, a 0.75rem label, and it sits
+ * on three grounds: `--bg` on the selected tab, `--bg-sunken` (the title bar)
+ * on every other one, `--surface-hover` on a hovered or lifted one. Held to the
+ * 4.5:1 the text tokens above are held to on the same grounds, and the APCA
+ * reading printed beside each, as there.
+ *
+ * And the other half, which is what keeps the fix from repainting the dark
+ * themes: wherever the ink already clears 4.5:1 on all three grounds, the text
+ * IS the ink, byte for byte — the tag's label and its border stay one colour.
+ * That is every dark built-in; asserted per theme, so a derivation change that
+ * quietly darkened or lightened them shows up here.
+ */
+for (const t of BUILT_IN_THEMES) {
+  const grounds = [
+    ['--bg', parseColor(t.colors.bg)!],
+    ['--bg-sunken', parseColor(t.colors.bgSunken)!],
+    ['--surface-hover', parseColor(t.colors.surfaceHover)!]
+  ] as const
+  let inkClears = 0
+  let same = 0
+  for (const tok of agentColorTokens({}, t.appearance, t.colors)) {
+    const text = parseColor(tok.text)!
+    const ink = parseColor(tok.ink)!
+    for (const [name, ground] of grounds) {
+      atLeast(
+        `${t.id}/${tok.key}: -text ${tok.text} on ${name}`,
+        contrastRatio(text, ground),
+        AGENT_TEXT_WCAG,
+        `, APCA Lc ${Math.abs(apcaContrast(text, ground)).toFixed(1)}`
+      )
+    }
+    if (grounds.every(([, g]) => contrastRatio(ink, g) >= AGENT_TEXT_WCAG)) {
+      inkClears++
+      if (tok.text === tok.ink) same++
+    }
+  }
+  eq(`${t.id}: text is the ink wherever the ink clears (${inkClears} of 18)`, same, inkClears)
+  if (t.appearance === 'dark') eq(`${t.id}: dark, so the ink clears for every agent`, inkClears, 18)
 }
 
 console.log('\n-- the ladder: borders and the surface ramp --')

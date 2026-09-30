@@ -343,3 +343,27 @@ rule is gated on `revealsOnEntry` (macOS ≥ 27, the only version measured doing
 **Not yet seen by a person:** the shift itself, driven by a real pointer. Everything above was
 measured with warps and a window list; this machine has no Accessibility permission to post real
 pointer events and no Screen Recording permission to screenshot native chrome.
+
+## 114. A pane shadow set outright erases every other one: the frame hid the drop ring
+
+**`.term-host` carries three shadows with three owners, and each used to be a `box-shadow` of its
+own.** The drop ring (`.term-pane[data-drop] .term-host`, a 2px `--accent-ink` inset saying "let go
+and the path is typed") and the frame (`:root[data-term-frame='true'] .term-host`, a hairline plus
+`--shadow-md`) are both specificity (0,3,0), and the frame's rule comes later in app.css — so on
+every framed pane the frame's declaration won and the drop ring was never painted. `box-shadow` is
+one property; two rules that set it do not add up, the cascade picks one. Nothing errors, and the
+pane still looks right at rest, which is the only state anyone screenshots.
+
+The agent colour (shared/agentColors.ts) is a third layer on the same box — a 2px inset rule in the
+agent's ink along the top — and set outright it would have replaced the frame in turn. So the box
+declares `box-shadow: var(--pane-drop-ring), var(--pane-agent-rule), var(--pane-frame)` once
+(`.paused-screen` too), each defaulting to `0 0 transparent`, and every owner sets only its own
+variable. Measured in the built app on 2026-09-30 with the frame on and a Codex/Claude pair open:
+at rest `…, rgb(255,141,202) 0 2px 0 0 inset, rgb(75,72,69) 0 0 0 1px inset, rgba(0,0,0,.22) 0
+4px 14px 0`; with `data-drop` set on the pane, the 2px accent ring is added in front and the other
+three stay. The host's `clientHeight` was 776 with the rule painted and without it: a shadow costs
+FitAddon no row, where a border would.
+
+The rule: **a new shadow on the terminal card is a `--pane-*` layer added to that one
+declaration, never a `box-shadow` of its own.** The same holds for any element two features
+decorate — grep the selector for `box-shadow` before adding one.

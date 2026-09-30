@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { capsFor, cliIdOf } from '@shared/codingClis'
+import { capsFor, cliFor, cliIdOf, type CodingCliId } from '@shared/codingClis'
 import type { ContextSnapshot } from '@shared/types'
 import type { WorklogButtonState } from '@shared/worklog'
 import { UsageChip } from './UsageMeter'
@@ -21,6 +21,7 @@ import {
 } from './Icons'
 import { chordLabel } from '../lib/shortcuts'
 import { useTabDrag } from '../lib/useTabDrag'
+import { agentMark } from '../lib/agentColor'
 import type { CloseSide } from '../lib/tabs'
 import type { ActivityView } from '@shared/activityView'
 import type { Tab } from '../types'
@@ -73,9 +74,13 @@ interface Props {
   onOpenPhoneSettings: () => void
   /**
    * What a tab says: `New · stoke` for a New tab aimed at a project, and the
-   * agent a non-Claude tab runs (QA L16). Omitted means the tab's own title.
+   * agent a tab runs when it is not the default one (QA L16): `agent` always,
+   * `agentTag` only while tags are shown. Omitted means the tab's own title.
    */
-  labelFor?: (tab: Tab) => { text: string; agentTag: string | null }
+  labelFor?: (tab: Tab) => { text: string; agentTag: string | null; agent: CodingCliId | null }
+  /** Settings › Coding agents › Show agent tags on tabs, for the tab menu's toggle. */
+  agentTagsShown?: boolean
+  onToggleAgentTags?: () => void
   /**
    * The Settings sheet is open right now.
    *
@@ -116,6 +121,8 @@ export function TitleBar({
   onOpenSettings,
   onOpenPhoneSettings,
   labelFor,
+  agentTagsShown = true,
+  onToggleAgentTags,
   settingsOpen
 }: Props): React.JSX.Element {
   const isMac = platform === 'darwin'
@@ -221,7 +228,8 @@ export function TitleBar({
             const ctx = contexts[tab.sessionId]
             const act = tab.kind === 'session' ? activity[tab.id] : undefined
             const dot = act?.dot ?? null
-            const label = labelFor?.(tab) ?? { text: tab.title, agentTag: null }
+            const label = labelFor?.(tab) ?? { text: tab.title, agentTag: null, agent: null }
+            const agentName = label.agent ? cliFor(label.agent).label : null
             return (
               <div
                 key={tab.id}
@@ -287,7 +295,7 @@ export function TitleBar({
                 title={
                   tab.kind === 'new'
                     ? `${label.text} — press Enter on the page to start, or pick another folder`
-                    : `${label.text}${label.agentTag ? ` · ${label.agentTag}` : ''}\n${tab.cwd}`
+                    : `${label.text}${agentName ? ` · running ${agentName}` : ''}\n${tab.cwd}`
                 }
               >
                 <TabIndicator
@@ -341,11 +349,21 @@ export function TitleBar({
                 ) : (
                   <span className="tab-label">{label.text}</span>
                 )}
-                {label.agentTag && (
-                  <span className="tab-agent" title={`Running ${label.agentTag}, not Claude Code`}>
-                    {label.agentTag}
-                  </span>
-                )}
+                {/*
+                  The tab's agent, when it is not the default one: the tag, or
+                  with tags off a rule along the tab's foot in the agent's
+                  colour — so a Codex tab and a Claude tab in one folder still
+                  differ at a glance (QA L16), as they do in the tooltip. The
+                  colour shows only while more than one agent is in view.
+                */}
+                {label.agent &&
+                  (label.agentTag ? (
+                    <span className="tab-agent" {...agentMark(label.agent)} title={`Running ${agentName}`}>
+                      {label.agentTag}
+                    </span>
+                  ) : (
+                    <span className="tab-agent-rule" {...agentMark(label.agent)} aria-hidden="true" />
+                  ))}
                 {/*
                   Where this session is. Working (and a turn whose workflow
                   runs on in the background) pulses grey; waiting for you pulses
@@ -503,7 +521,12 @@ export function TitleBar({
         items={buildTabMenu(tabs, menuTab, isMac, {
           onRename: startRename,
           onClose: onCloseTab,
-          onCloseSide: onCloseTabsSide
+          onCloseSide: onCloseTabsSide,
+          // Only on a tab that has an agent tag to hide or show.
+          agentTags:
+            onToggleAgentTags && labelFor?.(menuTab).agent
+              ? { shown: agentTagsShown, onToggle: onToggleAgentTags }
+              : null
         })}
         onClose={() => setMenu(null)}
       />
@@ -512,7 +535,10 @@ export function TitleBar({
   )
 }
 
-/** The tab context menu's items — Rename, then Chrome's four close actions. */
+/**
+ * The tab context menu's items — Rename, the agent-tag toggle on a tab that has
+ * an agent to tag, then Chrome's four close actions.
+ */
 function buildTabMenu(
   tabs: Tab[],
   tab: Tab,
@@ -521,6 +547,7 @@ function buildTabMenu(
     onRename: (t: Tab) => void
     onClose: (id: string) => void
     onCloseSide: (anchorId: string, side: CloseSide) => void
+    agentTags: { shown: boolean; onToggle: () => void } | null
   }
 ): MenuItem[] {
   const idx = tabs.findIndex((t) => t.id === tab.id)
@@ -534,6 +561,14 @@ function buildTabMenu(
       disabled: tab.kind !== 'session',
       onSelect: () => on.onRename(tab)
     },
+    ...(on.agentTags
+      ? [
+          {
+            label: on.agentTags.shown ? 'Hide agent tags' : 'Show agent tags',
+            onSelect: on.agentTags.onToggle
+          }
+        ]
+      : []),
     { label: 'Close', separated: true, hint: chordLabel('closeTab', isMac), onSelect: () => on.onClose(tab.id) },
     { label: 'Close others', disabled: tabs.length <= 1, onSelect: () => on.onCloseSide(tab.id, 'others') },
     { label: 'Close tabs to the right', disabled: !hasRight, onSelect: () => on.onCloseSide(tab.id, 'right') },

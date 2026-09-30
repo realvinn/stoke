@@ -16,7 +16,10 @@
  *   node scripts/verify-agents.mts
  */
 import {
+  AGENT_TAG_MAX,
   agentLaunchPlan,
+  agentTagText,
+  cleanTagLabel,
   DEFAULT_AGENTS,
   DEFAULT_ENDPOINT,
   endpointProblem,
@@ -55,6 +58,20 @@ import {
   SKILL_DIRS,
   skillReport
 } from '../src/shared/skills.ts'
+import {
+  AGENT_CLEAR_DISTANCE,
+  AGENT_DISTINCT_DISTANCE,
+  AGENT_SEEDS,
+  agentColorTokens,
+  agentSeed,
+  agentTokenNames,
+  COMMON_AGENTS,
+  hydrateAgentColors,
+  paintAgentColors
+} from '../src/shared/agentColors.ts'
+import { parseColor, perceptualDistance } from '../src/shared/color.ts'
+import { meterScale } from '../src/shared/meter.ts'
+import { BUILT_IN_THEMES } from '../src/shared/themes.ts'
 import { scanSkills } from '../src/main/skillsScan.ts'
 import {
   ClaudeSkillsProjector,
@@ -128,7 +145,14 @@ function keysOnlyInEnv(name: string, r: ReturnType<typeof plan>): void {
 }
 
 console.log('\nwhat is stored')
-check('nothing stored is never asked', hydrateAgents(undefined), { chosen: null, endpoints: {}, defaultCli: 'claude', shareSkillsToClaude: true })
+check('nothing stored is never asked', hydrateAgents(undefined), {
+  chosen: null,
+  endpoints: {},
+  defaultCli: 'claude',
+  shareSkillsToClaude: true,
+  tag: { show: true, labels: {} },
+  colors: {}
+})
 check('junk is never asked, not "nothing chosen"', hydrateAgents({ chosen: 'codex' }).chosen, null)
 check('an empty choice is kept — it means "show none"', hydrateAgents({ chosen: [] }).chosen, [])
 check(
@@ -190,6 +214,206 @@ check(
   false
 )
 check('a settings file with no agents block hydrates it on', hydrateSettings({}).agents.shareSkillsToClaude, true)
+console.log('\nthe agent tag, as stored')
+/*
+ * The clamp rule again: `hydrateAgents` rebuilds the block from named keys, so a
+ * field it does not name comes back undefined — and `tabLabel` would read an
+ * undefined `show` as "hidden".
+ */
+check('on by default, with no labels', DEFAULT_AGENTS.tag, { show: true, labels: {} })
+check('an older file with no tag block keeps the tag on', hydrateAgents({ chosen: ['codex'] }).tag, { show: true, labels: {} })
+check('only a literal false hides it', hydrateAgents({ tag: { show: false } }).tag.show, false)
+check(
+  'junk show values keep it on — "0", 0, null, "false", an object',
+  ['0', 0, null, 'false', {}].map((show) => hydrateAgents({ tag: { show } }).tag.show),
+  [true, true, true, true, true]
+)
+check('a non-object tag block is the default', hydrateAgents({ tag: 'junk' }).tag, { show: true, labels: {} })
+check('an array tag block is the default', hydrateAgents({ tag: [false] }).tag, { show: true, labels: {} })
+check(
+  'labels: unknown ids dropped, trimmed, empty and non-string dropped',
+  hydrateAgents({ tag: { labels: { cursor: '  Cursor  ', banana: 'B', codex: '   ', grok: 42, pi: null } } }).tag.labels,
+  { cursor: 'Cursor' }
+)
+check(
+  `labels are cut to ${AGENT_TAG_MAX} characters`,
+  hydrateAgents({ tag: { labels: { codex: 'a very long agent tag indeed' } } }).tag.labels.codex,
+  'a very long agen'
+)
+check('whitespace runs fold to one space before the cut', cleanTagLabel('GPT\n\t  five'), 'GPT five')
+check('the cut is by code point, so an emoji is never split', [...cleanTagLabel('\u{1F525}'.repeat(20))].length, AGENT_TAG_MAX)
+check('a labels array is ignored, not indexed', hydrateAgents({ tag: { labels: ['x'] } }).tag.labels, {})
+check('the tag says the label when there is one', agentTagText('cursor', { cursor: 'Cursor' }), 'Cursor')
+check('and the executable name when there is not', agentTagText('cursor', {}), 'cursor-agent')
+check(
+  'it survives the whole settings round trip',
+  hydrateSettings(
+    JSON.parse(
+      JSON.stringify({
+        ...DEFAULT_SETTINGS,
+        agents: { ...DEFAULT_SETTINGS.agents, tag: { show: false, labels: { codex: 'GPT' } } }
+      })
+    )
+  ).agents.tag,
+  { show: false, labels: { codex: 'GPT' } }
+)
+check('DEFAULT_SETTINGS names it', DEFAULT_SETTINGS.agents.tag, { show: true, labels: {} })
+
+console.log('\nagent colours, as stored')
+check('none by default', DEFAULT_AGENTS.colors, {})
+check('DEFAULT_SETTINGS names them', DEFAULT_SETTINGS.agents.colors, {})
+check(
+  'kept only for known ids, normalised to lower-case #rrggbb',
+  hydrateAgents({ colors: { codex: '#AABBCC', banana: '#112233', grok: 'rgb(10, 20, 30)' } }).colors,
+  { codex: '#aabbcc', grok: '#0a141e' }
+)
+check(
+  'junk is dropped: unparseable, translucent, transparent, non-string, empty',
+  hydrateAgentColors({ codex: 'not a colour', grok: 'rgba(1, 2, 3, 0.5)', pi: 7, gemini: '', opencode: 'transparent' }),
+  {}
+)
+check(
+  'a value equal to the seed is not stored — reset and untouched are one state',
+  hydrateAgentColors({ codex: AGENT_SEEDS.codex.toUpperCase() }),
+  {}
+)
+check('a non-object colours block is none', hydrateAgents({ colors: ['#ffffff'] }).colors, {})
+check('the override wins over the seed', agentSeed('codex', { codex: '#123456' }), '#123456')
+check('and the seed stands without one', agentSeed('codex', {}), AGENT_SEEDS.codex)
+check(
+  'it survives the whole settings round trip',
+  hydrateSettings(
+    JSON.parse(JSON.stringify({ ...DEFAULT_SETTINGS, agents: { ...DEFAULT_SETTINGS.agents, colors: { codex: '#123456' } } }))
+  ).agents.colors,
+  { codex: '#123456' }
+)
+
+console.log('\nagent colours: every agent has one, and the tokens are keyed for accounts to extend')
+ok('every agent in the table has a seed', CODING_CLIS.every((c) => typeof AGENT_SEEDS[c.id] === 'string'))
+ok('every seed parses as an opaque colour', CODING_CLIS.every((c) => parseColor(AGENT_SEEDS[c.id])?.a === 1))
+ok('no seed names an agent the table does not have', Object.keys(AGENT_SEEDS).every((id) => CODING_CLIS.some((c) => c.id === id)))
+check('tokens are keyed, so a second account is one more key', agentTokenNames('claude-work'), {
+  ink: '--agent-claude-work-ink',
+  text: '--agent-claude-work-text',
+  fill: '--agent-claude-work-fill'
+})
+const EMBER = BUILT_IN_THEMES.find((t) => t.id === 'ember')!
+check(
+  'agentColorTokens covers the whole table, in table order',
+  agentColorTokens({}, 'dark', EMBER.colors).map((t) => t.key),
+  CODING_CLIS.map((c) => c.id)
+)
+check(
+  'and an override reaches the token applyAppearance writes',
+  agentColorTokens({ codex: '#123456' }, 'dark', EMBER.colors).find((t) => t.key === 'codex')?.seed,
+  '#123456'
+)
+
+console.log('\nagent colours: the common five are told apart, and none reads as the meter, danger or warning')
+/*
+ * Seeds for distinctness: that is what the user sees on a dark page, where
+ * every seed here is kept byte for byte. On a light page each ink is solved
+ * darker to the same 4.5:1, which pulls lightness together — so the inks are
+ * held to the looser "not the same colour" floor (0.04) there, never allowed to
+ * collapse.
+ */
+const dist = (a: string, b: string): number => perceptualDistance(parseColor(a)!, parseColor(b)!)
+{
+  let nearest = Infinity
+  let pair = ''
+  for (let i = 0; i < COMMON_AGENTS.length; i++) {
+    for (let j = i + 1; j < COMMON_AGENTS.length; j++) {
+      const a = COMMON_AGENTS[i]
+      const b = COMMON_AGENTS[j]
+      const d = dist(AGENT_SEEDS[a], AGENT_SEEDS[b])
+      ok(`${a} and ${b}: seeds ${d.toFixed(3)} apart`, d >= AGENT_DISTINCT_DISTANCE, `under ${AGENT_DISTINCT_DISTANCE}`)
+      if (d < nearest) [nearest, pair] = [d, `${a}/${b}`]
+    }
+  }
+  console.log(`  nearest two common seeds: ${pair} at ${nearest.toFixed(3)} (floor ${AGENT_DISTINCT_DISTANCE})`)
+
+  /*
+   * The ink (borders, rules, dots) and the text (the tag's label, re-solved
+   * darker on a light theme's chrome) are both what the user tells agents
+   * apart by, so both are held to it.
+   */
+  for (const part of ['ink', 'text'] as const) {
+    let nearestInk = Infinity
+    let inkPair = ''
+    for (const t of BUILT_IN_THEMES) {
+      const inks = new Map(agentColorTokens({}, t.appearance, t.colors).map((x) => [x.key, x[part]]))
+      for (let i = 0; i < COMMON_AGENTS.length; i++) {
+        for (let j = i + 1; j < COMMON_AGENTS.length; j++) {
+          const d = dist(inks.get(COMMON_AGENTS[i])!, inks.get(COMMON_AGENTS[j])!)
+          if (d < nearestInk) [nearestInk, inkPair] = [d, `${t.id} ${COMMON_AGENTS[i]}/${COMMON_AGENTS[j]}`]
+        }
+      }
+    }
+    ok(
+      `the common five's ${part.toUpperCase()}S never become the same colour on any theme (nearest ${inkPair} ${nearestInk.toFixed(3)})`,
+      nearestInk >= 0.04
+    )
+  }
+
+  let nearestAll = Infinity
+  let allPair = ''
+  const ids = CODING_CLIS.map((c) => c.id)
+  for (let i = 0; i < ids.length; i++) {
+    for (let j = i + 1; j < ids.length; j++) {
+      const d = dist(AGENT_SEEDS[ids[i]], AGENT_SEEDS[ids[j]])
+      if (d < nearestAll) [nearestAll, allPair] = [d, `${ids[i]}/${ids[j]}`]
+    }
+  }
+  ok(`no two of all eighteen seeds are the same colour (nearest ${allPair} ${nearestAll.toFixed(3)})`, nearestAll >= 0.04)
+
+  /*
+   * Against what each theme actually paints: the meter's three tiers (solved per
+   * theme by meterScale, exactly as applyAppearance writes them), --danger and
+   * --warning. An agent's ink this close to one would read as context
+   * pressure, an error, or "waiting for you".
+   */
+  for (const c of CODING_CLIS) {
+    for (const part of ['ink', 'text'] as const) {
+      let worst = Infinity
+      let where = ''
+      for (const t of BUILT_IN_THEMES) {
+        const ink = agentColorTokens({}, t.appearance, t.colors).find((x) => x.key === c.id)![part]
+        const m = meterScale(t.colors.bg, t.colors.bgSunken, t.appearance)
+        for (const [name, colour] of [
+          ['meter-low', m.low],
+          ['meter-mid', m.mid],
+          ['meter-high', m.high],
+          ['danger', t.colors.danger],
+          ['warning', t.colors.warning]
+        ] as const) {
+          const d = dist(ink, colour)
+          if (d < worst) [worst, where] = [d, `${t.id} ${name}`]
+        }
+      }
+      ok(
+        `${c.id}: its ${part} stays clear of the meter, danger and warning (nearest ${where} ${worst.toFixed(3)})`,
+        worst >= AGENT_CLEAR_DISTANCE,
+        `under ${AGENT_CLEAR_DISTANCE}`
+      )
+    }
+  }
+}
+
+console.log('\nagent colours are painted only while more than one agent is in view')
+check(
+  'Claude Code alone: nothing painted — a Claude-only user sees no change',
+  paintAgentColors('claude', ['claude'], ['claude', 'claude']),
+  false
+)
+check('nothing installed, no tabs: nothing painted', paintAgentColors('claude', [], []), false)
+check('two agents on offer: painted', paintAgentColors('claude', ['claude', 'codex'], []), true)
+check(
+  'one on offer but a Codex tab open (restored, since unticked): painted',
+  paintAgentColors('claude', ['claude'], ['codex']),
+  true
+)
+check('the default counts even when nothing is on offer', paintAgentColors('claude', [], ['codex']), true)
+check('Codex alone, as the default and in every tab: nothing painted', paintAgentColors('codex', ['codex'], ['codex']), false)
 
 console.log('\nwhat the launcher shows')
 {
