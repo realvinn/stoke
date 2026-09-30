@@ -989,6 +989,17 @@ await withSandbox(
 
 await withSandbox(
   async () => {},
+  { login: false, direct: false },
+  async ({ sshDir, events, deps }) => {
+    // SIGHUP from closing the tab: exit code 0 and a signal, on macOS.
+    const done = await finishEnroll(webHost, join(sshDir, 'id_ed25519'), 0, false, deps, 1)
+    ok('closing the Add-key tab mid-prompt is a cancel, not "the install reported success"', /was closed/.test(done.message), done.message)
+    check('  reported as failed', events.at(-1)?.stage, 'failed')
+  }
+)
+
+await withSandbox(
+  async () => {},
   { login: true, direct: true },
   async ({ calls, events, deps }) => {
     const bad = await prepareEnroll({ ...webHost, alias: '-oProxyCommand=sh' }, deps)

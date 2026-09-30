@@ -774,13 +774,14 @@ async function startEnrollSession(requested: LaunchOptions): Promise<StartResult
  */
 async function finishEnrollRun(
   run: { host: SshHost; keyPath: string; fallback: boolean },
-  exitCode: number
+  exitCode: number,
+  signal: number | undefined
 ): Promise<void> {
   const hostId = run.host.id
   const emit = (event: SshEnrollEvent): void => send(CH.sshEnrollEvent, event)
   try {
     const { finishEnroll } = await import('./sshEnroll.ts')
-    const result = await finishEnroll(run.host, run.keyPath, exitCode, run.fallback, { emit })
+    const result = await finishEnroll(run.host, run.keyPath, exitCode, run.fallback, { emit }, signal)
     if (!result.ok) return
     if (!getSettings().hosts.some((h) => h.id === hostId)) return
     const hosts = getSettings().hosts.map((h) => (h.id === hostId ? { ...h, keyEnrolled: true } : h))
@@ -1752,7 +1753,7 @@ function createWindow(): void {
       const run = enrollRuns.get(ptyId)
       if (run) {
         enrollRuns.delete(ptyId)
-        void finishEnrollRun(run, code)
+        void finishEnrollRun(run, code, signal)
       }
     },
     /*

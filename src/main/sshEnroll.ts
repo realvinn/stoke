@@ -571,7 +571,9 @@ export async function finishEnroll(
   keyPath: string,
   exitCode: number,
   fallback: boolean,
-  deps: EnrollDeps = {}
+  deps: EnrollDeps = {},
+  /** The signal the tab's process died of — set when the user closed the tab. */
+  signal?: number
 ): Promise<EnrollResult> {
   const emit = deps.emit ?? ((): void => {})
   const alias = host.alias.trim()
@@ -598,6 +600,14 @@ export async function finishEnroll(
       .join('\n')
     say('done', message, false)
     return { ok: false, installed: true, message }
+  }
+
+  if (signal) {
+    // The user closed the "Add key" tab. Its exit code then says nothing, and
+    // "the install reported success" below would be a sentence about a kill.
+    const message = `The “Add key” tab was closed before ssh-copy-id finished, so no key was added to ${alias}.`
+    say('failed', message)
+    return { ok: false, installed: false, message }
   }
 
   if (exitCode !== 0) {

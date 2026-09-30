@@ -105,6 +105,8 @@ interface Session {
   realCwd: string
   /** A local Claude Code session: the only kind with a registry file to read. */
   instrumented: boolean
+  /** An "Add key to …" tab running ssh-copy-id (`opts.enroll`), not a session. */
+  enroll: boolean
   exited: boolean
   /**
    * When the process exited, or null while it is still running.
@@ -212,6 +214,12 @@ export interface SessionInfo {
   cli: string
   /** A local Claude Code session: the only kind the registry poller can read. */
   instrumented: boolean
+  /**
+   * An SSH key-enrollment tab (`opts.enroll`): ssh-copy-id in the home folder,
+   * not a session. The phone's list leaves it out — it would read as a Claude
+   * session named after the home folder.
+   */
+  enroll: boolean
 }
 
 /**
@@ -609,6 +617,7 @@ export class PtyManager {
       cwd,
       realCwd: cwd,
       instrumented,
+      enroll: enrolling,
       exited: false,
       endedAt: null,
       exitCode: null,
@@ -1028,7 +1037,8 @@ export class PtyManager {
       cols: s.cols,
       rows: s.rows,
       cli: s.cli,
-      instrumented: s.instrumented
+      instrumented: s.instrumented,
+      enroll: s.enroll
     }))
   }
 
