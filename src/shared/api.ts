@@ -36,6 +36,7 @@ import type { StokeCliRequest } from './stokeArgs'
 import type { ClaudeLaunchDefaults } from './launch'
 import type { SecretStoreStatus } from './secrets'
 import type { SetupPreview } from './setupFile'
+import type { HubLocalKeyView, HubResult, HubView } from './hub/client'
 import type { AccessLookup, RemoteAccessStatus } from './cfAccess'
 import type { ChatDetection, ChatImportResult, ChatIndexStatus, ChatSearchHit, ChatTranscript } from './chatIndex'
 import type {
@@ -787,6 +788,43 @@ export interface StokeApi {
     previewImport(passphrase: string): Promise<SetupPreviewResult>
     applyImport(opts: { includeSecrets: boolean }): Promise<SetupApplyResult>
     cancelImport(): Promise<void>
+  }
+
+  /**
+   * Stoke Hub (Settings › Account & sync). Main owns every step; this is the
+   * panel's remote control. See src/main/hub/service.ts.
+   */
+  hub: {
+    view(): Promise<HubView>
+    onChange(cb: (view: HubView) => void): () => void
+    setUrl(url: string): Promise<HubResult<{ url: string; warning: string | null }>>
+    checkUrl(url: string): Promise<HubResult<{ base: string; version: string; needsBootstrap: boolean; warning: string | null }>>
+    signIn(req: { email: string; password: string; label?: string; invite?: string }): Promise<HubResult<{ state: string }>>
+    signOut(): Promise<HubResult>
+    createVault(): Promise<HubResult<{ kit: string; group: number }>>
+    kit(): Promise<HubResult<{ kit: string; group: number; purpose: string }>>
+    confirmKit(group: string): Promise<HubResult>
+    cancelKit(): Promise<HubResult>
+    saveKit(): Promise<HubResult<{ path: string }>>
+    printKit(): Promise<HubResult>
+    newKit(): Promise<HubResult<{ kit: string; group: number }>>
+    joinStart(): Promise<HubResult>
+    joinCancel(): Promise<HubResult>
+    recover(kit: string): Promise<HubResult>
+    approveStart(pair: string): Promise<HubResult>
+    approveConfirm(pair: string): Promise<HubResult>
+    refuse(pair: string): Promise<HubResult>
+    syncNow(): Promise<HubResult>
+    setScope(patch: { settings?: boolean; hosts?: boolean; keys?: boolean }): Promise<HubResult>
+    setAccountKeys(on: boolean): Promise<HubResult>
+    rename(deviceId: string, name: string): Promise<HubResult>
+    revoke(deviceId: string, how: { kit: string } | { newKit: true }): Promise<HubResult<{ kit?: string; group?: number }>>
+    dismissNotes(): Promise<HubResult>
+    trustHub(): Promise<HubResult>
+    localKeys(): Promise<HubLocalKeyView[]>
+    shareKey(name: string): Promise<HubResult<{ keyId: string }>>
+    unshareKey(keyId: string): Promise<HubResult>
+    installKey(keyId: string): Promise<HubResult<{ message: string; name: string | null }>>
   }
 
   /**

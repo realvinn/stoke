@@ -37,6 +37,7 @@ import { RemoteSettings, SelfUpdateSettings, StokeCommandSettings, UpdatesSettin
 import { VoiceSettings } from './VoiceSettings'
 import { AgentsSettings } from './AgentsSettings'
 import { BackupSettings } from './BackupSettings'
+import { AccountSyncSettings } from './AccountSyncSettings'
 import { ChatHistorySettings } from './ChatHistorySettings'
 import type { ChatDetection, ChatIndexStatus } from '@shared/chatIndex'
 import type { CodingCliDetection, CodingCliId } from '@shared/codingClis'
@@ -122,6 +123,7 @@ export type SectionId =
   | 'worklog'
   | 'remote'
   | 'updates'
+  | 'account'
   | 'backup'
 
 interface Section {
@@ -196,6 +198,11 @@ const GROUPS: { title: string; sections: Section[] }[] = [
        * cannot find claude) sat behind the least descriptive label in the list.
        */
       { id: 'updates', label: 'Updates', hint: 'Stoke, the CLI, and where it lives' },
+      {
+        id: 'account',
+        label: 'Account & sync',
+        hint: 'Stoke Hub: keep settings, API keys, SSH hosts and chosen SSH keys in step across your computers'
+      },
       {
         id: 'backup',
         label: 'Backup & transfer',
@@ -981,6 +988,7 @@ export function SettingsSheet({
               <VoiceSettings settings={settings} onPatch={onPatch} />
             )}
 
+            {section === 'account' && <AccountSyncSettings />}
             {section === 'backup' && <BackupSettings />}
 
           </div>

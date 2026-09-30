@@ -4953,6 +4953,38 @@ summary.agent-picker-section:hover {
   overflow-wrap: anywhere;
 }
 
+/*
+ * Settings › Account & sync: the Recovery Kit, shown once, and the six-digit
+ * pairing code. Both are read by a person and typed or compared elsewhere, so
+ * they are large, monospaced and spaced by group; the group the owner is asked
+ * to type back is marked with the accent ink (gotcha 44: ink for text).
+ */
+.hub-kit {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4) var(--space-12);
+  padding: var(--space-12);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-sunken);
+  font-size: var(--fs-lg);
+  letter-spacing: 0.08em;
+  user-select: text;
+}
+
+.hub-kit > span[data-current] {
+  color: var(--accent-ink);
+  text-decoration: underline;
+  text-underline-offset: 0.25em;
+}
+
+.hub-code {
+  font-size: var(--fs-xl);
+  letter-spacing: 0.12em;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
 /* ----------------------------------------------------------- theme editor */
 
 /*
