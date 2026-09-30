@@ -186,7 +186,7 @@ import {
   makeAccountHome,
   readClaudeAccountEmail,
   repairAccountHome,
-  writeAccountIndex
+  updateAccountIndex
 } from './accounts.ts'
 import {
   accountEnv,
@@ -1046,29 +1046,30 @@ async function identifyAccounts(): Promise<Record<string, string | null>> {
 }
 
 /**
- * Keep `~/.stoke/accounts/index.json` — what `stoke account list|env` reads —
- * in step with the stored accounts. Written only when the part it holds
- * changed, and never created for someone who has no accounts and no index.
+ * Keep this Stoke's part of `~/.stoke/accounts/index.json` — what `stoke
+ * account list|env` reads — in step with its stored accounts, when that part
+ * changed. The file is shared with every other Stoke on the machine (the
+ * installed app, `npm run dev`, a sandbox), so it is MERGED under this
+ * userData's name, never rewritten from this list alone: a dev build with no
+ * accounts used to boot, find the installed app's index and write it back
+ * empty, and `stoke account env work` then failed until the app restarted.
  */
 let indexedAccounts: string | null = null
+let indexWriter: Promise<string> | null = null
 function syncAccountIndex(accounts: Record<string, AgentAccount>): void {
   const list = Object.values(accounts)
   const key = JSON.stringify(list.map((a) => [a.id, a.kind, a.home, a.label]))
   if (key === indexedAccounts) return
-  const first = indexedAccounts === null
   indexedAccounts = key
-  const root = accountsRoot(homedir())
+  // realpath'd once, so a `/tmp` sandbox is one writer however it was typed (gotcha 91).
+  const writer = (indexWriter ??= realpathFolder(app.getPath('userData')))
   void serialAccounts(async () => {
-    if (first && list.length === 0) {
-      // Nothing to say, and nothing to correct unless an index is already there.
-      const there = await access(join(root, 'index.json')).then(
-        () => true,
-        () => false
-      )
-      if (!there) return
-    }
-    await writeAccountIndex(root, list)
-  }).catch((err) => console.error('[stoke] could not write the account index', err))
+    await updateAccountIndex({ root: accountsRoot(homedir()), me: await writer, accounts: list })
+  }).catch((err) => {
+    // Not written, so the next change (or the next boot) tries again.
+    if (indexedAccounts === key) indexedAccounts = null
+    console.error('[stoke] could not write the account index', err)
+  })
 }
 
 /**

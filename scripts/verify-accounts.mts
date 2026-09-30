@@ -14,7 +14,10 @@
  *    synthetic accounts root, with bystanders that must survive (gotcha 74) —
  *    nothing here reads or writes the real ~/.claude, ~/.codex or ~/.stoke;
  *  - the index the `stoke` command reads, and the REAL shim (build/bin/stoke)
- *    run against it under every POSIX shell present, its output evaluated back.
+ *    run against it under every POSIX shell present, its output evaluated back;
+ *  - that index as what it is, a file every Stoke on the machine shares: a dev
+ *    build booting with no accounts leaves the app's index byte-for-byte, each
+ *    writer's rows survive the others' writes, and two writing at once both land.
  *
  * Imports are relative with `.ts` (gotcha 78). The tally and exitCode are the
  * last statements (gotchas 50, 62).
@@ -31,6 +34,7 @@ import {
   realpathSync,
   rmSync,
   symlinkSync,
+  utimesSync,
   writeFileSync
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -45,6 +49,8 @@ import {
   accountEnv,
   accountEnvNames,
   accountIdFor,
+  accountIndexNeedsWrite,
+  accountIndexRow,
   accountIndexText,
   accountKindsFor,
   accountProblem,
@@ -56,9 +62,12 @@ import {
   isAccountId,
   LOGIN_ACCOUNTS,
   loginArgsFor,
+  mergeAccountIndex,
   nextSwatch,
+  parseAccountIndex,
   resolveLaunchAccount,
   usageShareOf,
+  type AccountIndex,
   type AgentAccount
 } from '../src/shared/accounts.ts'
 import { AGENT_SEEDS } from '../src/shared/agentColors.ts'
@@ -73,7 +82,7 @@ import {
   planAccountHome,
   prepareAccountHome,
   readClaudeAccountEmail,
-  writeAccountIndex
+  updateAccountIndex
 } from '../src/main/accounts.ts'
 import { usageCredentialsPath, usageKeychainService } from '../src/main/usage.ts'
 
@@ -295,6 +304,73 @@ console.log('\nClaude Code\u2019s Keychain service name (wN() in 2.1.285)')
   check('with no dir, ~/.claude as ever', usageCredentialsPath({}, '/Users/v'), '/Users/v/.claude/.credentials.json')
 }
 
+/* ---------------------------------------------------- the shared index */
+console.log('\nthe index is shared by every Stoke on the machine: merged per writer, never replaced')
+{
+  // Two userData folders, as the installed app and `npm run dev` have (gotcha 12).
+  const APP = '/Users/v/Library/Application Support/Stoke'
+  const DEV = '/Users/v/Library/Application Support/Stoke (dev)'
+  const work = login('claude-work', '/Users/v/.stoke/accounts/claude-work', { label: 'Work' })
+  const cxw = login('codex-work', '/Users/v/.stoke/accounts/codex-work', { label: 'Codex work' })
+  const dev2 = login('gemini-dev', '/Users/v/.stoke/accounts/gemini-dev', { label: 'Dev' })
+  const ids = (x: AccountIndex): string[] => x.rows.map((r) => r.id)
+  const byApp = mergeAccountIndex({ existing: null, me: APP, mine: [work, cxw] })
+  check('the app’s first write: its rows, and its record', [ids(byApp), byApp.writers], [['claude-work', 'codex-work'], [{ userData: APP, ids: ['claude-work', 'codex-work'] }]])
+  // The reviewer's case: the dev build boots with no accounts and finds the app's index.
+  ok('a Stoke that never held an account has nothing to write, even with an index there', !accountIndexNeedsWrite(byApp, DEV, []))
+  ok('and neither does one with no index at all', !accountIndexNeedsWrite(null, DEV, []))
+  ok('a Stoke with accounts always writes', accountIndexNeedsWrite(null, DEV, [dev2]))
+  const withDev = mergeAccountIndex({ existing: byApp, me: DEV, mine: [dev2] })
+  check('the dev build adding one keeps the app’s rows', ids(withDev), ['claude-work', 'codex-work', 'gemini-dev'])
+  check('and records each writer apart', withDev.writers.map((w) => [w.userData, w.ids]), [[APP, ['claude-work', 'codex-work']], [DEV, ['gemini-dev']]])
+  ok('a Stoke that HAD accounts must write, to take them back', accountIndexNeedsWrite(withDev, DEV, []))
+  const devGone = mergeAccountIndex({ existing: withDev, me: DEV, mine: [] })
+  check('the dev build removing its last: only its own row goes', ids(devGone), ['claude-work', 'codex-work'])
+  check('and its record goes with it', devGone.writers.map((w) => w.userData), [APP])
+  const appDrops = mergeAccountIndex({ existing: withDev, me: APP, mine: [work] })
+  check('the app removing one keeps the dev build’s', ids(appDrops), ['claude-work', 'gemini-dev'])
+  const both = mergeAccountIndex({ existing: byApp, me: DEV, mine: [work] })
+  const oneLeaves = mergeAccountIndex({ existing: both, me: APP, mine: [cxw] })
+  ok('an id two Stokes hold stays while either still does', ids(oneLeaves).includes('claude-work') && ids(oneLeaves).includes('codex-work'), JSON.stringify(ids(oneLeaves)))
+  const relabel = mergeAccountIndex({ existing: withDev, me: APP, mine: [{ ...work, label: 'Work (me@example.com)' }, cxw] })
+  check('a writer’s row replaces its old one in place', relabel.rows.map((r) => [r.id, r.label]), [
+    ['claude-work', 'Work (me@example.com)'],
+    ['codex-work', 'Codex work'],
+    ['gemini-dev', 'Dev']
+  ])
+  const SANDBOX = '/tmp/stoke-sbx-x/ud'
+  const withSandbox = mergeAccountIndex({ existing: withDev, me: SANDBOX, mine: [login('claude-sbx', '/Users/v/.stoke/accounts/claude-sbx')] })
+  const pruned = mergeAccountIndex({ existing: withSandbox, me: APP, mine: [work, cxw], gone: (u) => u === SANDBOX })
+  check('a writer whose userData is gone is dropped, with the rows only it held', [ids(pruned), pruned.writers.map((w) => w.userData)], [['claude-work', 'codex-work', 'gemini-dev'], [APP, DEV]])
+  const legacy: AccountIndex = { rows: byApp.rows, writers: [] }
+  check('rows no writer claims (an index from before writers) are dropped; the owner writes its own back', ids(mergeAccountIndex({ existing: legacy, me: DEV, mine: [dev2] })), ['gemini-dev'])
+
+  console.log('\nthe index read back')
+  check('text round-trips through the parser', parseAccountIndex(accountIndexText(withDev)), withDev)
+  check('not JSON is null, never a guess', parseAccountIndex('{"accounts": ['), null)
+  check('an index with no writers reads as none', parseAccountIndex('{"accounts":[],"version":1}'), { rows: [], writers: [] })
+  const good = accountIndexRow(work)
+  const junk = [
+    { ...good, home: '/Users/v/a\u0007b' },
+    { ...good, id: 'claude-work', name: 'other' },
+    { ...good, env: 'CLAUDE CONFIG' },
+    { ...good, env: '' },
+    { ...good, extra: 'X=$(rm -rf ~)' },
+    { ...good, home: 'relative/path' },
+    { ...good, label: 7 },
+    'not a row'
+  ]
+  check(
+    'every row the shim could not trust is dropped, one by one',
+    parseAccountIndex(JSON.stringify({ accounts: [good, ...junk], writers: [{ userData: APP, ids: ['claude-work', 'nope nope', 3] }, { userData: '' }] })),
+    { rows: [good], writers: [{ userData: APP, ids: ['claude-work'] }] }
+  )
+  const future = { ...good, id: 'zed-work', name: 'work', cli: 'zed', env: 'ZED_HOME' }
+  check('an agent this version does not know still passes, so an older Stoke keeps a newer one’s account', parseAccountIndex(JSON.stringify({ accounts: [future], writers: [] }))?.rows, [future])
+  const text = accountIndexText(withDev)
+  ok('no writer line looks like an account line to the shim', text.split('\n').filter((l) => l.includes('{"id":"')).length === withDev.rows.length)
+}
+
 /* ---------------------------------------------------- folders and links */
 console.log('\nthe account folder and its links, against synthetic trees (gotcha 74)')
 const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'stoke-verify-accounts-')))
@@ -403,7 +479,14 @@ try {
     keyed('grok-team', 'xai-NEVER-IN-INDEX', { label: 'Team' }),
     login('claude-odd', join(accountsDir, 'odd"dir'), { label: 'Odd' })
   ]
-  const indexFile = await writeAccountIndex(accountsDir, accounts)
+  // Synthetic userData folders: the installed app's and the dev build's (gotcha 74 — none are real).
+  const udApp = join(scratch, 'ud-app')
+  const udDev = join(scratch, 'ud-dev')
+  mkdirSync(udApp)
+  mkdirSync(udDev)
+  const firstWrite = await updateAccountIndex({ root: accountsDir, me: udApp, accounts })
+  const indexFile = firstWrite.file
+  ok('the app with accounts writes the index', firstWrite.wrote)
   const text = readFileSync(indexFile, 'utf8')
   ok('the index is JSON', (() => {
     try {
@@ -414,7 +497,7 @@ try {
   })())
   ok('no key is ever written to it', !text.includes('xai-NEVER-IN-INDEX'))
   check('one account per line', text.split('\n').filter((l) => l.trimStart().startsWith('{"id":')).length, accounts.length)
-  check('the index text is the pure builder\u2019s', text, accountIndexText(accounts))
+  check('the index text is the pure builder\u2019s', text, accountIndexText(mergeAccountIndex({ existing: null, me: udApp, mine: accounts })))
   check('the bystander file beside it survives', readFileSync(join(accountsDir, 'notes.txt'), 'utf8'), 'bystander')
 
   const SHELLS = ['/bin/sh', '/bin/bash', '/bin/dash', '/bin/zsh'].filter((s) => existsSync(s))
@@ -465,6 +548,56 @@ try {
       )
     }
   }
+
+  console.log('\nevery Stoke on the machine writes that one index: the app, the dev build, a sandbox')
+  const appIds = accounts.map((a) => a.id)
+  const readIndex = (): AccountIndex | null => parseAccountIndex(readFileSync(indexFile, 'utf8'))
+  const before = readFileSync(indexFile, 'utf8')
+  const devBoot = await updateAccountIndex({ root: accountsDir, me: udDev, accounts: [] })
+  ok('the dev build booting with no accounts writes nothing', !devBoot.wrote)
+  check('and the app’s index is byte-for-byte what it was', readFileSync(indexFile, 'utf8'), before)
+  if (SHELLS.length) {
+    const after = spawnSync(SHELLS[0], [SHIM, 'account', 'env', 'claude-work'], { env: { PATH: '/usr/bin:/bin', HOME: userHome }, encoding: 'utf8' })
+    check('so `stoke account env` still answers for the app’s account', after.stdout, `export CLAUDE_CONFIG_DIR='${home}'\n`)
+  }
+  const devAccount = login('gemini-dev', join(accountsDir, 'gemini-dev'), { label: 'Dev' })
+  await updateAccountIndex({ root: accountsDir, me: udDev, accounts: [devAccount] })
+  check('the dev build adding one keeps every account of the app’s', readIndex()?.rows.map((r) => r.id), [...appIds, 'gemini-dev'])
+  const devClear = await updateAccountIndex({ root: accountsDir, me: udDev, accounts: [] })
+  ok('removing its last, it writes once more to take it back', devClear.wrote)
+  check('leaving exactly the app’s accounts', readIndex()?.rows.map((r) => r.id), appIds)
+  check('and no record of the dev build', readIndex()?.writers.map((w) => w.userData), [udApp])
+  ok('after which it has nothing to write again', !(await updateAccountIndex({ root: accountsDir, me: udDev, accounts: [] })).wrote)
+
+  const udSandbox = join(scratch, 'ud-sandbox')
+  mkdirSync(udSandbox)
+  await updateAccountIndex({ root: accountsDir, me: udSandbox, accounts: [login('claude-sbx', join(accountsDir, 'claude-sbx'))] })
+  ok('a sandbox’s account is listed while its userData exists', !!readIndex()?.rows.some((r) => r.id === 'claude-sbx'))
+  rmSync(udSandbox, { recursive: true })
+  await updateAccountIndex({ root: accountsDir, me: udApp, accounts })
+  check('once that folder is deleted, the next write drops it and its account', [readIndex()?.rows.map((r) => r.id), readIndex()?.writers.map((w) => w.userData)], [appIds, [udApp]])
+
+  const udA = join(scratch, 'ud-a')
+  const udB = join(scratch, 'ud-b')
+  mkdirSync(udA)
+  mkdirSync(udB)
+  await Promise.all([
+    updateAccountIndex({ root: accountsDir, me: udA, accounts: [login('qwen-a', join(accountsDir, 'qwen-a'))] }),
+    updateAccountIndex({ root: accountsDir, me: udB, accounts: [login('kimi-b', join(accountsDir, 'kimi-b'))] })
+  ])
+  const raced = readIndex()?.rows.map((r) => r.id) ?? []
+  ok('two Stokes writing at once both land (the lock)', raced.includes('qwen-a') && raced.includes('kimi-b') && appIds.every((id) => raced.includes(id)), JSON.stringify(raced))
+  const lock = `${indexFile}.lock`
+  ok('and no lock is left behind', !existsSync(lock))
+  mkdirSync(lock)
+  const longAgo = new Date(Date.now() - 60_000)
+  utimesSync(lock, longAgo, longAgo)
+  const t0 = Date.now()
+  await updateAccountIndex({ root: accountsDir, me: udA, accounts: [] })
+  ok('a crashed writer’s stale lock is broken, not waited out', Date.now() - t0 < 1_000 && !existsSync(lock), `${Date.now() - t0} ms`)
+  ok('and the write behind it landed', !readIndex()?.rows.some((r) => r.id === 'qwen-a') && !!readIndex()?.rows.some((r) => r.id === 'kimi-b'))
+  check('the bystander file beside the index still survives', readFileSync(join(accountsDir, 'notes.txt'), 'utf8'), 'bystander')
+
   const cmdText = readFileSync(CMD, 'utf8')
   const psDefaults = /\$names = @\(([^)]*)\)/.exec(cmdText)?.[1]?.replace(/'/g, '').split(',') ?? []
   check('stoke.cmd\u2019s fallback list for env default is the table\u2019s too', psDefaults, accountEnvNames())

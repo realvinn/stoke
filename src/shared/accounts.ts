@@ -479,6 +479,171 @@ export function accountEnvNames(): string[] {
   return [...names]
 }
 
+/** One account as the index holds it: what the `stoke` command prints or exports. */
+export interface AccountIndexRow {
+  id: string
+  /** The slug: `work` for `claude-work`, what `stoke account env work` matches. */
+  name: string
+  cli: string
+  /** The home variable; '' for a key account, which exports nothing. */
+  env: string
+  /** `NAME=value` pairs set beside it, space-separated (`ACCOUNT_EXTRA_ENV`). */
+  extra: string
+  home: string
+  label: string
+}
+
+/**
+ * The accounts one Stoke put in the index, by its userData folder.
+ *
+ * The index is SHARED: it lives outside userData on purpose (the `stoke`
+ * command has to find it from any shell), so the installed app, the `npm run
+ * dev` build and any `--user-data-dir` sandbox all write the same file, each
+ * knowing only its own settings. Recording who put each id there is what lets
+ * one of them rewrite the file without erasing the others' accounts
+ * (`mergeAccountIndex`).
+ */
+export interface AccountIndexWriter {
+  userData: string
+  ids: string[]
+}
+
+export interface AccountIndex {
+  rows: AccountIndexRow[]
+  writers: AccountIndexWriter[]
+}
+
+/** The index row for one of this Stoke's accounts. No key is ever in it. */
+export function accountIndexRow(a: AgentAccount): AccountIndexRow {
+  const login = a.kind === 'login'
+  return {
+    id: a.id,
+    name: slugOfAccountId(a.id),
+    cli: a.cli,
+    env: login ? (ACCOUNT_HOME_ENV[a.cli] ?? '') : '',
+    // `NAME=value` pairs, space-separated; names and values are fixed table
+    // text of [A-Za-z0-9_], so the shim can print them as they are.
+    extra: login
+      ? Object.entries(ACCOUNT_EXTRA_ENV[a.cli] ?? {})
+          .map(([k, v]) => `${k}=${v}`)
+          .join(' ')
+      : '',
+    home: login ? a.home : '',
+    label: a.label
+  }
+}
+
+/** What the shims trust in a row, field by field — the POSIX shim's own pattern (build/bin/stoke). */
+const ROW_ID = /^[a-z]+-[a-z0-9]+(?:-[a-z0-9]+)*$/
+const ROW_NAME = /^[a-z0-9-]+$/
+const ROW_CLI = /^[a-z]+$/
+const ROW_ENV = /^[A-Z_]*$/
+const ROW_EXTRA = /^[A-Za-z0-9_= ]*$/
+
+function indexRowFrom(raw: unknown): AccountIndexRow | null {
+  if (!isRecord(raw)) return null
+  const { id, name, cli, env, extra, home, label } = raw
+  if (typeof id !== 'string' || id.length > ACCOUNT_SLUG_MAX + 12 || !ROW_ID.test(id)) return null
+  if (typeof name !== 'string' || !ROW_NAME.test(name) || typeof cli !== 'string' || !ROW_CLI.test(cli)) return null
+  if (id !== `${cli}-${name}`) return null
+  if (typeof env !== 'string' || !ROW_ENV.test(env) || typeof extra !== 'string' || !ROW_EXTRA.test(extra)) return null
+  if (typeof home !== 'string' || (home !== '' && !isAccountHome(home))) return null
+  // A login row carries both, a key row neither: anything else is not one Stoke wrote.
+  if ((env === '') !== (home === '') || (env === '' && extra !== '')) return null
+  if (typeof label !== 'string') return null
+  return { id, name, cli, env, extra, home, label: cleanAccountLabel(label) || defaultAccountLabel(id) }
+}
+
+function indexWriterFrom(raw: unknown): AccountIndexWriter | null {
+  if (!isRecord(raw)) return null
+  const { userData, ids } = raw
+  // Absolute, with no control character: it is only ever handed to `stat`.
+  if (!isAccountHome(userData)) return null
+  if (!Array.isArray(ids)) return null
+  const kept = ids.filter((id): id is string => typeof id === 'string' && id.length <= ACCOUNT_SLUG_MAX + 12 && ROW_ID.test(id))
+  return { userData, ids: [...new Set(kept)] }
+}
+
+/**
+ * The index as read back, or null when it is not JSON Stoke could have
+ * written. Rows and writers that do not hold up are dropped one by one — a
+ * row is re-emitted into a file the shim evaluates, so it is held to exactly
+ * what the shim's pattern trusts — and an agent this version does not know
+ * still passes, so an older Stoke never erases a newer one's account.
+ */
+export function parseAccountIndex(text: string): AccountIndex | null {
+  let raw: unknown
+  try {
+    raw = JSON.parse(text)
+  } catch {
+    return null
+  }
+  if (!isRecord(raw)) return null
+  const rows = Array.isArray(raw.accounts) ? raw.accounts.map(indexRowFrom).filter((r): r is AccountIndexRow => r !== null) : []
+  const writers = Array.isArray(raw.writers)
+    ? raw.writers.map(indexWriterFrom).filter((w): w is AccountIndexWriter => w !== null)
+    : []
+  return { rows, writers }
+}
+
+/**
+ * Whether this Stoke has anything to say to the index: accounts of its own,
+ * or a record from when it had some that must now be taken back. A Stoke that
+ * never held an account never writes — above all not at boot, where the dev
+ * build or a sandbox would otherwise have rewritten the installed app's
+ * accounts as an empty list.
+ */
+export function accountIndexNeedsWrite(existing: AccountIndex | null, me: string, mine: readonly AgentAccount[]): boolean {
+  return mine.length > 0 || !!existing?.writers.some((w) => w.userData === me)
+}
+
+/**
+ * The index after THIS Stoke (`me`, its userData) says it holds `mine`.
+ *
+ * Every other writer's record is kept, and with it every row it claims —
+ * unless its userData is `gone` (a deleted sandbox, whose accounts no Stoke
+ * holds any more). This writer's record is replaced whole, so an id it held
+ * and no longer does leaves the index, but only when no other writer still
+ * claims it: two Stokes can hold one `claude-work` (same name, same folder),
+ * and one removing it must not take it from the other. A row nobody claims —
+ * an index from before writers were recorded — is dropped; its owner puts
+ * it back on its next write. Existing order is kept, new rows go last.
+ */
+export function mergeAccountIndex(input: {
+  existing: AccountIndex | null
+  me: string
+  mine: readonly AgentAccount[]
+  gone?: (userData: string) => boolean
+}): AccountIndex {
+  const gone = input.gone ?? (() => false)
+  const mineRows = new Map(input.mine.map((a) => [a.id, accountIndexRow(a)] as const))
+  const myRecord = (): AccountIndexWriter[] => (mineRows.size ? [{ userData: input.me, ids: [...mineRows.keys()] }] : [])
+  const writers: AccountIndexWriter[] = []
+  const seenWriters = new Set<string>()
+  for (const w of input.existing?.writers ?? []) {
+    if (seenWriters.has(w.userData)) continue
+    seenWriters.add(w.userData)
+    if (w.userData === input.me) writers.push(...myRecord())
+    else if (w.ids.length && !gone(w.userData)) writers.push(w)
+  }
+  if (!seenWriters.has(input.me)) writers.push(...myRecord())
+
+  const claimed = new Set(writers.flatMap((w) => w.ids))
+  const rows: AccountIndexRow[] = []
+  const seenRows = new Set<string>()
+  for (const r of input.existing?.rows ?? []) {
+    if (seenRows.has(r.id) || !claimed.has(r.id)) continue
+    seenRows.add(r.id)
+    rows.push(mineRows.get(r.id) ?? r)
+  }
+  for (const [id, r] of mineRows) {
+    if (seenRows.has(id)) continue
+    seenRows.add(id)
+    rows.push(r)
+  }
+  return { rows, writers }
+}
+
 /**
  * `~/.stoke/accounts/index.json`: what the `stoke` command reads to answer
  * `stoke account list` and `stoke account env NAME` with no app running.
@@ -491,36 +656,41 @@ export function accountEnvNames(): string[] {
  * home that JSON would have to escape (a backslash, a quote) is written as
  * JSON requires and the POSIX shim refuses that line rather than unescaping
  * it; the Windows shim parses real JSON. No key is ever written here.
+ *
+ * `writers` comes after `accounts` and no line of it can hold `{"id":"`
+ * (JSON escapes every quote inside a string), which is the shim's test for an
+ * account line.
  */
-export function accountIndexText(accounts: readonly AgentAccount[]): string {
-  const lines = accounts.map((a) => {
-    const login = a.kind === 'login'
-    const env = login ? (ACCOUNT_HOME_ENV[a.cli] ?? '') : ''
-    // `NAME=value` pairs, space-separated; names and values are fixed table
-    // text of [A-Za-z0-9_], so the shim can print them as they are.
-    const extra = login
-      ? Object.entries(ACCOUNT_EXTRA_ENV[a.cli] ?? {})
-          .map(([k, v]) => `${k}=${v}`)
-          .join(' ')
-      : ''
-    const fields: [string, string][] = [
-      ['id', a.id],
-      ['name', slugOfAccountId(a.id)],
-      ['cli', a.cli],
-      ['env', env],
-      ['extra', extra],
-      ['home', login ? a.home : ''],
-      ['label', a.label]
-    ]
-    return `    {${fields.map(([k, v]) => `${JSON.stringify(k)}:${JSON.stringify(v)}`).join(',')}}`
-  })
+export function accountIndexText(index: AccountIndex): string {
+  const line = (fields: [string, unknown][]): string =>
+    `    {${fields.map(([k, v]) => `${JSON.stringify(k)}:${JSON.stringify(v)}`).join(',')}}`
+  const rows = index.rows.map((r) =>
+    line([
+      ['id', r.id],
+      ['name', r.name],
+      ['cli', r.cli],
+      ['env', r.env],
+      ['extra', r.extra],
+      ['home', r.home],
+      ['label', r.label]
+    ])
+  )
+  const writers = index.writers.map((w) =>
+    line([
+      ['userData', w.userData],
+      ['ids', w.ids]
+    ])
+  )
   return [
     '{',
-    '  "version": 1,',
+    '  "version": 2,',
     '  "note": "Written by Stoke. The stoke command reads it for `stoke account list` and `stoke account env NAME`. Change accounts in Settings, Agents.",',
     '  "unset": ' + JSON.stringify(accountEnvNames()) + ',',
     '  "accounts": [',
-    lines.join(',\n'),
+    rows.join(',\n'),
+    '  ],',
+    '  "writers": [',
+    writers.join(',\n'),
     '  ]',
     '}',
     ''

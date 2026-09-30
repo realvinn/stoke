@@ -6,6 +6,9 @@
  * Where: `~/.stoke/accounts/<cli>-<slug>`. Not under userData — the dev and
  * packaged builds have different userData (gotcha 12), and the `stoke`
  * command, run from any shell with no app, has to find the same folders.
+ * The flip side: everything here is shared by every Stoke on the machine, so
+ * nothing here is ever written from one Stoke's settings alone — the index is
+ * merged per writer (`updateAccountIndex`), never replaced.
  *
  * What a Claude account's folder holds. Claude Code keeps EVERYTHING under its
  * config dir, so a bare second dir would be a second machine: its transcripts,
@@ -31,11 +34,20 @@
  */
 import { createHash } from 'node:crypto'
 import { constants as fsConstants } from 'node:fs'
-import { copyFile, lstat, mkdir, readFile, readlink, realpath, rename, stat, symlink, writeFile } from 'node:fs/promises'
+import { copyFile, lstat, mkdir, readFile, readlink, realpath, rename, rmdir, stat, symlink, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
-import { accountIndexText, ACCOUNT_INDEX_NAME, type AgentAccount } from '../shared/accounts.ts'
+import {
+  accountIndexNeedsWrite,
+  accountIndexText,
+  ACCOUNT_INDEX_NAME,
+  mergeAccountIndex,
+  parseAccountIndex,
+  type AccountIndex,
+  type AgentAccount
+} from '../shared/accounts.ts'
 import type { CodingCliId } from '../shared/codingClis.ts'
 import { oauthSuffix } from './claudePaths.ts'
+import { launchFolderProblem } from './folderCheck.ts'
 
 /* ------------------------------------------------------------- Keychain */
 
@@ -263,17 +275,92 @@ export async function repairAccountHome(account: AgentAccount, trees: DefaultTre
 
 /* ------------------------------------------------------------- the index */
 
+let indexWrites = 0
+
 /**
  * Write `<root>/index.json` for the `stoke` command: temp file and rename, so
  * a shell reading it mid-write sees the old one or the new one, never half.
+ * Writes exactly `index` — `updateAccountIndex` is what decides it.
  */
-export async function writeAccountIndex(root: string, accounts: readonly AgentAccount[]): Promise<string> {
+export async function writeAccountIndex(root: string, index: AccountIndex): Promise<string> {
   await mkdir(root, { recursive: true, mode: 0o700 })
   const file = join(root, ACCOUNT_INDEX_NAME)
-  const tmp = `${file}.${process.pid}.tmp`
-  await writeFile(tmp, accountIndexText(accounts), { encoding: 'utf8', mode: 0o600 })
+  // Per write, not just per process: two writes must never share one temp file.
+  const tmp = `${file}.${process.pid}.${++indexWrites}.tmp`
+  await writeFile(tmp, accountIndexText(index), { encoding: 'utf8', mode: 0o600 })
   await rename(tmp, file)
   return file
+}
+
+/** Past this, a lock on the index is a crashed writer's and is broken (claudeGlobalConfig.ts's rule). */
+const INDEX_LOCK_STALE_MS = 10_000
+/** How long to wait for another Stoke's write before going ahead without the lock. */
+const INDEX_LOCK_WAIT_MS = 2_000
+
+/**
+ * Take `<index>.lock` — an empty directory, made by `mkdir`, which only one
+ * process can create — or report that the wait ran out. Two Stokes that read
+ * the index at once and each wrote back its own merge would lose one's change.
+ */
+async function lockIndex(lock: string): Promise<boolean> {
+  const deadline = Date.now() + INDEX_LOCK_WAIT_MS
+  for (;;) {
+    try {
+      await mkdir(lock)
+      return true
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') return false
+      const info = await stat(lock).catch(() => null)
+      if (!info) continue
+      if (Date.now() - info.mtime.getTime() > INDEX_LOCK_STALE_MS) {
+        await rmdir(lock).catch(() => {})
+        continue
+      }
+    }
+    if (Date.now() >= deadline) return false
+    await new Promise((r) => setTimeout(r, 25))
+  }
+}
+
+/**
+ * Bring this Stoke's part of the shared index up to date: under the lock,
+ * read what is there, merge (`mergeAccountIndex` — every other Stoke's
+ * accounts kept, a writer whose userData folder is gone dropped), write.
+ *
+ * `me` is this Stoke's userData, realpath'd. A Stoke with no accounts and no
+ * record in the index writes nothing (`accountIndexNeedsWrite`), so the dev
+ * build, a sandbox or a fresh profile never touches an index it has no part in.
+ */
+export async function updateAccountIndex(opts: {
+  root: string
+  me: string
+  accounts: readonly AgentAccount[]
+}): Promise<{ file: string; wrote: boolean }> {
+  const file = join(opts.root, ACCOUNT_INDEX_NAME)
+  const text = await readFile(file, 'utf8').catch(() => null)
+  // Nothing to take back and nothing to add: not even the lock is taken.
+  if (!accountIndexNeedsWrite(text === null ? null : parseAccountIndex(text), opts.me, opts.accounts)) {
+    return { file, wrote: false }
+  }
+  await mkdir(opts.root, { recursive: true, mode: 0o700 })
+  const lock = `${file}.lock`
+  const locked = await lockIndex(lock)
+  try {
+    // Read again inside the lock: another Stoke may have written since.
+    const fresh = await readFile(file, 'utf8').catch(() => null)
+    const existing = fresh === null ? null : parseAccountIndex(fresh)
+    if (!accountIndexNeedsWrite(existing, opts.me, opts.accounts)) return { file, wrote: false }
+    const others = [...new Set((existing?.writers ?? []).map((w) => w.userData).filter((u) => u !== opts.me))]
+    // Only a folder that is certainly not there (ENOENT) is gone; a slow or
+    // unreadable volume is still someone's (gotcha 40's deadline).
+    const verdicts = await Promise.all(others.map(async (u) => [u, (await launchFolderProblem(u)) === 'missing'] as const))
+    const gone = new Set(verdicts.filter(([, g]) => g).map(([u]) => u))
+    const merged = mergeAccountIndex({ existing, me: opts.me, mine: opts.accounts, gone: (u) => gone.has(u) })
+    await writeAccountIndex(opts.root, merged)
+    return { file, wrote: true }
+  } finally {
+    if (locked) await rmdir(lock).catch(() => {})
+  }
 }
 
 /* ----------------------------------------------------------------- label */
