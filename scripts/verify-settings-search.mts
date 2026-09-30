@@ -49,6 +49,8 @@ import {
 } from '../src/shared/settingsIndex.ts'
 import { CODING_CLIS, type CodingCliId } from '../src/shared/codingClis.ts'
 import { CLAUDE_SETTINGS } from '../src/shared/claudeConfig.ts'
+import { endpointProblem } from '../src/shared/agents.ts'
+import { openRouterResponse } from '../src/shared/openRouterUsage.ts'
 import { paletteRows } from '../src/renderer/src/lib/paletteRows.ts'
 import type { ProjectHit } from '../src/renderer/src/lib/projectSearch.ts'
 
@@ -340,6 +342,43 @@ console.log('\nsearch: what ranks first, synonyms, spellings and highlights')
   check('"claude\'s status" matches the curly apostrophe in the label', has("claude's status", 'row:sessions.status-line', 1), true)
   check('"terminal padding": every word must land, across the path and the label', top('terminal padding'), ['row:terminal.padding'])
   check('"ai" matches a word that starts with it, not one that hides it (Tailscale)', [has('ai', 'row:chats.enabled', 10), has('ai', 'row:remote.reach', 40)], [true, false])
+  // Plurals: every row is named in the singular, and a word has to land as a word start.
+  check('"fonts": Font first', top('fonts'), ['row:terminal.font'])
+  check('"themes": the theme cards first', top('themes'), ['row:appearance.theme'])
+  check('"wallpapers": Wallpaper first', top('wallpapers'), ['row:appearance.wallpaper'])
+  check('"microphones": the microphone rows lead', top('microphones', 2).sort(), ['row:voice.mic-access', 'row:voice.microphone'])
+  check('"ssh keys": key login for SSH hosts first', top('ssh keys'), ['row:hosts.key-enroll'])
+  check(
+    '"api keys": both Claude Code key rows ahead of Where your keys live',
+    [top('api keys', 2).sort(), searchSettings(entries, 'api keys').findIndex((h) => h.entry.key === 'row:backup.storage') > 1],
+    [['row:providers.anthropic-key', 'row:providers.openrouter-key'], true]
+  )
+  check('"shortcuts" and "keyboard shortcuts": the zoom keys and dictation, and nothing that merely says keys', [top('shortcuts', 3).sort(), top('keyboard shortcuts', 3).sort()], [
+    ['row:appearance.zoom-keys', 'row:voice.dictation'],
+    ['row:appearance.zoom-keys', 'row:voice.dictation']
+  ])
+  check('"colors" (US and plural) finds what "colour" finds first', top('colors'), top('colour'))
+  check('"notifications" finds the notification row', has('notifications', 'row:sessions.notifications', 2), true)
+  check('"keys" lists a label that says keys before one only its singular found', searchSettings(entries, 'keys').findIndex((h) => h.entry.key === 'row:appearance.zoom-keys') < searchSettings(entries, 'keys').findIndex((h) => h.entry.key === 'row:providers.anthropic-key'), true)
+  check('"cookies": the browser rows, through its singular', [has('cookies', 'row:browser.profiles', 3), has('cookies', 'row:browser.import', 3)], [true, true])
+  check(
+    'a three-letter word lands only where a word starts: "mic" not inside "Dynamic", "aud" not inside every "Claude"',
+    [has('mic', 'row:claude-settings.workflowSizeGuideline', 20), has('aud', 'row:agent.look@claude', 20), top('aud tag')],
+    [false, false, ['row:remote.access']]
+  )
+
+  // Controls inside a row, found by what they are called.
+  check('"redact": Where Stoke looks, which holds the API-key filter', top('redact'), ['row:chats.sources'])
+  check('"tmux", "byobu", "kept session", "command on connect": Remote machines', ['tmux', 'byobu', 'kept session', 'command on connect'].map((q) => top(q)[0]), [
+    'row:hosts.list',
+    'row:hosts.list',
+    'row:hosts.list',
+    'row:hosts.list'
+  ])
+  check('"team domain" and "aud tag": Require Cloudflare Access', [top('team domain'), top('aud tag')], [['row:remote.access'], ['row:remote.access']])
+  check('a label typed out whole finds its row past its little words', top('keep sessions running on this machine'), ['row:hosts.list'])
+  check('…but a little word alone is still a query', has('on', 'row:sessions.start-on-launch', 3), true)
+
   check('nonsense finds nothing', searchSettings(entries, 'zzqxv'), [])
   check('an empty query finds nothing', searchSettings(entries, '   '), [])
 
@@ -381,6 +420,190 @@ console.log('\nthe palette interleaves settings with projects by how good a matc
   check('no project matching: settings alone, in their own order', paletteRows([], font.slice(0, 2)).map(label), ['setting:row:terminal.font', 'setting:row:terminal.font-size'])
   const tiers = [100, 90, 80, 75, 70, 60, 50, 48, 46, 44, 42].map(paletteTier)
   check('paletteTier never ranks a weaker score above a stronger one', tiers.every((t, i) => i === 0 || t <= tiers[i - 1]), true)
+}
+
+/* ---------------------------------------- what the sheet labels, findable */
+
+console.log('\nevery control the sheet labels is found by its label, on its own page')
+{
+  /*
+   * The marks above only compare rows that already HAVE a mark. A control
+   * added inside a marked row, with no keyword for it, is exactly as
+   * unfindable and passes every check there: "Leave out anything that looks
+   * like an API key" and a host's "Command on connect" were. So every label a
+   * settings component draws — a field label, a check row's text, a
+   * disclosure's summary, a slider row's name — is searched for, and has to
+   * find something on a page that component draws. Only the list below may
+   * not, each for its reason.
+   */
+  const pagesOf: Record<string, string[]> = {
+    'components/SettingsSheet.tsx': ['appearance', 'terminal', 'sessions', 'projects', 'updates'],
+    'components/ThemeEditor.tsx': ['appearance'],
+    'components/ProfilesSettings.tsx': ['profiles'],
+    'components/ProvidersSettings.tsx': ['providers'],
+    'components/ClaudeCodeSettings.tsx': ['claude-settings'],
+    'components/ChatHistorySettings.tsx': ['chats'],
+    'components/VoiceSettings.tsx': ['voice'],
+    'components/MicPicker.tsx': ['voice'],
+    'components/SpeechServiceSettings.tsx': ['voice'],
+    'components/WorklogSettings.tsx': ['worklog'],
+    'components/HostsSettings.tsx': ['hosts'],
+    'components/BrowserSettings.tsx': ['browser'],
+    'components/BackupSettings.tsx': ['backup'],
+    'components/RemoteSettings.tsx': ['remote', 'updates'],
+    'components/AgentsSettings.tsx': ['agents', 'agent', 'claude-launch']
+  }
+  const unfindable = new Map<string, string>([
+    ['components/SettingsSheet.tsx: Launch defaults', "Sessions' signpost to Agents › Claude Code › Launch defaults, which the search finds itself"],
+    ['components/AgentsSettings.tsx: The rest of Claude Code', "Claude Code's page's signpost to its three sub-pages, each found by name"],
+    ['components/ThemeEditor.tsx: Editing', 'the editor\'s heading, "Editing <theme>"'],
+    ['components/HostsSettings.tsx: Name', "one field of each machine's own row"],
+    ['components/BrowserSettings.tsx: Name', "one field of each browser profile's own row"],
+    ['components/RemoteSettings.tsx: Enter them by hand', "a disclosure over the Access team domain and AUD tag, which remote.access's keywords name"],
+    ['components/RemoteSettings.tsx: Advanced', 'a disclosure over Port and the key, each a row of its own'],
+    ['components/BackupSettings.tsx: Also import the', "the import's question about the keys in a file, drawn once one is chosen (its text stops at a count)"]
+  ])
+  const labelled = [
+    /className="field-label"[^>]*>\s*([^<{]+?)\s*[<{]/g,
+    // Lazily across the input: its onChange holds a `=>`, whose `>` a `[^>]*` stops at.
+    /className="check-row[^"]*"[^>]*>\s*<input[\s\S]*?\/>\s*<span>\s*(?:<span[^>]*>)?\s*([^<{]+?)\s*[<{]/g,
+    /<summary[^>]*>\s*(?:<span[^>]*>)?\s*([^<{]+?)\s*[<{]/g,
+    /className="theme-editor-row"[^>]*>\s*<span>([^<{]+?)\s*[<{]/g
+  ]
+  const entries = settingsEntries({ agents: ['claude', 'codex'] })
+  const lost: string[] = []
+  const seen = new Set<string>()
+  for (const [file, pages] of Object.entries(pagesOf)) {
+    const src = read(file)
+    for (const re of labelled) {
+      for (const m of src.matchAll(re)) {
+        const text = m[1].replace(/&[a-z]+;/g, "'").replace(/\s+/g, ' ').trim()
+        // A comment the pattern ran into is not a label.
+        if (text.length < 3 || text.length > 90 || text.includes('*/')) continue
+        const key = `${file}: ${text}`
+        seen.add(key)
+        if (unfindable.has(key)) continue
+        if (!searchSettings(entries, text).slice(0, 10).some((h) => pages.includes(h.entry.loc.page))) lost.push(key)
+      }
+    }
+  }
+  check('the scan found the labels it was written against (at least 110)', seen.size >= 110, true)
+  check('every label is found on its own page by searching for it', lost, [])
+  check('every label excused from that still exists (a stale excuse hides nothing)', [...unfindable.keys()].filter((k) => !seen.has(k)), [])
+}
+
+console.log('\na row drawn only in some states says where a jump lands instead')
+{
+  const fallbackOf = (id: string): string | undefined => SETTING_ROWS.find((r) => r.id === id)?.fallback
+  const theme = read('components/ThemeEditor.tsx')
+  // The cards and "Follow my system" are the not-editing branch; the editor replaces them.
+  const notEditing = theme.slice(theme.indexOf('if (!seed || !draft) {'), theme.lastIndexOf('data-setting="appearance.make-theme"'))
+  check(
+    'the theme cards and Follow my system are drawn only while no theme is being edited…',
+    [notEditing.includes('data-setting="appearance.theme"'), notEditing.includes('data-setting="appearance.follow-system"')],
+    [true, true]
+  )
+  check('…so both land on the editor, which is drawn either way', [fallbackOf('appearance.theme'), fallbackOf('appearance.follow-system')], [
+    'appearance.make-theme',
+    'appearance.make-theme'
+  ])
+  check(
+    'More agents is drawn only while an agent is not installed, and lands on Your agents',
+    [/\{more\.length > 0 && \(\s*<details[^>]*data-setting="agents\.more"/.test(read('components/AgentsSettings.tsx')), fallbackOf('agents.more')],
+    [true, 'agents.list']
+  )
+  const browser = read('components/BrowserSettings.tsx')
+  check(
+    "Import from other browsers is drawn on macOS and Windows only, and the index says so",
+    [
+      /\(window\.stoke\.platform === 'darwin' \|\| window\.stoke\.platform === 'win32'\) && \(\s*<ImportFromBrowsers/.test(browser),
+      SETTING_ROWS.find((r) => r.id === 'browser.import')?.platforms
+    ],
+    [true, ['darwin', 'win32']]
+  )
+  const onLinux = settingsEntries({ agents: ['claude'], platform: 'linux' })
+  const onMac = settingsEntries({ agents: ['claude'], platform: 'darwin' })
+  check(
+    '…so a Linux search never offers it, a Mac one does',
+    [onLinux.some((e) => e.row === 'browser.import'), onMac.some((e) => e.row === 'browser.import')],
+    [false, true]
+  )
+  check('…and with no platform named it lands on the profiles if it is not there', fallbackOf('browser.import'), 'browser.profiles')
+  const sheet = read('components/SettingsSheet.tsx')
+  const palette = read('components/CommandPalette.tsx')
+  check(
+    'the sheet and the palette both tell the index the platform',
+    [sheet, palette].map((src) => /settingsEntries\(\{ agents: [A-Za-z]+, platform: window\.stoke\.platform \}\)/.test(src)),
+    [true, true]
+  )
+}
+
+/* ------------------------------------------------------ the sheet's wiring */
+
+console.log('\nthe sheet: the scroll, the results list, and the live count')
+{
+  const sheet = read('components/SettingsSheet.tsx')
+  check(
+    "the pane's scroll resets on a page change, keyed on the page's id and not the location object",
+    /scrollTo\(\{ top: 0 \}\)\s*\}, \[current\]\)/.test(sheet),
+    true
+  )
+  check(
+    '…and going to the page already on show keeps its object (a press on its own menu row moves nothing)',
+    /setLoc\(\(cur\) => \(sameLocation\(cur, next\) \? cur : next\)\)/.test(sheet),
+    true
+  )
+  const open = sheet.indexOf('role="listbox"')
+  const listbox = sheet.slice(open, sheet.indexOf('{hits.map(', open))
+  check('the results listbox holds only its options: no status, no empty message', [/role="status"|settings-results-empty/.test(listbox)], [false])
+  const status = sheet.indexOf('role="status"')
+  check(
+    'the live count is mounted before the list and outside any branch on the query, so its first count is announced',
+    [status > 0 && status < sheet.indexOf('{searching && hits.length === 0 ?'), /\{!searching \? '' :/.test(sheet)],
+    [true, true]
+  )
+}
+
+console.log('\nthe jump: a row inside a disclosure it opens, and a row taller than the pane')
+{
+  const jump = read('lib/settingsJump.ts')
+  check(
+    'after opening a disclosure the scroll waits for the row to stop moving (it is not laid out in the same frame)',
+    /if \(opened\) frame = requestAnimationFrame\(\(\) => settle\(el, null, SETTLE_FRAMES\)\)/.test(jump) && /if \(top === last \|\| left <= 0\) show\(el\)/.test(jump),
+    true
+  )
+  check(
+    'a row taller than the pane is scrolled to its top, not its middle',
+    /getBoundingClientRect\(\)\.height > pane\.clientHeight \? 'start' : 'center'/.test(jump),
+    true
+  )
+}
+
+/* -------------------------------------- messages that name Provider & keys */
+
+console.log('\nmessages that send you to Provider & keys name where it is now')
+{
+  const place = `Settings › ${pathOf({ page: 'providers' }).join(' › ')}`
+  check('the place, from the menu itself', place, 'Settings › Agents › Claude Code › Provider & keys')
+  check("an agent on OpenRouter with no key says where the key goes", (endpointProblem('codex', { mode: 'openrouter', baseUrl: '', apiKey: '', model: 'x/y' } as never, '') ?? '').includes(place), true)
+  check('OpenRouter refusing the key says where the key is', openRouterResponse(401, null, 0).error?.includes(place), true)
+  const vendors = readFileSync(join(root, 'src/main/usageVendors.ts'), 'utf8')
+  check('no OpenRouter key at all says where one goes', vendors.includes(`'No OpenRouter key in ${place}.'`), true)
+  const stale: string[] = []
+  for (const dir of ['src/shared', 'src/main', 'src/renderer/src']) {
+    const walk = (d: string): void => {
+      for (const entry of readdirSync(d, { withFileTypes: true })) {
+        const path = join(d, entry.name)
+        if (entry.isDirectory()) walk(path)
+        else if (/\.tsx?$/.test(entry.name)) {
+          // Strings only: a comment may still say where a thing used to be.
+          for (const m of readFileSync(path, 'utf8').matchAll(/['`"][^'`"\n]*Settings › Providers[^'`"\n]*['`"]/g)) stale.push(`${relative(root, path)}: ${m[0]}`)
+        }
+      }
+    }
+    walk(join(root, dir))
+  }
+  check('no string still says "Settings › Providers"', stale, [])
 }
 
 /* ------------------------------------------------------------ the paint */

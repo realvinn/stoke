@@ -677,8 +677,11 @@ npm run verify:settings-search # the Settings index against the sheet: every `da
                               # (Agents > manager + installed agents, Claude Code > its three
                               # pages, levels and holders); every old section id and every
                               # `openSettings('<id>')` caller landing; ranking, synonyms,
-                              # spellings and highlights, every row found by its own label; the
-                              # palette's interleave; the flash's reduced-motion rule (138)
+                              # spellings, plurals and highlights, every row found by its own
+                              # label and every label a settings component draws found on its
+                              # page; the fallbacks of rows drawn only sometimes; the messages
+                              # that point at Provider & keys; the palette's interleave; the
+                              # flash's reduced-motion rule (138)
 npm run verify:chat-sources   # chat history, against synthetic fixtures for every source
                               # (Claude, Codex + its threads table, OpenCode, Cline, Zed's zstd,
                               # Cowork) under a fake home: tool output, reasoning, injected
@@ -1368,7 +1371,8 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     hides the docked browser for. verify:layers. Gotcha 14
   src/lib/settingsJump.ts  showing one Settings row: found by its `data-setting` (looked for
                     each frame while its page draws, its `fallback` after 250 ms), every
-                    `<details>` around it opened, scrolled to the middle, flashed for 1.6 s, its
+                    `<details>` around it opened and the row let settle a frame or two before
+                    it is scrolled to the middle (its top if taller), flashed for 1.6 s, its
                     control focused with `preventScroll`; and `markSettingHits` for the page on
                     show while there is a query
   src/lib/paletteRows.ts  the Cmd+K palette's one list: projects and settings interleaved on
@@ -1553,8 +1557,8 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     `visibleNodes`, `visibleHolder`), where each old section id lands
                     (`resolveSettingsTarget`: providers, claude, agents moved), the rows the
                     sheet marks (`SETTING_ROWS` plus two generated families) and the search over
-                    them (`searchSettings`: phrase, then every word, synonyms and British/US
-                    spellings). The sheet's search and Cmd+K both read it. Gotcha 138
+                    them (`searchSettings`: phrase, then every word, synonyms, British/US
+                    spellings and plurals). The sheet's search and Cmd+K both read it. Gotcha 138
   launcher.ts       the new-session page's pure half: same-name disambiguation, the
                     folder switcher's groups, which conversations list, the keyboard map,
                     the pinned launch aim (`launchAim`), the activation-key burst rule

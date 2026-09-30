@@ -462,8 +462,8 @@ rule file named on the group line.
   runs on (`background_tasks`, `stopNotifies`), `waiting` is the registry's and survives looking.
 - **127.** Act on an id main just made (an account) through main's reply or `settings.get()`, never
   `settingsRef`: the ref is the last RENDER's, and the push lands after the await (`startAccountLogin`).
-- **138.** Give a new Settings row a `data-setting` mark AND a `SETTING_ROWS` entry (settingsIndex.ts), with a
-  `fallback` if it is drawn only sometimes; open Settings by id only through `resolveSettingsTarget`.
+- **138.** Give a new Settings row a `data-setting` mark AND a `SETTING_ROWS` entry (a new control in one: its label as a
+  keyword) and a `fallback` if it is drawn only sometimes; open Settings by id only through `resolveSettingsTarget`.
 
 **Packaging and signing** — `.claude/rules/release.md`
 - **7.** Pick architectures with the `--x64`/`--arm64` CLI flags and never add an `arch:` list to
