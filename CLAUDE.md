@@ -233,7 +233,11 @@ rule file named on the group line.
   fresh tab's first load — `show()` seeds `about:blank` only when it created the tab (`created`).
 - **107.** Import cookies into their own profile, never Default, and only into an encrypted store
   (`cookieStoreEncrypted`); host-only cookies get NO `domain`; Chromium's samesite `0` is `no_restriction`.
-  Windows imports bookmarks only (`chromiumProfiles.ts`, `canLogins`); Chrome's key is sealed there.
+  On Windows the browser decrypts its own jar (130) — proven for v10 only, v20 unproven; `canLogins` once encrypted.
+- **130.** To decrypt Windows cookies, drive the browser's OWN exe headless against a COPY of the profile
+  (`chromeCookiesWin.ts`; validate the App Paths hit is this browser's exe not another channel's, not WindowsApps — 99);
+  mirror the source's `Network/Cookies`-vs-`Cookies` path or `Storage.getCookies` returns empty; report v20 rows it drops
+  (`sealedCookiesMissed`) — never a silent short read (v20 decrypt-in-a-copy is unproven on real Windows).
 
 **statusLine and context meter** — `.claude/rules/statusline.md`
 - **2.** Take the context window from the statusLine payload, not the model id (transcripts drop

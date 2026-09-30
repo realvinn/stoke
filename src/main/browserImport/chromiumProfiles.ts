@@ -24,20 +24,29 @@ export interface ChromiumBrowser {
   macDir: string
   /** Under %LOCALAPPDATA% on Windows; the "User Data" root. '' means not known there. */
   winDir: string
+  /**
+   * The browser's own executable name on Windows, used for the app-bound-cookie
+   * login path (`chromeCookiesWin.ts`): Stoke launches THIS binary headless
+   * against a copy of the profile so the browser decrypts its own v20 jar. ''
+   * means logins are not read there (bookmarks still are). The path-validation
+   * ABE check is per-binary, so `chrome.exe` cannot decrypt Edge's jar — each
+   * browser's own exe must be found and launched.
+   */
+  winExe: string
   /** The macOS Keychain generic password's service. Unused on Windows. */
   keychain: string
 }
 
 export const CHROMIUM_BROWSERS: ChromiumBrowser[] = [
-  { id: 'chrome', name: 'Chrome', macDir: 'Google/Chrome', winDir: 'Google\\Chrome\\User Data', keychain: 'Chrome Safe Storage' },
-  { id: 'chrome-beta', name: 'Chrome Beta', macDir: 'Google/Chrome Beta', winDir: 'Google\\Chrome Beta\\User Data', keychain: 'Chrome Safe Storage' },
-  { id: 'brave', name: 'Brave', macDir: 'BraveSoftware/Brave-Browser', winDir: 'BraveSoftware\\Brave-Browser\\User Data', keychain: 'Brave Safe Storage' },
-  { id: 'edge', name: 'Edge', macDir: 'Microsoft Edge', winDir: 'Microsoft\\Edge\\User Data', keychain: 'Microsoft Edge Safe Storage' },
+  { id: 'chrome', name: 'Chrome', macDir: 'Google/Chrome', winDir: 'Google\\Chrome\\User Data', winExe: 'chrome.exe', keychain: 'Chrome Safe Storage' },
+  { id: 'chrome-beta', name: 'Chrome Beta', macDir: 'Google/Chrome Beta', winDir: 'Google\\Chrome Beta\\User Data', winExe: 'chrome.exe', keychain: 'Chrome Safe Storage' },
+  { id: 'brave', name: 'Brave', macDir: 'BraveSoftware/Brave-Browser', winDir: 'BraveSoftware\\Brave-Browser\\User Data', winExe: 'brave.exe', keychain: 'Brave Safe Storage' },
+  { id: 'edge', name: 'Edge', macDir: 'Microsoft Edge', winDir: 'Microsoft\\Edge\\User Data', winExe: 'msedge.exe', keychain: 'Microsoft Edge Safe Storage' },
   // Arc on Windows is a UWP-packaged app whose data path is version-specific and
   // uncertain; left blank so it is simply skipped there rather than pointed wrong.
-  { id: 'arc', name: 'Arc', macDir: 'Arc/User Data', winDir: '', keychain: 'Arc Safe Storage' },
-  { id: 'vivaldi', name: 'Vivaldi', macDir: 'Vivaldi', winDir: 'Vivaldi\\User Data', keychain: 'Vivaldi Safe Storage' },
-  { id: 'chromium', name: 'Chromium', macDir: 'Chromium', winDir: 'Chromium\\User Data', keychain: 'Chromium Safe Storage' }
+  { id: 'arc', name: 'Arc', macDir: 'Arc/User Data', winDir: '', winExe: '', keychain: 'Arc Safe Storage' },
+  { id: 'vivaldi', name: 'Vivaldi', macDir: 'Vivaldi', winDir: 'Vivaldi\\User Data', winExe: 'vivaldi.exe', keychain: 'Vivaldi Safe Storage' },
+  { id: 'chromium', name: 'Chromium', macDir: 'Chromium', winDir: 'Chromium\\User Data', winExe: 'chrome.exe', keychain: 'Chromium Safe Storage' }
 ]
 
 /**

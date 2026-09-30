@@ -165,12 +165,15 @@ export function BrowserSettings({ browser }: Props): React.JSX.Element {
  * here, so none of them arrives out of nowhere. Only counts come back from
  * main; a cookie value never reaches this process.
  *
- * On Windows the same panel imports bookmarks, but logins stay behind: Chrome
- * seals them with app-bound encryption Stoke cannot open, so the Logins box is
- * off and says why (`canLogins`). Safari never appears there.
+ * On Windows the panel imports logins too, by a different route: Chrome seals
+ * its cookies to itself, so Stoke briefly launches the user's own browser in
+ * the background to decrypt them and reads the plaintext cookies back — never a
+ * password. It still needs an encrypting Stoke store (`canLogins`, gotcha 108).
+ * Safari never appears there.
  */
 function ImportFromBrowsers({ profiles }: { profiles: BrowserProfile[] }): React.JSX.Element {
   const isMac = window.stoke.platform === 'darwin'
+  const isWin = window.stoke.platform === 'win32'
   const [sources, setSources] = useState<ImportSource[] | null>(null)
   const [loginsAllowed, setLoginsAllowed] = useState(true)
   const [busyNote, setBusyNote] = useState<string | null>(null)
@@ -181,9 +184,10 @@ function ImportFromBrowsers({ profiles }: { profiles: BrowserProfile[] }): React
   const [running, setRunning] = useState(false)
   const [results, setResults] = useState<ImportResult[] | null>(null)
 
-  // Logins need both an encrypting Stoke store (`loginsAllowed`) and a reachable
-  // source key — and the key is only reachable on macOS.
-  const canLogins = loginsAllowed && isMac
+  // Logins need an encrypting Stoke store (`loginsAllowed`, gotcha 108) and a
+  // platform Stoke can read the cookie key on: macOS through the Keychain, or
+  // Windows by driving the browser's own binary (chromeCookiesWin.ts).
+  const canLogins = loginsAllowed && (isMac || isWin)
 
   /*
    * Re-entry guards, claimed before the await (gotcha 20). The old `scanning`
@@ -242,7 +246,7 @@ function ImportFromBrowsers({ profiles }: { profiles: BrowserProfile[] }): React
       <FieldHint>
         {isMac
           ? 'Logins come over as cookies into a browser profile of their own for each profile you pick, so nothing mixes with Default. Claude’s browser tools can use them in that profile. Saved passwords cannot come over: Safari’s are sealed to Apple’s apps, and Stoke has no password manager to put Chrome’s in. Some sites — Google accounts especially — tie a login to the browser it was made in and will ask you to sign in again.'
-          : 'Bookmarks come over from Chrome and the browsers built on it. Logins do not on Windows yet: Chrome seals them with app-bound encryption Stoke cannot open, so you stay signed in there and sign in again here. Saved passwords cannot come over — Stoke has no password manager to put them in.'}
+          : 'Logins come over as cookies into a browser profile of their own for each profile you pick. Because Chrome seals its cookies to itself, Stoke briefly launches your own browser in the background — against a copy of the profile, so your open windows usually stay put; if the files are in use it will ask you to close the browser first, and never forces it. Saved passwords cannot come over — Stoke has no password manager to put them in. Some sites — Google accounts especially — tie a login to the browser it was made in and will ask you to sign in again.'}
       </FieldHint>
 
       {sources === null ? (
@@ -346,13 +350,13 @@ function ImportFromBrowsers({ profiles }: { profiles: BrowserProfile[] }): React
             />
             <span>
               <span className="field-label">Logins</span>
-              {!isMac ? (
+              {!loginsAllowed ? (
                 <span className="field-hint" data-tone="warning">
-                  Not on Windows yet: Chrome seals its logins with app-bound encryption tied to its own signature,
-                  which Stoke cannot open. You stay signed in in Chrome, and sign in again here. Bookmarks still come
-                  over.
+                  Not in this build of Stoke: it stores cookies unencrypted on disk, where any program running as you
+                  — a Claude session&apos;s shell included — could read them without a prompt. Your browser keeps the
+                  same logins sealed, so they stay there until Stoke encrypts its own.
                 </span>
-              ) : loginsAllowed ? (
+              ) : isMac ? (
                 <FieldHint>
                   For Chrome, macOS asks whether <span className="mono">security</span> may use &ldquo;Chrome Safe
                   Storage&rdquo; — that is Stoke reading the key Chrome encrypts its cookies with. Press{' '}
@@ -360,11 +364,12 @@ function ImportFromBrowsers({ profiles }: { profiles: BrowserProfile[] }): React
                   key without asking, from then on.
                 </FieldHint>
               ) : (
-                <span className="field-hint" data-tone="warning">
-                  Not in this build of Stoke: it stores cookies unencrypted on disk, where any program running as you
-                  — a Claude session&apos;s shell included — could read them without a prompt. Chrome keeps the same
-                  logins behind your Keychain, so they stay there until Stoke encrypts its own.
-                </span>
+                <FieldHint>
+                  Chrome seals its cookies to itself, so Stoke briefly launches your own browser in the background — no
+                  window, against a copy of the profile — to hand the logins over decrypted, then closes it. Your open
+                  windows usually stay put. If your browser is holding the files, close it and import again; Stoke never
+                  forces it to quit. A login Chrome still will not decrypt is reported, not dropped silently.
+                </FieldHint>
               )}
             </span>
           </label>

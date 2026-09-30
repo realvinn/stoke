@@ -16,10 +16,12 @@ const execFileAsync = promisify(execFile)
  * Chrome, and the browsers built on the same Chromium profile layout.
  *
  * Their profile folders live at platform-specific roots (chromiumProfiles.ts).
- * Bookmarks import on macOS and Windows alike — same JSON. Logins are macOS-only
- * for now: there the cookie key is in the login Keychain and `security` hands it
- * over on a prompt; on Windows Chrome seals it with DPAPI + app-bound encryption,
- * so `read` brings only the bookmarks and says why the logins stayed behind.
+ * Bookmarks import on macOS and Windows alike — same JSON. Logins import on both
+ * now, by different means: on macOS the cookie key is in the login Keychain and
+ * `security` hands it over on a prompt (`readCookies` here); on Windows the key
+ * is DPAPI + app-bound-sealed, so Stoke has the browser decrypt its own jar and
+ * reads the plaintext back over CDP (`chromeCookiesWin.ts`), lazily loaded.
+ * Linux has neither yet, so there `read` brings only the bookmarks.
  */
 
 /** Long enough to answer a Keychain prompt; it waits on a person. */
@@ -27,9 +29,9 @@ const KEYCHAIN_TIMEOUT_MS = 120_000
 /** Rows folded between yields, so a big jar never holds the event loop (gotcha 40). */
 const ROWS_PER_TURN = 200
 
-/** Why Chrome's logins cannot come over on this OS. Bookmarks still do. */
+/** Why the logins could not come over on this OS. Bookmarks still do. */
 const OFF_PLATFORM_LOGINS =
-  'Logins cannot be imported from Chrome on Windows yet: Chrome seals them with app-bound encryption tied to its own signature. Your bookmarks still came over, and Chrome keeps you signed in there.'
+  'Logins cannot be imported from this browser here yet. Your bookmarks still came over, and the browser keeps you signed in there.'
 
 const rootOf = (b: ChromiumBrowser): string | null => chromiumRoot(b, process.platform, process.env, homedir())
 const browserOf = (profile: SourceProfile): ChromiumBrowser | undefined =>
@@ -269,12 +271,22 @@ export const chromeSource: BrowserSource = {
     const dir = profileDirOf(profile, b)
     const bookmarks = what.bookmarks ? await readBookmarks(dir) : []
     if (!what.cookies) return { cookies: [], skippedCookies: 0, bookmarks }
-    // The cookie key is only reachable on macOS; elsewhere the bookmarks stand
-    // and the logins are reported as left behind (see the file header).
-    if (process.platform !== 'darwin') return { cookies: [], skippedCookies: 0, bookmarks, cookieError: OFF_PLATFORM_LOGINS }
     try {
-      const { cookies, skipped } = await readCookies(b, dir)
-      return { cookies, skippedCookies: skipped, bookmarks }
+      if (process.platform === 'darwin') {
+        const { cookies, skipped } = await readCookies(b, dir)
+        return { cookies, skippedCookies: skipped, bookmarks }
+      }
+      if (process.platform === 'win32' && b.winExe) {
+        // The browser decrypts its own app-bound jar; Stoke reads the plaintext
+        // back. Loaded here, not at the top: `ws` and the launch code only ever
+        // matter for a Windows login import (gotcha 40).
+        const { readChromeCookiesWin } = await import('./chromeCookiesWin.ts')
+        const { cookies, skipped, cookieError } = await readChromeCookiesWin(b, dir)
+        return { cookies, skippedCookies: skipped, bookmarks, cookieError }
+      }
+      // Linux, or a Windows browser whose binary Stoke does not know: bookmarks
+      // stand, logins are reported left behind.
+      return { cookies: [], skippedCookies: 0, bookmarks, cookieError: OFF_PLATFORM_LOGINS }
     } catch (err) {
       return { cookies: [], skippedCookies: 0, bookmarks, cookieError: err instanceof Error ? err.message : String(err) }
     }

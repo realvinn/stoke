@@ -148,3 +148,129 @@ export function chromeRowToCookie(
   if (host.startsWith('.')) cookie.domain = host
   return cookie
 }
+
+/**
+ * A cookie as CDP hands it back (`Storage.getCookies`/`Network.getAllCookies`).
+ *
+ * On Windows the value is ALREADY decrypted — Chrome unsealed its own v20
+ * (DPAPI + app-bound) jar and CDP returns plaintext, HttpOnly included. So the
+ * Windows path never touches `decryptChromeValue`; it copies the profile, asks
+ * the user's own `chrome.exe` to open it headless, and reads these objects out.
+ * Only the mapping is left, and it is the same six rules as the SQLite row
+ * (gotcha 107), sourced from CDP fields instead of columns.
+ */
+export interface CdpCookie {
+  name: string
+  value: string
+  /** With a leading dot for a Domain= cookie, without for a host-only one — as Chrome's SQLite host_key. */
+  domain: string
+  path: string
+  secure: boolean
+  httpOnly: boolean
+  /** True for a cookie with no persistent expiry; `expires` is then -1. */
+  session: boolean
+  /** Unix seconds, or -1 for a session cookie. */
+  expires: number
+  /** CDP spells it `Strict`/`Lax`/`None`; absent is unspecified. */
+  sameSite?: 'Strict' | 'Lax' | 'None'
+  /**
+   * Present for a partitioned (CHIPS) cookie — skipped, since `cookies.set` has
+   * no partition key (gotcha 107). CDP gives it as a string or `{ topLevelSite }`.
+   */
+  partitionKey?: unknown
+}
+
+const CDP_SAME_SITE: Record<string, ImportedCookie['sameSite']> = {
+  None: 'no_restriction',
+  Lax: 'lax',
+  Strict: 'strict'
+}
+
+/**
+ * One CDP cookie into a cookie Electron will accept, or why it is left behind.
+ *
+ * Mirrors `chromeRowToCookie` — the value is already plaintext, so the only
+ * difference is the source shape: `session`/`expires` for the 30-day rule,
+ * `domain`'s leading dot for host-only, `partitionKey` for CHIPS, the string
+ * `sameSite`. Kept a pure function so `verify:chrome-import` holds it on
+ * synthetic CDP objects, with no browser anywhere.
+ */
+export function cdpCookieToImported(c: CdpCookie, nowSeconds: number): ImportedCookie | SkipReason {
+  if (c.partitionKey !== undefined && c.partitionKey !== null && c.partitionKey !== '') return 'partitioned'
+  if (typeof c.value !== 'string') return 'undecryptable'
+  const host = String(c.domain ?? '')
+  const name = String(c.name ?? '')
+  if (!host || !/^[\w.\-[\]:]+$/.test(host.replace(/^\./, ''))) return 'invalid'
+  const secure = c.secure === true
+  const persistent = c.session !== true && typeof c.expires === 'number' && c.expires > 0
+  const expires = persistent ? Math.floor(c.expires) : nowSeconds + SESSION_COOKIE_DAYS * 86_400
+  if (expires <= nowSeconds) return 'expired'
+  let sameSite = (c.sameSite && CDP_SAME_SITE[c.sameSite]) ?? 'unspecified'
+  // SameSite=None without Secure is refused by Chromium's own setter.
+  if (sameSite === 'no_restriction' && !secure) sameSite = 'unspecified'
+  const path = c.path && c.path.startsWith('/') ? c.path : '/'
+  const cookie: ImportedCookie = {
+    url: `${secure ? 'https' : 'http'}://${host.replace(/^\./, '')}${path}`,
+    name,
+    value: c.value,
+    path,
+    secure,
+    httpOnly: c.httpOnly === true,
+    expirationDate: expires,
+    sameSite
+  }
+  if (host.startsWith('.')) cookie.domain = host
+  return cookie
+}
+
+/**
+ * Whether an App Paths registry hit actually belongs to THIS browser.
+ *
+ * Chrome Stable, Chrome Beta and Chromium all ship an exe named `chrome.exe`,
+ * and Chrome's installer writes ONE shared `App Paths\chrome.exe` value for
+ * whichever channel installed last. So a lookup by exe NAME can hand back a
+ * different channel's binary — and launching THAT against this channel's profile
+ * decrypts nothing, because the app-bound path check is per-binary (each
+ * browser's own signed exe, gotcha 130). Accept the registry result only when it
+ * ends with one of this browser's own install subpaths (case-insensitively,
+ * separators normalised). With no known subpaths there is nothing to check it
+ * against, so it is accepted as the only lead there is.
+ */
+export function appPathMatchesBrowser(exePath: string, installSubpaths: string[]): boolean {
+  if (installSubpaths.length === 0) return true
+  const lower = exePath.toLowerCase().replace(/\//g, '\\')
+  return installSubpaths.some((s) => lower.endsWith(s.toLowerCase()))
+}
+
+/** One cookie's identity across the two views: `${host_or_domain}\t${name}`. */
+export function cookieIdentity(hostOrDomain: string, name: string): string {
+  return `${hostOrDomain}\t${name}`
+}
+
+/**
+ * How many app-bound (v20) cookies the browser did NOT hand back over CDP.
+ *
+ * The Windows reader launches the browser against a copy and takes whatever
+ * `Storage.getCookies` returns as the whole answer — but a cookie the browser
+ * cannot decrypt when it loads the store is silently DROPPED from that list. It
+ * never surfaces as a `skipped` either: CDP only ever returns cookies it already
+ * decrypted, so `cdpCookieToImported`'s `undecryptable` branch (a non-string
+ * value) can never fire for a real one. The copied DB is therefore the ground
+ * truth: every v20 row whose `(host_key, name)` is absent from what CDP returned
+ * is a login that stayed sealed. Counting them is the only way to turn a silent
+ * 0-login "success" — the exact failure a non-default `--user-data-dir` can
+ * cause, since Chrome may refuse app-bound decryption there — into an honest
+ * error. v10 rows are plain DPAPI and out of scope; a legitimately dropped one
+ * (expired, GC'd on load) is not counted, so the signal is app-bound only.
+ */
+export function sealedCookiesMissed(
+  rows: { host_key: string; name: string; tag: string }[],
+  cdpIdentities: Set<string>
+): number {
+  let sealed = 0
+  for (const r of rows) {
+    if (r.tag !== 'v20') continue
+    if (!cdpIdentities.has(cookieIdentity(r.host_key, r.name))) sealed++
+  }
+  return sealed
+}

@@ -51,8 +51,10 @@ on:
       - 'src/main/portableSwap.ts'
       - 'src/main/portableUpdate.ts'
       - 'src/main/selfUpdate.ts'
+      - 'src/main/browserImport/**'
       - 'scripts/serve-install.mjs'
       - 'scripts/probe-clis.mts'
+      - 'scripts/probe/**'
       - 'scripts/windows-e2e.mts'
       - 'scripts/winget.mjs'
 
@@ -680,6 +682,110 @@ jobs:
             release/*.zip
             release/latest*.yml
             ${{ runner.temp }}/swap/*
+
+  # The Windows Chrome login-import MECHANISM, end to end: locate chrome.exe,
+  # copy the profile, launch chrome.exe headless against the copy, read
+  # Storage.getCookies (plaintext, HttpOnly included) over CDP, map and assert.
+  # This job seeds a throwaway profile on the runner's real Chrome, closes it,
+  # then runs Stoke's own reader (chromeCookiesWin.ts) and asserts the cookie
+  # comes back decrypted. IMPORTANT — what this does NOT prove: the seed writes to
+  # a NON-default --user-data-dir, where Chrome turns app-bound encryption OFF, so
+  # the seeded cookie is v10 (plain DPAPI), not v20. The cookie-prefix step records
+  # the tag; a non-v20 tag means the app-bound (v20) seal was NOT exercised here.
+  # Decrypting a v20 cookie from a copied dir is still UNPROVEN (gotcha 130); the
+  # reader now reports any v20 row Chrome drops rather than reading short silently.
+  # windows-latest ships Chrome, its path in the App Paths registry key.
+  chrome-import:
+    name: Chrome login import · x64
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+
+      - name: Record the runner's Chrome version and path
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $chrome = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe' -ErrorAction SilentlyContinue).'(default)'
+          if (-not $chrome) { $chrome = (Get-ItemProperty 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe' -ErrorAction SilentlyContinue).'(default)' }
+          if (-not $chrome -or -not (Test-Path $chrome)) { throw 'no chrome.exe on this runner' }
+          "CHROME_EXE=$chrome" >> $env:GITHUB_ENV
+          $ver = (Get-Item $chrome).VersionInfo.ProductVersion
+          "Chrome: $chrome ($ver)"
+          "CHROME_VERSION=$ver" >> $env:GITHUB_ENV
+
+      # Stoke's own locator must find that same Chrome from the registry, and
+      # never a WindowsApps Store alias (gotcha 99).
+      - name: Stoke's locator finds Chrome, not a Store alias
+        shell: pwsh
+        run: |
+          node scripts/windows-e2e.mts chrome-locate chrome
+          if ($LASTEXITCODE -ne 0) { throw 'the locator did not find a real Chrome' }
+
+      # Seed a throwaway profile: drive the runner's own Chrome, headless, to a
+      # local login server that returns an HttpOnly cookie — so Chrome stores it
+      # the way it stores any login, encrypted with its own key. Close Chrome
+      # gracefully (chrome-seed.mjs Browser.close) so the cookie is flushed.
+      - name: Seed a throwaway Chrome profile with a login cookie, then close Chrome
+        shell: pwsh
+        env:
+          PORT: '8799'
+          SID: probe-sid-${{ github.run_id }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          "SID=$env:SID" >> $env:GITHUB_ENV
+          Start-Process -FilePath node -ArgumentList 'scripts/probe/login-server.mjs' -WindowStyle Hidden `
+            -RedirectStandardOutput (Join-Path $env:RUNNER_TEMP 'login.log') -RedirectStandardError (Join-Path $env:RUNNER_TEMP 'login.err')
+          $ok = $false
+          for ($i = 0; $i -lt 60; $i++) {
+            try { $null = Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:$env:PORT/whoami"; $ok = $true; break } catch { Start-Sleep -Milliseconds 250 }
+          }
+          if (-not $ok) { Get-Content (Join-Path $env:RUNNER_TEMP 'login.err') -ErrorAction SilentlyContinue; throw 'login server never came up' }
+          $udd = Join-Path $env:RUNNER_TEMP 'seed-udd'
+          # A local var, not $env:SEED_PROFILE: GITHUB_ENV only reaches LATER steps,
+          # so the same step still reads it null. (Not $profile — that name is taken.)
+          $seedProfile = Join-Path $udd 'Default'
+          "SEED_PROFILE=$seedProfile" >> $env:GITHUB_ENV
+          # Start-Process does not quote array elements: embed quotes for the path.
+          $p = Start-Process -FilePath $env:CHROME_EXE -PassThru -ArgumentList @(
+            '--headless=new', "--user-data-dir=`"$udd`"", '--profile-directory=Default',
+            '--remote-debugging-port=9223', '--no-first-run', '--no-default-browser-check', '--disable-sync',
+            "http://127.0.0.1:$env:PORT/seed")
+          node scripts/probe/chrome-seed.mjs 9223
+          if ($LASTEXITCODE -ne 0) { throw 'the cookie was never seeded' }
+          if (-not $p.WaitForExit(30000)) { throw 'Chrome did not exit after Browser.close' }
+          # Record what Chrome wrote: v20 is app-bound, v10 plain DPAPI. In a
+          # non-default --user-data-dir Chrome writes v10, so the app-bound seal is
+          # NOT exercised here — print that plainly so a green run is not misread as
+          # a v20 proof. Either tag must still hand back decrypted; do not gate on it
+          # (a hard fail on v10 would be permanently red on the non-default dir).
+          $db = Join-Path $seedProfile 'Network\Cookies'
+          if (-not (Test-Path $db)) { $db = Join-Path $seedProfile 'Cookies' }
+          $copy = Join-Path $env:RUNNER_TEMP 'cookies-peek.sqlite'
+          Copy-Item $db $copy -Force
+          $tags = node scripts/probe/cookie-prefix.mjs $copy
+          $tags
+          if ($tags -match 'tag=v20') {
+            "COOKIE SEAL: v20 (app-bound) — the seal WAS exercised on this run"
+          } else {
+            "COOKIE SEAL: not v20 — Chrome wrote plain DPAPI in a non-default dir, so the app-bound (v20) seal was NOT exercised (gotcha 130). The mechanism is proven; the v20 decrypt-in-a-copy is not."
+          }
+
+      # The reader under test: it copies the seeded profile, launches the runner's
+      # Chrome headless against the copy, and reads the cookie back over CDP. The
+      # value must come back decrypted — this proves the mechanism (v10 here; the
+      # v20 seal is unexercised, see the seed step).
+      - name: Stoke reads the seeded cookie back, decrypted
+        shell: pwsh
+        run: |
+          node scripts/windows-e2e.mts chrome-read "$env:SEED_PROFILE" "$env:CHROME_EXE" sid "$env:SID"
+          if ($LASTEXITCODE -ne 0) { throw 'the seeded cookie did not come back decrypted' }
+          "read back the seeded login on Chrome $env:CHROME_VERSION"
 
   winget:
     name: winget manifest · x64

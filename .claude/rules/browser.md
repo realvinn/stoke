@@ -134,6 +134,37 @@ part of this change.
 > a `cookieError` saying so, and the Settings panel disables the Logins box off macOS (`canLogins`).
 > Safari stays macOS-only. Untested on real Windows (no Windows round has run; CLAUDE.md).
 
+> **Windows logins import path, 2026-09-30 (supersedes the note above).** Stoke does not crack the
+> seal — it has the browser decrypt its own jar. `chromeCookiesWin.ts` (lazy, gotcha 40) locates the
+> browser's real `.exe` (App Paths registry then a standard install dir, never a WindowsApps alias —
+> gotcha 99, and the App Paths hit is accepted only when it is THIS browser's own binary, since
+> Stable/Beta/Chromium share `chrome.exe` under one key — `appPathMatchesBrowser`), copies `Local State`
+> + the profile's cookie DB into a throwaway `--user-data-dir`, launches that `.exe` HEADLESS against
+> the copy with a loopback debug port, and reads `Storage.getCookies` over CDP — which returns plaintext,
+> HttpOnly included. The INTENT is that the ABE key is bound to the machine, the Windows user and the
+> exe path, not the profile dir, so the copy still decrypts; the copy is also why Chrome 136+ (which
+> ignores the debug flag on the DEFAULT dir) still allows debugging.
+> Values map to `ImportedCookie` by `cdpCookieToImported`, the same six rules as the SQLite path (this
+> file, above). `canLogins` is on for Windows once `cookieStoreEncrypted()` holds (the fuse, gotcha 108).
+> The user's live browser is left running — a copy needs no close; a LOCKED copy (`ProfileLockedError`)
+> asks the user to close it, and Stoke never force-kills it. The child is always killed and the copy
+> always deleted (a decryptable jar must not linger). Values never cross IPC.
+>
+> **What is proven, and what is NOT (be honest — this is the load-bearing claim).** Only the v10 case
+> is proven: `windows.yml`'s `chrome-import` job seeds a login on the runner's own Chrome, closes it,
+> and Stoke's reader hands it back decrypted — but the seed writes to a NON-default `--user-data-dir`,
+> where Chrome turns app-bound encryption OFF, so the seeded cookie is `v10` (plain DPAPI), NOT `v20`.
+> The run log says `sid  len=84  tag=v10` on system Chrome 153.0.8010.53. So the mechanism (locate,
+> copy, launch, CDP read, map) is proven, but **that a v20 app-bound cookie decrypts when the browser
+> is launched against a copied non-default dir is UNPROVEN** — Chrome's own 136 note says a non-standard
+> data directory "uses a different encryption key," which points the other way. Because of that,
+> `readChromeCookiesWin` no longer trusts `Storage.getCookies` as the whole answer: it reads the copied
+> DB first (`readCookieTags`), and any `v20` row the browser does NOT hand back is counted
+> (`sealedCookiesMissed`) and surfaced as a `cookieError` — a silent 0-login "success" (the exact shape
+> a failed app-bound decrypt takes, since Chrome drops what it cannot decrypt with no error) can no
+> longer look like a profile with no logins. Until a v20 read-back is proven on real Windows, treat
+> Windows logins as best-effort: the ones that come over are real, and the ones that do not are reported.
+
 **Two grants reach further than the import.** The Keychain prompt names `security`: Allow is the
 safe answer, Always Allow puts `security` on the item's access list for good, after which any
 program can read Chrome's key silently — the UI says which to press. Full Disk Access is granted to
@@ -147,3 +178,39 @@ profiles, 4 cookies each with host-only/domain/samesite/session all as above, th
 partitioned one skipped, a `javascript:` bookmark refused, a re-import reusing both profiles, a double
 press refused. No real browser data or Keychain item has been read by any test.
 
+
+## 130. The cookie DB's relative path varies by browser build, so the copy must mirror the source's
+
+**When you launch a browser's own binary against a COPY of its profile to decrypt cookies
+(`chromeCookiesWin.ts`), the cookie DB in the copy must sit at the SAME relative path it had in the
+source.** Current Chrome keeps it at `<Profile>/Network/Cookies`; other builds — and Chrome as
+recently as the one on this Mac — keep it at `<Profile>/Cookies`. The relaunched browser is the same
+build as the one that wrote it, so it reads from the same place; put the DB under the wrong subpath
+and the browser starts clean, `Storage.getCookies` returns an EMPTY list, and there is **no error** —
+it looks exactly like a profile with no logins. The first draft always copied to `Network/Cookies`
+and read 0 cookies from a profile that plainly had one. So `copyProfile` detects which of the two the
+source uses (`Network/Cookies` first, else `Cookies`) and mirrors that exact relative path into the
+copy, creating the parent dir. Measured 2026-09-30 driving Google Chrome on macOS against a throwaway
+profile: it stored the seeded cookie at `Default/Cookies` (v10), and the reader returned it decrypted
+only once the copy mirrored that path. The same shape reaches any "copy a profile and relaunch the
+browser" scheme — the cookie store's location is the browser's to decide, not yours.
+
+> **Two more, 2026-09-30, from a review of this feature.**
+> - **The App Paths registry key is shared by every channel that names its exe the same.** Chrome
+>   Stable, Chrome Beta and Chromium all ship `chrome.exe`, and Chrome's installer writes ONE
+>   `HKLM/HKCU\...\App Paths\chrome.exe` value for whichever channel installed last. So looking the exe
+>   up by name (`appPathsExe`) can hand back a DIFFERENT channel's binary; launched against this
+>   channel's profile it decrypts nothing, because the app-bound path check is per-binary. `locateChromiumExe`
+>   now accepts the registry hit only when it ends with one of this browser's own `INSTALL_SUBPATHS`
+>   (`appPathMatchesBrowser`, case-insensitive), and otherwise falls through to the per-channel install dirs.
+> - **`Storage.getCookies` is not the whole answer — a row the browser cannot decrypt is dropped from
+>   it silently.** So a failed app-bound decrypt (which is exactly what a copied NON-default dir may
+>   cause: Chrome's 136 note says a non-standard data dir "uses a different encryption key," and the CI
+>   seed proves Chrome writes `v10`, not `v20`, in a non-default dir) returns an EMPTY cookie list with
+>   no error — indistinguishable from a profile with no logins, and never a `skipped` (CDP only returns
+>   cookies it already decrypted, so `cdpCookieToImported`'s `undecryptable` branch is dead for a real
+>   one). `readChromeCookiesWin` now reads the copied DB's `(host_key, name, tag)` first (`readCookieTags`)
+>   and reports every `v20` row absent from the CDP result as a `cookieError` (`sealedCookiesMissed`).
+>   **The v20 read-back itself is still UNPROVEN on real Windows** — the CI job only ever exercised `v10`
+>   (see the honest-proof paragraph under gotcha 107). Treat Windows logins as best-effort until a v20
+>   cookie is shown decrypting from a copied dir.

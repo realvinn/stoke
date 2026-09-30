@@ -8,12 +8,17 @@
  */
 import { createCipheriv, createHash } from 'node:crypto'
 import {
+  appPathMatchesBrowser,
   CHROME_EPOCH_OFFSET,
+  cdpCookieToImported,
   chromeKey,
   chromeRowToCookie,
   chromeTimeToUnix,
+  cookieIdentity,
   decryptChromeValue,
+  sealedCookiesMissed,
   SESSION_COOKIE_DAYS,
+  type CdpCookie,
   type ChromeCookieRow
 } from '../src/main/browserImport/chromeCookies.ts'
 import { CHROMIUM_BROWSERS, chromiumRoot } from '../src/main/browserImport/chromiumProfiles.ts'
@@ -155,6 +160,148 @@ check(
   })(),
   [true, false, 'strict']
 )
+
+console.log('\nCDP cookies into cookies (the Windows path: Chrome already decrypted them)')
+const cdp = (over: Partial<CdpCookie>): CdpCookie => ({
+  name: 'sid',
+  value: 'v',
+  domain: '.example.com',
+  path: '/',
+  secure: true,
+  httpOnly: true,
+  session: false,
+  expires: NOW + 86_400,
+  sameSite: 'Lax',
+  ...over
+})
+check('a Domain= cookie keeps its dot and its url has none', cdpCookieToImported(cdp({}), NOW), {
+  url: 'https://example.com/',
+  name: 'sid',
+  value: 'v',
+  path: '/',
+  secure: true,
+  httpOnly: true,
+  expirationDate: NOW + 86_400,
+  sameSite: 'lax',
+  domain: '.example.com'
+})
+{
+  const c = cdpCookieToImported(cdp({ domain: 'app.example.com', path: '/a' }), NOW)
+  check(
+    'a host-only CDP cookie (no leading dot) gets NO domain',
+    typeof c === 'object' ? [c.domain, c.url] : c,
+    [undefined, 'https://app.example.com/a']
+  )
+}
+check(
+  'CDP sameSite None/Lax/Strict/absent map as Chromium sets them',
+  (['None', 'Lax', 'Strict', undefined] as const).map((s) => {
+    const c = cdpCookieToImported(cdp({ sameSite: s }), NOW)
+    return typeof c === 'object' ? c.sameSite : c
+  }),
+  ['no_restriction', 'lax', 'strict', 'unspecified']
+)
+{
+  const c = cdpCookieToImported(cdp({ sameSite: 'None', secure: false }), NOW)
+  check(
+    'SameSite=None without Secure becomes unspecified, over http',
+    typeof c === 'object' ? [c.sameSite, c.url.slice(0, 5)] : c,
+    ['unspecified', 'http:']
+  )
+}
+{
+  const c = cdpCookieToImported(cdp({ session: true, expires: -1 }), NOW)
+  check(
+    'a session CDP cookie is carried for SESSION_COOKIE_DAYS, not lost at the first quit',
+    typeof c === 'object' ? c.expirationDate : c,
+    NOW + SESSION_COOKIE_DAYS * 86_400
+  )
+}
+check('an expired persistent CDP cookie is left behind', cdpCookieToImported(cdp({ expires: NOW - 1 }), NOW), 'expired')
+check(
+  'a partitioned CDP cookie (string partitionKey) is skipped',
+  cdpCookieToImported(cdp({ partitionKey: 'https://embedder.test' }), NOW),
+  'partitioned'
+)
+check(
+  'a partitioned CDP cookie (object partitionKey) is skipped too',
+  cdpCookieToImported(cdp({ partitionKey: { topLevelSite: 'https://embedder.test' } }), NOW),
+  'partitioned'
+)
+{
+  const c = cdpCookieToImported(cdp({ path: '' }), NOW)
+  check('an empty CDP path is /', typeof c === 'object' ? c.path : c, '/')
+}
+check('a CDP host with junk in it is refused', cdpCookieToImported(cdp({ domain: 'a b/c' }), NOW), 'invalid')
+{
+  const c = cdpCookieToImported(cdp({ httpOnly: true, value: 'plaintext-from-cdp' }), NOW)
+  check(
+    'the decrypted value and HttpOnly flag carry straight through',
+    typeof c === 'object' ? [c.value, c.httpOnly] : c,
+    ['plaintext-from-cdp', true]
+  )
+}
+
+console.log('\nWindows: the App Paths hit must be THIS browser (chrome.exe is shared)')
+{
+  // Chrome Stable, Beta and Chromium all name their exe chrome.exe, and the
+  // installer writes one shared App Paths\chrome.exe key — so a registry hit can
+  // belong to another channel. Accept it only when it ends with a browser's own
+  // install subpath (gotcha 130).
+  const stable = ['Google\\Chrome\\Application\\chrome.exe']
+  const beta = ['Google\\Chrome Beta\\Application\\chrome.exe']
+  check(
+    "Stable's own exe matches Stable",
+    appPathMatchesBrowser('C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', stable),
+    true
+  )
+  check(
+    "Stable's exe is REJECTED for Beta (the shared-key trap)",
+    appPathMatchesBrowser('C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', beta),
+    false
+  )
+  check(
+    "Beta's own exe matches Beta",
+    appPathMatchesBrowser('C:\\Program Files\\Google\\Chrome Beta\\Application\\chrome.exe', beta),
+    true
+  )
+  check('the match is case-insensitive', appPathMatchesBrowser('C:\\PROGRAM FILES\\GOOGLE\\CHROME\\APPLICATION\\CHROME.EXE', stable), true)
+  check('a forward-slash path still matches', appPathMatchesBrowser('C:/Program Files/Google/Chrome/Application/chrome.exe', stable), true)
+  check('with no known subpaths there is nothing to check, so it is accepted', appPathMatchesBrowser('C:\\anywhere\\x.exe', []), true)
+  check(
+    'and CHROMIUM_BROWSERS really do share chrome.exe across Stable/Beta/Chromium',
+    ['chrome', 'chrome-beta', 'chromium'].map((id) => CHROMIUM_BROWSERS.find((b) => b.id === id)?.winExe),
+    ['chrome.exe', 'chrome.exe', 'chrome.exe']
+  )
+}
+
+console.log('\nWindows: a v20 login the browser did not hand back is reported, not lost')
+{
+  // The reader takes Storage.getCookies as the whole answer; a v20 (app-bound)
+  // row the browser could not decrypt is silently dropped from that list and is
+  // never a `skipped`. sealedCookiesMissed counts those against the copied DB.
+  const rows = [
+    { host_key: '.example.com', name: 'sid', tag: 'v20' },
+    { host_key: '.example.com', name: 'pref', tag: 'v10' },
+    { host_key: 'app.test', name: 'tok', tag: 'v20' }
+  ]
+  check(
+    'both v20 rows absent from CDP → 2 sealed',
+    sealedCookiesMissed(rows, new Set()),
+    2
+  )
+  check(
+    'one v20 returned, one not → 1 sealed (v10 is never counted)',
+    sealedCookiesMissed(rows, new Set([cookieIdentity('.example.com', 'sid')])),
+    1
+  )
+  check(
+    'every v20 returned → 0 sealed, even with the v10 missing',
+    sealedCookiesMissed(rows, new Set([cookieIdentity('.example.com', 'sid'), cookieIdentity('app.test', 'tok')])),
+    0
+  )
+  check('no v20 rows at all → 0 sealed', sealedCookiesMissed([{ host_key: 'a.com', name: 'x', tag: 'v10' }], new Set()), 0)
+}
 
 console.log('\nprofile roots, per platform')
 {
