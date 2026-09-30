@@ -635,30 +635,24 @@ await step('typing reaches the session, and its hooks land', async () => {
 
 /**
  * What the descent fallback stands on here, measured beside it so a red
- * above says WHY (gotcha 92): the query `readProcessTable` runs, timed twice
- * against its 5 s deadline, PowerShell's own start-up, the same query asking
- * for two properties only, and the stub's ancestry by name. Printed, never
- * checked — the checks above are what Stoke did with it.
+ * above says WHY (gotcha 92): the CIM query `readProcessTable` runs (with
+ * each process's Name added), timed against its 5 s deadline, and the stub's
+ * ancestry from it. One query: on windows-11-arm it took 23-28 s where
+ * windows-latest took under 1 s (runs 36706319439), and the -Property
+ * variant and PowerShell's own start-up (0.2 s) were measured there too and
+ * explain none of it. Printed, never checked — the checks above are what
+ * Stoke did with it.
  */
 function windowsProcessTableReport(stubPid: number): void {
-  const ps = (command: string): { ms: number; out: string; status: number | null; error: string } => {
-    const t0 = Date.now()
-    const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], {
-      encoding: 'utf8',
-      timeout: 60_000,
-      windowsHide: true,
-      maxBuffer: 16 * 1024 * 1024
-    })
-    return { ms: Date.now() - t0, out: String(r.stdout ?? ''), status: r.status, error: r.error ? r.error.message : '' }
-  }
-  const row = (p: string): string => `"$($_.ProcessId) $($_.ParentProcessId)${p}"`
-  const stokes = ps(`Get-CimInstance Win32_Process | ForEach-Object { ${row('')} }`)
-  const again = ps(`Get-CimInstance Win32_Process | ForEach-Object { ${row('')} }`)
-  const bare = ps('exit 0')
-  const two = ps(`Get-CimInstance -ClassName Win32_Process -Property ProcessId,ParentProcessId | ForEach-Object { ${row('')} }`)
-  const named = ps(`Get-CimInstance Win32_Process | ForEach-Object { ${row(' $($_.Name)')} }`)
+  const t0 = Date.now()
+  const r = spawnSync(
+    'powershell.exe',
+    ['-NoProfile', '-NonInteractive', '-Command', 'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.ParentProcessId) $($_.Name)" }'],
+    { encoding: 'utf8', timeout: 60_000, windowsHide: true, maxBuffer: 16 * 1024 * 1024 }
+  )
+  const ms = Date.now() - t0
   const rows = new Map<number, { ppid: number; name: string }>()
-  for (const line of named.out.split(/\r?\n/)) {
+  for (const line of String(r.stdout ?? '').split(/\r?\n/)) {
     const m = /^(\d+) (\d+) (.*)$/.exec(line.trim())
     if (m) rows.set(Number(m[1]), { ppid: Number(m[2]), name: m[3] })
   }
@@ -667,12 +661,10 @@ function windowsProcessTableReport(stubPid: number): void {
     chain.push(`${at} ${rows.get(at)?.name ?? '?'}`)
     at = rows.get(at)?.ppid
   }
-  const lines = (s: string): number => s.split(/\r?\n/).filter((l) => l.trim()).length
   console.log(
-    `  (process table, readProcessTable's own query: ${stokes.ms} ms, then ${again.ms} ms — its deadline is 5000 ms; ` +
-      `${lines(stokes.out)} rows, exit ${stokes.status}${stokes.error ? `, ${stokes.error}` : ''})`
+    `  (process table, readProcessTable's CIM query: ${ms} ms — its deadline is 5000 ms; ${rows.size} rows, exit ${r.status}` +
+      `${r.error ? `, ${r.error.message}` : ''})`
   )
-  console.log(`  (powershell.exe starting and exiting: ${bare.ms} ms; the query with -Property ProcessId,ParentProcessId: ${two.ms} ms)`)
   console.log(`  (the stub's ancestry: ${chain.join(' <- ')})`)
 }
 
