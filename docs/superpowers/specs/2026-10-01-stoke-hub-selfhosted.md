@@ -412,6 +412,21 @@ A hub that impersonates E to N fails the same way: E's keys are inside the code.
 expired request, or three mismatched attempts in an hour end the pair; every request shows on
 every active device, so an unexpected one is visible.
 
+> **Built 2026-10-01, after review of the hub client.** Step 4's "the owner confirms they match"
+> must happen on N as well as on E. The first client let N finish on its own once the hub said
+> `approved`; then a hub that plays E — a fake E in a list it built, or any list N had no anchor in —
+> needs no collision at all: the owner's real devices never show the request, and N joins the hub's
+> vault. N now shows "The codes match" / "They don't" and takes nothing, approved or not, until the
+> owner presses the first (`joinConfirm`); the second refuses the pair. The approver the hub names
+> is checked against the verified list in every state that computes the code, `revealed` included.
+> And a device counts itself in a vault only where the served chain holds its own **anchor**: the
+> link of the entry it entered through (its genesis, the `add` it accepted after confirming the
+> code, or its Kit `add`), kept in hub-state.json and dropped only by signing out. `verifyChain`
+> accepts any self-signed genesis, so without the anchor a hub could answer a device's FIRST
+> sign-in with a list of its own — its genesis, then an `add` of the keys the device had just
+> posted — and a vault key of its choosing; the device would upload every portable key under it. A
+> list that names the device without its anchor is the `chain` alarm.
+
 ### 4.5 The Recovery Kit
 
 Generated with the account's genesis. 16 random bytes shown as `RK1-` + 26 Crockford base32
@@ -423,6 +438,12 @@ symbol catches a typo before any crypto runs), verify the chain, fetch the recov
 `VK_e` against the chain's `vkCommits[e]`, sign an `add` for yourself with `signer: 'recovery'`,
 and then **rotate** (a Kit that has been typed may have been seen). Lose every device and the Kit and the data is gone; the panel says so in those
 words, as the old design's §6.6 did.
+
+> **Built 2026-10-01, after review of the hub client.** The rotate is not advice: `recover` checks
+> the typed Kit, opens its wrap against the commitment, then makes a NEW Kit and shows it, and only
+> when that is confirmed posts the `add` (signed by the typed Kit) and a `rotate` naming the new Kit
+> in one append (`postRecovery`), with wraps for the new epoch only — so the typed Kit never opens an
+> epoch the device is in, and nothing is posted if the owner walks away.
 
 ### 4.6 Revocation rotates the vault key
 
@@ -443,6 +464,19 @@ SSH key off its hosts. Claim-before-await (gotcha 20): the hub serialises chain 
 > with the password. The client asks for the Kit at revoke (typed, used once), or makes a new Kit
 > and posts `revoke` + `rotate` in one append (wraps for the final epoch only), shown and confirmed
 > before anything is posted.
+>
+> **And a typed Kit is useless against a device that has had it** (review of the hub client,
+> 2026-10-01): the device that made the current Kit (it was shown there; "Save as file…" wrote it
+> there), any device added with it, and any device that had it typed to remove another can open the
+> new epoch's recovery wrap as a pending session with the password. `kitHandlers` reads them off
+> the verified chain; removing one of them requires a new Kit, and the panel says why.
+>
+> **Only the current epoch is applied.** Every epoch after 1 was opened by a revoke or a rotate, to
+> shut someone out, and whoever was shut out keeps the older keys: an item sealed under an older
+> epoch may be a rollback the hub kept or a forgery by a removed device, and rollback detection is
+> per item id, which changes with the epoch. So `pull` never applies one; an older item this device
+> had agreed on value for value is re-sealed forward (`resealStale`: the part of a re-seal a revoker
+> never finished), and older vault keys are dropped once every record is under the current epoch.
 
 ### 4.7 Item sealing, and why the path is bound through an id
 
@@ -525,6 +559,15 @@ appended under a free local `host-N` (`freeHostId`); `keyEnrolled` stays the dev
 tombstone removes. T2 values overlay last, only for portable secret paths, and a tombstone empties
 the key. The result is raw; the client runs `hydrateSettings` and writes through `setSettings` like
 any other change, so gotcha 63's coalescing and the secret vault apply unchanged.
+
+> **Built 2026-10-01, after review of the hub client: what runs code is held.** An incoming item
+> that would change what runs on the device — a new or changed MCP stdio program, its arguments or
+> a new variable name, a new value for a stdio server's variable, a new or changed MCP URL, a host
+> told to run a command — is not applied (`heldChangesFor`); the local value stays, and Settings ›
+> Account & sync lists it with the command spelled out (a variable named, never shown) and "Apply on
+> this computer" / "Keep this computer's". Anyone who can seal an item — a device before it is
+> removed, which removing undoes nothing of — could otherwise run a command at every device's next
+> session. The revoke report names what synced runs something, for the owner to check.
 
 ### 5.4 SSH private keys (T4): transfer by explicit choice
 
@@ -664,6 +707,14 @@ the chain as a pending session, could republish first with wraps of its own for 
 a junk Kit wrap. So the republishing device re-wraps `VK_e` to each device active at that epoch
 and re-posts the Kit's wrap, which it cannot make (it has no RK) — the client keeps a copy of the
 Kit's wrap for every epoch it holds (ciphertext, fetched beside its own) for exactly this.
+
+> **Built 2026-10-01 (`republish`).** The first client offered only "take the hub's copy", which
+> dropped the pin and accepted whatever list came next — a way for a hub to reset a device's trust
+> by serving a shorter list. Republish takes the served list only if it is an earlier copy of the
+> device's own, link for link (`isPrefixOf`), posts back the entries it lacks with the wraps the
+> hub lost (every device's and the Kit's copy when a lost entry opened an epoch; otherwise only the
+> devices it lost), then puts this device's value over any item the hub serves older than the
+> device has seen, and re-uploads what the hub lost altogether. Any other list is refused.
 
 ### 7.4 What the owner runs (none of this is automated or deployed by this change)
 

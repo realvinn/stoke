@@ -16,6 +16,8 @@ paths:
   - "hub/**/*.ts"
   - "hub/build.mjs"
   - "scripts/verify-hub-server.mts"
+  - "scripts/verify-hub-client.mts"
+  - "src/renderer/src/components/AccountSyncSettings.tsx"
 ---
 
 # Anywhere in the main process
@@ -419,6 +421,25 @@ log's redaction was untested. A suite that passes first time has not yet shown i
 > refused B's pair and B's own pairing failed outright. Wraps got the same rule in the same review:
 > `chainAppend` takes them only from a device active before or after the entries, by id and key.
 
+> **Checked against the code on 2026-10-01 (a review of the hub client)** — "active by id AND key"
+> is only half the rule on the CLIENT, because there the chain itself is the hub's word. `verifyChain`
+> accepts any self-signed genesis for the account id, and a signing-in device posts its public keys in
+> the login body — so a compromised NUC, the Cloudflare edge or an http MITM could answer a device's
+> FIRST sign-in with a whole list of its own (its genesis, then an `add` of those keys, a `vk` commit
+> for a vault key it chose), and the device, listed by id and key, took the key, pulled a forged
+> `acct/pref/sync-keys {on:true}` and uploaded every portable API key under it in the same pass. Two
+> reset paths did the same to a device that already held a pin: a re-sign-in answered with another
+> account id threw the pin away, and the alarm's "Take the hub's copy" set `pinned = null`. The client
+> now counts itself active only where the served chain holds its own ANCHOR — the link of the entry
+> it entered through: its genesis, the `add` it took after the owner confirmed the code ON IT
+> (`joinConfirm`), or its Kit `add` — kept in hub-state.json and dropped only by `signOut`
+> (`isActiveIn`, `anchorHolds`). A list that names it without the anchor is the `chain` alarm; a
+> login answering another account is refused ("sign out first"); `setUrl` is refused while the
+> device belongs to an account; and "take the hub's copy" became `republish`, which accepts only an
+> earlier copy of the device's own list (`isPrefixOf`). `verify:hub-client` holds each through the
+> device's injected `fetch` playing the hub: mutated back, the fake vault, the fake approver, the
+> other account id, the lapsed-session `setUrl` and the republish over a different list each go red.
+
 ## 141. The hub demands the Recovery Kit's wrap of every new epoch, and a device that could make one could open it
 
 **Found 2026-10-01, building the hub client's revoke (`HubService.rotate`).** Spec §4.6 says a
@@ -445,3 +466,16 @@ revoke, the removed device's sealed vault keys open none of the re-sealed items 
 no wrap of the new epoch for it) and proven in two sandbox Stokes against the real server: after
 the revoke, `wraps` held epoch 2 for the remaining device only, every item sat at epoch 2, and a key
 added afterwards never reached the removed one.
+
+> **Checked against the code on 2026-10-01 (a review of the hub client)** — the typed Kit was the
+> PRIMARY Remove path, and it keeps the Kit: useless against a device that has had that Kit in hand.
+> A device added with it (`signer: 'recovery'`), the device that made it (shown there, and "Save as
+> file…" writes it into ~/Documents there), and a device that had it typed to remove another can each
+> open the new epoch's recovery wrap as a pending session with the password — while the panel told
+> the owner the removed device "cannot read anything synced from now on". `kitHandlers` reads those
+> devices off the verified chain (from the entry that set the current `recovery` key on); removing
+> one needs `{ newKit: true }`, and the Devices list offers only that for it (`kitSeen`). And the
+> spec's rotate after a Kit join is no longer a hint: `recover` checks the typed Kit, then makes a new
+> Kit, and only once that is confirmed posts the `add` and a `rotate` naming the new Kit in ONE append
+> (`postRecovery`) — the typed Kit never opens an epoch the joining device is in. Mutated back, the
+> refusal to remove C with the Kit C made, and C's "nothing posted before the new Kit", each go red.

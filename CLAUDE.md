@@ -177,10 +177,10 @@ rule file named on the group line.
   binds every JS number as REAL, and FTS5 ignores `rowid = <real>` silently (`ChatStore.search`).
 - **139.** Never match an SSH host across machines by `SshHost.id`, a per-machine counter (`newHostId`): match
   by `syncId`, else equal alias + command (`applySyncedSettings`). `mergeSetup` still matches by id.
-- **140.** Count a hub device ACTIVE only when the chain lists its id WITH the key its session signed in with
-  (`authenticate`): a password-holder can squat an id before the real device joins. `login` refuses a bound id.
-- **141.** Never keep the Recovery Kit's wrap key on a device: a revoke needs the Kit typed or a new Kit
-  (`revokeDevice`), since a removed device with RK and the password opens every later recovery wrap.
+- **140.** Count a hub device ACTIVE only by its id WITH the key its session signed in with (`authenticate`) — and on
+  the client only where the chain holds its own anchor (`isActiveIn`): a hub can build a list around posted keys.
+- **141.** Never keep the Recovery Kit's wrap key on a device: a revoke needs the Kit typed, or a new Kit when the
+  target has had it (`kitHandlers`); a Kit join replaces the Kit in the same append (`postRecovery`).
 
 **Terminal** — `.claude/rules/terminal.md`
 - **5.** Never read the terminal from the DOM: WebGL paints a canvas, so `.xterm-rows` is empty.

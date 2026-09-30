@@ -328,9 +328,13 @@ Worker is not changed. The runbook for the NUC is `hub/README.md`.
 The CLIENT is `src/main/hub/` beside the reference crypto, loaded lazily (gotcha 40) the first
 time Settings › Account & sync asks, or 4 s after a boot with a hub configured. `service.ts` is the
 order things happen in: sign-in (an active device proves its sign-in by signature, spec §3.3), the
-vault's genesis only after the Recovery Kit is typed back, joining by the six digits or by the
-Kit, a sync pass (verify and pin the chain, take any new vault key only as the chain's `vk`
-commitment vouches for it, read the change feed, apply, give new hosts sync ids, upload), SSH keys
+vault's genesis only after the Recovery Kit is typed back, joining by the six digits (confirmed on
+BOTH screens: the joining device takes nothing until the owner presses "The codes match" there) or
+by the Kit (which is replaced in the same append, `postRecovery`), a sync pass (verify and pin the
+chain, count this device in only where the chain holds its own ANCHOR — the entry it joined
+through — take any new vault key only as the chain's `vk` commitment vouches for it, read the change
+feed and apply only what is sealed under the current epoch, hold anything that would change what
+runs here until the owner applies it on this computer, give new hosts sync ids, upload), SSH keys
 shared one at a time and installed by a press, rename (`acct/pref/device-names`), revoke with
 re-seal and prune, presence hints, and sign-out. One queue for every hub step; every action claims
 before its first await. The rules it follows are pure in `src/shared/hub/client.ts` (what each tier
@@ -342,9 +346,13 @@ an IdentityFile block (checked with `ssh -G -F` when the config is not the passw
 session never reaches Settings or the renderer; `settings.hub` has one writer, the service, and
 `commitSettings` drops a renderer patch's copy. Revoking needs the Recovery Kit (or makes a new
 one): the hub demands the Kit's wrap of every new epoch, and a device that kept the Kit's wrap key
-could open every later key from a pending session with the password (gotcha 141). Still to build:
-the relay's host and guest sides (spec H3), republishing after a hub restore (§7.3: the alarm
-offers only "take the hub's copy"), and `SshReach` on T3 hosts.
+could open every later key from a pending session with the password (gotcha 141) — so a device that
+has had the current Kit in hand (`kitHandlers`: made it, joined with it, or had it typed to remove
+another) is removed only with a new Kit. A hub gone back in time is republished to from a device
+(§7.3), and only over a list that is an earlier copy of the device's own (`isPrefixOf`); the pin and
+the anchor go only with sign-out. Every walk of the change feed is paged and bounded (`feedStep`),
+and every answer is read under a 16 MiB cap. Still to build: the relay's host and guest sides (spec
+H3), and `SshReach` on T3 hosts.
 
 ## Remote access
 
@@ -938,9 +946,15 @@ npm run verify:hub-client     # the hub CLIENT: what each tier offers and what n
                               # .pub and received with no overwrite (-stoke-2, a lone .pub counts,
                               # 0600, IdentityFile appended with a backup), then three devices
                               # against a real hub on 127.0.0.1: genesis after the Kit, join by
-                              # the six digits and by the Kit, an API key and an SSH key arriving,
-                              # a conflict, rename, revoke with re-seal, and hub.db holding no
-                              # secret. Eight rules mutated one at a time each turn it red
+                              # the six digits (confirmed on both screens) and by the Kit (a new
+                              # Kit in the same append), an API key and an SSH key arriving, a
+                              # conflict, rename, revoke with re-seal, a held MCP program and host
+                              # command, and hub.db holding no secret — and a hub that lies,
+                              # through each device's injected fetch: a vault built around a new
+                              # device's keys, a fake approver, another account's id, a list gone
+                              # back in time (republish) or replaced (refused), an old-epoch item
+                              # a removed device forged, a feed that never ends. Sixteen fixes
+                              # mutated back one at a time each turn it red
 npm run verify:install        # the one-line installer and the endpoint that serves it: the whole
                               # User-Agent matrix through the Worker's routing rule (PowerShell
                               # before anything browser-shaped, and HTML as the fallback), the
@@ -1212,11 +1226,12 @@ src/main/         Electron main process
                     sync pass, SSH key share/install, rename, revoke + re-seal, presence,
                     sign-out. One queue; claims before awaits. No electron import (dialogs are
                     injected by index.ts). verify:hub-client
-  hub/files.ts      `hub-device.json` (device keys, session) and `hub-state.json` (chain, pin,
-                    records, cursor, notes, prefs, sealed vault keys), 0600, sealed by the
-                    injected SecretBackend; refuses a vault key under an unprotected key store
-  hub/http.ts       one signed request, read through `readHubResponse` (a 200 web page is not
-                    the hub, gotcha 71)
+  hub/files.ts      `hub-device.json` (device keys, session, the digest key) and
+                    `hub-state.json` (chain, pin, anchor, records keyed by HMAC digests, cursor,
+                    notes, prefs, held changes, sealed vault keys), 0600, sealed by the injected
+                    SecretBackend; refuses a vault key under an unprotected key store
+  hub/http.ts       one signed request, read under a 16 MiB cap through `readHubResponse` (a 200
+                    web page is not the hub, gotcha 71)
   hub/sshKeys.ts    ~/.ssh key pairs by their .pub, one private key read on share, a received
                     key written `wx` 0600 and an IdentityFile appended (`ssh -G -F` when the
                     config is not the passwd home's). Paths injectable
