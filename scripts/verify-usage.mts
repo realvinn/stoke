@@ -22,7 +22,7 @@
 import { createHash } from 'node:crypto'
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync, existsSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import {
   BACKOFF_FIRST_MS,
   BACKOFF_MAX_MS,
@@ -472,16 +472,23 @@ const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'stoke-verify-usage-')))
 const bystander = join(scratch, 'bystander.txt')
 writeFileSync(bystander, 'must survive')
 const hash8 = (s: string): string => createHash('sha256').update(s.normalize('NFC')).digest('hex').substring(0, 8)
+/*
+ * A path the code built with node's `join` has backslashes on Windows, where
+ * the portability leg runs this suite; compare it by its segments, not its
+ * separator. Proven by rehearsing the suite with node:path's join swapped for
+ * path.win32's: 10 of these checks failed on their forward-slash literals.
+ */
+const slashed = (p: string | undefined): string | undefined => p?.replaceAll('\\', '/')
 
 console.log('\neach Claude account reads its own token, from its own two stores')
 {
   const user = '/Users/v'
   const def = credentialSources(null, {}, user)
-  check('the Default account: ~/.claude/.credentials.json', def.file, '/Users/v/.claude/.credentials.json')
+  check('the Default account: ~/.claude/.credentials.json', slashed(def.file), '/Users/v/.claude/.credentials.json')
   check('and the plain Keychain name it has always used', def.keychainService, 'Claude Code-credentials')
   const work = '/Users/v/.stoke/accounts/claude-work'
   const w = credentialSources(work, {}, user)
-  check('an account: the file inside its own folder', w.file, `${work}/.credentials.json`)
+  check('an account: the file inside its own folder', slashed(w.file), `${work}/.credentials.json`)
   check('and the Keychain item named after its folder (sha256, NFC, 8 hex)', w.keychainService, `Claude Code-credentials-${hash8(work)}`)
   const other = credentialSources('/Users/v/.stoke/accounts/claude-side', {}, user)
   check('two accounts never share a file', other.file === w.file, false)
@@ -493,8 +500,8 @@ console.log('\neach Claude account reads its own token, from its own two stores'
     `Claude Code-credentials-${hash8('/Users/Zoé/.stoke/accounts/claude-work')}`
   )
   const inherited = credentialSources(null, { CLAUDE_CONFIG_DIR: '/cfg' }, user)
-  check('Default under an inherited CLAUDE_CONFIG_DIR reads that folder', [inherited.file, inherited.keychainService], ['/cfg/.credentials.json', `Claude Code-credentials-${hash8('/cfg')}`])
-  check('an account overrides an inherited one, as its launch does', credentialSources(work, { CLAUDE_CONFIG_DIR: '/cfg' }, user).file, `${work}/.credentials.json`)
+  check('Default under an inherited CLAUDE_CONFIG_DIR reads that folder', [slashed(inherited.file), inherited.keychainService], ['/cfg/.credentials.json', `Claude Code-credentials-${hash8('/cfg')}`])
+  check('an account overrides an inherited one, as its launch does', slashed(credentialSources(work, { CLAUDE_CONFIG_DIR: '/cfg' }, user).file), `${work}/.credentials.json`)
 
   // Two synthetic homes, each with a live token of its own. The blob puts a
   // connector's token first, as the real one does (gotcha 36).
@@ -642,7 +649,7 @@ console.log('\nwhich reading answers for which tab')
   ])
   check('the Default Codex home is CODEX_HOME as inherited', plans.find((p) => p.key === 'codex:default')?.codexHome, '/c')
   check('a Codex account’s is its own home', plans.find((p) => p.key === 'codex:codex-work')?.codexHome, '/h/codex-work')
-  check('a Cline account reads providers.json under its own CLINE_DIR', plans.find((p) => p.key === 'cline:cline-two')?.clinePath, '/h/cline-two/data/settings/providers.json')
+  check('a Cline account reads providers.json under its own CLINE_DIR', slashed(plans.find((p) => p.key === 'cline:cline-two')?.clinePath), '/h/cline-two/data/settings/providers.json')
   check('the key’s row says who shares it', plans.find((p) => p.key === 'openrouter:key')?.detail, 'shared by 2 agents')
   const wire = JSON.stringify(plans.map((p) => toReading(p, { windows: [], extraCredits: null, fetchedAt: 0, error: null })))
   check('what reaches the renderer never carries the key', wire.includes('sk-or-SECRET'), false)
@@ -719,7 +726,7 @@ console.log('\nCodex: the limits its last turn stated, from a rollout’s tail')
   utimesSync(resumed, s(1_790_000_500_000), s(1_790_000_500_000))
   utimesSync(empty, s(1_790_001_000_000), s(1_790_001_000_000))
   const found = await newestRollouts(join(home, 'sessions'))
-  check('rollouts come newest-written first, whatever day folder holds them', found.map((f) => f.path.split('/').pop()), [
+  check('rollouts come newest-written first, whatever day folder holds them', found.map((f) => basename(f.path)), [
     'rollout-2026-09-28T11-00-00-c.jsonl',
     'rollout-2026-09-26T09-00-00-b.jsonl',
     'rollout-2026-09-27T10-00-00-a.jsonl'
@@ -811,7 +818,7 @@ console.log('\nCline: the balance its own CLI shows, in its own unit')
   check('success:false is a failure, not zero', clineBalanceResponse(200, { success: false, error: 'x' }, now).error !== null, true)
   check('a balance that is not a number is unknown, not $0', clineBalanceResponse(200, { success: true, data: { balance: '12' } }, now).error, 'Cline answered without a balance.')
   check('429 carries its Retry-After', clineBalanceResponse(429, null, now, 60).retryAfter, 60_000)
-  const pathOf = (env: Record<string, string>): string => clineProvidersPath(env, '/Users/v', join)
+  const pathOf = (env: Record<string, string>): string | undefined => slashed(clineProvidersPath(env, '/Users/v', join))
   check('providers.json: ~/.cline by default', pathOf({}), '/Users/v/.cline/data/settings/providers.json')
   check('CLINE_DIR moves it', pathOf({ CLINE_DIR: '/c' }), '/c/data/settings/providers.json')
   check('CLINE_DATA_DIR outranks CLINE_DIR', pathOf({ CLINE_DIR: '/c', CLINE_DATA_DIR: '/d' }), '/d/settings/providers.json')
@@ -841,7 +848,7 @@ console.log('\nKimi Code: its own /usages, with the token its sign-in left')
   check('expires_at 0 is never refreshed by Kimi, so it is sent as Kimi would', kimiAuthFrom(tok({ expires_at: 0 }), {}, now).ok, true)
   check('an empty access_token is a revoked one: signed out', (kimiAuthFrom(tok({ access_token: '' }), {}, now) as { kind?: string }).kind, 'signed-out')
   check('a Kimi pointed at another server: nothing is sent', (kimiAuthFrom(tok(), { KIMI_CODE_BASE_URL: 'https://x' }, now) as { kind?: string }).kind, 'elsewhere')
-  check('the token lives in the home\u2019s credentials/kimi-code.json', [kimiCredentialsPath({}, '/Users/v', join), kimiCredentialsPath({ KIMI_CODE_HOME: '/k' }, '/Users/v', join)], ['/Users/v/.kimi-code/credentials/kimi-code.json', '/k/credentials/kimi-code.json'])
+  check('the token lives in the home\u2019s credentials/kimi-code.json', [kimiCredentialsPath({}, '/Users/v', join), kimiCredentialsPath({ KIMI_CODE_HOME: '/k' }, '/Users/v', join)].map(slashed), ['/Users/v/.kimi-code/credentials/kimi-code.json', '/k/credentials/kimi-code.json'])
   const body = { usages: { limit_5h: { used_ratio: 0.1825, reset_time: '2026-09-30T20:00:00Z' }, limit_7d: { used_ratio: '0.4' }, limit_month_total: { used_ratio: 1.7 }, limit_month_code: { used_ratio: 0.2 } }, boosterWallet: { balance: { type: 'BOOSTER', amount: 5_000_000 } } }
   const snap = kimiUsageResponse(200, body, now)
   check('used_ratio 0-1 is percent used, rounded as its /usage prints it', snap.windows.map((w) => `${w.label}:${w.percent}`), ['5 hours:18', 'Weekly:40', 'Monthly:100'])
