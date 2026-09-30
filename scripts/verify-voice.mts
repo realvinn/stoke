@@ -847,6 +847,7 @@ console.log('\nthe wire: TerminalView and the phone really route through these')
    * sidecar. Always read from the working copy.
    */
   const mainSrc = readFileSync(new URL('../src/main/index.ts', import.meta.url), 'utf8')
+  const speechUi = readFileSync(new URL('../src/renderer/src/components/SpeechServiceSettings.tsx', import.meta.url), 'utf8')
   check(
     'desktop dictation and the phone both transcribe through sttConfigOf, read per call',
     (mainSrc.match(/transcribe\(sttConfigOf\(getSettings\(\)\.voice\)/g) ?? []).length,
@@ -858,6 +859,12 @@ console.log('\nthe wire: TerminalView and the phone really route through these')
     'main’s Test claims before its first await and refuses a second (gotcha 20)',
     /if \(voiceTesting\) return[^\n]*\n\s*voiceTesting = true\s*\n\s*try \{\s*\n\s*return await testSpeechService\(sttConfigFrom\(raw\)\)/.test(mainSrc)
   )
+  ok(
+    'Settings’ Test claims before the IPC call and sends the drafts on screen',
+    /if \(testingRef\.current\) return\s*\n\s*testingRef\.current = true[\s\S]{0,900}\.voiceTest\(cfg\)/.test(speechUi) && /key: keyField\.draft/.test(speechUi)
+  )
+  ok('the honest line is audioDestination’s, from the saved voice block', /audioDestination\(sttConfigOf\(voice\)\)/.test(speechUi))
+  ok('Settings → Voice renders the speech service', /<SpeechServiceSettings voice=\{voice\} patchVoice=\{patchVoice\}/.test(settingsUi))
 }
 
 console.log(failures ? `\n${failures} FAILED` : '\nall pass')

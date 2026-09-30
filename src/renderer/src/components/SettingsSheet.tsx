@@ -162,7 +162,7 @@ const GROUPS: { title: string; sections: Section[] }[] = [
       {
         id: 'voice',
         label: 'Voice',
-        hint: 'The microphone, Claude Code’s /voice, and Stoke’s dictation and its speech server'
+        hint: 'The microphone, Claude Code’s /voice, and Stoke’s dictation and who transcribes it'
       },
       { id: 'projects', label: 'Projects', hint: 'Which folders the sidebar scans' },
       { id: 'hosts', label: 'SSH hosts', hint: 'Remote machines to open sessions on' },
