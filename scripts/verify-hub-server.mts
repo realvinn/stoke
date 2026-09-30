@@ -882,9 +882,12 @@ let liveItemId = ''
   /* ------------------------------------------------------ size caps */
   console.log('\nsize caps')
   {
-    const huge = JSON.stringify({ puts: [], pad: 'x'.repeat(HUB_LIMITS.bodyBytes) })
-    const r = await call('POST', '/v1/items', undefined, { dev: A, raw: huge })
-    check('a body over 1 MiB is too-large', [r.status, r.body?.error], [413, 'too-large'])
+    // Only the headers go out. The hub refuses on the declared length before it
+    // reads a byte and closes; a client still WRITING the body then races its
+    // own EPIPE against reading the 413, and fetch lost that race about one
+    // run in four ("fetch failed", the suite stopped). Measured 2026-10-01.
+    const declared = await rawRequest(hub.lanPort as number, 'POST', '/hub/v1/items', { 'content-type': 'application/json', 'content-length': String(HUB_LIMITS.bodyBytes + 1) })
+    check('a body declared over 1 MiB is too-large before a byte of it is read', [declared.status, JSON.parse(declared.body || '{}').error], [413, 'too-large'])
     const chunked = await rawRequest(hub.lanPort as number, 'POST', '/hub/v1/auth/login', { 'content-type': 'application/json', 'transfer-encoding': 'chunked' }, Buffer.alloc(HUB_LIMITS.bodyBytes + 10, 0x20), true)
     check('and so is one streamed without a length', [chunked.status, JSON.parse(chunked.body || '{}').error], [413, 'too-large'])
     const notJson = await call('POST', '/v1/auth/login', undefined, { raw: '{nope', headers: { 'content-type': 'application/json' } })
