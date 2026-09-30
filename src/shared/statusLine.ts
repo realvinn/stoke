@@ -103,6 +103,14 @@ export function keepUsage(
   next: StatusLineSnapshot
 ): StatusLineSnapshot {
   if (!prev) return next
+  /*
+   * "Account-wide" is per ACCOUNT. Two Claude sign-ins have two sets of rate
+   * limits, and borrowing a window across them would draw one account's
+   * spend under the other's name — gotcha 45's wrong number, from a new
+   * direction. Both callers keep one reading per account, so this never
+   * fires in the app; it is the rule stated where the borrowing happens.
+   */
+  if ((prev.accountId || 'default') !== (next.accountId || 'default')) return next
   const [newer, older] = next.receivedAt >= prev.receivedAt ? [next, prev] : [prev, next]
   const fiveHour = newer.fiveHour ?? older.fiveHour
   const sevenDay = newer.sevenDay ?? older.sevenDay
@@ -168,7 +176,7 @@ export function mergeUsageWindows(
   const payloadWins = payloadAt >= accountAt
 
   const out: UsageWindow[] = []
-  const seen = new Set<UsageWindow['kind']>()
+  const seen = new Set<string>()
 
   // Ordered by the winning source first, so the chip's rows do not reshuffle
   // when the two swap over.
@@ -177,10 +185,19 @@ export function mergeUsageWindows(
     : [accountWindows, payloadWindows]
 
   for (const w of [...first, ...second]) {
-    if (seen.has(w.kind)) continue
-    seen.add(w.kind)
-    const fromAccount = accountWindows.find((a) => a.kind === w.kind)
+    const id = windowIdentity(w)
+    if (seen.has(id)) continue
+    seen.add(id)
+    const fromAccount = accountWindows.find((a) => windowIdentity(a) === id)
     out.push(fromAccount ? { ...w, severity: fromAccount.severity } : w)
   }
   return out
+}
+
+/**
+ * What makes two windows the same window: the kind, except for `other`, which
+ * names no particular window and so is told apart by its label.
+ */
+function windowIdentity(w: UsageWindow): string {
+  return w.kind === 'other' ? `other:${w.label}` : w.kind
 }

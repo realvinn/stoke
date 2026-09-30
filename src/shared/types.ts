@@ -351,6 +351,14 @@ export interface StatusLineSnapshot {
   sevenDay: StatusLineWindowReading | null
   /** Epoch ms the payload file was written. Drives the "as of HH:MM" tooltip. */
   receivedAt: number
+  /**
+   * The account the session runs on (shared/accounts.ts): an account id, or
+   * `'default'` for Claude Code's own sign-in. Stamped by main from the pty
+   * that owns the payload, because `fiveHour`/`sevenDay` are that ACCOUNT's
+   * rate limits and must never be merged into another account's reading
+   * (`keepUsage`, `claudeWindowsFor`). Absent reads as `'default'`.
+   */
+  accountId?: string
 }
 
 /* ---------------------------------------------------------- session events */
@@ -1494,9 +1502,24 @@ export interface CliUpdateInfo {
 export type UsageReadReason = 'poll' | 'message'
 
 export interface UsageWindow {
-  kind: 'session' | 'weekly' | 'weekly_scoped'
+  /**
+   * `session` and `weekly` are the two windows that run out — the chip's two
+   * rows — whichever agent states them (Claude's five_hour/seven_day, Codex's
+   * 300- and 10080-minute windows). `weekly_scoped` is Claude's per-model
+   * window. `other` is any window with no fixed meaning here — a Codex window
+   * of another length, OpenRouter's key limit or its free-model day — told
+   * apart by `label`, never by kind.
+   */
+  kind: 'session' | 'weekly' | 'weekly_scoped' | 'other'
   /** "5 hours", "Weekly", or the model name for a scoped window. */
   label: string
+  /** The chip's short form ("5h", "week", "free"). Absent: `shortLabel` decides. */
+  short?: string
+  /**
+   * What to say instead of a countdown when `resetsAt` is null because the
+   * source states the reset only as a rule ("resets monthly"), not an instant.
+   */
+  resetNote?: string
   /** 0-100. */
   percent: number
   severity: string
@@ -1538,6 +1561,74 @@ export interface UsageSnapshot {
    * against a `fetchedAt` that now belongs to the older, good reading.
    */
   retryUntil?: number
+  /** Where the reading came from. Absent: Anthropic's account endpoint, as it always was. */
+  source?: UsageSourceId
+  /** The account it describes (`'default'` for the agent's own sign-in). Absent reads as `'default'`. */
+  accountId?: string
+  /** The plan as the source names it ("team", "free tier"), or null when it names none. */
+  plan?: string | null
+  /** Money and credit figures, each in the unit the vendor's own client shows. */
+  balances?: UsageBalance[]
+  /**
+   * A sentence that is not a failure: "no Codex turn has stated its limits
+   * yet", "reset since the last Codex turn". Drawn plainly, never as an error.
+   */
+  note?: string | null
+  /**
+   * The figures are the agent's own record of its LAST TURN (Codex's rollout),
+   * not a poll of an account: they are "as of the last Codex turn", and go
+   * stale the moment nobody is using it.
+   */
+  asOfLastTurn?: boolean
+}
+
+/** A usage source Stoke can read (shared/usageSources.ts has which agent reads which). */
+export type UsageSourceId = 'anthropic' | 'codex' | 'kimi' | 'openrouter' | 'cline'
+
+/**
+ * One money or credit figure. `amount` null is UNKNOWN — drawn as a dash or
+ * as `text`, never as zero, the same rule as a missing rate limit (gotcha 21).
+ */
+export interface UsageBalance {
+  /** "Credits", "Used today", "Key limit left". */
+  label: string
+  amount: number | null
+  /** `usd` is dollars; `credits` is the vendor's own unit (Codex), never converted. */
+  unit: 'usd' | 'credits'
+  /** Said instead of an amount: "unlimited", "no limit". */
+  text?: string
+  /** A longer explanation, for the tooltip. */
+  title?: string
+}
+
+/** Which tab the chip is following: its agent and the account it runs on. */
+export interface UsageTarget {
+  cli: CodingCliId
+  accountId: string
+}
+
+/** One source's reading, as the panel lists it. Never carries a key or a token. */
+export interface UsageReading {
+  /** `<source>:<accountId>` (`usageKey`), stable across reads. */
+  key: string
+  source: UsageSourceId
+  /** The agent it belongs to; null for the OpenRouter key, which several agents share. */
+  cli: CodingCliId | null
+  accountId: string
+  /** The account's name: "Default", an account label, "OpenRouter key". */
+  label: string
+  /** A second line: "shared by 2 agents". */
+  detail: string | null
+  snapshot: UsageSnapshot
+}
+
+/**
+ * Every source's last reading, plus which one answers for the tab in front.
+ * `activeKey` null: that tab's agent states no usage Stoke can read.
+ */
+export interface UsageBoard {
+  readings: UsageReading[]
+  activeKey: string | null
 }
 
 /* ------------------------------------------------------------ tab restore */
