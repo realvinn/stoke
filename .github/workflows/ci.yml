@@ -361,3 +361,4 @@ jobs:
             ${{ runner.temp }}/debian/*.png
             ${{ runner.temp }}/debian/*.err
             ${{ runner.temp }}/debian/*.out
+            ${{ runner.temp }}/debian/*.txt

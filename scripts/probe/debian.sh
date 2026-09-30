@@ -81,26 +81,77 @@ xvfb_pid=$!
 export DISPLAY=:99
 sleep 1
 
-# The newest process whose command line names the AppImage's mount or file and
-# carries --no-sandbox: the browser process, not a helper (helpers are younger).
-stoke_main() { pgrep -o -f -- 'stoke.*--no-sandbox' 2>/dev/null | head -n 1; }
+# Every process of an installed Stoke: the AppImage runtime, a FUSE mount's
+# daemon, the app from its mount (/tmp/.mount_*) or its extraction
+# (/tmp/appimage_extracted_*), and Chromium's helpers.
+stoke_procs() { ps -eo pid=,ppid=,args= | grep -E 'stoke\.AppImage|\.mount_stoke|appimage_extracted' | grep -v -e grep -e 'ps -eo' ; }
+# The browser process: carries --no-sandbox, is not a helper (--type=), and is
+# not the AppImage runtime itself (its command line starts with the .AppImage).
+browser_pid() { stoke_procs | awk '/--no-sandbox/ && !/--type=/ { if ($3 !~ /stoke\.AppImage$/) { print $1; exit } }'; }
 
-"$bin" >"$W/launcher.out" 2>"$W/launcher.err"
-launch_status=$?
-sleep 10
-pid=$(stoke_main)
-if [ "$launch_status" = 0 ] && [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-  pass "stoke started and is still up 10 s later (pid $pid)"
-  if tr '\0' ' ' <"/proc/$pid/cmdline" | grep -q -- '--no-sandbox'; then pass 'with --no-sandbox on its command line'; else fail 'without --no-sandbox — it could not have started as root'; fi
-  kill -TERM "$pid" 2>/dev/null
+# Start the installed command as root and judge it: $1 a file-safe slug, $2 the
+# label, then the command. The launcher returns within a second (it detaches
+# Stoke); a route that runs Stoke in the foreground is still running after 10 s,
+# which counts as started. Output: $W/launcher-<slug>.{out,err}.
+start_and_judge() {
+  slug=$1
+  label=$2
+  shift 2
+  "$@" >"$W/launcher-$slug.out" 2>"$W/launcher-$slug.err" &
+  cmd_pid=$!
   n=0
-  while kill -0 "$pid" 2>/dev/null && [ $n -lt 150 ]; do sleep 0.2; n=$((n + 1)); done
-  if kill -0 "$pid" 2>/dev/null; then fail 'it did not quit on SIGTERM within 30 s'; else pass 'and quit on SIGTERM'; fi
-elif [ "$mode" = nofuse ] && [ "$launch_status" != 0 ] && grep -qi -e fuse -e mount "$W/launcher.err"; then
-  pass "with no FUSE it did not start, and said why (exit $launch_status): $(grep -i -m1 -e fuse -e mount "$W/launcher.err")"
+  while kill -0 "$cmd_pid" 2>/dev/null && [ $n -lt 50 ]; do sleep 0.2; n=$((n + 1)); done
+  if kill -0 "$cmd_pid" 2>/dev/null; then
+    launch_status=0
+  else
+    wait "$cmd_pid"
+    launch_status=$?
+  fi
+  sleep 8
+  pid=$(browser_pid)
+  stoke_procs >"$W/procs-$slug.txt"
+  if [ "$launch_status" = 0 ] && [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    pass "$label: started and is still up 10 s later (pid $pid)"
+    if tr '\0' ' ' <"/proc/$pid/cmdline" | grep -q -- '--no-sandbox'; then pass "$label: with --no-sandbox on its command line"; else fail "$label: without --no-sandbox — it could not have started as root"; fi
+    kill -TERM "$pid" 2>/dev/null
+    n=0
+    while [ -n "$(stoke_procs)" ] && [ $n -lt 150 ]; do sleep 0.2; n=$((n + 1)); done
+    if [ -n "$(stoke_procs)" ]; then
+      fail "$label: SIGTERM to the app left Stoke processes behind after 30 s"
+      note "$(stoke_procs | cut -c1-200 | tr '\n' '|')"
+      note "(tree when started: $(cut -c1-160 "$W/procs-$label.txt" | tr '\n' '|'))"
+      stoke_procs | awk '{print $1}' | while read -r p; do kill -TERM "$p" 2>/dev/null; done
+    else
+      pass "$label: and every Stoke process went on SIGTERM to the app"
+    fi
+    return 0
+  fi
+  return 1
+}
+
+if start_and_judge stoke 'stoke' "$bin"; then
+  :
+elif [ "$mode" = nofuse ] && [ "$launch_status" != 0 ] && grep -qi -e fuse -e mount "$W/launcher-stoke.err"; then
+  pass "with no FUSE it did not start, and said why (exit $launch_status): $(grep -i -m1 -e fuse -e mount "$W/launcher-stoke.err")"
 else
   fail "stoke did not stay up (launcher exit $launch_status, pid '${pid:-none}')"
-  note "stderr: $(head -c 1500 "$W/launcher.err" | tr '\n' ' ')"
+  note "stderr: $(head -c 1500 "$W/launcher-stoke.err" | tr '\n' ' ')"
+  note "processes: $(cut -c1-160 "$W/procs-stoke.txt" | tr '\n' '|')"
+fi
+
+if [ "$mode" = nofuse ]; then
+  # With no FUSE, what install.sh tells the user to do instead has to work too,
+  # as root. Both routes go through the launcher, so both must still get
+  # --no-sandbox (gotcha 76).
+  echo
+  echo "the installer's own no-FUSE remedies, as root"
+  note "install.sh says: $(grep -A1 'refuses to start with a FUSE error' "$W/install.log" | tr '\n' ' ' | sed 's/  */ /g')"
+  if start_and_judge env-extract 'APPIMAGE_EXTRACT_AND_RUN=1 stoke' env APPIMAGE_EXTRACT_AND_RUN=1 "$bin"; then :; else
+    fail "APPIMAGE_EXTRACT_AND_RUN=1 stoke did not stay up (exit $launch_status): $(head -c 600 "$W/launcher-env-extract.err" | tr '\n' ' ')"
+  fi
+  if start_and_judge arg-extract 'stoke --appimage-extract-and-run' "$bin" --appimage-extract-and-run; then :; else
+    fail "stoke --appimage-extract-and-run did not stay up as root (exit $launch_status): $(head -c 600 "$W/launcher-arg-extract.err" | tr '\n' ' ')"
+  fi
 fi
 
 # --- 4. the renderer, over CDP ---------------------------------------------
@@ -136,7 +187,10 @@ fi
 main=$(pgrep -o -f -- "--user-data-dir=$W/ud" 2>/dev/null | head -n 1)
 for p in $main $app_pid; do kill -TERM "$p" 2>/dev/null; done
 n=0
-while [ -n "$main" ] && kill -0 "$main" 2>/dev/null && [ $n -lt 150 ]; do sleep 0.2; n=$((n + 1)); done
+while [ -n "$(stoke_procs)" ] && [ $n -lt 150 ]; do sleep 0.2; n=$((n + 1)); done
+if [ -n "$(stoke_procs)" ]; then
+  note "still running 30 s after SIGTERM: $(stoke_procs | cut -c1-160 | tr '\n' '|')"
+fi
 kill -TERM "$xvfb_pid" 2>/dev/null
 
 echo
