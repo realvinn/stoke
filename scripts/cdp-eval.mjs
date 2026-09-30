@@ -12,11 +12,10 @@
  * CSS reads correct while laying out wrong (gotcha 14).
  *
  * Page targets are filtered to the one holding a `window.stoke` contextBridge
- * object. Matching on URL is NOT enough: the docked browser is its own page
- * target (gotcha 6) and it exists precisely so the user can point it at a local
- * dev server or a file:// page, so `localhost:<port>`, `/index.html` and
- * `file://` are all URLs it legitimately shows. contextBridge is injected into
- * the renderer only, which is why it is the one reliable discriminator.
+ * object, never matched on URL (gotcha 6) — that rule, and the socket
+ * plumbing, live in scripts/cdp-lib.mjs, which the CI probe
+ * (scripts/probe-e2e.mts) drives the app through too. This file is the thin
+ * one-expression CLI over it.
  *
  * The expression is wrapped as `(() => (<expr>))()`, so it must be a single
  * expression — the `await` keyword cannot appear (the wrapper arrow function is
@@ -37,14 +36,7 @@
  * Exit codes: 0 success; 1 no endpoint, no renderer, or the expression threw;
  * 2 usage error.
  */
-import { writeFileSync } from 'node:fs'
-import WebSocket from 'ws'
-
-// A few seconds is long enough for a live renderer to answer and short enough
-// that a stalled target (dead socket, blocked main thread, quit mid-evaluate)
-// fails fast instead of hanging on a live handle until the caller's own
-// timeout kills the process.
-const CDP_TIMEOUT_MS = 5000
+import { connectStoke } from './cdp-lib.mjs'
 
 const port = process.env.CDP_PORT || '9222'
 const argv = process.argv.slice(2)
@@ -57,169 +49,28 @@ if (!arg) {
   process.exit(2)
 }
 
-let targets
+let client
 try {
-  const res = await fetch(`http://127.0.0.1:${port}/json/list`)
-  targets = await res.json()
-} catch {
-  console.error(
-    `No CDP endpoint on port ${port}. Launch the app with --remote-debugging-port=${port} first.`
-  )
-  process.exit(1)
-}
-
-/** Resolves once the socket opens; rejects on error or after CDP_TIMEOUT_MS. */
-function openSocket(ws) {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      cleanup()
-      reject(new Error(`timed out after ${CDP_TIMEOUT_MS}ms opening the socket`))
-    }, CDP_TIMEOUT_MS)
-    const onOpen = () => {
-      cleanup()
-      resolve()
-    }
-    const onError = (err) => {
-      cleanup()
-      reject(err)
-    }
-    // Removing both listeners on settle matters as much as adding the
-    // timeout: left attached, this same `onError` would still be listening
-    // on the winning socket during the later send() calls and would consume
-    // a real mid-evaluate error before send()'s own handler ever saw it.
-    function cleanup() {
-      clearTimeout(timer)
-      ws.off('open', onOpen)
-      ws.off('error', onError)
-    }
-    ws.once('open', onOpen)
-    ws.once('error', onError)
-  })
-}
-
-/**
- * One request, matched back by id — replies and events share the socket.
- * Rejects on a matching error reply, on the socket closing or erroring before
- * a reply arrives, or after CDP_TIMEOUT_MS — so a target that goes silent
- * mid-evaluate (app quit, page reload, blocked main thread) fails this call
- * instead of leaving the promise, and the process, hanging forever.
- */
-function send(ws, id, method, params) {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      cleanup()
-      reject(new Error(`timed out after ${CDP_TIMEOUT_MS}ms waiting for a reply to ${method}`))
-    }, CDP_TIMEOUT_MS)
-    const onMessage = (raw) => {
-      const msg = JSON.parse(String(raw))
-      if (msg.id !== id) return
-      cleanup()
-      if (msg.error) reject(new Error(msg.error.message))
-      else resolve(msg.result)
-    }
-    const onClose = () => {
-      cleanup()
-      reject(new Error(`socket closed while waiting for a reply to ${method}`))
-    }
-    const onError = (err) => {
-      cleanup()
-      reject(err)
-    }
-    function cleanup() {
-      clearTimeout(timer)
-      ws.off('message', onMessage)
-      ws.off('close', onClose)
-      ws.off('error', onError)
-    }
-    ws.on('message', onMessage)
-    ws.once('close', onClose)
-    ws.once('error', onError)
-    ws.send(JSON.stringify({ id, method, params }))
-  })
-}
-
-async function evaluate(ws, id, expression) {
-  const result = await send(ws, id, 'Runtime.evaluate', {
-    expression,
-    returnByValue: true,
-    awaitPromise: true
-  })
-  if (result.exceptionDetails) {
-    throw new Error(result.exceptionDetails.exception?.description ?? result.exceptionDetails.text)
-  }
-  return result.result.value
-}
-
-const allPages = targets.filter((t) => t.type === 'page')
-// Chromium omits webSocketDebuggerUrl for a target that already has a
-// debugger attached — most commonly DevTools open on it. Losing that target
-// silently here would make an already-running renderer look absent, so it is
-// tracked separately and named explicitly if nothing else matches.
-const pages = allPages.filter((t) => t.webSocketDebuggerUrl)
-const noDebuggerUrl = allPages.filter((t) => !t.webSocketDebuggerUrl)
-
-let hit = null
-let hitPage = null
-const attempts = []
-
-for (const page of pages) {
-  const ws = new WebSocket(page.webSocketDebuggerUrl, { maxPayload: 64 * 1024 * 1024 })
-  try {
-    await openSocket(ws)
-    const isStoke = await evaluate(
-      ws,
-      1,
-      'typeof window.stoke === "object" && typeof window.stoke.platform === "string"'
-    )
-    if (isStoke) {
-      hit = ws
-      hitPage = page
-      break
-    }
-  } catch (e) {
-    attempts.push(`${page.url}: ${e instanceof Error ? e.message : String(e)}`)
-  }
-  ws.close()
-}
-
-if (!hit) {
-  const lines = [`No Stoke renderer among ${pages.length} page target(s) with a debugger URL.`]
-  if (attempts.length) {
-    lines.push('Attempts:')
-    for (const a of attempts) lines.push(`  - ${a}`)
-  }
-  if (noDebuggerUrl.length) {
-    lines.push(
-      `${noDebuggerUrl.length} more page target(s) had no webSocketDebuggerUrl and could not be ` +
-        `tried at all — Chromium omits it when a debugger is already attached to that target, ` +
-        `most likely DevTools open on it: ${noDebuggerUrl.map((p) => p.url).join(', ')}`
-    )
-  }
-  console.error(lines.join('\n'))
+  client = await connectStoke(port)
+} catch (e) {
+  console.error(e instanceof Error ? e.message : String(e))
   process.exit(1)
 }
 
 // Always on stderr, never stdout: makes a wrong-target attachment obvious at
 // a glance without disturbing the measured value a caller is capturing.
-console.error(`Attached to Stoke renderer: ${hitPage.url}`)
+console.error(`Attached to Stoke renderer: ${client.page.url}`)
 
 try {
   if (wantsShot) {
-    const result = await send(hit, 2, 'Page.captureScreenshot', { format: 'png' })
-    writeFileSync(arg, Buffer.from(result.data, 'base64'))
-    console.log(arg)
+    console.log(await client.screenshot(arg))
   } else {
-    const value = await evaluate(
-      hit,
-      2,
-      `Promise.resolve((() => (${arg}))()).then((v) => JSON.stringify(v))`
-    )
-    console.log(value)
+    console.log(await client.evaluate(`Promise.resolve((() => (${arg}))()).then((v) => JSON.stringify(v))`))
   }
 } catch (e) {
   console.error(String(e instanceof Error ? e.message : e))
-  hit.close()
+  client.close()
   process.exit(1)
 }
 
-hit.close()
+client.close()
