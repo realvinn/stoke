@@ -39,7 +39,9 @@ import type {
   SessionRebind,
   StoredTabs,
   Theme,
+  UsageBoard,
   UsageReadReason,
+  UsageTarget,
   WorklogScanOutcome,
   WorklogScanReport,
   WorklogWatchState
@@ -94,7 +96,7 @@ import { parseSession, readTranscript } from './sessionFile.ts'
 import { fetchRemoteTranscript } from './sshTranscript.ts'
 import { PtyManager, type StartResult } from './pty.ts'
 import { checkMicrophone } from './audio/defaultDevice.ts'
-import { CODING_CLIS, capsFor, cliIdOf, isClaudeCode, type CodingCliId } from '../shared/codingClis.ts'
+import { CODING_CLIS, capsFor, cliIdOf, isClaudeCode, isCodingCliId, type CodingCliId } from '../shared/codingClis.ts'
 import {
   agentLaunchPlan,
   installedAgents,
@@ -181,7 +183,8 @@ import {
   type AutoUpdateAttempt,
   type UpdateInfo
 } from './updates.ts'
-import { fetchUsage, keepLastGood, nextBackoff, type UsageSnapshot } from './usage.ts'
+import { planUsageSources, readUsageSource, toReading, USAGE_FLOORS, UsageScheduler, usagePlanInput } from './usageBoard.ts'
+import { CLAUDE_DEFAULT_KEY, usageKey, usageRouteFor } from '../shared/usageSources.ts'
 import { patchClaudeSetting, readClaudeSettings, readLaunchDefaults, untouchedKeys } from './claudeSettings.ts'
 import {
   readGlobalConfigKey,
@@ -208,8 +211,9 @@ import {
   cleanAccountLabel,
   loginArgsFor,
   nextSwatch,
+  DEFAULT_ACCOUNT_ID,
+  isAccountId,
   resolveLaunchAccount,
-  usageShareOf,
   type AgentAccount
 } from '../shared/accounts.ts'
 import { agentSeed } from '../shared/agentColors.ts'
@@ -343,28 +347,21 @@ function scheduleChatPass(delay: number): void {
  * object from both — so one loop is enough for both kinds.
  */
 const timers: NodeJS.Timeout[] = []
-let usageCache: UsageSnapshot | null = null
 /**
- * When the endpoint was last actually CALLED, which is not `usageCache.fetchedAt`.
+ * Every usage source's cache, attempt time and backoff, PER SOURCE AND
+ * ACCOUNT (usageBoard.ts). One account's 429 pauses that account only, and
+ * one account's last good figures are never kept in another's place.
  *
- * They came apart when a failed read stopped throwing the last good numbers
- * away: the cache now keeps the timestamp of the data it holds, so the
- * scheduler needs its own record of when it last knocked, or a stale-but-good
- * reading would look overdue and be re-fetched on every single poll — turning
- * one rate limit into a permanent one.
+ * The attempt time is not the cache's `fetchedAt`: they came apart when a
+ * failed read stopped throwing the last good numbers away — the cache keeps
+ * the timestamp of the data it holds, so the scheduler needs its own record
+ * of when it last knocked, or a stale-but-good reading would look overdue and
+ * be re-fetched on every single poll, turning one rate limit into a permanent
+ * one. The floors (`USAGE_FLOORS`): Anthropic's 30s idle cadence and 5s
+ * message floor are the chip's long-standing ones — `POLL_MS` in
+ * UsageMeter.tsx is the same 30s from the other side.
  */
-let usageAttemptedAt = 0
-/** The wait currently in force after a failure; 0 whenever the last read worked. */
-let usageBackoff = 0
-/**
- * The idle refresh interval for the account reading, and the floor a
- * message-triggered one may not go below. The renderer polls on the first and
- * pre-empts with the second; see the `usageRead` handler for why both exist.
- * `POLL_MS` in UsageMeter.tsx is the same 30s from the other side — a shorter
- * interval there would only ever be handed this cache back.
- */
-const USAGE_POLL_MS = 30_000
-const USAGE_MESSAGE_FLOOR_MS = 5_000
+const usageScheduler = new UsageScheduler()
 
 /* ------------------------------------------------- keeping the CLI current */
 
@@ -477,13 +474,29 @@ function cliState(): CliUpdateState {
   return { info: cliUpdate, auto: getSettings().cliAutoUpdate, note: cliAutoNote }
 }
 /**
- * The newest statusLine reading seen this run, whichever session produced it.
+ * The newest statusLine reading seen this run PER ACCOUNT, whichever of that
+ * account's sessions produced it.
  *
- * The rate limits in it are account-wide, so any open session's payload
- * answers for all of them — and keeping one means the usage chip still has
- * figures once every tab is closed, which is the whole "as of HH:MM" case.
+ * The rate limits in a payload are the ACCOUNT's, so any open session of an
+ * account answers for all of its sessions — and for no other account's. One
+ * slot for every account (as this was until accounts) would have let a
+ * second Claude sign-in's payload stand in for the first's. Keeping one per
+ * account also means the chip still has figures once every tab is closed,
+ * which is the whole "as of HH:MM" case.
  */
-let lastStatusLine: StatusLineSnapshot | null = null
+const lastStatusLines = new Map<string, StatusLineSnapshot>()
+
+/** File a payload under the account its session runs on, and keep its rate limits (`keepUsage`). */
+function fileStatusLine(snap: StatusLineSnapshot): void {
+  const account = snap.accountId || DEFAULT_ACCOUNT_ID
+  lastStatusLines.set(account, keepUsage(lastStatusLines.get(account) ?? null, snap))
+}
+
+/** A payload read from the key's files, stamped with the account of the session that owns the key. */
+function readAccountStatusLine(key: string): StatusLineSnapshot | null {
+  const read = readStatusLine(key)
+  return read ? { ...read, accountId: ptys?.accountIdForKey(key) ?? DEFAULT_ACCOUNT_ID } : null
+}
 /** receivedAt of the last payload pushed per session, so nothing is sent twice. */
 const statusLineSeen = new Map<string, number>()
 
@@ -506,20 +519,18 @@ function pushStatusLine(sessionId: string): void {
   // Through the launch key: a rebound session's files are named after the id
   // it was LAUNCHED with, not the one it is on now. See `payloadKeyFor`.
   const key = payloadKeyFor(sessionId)
-  const read = readStatusLine(key)
-  if (!read) return
-  // Another account's rate limits are not the Default account's: until usage
-  // is keyed per account, only the Default account feeds the chip
-  // (`usageShareOf`, shared/accounts.ts), here and in the renderer's merge.
-  const snap = usageShareOf(read, ptys?.accountIdForKey(key))
+  // Stamped with the session's account, so its rate limits are filed — here
+  // and in the renderer — under that account and no other.
+  const snap = readAccountStatusLine(key)
+  if (!snap) return
   if (statusLineSeen.get(sessionId) === snap.receivedAt) return
   statusLineSeen.set(sessionId, snap.receivedAt)
   // Same rule as refreshStatusLine: the newer reading wins for everything
-  // per-session, but the two account-wide rate limits are RETAINED when the
+  // per-session, but the account's two rate limits are RETAINED when the
   // newer payload states none — otherwise opening a tab evicts a live
   // session's figures, because a payload carries no rate limits until its
   // first render after an API response. See `keepUsage`.
-  lastStatusLine = keepUsage(lastStatusLine, snap)
+  fileStatusLine(snap)
   send(CH.statusLineUpdate, snap)
 }
 
@@ -538,7 +549,7 @@ function payloadKeyFor(sessionId: string): string {
 }
 
 /**
- * Bring `lastStatusLine` up to date from every live session's payload file.
+ * Bring `lastStatusLines` up to date from every live session's payload file.
  *
  * `pushStatusLine` above only runs for sessions the context watcher watches,
  * which is every session Stoke minted an id for — but not a `--continue`,
@@ -546,7 +557,7 @@ function payloadKeyFor(sessionId: string): string {
  * nothing. Its payload exists all the same, under its launch key.
  *
  * That matters because the rate limits in a payload are ACCOUNT-wide: any open
- * session answers for all of them. Without this, the one launch path we cannot
+ * session of an account answers for all of that account's. Without this, the one launch path we cannot
  * predict is also the one that contributes no usage figures at all.
  *
  * Called from the `statusline:last` invoke, not on a timer: the chip asks when
@@ -555,9 +566,8 @@ function payloadKeyFor(sessionId: string): string {
  */
 function refreshLastStatusLine(): void {
   for (const key of ptys?.statusKeys() ?? []) {
-    const snap = readStatusLine(key)
-    if (!snap) continue
-    lastStatusLine = keepUsage(lastStatusLine, usageShareOf(snap, ptys?.accountIdForKey(key)))
+    const snap = readAccountStatusLine(key)
+    if (snap) fileStatusLine(snap)
   }
 }
 const tunnel = new TunnelManager()
@@ -2679,28 +2689,48 @@ function registerIpc(): void {
    * server asked for, or a minute doubling to fifteen when it asked for
    * nothing. It is NOT a flat fifteen minutes any more; see that function for
    * the measurement that changed it.
+   *
+   * All of that now holds PER SOURCE AND ACCOUNT (`UsageScheduler`): each
+   * Claude account's endpoint, each Codex home, each Cline sign-in and the
+   * OpenRouter key has its own floor, attempt time and backoff. `usage:read`
+   * asks only the source the tab in front spends; `usage:all` (the panel is
+   * open) asks every one, each under its own floor.
    */
-  ipcMain.handle(CH.usageRead, async (_e, reason?: UsageReadReason) => {
-    const now = Date.now()
-    const floor = reason === 'message' ? USAGE_MESSAGE_FLOOR_MS : USAGE_POLL_MS
-    const wait = Math.max(usageBackoff, floor)
-    if (usageCache && now - usageAttemptedAt < wait) return usageCache
-
-    usageAttemptedAt = now
-    const fresh = await fetchUsage(now)
-    if (!fresh.error) {
-      usageBackoff = 0
-      usageCache = fresh
-      return usageCache
-    }
-
-    // Both halves are pure and asserted in verify:usage — see `keepLastGood`
-    // for why a failure keeps the previous numbers, and `nextBackoff` for why
-    // the wait is no longer a flat fifteen minutes.
-    usageBackoff = nextBackoff(usageBackoff, fresh.retryAfter)
-    usageCache = keepLastGood(usageCache, fresh, now + usageBackoff)
-    return usageCache
-  })
+  const usageReason = (v: unknown): UsageReadReason => (v === 'message' ? 'message' : 'poll')
+  /** A wire-borne target, or null for anything that is not one: an agent id and `default` or an account id. */
+  const usageTargetOf = (v: unknown): UsageTarget | null => {
+    if (!v || typeof v !== 'object') return null
+    const t = v as { cli?: unknown; accountId?: unknown }
+    if (!isCodingCliId(t.cli)) return null
+    const accountId = t.accountId === DEFAULT_ACCOUNT_ID || isAccountId(t.accountId) ? (t.accountId as string) : DEFAULT_ACCOUNT_ID
+    return { cli: t.cli, accountId }
+  }
+  const usageBoard = async (reasonRaw: unknown, targetRaw: unknown, all: boolean): Promise<UsageBoard> => {
+    const reason = usageReason(reasonRaw)
+    const target = usageTargetOf(targetRaw)
+    const input = usagePlanInput(getSettings())
+    const fake = process.env.STOKE_FAKE_USAGE || undefined
+    const plans = planUsageSources(input, process.env, homedir(), fake)
+    usageScheduler.retain(plans.map((p) => p.key))
+    // No tab to follow (a New tab, the launcher): Claude Code's Default
+    // account, as the chip always showed. A tab whose agent states nothing
+    // readable answers null, and the chip falls back to that same reading.
+    const route = target ? usageRouteFor(target, input) : { source: 'anthropic' as const, accountId: DEFAULT_ACCOUNT_ID }
+    const activeKey = route ? usageKey(route.source, route.accountId) : null
+    const wanted = all ? plans : plans.filter((p) => p.key === (activeKey ?? CLAUDE_DEFAULT_KEY))
+    await Promise.all(
+      wanted.map((p) =>
+        usageScheduler.read(p.key, reason, Date.now(), () => readUsageSource(p, Date.now(), fake), USAGE_FLOORS[p.source])
+      )
+    )
+    const readings = plans.flatMap((p) => {
+      const snap = usageScheduler.peek(p.key)
+      return snap ? [toReading(p, snap)] : []
+    })
+    return { readings, activeKey }
+  }
+  ipcMain.handle(CH.usageRead, (_e, reason?: unknown, target?: unknown) => usageBoard(reason, target, false))
+  ipcMain.handle(CH.usageAll, (_e, reason?: unknown, target?: unknown) => usageBoard(reason, target, true))
 
   /* -------------------------------------------------------------- projects */
   ipcMain.handle(CH.projectsList, () => listProjects(getSettings()))
@@ -2914,9 +2944,9 @@ function registerIpc(): void {
 
   ipcMain.handle(CH.statusLineLast, () => {
     // Sweep first, so a session nothing watches — a --continue — still
-    // contributes its account-wide rate limits. See refreshLastStatusLine.
+    // contributes its account's rate limits. See refreshLastStatusLine.
     refreshLastStatusLine()
-    return lastStatusLine
+    return [...lastStatusLines.values()]
   })
 
   /* --------------------------------------------------------------- browser */

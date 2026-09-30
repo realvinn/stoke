@@ -57,8 +57,9 @@ export const CH = {
   accountsRemove: 'accounts:remove',
   accountsIdentify: 'accounts:identify',
 
-  // plan limits
+  // plan limits, per account and per source (shared/usageSources.ts)
   usageRead: 'usage:read',
+  usageAll: 'usage:all',
 
   // projects & sessions
   projectsList: 'projects:list',

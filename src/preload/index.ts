@@ -12,7 +12,8 @@ import type {
   SshAuthPromptEvent,
   SshEnrollEvent,
   StoredTabs,
-  UsageReadReason
+  UsageReadReason,
+  UsageTarget
 } from '@shared/types'
 
 /** Subscribe helper that hands back an unsubscribe function. */
@@ -56,7 +57,8 @@ const api: StokeApi = {
   },
 
   usage: {
-    read: (reason?: UsageReadReason) => ipcRenderer.invoke(CH.usageRead, reason)
+    read: (reason?: UsageReadReason, target?: UsageTarget | null) => ipcRenderer.invoke(CH.usageRead, reason, target ?? null),
+    all: (reason?: UsageReadReason, target?: UsageTarget | null) => ipcRenderer.invoke(CH.usageAll, reason, target ?? null)
   },
 
   projects: {

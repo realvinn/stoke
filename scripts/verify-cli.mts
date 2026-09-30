@@ -361,7 +361,17 @@ for (const cli of CODING_CLIS.filter((c) => !isClaudeCode(c.id))) {
     cli.continueArgs ? 'continue' : 'none'
   )
   check(`${id} is not reviewed by the worklog, which shells out to claude -p`, caps.worklog, false)
-  check(`${id} claims no plan usage — that endpoint is Anthropic's`, caps.usage, 'none')
+  /*
+   * `usage` is raised for exactly the agents whose usage is read from their
+   * own artefact (codingClis.ts names each source): Codex's rollout limits,
+   * Kimi Code's own /usages and Cline's account balance. Anthropic's endpoint
+   * stays Claude's alone.
+   */
+  check(
+    `${id} claims usage only from a source of its own — never Anthropic's`,
+    caps.usage,
+    id === 'codex' ? 'codex' : id === 'cline' ? 'cline' : id === 'kimi' ? 'kimi' : 'none'
+  )
   /*
    * `model` is raised exactly where the table has a model flag it read out of
    * the vendor's own artefact or docs (`modelArgs`): that tab was launched

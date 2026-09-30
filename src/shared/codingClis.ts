@@ -528,7 +528,9 @@ export const CODING_CLIS: readonly CodingCli[] = [
  * from observed usage reported 140-320% occupancy the first time it was tried),
  * a `total_token_usage` object, and `rate_limits` with `used_percent` and an
  * epoch-seconds `resets_at`. That is a ring and a plan chip from a file
- * watcher, with no wrapper and no hook. Until that watcher exists, `'none'`.
+ * watcher, with no wrapper and no hook. The plan chip half exists now
+ * (`usage: 'codex'`, shared/codexUsage.ts reads the newest rollout's tail);
+ * the ring does not, so `ring` stays `'none'`.
  */
 export interface CliCaps {
   /** Where a context reading could come from, or `'none'` for no ring at all. */
@@ -545,8 +547,14 @@ export interface CliCaps {
   resume: 'mintedId' | 'continue' | 'none'
   /** Whether the worklog runner can review this session's work. */
   worklog: boolean
-  /** Whose plan the usage chip would be describing. */
-  usage: 'anthropic' | 'none'
+  /**
+   * Whose usage the chip may describe for a tab of this CLI on its own
+   * sign-in (shared/usageSources.ts): Anthropic's plan limits, the limits a
+   * Codex rollout states, or the balance of the Cline account the CLI is
+   * signed in to. An agent pointed at OpenRouter reads the OpenRouter key
+   * instead, whatever this says — that is its endpoint, not its caps.
+   */
+  usage: 'anthropic' | 'codex' | 'kimi' | 'cline' | 'none'
   /**
    * Which launch flags a session of this CLI was actually given, so which of
    * the status bar's mode / model / effort items describe it. Claude's three
@@ -644,7 +652,21 @@ export const CLI_CAPS: Record<CodingCliId, CliCaps> = {
    *          do not show, cline shows none, amp's JS is compiled in. `none`.
    *   grok, cursor, crush: no package read. `none`.
    */
-  codex: floorFor('codex', 'continue', 'flags'),
+  /*
+   * `usage` raised for two, each from the vendor's own artefact (2026-09-30):
+   *   codex  its rollout's `event_msg`/`token_count` lines carry `rate_limits`
+   *          {primary, secondary {used_percent, window_minutes, resets_at
+   *          (epoch s)}, credits, plan_type} — read on this machine, and the
+   *          shape its TUI's own status/rate_limits.rs draws.
+   *   cline  the balance its CLI shows (`GET /api/v1/users/{id}/balance`,
+   *          micro-dollars, apps/cli/src/utils/output.ts), with the token the
+   *          CLI stored in providers.json — read, never refreshed.
+   *   kimi   its `/usage` (`GET https://api.kimi.com/coding/v1/usages`,
+   *          `used_ratio` 0-1), with the token in `credentials/kimi-code.json`
+   *          — read out of @moonshot-ai/kimi-code 2.1.1, never refreshed.
+   *          Unverified live: not installed where it was written.
+   */
+  codex: { ...floorFor('codex', 'continue', 'flags'), usage: 'codex' },
   grok: floorFor('grok', 'continue'),
   opencode: floorFor('opencode', 'continue', 'env'),
   pi: floorFor('pi', 'continue', 'env'),
@@ -653,7 +675,7 @@ export const CLI_CAPS: Record<CodingCliId, CliCaps> = {
   // `cursor-agent --continue`, `amp threads continue --last`.
   gemini: floorFor('gemini', 'continue'),
   qwen: floorFor('qwen', 'continue', 'file'),
-  kimi: floorFor('kimi', 'continue', 'file'),
+  kimi: { ...floorFor('kimi', 'continue', 'file'), usage: 'kimi' },
   copilot: floorFor('copilot', 'continue', 'file'),
   cursor: floorFor('cursor', 'continue'),
   amp: floorFor('amp', 'continue'),
@@ -664,7 +686,7 @@ export const CLI_CAPS: Record<CodingCliId, CliCaps> = {
   aider: floorFor('aider', 'continue'),
   crush: floorFor('crush', 'none'),
   droid: floorFor('droid', 'none'),
-  cline: floorFor('cline', 'none'),
+  cline: { ...floorFor('cline', 'none'), usage: 'cline' },
   auggie: floorFor('auggie', 'continue'),
   vibe: floorFor('vibe', 'continue', 'env')
 }

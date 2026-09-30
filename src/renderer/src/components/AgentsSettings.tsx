@@ -1336,7 +1336,7 @@ function AgentAccounts({
           ? `Another ${cli.label} sign-in, kept in its own folder under ~/.stoke/accounts and signed in by ${cli.label} itself.`
           : `Another ${cli.label} API key, sealed like every key Stoke holds.`}
         {cli.id === 'claude' &&
-          ' Every Claude Code account shares one history, so a conversation started on one resumes on another. The plan-limit chip shows the Default account only.'}
+          ' Every Claude Code account shares one history, so a conversation started on one resumes on another. Each account\u2019s plan limits are its own: the usage chip follows the account of the tab in front, and its panel lists them all.'}
       </span>
       <div className="agent-account-list" role="radiogroup" aria-label={`Account new ${cli.label} sessions start on`}>
         <label className="agent-account-row">
