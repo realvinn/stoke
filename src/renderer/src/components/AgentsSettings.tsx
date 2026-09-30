@@ -1473,7 +1473,7 @@ function AccountRow({
     f()
   }
   return (
-    <div className="agent-account-row" data-account={account.id}>
+    <div className="agent-account-row agent-account-stored" data-account={account.id}>
       <input type="radio" name={`account-${cli.id}`} checked={checked} onChange={onDefault} aria-label={`Start new ${cli.label} sessions on ${account.label}`} />
       <span className="agent-tab-dot" {...agentMark(account.id)} aria-hidden="true" />
       <div className="agent-account-body">
@@ -1488,23 +1488,10 @@ function AccountRow({
           onKeyDown={(e) => e.key === 'Enter' && commit()}
         />
         {account.kind === 'login' ? (
-          <>
-            <span className="field-hint mono agent-account-home" title={account.home}>
-              {email && email !== account.label ? `${email} · ` : ''}
-              {account.home}
-            </span>
-            {mcp &&
-              accountMcpLines(mcp).map((line) => (
-                <span
-                  key={line}
-                  className="field-hint agent-account-mcp"
-                  data-testid="account-mcp"
-                  data-tone={mcp.error || line.startsWith('Not passed') ? 'warning' : undefined}
-                >
-                  {line}
-                </span>
-              ))}
-          </>
+          <span className="field-hint mono agent-account-home" title={account.home}>
+            {email && email !== account.label ? `${email} · ` : ''}
+            {account.home}
+          </span>
         ) : (
           <input
             className="input mono"
@@ -1541,6 +1528,21 @@ function AccountRow({
           </button>
         )}
       </div>
+      {/* Its own grid row under the name, so the radio and buttons stay level with the name. */}
+      {account.kind === 'login' && mcp && accountMcpLines(mcp).length > 0 && (
+        <div className="agent-account-mcp">
+          {accountMcpLines(mcp).map((line) => (
+            <span
+              key={line}
+              className="field-hint"
+              data-testid="account-mcp"
+              data-tone={mcp.error || line.startsWith('Not passed') ? 'warning' : undefined}
+            >
+              {line}
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

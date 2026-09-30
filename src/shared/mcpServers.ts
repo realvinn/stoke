@@ -1082,6 +1082,8 @@ export function accountMcpMirror(input: {
     }
     const parsed = specFromClaudeEntry(name, raw, input.env)
     if (parsed.ok) out.servers.push(parsed.spec)
+    // Said for THIS case: the account is Claude too, so "the other agents" would be the wrong reason.
+    else if (isRecord(raw) && raw.type === 'sse') out.refused.push({ name, reason: 'it uses the older SSE transport, which Stoke does not pass between accounts' })
     else out.refused.push({ name, reason: parsed.reason })
   }
   return out
