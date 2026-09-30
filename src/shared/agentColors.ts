@@ -45,6 +45,29 @@
  * colour; the tag and the tooltip carry the name, and the user can override
  * any seed.
  *
+ * That last floor is 0.04, "not the same colour", and on a light theme several
+ * pairs sit just over it — measured 2026-10-01: Cursor/Grok 0.041 (Paper),
+ * Copilot/Codex and Qwen/Gemini 0.045, Vibe/Grok 0.046, Kimi/OpenCode 0.048,
+ * Droid/Grok 0.050. Every ink there is solved to the same 4.5:1, so four
+ * near-neutrals (Grok's silver, Cursor's stone, Droid's taupe, Vibe's ivory)
+ * become four dark greys told apart by a trace of warmth. It is structural,
+ * not one seed's fault: swept, the best warm stone for Cursor reaches 0.060
+ * from Grok and the best Grok 0.054 from everyone, each by leaving its brand.
+ * So "never the same colour" is what is promised on a light theme, not
+ * "never alike".
+ *
+ * NOT kept clear of: the theme's own accent. Claude's orange is Ember's accent
+ * (0.011), and Daylight's and Paper's (0.037, 0.035); Gemini's blue is
+ * Nocturne's and Ink's (0.019); OpenCode's cyan Lagoon's and Mist's. The owner
+ * asked for the vendors' colours and the themes chose theirs, so where they
+ * meet, the Claude tab's tag and pane rule are drawn in the same colour as the
+ * accent chrome beside them (the active tab's top border, the focus ring).
+ * Decided 2026-10-01 and left as is: pushing Claude off orange on the orange
+ * themes would undo the request, and the tag's text names the agent. The
+ * colour picker says so ("The same colour as this theme's accent",
+ * `SAME_COLOUR_DISTANCE`), and `verify:agents` prints every coincidence and
+ * fails on one it was not told about, so the next seed or theme change sees it.
+ *
  * Keyed by a string rather than by `CodingCliId` alone so an account can extend
  * it: a second Claude account would file its colour under `claude-work` and get
  * `--agent-claude-work-ink` from the same writer, with no CSS added — surfaces
@@ -203,6 +226,26 @@ export const COMMON_AGENTS: readonly CodingCliId[] = ['claude', 'codex', 'grok',
  * the smallest gap this repo already ships as "two different colours".
  */
 export const AGENT_DISTINCT_DISTANCE = 0.083
+
+/**
+ * Under this OKLab distance two colours are "the same colour" (gotcha 44's
+ * nudge budget, and the floor every suite here uses for it).
+ */
+export const SAME_COLOUR_DISTANCE = 0.04
+
+/**
+ * How close an agent's ink or text comes to the theme's `--accent-ink`, when it
+ * is under `SAME_COLOUR_DISTANCE` — the coincidence the header describes — else
+ * null. Not a floor anything is held to; the picker reports it.
+ */
+export function accentNear(tokens: Pick<AgentTokens, 'ink' | 'text'>, accentInk: string): number | null {
+  const a = parseColor(accentInk)
+  const ink = parseColor(tokens.ink)
+  const text = parseColor(tokens.text)
+  if (!a || !ink || !text) return null
+  const d = Math.min(perceptualDistance(ink, a), perceptualDistance(text, a))
+  return d < SAME_COLOUR_DISTANCE ? d : null
+}
 
 /**
  * How far every agent's derived ink stays from the meter's three tiers,

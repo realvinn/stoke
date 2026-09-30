@@ -194,6 +194,16 @@ than the 0.04 perceptual distance this repo already calls "the same colour".
 > The seed table in agentColors.ts cites the source of each. A stored override equal to an agent's
 > OLD seed is dropped once (agents format 3): no build ever stored its own seed, so it was a default.
 
+> **Also decided on 2026-10-01, after the review: an agent's colour may BE the theme's accent.**
+> Nothing held agent inks clear of `--accent-ink`, and on the orange themes Claude's is the accent:
+> Ember 0.011, Daylight 0.037, Paper 0.035; Gemini is Nocturne's and Ink's blue (0.019), OpenCode
+> Lagoon's and Mist's cyan. So the Claude pane's top rule sits beside the active tab's accent border
+> in the same colour. Left as is, deliberately: the fix would be moving Claude off orange on exactly
+> the themes where orange is at home, against the owner's request, and the tag's text names the
+> agent. It is reported rather than prevented — the picker says "The same colour as this theme's
+> accent" (`accentNear`, `SAME_COLOUR_DISTANCE`), and `verify:agents` prints every common agent's
+> distance from every theme's accent and fails on a coincidence not on its written list.
+
 ## 65. `--accent-contrast` is chosen for the solid fill and painted on the hover fill too
 
 **`--accent-contrast` is chosen for the solid fill and painted on the hover fill too.**

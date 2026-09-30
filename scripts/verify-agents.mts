@@ -118,6 +118,7 @@ import {
   skillReport
 } from '../src/shared/skills.ts'
 import {
+  accentNear,
   AGENT_BRAND_FAMILIES,
   AGENT_CLEAR_DISTANCE,
   AGENT_DISTINCT_DISTANCE,
@@ -133,8 +134,10 @@ import {
   paintAgentColors,
   PREVIOUS_AGENT_SEEDS,
   reservedColors,
-  reservedNear
+  reservedNear,
+  SAME_COLOUR_DISTANCE
 } from '../src/shared/agentColors.ts'
+import { deriveAccent } from '../src/shared/accent.ts'
 import { parseColor, perceptualDistance, toOklch } from '../src/shared/color.ts'
 import { BUILT_IN_THEMES } from '../src/shared/themes.ts'
 import { scanSkills } from '../src/main/skillsScan.ts'
@@ -735,6 +738,49 @@ console.log('\nagent colours: what the owner asked for, and the one exception it
     'and it names what a pick lands on: Codex painted the meter orange reads as the meter on every theme',
     BUILT_IN_THEMES.filter((t) => reservedNear('#fe860f', t).some((r) => r.name === 'meter-mid')).length,
     BUILT_IN_THEMES.length
+  )
+}
+
+console.log('\nagent colours against each theme\'s own accent: reported, and only the known coincidences')
+{
+  /*
+   * Not a floor (agentColors.ts, "NOT kept clear of"): the owner's vendor
+   * colours and the themes' accents were each chosen on their own, and where
+   * they meet — Claude on Ember — the agent's tag and rule are drawn in the
+   * accent chrome's colour. Decided and left. So this prints every common
+   * agent's distance from every theme's accent ink, and holds the set under
+   * "the same colour" to the one written down here: a seed or theme change
+   * that makes a NEW coincidence fails until someone looks at it and adds it.
+   */
+  const known = [
+    'ember claude',
+    'nocturne gemini',
+    'lagoon opencode',
+    'ink gemini',
+    'daylight claude',
+    'paper claude',
+    'mist opencode'
+  ]
+  const found: string[] = []
+  for (const t of BUILT_IN_THEMES) {
+    const accent = deriveAccent(t.colors.accent, t.appearance, t.colors.bg).accentInk
+    const toks = agentColorTokens({}, t.appearance, t.colors)
+    const row = COMMON_AGENTS.map((id) => {
+      const tok = toks.find((x) => x.key === id)!
+      const d = Math.min(dist(tok.ink, accent), dist(tok.text, accent))
+      if (d < SAME_COLOUR_DISTANCE) found.push(`${t.id} ${id}`)
+      return `${id} ${d.toFixed(3)}`
+    })
+    console.log(`  ${t.id.padEnd(9)} accent ${accent}  ${row.join('  ')}`)
+  }
+  check(`the common five meet a theme's accent (under ${SAME_COLOUR_DISTANCE}) only where it is written down`, found, known)
+  // The picker's note reads the same thing through accentNear.
+  const ember = BUILT_IN_THEMES.find((t) => t.id === 'ember')!
+  const emberAccent = deriveAccent(ember.colors.accent, ember.appearance, ember.colors.bg).accentInk
+  ok(
+    'accentNear names Claude on Ember and not Codex there',
+    accentNear(agentColorTokens({}, 'dark', ember.colors).find((x) => x.key === 'claude')!, emberAccent) !== null &&
+      accentNear(agentColorTokens({}, 'dark', ember.colors).find((x) => x.key === 'codex')!, emberAccent) === null
   )
 }
 
