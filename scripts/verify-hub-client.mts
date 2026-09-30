@@ -497,7 +497,7 @@ try {
   await A.svc.syncNow()
   await B.svc.syncNow()
   const note = B.svc.view().notes.find((n) => n.path === 't1/settings/themeId')
-  check('two devices changed the theme: the later edit (B’s) wins, and B notes it', [B.settings().themeId, note?.kept, note?.otherDevice], ['rose', 'mine', 'Mac'])
+  check('two devices changed the theme: the later edit (B’s) wins, and B notes it in words', [B.settings().themeId, note?.kept, note?.otherDevice, note?.label], ['rose', 'mine', 'Mac', 'Theme'])
   await A.svc.syncNow()
   check('A converges on it', A.settings().themeId, 'rose')
 

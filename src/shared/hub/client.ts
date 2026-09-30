@@ -284,6 +284,48 @@ export function planSync(f: {
   return plan
 }
 
+/**
+ * What a person calls each synced setting, for conflict notes. The contract's
+ * `itemLabel` names a T1 item by its key ("Setting “themeId”"), which is a
+ * field name, not a sentence; anything not named here falls back to it.
+ */
+const SETTING_LABELS: Record<string, string> = {
+  themeId: 'Theme',
+  themeIdLight: 'Light theme',
+  followSystemTheme: 'Follow the system theme',
+  customThemes: 'Custom themes',
+  fontFamily: 'Terminal font',
+  fontSize: 'Font size',
+  terminal: 'Terminal',
+  zoomTarget: 'What zoom scales',
+  fullScreenReveal: 'Full-screen menu bar',
+  defaults: 'Session defaults',
+  voice: 'Voice',
+  profiles: 'Profiles',
+  worklogGroups: 'Worklog folders',
+  worklogAuto: 'Worklog auto-scan',
+  betaUpdates: 'Beta updates',
+  cliAutoUpdate: 'Claude Code updates',
+  cliRelaunch: 'Relaunch after a CLI update',
+  selfUpdateAuto: 'Stoke updates',
+  worklogBoards: 'Worklog boards',
+  hideStatusLine: 'Status line',
+  showBrand: 'Brand mark',
+  sshKeyEnroll: 'SSH key offers',
+  notifications: 'Notifications',
+  providers: 'Providers',
+  agents: 'Agents',
+  wallpaper: 'Wallpaper',
+  browser: 'Browser home and bookmarks'
+}
+
+/** A human label for any item path; `host`/`sshKey` name those by the local host or key. */
+export function syncLabel(path: string, names: { host?: (id: string) => string; sshKey?: (id: string) => string } = {}): string {
+  const p = parseItemPath(path)
+  if (p?.tier === 't1' && SETTING_LABELS[p.key]) return SETTING_LABELS[p.key]
+  return itemLabel(path, names)
+}
+
 /** What `applySyncedSettings` takes, and the account preferences, from items to apply. */
 export function incomingFrom(items: readonly RemoteItem[]): {
   incoming: SyncedIncoming

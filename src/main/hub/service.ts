@@ -66,7 +66,8 @@ import {
   type PlannedUpload,
   type RemoteItem,
   type SyncedRecord,
-  type SyncScope
+  type SyncScope,
+  syncLabel
 } from '../../shared/hub/client.ts'
 import { idFromBytes, isId, isRecord } from '../../shared/hub/codec.ts'
 import { hubSocketUrl, hubUrlVerdict } from '../../shared/hub/edge.ts'
@@ -1583,7 +1584,7 @@ export class HubService {
           lastEditedAt: st.lastEditedAt,
           digest: sha256B64u,
           stamps: st.stamps,
-          label: (path) => itemLabel(path, { host: (id) => this.hostName(id) })
+          label: (path) => syncLabel(path, { host: (id) => this.hostName(id) })
         })
         st.lastEditedAt = res.lastEditedAt
         return res
@@ -1749,7 +1750,7 @@ export class HubService {
           }
           const mine = { editedAt: u.editedAt, author: me }
           const their = { editedAt: other.editedAt, author: other.author }
-          this.addNotes([conflictNote({ path: u.path, label: itemLabel(u.path, { host: (id) => this.hostName(id) }), mine, theirs: their, now: this.now() })])
+          this.addNotes([conflictNote({ path: u.path, label: syncLabel(u.path, { host: (id) => this.hostName(id) }), mine, theirs: their, now: this.now() })])
           if (decideConflict(mine, their) === 'mine') retry.push({ ...u, over: other })
           else theirs.push(other)
         } else if (r?.error === 'stale-epoch') {
