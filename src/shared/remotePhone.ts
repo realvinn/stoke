@@ -643,7 +643,8 @@ export function remoteFolderBases(
   const projects = input.projects
     .map((p) => normalizePath(typeof p === 'string' ? p : '', rules))
     .filter((p) => p && isAbsoluteFor(p, rules))
-  // The folders holding a project: each is a place already, or too shallow to be one.
+  // The folders holding a project. A project that is one of them sits in or above a
+  // place already, and its own parent is exactly the climb, so it lends nothing.
   const holders = new Set<string>()
   for (const p of projects) {
     const up = pathKey(parentFolder(p, rules), rules)
