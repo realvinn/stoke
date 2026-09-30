@@ -4055,30 +4055,176 @@ summary.agent-picker-section:hover {
 }
 
 /*
- * Settings › Coding agents. One agent per block, stacked: its name and state,
- * then what it is, where it is, and its endpoint underneath. `.cc-row` is a
- * label-beside-control row and squeezed all five of those into columns.
+ * Settings › Agents. A header, then a strip of the agents that are installed or
+ * ticked — one page each underneath — then "More agents", folded. The strip
+ * wraps rather than scrolls: a sideways scroller hides the agents past its
+ * edge, and even eighteen fit in three short rows at the pane's 44rem.
  */
-.agent-settings {
+.agent-actions {
   display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
+  gap: var(--space-8);
 }
 
-.agent-setting {
+.agent-area {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-16);
+  min-width: 0;
+}
+
+.agent-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  padding-bottom: var(--space-12);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+/*
+ * `border` and `background` declared outright, or Chromium's `buttonface`
+ * fill shows (gotcha 47). The selected agent is the raised surface, the same
+ * signal the section nav beside it uses.
+ */
+.agent-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-8);
+  padding: var(--space-4) var(--space-12);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-full);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  line-height: var(--lh-tight);
+  cursor: default;
+  transition:
+    background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+
+.agent-tab:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.agent-tab[aria-selected='true'] {
+  border-color: var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+}
+
+/*
+ * The agent's colour, always — unlike `.agent-dot`, which waits for a second
+ * agent in view: this is the page where the colour is chosen. A graphic, so
+ * the ink (`agentMark` points `--agent-ink` at the agent's token).
+ */
+.agent-tab-dot {
+  flex: none;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: var(--r-full);
+  background: var(--agent-ink);
+}
+
+.agent-tab-note {
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+  font-weight: 400;
+}
+
+.agent-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-16);
+  min-width: 0;
+}
+
+/* Name, what it is and where it is read as one block, above the settings. */
+.agent-page-intro {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.agent-page-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+}
+
+.agent-page-title {
+  margin: 0;
+  font-size: var(--fs-lg);
+  font-weight: 600;
+}
+
+/* An agent's endpoint and model: the mode, then only the fields that mode reads. */
+.agent-endpoint {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-16);
+  max-width: 28rem;
+}
+
+/*
+ * "More agents": a native <details>, like FieldHint's, so it is keyboard-
+ * operable and Cmd+F finds an agent inside it while it is closed.
+ */
+.agent-more > summary {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-8);
+  width: fit-content;
+  font-size: var(--fs-md);
+  font-weight: 550;
+  cursor: default;
+  list-style: none;
+}
+
+.agent-more > summary::-webkit-details-marker {
+  display: none;
+}
+
+/* FieldHint's caret, one size up: closed points at the label, open points down. */
+.agent-more > summary::before {
+  content: '';
+  align-self: center;
+  width: 0;
+  height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 5px solid currentColor;
+  transition: transform var(--dur-fast) var(--ease);
+}
+
+.agent-more[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.agent-more-count {
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+  font-weight: 400;
+}
+
+.agent-more-list {
+  display: flex;
+  flex-direction: column;
+  margin-top: var(--space-8);
+}
+
+.agent-brief {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
   min-width: 0;
   padding: var(--space-12) 0;
   border-top: 1px solid var(--border-subtle);
-}
-
-/* An agent's endpoint: the mode, then only the fields that mode reads. */
-.agent-endpoint {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: var(--space-8);
-  max-width: 28rem;
 }
 
 /* An agent's colour and tab tag, one labelled row each. */

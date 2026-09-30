@@ -520,7 +520,7 @@ const LABELS: Record<string, string> = {
   sshKeyEnroll: 'SSH key offer',
   notifications: 'Notifications',
   providers: 'Providers',
-  agents: 'Coding agents',
+  agents: 'Agents',
   'wallpaper.blur': 'Wallpaper blur',
   'wallpaper.dim': 'Wallpaper dim',
   'wallpaper.opacity': 'Panel opacity',

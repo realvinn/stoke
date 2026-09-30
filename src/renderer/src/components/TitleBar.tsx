@@ -78,7 +78,7 @@ interface Props {
    * `agentTag` only while tags are shown. Omitted means the tab's own title.
    */
   labelFor?: (tab: Tab) => { text: string; agentTag: string | null; agent: CodingCliId | null }
-  /** Settings › Coding agents › Show agent tags on tabs, for the tab menu's toggle. */
+  /** Settings › Agents › Show agent tags on tabs, for the tab menu's toggle. */
   agentTagsShown?: boolean
   onToggleAgentTags?: () => void
   /**
