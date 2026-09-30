@@ -756,6 +756,27 @@ console.log('\nskills Claude Code is lent at launch: the projection, on a fake h
     )
     check('an explicit "on" is on', claudeProjection(scans, { trimmed: 'on' }).map((k) => k.name), ['only-shared', 'trimmed'])
     check(
+      "a trim takes the folder out under every name: trimming the lent one does not lend its alias ('second-name') instead",
+      claudeProjection(scans, { 'only-shared': 'off' }).map((k) => k.name),
+      ['trimmed']
+    )
+    check(
+      'nor does a trim of the name Claude shows hand that name to another folder that flattens to it',
+      claudeProjection(
+        [
+          {
+            dir: SHARED_SKILLS_DIR,
+            skills: [
+              { name: 'a-b', real: '/r/2' },
+              { name: 'a.b', real: '/r/1' }
+            ]
+          }
+        ],
+        { 'a-b': 'off' }
+      ).map((k) => k.name),
+      []
+    )
+    check(
       'two names Claude flattens to one are projected once',
       claudeProjection([
         {
@@ -954,6 +975,7 @@ console.log('\nskills Claude Code is lent at launch: the projection, on a fake h
     check("a tab in the repo's subfolder is not lent what the repo trims", fromSub ? readdirSync(join(fromSub, 'skills')) : null, ['only-shared'])
     const fromWt = await inRepo.prepare(wt)
     check('nor is a tab in a linked worktree of it', fromWt ? readdirSync(join(fromWt, 'skills')) : null, ['only-shared'])
+    check('the two layers\' trims together leave nothing to lend, so no flag', await inRepo.prepare(legacy), null)
   } finally {
     // In finally: a throw anywhere above must not leave a fixture behind.
     if (userData) rmSync(userData, { recursive: true, force: true })

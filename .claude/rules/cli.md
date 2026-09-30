@@ -425,9 +425,13 @@ so a shared skill lent to a session as the `stoke-shared` plugin would have walk
 every one of those trims, silently, and spent the context they exist to save.
 `claudeProjection(scans, overrides)` therefore takes the overrides the CLI would merge for the
 launch folder (`skillOverridesFor`: user < project < local, where "local" is NOT just the cwd's
-file — see the note below) and leaves out any skill whose value is anything but `"on"`: `name-only` and `user-invocable-only` cannot be expressed for a plugin skill, and
-dropping it is the direction that respects a decision to spend less. The key may be the bare name
-or `stoke-shared:<name>`.
+file — see the note below) and leaves out any skill whose value is anything but `"on"`:
+`name-only` and `user-invocable-only` cannot be expressed for a plugin skill, and dropping it is
+the direction that respects a decision to spend less. The key may be the bare name or
+`stoke-shared:<name>`. A trim takes out the FOLDER under every shared name that links to it, and
+the `stoke-shared:` name from every entry that flattens to it: the projection lends one name per
+folder, so a trim that skipped only its own entry handed the folder to the next alias (found
+2026-09-30 — trimming `only-shared` lent it as `second-name`).
 
 Four more facts from the same binary, each of which decides a line in `skillsProject.ts`:
 

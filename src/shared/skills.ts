@@ -129,6 +129,12 @@ function claudeSees(dir: string): boolean {
  * "user-invocable-only" cannot be expressed for a plugin skill, and a trim is a
  * decision to spend less context, so the conservative reading is not to add it.
  * The key may be the bare name or the namespaced one.
+ *
+ * A trim takes out the FOLDER, under every shared name that links to it, and
+ * the name Claude would show, from every entry that flattens to it. The dedupe
+ * above picks one name per folder and per `stoke-shared:` name; a trim that
+ * only skipped its own entry left the next one free to take that place, so
+ * trimming `pdf` lent the same folder as `pdf-alias` instead.
  */
 export function claudeProjection(
   scans: readonly SkillDirScan[],
@@ -144,13 +150,16 @@ export function claudeProjection(
     }
     return false
   }
+  const cut = shared.filter((k) => trimmed(k.name))
+  const cutReals = new Set(cut.map((k) => k.real))
+  const cutFlat = new Set(cut.map((k) => pluginSkillName(k.name)))
   const out: { name: string; real: string }[] = []
   const reals = new Set<string>()
   const flat = new Set<string>()
   for (const k of [...shared].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
     if (claudeNames.has(k.name) || claudeReals.has(k.real)) continue
+    if (cutReals.has(k.real) || cutFlat.has(pluginSkillName(k.name))) continue
     if (reals.has(k.real) || flat.has(pluginSkillName(k.name))) continue
-    if (trimmed(k.name)) continue
     reals.add(k.real)
     flat.add(pluginSkillName(k.name))
     out.push({ name: k.name, real: k.real })
