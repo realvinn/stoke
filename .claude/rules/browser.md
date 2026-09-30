@@ -164,6 +164,11 @@ part of this change.
 > a failed app-bound decrypt takes, since Chrome drops what it cannot decrypt with no error) can no
 > longer look like a profile with no logins. Until a v20 read-back is proven on real Windows, treat
 > Windows logins as best-effort: the ones that come over are real, and the ones that do not are reported.
+>
+> **Checked against Chromium's source on 2026-09-30** — both open points above are settled, and not the
+> way the note hoped: a v20 row NEVER comes from a copy, and "a copy needs no close" is false on Windows,
+> where a running browser holds its cookie DB under an exclusive lock. Citations under gotcha 130; how
+> the browser is closed and reopened is gotcha 135.
 
 **Two grants reach further than the import.** The Keychain prompt names `security`: Allow is the
 safe answer, Always Allow puts `security` on the item's access list for good, after which any
@@ -215,37 +220,95 @@ browser" scheme — the cookie store's location is the browser's to decide, not 
 >   (see the honest-proof paragraph under gotcha 107). Treat Windows logins as best-effort until a v20
 >   cookie is shown decrypting from a copied dir.
 
-> **The close-and-reopen flow, 2026-09-30 — the owner's own description, now built.** The copy usually
-> needs no close (a hot copy of the live jar is consistent), but two cases do, and both are the owner's
-> "pull the data, close the browser, reopen it": the files are LOCKED by a running browser so the copy
-> cannot be made (`ProfileLockedError`), or some app-bound rows came back sealed and a clean, fully
-> flushed copy might read where a hot one did not (honest — not a promise; a v20 row a copied non-default
-> dir genuinely cannot decrypt stays sealed either way). `readChromeCookiesWin` no longer THROWS on a
-> locked copy: it returns `{ cookieError, needsClose: true }` (bookmarks still import), and the panel then
-> offers ONE explicit second press. With the user's consent (`opts.closeAndReopen`, threaded from
-> `ReadWhat.closeReopen` → the `importRun` IPC → the `needsChromeClose` report field), the reader closes
-> the browser GRACEFULLY first (`closeBrowserGracefully` runs the constant `browserCloseScript`; the exe
-> path travels in `$env:STOKE_BROWSER_EXE`, never spliced in — gotcha 101; found by
-> `Get-CimInstance Win32_Process` on `ExecutablePath` since a 32-bit PowerShell cannot read a 64-bit
-> `.Path` — gotcha 94; `CloseMainWindow()` re-issued each pass because ONE browser process owns several
-> top-level windows and closing one moves the main handle to the next; NEVER `Stop-Process`/`-Force`),
-> waits a bounded `BROWSER_CLOSE_DEADLINE_MS`, copies, reads, and reopens the browser in a `finally`
-> (`reopenBrowser` → `chrome.exe --profile-directory=<name>`, no `--user-data-dir`, so the user's real
-> session and its tabs come back IF their browser is set to restore them — Stoke does not force that
-> setting, and the UI says so). If the copy is STILL locked after closing, Stoke tells the user to close
-> it themselves and does not offer to try again (`needsClose` false — no loop). The close/reopen path
-> itself is UNVERIFIED on real Windows from this round (a Mac cannot run it); only its pure parts
-> (`browserCloseScript` is ASCII, carries no path, never force-kills; `reopenArgs`) are held by
-> `verify:chrome-import`.
+> **Checked against Chromium's source on 2026-09-30 — v20 can never come from a copy, and the copy
+> always needs the browser closed.** Read from `chromium/chromium` main, after a review of this branch;
+> this supersedes every "unproven" and "might" above and in gotcha 107.
+> - **No copy can unseal v20.** `GetAppBoundEncryptionSupportLevel`
+>   (chrome/browser/os_crypt/app_bound_encryption_win.cc) returns `kNotUsingDefaultUserDataDir` for any
+>   user-data dir that is not the default ("User data dir can be overridden by policy or by a command
+>   line option"), and `AppBoundEncryptionProviderWin::GetKey` (app_bound_encryption_provider_win.cc)
+>   answers that with `kTemporarilyUnavailable`: "Modified user data dir, signal temporarily unavailable.
+>   This means decrypts will not work, but neither will new encrypts." So the headless reader, which
+>   must use a non-default dir, drops every v20 row — open browser or closed, hot copy or clean.
+> - **The default dir cannot be driven instead.** `IsRemoteDebuggingAllowed`
+>   (chrome/browser/devtools/remote_debugging_server.cc) returns `kDisabledByDefaultUserDataDir` for a
+>   Google Chrome-branded build on the default dir, checked for `--remote-debugging-pipe` AND the port.
+>   The only CDP route into a default-dir Chrome left in that file is the approval mode
+>   (`kDevToolsAcceptDebuggingConnections`: the user turns it on in chrome://inspect and approves each
+>   connection) — unexplored, and a different product decision.
+> - **Who writes v20 at all.** Only a system-level install: a per-user one returns `kNotSystemLevel`
+>   ("No service. No App-Bound APIs are available"), and only on the default dir, with no
+>   `ApplicationBoundEncryptionEnabled=0` policy and no roaming Windows profile. A per-user Chrome
+>   writes v10, which this reader DOES bring over. The CI seed's v10 is explained by its non-default
+>   `--user-data-dir` alone; no runner evidence was needed for it.
+> - **A running browser always blocks the copy.** On Windows the network service opens the cookie DB
+>   with an exclusive lock (`enable_exclusive_access = network_service()->exclusive_cookie_database_locking()`
+>   under `BUILDFLAG(IS_WIN)` in services/network/network_context.cc; `exclusive_cookie_database_locking_
+>   = true` in network_service.h). So `ProfileLockedError` is not a corner case: it is every import from
+>   a browser that has that profile open.
+>
+> What the code does with that (`chromeCookies.ts`): a locked copy returns `lockedCopyReport` —
+> `needsClose` on the first press, never after a close was tried; sealed v20 rows return
+> `sealedReport`, which NEVER sets `needsClose` (the first version of this flow offered to close the
+> user's browser for them, for nothing) and no longer says "while it was running" (the copy succeeding
+> proves the browser had let go). The close itself, once per browser, is gotcha 135.
+> `scripts/windows-chrome-probe.mts` is the owner's measurement on real hardware — counts only, per
+> domain, of v10/v20 rows and which came back; the prediction it checks is "every v10 back, every v20
+> sealed". `windows.yml`'s `chrome-import` job gained a best-effort step that seeds the headed default
+> profile (v20 on a system-level install), closes it with Stoke's own close, and asserts the v20 row
+> stays sealed AND is reported (`windows-e2e.mts chrome-sealed`). **Neither has run yet** — no Windows
+> round in this change; the next `windows.yml` run is the first.
 
-> **Proving v20 for real, 2026-09-30.** `scripts/windows-chrome-probe.mts` is for the OWNER to run on
-> their own Windows PC against their real Chrome (where v20 rows always exist, unlike the CI runner's
-> non-default seed). It is READ-ONLY (copies what it needs, as the reader does), drives the browser to
-> decrypt from a copy, and prints ONLY COUNTS — per registrable domain, how many v10/v20 rows and how
-> many v20 came back decrypted — never a cookie name or value. Its Verdict line is the answer gotcha 130
-> is missing. `windows.yml`'s `chrome-import` job gained two best-effort steps (continue-on-error): one
-> gathers the ABE evidence (`sc query GoogleChromeElevationService`, the `ApplicationBoundEncryptionEnabled`
-> policy, the default dir's `Local State` `os_crypt.app_bound_encrypted_key`) so "why v10 not v20" has
-> data; the other seeds the REAL default profile (where Chrome uses ABE), closes it, and if the tag is
-> v20 runs the reader against a copy to prove the decrypt. Neither can fail the suite; if the runner's
-> Chrome has no active elevation service it writes v10 again and the step says so.
+## 135. Closing another Chromium browser window by window drops every window but the last from its session
+
+**Stoke closes the user's browser only to copy its locked cookie file (gotcha 130), and it must end
+it the way a Windows sign-out does — never by closing its windows one at a time.** Chromium's
+`SessionService::WindowClosing` (chrome/browser/sessions/session_service.cc) commits a window's close
+to the session AT ONCE while another tabbed window of the same profile is still open ("If there are
+other tabbed browsers with the same original profile commit the close immediately"); only the LAST
+window's close is kept pending, which is what session restore brings back. The first version of this
+flow re-issued `CloseMainWindow()` each pass "because one browser process owns several top-level
+windows" — so a user with three windows would get one back, the other two only in History, while the
+panel promised the tabs would return. Found in review and read from the source; not measured on
+Windows.
+
+The Exit menu and a sign-out skip that path — the same comment: "if the user chooses the exit menu
+item session service is destroyed and this code isn't hit". On Windows every browser frame answers
+`WM_ENDSESSION` with `chrome::SessionEnding()` (`BrowserDesktopWindowTreeHostWin::PreHandleMSG`; the
+status-tray window does too, for a windowless background Chrome), which marks the shutdown
+`kEndSession`, writes what it must and terminates the process — no window is closed one by one, so the
+session keeps them all. The Restart Manager is the documented way to deliver that to another app:
+`closeBrowserForImport` runs `browserCloseScript`, which registers the browser's MAIN process (no
+`--type=`; only the instance whose command line names no `--user-data-dir`, or this root — Chromium
+copies `--user-data-dir` to every child, so an automation browser on its own dir is left alone) and
+calls `RmShutdown` with flags 0, never `RmForceShutdown`: WM_QUERYENDSESSION, then WM_ENDSESSION with
+`ENDSESSION_CLOSEAPP`.
+
+What comes with it, each one a trap:
+- **A page's "leave site?" prompt does not run** — `SessionEnding` is the sign-out path. Unsaved typing
+  is lost exactly as at sign-out; the panel says so.
+- **The C# travels in `$env:STOKE_RM_SOURCE`**, so the `-Command` text carries no double quote for the
+  Windows command line to mangle (the suite pins that), and it must compile under Windows PowerShell
+  5.1's C# 5 compiler — no `$"…"`, `?.`, `out var`, `=>` members. Checked on a Mac with pwsh 7.6.6's
+  `Add-Type -CompilerOptions -langversion:5` (a C# 6 control is rejected with CS8026, so the flag
+  bites); the script's selection logic was run there against stubbed `Get-CimInstance` output.
+- **Reopen only a browser that ran AND exited** (`closeVerdict`: `started>0`, `remaining=0`). Spawning
+  the exe into an instance that is still running just opens one more window; a browser that was never
+  running must not be opened; a close that timed out is not reopened either (state unknown). Anything
+  else is a `stillOpen` message and that browser's logins are not read — the copy would be locked.
+  `windows=0` at entry is a browser running in the background: the message sends the user to its icon
+  by the clock.
+- **Once per browser, not per profile** (`groupKeysByBrowser` in `runImport`, the `borrow` lease). Per
+  profile, the second profile's close hit the instance the first profile's reopen had just started,
+  mid-restore — committing the closes of windows already restored — and only the last profile reopened.
+- **Reopen with no arguments** (`reopenArgs()` is `[]`): no `--profile-directory`, so the browser brings
+  back every profile that was open, not just the one read. The panel promises windows back only "if it
+  is set to continue where you left off".
+- **Start the reopen in the browser's own folder** (`cwd: dirname(exePath)`): a long-lived process whose
+  working directory is inside Stoke's install folder can keep the portable swap's whole-folder rename
+  (gotcha 96) from happening.
+
+Unverified on real Windows: the Restart Manager close, the reopen, and the multi-window session
+surviving both. `windows.yml`'s `chrome-import` job calls the first two (`windows-e2e.mts chrome-close`,
+`chrome-reopen`) on its next run; a multi-window restore check would need the profile's
+`session.restore_on_startup` set, and is not written.

@@ -6,10 +6,11 @@
  * writes it into the profile's partition, which is why `runImport` refuses
  * logins unless Stoke's own cookie store is encrypted (`cookieStoreEncrypted`).
  *
- * Bookmarks import on macOS and Windows (the profile files are identical); logins
- * are macOS-only, where Chrome's cookie key lives in the login Keychain. On
- * Windows it is DPAPI with app-bound encryption, on Linux libsecret — neither
- * done. Safari is macOS-only outright.
+ * Bookmarks import on macOS and Windows (the profile files are identical). Logins
+ * import on macOS, where Chrome's cookie key lives in the login Keychain, and on
+ * Windows by having the browser open a copy of its own jar — which hands over
+ * plain-DPAPI (v10) rows but never app-bound (v20) ones (gotcha 130). Linux
+ * (libsecret) is not done. Safari is macOS-only outright.
  */
 
 export type ImportBrowserId = 'chrome' | 'chrome-beta' | 'brave' | 'edge' | 'arc' | 'vivaldi' | 'chromium' | 'safari'
@@ -58,9 +59,10 @@ export interface ReadWhat {
   bookmarks: boolean
   /**
    * Windows only: the user has consented to Stoke closing their browser for a
-   * moment (its files were locked, or some app-bound logins would not decrypt),
-   * copying the logins, then reopening it. Off by default and never taken
-   * without an explicit second press in the import panel.
+   * moment because its login file was locked, copying the logins, then reopening
+   * it. Off by default and never taken without an explicit second press in the
+   * import panel. `runImport` closes each browser ONCE around all its profiles
+   * (`BrowserSource.borrow`); the reads themselves never close anything.
    */
   closeReopen?: boolean
 }
@@ -78,13 +80,23 @@ export interface ReadResult {
    */
   cookieError?: string
   /**
-   * Windows only: this read's `cookieError` is one that closing and reopening
-   * the browser could resolve — the profile files were locked by a running
-   * browser, or some app-bound logins came back sealed and a clean, fully
-   * flushed copy might do better. The panel may then offer the close-and-reopen
-   * button. Never set once a close-and-reopen was already tried (no loop).
+   * Windows only: this read's `cookieError` is a login file LOCKED by the running
+   * browser, which closing it for a moment resolves. The panel may then offer the
+   * close-and-reopen button. Never set for sealed (v20) rows — no close unseals
+   * them (gotcha 130) — and never once a close was already tried (no loop).
    */
   needsClose?: boolean
+}
+
+/**
+ * A browser Stoke has closed for the length of an import (Windows, the user's
+ * second press). `giveBack` reopens it — only when it really was running and
+ * really exited — and is called once, after every profile of it was read.
+ */
+export interface BrowserLease {
+  /** It would not close: why, fit to show. Its profiles' logins are then not read (the copy would be locked). */
+  stillOpen?: string
+  giveBack(): void
 }
 
 export interface BrowserSource {
@@ -92,6 +104,11 @@ export interface BrowserSource {
   list(): Promise<SourceProfile[]>
   /** Read one profile. Throws an Error whose message is fit to show the user. */
   read(profile: SourceProfile, what: ReadWhat): Promise<ReadResult>
+  /**
+   * Windows: close this browser once, for all of its profiles' reads, the way a
+   * sign-out does so its session keeps every window (gotcha 135). Never throws.
+   */
+  borrow?(browser: ImportBrowserId): Promise<BrowserLease>
 }
 
 /** What an import did, per source profile, for the Settings panel. Counts only. */
@@ -108,7 +125,7 @@ export interface ImportReport {
   cookieError?: string
   /**
    * Windows only: the panel may offer to close and reopen the browser to get
-   * these logins (a locked profile, or app-bound rows a clean copy might read).
+   * these logins — its login file was locked by the running browser.
    */
   needsChromeClose?: boolean
 }

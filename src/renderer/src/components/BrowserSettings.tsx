@@ -165,11 +165,14 @@ export function BrowserSettings({ browser }: Props): React.JSX.Element {
  * here, so none of them arrives out of nowhere. Only counts come back from
  * main; a cookie value never reaches this process.
  *
- * On Windows the panel imports logins too, by a different route: Chrome seals
- * its cookies to itself, so Stoke briefly launches the user's own browser in
- * the background to decrypt them and reads the plaintext cookies back — never a
- * password. It still needs an encrypting Stoke store (`canLogins`, gotcha 108).
- * Safari never appears there.
+ * On Windows the panel imports logins too, by a different route: Stoke briefly
+ * launches the user's own browser in the background against a copy of the
+ * profile and reads the plaintext cookies back — never a password. That brings
+ * every v10 row and never a v20 (app-bound) one, which the browser unseals only
+ * in its own default profile (gotcha 130); those are counted, not hidden. While
+ * the browser is open its login file is locked, so the panel offers ONE explicit
+ * close-and-reopen for the sources that reported it (gotcha 135). It still needs
+ * an encrypting Stoke store (`canLogins`, gotcha 108). Safari never appears there.
  */
 function ImportFromBrowsers({ profiles }: { profiles: BrowserProfile[] }): React.JSX.Element {
   const isMac = window.stoke.platform === 'darwin'
@@ -218,19 +221,26 @@ function ImportFromBrowsers({ profiles }: { profiles: BrowserProfile[] }): React
       })
   }
 
-  // `closeReopen` is the Windows-only second press: the user has agreed Stoke may
-  // close their browser for a moment to hand over locked or sealed logins, then
-  // reopen it. Off on the first Import; never taken without this explicit press.
-  const run = (closeReopen = false): void => {
-    if (runningRef.current || chosen.size === 0) return
+  // Windows: the sources whose login file was locked by their running browser —
+  // the only case closing it for a moment helps (never sealed v20 rows, 130).
+  const lockedKeys = isWin ? (results ?? []).filter((r) => r.needsChromeClose).map((r) => r.key) : []
+
+  // `retryKeys` is the Windows-only second press: the user has agreed Stoke may
+  // close those browsers for a moment, then reopen them. It re-runs ONLY those
+  // sources (main closes each browser once around them) and keeps every other
+  // source's result on screen. Off on the first Import; never taken otherwise.
+  const run = (retryKeys: string[] | null = null): void => {
+    const keys = retryKeys ?? [...chosen]
+    if (runningRef.current || keys.length === 0) return
     runningRef.current = true
     setRunning(true)
-    setResults(null)
+    if (!retryKeys) setResults(null)
     setBusyNote(null)
     void window.stoke.browser
-      .importRun([...chosen], { cookies: cookies && canLogins, bookmarks, closeReopen })
+      .importRun(keys, { cookies: cookies && canLogins, bookmarks, closeReopen: retryKeys !== null })
       .then((r) => {
-        if (r) setResults(r)
+        if (r && retryKeys) setResults((prev) => [...(prev ?? []).filter((p) => !r.some((n) => n.key === p.key)), ...r])
+        else if (r) setResults(r)
         // Null is main refusing a second run: say so rather than do nothing.
         else setBusyNote('An import is already running. Its results appear here when you reopen this page.')
       })
@@ -239,10 +249,6 @@ function ImportFromBrowsers({ profiles }: { profiles: BrowserProfile[] }): React
         setRunning(false)
       })
   }
-
-  // Windows: a result asks for the browser to be closed and reopened when its
-  // files were locked, or some app-bound logins would not decrypt while it ran.
-  const needsClose = isWin && (results?.some((r) => r.needsChromeClose) ?? false)
 
   const nameOf = (s: ImportSource): string => (s.name === s.browserName ? s.name : `${s.browserName} · ${s.name}`)
   const intoOf = (key: string): string | null => profiles.find((p) => p.origin === key)?.label ?? null
@@ -253,7 +259,7 @@ function ImportFromBrowsers({ profiles }: { profiles: BrowserProfile[] }): React
       <FieldHint>
         {isMac
           ? 'Logins come over as cookies into a browser profile of their own for each profile you pick, so nothing mixes with Default. Claude’s browser tools can use them in that profile. Saved passwords cannot come over: Safari’s are sealed to Apple’s apps, and Stoke has no password manager to put Chrome’s in. Some sites — Google accounts especially — tie a login to the browser it was made in and will ask you to sign in again.'
-          : 'Logins come over as cookies into a browser profile of their own for each profile you pick. Because Chrome seals its cookies to itself, Stoke briefly launches your own browser in the background — against a copy of the profile, so your open windows usually stay put; if the files are in use it will ask you to close the browser first, and never forces it. Saved passwords cannot come over — Stoke has no password manager to put them in. Some sites — Google accounts especially — tie a login to the browser it was made in and will ask you to sign in again.'}
+          : 'Logins come over as cookies into a browser profile of their own for each profile you pick. Stoke briefly launches your own browser in the background against a copy of the profile to hand them over. Chrome installed for everyone on this PC seals newer logins with app-bound encryption, which it opens only inside its own profile — those cannot come over, and Stoke tells you how many stayed. Saved passwords cannot come over either — Stoke has no password manager to put them in. Some sites — Google accounts especially — tie a login to the browser it was made in and will ask you to sign in again.'}
       </FieldHint>
 
       {sources === null ? (
@@ -372,10 +378,11 @@ function ImportFromBrowsers({ profiles }: { profiles: BrowserProfile[] }): React
                 </FieldHint>
               ) : (
                 <FieldHint>
-                  Chrome seals its cookies to itself, so Stoke briefly launches your own browser in the background — no
-                  window, against a copy of the profile — to hand the logins over decrypted, then closes it. Your open
-                  windows usually stay put. If your browser is holding the files, close it and import again; Stoke never
-                  forces it to quit. A login Chrome still will not decrypt is reported, not dropped silently.
+                  Stoke briefly launches your own browser in the background — no window, against a copy of the
+                  profile — to hand the logins over decrypted, then closes that copy. While your browser is open,
+                  Windows keeps its login file locked, so Stoke will offer to close it for a moment and reopen it; it
+                  never forces it. Logins sealed with app-bound encryption stay behind and are counted, never dropped
+                  silently.
                 </FieldHint>
               )}
             </span>
@@ -416,12 +423,14 @@ function ImportFromBrowsers({ profiles }: { profiles: BrowserProfile[] }): React
               {scanning ? 'Looking…' : 'Look again'}
             </button>
           </div>
-          {needsClose && (
+          {lockedKeys.length > 0 && (
             <div className="settings-item import-source-extra">
               <FieldHint>
-                Your browser needs to close for a moment so it can hand over those logins; your tabs come back when it
-                reopens, if your browser is set to restore them. Stoke closes it gently — it never forces it — and reopens
-                it as soon as it has the logins.
+                Your browser is open, and while it is, Windows keeps its login file locked. Stoke can close it for a
+                moment the way signing out of Windows does — every window is kept for next time — copy the logins, and
+                reopen it. Your windows and tabs come back if it is set to continue where you left off; otherwise they
+                are in its History. Anything typed into a page and not yet sent is lost, as when Windows signs out.
+                Stoke never forces it to quit.
               </FieldHint>
               <div className="settings-item-actions">
                 <button
@@ -430,7 +439,7 @@ function ImportFromBrowsers({ profiles }: { profiles: BrowserProfile[] }): React
                   data-size="sm"
                   disabled={running}
                   aria-busy={running}
-                  onClick={() => run(true)}
+                  onClick={() => run(lockedKeys)}
                 >
                   {running && <Spinner />}
                   {running ? 'Closing and reading…' : 'Close the browser, get the logins, reopen it'}

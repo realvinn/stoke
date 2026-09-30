@@ -6,8 +6,9 @@ import { mergeBookmarks, newProfileId, partitionFor } from '../../shared/browser
 import type { BrowserProfile } from '../../shared/browserProfiles.ts'
 import type { Settings } from '../../shared/types.ts'
 import { chromeSource, forgetChromeKeys } from './chrome.ts'
+import { groupKeysByBrowser } from './chromeCookies.ts'
 import { safariSource } from './safari.ts'
-import type { ImportedCookie, ImportReport, ReadWhat, SourceProfile } from './types.ts'
+import type { BrowserLease, ImportBrowserId, ImportedCookie, ImportReport, ReadWhat, SourceProfile } from './types.ts'
 
 /*
  * Importing another browser's profiles into the docked browser.
@@ -147,6 +148,12 @@ export function importInProgress(): boolean {
  * second run while one is going — claimed before the first await (gotcha 20),
  * since each run can raise its own Keychain prompt and a double press would
  * stack them.
+ *
+ * The keys are read in runs of one browser each. On Windows, when the user
+ * agreed to it (`what.closeReopen`, the panel's second press), each browser is
+ * closed ONCE before its run and reopened ONCE after it (`borrow`/`giveBack`) —
+ * never per profile, which closed the instance the previous profile's reopen had
+ * just launched, mid-restore, and reopened only the last profile (gotcha 135).
  */
 export async function runImport(keys: string[], what: ReadWhat, deps: ImportDeps): Promise<ImportReport[] | null> {
   if (importing) return null
@@ -161,40 +168,56 @@ export async function runImport(keys: string[], what: ReadWhat, deps: ImportDeps
     const sources = await scanImportSources()
     const reports: ImportReport[] = []
     const bookmarks: string[] = []
-    for (const key of keys) {
-      const source = sources.find((s) => s.key === key)
-      if (!source) {
-        reports.push({ key, profileId: '', cookies: 0, skippedCookies: 0, bookmarks: 0, error: 'That profile is no longer there.' })
-        continue
-      }
+    const runs = groupKeysByBrowser<ImportBrowserId>(keys, (k) => sources.find((s) => s.key === k)?.browser ?? null)
+    for (const run of runs) {
+      // Closed for this run only, and only with the user's consent; logins only
+      // (a refused-logins build or a bookmarks-only import never closes anything).
+      const lease: BrowserLease | null =
+        what.cookies && what.closeReopen && run.browser && run.browser !== 'safari' && chromeSource.borrow
+          ? await chromeSource.borrow(run.browser).catch(() => null)
+          : null
       try {
-        const read = await (source.browser === 'safari' ? safariSource : chromeSource).read(source, what)
-        // A Stoke profile only when there are logins to put in it: a source with
-        // none (a Safari that was never used) must not leave an empty profile.
-        const profileId = what.cookies && read.cookies.length ? profileFor(source, deps) : ''
-        const { set, failed } = profileId ? await setCookies(profileId, read.cookies) : { set: 0, failed: 0 }
-        bookmarks.push(...read.bookmarks)
-        const cookieError = loginsRefused ?? read.cookieError
-        reports.push({
-          key,
-          profileId,
-          cookies: set,
-          skippedCookies: read.skippedCookies + failed,
-          bookmarks: read.bookmarks.length,
-          ...(cookieError ? { cookieError } : {}),
-          // Only offer close-and-reopen for a real login read, never when the
-          // build itself refused logins (loginsRefused) — closing fixes nothing.
-          ...(read.needsClose && !loginsRefused ? { needsChromeClose: true } : {})
-        })
-      } catch (err) {
-        reports.push({
-          key,
-          profileId: '',
-          cookies: 0,
-          skippedCookies: 0,
-          bookmarks: 0,
-          error: err instanceof Error ? err.message : String(err)
-        })
+        for (const key of run.keys) {
+          const source = sources.find((s) => s.key === key)
+          if (!source) {
+            reports.push({ key, profileId: '', cookies: 0, skippedCookies: 0, bookmarks: 0, error: 'That profile is no longer there.' })
+            continue
+          }
+          // A browser that would not close still holds its login file: read the
+          // bookmarks only, and say why the logins stayed.
+          const readWhat: ReadWhat = lease?.stillOpen ? { ...what, cookies: false } : what
+          try {
+            const read = await (source.browser === 'safari' ? safariSource : chromeSource).read(source, readWhat)
+            // A Stoke profile only when there are logins to put in it: a source with
+            // none (a Safari that was never used) must not leave an empty profile.
+            const profileId = readWhat.cookies && read.cookies.length ? profileFor(source, deps) : ''
+            const { set, failed } = profileId ? await setCookies(profileId, read.cookies) : { set: 0, failed: 0 }
+            bookmarks.push(...read.bookmarks)
+            const cookieError = loginsRefused ?? lease?.stillOpen ?? read.cookieError
+            reports.push({
+              key,
+              profileId,
+              cookies: set,
+              skippedCookies: read.skippedCookies + failed,
+              bookmarks: read.bookmarks.length,
+              ...(cookieError ? { cookieError } : {}),
+              // Only offer close-and-reopen for a real login read, never when the
+              // build itself refused logins (loginsRefused) — closing fixes nothing.
+              ...(read.needsClose && !loginsRefused ? { needsChromeClose: true } : {})
+            })
+          } catch (err) {
+            reports.push({
+              key,
+              profileId: '',
+              cookies: 0,
+              skippedCookies: 0,
+              bookmarks: 0,
+              error: err instanceof Error ? err.message : String(err)
+            })
+          }
+        }
+      } finally {
+        lease?.giveBack()
       }
     }
     const current = deps.getSettings().browser

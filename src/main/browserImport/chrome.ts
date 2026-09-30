@@ -8,7 +8,15 @@ import { chromeKey, chromeRowToCookie, decryptChromeValue } from './chromeCookie
 import type { ChromeCookieRow } from './chromeCookies.ts'
 import { CHROMIUM_BROWSERS, chromiumRoot } from './chromiumProfiles.ts'
 import type { ChromiumBrowser } from './chromiumProfiles.ts'
-import type { BrowserSource, ImportedCookie, ReadResult, ReadWhat, SourceProfile } from './types.ts'
+import type {
+  BrowserLease,
+  BrowserSource,
+  ImportBrowserId,
+  ImportedCookie,
+  ReadResult,
+  ReadWhat,
+  SourceProfile
+} from './types.ts'
 
 const execFileAsync = promisify(execFile)
 
@@ -18,10 +26,11 @@ const execFileAsync = promisify(execFile)
  * Their profile folders live at platform-specific roots (chromiumProfiles.ts).
  * Bookmarks import on macOS and Windows alike — same JSON. Logins import on both
  * now, by different means: on macOS the cookie key is in the login Keychain and
- * `security` hands it over on a prompt (`readCookies` here); on Windows the key
- * is DPAPI + app-bound-sealed, so Stoke has the browser decrypt its own jar and
- * reads the plaintext back over CDP (`chromeCookiesWin.ts`), lazily loaded.
- * Linux has neither yet, so there `read` brings only the bookmarks.
+ * `security` hands it over on a prompt (`readCookies` here); on Windows Stoke has
+ * the browser open a copy of its own jar and reads the plaintext back over CDP
+ * (`chromeCookiesWin.ts`, lazily loaded) — every v10 row, never a v20 app-bound
+ * one, which Chromium unseals only in its own default dir (gotcha 130). Linux
+ * has neither yet, so there `read` brings only the bookmarks.
  */
 
 /** Long enough to answer a Keychain prompt; it waits on a person. */
@@ -277,14 +286,14 @@ export const chromeSource: BrowserSource = {
         return { cookies, skippedCookies: skipped, bookmarks }
       }
       if (process.platform === 'win32' && b.winExe) {
-        // The browser decrypts its own app-bound jar; Stoke reads the plaintext
-        // back. Loaded here, not at the top: `ws` and the launch code only ever
-        // matter for a Windows login import (gotcha 40). `closeReopen` is the
-        // user's consent to close and reopen the browser (locked files, or
-        // sealed logins) — off unless they pressed the second time.
+        // The browser opens a copy of its own jar; Stoke reads the plaintext back.
+        // Loaded here, not at the top: `ws` and the launch code only ever matter
+        // for a Windows login import (gotcha 40). `closeReopen` means runImport
+        // already closed this browser (`borrow`), so a still-locked copy is not
+        // offered the close again.
         const { readChromeCookiesWin } = await import('./chromeCookiesWin.ts')
         const { cookies, skipped, cookieError, needsClose } = await readChromeCookiesWin(b, dir, {
-          closeAndReopen: what.closeReopen === true
+          afterClose: what.closeReopen === true
         })
         return { cookies, skippedCookies: skipped, bookmarks, cookieError, needsClose }
       }
@@ -293,6 +302,28 @@ export const chromeSource: BrowserSource = {
       return { cookies: [], skippedCookies: 0, bookmarks, cookieError: OFF_PLATFORM_LOGINS }
     } catch (err) {
       return { cookies: [], skippedCookies: 0, bookmarks, cookieError: err instanceof Error ? err.message : String(err) }
+    }
+  },
+
+  async borrow(browserId: ImportBrowserId): Promise<BrowserLease> {
+    const none: BrowserLease = { giveBack: () => {} }
+    const b = CHROMIUM_BROWSERS.find((x) => x.id === browserId)
+    const root = b ? rootOf(b) : null
+    if (process.platform !== 'win32' || !b?.winExe || !root) return none
+    try {
+      const { closeBrowserForImport, reopenBrowser } = await import('./chromeCookiesWin.ts')
+      const out = await closeBrowserForImport(b, root)
+      return {
+        ...(out.stillOpen ? { stillOpen: out.stillOpen } : {}),
+        // Reopen only a browser that was running and really exited: never one the
+        // user had shut, and never a second launch into one still running.
+        giveBack: () => {
+          if (out.closed && out.exePath) reopenBrowser(out.exePath)
+        }
+      }
+    } catch {
+      // Could not even load the closer: the reads go ahead and report a locked copy.
+      return none
     }
   }
 }
