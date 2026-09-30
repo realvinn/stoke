@@ -952,9 +952,10 @@ npm run verify:hub-client     # the hub CLIENT: what each tier offers and what n
                               # command, and hub.db holding no secret — and a hub that lies,
                               # through each device's injected fetch: a vault built around a new
                               # device's keys, a fake approver, another account's id, a list gone
-                              # back in time (republish) or replaced (refused), an old-epoch item
-                              # a removed device forged, a feed that never ends. Sixteen fixes
-                              # mutated back one at a time each turn it red
+                              # back in time (republish) or replaced (refused), a Kit join whose
+                              # post never lands, an old-epoch item a removed device forged, a
+                              # feed that never ends. Nineteen fixes mutated back one at a time
+                              # each turn it red
 npm run verify:install        # the one-line installer and the endpoint that serves it: the whole
                               # User-Agent matrix through the Worker's routing rule (PowerShell
                               # before anything browser-shaped, and HTML as the fallback), the

@@ -641,21 +641,6 @@ try {
   await A.svc.syncNow()
   check('A gets B’s VPS', (A.settings().hosts as { alias: string }[]).map((h) => h.alias).sort(), ['nuc', 'vps'])
 
-  /* ------------------------------------------ the joining device says the codes differ */
-  const E = device('stranger', {} as Partial<Settings>)
-  extras.push(E)
-  await E.svc.start()
-  await E.svc.setUrl(URL_)
-  await E.svc.signIn({ email: EMAIL, password: PASSWORD, label: 'Stranger' })
-  await E.svc.joinStart()
-  await A.svc.syncNow()
-  const reqE = A.svc.view().pairs.find((p) => p.device.label === 'Stranger')
-  await A.svc.approveStart(reqE?.pair ?? '')
-  await until('E shows a code', () => !!E.svc.view().join?.code)
-  check('“They don’t” on the joining device refuses the request there, and it takes nothing', [(await E.svc.joinConfirm(false)).ok, E.svc.view().join?.state, E.svc.view().phase], [true, 'refused', 'locked'])
-  await A.svc.syncNow()
-  check('and the request is gone from the approving device', A.svc.view().pairs.some((p) => p.pair === reqE?.pair), false)
-
   /* ------------------------------------------ a hub that plays the approver */
   const F = device('fake-approver', {} as Partial<Settings>)
   extras.push(F)
@@ -790,6 +775,31 @@ try {
   )
   check('and the alarm is gone', A.svc.view().alarm, null)
 
+  /* ------------------------------------------ the joining device says the codes differ, after the other added it */
+  const E = device('stranger', {} as Partial<Settings>)
+  extras.push(E)
+  await E.svc.start()
+  await E.svc.setUrl(URL_)
+  await E.svc.signIn({ email: EMAIL, password: PASSWORD, label: 'Stranger' })
+  await E.svc.joinStart()
+  await A.svc.syncNow()
+  const reqE = A.svc.view().pairs.find((p) => p.device.label === 'Stranger')
+  await A.svc.approveStart(reqE?.pair ?? '')
+  await until('E shows a code', () => !!E.svc.view().join?.code && !!A.svc.view().pairs.find((p) => p.pair === reqE?.pair)?.code)
+  check('A adds E', (await A.svc.approveConfirm(reqE?.pair ?? '')).ok, true)
+  await until('E sees that A added it', () => E.svc.view().join?.state === 'approved')
+  check(
+    '“They don’t” on the joining device takes nothing, even after the other side added it',
+    [(await E.svc.joinConfirm(false)).ok, E.svc.view().join?.state, E.svc.view().phase, E.seen.some((r) => r.includes('/v1/vault/wrap'))],
+    [true, 'refused', 'locked', false]
+  )
+  await E.svc.syncNow()
+  check('and once that request is over, a list naming E is the alarm it is', E.svc.view().alarm?.kind, 'chain')
+  const eId = E.svc.view().device?.id ?? ''
+  check('A removes E, added by mistake (E never had the Kit, so the Kit may be typed)', (await A.svc.revokeDevice(eId, { kit: made.kit })).ok, true)
+  await A.svc.syncNow()
+  check('and the request is gone from the approving device', A.svc.view().pairs.some((p) => p.pair === reqE?.pair), false)
+
   /* ------------------------------------------ an SSH key, opt-in */
   const key = syntheticKey('nuc-key', 'none')
   writeFileSync(join(A.ssh.dir, 'nuc_ed25519'), key.priv, { mode: 0o600 })
@@ -830,6 +840,24 @@ try {
   await C.svc.signIn({ email: EMAIL, password: PASSWORD, label: 'Laptop' })
   check('a Kit with a typo is caught before any crypto', (await C.svc.recover(made.kit.slice(0, -1) + (made.kit.endsWith('0') ? '1' : '0'))).ok, false)
   const epoch0 = A.svc.view().epoch
+  // Meanwhile A meets an older version of an item it has seen: the version alarm, and A stops syncing.
+  const aSeen = JSON.parse(readFileSync(join(A.userData, 'hub-state.json'), 'utf8')).seen as Record<string, number>
+  const seenId = Object.entries(aSeen).find(([, n]) => n >= 1)?.[0] ?? ''
+  A.intercept = (url, init) =>
+    v1(url) === '/v1/items' && (init.method ?? 'GET') === 'GET'
+      ? json({ items: [{ seq: 1, envelope: { v: 1, id: seenId, version: 0, epoch: epoch0, author: 'd0000000000000000', nonce: 'x', ct: 'x' } }], next: Number(url.searchParams.get('since') ?? 0), more: false, epoch: epoch0 })
+      : null
+  await A.svc.syncNow()
+  A.intercept = null
+  check('an older version of an item A has already seen is the version alarm', A.svc.view().alarm?.kind, 'version')
+  const cTry = await C.svc.recover(made.kit)
+  if (cTry.ok) secretsSeen.push(cTry.kit)
+  C.intercept = (url, init) => (v1(url) === '/v1/chain' && init.method === 'POST' ? json({ error: 'server-error', message: 'The hub fell over.' }, 500) : null)
+  const lost = await C.svc.confirmKit(cTry.ok ? kitGroup(cTry) : '')
+  C.intercept = null
+  await C.svc.syncNow()
+  check('a Kit join whose post never lands leaves no alarm behind, only a device still outside', [lost.ok, C.svc.view().alarm, C.svc.view().phase], [false, null, 'locked'])
+  C.seen.length = 0
   const cRec = await C.svc.recover(made.kit)
   check(
     'the right Kit is checked, and a NEW Kit made before anything is posted (a typed Kit may have been seen)',
@@ -841,6 +869,8 @@ try {
   check('confirming it joins C and retires the typed Kit, in one append', (await C.svc.confirmKit(kitGroup(cRec as { kit: string; group: number }))).ok, true)
   await until('C syncs', () => C.svc.view().lastSyncAt !== null)
   check('C has the account’s settings and key', [C.settings().themeId, C.settings().providers.anthropicApiKey], ['rose', CANARY_KEY])
+  const aBack = await A.svc.republish()
+  check('republishing after the list moved on takes it (it extends this computer’s own) and clears the alarm', [aBack.ok, A.svc.view().alarm, A.svc.view().epoch], [true, null, epoch0 + 1])
   await A.svc.syncNow()
   check('the device list is three, one epoch on', [A.svc.view().devices.length, A.svc.view().epoch], [3, epoch0 + 1])
   const kitCheck = device('kit-check', {} as Partial<Settings>)

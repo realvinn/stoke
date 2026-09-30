@@ -145,7 +145,7 @@ export function AccountSyncSettings(): React.JSX.Element {
           <RecoveryKit view={view} />
         </>
       )}
-      {view.phase !== 'off' && (view.phase !== 'signed-out' || view.device !== null) && <SignOut view={view} />}
+      {view.phase !== 'off' && (view.phase !== 'signed-out' || (view.device !== null && view.email !== '')) && <SignOut view={view} />}
     </>
   )
 }

@@ -632,7 +632,7 @@ export class HubService {
       const host = /^t3\/host\/(.+)$/.exec(h.group)?.[1]
       groups.set(h.group, {
         group: h.group,
-        label: host ? `SSH host ${this.hostName(host)}` : 'MCP servers (Settings › Agents)',
+        label: host ? (this.hostName(host) === host ? 'A new SSH host' : `SSH host ${this.hostName(host)}`) : 'MCP servers (Settings › Agents)',
         from: h.author ? this.deviceName(h.author, this.labelFromChain(h.author)) : 'another device',
         lines: [...h.lines],
         at: h.at
@@ -869,17 +869,17 @@ export class HubService {
     const cmp = compareToPinned(st.pinned, ok.links)
     if (cmp === 'rollback') this.raise('rollback', `The hub’s device list is shorter than the one this device last saw (${ok.seq + 1} entries, not ${(st.pinned?.seq ?? 0) + 1}). A restored backup looks like this; so does a hub going back in time. Nothing was synced.`)
     if (cmp === 'fork') this.raise('fork', 'The hub’s device list differs from the one this device last saw, at an entry both have. Nothing was synced.')
-    if (st.anchor && !anchorHolds(ok.links, st.anchor)) {
-      this.raise('fork', 'The hub’s device list does not hold the entry this computer joined the vault through. Nothing was synced.')
-    }
     /*
-     * A list that names this device when this device never entered it is a
-     * vault somebody else built around the keys it posted at sign-in. Not
-     * while a join or a Kit recovery is being finished here: those set the
-     * anchor from exactly this list, after their own checks.
+     * A list that names this device but does not hold its anchor is a vault
+     * somebody else built around the keys it posted at sign-in. Not while a
+     * join or a Kit recovery is being finished here: those set the anchor
+     * from exactly this list, after their own checks. (An anchor the list
+     * does not hold is otherwise only "not in the vault": an entry this
+     * device posted may not have landed, and the pin already makes any list
+     * that dropped a held anchor a rollback or a fork.)
      */
     const me = this.dev
-    if (!st.anchor && !opts.entering && !this.joining && me && ok.active.some((d) => d.id === me.id)) this.raise('chain', UNANCHORED_SENTENCE)
+    if (!anchorHolds(ok.links, st.anchor) && !opts.entering && !this.joinLive() && me && ok.active.some((d) => d.id === me.id)) this.raise('chain', UNANCHORED_SENTENCE)
     st.chain = entries as ChainEntry[]
     st.pinned = { seq: ok.seq, head: ok.head }
     this.verdict = ok
@@ -1136,6 +1136,12 @@ export class HubService {
       }
       return { ok: true }
     })
+  }
+
+  /** A join of this device's own still under way (a refused or expired one is over). */
+  private joinLive(): boolean {
+    const j = this.joining
+    return !!j && (j.state === 'waiting' || j.state === 'nonce' || j.state === 'revealed' || j.state === 'approved')
   }
 
   /** Whether an approver the hub names is the device the verified chain holds, keys and all (gotcha 140). */
@@ -1699,10 +1705,12 @@ export class HubService {
         if (!sv.ok) return { ok: false, message: `The hub’s device list does not check out (entry ${sv.at}: ${sv.reason}). Nothing was sent.` }
         served = sv
       }
-      if (!isPrefixOf(served?.links ?? [], mine.links)) {
+      // An earlier copy of this device's list gets the entries it lost; a list that has moved on from it needs none.
+      const behind = isPrefixOf(served?.links ?? [], mine.links)
+      if (!behind && !isPrefixOf(mine.links, served?.links ?? [])) {
         return { ok: false, message: 'The hub’s device list is not an earlier copy of this computer’s, so republishing cannot put it right. Nothing was sent. Sign out here and look at the hub.' }
       }
-      const missing = st.chain.slice(served ? served.seq + 1 : 0)
+      const missing = behind ? st.chain.slice(served ? served.seq + 1 : 0) : []
       if (missing.length) {
         const epoch = mine.epoch
         const vk = await this.vaultKey(mine, epoch)
@@ -1722,7 +1730,7 @@ export class HubService {
       }
       st.alarm = null
       const v = await this.refreshChain()
-      if (!v || v.head !== mine.head) throw new Stop('The hub took the entries back, but its device list still differs from this computer’s.')
+      if (!v || !isPrefixOf(mine.links, v.links)) throw new Stop('The hub took the entries back, but its device list still differs from this computer’s.')
       // Items: this device's value over any the hub serves older than it has seen.
       const seenBefore = { ...st.seen }
       const served2 = new Map<string, RemoteItem>()
