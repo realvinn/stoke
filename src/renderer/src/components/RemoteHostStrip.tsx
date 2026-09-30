@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { AttachAnswer, HubRemoteView, RemoteAskView } from '@shared/hub/remote'
+import { ONCE_GRACE_MS, type AttachAnswer, type HubRemoteView, type RemoteAskView } from '@shared/hub/remote'
 import { platformName } from '../lib/hubRemote'
 
 /*
@@ -13,7 +13,13 @@ import { platformName } from '../lib/hubRemote'
  * device, its platform and its signing-key fingerprint (the same one Account &
  * sync lists), so a device the owner does not recognise can be told apart.
  * An answer is claimed before the IPC (gotcha 20): a second press sends nothing.
+ *
+ * The tooltips say exactly what each answer reaches (`relayScopeVerdict`):
+ * under either, a relay reaches only the session it opened — never new
+ * sessions, folders or past conversations. Always only stops the question.
  */
+
+const GRACE_MIN = Math.round(ONCE_GRACE_MS / 60_000)
 
 interface Props {
   view: HubRemoteView
@@ -42,10 +48,21 @@ function Ask({ ask }: { ask: RemoteAskView }): React.JSX.Element {
       <span className="ssh-prompt-meta truncate mono" title="The asking device's signing-key fingerprint, as Settings › Account & sync lists it">
         {platformName(ask.platform)} · {ask.fingerprint} · {left}s
       </span>
-      <button className="btn" data-variant="primary" disabled={sent !== null} onClick={() => answer('once')} title="This session, this time: it can watch and type until the tab closes">
+      <button
+        className="btn"
+        data-variant="primary"
+        disabled={sent !== null}
+        onClick={() => answer('once')}
+        title={`This session, this time: ${ask.label} can watch and type in it until its tab closes, and a dropped link may reconnect within ${GRACE_MIN} minutes without asking again.`}
+      >
         Allow once
       </button>
-      <button className="btn" disabled={sent !== null} onClick={() => answer('always')} title={`Let ${ask.label} open any session here without asking. Take it back in Settings › Account & sync.`}>
+      <button
+        className="btn"
+        disabled={sent !== null}
+        onClick={() => answer('always')}
+        title={`Let ${ask.label} open any running session here, to watch and type in it, without asking. Nothing more: it cannot start sessions, make folders or read past conversations. Take it back in Settings › Account & sync.`}
+      >
         Always
       </button>
       <button className="btn" data-variant="ghost" disabled={sent !== null} onClick={() => answer('deny')}>

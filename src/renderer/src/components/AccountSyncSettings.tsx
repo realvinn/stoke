@@ -897,14 +897,15 @@ function OtherMachinesSettings(): React.JSX.Element {
           <span>Let my other devices see and open my sessions</span>
           <span className="field-hint">
             Your other signed-in computers list this one’s running sessions — a project’s folder name and the session’s title, never a
-            path — and can open one as a tab. Each open asks here first: Allow once, Always, or Deny. The list and the session travel
-            end to end encrypted between your devices; your hub passes them on and cannot read them.
+            path — and can open one as a tab, to watch and type in it (never to start sessions, make folders or read past
+            conversations). Each open asks here first: Allow once, Always, or Deny. The list and the session travel end to end
+            encrypted between your devices; your hub passes them on and cannot read them.
           </span>
         </span>
       </label>
       {remote.grants.length > 0 && (
         <>
-          <span className="field-hint">Always allowed here, without asking:</span>
+          <span className="field-hint">Always allowed to open this computer’s running sessions, without asking:</span>
           {remote.grants.map((g) => (
             <div key={g.device} className="settings-item-card" data-hub="grant" style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-8)' }}>
               <span style={{ flex: 1 }}>
