@@ -744,7 +744,10 @@ jobs:
           }
           if (-not $ok) { Get-Content (Join-Path $env:RUNNER_TEMP 'login.err') -ErrorAction SilentlyContinue; throw 'login server never came up' }
           $udd = Join-Path $env:RUNNER_TEMP 'seed-udd'
-          "SEED_PROFILE=$(Join-Path $udd 'Default')" >> $env:GITHUB_ENV
+          # A local var, not $env:SEED_PROFILE: GITHUB_ENV only reaches LATER steps,
+          # so the same step still reads it null. (Not $profile — that name is taken.)
+          $seedProfile = Join-Path $udd 'Default'
+          "SEED_PROFILE=$seedProfile" >> $env:GITHUB_ENV
           # Start-Process does not quote array elements: embed quotes for the path.
           $p = Start-Process -FilePath $env:CHROME_EXE -PassThru -ArgumentList @(
             '--headless=new', "--user-data-dir=`"$udd`"", '--profile-directory=Default',
@@ -755,8 +758,8 @@ jobs:
           if (-not $p.WaitForExit(30000)) { throw 'Chrome did not exit after Browser.close' }
           # Record what Chrome wrote: v20 is app-bound, v10 plain DPAPI. Either way
           # the reader must hand it back decrypted; the tag is for the record.
-          $db = Join-Path $env:SEED_PROFILE 'Network\Cookies'
-          if (-not (Test-Path $db)) { $db = Join-Path $env:SEED_PROFILE 'Cookies' }
+          $db = Join-Path $seedProfile 'Network\Cookies'
+          if (-not (Test-Path $db)) { $db = Join-Path $seedProfile 'Cookies' }
           $copy = Join-Path $env:RUNNER_TEMP 'cookies-peek.sqlite'
           Copy-Item $db $copy -Force
           node scripts/probe/cookie-prefix.mjs $copy
