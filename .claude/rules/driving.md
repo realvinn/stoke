@@ -1,6 +1,9 @@
 ---
 paths:
   - "scripts/cdp-eval.mjs"
+  - "scripts/cdp-lib.mjs"
+  - "scripts/probe-e2e.mts"
+  - "scripts/probe/**"
   - "scripts/verify-selection.mts"
   - "scripts/make-icon.cjs"
   - ".claude/commands/mac-release.md"
@@ -115,6 +118,26 @@ genuinely different code paths.
 > the way Claude Code 2.1.285's executor does — the payload file DOES appear, and the hooks append,
 > under all three (gotchas 61, 123). What is still unproven is the other half: a real `claude` on
 > Windows choosing its shell and running the command, and the installed app around it.
+
+> **Checked on 2026-09-30 — a PACKAGED Stoke driven on every target** (ci.yml `probe`,
+> `scripts/probe-e2e.mts`; runs 36701034597 and after). Each release target was built with `--dir`
+> on its own runner and driven over CDP with stub agents: Linux x64 (the first Linux Stoke ever
+> launched) 74/74 against a Debian sshd container, macOS arm64 74/74 against the runner's own sshd
+> on loopback (Apple's ssh client, a password prompt, a key enrollment, a tmux reattach after a
+> relaunch), macOS x64 and Windows x64 and arm64 63/63 (no sshd there).
+> What that proves on each: `stoke --new` as a second instance opens the tab; typing through xterm
+> reaches the process; the packaged binary's runAsNode shim writes the statusLine payload and the
+> hooks land (on Windows through Git Bash, the CLI's preferred shell — so the installed app's half
+> of gotcha 61 is no longer unproven, though a REAL `claude` choosing that shell still is); three
+> agents side by side, each handed the browser MCP as agentLaunchPlan says and able to read a
+> logged-in page through it; a second browser profile without the cookie; phone access and its 43
+> security checks; a graceful quit — **SIGTERM is Electron's graceful quit on macOS and Linux**
+> (exit 0, before-quit ran: the session's statusLine files were released and every stub got its
+> exit marker), and on Windows `window.stoke.window.close()` does the same (conpty's close reaches a
+> node child as SIGHUP); the cookie stored with an empty `value` and a non-empty
+> `encrypted_value`; a relaunch that hands Claude `--resume <the same id>`. Still NOT proven by it:
+> any real agent CLI (the stubs speak Stoke's side of each contract, not the vendor's), the macOS
+> native chrome, and real OS keystrokes — CDP's `Input` events are what typed.
 
 ## 110. `require` from a main-process inspector exists only during the evaluation, and the error it throws later is a modal nobody can click
 

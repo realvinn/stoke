@@ -308,6 +308,12 @@ Three locks:
   Claude id with no transcript and a 400 with no valid id, before anything spawns. A Resume must
   never silently become a new conversation.
 
+> **Checked on a real Windows runner on 2026-09-30** (ci.yml `probe`, windows-latest, run
+> 36701034597): the descent fallback WORKS there. The packaged app started a stub `claude` through a
+> `.cmd` launcher, so the pty's child was cmd.exe and the registry file was named after node's pid,
+> a grandchild; within the probe's 20 s `session.states()` named the tab. So the CIM process table
+> answers and `descendsFrom` walks it. Still unproven: a real `claude.cmd` (npm) install.
+
 ## 103. A whole-transcript parse is one block of the main process, and two pollers ran it on every change
 
 **`parseSession` folded a whole transcript in one synchronous block, and two callers ran it over

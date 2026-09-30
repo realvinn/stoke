@@ -91,8 +91,9 @@ src/shared/          compiled by BOTH tsconfigs, so no `node:` imports (browser-
                      in TERMINAL_DEFAULTS/WALLPAPER_DEFAULTS AND a line in clampTerminal/
                      clampWallpaper (all in ui.ts) in the same change: the clamps rebuild the
                      object from named keys, so a field they miss hydrates as undefined
-scripts/             verify-*.mts suites, ci-verify.mjs, gen-themes.mts, cdp-eval.mjs (picks the
-                     target by its window.stoke object, never by URL), mac-signing-secrets.sh
+scripts/             verify-*.mts suites, ci-verify.mjs, gen-themes.mts, cdp-eval.mjs over
+                     cdp-lib.mjs (picks the target by its window.stoke object, never by URL),
+                     probe-e2e.mts + probe/ (ci.yml's packaged-app probe), mac-signing-secrets.sh
 install/             the one-line installer: install.sh (macOS/Linux), install.ps1 (Windows,
                      never run on one) and index.html. Each script's whole body is inside a
                      function called on the LAST line, because a piped `sh` executes as it reads
@@ -212,6 +213,8 @@ rule file named on the group line.
   script rather than a copy, under every shell: keep `setopt sh_word_split` for zsh, which
   parses the script perfectly and could not run a line of it. Put the renamed-aside
   `/Applications/Stoke.app` back whenever the new copy does not land.
+- **134.** Never trust a root run in Docker for 76: AppRun adds `--no-sandbox` when `unshare -Ur`
+  fails, which it does there — `verify:install` holds the launcher's root branch. No-FUSE advice is `fuse3`.
 - **100.** Document Windows as `powershell -ExecutionPolicy Bypass -c "irm … | iex"` (cmd.exe has no
   `irm`), keep install.sh's `windows_handoff` for Git Bash, and remember the page needs `deploy:install`.
 - **77.** After `deploy:install`, expect the custom domain to be `enabled` with a `cert_id` while
@@ -558,14 +561,18 @@ rule file named on the group line.
 - For UI work, launch with `--remote-debugging-port` and drive it over CDP
   (`scripts/cdp-eval.mjs`); screenshots are the only reliable proof that the terminal and panels
   render (gotchas 5, 6).
+- ci.yml's non-gating `probe` job builds every target with `--dir` and drives the PACKAGED app
+  with stub agents (`scripts/probe-e2e.mts`; `--dev --work <dir>` rehearses it on the unpackaged
+  build). It proves Stoke's side of each agent contract, never the real CLI's.
 - A suite that asserts a known bug as expected turns the regression into a green run (gotchas
   10, 61): fix the assertion in the same change as the bug.
 - Still unverified: macOS native chrome (the `hiddenInset` traffic-light padding's full-screen
   signal from main), the login-shell probe *succeeding* from a Finder/Dock launch (gotcha 52
   measured that launch's PATH and the failure path), real OS keystrokes for the shortcuts — and
-  **no recent round of work has run on Windows**: treat the statusLine/hook shim there as
-  unverified, with and without Git for Windows (gotcha 61). What has and has not
-  been proven, per platform: `.claude/rules/driving.md`.
+  on Windows the statusLine/hook shim has run inside the packaged app only under a stub CLI,
+  through Git Bash (the probe): a real `claude` choosing its shell, and a machine with no Git for
+  Windows, are still unproven (gotcha 61). What has and has not been proven, per platform:
+  `.claude/rules/driving.md`.
 
 ## Recording a new gotcha
 

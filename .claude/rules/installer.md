@@ -12,6 +12,7 @@ paths:
   - "wrangler.jsonc"
   - "scripts/verify-install.mts"
   - "scripts/serve-install.mjs"
+  - "scripts/probe/debian.sh"
 ---
 
 # The one-line installer
@@ -530,3 +531,39 @@ which stays a deliberate, manual act (the Worker serves what was embedded at the
 > `scripts/serve-install.mjs` now rewrites that one assignment to point at itself and refuses to
 > start if the line is gone. Every Git Bash user on arm64 still gets the x64 build until
 > `npm run deploy:install`.
+
+## 134. A root run inside Docker cannot fail the way a root host does, and the no-FUSE advice was for the wrong runtime
+
+**The Debian probe legs (ci.yml `debian`, a bare `debian:bookworm` container, as root) passed every
+`--no-sandbox` check they could make — and could not have failed one.** AppRun adds `--no-sandbox`
+by itself whenever `unshare -Ur true` fails, and inside Docker it fails — measured, the container
+said so (Docker's default seccomp profile refusing user namespaces is the usual cause; not checked
+here). On a real host, as root,
+the same probe SUCCEEDS (gotcha 76), AppRun adds nothing, and only the launcher stands between the
+user and Chromium's `LOG(FATAL)`. So in a container a flag on the command line may be AppRun's, and
+a green root run proves nothing about the launcher's root branch. `debian.sh` records which case it
+is in; `verify:install`, which runs the shipped launcher with `id` shimmed to 0, is what holds that
+branch. The same probe DID show the launcher starting the app as root (with FUSE), quitting it on
+SIGTERM, and booting it to `window.stoke.platform === "linux"` with and without FUSE.
+
+What it found, on the no-FUSE leg, was the advice around that branch:
+
+- **`--appimage-extract-and-run` bypassed the root branch.** The launcher passed every
+  `--appimage-*` argument straight to the AppImage, which is right for the commands (extract, print
+  the offset) and wrong for the one that is a LAUNCH — the very route install.sh told a user without
+  FUSE to take. As root on a real host that would be the `LOG(FATAL)` again (inferred from 76's
+  AppRun reading; the container above cannot show it, and no real root host has run it). The launcher now adds
+  `--no-sandbox` after that flag for uid 0 (the runtime reads its options from the FIRST argument
+  only); `verify:install` fails the old script on it.
+- **"install libfuse2" was advice for the other runtime.** The AppImage carries the static type-2
+  runtime (`toolsets.appimage`), which has libfuse built in and needs only a `fusermount` binary —
+  libfuse2 ships none. Without FUSE the runtime says `No suitable fusermount binary found on the
+  $PATH` (exit 127, which the launcher shows); with `fuse3` installed the same AppImage mounted and
+  ran. install.sh now says `sudo apt install fuse3`.
+
+Two container artefacts that look like Stoke bugs and are not: the FUSE daemon exits with the app
+and stays `<defunct>` (the container's PID 1 is not an init and never reaps), and under
+extract-and-run the AppImage runtime keeps the app as a CHILD, so a SIGTERM to the runtime's pid
+orphans the app rather than quitting it — signal the browser process (`browser_pid` in debian.sh).
+Unproven still: a root install on a real Debian host, and Debian's own `fuse` (FUSE 2) package's
+`fusermount` in place of fuse3's.
