@@ -222,3 +222,55 @@ export function cdpCookieToImported(c: CdpCookie, nowSeconds: number): ImportedC
   if (host.startsWith('.')) cookie.domain = host
   return cookie
 }
+
+/**
+ * Whether an App Paths registry hit actually belongs to THIS browser.
+ *
+ * Chrome Stable, Chrome Beta and Chromium all ship an exe named `chrome.exe`,
+ * and Chrome's installer writes ONE shared `App Paths\chrome.exe` value for
+ * whichever channel installed last. So a lookup by exe NAME can hand back a
+ * different channel's binary — and launching THAT against this channel's profile
+ * decrypts nothing, because the app-bound path check is per-binary (each
+ * browser's own signed exe, gotcha 130). Accept the registry result only when it
+ * ends with one of this browser's own install subpaths (case-insensitively,
+ * separators normalised). With no known subpaths there is nothing to check it
+ * against, so it is accepted as the only lead there is.
+ */
+export function appPathMatchesBrowser(exePath: string, installSubpaths: string[]): boolean {
+  if (installSubpaths.length === 0) return true
+  const lower = exePath.toLowerCase().replace(/\//g, '\\')
+  return installSubpaths.some((s) => lower.endsWith(s.toLowerCase()))
+}
+
+/** One cookie's identity across the two views: `${host_or_domain}\t${name}`. */
+export function cookieIdentity(hostOrDomain: string, name: string): string {
+  return `${hostOrDomain}\t${name}`
+}
+
+/**
+ * How many app-bound (v20) cookies the browser did NOT hand back over CDP.
+ *
+ * The Windows reader launches the browser against a copy and takes whatever
+ * `Storage.getCookies` returns as the whole answer — but a cookie the browser
+ * cannot decrypt when it loads the store is silently DROPPED from that list. It
+ * never surfaces as a `skipped` either: CDP only ever returns cookies it already
+ * decrypted, so `cdpCookieToImported`'s `undecryptable` branch (a non-string
+ * value) can never fire for a real one. The copied DB is therefore the ground
+ * truth: every v20 row whose `(host_key, name)` is absent from what CDP returned
+ * is a login that stayed sealed. Counting them is the only way to turn a silent
+ * 0-login "success" — the exact failure a non-default `--user-data-dir` can
+ * cause, since Chrome may refuse app-bound decryption there — into an honest
+ * error. v10 rows are plain DPAPI and out of scope; a legitimately dropped one
+ * (expired, GC'd on load) is not counted, so the signal is app-bound only.
+ */
+export function sealedCookiesMissed(
+  rows: { host_key: string; name: string; tag: string }[],
+  cdpIdentities: Set<string>
+): number {
+  let sealed = 0
+  for (const r of rows) {
+    if (r.tag !== 'v20') continue
+    if (!cdpIdentities.has(cookieIdentity(r.host_key, r.name))) sealed++
+  }
+  return sealed
+}

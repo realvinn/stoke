@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { basename, dirname, join, win32 as winPath } from 'node:path'
 import { promisify } from 'node:util'
 import { WebSocket } from 'ws'
-import { cdpCookieToImported } from './chromeCookies.ts'
+import { appPathMatchesBrowser, cdpCookieToImported, cookieIdentity, sealedCookiesMissed } from './chromeCookies.ts'
 import type { CdpCookie } from './chromeCookies.ts'
 import type { ChromiumBrowser } from './chromiumProfiles.ts'
 import type { ImportBrowserId, ImportedCookie } from './types.ts'
@@ -27,8 +27,10 @@ import type { ImportBrowserId, ImportedCookie } from './types.ts'
  *      stub that would fail the elevation service's path check anyway.
  *   2. Copy the minimum — `Local State` (carries the wrapped key) and the
  *      profile's `Network/Cookies` (+ its -wal/-journal) — into a throwaway
- *      user-data-dir. The ABE key is bound to the machine, the Windows user and
- *      the exe path, NOT to the profile directory, so the copy still decrypts.
+ *      user-data-dir. The INTENT is that the ABE key is bound to the machine, the
+ *      Windows user and the exe path, not the profile directory, so the copy
+ *      still decrypts — UNPROVEN for v20 on real Windows (see gotcha 130); step 5
+ *      reports any app-bound row the browser then refuses to hand back.
  *   3. Launch that .exe HEADLESS against the copy with a loopback debugging
  *      port. Chrome 136+ ignores the debug flag on the DEFAULT dir; a non-standard
  *      --user-data-dir is exactly why the copy is required (and why the copy
@@ -36,6 +38,10 @@ import type { ImportBrowserId, ImportedCookie } from './types.ts'
  *   4. `Storage.getCookies` returns already-decrypted values, HttpOnly included,
  *      which map to `ImportedCookie` by the same gotcha-107 rules as the SQLite
  *      path (host-only → no domain, samesite, 30-day session expiry, skip CHIPS).
+ *      A cookie the browser could NOT decrypt is dropped from that list with no
+ *      error, so before the launch the copied DB's app-bound (v20) rows are noted
+ *      (`readCookieTags`) and any that do not come back are reported, not lost
+ *      (`sealedCookiesMissed`) — the whole answer is the DB, not what CDP returns.
  *   5. Always close the browser, kill the child and delete the copy (finally):
  *      the copy holds a decryptable jar, so its removal is a security step.
  *
@@ -128,12 +134,18 @@ async function appPathsExe(exeName: string): Promise<string | null> {
  */
 export async function locateChromiumExe(browser: Pick<ChromiumBrowser, 'id' | 'winExe'>): Promise<string | null> {
   if (!browser.winExe) return null
+  const subpaths = INSTALL_SUBPATHS[browser.id] ?? []
   const viaReg = await appPathsExe(browser.winExe)
-  if (viaReg && !isWindowsAppsAlias(viaReg) && (await isFile(viaReg))) return viaReg
+  // Accept the registry hit only if it is THIS browser's own binary: chrome.exe
+  // is shared by Stable/Beta/Chromium under one App Paths key, so the lookup can
+  // point at another channel's exe, which decrypts nothing here (gotcha 130).
+  if (viaReg && !isWindowsAppsAlias(viaReg) && appPathMatchesBrowser(viaReg, subpaths) && (await isFile(viaReg))) {
+    return viaReg
+  }
   const bases = [process.env['ProgramFiles'], process.env['ProgramFiles(x86)'], process.env.LOCALAPPDATA].filter(
     (b): b is string => Boolean(b)
   )
-  for (const sub of INSTALL_SUBPATHS[browser.id] ?? []) {
+  for (const sub of subpaths) {
     for (const base of bases) {
       const p = winPath.join(base, sub)
       if (!isWindowsAppsAlias(p) && (await isFile(p))) return p
@@ -170,7 +182,7 @@ async function copyMaybeLocked(from: string, to: string): Promise<void> {
  * (`<copy>/Local State`, `<copy>/<Profile>/Network/Cookies`). Returns the copy
  * root and the profile subdirectory name for `--profile-directory`.
  */
-async function copyProfile(profileDir: string): Promise<{ copyDir: string; profileName: string }> {
+async function copyProfile(profileDir: string): Promise<{ copyDir: string; profileName: string; cookieCopyPath: string }> {
   const root = dirname(profileDir)
   const profileName = basename(profileDir)
   const localState = join(root, 'Local State')
@@ -189,21 +201,52 @@ async function copyProfile(profileDir: string): Promise<{ copyDir: string; profi
   const cookieSrc = join(profileDir, ...cookieRel)
 
   const copyDir = await mkdtemp(join(tmpdir(), 'stoke-winimport-'))
+  const cookieCopyPath = join(copyDir, profileName, ...cookieRel)
   try {
     await copyMaybeLocked(localState, join(copyDir, 'Local State'))
-    const cookieDst = join(copyDir, profileName, ...cookieRel)
-    await mkdir(dirname(cookieDst), { recursive: true })
-    await copyMaybeLocked(cookieSrc, cookieDst)
+    await mkdir(dirname(cookieCopyPath), { recursive: true })
+    await copyMaybeLocked(cookieSrc, cookieCopyPath)
     // Sidecars are best-effort: a hot WAL carries committed rows not yet folded in,
     // but an absent one is normal, not a lock.
     for (const suffix of ['-wal', '-journal']) {
-      await copyFile(cookieSrc + suffix, cookieDst + suffix).catch(() => {})
+      await copyFile(cookieSrc + suffix, cookieCopyPath + suffix).catch(() => {})
     }
   } catch (err) {
     await rm(copyDir, { recursive: true, force: true }).catch(() => {})
     throw err
   }
-  return { copyDir, profileName }
+  return { copyDir, profileName, cookieCopyPath }
+}
+
+/**
+ * The `(host_key, name, tag)` of every row in the copied cookie DB, read BEFORE
+ * the browser reopens the copy. `tag` is the 3-byte scheme prefix — `v10` plain
+ * DPAPI, `v20` app-bound — used only to tell which un-returned rows were sealed
+ * (`sealedCookiesMissed`). Best-effort: a read failure returns null, and the
+ * import proceeds without the sealed-count check rather than throwing.
+ */
+async function readCookieTags(dbPath: string): Promise<{ host_key: string; name: string; tag: string }[] | null> {
+  try {
+    // Lazy, like chrome.ts: only an import ever needs SQLite (gotcha 40).
+    const { DatabaseSync } = await import('node:sqlite')
+    // Read-write on the private copy, as chrome.ts does: a read-only open fails
+    // outright on a hot journal, which a fresh copy of a live DB can carry.
+    const db = new DatabaseSync(dbPath)
+    try {
+      const rows = db
+        .prepare('SELECT host_key AS host_key, name AS name, hex(substr(encrypted_value, 1, 3)) AS tag FROM cookies')
+        .all() as { host_key: string; name: string; tag: string | null }[]
+      return rows.map((r) => ({
+        host_key: String(r.host_key ?? ''),
+        name: String(r.name ?? ''),
+        tag: r.tag ? Buffer.from(String(r.tag), 'hex').toString('latin1') : ''
+      }))
+    } finally {
+      db.close()
+    }
+  } catch {
+    return null
+  }
 }
 
 /** Read the first line (the port) of the browser's DevToolsActivePort file once it appears. */
@@ -295,7 +338,9 @@ export interface WinReadOptions {
 
 /**
  * Read one Windows Chrome-family profile's cookies by driving the browser's own
- * binary. Returns already-decrypted, mapped cookies; throws an Error whose
+ * binary. Returns already-decrypted, mapped cookies; a `cookieError` is set (with
+ * the cookies that DID come over) when some app-bound logins could not be
+ * decrypted — never a silent short read (gotcha 130). Throws an Error whose
  * message is fit to show the user (bookmarks still import around it), or a
  * `ProfileLockedError` when the profile files cannot be copied.
  */
@@ -303,13 +348,13 @@ export async function readChromeCookiesWin(
   browser: ChromiumBrowser,
   profileDir: string,
   opts: WinReadOptions = {}
-): Promise<{ cookies: ImportedCookie[]; skipped: number }> {
+): Promise<{ cookies: ImportedCookie[]; skipped: number; cookieError?: string }> {
   const exePath = opts.exePath ?? (await locateChromiumExe(browser))
   if (!exePath) {
     throw new Error(`Stoke could not find ${browser.name}'s program on this PC, so it could not open its logins.`)
   }
 
-  let copy: { copyDir: string; profileName: string }
+  let copy: { copyDir: string; profileName: string; cookieCopyPath: string }
   try {
     copy = await copyProfile(profileDir)
   } catch (err) {
@@ -322,7 +367,11 @@ export async function readChromeCookiesWin(
     }
     throw err
   }
-  const { copyDir, profileName } = copy
+  const { copyDir, profileName, cookieCopyPath } = copy
+  // Ground truth BEFORE the browser reopens the copy: which rows are app-bound.
+  // If any v20 row does not come back over CDP, the browser dropped it as
+  // undecryptable and we must say so rather than report a silent short read.
+  const dbRows = await readCookieTags(cookieCopyPath)
   let child: ChildProcess | null = null
   try {
     const args = [
@@ -356,9 +405,13 @@ export async function readChromeCookiesWin(
     const now = Math.floor(Date.now() / 1000)
     const cookies: ImportedCookie[] = []
     let skipped = 0
+    // What the browser handed back, by identity, so a v20 row it silently dropped
+    // (could not decrypt) can be counted against the DB it was read from.
+    const cdpIdentities = new Set<string>()
     await withBrowserWs(wsUrl, async (send) => {
       const result = (await send('Storage.getCookies')) as { cookies?: CdpCookie[] }
       for (const c of result.cookies ?? []) {
+        cdpIdentities.add(cookieIdentity(String(c.domain ?? ''), String(c.name ?? '')))
         const mapped = cdpCookieToImported(c, now)
         if (typeof mapped === 'string') skipped++
         else cookies.push(mapped)
@@ -366,7 +419,15 @@ export async function readChromeCookiesWin(
       // Graceful close flushes the browser and ends its child processes.
       await send('Browser.close').catch(() => {})
     })
-    return { cookies, skipped }
+    // A v20 row the browser did not return is a login it could not decrypt here.
+    // Report it (with whatever DID come over) instead of a silent success — the
+    // failure a copied, non-default profile dir can cause on real Windows.
+    const sealed = dbRows ? sealedCookiesMissed(dbRows, cdpIdentities) : 0
+    const cookieError =
+      sealed > 0
+        ? `${sealed} ${sealed === 1 ? 'login is' : 'logins are'} sealed with app-bound encryption that ${browser.name} would not open for Stoke on this PC, so ${sealed === 1 ? 'it' : 'they'} stayed behind. Any others came over; you stay signed in in ${browser.name}.`
+        : undefined
+    return { cookies, skipped, cookieError }
   } finally {
     if (child) {
       // A graceful Browser.close ends the whole tree; give it a moment, then insist.

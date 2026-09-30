@@ -281,8 +281,8 @@ export const chromeSource: BrowserSource = {
         // back. Loaded here, not at the top: `ws` and the launch code only ever
         // matter for a Windows login import (gotcha 40).
         const { readChromeCookiesWin } = await import('./chromeCookiesWin.ts')
-        const { cookies, skipped } = await readChromeCookiesWin(b, dir)
-        return { cookies, skippedCookies: skipped, bookmarks }
+        const { cookies, skipped, cookieError } = await readChromeCookiesWin(b, dir)
+        return { cookies, skippedCookies: skipped, bookmarks, cookieError }
       }
       // Linux, or a Windows browser whose binary Stoke does not know: bookmarks
       // stand, logins are reported left behind.
