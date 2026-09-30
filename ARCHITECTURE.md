@@ -258,6 +258,11 @@ attaches to a PTY, replaying its scrollback first.
   127.0.0.1. `remote:openOnPhone` is the one-press path: it picks the tailnet when Tailscale is
   up and the LAN otherwise, mints a key if there is none, starts, and pushes `settingsChanged`.
   A running server is restarted from the `settings:set` handler when a bound field changes.
+- **Dictation is proxied, and its address is read per clip.** `/api/transcribe` hands the
+  phone's WAV to `RemoteDeps.transcribe`, which calls `stt.ts` with `voice.sttUrl` (Settings →
+  Voice) as it stands now. The server's own config, captured at start, holds nothing about
+  speech: it used to hold the address, and since the speech server is not a bound field the
+  phone kept the old one until Phone access was turned off and on.
 - **The phone reflows the desktop terminal by default, and puts it back.** `Fit` is on unless
   the user turned it off, so opening a session from a phone fits the PTY to the phone's screen
   and the desktop's xterm follows. The server remembers the desktop's own size the first time a
@@ -585,7 +590,9 @@ npm run verify:worklog-recall   # the read-only board read, its parse and its ca
 npm run verify:worklog-autoscan # when a session is scanned without being asked
 npm run verify:ssh            # ssh argv, ~/.ssh/config parsing, the remote transcript fetch
 npm run verify:remote         # phone access: where the link points and how it says it gets
-                              # there, the LAN interface ranking, what a dead tunnel reports
+                              # there, the LAN interface ranking, what a dead tunnel reports,
+                              # and stt.ts against fake sidecars on loopback port 0: the
+                              # address per call, and `unset` (503) vs a failed server (502)
 npm run verify:phone-ui       # the phone UI's decisions: list sections, answer options read
                               # off the screen, the resize policy, queued sends, connect input
 npm run verify:installer-art  # the committed installer bitmaps: BMP3 headers decoded by hand,
@@ -774,7 +781,9 @@ src/main/         Electron main process
                     `home` is a parameter so verify:agents runs it on a fake tree
   stt.ts            the one place Stoke talks to the speech sidecar. Both the desktop and
                     the phone route through it, because "only main may reach it" is the
-                    sidecar's whole authentication story
+                    sidecar's whole authentication story. Both callers read `voice.sttUrl`
+                    per call (`CH.transcribe`, `RemoteDeps.transcribe`), and `unset` is what
+                    turns "no server set" into the phone's 503 rather than a 502
   audio/            reads the default capture device, to warn about virtual cables
   worklog/          the Notion/ClickUp review queue
     gate.ts           which project groups are watched

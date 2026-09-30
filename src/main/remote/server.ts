@@ -19,7 +19,7 @@ import type { LiveSessionState } from '@shared/types'
 import type { ContextWatcher } from '../context.ts'
 import type { PtyManager, StartResult } from '../pty.ts'
 import type { Transcript } from '../sessionFile.ts'
-import { MAX_AUDIO_BYTES, transcribe } from '../stt.ts'
+import { MAX_AUDIO_BYTES, type SttResult } from '../stt.ts'
 import { CODING_CLIS } from '../../shared/codingClis.ts'
 import { isTailnetAddress, tailnetAddress } from './link.ts'
 import {
@@ -150,6 +150,17 @@ export interface RemoteDeps {
   /** `settings.defaults`, with `bypassPermissions` never offered to the phone. */
   defaults: () => { permissionMode: PermissionMode; model: string; effort: EffortLevel }
   sttStatus: () => Promise<'ready' | 'down' | 'off'>
+  /**
+   * A dictated clip to text, through `stt.ts` with the speech server read from
+   * settings on THIS call (`voice.sttUrl`).
+   *
+   * A dep rather than an address in `RemoteConfig`, because the config is
+   * captured when the server starts and the speech server is not a field the
+   * server binds or checks — so it never restarts for it (`shouldRestartRemote`)
+   * and the phone kept posting to the old address until Phone access was turned
+   * off and on, while the desktop's dictation followed a change at once.
+   */
+  transcribe: (wav: Uint8Array) => Promise<SttResult>
 }
 
 /** One `/api/sessions` (and `/ws/events`) row. */
@@ -252,17 +263,11 @@ export interface RemoteConfig {
    * do not let it justify a weaker token or a wider bind.
    */
   requireAccessHeader: boolean
-  /**
-   * Speech-to-text sidecar, e.g. `http://127.0.0.1:17890`.
-   *
-   * Empty does not hide the microphone — the button is gated on browser
-   * capability alone — it fails at press time with a 503 from `/api/transcribe`.
-   *
-   * Stoke proxies to it rather than letting the phone reach it directly: the
-   * sidecar has no authentication of its own, so publishing it through the
-   * tunnel would put an open transcription endpoint on the internet.
+  /*
+   * No speech server here. It used to be `sttUrl`, captured with the rest of
+   * this at start, so the phone kept the address it started with; it is read
+   * per request through `RemoteDeps.transcribe` now.
    */
-  sttUrl: string
 }
 
 export interface RemoteStatus {
@@ -1017,15 +1022,17 @@ export class RemoteServer {
         }
         /*
          * The call itself lives in ../stt.ts, which the desktop's dictation
-         * uses too. Only the status code is decided here, because only this
-         * caller speaks HTTP: 503 when no server is configured — the shipped
-         * state, and not this request's fault — 502 for anything that went
-         * wrong reaching one.
+         * uses too, and the address is read from settings on this request
+         * (`RemoteDeps.transcribe`), so the phone follows a change made in
+         * Settings → Voice without the server restarting. Only the status code
+         * is decided here, because only this caller speaks HTTP: 503 when no
+         * server is configured — not this request's fault — 502 for anything
+         * that went wrong reaching one. `unset` comes from the same read as the
+         * call, so the two can never describe different addresses.
          */
-        const result = await transcribe(this.config?.sttUrl, new Uint8Array(audio))
+        const result = await this.deps.transcribe(new Uint8Array(audio))
         if (!result.ok) {
-          const configured = Boolean(this.config?.sttUrl?.trim())
-          return this.json(res, { error: result.error }, setCookie, configured ? 502 : 503)
+          return this.json(res, { error: result.error }, setCookie, result.unset ? 503 : 502)
         }
         return this.json(res, { text: result.text }, setCookie)
       }

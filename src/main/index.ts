@@ -875,7 +875,7 @@ const remoteState = async (): Promise<RemoteState> => {
     tailnet: tailnetAddress(),
     qr,
     setup: tunnel.setupCommands(cfg.tunnelName, cfg.hostname, cfg.port),
-    stt: await probeStt(cfg.sttUrl)
+    stt: await probeStt(getSettings().voice.sttUrl)
   }
 }
 
@@ -933,11 +933,17 @@ function remoteDeps(): RemoteDeps {
       }
     },
     sttStatus: async () => {
-      const url = getSettings().remote.sttUrl
+      const url = getSettings().voice.sttUrl
       if (!url.trim()) return 'off'
       const result = await probeStt(url)
       return result === 'up' ? 'ready' : 'down'
-    }
+    },
+    /*
+     * Read per call, like the desktop's `CH.transcribe` below, so an address
+     * changed in Settings → Voice reaches the phone's next clip without Phone
+     * access being turned off and on.
+     */
+    transcribe: (wav) => transcribe(getSettings().voice.sttUrl, wav)
   }
 }
 
@@ -2704,7 +2710,7 @@ function registerIpc(): void {
     if (remote && shouldRestartRemote(prev.remote, next.remote, remote.status())) {
       await remote.start(next.remote)
       pushRemote()
-    } else if (prev.remote.sttUrl !== next.remote.sttUrl) {
+    } else if (prev.voice.sttUrl !== next.voice.sttUrl) {
       sttProbe = null
       pushRemote()
     } else if (prev.remote.reach !== next.remote.reach) {
@@ -3042,7 +3048,7 @@ function registerIpc(): void {
    * the address takes effect on the next dictation instead of the next launch.
    */
   ipcMain.handle(CH.transcribe, async (_e, wav: ArrayBuffer) => {
-    return transcribe(getSettings().remote?.sttUrl, new Uint8Array(wav))
+    return transcribe(getSettings().voice.sttUrl, new Uint8Array(wav))
   })
 
   /* ------------------------------------------------------------- clipboard */
