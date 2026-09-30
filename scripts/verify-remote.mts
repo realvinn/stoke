@@ -1067,6 +1067,14 @@ console.log('\nCloudflare Access tokens are verified, not just present (gotcha 1
     check('a URL is not a hostname', (await discoverAccess('https://x.example.com/a', { fetch: never, now })).ok, false)
   }
 
+  console.log('  the setup check sees Access with Managed OAuth')
+  check(
+    "a 401 naming Access's protected-resource metadata is Access, not Stoke",
+    classifyHostname(401, null, '', 'Bearer realm="OAuth", resource_metadata="https://h/.well-known/cloudflare-access-protected-resource/"'),
+    'access'
+  )
+  check('a plain 401 is still our own server asking for the key', classifyHostname(401, null, '', null), 'ok')
+
   console.log('  a policy change restarts a running server, dropping every socket')
   {
     const base = {

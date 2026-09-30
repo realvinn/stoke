@@ -5,6 +5,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { findCloudflared, installHint } from './tunnel.ts'
+import { BROWSER_PROBE_HEADERS } from './accessJwt.ts'
 
 /**
  * Setting up a Cloudflare Tunnel, as five steps that can each be looked at.
@@ -176,12 +177,21 @@ export type HostnameVerdict = 'ok' | 'tunnel-not-found' | 'access' | 'dns' | 'ot
 export function classifyHostname(
   status: number,
   location: string | null,
-  body: string
+  body: string,
+  wwwAuthenticate: string | null = null
 ): HostnameVerdict {
   if (status === 530 || /\berror 1033\b/i.test(body) || /argo tunnel error/i.test(body)) {
     return 'tunnel-not-found'
   }
   if (status >= 300 && status < 400 && /cloudflareaccess\.com/i.test(location ?? '')) return 'access'
+  /*
+   * An Access application with Managed OAuth answers a request that does not
+   * look like a browser with `401` and a `WWW-Authenticate` naming its
+   * protected-resource metadata, not with the login redirect (measured
+   * 2026-09-30). Read as "our own 401" below, that told the panel an
+   * Access-protected hostname "reaches this machine".
+   */
+  if (status === 401 && /cloudflare-access-protected-resource/i.test(wwwAuthenticate ?? '')) return 'access'
   // 401 is ours: the server answered and asked for the key, which is a success
   // for this question — something on the other end is Stoke.
   if (status === 401 || (status >= 200 && status < 400)) return 'ok'
@@ -217,11 +227,13 @@ export async function checkHostname(host: string): Promise<HostnameVerdict> {
     const res = await fetch(`https://${name}/`, {
       redirect: 'manual',
       signal: AbortSignal.timeout(8000),
-      headers: { 'user-agent': 'stoke-setup-check' }
+      // Browser-shaped, so Access answers with its login redirect rather than
+      // Managed OAuth's 401 (`BROWSER_PROBE_HEADERS`, gotcha 124).
+      headers: { ...BROWSER_PROBE_HEADERS }
     })
     // Only read a body when the status suggests an error page worth reading.
     const body = res.status >= 400 ? (await res.text().catch(() => '')).slice(0, 4000) : ''
-    return classifyHostname(res.status, res.headers.get('location'), body)
+    return classifyHostname(res.status, res.headers.get('location'), body, res.headers.get('www-authenticate'))
   } catch {
     return 'dns'
   }
