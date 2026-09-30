@@ -462,6 +462,18 @@ export const SERVER_ALIVE_COUNT_MAX = 3
  *   drags stay Stoke's. An app inside that asks for the mouse (claude) still
  *   gets it: tmux forwards a pane's own mouse mode even with `mouse off`
  *   (gotcha 10).
+ * - **`set -g prefix None`, `set -g prefix2 None`.** `-f /dev/null` skips the
+ *   user's config, not tmux's built-in table, so C-b was still tmux's: the
+ *   shell's backward-char and Claude Code's own Ctrl+B needed a double press,
+ *   C-b d detached with exit 0 (read as "the shell ended", so the tab closed
+ *   unasked), C-b c and C-b " broke the one-pane model and C-b [ opened tmux's
+ *   copy mode (measured on 3.5a and 3.4, gotcha 126). With no prefix no key
+ *   reaches the prefix table, and the root table holds only mouse bindings,
+ *   which `mouse off` forwards to the pane. NOT `unbind -a -T prefix`: once
+ *   it has run, the table is gone and the next run — every reconnect, every
+ *   second tab — fails with "table prefix doesn't exist", which aborts the
+ *   rest of the sequence, `new-session` included. `-q` only hides that: it
+ *   still aborts, and the client exits 0.
  * - **`capture-pane -p -e -J -S - -E -1` first.** The session's own history,
  *   printed into the fresh terminal a reconnect opens, before the attach
  *   paints the screen below it (the terminal keeps it through tmux's clear:
@@ -485,6 +497,8 @@ export function buildPersistentCommand(host: SshHost, name: string): string | nu
     `set -s terminal-overrides "${MANAGED_TERMINAL_OVERRIDES}"`,
     'set -g status off',
     'set -g mouse off',
+    'set -g prefix None',
+    'set -g prefix2 None',
     `set -g history-limit ${MANAGED_HISTORY_LIMIT}`,
     `new-session -A -s ${name}${quoted}`
   ].join(' \\; ')

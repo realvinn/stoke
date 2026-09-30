@@ -304,8 +304,8 @@ export function HostsSettings({
               invisible <span className="mono">tmux</span> session (a private one, so your own tmux
               and byobu are never touched). A dropped connection, a sleeping laptop or quitting
               Stoke leaves it running; the tab reconnects by itself, and a restart reattaches.
-              There is no status bar and no copy mode: the wheel, dragging and Copy work as they do
-              locally. Closing a tab asks whether to detach or end the shell, and the launcher lists
+              There is no status bar, no copy mode and no tmux keys (Ctrl+B reaches your shell): the
+              wheel, dragging and Copy work as they do locally. Closing a tab asks whether to detach or end the shell, and the launcher lists
               the ones still running. The machine needs <span className="mono">tmux</span>; without
               it the tab says so and runs a plain shell.
             </p>

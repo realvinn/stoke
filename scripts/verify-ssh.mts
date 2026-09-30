@@ -904,6 +904,23 @@ const kept = (p: Partial<SshHost>): SshHost => host({ persist: 'tmux', ...p })
   check('it is one sh -c with a single-quoted body', /^sh -c '[^']*'$/.test(cmd), cmd)
   check('on the private socket with no config file', cmd.includes('tmux -u -L stoke -f /dev/null start-server'), cmd)
   check('status bar and tmux mouse off', cmd.includes('set -g status off') && cmd.includes('set -g mouse off'), cmd)
+  /*
+   * `-f /dev/null` skips the user's config, not tmux's built-in C-b: C-b d
+   * detached with exit 0 (the tab closed as "the shell ended"), C-b c added a
+   * window, C-b [ opened copy mode (gotcha 126, measured on 3.5a and 3.4).
+   */
+  check(
+    'no prefix key: C-b and every key after it reach the pane',
+    cmd.includes('set -g prefix None') && cmd.includes('set -g prefix2 None') && cmd.indexOf('set -g prefix None') < cmd.indexOf('new-session'),
+    cmd
+  )
+  /*
+   * And never `unbind -a`: after its first run the prefix table no longer
+   * exists, so every later run — each reconnect, each second tab — errors
+   * "table prefix doesn't exist" and tmux skips the rest of the sequence,
+   * `new-session` included; `-q` only makes that abort silent (exit 0).
+   */
+  check('no unbind, which aborts every later attach', !/\bunbind(-key)?\b/.test(cmd), cmd)
   check(
     'terminal-overrides REPLACED with -s, never grown with -ga on every reconnect',
     cmd.includes(`set -s terminal-overrides "${MANAGED_TERMINAL_OVERRIDES}"`) && !cmd.includes('-ga'),
@@ -1034,6 +1051,8 @@ console.log('\nthe managed session: run by real login shells against a fake tmux
       'set', '-s', 'terminal-overrides', MANAGED_TERMINAL_OVERRIDES, ';',
       'set', '-g', 'status', 'off', ';',
       'set', '-g', 'mouse', 'off', ';',
+      'set', '-g', 'prefix', 'None', ';',
+      'set', '-g', 'prefix2', 'None', ';',
       'set', '-g', 'history-limit', String(MANAGED_HISTORY_LIMIT), ';',
       'new-session', '-A', '-s', name
     ]
