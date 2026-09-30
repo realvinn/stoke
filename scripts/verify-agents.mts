@@ -76,6 +76,8 @@ import {
   mcpFileName,
   mcpTicksFor,
   mergeMcpJsons,
+  NO_APPROVALS,
+  parseJsonc,
   PI_MCP_EXTENSION,
   qwenMcpFile,
   serversForLaunch,
@@ -93,7 +95,9 @@ import {
   ClaudeConfigReader,
   claudeProjectKey,
   foldersDownTo,
+  foldersUpTo,
   McpFileStore,
+  ownMcpSources,
   readMcpCatalog,
   resolveLaunchMcp,
   trustKeys
@@ -1928,6 +1932,19 @@ console.log('\nMCP: names, secrets and collisions')
   check('vibeConfiguredServers: the name of each [[mcp_servers]] block', vibeConfiguredServers('[[mcp_servers]]\nname = "fs"\ntransport = "stdio"\n[[mcp_servers]]\nname = \'web\'\n[tools]\nname = "not-a-server"\n'), ['fs', 'web'])
   check('jsonConfiguredServers: a Claude-shaped file’s names', jsonConfiguredServers('{"mcpServers":{"a":{},"b":{}}}'), ['a', 'b'])
   check('and junk is none', jsonConfiguredServers('{nope'), [])
+  const jsonc = [
+    '﻿{',
+    '  // OpenCode’s own server, in an opencode.jsonc',
+    '  "$schema": "https://opencode.ai/config.json", /* a block',
+    '  comment */ "mcp": {',
+    '    "github": { "type": "local", "command": ["x", "// not a comment", "/* nor this */"], },',
+    '    "notes,}": { "type": "remote", "url": "https://n.example/mcp", },',
+    '  },',
+    '}'
+  ].join('\n')
+  check('JSONC (OpenCode, Kilo, Qwen): comments and trailing commas, never inside a string', jsonConfiguredServers(jsonc, 'mcp'), ['github', 'notes,}'])
+  check('parseJsonc keeps a string that looks like a comment', (parseJsonc(jsonc) as { mcp: { github: { command: string[] } } }).mcp.github.command, ['x', '// not a comment', '/* nor this */'])
+  check('and a key other than the one asked for is none', jsonConfiguredServers(jsonc, 'mcpServers'), [])
 }
 
 console.log('\nMCP: Claude Code’s own list, from a ~/.claude.json fixture')
@@ -2071,7 +2088,8 @@ console.log('\nMCP in main: a scratch HOME, its ~/.claude.json read, owner-only 
     mkdirSync(join(home, '.vibe'), { recursive: true })
     writeFileSync(join(home, '.vibe', 'config.toml'), '[[mcp_servers]]\nname = "github"\ntransport = "stdio"\ncommand = "x"\n')
     check('vibe: its own config.toml’s names', (await agentOwnMcp('vibe', {}, home)).own, ['github'])
-    const cat = await readMcpCatalog(reader, {}, home)
+    // Qwen's system settings live outside HOME; point them into the scratch too.
+    const cat = await readMcpCatalog(reader, { QWEN_CODE_SYSTEM_SETTINGS_PATH: join(home, 'qwen-system', 'settings.json') }, home)
     check('Settings’ catalog from the same files: user servers and own names per agent', [cat.user.map((s) => s.name), cat.own], [['github', 'docs', 'turned-off'], { codex: ['docs'], kimi: ['github'], vibe: ['github'] }])
     ok('and no secret in it', !MCP_SECRETS.some((v) => JSON.stringify(cat).includes(v)))
 
@@ -2104,6 +2122,80 @@ console.log('\nMCP in main: a scratch HOME, its ~/.claude.json read, owner-only 
   }
   const headless = readFileSync(new URL('../src/main/agent.ts', import.meta.url), 'utf8')
   ok('agent.ts (headless runs) never reads the mirrored list (gotcha 15)', !/mcpLaunch|mcpServers\.ts|claudeMcpServers/.test(headless))
+}
+
+console.log('\nMCP: every agent’s own servers, its user config and the launch folder’s (ownMcpSources)')
+{
+  check('foldersUpTo: nearest first, to the stop inclusive', foldersUpTo('/a/b/c', '/a/b'), ['/a/b/c', '/a/b'])
+  check('foldersUpTo: to the top with no stop', foldersUpTo('/a/b', null), ['/a/b', '/a', '/'])
+  // Fake every input (gotcha 74): a scratch home with each agent's files, a repo and a subfolder in it.
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'stoke-verify-mcpown-')))
+  try {
+    const repo = join(home, 'work', 'app')
+    const sub = join(repo, 'pkg')
+    mkdirSync(join(repo, '.git'), { recursive: true })
+    mkdirSync(sub, { recursive: true })
+    const put = (path: string, text: string): void => {
+      mkdirSync(dirname(path), { recursive: true })
+      writeFileSync(path, text)
+    }
+    const env = { QWEN_CODE_SYSTEM_SETTINGS_PATH: join(home, 'qwen-system', 'settings.json') }
+    // OpenCode: JSONC at user level, and a project file plus a .opencode dir in the repo.
+    put(join(home, '.config', 'opencode', 'opencode.jsonc'), '{\n  // mine\n  "mcp": { "github": { "type": "local", "command": ["gh-mcp"] }, },\n}')
+    put(join(repo, 'opencode.json'), JSON.stringify({ mcp: { 'repo-oc': { type: 'local', command: ['x'] } } }))
+    put(join(sub, '.opencode', 'opencode.json'), JSON.stringify({ mcp: { 'sub-oc': { type: 'local', command: ['x'] } } }))
+    put(join(home, 'work', 'opencode.json'), JSON.stringify({ mcp: { 'above-repo': { type: 'local', command: ['x'] } } }))
+    // Kilo: its own names, and the opencode.json it still reads per folder.
+    put(join(home, '.config', 'kilo', 'kilo.json'), JSON.stringify({ mcp: { linear: { type: 'remote', url: 'https://l.example/mcp' } } }))
+    put(join(repo, '.kilo', 'kilo.jsonc'), '{ "mcp": { "repo-kilo": { "type": "local", "command": ["x"] }, }, }')
+    // Qwen: user settings, system settings, the cwd's .qwen/settings.json and .mcp.json.
+    put(join(home, '.qwen', 'settings.json'), '{ /* qwen strips comments */ "mcpServers": { "docs": { "httpUrl": "https://d.example/mcp" } } }')
+    put(env.QWEN_CODE_SYSTEM_SETTINGS_PATH, JSON.stringify({ mcpServers: { 'org-tool': { command: 'x' } } }))
+    put(join(sub, '.qwen', 'settings.json'), JSON.stringify({ mcpServers: { 'ws-qwen': { command: 'x' } } }))
+    put(join(sub, '.mcp.json'), JSON.stringify({ mcpServers: { 'sub-mcpjson': { command: 'x' } } }))
+    // Copilot: its mcp-config.json, and the workspace .github/mcp.json at the repo's top.
+    put(join(home, '.copilot', 'mcp-config.json'), JSON.stringify({ mcpServers: { playwright: { type: 'local', command: 'x' } } }))
+    put(join(repo, '.github', 'mcp.json'), JSON.stringify({ mcpServers: { 'repo-copilot': { type: 'local', command: 'x' } } }))
+    // Codex: a project .codex/config.toml at the repo's top.
+    put(join(home, '.codex', 'config.toml'), '[mcp_servers.node_repl]\ncommand = "node"\n')
+    put(join(repo, '.codex', 'config.toml'), '[mcp_servers.repo-codex]\ncommand = "x"\n')
+    // Vibe: the NEAREST .vibe/config.toml only.
+    put(join(home, '.vibe', 'config.toml'), '[[mcp_servers]]\nname = "fs"\n')
+    put(join(repo, '.vibe', 'config.toml'), '[[mcp_servers]]\nname = "repo-vibe"\n')
+    put(join(sub, '.vibe', 'config.toml'), '[[mcp_servers]]\nname = "sub-vibe"\n')
+
+    const folder = { real: sub, gitRoot: repo }
+    const own = async (id: CodingCliId, f: typeof folder | null = folder) => (await agentOwnMcp(id, env, home, f)).own.sort()
+    check('opencode: user JSONC, the repo’s opencode.json, the subfolder’s .opencode — not a file above the repo', await own('opencode'), ['github', 'repo-oc', 'sub-oc'])
+    check('kilo: its kilo.json and the repo’s .kilo/, plus the opencode.json it reads per folder', await own('kilo'), ['linear', 'repo-kilo', 'repo-oc'])
+    check('qwen: user, system, and the cwd’s .qwen/settings.json and .mcp.json', await own('qwen'), ['docs', 'org-tool', 'sub-mcpjson', 'ws-qwen'])
+    check('copilot: its mcp-config.json, the repo’s .github/mcp.json and the cwd’s .mcp.json', await own('copilot'), ['playwright', 'repo-copilot', 'sub-mcpjson'])
+    check('codex: config.toml and the repo’s .codex/config.toml', await own('codex'), ['node_repl', 'repo-codex'])
+    check('vibe: its config.toml and the nearest .vibe/config.toml only', await own('vibe'), ['fs', 'sub-vibe'])
+    check('with no folder (Settings), only the user level', [await own('opencode', null), await own('qwen', null), await own('copilot', null)], [['github'], ['docs', 'org-tool'], ['playwright']])
+    check('outside a repo OpenCode walks to the top', ownMcpSources('opencode', {}, '/h', { real: '/x/y', gitRoot: null }).filter((s) => s.path.endsWith('opencode.json') && !s.path.includes('.opencode')).map((s) => s.path).slice(-3), ['/x/y/opencode.json', '/x/opencode.json', '/opencode.json'])
+    check('pi and claude read nothing here: Pi’s own mcp.json outranks, Claude loads its own', [ownMcpSources('pi', {}, '/h', folder), ownMcpSources('claude', {}, '/h', folder)], [[], []])
+
+    // The launch: a tick of a name the folder's own config defines is skipped, never merged.
+    writeFileSync(join(home, '.claude.json'), JSON.stringify({ mcpServers: { 'repo-oc': { command: 'claude-side' }, github: { command: 'npx' }, other: { command: 'o' } } }))
+    const ticks = { perAgent: { opencode: ['stoke', 'repo-oc', 'github', 'other'] }, extra: {} }
+    const r = await resolveLaunchMcp({ cliId: 'opencode', cwd: sub, mcp: ticks, browser: BROWSER, reader: new ClaudeConfigReader({}, home), env, home })
+    check('opencode in the subfolder: its own names come back with the launch', r.own.sort(), ['github', 'repo-oc', 'sub-oc'])
+    const planned = plan('opencode', undefined, { mcp: r.servers, mcpOwn: r.own })
+    check('so only the browser and `other` reach OPENCODE_CONFIG_CONTENT', Object.keys(JSON.parse(planOk(planned).env.OPENCODE_CONFIG_CONTENT ?? '{}').mcp ?? {}), ['stoke', 'other'])
+    check('and the two it defines itself are said', (planned.ok ? planned.plan.mcpSkipped ?? [] : []).map((s) => s.name), ['repo-oc', 'github'])
+    const cat = await readMcpCatalog(new ClaudeConfigReader({}, home), env, home)
+    check('Settings greys each agent’s user-level names', cat.own, {
+      codex: ['node_repl'],
+      opencode: ['github'],
+      kilo: ['linear'],
+      qwen: ['docs', 'org-tool'],
+      copilot: ['playwright'],
+      vibe: ['fs']
+    })
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
 }
 
 console.log('\nMCP: where Claude Code files a folder — its canonical git root, and the .mcp.json chain (gotcha 129)')

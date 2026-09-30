@@ -27,12 +27,13 @@ import { isClaudeCode, type CodingCliId } from '../shared/codingClis.ts'
 
 /*
  * The main-process half of mcpServers.ts: read Claude Code's own MCP list for
- * one launch, read which names Codex already defines, and write the owner-only
- * files the file-taking agents are pointed at.
+ * one launch, read which names each agent's own config already defines
+ * (`ownMcpSources`), and write the owner-only files the file-taking agents are
+ * pointed at.
  *
  * Everything here READS the agents' config — `~/.claude.json` (never through
  * claudeGlobalConfig.ts's sync reader, gotcha 40; never written, gotcha 38),
- * the folder's `.mcp.json` and settings layers, Codex's config.toml — and
+ * the folder's `.mcp.json` and settings layers, each agent's own files — and
  * writes only inside `<userData>/agents/mcp/`. Every read is async and under a
  * deadline: a launch never waits on a slow disk past it, and a miss reads as
  * "nothing there", which hands the agent fewer servers, never a wrong one.
@@ -142,12 +143,6 @@ export function codexConfigPath(env: NodeJS.ProcessEnv, home: string): string {
   return join(env.CODEX_HOME || join(home, '.codex'), 'config.toml')
 }
 
-/** The server names Codex's own config defines; none when it cannot be read. */
-export async function codexOwnServers(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): Promise<string[]> {
-  const text = await readTextUnder(codexConfigPath(env, home))
-  return text === null ? [] : codexConfiguredServers(text)
-}
-
 /** Kimi's own MCP file — `$KIMI_SHARE_DIR/mcp.json`, else `~/.kimi/mcp.json` (kimi-cli `get_share_dir`). */
 export function kimiMcpPath(env: NodeJS.ProcessEnv, home: string): string {
   return join(env.KIMI_SHARE_DIR || join(home, '.kimi'), 'mcp.json')
@@ -165,19 +160,175 @@ export interface AgentOwnMcp {
   keep: string[]
 }
 
+/** The launch folder, for the agents' folder-level config: its realpath and its nearest git top. */
+export interface OwnFolder {
+  real: string
+  /** The nearest folder holding a `.git` (a linked worktree's own top), or null outside a repo. */
+  gitRoot: string | null
+}
+
+/** One file an agent reads servers from, and how to read its names. */
+export interface OwnMcpSource {
+  path: string
+  format: 'codex-toml' | 'vibe-toml' | 'mcpServers' | 'mcp'
+  /** Of the sources carrying this flag, only the first that exists counts (Vibe's nearest project file). */
+  nearestOnly?: true
+}
+
+/** The folders from `dir` up to `stop` (inclusive), nearest first; to the top when `stop` is null. */
+export function foldersUpTo(dir: string, stop: string | null): string[] {
+  const out: string[] = []
+  let d = resolve(dir)
+  for (;;) {
+    out.push(d)
+    const up = dirname(d)
+    if (d === stop || up === d) break
+    d = up
+  }
+  return out
+}
+
+/** `~/…` and relative, as Qwen's `Storage.resolvePath` takes `QWEN_HOME`. */
+function homePath(p: string, home: string): string {
+  return p === '~' ? home : p.startsWith('~/') || p.startsWith('~\\') ? join(home, p.slice(2)) : resolve(p)
+}
+
 /**
- * What the agent's OWN MCP config says, read-only, for the agents where a
- * launch-time server could collide with one of the user's or where naming a
- * file hides theirs. Kimi's file is kept whenever it EXISTS, even if it could
- * not be read in time: dropping the user's own servers for a session is the
- * direction never to fail in.
+ * Every file an agent reads MCP servers from that a launch-time server of the
+ * same name would replace or merge into — its user config, and with `folder`
+ * the launch folder's own layers too. Read out of each vendor's package on
+ * 2026-09-30 (read, never run):
+ *
+ *   codex    `$CODEX_HOME/config.toml`; and `.codex/config.toml` in each folder
+ *            from the repo's top (`project_root_markers = [".git"]`) down to the
+ *            cwd — 0.153.1's strings: "Failed to read project config file",
+ *            "Overridden by project config". `-c` merges into either.
+ *   opencode `$XDG_CONFIG_HOME/opencode/{config,opencode}.json` +
+ *            `opencode.jsonc` (else `~/.config`), `OPENCODE_CONFIG`,
+ *            `OPENCODE_CONFIG_DIR`, `~/.opencode/`, and `opencode.json(c)` plus
+ *            `.opencode/opencode.json(c)` in every folder from the cwd up to the
+ *            worktree's top (the filesystem's, outside a repo). 1.18.31
+ *            (Homebrew) `Config.loadInstanceState`: each layer is folded in with
+ *            remeda's `mergeDeep`, `OPENCODE_CONFIG_CONTENT` last but for managed
+ *            config — so a same-named `mcp.<n>` was MERGED into the user's.
+ *   kilo     the same shape under `kilo/` (`config.json`, `kilo.json(c)`,
+ *            `opencode.json(c)`), `KILO_CONFIG`, `KILO_CONFIG_DIR`, `~/.kilo/`,
+ *            `~/.kilocode/`, and per folder `kilo.json(c)`, `opencode.json(c)`,
+ *            `.kilo/` and `.kilocode/` (`ALL_CONFIG_FILES`). @kilocode/cli
+ *            7.8.1; `KILO_CONFIG_CONTENT` is layered last the same way.
+ *   qwen     `$QWEN_HOME/settings.json` (else `~/.qwen`), the system
+ *            settings and system-defaults, and the cwd's `.qwen/settings.json`
+ *            and `.mcp.json`. @qwen-code/qwen-code 0.24.7 `assembleMcpServers`:
+ *            `{...user, ...project .mcp.json, ...workspace/system,
+ *            ...cliMcpServers}` — `--mcp-config` REPLACES a same-named server.
+ *   copilot  `$COPILOT_HOME/mcp-config.json` (else `~/.copilot`), and the
+ *            workspace `.mcp.json` / `.github/mcp.json` at the cwd and the repo's
+ *            top. @github/copilot 1.0.89's help: `--additional-mcp-config`
+ *            "augments config from ~/.copilot/mcp-config.json"; the merge itself
+ *            is native code, not readable, so a same name is skipped either way.
+ *   vibe     `$VIBE_HOME/config.toml`, and the NEAREST `.vibe/config.toml`
+ *            from the cwd up to (not including) `$VIBE_HOME`'s parent
+ *            (mistral-vibe 2.25.8 `ProjectConfigLayer`), which
+ *            `VIBE_MCP_SERVERS`' environment layer sits above.
+ *
+ * Kimi reads only its `mcp.json` (`agentOwnMcp` keeps it), Pi's own
+ * `mcp.json` outranks a registered server, and Claude Code's own list is read
+ * by `resolveLaunchMcp` — none of those is here. A path missed here means the
+ * session's copy wins over the user's; a false hit only skips a server.
+ */
+export function ownMcpSources(
+  cliId: CodingCliId,
+  env: NodeJS.ProcessEnv,
+  home: string,
+  folder: OwnFolder | null,
+  platform: string = process.platform
+): OwnMcpSource[] {
+  const xdg = env.XDG_CONFIG_HOME || join(home, '.config')
+  const files = (dir: string, names: readonly string[], format: OwnMcpSource['format']): OwnMcpSource[] =>
+    names.map((n) => ({ path: join(dir, n), format }))
+  const up = folder ? foldersUpTo(folder.real, folder.gitRoot) : []
+  switch (cliId) {
+    case 'codex': {
+      const out: OwnMcpSource[] = [{ path: codexConfigPath(env, home), format: 'codex-toml' }]
+      if (folder) {
+        for (const d of folder.gitRoot ? up : [folder.real]) out.push({ path: join(d, '.codex', 'config.toml'), format: 'codex-toml' })
+      }
+      return out
+    }
+    case 'opencode': {
+      const pair = ['opencode.json', 'opencode.jsonc']
+      const out = files(join(xdg, 'opencode'), ['config.json', ...pair], 'mcp')
+      if (env.OPENCODE_CONFIG) out.push({ path: env.OPENCODE_CONFIG, format: 'mcp' })
+      if (env.OPENCODE_CONFIG_DIR) out.push(...files(env.OPENCODE_CONFIG_DIR, pair, 'mcp'))
+      out.push(...files(join(home, '.opencode'), pair, 'mcp'))
+      for (const d of up) out.push(...files(d, pair, 'mcp'), ...files(join(d, '.opencode'), pair, 'mcp'))
+      return out
+    }
+    case 'kilo': {
+      const all = ['kilo.jsonc', 'kilo.json', 'opencode.jsonc', 'opencode.json']
+      const out = files(join(xdg, 'kilo'), ['config.json', 'kilo.json', 'kilo.jsonc', 'opencode.json', 'opencode.jsonc'], 'mcp')
+      if (env.KILO_CONFIG) out.push({ path: env.KILO_CONFIG, format: 'mcp' })
+      if (env.KILO_CONFIG_DIR) out.push(...files(env.KILO_CONFIG_DIR, all, 'mcp'))
+      out.push(...files(join(home, '.kilo'), all, 'mcp'), ...files(join(home, '.kilocode'), all, 'mcp'))
+      for (const d of up) {
+        out.push(...files(d, all, 'mcp'), ...files(join(d, '.kilo'), all, 'mcp'), ...files(join(d, '.kilocode'), all, 'mcp'))
+      }
+      return out
+    }
+    case 'qwen': {
+      const system =
+        env.QWEN_CODE_SYSTEM_SETTINGS_PATH ||
+        (platform === 'darwin'
+          ? '/Library/Application Support/QwenCode/settings.json'
+          : platform === 'win32'
+            ? 'C:\\ProgramData\\qwen-code\\settings.json'
+            : '/etc/qwen-code/settings.json')
+      const defaults = env.QWEN_CODE_SYSTEM_DEFAULTS_PATH || join(dirname(system), 'system-defaults.json')
+      const user = join(env.QWEN_HOME ? homePath(env.QWEN_HOME, home) : join(home, '.qwen'), 'settings.json')
+      const out: OwnMcpSource[] = [user, system, defaults].map((path) => ({ path, format: 'mcpServers' }))
+      if (folder) out.push(...[join(folder.real, '.qwen', 'settings.json'), join(folder.real, '.mcp.json')].map((path) => ({ path, format: 'mcpServers' as const })))
+      return out
+    }
+    case 'copilot': {
+      const out: OwnMcpSource[] = [{ path: join(env.COPILOT_HOME || join(home, '.copilot'), 'mcp-config.json'), format: 'mcpServers' }]
+      const roots = folder ? [...new Set([folder.real, ...(folder.gitRoot ? [folder.gitRoot] : [])])] : []
+      for (const d of roots) out.push(...[join(d, '.mcp.json'), join(d, '.github', 'mcp.json')].map((path) => ({ path, format: 'mcpServers' as const })))
+      return out
+    }
+    case 'vibe': {
+      const out: OwnMcpSource[] = [{ path: vibeConfigPath(env, home), format: 'vibe-toml' }]
+      if (folder) {
+        const stop = dirname(resolve(env.VIBE_HOME || join(home, '.vibe')))
+        for (const d of foldersUpTo(folder.real, null)) {
+          if (d === stop) break
+          out.push({ path: join(d, '.vibe', 'config.toml'), format: 'vibe-toml', nearestOnly: true })
+        }
+      }
+      return out
+    }
+    default:
+      return []
+  }
+}
+
+function namesIn(format: OwnMcpSource['format'], text: string): string[] {
+  if (format === 'codex-toml') return codexConfiguredServers(text)
+  if (format === 'vibe-toml') return vibeConfiguredServers(text)
+  return jsonConfiguredServers(text, format)
+}
+
+/**
+ * What the agent's OWN MCP config says, read-only (`ownMcpSources`), every
+ * file at once under the deadline. Kimi's file is kept whenever it EXISTS,
+ * even if it could not be read in time: dropping the user's own servers for a
+ * session is the direction never to fail in.
  */
 export async function agentOwnMcp(
   cliId: CodingCliId,
   env: NodeJS.ProcessEnv = process.env,
-  home: string = homedir()
+  home: string = homedir(),
+  folder: OwnFolder | null = null
 ): Promise<AgentOwnMcp> {
-  if (cliId === 'codex') return { own: await codexOwnServers(env, home), keep: [] }
   if (cliId === 'kimi') {
     const path = kimiMcpPath(env, home)
     const exists = await stat(path).then((st) => st.isFile(), () => false)
@@ -185,11 +336,21 @@ export async function agentOwnMcp(
     const text = await readTextUnder(path)
     return { own: text === null ? [] : jsonConfiguredServers(text), keep: [path] }
   }
-  if (cliId === 'vibe') {
-    const text = await readTextUnder(vibeConfigPath(env, home))
-    return { own: text === null ? [] : vibeConfiguredServers(text), keep: [] }
-  }
-  return { own: [], keep: [] }
+  const sources = ownMcpSources(cliId, env, home, folder)
+  if (!sources.length) return { own: [], keep: [] }
+  const texts = await Promise.all(sources.map((s) => readTextUnder(s.path)))
+  const own = new Set<string>()
+  let nearestSeen = false
+  sources.forEach((s, i) => {
+    const text = texts[i]
+    if (text === null) return
+    if (s.nearestOnly) {
+      if (nearestSeen) return
+      nearestSeen = true
+    }
+    for (const n of namesIn(s.format, text)) own.add(n)
+  })
+  return { own: [...own], keep: [] }
 }
 
 /** A key the way the CLI writes it into `projects`: forward slashes on Windows (its `_9`). */
@@ -316,11 +477,14 @@ export async function resolveLaunchMcp(input: {
   const ticks = mcpTicksFor(input.mcp, input.cliId)
   const others = ticks.filter((n) => n !== STOKE_BROWSER_SERVER)
   const extra = input.mcp.extra
+  // The folder, resolved once and only when something needs it.
+  let where: Promise<{ key: string; real: string; gitRoot: string | null }> | null = null
+  const place = (): Promise<{ key: string; real: string; gitRoot: string | null }> => (where ??= claudeProjectKey(input.cwd))
   if (isClaudeCode(input.cliId)) {
     const wanted = others.filter((n) => extra[n])
     let claudeOwn: string[] = []
     if (wanted.length) {
-      const { key, real } = await claudeProjectKey(input.cwd)
+      const { key, real } = await place()
       const [read, projectMcp] = await Promise.all([input.reader.read(), mcpJsonChain(real)])
       // Every name Claude could know here, approved or not: a Stoke-held
       // server must never shadow one of the user's.
@@ -335,16 +499,20 @@ export async function resolveLaunchMcp(input: {
   const needMirror = others.some((n) => !extra[n])
   let mirrored: McpServerSpec[] = []
   if (needMirror) {
-    const { key, real, gitRoot } = await claudeProjectKey(input.cwd)
+    const { key, real, gitRoot } = await place()
     const [read, projectMcp] = await Promise.all([input.reader.read(), mcpJsonChain(real)])
     const trusted = isTrustedFolder(read.json, trustKeys(key, real, gitRoot))
     const approvals = await mcpJsonApprovals(real, env, home, trusted)
     mirrored = claudeMcpServers(read.json, projectMcp, key, { approvals, env }).servers
   }
   const servers = serversForLaunch({ ticks, browser: input.browser, mirrored, extra })
-  const mine = servers.length ? await agentOwnMcp(input.cliId, env, home) : { own: [], keep: [] }
-  return { servers, ...mine }
+  if (!servers.length) return { servers, own: [], keep: [] }
+  const { real, gitRoot } = await place()
+  return { servers, ...(await agentOwnMcp(input.cliId, env, home, { real, gitRoot })) }
 }
+
+/** The agents whose own user config Settings reads, to grey the names they define (`ownMcpSources`). */
+const OWN_MCP_AGENTS: readonly CodingCliId[] = ['codex', 'opencode', 'kilo', 'qwen', 'copilot', 'kimi', 'vibe']
 
 /** What Settings › Agents lists: names and kinds only, never a value (`mcpCatalog`). */
 export async function readMcpCatalog(
@@ -352,10 +520,9 @@ export async function readMcpCatalog(
   env: NodeJS.ProcessEnv = process.env,
   home: string = homedir()
 ): Promise<McpCatalog> {
-  const agents: CodingCliId[] = ['codex', 'kimi', 'vibe']
-  const [read, ...owns] = await Promise.all([reader.read(), ...agents.map((id) => agentOwnMcp(id, env, home))])
+  const [read, ...owns] = await Promise.all([reader.read(), ...OWN_MCP_AGENTS.map((id) => agentOwnMcp(id, env, home))])
   const own: Partial<Record<CodingCliId, string[]>> = {}
-  agents.forEach((id, i) => {
+  OWN_MCP_AGENTS.forEach((id, i) => {
     if (owns[i].own.length) own[id] = owns[i].own
   })
   return mcpCatalog(read.json, own, read.error, env)

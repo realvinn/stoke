@@ -441,9 +441,10 @@ export interface LaunchPlanInput {
    */
   mcpFileFor?: ((name: string) => string) | null
   /**
-   * Server names the agent's own config already defines (Codex's config.toml,
-   * Kimi's mcp.json, Vibe's config.toml): skipped, never merged into or
-   * replaced for the session.
+   * Server names the agent's own config already defines — its user config and
+   * the launch folder's layers (main's `ownMcpSources`: Codex, OpenCode, Kilo,
+   * Qwen, Copilot, Kimi, Vibe): skipped, never merged into or replaced for the
+   * session.
    */
   mcpOwn?: readonly string[]
   /**

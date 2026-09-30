@@ -27,7 +27,10 @@
  *     `piMcp` through a constant extension), or a 0600 file whose path is a
  *     flag (`qwenMcpFile`, `copilotMcpFile`, `kimiMcpFile`,
  *     `claudeMcpConfigs`). Never a write into the agent's own config; a name
- *     the agent's own config already uses is skipped, never replaced. Agents
+ *     the agent's own config already uses — its user file or the launch
+ *     folder's (main's `agentOwnMcp`, per agent) — is skipped, never replaced
+ *     or merged into. Pi alone needs no list: its own `mcp.json` outranks a
+ *     registered server of the same name. Agents
  *     with no such route (`CLI_CAPS[id].mcp === 'none'`, each with its reason
  *     in codingClis.ts) are handed nothing, and Settings greys their list.
  *
@@ -887,14 +890,56 @@ export function vibeConfiguredServers(toml: string): string[] {
   return [...names]
 }
 
-/** The server names a Claude-shaped `{ mcpServers: {…} }` JSON text defines (Kimi's own mcp.json). */
-export function jsonConfiguredServers(text: string): string[] {
-  try {
-    const v: unknown = JSON.parse(text)
-    return isRecord(v) && isRecord(v.mcpServers) ? Object.keys(v.mcpServers) : []
-  } catch {
-    return []
+/**
+ * JSON with comments and trailing commas, as OpenCode, Kilo and Qwen read
+ * their config files (`opencode.jsonc`; Qwen strips comments from
+ * settings.json) — or null. Comments are removed outside strings only, then a
+ * comma before a closing bracket, then a BOM; anything still not JSON is null.
+ */
+export function parseJsonc(text: string): unknown {
+  const src = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text
+  // One pass, string-aware: a `//`, `/*` or `,}` inside a string is left alone.
+  let out = ''
+  let i = 0
+  while (i < src.length) {
+    const c = src[i]
+    if (c === '"') {
+      const start = i++
+      while (i < src.length && src[i] !== '"') i += src[i] === '\\' ? 2 : 1
+      out += src.slice(start, ++i)
+    } else if (c === '/' && src[i + 1] === '/') {
+      while (i < src.length && src[i] !== '\n') i++
+    } else if (c === '/' && src[i + 1] === '*') {
+      const end = src.indexOf('*/', i + 2)
+      i = end < 0 ? src.length : end + 2
+      out += ' '
+    } else if (c === '}' || c === ']') {
+      // Drop a trailing comma: the last non-space character written so far.
+      let j = out.length - 1
+      while (j >= 0 && /\s/.test(out[j])) j--
+      if (j >= 0 && out[j] === ',') out = out.slice(0, j) + out.slice(j + 1)
+      out += c
+      i++
+    } else {
+      out += c
+      i++
+    }
   }
+  try {
+    return JSON.parse(out)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The server names a JSON (or JSONC) config defines under `key`: `mcpServers`
+ * for Kimi's mcp.json, Qwen's settings.json, Copilot's mcp-config.json and any
+ * `.mcp.json`; `mcp` for OpenCode's and Kilo's config. None for junk.
+ */
+export function jsonConfiguredServers(text: string, key: 'mcpServers' | 'mcp' = 'mcpServers'): string[] {
+  const v = parseJsonc(text)
+  return isRecord(v) && isRecord(v[key]) ? Object.keys(v[key] as Record<string, unknown>) : []
 }
 
 /** Claude Code's own `--mcp-config` shape. */
