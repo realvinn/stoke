@@ -98,6 +98,18 @@ function readJson(file: string): unknown {
   }
 }
 
+/**
+ * Best effort. A stale temp that cannot be removed is no reason to fail the
+ * boot: the store would then stay off and this run would see no keys at all.
+ */
+function removeQuietly(file: string): void {
+  try {
+    rmSync(file, { force: true })
+  } catch (err) {
+    console.error(`[stoke] could not remove ${file}`, err)
+  }
+}
+
 function fileExists(file: string): boolean {
   return readText(file) !== null
 }
@@ -202,7 +214,7 @@ export class SecretStore {
       // Nothing secret anywhere, so the key store is not asked. A temp file is
       // a crash's leftover that never became settings.json; it may still hold
       // a key typed before a migration, and nothing ever reads it.
-      if (tmpExists) rmSync(tmp, { force: true })
+      if (tmpExists) removeQuietly(tmp)
       return raw
     }
 
@@ -249,10 +261,10 @@ export class SecretStore {
         this.demote(
           `The key store would not seal keys on this run (${err instanceof Error ? err.message : String(err)}), so they stay in settings.json in plain text.`
         )
-        // secrets.json stays as it was on disk (a failed write never renamed
-        // over it). What already opened is still used this run, under the
-        // plaintext — and the next write puts it in settings.json, which the
-        // next protected boot migrates back.
+        // settings.json was not touched, so the plaintext is still there and
+        // wins at the next protected boot whatever secrets.json now holds.
+        // What already opened is still used this run, under the plaintext,
+        // and the next write puts it in settings.json too.
         for (const path of Object.keys(plain)) delete fromVault[path]
         this.values = {}
         this.sealed = {}
@@ -263,7 +275,7 @@ export class SecretStore {
       writePrivateFile(this.settingsFile, JSON.stringify(scrubSecrets(raw), null, 2))
     }
     // A temp left by a crash mid-write can hold the plaintext the scrub just removed.
-    if (tmpExists) rmSync(tmp, { force: true })
+    if (tmpExists) removeQuietly(tmp)
     return applySecrets(needsMigration ? scrubSecrets(raw) : raw, this.values)
   }
 
