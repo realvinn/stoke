@@ -10,7 +10,18 @@
  *
  *   node scripts/verify-secrets.mts
  */
-import { mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync, existsSync } from 'node:fs'
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DEFAULT_SETTINGS, hydrateSettings } from '../src/main/settingsSchema.ts'
@@ -333,6 +344,67 @@ console.log('\na key store that refuses mid-run loses nothing')
   store.save({ ...s, providers: { ...s.providers, anthropicApiKey: 'sk-ant-must-survive' } })
   ok('the key the user just typed is saved (in settings.json, as before)', read(settingsFile).includes('sk-ant-must-survive'))
   check('and status says so', store.status().protected, false)
+}
+
+console.log('\na secrets.json write that fails is retried, and the key is never lost')
+{
+  // The reported case: the vault's rename fails once (ENOSPC, or on Windows an
+  // EPERM/EBUSY while antivirus holds the file). A non-empty directory where
+  // secrets.json should be makes that rename throw on every platform, while
+  // the old vault waits aside — exactly what a failed rename leaves on disk.
+  const dir = freshDir()
+  const settingsFile = join(dir, 'settings.json')
+  const secretsFile = join(dir, 'secrets.json')
+  const aside = `${secretsFile}.aside`
+  writeFileSync(settingsFile, JSON.stringify(plaintextSettings(), null, 2))
+  const store = new SecretStore(dir, fakeBackend().backend, 'darwin')
+  const s = hydrateSettings(store.load())
+  const vaultBefore = read(secretsFile)
+  const rotated = 'sk-or-CANARY-typed-while-busy'
+  const next = { ...s, providers: { ...s.providers, openrouterApiKey: rotated } }
+
+  renameSync(secretsFile, aside)
+  mkdirSync(secretsFile)
+  writeFileSync(join(secretsFile, 'occupant'), 'x')
+  let threw: unknown = null
+  try {
+    store.save(next)
+  } catch (err) {
+    threw = err
+  }
+  rmSync(secretsFile, { recursive: true, force: true })
+  renameSync(aside, secretsFile)
+
+  ok('the failed vault write does not throw out of save', threw === null, String(threw))
+  check('the vault on disk is still the old one', read(secretsFile), vaultBefore)
+  ok('the key just typed is kept in settings.json meanwhile', read(settingsFile).includes(rotated))
+  check('and only that one: the keys the vault holds stay scrubbed', hasCanary(read(settingsFile)), [])
+  ok('status names the failed write', typeof store.status().vaultWriteError === 'string')
+
+  // A boot before any retry (a crash, a quit) must still see the new key.
+  const crashed = freshDir()
+  cpSync(dir, crashed, { recursive: true })
+  check(
+    'a boot in between reads the new key',
+    hydrateSettings(new SecretStore(crashed, fakeBackend().backend, 'darwin').load()).providers.openrouterApiKey,
+    rotated
+  )
+
+  // The next save of anything retries the vault: before the fix it compared
+  // against a copy already claiming the new key, and skipped it for good.
+  store.save({ ...next, fontSize: 18 })
+  ok('the next save, of an unrelated setting, rewrites secrets.json', read(secretsFile) !== vaultBefore)
+  ok('and takes the key back out of settings.json', !read(settingsFile).includes(rotated))
+  check('and clears the status', store.status().vaultWriteError, null)
+  check(
+    'a fresh boot returns the new key',
+    hydrateSettings(new SecretStore(dir, fakeBackend().backend, 'darwin').load()).providers.openrouterApiKey,
+    rotated
+  )
+  check('with every other key intact', collectSecrets(hydrateSettings(new SecretStore(dir, fakeBackend().backend, 'darwin').load())), {
+    ...collectSecrets(s),
+    'providers.openrouterApiKey': rotated
+  })
 }
 
 console.log('\na profile with no keys never asks the key store')

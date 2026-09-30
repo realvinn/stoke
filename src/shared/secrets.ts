@@ -357,4 +357,10 @@ export interface SecretStoreStatus {
    * replaces its item.
    */
   stranded: string[]
+  /**
+   * Why the last write of secrets.json failed, while a key it should hold is
+   * still waiting for the next write; null once one succeeds. Until then a
+   * changed key is kept in settings.json in plain text, never dropped.
+   */
+  vaultWriteError: string | null
 }

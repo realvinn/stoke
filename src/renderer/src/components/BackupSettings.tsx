@@ -80,6 +80,13 @@ function KeyStorage({ status }: { status: SecretStoreStatus | null | 'loading' }
           {status.why}
         </span>
       )}
+      {status?.vaultWriteError && (
+        <span className="field-hint" data-tone="warning" data-backup="vault-write-error">
+          The last change to your keys could not be written to <span className="mono">secrets.json</span> (
+          {status.vaultWriteError}), so the changed key is in settings.json in plain text for now. Stoke tries again on
+          the next change to any setting, and moves it back at the next start.
+        </span>
+      )}
       {stranded.length > 0 && (
         <span className="field-hint" data-tone="warning">
           {stranded.length === 1 ? 'One saved key' : `${stranded.length} saved keys`} could not be opened on this run (

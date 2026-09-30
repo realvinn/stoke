@@ -257,7 +257,11 @@ encrypts with a password hardcoded in Chromium and does NOT count. An unprotecte
 old behaviour exactly — plaintext settings.json — and Settings › Backup & transfer says so. An
 item that will not open (another key store, a recreated Keychain item) is kept verbatim and
 listed as stranded; re-entering the key replaces it. A key store that refuses mid-run demotes
-that run to plaintext rather than drop the key just typed.
+that run to plaintext rather than drop the key just typed. A secrets.json write that FAILS
+(ENOSPC; on Windows an EPERM/EBUSY rename while antivirus holds the file) commits nothing — `save`
+compares against what the vault holds on disk, so the next write of any setting retries it — and
+meanwhile keeps the changed key, and only that one, in settings.json in plain text, which a boot in
+between migrates in; Settings names the failure (`vaultWriteError`) until a write lands.
 
 **Downgrade.** A build from before this reads settings.json only, so it sees every key as empty:
 API-key sessions refuse to start and Phone access mints a new key (the phone needs the new QR).
@@ -588,7 +592,8 @@ npm run verify:secrets        # secrets at rest and the setup file, on a SYNTHET
                               # an injected key store (never the Keychain) and a bystander that
                               # must survive: migration scrubs settings.json and its .tmp, is
                               # idempotent, plaintext wins; basic_text and no key store keep
-                              # plaintext; stranded items are kept; a canary never reaches disk
+                              # plaintext; stranded items are kept; a failed vault rename keeps
+                              # the typed key and the next save retries; a canary never reaches disk
                               # or an export; real scrypt/AES-GCM round trip, wrong passphrase,
                               # flipped byte, edited header, unknown KDF/cipher/format refused;
                               # import drops unknown keys, clamps, keeps local fields

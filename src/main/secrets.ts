@@ -132,6 +132,8 @@ export class SecretStore {
   /** Items carried verbatim: stranded (would not open) or foreign (a newer build's path). */
   private kept: Record<string, string>
   private strandedPaths: string[]
+  /** Set while secrets.json is behind the settings because its last write failed. */
+  private vaultWriteError: string | null
 
   constructor(dir: string, backend: SecretBackend, platform: string) {
     this.dir = dir
@@ -142,6 +144,7 @@ export class SecretStore {
     this.sealed = {}
     this.kept = {}
     this.strandedPaths = []
+    this.vaultWriteError = null
   }
 
   get settingsFile(): string {
@@ -193,8 +196,8 @@ export class SecretStore {
     this.protection = { protected: false, backend: was.backend, why }
   }
 
-  private writeVault(): void {
-    writePrivateFile(this.secretsFile, serializeSecretsFile(this.decide().backend, { ...this.kept, ...this.sealed }))
+  private writeVault(kept: Record<string, string> = this.kept, sealed: Record<string, string> = this.sealed): void {
+    writePrivateFile(this.secretsFile, serializeSecretsFile(this.decide().backend, { ...kept, ...sealed }))
   }
 
   /**
@@ -283,6 +286,14 @@ export class SecretStore {
    * Write settings: the secrets into secrets.json (only when they moved), then
    * settings.json with them emptied. Called for every coalesced settings write,
    * so an unchanged key is never re-sealed.
+   *
+   * "Only when they moved" compares against `values`, which is what secrets.json
+   * holds ON DISK — so nothing is committed to it until the vault write has
+   * returned. It used to be assigned first: one failed write (ENOSPC, or an
+   * EPERM/EBUSY rename on Windows while antivirus holds the file) left `values`
+   * claiming the new key was stored, every later save skipped the vault as
+   * unchanged, settings.json went on being scrubbed, and the next boot brought
+   * back the old key or none.
    */
   save(settings: object): void {
     const secrets = collectSecrets(settings)
@@ -313,12 +324,33 @@ export class SecretStore {
         return
       }
       // A key typed again replaces its stranded copy.
-      for (const path of Object.keys(secrets)) delete this.kept[path]
+      const kept = { ...this.kept }
+      for (const path of Object.keys(secrets)) delete kept[path]
+      try {
+        this.writeVault(kept, sealed)
+      } catch (err) {
+        // Nothing is committed, so the next save still finds the vault behind
+        // and writes it again. Until one lands, a key the vault does not yet
+        // hold stays in settings.json in plain text rather than nowhere: a boot
+        // in between migrates it in (plaintext wins, as the newer write). Keys
+        // the vault already holds stay scrubbed. A key CLEARED meanwhile cannot
+        // be written anywhere and comes back if no later write succeeds — the
+        // safe direction.
+        // Node's fs messages run on into both full paths after the first comma;
+        // Settings shows only the reason ("EBUSY: resource busy or locked").
+        this.vaultWriteError = (err instanceof Error ? err.message : String(err)).split(',')[0]
+        console.error('[stoke] could not write secrets.json; the changed keys stay in settings.json until it can', err)
+        const unsaved: Record<string, string> = {}
+        for (const [path, value] of Object.entries(secrets)) if (this.values[path] !== value) unsaved[path] = value
+        writePrivateFile(this.settingsFile, JSON.stringify(applySecrets(scrubSecrets(settings), unsaved), null, 2))
+        return
+      }
+      this.kept = kept
       this.strandedPaths = this.strandedPaths.filter((s) => !(s in secrets))
       this.values = { ...secrets }
       this.sealed = sealed
-      this.writeVault()
     }
+    this.vaultWriteError = null
     writePrivateFile(this.settingsFile, JSON.stringify(scrubSecrets(settings), null, 2))
   }
 
@@ -333,7 +365,8 @@ export class SecretStore {
       why: p.why,
       location: p.protected ? (held.length ? 'secrets.json' : 'none') : 'settings.json',
       held: p.protected ? held : [],
-      stranded: [...this.strandedPaths]
+      stranded: [...this.strandedPaths],
+      vaultWriteError: p.protected ? this.vaultWriteError : null
     }
   }
 }
