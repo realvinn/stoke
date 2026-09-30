@@ -6,7 +6,7 @@
  */
 import { deriveAccent } from '@shared/accent'
 import { meterScale } from '@shared/meter'
-import type { PhoneSessionStatus } from '@shared/remotePhone'
+import { accessRefusalMessage, type PhoneSessionStatus } from '@shared/remotePhone'
 
 export interface ContextInfo {
   contextTokens: number
@@ -103,6 +103,20 @@ export const CONNECTED_KEY = 'stoke.connected'
 
 /** A non-2xx answer: its status, and its JSON body when it had one. */
 export type ApiError = Error & { status?: number; body?: unknown }
+
+/**
+ * The computer's own sentence when it took the key and refused the Cloudflare
+ * Access token (403 `{error, refused: 'access'}`), else null.
+ *
+ * Never an `AuthError`: the key was right, and a Connect screen saying it was
+ * replaced sent people to re-scan a key that worked (gotcha 124). The server
+ * says what it could not check instead — its clock, its keys, its AUD.
+ */
+export function accessRefusalOf(err: unknown): string | null {
+  if (!(err instanceof Error)) return null
+  const e = err as ApiError
+  return accessRefusalMessage(e.status, e.body)
+}
 
 /**
  * Resume a past conversation, or open it where it already runs.

@@ -46,7 +46,7 @@ import {
   type SpaceHoldStep
 } from '@shared/voiceRoute'
 import { DEFAULT_HOLD_MS } from '@shared/voiceSettings'
-import { folderName, host, machineName, resumeSession, theme, THEME_EVENT, wsUrl, type SessionRow } from './api'
+import { accessRefusalOf, folderName, host, machineName, resumeSession, theme, THEME_EVENT, wsUrl, type SessionRow } from './api'
 import { confirmSheet, el, explain, icon, iconButton, openSheet, toast } from './dom'
 import { rowTitle, screenLines, sendAnswer } from './list'
 import { store } from './store'
@@ -169,7 +169,18 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
     moreBtn
   )
 
-  const linkStrip = el('div', { class: 'link-strip', role: 'status', hidden: true }, el('i', { class: 'spinner' }), 'Reconnecting…')
+  /*
+   * A browser never sees a refused handshake's status, so a socket the computer
+   * refuses for Cloudflare Access looks like any dropped link. The store's
+   * fallback poll does see it (403, `accessRefusalOf`), and the strip says the computer's
+   * reason instead of reconnecting in silence (gotcha 124).
+   */
+  const linkText = el('span', {}, 'Reconnecting…')
+  const linkStrip = el('div', { class: 'link-strip', role: 'status', hidden: true }, el('i', { class: 'spinner' }), linkText)
+  const paintLink = (): void => {
+    linkText.textContent = accessRefusalOf(store.error) ?? 'Reconnecting…'
+  }
+  paintLink()
 
   /* ------------------------------------------------------------- terminal */
 
@@ -254,6 +265,7 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
   }
 
   signal.addEventListener('abort', store.subscribe(() => {
+    paintLink()
     const next = store.row(ptyId)
     if (next) {
       row = next

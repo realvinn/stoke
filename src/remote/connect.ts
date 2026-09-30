@@ -8,7 +8,7 @@
  * on first launch, since it gets a cookie jar of its own.
  */
 import { connectCopy, parseConnectInput } from '@shared/phoneUi'
-import { api, AuthError, CONNECTED_KEY } from './api'
+import { accessRefusalOf, api, AuthError, CONNECTED_KEY } from './api'
 import { el, icon } from './dom'
 
 /** `linkKey`: the page was opened with a `?k=` that the server then refused. */
@@ -58,12 +58,18 @@ export function mountConnect(opts: { linkKey?: boolean } = {}): HTMLElement {
     go.disabled = true
     go.textContent = 'Checking…'
     // Try the key before storing it, so a typo gets a sentence, not a loop.
+    // The server turns ?k= into the HttpOnly cookie; boot scrubs it from the URL.
+    const keep = (): void => location.replace(`${location.pathname}?k=${encodeURIComponent(parsed.key)}`)
     api('/api/host', { key: parsed.key })
-      .then(() => {
-        // The server turns ?k= into the HttpOnly cookie; boot scrubs it from the URL.
-        location.replace(`${location.pathname}?k=${encodeURIComponent(parsed.key)}`)
-      })
+      .then(keep)
       .catch((err) => {
+        /*
+         * An Access refusal means the key WORKED — it is checked first — so it
+         * is kept like any accepted key, and the list then shows the computer's
+         * reason. Telling this person their key "was not accepted" is the
+         * diagnosis the server can disprove (gotcha 124).
+         */
+        if (accessRefusalOf(err) !== null) return keep()
         go.disabled = false
         go.textContent = 'Connect'
         error.textContent =

@@ -1,5 +1,5 @@
 import './style.css'
-import { AuthError, loadHost, loadTheme, machineName, setAuthFailureHandler, showMachine, host } from './api'
+import { accessRefusalOf, AuthError, loadHost, loadTheme, machineName, setAuthFailureHandler, showMachine, host } from './api'
 import { mountConnect } from './connect'
 import { el, failure, humanError, icon, iconButton, skeleton } from './dom'
 import { mountHistory, mountProjectHistory, mountTranscript, type Page } from './history'
@@ -67,9 +67,21 @@ function linkStrip(): HTMLElement {
     const down = store.link === 'down'
     strip.hidden = !down
     if (down) {
+      /*
+       * An Access refusal is not "can't reach": the computer answered, and the
+       * page's own body says why it refused (gotcha 124). Telling this person to
+       * turn Phone access back on would send them after a server that is up.
+       */
+      const access = accessRefusalOf(store.error) !== null
       strip.replaceChildren(
         el('i', { class: 'spinner', 'aria-hidden': 'true' }),
-        el('span', {}, `Can't reach ${machineName()} — retrying. If Phone access was turned off, turn it back on in Stoke.`)
+        el(
+          'span',
+          {},
+          access
+            ? `Cloudflare Access check failed on ${machineName()} — retrying.`
+            : `Can't reach ${machineName()} — retrying. If Phone access was turned off, turn it back on in Stoke.`
+        )
       )
     }
   }
@@ -98,7 +110,13 @@ function mountList(container: HTMLElement, compact: boolean): SessionList {
     compact,
     empty: emptyState,
     loading: () => skeleton(compact ? 4 : 3),
-    failure: (err) => failure(`Can't reach ${machineName()}`, humanError(err), () => void store.refresh())
+    // An Access refusal DID reach the computer: it answered, and said why not.
+    failure: (err) =>
+      failure(
+        accessRefusalOf(err) !== null ? 'Cloudflare Access check failed' : `Can't reach ${machineName()}`,
+        humanError(err),
+        () => void store.refresh()
+      )
   })
   list.update(store.rows, store.error)
   const off = store.subscribe(() => list.update(store.rows, store.error))
