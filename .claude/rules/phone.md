@@ -276,6 +276,14 @@ The rules, each a way a plausible version goes wrong:
   every token (`no-keys`), keeping a last-good set only up to `MAX_STALE_MS`. A settings file with
   Access on but no team/AUD keeps the presence check so an upgrade does not lock a phone out, and
   reports `presence-only` in amber — turning the box on from off looks the pair up first.
+- **Refuse Access in its own words, never with the key's 401.** `authorize` answers a
+  `RemoteAuthVerdict` (`ok` / `key` / `access` + reason), and `remoteRefusal` turns an Access refusal
+  into 403 `{error, refused: 'access'}` (socket: `403 Forbidden`). The phone's `api()` turns EVERY
+  401 into the Connect screen ("Your key was replaced", "This link's key isn't current"), so while
+  both were 401 a stale AUD, a JWKS outage or a skewed clock told the owner to re-scan a key that had
+  just matched — a diagnosis the server could disprove. And `?k=` must still set the cookie when the
+  key matched and only Access refused (`mayStoreKeyCookie` takes the verdict): withholding it made
+  the next `/api` call keyless, so it 401'd and blamed the key anyway.
 - **Discovery needs browser headers.** Access with Managed OAuth answers a non-browser request with
   `401 WWW-Authenticate … cloudflare-access-protected-resource`, not the login redirect whose `kid`
   (the AUD) and `meta` (a JWT the team signed over the hostname) `discoverAccess` reads — and
@@ -292,3 +300,15 @@ team domains, which the clamp refuses until measured. None of this has met a rea
 `verify:remote` holds the verifier against generated keys, and `verify:security --access-configured`
 the wiring against a sandbox pointed at a loopback JWKS by `STOKE_ACCESS_CERTS_URL` (unpackaged
 builds only, loopback only).
+
+> **Checked against the code on 2026-09-30, review of the above.** Every "401" this entry measures
+> for a request that HELD the key is a 403 now (the refusal bullet above says why); a keyless
+> request is still 401. Measured against a sandbox on a loopback JWKS: `verify:security
+> --access-configured` 52/52, a token for another AUD answered 403 with the Look it up sentence,
+> an expired one and a future `nbf` the clock sentence, a keyless one 401 text/plain. In Chromium at
+> 390x844 with no Access header, `/?k=<key>` stored the cookie and the list read "Cloudflare Access
+> check failed" (the review traced the old code to "This link's key isn't current"; the old build
+> was not driven), and pasting the key into Connect landed on the same list; the handshake logged
+> `Unexpected response code: 403`. A browser cannot read a refused handshake's status, which is why
+> the session view's strip takes its sentence from the store's poll. Not driven: that strip over a
+> live pty, and `no-keys` (a last-good set outlives a JWKS outage by design).

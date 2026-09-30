@@ -316,8 +316,13 @@ attaches to a PTY, replaying its scrollback first.
   (`remote/accessJwt.ts`, gotcha 124): RS256 only, signed by a key from
   `https://<team>/cdn-cgi/access/certs` looked up by `kid`, `iss` equal to `https://<team>`,
   `aud` containing the AUD tag, `exp` required and `nbf`/`iat` checked, 60 s of leeway. It fails
-  closed — a missing, forged or expired token is a 401, and so is every request while the keys
+  closed — a missing, forged or expired token is refused, and so is every request while the keys
   cannot be fetched — and the unsigned `Cf-Access-Authenticated-User-Email` counts for nothing.
+  An Access refusal is **403** with `{error, refused: 'access'}` (`remoteRefusal`,
+  `RemoteAuthVerdict`), never the key's 401: the phone reads every 401 as "your key was replaced",
+  so a stale AUD, an unreachable JWKS or a skewed clock sent people to re-scan a key that worked.
+  The phone shows the computer's sentence (`accessRefusalForPhone`) instead, and `?k=` still sets
+  the cookie when the key matched and only Access refused, so the next call hears that reason.
   The bearer key is checked first, so a keyless request never reaches the verifier or causes a
   fetch. `AccessKeySet` holds one fetch in flight, refetches for an unknown `kid` at most every
   30 s, retries an empty cache every 5 s, and keeps a last-good set through an outage for a day.
@@ -1078,7 +1083,8 @@ src/remote/       mobile web UI, built separately to out/remote. Vanilla TS on o
                   340px session rail beside the session (never a stretched phone)
   main.ts           boot (key scrub, live theme), the router and the rail/pane layout
   api.ts            the phone contract's shapes, the fetch wrapper (a 401 is the Connect
-                    screen), /api/theme -> :root including derived accent-ink and meters
+                    screen; a 403 `refused: 'access'` is the computer's Access reason,
+                    `accessRefusalOf`), /api/theme -> :root including derived accent-ink and meters
   store.ts          the one session list: /ws/events pushes, a 5s poll while it is down
   list.ts           Needs you / Working / Idle / Ended rows, answerable from the list; reads
                     a waiting prompt's options by replaying the pty into an unopened xterm
