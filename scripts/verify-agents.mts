@@ -46,10 +46,32 @@ import {
   type LaunchPlanInput
 } from '../src/shared/agents.ts'
 import { CLI_CAPS, CODING_CLIS, type CodingCliId } from '../src/shared/codingClis.ts'
-import { SHARED_SKILLS_DIR, SKILL_DIRS, skillReport } from '../src/shared/skills.ts'
+import {
+  CLAUDE_PLUGIN_SKILLS,
+  CLAUDE_SHARED_PLUGIN,
+  claudeProjection,
+  pluginSkillName,
+  SHARED_SKILLS_DIR,
+  SKILL_DIRS,
+  skillReport
+} from '../src/shared/skills.ts'
 import { scanSkills } from '../src/main/skillsScan.ts'
+import { ClaudeSkillsProjector, SHARED_PLUGIN_MANIFEST } from '../src/main/skillsProject.ts'
 import { DEFAULT_SETTINGS, hydrateSettings } from '../src/main/settingsSchema.ts'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync
+} from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
@@ -101,7 +123,7 @@ function keysOnlyInEnv(name: string, r: ReturnType<typeof plan>): void {
 }
 
 console.log('\nwhat is stored')
-check('nothing stored is never asked', hydrateAgents(undefined), { chosen: null, endpoints: {}, defaultCli: 'claude' })
+check('nothing stored is never asked', hydrateAgents(undefined), { chosen: null, endpoints: {}, defaultCli: 'claude', shareSkillsToClaude: true })
 check('junk is never asked, not "nothing chosen"', hydrateAgents({ chosen: 'codex' }).chosen, null)
 check('an empty choice is kept — it means "show none"', hydrateAgents({ chosen: [] }).chosen, [])
 check(
@@ -146,6 +168,23 @@ check(
 )
 check("DEFAULT_SETTINGS names it, so a fresh file is not undefined", DEFAULT_SETTINGS.agents.defaultCli, 'claude')
 check('and a settings file with no agents block hydrates it', hydrateSettings({}).agents.defaultCli, 'claude')
+
+console.log('\nsharing ~/.agents/skills with Claude Code, as stored')
+// The clamp rule again: hydrateAgents rebuilds the block from named keys, so a
+// field it does not name would come back undefined — and `undefined` is falsy,
+// which would switch the feature off for everyone on the next save.
+check('on by default', DEFAULT_AGENTS.shareSkillsToClaude, true)
+check('DEFAULT_SETTINGS names it', DEFAULT_SETTINGS.agents.shareSkillsToClaude, true)
+check('an older file with no such key is on', hydrateAgents({ chosen: ['codex'] }).shareSkillsToClaude, true)
+check('an explicit false is kept', hydrateAgents({ shareSkillsToClaude: false }).shareSkillsToClaude, false)
+check('junk is the default, not off', hydrateAgents({ shareSkillsToClaude: 'no' }).shareSkillsToClaude, true)
+check(
+  'off survives the whole settings round trip',
+  hydrateSettings(JSON.parse(JSON.stringify({ ...DEFAULT_SETTINGS, agents: { ...DEFAULT_SETTINGS.agents, shareSkillsToClaude: false } })))
+    .agents.shareSkillsToClaude,
+  false
+)
+check('a settings file with no agents block hydrates it on', hydrateSettings({}).agents.shareSkillsToClaude, true)
 
 console.log('\nwhat the launcher shows')
 {
@@ -598,7 +637,254 @@ console.log('\nskills: who can see what, from a fake home (never the real one �
     rmSync(home, { recursive: true, force: true })
   }
   ok('every agent has a skills entry, so a new one cannot be forgotten', CODING_CLIS.every((c) => Array.isArray(SKILL_DIRS[c.id])))
+  check('the report lends Claude nothing when sharing is off', skillReport([], ['claude']).projected, [])
   ok('and the shared folder is in nearly all of them', CODING_CLIS.filter((c) => SKILL_DIRS[c.id].includes(SHARED_SKILLS_DIR)).length >= CODING_CLIS.length - 2)
+}
+
+console.log('\nskills Claude Code is lent at launch: the projection, on a fake home (gotcha 74)')
+{
+  // realpath'd: macOS's own tmpdir is a symlink, and the projection compares
+  // real paths, so an unresolved fixture root would compare a path with itself
+  // under two spellings.
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'stoke-share-')))
+  const skill = (dir: string, name: string): string => {
+    const at = join(home, dir, name)
+    mkdirSync(at, { recursive: true })
+    writeFileSync(join(at, 'SKILL.md'), `---\nname: ${name}\ndescription: x\n---\n`)
+    return at
+  }
+  const link = (target: string, dir: string, name: string): void => {
+    mkdirSync(join(home, dir), { recursive: true })
+    symlinkSync(target, join(home, dir, name))
+  }
+  // A bystander that was deleted reads as '' — a FAIL line, not a crash that
+  // skips every assertion after it.
+  const readOr = (path: string): string => {
+    try {
+      return readFileSync(path, 'utf8')
+    } catch {
+      return ''
+    }
+  }
+  const listing = (root: string): string[] => {
+    const out: string[] = []
+    const walk = (d: string): void => {
+      for (const n of readdirSync(d).sort()) {
+        const p = join(d, n)
+        const st = lstatSync(p)
+        out.push(`${p.slice(root.length)}${st.isSymbolicLink() ? ` -> ${readlinkSync(p)}` : ''}`)
+        if (st.isDirectory()) walk(p)
+      }
+    }
+    walk(root)
+    return out
+  }
+  try {
+    // Claude already has it: linked into ~/.claude/skills under the same name.
+    link(skill('.agents/skills', 'in-both'), '.claude/skills', 'in-both')
+    // Claude already has it under ANOTHER name: one skill by real path.
+    link(skill('.agents/skills', 'aliased'), '.claude/skills', 'my-alias')
+    // A different skill with the same name in each: Claude's own wins.
+    skill('.agents/skills', 'copied')
+    skill('.claude/skills', 'copied')
+    // Only in the shared folder: these are what the projection is for.
+    const only = skill('.agents/skills', 'only-shared')
+    skill('.agents/skills', 'trimmed')
+    // A second shared name for one folder: projected once.
+    link(only, '.agents/skills', 'second-name')
+    // A shared entry that IS one of Claude's plugin skills: already seen.
+    const pluginRoot = join(home, 'plugin-src', 'tools')
+    mkdirSync(join(pluginRoot, '.claude-plugin'), { recursive: true })
+    writeFileSync(join(pluginRoot, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'tools' }))
+    const helper = join(pluginRoot, 'skills', 'helper')
+    mkdirSync(helper, { recursive: true })
+    writeFileSync(join(helper, 'SKILL.md'), '---\nname: helper\n---\n')
+    link(helper, '.agents/skills', 'via-plugin')
+    // And one plugin skill nothing else has.
+    mkdirSync(join(pluginRoot, 'skills', 'solo'), { recursive: true })
+    writeFileSync(join(pluginRoot, 'skills', 'solo', 'SKILL.md'), '---\nname: solo\n---\n')
+    // A switched-off plugin and a project-scope one are not Claude's here.
+    const offRoot = join(home, 'plugin-src', 'off')
+    mkdirSync(join(offRoot, 'skills', 'hidden'), { recursive: true })
+    writeFileSync(join(offRoot, 'skills', 'hidden', 'SKILL.md'), 'x')
+    mkdirSync(join(home, '.claude', 'plugins'), { recursive: true })
+    writeFileSync(
+      join(home, '.claude', 'plugins', 'installed_plugins.json'),
+      JSON.stringify({
+        version: 2,
+        plugins: {
+          'tools@market': [{ scope: 'user', installPath: pluginRoot }],
+          'off@market': [{ scope: 'user', installPath: offRoot }],
+          'proj@market': [{ scope: 'project', projectPath: '/somewhere', installPath: offRoot }]
+        }
+      })
+    )
+    writeFileSync(join(home, '.claude', 'settings.json'), JSON.stringify({ enabledPlugins: { 'off@market': false } }))
+
+    const scans = await scanSkills(home)
+    const names = (dir: string) => scans.find((x) => x.dir === dir)?.skills.map((k) => k.name)
+    check(
+      "Claude's plugin skills are scanned as Claude invokes them, enabled user-scope only",
+      names(CLAUDE_PLUGIN_SKILLS),
+      ['tools:helper', 'tools:solo']
+    )
+    check(
+      'projected: only what Claude cannot already see, each folder once',
+      claudeProjection(scans).map((k) => k.name),
+      ['only-shared', 'trimmed']
+    )
+    check(
+      'a trim in skillOverrides is honoured (Claude itself ignores it for plugin skills)',
+      claudeProjection(scans, { trimmed: 'off' }).map((k) => k.name),
+      ['only-shared']
+    )
+    check(
+      'so is one keyed by the namespaced name',
+      claudeProjection(scans, { [`${CLAUDE_SHARED_PLUGIN}:trimmed`]: 'off' }).map((k) => k.name),
+      ['only-shared']
+    )
+    check(
+      'name-only cannot be expressed for a plugin skill, so it is left out too',
+      claudeProjection(scans, { trimmed: 'name-only' }).map((k) => k.name),
+      ['only-shared']
+    )
+    check('an explicit "on" is on', claudeProjection(scans, { trimmed: 'on' }).map((k) => k.name), ['only-shared', 'trimmed'])
+    check(
+      'two names Claude flattens to one are projected once',
+      claudeProjection([
+        {
+          dir: SHARED_SKILLS_DIR,
+          skills: [
+            { name: 'a.b', real: '/r/1' },
+            { name: 'a-b', real: '/r/2' }
+          ]
+        }
+      ]).map((k) => k.name),
+      ['a-b']
+    )
+    check("the flattening is the CLI's own", pluginSkillName('my skill.v2'), 'my-skill-v2')
+
+    const r = skillReport(scans, ['claude', 'codex'], { shareToClaude: true })
+    check('the report counts the projected skills as visible to Claude', r.projected, ['only-shared', 'trimmed'])
+    check(
+      'with sharing on, Claude misses no shared skill, and a skill seen under another name or through a plugin is not missing; the plugin-only skill is Claude-only',
+      r.partial.map((x) => [x.name, x.missing]),
+      [['tools:solo', ['codex']]]
+    )
+    const off = skillReport(scans, ['claude', 'codex'], { shareToClaude: false })
+    ok(
+      "with sharing off, the shared-only skills are Claude's misses again",
+      off.partial.some((x) => x.name === 'only-shared' && x.missing.includes('claude')) && off.projected.length === 0,
+      JSON.stringify(off.partial)
+    )
+
+    // --- the projector: a real folder under a fake userData ---
+    const userData = realpathSync(mkdtempSync(join(tmpdir(), 'stoke-share-ud-')))
+    const agentsDir = join(userData, 'agents')
+    const root = join(agentsDir, 'claude-skills')
+    mkdirSync(root, { recursive: true })
+    // Bystanders: beside the plugin dir, inside it under a name Stoke never
+    // makes, and the target of a stale set's link, which a recursive delete
+    // through the link would empty.
+    writeFileSync(join(agentsDir, 'pi-provider.ts'), 'keep me')
+    writeFileSync(join(root, 'README.txt'), 'keep me too')
+    const staleTarget = join(userData, 'stale-target')
+    mkdirSync(staleTarget)
+    writeFileSync(join(staleTarget, 'SKILL.md'), 'still here')
+    const stale = join(root, '0123456789abcdef')
+    mkdirSync(join(stale, 'skills'), { recursive: true })
+    symlinkSync(staleTarget, join(stale, 'skills', 'old'))
+    const project = join(home, 'project')
+    mkdirSync(join(project, '.claude'), { recursive: true })
+    writeFileSync(join(project, '.claude', 'settings.local.json'), JSON.stringify({ skillOverrides: { trimmed: 'off' } }))
+    const other = join(home, 'other')
+    mkdirSync(other)
+    const beforeHome = listing(home)
+    const projector = (): ClaudeSkillsProjector =>
+      new ClaudeSkillsProjector({ root, home, claudeDir: join(home, '.claude'), managedDir: null })
+
+    const run1 = projector()
+    const [a, b, c] = await Promise.all([run1.prepare(project), run1.prepare(project), run1.prepare(project)])
+    ok('three launches at once get one set', a !== null && a === b && b === c, `${a} ${b} ${c}`)
+    ok('inside its own directory', !!a && dirname(a) === root, String(a))
+    check('the per-project trim reaches the launch', a ? readdirSync(join(a, 'skills')) : null, ['only-shared'])
+    check(
+      'each skill is a LINK to the shared folder, not a copy',
+      a ? readlinkSync(join(a, 'skills', 'only-shared')) : null,
+      join(home, '.agents', 'skills', 'only-shared')
+    )
+    check(
+      'the manifest names the plugin Claude namespaces with',
+      a ? JSON.parse(readFileSync(join(a, '.claude-plugin', 'plugin.json'), 'utf8')).name : null,
+      'stoke-shared'
+    )
+    check('and is the constant one', a ? readFileSync(join(a, '.claude-plugin', 'plugin.json'), 'utf8') : null, SHARED_PLUGIN_MANIFEST)
+    ok('no half-built folder is left', !readdirSync(root).some((n) => n.startsWith('.build-')), readdirSync(root).join(' '))
+    const ino = a ? statSync(join(a, '.claude-plugin', 'plugin.json')).ino : -1
+    check('the same set again is the same folder', await run1.prepare(project), a)
+    check('and it was not rebuilt', a ? statSync(join(a, '.claude-plugin', 'plugin.json')).ino : -2, ino)
+    const d = await run1.prepare(other)
+    ok('another project with no trim is another set', d !== null && d !== a, String(d))
+    check('holding both', d ? readdirSync(join(d, 'skills')) : null, ['only-shared', 'trimmed'])
+    ok('a set handed out this run is kept: a session may be on it', !!a && existsSync(a))
+    ok("an earlier run's set is removed", !existsSync(stale))
+    ok(
+      'without following its link: the folder it pointed at is intact',
+      readOr(join(staleTarget, 'SKILL.md')) === 'still here'
+    )
+    ok('a bystander beside the plugin dir survives', readOr(join(agentsDir, 'pi-provider.ts')) === 'keep me')
+    ok('and one inside it that Stoke did not name', readOr(join(root, 'README.txt')) === 'keep me too')
+
+    const run2 = projector()
+    check('the next run reuses a set that still matches', await run2.prepare(other), d)
+    ok('and removes the one it no longer hands out', !!a && !existsSync(a))
+    ok('the shared skill itself is untouched by the removal', readOr(join(only, 'SKILL.md')).includes('only-shared'))
+    check('nothing was written into the fake home: ~/.claude, ~/.agents, the project', listing(home), beforeHome)
+
+    // A set tampered with (a link re-pointed) is not trusted.
+    if (d) {
+      rmSync(join(d, 'skills', 'trimmed'))
+      symlinkSync(staleTarget, join(d, 'skills', 'trimmed'))
+    }
+    const e = await run2.prepare(other)
+    check(
+      'a set that no longer matches is rebuilt',
+      e ? readlinkSync(join(e, 'skills', 'trimmed')) : null,
+      join(home, '.agents', 'skills', 'trimmed')
+    )
+    ok('and the rebuild did not follow the re-pointed link either', readOr(join(staleTarget, 'SKILL.md')) === 'still here')
+
+    const empty = realpathSync(mkdtempSync(join(tmpdir(), 'stoke-share-empty-')))
+    check(
+      'nothing to share is no flag at all',
+      await new ClaudeSkillsProjector({ root, home: empty, claudeDir: join(empty, '.claude'), managedDir: null }).prepare(empty),
+      null
+    )
+    const managed = join(empty, 'managed')
+    mkdirSync(join(managed, 'managed-settings.d'), { recursive: true })
+    writeFileSync(join(managed, 'managed-settings.d', '10-org.json'), JSON.stringify({ disableSideloadFlags: true }))
+    check(
+      'a policy that refuses --plugin-dir at startup gets no flag (a session that never starts)',
+      await new ClaudeSkillsProjector({ root, home, claudeDir: join(home, '.claude'), managedDir: managed }).prepare(other),
+      null
+    )
+    rmSync(empty, { recursive: true, force: true })
+    rmSync(userData, { recursive: true, force: true })
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+
+  // The one place the flag is pushed, and its gate. A source check, as
+  // verify:cli does for PATH: `start()` needs a real pty to call.
+  const pty = readFileSync(new URL('../src/main/pty.ts', import.meta.url), 'utf8')
+  const pushes = pty.split('\n').filter((l) => l.includes("'--plugin-dir'"))
+  ok(
+    'pty.ts pushes --plugin-dir once, only for an instrumented (local Claude) session, never ssh (gotcha 19)',
+    pushes.length === 1 && /\binstrumented\b/.test(pushes[0]),
+    pushes.join(' | ')
+  )
+  const headless = readFileSync(new URL('../src/main/agent.ts', import.meta.url), 'utf8')
+  ok('agent.ts (headless runs) never names --plugin-dir (gotcha 15)', !headless.includes('--plugin-dir'))
 }
 
 console.log(failures ? `\n${failures} FAILED` : '\nall pass')

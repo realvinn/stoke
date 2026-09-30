@@ -87,9 +87,22 @@ export interface AgentSettings {
    * is always `claude` (gotcha 19).
    */
   defaultCli: CodingCliId
+  /**
+   * Hand Claude Code the skills in `~/.agents/skills` it would not otherwise
+   * see, as a plugin for each local session (`--plugin-dir`, skillsProject.ts).
+   * On by default: it adds only skills every other agent already reads, links
+   * rather than copies, and writes nothing into Claude's own folders. Off is
+   * the way out on a machine whose policy refuses the flag.
+   */
+  shareSkillsToClaude: boolean
 }
 
-export const DEFAULT_AGENTS: AgentSettings = { chosen: null, endpoints: {}, defaultCli: DEFAULT_CLI }
+export const DEFAULT_AGENTS: AgentSettings = {
+  chosen: null,
+  endpoints: {},
+  defaultCli: DEFAULT_CLI,
+  shareSkillsToClaude: true
+}
 
 export const DEFAULT_ENDPOINT: AgentEndpoint = { mode: 'default', model: '', baseUrl: '', apiKey: '' }
 
@@ -117,7 +130,7 @@ export function hydrateEndpoint(raw: unknown): AgentEndpoint {
 
 export function hydrateAgents(raw: unknown): AgentSettings {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ...DEFAULT_AGENTS, endpoints: {} }
-  const r = raw as { chosen?: unknown; endpoints?: unknown; defaultCli?: unknown }
+  const r = raw as { chosen?: unknown; endpoints?: unknown; defaultCli?: unknown; shareSkillsToClaude?: unknown }
   // An array, deduplicated and filtered to ids this build knows. Anything else
   // — a string, an object, junk — is "never asked", which re-shows the picker
   // rather than hiding every agent on the strength of a bad value.
@@ -136,7 +149,14 @@ export function hydrateAgents(raw: unknown): AgentSettings {
   }
   // An id this build does not know — a newer build's agent, junk — is Claude
   // Code, the same answer `cliIdOf` gives a restored tab (codingClis.ts).
-  return { chosen, endpoints, defaultCli: cliIdOf(r.defaultCli) }
+  return {
+    chosen,
+    endpoints,
+    defaultCli: cliIdOf(r.defaultCli),
+    // Only an explicit false turns it off: every file written before the
+    // setting existed has no key, and reads as the default.
+    shareSkillsToClaude: r.shareSkillsToClaude !== false
+  }
 }
 
 /**

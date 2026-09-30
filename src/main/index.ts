@@ -57,6 +57,7 @@ import {
   resumeOrMint
 } from './cli.ts'
 import { scanSkills } from './skillsScan.ts'
+import { ClaudeSkillsProjector } from './skillsProject.ts'
 import { ContextWatcher } from './context.ts'
 import {
   findSessionFile,
@@ -200,6 +201,12 @@ let autoscan: AutoScanner | null = null
 let mcp: BrowserMcpServer | null = null
 /** Path of the generated --mcp-config file; null until the server is up. */
 let mcpConfigPath: string | null = null
+/**
+ * Builds the `--plugin-dir` that lends a local Claude session the shared
+ * skills (skillsProject.ts). Created on the first Claude launch, because it is
+ * keyed on userData, and kept: the sets it handed out this run are in its memory.
+ */
+let skillsProjector: ClaudeSkillsProjector | null = null
 let remote: RemoteServer | null = null
 /**
  * Timers armed by `createWindow`, cleared when that window closes.
@@ -665,6 +672,18 @@ async function launchSession(
   // the PATH the child is given, which on Windows now leads with the registry's
   // (gotcha 99) — Stoke's own inherited PATH can predate a Git install.
   const hasGitBash = process.platform === 'win32' ? gitBashPath({ ...process.env, PATH: await buildEnvPath() }) !== null : undefined
+  /*
+   * The shared skills Claude Code does not read on its own, lent to this one
+   * local session as a plugin. Never for an SSH tab (its `claude` is another
+   * machine's, gotcha 19), an install tab or another agent; `prepare` answers
+   * null rather than failing, so a launch never waits on it past its deadline
+   * or dies of it. Filtered by this folder's own `skillOverrides`.
+   */
+  let claudePluginDir: string | null = null
+  if (!opts.host && !opts.install?.length && isClaudeCode(cliId) && settings.agents.shareSkillsToClaude) {
+    skillsProjector ??= new ClaudeSkillsProjector({ root: join(app.getPath('userData'), 'agents', 'claude-skills') })
+    claudePluginDir = await skillsProjector.prepare(opts.cwd)
+  }
   const result = await ptys.start(
     opts,
     settings.claudePath,
@@ -680,7 +699,9 @@ async function launchSession(
         passthroughCommand: settings.hideStatusLine ? '' : userStatusLineCommand()
       }),
     settings.providers,
-    agentPlan
+    agentPlan,
+    null,
+    claudePluginDir
   )
   // A brand-new row for /ws/events, whichever side started it — a phone
   // watching the list should see a desktop-started session appear too.

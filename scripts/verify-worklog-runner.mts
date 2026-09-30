@@ -58,6 +58,7 @@ import { BUDGET_REFUSAL } from './worklog-budget-fixture.ts'
 import {
   MAX_RECALL_CHARS_PER_BOARD,
   formatRecall,
+  recallRunOptions,
   type RecallSnapshot
 } from '../src/main/worklog/recall.ts'
 import {
@@ -420,6 +421,25 @@ ok(
   !writeArgs.some((a) => a.includes('dangerously') || a.includes('bypassPermissions')),
   writeArgs.join(' ')
 )
+/*
+ * The shared-skills plugin (skillsProject.ts) is lent to interactive sessions
+ * only. A headless run that loaded it would pay for every lent skill's listing
+ * on every scan, and the scan is `--safe-mode` precisely so it loads nothing
+ * of the kind (gotcha 15). Checked on all three real runs, not a copy.
+ */
+for (const [name, args] of [
+  ['scan', scanArgs],
+  ['clickup write', writeArgs],
+  ['notion write', buildHeadlessArgs(applyRunOptions(proposal(), 'notion'))],
+  ['recall', buildHeadlessArgs(recallRunOptions({ clickupListId: 'L', notionDataSource: 'D', cwd: '/p' }))],
+  ['zero-target recall', buildHeadlessArgs(recallRunOptions({ clickupListId: '', notionDataSource: '', targets: [] }))]
+] as const) {
+  ok(
+    `the ${name} run is never lent the shared skills: no --plugin-dir, no --plugin-dir-no-mcp`,
+    !args.some((a) => a.startsWith('--plugin-dir')),
+    args.join(' ')
+  )
+}
 check(
   'a write run carries its own explicit ceiling, even when the caller forgets',
   writeArgs[writeArgs.indexOf('--max-budget-usd') + 1],
