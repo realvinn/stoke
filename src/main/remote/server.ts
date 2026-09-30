@@ -1,6 +1,6 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
-import { readFile, realpath } from 'node:fs/promises'
+import { readFile } from 'node:fs/promises'
 import { hostname } from 'node:os'
 import { extname, join, normalize, sep } from 'node:path'
 import type { Duplex } from 'node:stream'
@@ -13,6 +13,7 @@ import type {
   PermissionMode,
   Project,
   SessionMeta,
+  SshHost,
   Theme
 } from '@shared/types'
 import type { LiveSessionState } from '@shared/types'
@@ -20,7 +21,12 @@ import type { ContextWatcher } from '../context.ts'
 import type { PtyManager, StartResult } from '../pty.ts'
 import type { Transcript } from '../sessionFile.ts'
 import { MAX_AUDIO_BYTES, type SttResult } from '../stt.ts'
+import { realpathFolder } from '../folderCheck.ts'
 import { CODING_CLIS, type CodingCliId } from '../../shared/codingClis.ts'
+import { disambiguate } from '../../shared/launcher.ts'
+import { pathKey, pathRulesFor } from '../../shared/paths.ts'
+import type { FolderBase } from '../../shared/remotePhone.ts'
+import { addRemoteProject, browseRemoteFolder, resolveFolderBases } from './folders.ts'
 import { isTailnetAddress, tailnetAddress } from './link.ts'
 import {
   answerBytes,
@@ -110,7 +116,31 @@ export type { ConnectTarget, Reach } from './link.ts'
  *    input (`trackPrompt`).
  * 8. `POST /api/sessions` accepts `{cwd, cli?, permissionMode?, model?,
  *    effort?}`; `cli` must be an installed agent; bypass stays 403;
- *    `knownCwd` compares realpaths on both sides (F6).
+ *    `knownCwd` compares realpaths on both sides (F6), keyed by this OS's
+ *    `pathKey` (case folds on macOS and Windows, never on Linux).
+ *    Instead of `cwd` it takes `hostId` — an SSH host from Settings, looked up
+ *    by id here; a `host` object in the body is refused — which starts Claude
+ *    Code on that machine (never another agent, never resumed from here,
+ *    gotcha 19), or `scratch: true`, which starts in a fresh scratch folder.
+ *    The reply adds `cwd`: the folder, or the host's alias (gotcha 18).
+ *    An SSH start's reply carries no argv.
+ * 11. `GET /api/projects` lists EVERY project (the 60 cap is gone), each with
+ *     `label` (the name the user gave it, or null) and `hint` (the parent
+ *     path that tells two same-named ones apart, `disambiguate`), plus
+ *     `hosts: [{id,label,alias}]` (nothing else of a host) and `roots`.
+ * 12. `GET /api/folders?path=` lists one folder's immediate subfolders
+ *     (`{path, base, up, folders: [{name,path}], truncated}`, at most
+ *     `MAX_LISTED_FOLDERS`, dot-folders skipped). Only inside a place
+ *     `remoteFolderVerdict` allows — a project root, the default folder, or a
+ *     folder holding a known project — judged on the realpath; anything else
+ *     is 403 whether or not it exists. With no `path` it lists those places
+ *     (`path: null`, each folder with a `kind`).
+ * 13. `POST /api/projects {path}` adds a folder inside a place as a project,
+ *     realpath'd first (gotcha 91); `{parent, name}` creates `name` (one
+ *     segment, `newFolderNameProblem`) inside `parent` first — an existing
+ *     folder of that name is success, so a double tap is harmless (gotcha
+ *     20). Replies `{path, name, created}`; the desktop is told
+ *     (`settingsChanged`, gotcha 53), and the folder then passes point 8.
  * 9. `GET /api/history` rows add `live` and `ptyId` (when that session is
  *    running in a pty now, PX-10), and take `contextLimit` from the live
  *    snapshot or the last recorded one, else `null` (PX-19, gotcha 2).
@@ -167,6 +197,22 @@ export interface RemoteDeps {
    * off and on, while the desktop's dictation followed a change at once.
    */
   transcribe: (wav: Uint8Array) => Promise<SttResult>
+  /** `settings.projectRoots`, read per call (gotcha 111). */
+  projectRoots: () => string[]
+  /**
+   * `settings.hosts`, read per call. A phone names a host by id and the host
+   * is looked up here — a host object is never taken from a request, since
+   * its `alias` and `command` become an ssh argv.
+   */
+  hosts: () => SshHost[]
+  /**
+   * Remember a folder the phone picked or created as a project
+   * (`manualProjectPatch`) and tell the desktop (gotcha 53). Given a realpath
+   * (gotcha 91); returns the path as stored.
+   */
+  addProject: (realPath: string) => string
+  /** A fresh scratch folder, the one the launcher's Scratch session makes. */
+  createScratch: () => Promise<string>
 }
 
 /** One `/api/sessions` (and `/ws/events`) row. */
@@ -758,20 +804,39 @@ export class RemoteServer {
    * exist, so a failure falls back to the plain normalised compare rather
    * than refusing a folder that simply is not there yet — `pty.ts`'s own
    * `access` check is what actually enforces existence.
+   *
+   * Keyed by this OS's `pathKey`. It used to lower-case unconditionally, so on
+   * Linux — where `/home/v/Proj` and `/home/v/proj` are two folders — a case
+   * variant of a known project passed as that project. And it awaited one
+   * `realpath` per project in turn, with no deadline, on every start; they
+   * run together now, each under the launch deadline (gotcha 40), the default
+   * folder resolved the same way as the projects.
    */
   private async knownCwd(cwd: string): Promise<boolean> {
     if (!cwd || typeof cwd !== 'string') return false
-    if (cwd === this.deps.defaultCwd()) return true
-    const norm = (p: string): string => normalize(p).replace(/[\\/]+$/, '').toLowerCase()
-    const real = await realpath(cwd).then(norm, () => norm(cwd))
+    const def = this.deps.defaultCwd()
+    if (cwd === def) return true
+    const rules = pathRulesFor(process.platform)
     const projects = await this.deps.listProjects()
-    for (const p of projects) {
-      const projectNorm = norm(p.path)
-      if (projectNorm === norm(cwd)) return true
-      const projectReal = await realpath(p.path).then(norm, () => projectNorm)
-      if (projectReal === real) return true
-    }
-    return false
+    const known = [def, ...projects.map((p) => p.path)].filter(Boolean)
+    const [real, ...reals] = await Promise.all([cwd, ...known].map((p) => realpathFolder(p)))
+    const want = new Set([pathKey(cwd, rules), pathKey(real, rules)])
+    return known.some((p, i) => want.has(pathKey(p, rules)) || want.has(pathKey(reals[i], rules)))
+  }
+
+  /**
+   * Where a phone may browse and create folders right now (phone contract
+   * points 12, 13): read per call from settings and the project list, so a
+   * root added on the desktop counts at once (gotcha 111).
+   */
+  private async folderBases(): Promise<FolderBase[]> {
+    const projects = await this.deps.listProjects()
+    return resolveFolderBases({
+      roots: this.deps.projectRoots(),
+      defaultCwd: this.deps.defaultCwd(),
+      projects: projects.map((p) => p.path),
+      platform: process.platform
+    })
   }
 
   /**
@@ -942,31 +1007,72 @@ export class RemoteServer {
          * Deduped by realpath — audit finding: `/tmp/…/proj-a` and
          * `/private/tmp/…/proj-a` (macOS's `/tmp` symlink) listed as two
          * separate cards for one project. The first occurrence wins; ties in
-         * `listProjects()`'s own order are broken there, not here.
+         * `listProjects()`'s own order are broken there, not here. Resolved
+         * together under the launch deadline (gotcha 40) — one at a time, a
+         * sleeping disk held the whole reply once per project on it.
          */
+        const rules = pathRulesFor(process.platform)
+        const reals = await Promise.all(projects.map((p) => realpathFolder(p.path)))
         const seen = new Set<string>()
         const deduped: Project[] = []
-        for (const p of projects) {
-          const real = await realpath(p.path).catch(() => normalize(p.path))
-          if (seen.has(real)) continue
-          seen.add(real)
+        projects.forEach((p, i) => {
+          const key = pathKey(reals[i], rules)
+          if (seen.has(key)) return
+          seen.add(key)
           deduped.push(p)
-        }
+        })
+        /*
+         * Every project (phone contract point 11). The list used to stop at
+         * 60 and the phone searched only what it was sent, so the 61st
+         * project could not be reached from a phone at all.
+         */
+        const hints = disambiguate(deduped.map((p) => ({ path: p.path, label: p.label ?? p.name })))
         return this.json(
           res,
           {
             defaultCwd: this.deps.defaultCwd(),
-            projects: deduped.slice(0, 60).map((p) => ({
+            projects: deduped.map((p) => ({
               path: p.path,
               name: p.name,
+              label: p.label,
+              hint: hints[p.path] ?? '',
               sessionCount: p.sessionCount,
               lastActivityAt: p.lastModified,
               pinned: p.pinned,
               exists: p.exists
-            }))
+            })),
+            // Id, name and alias only: never `command`, which is argv.
+            hosts: this.deps.hosts().map((h) => ({ id: h.id, label: h.label, alias: h.alias })),
+            roots: this.deps.projectRoots()
           },
           setCookie
         )
+      }
+
+      /*
+       * Browse (phone contract point 12). Only immediate subfolders of a
+       * folder inside a place `remoteFolderVerdict` allows.
+       */
+      if (url.pathname === '/api/folders' && req.method === 'GET') {
+        const result = await browseRemoteFolder(url.searchParams.get('path'), await this.folderBases(), process.platform)
+        if (!result.ok) return this.json(res, { error: result.error }, setCookie, result.status)
+        return this.json(res, result.body, setCookie)
+      }
+
+      /*
+       * Add or create a project folder (phone contract point 13). The one
+       * write a phone makes to settings; `addProject` pushes it to the desktop.
+       */
+      if (url.pathname === '/api/projects' && req.method === 'POST') {
+        const parsed = await this.readJson(req)
+        if (parsed === BAD_JSON) return this.json(res, { error: 'Malformed JSON body.' }, setCookie, 400)
+        const result = await addRemoteProject(parsed, {
+          bases: () => this.folderBases(),
+          platform: process.platform,
+          remember: (realPath) => this.deps.addProject(realPath)
+        })
+        if (!result.ok) return this.json(res, { error: result.error }, setCookie, result.status)
+        return this.json(res, result.body, setCookie)
       }
       /*
        * Past sessions. Without these the phone can only see what happens to be
@@ -1054,7 +1160,7 @@ export class RemoteServer {
         if (parsed === BAD_JSON) {
           return this.json(res, { error: 'Malformed JSON body.' }, setCookie, 400)
         }
-        const body = parsed as Partial<LaunchOptions> | null
+        const body = parsed as (Partial<Omit<LaunchOptions, 'host'>> & { host?: unknown; hostId?: unknown; scratch?: unknown }) | null
 
         /*
          * The phone may not start an unsandboxed agent. `bypassPermissions`
@@ -1074,12 +1180,49 @@ export class RemoteServer {
         }
 
         /*
+         * Where it runs: a known folder, an SSH host named by id, or a new
+         * scratch folder (phone contract point 8) — one of them. A `host`
+         * OBJECT is refused outright: its alias and command become an ssh
+         * argv, so a host is only ever the one Settings holds under that id.
+         */
+        if (body && typeof body === 'object' && 'host' in body) {
+          return this.json(res, { error: 'Name a remote machine by its hostId.' }, setCookie, 400)
+        }
+        const hostId = body?.hostId
+        const scratch = body?.scratch === true
+        if (hostId !== undefined && (typeof hostId !== 'string' || !hostId)) {
+          return this.json(res, { error: 'hostId must name a remote machine.' }, setCookie, 400)
+        }
+        if (hostId !== undefined && scratch) {
+          return this.json(res, { error: 'A session runs on a remote machine or in a scratch folder, not both.' }, setCookie, 400)
+        }
+        let host: SshHost | null = null
+        if (typeof hostId === 'string') {
+          host = this.deps.hosts().find((h) => h.id === hostId) ?? null
+          if (!host) return this.json(res, { error: 'That remote machine is not in Settings.' }, setCookie, 400)
+          // Its `claude` is on the far machine; nothing is added to its command (gotcha 19).
+          const asked: unknown = body?.cli
+          if (typeof asked === 'string' && asked !== '' && asked !== 'claude') {
+            return this.json(res, { error: 'A remote machine runs Claude Code.' }, setCookie, 400)
+          }
+          if (body?.resume === true) {
+            return this.json(res, { error: "Resume a remote machine's conversation from the desktop." }, setCookie, 400)
+          }
+        }
+        if (scratch && body?.resume === true) {
+          return this.json(res, { error: 'A scratch folder has no conversation to resume.' }, setCookie, 400)
+        }
+
+        /*
          * The working directory has to be one the desktop already knows about.
          * It was passed straight to spawn, so any path on the machine was fair
          * game, and a bad one threw a message that leaked absolute paths back.
+         * An SSH session's local cwd is the default folder, as the desktop's
+         * own `startHostSession` uses; a scratch folder is made below, once
+         * everything else has passed.
          */
-        const cwd = body?.cwd || this.deps.defaultCwd()
-        if (!(await this.knownCwd(cwd))) {
+        let cwd = host || scratch ? this.deps.defaultCwd() : body?.cwd || this.deps.defaultCwd()
+        if (!host && !scratch && !(await this.knownCwd(cwd))) {
           return this.json(res, { error: 'Unknown project directory.' }, setCookie, 400)
         }
 
@@ -1090,7 +1233,7 @@ export class RemoteServer {
          * said they use.
          */
         let cli: string | undefined
-        if (typeof body?.cli === 'string' && body.cli.length > 0) {
+        if (!host && typeof body?.cli === 'string' && body.cli.length > 0) {
           const agents = await this.deps.agents()
           if (!agents.some((a) => a.id === body.cli)) {
             return this.json(res, { error: 'That agent is not installed.' }, setCookie, 400)
@@ -1106,7 +1249,8 @@ export class RemoteServer {
          * live one's context meter (`dropSessionState`). Refused with the pty
          * that has it, so the phone opens that one instead.
          */
-        const resumeId = typeof body?.sessionId === 'string' && UUID.test(body.sessionId) ? body.sessionId : null
+        const resumeId =
+          !host && !scratch && typeof body?.sessionId === 'string' && UUID.test(body.sessionId) ? body.sessionId : null
         const resuming = body?.resume === true
         /*
          * And a Resume never silently becomes a new conversation (gotcha 92):
@@ -1127,9 +1271,13 @@ export class RemoteServer {
           return this.json(res, { error: payload.error, live: payload.live, ptyId: payload.ptyId }, setCookie, status)
         }
 
+        // Made only now, so a refused request leaves no folder behind.
+        if (scratch) cwd = await this.deps.createScratch()
+
         const started = await this.deps.startSession({
           cwd,
           cli: cli as LaunchOptions['cli'],
+          ...(host ? { host } : {}),
           // Resuming needs both flags: the id says which transcript, and
           // resume turns it into --resume rather than --session-id, which
           // would instead try to create a session that already exists.
@@ -1141,7 +1289,13 @@ export class RemoteServer {
           cols: 100,
           rows: 30
         })
-        return this.json(res, started, setCookie)
+        /*
+         * `cwd` (point 8) is what the phone's header names: the folder, or the
+         * host's alias — an SSH session's local cwd is not where it runs
+         * (gotcha 18). An SSH start echoes no argv.
+         */
+        if (host) return this.json(res, { ptyId: started.ptyId, sessionId: started.sessionId, cwd: host.alias }, setCookie)
+        return this.json(res, { ...started, cwd }, setCookie)
       }
 
       /*

@@ -17,6 +17,7 @@
  */
 import {
   appendFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   realpathSync,
@@ -45,6 +46,7 @@ import {
   migrateSymlinkedProjectKeys
 } from '../src/main/projects.ts'
 import { defaultCwdCandidates, resolveDefaultCwd } from '../src/main/workspaceRoots.ts'
+import { addRemoteProject, resolveFolderBases } from '../src/main/remote/folders.ts'
 import { ContextWatcher } from '../src/main/context.ts'
 import {
   advanceCursor,
@@ -623,6 +625,64 @@ try {
     removedRow,
     undefined
   )
+
+  /*
+   * The phone's Start here / New folder (phone contract point 13) is one more
+   * door a folder comes in by, so gotcha 91 applies to it: a folder picked or
+   * created under a SYMLINKED place must be remembered by its real path. The
+   * one-row check alone could not fail — `listProjects` collapses a symlinked
+   * key on read — so what `remember` was handed is asserted exactly.
+   */
+  console.log('\na folder added from a phone (POST /api/projects)')
+  const phoneRoot = join(tmp, 'phone-root')
+  mkdirSync(phoneRoot)
+  const phoneLink = join(tmp, 'phone-link')
+  symlinkSync(phoneRoot, phoneLink)
+  const escapeTarget = join(tmp, 'phone-elsewhere')
+  mkdirSync(escapeTarget)
+  symlinkSync(escapeTarget, join(phoneRoot, 'out'))
+  writeFileSync(join(phoneRoot, 'afile'), 'x')
+  let phoneSettings = listSettings({})
+  const remembered: string[] = []
+  const phoneDeps = {
+    // The place is Settings' root, stored under its symlinked spelling.
+    bases: () => resolveFolderBases({ roots: [phoneLink], defaultCwd: '', projects: [], platform: process.platform }),
+    platform: process.platform,
+    remember: (realPath: string): string => {
+      remembered.push(realPath)
+      phoneSettings = { ...phoneSettings, ...manualProjectPatch(phoneSettings, realPath, nativeRules) } as Settings
+      return realPath
+    }
+  }
+  const fresh = join(phoneRoot, 'fresh')
+  const made = await addRemoteProject({ parent: phoneLink, name: ' fresh ' }, phoneDeps)
+  check('New folder under a symlinked place: created, and reported by its real path', made.ok ? [made.body.path, made.body.created] : made, [fresh, true])
+  check('the folder is really there', statSync(fresh).isDirectory(), true)
+  const twice = await addRemoteProject({ parent: phoneLink, name: 'fresh' }, phoneDeps)
+  check('a second tap finds it there: success, not an error (gotcha 20)', twice.ok ? [twice.body.path, twice.body.created] : twice, [fresh, false])
+  const byLink = await addRemoteProject({ path: join(phoneLink, 'fresh') }, phoneDeps)
+  check('Start here on the symlinked spelling lands on the same real path', byLink.ok ? byLink.body.path : byLink, fresh)
+  check('remember was only ever handed the real path', remembered, [fresh, fresh, fresh])
+  const phoneListed = await listProjects(listSettings({ projectMeta: phoneSettings.projectMeta }))
+  check(
+    'and the sidebar lists it once, under the real path',
+    phoneListed.filter((x) => x.path === fresh || x.path === join(phoneLink, 'fresh')).map((x) => x.path),
+    [fresh]
+  )
+  const before = remembered.length
+  const outside = await addRemoteProject({ parent: tmp, name: 'nope' }, phoneDeps)
+  check('a parent outside every place: 403, and nothing is created', [outside.ok ? 'added' : outside.status, existsSync(join(tmp, 'nope'))], [403, false])
+  const out = await addRemoteProject({ parent: phoneLink, name: 'out' }, phoneDeps)
+  check('a name that is a symlink out of the place: 403 once resolved', out.ok ? 'added' : out.status, 403)
+  const fileInWay = await addRemoteProject({ parent: phoneLink, name: 'afile' }, phoneDeps)
+  check('a file already has that name: 409', fileInWay.ok ? 'added' : fileInWay.status, 409)
+  const climb = await addRemoteProject({ parent: phoneLink, name: '../climbed' }, phoneDeps)
+  check('a name with a separator: 400, nothing created', [climb.ok ? 'added' : climb.status, existsSync(join(tmp, 'climbed'))], [400, false])
+  const traversal = await addRemoteProject({ path: `${phoneLink}/../phone-elsewhere` }, phoneDeps)
+  check('a path with ..: 400', traversal.ok ? 'added' : traversal.status, 400)
+  const empty = await addRemoteProject({}, phoneDeps)
+  check('a body naming nothing: 400', empty.ok ? 'added' : empty.status, 400)
+  check('none of the refusals remembered anything', remembered.length, before)
 } finally {
   rmSync(tmp, { recursive: true, force: true })
 }

@@ -104,6 +104,62 @@ check(
   await status(`/api/sessions?k=${key}`, json('not json{{{'))
 )
 
+/*
+ * Phone contract points 8, 12 and 13: a phone may browse and create folders
+ * only under a project root, the default folder or a known project's parent,
+ * and names a remote machine only by id. The key is the whole defence (Access
+ * is presence-checked, never verified), so each way out is refused here.
+ */
+console.log('\nfolders: only under the places a phone may reach')
+const outsidePath = process.platform === 'win32' ? 'C:\\Windows\\System32' : '/etc'
+const rootPath = process.platform === 'win32' ? 'C:\\' : '/'
+check('/api/folders is gated', 401, await status(`/api/folders?path=${encodeURIComponent(outsidePath)}`))
+check('the places list is served with the key', 200, await status(`/api/folders?k=${key}`))
+check(
+  `browsing ${outsidePath} is refused`,
+  403,
+  await status(`/api/folders?path=${encodeURIComponent(outsidePath)}&k=${key}`)
+)
+check('browsing the filesystem root is refused', 403, await status(`/api/folders?path=${encodeURIComponent(rootPath)}&k=${key}`))
+check(
+  'a missing folder outside is refused the same way, so a probe learns nothing',
+  403,
+  await status(`/api/folders?path=${encodeURIComponent(`${outsidePath}-no-such-${Date.now()}`)}&k=${key}`)
+)
+check(
+  'a traversal is refused before anything resolves it',
+  400,
+  await status(`/api/folders?path=${encodeURIComponent('/Users/../etc')}&k=${key}`)
+)
+check('POST /api/projects is gated', 401, await status('/api/projects', json({ path: outsidePath })))
+check(`adding ${outsidePath} as a project is refused`, 403, await status(`/api/projects?k=${key}`, json({ path: outsidePath })))
+check(
+  `creating a folder inside ${outsidePath} is refused`,
+  403,
+  await status(`/api/projects?k=${key}`, json({ parent: outsidePath, name: `stoke-verify-${Date.now()}` }))
+)
+check(
+  'a new folder name with a separator is refused',
+  400,
+  await status(`/api/projects?k=${key}`, json({ parent: outsidePath, name: '../escape' }))
+)
+check('a malformed body is refused', 400, await status(`/api/projects?k=${key}`, json('not json{{{')))
+
+console.log('\na remote machine is named by id, never sent')
+check(
+  'a host object in the body is refused',
+  400,
+  await status(`/api/sessions?k=${key}`, json({ cwd: outsidePath, host: { id: 'x', label: 'x', alias: 'evil', command: 'rm -rf ~' } }))
+)
+check('an unknown hostId is refused', 400, await status(`/api/sessions?k=${key}`, json({ hostId: `no-such-host-${Date.now()}` })))
+{
+  const res = await fetch(`${base}/api/projects?k=${key}`, { headers: ACCESS, signal: AbortSignal.timeout(20_000) })
+  const body = await res.json()
+  const keys = [...new Set((body.hosts ?? []).flatMap((h) => Object.keys(h)))].sort().join(',')
+  check('/api/projects lists hosts by id, label and alias only (never their command)', true, keys === '' || keys === 'alias,id,label')
+  check('/api/projects carries roots', true, Array.isArray(body.roots))
+}
+
 console.log('\npath traversal')
 check(
   'a traversing session id is refused',
@@ -114,7 +170,9 @@ check('a non-uuid session id is refused', 400, await status(`/api/transcript?id=
 
 console.log('\nthe wrong method no longer returns the app shell')
 check('GET on a POST-only route', 404, await status(`/api/transcribe?k=${key}`))
-check('POST on a GET-only route', 404, await status(`/api/projects?k=${key}`, { method: 'POST' }))
+// Not /api/projects any more: POST there adds a folder (phone contract point 13).
+check('POST on a GET-only route', 404, await status(`/api/theme?k=${key}`, { method: 'POST' }))
+check('DELETE on projects', 404, await status(`/api/projects?k=${key}`, { method: 'DELETE' }))
 check('DELETE on sessions', 404, await status(`/api/sessions?k=${key}`, { method: 'DELETE' }))
 
 console.log('\ncookie flags')

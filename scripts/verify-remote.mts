@@ -43,7 +43,20 @@ import {
   typingChunks,
   type PromptTrack
 } from '../src/shared/remotePhone.ts'
+import {
+  folderDepth,
+  isPlainFolderPath,
+  newFolderNameProblem,
+  remoteFolderBases,
+  remoteFolderVerdict,
+  type FolderBase
+} from '../src/shared/remotePhone.ts'
+import { pathRulesFor } from '../src/shared/paths.ts'
+import { browseRemoteFolder, listSubfolders, resolveFolderBases } from '../src/main/remote/folders.ts'
 import { createServer, type Server } from 'node:http'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { transcribe } from '../src/main/stt.ts'
 
 let failures = 0
@@ -700,6 +713,179 @@ console.log("\n/api/host's defaults (phone contract point 2)")
   )
   check('with no Claude on offer, the first agent that is', phoneHostDefaults(d, 'grok', ['codex', 'opencode']).cli, 'codex')
   check('an agent list carrying junk ids cannot become the default', phoneHostDefaults(d, 'grok', ['bash', 'codex']).cli, 'codex')
+}
+
+/*
+ * Phone contract points 12 and 13: a phone may browse and create folders only
+ * under a project root, the default folder, or the folder holding a known
+ * project. The bearer key is the whole defence, so every way out is a case.
+ */
+console.log('\nwhere a phone may browse (remoteFolderVerdict)')
+{
+  const mac = pathRulesFor('darwin')
+  const linux = pathRulesFor('linux')
+  const win = pathRulesFor('win32')
+  const root: FolderBase[] = [{ path: '/Users/v/dev/Stoke', kind: 'root' }]
+  const verdict = (requested: string, real: string, bases = root, rules = mac) =>
+    remoteFolderVerdict({ requested, real, bases }, rules)
+  check('inside a root', verdict('/Users/v/dev/Stoke/src', '/Users/v/dev/Stoke/src').ok, true)
+  check('the root itself', verdict('/Users/v/dev/Stoke', '/Users/v/dev/Stoke').ok, true)
+  check(
+    'a sibling that only shares the prefix (…/Stoke-old) is outside',
+    verdict('/Users/v/dev/Stoke-old', '/Users/v/dev/Stoke-old'),
+    { ok: false, reason: 'outside' }
+  )
+  check(
+    'a symlink inside the root that points out of it is judged where it leads: outside',
+    verdict('/Users/v/dev/Stoke/escape', '/etc'),
+    { ok: false, reason: 'outside' }
+  )
+  check(
+    'and one pointing in from outside is judged where it leads: inside',
+    verdict('/Users/v/elsewhere/link', '/Users/v/dev/Stoke/src').ok,
+    true
+  )
+  check('a .. segment is refused before anything resolves it', verdict('/Users/v/dev/Stoke/../../etc', '/Users/v/etc'), {
+    ok: false,
+    reason: 'malformed'
+  })
+  check('so is a . segment', verdict('/Users/v/dev/Stoke/./src', '/Users/v/dev/Stoke/src').ok, false)
+  check('a relative path is refused', verdict('dev/Stoke', '/Users/v/dev/Stoke').ok, false)
+  check('a NUL is refused', verdict('/Users/v/dev/Stoke\0/x', '/Users/v/dev/Stoke/x').ok, false)
+  check('a non-string (a crafted query) is refused, not thrown on', remoteFolderVerdict({ requested: 7, real: '', bases: root }, mac).ok, false)
+  check('nothing is allowed when there are no places', verdict('/Users/v/dev/Stoke', '/Users/v/dev/Stoke', []).ok, false)
+  check(
+    'case folds on macOS, where the disk does',
+    verdict('/users/v/dev/stoke/src', '/users/v/dev/stoke/src').ok,
+    true
+  )
+  check(
+    'and never on Linux, where /home/v/Dev and /home/v/dev are two folders',
+    remoteFolderVerdict(
+      { requested: '/home/v/dev/x', real: '/home/v/dev/x', bases: [{ path: '/home/v/Dev', kind: 'root' }] },
+      linux
+    ).ok,
+    false
+  )
+  check(
+    'Windows: case folds, either separator',
+    remoteFolderVerdict(
+      { requested: 'c:/users/v/dev/app', real: 'c:\\users\\v\\dev\\app', bases: [{ path: 'C:\\Users\\v\\dev', kind: 'root' }] },
+      win
+    ).ok,
+    true
+  )
+  check(
+    'a too-shallow place handed straight to the verdict still counts for nothing',
+    verdict('/Users/other/secret', '/Users/other/secret', [{ path: '/Users', kind: 'parent' }]).ok,
+    false
+  )
+  check('isPlainFolderPath: Windows drive and UNC paths are absolute there', [
+    isPlainFolderPath('C:\\x\\y', win),
+    isPlainFolderPath('\\\\server\\share\\x', win),
+    isPlainFolderPath('/x/y', win),
+    isPlainFolderPath('/x/y', mac)
+  ], [true, true, false, true])
+  check('folderDepth does not count a drive letter', [folderDepth('/'), folderDepth('/Users'), folderDepth('C:\\Users\\v'), folderDepth('/Users/v/')], [0, 1, 2, 2])
+}
+
+console.log('\nthe places themselves (remoteFolderBases)')
+{
+  const mac = pathRulesFor('darwin')
+  const bases = (roots: string[], defaultCwd: string, projects: string[], rules = mac) =>
+    remoteFolderBases({ roots, defaultCwd, projects }, rules).map((b) => [b.kind, b.path])
+  check(
+    'roots, the default folder, and the folder holding each project, in that order',
+    bases(['/Users/v/roots'], '/Users/v/default', ['/Users/v/dev/a']),
+    [
+      ['root', '/Users/v/roots'],
+      ['default', '/Users/v/default'],
+      ['parent', '/Users/v/dev']
+    ]
+  )
+  check(
+    'a project in the home folder does NOT make /Users — every account — a place',
+    bases([], '', ['/Users/v']),
+    []
+  )
+  check('nor does a project at the root make the whole disk one', bases([], '', ['/']), [])
+  check('nor a root of /, however it got into Settings', bases(['/'], '', []), [])
+  check('two projects side by side are one place', bases([], '', ['/Users/v/dev/a', '/Users/v/dev/b']), [['parent', '/Users/v/dev']])
+  check(
+    'a place inside another is folded into it, and a wider one arriving later takes its slot',
+    bases(['/Users/v/dev/personal'], '/Users/v/dev/personal/x', ['/Users/v/dev/stoke']),
+    [['parent', '/Users/v/dev']]
+  )
+  check('a default folder that IS a root is listed once, as the root', bases(['/Users/v/dev'], '/Users/v/dev', []), [['root', '/Users/v/dev']])
+  check('an empty default folder is simply absent', bases(['/Users/v/dev'], '', []), [['root', '/Users/v/dev']])
+  check(
+    'Windows: C:\\Users is too shallow, C:\\Users\\v\\dev is not',
+    bases([], '', ['C:\\Users\\v', 'C:\\Users\\v\\dev\\app'], pathRulesFor('win32')),
+    [['parent', 'C:\\Users\\v\\dev']]
+  )
+}
+
+/*
+ * The same rules against a real disk: a real symlink out of a place, a real
+ * sibling prefix, a file, a dot-folder, and more folders than one answer lists.
+ * Everything lives under a fresh temp dir (resolved, since macOS's own
+ * `$TMPDIR` is a symlink) and is removed afterwards.
+ */
+console.log('\nbrowsing a real folder (GET /api/folders)')
+{
+  const tmp = realpathSync(mkdtempSync(join(tmpdir(), 'stoke-browse-')))
+  try {
+    const place = join(tmp, 'projects')
+    const outside = join(tmp, 'projects-old')
+    mkdirSync(join(place, 'alpha', 'inner'), { recursive: true })
+    mkdirSync(join(place, 'Beta'))
+    mkdirSync(join(place, '.git'))
+    mkdirSync(outside)
+    writeFileSync(join(place, 'notes.txt'), 'x')
+    symlinkSync(outside, join(place, 'escape'))
+    const bases = await resolveFolderBases({ roots: [place], defaultCwd: '', projects: [], platform: process.platform })
+    check('the root is the one place', bases.map((b) => b.path), [place])
+
+    const places = await browseRemoteFolder(null, bases, process.platform)
+    check('with no path: the places, each with its kind', places.ok ? places.body.folders.map((f) => [f.path, f.kind]) : places, [[place, 'root']])
+
+    const listed = await browseRemoteFolder(place, bases, process.platform)
+    check(
+      'subfolders only: no file, no dot-folder; a symlinked folder is listed (judged when opened)',
+      listed.ok ? listed.body.folders.map((f) => f.name) : listed,
+      ['alpha', 'Beta', 'escape']
+    )
+    check('at the place there is no way up', listed.ok ? [listed.body.base, listed.body.up] : listed, [place, null])
+    const inner = await browseRemoteFolder(join(place, 'alpha'), bases, process.platform)
+    check('one down, up is the place', inner.ok ? [inner.body.path, inner.body.up, inner.body.folders.map((f) => f.name)] : inner, [
+      join(place, 'alpha'),
+      place,
+      ['inner']
+    ])
+    const escaped = await browseRemoteFolder(join(place, 'escape'), bases, process.platform)
+    check('opening the symlink that leads out: 403', escaped.ok ? 'served' : escaped.status, 403)
+    const sibling = await browseRemoteFolder(outside, bases, process.platform)
+    check('the sibling that shares the prefix: 403', sibling.ok ? 'served' : sibling.status, 403)
+    const missingOutside = await browseRemoteFolder(join(tmp, 'nope', 'nothing'), bases, process.platform)
+    check('a missing folder outside: 403 as well, so a probe cannot tell it from one that exists', missingOutside.ok ? 'served' : missingOutside.status, 403)
+    const missingInside = await browseRemoteFolder(join(place, 'gone'), bases, process.platform)
+    check('a missing folder inside a place: 404', missingInside.ok ? 'served' : missingInside.status, 404)
+    const file = await browseRemoteFolder(join(place, 'notes.txt'), bases, process.platform)
+    check('a file: 400', file.ok ? 'served' : file.status, 400)
+    const traversal = await browseRemoteFolder(`${place}/../projects-old`, bases, process.platform)
+    check('a traversal: 400, never resolved', traversal.ok ? 'served' : traversal.status, 400)
+    const etc = await browseRemoteFolder('/etc', bases, process.platform)
+    check('/etc: 403', etc.ok ? 'served' : etc.status, 403)
+
+    const crowd = join(place, 'crowd')
+    for (let i = 0; i < 205; i++) mkdirSync(join(crowd, `d${i}`), { recursive: true })
+    const capped = await listSubfolders(crowd)
+    check('at most 200 in one answer, and it says so', [capped?.folders.length, capped?.truncated], [200, true])
+    check('sorted as a person reads numbers (d2 before d10)', capped?.folders.slice(0, 3).map((f) => f.name), ['d0', 'd1', 'd2'])
+  } finally {
+    rmSync(tmp, { recursive: true, force: true })
+  }
+  check('newFolderNameProblem is the server’s own gate too', newFolderNameProblem('../x') !== null, true)
 }
 
 console.log(failures ? `\n${failures} FAILED` : '\nall pass')
