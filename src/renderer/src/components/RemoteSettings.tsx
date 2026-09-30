@@ -22,9 +22,6 @@ interface Props {
   onPatch: (patch: Partial<Settings>) => void
 }
 
-/** Mirrors the store default; an emptied box falls back here rather than to ''. */
-const DEFAULT_STT_URL = 'http://127.0.0.1:17890'
-
 /** The two answers to "what happens to open sessions after the CLI updates". */
 const RELAUNCH_MODES: { id: CliRelaunchMode; label: string; hint: string }[] = [
   {
@@ -118,14 +115,6 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
     patch({ remote: { ...r, ...p } })
   }, [])
 
-  useEffect(
-    () => () => {
-      const { remote: r } = latest.current
-      if (!r.sttUrl.trim()) patchRemote({ sttUrl: DEFAULT_STT_URL })
-    },
-    [patchRemote]
-  )
-
   const refresh = useCallback(async (): Promise<void> => {
     setState(await window.stoke.remote.status())
   }, [])
@@ -179,7 +168,6 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
     patchRemote({ tunnelName: v.trim() || 'stoke' })
   )
   const portField = useDraft(String(remote.port), (v) => patchRemote({ port: clampPort(v) }))
-  const sttField = useDraft(remote.sttUrl, (v) => patchRemote({ sttUrl: v.trim() || DEFAULT_STT_URL }))
 
   const accessUsable = Boolean(remote.hostname.trim()) && tunnel?.running === true && tunnel.mode === 'named'
 
@@ -641,39 +629,16 @@ export function RemoteSettings({ settings, onPatch }: Props): React.JSX.Element 
             </span>
           </div>
 
-          <div className="field">
-            <span className="field-label">
-              Speech server{' '}
-              {state && state.stt !== 'unknown' && (
-                <span className="pill" data-tone={state.stt === 'up' ? 'success' : undefined}>
-                  {state.stt === 'up' ? 'running' : 'not running'}
-                </span>
-              )}
-            </span>
-            <input
-              className="input mono"
-              placeholder={DEFAULT_STT_URL}
-              value={sttField.draft}
-              spellCheck={false}
-              onChange={(e) => sttField.setDraft(e.target.value)}
-              onBlur={sttField.onBlur}
-              onKeyDown={sttField.onKeyDown}
-            />
-            <FieldHint
-              more={
-                <>
-                  Stoke proxies to it, so it never has to face the internet. Terminal dictation picks
-                  up a change immediately; the phone picks it up the next time the remote server
-                  starts. <span className="mono">python scripts/stt-sidecar.py</span> in this repo runs
-                  one locally.
-                </>
-              }
-            >
-              {state?.stt === 'down'
-                ? 'Nothing is answering there, so dictation will fail until it is started.'
-                : 'Where speech is transcribed, for the phone and the terminal alike.'}
-            </FieldHint>
-          </div>
+          {/*
+            The speech server used to be edited here, because the phone was
+            dictation's first surface. It is Settings → Voice's now — the
+            terminal uses it as much as the phone — and this line is for
+            whoever still looks for it where it was.
+          */}
+          <span className="field-hint">
+            The speech server the phone dictates through is in Settings → Voice, shared with the
+            terminal. A change there reaches the phone&rsquo;s next recording.
+          </span>
 
           <div className="field">
             <span className="field-label">Key</span>

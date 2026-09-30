@@ -165,7 +165,11 @@ const GROUPS: { title: string; sections: Section[] }[] = [
         hint: 'Codex, OpenCode, Grok, Pi and the rest: which show, installing them, their endpoints'
       },
       { id: 'providers', label: 'Providers', hint: 'Claude Code’s API keys and gateway, and the shared OpenRouter key' },
-      { id: 'voice', label: 'Voice', hint: 'The microphone, Claude Code’s /voice, and Stoke’s dictation' },
+      {
+        id: 'voice',
+        label: 'Voice',
+        hint: 'The microphone, Claude Code’s /voice, and Stoke’s dictation and its speech server'
+      },
       { id: 'projects', label: 'Projects', hint: 'Which folders the sidebar scans' },
       { id: 'hosts', label: 'SSH hosts', hint: 'Remote machines to open sessions on' },
       { id: 'browser', label: 'Browser', hint: 'Profiles for the docked browser, each with its own logins' }
@@ -995,7 +999,7 @@ export function SettingsSheet({
             )}
 
             {section === 'voice' && (
-              <VoiceSettings settings={settings} onOpenSection={(id) => setSection(id)} />
+              <VoiceSettings settings={settings} onPatch={onPatch} />
             )}
 
           </div>

@@ -560,13 +560,14 @@ never the Finder/Dock case with no inherited PATH that the probe exists for. And
 shortcuts: buttons were driven by dispatching `.click()` on the DOM, never a real
 `metaKey`-modified keystroke, so `shortcuts.ts`'s Mac branch has not actually fired.
 
-**Dictation will point at nothing.** `remote.sttUrl` defaults to `http://127.0.0.1:17890`,
+**Dictation will point at nothing.** `voice.sttUrl` (Settings → Voice → Speech server;
+`remote.sttUrl` before that section had the field) defaults to `http://127.0.0.1:17890`,
 which is the speech sidecar on the Windows machine. On the Mac either run a sidecar
 locally, or point the setting at the Windows box over Tailscale:
 
 ```jsonc
 // ~/Library/Application Support/Stoke/settings.json
-"remote": { "sttUrl": "http://<windows-tailscale-name>:17890" }
+"voice": { "sttUrl": "http://<windows-tailscale-name>:17890" }
 ```
 
 Do not put that address on the public tunnel: the sidecar has no authentication of its

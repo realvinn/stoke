@@ -749,7 +749,9 @@ worth building:
 - **`sttUrl` is inert until the remote server restarts.** `CH.settingsSet` never calls
   `remote.start`; only token regeneration does. Every neighbouring remote field behaves the
   same way, so this matches its neighbours rather than inventing a restart. The field hint
-  says so.
+  says so. **Fixed 2026-09-30:** the address moved to `voice.sttUrl` (Settings → Voice), and
+  the phone's `/api/transcribe` reads it per request through `RemoteDeps.transcribe`, as the
+  desktop's dictation always did — no restart, and nothing for a restart to fix.
 - **scorptec's outline is empty**, because its product names live in `<a>` elements and
   admitting links as heading candidates floods the outline on every site. Accepted: a
   product grid is not a heading hierarchy, and `browser_read` returns the products.
