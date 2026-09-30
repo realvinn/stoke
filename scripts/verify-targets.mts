@@ -514,9 +514,16 @@ check(
 check('each leg runs on its own matrix os', port['runs-on'], '${{ matrix.os }}')
 check(
   'and runs typecheck, then verify:ci',
-  [portRuns.indexOf('npm run typecheck'), portRuns.indexOf('npm run verify:ci')].every((v, i, a) => v !== -1 && (i === 0 || a[i - 1] < v)),
+  [portRuns.indexOf('npm run typecheck'), portRuns.indexOf('npm run verify:ci -- --keep-going')].every((v, i, a) => v !== -1 && (i === 0 || a[i - 1] < v)),
   true
 )
+/*
+ * Every suite, not the first red one: the legs are there to show which suites
+ * are not portable, and the first Windows run stopped at verify:statusline with
+ * forty-five suites behind it unrun. The gate itself keeps stopping at the first
+ * failure (its runs are held above to be release.yml's, exactly).
+ */
+check('and runs every suite past a failure, so one run names every non-portable one', portRuns.includes('npm run verify:ci -- --keep-going'), true)
 check('naming no single suite', portRuns.filter(namesASuite), [])
 check(
   'every job has a timeout, so a hung Electron window cannot hold a runner for six hours',

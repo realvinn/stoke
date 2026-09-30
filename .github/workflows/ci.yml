@@ -128,4 +128,6 @@ jobs:
       - run: npm run typecheck
       # macOS and Windows runners have a desktop session, so verify:selection
       # runs as it does on a developer's machine (ci-verify.mjs, displayRoute).
-      - run: npm run verify:ci
+      # --keep-going: this leg exists to show WHICH suites are not portable, and
+      # stopping at the first red one hid the rest behind it for a push each.
+      - run: npm run verify:ci -- --keep-going
