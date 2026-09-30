@@ -341,6 +341,12 @@ attaches to a PTY, replaying its scrollback first.
 - **The phone paints the desktop's theme.** `GET /api/theme` serves the resolved theme and the
   terminal font; the mobile bundle writes the tokens onto `:root` and hands xterm the same
   sixteen ANSI slots the desktop uses. The stylesheet's Ember copy paints one frame at most.
+- **A phone starts where the desktop's switcher would.** New session offers `folderChoices` —
+  recent projects, the default folder, a scratch folder, SSH hosts (named by id; main looks the
+  host up) — plus Browse, which walks folders and creates one. Browse and New folder reach only
+  project roots, the default folder and the folders holding known projects, judged on the
+  realpath and never shallower than two folders (`remoteFolderVerdict`, gotcha 121); a folder
+  picked there is added as a project first, so the start itself still passes `knownCwd`.
 - **A dropped socket comes back.** iOS Safari drops a WebSocket seconds after backgrounding; the
   phone reconnects with backoff and on `visibilitychange`, resetting the terminal before the
   server's history replay lands.
@@ -607,7 +613,9 @@ npm run verify:folders        # folder metadata: trimming, caps, added folders, 
                               # transcripts read in pieces on synthetic files - incremental
                               # == one pass at every cut, a split UTF-8 character, resets on
                               # truncate/rename/rewrite, the watcher end to end, and
-                              # listSessions re-parsing only what changed (gotcha 103)
+                              # listSessions re-parsing only what changed (gotcha 103); and a
+                              # phone's Start here / New folder under a real symlinked place,
+                              # remembered by its realpath and listed once (gotcha 91)
 npm run verify:search         # sidebar + palette search: tiers, recency, highlight ranges on
                               # accented text, the label in both surfaces; and the session
                               # index against real files in a temp dir - a 40 MB transcript
@@ -711,9 +719,14 @@ npm run verify:ssh-enroll     # the password-prompt detector (POSIX and ConPTY-s
 npm run verify:remote         # phone access: where the link points and how it says it gets
                               # there, the LAN interface ranking, what a dead tunnel reports,
                               # and stt.ts against fake sidecars on loopback port 0: the
-                              # address per call, and `unset` (503) vs a failed server (502)
+                              # address per call, and `unset` (503) vs a failed server (502);
+                              # where a phone may browse (`remoteFolderVerdict`: a sibling
+                              # prefix, a symlink out, `..`, case per OS, too-shallow places)
+                              # and /api/folders against a real temp tree (gotcha 121)
 npm run verify:phone-ui       # the phone UI's decisions: list sections, answer options read
-                              # off the screen, the resize policy, queued sends, connect input
+                              # off the screen, the resize policy, queued sends, connect input,
+                              # the New session picker (the desktop's `folderChoices`), the
+                              # Browse breadcrumb and New folder names
 npm run verify:installer-art  # the committed installer bitmaps: BMP3 headers decoded by hand,
                               # exact dimensions, that neither the bitmaps nor the dmg PNGs are a
                               # well-formed blank, that the generator, electron-builder.yml and
@@ -876,6 +889,10 @@ src/main/         Electron main process
                     safari.ts + safariCookies.ts + plist.ts (Full Disk Access, binarycookies,
                     Bookmarks.plist), index.ts (scan, runImport). Gotcha 107
   workspace.ts      default folder + scratch folders
+  folderCheck.ts    a named folder asked about under the launch deadline: why it cannot be
+                    opened (`launchFolderProblem`) and its realpath (`realpathFolder`, gotcha
+                    91). No electron import, so the phone's folder routes and verify:folders
+                    run the very checks `stoke .` does
   workspaceRoots.ts where a session with no project starts, per platform. Takes the
                     platform and home as arguments so a suite can ask for another machine's
   wallpaper.ts      the picked image, copied under userData and served over the custom
@@ -989,6 +1006,10 @@ src/main/         Electron main process
   remote/           phone access
     server.ts         loopback HTTP + WebSocket, token auth, tailnet listener, and
                       /api/theme so the phone paints the desktop's own palette
+    folders.ts        the phone's folder routes minus HTTP: the places it may reach
+                      (realpath'd, `remoteFolderBases`), one folder's subfolders under the
+                      deadline, and Start here / New folder as a project. Every WHERE is
+                      `remoteFolderVerdict`'s. No electron import. Gotcha 121
     link.ts           where the phone link points and HOW it gets there (`reach`).
                       Pure, so verify:remote can hold the fallback order. Gotcha 53
     tunnel.ts         supervises cloudflared; finds it on the login-shell PATH

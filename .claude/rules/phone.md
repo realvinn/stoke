@@ -246,3 +246,33 @@ field never commits and the edit reads as "not saved" in working code. Dispatch
 `new FocusEvent('focusout', { bubbles: true })` on the input instead; React's `onBlur` listens for
 exactly that. Measured with fake sidecars on 17991/17992 and the phone server on loopback: the same
 running server answered `from A`, then `from B` after the Voice edit, with no restart between.
+
+## 121. "A known project's parent" includes `/Users` and `/` on real machines, so the phone's folder allow-list needs a floor
+
+**Found 2026-09-30, building the phone's Browse and New folder (phone contract points 12, 13).** The
+decision was that a phone may browse and create folders only under Settings' project roots, the
+default folder, and the folder holding each known project — never anywhere else, because the bearer
+key is the whole defence (Access headers are presence-checked, never verified). Read literally, the
+third source is not narrow. Claude Code records a project wherever `claude` was ever run, and on
+the owner's machine that includes the home folder itself (`paths.ts` records `/Users/thevinh` as a
+registered project). Its parent is `/Users` — every account on the machine — and a project run at
+`/` or a drive root has the whole disk as its parent. A leaked key would then list and create
+folders anywhere the desktop user can write.
+
+So `remoteFolderBases` drops any place shallower than `MIN_FOLDER_BASE_DEPTH` (two folders below the
+root, a drive letter not counted: `/Users/v` passes, `/Users`, `/`, `C:\Users` do not), folds a
+place inside another into it, and is computed from REAL paths. `remoteFolderVerdict` judges the
+REQUESTED path's shape first (`isPlainFolderPath`: absolute, no `.`/`..`, no NUL — refused before
+anything resolves it) and then its realpath: a symlink inside a root that points out is outside,
+and an out-of-place path answers 403 whether or not it exists, so the route is no existence probe.
+Case folds only where the OS does (`pathKey`) — the old `knownCwd` lower-cased unconditionally, so
+on Linux a case variant of a known project passed as it. A new folder's name is one segment
+(`newFolderNameProblem`), and an `EEXIST` is judged again as an existing folder, so a pre-planted
+symlink of that name is refused rather than remembered.
+
+`verify:remote` holds the rules and runs `/api/folders` against a real temp tree (symlink out,
+sibling prefix `…/projects-old`, a file, a dot-folder, 205 subfolders); mutating `isInside`'s
+separator test turns three of them red. `verify:folders` holds the add path under a real symlinked
+place. The live half — every refusal over HTTP, and that no refused request launched anything — is
+`verify:security` against a running sandbox (43/43 on 2026-09-30, with a stub `claude` whose launch
+log stayed empty through them).
