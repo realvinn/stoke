@@ -695,6 +695,15 @@ jobs:
   # Decrypting a v20 cookie from a copied dir is still UNPROVEN (gotcha 130); the
   # reader now reports any v20 row Chrome drops rather than reading short silently.
   # windows-latest ships Chrome, its path in the App Paths registry key.
+  #
+  # Two more steps at the end, both best-effort (continue-on-error, never fatal):
+  # one gathers the ABE evidence (elevation service, policy, Local State os_crypt)
+  # so "why v10 not v20" has data behind it; the other tries to seed a REAL v20
+  # cookie on the DEFAULT profile (where Chrome does use app-bound encryption),
+  # close Chrome, and prove the reader decrypts it from a copy — the v20 read-back
+  # gotcha 130 wants. A runner without the elevation service writes v10 again and
+  # the step reports precisely that. The owner's own `scripts/windows-chrome-probe.mts`
+  # is the definitive proof on real hardware, where v20 rows always exist.
   chrome-import:
     name: Chrome login import · x64
     runs-on: windows-latest
@@ -786,6 +795,84 @@ jobs:
           node scripts/windows-e2e.mts chrome-read "$env:SEED_PROFILE" "$env:CHROME_EXE" sid "$env:SID"
           if ($LASTEXITCODE -ne 0) { throw 'the seeded cookie did not come back decrypted' }
           "read back the seeded login on Chrome $env:CHROME_VERSION"
+
+      # WHY the seal was v10 not v20 — the evidence, so gotcha 130's open question
+      # has data behind it rather than a guess. App-bound (v20) decryption calls
+      # into Chrome's elevation COM service; a policy can disable it; and the
+      # app_bound key in Local State is only minted when ABE is active. Read-only,
+      # and never fatal — this is diagnostics, not an assertion.
+      - name: The runner's app-bound-encryption evidence (service, policy, Local State)
+        if: always()
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          "=== GoogleChromeElevationService (v20 decryption calls into it) ==="
+          cmd /c "sc query GoogleChromeElevationService" 2>&1 | Out-String
+          cmd /c "sc qc GoogleChromeElevationService" 2>&1 | Out-String
+          "=== ApplicationBoundEncryptionEnabled policy (DWORD 0 would disable v20) ==="
+          foreach ($p in 'HKLM:\SOFTWARE\Policies\Google\Chrome', 'HKCU:\SOFTWARE\Policies\Google\Chrome') {
+            if (Test-Path $p) { "$p :"; (Get-ItemProperty $p | Format-List | Out-String) } else { "$p : (absent)" }
+          }
+          "=== Local State os_crypt of the REAL default Chrome dir ==="
+          $def = Join-Path $env:LOCALAPPDATA 'Google\Chrome\User Data\Local State'
+          if (Test-Path $def) {
+            $abe = (Get-Content -Raw $def | ConvertFrom-Json).os_crypt.app_bound_encrypted_key
+            if ($abe) {
+              $bytes = [Convert]::FromBase64String($abe)
+              "app_bound_encrypted_key: present, $($bytes.Length) bytes, prefix $([Text.Encoding]::ASCII.GetString($bytes[0..3]))"
+            } else { "app_bound_encrypted_key: ABSENT — no v20 key minted (ABE not active for this install)" }
+          } else { "no default-dir Local State — Chrome has not run on its default profile here" }
+          "=== Local State os_crypt of the SEEDED (non-default) dir ==="
+          $seedLs = Join-Path (Split-Path $env:SEED_PROFILE) 'Local State'
+          if (Test-Path $seedLs) {
+            $abe2 = (Get-Content -Raw $seedLs | ConvertFrom-Json).os_crypt.app_bound_encrypted_key
+            "seeded-dir app_bound_encrypted_key: $(if ($abe2) { 'present' } else { 'absent' }) — a non-default dir writes v10 (gotcha 130)"
+          } else { "no seeded-dir Local State" }
+
+      # BEST-EFFORT v20: seed the REAL default profile (where Chrome uses ABE) so
+      # the cookie is written v20 if this runner supports it, close Chrome so it
+      # flushes, read the tag, and — if it IS v20 — prove the copy-and-drive reader
+      # decrypts it, the one thing the v10 path above cannot show (gotcha 130).
+      # Never fatal: a runner without the elevation service writes v10 again and
+      # this reports precisely that.
+      - name: Try to produce a REAL v20 cookie on the default profile, then read it from a copy
+        if: always()
+        continue-on-error: true
+        shell: pwsh
+        env:
+          PORT: '8798'
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $default = Join-Path $env:LOCALAPPDATA 'Google\Chrome\User Data'
+          $seedUrl = "http://127.0.0.1:$env:PORT/seed"
+          Start-Process -FilePath node -ArgumentList 'scripts/probe/login-server.mjs' -WindowStyle Hidden `
+            -RedirectStandardOutput (Join-Path $env:RUNNER_TEMP 'login2.log') -RedirectStandardError (Join-Path $env:RUNNER_TEMP 'login2.err')
+          $up = $false
+          for ($i = 0; $i -lt 40; $i++) { try { $null = Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:$env:PORT/whoami"; $up = $true; break } catch { Start-Sleep -Milliseconds 250 } }
+          if (-not $up) { "the second login server never came up — skipping the v20 attempt"; exit 0 }
+          # Headed (there is an interactive desktop) against the DEFAULT dir (no
+          # --user-data-dir), so Chrome uses app-bound encryption. A window means we
+          # can close it gracefully so cookies flush — never force-killed.
+          $p = Start-Process -FilePath $env:CHROME_EXE -PassThru -ArgumentList @('--no-first-run', '--no-default-browser-check', '--disable-sync', '--profile-directory=Default', $seedUrl)
+          Start-Sleep -Seconds 8
+          [void]$p.CloseMainWindow()
+          if (-not $p.WaitForExit(30000)) { 'Chrome did not close on its own — leaving it, never force-killed' }
+          $db = Join-Path $default 'Default\Network\Cookies'
+          if (-not (Test-Path $db)) { $db = Join-Path $default 'Default\Cookies' }
+          if (-not (Test-Path $db)) { 'no default-profile cookie DB was written — cannot test v20 here'; exit 0 }
+          $peek = Join-Path $env:RUNNER_TEMP 'default-cookies.sqlite'
+          Copy-Item $db $peek -Force
+          $tags = node scripts/probe/cookie-prefix.mjs $peek
+          $tags
+          if ($tags -match 'tag=v20') {
+            'DEFAULT-DIR SEAL: v20 — app-bound encryption IS active on this runner'
+            node scripts/windows-e2e.mts chrome-read (Join-Path $default 'Default') "$env:CHROME_EXE" sid "$env:SID"
+            if ($LASTEXITCODE -eq 0) { '::notice title=v20 proven::a v20 app-bound cookie decrypted from a copied non-default dir (gotcha 130 resolved for this Chrome build)' }
+            else { '::warning title=v20 not read::a v20 cookie did NOT decrypt from a copy — gotcha 130 caution stands' }
+          } else {
+            'DEFAULT-DIR SEAL: not v20 — even the default profile wrote plain DPAPI, so this runner Chrome has no active ABE (see the elevation-service evidence above). v20 cannot be produced here.'
+          }
 
   winget:
     name: winget manifest · x64
