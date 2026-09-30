@@ -6566,11 +6566,6 @@ summary.agent-picker-section:hover {
   color: var(--text-faint);
 }
 
-/* A notice, not an error: "this chat cannot be reopened". */
-.banner[data-tone='info'] {
-  background: color-mix(in srgb, var(--accent) 10%, var(--bg));
-}
-
 /* The sidebar's "In conversations" group. */
 .chat-hits {
   margin-top: var(--space-8);
@@ -6646,4 +6641,224 @@ summary.agent-picker-section:hover {
 
 .chat-cap-input .input {
   width: 7rem;
+}
+
+/*
+ * The import button and the drop zone around it: one box, so the ring says
+ * "let go here" over the button too. A dashed border at rest says a file can
+ * land; the drag lights it in the accent's ink (gotcha 44: a 1px line is ink).
+ */
+.chat-import-drop {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-12);
+  padding: var(--space-12);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r-md);
+  background: transparent;
+  transition:
+    border-color var(--dur-fast) var(--ease),
+    background-color var(--dur-fast) var(--ease);
+}
+
+.chat-import-drop[data-over='true'] {
+  border-color: var(--accent-ink);
+  background: var(--accent-soft);
+}
+
+.chat-import-drop[data-disabled='true'] {
+  border-style: solid;
+  border-color: var(--border-subtle);
+}
+
+.chat-imports {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+}
+
+/* What the file left in the index on the left, its Remove on the right. */
+.chat-import {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-12);
+  min-width: 0;
+  padding-top: var(--space-8);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.chat-import-main {
+  flex: 1 1 0%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.chat-import .chat-source-head {
+  max-width: 100%;
+  min-width: 0;
+  flex-wrap: nowrap;
+}
+
+.chat-import .chat-source-found {
+  flex: 1 1 0%;
+  min-width: 0;
+}
+
+/* ------------------------------------------------------------ chat viewer */
+
+/*
+ * A chat that cannot be taken back up, read-only (ChatViewer.tsx). A sibling
+ * column in `.body-row`, like `.activity`, never an overlay: the docked
+ * browser paints over every pixel of the page (gotcha 14). One surface, no
+ * second tint inside it (gotcha 54).
+ */
+.chat-view {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0%;
+  min-width: 0;
+  border-left: 1px solid var(--border);
+  background: var(--bg-sunken);
+}
+
+.chat-view-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  flex-shrink: 0;
+  padding: var(--space-8);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.chat-view-heading {
+  flex: 1 1 0%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding-left: var(--space-4);
+}
+
+.chat-view-title {
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.chat-view-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  min-width: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.chat-view-notes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  flex-shrink: 0;
+  padding: 0 var(--space-12);
+}
+
+.chat-view-notes:not(:empty) {
+  padding-top: var(--space-8);
+  padding-bottom: var(--space-8);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.chat-view-note {
+  margin: 0;
+  font-size: var(--fs-xs);
+  line-height: var(--lh-normal);
+  color: var(--text-muted);
+}
+
+.chat-view-note[data-tone='warning'] {
+  color: var(--warning);
+}
+
+.chat-view-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  margin: 0;
+  padding: var(--space-16) var(--space-12);
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+.chat-view-list {
+  flex: 1 1 0%;
+  min-height: 0;
+  margin: 0;
+  padding: var(--space-8) var(--space-12) var(--space-24);
+  list-style: none;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+}
+
+.chat-msg {
+  min-width: 0;
+  padding: var(--space-8) var(--space-12);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: transparent;
+}
+
+/* The user's own turns sit on the accent's faint tint, so a long thread reads as two voices at a glance. */
+.chat-msg[data-role='user'] {
+  background: var(--accent-soft);
+  border-color: transparent;
+}
+
+.chat-msg-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  min-width: 0;
+  margin-bottom: var(--space-4);
+}
+
+.chat-msg-who {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.chat-msg-at {
+  flex: 1 1 0%;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The copy button sits at the row's end whether or not a time is shown. */
+.chat-msg-head .chat-msg-copy {
+  margin-left: auto;
+  opacity: 0.6;
+}
+
+.chat-msg:hover .chat-msg-copy,
+.chat-msg-copy:focus-visible {
+  opacity: 1;
+}
+
+.chat-msg-text {
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
 }

@@ -35,7 +35,7 @@ import type { ClaudeLaunchDefaults } from './launch'
 import type { SecretStoreStatus } from './secrets'
 import type { SetupPreview } from './setupFile'
 import type { AccessLookup, RemoteAccessStatus } from './cfAccess'
-import type { ChatDetection, ChatIndexStatus, ChatSearchHit } from './chatIndex'
+import type { ChatDetection, ChatImportResult, ChatIndexStatus, ChatSearchHit, ChatTranscript } from './chatIndex'
 import type {
   ActivityReport,
   BrowserState,
@@ -545,10 +545,20 @@ export interface StokeApi {
     search(query: string): Promise<ChatSearchHit[]>
     /** Start a pass now (it runs in the background; progress arrives by `onStatus`). */
     indexNow(): Promise<void>
-    /** Delete the index and build it again from scratch. */
+    /** Drop every chat read from this computer's tools and read them again. Imports are kept. */
     rebuild(): Promise<void>
-    /** Delete the index. The setting is left as it is. */
+    /** Delete the index, imports included. The setting is left as it is. */
     deleteIndex(): Promise<ChatIndexStatus>
+    /**
+     * Import a claude.ai or ChatGPT export. No path: main asks with a file
+     * dialog, and null means it was cancelled. A path: a file dropped on
+     * Settings › Chat history. Refused unless chat history is on.
+     */
+    importExport(path?: string | null): Promise<ChatImportResult | null>
+    /** Remove one import's conversations from the index. */
+    removeImport(importId: number): Promise<ChatIndexStatus>
+    /** One chat for the read-only viewer; null when it is not in the index (or not viewable). */
+    open(chatId: number): Promise<ChatTranscript | null>
   }
 
   workspace: {

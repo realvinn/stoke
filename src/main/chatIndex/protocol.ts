@@ -2,7 +2,7 @@
  * The chat-index worker's wire: what main asks, what the worker answers, and
  * what it pushes unasked. Types only, so both ends import it at no cost.
  */
-import type { ChatDetection, ChatIndexStatus, ChatPassSummary, ChatSearchHit } from '../../shared/chatIndex.ts'
+import type { ChatDetection, ChatImportResult, ChatIndexOptions, ChatIndexStatus, ChatPassSummary, ChatSearchHit, ChatTranscript } from '../../shared/chatIndex.ts'
 import type { PassPlan } from './scan.ts'
 import type { SourceEnv } from './sources.ts'
 
@@ -19,6 +19,13 @@ export type WorkerRequest =
   | { id: number; op: 'cancel' }
   | { id: number; op: 'delete' }
   | { id: number; op: 'close' }
+  /** An account export the user handed over, read and written into the store (importer.ts). */
+  | { id: number; op: 'import'; path: string; options: ChatIndexOptions }
+  /** One chat for the viewer: a local one re-read from its source, an import from the store (viewer.ts). */
+  | { id: number; op: 'open'; chatId: number; env: SourceEnv; redact: boolean; fileMb: number }
+  | { id: number; op: 'removeImport'; importId: number }
+  /** Every local chat and read position gone, imports kept; the next pass reads the tools again. */
+  | { id: number; op: 'rebuild' }
 
 /** What each request resolves to. */
 export interface WorkerResults {
@@ -30,6 +37,10 @@ export interface WorkerResults {
   cancel: null
   delete: null
   close: null
+  import: ChatImportResult
+  open: ChatTranscript | null
+  removeImport: null
+  rebuild: null
 }
 
 export type WorkerReply = { id: number; ok: true; value: unknown } | { id: number; ok: false; error: string }

@@ -7,7 +7,8 @@
  * 1. **List everything first**, newest first, under discovery's own cap. No
  *    chat is read yet, so a source that cannot be listed costs nothing.
  * 2. **Admit** the newest `perSource` of each source, then the newest `total`
- *    of those across all sources. Deciding the whole range up front is what
+ *    of those across all sources, after the imported conversations — held to
+ *    this pass's caps first (`capImports`) — have taken their room. Deciding the whole range up front is what
  *    keeps the total cap stable: evicting after the fact would re-read the
  *    evicted chats on the next pass and evict them again, every pass. The
  *    store's size ceiling can only be learnt by reading, so it is the one cap
@@ -209,8 +210,25 @@ export async function runPass(store: ChatStore, plan: PassPlan, hooks: PassHooks
     }
     return { id, listing, admitted, duplicates, cappedBy }
   })
+  /*
+   * Imported conversations count toward the total: "chats in all" is every
+   * chat the index holds, not every chat a pass reads. They are never ranked
+   * here — a pass could not bring one back — so they take their room first.
+   *
+   * Held to THIS pass's caps before that room is worked out, not only the
+   * caps they were imported under: an import is capped when it runs, and the
+   * user can lower the caps after it (Light, or a smaller number). Without
+   * this, 2,000 ChatGPT and 2,000 claude.ai conversations imported under the
+   * defaults stayed at 4,000 under Light's 500 per tool and 1,500 in all, and
+   * left local chats a room of max(0, 1,500 − 4,000) = 0 — so step 4 pruned
+   * every chat of every tool and the index held nothing but the imports, more
+   * of them than either cap now allowed. Cheap when nothing is over: two
+   * ordered selects of the imported rows.
+   */
+  store.capImports(caps.perSource, caps.total)
+  const room = Math.max(0, caps.total - store.importedCount())
   const everyone = plans.flatMap((p) => p.admitted).sort((a, b) => b.mtimeMs - a.mtimeMs)
-  const admitted = new Set(everyone.slice(0, caps.total).map((c) => keyOf(c.source, c.nativeId)))
+  const admitted = new Set(everyone.slice(0, room).map((c) => keyOf(c.source, c.nativeId)))
   for (const p of plans) {
     const before = p.admitted.length
     p.admitted = p.admitted.filter((c) => admitted.has(keyOf(c.source, c.nativeId)))

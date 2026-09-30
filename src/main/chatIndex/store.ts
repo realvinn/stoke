@@ -18,15 +18,21 @@ import { DatabaseSync, type StatementSync } from 'node:sqlite'
 import { chmodSync, existsSync, mkdirSync, rmSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import {
+  CHAT_IMPORT_KINDS,
   CHAT_SOURCE_IDS,
   emptyChatStatus,
   ftsQuery,
+  isChatImportKind,
+  isChatOrigin,
   isChatSourceId,
   parseMarked,
   HIT_CLOSE,
   HIT_OPEN,
   type ChatCap,
+  type ChatImportKind,
+  type ChatImportRecord,
   type ChatIndexStatus,
+  type ChatOrigin,
   type ChatPassSummary,
   type ChatSearchHit,
   type ChatSourceId,
@@ -35,7 +41,11 @@ import {
 import { planTrim, type ChatMessage, type ChatMeta } from './parse.ts'
 
 export const STORE_FILE = 'index.sqlite'
-const SCHEMA_VERSION = '1'
+/*
+ * 2: imports — the `import_file` table and `chat.import_id`. A version-1 store
+ * gains the column in place (`migrate`); nothing in it is rewritten.
+ */
+const SCHEMA_VERSION = '2'
 
 /** Where a source's file (or row) was read up to, so the next pass reads only what is new. */
 export interface FileRow {
@@ -68,6 +78,31 @@ export interface ChatRow {
   updatedMs: number | null
 }
 
+/** One chat as the viewer needs it from the store: its row, where it was read from, and the index's copy of its text. */
+export interface StoredChat {
+  id: number
+  source: ChatOrigin
+  nativeId: string
+  title: string | null
+  cwd: string | null
+  createdMs: number | null
+  updatedMs: number | null
+  subagent: boolean
+  truncated: boolean
+  /** The file (or `<db>#<id>` row) it was read from; null for an import. */
+  locator: string | null
+}
+
+/** What an import did, written when it ends — stopped part-way too, when `added + updated + empty` is short of `admitted`. */
+export interface ImportTally {
+  admitted: number
+  added: number
+  updated: number
+  empty: number
+  truncated: number
+  cappedBy: 'perSource' | 'total' | null
+}
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS chat (
@@ -81,6 +116,7 @@ CREATE TABLE IF NOT EXISTS chat (
   truncated INTEGER NOT NULL DEFAULT 0,
   subagent INTEGER NOT NULL DEFAULT 0,
   dedupe_key TEXT,
+  import_id INTEGER,
   UNIQUE(source, native_id)
 );
 CREATE INDEX IF NOT EXISTS chat_updated ON chat(updated_ms);
@@ -118,6 +154,20 @@ CREATE TABLE IF NOT EXISTS source_state (
   duplicates INTEGER NOT NULL DEFAULT 0,
   bytes_read INTEGER NOT NULL DEFAULT 0,
   capped_by TEXT, last_pass_ms INTEGER, error TEXT
+);
+CREATE TABLE IF NOT EXISTS import_file (
+  id INTEGER PRIMARY KEY,
+  kind TEXT NOT NULL,
+  file_name TEXT NOT NULL,
+  bytes INTEGER NOT NULL DEFAULT 0,
+  imported_ms INTEGER NOT NULL,
+  found INTEGER NOT NULL DEFAULT 0,
+  admitted INTEGER NOT NULL DEFAULT 0,
+  added INTEGER NOT NULL DEFAULT 0,
+  updated INTEGER NOT NULL DEFAULT 0,
+  empty INTEGER NOT NULL DEFAULT 0,
+  truncated INTEGER NOT NULL DEFAULT 0,
+  capped_by TEXT
 );
 `
 
@@ -161,8 +211,20 @@ export class ChatStore {
     this.db = new DatabaseSync(this.file, { timeout: 2000 })
     this.db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA synchronous = NORMAL;')
     this.db.exec(SCHEMA)
-    this.q('INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)').run('schema', SCHEMA_VERSION)
+    this.migrate()
     this.lockDown()
+  }
+
+  /*
+   * A store written before imports existed has no `chat.import_id`: `CREATE
+   * TABLE IF NOT EXISTS` leaves an existing table as it is, so the column is
+   * added here. Its index can only be made once the column exists.
+   */
+  private migrate(): void {
+    const cols = (this.db.prepare('PRAGMA table_info(chat)').all() as { name?: unknown }[]).map((c) => c.name)
+    if (!cols.includes('import_id')) this.db.exec('ALTER TABLE chat ADD COLUMN import_id INTEGER')
+    this.db.exec('CREATE INDEX IF NOT EXISTS chat_import ON chat(import_id)')
+    this.q('INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run('schema', SCHEMA_VERSION)
   }
 
   private q(sql: string): StatementSync {
@@ -225,7 +287,7 @@ export class ChatStore {
 
   /* ------------------------------------------------------------ chats */
 
-  chatId(source: ChatSourceId, nativeId: string): number | null {
+  chatId(source: ChatOrigin, nativeId: string): number | null {
     const r = this.q('SELECT id FROM chat WHERE source = ? AND native_id = ?').get(source, nativeId) as { id?: unknown } | undefined
     return r ? numOrNull(r.id) : null
   }
@@ -247,7 +309,7 @@ export class ChatStore {
    * chat's first ones are, so it wins.
    */
   upsertChat(
-    source: ChatSourceId,
+    source: ChatOrigin,
     nativeId: string,
     meta: ChatMeta,
     flags: { subagent: boolean; dedupeKey: string | null; whole: boolean }
@@ -441,6 +503,10 @@ export class ChatStore {
    * cut (`setStoreCutMs`): `deleteChat` takes the read positions with the chat,
    * so without it the next pass admits the same chats again, reads them whole
    * and evicts them again.
+   *
+   * An imported chat has no file, so its own last stamp is its key: the line
+   * runs through imports and local chats alike, oldest first. One that goes is
+   * gone until its file is imported again — its import's disclosure counts it.
    */
   evictToText(maxTextBytes: number): { sources: Set<ChatSourceId>; newestMs: number | null } {
     const sources = new Set<ChatSourceId>()
@@ -448,7 +514,8 @@ export class ChatStore {
     const over = this.textBytes() - maxTextBytes
     if (over <= 0) return { sources, newestMs }
     const oldest = this.q(
-      `SELECT c.id AS id, c.source AS source, c.text_bytes AS bytes, COALESCE(MAX(f.mtime_ms), 0) AS m
+      // An imported chat has no file: its own last stamp is its place in the line.
+      `SELECT c.id AS id, c.source AS source, c.text_bytes AS bytes, COALESCE(MAX(f.mtime_ms), c.updated_ms, 0) AS m
        FROM chat c LEFT JOIN source_file f ON f.chat_id = c.id
        GROUP BY c.id ORDER BY m ASC, c.id ASC`
     )
@@ -590,7 +657,8 @@ export class ChatStore {
       chats: this.count(),
       messages: num(msgs?.n),
       storeBytes: this.sizeOnDisk(),
-      lastPass: this.lastPass()
+      lastPass: this.lastPass(),
+      imports: this.imports()
     }
   }
 
@@ -636,7 +704,7 @@ export class ChatStore {
     for (const r of best) {
       const chatId = num(r.chat_id)
       const c = chatQ.get(chatId) as Record<string, unknown> | undefined
-      if (!c || !isChatSourceId(c.source)) continue
+      if (!c || !isChatOrigin(c.source)) continue
       const snip = snipQ.get(match, num(r.mid)) as { snip?: unknown } | undefined
       const role = r.role === 'user' || r.role === 'assistant' || r.role === 'title' ? r.role : 'assistant'
       out.push({
@@ -655,11 +723,170 @@ export class ChatStore {
     return out
   }
 
-  /** Every message of a chat, in order — for a suite, and the read-only viewer to come. */
-  messages(chatId: number): { ord: number; role: string; text: string }[] {
-    return (this.q('SELECT ord, role, text FROM message WHERE chat_id = ? AND ord >= 0 ORDER BY ord').all(chatId) as Record<string, unknown>[]).map(
-      (r) => ({ ord: num(r.ord), role: String(r.role), text: String(r.text) })
+  /** Every message of a chat, in order — the viewer's copy for an import, and a suite's. */
+  messages(chatId: number): { ord: number; role: string; text: string; atMs: number | null }[] {
+    return (this.q('SELECT ord, role, at_ms, text FROM message WHERE chat_id = ? AND ord >= 0 ORDER BY ord').all(chatId) as Record<string, unknown>[]).map(
+      (r) => ({ ord: num(r.ord), role: String(r.role), text: String(r.text), atMs: numOrNull(r.at_ms) })
     )
+  }
+
+  /** One chat's row and where it was read from, for the viewer. Null when it is not in the store. */
+  chat(chatId: number): StoredChat | null {
+    const r = this.q(
+      `SELECT c.id AS id, c.source AS source, c.native_id AS native_id, c.title AS title, c.cwd AS cwd, c.created_ms AS created_ms,
+              c.updated_ms AS updated_ms, c.subagent AS subagent, c.truncated AS truncated,
+              (SELECT f.locator FROM source_file f WHERE f.chat_id = c.id ORDER BY f.mtime_ms DESC LIMIT 1) AS locator
+       FROM chat c WHERE c.id = CAST(? AS INTEGER)`
+    ).get(chatId) as Record<string, unknown> | undefined
+    if (!r || !isChatOrigin(r.source)) return null
+    return {
+      id: num(r.id),
+      source: r.source,
+      nativeId: String(r.native_id),
+      title: strOrNull(r.title),
+      cwd: strOrNull(r.cwd),
+      createdMs: numOrNull(r.created_ms),
+      updatedMs: numOrNull(r.updated_ms),
+      subagent: num(r.subagent) === 1,
+      truncated: num(r.truncated) === 1,
+      locator: strOrNull(r.locator)
+    }
+  }
+
+  /* ---------------------------------------------------------- imports */
+
+  /** A new import's record, before any of its conversations is written. */
+  addImport(kind: ChatImportKind, fileName: string, bytes: number, importedMs: number, found: number): number {
+    this.q('INSERT INTO import_file(kind, file_name, bytes, imported_ms, found) VALUES (?, ?, ?, ?, ?)').run(
+      kind,
+      fileName,
+      bytes,
+      Math.round(importedMs),
+      found
+    )
+    const r = this.q('SELECT last_insert_rowid() AS id').get() as { id?: unknown } | undefined
+    return num(r?.id)
+  }
+
+  finishImport(id: number, t: ImportTally): void {
+    this.q('UPDATE import_file SET admitted = ?, added = ?, updated = ?, empty = ?, truncated = ?, capped_by = ? WHERE id = CAST(? AS INTEGER)').run(
+      t.admitted,
+      t.added,
+      t.updated,
+      t.empty,
+      t.truncated,
+      t.cappedBy,
+      id
+    )
+  }
+
+  /** Which import a chat's text last came from: a re-import of the same conversation takes it over. */
+  setImportId(chatId: number, importId: number): void {
+    this.q('UPDATE chat SET import_id = ? WHERE id = CAST(? AS INTEGER)').run(importId, chatId)
+  }
+
+  /** Every import, newest first, each with how many of its chats are in the store NOW. */
+  imports(): ChatImportRecord[] {
+    const rows = this.q(
+      `SELECT i.*, (SELECT COUNT(*) FROM chat c WHERE c.import_id = i.id) AS indexed
+       FROM import_file i ORDER BY i.imported_ms DESC, i.id DESC`
+    ).all() as Record<string, unknown>[]
+    const out: ChatImportRecord[] = []
+    for (const r of rows) {
+      if (!isChatImportKind(r.kind)) continue
+      const cap = r.capped_by === 'perSource' || r.capped_by === 'total' ? r.capped_by : null
+      out.push({
+        id: num(r.id),
+        kind: r.kind,
+        fileName: String(r.file_name),
+        bytes: num(r.bytes),
+        importedMs: num(r.imported_ms),
+        found: num(r.found),
+        admitted: num(r.admitted),
+        added: num(r.added),
+        updated: num(r.updated),
+        empty: num(r.empty),
+        truncated: num(r.truncated),
+        cappedBy: cap,
+        indexed: num(r.indexed)
+      })
+    }
+    return out
+  }
+
+  importRecord(id: number): ChatImportRecord | null {
+    return this.imports().find((r) => r.id === id) ?? null
+  }
+
+  /** Chats that came from an export, of one kind or all. */
+  importedCount(kind?: ChatImportKind): number {
+    const r = (kind
+      ? this.q('SELECT COUNT(*) AS n FROM chat WHERE source = ?').get(kind)
+      : this.q(`SELECT COUNT(*) AS n FROM chat WHERE source IN (${CHAT_IMPORT_KINDS.map(() => '?').join(', ')})`).get(...CHAT_IMPORT_KINDS)) as
+      | { n?: unknown }
+      | undefined
+    return num(r?.n)
+  }
+
+  /**
+   * Hold imported chats to the caps: the newest `perKind` of each kind, and the
+   * newest `total` of every import together — oldest by the conversation's own
+   * last stamp. Returns how many went.
+   */
+  capImports(perKind: number, total: number): number {
+    const doomed = new Set<number>()
+    for (const kind of CHAT_IMPORT_KINDS) {
+      const rows = this.q('SELECT id FROM chat WHERE source = ? ORDER BY COALESCE(updated_ms, 0) DESC, id DESC LIMIT -1 OFFSET CAST(? AS INTEGER)').all(kind, perKind) as {
+        id: unknown
+      }[]
+      for (const r of rows) doomed.add(num(r.id))
+    }
+    const all = this.q(
+      `SELECT id FROM chat WHERE source IN (${CHAT_IMPORT_KINDS.map(() => '?').join(', ')}) ORDER BY COALESCE(updated_ms, 0) DESC, id DESC LIMIT -1 OFFSET CAST(? AS INTEGER)`
+    ).all(...CHAT_IMPORT_KINDS, total) as { id: unknown }[]
+    for (const r of all) doomed.add(num(r.id))
+    if (doomed.size) this.tx(() => doomed.forEach((id) => this.deleteChat(id)))
+    return doomed.size
+  }
+
+  /** An import's chats and its record gone — "Remove" beside it in Settings. */
+  removeImport(id: number): number {
+    const rows = this.q('SELECT id FROM chat WHERE import_id = CAST(? AS INTEGER)').all(id) as { id: unknown }[]
+    this.tx(() => {
+      for (const r of rows) this.deleteChat(num(r.id))
+      this.q('DELETE FROM import_file WHERE id = CAST(? AS INTEGER)').run(id)
+    })
+    return rows.length
+  }
+
+  /**
+   * Forget the records of older imports of `kind` that no longer hold a single
+   * chat — every one of their conversations was brought up to date by a later
+   * file. Kept, they would only say "N have since left the index".
+   */
+  dropSupersededImports(kind: ChatImportKind, keepId: number): void {
+    this.q(
+      `DELETE FROM import_file WHERE kind = ? AND id <> CAST(? AS INTEGER)
+       AND NOT EXISTS (SELECT 1 FROM chat c WHERE c.import_id = import_file.id)`
+    ).run(kind, keepId)
+  }
+
+  /**
+   * Every chat a pass reads, and every read position and cut — "Rebuild". What
+   * came from an export stays: a pass could never bring it back, and the user
+   * asked to read their tools again, not to lose their imports.
+   */
+  clearLocal(): void {
+    this.tx(() => {
+      for (const id of CHAT_SOURCE_IDS) {
+        for (const r of this.chatsOf(id)) this.deleteChat(r.id)
+        this.q('DELETE FROM source_state WHERE source = ?').run(id)
+      }
+      this.q('DELETE FROM source_file').run()
+      this.putMeta('storeCutMs', null)
+      this.putMeta('passKey', null)
+      this.putMeta('lastPass', null)
+    })
   }
 
   /** Fold the WAL back and merge FTS segments after a big pass; cheap when there is nothing to do. */

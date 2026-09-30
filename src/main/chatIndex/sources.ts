@@ -737,7 +737,7 @@ function readWindow(fd: number, start: number, len: number): Buffer {
 }
 
 /** A whole-document source (Cline): read in full when under `fileBytes`, else only its metadata is kept. */
-export function readCline(c: Candidate, fileBytes: number, redact: boolean): Extracted {
+export function readCline(c: Pick<Candidate, 'path'>, fileBytes: number, redact: boolean): Extracted {
   const st = statSync(c.path)
   const file = { dev: st.dev, ino: st.ino, size: st.size, mtimeMs: Math.round(st.mtimeMs), offset: 0 }
   if (st.size > fileBytes) return { fold: emptyFold(), mode: 'replace', file, bytesRead: 0, truncated: true }
@@ -745,7 +745,7 @@ export function readCline(c: Candidate, fileBytes: number, redact: boolean): Ext
   return { fold: foldClineMessages(JSON.parse(text), redact), mode: 'replace', file, bytesRead: Buffer.byteLength(text), truncated: false }
 }
 
-export function readOpencode(db: DatabaseSync, c: Candidate, redact: boolean): Extracted {
+export function readOpencode(db: DatabaseSync, c: Pick<Candidate, 'nativeId' | 'mtimeMs'>, redact: boolean): Extracted {
   const rows = db
     .prepare(
       `SELECT m.id AS mid, json_extract(m.data, '$.role') AS role, m.time_created AS t, p.data AS data
@@ -766,7 +766,7 @@ export function readOpencode(db: DatabaseSync, c: Candidate, redact: boolean): E
   return { fold, mode: 'replace', file: { dev: 0, ino: 0, size: 0, mtimeMs: c.mtimeMs, offset: 0 }, bytesRead: bytes, truncated: false }
 }
 
-export function readZed(db: DatabaseSync, c: Candidate, fileBytes: number, redact: boolean): Extracted {
+export function readZed(db: DatabaseSync, c: Pick<Candidate, 'nativeId' | 'mtimeMs'>, fileBytes: number, redact: boolean): Extracted {
   const r = db.prepare('SELECT data_type, data FROM threads WHERE id = ?').get(c.nativeId) as Record<string, unknown> | undefined
   const file = { dev: 0, ino: 0, size: 0, mtimeMs: c.mtimeMs, offset: 0 }
   if (!r || !(r.data instanceof Uint8Array)) return { fold: emptyFold(), mode: 'replace', file, bytesRead: 0, truncated: false }

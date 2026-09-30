@@ -530,6 +530,8 @@ rule file named on the group line.
   window behind another app (`document.hasFocus()` false) the blur commits nothing.
 - **128.** Give a sandbox that dictates in a Claude tab `CLAUDE_CONFIG_DIR=<scratch>` (worktree agents
   may not set `HOME`): the owner's `/voice` is on, so `spaceOwner` would hand Space to Claude Code.
+- **133.** Aim a chat-history sandbox's caps at synthetic chats (only `claude` on, `perSource` = their count,
+  dated ahead): `claudeRoots` always reads `~/.claude/projects` too, so the owner's real chats get in.
 - **Nested backticks inside a template literal end it early**, as a SyntaxError that points at the
   wrong place. Build anything injected into a page from an array of lines.
 - **A `.settings.json` missing from `$TMPDIR/stoke/statusline/` has two causes, both found and

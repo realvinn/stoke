@@ -33,6 +33,7 @@ import { zstdCompressSync } from 'node:zlib'
 import { DatabaseSync } from 'node:sqlite'
 import {
   CHAT_CAP_DEFAULTS,
+  CHAT_EXPORT_LIMITS,
   CHAT_INDEX_DEFAULTS,
   CHAT_PRESETS,
   chatOpenAction,
@@ -41,13 +42,17 @@ import {
   clampChatIndexOptions,
   emptyChatStatus,
   ftsQuery,
+  highlightRanges,
   HIT_CLOSE,
   HIT_OPEN,
+  importDisclosure,
   offerFound,
   parseMarked,
   presetOf,
   sourceDisclosure,
+  type ChatImportRecord,
   type ChatIndexOptions,
+  type ChatOrigin,
   type ChatSourceStatus
 } from '../src/shared/chatIndex.ts'
 import { agentLaunchPlan, DEFAULT_ENDPOINT } from '../src/shared/agents.ts'
@@ -69,6 +74,11 @@ import {
 } from '../src/main/chatIndex/sources.ts'
 import { ChatIndexHost } from '../src/main/chatIndex/host.ts'
 import { hydrateSettings } from '../src/main/settingsSchema.ts'
+import { closeZip, openZip, readZipEntry, ZipError, type ZipLimits } from '../src/main/chatIndex/zip.ts'
+import { forEachArrayObject, foldChatgptConversation, foldClaudeAiConversation } from '../src/main/chatIndex/exports.ts'
+import { importExport, type ImportHooks } from '../src/main/chatIndex/importer.ts'
+import { openChat } from '../src/main/chatIndex/viewer.ts'
+import { crc32, deflateRawSync } from 'node:zlib'
 
 let failures = 0
 
@@ -140,13 +150,24 @@ section('opening a hit')
     sessionId: 'abc',
     cwd: '/w'
   })
-  check('Codex, installed, reopens in Codex', chatOpenAction({ source: 'codex', nativeId: 'x-1', cwd: '/w', subagent: false }, ctx).kind, 'agent')
-  check('OpenCode, not installed, says so', chatOpenAction({ source: 'opencode', nativeId: 'ses_1', cwd: '/w', subagent: false }, ctx).kind, 'notice')
-  check('Zed and Cowork get the viewer notice', [chatOpenAction({ source: 'zed', nativeId: 'z', cwd: '/w', subagent: false }, ctx).kind, chatOpenAction({ source: 'claude-cowork', nativeId: 'c', cwd: '/w', subagent: false }, ctx).kind], [
-    'notice',
-    'notice'
+  const hitOf = (source: ChatOrigin, over: { nativeId?: string; cwd?: string | null; subagent?: boolean } = {}) => ({
+    chatId: 7,
+    source,
+    nativeId: over.nativeId ?? 'x-1',
+    cwd: over.cwd === undefined ? '/w' : over.cwd,
+    subagent: over.subagent ?? false
+  })
+  check('Codex, installed, reopens in Codex', chatOpenAction(hitOf('codex'), ctx).kind, 'agent')
+  const ocView = chatOpenAction(hitOf('opencode', { nativeId: 'ses_1' }), ctx)
+  check('OpenCode, not installed, opens in the viewer and says why', [ocView.kind, ocView.kind === 'view' && ocView.chatId, ocView.kind === 'view' && ocView.note?.startsWith('OpenCode isn’t installed')], ['view', 7, true])
+  check('Zed and Cowork open in the viewer', [chatOpenAction(hitOf('zed', { nativeId: 'z' }), ctx).kind, chatOpenAction(hitOf('claude-cowork', { nativeId: 'c' }), ctx).kind], ['view', 'view'])
+  const subView = chatOpenAction(hitOf('claude', { nativeId: 'a/b', subagent: true }), ctx)
+  check('a subagent transcript is never resumed: it opens in the viewer, which says what it is', [subView.kind, subView.kind === 'view' && subView.note?.includes('subagent')], ['view', true])
+  check('a chat with no folder is viewed, not resumed', chatOpenAction(hitOf('claude', { cwd: null }), ctx).kind, 'view')
+  check('an import always opens in the viewer, with no excuse to make', [chatOpenAction(hitOf('export-claude', { cwd: null }), ctx), chatOpenAction(hitOf('export-chatgpt'), ctx).kind], [
+    { kind: 'view', chatId: 7, note: null },
+    'view'
   ])
-  check('a subagent transcript is never resumed', chatOpenAction({ source: 'claude', nativeId: 'a/b', cwd: '/w', subagent: true }, ctx).kind, 'notice')
   const base = { endpoint: DEFAULT_ENDPOINT, openrouterKey: '', continueLast: true, mcp: [] }
   const codex = agentLaunchPlan({ ...base, id: 'codex', resumeId: '019f456c-d3fd-7e83-927d-f3b8ad5ac6cf' })
   check('codex reopens by id, and the id wins over continue', codex.ok ? codex.plan.args : codex, ['resume', '019f456c-d3fd-7e83-927d-f3b8ad5ac6cf'])
@@ -155,6 +176,62 @@ section('opening a hit')
   check('an id with a cmd.exe metacharacter is refused', agentLaunchPlan({ ...base, id: 'codex', resumeId: 'abc&calc' }).ok, false)
   check('a CLI with no by-id resume is refused, not started fresh', agentLaunchPlan({ ...base, id: 'gemini', resumeId: 'abcdef12' }).ok, false)
   check('isSafeResumeId', [isSafeResumeId('ses_abc123'), isSafeResumeId('a b'), isSafeResumeId('-x'), isSafeResumeId('x')], [true, false, false, false])
+}
+
+section('the viewer’s highlight follows the search’s rule')
+{
+  const marked = (text: string, q: string): string[] => highlightRanges(text, q).map(([s, e]) => text.slice(s, e))
+  check('a word that STARTS with a query word is marked whole, any case', marked('Stoke sessions, STOKED, unstoked', 'stok'), ['Stoke', 'STOKED'])
+  check('accents fold both ways', marked('tiếng Việt and naïve café', 'viet naive cafe'), ['Việt', 'naïve', 'café'])
+  check('underscore is a separator, as in FTS5’s unicode61', marked('foo_bar baz', 'bar'), ['bar'])
+  check('every query word is looked for', marked('the wombat met a quokka', 'quok womb'), ['wombat', 'quokka'])
+  check('CJK runs are one word', marked('日本語 text', '日本'), ['日本語'])
+  check('nothing to mark for an empty or wordless query', [highlightRanges('abc', ''), highlightRanges('abc', ' -- ')], [[], []])
+}
+
+section('import disclosure: every cap that binds is said')
+{
+  const rec = (over: Partial<ChatImportRecord>): ChatImportRecord => ({
+    id: 1,
+    kind: 'export-claude',
+    fileName: 'x.zip',
+    bytes: 1,
+    importedMs: 0,
+    found: 3,
+    admitted: 3,
+    added: 3,
+    updated: 0,
+    empty: 0,
+    truncated: 0,
+    cappedBy: null,
+    indexed: 3,
+    ...over
+  })
+  const caps = { ...CHAT_CAP_DEFAULTS, perSource: 2 }
+  check('all of it', importDisclosure(rec({}), caps), 'Imported all 3 conversations.')
+  check('per tool', importDisclosure(rec({ admitted: 2, added: 2, indexed: 2, cappedBy: 'perSource' }), caps), 'Imported the newest 2 of 3 conversations (the limit is 2 per tool).')
+  check('the total', importDisclosure(rec({ admitted: 2, added: 2, indexed: 2, cappedBy: 'total' }), { ...caps, total: 2 }).startsWith('Imported the newest 2 of 3 conversations: the index holds at most 2 chats.'), true)
+  check(
+    'updated in place, empty, kept in part, and since left',
+    importDisclosure(rec({ added: 1, updated: 1, empty: 1, truncated: 1, indexed: 1 }), caps),
+    'Imported all 3 conversations. 1 was already here from an earlier import and was updated in place. 1 held no text and was left out. 1 is kept in part (over 512 KB of text). 1 has since left the index — a newer import of the same conversations, the per-tool or total limit, or the index’s size ceiling.'
+  )
+  check('an empty file says so', importDisclosure(rec({ found: 0, admitted: 0, added: 0, indexed: 0 }), caps), 'The file held no conversations.')
+  check(
+    'a stopped import says how far it got, never "all"',
+    importDisclosure(rec({ found: 5, admitted: 5, added: 2, indexed: 2 }), { ...caps, perSource: 10 }),
+    'The import was stopped after 2 of 5 conversations. Import the file again to finish: the ones already here are updated in place, not copied.'
+  )
+  check(
+    '...and the cap it was under',
+    importDisclosure(rec({ found: 5, admitted: 2, added: 1, indexed: 1, cappedBy: 'perSource' }), caps),
+    'The import was stopped after 1 of the newest 2 of 5 conversations (the limit is 2 per tool). Import the file again to finish: the ones already here are updated in place, not copied.'
+  )
+  check(
+    'a record not yet finished (running, or its worker killed) is not "all" either',
+    importDisclosure(rec({ found: 5, admitted: 0, added: 0, indexed: 3 }), caps),
+    'This import has not finished: 3 of the file’s 5 conversations are in the index.'
+  )
 }
 
 section('disclosure: a cap that binds is said out loud')
@@ -421,6 +498,231 @@ const hooks = (over: Partial<PassHooks> = {}): PassHooks => ({
   ...over
 })
 const words = (store: ChatStore, q: string): string[] => store.search(q).map((h) => `${h.source}:${h.nativeId}`)
+
+/* ------------------------------------------------------- export fixtures */
+
+/*
+ * A zip writer, just enough to build real archives here rather than trust a
+ * fixture on disk: stored and deflated members, ZIP64 when asked (some writers
+ * use it for every archive), and the knobs a hostile archive turns — a size
+ * header that lies, a flag, a method, a wrong checksum.
+ */
+interface ZipMember {
+  name: string
+  data: Buffer
+  method?: 0 | 8
+  /** The size the headers claim, when it is not the truth. */
+  declaredSize?: number
+  flags?: number
+  /** A method number other than 0/8, written as is. */
+  rawMethod?: number
+  badCrc?: boolean
+}
+function makeZip(members: ZipMember[], zip64 = false): Buffer {
+  const locals: Buffer[] = []
+  const centrals: Buffer[] = []
+  let offset = 0
+  for (const m of members) {
+    const method = m.method ?? 8
+    const packed = method === 8 ? deflateRawSync(m.data) : m.data
+    const size = m.declaredSize ?? m.data.length
+    const crc = m.badCrc ? (crc32(m.data) ^ 1) >>> 0 : crc32(m.data)
+    const name = Buffer.from(m.name, 'utf8')
+    const flags = (m.flags ?? 0) | 0x800
+    const lh = Buffer.alloc(30)
+    lh.writeUInt32LE(0x04034b50, 0)
+    lh.writeUInt16LE(zip64 ? 45 : 20, 4)
+    lh.writeUInt16LE(flags, 6)
+    lh.writeUInt16LE(m.rawMethod ?? method, 8)
+    lh.writeUInt32LE(crc, 14)
+    lh.writeUInt32LE(zip64 ? 0xffffffff : packed.length, 18)
+    lh.writeUInt32LE(zip64 ? 0xffffffff : size, 22)
+    lh.writeUInt16LE(name.length, 26)
+    locals.push(lh, name, packed)
+    const extra = zip64 ? Buffer.alloc(4 + 24) : Buffer.alloc(0)
+    if (zip64) {
+      extra.writeUInt16LE(0x0001, 0)
+      extra.writeUInt16LE(24, 2)
+      extra.writeBigUInt64LE(BigInt(size), 4)
+      extra.writeBigUInt64LE(BigInt(packed.length), 12)
+      extra.writeBigUInt64LE(BigInt(offset), 20)
+    }
+    const ch = Buffer.alloc(46)
+    ch.writeUInt32LE(0x02014b50, 0)
+    ch.writeUInt16LE(zip64 ? 45 : 20, 4)
+    ch.writeUInt16LE(zip64 ? 45 : 20, 6)
+    ch.writeUInt16LE(flags, 8)
+    ch.writeUInt16LE(m.rawMethod ?? method, 10)
+    ch.writeUInt32LE(crc, 16)
+    ch.writeUInt32LE(zip64 ? 0xffffffff : packed.length, 20)
+    ch.writeUInt32LE(zip64 ? 0xffffffff : size, 24)
+    ch.writeUInt16LE(name.length, 28)
+    ch.writeUInt16LE(extra.length, 30)
+    ch.writeUInt32LE(zip64 ? 0xffffffff : offset, 42)
+    centrals.push(ch, name, extra)
+    offset += 30 + name.length + packed.length
+  }
+  const dir = Buffer.concat(centrals)
+  const tail: Buffer[] = []
+  if (zip64) {
+    const rec = Buffer.alloc(56)
+    rec.writeUInt32LE(0x06064b50, 0)
+    rec.writeBigUInt64LE(44n, 4)
+    rec.writeUInt16LE(45, 12)
+    rec.writeUInt16LE(45, 14)
+    rec.writeBigUInt64LE(BigInt(members.length), 24)
+    rec.writeBigUInt64LE(BigInt(members.length), 32)
+    rec.writeBigUInt64LE(BigInt(dir.length), 40)
+    rec.writeBigUInt64LE(BigInt(offset), 48)
+    const loc = Buffer.alloc(20)
+    loc.writeUInt32LE(0x07064b50, 0)
+    loc.writeBigUInt64LE(BigInt(offset + dir.length), 8)
+    loc.writeUInt32LE(1, 16)
+    tail.push(rec, loc)
+  }
+  const end = Buffer.alloc(22)
+  end.writeUInt32LE(0x06054b50, 0)
+  end.writeUInt16LE(zip64 ? 0xffff : members.length, 8)
+  end.writeUInt16LE(zip64 ? 0xffff : members.length, 10)
+  end.writeUInt32LE(zip64 ? 0xffffffff : dir.length, 12)
+  end.writeUInt32LE(zip64 ? 0xffffffff : offset, 16)
+  return Buffer.concat([...locals, dir, ...tail, end])
+}
+
+const H = 3_600_000
+/** A claude.ai export: a branched conversation, a legacy text-only one, and an empty one. */
+function claudeAiExport(over: { title?: string; extra?: string } = {}): unknown[] {
+  const root = '00000000-0000-4000-8000-000000000000'
+  const m = (uuid: string, sender: string, parent: string, blocks: unknown[], t: number, rest: Record<string, unknown> = {}) => ({
+    uuid,
+    sender,
+    parent_message_uuid: parent,
+    created_at: iso(T0 + t),
+    updated_at: iso(T0 + t),
+    content: blocks,
+    text: 'This block is not supported on your current device yet. claudeaiplaceholderword',
+    attachments: [],
+    files: [],
+    ...rest
+  })
+  const text = (t: string) => ({ type: 'text', text: t, citations: [] })
+  return [
+    {
+      uuid: 'ca-1',
+      name: over.title ?? 'Echidna planning',
+      summary: '',
+      created_at: iso(T0 + 1 * H),
+      updated_at: iso(T0 + 3 * H),
+      account: { uuid: 'acct' },
+      chat_messages: [
+        m('m1', 'human', root, [text('How do echidnas lay eggs? claudeaiuserword')], 1 * H, {
+          attachments: [{ file_name: 'burrow-notes.txt', file_size: 10, extracted_content: 'attachmentcontentword' }]
+        }),
+        m('m2', 'assistant', 'm1', [{ type: 'thinking', thinking: 'claudeaithinkword' }, text('Monotremes claudeaiassistantword'), { type: 'tool_use', name: 'web_search', input: { query: 'claudeaitoolword' } }, { type: 'tool_result', content: [{ type: 'text', text: 'claudeaitoolresultword' }] }], 1 * H + 1000),
+        m('m3b', 'human', 'm2', [text(`currentbranchword ${over.extra ?? ''}`)], 2 * H + 5000),
+        m('m4b', 'assistant', 'm3b', [text('currentreplyword key sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUV')], 2 * H + 6000),
+        // An edit made LATER and last in the list, then switched away from: only the leaf pointer says which branch is shown.
+        m('m3a', 'human', 'm2', [text('abandonedbranchword')], 2 * H + 7000),
+        m('m4a', 'assistant', 'm3a', [text('abandonedreplyword')], 2 * H + 8000)
+      ],
+      current_leaf_message_uuid: 'm4b'
+    },
+    {
+      uuid: 'ca-2',
+      name: 'Legacy flat chat',
+      created_at: iso(T0 + 0.5 * H),
+      updated_at: iso(T0 + 0.6 * H),
+      chat_messages: [
+        { uuid: 'x1', sender: 'human', text: 'flatlegacyword question', content: [], created_at: iso(T0 + 0.5 * H) },
+        { uuid: 'x2', sender: 'assistant', text: 'flatlegacyreply', created_at: iso(T0 + 0.55 * H) }
+      ]
+    },
+    { uuid: 'ca-3', name: '', created_at: iso(T0 + 4 * H), updated_at: iso(T0 + 4 * H), chat_messages: [] }
+  ]
+}
+
+/** A ChatGPT export: a mapping tree with an edited turn (two branches), tool calls, hidden and system nodes. */
+function chatgptExport(): unknown[] {
+  const s = (h: number): number => (T0 + h * H) / 1000
+  const node = (id: string, parent: string | null, children: string[], message: unknown) => ({ id, parent, children, message })
+  const msg = (role: string, parts: unknown[], t: number | null, rest: Record<string, unknown> = {}) => ({
+    id: `msg-${Math.random()}`,
+    author: { role, name: null, metadata: {} },
+    create_time: t,
+    content: { content_type: 'text', parts },
+    status: 'finished_successfully',
+    recipient: 'all',
+    metadata: {},
+    ...rest
+  })
+  return [
+    {
+      title: 'Wombat facts',
+      create_time: s(5),
+      update_time: s(6),
+      conversation_id: 'cg-1',
+      id: 'cg-1',
+      current_node: 'a2b',
+      default_model_slug: 'gpt-4o',
+      mapping: {
+        root: node('root', null, ['sys'], null),
+        sys: node('sys', 'root', ['ctx'], msg('system', ['chatgptsystemword'], null, { metadata: { is_visually_hidden_from_conversation: true } })),
+        ctx: node('ctx', 'sys', ['u1'], msg('user', [], null, { content: { content_type: 'user_editable_context', user_profile: 'chatgptprofileword' }, metadata: { is_visually_hidden_from_conversation: true } })),
+        u1: node('u1', 'ctx', ['a1'], msg('user', ['Tell me about wombats chatgptuserword'], s(5))),
+        a1: node('a1', 'u1', ['u2a', 'u2b'], msg('assistant', ['Wombats dig chatgptreplyword'], s(5.01), { metadata: { model_slug: 'gpt-4o' } })),
+        u2a: node('u2a', 'a1', ['a2a'], msg('user', ['oldbranchword'], s(5.1))),
+        // Regenerated LATER than the branch shown: the user switched back, so only current_node tells them apart.
+        a2a: node('a2a', 'u2a', [], msg('assistant', ['oldbranchreplyword'], s(5.9))),
+        u2b: node('u2b', 'a1', ['t1'], msg('user', [{ content_type: 'image_asset_pointer', asset_pointer: 'file-service://imageblobword' }, 'newbranchword with a picture'], s(5.2), { content: { content_type: 'multimodal_text', parts: [{ content_type: 'image_asset_pointer', asset_pointer: 'file-service://imageblobword' }, 'newbranchword with a picture'] } })),
+        t1: node('t1', 'u2b', ['tool1'], msg('assistant', [], s(5.21), { recipient: 'python', content: { content_type: 'code', language: 'python', text: 'chatgptcodeword' } })),
+        tool1: node('tool1', 't1', ['a2b'], msg('tool', ['chatgpttooloutputword'], s(5.22))),
+        a2b: node('a2b', 'tool1', [], msg('assistant', ['newbranchreplyword'], s(5.3), { metadata: { model_slug: 'gpt-5' } }))
+      }
+    },
+    {
+      // No current_node: the newest leaf is the conversation.
+      title: 'Leafless',
+      create_time: s(1),
+      update_time: s(1.5),
+      id: 'cg-2',
+      mapping: {
+        r: node('r', null, ['q'], null),
+        q: node('q', 'r', ['x', 'y'], msg('user', ['leaflessquestion'], s(1))),
+        x: node('x', 'q', [], msg('assistant', ['olderleafword'], s(1.1))),
+        y: node('y', 'q', [], msg('assistant', ['newerleafword'], s(1.2)))
+      }
+    }
+  ]
+}
+
+const exportsDir = join(root, 'exports')
+mkdirSync(exportsDir, { recursive: true })
+const json = (v: unknown): Buffer => Buffer.from(JSON.stringify(v), 'utf8')
+const claudeZip = join(exportsDir, 'data-2026-09-30-claude.zip')
+writeFileSync(
+  claudeZip,
+  makeZip([
+    { name: 'users.json', data: json([{ uuid: 'u', full_name: 'Private Person', email_address: 'person@example.com' }]) },
+    { name: 'conversations.json', data: json(claudeAiExport()) },
+    { name: 'projects.json', data: json([]), method: 0 }
+  ])
+)
+const chatgptZip = join(exportsDir, 'chatgpt-export.zip')
+writeFileSync(
+  chatgptZip,
+  makeZip(
+    [
+      { name: 'chat.html', data: Buffer.from('<html>chathtmlword</html>'), method: 0 },
+      { name: 'user.json', data: json({ email: 'person@example.com' }) },
+      // An image the importer must never inflate: a random blob that is not even deflate.
+      { name: 'file-abc/image.png', data: Buffer.from(Array.from({ length: 4096 }, (_, k) => (k * 7919) % 251)), method: 0 },
+      { name: 'conversations.json', data: json(chatgptExport()) }
+    ],
+    true
+  )
+)
+const importHooks = (over: Partial<ImportHooks> = {}): ImportHooks => ({ now: () => clock, yieldTurn: async () => undefined, cancelled: () => false, ...over })
+const BIG_TEXT = 512 * 1024 * 1024
 
 try {
   section('roots honour each tool’s own override')
@@ -731,6 +1033,324 @@ try {
   cancelStore.close()
   store.close()
 
+  section('zip reader: real archives, stored and deflated, and the ones it refuses')
+  {
+    const zdir = join(root, 'zips')
+    mkdirSync(zdir, { recursive: true })
+    const at = (name: string, buf: Buffer): string => {
+      const p = join(zdir, name)
+      writeFileSync(p, buf)
+      return p
+    }
+    const refusal = (path: string, limits?: ZipLimits, entry?: string): string => {
+      let z: ReturnType<typeof openZip> | null = null
+      try {
+        z = openZip(path, limits)
+        const e = z.entries.find((x) => x.name === entry) ?? z.entries[0]
+        readZipEntry(z, e, limits)
+        return 'read'
+      } catch (err) {
+        return err instanceof ZipError ? err.message : `not a ZipError: ${(err as Error).message}`
+      } finally {
+        if (z) closeZip(z)
+      }
+    }
+    const text = Buffer.from('hello from a zip — ünïcode 日本語\n'.repeat(200), 'utf8')
+    for (const zip64 of [false, true]) {
+      const p = at(`plain${zip64 ? '64' : ''}.zip`, makeZip([{ name: 'a/stored.txt', data: text, method: 0 }, { name: 'deflated.txt', data: text }], zip64))
+      const z = openZip(p)
+      const got = z.entries.map((e) => [e.name, e.method, readZipEntry(z, e).equals(text)])
+      closeZip(z)
+      check(`${zip64 ? 'ZIP64: ' : ''}a stored and a deflated member read back byte for byte`, got, [
+        ['a/stored.txt', 0, true],
+        ['deflated.txt', 8, true]
+      ])
+    }
+    for (const name of ['../conversations.json', 'a/../../conversations.json', '/etc/conversations.json', 'C:\\conversations.json', 'a\\..\\..\\x.json']) {
+      const p = at('escape.zip', makeZip([{ name: 'conversations.json', data: json([]) }, { name, data: Buffer.from('x') }]))
+      check(`a name that leaves the archive refuses all of it: ${name}`, refusal(p).includes('points outside it'), true)
+    }
+    // 8 MiB of zeros packs to a few KB: over 200:1, and past the 1 MiB floor.
+    const bomb = at('bomb.zip', makeZip([{ name: 'conversations.json', data: Buffer.alloc(8 * 1024 * 1024) }]))
+    check('a member inflating past 200:1 is refused as a bomb, before inflating', refusal(bomb).includes('zip bomb'), true)
+    const small: ZipLimits = { ...CHAT_EXPORT_LIMITS, memberBytes: 1024 }
+    // Garbage for deflate data: had it been inflated, the error would be "could not be unpacked".
+    const oversize = at('oversize.zip', makeZip([{ name: 'conversations.json', data: Buffer.from('not deflate at all '.repeat(200)), method: 0, rawMethod: 8, declaredSize: 5000 }]))
+    check('a member declared over the size cap is refused before any inflate', refusal(oversize, small), '“conversations.json” is 0 MB unpacked; Stoke reads up to 0 MB.')
+    const liar = at('liar.zip', makeZip([{ name: 'conversations.json', data: Buffer.from('a lying header says this is short '.repeat(300)), declaredSize: 100 }]))
+    check('a header that understates the size stops the inflate at what it said', refusal(liar).includes('more than its stated size'), true)
+    const many = at('many.zip', makeZip(Array.from({ length: 5 }, (_, k) => ({ name: `f${k}.txt`, data: Buffer.from('x') }))))
+    check('more entries than the cap is refused before the directory is read', refusal(many, { ...CHAT_EXPORT_LIMITS, entries: 3 }).includes('lists 5 files'), true)
+    check('an encrypted member is refused', refusal(at('enc.zip', makeZip([{ name: 'c.json', data: text, flags: 1 }]))).includes('encrypted'), true)
+    check('an unknown compression method is refused', refusal(at('bz.zip', makeZip([{ name: 'c.json', data: text, method: 0, rawMethod: 12 }]))).includes('method 12'), true)
+    check('a wrong checksum is refused', refusal(at('crc.zip', makeZip([{ name: 'c.json', data: text, badCrc: true }]))).includes('checksum'), true)
+    check('a file that is not a zip is said to be one', refusal(at('not.zip', Buffer.from('just some text, long enough to have a tail'))), 'This is not a zip archive (no directory at its end).')
+    const cut = makeZip([{ name: 'conversations.json', data: text }])
+    check('an archive cut short is refused, not half-read', refusal(at('cut.zip', cut.subarray(0, cut.length - 30))), 'This is not a zip archive (no directory at its end).')
+  }
+
+  section('the export array is split by bytes, never one parse')
+  {
+    const doc = Buffer.from('\ufeff [ {"a":"x]}\\"{"}, 3, "str]", [1,{"no":1}], {"b":{"c":[1,2]}} ]', 'utf8')
+    const got: string[] = []
+    const res = forEachArrayObject(doc, (s, e) => got.push(doc.toString('utf8', s, e)))
+    check('each top-level object, braces and quotes inside strings ignored', [got, res], [['{"a":"x]}\\"{"}', '{"b":{"c":[1,2]}}'], { count: 2, complete: true }])
+    const trunc = Buffer.from('[{"a":1},{"b":', 'utf8')
+    const tgot: string[] = []
+    check('a file cut short keeps what came before, and says it is incomplete', [forEachArrayObject(trunc, (s, e) => tgot.push(trunc.toString('utf8', s, e))), tgot], [{ count: 1, complete: false }, ['{"a":1}']])
+    let threw = false
+    try {
+      forEachArrayObject(Buffer.from('{"conversations": []}'), () => undefined)
+    } catch {
+      threw = true
+    }
+    check('a document that is not a list is not an export', threw, true)
+  }
+
+  section('claude.ai export: words only, the current branch, its own title and times')
+  {
+    const [c1, c2, c3] = claudeAiExport()
+    const conv = foldClaudeAiConversation(c1, true)!
+    const said = conv.fold.messages.map((m) => `${m.role}:${m.text.split(' ')[0]}`)
+    check('only the branch ending at current_leaf_message_uuid, in order', said, ['user:How', 'assistant:Monotremes', 'user:currentbranchword', 'assistant:currentreplyword'])
+    const all = conv.fold.messages.map((m) => m.text).join('\n')
+    check(
+      'no thinking, tool call, tool result, placeholder or attachment contents; the file name is kept',
+      ['claudeaithinkword', 'claudeaitoolword', 'claudeaitoolresultword', 'claudeaiplaceholderword', 'attachmentcontentword', 'abandonedbranchword'].filter((w) => all.includes(w)).concat(all.includes('[Attached: burrow-notes.txt]') ? ['named'] : []),
+      ['named']
+    )
+    check('its own title and stamps', [conv.id, conv.fold.meta.title, conv.fold.meta.createdMs, conv.fold.meta.updatedMs, conv.fold.messages[0].atMs], ['ca-1', 'Echidna planning', T0 + 1 * H, T0 + 3 * H, T0 + 1 * H])
+    check('keys redacted before they are kept', all.includes('ABCDEFGHIJKLMNOPQRSTUV'), false)
+    const legacy = foldClaudeAiConversation(c2, true)!
+    check('an older export with no content blocks reads `text`', legacy.fold.messages.map((m) => m.text), ['flatlegacyword question', 'flatlegacyreply'])
+    check('an empty conversation folds to nothing', foldClaudeAiConversation(c3, true)!.fold.messages.length, 0)
+  }
+
+  section('ChatGPT export: the mapping tree, from current_node only')
+  {
+    const [g1, g2] = chatgptExport()
+    const conv = foldChatgptConversation(g1, true)!
+    check(
+      'the path from current_node to the root, in order; tool calls, tool output, system and hidden turns left out',
+      conv.fold.messages.map((m) => `${m.role}:${m.text}`),
+      ['user:Tell me about wombats chatgptuserword', 'assistant:Wombats dig chatgptreplyword', 'user:newbranchword with a picture', 'assistant:newbranchreplyword']
+    )
+    check('its title, epoch-second stamps as ms, and the model that answered last', [conv.id, conv.fold.meta.title, conv.fold.meta.createdMs, conv.fold.meta.updatedMs, conv.fold.meta.model], ['cg-1', 'Wombat facts', T0 + 5 * H, T0 + 6 * H, 'gpt-5'])
+    check('with no current_node, the newest leaf is the conversation', foldChatgptConversation(g2, true)!.fold.messages.map((m) => m.text), ['leaflessquestion', 'newerleafword'])
+  }
+
+  section('importing an export: recognised by content, capped, disclosed, updated in place')
+  {
+    const imp = ChatStore.open(join(root, 'import-index'))
+    const ok = await importExport(imp, { path: claudeZip, options: options(), maxTextBytes: BIG_TEXT }, importHooks())
+    const rec = ok.ok ? ok.record : null
+    check('a claude.ai zip imports', [ok.ok, rec?.kind, rec?.fileName, rec?.found, rec?.admitted, rec?.added, rec?.empty, rec?.indexed], [true, 'export-claude', 'data-2026-09-30-claude.zip', 3, 3, 2, 1, 2])
+    check('...searchable, current branch only', [words(imp, 'currentbranchword'), words(imp, 'abandonedbranchword'), words(imp, 'flatlegacyword')], [['export-claude:ca-1'], [], ['export-claude:ca-2']])
+    check('...the account files beside it are never read', [words(imp, 'example.com'), words(imp, 'Private')], [[], []])
+    check('...an attached file is findable by name', words(imp, 'burrow notes'), ['export-claude:ca-1'])
+    const c1 = imp.chat(imp.chatId('export-claude', 'ca-1')!)!
+    check('...with its own title and times, no folder, and nothing to read it from but the store', [c1.title, c1.createdMs, c1.updatedMs, c1.cwd, c1.locator], ['Echidna planning', T0 + 1 * H, T0 + 3 * H, null, null])
+    check('...a hit names where it came from', imp.search('currentbranchword')[0]?.source, 'export-claude')
+    check('the import is disclosed in the status', imp.status('idle').imports.map((r) => [r.kind, r.indexed, importDisclosure(r, options().caps)]), [
+      ['export-claude', 2, 'Imported all 3 conversations. 1 held no text and was left out.']
+    ])
+
+    const cg = await importExport(imp, { path: chatgptZip, options: options(), maxTextBytes: BIG_TEXT }, importHooks())
+    check('a ChatGPT zip (ZIP64, with images beside it) imports', [cg.ok, cg.ok && cg.record.kind, cg.ok && cg.record.added], [true, 'export-chatgpt', 2])
+    check('...only the current branch is searchable', [words(imp, 'newbranchreplyword'), words(imp, 'oldbranchword'), words(imp, 'chatgptcodeword'), words(imp, 'chatgptsystemword'), words(imp, 'chathtmlword')], [['export-chatgpt:cg-1'], [], [], [], []])
+
+    // The same ids again, from a newer export: in place, never doubled.
+    const newer = join(exportsDir, 'data-2026-10-07-claude.zip')
+    writeFileSync(newer, makeZip([{ name: 'conversations.json', data: json(claudeAiExport({ title: 'Echidna planning, renamed', extra: 'reimportword' })) }]))
+    const again = await importExport(imp, { path: newer, options: options(), maxTextBytes: BIG_TEXT }, importHooks())
+    check('re-importing updates in place: same count, new words and title, old record superseded', [
+      again.ok && [again.record.added, again.record.updated],
+      imp.importedCount('export-claude'),
+      words(imp, 'reimportword'),
+      imp.chat(imp.chatId('export-claude', 'ca-1')!)?.title,
+      imp.status('idle').imports.map((r) => r.fileName)
+    ], [[0, 2], 2, ['export-claude:ca-1'], 'Echidna planning, renamed', ['data-2026-10-07-claude.zip', 'chatgpt-export.zip']])
+    check('...and the disclosure says so', again.ok && importDisclosure(again.record, options().caps), 'Imported all 3 conversations. 2 were already here from an earlier import and were updated in place. 1 held no text and was left out.')
+
+    // A bare conversations.json is taken too, recognised by what is in it.
+    const bare = join(exportsDir, 'conversations.json')
+    writeFileSync(bare, JSON.stringify(chatgptExport(), null, 2))
+    const bareRes = await importExport(imp, { path: bare, options: options(), maxTextBytes: BIG_TEXT }, importHooks())
+    check('a bare conversations.json imports (ChatGPT, by its mapping)', [bareRes.ok, bareRes.ok && bareRes.record.updated], [true, 2])
+
+    const takeout = join(exportsDir, 'takeout.zip')
+    writeFileSync(takeout, makeZip([{ name: 'Takeout/My Activity/Gemini Apps/MyActivity.json', data: json([{ title: 'Prompted hi' }]) }]))
+    const gem = await importExport(imp, { path: takeout, options: options(), maxTextBytes: BIG_TEXT }, importHooks())
+    check('a Gemini Takeout is named and refused, not guessed at', [gem.ok, !gem.ok && gem.error.startsWith('This looks like a Google Takeout (Gemini) export.')], [false, true])
+    const junk = join(exportsDir, 'junk.json')
+    writeFileSync(junk, JSON.stringify([{ hello: 'world' }]))
+    const junkRes = await importExport(imp, { path: junk, options: options(), maxTextBytes: BIG_TEXT }, importHooks())
+    check('a JSON list of something else is refused', [junkRes.ok, !junkRes.ok && junkRes.error.startsWith('No claude.ai or ChatGPT conversations')], [false, true])
+    const bombRes = await importExport(imp, { path: join(root, 'zips', 'bomb.zip'), options: options(), maxTextBytes: BIG_TEXT }, importHooks())
+    // The bare file took over cg-1 and cg-2 from the ChatGPT zip, whose record then held nothing and went.
+    check('a zip bomb is refused through the importer too, and nothing is written', [bombRes.ok, imp.status('idle').imports.map((r) => r.fileName)], [false, ['conversations.json', 'data-2026-10-07-claude.zip']])
+
+    // Remove one import: its chats go, the others stay.
+    const cgRec = imp.status('idle').imports.find((r) => r.kind === 'export-chatgpt')!
+    imp.removeImport(cgRec.id)
+    check('Remove takes that file’s chats and nothing else', [words(imp, 'newbranchreplyword'), words(imp, 'reimportword'), imp.status('idle').imports.length], [[], ['export-claude:ca-1'], 1])
+    imp.close()
+  }
+
+  section('a store written before imports existed gains them in place')
+  {
+    // Version 1's chat table, as wave 4 shipped it: no import_id, no import_file.
+    const oldDir = join(root, 'v1-index')
+    mkdirSync(oldDir, { recursive: true })
+    const old = new DatabaseSync(join(oldDir, 'index.sqlite'))
+    old.exec(`CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
+      INSERT INTO meta VALUES ('schema', '1');
+      CREATE TABLE chat (id INTEGER PRIMARY KEY, source TEXT NOT NULL, native_id TEXT NOT NULL, title TEXT, first_prompt TEXT, cwd TEXT, git_branch TEXT, model TEXT,
+        created_ms INTEGER, updated_ms INTEGER, message_count INTEGER NOT NULL DEFAULT 0, text_bytes INTEGER NOT NULL DEFAULT 0,
+        truncated INTEGER NOT NULL DEFAULT 0, subagent INTEGER NOT NULL DEFAULT 0, dedupe_key TEXT, UNIQUE(source, native_id));
+      INSERT INTO chat(source, native_id, title) VALUES ('claude', 'old-one', 'Kept from before');`)
+    old.close()
+    const up = ChatStore.open(oldDir)
+    const r = await importExport(up, { path: claudeZip, options: options(), maxTextBytes: BIG_TEXT }, importHooks())
+    check('the old chat is kept, the column is added, and an import lands', [up.hasChat('claude', 'old-one'), r.ok, up.importedCount()], [true, true, 2])
+    up.close()
+  }
+
+  section('imports under the caps: per tool, text per chat, the total, and passes that never prune them')
+  {
+    // Five non-empty conversations, the newest two admitted under a per-tool cap of 2; the newest runs to ~40 KB.
+    const five = Array.from({ length: 5 }, (_, k) => ({
+      uuid: `cap-${k}`,
+      name: `Cap ${k}`,
+      created_at: iso(T0 + k * H),
+      updated_at: iso(T0 + k * H),
+      chat_messages: Array.from({ length: k === 4 ? 12 : 2 }, (_, j) => ({
+        uuid: `c${k}m${j}`,
+        sender: j % 2 ? 'assistant' : 'human',
+        content: [{ type: 'text', text: `${j === 0 ? `capword${k}` : j === 11 ? 'lastcapword' : 'middle'} ${'lorem ipsum '.repeat(k === 4 ? 280 : 10)}` }],
+        created_at: iso(T0 + k * H + j)
+      }))
+    }))
+    const capZip = join(exportsDir, 'caps.zip')
+    writeFileSync(capZip, makeZip([{ name: 'conversations.json', data: json(five) }]))
+    const cs = ChatStore.open(join(root, 'import-caps'))
+    const capOpts = options({}, { perSource: 2, chatKb: 16 })
+    const r = await importExport(cs, { path: capZip, options: capOpts, maxTextBytes: BIG_TEXT }, importHooks())
+    check('the newest 2 of 5, and the long one kept in part', [r.ok && [r.record.found, r.record.admitted, r.record.cappedBy, r.record.truncated], cs.importedCount('export-claude')], [[5, 2, 'perSource', 1], 2])
+    check('...which ones', [words(cs, 'capword4'), words(cs, 'capword3'), words(cs, 'capword2')], [['export-claude:cap-4'], ['export-claude:cap-3'], []])
+    check('...and it is said', r.ok && importDisclosure(r.record, capOpts.caps), 'Imported the newest 2 of 5 conversations (the limit is 2 per tool). 1 is kept in part (over 16 KB of text).')
+    const keptText = cs.messages(cs.chatId('export-claude', 'cap-4')!).reduce((n, m) => n + Buffer.byteLength(m.text), 0)
+    check(`...its text held to the per-chat cap, its opening and its end kept (kept ${keptText} bytes)`, [keptText > 8 * 1024 && keptText <= 16 * 1024, words(cs, 'lastcapword')], [true, ['export-claude:cap-4']])
+
+    // A pass beside imports: they take their room under the total first, and no pass prunes them.
+    await runPass(cs, { env, options: options({}, { total: 5 }) }, hooks())
+    const st = cs.status('idle')
+    check('the total counts imports: 2 imported + 3 local = 5', [cs.importedCount(), cs.count() - cs.importedCount(), st.sources.find((s) => s.id === 'claude')!.cappedBy], [2, 3, 'total'])
+    await runPass(cs, { env, options: options({ sources: { ...CHAT_INDEX_DEFAULTS.sources, claude: false } }) }, hooks())
+    check('a pass, even one that drops a source, never prunes an import', cs.importedCount(), 2)
+    cs.clearLocal()
+    check('Rebuild clears every local chat and read position, and keeps imports', [cs.count() - cs.importedCount(), cs.importedCount(), cs.getFile(claudeFile(29))], [0, 2, null])
+    // Held to the total: a total of 1 leaves the newest import.
+    const one = ChatStore.open(join(root, 'import-total'))
+    const rt = await importExport(one, { path: capZip, options: options({}, { perSource: 2, total: 1 }), maxTextBytes: BIG_TEXT }, importHooks())
+    check('an import is held to the total too, and says which cap', [rt.ok && rt.record.cappedBy, one.importedCount(), words(one, 'capword4')], ['total', 1, ['export-claude:cap-4']])
+    one.close()
+    cs.close()
+
+    /*
+     * Caps lowered AFTER an import: the pass holds the imports to its own caps
+     * before it works out the room left for local chats. Without that, 7
+     * imports under a total of 5 left a room of 0 and the pass pruned every
+     * local chat, while all 7 imports stayed, over both new caps.
+     */
+    const low = ChatStore.open(join(root, 'import-lowered'))
+    const claudeOnly = { sources: Object.fromEntries(Object.keys(CHAT_INDEX_DEFAULTS.sources).map((id) => [id, id === 'claude'])) as ChatIndexOptions['sources'] }
+    const high = options(claudeOnly, { perSource: 10, total: 20 })
+    const hr = await importExport(low, { path: capZip, options: high, maxTextBytes: BIG_TEXT }, importHooks())
+    await importExport(low, { path: chatgptZip, options: high, maxTextBytes: BIG_TEXT }, importHooks())
+    await runPass(low, { env, options: high }, hooks())
+    check('under the caps they were imported under: 5 + 2 imports and 10 local chats', [low.importedCount('export-claude'), low.importedCount('export-chatgpt'), low.count() - low.importedCount()], [5, 2, 10])
+    const lowered = options(claudeOnly, { perSource: 2, total: 5 })
+    await runPass(low, { env, options: lowered }, hooks())
+    check(
+      'caps lowered: the imports are cut to 2 per tool, and local chats keep the room the total leaves (5 − 4 = 1)',
+      [low.importedCount('export-claude'), low.importedCount('export-chatgpt'), low.count() - low.importedCount(), low.status('idle').sources.find((s) => s.id === 'claude')!.cappedBy],
+      [2, 2, 1, 'total']
+    )
+    check('...the newest of each import stays', [words(low, 'capword4'), words(low, 'capword3'), words(low, 'capword2'), words(low, 'newbranchreplyword')], [['export-claude:cap-4'], ['export-claude:cap-3'], [], ['export-chatgpt:cg-1']])
+    const lowRec = low.status('idle').imports.find((r) => hr.ok && r.id === hr.record.id)
+    check(
+      '...and the import says the rest has since left the index',
+      lowRec && importDisclosure(lowRec, lowered.caps),
+      'Imported all 5 conversations. 3 have since left the index — a newer import of the same conversations, the per-tool or total limit, or the index’s size ceiling.'
+    )
+    low.close()
+
+    /*
+     * Stopped while writing (Delete index, switch-off, quit): what was written
+     * stays and the record says how far it got. It used to answer ok: true and
+     * "Imported all 5 conversations." with two of them written.
+     */
+    const halt = ChatStore.open(join(root, 'import-stopped'))
+    const wide = options({}, { perSource: 10 })
+    const stopped = await importExport(halt, { path: capZip, options: wide, maxTextBytes: BIG_TEXT }, importHooks({ cancelled: () => halt.importedCount() >= 2 }))
+    check('an import stopped part-way is not ok, and says how far it got', [stopped.ok, !stopped.ok && stopped.error], [
+      false,
+      'claude.ai export, caps.zip: The import was stopped after 2 of 5 conversations. Import the file again to finish: the ones already here are updated in place, not copied.'
+    ])
+    check('...what it wrote stays, newest first, and so does its record', [halt.importedCount(), words(halt, 'capword4'), words(halt, 'capword2'), halt.status('idle').imports.map((r) => [r.admitted, r.added])], [2, ['export-claude:cap-4'], [], [[5, 2]]])
+    const finish = await importExport(halt, { path: capZip, options: wide, maxTextBytes: BIG_TEXT }, importHooks())
+    check('importing it again finishes it, in place, and the stopped record goes', [finish.ok && [finish.record.added, finish.record.updated], halt.importedCount(), halt.status('idle').imports.length], [[3, 2], 5, 1])
+    halt.close()
+  }
+
+  section('the viewer: a local chat read again from its source, an import from the store')
+  {
+    const vHome = join(root, 'view-home')
+    const vEnv: SourceEnv = { home: vHome, env: {}, platform: process.platform }
+    const vDir = join(vHome, '.claude', 'projects', '-tmp-view')
+    const top = join(vDir, `${uuid(1)}.jsonl`)
+    write(top, claudeChat(1, '/tmp/view', `viewerword key sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUV`), T0 + 60_000)
+    const subFile = join(vDir, uuid(1), 'subagents', 'agent-v1.jsonl')
+    write(subFile, claudeSubagentChat(2, '/tmp/view', 'viewsubword'), T0 + 2 * 60_000)
+    const vs = ChatStore.open(join(root, 'view-index'))
+    await runPass(vs, { env: vEnv, options: options({ subagents: true }) }, hooks())
+    const subId = vs.chatId('claude', `${uuid(1)}/agent-v1`)!
+    const view = { redact: true, fileBytes: 256 * 1024 * 1024 }
+    const hit = vs.search('viewsubword')[0]
+    check('a subagent hit opens in the viewer', chatOpenAction(hit, { installed: new Set<CodingCliId>(['claude']), resumable: resumableClis() }).kind, 'view')
+    const v1 = openChat(vs, subId, vEnv, view)!
+    check('...read from the file itself, both of its turns, in order', [v1.from, v1.fallback, v1.messages.map((m) => m.role), v1.messages[1]?.text], ['source', null, ['user', 'assistant'], 'subagent report viewsubword'])
+    // Written to after the index read it: the viewer shows the file as it is NOW.
+    appendFileSync(subFile, jl([{ type: 'assistant', isSidechain: true, message: { content: [{ type: 'text', text: 'late freshword' }] }, timestamp: iso(T0 + 3 * 60_000) }]))
+    const v2 = openChat(vs, subId, vEnv, view)!
+    check('...and re-read at open time, not from the index', [v2.messages.length, v2.messages[2]?.text, vs.messages(subId).length], [3, 'late freshword', 2])
+    const topId = vs.chatId('claude', uuid(1))!
+    const vt = openChat(vs, topId, vEnv, view)!
+    check('the viewer redacts as the index does, and leaves out what the index leaves out', [vt.messages.some((m) => m.text.includes('ABCDEFGHIJKLMNOPQRSTUV')), vt.messages.some((m) => /tooloutputword|metaword|sidechainword/.test(m.text))], [false, false])
+    check('...with the chat’s title, folder and stamps', [vt.title, vt.cwd, vt.messages[0].atMs], ['Title number 1', '/tmp/view', T0 + 60_000])
+    const elsewhere = openChat(vs, topId, { ...vEnv, home: join(root, 'no-such-home') }, view)!
+    check('a remembered path outside the tool’s root is not read: the index’s copy, and it says so', [elsewhere.from, elsewhere.fallback?.includes('index’s copy'), elsewhere.messages.length > 0], ['store', true, true])
+    unlinkSync(top)
+    const gone = openChat(vs, topId, vEnv, view)!
+    check('an original that is gone: the index’s copy, and it says so', [gone.from, gone.fallback?.startsWith('The original is no longer where Claude Code kept it'), gone.messages.length], ['store', true, vs.messages(topId).length])
+    const tiny = openChat(vs, subId, vEnv, { ...view, maxBytes: 40 })!
+    check('a chat past the viewer’s cap shows its opening and its end, and says part is missing', [tiny.partial, tiny.messages.length < 3], [true, true])
+    check('a chat not in the store is null', openChat(vs, 99_999, vEnv, view), null)
+    const ir = await importExport(vs, { path: claudeZip, options: options(), maxTextBytes: BIG_TEXT }, importHooks())
+    const importId = vs.chatId('export-claude', 'ca-1')!
+    const vi = openChat(vs, importId, vEnv, view)!
+    check('an import opens from the store, whole, in order, with its times', [ir.ok, vi.from, vi.fallback, vi.messages.map((m) => m.role), vi.messages[0].atMs, vi.title], [
+      true,
+      'store',
+      null,
+      ['user', 'assistant', 'user', 'assistant'],
+      T0 + 1 * H,
+      'Echidna planning'
+    ])
+    vs.close()
+  }
+
   section('the worker: main asks, the worker reads, the main loop keeps turning')
   // A big transcript, so a pass is long enough to measure what it blocks.
   const heavy = join(projDir, `${uuid(900)}.jsonl`)
@@ -794,10 +1414,44 @@ try {
     peek.close()
   }
   check('status was pushed while it ran', statuses.includes('running') && statuses.includes('idle'), true)
+  {
+    // An export, parsed in the worker; a second import while it runs is refused, not doubled.
+    const [first, second] = await Promise.all([host.importExport(claudeZip, options()), host.importExport(chatgptZip, options())])
+    check('an import runs in the worker; a second one at the same time is refused', [first.ok, !second.ok && second.error], [true, 'An import is already running.'])
+    const hit = (await host.search('currentbranchword', 10))[0]
+    check('...its conversations are searched with everything else', hit ? `${hit.source}:${hit.nativeId}` : null, 'export-claude:ca-1')
+    const viewed = hit ? await host.open(hit.chatId, env, true, 256) : null
+    check('...and open in the viewer from the store', [viewed?.from, viewed?.messages.length], ['store', 4])
+    const st = await host.status()
+    check('...and the status lists the import', st.imports.map((r) => [r.kind, r.indexed]), [['export-claude', 2]])
+    await host.rebuild()
+    check('Rebuild keeps imports', [(await host.search('currentbranchword', 10)).length, (await host.search('wombat', 10)).length], [1, 0])
+
+    /*
+     * Rebuild mid-import stops the pass only. The worker had one stop flag for
+     * both, so Rebuild — which keeps imports — stopped a running one, and a
+     * stop while writing was then recorded as the whole file imported.
+     */
+    const bulkZip = join(exportsDir, 'bulk.zip')
+    const bulk = Array.from({ length: 400 }, (_, k) => ({
+      uuid: `bulk-${k}`,
+      name: `Bulk ${k}`,
+      created_at: iso(T0 + k * 1000),
+      updated_at: iso(T0 + k * 1000),
+      chat_messages: [{ uuid: `bulk-${k}-m`, sender: 'human', content: [{ type: 'text', text: `bulkword number ${k}` }], created_at: iso(T0 + k * 1000) }]
+    }))
+    writeFileSync(bulkZip, makeZip([{ name: 'conversations.json', data: json(bulk) }]))
+    const roomy = options({}, { perSource: 1000 })
+    const [during] = await Promise.all([host.importExport(bulkZip, roomy), host.rebuild()])
+    check('Rebuild while an import runs leaves it to finish', [during.ok, during.ok && [during.record.admitted, during.record.added]], [true, [400, 400]])
+    const [cut] = await Promise.all([host.importExport(bulkZip, roomy), host.cancel()])
+    check('switching chat history off stops an import, and says so', [cut.ok, !cut.ok && /stopped/.test(cut.error)], [false, true])
+  }
   await host.deleteIndex()
   check('Delete index removes the store…', existsSync(workerDir), false)
   check('…and nothing beside it', readFileSync(join(userData, 'bystander.txt'), 'utf8'), 'beside the store')
   check('after delete, search is empty and status is zero', [await host.search('wombat', 10), (await host.status()).chats], [[], 0])
+  check('…imports included: Delete index removes them too', [await host.search('currentbranchword', 10), (await host.status()).imports], [[], []])
   await host.stop()
 } finally {
   rmSync(root, { recursive: true, force: true })

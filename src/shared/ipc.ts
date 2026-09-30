@@ -91,6 +91,15 @@ export const CH = {
   chatsIndexNow: 'chats:indexNow',
   chatsRebuild: 'chats:rebuild',
   chatsDelete: 'chats:delete',
+  /*
+   * An account export (a claude.ai or ChatGPT zip, or a bare conversations.json)
+   * into the index: with no path, main asks with a file dialog; a path comes from
+   * a drop on Settings › Chat history. The worker reads it (importer.ts).
+   */
+  chatsImport: 'chats:import',
+  chatsRemoveImport: 'chats:removeImport',
+  /** One chat for the read-only viewer: re-read from its tool's own copy, or the store's for an import. */
+  chatsOpen: 'chats:open',
 
   // sessions that are not tied to a saved project
   workspaceDefault: 'workspace:default',

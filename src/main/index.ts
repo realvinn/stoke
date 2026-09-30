@@ -79,7 +79,7 @@ import { isInside, normalizePath, pathKey, pathRulesFor } from '../shared/paths.
 import { ChatIndexHost } from './chatIndex/host.ts'
 import type { SourceEnv } from './chatIndex/sources.ts'
 import chatWorkerPath from './chatIndex/worker.ts?modulePath'
-import { CHAT_SEARCH_MIN_CHARS, type ChatIndexStatus } from '../shared/chatIndex.ts'
+import { CHAT_SEARCH_MIN_CHARS, type ChatImportResult, type ChatIndexStatus } from '../shared/chatIndex.ts'
 import {
   folderOf,
   folderProblem,
@@ -2763,13 +2763,68 @@ function registerIpc(): void {
   ipcMain.handle(CH.chatsIndexNow, () => {
     runChatPass()
   })
+  // Every chat read from this computer's tools goes and is read again. Imports
+  // stay: no pass could bring them back, and nobody asked for them to go.
   ipcMain.handle(CH.chatsRebuild, async () => {
-    await chatHost().deleteIndex()
+    await chatHost().rebuild()
     runChatPass()
   })
   ipcMain.handle(CH.chatsDelete, async () => {
     await chatHost().deleteIndex()
     return chatStatusFor(await chatHost().status())
+  })
+  /*
+   * An account export into the index. Only while chat history is on: search
+   * answers nothing otherwise, and an import is text copied into the index, the
+   * thing that switch consents to. No path means ask; a path is a drop on
+   * Settings › Chat history, taken only as a regular file named .zip or .json
+   * (the worker then recognises it by content). Claimed in the host before its
+   * first await (gotcha 20); the pass that follows balances the total cap.
+   */
+  ipcMain.handle(CH.chatsImport, async (_e, given: unknown): Promise<ChatImportResult | null> => {
+    const s = getSettings()
+    if (s.chatIndex !== 'on') return { ok: false, error: 'Turn on chat history first: an import is searched with everything else in it.' }
+    if (chatHost().importRunning) return { ok: false, error: 'An import is already running.' }
+    let path: string
+    if (typeof given === 'string' && given) {
+      path = given
+    } else {
+      if (!win) return null
+      const res = await dialog.showOpenDialog(win, {
+        title: 'Import a claude.ai or ChatGPT export',
+        properties: ['openFile'],
+        filters: [{ name: 'Chat export (.zip, conversations.json)', extensions: ['zip', 'json'] }]
+      })
+      if (res.canceled || !res.filePaths[0]) return null
+      path = res.filePaths[0]
+    }
+    if (!/\.(zip|json)$/i.test(path)) return { ok: false, error: 'Stoke imports a .zip export or a conversations.json file.' }
+    try {
+      if (!(await stat(path)).isFile()) return { ok: false, error: 'That is not a file.' }
+    } catch {
+      return { ok: false, error: 'That file could not be found.' }
+    }
+    const result = await chatHost().importExport(path, s.chatIndexOptions)
+    if (result.ok) runChatPass()
+    return result
+  })
+  ipcMain.handle(CH.chatsRemoveImport, async (_e, importId: unknown) => {
+    if (typeof importId === 'number' && Number.isInteger(importId) && importId > 0) await chatHost().removeImport(importId)
+    return chatStatusFor(await chatHost().status())
+  })
+  /*
+   * One chat for the viewer. Nothing while chat history is off (as search), and
+   * nothing in a hidden project — the rule search keeps: hiding a folder hides
+   * its conversations everywhere they could surface.
+   */
+  ipcMain.handle(CH.chatsOpen, async (_e, chatId: unknown) => {
+    const s = getSettings()
+    if (s.chatIndex !== 'on' || typeof chatId !== 'number' || !Number.isInteger(chatId) || chatId <= 0) return null
+    const t = await chatHost().open(chatId, chatEnv(), s.chatIndexOptions.redact, s.chatIndexOptions.caps.fileMb)
+    if (!t) return null
+    const rules = pathRulesFor(process.platform)
+    if (t.cwd && s.hiddenProjects.some((p) => isInside(p, t.cwd!, rules))) return null
+    return t
   })
 
   ipcMain.handle(CH.projectsAddRoot, async () => {

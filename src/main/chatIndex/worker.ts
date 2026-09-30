@@ -14,8 +14,10 @@ import { join } from 'node:path'
 import { rmSync } from 'node:fs'
 import { CHAT_SOURCE_IDS, emptyChatStatus, type ChatIndexStatus, type ChatPassSummary } from '../../shared/chatIndex.ts'
 import { ChatStore, STORE_FILE } from './store.ts'
-import { runPass } from './scan.ts'
+import { runPass, STORE_MAX_TEXT_BYTES } from './scan.ts'
 import { detectSource, discovery } from './sources.ts'
+import { importExport } from './importer.ts'
+import { openChat } from './viewer.ts'
 import type { WorkerData, WorkerEvent, WorkerReply, WorkerRequest } from './protocol.ts'
 
 const port = parentPort
@@ -24,7 +26,16 @@ const { dir } = workerData as WorkerData
 
 let store: ChatStore | null = null
 let running: Promise<ChatPassSummary> | null = null
-let cancel = false
+/** An import in progress: one at a time, and Delete index waits for it like a pass. */
+let importing: Promise<unknown> | null = null
+/*
+ * Two stop flags, not one. A pass and an import each clear their own when they
+ * start, and Rebuild stops only the pass: it keeps imports, so it has no reason
+ * to stop one — with a shared flag it did, and a pass starting mid-import
+ * cleared a stop that was meant for the import.
+ */
+let stopPass = false
+let stopImport = false
 let progress: ChatIndexStatus['progress'] = null
 
 /** The store, opened on first need — and never CREATED just to answer a status or a search. */
@@ -64,9 +75,12 @@ function fail(id: number, err: unknown): void {
   port!.postMessage(r)
 }
 
+/** Stop the pass and any import, and wait for both: Delete index and quit. */
 async function settle(): Promise<void> {
-  cancel = true
+  stopPass = true
+  stopImport = true
   if (running) await running.catch(() => null)
+  if (importing) await importing.catch(() => null)
 }
 
 port.on('message', async (msg: WorkerRequest) => {
@@ -80,12 +94,12 @@ port.on('message', async (msg: WorkerRequest) => {
       case 'scan': {
         // One pass at a time; the host queues the next.
         if (running) return reply(msg.id, null)
-        cancel = false
+        stopPass = false
         const s = openStore(true)!
         const pass = runPass(s, msg.plan, {
           now: Date.now,
           yieldTurn: () => new Promise((r) => setImmediate(r)),
-          cancelled: () => cancel,
+          cancelled: () => stopPass,
           progress: (p) => {
             progress = p
             emit()
@@ -111,7 +125,9 @@ port.on('message', async (msg: WorkerRequest) => {
         reply(msg.id, statusNow())
         return
       case 'cancel':
-        cancel = true
+        // Chat history switched off: nothing more is read, from a tool or a file.
+        stopPass = true
+        stopImport = true
         reply(msg.id, null)
         return
       case 'delete': {
@@ -128,6 +144,52 @@ port.on('message', async (msg: WorkerRequest) => {
         store?.close()
         store = null
         reply(msg.id, null)
+        return
+      }
+      case 'import': {
+        if (importing) return reply(msg.id, { ok: false, error: 'An import is already running.' })
+        stopImport = false
+        const s = openStore(true)!
+        const job = importExport(s, { path: msg.path, options: msg.options, maxTextBytes: STORE_MAX_TEXT_BYTES }, {
+          now: Date.now,
+          yieldTurn: () => new Promise((r) => setImmediate(r)),
+          cancelled: () => stopImport
+        })
+        importing = job
+        try {
+          reply(msg.id, await job)
+        } finally {
+          importing = null
+          emit(true)
+        }
+        return
+      }
+      case 'open': {
+        const s = openStore(false)
+        reply(msg.id, s ? openChat(s, msg.chatId, msg.env, { redact: msg.redact, fileBytes: Math.max(64, Math.floor(msg.fileMb * 1024 * 1024)) }) : null)
+        return
+      }
+      case 'removeImport': {
+        const s = openStore(false)
+        if (s) {
+          s.removeImport(msg.importId)
+          s.tidy(false)
+        }
+        reply(msg.id, null)
+        emit(true)
+        return
+      }
+      case 'rebuild': {
+        // The pass only: an import running beside it carries on, and Rebuild keeps what it writes.
+        stopPass = true
+        if (running) await running.catch(() => null)
+        const s = openStore(false)
+        if (s) {
+          s.clearLocal()
+          s.tidy(true)
+        }
+        reply(msg.id, null)
+        emit(true)
         return
       }
     }

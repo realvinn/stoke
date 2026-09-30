@@ -11,7 +11,15 @@
  * while one runs is remembered, once, and run when it ends.
  */
 import { Worker } from 'node:worker_threads'
-import type { ChatDetection, ChatIndexStatus, ChatPassSummary, ChatSearchHit } from '../../shared/chatIndex.ts'
+import type {
+  ChatDetection,
+  ChatImportResult,
+  ChatIndexOptions,
+  ChatIndexStatus,
+  ChatPassSummary,
+  ChatSearchHit,
+  ChatTranscript
+} from '../../shared/chatIndex.ts'
 import type { PassPlan } from './scan.ts'
 import type { SourceEnv } from './sources.ts'
 import type { WorkerData, WorkerEvent, WorkerReply, WorkerRequest, WorkerResults } from './protocol.ts'
@@ -39,6 +47,7 @@ export class ChatIndexHost {
   private scanning = false
   private queued: PassPlan | null = null
   private idle: ReturnType<typeof setTimeout> | null = null
+  private importing = false
   /** When the last pass ended, for the focus trigger's five-minute floor. */
   lastPassAt = 0
 
@@ -138,14 +147,49 @@ export class ChatIndexHost {
     })
   }
 
-  /** Stop the running pass where it is; nothing it wrote is lost. */
+  /** Stop the running pass, and any import, where they are (chat history switched off); nothing written is lost. */
   cancel(): Promise<void> {
     this.queued = null
     if (!this.worker) return Promise.resolve()
     return this.request('cancel', {}).then(() => undefined)
   }
 
-  /** Delete the whole store: the running pass is stopped first. */
+  /**
+   * Read an export into the store. Claimed synchronously (gotcha 20): a second
+   * import while one runs is refused at once rather than queued — the user
+   * pressed twice, or dropped two files, and one answer is the right one.
+   */
+  importExport(path: string, options: ChatIndexOptions): Promise<ChatImportResult> {
+    if (this.importing) return Promise.resolve({ ok: false, error: 'An import is already running.' })
+    this.importing = true
+    return this.request('import', { path, options }).finally(() => {
+      this.importing = false
+    })
+  }
+
+  get importRunning(): boolean {
+    return this.importing
+  }
+
+  /** One chat for the viewer: re-read from its source, or the store's copy for an import. */
+  open(chatId: number, env: SourceEnv, redact: boolean, fileMb: number): Promise<ChatTranscript | null> {
+    return this.request('open', { chatId, env, redact, fileMb })
+  }
+
+  removeImport(importId: number): Promise<void> {
+    return this.request('removeImport', { importId }).then(() => undefined)
+  }
+
+  /**
+   * Every local chat gone, imports kept; the caller starts the pass that reads
+   * the tools again. Stops the running pass, never an import: that carries on.
+   */
+  rebuild(): Promise<void> {
+    this.queued = null
+    return this.request('rebuild', {}).then(() => undefined)
+  }
+
+  /** Delete the whole store: the running pass and any import are stopped first. */
   deleteIndex(): Promise<void> {
     this.queued = null
     return this.request('delete', {}).then(() => undefined)
