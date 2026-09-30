@@ -77,12 +77,29 @@ export function ActivityPanel({ onClose }: { onClose: () => void }): React.JSX.E
 
   return (
     <section className="activity" style={{ width: '100%' }} aria-label="Activity report">
-      <div className="worklog-head">
-        <span className="worklog-title">Activity</span>
-        <span style={{ flex: 1 }} />
-        <button className="icon-btn" onClick={() => void load(period)} disabled={busy} title="Refresh">
+      {/*
+        Its own class names, styled in app.css's activity section. It used to
+        borrow the deleted review panel's, and stacked its two buttons once
+        those rules went (see `.activity-head`).
+      */}
+      <div className="activity-head">
+        <span className="activity-title truncate">Activity</span>
+        {/*
+          Busy, not refused: `disabled` stops a second load, `aria-busy` keeps
+          the button at full strength and turns the arrow (app.css), and the
+          title says what it is doing.
+        */}
+        <button
+          className="icon-btn"
+          onClick={() => void load(period)}
+          disabled={busy}
+          aria-busy={busy}
+          title={busy ? 'Refreshing…' : 'Refresh'}
+        >
           <IconRefresh />
-          <span className="sr-only">Refresh the activity report</span>
+          <span className="sr-only">
+            {busy ? 'Refreshing the activity report' : 'Refresh the activity report'}
+          </span>
         </button>
         <button className="icon-btn" onClick={onClose} title="Close activity panel">
           <IconClose />

@@ -60,6 +60,14 @@ migration is verified by `grep -rn -- '--sp-' src/` returning **zero**, and a sw
 stylesheet is not the whole job — 26 uses were inside `style={{ }}` objects in eight `.tsx`
 files and rendered at 0 until they were found.
 
+> **Checked against the code on 2026-09-30** — the same trap runs the other way for a class
+> NAME, and there it is silent. a708435 deleted the old review panel's stylesheet as dead; two of
+> its rules, `.worklog-head` and `.worklog-title`, were still carried by `ActivityPanel`, whose
+> header then fell back to block layout and stacked its Refresh and Close buttons. A class with no
+> rule is not an error to the typecheck, the build or the browser. Before deleting CSS as dead,
+> grep every class name it styles across `src/**/*.tsx` to zero; `verify:activity` now fails on
+> any `className="…"` literal in ActivityPanel.tsx or WorklogPrompt.tsx that app.css never names.
+
 ## 23. macOS traffic lights are device pixels; anything clearing them must be too
 
 **macOS traffic lights are device pixels; anything clearing them must be too.** `padding-left`
@@ -222,6 +230,16 @@ a frame of a moving one.
 > on a mounted element; prefer the flag anyway, for the two honest reasons — it is the state a
 > user with the OS setting actually boots into, and it needs no race against a splash that is
 > only up for `WELCOME_DISMISS_MS`.
+
+> **Checked against the code on 2026-09-30** — an override that tries to KEEP an animation under
+> reduced motion is dead too. `.spinner`'s block re-declared `animation: spin 700ms linear
+> infinite`, meaning to leave it turning; a normal declaration cannot beat the global block's
+> `!important` duration and count at any specificity, so it ran once for 1ms like everything else.
+> `animation: none` is what does win (the global block never sets `animation-name`), and it is now
+> the spinner's deliberate still state: a ring with one arc, with the busy button's changed label
+> and `aria-busy` carrying the state (components/Spinner.tsx). Measured under
+> `--force-prefers-reduced-motion`: `.spinner` `getAnimations()` empty, `animation-name: none`,
+> label "Checking…". A 1ms `CSSTransition` on every element is expected there, not a leak.
 
 ## 105. macOS's full-screen reveal is two windows over the page, 62px deep, and on macOS 27 it arrives with full screen
 

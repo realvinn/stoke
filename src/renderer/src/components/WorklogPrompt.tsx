@@ -103,9 +103,13 @@ export function WorklogPrompt({
         One line that truncates as a whole, rather than a flex row that truncates
         the title inside it. The nested version made a long title widen the entire
         app past its window — see .worklog-prompt-text in app.css. The full text is
-        on the element, so a clipped question is still readable on hover.
+        on the element, so a clipped question is still readable on hover — with
+        the folder too, since a narrow strip drops the folder name (app.css).
       */}
-      <p className="worklog-prompt-text" title={`${lead} ${subject} ${tail}`}>
+      <p
+        className="worklog-prompt-text"
+        title={`${lead} ${subject} ${tail}${current.cwd ? `\n${current.cwd}` : ''}`}
+      >
         {lead} <strong>{subject}</strong> {tail}
       </p>
 
@@ -119,13 +123,24 @@ export function WorklogPrompt({
         className="btn"
         data-variant="primary"
         data-size="sm"
+        data-shed="answer"
         disabled={busy}
         onClick={() => onAccept(current.id)}
       >
         {busy ? 'Writing…' : current.kind === 'update' ? 'Update it' : 'Add it'}
       </button>
-      {/* Skipping leaves the proposal in the queue to decide on later. */}
-      <button className="btn" data-size="sm" disabled={busy} onClick={() => onSkip(current.id)}>
+      {/*
+        Skipping leaves the proposal in the queue to decide on later.
+        `data-shed` names the order a narrow strip drops controls in rather than
+        clip the × off the end (see the container queries on .worklog-prompt).
+      */}
+      <button
+        className="btn"
+        data-size="sm"
+        data-shed="skip"
+        disabled={busy}
+        onClick={() => onSkip(current.id)}
+      >
         Not now
       </button>
       {/*
@@ -147,6 +162,7 @@ export function WorklogPrompt({
           className="btn"
           data-variant="danger"
           data-size="sm"
+          data-shed="reject"
           disabled={busy}
           onClick={() => {
             setConfirming(null)
@@ -160,6 +176,7 @@ export function WorklogPrompt({
           className="btn"
           data-variant="ghost"
           data-size="sm"
+          data-shed="reject"
           disabled={busy}
           onClick={() => setConfirming(current.id)}
           title="Never write this, and stop the scan proposing it again"

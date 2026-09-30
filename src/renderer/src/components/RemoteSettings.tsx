@@ -14,6 +14,7 @@ import { cliUpToDate, selfUpToDate } from '@shared/updateCheck'
 import { useDraft } from '../lib/useDraft'
 import { FieldHint } from './FieldHint'
 import { IconCopy } from './Icons'
+import { Spinner } from './Spinner'
 import { CloudflareSetup } from './CloudflareSetup'
 import type { CliRelaunchMode, CliUpdateState, Settings } from '@shared/types'
 
@@ -725,7 +726,34 @@ export function SelfUpdateSettings({
 }): React.JSX.Element {
   const [state, setState] = useState<SelfUpdateState | null>(null)
   const [busy, setBusy] = useState(false)
+  /*
+   * The re-entry guard, claimed before the await (gotchas 20 and 51). `busy`
+   * disables the button only once React has re-rendered, so two presses in one
+   * tick both got through it and started two checks.
+   */
+  const checkingRef = useRef(false)
+  /** A check that threw. Without it the press did nothing visible at all. */
+  const [checkError, setCheckError] = useState<string | null>(null)
   const [copiedCommand, setCopiedCommand] = useState(false)
+
+  const check = (): void => {
+    if (checkingRef.current) return
+    checkingRef.current = true
+    setBusy(true)
+    setCheckError(null)
+    void window.stoke.self
+      .check()
+      .then(setState)
+      .catch((err: unknown) =>
+        setCheckError(
+          `Stoke could not check for updates: ${err instanceof Error ? err.message : String(err)}`
+        )
+      )
+      .finally(() => {
+        checkingRef.current = false
+        setBusy(false)
+      })
+  }
 
   useEffect(() => {
     void window.stoke.self.state().then(setState)
@@ -822,15 +850,11 @@ export function SelfUpdateSettings({
           <button
             className="btn"
             disabled={busy || state.downloading}
-            onClick={() => {
-              setBusy(true)
-              void window.stoke.self
-                .check()
-                .then(setState)
-                .finally(() => setBusy(false))
-            }}
+            aria-busy={busy}
+            onClick={check}
           >
-            Check for updates
+            {busy && <Spinner />}
+            {busy ? 'Checking…' : 'Check for updates'}
           </button>
           {state.availableVersion && !state.downloaded && !managed && (
             <button
@@ -868,6 +892,12 @@ export function SelfUpdateSettings({
             </button>
           )}
         </div>
+      )}
+
+      {checkError && (
+        <span className="field-hint" data-tone="danger" role="alert">
+          {checkError}
+        </span>
       )}
 
       {state.supported && (
@@ -1096,6 +1126,23 @@ export function UpdatesSettings({
     null
   )
   const [busy, setBusy] = useState<string | null>(null)
+  /*
+   * Which action holds the panel, claimed before the first await (gotchas 20,
+   * 51 and 66). `busy` is the visible half — it disables the buttons and swaps
+   * a label — but only after React re-renders, so two presses in one tick both
+   * got past it: two `claude update`s, or two doctors racing one output box.
+   */
+  const busyRef = useRef<string | null>(null)
+  const claim = (label: string): boolean => {
+    if (busyRef.current !== null) return false
+    busyRef.current = label
+    setBusy(label)
+    return true
+  }
+  const release = (): void => {
+    busyRef.current = null
+    setBusy(null)
+  }
 
   /*
    * Read the state main already holds rather than starting a fresh check, and
@@ -1125,8 +1172,29 @@ export function UpdatesSettings({
     }
   }, [])
 
+  /*
+   * "Check again" used to be a bare `updates.check().then(setInfo)`: no busy
+   * state, so a check taking seconds looked like a press that missed; no guard;
+   * and no catch, so a rejected check left the panel exactly as it was. It is
+   * one of the panel's actions now, with the others' guard and verdict line.
+   */
+  const recheck = async (): Promise<void> => {
+    if (!claim('check')) return
+    setVerdict(null)
+    try {
+      setInfo(await window.stoke.updates.check())
+    } catch (err) {
+      setVerdict({
+        tone: 'danger',
+        text: `Stoke could not check for updates: ${err instanceof Error ? err.message : String(err)}`
+      })
+    } finally {
+      release()
+    }
+  }
+
   const run = async (label: string, fn: () => Promise<CliRunResult>): Promise<void> => {
-    setBusy(label)
+    if (!claim(label)) return
     setOutput(null)
     setVerdict(null)
     try {
@@ -1154,7 +1222,7 @@ export function UpdatesSettings({
         }`
       })
     } finally {
-      setBusy(null)
+      release()
     }
   }
 
@@ -1178,7 +1246,7 @@ export function UpdatesSettings({
    * is a legitimate choice and this is an offer, not a correction.
    */
   const switchToLatest = async (): Promise<void> => {
-    setBusy('channel')
+    if (!claim('channel')) return
     setOutput(null)
     setVerdict(null)
     try {
@@ -1209,7 +1277,7 @@ export function UpdatesSettings({
         }`
       })
     } finally {
-      setBusy(null)
+      release()
     }
   }
 
@@ -1289,9 +1357,11 @@ export function UpdatesSettings({
             className="btn"
             data-variant="primary"
             disabled={busy !== null}
+            aria-busy={busy === 'channel'}
             title="Writes autoUpdatesChannel: latest to ~/.claude/settings.json, then runs claude update."
             onClick={() => void switchToLatest()}
           >
+            {busy === 'channel' && <Spinner />}
             {busy === 'channel' ? 'Switching…' : lag.action}
           </button>
         </div>
@@ -1318,24 +1388,30 @@ export function UpdatesSettings({
         <button
           className="btn"
           disabled={busy !== null}
-          onClick={() => void window.stoke.updates.check().then(setInfo)}
+          aria-busy={busy === 'check'}
+          onClick={() => void recheck()}
         >
-          Check again
+          {busy === 'check' && <Spinner />}
+          {busy === 'check' ? 'Checking…' : 'Check again'}
         </button>
         <button
           className="btn"
           data-variant={info?.updateAvailable ? 'primary' : undefined}
           disabled={busy !== null || !update.enabled}
+          aria-busy={busy === 'update'}
           title={update.hint}
           onClick={() => void run('update', window.stoke.updates.run)}
         >
+          {busy === 'update' && <Spinner />}
           {busy === 'update' ? 'Updating…' : 'Update now'}
         </button>
         <button
           className="btn"
           disabled={busy !== null}
+          aria-busy={busy === 'doctor'}
           onClick={() => void run('doctor', window.stoke.updates.doctor)}
         >
+          {busy === 'doctor' && <Spinner />}
           {busy === 'doctor' ? 'Running…' : 'Run doctor'}
         </button>
       </div>

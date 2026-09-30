@@ -18,6 +18,7 @@ import {
 import type { Settings } from '@shared/types'
 import { SHARED_SKILLS_DIR, skillReport, type SkillDirScan } from '@shared/skills'
 import { cliFor } from '@shared/codingClis'
+import { Spinner } from './Spinner'
 
 /*
  * Settings › Coding agents: which agents show in the launcher, installing the
@@ -43,7 +44,8 @@ export function AgentsSettings({
   settings: Settings
   onPatch: (patch: Partial<Settings>) => void
   detection: CodingCliDetection | null
-  onRefresh: () => void
+  /** Never rejects (App swallows a failed detection); settles when the look is done. */
+  onRefresh: () => Promise<void>
   onOpenPicker: () => void
   onInstall: (ids: CodingCliId[]) => void
 }): React.JSX.Element {
@@ -51,6 +53,25 @@ export function AgentsSettings({
   const platform = window.stoke.platform
   const agentsRef = useRef(agents)
   agentsRef.current = agents
+
+  /*
+   * "Look again" re-reads the login shell (gotcha 52), which takes seconds, and
+   * a re-check keeps the last detection on screen — so the rows' "checking…"
+   * pills, which only a `null` detection draws, never appeared, and the button
+   * looked like it had done nothing. Its own state, and a ref claimed before
+   * the await so a second press cannot start a second probe (gotcha 20).
+   */
+  const [looking, setLooking] = useState(false)
+  const lookingRef = useRef(false)
+  const lookAgain = (): void => {
+    if (lookingRef.current) return
+    lookingRef.current = true
+    setLooking(true)
+    void onRefresh().finally(() => {
+      lookingRef.current = false
+      setLooking(false)
+    })
+  }
 
   const patchAgents = (next: AgentSettings): void => onPatch({ agents: next })
 
@@ -87,8 +108,15 @@ export function AgentsSettings({
           <button className="btn" onClick={onOpenPicker}>
             Choose agents…
           </button>
-          <button className="btn" data-variant="ghost" onClick={onRefresh}>
-            Look again
+          <button
+            className="btn"
+            data-variant="ghost"
+            disabled={looking}
+            aria-busy={looking}
+            onClick={lookAgain}
+          >
+            {looking && <Spinner />}
+            {looking ? 'Looking…' : 'Look again'}
           </button>
         </div>
         {detection?.probeFailed && (

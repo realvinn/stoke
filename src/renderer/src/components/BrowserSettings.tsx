@@ -5,6 +5,7 @@ import type { Settings } from '@shared/types'
 import type { ImportResult, ImportSource } from '@shared/api'
 import { FieldHint } from './FieldHint'
 import { IconClose, IconPlus } from './Icons'
+import { Spinner } from './Spinner'
 
 interface Props {
   browser: Settings['browser']
@@ -184,8 +185,20 @@ function ImportFromBrowsers({ profiles }: { profiles: BrowserProfile[] }): React
   // source key — and the key is only reachable on macOS.
   const canLogins = loginsAllowed && isMac
 
+  /*
+   * Re-entry guards, claimed before the await (gotcha 20). The old `scanning`
+   * and `running` checks read the last render, so two presses inside one tick
+   * both passed them. For Import that is worse than a duplicate: main refuses
+   * the second run and answers null at once, and that call's `finally` would
+   * clear `running` — the button back to "Import", and its spinner gone, while
+   * the first import was still going. (Read from the code; not driven.)
+   */
+  const scanningRef = useRef(false)
+  const runningRef = useRef(false)
+
   const scan = (): void => {
-    if (scanning) return
+    if (scanningRef.current) return
+    scanningRef.current = true
     setScanning(true)
     void window.stoke.browser
       .importScan()
@@ -195,11 +208,15 @@ function ImportFromBrowsers({ profiles }: { profiles: BrowserProfile[] }): React
         if (!allowed) setCookies(false)
         setChosen(new Set(found.filter((f) => f.status === 'ready').map((f) => f.key)))
       })
-      .finally(() => setScanning(false))
+      .finally(() => {
+        scanningRef.current = false
+        setScanning(false)
+      })
   }
 
   const run = (): void => {
-    if (running || chosen.size === 0) return
+    if (runningRef.current || chosen.size === 0) return
+    runningRef.current = true
     setRunning(true)
     setResults(null)
     setBusyNote(null)
@@ -210,7 +227,10 @@ function ImportFromBrowsers({ profiles }: { profiles: BrowserProfile[] }): React
         // Null is main refusing a second run: say so rather than do nothing.
         else setBusyNote('An import is already running. Its results appear here when you reopen this page.')
       })
-      .finally(() => setRunning(false))
+      .finally(() => {
+        runningRef.current = false
+        setRunning(false)
+      })
   }
 
   const nameOf = (s: ImportSource): string => (s.name === s.browserName ? s.name : `${s.browserName} · ${s.name}`)
@@ -227,7 +247,15 @@ function ImportFromBrowsers({ profiles }: { profiles: BrowserProfile[] }): React
 
       {sources === null ? (
         <div className="settings-item-actions">
-          <button className="btn" data-variant="ghost" data-size="sm" disabled={scanning} onClick={scan}>
+          <button
+            className="btn"
+            data-variant="ghost"
+            data-size="sm"
+            disabled={scanning}
+            aria-busy={scanning}
+            onClick={scan}
+          >
+            {scanning && <Spinner />}
             {scanning ? 'Looking…' : 'Find browsers'}
           </button>
         </div>
@@ -358,11 +386,21 @@ function ImportFromBrowsers({ profiles }: { profiles: BrowserProfile[] }): React
               className="btn"
               data-variant="primary"
               disabled={running || chosen.size === 0 || (!(cookies && canLogins) && !bookmarks)}
+              aria-busy={running}
               onClick={run}
             >
+              {running && <Spinner />}
               {running ? 'Importing…' : `Import ${chosen.size} profile${chosen.size === 1 ? '' : 's'}`}
             </button>
-            <button className="btn" data-variant="ghost" data-size="sm" disabled={scanning || running} onClick={scan}>
+            <button
+              className="btn"
+              data-variant="ghost"
+              data-size="sm"
+              disabled={scanning || running}
+              aria-busy={scanning}
+              onClick={scan}
+            >
+              {scanning && <Spinner />}
               {scanning ? 'Looking…' : 'Look again'}
             </button>
           </div>

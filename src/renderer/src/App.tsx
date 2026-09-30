@@ -223,10 +223,15 @@ export function App(): React.JSX.Element {
    * on mount and again after an install tab exits — `fresh` re-reads the login
    * shell, since the installer has just added its bin directory to the rc.
    * `null` is "still looking", which the picker shows as such.
+   *
+   * Returns the run, which never rejects, so Settings' "Look again" can show
+   * that it is looking: a re-check keeps the last answer on screen (only the
+   * first read is `null`), and a `fresh` one re-reads the login shell, which
+   * takes seconds (gotcha 52) — during which the button used to do nothing.
    */
   const [agentDetection, setAgentDetection] = useState<CodingCliDetection | null>(null)
-  const refreshAgents = useCallback((fresh = false): void => {
-    void window.stoke.cli
+  const refreshAgents = useCallback((fresh = false): Promise<void> => {
+    return window.stoke.cli
       .detect({ fresh })
       .then(setAgentDetection)
       .catch(() => {
@@ -1559,7 +1564,7 @@ export function App(): React.JSX.Element {
             )
           )
           // An install tab has just changed what is on this machine.
-          if (t.installing?.length) refreshAgents(true)
+          if (t.installing?.length) void refreshAgents(true)
           // And a session that ended has just written its last transcript
           // line, which moves its project in Recent (QA L5).
           void refreshProjects()
@@ -3202,7 +3207,7 @@ export function App(): React.JSX.Element {
   }, [revealShifted, revealInset, revealLayout])
 
   useEffect(() => {
-    refreshAgents()
+    void refreshAgents()
   }, [refreshAgents])
 
   /*
@@ -4287,50 +4292,53 @@ export function App(): React.JSX.Element {
             not.
           */}
           {/*
-            Suppressed while the review panel is open. The strip and the panel
-            draw the same proposals from the same queue, and the strip's own
-            "Review all" button just opens that panel — so with it open the strip
-            is a duplicate of what is already on screen, and one that costs a row
-            of height in `.main-col` (see gotcha 14) every time a scan lands.
+            Shown whether or not the Activity panel is open. It used to be
+            hidden while the panel was up, on the grounds that the panel drew
+            the same proposals — true of the review panel this column once held,
+            and false since 6304e35 replaced it with the activity report, which
+            shows none. So opening Activity hid the only place a proposal can be
+            answered, while the title bar's tooltip pointed at "the review strip".
+            The strip costs one row of `.main-col` (gotcha 14), and with the
+            panel open that column is at its narrowest — which is why
+            `.worklog-prompt` sheds whole controls by its own width rather than
+            clip its Review all and Dismiss off the right edge.
           */}
-          {!worklogOpen && (
-            <WorklogPrompt
-              proposals={promptQueue}
-              busy={worklogBusy}
-              onAccept={(id) => {
-                // Dropped from the strip at once. The write takes tens of seconds
-                // and the answer has already been given; leaving the question up
-                // while it runs invites a second press.
-                setAsked((prev) => new Set(prev).add(id))
-                void acceptProposal(id)
-              }}
-              onSkip={(id) => setAsked((prev) => new Set(prev).add(id))}
-              onReject={(id) => {
-                setAsked((prev) => new Set(prev).add(id))
-                void rejectProposal(id)
-              }}
-              /*
-               * Brings EVERY pending proposal into the strip, rather than the
-               * ids from this session's own scan events.
-               *
-               * It used to open the activity report — `setWorklogOpen(true)` —
-               * which shows hours and lines per project and has never so much
-               * as imported WorklogProposal. That was left behind when 6304e35
-               * replaced the review panel with the report: the button, its
-               * label and the title bar's "N awaiting review" all went on
-               * naming a surface that no longer existed. So a proposal skipped
-               * with "Not now", or one left pending from an earlier run, was
-               * unreachable — the badge counted up and nothing could act on it.
-               */
-              onReviewAll={() => {
-                setAsked(new Set())
-                setProposedIds(
-                  worklog.filter((p) => p.status === 'pending').map((p) => p.id)
-                )
-              }}
-              onDismiss={() => setProposedIds([])}
-            />
-          )}
+          <WorklogPrompt
+            proposals={promptQueue}
+            busy={worklogBusy}
+            onAccept={(id) => {
+              // Dropped from the strip at once. The write takes tens of seconds
+              // and the answer has already been given; leaving the question up
+              // while it runs invites a second press.
+              setAsked((prev) => new Set(prev).add(id))
+              void acceptProposal(id)
+            }}
+            onSkip={(id) => setAsked((prev) => new Set(prev).add(id))}
+            onReject={(id) => {
+              setAsked((prev) => new Set(prev).add(id))
+              void rejectProposal(id)
+            }}
+            /*
+             * Brings EVERY pending proposal into the strip, rather than the
+             * ids from this session's own scan events.
+             *
+             * It used to open the activity report — `setWorklogOpen(true)` —
+             * which shows hours and lines per project and has never so much
+             * as imported WorklogProposal. That was left behind when 6304e35
+             * replaced the review panel with the report: the button, its
+             * label and the title bar's "N awaiting review" all went on
+             * naming a surface that no longer existed. So a proposal skipped
+             * with "Not now", or one left pending from an earlier run, was
+             * unreachable — the badge counted up and nothing could act on it.
+             */
+            onReviewAll={() => {
+              setAsked(new Set())
+              setProposedIds(
+                worklog.filter((p) => p.status === 'pending').map((p) => p.id)
+              )
+            }}
+            onDismiss={() => setProposedIds([])}
+          />
 
           <div
             className="term-stack"

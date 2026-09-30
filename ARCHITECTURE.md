@@ -622,7 +622,8 @@ npm run verify:security <url> <token> --access   # remote server, against a runn
 ```
 
 Four more sit in the `check` chain without an entry above: `verify:activity` (the activity
-report's active time and lines written — a session's wall-clock span is not time worked),
+report's active time and lines written — a session's wall-clock span is not time worked — and
+that every `className="…"` in ActivityPanel.tsx and WorklogPrompt.tsx has a rule in app.css),
 `verify:restore` (the tab-restore store: what survives a quit, what is trimmed, what a corrupt
 file does), `verify:targets` (that every runner in the release matrix is native for the arch it
 builds, that the `dist:*` scripts and the workflow both read `scripts/targets.mjs`, that
@@ -844,6 +845,12 @@ src/renderer/     desktop React UI (all colour via CSS custom properties)
                     (resolved, THIS launch only, "Make default"), the conversation list.
                     Top-aligned so nothing above a row moves when a row below loads. Its
                     keys come from `launcherKey` (shared/launcher.ts). Gotcha 88
+  src/components/Spinner.tsx  the busy mark for a check / refresh / look-again button. The
+                    house rule it belongs to: the button keeps `disabled` (plus a ref claimed
+                    before the await), carries `aria-busy="true"` so app.css leaves it at full
+                    strength instead of dimming it, and changes its label ("Checking…"). The
+                    ring is drawn in `currentColor` inside a `.btn`, and stands still under
+                    reduced motion (gotcha 72) — the label is what carries the state
   src/components/FolderSwitcher.tsx  the launcher's title as a combobox: recent projects
                     (profile-scoped, same names told apart), the default folder, scratch,
                     remote machines, Open folder…. Replaced the separate "Start a session"
