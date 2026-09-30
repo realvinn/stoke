@@ -134,6 +134,23 @@ part of this change.
 > a `cookieError` saying so, and the Settings panel disables the Logins box off macOS (`canLogins`).
 > Safari stays macOS-only. Untested on real Windows (no Windows round has run; CLAUDE.md).
 
+> **Windows logins now import, 2026-09-30 (supersedes the note above).** Stoke does not crack the
+> seal — it has the browser decrypt its own jar. `chromeCookiesWin.ts` (lazy, gotcha 40) locates the
+> browser's real `.exe` (App Paths registry then a standard install dir, never a WindowsApps alias —
+> gotcha 99), copies `Local State` + the profile's cookie DB into a throwaway `--user-data-dir`,
+> launches that `.exe` HEADLESS against the copy with a loopback debug port, and reads
+> `Storage.getCookies` over CDP — which returns plaintext, HttpOnly included. The ABE key is bound to
+> the machine, the Windows user and the exe path, NOT the profile dir, so the copy still decrypts; the
+> copy is also why Chrome 136+ (which ignores the debug flag on the DEFAULT dir) still allows debugging.
+> Values map to `ImportedCookie` by `cdpCookieToImported`, the same six rules as the SQLite path (this
+> file, above). `canLogins` is on for Windows once `cookieStoreEncrypted()` holds (the fuse, gotcha 108).
+> The user's live browser is left running — a copy needs no close; a LOCKED copy (`ProfileLockedError`)
+> asks the user to close it, and Stoke never force-kills it. The child is always killed and the copy
+> always deleted (a decryptable jar must not linger). Values never cross IPC. Proven end-to-end on
+> `windows.yml`'s `chrome-import` job (seed a login on the runner's Chrome, close it, read it back
+> decrypted) and, for the launch/copy/CDP mechanism itself, locally on macOS against a throwaway Chrome
+> profile (v10 there; Windows is v20, same CDP surface).
+
 **Two grants reach further than the import.** The Keychain prompt names `security`: Allow is the
 safe answer, Always Allow puts `security` on the item's access list for good, after which any
 program can read Chrome's key silently — the UI says which to press. Full Disk Access is granted to
@@ -147,3 +164,19 @@ profiles, 4 cookies each with host-only/domain/samesite/session all as above, th
 partitioned one skipped, a `javascript:` bookmark refused, a re-import reusing both profiles, a double
 press refused. No real browser data or Keychain item has been read by any test.
 
+
+## 130. The cookie DB's relative path varies by browser build, so the copy must mirror the source's
+
+**When you launch a browser's own binary against a COPY of its profile to decrypt cookies
+(`chromeCookiesWin.ts`), the cookie DB in the copy must sit at the SAME relative path it had in the
+source.** Current Chrome keeps it at `<Profile>/Network/Cookies`; other builds — and Chrome as
+recently as the one on this Mac — keep it at `<Profile>/Cookies`. The relaunched browser is the same
+build as the one that wrote it, so it reads from the same place; put the DB under the wrong subpath
+and the browser starts clean, `Storage.getCookies` returns an EMPTY list, and there is **no error** —
+it looks exactly like a profile with no logins. The first draft always copied to `Network/Cookies`
+and read 0 cookies from a profile that plainly had one. So `copyProfile` detects which of the two the
+source uses (`Network/Cookies` first, else `Cookies`) and mirrors that exact relative path into the
+copy, creating the parent dir. Measured 2026-09-30 driving Google Chrome on macOS against a throwaway
+profile: it stored the seeded cookie at `Default/Cookies` (v10), and the reader returned it decrypted
+only once the copy mirrored that path. The same shape reaches any "copy a profile and relaunch the
+browser" scheme — the cookie store's location is the browser's to decide, not yours.
