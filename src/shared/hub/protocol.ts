@@ -92,6 +92,12 @@ export const HUB_LIMITS = {
   activeDevices: 32,
   /** One presence frame. */
   presenceFrameBytes: 64 * 1024,
+  /**
+   * One sealed presence status, as JSON (`SealedStatus`): a device's session
+   * summary for its other devices. Well under a frame, so the hub can forward
+   * it inside one with room for the envelope.
+   */
+  statusBytes: 24 * 1024,
   /** Presence and relay sockets ping this often, so nothing on the path sees them idle (spec §2.2). */
   pingMs: 25_000
 } as const
@@ -448,6 +454,34 @@ export interface RelayCreateResponse {
 
 /* ------------------------------------------------------------ presence */
 
+/**
+ * A device's presence status — what it tells its OTHER devices about itself
+ * and, if its owner allowed it there, its sessions — sealed under the current
+ * epoch's presence key (crypto.ts `sealStatus`, AAD `presenceStatusAad`). The
+ * hub keeps the last one per connected device in memory, forwards it to the
+ * account's other devices, and cannot read it: the plaintext is
+ * `RemoteStatus` (src/shared/hub/remote.ts).
+ */
+export interface SealedStatus {
+  v: 1
+  epoch: number
+  /** b64url, 12 random bytes. */
+  nonce: string
+  /** b64url AES-256-GCM ciphertext, tag appended. */
+  ct: string
+}
+
+/** Why `v` is not a sealed status the hub may forward, or null. Judged on shape and size only. */
+export function sealedStatusProblem(v: unknown): string | null {
+  if (!isRecord(v) || v.v !== 1) return 'not a sealed status'
+  if (typeof v.epoch !== 'number' || !Number.isSafeInteger(v.epoch) || v.epoch < 1) return 'bad epoch'
+  if (typeof v.nonce !== 'string' || !/^[A-Za-z0-9_-]{16}$/.test(v.nonce)) return 'bad nonce'
+  if (typeof v.ct !== 'string' || !/^[A-Za-z0-9_-]{22,}$/.test(v.ct)) return 'bad ciphertext'
+  if (Object.keys(v).some((k) => k !== 'v' && k !== 'epoch' && k !== 'nonce' && k !== 'ct')) return 'unknown fields'
+  if (JSON.stringify(v).length > HUB_LIMITS.statusBytes) return 'too large'
+  return null
+}
+
 /** Hub → device on `/v1/ws/presence`. Hints only: a client re-reads state on every (re)connect. */
 export type PresenceServerFrame =
   | { t: 'welcome'; device: string; online: string[] }
@@ -456,11 +490,32 @@ export type PresenceServerFrame =
   | { t: 'chain'; seq: number; head: string }
   | { t: 'pair'; pair: string; state: PairRecord['state'] }
   | { t: 'relay'; relay: string; guest: string }
+  /** Another device's latest sealed status (null: it withdrew it), after `welcome` and whenever it sends one. */
+  | { t: 'status'; device: string; status: SealedStatus | null }
   | { t: 'bye'; reason: string }
   | { t: 'pong' }
 
-/** Device → hub on `/v1/ws/presence`. */
-export type PresenceClientFrame = { t: 'hello'; protocol: number; app: string } | { t: 'ping' }
+/** Device → hub on `/v1/ws/presence`. `status` replaces this device's last one (null withdraws it). */
+export type PresenceClientFrame =
+  | { t: 'hello'; protocol: number; app: string }
+  | { t: 'ping' }
+  | { t: 'status'; status: SealedStatus | null }
+
+/** A client frame the hub acts on, or null (ignored). A `status` must pass `sealedStatusProblem`. */
+export function parsePresenceClientFrame(v: unknown): PresenceClientFrame | null {
+  if (!isRecord(v)) return null
+  switch (v.t) {
+    case 'hello':
+      return { t: 'hello', protocol: typeof v.protocol === 'number' ? v.protocol : 0, app: typeof v.app === 'string' ? v.app.slice(0, 40) : '' }
+    case 'ping':
+      return { t: 'ping' }
+    case 'status':
+      if (v.status === null) return { t: 'status', status: null }
+      return sealedStatusProblem(v.status) === null ? { t: 'status', status: v.status as unknown as SealedStatus } : null
+    default:
+      return null
+  }
+}
 
 export function parsePresenceServerFrame(text: string): PresenceServerFrame | null {
   let v: unknown
@@ -484,6 +539,10 @@ export function parsePresenceServerFrame(text: string): PresenceServerFrame | nu
       return typeof v.pair === 'string' && typeof v.state === 'string' ? (v as unknown as PresenceServerFrame) : null
     case 'relay':
       return typeof v.relay === 'string' && typeof v.guest === 'string' ? (v as unknown as PresenceServerFrame) : null
+    case 'status':
+      return typeof v.device === 'string' && (v.status === null || sealedStatusProblem(v.status) === null)
+        ? { t: 'status', device: v.device, status: v.status as SealedStatus | null }
+        : null
     case 'bye':
       return typeof v.reason === 'string' ? (v as unknown as PresenceServerFrame) : null
     case 'pong':

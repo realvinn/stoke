@@ -84,6 +84,7 @@ import {
   HUB_ROUTES,
   matchHubRoute,
   NONCE_MEMORY_MS,
+  parsePresenceClientFrame,
   pathFromV1 as pathUnderMount,
   type HubAuth,
   type HubErrorBody,
@@ -813,7 +814,7 @@ class HubServer {
   }
 
   private presenceOpened(ws: WebSocket, auth: Authed): void {
-    const conn: PresenceConn = { ws, account: auth.account.id, device: auth.device, tokenHash: auth.tokenHash, app: '' }
+    const conn: PresenceConn = { ws, account: auth.account.id, device: auth.device, tokenHash: auth.tokenHash, app: '', status: null }
     this.watchAlive(ws)
     this.presence.add(conn)
     let windowStart = this.now()
@@ -839,9 +840,20 @@ class HubServer {
         ws.close(1007, 'not JSON')
         return
       }
-      if (!isRecord(f)) return
-      if (f.t === 'ping') this.presence.send(conn.account, conn.device, { t: 'pong' })
-      else if (f.t === 'hello') conn.app = typeof f.app === 'string' ? f.app.slice(0, 40) : ''
+      const frame = parsePresenceClientFrame(f)
+      if (!frame) return
+      if (frame.t === 'ping') this.presence.send(conn.account, conn.device, { t: 'pong' })
+      else if (frame.t === 'hello') conn.app = frame.app
+      else if (frame.t === 'status') {
+        /*
+         * "Other machines" (spec §6.1): the device's sealed status, kept in
+         * memory for devices that come online later and forwarded to the
+         * others as it is. The hub cannot open it (a key from the vault key)
+         * and never logs it; a replaced socket starts with none.
+         */
+        conn.status = frame.status
+        this.presence.broadcast(conn.account, { t: 'status', device: conn.device, status: frame.status }, conn.device)
+      }
     })
     ws.on('close', () => {
       if (this.presence.remove(conn)) this.presence.broadcast(conn.account, { t: 'presence', online: this.presence.online(conn.account) })
@@ -849,6 +861,10 @@ class HubServer {
     ws.on('error', () => {})
     const online = this.presence.online(conn.account)
     this.presence.send(conn.account, conn.device, { t: 'welcome', device: conn.device, online })
+    // What every other device last said about itself, so a newcomer's list fills at once.
+    for (const other of this.presence.statuses(conn.account)) {
+      if (other.device !== conn.device) this.presence.send(conn.account, conn.device, { t: 'status', device: other.device, status: other.status })
+    }
     this.presence.broadcast(conn.account, { t: 'presence', online }, conn.device)
   }
 

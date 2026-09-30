@@ -35,8 +35,10 @@ import {
   nodeChainCrypto,
   openItem,
   openRecoveryWrap,
+  openStatus,
   pairCode,
   pairCommit,
+  presenceKey,
   randomB64u,
   randomU8,
   RelayCipher,
@@ -49,6 +51,7 @@ import {
   relayKeys,
   sealItem,
   sealRecoveryWrap,
+  sealStatus,
   sha256B64u,
   signRequest,
   signText,
@@ -967,6 +970,38 @@ let liveItemId = ''
     check(`at most ${RELAYS_PER_ACCOUNT} relays per account`, [open.every(Boolean), ninth.status, ninth.body?.error], [true, 429, 'rate-limited'])
     clock += RELAY_OPEN_TTL_MS
     hub.tick()
+
+    /*
+     * "Other machines" (spec §6.1): each device's sealed status, forwarded to
+     * the account's other devices as it is, held in memory for a device that
+     * comes online later, and never written or logged. The hub cannot open it;
+     * what it must not do is keep it, echo it, relabel it, or hand it to
+     * another account.
+     */
+    const statusPlain = JSON.stringify({ v: 1, at: clock, name: 'Linux box', platform: 'linux', open: true, sessions: [{ ptyId: 'pty-9', project: `status-canary-${randomB64u(9)}`, title: null, status: 'idle', agent: 'Claude Code', context: null, lastActivityAt: null }] })
+    const pk = presenceKey(VK2, ACCOUNT, 2)
+    const sealedC = sealStatus(pk, { account: ACCOUNT, epoch: 2, device: C.id }, statusPlain)
+    secretsSeen.push(sealedC.ct, JSON.parse(statusPlain).sessions[0].project)
+    await sendOn(presC, JSON.stringify({ t: 'status', status: sealedC }), false)
+    const fwd = await presA.frame((f) => f.t === 'status' && f.device === C.id)
+    check('a device’s sealed status reaches the account’s other devices exactly as sent', fwd?.status, sealedC)
+    check('and it opens there, for a device of the vault', openStatus(pk, { account: ACCOUNT, epoch: 2, device: C.id }, fwd?.status)?.includes('Linux box'), true)
+    ok('it is not echoed to the device that sent it', !(await presC.frame((f) => f.t === 'status', 300)))
+    await sendOn(presC, JSON.stringify({ t: 'status', status: { v: 1, epoch: 2, nonce: 'x', ct: 'y', device: A.id } }), false)
+    await new Promise((r) => setTimeout(r, 300))
+    check('a malformed status is dropped, not forwarded', presA.json().filter((f) => f?.t === 'status').length, 1)
+    const presD = await mustOpen('/v1/ws/presence', D, 'another account’s device opens presence')
+    const presB = await mustOpen('/v1/ws/presence', B, 'a device of this account comes online later')
+    const handed = await presB.frame((f) => f.t === 'status' && f.device === C.id)
+    check('a device that comes online later is handed the status the hub holds', handed?.status, sealedC)
+    ok('another account’s device never sees it', !(await presD.frame((f) => f.t === 'status', 300)))
+    await sendOn(presC, JSON.stringify({ t: 'status', status: null }), false)
+    check('a withdrawn status is forwarded as null', (await presA.frame((f) => f.t === 'status' && f.status === null))?.device, C.id)
+    presB.ws.close()
+    presD.ws.close()
+    await presB.until(() => presB.closed)
+    await presD.until(() => presD.closed)
+
     const big2 = Buffer.alloc(HUB_LIMITS.presenceFrameBytes + 1, 0x20)
     presC.ws.send(big2)
     await presC.until(() => presC.closed)

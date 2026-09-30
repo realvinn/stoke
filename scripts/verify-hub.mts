@@ -850,7 +850,8 @@ console.log('\nsettings: the local hub block')
     token: 7,
     deviceId: 'not-an-id',
     sync: { keys: false, settings: 'yes' },
-    remoteHost: false,
+    remoteHost: true,
+    shareSessions: true,
     grants: { [DA.id]: { mode: 'full', label: 'Mac', at: 5 }, [DB.id]: { mode: 'admin' }, bad: { mode: 'view' } },
     extra: 'dropped'
   })
@@ -858,7 +859,8 @@ console.log('\nsettings: the local hub block')
   check('a non-string token is empty', h.token, '')
   check('a malformed device id is empty', h.deviceId, '')
   check('a switch keeps a boolean and defaults the rest', h.sync, { settings: true, hosts: true, keys: false })
-  check('remoteHost off stays off', h.remoteHost, false)
+  check('sharing sessions ticked stays ticked', h.shareSessions, true)
+  check('sharing sessions is off unless ticked, and the old remoteHost (default on) is not read as it', hydrateHubSettings({ remoteHost: true }).shareSessions, false)
   check('only well-formed grants survive', Object.keys(h.grants), [DA.id])
   check('an unknown field is dropped', 'extra' in h, false)
 }

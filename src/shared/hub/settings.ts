@@ -33,8 +33,16 @@ export interface HubSettings {
   deviceLabel: string
   /** This device's own switches (T2 also needs the account's `acct/pref/sync-keys`). */
   sync: { settings: boolean; hosts: boolean; keys: boolean }
-  /** Take attach requests from the owner's other devices at all (each device is still asked once). */
-  remoteHost: boolean
+  /**
+   * "Let my other devices see and open my sessions" — this machine's own tick,
+   * default OFF. Off, its presence status lists no session and every relay
+   * asking for one is refused, whatever `grants` says. On, its sessions are
+   * listed on the owner's other signed-in devices, and opening one still asks
+   * here first unless that device holds a grant (src/shared/hub/remote.ts).
+   * It replaced `remoteHost` (default on) before any build shipped it, under a
+   * new name so a file that held the old default cannot hydrate as on.
+   */
+  shareSessions: boolean
   /** Requesting device id → its grant on THIS machine. Never synced. */
   grants: Record<string, HubGrant>
 }
@@ -46,7 +54,7 @@ export const HUB_SETTINGS_DEFAULTS: HubSettings = {
   deviceId: '',
   deviceLabel: '',
   sync: { settings: true, hosts: true, keys: true },
-  remoteHost: true,
+  shareSessions: false,
   grants: {}
 }
 
@@ -81,7 +89,7 @@ export function hydrateHubSettings(raw: unknown): HubSettings {
       hosts: bool(sync.hosts, HUB_SETTINGS_DEFAULTS.sync.hosts),
       keys: bool(sync.keys, HUB_SETTINGS_DEFAULTS.sync.keys)
     },
-    remoteHost: bool(r.remoteHost, HUB_SETTINGS_DEFAULTS.remoteHost),
+    shareSessions: bool(r.shareSessions, HUB_SETTINGS_DEFAULTS.shareSessions),
     grants
   }
 }

@@ -25,7 +25,7 @@
  * relay (1013) if frames already read past the pause ever push it that far.
  */
 import type { RawData, WebSocket } from 'ws'
-import type { PresenceServerFrame } from '../src/shared/hub/protocol.ts'
+import type { PresenceServerFrame, SealedStatus } from '../src/shared/hub/protocol.ts'
 import { RELAY_IDLE_MS, RELAY_OPEN_TTL_MS, RELAYS_PER_ACCOUNT } from '../src/shared/hub/relay.ts'
 import type { HubLog } from './log.ts'
 
@@ -58,6 +58,8 @@ export interface PresenceConn {
   tokenHash: string
   /** The app version its `hello` named, for the log. */
   app: string
+  /** The last sealed status it sent (spec §6.1): ciphertext the hub cannot open, held only while it is connected. */
+  status: SealedStatus | null
 }
 
 /**
@@ -96,6 +98,13 @@ export class Presence {
 
   online(account: string): string[] {
     return [...(this.accounts.get(account)?.keys() ?? [])].sort()
+  }
+
+  /** Every connected device of `account` that has sent a status, and that status. */
+  statuses(account: string): { device: string; status: SealedStatus }[] {
+    const out: { device: string; status: SealedStatus }[] = []
+    for (const c of this.accounts.get(account)?.values() ?? []) if (c.status) out.push({ device: c.device, status: c.status })
+    return out
   }
 
   isOnline(account: string, device: string): boolean {

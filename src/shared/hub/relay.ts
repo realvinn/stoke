@@ -134,8 +134,22 @@ export function relayFrameAad(relay: string, dir: RelayDir): Uint8Array {
 
 export type RelayMode = 'view' | 'full'
 
-/** What travels inside the encrypted channel, as JSON. */
+/**
+ * What travels inside the encrypted channel, as JSON.
+ *
+ * - `attach` (guest, the first frame after `hs3`): the session this relay is
+ *   for. The host's question — "Let <device> open <session>?" — names it, and
+ *   an "Allow once" answer is scoped to it (`relayScopeVerdict`, remote.ts).
+ * - `ready`/`refused` (host): the answer. Nothing else is served before `ready`.
+ * - `part`: a piece of the JSON text of the NEXT frame, every piece but the
+ *   last carrying `more: true` (`relayFrameParts`). A pty's `attached` frame
+ *   replays up to 512 K characters of scrollback and a transcript can be
+ *   megabytes, which JSON inside JSON takes past the hub's 1 MiB frame cap;
+ *   the receiver joins the pieces and parses the whole as one frame. A part
+ *   never holds a part.
+ */
 export type RelayInnerFrame =
+  | { t: 'attach'; ptyId: string }
   | { t: 'ready'; mode: RelayMode; host: { label: string; platform: string } }
   | { t: 'refused'; reason: string }
   | { t: 'req'; id: number; method: 'GET' | 'POST'; path: string; body?: unknown }
@@ -143,8 +157,36 @@ export type RelayInnerFrame =
   | { t: 'ws-open'; id: number; path: string }
   | { t: 'ws-msg'; id: number; data: string }
   | { t: 'ws-close'; id: number; code?: number; reason?: string }
+  | { t: 'part'; data: string; more?: true }
   | { t: 'ping' }
   | { t: 'pong' }
+
+/**
+ * The most UTF-16 units of frame text one `part` carries. A unit is at most
+ * three UTF-8 bytes, and escaping it again as JSON at most doubles an ASCII
+ * one, so a part stays under ~600 KB sealed: inside `RELAY_MAX_FRAME_BYTES`.
+ */
+export const RELAY_CHUNK_CHARS = 200 * 1024
+/** The most one joined frame may grow to before the relay is closed: past any real reply. */
+export const RELAY_MAX_MESSAGE_CHARS = 16 * 1024 * 1024
+
+/** One frame's JSON text as what goes on the wire: itself when small, else its parts in order. */
+export function relayFrameParts(text: string): string[] {
+  if (text.length <= RELAY_CHUNK_CHARS) return [text]
+  const out: string[] = []
+  for (let at = 0; at < text.length; at += RELAY_CHUNK_CHARS) {
+    const data = text.slice(at, at + RELAY_CHUNK_CHARS)
+    out.push(JSON.stringify(at + RELAY_CHUNK_CHARS < text.length ? { t: 'part', data, more: true } : { t: 'part', data }))
+  }
+  return out
+}
+
+const PTY_ID_RE = /^[A-Za-z0-9_-]{1,80}$/
+
+/** A pty id as the phone API spells one. */
+export function isPtyId(v: unknown): v is string {
+  return typeof v === 'string' && PTY_ID_RE.test(v)
+}
 
 export function parseRelayInner(text: string): RelayInnerFrame | null {
   let v: unknown
@@ -156,6 +198,8 @@ export function parseRelayInner(text: string): RelayInnerFrame | null {
   if (!isRecord(v) || typeof v.t !== 'string') return null
   const id = (x: unknown): boolean => typeof x === 'number' && Number.isSafeInteger(x) && x >= 0
   switch (v.t) {
+    case 'attach':
+      return isPtyId(v.ptyId) ? { t: 'attach', ptyId: v.ptyId } : null
     case 'ready':
       return (v.mode === 'view' || v.mode === 'full') && isRecord(v.host) ? (v as unknown as RelayInnerFrame) : null
     case 'refused':
@@ -170,6 +214,9 @@ export function parseRelayInner(text: string): RelayInnerFrame | null {
       return id(v.id) && typeof v.path === 'string' ? (v as unknown as RelayInnerFrame) : null
     case 'ws-msg':
       return id(v.id) && typeof v.data === 'string' ? (v as unknown as RelayInnerFrame) : null
+    case 'part':
+      if (typeof v.data !== 'string' || (v.more !== undefined && v.more !== true)) return null
+      return v.more ? { t: 'part', data: v.data, more: true } : { t: 'part', data: v.data }
     case 'ws-close':
       return id(v.id) ? (v as unknown as RelayInnerFrame) : null
     case 'ping':
@@ -210,7 +257,7 @@ export const RELAY_ROUTES: readonly RelayRoute[] = [
   { method: 'WS', path: '/ws', needs: 'view' }
 ]
 
-const PTY_ID = /^[A-Za-z0-9_-]{1,80}$/
+const PTY_ID = PTY_ID_RE
 
 /** The route a request names, or null (refused). `path` may carry a query. */
 export function relayRouteFor(method: 'GET' | 'POST' | 'WS', path: string): RelayRoute | null {

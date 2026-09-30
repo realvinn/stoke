@@ -51,7 +51,15 @@ export const HUB_LABELS = {
   /** HKDF info for the relay's two direction keys. */
   relayKeys: 'stoke-hub/v1/relay-keys',
   /** GCM AAD of one relay frame. */
-  relayFrame: 'stoke-hub/v1/relay-frame'
+  relayFrame: 'stoke-hub/v1/relay-frame',
+  /**
+   * HKDF info for the key one epoch's presence statuses are sealed with: what
+   * a device tells its other devices about its sessions ("Other machines"),
+   * which the hub forwards and cannot read (src/shared/hub/remote.ts).
+   */
+  presenceKey: 'stoke-hub/v1/presence-key',
+  /** GCM AAD of one device's sealed presence status: binds the account, the epoch and the device it speaks for. */
+  presenceStatus: 'stoke-hub/v1/presence-status'
 } as const
 
 export type HubLabel = (typeof HUB_LABELS)[keyof typeof HUB_LABELS]
@@ -86,4 +94,20 @@ export function itemKeyInfo(f: { account: string; epoch: number }): string {
 /** HKDF info for this epoch's item-id HMAC key. */
 export function itemIdInfo(f: { account: string; epoch: number }): string {
   return labelled(HUB_LABELS.itemId, { account: f.account, epoch: f.epoch })
+}
+
+/* ------------------------------------------------------------ presence */
+
+/** HKDF info for this epoch's presence-status key (crypto.ts `presenceKey`). */
+export function presenceKeyInfo(f: { account: string; epoch: number }): string {
+  return labelled(HUB_LABELS.presenceKey, { account: f.account, epoch: f.epoch })
+}
+
+/**
+ * GCM AAD of the status `device` sealed under `epoch`'s presence key. The
+ * device is in it so a hub cannot hand one device's status to the others as
+ * another's: it relabels the frame, and the tag fails.
+ */
+export function presenceStatusAad(f: { account: string; epoch: number; device: string }): string {
+  return labelled(HUB_LABELS.presenceStatus, { account: f.account, epoch: f.epoch, device: f.device })
 }

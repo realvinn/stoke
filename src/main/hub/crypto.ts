@@ -52,9 +52,18 @@ import {
   type ItemEnvelope,
   type ItemPlaintext
 } from '../../shared/hub/items.ts'
-import { HUB_LABELS, itemIdInfo, itemKeyInfo, recoveryWrapAad, vkCommitInfo, vkWrapInfo } from '../../shared/hub/labels.ts'
+import { HUB_LABELS, itemIdInfo, itemKeyInfo, presenceKeyInfo, presenceStatusAad, recoveryWrapAad, vkCommitInfo, vkWrapInfo } from '../../shared/hub/labels.ts'
 import { pairCommitText, pairSasText, sasDigits } from '../../shared/hub/pairing.ts'
-import { HUB_HEADERS, REQUEST_NONCE_BYTES, REQUEST_SKEW_MS, requestSigningText, type RecoveryWrap, type VaultWrap } from '../../shared/hub/protocol.ts'
+import {
+  HUB_HEADERS,
+  REQUEST_NONCE_BYTES,
+  REQUEST_SKEW_MS,
+  requestSigningText,
+  sealedStatusProblem,
+  type RecoveryWrap,
+  type SealedStatus,
+  type VaultWrap
+} from '../../shared/hub/protocol.ts'
 import {
   hs2Problem,
   hs3Problem,
@@ -574,6 +583,40 @@ export class RelayCipher {
     else this.counter = RELAY_MAX_COUNTER
     return plain
   }
+}
+
+/* --------------------------------------------------------- presence */
+
+/**
+ * The key every device of the account seals its presence status with under
+ * `epoch` (spec §6.1, "Other machines"). Derived from that epoch's vault key,
+ * so exactly the devices in the vault can read one — the hub forwards it
+ * blind — and a device removed by a revoke (which opens a new epoch) cannot.
+ */
+export function presenceKey(vk: Uint8Array, account: string, epoch: number): Uint8Array {
+  need(vk, VAULT_KEY_BYTES, 'a vault key')
+  return hkdf(vk, new Uint8Array(0), presenceKeyInfo({ account, epoch }), 32)
+}
+
+/** `text` (a `RemoteStatus` as JSON) sealed as `device`'s status under `epoch`. */
+export function sealStatus(key: Uint8Array, f: { account: string; epoch: number; device: string }, text: string, nonce: Uint8Array = randomU8(12)): SealedStatus {
+  const ct = gcmSeal(key, need(nonce, 12, 'nonce'), utf8(text), utf8(presenceStatusAad(f)))
+  return { v: 1, epoch: f.epoch, nonce: b64uEncode(nonce), ct: b64uEncode(ct) }
+}
+
+/**
+ * The text of a status the hub said `device` sent, or null: a malformed
+ * envelope, another epoch than `f.epoch`, another device's status relabelled,
+ * or any flipped byte. The caller parses what it gets (remote.ts
+ * `parseRemoteStatus`) — it is still another machine's text.
+ */
+export function openStatus(key: Uint8Array, f: { account: string; epoch: number; device: string }, s: SealedStatus): string | null {
+  if (sealedStatusProblem(s) !== null || s.epoch !== f.epoch) return null
+  const nonce = b64uDecode(s.nonce)
+  const ct = b64uDecode(s.ct)
+  if (!nonce || !ct) return null
+  const plain = gcmOpen(key, nonce, ct, utf8(presenceStatusAad(f)))
+  return plain ? fromUtf8(plain) : null
 }
 
 /* ------------------------------------------------------- passwords */
