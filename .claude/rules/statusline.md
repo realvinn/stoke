@@ -59,6 +59,11 @@ that assumes the file name *is* the session id will not find a `--continue` sess
 > - Those lines have moved. `const statusKey = opts.host ? '' : sessionId || randomUUID()` is now src/main/pty.ts:213, and `const settingsFile = opts.host ? null : sessionSettings(statusKey)` is now pty.ts:218. Line 185 now holds the 'That folder is not there any more' error and line 190 is a comment.
 > - The remote-session explanation, `windowFor`'s doc comment (the 'a remote session, which has no key and no payload at all' bullet), is now src/main/statusLine.ts:848-860, with the function itself at :861-862. Lines 557-563 now fall in `readSessionEvents`' return and `parseHookEvent`'s doc comment.
 
+> **Checked against the code on 2026-09-30** — "prints nothing by default" was the cause of the
+> blank row under the input box, and it no longer does: with no pass-through the wrapper prints
+> `EMPTY_STATUS_LINE`, one SGR reset. Suppressing the line and reading the data are still one
+> act; suppressing it with an empty stdout was the wrong way to do it. Gotcha 118.
+
 ## 26. A `--continue` session has no context ring, and it is the missing *id* that causes it
 
 **A `--continue` session has no context ring, and it is the missing *id* that causes it.** This
@@ -382,3 +387,56 @@ same cut-point check on the three largest real transcripts).
 >   < 6)` over fewer than six newlines, and `< 9` over a file under ~10 bytes, so `npm run check`
 >   hung on a fresh machine. `pickCuts` bounds both by what the file holds and by attempts, prints
 >   a NOTE/SKIP when a file offers fewer, and is asserted on those shapes directly.
+
+## 118. Claude Code lays its footer out by whether a status line is CONFIGURED, so an empty one is a blank row
+
+**"Hide Claude's status line in Stoke" left a blank row between the input box and the footer, and
+the cause was the wrapper printing nothing.** Measured 2026-09-30 against Claude Code 2.1.285,
+driving the built app over CDP and reading the xterm buffer (`window.stokeTerminals`, gotcha 5),
+149x38 terminal, the session started in a scratch folder with no prompt typed, in both auto and
+manual permission modes. Rows between the input box's bottom border and the footer's last row
+(inline, a transient `◐ medium · /effort` notice added a row to baseline and hidden alike):
+
+| renderer | no statusLine at all (baseline) | hidden, before | hidden, after | pass-through (the user's own line) |
+| --- | --- | --- | --- | --- |
+| fullscreen (this machine's default) | 1, the footer | **2: one blank, then the footer** | 1, the footer | 2: their line, then the footer |
+| inline (`CLAUDE_CODE_NO_FLICKER=0`) | 1, the footer | 1, the footer | 1, the footer | 2: their line, then the footer |
+
+Read out of the 2.1.285 bundle, which the table agrees with: the status line element is `text ?
+<line/> : fullscreen ? <Text> </Text> : null`, and it is mounted whenever
+`settings.statusLine` resolves to anything. So in the fullscreen renderer an empty stdout is a
+deliberately reserved one-space row; in the inline one it is nothing. The CLI reads stdout as
+`trim()`, then every line trimmed and dropped if empty — whitespace, never escapes. A line holding
+only an SGR reset is therefore TEXT to it, and a Text with no visible character lays out at zero
+height. `EMPTY_STATUS_LINE` (`'\x1b[0m'`) is what the wrapper prints now whenever there is no
+pass-through file, and both renderers match the baseline row for row. The payload is written
+exactly as before — the fix changes stdout only (gotcha 2 still stands).
+
+What no output can restore, and why this is the least-bad answer rather than the stock layout:
+
+- **"? for shortcuts" is gone whenever any statusLine is configured** — the footer receives
+  `suppressHint: suppressHint || statusLineConfigured`, which also drops the loading hints
+  ("esc to interrupt"). Baseline in manual mode: `⏸ manual mode on · ? for shortcuts · ← 1 agent`;
+  hidden: `⏸ manual mode on · ← 1 agent`, same row. Printing the hint from the wrapper does not
+  bring it back into that row: the status line is its own row ABOVE the footer, so it adds one.
+  The payload carries no permission mode either (`permission_mode` is left undefined in 2.1.285),
+  so the wrapper could not know when the stock would show the hint.
+- **Dropping the statusLine entry when hidden** would give the exact stock footer and lose the only
+  exact context-window source (gotcha 2), the fresher plan-limit reading and `cliVersion`. No.
+- **The first frame still has the row.** Until the wrapper's first answer lands (~0.5 s after the
+  TUI appears, Electron-as-node starting up) the CLI draws its placeholder, then the box drops one
+  row into place. Polled at startup: border at row 35 with a blank below it at 2.2-2.4 s, row 36
+  from 2.7 s on. The CLI keeps the last text per session in memory, so it is once per launch.
+
+With suppression off, a pass-through that fails or prints nothing still prints NOTHING rather than
+the empty line: a bare `claude` whose own command fails keeps the blank row too, and the promise
+there is "exactly what your own line does". `verify:statusline` holds both, plus the CLI's own
+trimming (`cliText`) applied to the wrapper's real output. The measurement matrix, scripts and
+screenshots were under `/tmp/stoke-proof/statusline-gap/`; the baseline was a throwaway local
+change to the BUILT bundle adding `disableAllHooks: true` to the `--settings` file — never the
+user's `~/.claude/settings.json`, which here configures a statusLine of its own — because that
+key makes the CLI resolve `statusLine` to undefined (`Vh()` → policy settings only) while every
+other user setting (permission mode, theme) still applies. Unverified: Windows (both shells run
+the same node wrapper, so the bytes are identical, but nothing was driven there) and any CLI
+other than 2.1.285 — if a later one draws the reset as a row, the result is the old blank row,
+never visible text.

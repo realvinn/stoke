@@ -68,6 +68,28 @@ export function statusLinePayloadFile(sessionId: string): string {
 }
 
 /**
+ * What the wrapper prints when it has no line of the user's to pass through:
+ * one SGR reset and nothing else — a status line with no visible text. NOT an
+ * empty stdout, which is what it printed until 2026-09-30 and what drew the
+ * blank row under Claude Code's input box (gotcha 118).
+ *
+ * Measured against Claude Code 2.1.285 over CDP, reading the xterm buffer: the
+ * CLI lays its footer out by whether a statusLine is CONFIGURED, not by what it
+ * prints. In its fullscreen renderer (this machine's default) an empty status
+ * line is drawn as a reserved one-space row — the bundle's `text ? <line/> :
+ * fullscreen ? " " : null` — so the footer sat one row below the input box
+ * instead of directly under it. The CLI trims whitespace, never escapes, so this
+ * line counts as text to it, and a Text holding only a reset lays out at zero
+ * height: the footer lands directly under the box, as it does for a bare
+ * `claude`. In the inline renderer the empty line was already zero rows, and
+ * this still is. If a later CLI renders it as a row after all, the result is the
+ * blank row this replaced, never visible text: a reset paints nothing.
+ *
+ * Exported so verify-statusline asserts the wrapper against the same bytes.
+ */
+export const EMPTY_STATUS_LINE = '\x1b[0m'
+
+/**
  * The wrapper, as source. Plain JavaScript rather than TypeScript because it
  * is executed, not built — which is also what lets verify-statusline run the
  * real artefact instead of a copy of its logic.
@@ -139,7 +161,10 @@ if (id && raw.trim().startsWith('{')) {
 }
 
 // Pass-through: print the user's own status line, fed the same payload. No
-// file means the line is suppressed, which is the default.
+// file means the line is suppressed, which is the default, and then the one
+// thing printed is a line with no visible text (EMPTY_STATUS_LINE in
+// statusLine.ts): an empty stdout is what the CLI draws as a blank row under
+// its input box, and this lays out at zero height (gotcha 118).
 //
 // This string is the user's own statusLine.command, copied out of their own
 // ~/.claude/settings.json and written here by Stoke. Claude Code already runs
@@ -181,13 +206,19 @@ if (cmd) {
       })
     )
   } catch {}
+} else {
+  // Printed whatever stdin held, a frame that was not JSON included: it only
+  // decides the layout, and no layout wants the blank row.
+  process.stdout.write(${JSON.stringify(EMPTY_STATUS_LINE)})
 }
 // A non-zero exit, a signal, a timeout and a blown maxBuffer all arrive as a
 // throw, and all four print NOTHING. The write is inside the try on purpose,
 // so no partial err.stdout is salvaged either: the CLI paints this stdout
 // straight into the TUI, so an error message here would appear in the
 // terminal looking like Stoke's own output. A status line that failed is
-// shown as no status line.
+// shown as no status line — and deliberately not as the empty line above:
+// with suppression off the promise is "exactly what your own line does", and
+// a bare claude whose own command fails keeps the blank row too.
 `
 
 /**
