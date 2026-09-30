@@ -124,7 +124,7 @@ async function isGitEntry(path: string): Promise<boolean> {
 }
 
 /** The nearest folder at or above `start` holding a `.git`, or null. `start` is already real. */
-async function gitRootOf(start: string): Promise<string | null> {
+export async function gitRootOf(start: string): Promise<string | null> {
   let dir = resolve(start)
   for (;;) {
     if (await isGitEntry(join(dir, '.git'))) return dir
@@ -134,7 +134,7 @@ async function gitRootOf(start: string): Promise<string | null> {
   }
 }
 
-async function realOr(path: string): Promise<string> {
+export async function realOr(path: string): Promise<string> {
   return realpath(path).catch(() => resolve(path))
 }
 
@@ -150,7 +150,7 @@ async function isRegularFile(path: string): Promise<boolean> {
  * root itself. A worktree of a bare repo answers the bare folder, which the
  * ownership check then refuses (it has no `.git`), as the CLI's does.
  */
-async function canonicalRootOf(root: string): Promise<string> {
+export async function canonicalRootOf(root: string): Promise<string> {
   try {
     const text = (await readFile(join(root, '.git'), 'utf8')).trim()
     if (!text.startsWith('gitdir:')) return root
@@ -241,7 +241,8 @@ export async function skillOverridesFor(
   return merged
 }
 
-async function readJsonUnder(path: string, deadlineMs: number): Promise<Record<string, unknown> | null> {
+/** A JSON object file, or null for a missing, unparseable or late one — never waits past `deadlineMs` (gotcha 40). */
+export async function readJsonUnder(path: string, deadlineMs: number): Promise<Record<string, unknown> | null> {
   const read = readFile(path, 'utf8').then(
     (raw) => {
       try {

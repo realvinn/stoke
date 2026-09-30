@@ -335,7 +335,10 @@ check('claude is the fully instrumented one', CLI_CAPS.claude, {
   resume: 'mintedId',
   worklog: true,
   usage: 'anthropic',
-  launchFlags: { permissionMode: true, effort: true, model: true }
+  launchFlags: { permissionMode: true, effort: true, model: true },
+  // `--mcp-config <configs...>`: Stoke's own servers in files; Claude loads its
+  // own itself. Every other agent's route is held exactly in verify:agents.
+  mcp: 'file'
 })
 /*
  * Driven by the table rather than a list of three, so an agent added later is
@@ -371,6 +374,11 @@ for (const cli of CODING_CLIS.filter((c) => !isClaudeCode(c.id))) {
     { permissionMode: false, effort: false, model: cli.modelArgs !== undefined }
   )
 }
+check(
+  'an MCP route is raised for exactly the agents with one read or measured (codingClis.ts names each source)',
+  CODING_CLIS.filter((c) => !isClaudeCode(c.id) && CLI_CAPS[c.id].mcp !== 'none').map((c) => c.id),
+  ['codex', 'opencode', 'pi', 'qwen', 'kimi', 'copilot', 'kilo', 'vibe']
+)
 check(
   'the model is raised for exactly the agents with a confirmed flag',
   CODING_CLIS.filter((c) => !isClaudeCode(c.id) && CLI_CAPS[c.id].launchFlags.model).map((c) => c.id),

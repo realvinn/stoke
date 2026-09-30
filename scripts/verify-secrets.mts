@@ -106,6 +106,34 @@ function plaintextSettings(): Record<string, unknown> {
   }
 }
 
+/* A Stoke-held MCP server of each kind (shared/mcpServers.ts), holding canaries of its own. */
+const MCP_CANARY = {
+  env: 'mcp-env-CANARY-z1y2x3',
+  header: 'mcp-header-CANARY-w4v5u6',
+  bearer: 'mcp-bearer-CANARY-t7s8r9'
+}
+function withMcpServers(s: Record<string, unknown>): Record<string, unknown> {
+  const agents = (s.agents ?? {}) as Record<string, unknown>
+  return {
+    ...s,
+    agents: {
+      ...agents,
+      mcp: {
+        perAgent: { codex: ['stoke', 'github', 'docs'] },
+        extra: {
+          github: {
+            transport: 'stdio',
+            command: 'npx',
+            args: ['-y', '@modelcontextprotocol/server-github'],
+            env: { GITHUB_PERSONAL_ACCESS_TOKEN: MCP_CANARY.env }
+          },
+          docs: { transport: 'http', url: 'https://mcp.example.com/mcp', headers: { 'X-Api-Key': MCP_CANARY.header }, bearer: MCP_CANARY.bearer }
+        }
+      }
+    }
+  }
+}
+
 /**
  * A fake key store. Reversible, prefix-tagged so a wrong "key" is visible, and
  * counting calls so the suite can prove when the store was NOT asked.
@@ -156,7 +184,9 @@ console.log('\nthe secret-path registry')
     'voice.keys.openai'
   ])
   // A pattern that names a path Settings does not have encrypts nothing, silently.
-  const hydrated = hydrateSettings(s)
+  // The fixture plus one Stoke-held MCP server of each kind, so the MCP
+  // patterns are held to a real path too (the block below covers them).
+  const hydrated = hydrateSettings(withMcpServers(s))
   for (const spec of SECRET_PATHS) {
     ok(
       `pattern ${spec.pattern} names a real Settings path`,
@@ -181,6 +211,22 @@ console.log('\nthe secret-path registry')
   check('secretLabel names the agent for a wildcard path', secretLabel('agents.endpoints.codex.apiKey'), 'Codex endpoint key')
   check('and a speech provider by its own spelling, not a capitalised id', secretLabel('voice.keys.openai'), 'OpenAI speech-to-text key')
   check('a provider the table does not name falls back to capitalising', secretLabel('voice.keys.newco'), 'Newco speech-to-text key')
+
+  // Stoke-held MCP servers: every value that can carry a credential is sealed.
+  const m = hydrateSettings(withMcpServers(plaintextSettings()))
+  check(
+    'an MCP server’s env values, headers and bearer are secrets; its command, args and URL are not',
+    secretPathsIn(m).filter((p) => p.startsWith('agents.mcp.')).sort(),
+    ['agents.mcp.extra.docs.bearer', 'agents.mcp.extra.docs.headers.X-Api-Key', 'agents.mcp.extra.github.env.GITHUB_PERSONAL_ACCESS_TOKEN']
+  )
+  const mScrubbed = scrubSecrets(m)
+  const mText = JSON.stringify(mScrubbed)
+  check('scrubSecrets empties every MCP secret', Object.values(MCP_CANARY).filter((c) => mText.includes(c)), [])
+  ok('and keeps the server whole, so the vault can fill it again', mText.includes('@modelcontextprotocol/server-github') && mText.includes('https://mcp.example.com/mcp'))
+  const back = hydrateSettings(applySecrets(mScrubbed, collectSecrets(m))) as unknown as Record<string, { mcp: { extra: Record<string, { env: Record<string, string>; bearer?: string }> } }>
+  check('applySecrets and a hydrate put them back', [back.agents.mcp.extra.github.env.GITHUB_PERSONAL_ACCESS_TOKEN, back.agents.mcp.extra.docs.bearer], [MCP_CANARY.env, MCP_CANARY.bearer])
+  check('an emptied secret survives hydrate, so the shape is there to fill', (hydrateSettings(mScrubbed) as unknown as typeof back).agents.mcp.extra.github.env, { GITHUB_PERSONAL_ACCESS_TOKEN: '' })
+  check('secretLabel names the server', secretLabel('agents.mcp.extra.github.env.GITHUB_PERSONAL_ACCESS_TOKEN'), 'Github MCP server variable')
   check('a whitespace-only value is not a secret', collectSecrets({ providers: { anthropicApiKey: '   ' } }), {})
 }
 

@@ -742,7 +742,15 @@ npm run verify:agents         # the coding agents: what is stored, what the laun
                               # endpointProblem and launch, and the install script —
                               # only table ids survive into a command; the shared-skills
                               # projection and its plugin folder on a fake home and userData
-                              # (bystanders survive, links are never followed)
+                              # (bystanders survive, links are never followed); every MCP
+                              # adapter's exact plan on a stdio-with-secret + http-with-bearer
+                              # fixture (no secret in argv, a key in a URL included),
+                              # each agent's own server names from its user and folder
+                              # config (never replaced), unsafe server names refused,
+                              # Claude's list from a ~/.claude.json fixture (disabledMcpServers,
+                              # .mcp.json approvals, the canonical-root key and the parent
+                              # chain, gotcha 129), Settings' project-scope rows under the
+                              # same trust gate, the ticks' hydrate, and the 0600 files
 npm run verify:voice          # who owns a held Space: Claude Code's /voice or Stoke's
                               # dictation; `spaceHold` (a tap types a space and never
                               # opens the microphone, a hold records, every REPEAT is
@@ -1099,6 +1107,19 @@ src/main/         Electron main process
                     does, under the cwd's own legacy copy). Serialised
                     (gotcha 20), under a deadline, never throws; deletes only its own names,
                     link by link, never recursively. Not SSH, not headless (gotchas 19, 15)
+  mcpLaunch.ts      the main half of shared/mcpServers.ts: one launch's MCP set. Reads
+                    `~/.claude.json` async (never claudeGlobalConfig's sync reader, gotcha 40;
+                    never written, gotcha 38), cached on mtime and size, and only when a
+                    non-default tick needs it; files the folder under its canonical git root
+                    (`claudeProjectKey`) and reads `.mcp.json` along every parent, approvals
+                    only once trusted (gotcha 129); reads the names each agent's own config
+                    defines, its user file and the launch folder's layers (`ownMcpSources`:
+                    Codex, OpenCode, Kilo, Qwen, Copilot, Kimi, Vibe), so none is replaced or
+                    merged into; Settings' list adds every known folder's approved `.mcp.json`
+                    servers (`readMcpCatalog`). `McpFileStore`
+                    writes the Qwen/Copilot/Kimi/Claude files owner-only under
+                    `<userData>/agents/mcp/`, content-named, and sweeps only its own names once
+                    per run. Not SSH, not headless (gotchas 19, 15)
   stt.ts            the one place Stoke sends a recording to be transcribed — the sidecar,
                     a custom OpenAI-compatible server, or a hosted provider. Both the
                     desktop and the phone route through it, because "only main may reach
@@ -1282,7 +1303,18 @@ src/shared/       types, IPC channel names, themes, profiles, colour maths
                     The block's `format` (`AGENTS_FORMAT`, 2) clears every default-mode
                     model in a file from before it, once — hidden leftovers of a mode switch
                     then — and `mergeSetup` does the same for an old setup file's endpoints.
-                    `tag` (show, labels) and `colors` are hydrated here too
+                    `tag` (show, labels) and `colors` are hydrated here too, and `mcp`
+  mcpServers.ts     one model of an MCP server (`McpServerSpec`) and an adapter per agent
+                    that hands it over at launch: Codex `-c mcp_servers.*` (secrets by
+                    variable name), OpenCode/Kilo inline config, Vibe's `VIBE_MCP_SERVERS`,
+                    Pi through a constant extension, Qwen/Copilot/Kimi/Claude as 0600 files.
+                    A URL that may carry a key never reaches Codex's argv (`urlInArgvProblem`).
+                    The list is Claude Code's own (`claudeMcpServers`), read at every launch
+                    and never stored; settings hold only per-agent ticks (`agents.mcp.perAgent`,
+                    default: Stoke's browser alone) and Stoke-held servers (`extra`, secrets
+                    in the vault). `CLI_CAPS[id].mcp` says which agents have no route. Claude's
+                    OAuth sign-ins are never copied (gotcha 36); names are a whitelist
+                    (`isSafeServerName`), as they become TOML keys and reach cmd.exe (gotcha 13)
   agentColors.ts    each coding agent's colour: `AGENT_SEEDS`, the user's override, and
                     `agentColorTokens` — deriveAccent per seed, which applyAppearance writes
                     as `--agent-<key>-ink`/`-text`/`-fill` and the suites assert; `-text` is

@@ -16,6 +16,8 @@ paths:
   - "src/shared/skills.ts"
   - "src/main/skillsProject.ts"
   - "src/main/skillsScan.ts"
+  - "src/shared/mcpServers.ts"
+  - "src/main/mcpLaunch.ts"
 ---
 
 # Finding and running `claude`
@@ -487,3 +489,69 @@ the one the scratch `~/.claude/skills` already linked. Two traps in that setup:
 > exactly the bypass above. `localSettingsFiles` mirrors that resolution; verify:agents builds the
 > repo, the subfolder, the worktree and a repo AT a fake home with real `git`, and the pre-fix
 > projector lent the trimmed skill from both the subfolder and the worktree.
+
+## 129. `~/.claude.json` files a folder under its canonical git root, and `.mcp.json` is read from every folder above the cwd
+
+**Mirroring Claude Code's MCP servers into other agents (`claudeMcpServers`, mcpServers.ts) first
+looked them up as `projects[cwd]` and read only `<cwd>/.mcp.json`.** Both were wrong for 2.1.285,
+read out of the binary on 2026-09-30 (never run), and both fail silently: an agent is handed fewer
+servers, or one the folder turned off.
+
+- **The `projects` key is the cwd's CANONICAL git root, else the cwd.** `xRe()` returns
+  `oP(originalCwd) ?? realpath(cwd)`, and `oP` → `ms` → the git root (`ur`) mapped through
+  `canonicalRootByRoot`: the repo's top, and for a linked worktree the MAIN worktree's top. No
+  ownership or `$HOME` exception here, unlike gotcha 117's local-settings layer (`i8n` always
+  answers null: its `Fr` is `return!1`). Windows keys use forward slashes (`_9`). The owner's real
+  file agrees: 125 projects, not one key inside a repo other than its top, and none for the seven
+  live worktrees under this repo. So a tab in a subfolder or in `.claude/worktrees/<x>` read an
+  entry that does not exist, and lost the folder's local servers AND its `disabledMcpServers`
+  (`To(e)` reads `Js().disabledMcpServers`, the same entry): a server the owner had turned off in
+  `/mcp` came back for Codex. `claudeProjectKey` (mcpLaunch.ts) reuses `gitRootOf`/`canonicalRootOf`
+  from skillsProject.ts under the read deadline (gotcha 40).
+- **Project scope walks up.** `PZe`'s `case"project"` pushes every folder from the cwd to the
+  filesystem's top (the top itself excluded), reverses, and `Object.assign`s each `.mcp.json`'s
+  servers, so the NEAREST file wins and a `~/.mcp.json` or a parent's applies to every folder
+  under it. `foldersDownTo` + `mergeMcpJsons`.
+- **A folder cannot approve its own `.mcp.json` until it is trusted.** The approval check (`uZe`)
+  skips the project settings layer unless the folder is trusted, and a git-tracked local layer
+  always. Folding every layer, as the first cut did, let a cloned repo commit
+  `.claude/settings.json` with `enableAllProjectMcpServers: true` and a `.mcp.json` server named
+  like one the user ticked, and Stoke would hand the repo's command to Codex where Claude itself
+  would ask first. Now only `~/.claude/settings.json` and `~/.claude.json`'s own
+  `projects[key]` approvals count unless `isTrustedFolder` finds `hasTrustDialogAccepted` on one of
+  `trustKeys` (58 of the owner's 125 entries carry it).
+- **The trust walk stops at the repository's top.** `x5n` checks the project key, then `GS` →
+  `WS` walks from the cwd upward, BOUNDED by the cwd's own (non-canonical) git root when there is
+  one, unbounded only outside a repo. The first cut of the gate walked every parent, and the
+  owner's file has a `~` entry: a trusted home would have "trusted" every repo cloned under it,
+  undoing the gate. verify:agents holds both sides (a trusted home trusts a loose folder under it,
+  never a repo), and the unbounded walk turns two of its checks red.
+
+verify:agents builds a repo, a subfolder and a linked worktree under a scratch home, and the
+pre-fix lookup (the realpath instead of the key) turns four of its checks red. Live, a stub Codex
+started in `app/src` was handed `app`'s local-scope `local-db` and not its disabled `turned-off`.
+
+> **Checked against the code on 2026-09-30** (review, before merge). Three more places the mirror
+> disagreed with what it claimed, none visible to a suite whose fixture could not show them:
+> - **An http server's URL is a secret channel, and Codex's only route for one is argv.** The
+>   header argued "the server process carries it in ITS argv whoever starts it", which is true of a
+>   stdio command and false of a URL: no local process ever shows one. Hosted servers take their key
+>   there (Tavily `?tavilyApiKey=`, Exa `?exaApiKey=`), Claude Code documents `${VAR}` in `url`, and
+>   neither holds a `CMD_SYNTAX` character, so `-c mcp_servers.<n>.url=` put the key in the process
+>   table. `keysOnlyInEnv` passed because the fixture's URL held no secret. `urlInArgvProblem` refuses
+>   a URL with a query, userinfo, a key-like path segment, or one filled from `${…}` (`urlFromEnv`);
+>   none of the owner's 11 real http URLs trips it. The fixture now carries a URL canary through every
+>   agent's plan; with the refusal removed, nine checks go red.
+> - **"A name the agent's own config defines is skipped, never replaced" held for three agents of
+>   seven.** OpenCode 1.18.31 folds `OPENCODE_CONFIG_CONTENT` over every user and folder layer with
+>   remeda's `mergeDeep` (read out of the Homebrew binary), so a same-named `mcp.<n>` was MERGED
+>   into the user's; Kilo 7.8.1, its fork, layers `KILO_CONFIG_CONTENT` the same way. Qwen 0.24.7's
+>   `assembleMcpServers` spreads
+>   `--mcp-config` last (REPLACED), Copilot 1.0.89's `--additional-mcp-config` "augments" its
+>   mcp-config.json in native code, and each also reads the launch FOLDER's config — as do Codex
+>   (`.codex/config.toml`, `project_root_markers = [".git"]`) and Vibe (the nearest
+>   `.vibe/config.toml`). `ownMcpSources` lists every one of those files, read, never run; the
+>   pre-fix reading turns twelve checks red.
+> - **Settings never listed project scope**, so a `.mcp.json`-only server could not be ticked.
+>   `readMcpCatalog` reads the `.mcp.json` chain of every `projects` key, each distinct file once,
+>   and applies the launch's trust gate; dropping that gate turns a check red.

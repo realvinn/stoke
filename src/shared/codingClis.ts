@@ -556,6 +556,18 @@ export interface CliCaps {
    * and are drawn only where the card can start Claude (Launcher.tsx).
    */
   launchFlags: { permissionMode: boolean; effort: boolean; model: boolean }
+  /**
+   * How this agent can be handed MCP servers AT LAUNCH (shared/mcpServers.ts),
+   * so the plan and Settings › Agents say who cannot take them rather than
+   * dropping a tick silently. `flags` — argv overrides, every secret by
+   * variable name (Codex's `-c mcp_servers.*`); `env` — an inline config in an
+   * environment variable (OpenCode's and Kilo's `*_CONFIG_CONTENT`); `file` —
+   * an owner-only config file whose path is a flag (Claude's `--mcp-config`,
+   * Qwen's `--mcp-config`, Copilot's `--additional-mcp-config`); `none` — no
+   * route read or measured, so its Tools list is greyed. Each raise names its
+   * evidence where it is made.
+   */
+  mcp: 'flags' | 'env' | 'file' | 'none'
 }
 
 /**
@@ -567,7 +579,8 @@ const FLOOR: CliCaps = {
   resume: 'none',
   worklog: false,
   usage: 'none',
-  launchFlags: { permissionMode: false, effort: false, model: false }
+  launchFlags: { permissionMode: false, effort: false, model: false },
+  mcp: 'none'
 }
 
 /**
@@ -576,9 +589,9 @@ const FLOOR: CliCaps = {
  * one real source behind it is the launch itself: `agentLaunchPlan` passes the
  * model, and the tab carries what that plan asked for.
  */
-function floorFor(id: CodingCliId, resume: CliCaps['resume']): CliCaps {
+function floorFor(id: CodingCliId, resume: CliCaps['resume'], mcp: CliCaps['mcp'] = 'none'): CliCaps {
   const model = CODING_CLIS.some((c) => c.id === id && c.modelArgs !== undefined)
-  return { ...FLOOR, resume, launchFlags: { ...FLOOR.launchFlags, model } }
+  return { ...FLOOR, resume, launchFlags: { ...FLOOR.launchFlags, model }, mcp }
 }
 
 export const CLI_CAPS: Record<CodingCliId, CliCaps> = {
@@ -587,7 +600,11 @@ export const CLI_CAPS: Record<CodingCliId, CliCaps> = {
     resume: 'mintedId',
     worklog: true,
     usage: 'anthropic',
-    launchFlags: { permissionMode: true, effort: true, model: true }
+    launchFlags: { permissionMode: true, effort: true, model: true },
+    // `--mcp-config <configs...>`, "Load MCP servers from JSON files or strings
+    // (space-separated)" — read out of the 2.1.285 binary, 2026-09-30. It loads
+    // its own servers itself; the flag carries only Stoke's.
+    mcp: 'file'
   },
   /*
    * `continue` for the four below is each CLI's own flag, read from its --help
@@ -596,29 +613,60 @@ export const CLI_CAPS: Record<CodingCliId, CliCaps> = {
    * be handed a session id Stoke chose before launch the way Claude Code can,
    * so none is `mintedId`.
    */
-  codex: floorFor('codex', 'continue'),
+  /*
+   * MCP routes, each seen working against a server that logged every request
+   * (2026-09-19, e00c95a): Codex's `-c mcp_servers.*` (listed by `codex mcp
+   * get`, config.toml untouched; its `env_vars`/`env_http_headers`/
+   * `bearer_token_env_var` keys read out of the 0.153 binary on 2026-09-30),
+   * OpenCode's and Kilo's inline config, Qwen's `--mcp-config` file and
+   * Copilot's `--additional-mcp-config @file`. Aider has no MCP.
+   *
+   * Read, not run, on 2026-09-30 — each vendor's published package, never
+   * executed (mcpServers.ts has the shape each adapter writes):
+   *   pi     0.99.1 (npm @earendil-works/pi-coding-agent): an extension's
+   *          `pi.registerMcpServer`, session-only (docs/extensions.md,
+   *          dist/core/mcp-servers.d.ts) — raised to `env`.
+   *   kimi   kimi-cli 1.52.0 (PyPI): `--mcp-config-file`, repeatable, and
+   *          naming one stops the default ~/.kimi/mcp.json loading, so that
+   *          file is named too (cli/__init__.py) — raised to `file`.
+   *   vibe   mistral-vibe 2.25.8 (PyPI): a `VIBE_MCP_SERVERS` environment
+   *          layer, merged by name above the user's config
+   *          (core/config/layers/environment.py) — raised to `env`.
+   *   gemini 0.62.0 (npm): the only launch-time settings file is
+   *          GEMINI_CLI_SYSTEM_DEFAULTS_PATH / _SETTINGS_PATH, and it is
+   *          SKIPPED unless it and every parent folder are owned by root
+   *          (`isFileAndDirectorySecureSync`) — a Stoke file never is. `none`.
+   *   auggie 0.36.0 (npm): `--mcp-config` exists but "Overwrites default mcp
+   *          configuration in settings.json" — the user's own servers would
+   *          vanish for the session (augment.mjs). `none`.
+   *   droid  0.230.0, cline 3.0.66, amp 0.0.1790740844: their binaries were
+   *          scanned; droid names a `--mcp-servers` whose meaning its strings
+   *          do not show, cline shows none, amp's JS is compiled in. `none`.
+   *   grok, cursor, crush: no package read. `none`.
+   */
+  codex: floorFor('codex', 'continue', 'flags'),
   grok: floorFor('grok', 'continue'),
-  opencode: floorFor('opencode', 'continue'),
-  pi: floorFor('pi', 'continue'),
+  opencode: floorFor('opencode', 'continue', 'env'),
+  pi: floorFor('pi', 'continue', 'env'),
   // Each one's own continue flag, from its --help: `gemini --resume latest`,
   // `qwen --continue`, `kimi --continue`, `copilot --continue`,
   // `cursor-agent --continue`, `amp threads continue --last`.
   gemini: floorFor('gemini', 'continue'),
-  qwen: floorFor('qwen', 'continue'),
-  kimi: floorFor('kimi', 'continue'),
-  copilot: floorFor('copilot', 'continue'),
+  qwen: floorFor('qwen', 'continue', 'file'),
+  kimi: floorFor('kimi', 'continue', 'file'),
+  copilot: floorFor('copilot', 'continue', 'file'),
   cursor: floorFor('cursor', 'continue'),
   amp: floorFor('amp', 'continue'),
   // `kilo --continue`, `aider --restore-chat-history`, `auggie -c`, `vibe -c`.
   // Crush, Droid and Cline have resume flags whose meaning with no id was not
   // confirmed, so a paused tab of theirs starts fresh rather than guessing.
-  kilo: floorFor('kilo', 'continue'),
+  kilo: floorFor('kilo', 'continue', 'env'),
   aider: floorFor('aider', 'continue'),
   crush: floorFor('crush', 'none'),
   droid: floorFor('droid', 'none'),
   cline: floorFor('cline', 'none'),
   auggie: floorFor('auggie', 'continue'),
-  vibe: floorFor('vibe', 'continue')
+  vibe: floorFor('vibe', 'continue', 'env')
 }
 
 /**

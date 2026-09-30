@@ -1,10 +1,11 @@
 import { randomBytes } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
-import { writeFileSync } from 'node:fs'
+import { chmod, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { app } from 'electron'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import type { EmbeddedBrowser } from '../browser.ts'
+import { STOKE_BROWSER_SERVER, type McpServerSpec } from '../../shared/mcpServers.ts'
 import { PageAgent } from './page.ts'
 import { analyseDesign } from './design.ts'
 import { detectStack } from './stack.ts'
@@ -139,7 +140,7 @@ export class BrowserMcpServer {
 
     const config = {
       mcpServers: {
-        stoke: {
+        [STOKE_BROWSER_SERVER]: {
           type: 'http',
           url: `http://127.0.0.1:${this.port}/mcp`,
           headers: { Authorization: `Bearer ${this.token}` }
@@ -148,8 +149,12 @@ export class BrowserMcpServer {
     }
     // A file rather than a JSON string on the command line: quoting a JSON
     // blob through a shell differs across platforms and breaks silently.
-    writeFileSync(this.configPath(), JSON.stringify(config, null, 2), 'utf8')
-    return this.configPath()
+    // Owner-only, because it holds the bearer: `mode` applies only when the
+    // file is created, and a file from an older build was 0644, so the chmod.
+    const file = this.configPath()
+    await writeFile(file, JSON.stringify(config, null, 2), { encoding: 'utf8', mode: 0o600 })
+    await chmod(file, 0o600).catch(() => {})
+    return file
   }
 
   /**
@@ -159,6 +164,14 @@ export class BrowserMcpServer {
    */
   endpoint(): { url: string; token: string } | null {
     return this.http && this.port ? { url: `http://127.0.0.1:${this.port}/mcp`, token: this.token } : null
+  }
+
+  /** The same, as the spec every agent adapter takes (mcpServers.ts): spec 0 of a launch. */
+  spec(): McpServerSpec | null {
+    const e = this.endpoint()
+    return e
+      ? { name: STOKE_BROWSER_SERVER, transport: 'http', command: '', args: [], env: {}, url: e.url, headers: {}, bearer: e.token }
+      : null
   }
 
   stop(): void {

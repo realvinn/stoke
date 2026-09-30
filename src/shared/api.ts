@@ -24,6 +24,7 @@ export interface ImportResult {
   cookieError?: string
 }
 import type { SkillDirScan } from './skills'
+import type { McpCatalog } from './mcpServers'
 import type { MicAccess } from './voiceRoute'
 import type { SttConfig } from './speechProviders'
 import type { CreateProfileInput, ProfilePlan } from './profiles'
@@ -474,6 +475,12 @@ export interface StokeApi {
     detect(opts?: { fresh?: boolean }): Promise<CodingCliDetection>
     /** What each skill folder the agents read holds. Never writes anything. */
     skills(): Promise<SkillDirScan[]>
+    /**
+     * Claude Code's MCP servers, as Settings lists them for ticking per agent:
+     * names, kinds and a recognisable detail, never an env value, argument or
+     * header. Read from `~/.claude.json` afresh (a stat when it has not moved).
+     */
+    mcpServers(): Promise<McpCatalog>
   }
 
   /**

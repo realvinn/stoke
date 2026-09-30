@@ -298,6 +298,8 @@ rule file named on the group line.
   first on PATH: `buildEnvPath` puts the login shell's PATH (your rc, `~/.local/bin`) ahead of it.
 - **117.** Trim what `--plugin-dir` lends yourself (`claudeProjection`): plugin skills ignore
   `skillOverrides`, whose local layer is the git root's (`localSettingsFiles`). Only when `instrumented`.
+- **129.** Read a folder's `~/.claude.json` entry by `claudeProjectKey` (canonical git root), `.mcp.json`
+  along every parent (`mergeMcpJsons`), its own approvals only if trusted (`trustKeys` stops at the repo top).
 
 **Worklog** — `.claude/rules/worklog.md`
 - **15.** Keep the worklog scan `--safe-mode` and read boards in `recall.ts`'s own run: safe mode

@@ -21,7 +21,8 @@
 import { DEFAULT_PROVIDERS } from '../src/shared/providers.ts'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
+import { MCP_FILE_NAME } from '../src/shared/mcpServers.ts'
 import {
   buildHeadlessArgs,
   DEFAULT_HEADLESS_MODEL,
@@ -438,6 +439,19 @@ for (const [name, args] of [
     `the ${name} run is never lent the shared skills: no --plugin-dir, no --plugin-dir-no-mcp`,
     !args.some((a) => a.startsWith('--plugin-dir')),
     args.join(' ')
+  )
+  /*
+   * Nor the MCP servers an interactive launch is handed (mcpServers.ts): no
+   * mirrored or Stoke-held server file, no browser file. The only
+   * `--mcp-config` a headless run may carry is the scan's empty one, beside
+   * `--strict-mcp-config` (gotcha 15).
+   */
+  const configs = args.flatMap((a, i) => (a === '--mcp-config' ? [args[i + 1] ?? ''] : []))
+  ok(
+    `the ${name} run is never handed a mirrored --mcp-config: only the empty strict file, if any`,
+    configs.every((c) => basename(c) === 'empty-mcp.json' && !MCP_FILE_NAME.test(basename(c))) &&
+      (configs.length === 0 || args.includes('--strict-mcp-config')),
+    configs.join(' ')
   )
 }
 check(

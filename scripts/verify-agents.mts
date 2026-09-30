@@ -32,7 +32,6 @@ import {
   ENV_OPENROUTER_KEY,
   hydrateAgents,
   hydrateEndpoint,
-  httpUrlMcpConfig,
   installedAgents,
   INSTALL_SCRIPT_ENV,
   installScript,
@@ -57,6 +56,53 @@ import {
 } from '../src/shared/agents.ts'
 import { CLI_CAPS, CODING_CLIS, type CodingCliId } from '../src/shared/codingClis.ts'
 import type { AgentAccount } from '../src/shared/accounts.ts'
+import {
+  claudeMcpConfigs,
+  claudeMcpServers,
+  claudeShapeMcpFile,
+  codexConfiguredServers,
+  codexMcp,
+  copilotMcpFile,
+  DEFAULT_AGENT_MCP,
+  ENV_PI_MCP,
+  ENV_VIBE_MCP,
+  expandEnvRefs,
+  hydrateAgentMcp,
+  isSafeServerName,
+  isTrustedFolder,
+  jsonConfiguredServers,
+  kimiMcpFile,
+  MCP_FILE_NAME,
+  mcpCatalog,
+  mcpFileName,
+  mcpTicksFor,
+  mergeMcpJsons,
+  NO_APPROVALS,
+  parseJsonc,
+  PI_MCP_EXTENSION,
+  qwenMcpFile,
+  serversForLaunch,
+  specFromClaudeEntry,
+  STOKE_BROWSER_SERVER,
+  summarize,
+  urlInArgvProblem,
+  vibeConfiguredServers,
+  vibeMcpEnv,
+  withMcpTick,
+  type McpServerSpec
+} from '../src/shared/mcpServers.ts'
+import {
+  agentOwnMcp,
+  ClaudeConfigReader,
+  claudeProjectKey,
+  foldersDownTo,
+  foldersUpTo,
+  McpFileStore,
+  ownMcpSources,
+  readMcpCatalog,
+  resolveLaunchMcp,
+  trustKeys
+} from '../src/main/mcpLaunch.ts'
 import {
   CLAUDE_PLUGIN_SKILLS,
   CLAUDE_SHARED_PLUGIN,
@@ -126,6 +172,63 @@ function ok(name: string, cond: boolean, detail = ''): void {
 const KEY = 'sk-or-v1-secret'
 const CUSTOM_KEY = 'sk-custom-secret'
 const MCP = { url: 'http://127.0.0.1:50465/mcp', token: 'mcp-token-secret' }
+/** Stoke's browser server as every launch now gets it: spec 0, with its bearer. */
+const BROWSER: McpServerSpec = {
+  name: STOKE_BROWSER_SERVER,
+  transport: 'http',
+  command: '',
+  args: [],
+  env: {},
+  url: MCP.url,
+  headers: {},
+  bearer: MCP.token
+}
+/*
+ * The two-server fixture: a stdio server with a secret in its environment and
+ * an http server with a bearer and a secret header — the three places a
+ * credential can live in a server's config.
+ */
+const STDIO_SECRET = 'ghp-STDIO-secret-0001'
+const HTTP_BEARER = 'docs-BEARER-secret-0002'
+const HEADER_SECRET = 'docs-HEADER-secret-0003'
+const GITHUB: McpServerSpec = {
+  name: 'github',
+  transport: 'stdio',
+  command: 'npx',
+  args: ['-y', '@modelcontextprotocol/server-github'],
+  env: { GITHUB_PERSONAL_ACCESS_TOKEN: STDIO_SECRET },
+  url: '',
+  headers: {}
+}
+const DOCS: McpServerSpec = {
+  name: 'docs',
+  transport: 'http',
+  command: '',
+  args: [],
+  env: {},
+  url: 'https://mcp.example.com/mcp',
+  headers: { 'X-Api-Key': HEADER_SECRET },
+  bearer: HTTP_BEARER
+}
+const TWO = [GITHUB, DOCS]
+/*
+ * The fourth place a credential lives: the URL itself. Hosted servers take
+ * their key in the query (Tavily `?tavilyApiKey=`, Exa `?exaApiKey=`), and
+ * Codex's only route for a URL is argv.
+ */
+const URL_SECRET = 'url-KEY-secret-0004'
+const KEYED: McpServerSpec = {
+  name: 'search',
+  transport: 'http',
+  command: '',
+  args: [],
+  env: {},
+  url: `https://mcp.search.example/mcp/?searchApiKey=${URL_SECRET}`,
+  headers: {}
+}
+const MCP_SECRETS = [MCP.token, STDIO_SECRET, HTTP_BEARER, HEADER_SECRET, URL_SECRET]
+const FILES_AT = '/u/Stoke/agents/mcp'
+const fileFor = (name: string): string => `${FILES_AT}/${name}`
 const or = (model = 'anthropic/claude-sonnet-5'): AgentEndpoint => ({ ...DEFAULT_ENDPOINT, mode: 'openrouter', model })
 const custom = (over: Partial<AgentEndpoint> = {}): AgentEndpoint => ({
   mode: 'custom',
@@ -140,17 +243,25 @@ const plan = (id: CodingCliId, endpoint: AgentEndpoint | undefined, over: Partia
     endpoint,
     openrouterKey: KEY,
     continueLast: false,
-    mcp: null,
+    mcp: [],
     piExtensionPath: '/Users/u/Library/Application Support/Stoke/agents/pi-provider.ts',
     ...over
   })
 const planOk = (r: ReturnType<typeof plan>) => (r.ok ? r.plan : { args: ['<refused>'], env: {} as Record<string, string> })
 
-/** No secret may appear in argv: `ps` shows every argument of every process. */
+/**
+ * No secret may appear in argv: `ps` shows every argument of every process.
+ * Every MCP secret too — a bearer, a header, a stdio server's environment —
+ * which may live only in `env` or in an owner-only file the plan names.
+ */
 function keysOnlyInEnv(name: string, r: ReturnType<typeof plan>): void {
   const p = planOk(r)
   const argv = p.args.join('\u0000')
-  ok(`${name}: no key in argv`, ![KEY, CUSTOM_KEY, MCP.token].some((k) => argv.includes(k)), JSON.stringify(p.args))
+  ok(
+    `${name}: no key in argv`,
+    ![KEY, CUSTOM_KEY, ...MCP_SECRETS].some((k) => argv.includes(k)),
+    JSON.stringify(p.args)
+  )
 }
 
 console.log('\nwhat is stored')
@@ -159,6 +270,7 @@ check('nothing stored is never asked', hydrateAgents(undefined), {
   endpoints: {},
   defaultCli: 'claude',
   shareSkillsToClaude: true,
+  mcp: { perAgent: {}, extra: {} },
   tag: { show: true, labels: {} },
   colors: {},
   defaultAccount: {},
@@ -526,7 +638,7 @@ console.log('\ncodex: -c overrides, Responses API, nothing written to config.tom
   keysOnlyInEnv('codex openrouter', r)
   const c = plan('codex', custom({ apiKey: '' }))
   check('a custom endpoint with no key gets the placeholder, not an empty var', planOk(c).env[ENV_CUSTOM_KEY], NO_KEY)
-  const m = plan('codex', undefined, { mcp: MCP })
+  const m = plan('codex', undefined, { mcp: [BROWSER] })
   check('Stoke’s browser tools ride in as an MCP server, token by env var name', planOk(m), {
     args: [
       '-c', `mcp_servers.stoke.url="${MCP.url}"`,
@@ -544,7 +656,7 @@ console.log('\nopencode: built-in OpenRouter, everything else in OPENCODE_CONFIG
 {
   const r = plan('opencode', or('z-ai/glm-5'))
   check('OpenRouter', planOk(r), { args: ['-m', 'openrouter/z-ai/glm-5'], env: { OPENROUTER_API_KEY: KEY }, model: 'z-ai/glm-5' })
-  const c = planOk(plan('opencode', custom(), { mcp: MCP }))
+  const c = planOk(plan('opencode', custom(), { mcp: [BROWSER] }))
   const cfg = JSON.parse(c.env.OPENCODE_CONFIG_CONTENT ?? '{}')
   check('custom: the model is addressed through Stoke’s provider', c.args, ['-m', 'stoke_custom/qwen3-coder'])
   check('custom: an openai-compatible provider at the base URL', cfg.provider?.stoke_custom?.options?.baseURL, 'http://127.0.0.1:11434/v1')
@@ -624,20 +736,19 @@ console.log('\nqwen, kimi, copilot: environment only, and every key in it')
     },
     model: 'qwen3-coder'
   })
-  const files = { claude: '/u/Stoke/mcp-browser.json', httpUrl: '/u/Stoke/agents/mcp-httpurl.json' }
   check(
     'copilot: Stoke’s own MCP file, by path, so the token is not in argv',
-    planOk(plan('copilot', undefined, { mcpFiles: files })).args,
-    ['--additional-mcp-config', '@/u/Stoke/mcp-browser.json']
+    planOk(plan('copilot', undefined, { mcp: [BROWSER], mcpFileFor: fileFor })).args,
+    ['--additional-mcp-config', `@${fileFor(mcpFileName('copilot', copilotMcpFile([BROWSER])))}`]
   )
   check(
     'qwen: the httpUrl-shaped file — a plain url is SSE there and never connects',
-    planOk(plan('qwen', undefined, { mcpFiles: files })).args,
-    ['--mcp-config', '/u/Stoke/agents/mcp-httpurl.json']
+    planOk(plan('qwen', undefined, { mcp: [BROWSER], mcpFileFor: fileFor })).args,
+    ['--mcp-config', fileFor(mcpFileName('qwen', qwenMcpFile([BROWSER])))]
   )
   check(
     'the httpUrl file carries the bearer as a header',
-    JSON.parse(httpUrlMcpConfig(MCP)).mcpServers.stoke,
+    JSON.parse(qwenMcpFile([BROWSER])).mcpServers.stoke,
     { httpUrl: MCP.url, headers: { Authorization: `Bearer ${MCP.token}` } }
   )
   ok('gemini refuses OpenRouter rather than silently using its own sign-in', !plan('gemini', or()).ok)
@@ -646,7 +757,7 @@ console.log('\nqwen, kimi, copilot: environment only, and every key in it')
 
 console.log('\nkilo reads OpenCode’s inline config under its own name; aider takes LiteLLM prefixes')
 {
-  const k = planOk(plan('kilo', custom(), { mcp: MCP }))
+  const k = planOk(plan('kilo', custom(), { mcp: [BROWSER] }))
   ok('kilo: KILO_CONFIG_CONTENT, not OpenCode’s variable', !!k.env.KILO_CONFIG_CONTENT && !('OPENCODE_CONFIG_CONTENT' in k.env))
   check('kilo: the same provider and MCP shape', Object.keys(JSON.parse(k.env.KILO_CONFIG_CONTENT ?? '{}')).sort(), ['mcp', 'provider'])
   check('aider: openrouter/<model> with OPENROUTER_API_KEY', planOk(plan('aider', or('deepseek/deepseek-v4'))), {
@@ -703,7 +814,7 @@ console.log('\nthe default model on an agent’s own sign-in: exactly its confir
   check('a blank default model passes nothing: the agent chooses', planOk(plan('codex', own(''))), { args: [], env: {}, model: '' })
   check(
     'codex: the model before the MCP overrides and before `resume --last`, whose global flags go first',
-    planOk(plan('codex', own('gpt-6.1-sol'), { mcp: MCP, continueLast: true })).args,
+    planOk(plan('codex', own('gpt-6.1-sol'), { mcp: [BROWSER], continueLast: true })).args,
     [
       '-m', 'gpt-6.1-sol',
       '-c', `mcp_servers.stoke.url="${MCP.url}"`,
@@ -711,18 +822,18 @@ console.log('\nthe default model on an agent’s own sign-in: exactly its confir
       'resume', '--last'
     ]
   )
-  keysOnlyInEnv('codex default model with MCP', plan('codex', own('gpt-6.1-sol'), { mcp: MCP }))
+  keysOnlyInEnv('codex default model with MCP', plan('codex', own('gpt-6.1-sol'), { mcp: [BROWSER] }))
   check(
     'qwen: the model beside its MCP file, the token still only in that file',
-    planOk(plan('qwen', own('qwen3-coder-plus'), { mcpFiles: { claude: null, httpUrl: '/u/Stoke/agents/mcp-httpurl.json' } })).args,
-    ['-m', 'qwen3-coder-plus', '--mcp-config', '/u/Stoke/agents/mcp-httpurl.json']
+    planOk(plan('qwen', own('qwen3-coder-plus'), { mcp: [BROWSER], mcpFileFor: fileFor })).args,
+    ['-m', 'qwen3-coder-plus', '--mcp-config', fileFor(mcpFileName('qwen', qwenMcpFile([BROWSER])))]
   )
   check(
     'opencode: a default model beside its inline MCP config, whose token stays in env',
-    Object.keys(planOk(plan('opencode', own('anthropic/claude-sonnet-5'), { mcp: MCP })).env),
+    Object.keys(planOk(plan('opencode', own('anthropic/claude-sonnet-5'), { mcp: [BROWSER] })).env),
     ['OPENCODE_CONFIG_CONTENT']
   )
-  keysOnlyInEnv('opencode default model with MCP', plan('opencode', own('anthropic/claude-sonnet-5'), { mcp: MCP }))
+  keysOnlyInEnv('opencode default model with MCP', plan('opencode', own('anthropic/claude-sonnet-5'), { mcp: [BROWSER] }))
   check(
     'off its own sign-in the endpoint’s shape wins, not the default-model flag',
     planOk(plan('opencode', or('z-ai/glm-5'))).args,
@@ -1571,6 +1682,748 @@ console.log('\nan account in the launch plan (shared/accounts.ts)')
   ok('a key account with no key yet is refused, not launched on the machine\u2019s own sign-in', !empty.ok, JSON.stringify(empty))
   check('no account is the plan as it always was', planOk(plan('codex', undefined, { account: null })).env, {})
   check('Claude Code\u2019s plan stays empty: its account travels in pty.ts, not here', planOk(plan('claude', undefined, { account: null })), { args: [], env: {}, model: '' })
+}
+
+console.log('\nMCP servers: one model, an adapter per agent (mcpServers.ts)')
+{
+  /*
+   * Every launch-time adapter, exactly, on the same three servers: Stoke's
+   * browser (a bearer), a stdio server with a secret in its environment, and an
+   * http server with a bearer and a secret header. Written out rather than
+   * derived, so an adapter change has to change its line here too.
+   */
+  const ALL = [BROWSER, ...TWO]
+  const codex = plan('codex', undefined, { mcp: ALL })
+  check('codex: -c overrides, every secret by variable NAME in argv and by value in env', planOk(codex), {
+    args: [
+      '-c', `mcp_servers.stoke.url="${MCP.url}"`,
+      '-c', `mcp_servers.stoke.bearer_token_env_var="STOKE_MCP_TOKEN"`,
+      '-c', 'mcp_servers.github.command="npx"',
+      '-c', 'mcp_servers.github.args=["-y", "@modelcontextprotocol/server-github"]',
+      '-c', 'mcp_servers.github.env_vars=["GITHUB_PERSONAL_ACCESS_TOKEN"]',
+      '-c', 'mcp_servers.docs.url="https://mcp.example.com/mcp"',
+      '-c', 'mcp_servers.docs.bearer_token_env_var="STOKE_MCP_2_TOKEN"',
+      '-c', 'mcp_servers.docs.env_http_headers={ "X-Api-Key" = "STOKE_MCP_2_H0" }'
+    ],
+    env: {
+      STOKE_MCP_TOKEN: MCP.token,
+      GITHUB_PERSONAL_ACCESS_TOKEN: STDIO_SECRET,
+      STOKE_MCP_2_TOKEN: HTTP_BEARER,
+      STOKE_MCP_2_H0: HEADER_SECRET
+    },
+    model: ''
+  })
+  keysOnlyInEnv('codex two servers', codex)
+
+  const oc = planOk(plan('opencode', undefined, { mcp: ALL }))
+  check('opencode: the inline config in OPENCODE_CONFIG_CONTENT, local and remote', JSON.parse(oc.env.OPENCODE_CONFIG_CONTENT ?? '{}'), {
+    mcp: {
+      stoke: { type: 'remote', url: MCP.url, headers: { Authorization: `Bearer ${MCP.token}` }, enabled: true },
+      github: {
+        type: 'local',
+        command: ['npx', '-y', '@modelcontextprotocol/server-github'],
+        environment: { GITHUB_PERSONAL_ACCESS_TOKEN: STDIO_SECRET },
+        enabled: true
+      },
+      docs: {
+        type: 'remote',
+        url: 'https://mcp.example.com/mcp',
+        headers: { 'X-Api-Key': HEADER_SECRET, Authorization: `Bearer ${HTTP_BEARER}` },
+        enabled: true
+      }
+    }
+  })
+  check('opencode: nothing in argv', oc.args, [])
+  keysOnlyInEnv('opencode two servers', plan('opencode', undefined, { mcp: ALL }))
+  const kilo = planOk(plan('kilo', undefined, { mcp: ALL }))
+  check('kilo: the same block under KILO_CONFIG_CONTENT', kilo.env.KILO_CONFIG_CONTENT, oc.env.OPENCODE_CONFIG_CONTENT)
+
+  const qwenFile = qwenMcpFile(ALL)
+  const qwen = planOk(plan('qwen', undefined, { mcp: ALL, mcpFileFor: fileFor }))
+  check('qwen: one owner-only file, by path', qwen, {
+    args: ['--mcp-config', fileFor(mcpFileName('qwen', qwenFile))],
+    env: {},
+    model: '',
+    files: [{ path: fileFor(mcpFileName('qwen', qwenFile)), content: qwenFile }]
+  })
+  check('qwen: the Gemini-family shape, httpUrl for streamable HTTP', JSON.parse(qwenFile), {
+    mcpServers: {
+      stoke: { httpUrl: MCP.url, headers: { Authorization: `Bearer ${MCP.token}` } },
+      github: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-github'], env: { GITHUB_PERSONAL_ACCESS_TOKEN: STDIO_SECRET } },
+      docs: { httpUrl: 'https://mcp.example.com/mcp', headers: { 'X-Api-Key': HEADER_SECRET, Authorization: `Bearer ${HTTP_BEARER}` } }
+    }
+  })
+  keysOnlyInEnv('qwen two servers', plan('qwen', undefined, { mcp: ALL, mcpFileFor: fileFor }))
+
+  const copFile = copilotMcpFile(ALL)
+  const cop = planOk(plan('copilot', undefined, { mcp: ALL, mcpFileFor: fileFor }))
+  check('copilot: --additional-mcp-config @file', cop.args, ['--additional-mcp-config', `@${fileFor(mcpFileName('copilot', copFile))}`])
+  check('copilot: its own mcp-config.json shape', JSON.parse(copFile), {
+    mcpServers: {
+      stoke: { type: 'http', url: MCP.url, headers: { Authorization: `Bearer ${MCP.token}` }, tools: ['*'] },
+      github: {
+        type: 'local',
+        command: 'npx',
+        args: ['-y', '@modelcontextprotocol/server-github'],
+        env: { GITHUB_PERSONAL_ACCESS_TOKEN: STDIO_SECRET },
+        tools: ['*']
+      },
+      docs: {
+        type: 'http',
+        url: 'https://mcp.example.com/mcp',
+        headers: { 'X-Api-Key': HEADER_SECRET, Authorization: `Bearer ${HTTP_BEARER}` },
+        tools: ['*']
+      }
+    }
+  })
+  keysOnlyInEnv('copilot two servers', plan('copilot', undefined, { mcp: ALL, mcpFileFor: fileFor }))
+
+  const kimiFile = kimiMcpFile(ALL)
+  const kimiOwnFile = '/h/.kimi/mcp.json'
+  const kimi = planOk(plan('kimi', undefined, { mcp: ALL, mcpFileFor: fileFor, mcpKeep: [kimiOwnFile] }))
+  check('kimi: Stoke’s file, then its own mcp.json — naming one stops Kimi reading the default', kimi.args, [
+    '--mcp-config-file', fileFor(mcpFileName('kimi', kimiFile)),
+    '--mcp-config-file', kimiOwnFile
+  ])
+  check('kimi: fastmcp’s MCPConfig shape, remote as transport http', JSON.parse(kimiFile), {
+    mcpServers: {
+      stoke: { url: MCP.url, transport: 'http', headers: { Authorization: `Bearer ${MCP.token}` } },
+      github: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-github'], env: { GITHUB_PERSONAL_ACCESS_TOKEN: STDIO_SECRET } },
+      docs: { url: 'https://mcp.example.com/mcp', transport: 'http', headers: { 'X-Api-Key': HEADER_SECRET, Authorization: `Bearer ${HTTP_BEARER}` } }
+    }
+  })
+  check('kimi: with no servers, no flag — it reads its own file itself', planOk(plan('kimi', undefined, { mcp: [], mcpFileFor: fileFor, mcpKeep: [kimiOwnFile] })).args, [])
+  keysOnlyInEnv('kimi two servers', plan('kimi', undefined, { mcp: ALL, mcpFileFor: fileFor, mcpKeep: [kimiOwnFile] }))
+
+  const vibe = planOk(plan('vibe', undefined, { mcp: ALL }))
+  check('vibe: VIBE_MCP_SERVERS, nothing in argv', [vibe.args, Object.keys(vibe.env)], [[], [ENV_VIBE_MCP]])
+  check('vibe: a list its environment layer unions by name', JSON.parse(vibe.env[ENV_VIBE_MCP] ?? '[]'), [
+    { name: 'stoke', transport: 'streamable-http', url: MCP.url, auth: { type: 'static', headers: { Authorization: `Bearer ${MCP.token}` } } },
+    { name: 'github', transport: 'stdio', command: ['npx'], args: ['-y', '@modelcontextprotocol/server-github'], env: { GITHUB_PERSONAL_ACCESS_TOKEN: STDIO_SECRET } },
+    {
+      name: 'docs',
+      transport: 'streamable-http',
+      url: 'https://mcp.example.com/mcp',
+      auth: { type: 'static', headers: { 'X-Api-Key': HEADER_SECRET, Authorization: `Bearer ${HTTP_BEARER}` } }
+    }
+  ])
+  check('vibe: the same text vibeMcpEnv writes', vibe.env[ENV_VIBE_MCP], vibeMcpEnv(ALL))
+
+  const PI_MCP_PATH = '/u/Stoke/agents/pi-mcp.ts'
+  const pi = planOk(plan('pi', undefined, { mcp: ALL, piMcpExtensionPath: PI_MCP_PATH }))
+  check('pi: its MCP extension by -e, the list and every value in env', pi, {
+    args: ['-e', PI_MCP_PATH],
+    env: {
+      STOKE_MCP_0_H0: `Bearer ${MCP.token}`,
+      STOKE_MCP_1_E0: STDIO_SECRET,
+      STOKE_MCP_2_H0: HEADER_SECRET,
+      STOKE_MCP_2_H1: `Bearer ${HTTP_BEARER}`,
+      [ENV_PI_MCP]: JSON.stringify({
+        stoke: { url: MCP.url, headers: { Authorization: '${STOKE_MCP_0_H0}' } },
+        github: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-github'], env: { GITHUB_PERSONAL_ACCESS_TOKEN: '${STOKE_MCP_1_E0}' } },
+        docs: { url: 'https://mcp.example.com/mcp', headers: { 'X-Api-Key': '${STOKE_MCP_2_H0}', Authorization: '${STOKE_MCP_2_H1}' } }
+      })
+    },
+    model: ''
+  })
+  ok(
+    'pi: the list Pi resolves holds no secret — a value is never inlined, since Pi runs a value starting with ! as a command',
+    !MCP_SECRETS.some((v) => (pi.env[ENV_PI_MCP] ?? '').includes(v))
+  )
+  ok('pi: the extension is constant text naming only the variable', PI_MCP_EXTENSION.includes(ENV_PI_MCP) && !MCP_SECRETS.some((v) => PI_MCP_EXTENSION.includes(v)))
+  ok('pi: and does nothing on a Pi without registerMcpServer', PI_MCP_EXTENSION.includes("typeof pi.registerMcpServer !== 'function'"))
+  check(
+    'pi: a custom endpoint’s extension and the MCP one side by side',
+    planOk(plan('pi', custom(), { mcp: [BROWSER], piMcpExtensionPath: PI_MCP_PATH })).args,
+    ['-e', '/Users/u/Library/Application Support/Stoke/agents/pi-provider.ts', '--provider', 'stoke_custom', '--model', 'qwen3-coder', '-e', PI_MCP_PATH]
+  )
+  const piNoExt = plan('pi', undefined, { mcp: ALL, piMcpExtensionPath: null })
+  check('pi: with no extension file, no flag and every server said', [planOk(piNoExt).args, (piNoExt.ok ? piNoExt.plan.mcpSkipped ?? [] : []).map((s) => s.name)], [[], ['stoke', 'github', 'docs']])
+  keysOnlyInEnv('pi two servers', plan('pi', undefined, { mcp: ALL, piMcpExtensionPath: PI_MCP_PATH }))
+
+  // The agents with no launch-time route are handed nothing at all.
+  const none = CODING_CLIS.filter((c) => CLI_CAPS[c.id].mcp === 'none').map((c) => c.id)
+  check(
+    'CLI_CAPS names exactly the agents with no route (each with its reason, codingClis.ts)',
+    none,
+    ['grok', 'gemini', 'cursor', 'amp', 'aider', 'crush', 'droid', 'cline', 'auggie']
+  )
+  for (const id of none) {
+    check(`${id}: no MCP route, so nothing is passed`, planOk(plan(id, undefined, { mcp: ALL, mcpFileFor: fileFor })), { args: [], env: {}, model: '' })
+  }
+  check('claude is never planned here: its servers go in --mcp-config (claudeMcpConfigs)', planOk(plan('claude', undefined, { mcp: ALL })), { args: [], env: {}, model: '' })
+  check(
+    'CLI_CAPS routes',
+    Object.fromEntries(CODING_CLIS.filter((c) => CLI_CAPS[c.id].mcp !== 'none').map((c) => [c.id, CLI_CAPS[c.id].mcp])),
+    { claude: 'file', codex: 'flags', opencode: 'env', pi: 'env', qwen: 'file', kimi: 'file', copilot: 'file', kilo: 'env', vibe: 'env' }
+  )
+
+  // Claude Code: only Stoke's servers, in one flag's list.
+  const claudeOut = claudeMcpConfigs([BROWSER, DOCS], '/u/Stoke/mcp-browser.json', fileFor)
+  check('claude: the browser file, then one generated file of Stoke-held servers', claudeOut, {
+    configs: ['/u/Stoke/mcp-browser.json', fileFor(mcpFileName('claude', claudeShapeMcpFile([DOCS])))],
+    files: [{ path: fileFor(mcpFileName('claude', claudeShapeMcpFile([DOCS]))), content: claudeShapeMcpFile([DOCS]) }]
+  })
+  check('claude: the browser unticked, no browser file', claudeMcpConfigs([], '/u/Stoke/mcp-browser.json', fileFor), { configs: [], files: [] })
+  check('claude: nothing writable, only the browser file', claudeMcpConfigs([BROWSER, DOCS], '/u/Stoke/mcp-browser.json', null).configs, ['/u/Stoke/mcp-browser.json'])
+  const pty = readFileSync(new URL('../src/main/pty.ts', import.meta.url), 'utf8')
+  const mcpPushes = pty.split('\n').filter((l) => l.includes("'--mcp-config'"))
+  ok(
+    'pty.ts pushes --mcp-config once, only for an instrumented (local Claude) session, never ssh (gotcha 19)',
+    mcpPushes.length === 1 && /\binstrumented\b/.test(mcpPushes[0]),
+    mcpPushes.join(' | ')
+  )
+
+  // A file-taking agent with nowhere to write goes without, and says so.
+  const noFile = plan('qwen', undefined, { mcp: ALL, mcpFileFor: null })
+  check('qwen with no file store: no flag naming nothing', planOk(noFile).args, [])
+  check('and every server is reported, not dropped silently', (noFile.ok ? noFile.plan.mcpSkipped ?? [] : []).map((s) => s.name), ['stoke', 'github', 'docs'])
+
+  // A key in a URL: every agent with a route, and not one of them puts it in argv.
+  for (const c of CODING_CLIS.filter((x) => CLI_CAPS[x.id].mcp !== 'none')) {
+    keysOnlyInEnv(
+      `${c.id} with a key in a server's URL`,
+      plan(c.id, undefined, { mcp: [...ALL, KEYED], mcpFileFor: fileFor, piMcpExtensionPath: PI_MCP_PATH })
+    )
+  }
+  const codexKeyed = plan('codex', undefined, { mcp: [...ALL, KEYED] })
+  check(
+    'codex: the keyed URL is skipped and said, the rest handed as before',
+    [planOk(codexKeyed).args, (codexKeyed.ok ? codexKeyed.plan.mcpSkipped ?? [] : []).map((s) => s.name)],
+    [planOk(codex).args, ['search']]
+  )
+  ok(
+    'codex: and the reason names the URL and points at its own config.toml',
+    /URL.*query string.*config\.toml/.test((codexKeyed.ok ? codexKeyed.plan.mcpSkipped ?? [] : [])[0]?.reason ?? ''),
+    JSON.stringify(codexKeyed.ok ? codexKeyed.plan.mcpSkipped : null)
+  )
+  const qwenKeyed = planOk(plan('qwen', undefined, { mcp: [KEYED], mcpFileFor: fileFor }))
+  check('qwen: the keyed URL is fine in its 0600 file, not argv', JSON.parse(qwenKeyed.files?.[0]?.content ?? '{}').mcpServers.search.httpUrl, KEYED.url)
+}
+
+console.log('\nMCP: names, secrets and collisions')
+{
+  for (const name of ['github', 'my-server_2', 'A1', 'x'.repeat(64)]) ok(`a safe server name: ${name.slice(0, 20)}`, isSafeServerName(name))
+  for (const name of ['', 'a.b', 'a b', '-x', '_x', 'x;rm', 'x&y', 'x"y', 'x|y', 'x%PATH%', '__proto__', 'constructor', 'prototype', 'x'.repeat(65), 'ünï']) {
+    ok(`refused: ${JSON.stringify(name.slice(0, 20))} — it becomes a TOML key and may pass through cmd.exe (gotcha 13)`, !isSafeServerName(name))
+  }
+  check('a Claude entry with an unsafe name is refused, not escaped', specFromClaudeEntry('a;b', { command: 'x' }).ok, false)
+  check('the browser server’s name is Stoke’s', specFromClaudeEntry(STOKE_BROWSER_SERVER, { command: 'x' }).ok, false)
+  check('SSE is refused, not passed as http (Qwen’s plain url IS sse)', specFromClaudeEntry('old', { type: 'sse', url: 'https://x/sse' }).ok, false)
+  const oauth = specFromClaudeEntry('notion', { type: 'http', url: 'https://mcp.notion.com/mcp', oauth: { clientId: 'abc', clientSecret: 's' } })
+  check(
+    'an OAuth server is its URL alone — Claude’s sign-in is never copied (gotcha 36)',
+    oauth.ok ? oauth.spec : null,
+    { name: 'notion', transport: 'http', command: '', args: [], env: {}, url: 'https://mcp.notion.com/mcp', headers: {} }
+  )
+  check('${VAR} and ${VAR:-default} expand as the CLI expands them', expandEnvRefs('a ${X} ${Y:-d}', { X: '1' }), 'a 1 d')
+  const unset = specFromClaudeEntry('docs', { type: 'http', url: 'https://x/mcp', headers: { K: '${NOPE}' } })
+  check('an unset ${VAR} refuses the server rather than handing on the literal', unset.ok ? null : unset.reason, 'it needs ${NOPE}, which is not set')
+  check('a line break in a value refuses the server', specFromClaudeEntry('x', { command: 'a', env: { K: 'v\nw' } }).ok, false)
+
+  const refusedUrl = codexMcp([{ ...DOCS, url: 'https://x/100%25/mcp' }], [])
+  check('codex: a % in a URL that reaches argv is refused (cmd.exe, gotcha 13)', [refusedUrl.args, refusedUrl.skipped.map((s) => s.name)], [[], ['docs']])
+  ok('and for that reason, not the URL-key one', /cmd\.exe/.test(refusedUrl.skipped[0]?.reason ?? ''), refusedUrl.skipped[0]?.reason)
+
+  // A URL that may carry a key never reaches Codex's argv (urlInArgvProblem).
+  const http = (url: string, over: Partial<McpServerSpec> = {}): McpServerSpec => ({ ...KEYED, url, ...over })
+  for (const [why, url] of [
+    ['a query string (Tavily’s ?tavilyApiKey=)', 'https://mcp.tavily.example/mcp/?tavilyApiKey=tvly-abc'],
+    ['a query with no & at all, which cmd.exe never flagged', 'https://mcp.exa.example/mcp?exaApiKey=k'],
+    ['a user name and password', 'https://user:pass@mcp.example.com/mcp'],
+    ['a key-like path segment', 'https://mcp.example.com/s/Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5/mcp'],
+    ['a capability UUID in the path', 'https://mcp.example.com/server/0f8fad5b-d9cb-469f-a165-70867728950e/mcp']
+  ] as const) {
+    ok(`urlInArgvProblem: ${why}`, urlInArgvProblem(http(url)) !== null)
+    const out = codexMcp([http(url)], [])
+    check(`codex: refused — ${why}`, [out.args, out.skipped.map((s) => s.name)], [[], ['search']])
+  }
+  for (const url of [
+    'https://api.githubcopilot.com/mcp/',
+    'https://mcp.deepwiki.com/mcp',
+    'https://mcp.vercel.com',
+    'https://observability.mcp.cloudflare.com/mcp',
+    MCP.url
+  ]) {
+    ok(`urlInArgvProblem: a plain endpoint passes — ${url}`, urlInArgvProblem(http(url)) === null)
+  }
+  const fromEnv = specFromClaudeEntry('keyed', { type: 'http', url: 'https://mcp.example.com/k/${SHORT_KEY}/mcp' }, { SHORT_KEY: 'abc' })
+  check('a URL built from ${VAR} is marked, whatever it expanded to', fromEnv.ok ? [fromEnv.spec.url, fromEnv.spec.urlFromEnv] : null, ['https://mcp.example.com/k/abc/mcp', true])
+  check('and Codex is never handed it', fromEnv.ok ? codexMcp([fromEnv.spec], []).skipped.map((s) => s.name) : null, ['keyed'])
+  const literal = specFromClaudeEntry('plain', { type: 'http', url: 'https://mcp.example.com/mcp' })
+  check('a literal URL is not marked', literal.ok ? literal.spec.urlFromEnv : 'refused', undefined)
+  check('a stdio server is never judged by URL', urlInArgvProblem(GITHUB), null)
+  check(
+    'the Settings summary carries the reason (never the URL) so Codex’s row can say it',
+    [summarize(KEYED).detail, typeof summarize(KEYED).urlProblem, JSON.stringify(summarize(KEYED)).includes(URL_SECRET)],
+    ['https://mcp.search.example', 'string', false]
+  )
+  const ownPath = codexMcp([{ ...GITHUB, env: { PATH: '/evil' } }], [])
+  check('codex: a server may not set a variable Codex itself runs on', [ownPath.args, ownPath.skipped.map((s) => s.name)], [[], ['github']])
+  const clash = codexMcp([GITHUB, { ...GITHUB, name: 'github2', env: { GITHUB_PERSONAL_ACCESS_TOKEN: 'other' } }], [])
+  check('codex: two servers wanting one variable with different values — the later is skipped', clash.skipped.map((s) => s.name), ['github2'])
+  const endpointVar = plan('codex', custom(), { mcp: [{ ...GITHUB, env: { STOKE_CUSTOM_API_KEY: 'x' } }] })
+  check('codex: a server may not take a variable the endpoint set', (endpointVar.ok ? endpointVar.plan.mcpSkipped ?? [] : []).map((s) => s.name), ['github'])
+
+  const toml = [
+    'mcp_servers.dotted.command = "x"',
+    '[mcp_servers.node_repl]',
+    'command = "node"',
+    '[mcp_servers."computer-use"]',
+    '[mcp_servers.cua_repl.env]',
+    '[mcp_servers]',
+    'inline = { command = "y" }',
+    '[profiles.github]',
+    'github = 1'
+  ].join('\n')
+  check('codexConfiguredServers reads its own config.toml’s names', codexConfiguredServers(toml).sort(), ['computer-use', 'cua_repl', 'dotted', 'inline', 'node_repl'])
+  const own = plan('codex', undefined, { mcp: [BROWSER, GITHUB], mcpOwn: ['github'] })
+  check('codex: a name its own config.toml defines is skipped — `-c` would merge into the user’s entry', [planOk(own).args.some((a) => a.includes('github')), (own.ok ? own.plan.mcpSkipped ?? [] : []).map((s) => s.name)], [false, ['github']])
+  const kimiOwn = plan('kimi', undefined, { mcp: [BROWSER, GITHUB], mcpFileFor: fileFor, mcpOwn: ['github'] })
+  check('kimi: a name its own mcp.json defines is skipped too', (kimiOwn.ok ? kimiOwn.plan.mcpSkipped ?? [] : []).map((s) => s.name), ['github'])
+  check('vibeConfiguredServers: the name of each [[mcp_servers]] block', vibeConfiguredServers('[[mcp_servers]]\nname = "fs"\ntransport = "stdio"\n[[mcp_servers]]\nname = \'web\'\n[tools]\nname = "not-a-server"\n'), ['fs', 'web'])
+  check('jsonConfiguredServers: a Claude-shaped file’s names', jsonConfiguredServers('{"mcpServers":{"a":{},"b":{}}}'), ['a', 'b'])
+  check('and junk is none', jsonConfiguredServers('{nope'), [])
+  const jsonc = [
+    '﻿{',
+    '  // OpenCode’s own server, in an opencode.jsonc',
+    '  "$schema": "https://opencode.ai/config.json", /* a block',
+    '  comment */ "mcp": {',
+    '    "github": { "type": "local", "command": ["x", "// not a comment", "/* nor this */"], },',
+    '    "notes,}": { "type": "remote", "url": "https://n.example/mcp", },',
+    '  },',
+    '}'
+  ].join('\n')
+  check('JSONC (OpenCode, Kilo, Qwen): comments and trailing commas, never inside a string', jsonConfiguredServers(jsonc, 'mcp'), ['github', 'notes,}'])
+  check('parseJsonc keeps a string that looks like a comment', (parseJsonc(jsonc) as { mcp: { github: { command: string[] } } }).mcp.github.command, ['x', '// not a comment', '/* nor this */'])
+  check('and a key other than the one asked for is none', jsonConfiguredServers(jsonc, 'mcpServers'), [])
+}
+
+console.log('\nMCP: Claude Code’s own list, from a ~/.claude.json fixture')
+{
+  const claudeJson = JSON.parse(
+    JSON.stringify({
+      numStartups: 5,
+      oauthAccount: { emailAddress: 'someone@example.com' },
+      mcpServers: {
+        github: { type: 'stdio', command: 'npx', args: ['-y', '@modelcontextprotocol/server-github'], env: { GITHUB_PERSONAL_ACCESS_TOKEN: STDIO_SECRET } },
+        docs: { type: 'http', url: 'https://mcp.example.com/mcp', headers: { 'X-Api-Key': '${DOCS_KEY}' } },
+        notion: { type: 'http', url: 'https://mcp.notion.com/mcp' },
+        legacy: { type: 'sse', url: 'https://old.example.com/sse' },
+        'turned-off': { command: 'uvx', args: ['off-server'] },
+        'bad name': { command: 'x' },
+        stoke: { command: 'x' }
+      },
+      projects: {
+        '/work/app': {
+          mcpServers: { 'local-db': { command: 'pg-mcp', args: ['--db', 'app'] }, notion: { type: 'http', url: 'https://notion.local/mcp' } },
+          disabledMcpServers: ['turned-off'],
+          enabledMcpjsonServers: ['repo-tool']
+        },
+        '/work/other': { mcpServers: { 'other-only': { command: 'x' } } }
+      }
+    })
+  )
+  const mcpJson = { mcpServers: { 'repo-tool': { command: 'repo-mcp' }, unapproved: { command: 'evil' } } }
+  const app = claudeMcpServers(claudeJson, mcpJson, '/work/app', { env: { DOCS_KEY: HEADER_SECRET } })
+  check('user scope, then the approved .mcp.json server, then local scope — minus disabledMcpServers', app.servers.map((s) => s.name), ['github', 'docs', 'notion', 'repo-tool', 'local-db'])
+  ok('a server the folder turned off (/mcp disable) is not handed on', !app.servers.some((s) => s.name === 'turned-off'))
+  ok('an unapproved .mcp.json server is never run — a cloned repo could name anything', !app.servers.some((s) => s.name === 'unapproved'))
+  check('a local server replaces the user one of the same name', app.servers.find((s) => s.name === 'notion')?.url, 'https://notion.local/mcp')
+  check('${DOCS_KEY} expanded from the environment', app.servers.find((s) => s.name === 'docs')?.headers, { 'X-Api-Key': HEADER_SECRET })
+  check('refused, each with its reason', app.refused.map((r) => r.name), ['legacy', 'bad name', 'stoke'])
+  const other = claudeMcpServers(claudeJson, null, '/work/other', { env: {} })
+  check('another folder: its own local server, and turned-off is on there; docs refused without DOCS_KEY', other.servers.map((s) => s.name), ['github', 'notion', 'turned-off', 'other-only'])
+  check('no ~/.claude.json at all is an empty list, not a throw', claudeMcpServers(null, null, '/x').servers, [])
+
+  const launch = serversForLaunch({
+    ticks: ['docs', 'stoke', 'github', 'mine', 'not-here'],
+    browser: BROWSER,
+    mirrored: app.servers,
+    extra: { mine: { ...GITHUB, name: 'mine' }, github: { ...GITHUB, command: 'held-by-stoke' } }
+  })
+  check('one launch: browser first, then Claude’s order, then Stoke-held; a tick naming nothing here is absent', launch.map((s) => s.name), ['stoke', 'docs', 'mine', 'github'])
+  check('a Stoke-held server replaces a mirrored one of the same name', launch.find((s) => s.name === 'github')?.command, 'held-by-stoke')
+  check(
+    'for Claude: only the browser and Stoke-held servers, never one whose name its own config uses',
+    serversForLaunch({ ticks: ['stoke', 'github', 'mine'], browser: BROWSER, mirrored: app.servers, extra: { mine: { ...GITHUB, name: 'mine' }, github: GITHUB }, forClaude: { claudeOwn: ['github'] } }).map((s) => s.name),
+    ['stoke', 'mine']
+  )
+  check('the browser unticked is not handed', serversForLaunch({ ticks: [], browser: BROWSER, mirrored: [], extra: {} }), [])
+  check('the browser not up yet is simply absent', serversForLaunch({ ticks: ['stoke'], browser: null, mirrored: [], extra: {} }), [])
+
+  const catalog = mcpCatalog(claudeJson, { codex: ['node_repl'] }, null, { DOCS_KEY: HEADER_SECRET })
+  check('Settings’ list: user servers', catalog.user.map((s) => [s.name, s.transport, s.detail]), [
+    ['github', 'stdio', 'npx'],
+    ['docs', 'http', 'https://mcp.example.com'],
+    ['notion', 'http', 'https://mcp.notion.com'],
+    ['turned-off', 'stdio', 'uvx']
+  ])
+  check('local servers, each with its folders', catalog.local.map((s) => [s.name, s.folders]), [['local-db', ['/work/app']], ['other-only', ['/work/other']]])
+  ok('no env value, argument or header ever reaches Settings', !MCP_SECRETS.some((v) => JSON.stringify(catalog).includes(v)) && !JSON.stringify(catalog).includes('@modelcontextprotocol'))
+
+  // Project scope: each known folder's .mcp.json chain, as main read it.
+  const withProjects = mcpCatalog(
+    { ...claudeJson, projects: { ...claudeJson.projects, '/work/app': { ...claudeJson.projects['/work/app'], disabledMcpServers: ['turned-off', 'off-here'], disabledMcpjsonServers: ['rejected'] } } },
+    {},
+    null,
+    { DOCS_KEY: HEADER_SECRET },
+    {
+      '/work/app': {
+        mcpJson: { mcpServers: { 'repo-tool': { command: 'repo-mcp' }, unapproved: { command: 'evil' }, github: { command: 'dup' }, rejected: { command: 'r' }, 'off-here': { command: 'o' } } },
+        approvals: { enableAll: false, enabled: ['off-here'], disabled: [] }
+      },
+      '/work/other': {
+        mcpJson: { mcpServers: { 'repo-tool': { command: 'repo-mcp' }, keyed: { type: 'http', url: KEYED.url } } },
+        approvals: { enableAll: true, enabled: [], disabled: [] }
+      },
+      '/work/none': { mcpJson: { mcpServers: { unapproved: { command: 'evil' } } }, approvals: NO_APPROVALS }
+    }
+  )
+  check(
+    'project servers Claude may run, each with its folders — approved by projects[key] in one, by enableAll in another',
+    withProjects.project.map((s) => [s.name, s.folders]),
+    [['repo-tool', ['/work/app', '/work/other']], ['keyed', ['/work/other']]]
+  )
+  check('never approved anywhere: listed apart, with where', withProjects.unapproved, [{ name: 'unapproved', folders: ['/work/app', '/work/none'] }])
+  ok('refused at Claude’s prompt (disabledMcpjsonServers) or turned off in /mcp: not offered at all', !JSON.stringify(withProjects).includes('rejected') && !JSON.stringify(withProjects).includes('off-here'))
+  ok('a name user scope already lists is not listed again', !withProjects.project.some((s) => s.name === 'github'))
+  check('and a keyed URL carries only its reason to Settings', [withProjects.project[1]?.detail, typeof withProjects.project[1]?.urlProblem, JSON.stringify(withProjects).includes(URL_SECRET)], ['https://mcp.search.example', 'string', false])
+}
+
+console.log('\nMCP: what is stored — ticks and Stoke-held servers only')
+{
+  check('the default: no ticks stored, no servers held', DEFAULT_AGENT_MCP, { perAgent: {}, extra: {} })
+  check('DEFAULT_SETTINGS names it', DEFAULT_SETTINGS.agents.mcp, { perAgent: {}, extra: {} })
+  check('a settings file with no agents block hydrates it', hydrateSettings({}).agents.mcp, { perAgent: {}, extra: {} })
+  check('an older agents block with no mcp key hydrates it', hydrateAgents({ chosen: ['codex'] }).mcp, { perAgent: {}, extra: {} })
+  check('junk is the default', hydrateAgents({ mcp: 'junk' }).mcp, { perAgent: {}, extra: {} })
+  check('every agent gets only Stoke’s browser until the user ticks another', mcpTicksFor(DEFAULT_AGENT_MCP, 'codex'), ['stoke'])
+  const h = hydrateAgentMcp(
+    {
+      perAgent: { codex: ['github', 'bad name', 'github', 'stoke', 7], banana: ['x'], qwen: 'junk', kimi: [] },
+      extra: {
+        good: { transport: 'stdio', command: ' uvx ', args: ['x', 3], env: { TOKEN: '', 'bad-name': 'x', __proto__: 'y' }, url: 'ignored', headers: { A: 'b' } },
+        web: { transport: 'http', url: 'https://w.example/mcp', headers: { 'X-Key': 'k', 'X.Dotted': 'never sealable' }, bearer: ' t ' },
+        'bad.name': { transport: 'stdio', command: 'x' },
+        stoke: { transport: 'stdio', command: 'x' },
+        nocommand: { transport: 'stdio' },
+        ftp: { transport: 'http', url: 'ftp://x' },
+        constructor: { transport: 'stdio', command: 'x' }
+      },
+      junk: 1
+    },
+    (id: string): id is CodingCliId => CODING_CLIS.some((c) => c.id === id)
+  )
+  check('ticks: unknown agents, unsafe names and duplicates dropped; an explicit [] kept (not even the browser)', h.perAgent, { codex: ['github', 'stoke'], kimi: [] })
+  check('Stoke-held servers rebuilt from named keys; an emptied secret kept for the vault to fill', h.extra, {
+    good: { name: 'good', transport: 'stdio', command: 'uvx', args: ['x'], env: { TOKEN: '' }, url: '', headers: {} },
+    web: { name: 'web', transport: 'http', command: '', args: [], env: {}, url: 'https://w.example/mcp', headers: { 'X-Key': 'k' }, bearer: 't' }
+  })
+  check('an unticked browser stays unticked', mcpTicksFor(withMcpTick(DEFAULT_AGENT_MCP, 'codex', 'stoke', false), 'codex'), [])
+  check('ticking adds to the default rather than replacing it', mcpTicksFor(withMcpTick(DEFAULT_AGENT_MCP, 'codex', 'github', true), 'codex'), ['stoke', 'github'])
+  check('and touches no other agent', withMcpTick(DEFAULT_AGENT_MCP, 'codex', 'github', true).perAgent.qwen, undefined)
+  const round = hydrateSettings(JSON.parse(JSON.stringify({ ...DEFAULT_SETTINGS, agents: { ...DEFAULT_SETTINGS.agents, mcp: h } }))).agents.mcp
+  check('a hydrated block survives a second hydrate unchanged', round, h)
+  check('a generated file name is the agent and a content hash', MCP_FILE_NAME.test(mcpFileName('qwen', 'x')) && mcpFileName('qwen', 'x') === mcpFileName('qwen', 'x') && mcpFileName('qwen', 'x') !== mcpFileName('qwen', 'y'), true)
+}
+
+console.log('\nMCP in main: a scratch HOME, its ~/.claude.json read, owner-only files written')
+{
+  // Fake every input (gotcha 74): a scratch home and userData, never the real ones.
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'stoke-verify-mcp-')))
+  try {
+    const project = join(home, 'work', 'app')
+    mkdirSync(project, { recursive: true })
+    writeFileSync(
+      join(home, '.claude.json'),
+      JSON.stringify({
+        mcpServers: {
+          github: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-github'], env: { GITHUB_PERSONAL_ACCESS_TOKEN: STDIO_SECRET } },
+          docs: { type: 'http', url: 'https://mcp.example.com/mcp', headers: { Authorization: `Bearer ${HTTP_BEARER}` } },
+          'turned-off': { command: 'uvx', args: ['off'] }
+        },
+        projects: { [project]: { disabledMcpServers: ['turned-off'], mcpServers: { 'local-db': { command: 'pg-mcp' } } } }
+      })
+    )
+    mkdirSync(join(home, '.codex'), { recursive: true })
+    writeFileSync(join(home, '.codex', 'config.toml'), '[mcp_servers.docs]\nurl = "https://codex-own.example/mcp"\n')
+    const reader = new ClaudeConfigReader({}, home)
+    const ticks = { perAgent: { codex: ['stoke', 'github', 'docs', 'turned-off', 'local-db'] }, extra: {} }
+    const r = await resolveLaunchMcp({ cliId: 'codex', cwd: project, mcp: ticks, browser: BROWSER, reader, env: {}, home })
+    check('codex in the project: the browser, github, local-db; turned-off honoured from disabledMcpServers', r.servers.map((s) => s.name), ['stoke', 'github', 'docs', 'local-db'])
+    check('and the names its own config.toml defines, to skip', r.own, ['docs'])
+    const planned = plan('codex', undefined, { mcp: r.servers, mcpOwn: r.own })
+    check('so docs is skipped, not merged into the user’s entry', (planned.ok ? planned.plan.mcpSkipped ?? [] : []).map((s) => s.name), ['docs'])
+    keysOnlyInEnv('codex from a real read', planned)
+    const def = await resolveLaunchMcp({ cliId: 'qwen', cwd: project, mcp: DEFAULT_AGENT_MCP, browser: BROWSER, reader, env: {}, home })
+    check('an agent on the default ticks gets the browser alone', def.servers.map((s) => s.name), ['stoke'])
+    const noneAgent = await resolveLaunchMcp({ cliId: 'claude', cwd: project, mcp: { perAgent: { claude: ['stoke', 'github'] }, extra: {} }, browser: BROWSER, reader, env: {}, home })
+    check('Claude: a tick of one of its own servers hands it nothing extra — it loads its own', noneAgent.servers.map((s) => s.name), ['stoke'])
+
+    mkdirSync(join(home, '.kimi'), { recursive: true })
+    writeFileSync(join(home, '.kimi', 'mcp.json'), JSON.stringify({ mcpServers: { github: { command: 'kimi-own' } } }))
+    check('kimi: its own mcp.json is kept beside Stoke’s, and its names skipped', await agentOwnMcp('kimi', {}, home), { own: ['github'], keep: [join(home, '.kimi', 'mcp.json')] })
+    check('kimi with no mcp.json: nothing to keep', await agentOwnMcp('kimi', { KIMI_SHARE_DIR: join(home, 'nowhere') }, home), { own: [], keep: [] })
+    mkdirSync(join(home, '.vibe'), { recursive: true })
+    writeFileSync(join(home, '.vibe', 'config.toml'), '[[mcp_servers]]\nname = "github"\ntransport = "stdio"\ncommand = "x"\n')
+    check('vibe: its own config.toml’s names', (await agentOwnMcp('vibe', {}, home)).own, ['github'])
+    // Qwen's system settings live outside HOME; point them into the scratch too.
+    const cat = await readMcpCatalog(reader, { QWEN_CODE_SYSTEM_SETTINGS_PATH: join(home, 'qwen-system', 'settings.json') }, home)
+    check('Settings’ catalog from the same files: user servers and own names per agent', [cat.user.map((s) => s.name), cat.own], [['github', 'docs', 'turned-off'], { codex: ['docs'], kimi: ['github'], vibe: ['github'] }])
+    ok('and no secret in it', !MCP_SECRETS.some((v) => JSON.stringify(cat).includes(v)))
+
+    // The files: owner-only, and the sweep touches only its own names.
+    const agentsDir = join(home, 'ud', 'agents')
+    const store = new McpFileStore(agentsDir)
+    mkdirSync(store.dir, { recursive: true })
+    const bystander = join(store.dir, 'keep-me.txt')
+    const stale = join(store.dir, 'qwen-0123456789abcdef.json')
+    const legacy = join(agentsDir, 'mcp-httpurl.json')
+    writeFileSync(bystander, 'mine')
+    writeFileSync(stale, '{"old":"bearer"}')
+    writeFileSync(legacy, '{"old":"bearer"}')
+    const q = plan('qwen', undefined, { mcp: [BROWSER, ...TWO], mcpFileFor: store.fileFor })
+    const files = q.ok ? q.plan.files ?? [] : []
+    ok('the write succeeds', await store.write(files))
+    const written = files[0]?.path ?? ''
+    check('the plan names the file it wrote', planOk(q).args, ['--mcp-config', written])
+    check('with exactly the plan’s content', readFileSync(written, 'utf8'), files[0]?.content)
+    if (process.platform !== 'win32') {
+      check('owner-only: the file is -rw-------', (statSync(written).mode & 0o777).toString(8), '600')
+      check('and its folder drwx------', (statSync(store.dir).mode & 0o777).toString(8), '700')
+    }
+    ok('an earlier run’s generated file is swept', !existsSync(stale))
+    ok('the old httpUrl file (a bearer) is swept', !existsSync(legacy))
+    ok('a bystander in the same folder survives (gotcha 74)', existsSync(bystander))
+    ok('writing the same set again reuses the file', (await store.write(files)) && existsSync(written))
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+  const headless = readFileSync(new URL('../src/main/agent.ts', import.meta.url), 'utf8')
+  ok('agent.ts (headless runs) never reads the mirrored list (gotcha 15)', !/mcpLaunch|mcpServers\.ts|claudeMcpServers/.test(headless))
+}
+
+console.log('\nMCP: every agent’s own servers, its user config and the launch folder’s (ownMcpSources)')
+{
+  check('foldersUpTo: nearest first, to the stop inclusive', foldersUpTo('/a/b/c', '/a/b'), ['/a/b/c', '/a/b'])
+  check('foldersUpTo: to the top with no stop', foldersUpTo('/a/b', null), ['/a/b', '/a', '/'])
+  // Fake every input (gotcha 74): a scratch home with each agent's files, a repo and a subfolder in it.
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'stoke-verify-mcpown-')))
+  try {
+    const repo = join(home, 'work', 'app')
+    const sub = join(repo, 'pkg')
+    mkdirSync(join(repo, '.git'), { recursive: true })
+    mkdirSync(sub, { recursive: true })
+    const put = (path: string, text: string): void => {
+      mkdirSync(dirname(path), { recursive: true })
+      writeFileSync(path, text)
+    }
+    const env = { QWEN_CODE_SYSTEM_SETTINGS_PATH: join(home, 'qwen-system', 'settings.json') }
+    // OpenCode: JSONC at user level, and a project file plus a .opencode dir in the repo.
+    put(join(home, '.config', 'opencode', 'opencode.jsonc'), '{\n  // mine\n  "mcp": { "github": { "type": "local", "command": ["gh-mcp"] }, },\n}')
+    put(join(repo, 'opencode.json'), JSON.stringify({ mcp: { 'repo-oc': { type: 'local', command: ['x'] } } }))
+    put(join(sub, '.opencode', 'opencode.json'), JSON.stringify({ mcp: { 'sub-oc': { type: 'local', command: ['x'] } } }))
+    put(join(home, 'work', 'opencode.json'), JSON.stringify({ mcp: { 'above-repo': { type: 'local', command: ['x'] } } }))
+    // Kilo: its own names, and the opencode.json it still reads per folder.
+    put(join(home, '.config', 'kilo', 'kilo.json'), JSON.stringify({ mcp: { linear: { type: 'remote', url: 'https://l.example/mcp' } } }))
+    put(join(repo, '.kilo', 'kilo.jsonc'), '{ "mcp": { "repo-kilo": { "type": "local", "command": ["x"] }, }, }')
+    // Qwen: user settings, system settings, the cwd's .qwen/settings.json and .mcp.json.
+    put(join(home, '.qwen', 'settings.json'), '{ /* qwen strips comments */ "mcpServers": { "docs": { "httpUrl": "https://d.example/mcp" } } }')
+    put(env.QWEN_CODE_SYSTEM_SETTINGS_PATH, JSON.stringify({ mcpServers: { 'org-tool': { command: 'x' } } }))
+    put(join(sub, '.qwen', 'settings.json'), JSON.stringify({ mcpServers: { 'ws-qwen': { command: 'x' } } }))
+    put(join(sub, '.mcp.json'), JSON.stringify({ mcpServers: { 'sub-mcpjson': { command: 'x' } } }))
+    // Copilot: its mcp-config.json, and the workspace .github/mcp.json at the repo's top.
+    put(join(home, '.copilot', 'mcp-config.json'), JSON.stringify({ mcpServers: { playwright: { type: 'local', command: 'x' } } }))
+    put(join(repo, '.github', 'mcp.json'), JSON.stringify({ mcpServers: { 'repo-copilot': { type: 'local', command: 'x' } } }))
+    // Codex: a project .codex/config.toml at the repo's top.
+    put(join(home, '.codex', 'config.toml'), '[mcp_servers.node_repl]\ncommand = "node"\n')
+    put(join(repo, '.codex', 'config.toml'), '[mcp_servers.repo-codex]\ncommand = "x"\n')
+    // Vibe: the NEAREST .vibe/config.toml only.
+    put(join(home, '.vibe', 'config.toml'), '[[mcp_servers]]\nname = "fs"\n')
+    put(join(repo, '.vibe', 'config.toml'), '[[mcp_servers]]\nname = "repo-vibe"\n')
+    put(join(sub, '.vibe', 'config.toml'), '[[mcp_servers]]\nname = "sub-vibe"\n')
+
+    const folder = { real: sub, gitRoot: repo }
+    const own = async (id: CodingCliId, f: typeof folder | null = folder) => (await agentOwnMcp(id, env, home, f)).own.sort()
+    check('opencode: user JSONC, the repo’s opencode.json, the subfolder’s .opencode — not a file above the repo', await own('opencode'), ['github', 'repo-oc', 'sub-oc'])
+    check('kilo: its kilo.json and the repo’s .kilo/, plus the opencode.json it reads per folder', await own('kilo'), ['linear', 'repo-kilo', 'repo-oc'])
+    check('qwen: user, system, and the cwd’s .qwen/settings.json and .mcp.json', await own('qwen'), ['docs', 'org-tool', 'sub-mcpjson', 'ws-qwen'])
+    check('copilot: its mcp-config.json, the repo’s .github/mcp.json and the cwd’s .mcp.json', await own('copilot'), ['playwright', 'repo-copilot', 'sub-mcpjson'])
+    check('codex: config.toml and the repo’s .codex/config.toml', await own('codex'), ['node_repl', 'repo-codex'])
+    check('vibe: its config.toml and the nearest .vibe/config.toml only', await own('vibe'), ['fs', 'sub-vibe'])
+    check('with no folder (Settings), only the user level', [await own('opencode', null), await own('qwen', null), await own('copilot', null)], [['github'], ['docs', 'org-tool'], ['playwright']])
+    check('outside a repo OpenCode walks to the top', ownMcpSources('opencode', {}, '/h', { real: '/x/y', gitRoot: null }).filter((s) => s.path.endsWith('opencode.json') && !s.path.includes('.opencode')).map((s) => s.path).slice(-3), ['/x/y/opencode.json', '/x/opencode.json', '/opencode.json'])
+    check('pi and claude read nothing here: Pi’s own mcp.json outranks, Claude loads its own', [ownMcpSources('pi', {}, '/h', folder), ownMcpSources('claude', {}, '/h', folder)], [[], []])
+
+    // The launch: a tick of a name the folder's own config defines is skipped, never merged.
+    writeFileSync(join(home, '.claude.json'), JSON.stringify({ mcpServers: { 'repo-oc': { command: 'claude-side' }, github: { command: 'npx' }, other: { command: 'o' } } }))
+    const ticks = { perAgent: { opencode: ['stoke', 'repo-oc', 'github', 'other'] }, extra: {} }
+    const r = await resolveLaunchMcp({ cliId: 'opencode', cwd: sub, mcp: ticks, browser: BROWSER, reader: new ClaudeConfigReader({}, home), env, home })
+    check('opencode in the subfolder: its own names come back with the launch', r.own.sort(), ['github', 'repo-oc', 'sub-oc'])
+    const planned = plan('opencode', undefined, { mcp: r.servers, mcpOwn: r.own })
+    check('so only the browser and `other` reach OPENCODE_CONFIG_CONTENT', Object.keys(JSON.parse(planOk(planned).env.OPENCODE_CONFIG_CONTENT ?? '{}').mcp ?? {}), ['stoke', 'other'])
+    check('and the two it defines itself are said', (planned.ok ? planned.plan.mcpSkipped ?? [] : []).map((s) => s.name), ['repo-oc', 'github'])
+    const cat = await readMcpCatalog(new ClaudeConfigReader({}, home), env, home)
+    check('Settings greys each agent’s user-level names', cat.own, {
+      codex: ['node_repl'],
+      opencode: ['github'],
+      kilo: ['linear'],
+      qwen: ['docs', 'org-tool'],
+      copilot: ['playwright'],
+      vibe: ['fs']
+    })
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+}
+
+console.log('\nMCP: where Claude Code files a folder — its canonical git root, and the .mcp.json chain (gotcha 129)')
+{
+  check(
+    'the .mcp.json chain merges outermost first, the nearest file winning',
+    mergeMcpJsons([
+      { mcpServers: { a: { command: 'outer' }, b: { command: 'outer' } } },
+      null,
+      'junk',
+      { mcpServers: { b: { command: 'inner' }, c: { command: 'inner' } } }
+    ]),
+    { mcpServers: { a: { command: 'outer' }, b: { command: 'inner' }, c: { command: 'inner' } } }
+  )
+  check('the chain is every folder from the top down, the top itself excluded', foldersDownTo('/a/b/c'), ['/a', '/a/b', '/a/b/c'])
+  const trustJson = { projects: { '/r': { hasTrustDialogAccepted: true }, '/u': { hasTrustDialogAccepted: false } } }
+  ok('a trusted folder, or one under a trusted folder, is trusted', isTrustedFolder(trustJson, ['/r/sub', '/r']))
+  ok('an untrusted or unknown one is not', !isTrustedFolder(trustJson, ['/u', '/x']) && !isTrustedFolder(null, ['/r']))
+  check(
+    'inside a repo the trust walk stops at the repo’s own top (the CLI’s GS/WS)',
+    trustKeys('/h/repo', '/h/repo/src/deep', '/h/repo', 'darwin'),
+    ['/h/repo', '/h/repo', '/h/repo/src', '/h/repo/src/deep']
+  )
+  check('outside one it goes to the top', trustKeys('/h/loose', '/h/loose', null, 'darwin'), ['/h/loose', '/h', '/h/loose'])
+
+  // Fake every input (gotcha 74): a scratch home holding a repo, a subfolder and a linked worktree.
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'stoke-verify-mcpkey-')))
+  try {
+    const repo = join(home, 'work', 'app')
+    const sub = join(repo, 'src', 'deep')
+    const wt = join(repo, '.claude', 'worktrees', 'wt1')
+    mkdirSync(sub, { recursive: true })
+    mkdirSync(join(repo, '.git', 'worktrees', 'wt1'), { recursive: true })
+    mkdirSync(wt, { recursive: true })
+    // A linked worktree as `git worktree add` leaves it: .git a FILE, and git's back-pointers agree.
+    writeFileSync(join(wt, '.git'), `gitdir: ${join(repo, '.git', 'worktrees', 'wt1')}\n`)
+    writeFileSync(join(repo, '.git', 'worktrees', 'wt1', 'commondir'), '../..\n')
+    writeFileSync(join(repo, '.git', 'worktrees', 'wt1', 'gitdir'), `${join(wt, '.git')}\n`)
+    const plain = join(home, 'plain', 'folder')
+    mkdirSync(plain, { recursive: true })
+
+    check('a repo’s top is its own key', (await claudeProjectKey(repo)).key, repo)
+    check('a subfolder is filed under the repo’s top, not its own path', (await claudeProjectKey(sub)).key, repo)
+    check('a linked worktree is filed under the MAIN worktree’s top', (await claudeProjectKey(wt)).key, repo)
+    check('a folder in no repo is its own key', (await claudeProjectKey(plain)).key, plain)
+    ok('a Windows key is written with forward slashes, as the CLI writes it', !(await claudeProjectKey(plain, 'win32')).key.includes('\\'))
+
+    writeFileSync(
+      join(home, '.claude.json'),
+      JSON.stringify({
+        mcpServers: { github: { command: 'npx', args: ['gh'] }, 'turned-off': { command: 'uvx' } },
+        projects: { [repo]: { disabledMcpServers: ['turned-off'], mcpServers: { 'local-db': { command: 'pg-mcp' } } } }
+      })
+    )
+    // `.mcp.json` above the repo and at its top: both read, the nearer one winning.
+    writeFileSync(
+      join(home, 'work', '.mcp.json'),
+      JSON.stringify({ mcpServers: { 'outer-tool': { command: 'outer' }, shared: { command: 'from-outer' } } })
+    )
+    writeFileSync(
+      join(repo, '.mcp.json'),
+      JSON.stringify({ mcpServers: { 'repo-tool': { command: 'repo-mcp' }, shared: { command: 'from-repo' } } })
+    )
+    // The repo approves its own .mcp.json servers, in a file it could commit.
+    mkdirSync(join(sub, '.claude'), { recursive: true })
+    writeFileSync(join(sub, '.claude', 'settings.json'), JSON.stringify({ enableAllProjectMcpServers: true }))
+
+    const ticks = {
+      perAgent: { codex: ['stoke', 'github', 'turned-off', 'local-db', 'repo-tool', 'outer-tool', 'shared', 'loose-tool'] },
+      extra: {}
+    }
+    const at = async (cwd: string) =>
+      (
+        await resolveLaunchMcp({ cliId: 'codex', cwd, mcp: ticks, browser: BROWSER, reader: new ClaudeConfigReader({}, home), env: {}, home })
+      ).servers.map((s) => [s.name, s.command])
+    check(
+      'a tab in a subfolder: the repo’s local server, turned-off stays off, and the repo’s own approval of its .mcp.json does not count while untrusted',
+      await at(sub),
+      [['stoke', ''], ['github', 'npx'], ['local-db', 'pg-mcp']]
+    )
+    check('a tab in a worktree: the same, from the main worktree’s entry', await at(wt), [['stoke', ''], ['github', 'npx'], ['local-db', 'pg-mcp']])
+
+    // Trusted in Claude Code, the folder's committed approval counts, as the CLI's does.
+    const cfg = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'))
+    cfg.projects[repo].hasTrustDialogAccepted = true
+    writeFileSync(join(home, '.claude.json'), JSON.stringify(cfg))
+    check(
+      'trusted: every approved .mcp.json server along the chain, the nearer file’s entry winning',
+      await at(sub),
+      [['stoke', ''], ['github', 'npx'], ['outer-tool', 'outer'], ['shared', 'from-repo'], ['repo-tool', 'repo-mcp'], ['local-db', 'pg-mcp']]
+    )
+    // A trusted HOME trusts a loose folder under it, and never a repo cloned there.
+    delete cfg.projects[repo].hasTrustDialogAccepted
+    cfg.projects[home] = { hasTrustDialogAccepted: true }
+    writeFileSync(join(home, '.claude.json'), JSON.stringify(cfg))
+    check(
+      'a trusted home does not trust a repo under it: the repo’s own approval still does not count',
+      await at(sub),
+      [['stoke', ''], ['github', 'npx'], ['local-db', 'pg-mcp']]
+    )
+    writeFileSync(join(plain, '.mcp.json'), JSON.stringify({ mcpServers: { 'loose-tool': { command: 'loose' } } }))
+    mkdirSync(join(plain, '.claude'), { recursive: true })
+    writeFileSync(join(plain, '.claude', 'settings.json'), JSON.stringify({ enableAllProjectMcpServers: true }))
+    check(
+      'but it does trust a folder in no repo under it (where turned-off is on: no entry turns it off there)',
+      await at(plain),
+      [['stoke', ''], ['github', 'npx'], ['turned-off', 'uvx'], ['loose-tool', 'loose']]
+    )
+    // Untrusted, the user's own settings still approve by name.
+    mkdirSync(join(home, '.claude'), { recursive: true })
+    writeFileSync(join(home, '.claude', 'settings.json'), JSON.stringify({ enabledMcpjsonServers: ['repo-tool'] }))
+    check(
+      'untrusted, the user’s own settings still approve by name',
+      await at(sub),
+      [['stoke', ''], ['github', 'npx'], ['repo-tool', 'repo-mcp'], ['local-db', 'pg-mcp']]
+    )
+
+    // Settings' list reads the same chain for every folder ~/.claude.json knows, under the same gate.
+    const catEnv = { QWEN_CODE_SYSTEM_SETTINGS_PATH: join(home, 'qwen-system', 'settings.json') }
+    const catalogNow = () => readMcpCatalog(new ClaudeConfigReader({}, home), catEnv, home)
+    const untrusted = await catalogNow()
+    check('Settings lists a known folder’s approved .mcp.json server, with its folder', untrusted.project.map((s) => [s.name, s.folders]), [['repo-tool', [repo]]])
+    check('and the ones Claude may not run there yet, apart', untrusted.unapproved, [
+      { name: 'outer-tool', folders: [repo] },
+      { name: 'shared', folders: [repo] }
+    ])
+    mkdirSync(join(repo, '.claude'), { recursive: true })
+    writeFileSync(join(repo, '.claude', 'settings.json'), JSON.stringify({ enableAllProjectMcpServers: true }))
+    check('the repo’s own approval does not count while it is untrusted', (await catalogNow()).project.map((s) => s.name), ['repo-tool'])
+    cfg.projects[repo].hasTrustDialogAccepted = true
+    writeFileSync(join(home, '.claude.json'), JSON.stringify(cfg))
+    const trusted = await catalogNow()
+    check('once trusted, every server of its chain', [trusted.project.map((s) => [s.name, s.folders]), trusted.unapproved], [
+      [['outer-tool', [repo]], ['shared', [repo]], ['repo-tool', [repo]]],
+      []
+    ])
+    check('and the catalog read no error', trusted.error, null)
+    // A folder whose entry carries none of the MCP keys is still a known folder.
+    const bare = join(home, 'bare')
+    mkdirSync(bare, { recursive: true })
+    writeFileSync(join(bare, '.mcp.json'), JSON.stringify({ mcpServers: { 'bare-tool': { command: 'bare' } } }))
+    cfg.projects[bare] = { lastSessionId: 'x' }
+    writeFileSync(join(home, '.claude.json'), JSON.stringify(cfg))
+    writeFileSync(join(home, '.claude', 'settings.json'), JSON.stringify({ enabledMcpjsonServers: ['repo-tool', 'bare-tool'] }))
+    check('a folder whose ~/.claude.json entry has no MCP key is still scanned', (await catalogNow()).project.find((s) => s.name === 'bare-tool')?.folders, [bare])
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
 }
 
 console.log(failures ? `\n${failures} FAILED` : '\nall pass')
