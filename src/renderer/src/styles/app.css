@@ -6299,3 +6299,132 @@ summary.agent-picker-section:hover {
     display: none;
   }
 }
+
+/* ------------------------------------------------------------ chat history */
+
+/*
+ * The one-time offer (ChatOffer.tsx): a card in the launcher's own column, above
+ * the launcher card — in the page, never over it, so the docked browser cannot
+ * paint over it (gotcha 14) and it needs no `inert` or focus of its own.
+ */
+.chat-offer {
+  width: min(clamp(38rem, 60%, 56rem), 100%);
+  margin: min(10vh, var(--space-48)) auto 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-12);
+  padding: var(--space-12) var(--space-16);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg));
+}
+
+/* The launcher card below it keeps a normal gap instead of its own top margin. */
+.chat-offer + .launcher-card {
+  margin-top: var(--space-16);
+}
+
+.chat-offer-text {
+  flex: 1 1 20rem;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.chat-offer-text b {
+  color: var(--text);
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+
+.chat-offer-caps {
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+}
+
+/* A notice, not an error: "this chat cannot be reopened". */
+.banner[data-tone='info'] {
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg));
+}
+
+/* The sidebar's "In conversations" group. */
+.chat-hits {
+  margin-top: var(--space-8);
+}
+
+/* Which tool, how long ago, which folder: the badge and the age never shrink or wrap. */
+.chat-hit-meta {
+  min-width: 0;
+}
+
+.chat-badge,
+.chat-hit-age {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* "Set up chat history…", inline in a note; a text button with a declared box (gotcha 47). */
+.session-more.chat-setup {
+  display: inline;
+  padding: 0;
+  color: var(--accent-ink);
+}
+
+/* Settings › Chat history. */
+.segmented.chat-presets {
+  align-self: flex-start;
+}
+
+.chat-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-8);
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+.chat-sources {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+}
+
+.chat-source-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-8);
+}
+
+.chat-source-found {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.chat-caps {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+  gap: var(--space-8) var(--space-12);
+}
+
+.chat-cap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.chat-cap-input {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+}
+
+.chat-cap-input .input {
+  width: 7rem;
+}

@@ -1,4 +1,11 @@
-import { capsFor, cliFor, cliStatusLine, DEFAULT_CLI, isClaudeCode } from '@shared/codingClis'
+import { capsFor, cliFor, cliStatusLine, DEFAULT_CLI, isClaudeCode, resumableClis } from '@shared/codingClis'
+import {
+  CHAT_SEARCH_MIN_CHARS,
+  chatOpenAction,
+  type ChatDetection,
+  type ChatIndexStatus,
+  type ChatSearchHit
+} from '@shared/chatIndex'
 import type { CodingCliDetection, CodingCliId } from '@shared/codingClis'
 import { installedAgents, resolveDefaultAgent, visibleAgents } from '@shared/agents'
 import { paintAgentColors, type AgentColors } from '@shared/agentColors'
@@ -58,6 +65,7 @@ import { BusyDialog } from './components/BusyDialog'
 import { CommandPalette } from './components/CommandPalette'
 import { IconClose } from './components/Icons'
 import { Launcher, type LaunchTarget } from './components/Launcher'
+import { ChatOffer } from './components/ChatOffer'
 import { PausedSession } from './components/PausedSession'
 import { Resizer } from './components/Resizer'
 import { SettingsSheet, type SectionId } from './components/SettingsSheet'
@@ -340,6 +348,23 @@ export function App(): React.JSX.Element {
   const [sessionIndex, setSessionIndex] = useState<SessionIndexEntry[] | null>(null)
   const [sessionIndexLoading, setSessionIndexLoading] = useState(false)
   const [sessionIndexError, setSessionIndexError] = useState<string | null>(null)
+
+  /*
+   * Chat history (shared/chatIndex.ts). The index's status is main's, pushed
+   * while a pass runs; detection is names and sizes only, taken when the offer
+   * or Settings needs it; body search is its own debounced, numbered request
+   * (below, beside `loadSessionIndex`'s numbering). One copy each, read by the
+   * offer card, Settings › Chat history and the sidebar.
+   */
+  const [chatStatus, setChatStatus] = useState<ChatIndexStatus | null>(null)
+  const [chatDetection, setChatDetection] = useState<ChatDetection | null>(null)
+  const [chatSearch, setChatSearch] = useState<{
+    state: 'off' | 'short' | 'searching' | 'ready' | 'error'
+    hits: ChatSearchHit[]
+    error?: string | null
+  }>({ state: 'off', hits: [] })
+  /** "This chat cannot be reopened", said where the error banner goes but as a note. */
+  const [chatNotice, setChatNotice] = useState<string | null>(null)
 
   /*
    * The app always has at least one tab: a New Project tab is a real tab now,
@@ -856,6 +881,43 @@ export function App(): React.JSX.Element {
       }
     )
   }, [])
+
+  /*
+   * Chat history's body search: debounced, and numbered like the index above,
+   * so a slow answer never lands over a newer query. Asked only while indexing
+   * is on and the query is long enough to mean something; a pass that ends
+   * while a query is up asks again, so what it just indexed shows.
+   */
+  const chatIndexOn = settings?.chatIndex === 'on'
+  const chatRequest = useRef(0)
+  const chatPassEnded = chatStatus?.lastPass ? chatStatus.lastPass.startedMs + chatStatus.lastPass.ms : 0
+  useEffect(() => {
+    const q = query.trim()
+    const req = ++chatRequest.current
+    if (!q || !chatIndexOn) {
+      setChatSearch({ state: 'off', hits: [] })
+      return
+    }
+    if (q.length < CHAT_SEARCH_MIN_CHARS) {
+      setChatSearch({ state: 'short', hits: [] })
+      return
+    }
+    setChatSearch((cur) => ({ state: 'searching', hits: cur.hits }))
+    const t = window.setTimeout(() => {
+      window.stoke.chats.search(q).then(
+        (hits) => {
+          if (req === chatRequest.current) setChatSearch({ state: 'ready', hits })
+        },
+        (e: unknown) => {
+          if (req === chatRequest.current) setChatSearch({ state: 'error', hits: [], error: ipcErrorMessage(e) })
+        }
+      )
+    }, 180)
+    return () => window.clearTimeout(t)
+  }, [query, chatIndexOn, chatPassEnded])
+
+  // The index's status: pushed by main while a pass runs, read once when it matters.
+  useEffect(() => window.stoke.chats.onStatus(setChatStatus), [])
 
   const patchSettings = useCallback(async (patch: Partial<Settings>): Promise<void> => {
     const next = await window.stoke.settings.set(patch)
@@ -1873,6 +1935,8 @@ export function App(): React.JSX.Element {
       cli?: CodingCliId
       /** Install these agents in this tab instead of running one (agents.ts). */
       install?: CodingCliId[]
+      /** Another agent's chat to reopen by its own id (chat search; `resumeArgs`). */
+      agentResumeId?: string
     }): Promise<boolean> => {
       setError(null)
       const launchCli = opts.cli ?? DEFAULT_CLI
@@ -1907,6 +1971,8 @@ export function App(): React.JSX.Element {
                 ? opts.continueLast === true || opts.resume === true
                 : undefined,
           install: opts.install,
+          // Never a Claude flag: Claude's resume is `sessionId` + `resume` above.
+          agentResumeId: isClaudeCode(launchCli) ? undefined : opts.agentResumeId,
           permissionMode,
           model: sessionModel,
           effort: sessionEffort,
@@ -3358,6 +3424,27 @@ export function App(): React.JSX.Element {
     !!settings && (!welcomeSettled || (firstRunAsking && !firstRunWaitOver && !agentDetectFailed))
 
   /*
+   * The chat-history offer: once, to a new install and an existing one alike
+   * (a settings file with no `chatIndex` reads as `unasked`), and only after
+   * the first-run chain has settled — the splash decided and gone, the agent
+   * picker answered, closed, or never coming. It is a card in the launcher,
+   * never another modal in that chain (gotchas 88, 93).
+   */
+  const pickerSettled =
+    !!settings && !agentPickerOpen && (settings.agents.chosen !== null || agentDetectFailed || firstRunWaitOver || pickerAskedState)
+  const chatOfferVisible =
+    !!settings && settings.chatIndex === 'unasked' && welcomeSettled && welcome === null && !firstRunPending && pickerSettled
+  const chatMode = settings?.chatIndex
+  useEffect(() => {
+    if (!chatOfferVisible && !settingsOpen) return
+    void window.stoke.chats.detect().then(setChatDetection, () => undefined)
+  }, [chatOfferVisible, settingsOpen])
+  useEffect(() => {
+    if (chatMode === undefined || (chatMode !== 'on' && !settingsOpen)) return
+    void window.stoke.chats.status().then(setChatStatus, () => undefined)
+  }, [chatMode, settingsOpen])
+
+  /*
    * Everything behind a modal is inert while it is up — the title bar, the body
    * row and the status bar, which are the shell's three rows; the overlays are
    * their siblings and stay live (QA L1). The welcome splash counts: it said
@@ -4204,6 +4291,44 @@ export function App(): React.JSX.Element {
     [projects, startSession, activeNewTabId, closeTab, resumeTabFor]
   )
 
+  /**
+   * A chat-search hit, pressed. A Claude Code chat resumes through the path
+   * every resume takes (main's `resumeOrMint`, gotcha 81); another agent's
+   * reopens in that agent only when it is installed and can be handed the id
+   * (`chatOpenAction`); anything else says what it is instead of opening
+   * something the user did not pick.
+   */
+  const openChat = useCallback(
+    (hit: ChatSearchHit): void => {
+      setChatNotice(null)
+      const action = chatOpenAction(hit, { installed: installedAgentIds, resumable: resumableClis() })
+      if (action.kind === 'notice') {
+        setChatNotice(action.message)
+        return
+      }
+      if (action.kind === 'claude') {
+        resumeSession({
+          id: action.sessionId,
+          projectPath: action.cwd,
+          title: hit.title,
+          firstPrompt: hit.firstPrompt,
+          modified: hit.updatedMs ?? 0
+        })
+        return
+      }
+      const project = projects.find((p) => p.path === action.cwd)
+      void startSession({
+        cwd: action.cwd,
+        cli: action.cli,
+        name: project?.label ?? project?.name ?? baseName(action.cwd),
+        title: hit.title ?? undefined,
+        agentResumeId: action.sessionId,
+        replaceTabId: activeNewTabId ?? undefined
+      })
+    },
+    [installedAgentIds, resumeSession, projects, startSession, activeNewTabId]
+  )
+
   /* ------------------------------------------------------------ launcher */
 
   const activeLaunch = tabs.find((t) => t.id === activeTabId && t.kind === 'new')?.launch
@@ -4608,6 +4733,9 @@ export function App(): React.JSX.Element {
                 activeProfile={activeProfile?.id ?? null}
                 onSelectProfile={(id) => void patchSettings({ activeProfile: id })}
                 projectHints={query.trim() ? allProjectHints : projectHints}
+                chatSearch={chatSearch}
+                onOpenChat={openChat}
+                onSetUpChats={() => openSettings('chats')}
               />
             </div>
             <Resizer
@@ -4626,6 +4754,15 @@ export function App(): React.JSX.Element {
             <div className="banner" role="alert">
               <span style={{ flex: 1 }}>{error}</span>
               <button className="btn" data-variant="ghost" onClick={() => setError(null)}>
+                Dismiss
+              </button>
+            </div>
+          )}
+
+          {chatNotice && (
+            <div className="banner" data-tone="info" role="status">
+              <span style={{ flex: 1 }}>{chatNotice}</span>
+              <button className="btn" data-variant="ghost" onClick={() => setChatNotice(null)}>
                 Dismiss
               </button>
             </div>
@@ -4939,6 +5076,19 @@ export function App(): React.JSX.Element {
               }}
               onContinue={continueHere}
               onResume={(s) => resumeSession(s, { fromTabId: activeNewTabId, launch: launchNow.choice })}
+              above={
+                chatOfferVisible && settings ? (
+                  <ChatOffer
+                    detection={chatDetection}
+                    enabled={settings.chatIndexOptions.sources}
+                    caps={settings.chatIndexOptions.caps}
+                    armedAt={launcherArmedAt}
+                    onIndex={() => void patchSettings({ chatIndex: 'on' })}
+                    onNotNow={() => void patchSettings({ chatIndex: 'off' })}
+                    onChoose={() => openSettings('chats')}
+                  />
+                ) : null
+              }
             />
           )}
         </div>
@@ -5059,6 +5209,7 @@ export function App(): React.JSX.Element {
             }
           }}
           onRestartToUpdate={requestSelfRestart}
+          chats={{ status: chatStatus, detection: chatDetection }}
           sshKeys={{
             enrollingHostId: sshEnrolling,
             onSetUpKey: (hostId) => {
