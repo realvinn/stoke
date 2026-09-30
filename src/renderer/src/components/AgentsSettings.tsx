@@ -19,7 +19,7 @@ import {
   type EndpointMode
 } from '@shared/agents'
 import type { Settings } from '@shared/types'
-import { SHARED_SKILLS_DIR, skillReport, type SkillDirScan } from '@shared/skills'
+import { CLAUDE_SHARED_PLUGIN, SHARED_SKILLS_DIR, skillReport, type SkillDirScan } from '@shared/skills'
 import { cliFor } from '@shared/codingClis'
 import { Spinner } from './Spinner'
 
@@ -176,6 +176,8 @@ export function AgentsSettings({
 
       <SkillsReport
         agents={CODING_CLIS.map((c) => c.id).filter((id) => shown(id) && installed.has(id))}
+        share={agents.shareSkillsToClaude}
+        onShare={(on) => patchAgents({ ...agentsRef.current, shareSkillsToClaude: on })}
       />
 
       <div className="agent-settings">
@@ -394,9 +396,19 @@ function AgentRow({
 /*
  * Which skills each of your agents can see. Read-only: it says where a skill
  * has to live to reach everyone, and never moves one (shared/skills.ts says
- * why a sync would be worse than the problem).
+ * why a sync would be worse than the problem). The one thing it switches is
+ * the launch-time lending of the shared folder to Claude Code, which writes
+ * nothing into any agent's folder either (skillsProject.ts).
  */
-function SkillsReport({ agents }: { agents: CodingCliId[] }): React.JSX.Element | null {
+function SkillsReport({
+  agents,
+  share,
+  onShare
+}: {
+  agents: CodingCliId[]
+  share: boolean
+  onShare: (on: boolean) => void
+}): React.JSX.Element {
   const [scans, setScans] = useState<SkillDirScan[] | null>(null)
   useEffect(() => {
     let live = true
@@ -407,23 +419,48 @@ function SkillsReport({ agents }: { agents: CodingCliId[] }): React.JSX.Element 
       live = false
     }
   }, [])
-  if (!scans || agents.length === 0) return null
-  const report = skillReport(scans, agents)
-  if (report.total === 0) return null
+  const report = scans && agents.length > 0 ? skillReport(scans, agents, { shareToClaude: share }) : null
   const label = (id: CodingCliId): string => cliFor(id).label
   return (
-    <div className="field">
+    <div className="field" data-testid="skills-report">
       <span className="field-label">Skills</span>
       <span className="field-hint">
         Every agent here reads the same SKILL.md format, from different folders.{' '}
-        <span className="mono">{SHARED_SKILLS_DIR}</span> is the one nearly all of them share;
-        Claude Code reads only <span className="mono">~/.claude/skills</span>, so a skill kept in the
-        shared folder and linked into Claude’s reaches all of them.
+        <span className="mono">{SHARED_SKILLS_DIR}</span> is the one nearly all of them share.
+        Claude Code reads only <span className="mono">~/.claude/skills</span> and its own plugins.
       </span>
+      <label style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--space-8)' }}>
+        <input type="checkbox" checked={share} onChange={(e) => onShare(e.target.checked)} />
+        Lend Claude Code the shared skills
+      </label>
       <span className="field-hint">
-        {report.perAgent.map((a) => `${label(a.id)} ${a.visible}`).join(' · ')} — of {report.total}.
+        Each local Claude Code session also gets the skills in{' '}
+        <span className="mono">{SHARED_SKILLS_DIR}</span> it would not otherwise see, as a plugin
+        for that session only: linked, not copied, and nothing is written into{' '}
+        <span className="mono">~/.claude</span>. Claude names them{' '}
+        <span className="mono">{CLAUDE_SHARED_PLUGIN}:</span>
+        <em>skill</em>, so a shared <span className="mono">pdf</span> is{' '}
+        <span className="mono">/{CLAUDE_SHARED_PLUGIN}:pdf</span>. A project’s{' '}
+        <span className="mono">skillOverrides</span> still apply. SSH tabs are not lent anything.
       </span>
-      {report.partial.length > 0 && (
+      {report && share && (
+        <span className="field-hint">
+          {report.projected.length === 0
+            ? 'Claude Code already sees every shared skill.'
+            : `${report.projected.length} shared skill${report.projected.length === 1 ? '' : 's'} reach Claude Code this way: ${report.projected.join(', ')}.`}
+        </span>
+      )}
+      <span className="field-hint" data-tone="warning">
+        <span className="mono">claude import</span> does the opposite: it copies the shared folder
+        into <span className="mono">~/.claude/skills</span>, and those copies drift from the originals
+        on the next edit.
+      </span>
+      {report && report.total > 0 && (
+        <span className="field-hint">
+          {report.perAgent.map((a) => `${label(a.id)} ${a.visible}`).join(' · ')} — of {report.total}.
+        </span>
+      )}
+      {report && report.partial.length > 0 && (
         <details>
           <summary className="field-hint">
             {report.partial.length} skill{report.partial.length === 1 ? '' : 's'} some of your agents
@@ -438,7 +475,7 @@ function SkillsReport({ agents }: { agents: CodingCliId[] }): React.JSX.Element 
           </ul>
         </details>
       )}
-      {report.duplicated.length > 0 && (
+      {report && report.duplicated.length > 0 && (
         <details>
           <summary className="field-hint" data-tone="warning">
             {report.duplicated.length} skill{report.duplicated.length === 1 ? ' exists' : 's exist'} as
