@@ -127,7 +127,7 @@ import { readSessionState, sessionStateFile, writeSessionState } from './worklog
 import { invalidateRecall, recall, scanOutcomeFor } from './worklog/recall.ts'
 import type { CreateProfileInput } from '@shared/profiles'
 import type { CliRunResult, RemoteState, StokeCommandState, VoiceState } from '@shared/api'
-import { flushSettings, getSettings, onSettingsChanged, setSettings } from './store.ts'
+import { flushSettings, getSettings, initSecretStore, onSettingsChanged, setSettings } from './store.ts'
 import {
   gitBashPath,
   readSessionEvents,
@@ -3391,6 +3391,13 @@ if (!app.requestSingleInstanceLock(launchRequest ? { stokeCli: launchRequest } :
   })
 
   app.whenReady().then(() => {
+    /*
+     * Before anything reads a setting: open secrets.json and migrate any key
+     * still in plain text in settings.json (secrets.ts). `safeStorage` is not
+     * usable before `ready` on Windows and Linux, and the window's first paint
+     * and every IPC answer should already see the keys.
+     */
+    initSecretStore()
     protocol.handle(WALLPAPER_SCHEME, (request) => {
       const file = wallpaperFileFor(app.getPath('userData'), request.url)
       if (!file) return new Response('not found', { status: 404 })

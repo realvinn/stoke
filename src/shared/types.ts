@@ -1012,7 +1012,11 @@ export interface Settings {
   remote: {
     enabled: boolean
     port: number
-    /** Bearer key; generated on first use. Also carried in the QR link. */
+    /**
+     * Bearer key; generated on first use. Also carried in the QR link. A secret
+     * at rest (shared/secrets.ts) that never leaves this machine, not even in a
+     * setup export with keys ticked: it opens a shell here.
+     */
     token: string
     /**
      * Which transport the user CHOSE, as distinct from what the server binds.
@@ -1169,7 +1173,9 @@ export interface Settings {
   notifications: NotificationMode
   /**
    * API keys and how local Claude Code sessions authenticate.
-   * See providers.ts. Keys stay in settings.json on this machine.
+   * See providers.ts. Keys stay on this machine: sealed in secrets.json by
+   * safeStorage where a key store protects them, empty strings in settings.json
+   * (main/secrets.ts; the paths are registered in shared/secrets.ts).
    */
   providers: ProviderSettings
   /**
