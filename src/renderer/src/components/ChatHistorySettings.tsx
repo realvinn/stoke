@@ -1,13 +1,15 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import type { Settings } from '@shared/types'
 import {
   CHAT_CAP_LIMITS,
+  CHAT_IMPORTS,
   CHAT_PRESETS,
   CHAT_SOURCES,
   capsSentence,
   chatSourceInfo,
   formatBytes,
   formatCount,
+  importDisclosure,
   presetOf,
   sourceDisclosure,
   type ChatDetection,
@@ -17,7 +19,7 @@ import {
 } from '@shared/chatIndex'
 import { FieldHint } from './FieldHint'
 import { Spinner } from './Spinner'
-import { relativeTime } from '../lib/format'
+import { ipcErrorMessage, relativeTime } from '../lib/format'
 import { useDraft } from '../lib/useDraft'
 
 interface Props {
@@ -69,6 +71,101 @@ export function ChatHistorySettings({ settings, onPatch, status, detection }: Pr
     void run.finally(() => setBusy(null))
   }
 
+  /*
+   * Importing an export. Claimed in a ref before the await (gotcha 20): a
+   * second press, or a second file dropped while the first is read, is
+   * refused here rather than started beside it.
+   */
+  const [importing, setImporting] = useState(false)
+  const importingRef = useRef(false)
+  const [importNote, setImportNote] = useState<{ tone: 'success' | 'warning'; text: string } | null>(null)
+  const [removing, setRemoving] = useState<number | null>(null)
+  const runImport = (path: string | null): void => {
+    if (importingRef.current) return
+    importingRef.current = true
+    setImporting(true)
+    setImportNote(null)
+    window.stoke.chats
+      .importExport(path)
+      .then(
+        (r) => {
+          if (!r) return // the dialog was cancelled
+          if (r.ok) {
+            const text = `${CHAT_IMPORTS[r.record.kind].label}, ${r.record.fileName}: ${importDisclosure(r.record, opts.caps)}`
+            setImportNote({ tone: r.warning ? 'warning' : 'success', text: r.warning ? `${text} ${r.warning}` : text })
+          } else {
+            setImportNote({ tone: 'warning', text: r.error })
+          }
+        },
+        (e: unknown) => setImportNote({ tone: 'warning', text: ipcErrorMessage(e) })
+      )
+      .finally(() => {
+        importingRef.current = false
+        setImporting(false)
+      })
+  }
+  const removeImport = (id: number): void => {
+    if (removing !== null) return
+    setRemoving(id)
+    void window.stoke.chats.removeImport(id).finally(() => setRemoving(null))
+  }
+
+  /*
+   * The drop zone. Only a drag carrying files is taken, and `dragover` is
+   * cancelled so a drop fires at all (gotcha 59) — without it Chromium would
+   * navigate to the file, which `will-navigate` refuses as the backstop. The
+   * depth counter keeps the ring from flickering off as the drag crosses a
+   * child. The path comes from the preload (`pathForFile`): `File.path` is gone.
+   */
+  const dropDepth = useRef(0)
+  const [dropOver, setDropOver] = useState(false)
+  const carriesFiles = (e: React.DragEvent): boolean => Array.from(e.dataTransfer.types).includes('Files')
+  const dropProps = {
+    onDragEnter: (e: React.DragEvent): void => {
+      if (!carriesFiles(e)) return
+      e.preventDefault()
+      e.stopPropagation()
+      dropDepth.current++
+      setDropOver(true)
+    },
+    onDragOver: (e: React.DragEvent): void => {
+      if (!carriesFiles(e)) return
+      e.preventDefault()
+      e.stopPropagation()
+      e.dataTransfer.dropEffect = on && !importing ? 'copy' : 'none'
+    },
+    onDragLeave: (e: React.DragEvent): void => {
+      if (!carriesFiles(e)) return
+      e.stopPropagation()
+      dropDepth.current = Math.max(0, dropDepth.current - 1)
+      if (dropDepth.current === 0) setDropOver(false)
+    },
+    onDrop: (e: React.DragEvent): void => {
+      if (!carriesFiles(e)) return
+      e.preventDefault()
+      e.stopPropagation()
+      dropDepth.current = 0
+      setDropOver(false)
+      if (!on) {
+        setImportNote({ tone: 'warning', text: 'Turn on chat history above to import an export.' })
+        return
+      }
+      const files = Array.from(e.dataTransfer.files)
+      if (files.length !== 1) {
+        setImportNote({ tone: 'warning', text: 'Drop one export at a time.' })
+        return
+      }
+      const path = window.stoke.pathForFile(files[0])
+      if (!path) {
+        setImportNote({ tone: 'warning', text: 'That drop has no file on disk behind it. Save the export first, then drop the saved file.' })
+        return
+      }
+      runImport(path)
+    }
+  }
+  const imports = status?.imports ?? []
+  const importedChats = imports.reduce((n, r) => n + r.indexed, 0)
+
   const progress = status?.progress
   const lastPass = status?.lastPass
   return (
@@ -86,10 +183,10 @@ export function ChatHistorySettings({ settings, onPatch, status, detection }: Pr
             <FieldHint
               more={
                 <>
-                  Stoke reads the chats your coding tools keep on this computer — only what you and the model
-                  wrote, never tool output, images or pasted keys — and keeps a private copy of that text so the
-                  sidebar&apos;s search can look inside them. The copy is a file only your account can read, and it
-                  is never offered to the phone or to the browser tools.
+                  Stoke reads the chats your coding tools keep on this computer, and any claude.ai or ChatGPT export
+                  you import below — only what you and the model wrote, never tool output, images or pasted keys —
+                  and keeps a private copy of that text so the sidebar&apos;s search can look inside them. The copy is
+                  a file only your account can read, and it is never offered to the phone or to the browser tools.
                 </>
               }
             >
@@ -182,6 +279,71 @@ export function ChatHistorySettings({ settings, onPatch, status, detection }: Pr
       </div>
 
       <div className="field">
+        <span className="field-label">Imported chats</span>
+        <FieldHint
+          more={
+            <>
+              claude.ai and ChatGPT keep your chats on their servers, so the only way to search them here is an export:
+              in claude.ai, Settings › Privacy › Export data; in ChatGPT, Settings › Data controls › Export data. Each
+              emails a link to a .zip. Stoke reads only the conversations file inside it — never the images or anything
+              else — and keeps each message&apos;s text, who wrote it and when, in this index and nowhere else.
+              Importing the same export again, or a newer one, updates those conversations in place rather than adding
+              copies. The limits below apply as they do to your tools: the newest {formatCount(opts.caps.perSource)} per
+              service, {formatCount(opts.caps.total)} chats in all. Gemini and Grok exports are not read: neither has a
+              documented format.
+            </>
+          }
+        >
+          A claude.ai or ChatGPT export (.zip, or its conversations.json), searched with everything else.
+        </FieldHint>
+        <div
+          className="chat-import-drop"
+          data-over={dropOver ? 'true' : undefined}
+          data-disabled={!on ? 'true' : undefined}
+          {...dropProps}
+        >
+          <button className="btn" disabled={!on || importing} aria-busy={importing} onClick={() => runImport(null)}>
+            {importing && <Spinner />}
+            {importing ? 'Importing…' : 'Import an export…'}
+          </button>
+          <span className="field-hint">{on ? 'or drop the .zip here' : 'Turn on chat history above to import.'}</span>
+        </div>
+        {importNote && (
+          <FieldHint tone={importNote.tone === 'warning' ? 'warning' : undefined}>
+            <span role="status">{importNote.text}</span>
+          </FieldHint>
+        )}
+        {imports.length > 0 && (
+          <div className="chat-imports">
+            {imports.map((r) => (
+              <div key={r.id} className="chat-import">
+                <div className="chat-import-main">
+                  <span className="chat-source-head">
+                    <span>{CHAT_IMPORTS[r.kind].label}</span>
+                    <span className="chat-source-found truncate" title={r.fileName}>
+                      {r.fileName} · {formatBytes(r.bytes)} · {relativeTime(r.importedMs)}
+                    </span>
+                  </span>
+                  <FieldHint>{importDisclosure(r, opts.caps)}</FieldHint>
+                </div>
+                <button
+                  className="btn"
+                  data-variant="ghost"
+                  disabled={removing !== null || importing}
+                  aria-busy={removing === r.id}
+                  onClick={() => removeImport(r.id)}
+                  title="Remove this file’s conversations from the index"
+                >
+                  {removing === r.id && <Spinner />}
+                  Remove
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="field">
         <span className="field-label">Limits</span>
         <div className="segmented chat-presets" role="group" aria-label="How much to index">
           {(Object.keys(PRESET_LABELS) as ChatPreset[]).map((id) => (
@@ -219,13 +381,20 @@ export function ChatHistorySettings({ settings, onPatch, status, detection }: Pr
               — {formatBytes(status.storeBytes)}, {formatCount(status.chats)} chats, {formatCount(status.messages)} messages.
             </>
           )}
-          {' '}A chat deleted by its own tool leaves the index at the next pass.
+          {' '}A chat deleted by its own tool leaves the index at the next pass; an imported one stays until you
+          remove its import or delete the index.
         </FieldHint>
         <div className="btn-row">
           <button className="btn" disabled={!on || running} onClick={() => void window.stoke.chats.indexNow()}>
             Index now
           </button>
-          <button className="btn" disabled={!on || busy !== null} aria-busy={busy === 'rebuild'} onClick={() => act('rebuild')}>
+          <button
+            className="btn"
+            disabled={!on || busy !== null}
+            aria-busy={busy === 'rebuild'}
+            onClick={() => act('rebuild')}
+            title="Read every tool again from scratch. Imported chats are kept."
+          >
             {busy === 'rebuild' && <Spinner />}
             Rebuild
           </button>
@@ -254,7 +423,10 @@ export function ChatHistorySettings({ settings, onPatch, status, detection }: Pr
         {confirmDelete && (
           <FieldHint tone="warning">
             This deletes Stoke&apos;s copy only. Your chats in each tool are not touched.
-            {on ? ' Indexing is still on, so the next pass builds it again; turn it off above to keep it gone.' : ''}
+            {importedChats > 0
+              ? ` It also removes the ${formatCount(importedChats)} imported ${importedChats === 1 ? 'conversation' : 'conversations'}, which only this copy holds; import the files again to bring them back.`
+              : ''}
+            {on ? ' Indexing is still on, so the next pass builds it again from your tools; turn it off above to keep it gone.' : ''}
           </FieldHint>
         )}
       </div>

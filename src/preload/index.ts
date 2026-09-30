@@ -79,7 +79,10 @@ const api: StokeApi = {
     search: (query: string) => ipcRenderer.invoke(CH.chatsSearch, query),
     indexNow: () => ipcRenderer.invoke(CH.chatsIndexNow),
     rebuild: () => ipcRenderer.invoke(CH.chatsRebuild),
-    deleteIndex: () => ipcRenderer.invoke(CH.chatsDelete)
+    deleteIndex: () => ipcRenderer.invoke(CH.chatsDelete),
+    importExport: (path?: string | null) => ipcRenderer.invoke(CH.chatsImport, path ?? null),
+    removeImport: (importId: number) => ipcRenderer.invoke(CH.chatsRemoveImport, importId),
+    open: (chatId: number) => ipcRenderer.invoke(CH.chatsOpen, chatId)
   },
 
   workspace: {

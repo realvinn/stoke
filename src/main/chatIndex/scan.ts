@@ -209,8 +209,15 @@ export async function runPass(store: ChatStore, plan: PassPlan, hooks: PassHooks
     }
     return { id, listing, admitted, duplicates, cappedBy }
   })
+  /*
+   * Imported conversations count toward the total: "chats in all" is every
+   * chat the index holds, not every chat a pass reads. They are never ranked
+   * here — a pass could not bring one back — so they take their room first,
+   * and an import is itself held to the total (`capImports`).
+   */
+  const room = Math.max(0, caps.total - store.importedCount())
   const everyone = plans.flatMap((p) => p.admitted).sort((a, b) => b.mtimeMs - a.mtimeMs)
-  const admitted = new Set(everyone.slice(0, caps.total).map((c) => keyOf(c.source, c.nativeId)))
+  const admitted = new Set(everyone.slice(0, room).map((c) => keyOf(c.source, c.nativeId)))
   for (const p of plans) {
     const before = p.admitted.length
     p.admitted = p.admitted.filter((c) => admitted.has(keyOf(c.source, c.nativeId)))

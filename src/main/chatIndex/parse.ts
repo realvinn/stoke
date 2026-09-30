@@ -132,7 +132,8 @@ export function cutBytes(s: string, max: number): string {
   return buf.subarray(0, end).toString('utf8')
 }
 
-function stamp(v: unknown): number | null {
+/** An epoch (seconds or ms) or an ISO string, as ms; null when it is neither. */
+export function stamp(v: unknown): number | null {
   if (typeof v === 'number' && Number.isFinite(v)) return v > 1e12 ? v : v * 1000
   if (typeof v === 'string') {
     const n = Date.parse(v)
@@ -141,17 +142,19 @@ function stamp(v: unknown): number | null {
   return null
 }
 
-function note(meta: ChatMeta, at: number | null): void {
+/** Widen a chat's first and last stamps to take in `at`. */
+export function note(meta: ChatMeta, at: number | null): void {
   if (at === null) return
   if (meta.createdMs === null || at < meta.createdMs) meta.createdMs = at
   if (meta.updatedMs === null || at > meta.updatedMs) meta.updatedMs = at
 }
 
-function firstPromptOf(text: string): string {
+export function firstPromptOf(text: string): string {
   return text.replace(/\s+/g, ' ').trim().slice(0, 300)
 }
 
-function push(fold: Fold, role: 'user' | 'assistant', raw: string, at: number | null, redact: boolean): void {
+/** One message, cleaned (`cleanText`); nothing when no text is left. The first user message is the first prompt. */
+export function push(fold: Fold, role: 'user' | 'assistant', raw: string, at: number | null, redact: boolean): void {
   const text = cleanText(raw, { redact })
   if (!text) return
   fold.messages.push({ role, text, atMs: at })

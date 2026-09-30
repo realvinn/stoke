@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import type { Project, ProjectMeta, SessionIndexEntry, SessionMeta } from '@shared/types'
-import { chatSourceInfo, type ChatSearchHit } from '@shared/chatIndex'
+import { chatOriginBadge, type ChatSearchHit } from '@shared/chatIndex'
 import { ContextBar } from './ContextMeter'
 import type { ResolvedProfile } from '@shared/profiles'
 import { foldGroup } from '@shared/profiles'
@@ -745,7 +745,7 @@ export function Sidebar({
                         <Highlight text={at.text} ranges={at.ranges} />
                       </span>
                       <span className="session-meta chat-hit-meta">
-                        <span className="pill chat-badge">{chatSourceInfo(h.source).badge}</span>
+                        <span className="pill chat-badge">{chatOriginBadge(h.source)}</span>
                         <span className="chat-hit-age">{relativeTime(h.updatedMs)}</span>
                         {h.cwd && <span className="truncate">{baseName(h.cwd)}</span>}
                       </span>

@@ -14,8 +14,10 @@ import { join } from 'node:path'
 import { rmSync } from 'node:fs'
 import { CHAT_SOURCE_IDS, emptyChatStatus, type ChatIndexStatus, type ChatPassSummary } from '../../shared/chatIndex.ts'
 import { ChatStore, STORE_FILE } from './store.ts'
-import { runPass } from './scan.ts'
+import { runPass, STORE_MAX_TEXT_BYTES } from './scan.ts'
 import { detectSource, discovery } from './sources.ts'
+import { importExport } from './importer.ts'
+import { openChat } from './viewer.ts'
 import type { WorkerData, WorkerEvent, WorkerReply, WorkerRequest } from './protocol.ts'
 
 const port = parentPort
@@ -25,6 +27,8 @@ const { dir } = workerData as WorkerData
 let store: ChatStore | null = null
 let running: Promise<ChatPassSummary> | null = null
 let cancel = false
+/** An import in progress: one at a time, and Delete index waits for it like a pass. */
+let importing: Promise<unknown> | null = null
 let progress: ChatIndexStatus['progress'] = null
 
 /** The store, opened on first need — and never CREATED just to answer a status or a search. */
@@ -67,6 +71,7 @@ function fail(id: number, err: unknown): void {
 async function settle(): Promise<void> {
   cancel = true
   if (running) await running.catch(() => null)
+  if (importing) await importing.catch(() => null)
 }
 
 port.on('message', async (msg: WorkerRequest) => {
@@ -128,6 +133,50 @@ port.on('message', async (msg: WorkerRequest) => {
         store?.close()
         store = null
         reply(msg.id, null)
+        return
+      }
+      case 'import': {
+        if (importing) return reply(msg.id, { ok: false, error: 'An import is already running.' })
+        cancel = false
+        const s = openStore(true)!
+        const job = importExport(s, { path: msg.path, options: msg.options, maxTextBytes: STORE_MAX_TEXT_BYTES }, {
+          now: Date.now,
+          yieldTurn: () => new Promise((r) => setImmediate(r)),
+          cancelled: () => cancel
+        })
+        importing = job
+        try {
+          reply(msg.id, await job)
+        } finally {
+          importing = null
+          emit(true)
+        }
+        return
+      }
+      case 'open': {
+        const s = openStore(false)
+        reply(msg.id, s ? openChat(s, msg.chatId, msg.env, { redact: msg.redact, fileBytes: Math.max(64, Math.floor(msg.fileMb * 1024 * 1024)) }) : null)
+        return
+      }
+      case 'removeImport': {
+        const s = openStore(false)
+        if (s) {
+          s.removeImport(msg.importId)
+          s.tidy(false)
+        }
+        reply(msg.id, null)
+        emit(true)
+        return
+      }
+      case 'rebuild': {
+        await settle()
+        const s = openStore(false)
+        if (s) {
+          s.clearLocal()
+          s.tidy(true)
+        }
+        reply(msg.id, null)
+        emit(true)
         return
       }
     }

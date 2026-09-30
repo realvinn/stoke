@@ -68,6 +68,7 @@ import { CommandPalette } from './components/CommandPalette'
 import { IconClose } from './components/Icons'
 import { Launcher, type LaunchTarget } from './components/Launcher'
 import { ChatOffer } from './components/ChatOffer'
+import { ChatViewer, type ChatViewTarget } from './components/ChatViewer'
 import { PausedSession } from './components/PausedSession'
 import { Resizer } from './components/Resizer'
 import { SettingsSheet, type SectionId } from './components/SettingsSheet'
@@ -374,8 +375,13 @@ export function App(): React.JSX.Element {
     hits: ChatSearchHit[]
     error?: string | null
   }>({ state: 'off', hits: [] })
-  /** "This chat cannot be reopened", said where the error banner goes but as a note. */
-  const [chatNotice, setChatNotice] = useState<string | null>(null)
+  /**
+   * The read-only chat viewer: a hit that cannot be taken back up, open in a
+   * column beside the main one (ChatViewer.tsx). Null when closed; opening
+   * another hit replaces it. Its width is this window's alone, not a setting.
+   */
+  const [chatView, setChatView] = useState<ChatViewTarget | null>(null)
+  const [chatViewWidth, setChatViewWidth] = useState(520)
 
   /*
    * The app always has at least one tab: a New Project tab is a real tab now,
@@ -954,6 +960,8 @@ export function App(): React.JSX.Element {
   const chatIndexOn = settings?.chatIndex === 'on'
   const chatRequest = useRef(0)
   const chatPassEnded = chatStatus?.lastPass ? chatStatus.lastPass.startedMs + chatStatus.lastPass.ms : 0
+  // An import or a removal changes what matches as much as a pass does.
+  const chatImportsKey = (chatStatus?.imports ?? []).map((i) => `${i.id}:${i.indexed}`).join(',')
   useEffect(() => {
     const q = query.trim()
     const req = ++chatRequest.current
@@ -977,7 +985,13 @@ export function App(): React.JSX.Element {
       )
     }, 180)
     return () => window.clearTimeout(t)
-  }, [query, chatIndexOn, chatPassEnded])
+  }, [query, chatIndexOn, chatPassEnded, chatImportsKey])
+
+  // Switched off, or the index deleted: the viewer shows nothing main would still hand over.
+  const chatIndexChats = chatStatus?.chats ?? null
+  useEffect(() => {
+    if (!chatIndexOn || chatIndexChats === 0) setChatView(null)
+  }, [chatIndexOn, chatIndexChats])
 
   // The index's status: pushed by main while a pass runs, read once when it matters.
   useEffect(() => window.stoke.chats.onStatus(setChatStatus), [])
@@ -4776,15 +4790,15 @@ export function App(): React.JSX.Element {
    * A chat-search hit, pressed. A Claude Code chat resumes through the path
    * every resume takes (main's `resumeOrMint`, gotcha 81); another agent's
    * reopens in that agent only when it is installed and can be handed the id
-   * (`chatOpenAction`); anything else says what it is instead of opening
-   * something the user did not pick.
+   * (`chatOpenAction`); anything else — an import, Zed, Cowork, a subagent's
+   * transcript, an agent that is missing or cannot resume by id — opens in the
+   * read-only viewer, which says why it is not a live session.
    */
   const openChat = useCallback(
     (hit: ChatSearchHit): void => {
-      setChatNotice(null)
       const action = chatOpenAction(hit, { installed: installedAgentIds, resumable: resumableClis() })
-      if (action.kind === 'notice') {
-        setChatNotice(action.message)
+      if (action.kind === 'view') {
+        setChatView({ hit, query, note: action.note })
         return
       }
       if (action.kind === 'claude') {
@@ -4807,7 +4821,7 @@ export function App(): React.JSX.Element {
         replaceTabId: activeNewTabId ?? undefined
       })
     },
-    [installedAgentIds, resumeSession, projects, startSession, activeNewTabId]
+    [installedAgentIds, resumeSession, projects, startSession, activeNewTabId, query]
   )
 
   /* ------------------------------------------------------------ launcher */
@@ -5297,15 +5311,6 @@ export function App(): React.JSX.Element {
             </div>
           )}
 
-          {chatNotice && (
-            <div className="banner" data-tone="info" role="status">
-              <span style={{ flex: 1 }}>{chatNotice}</span>
-              <button className="btn" data-variant="ghost" onClick={() => setChatNotice(null)}>
-                Dismiss
-              </button>
-            </div>
-          )}
-
           {restoreCount > 0 && (
             <div className="restore-bar" role="status">
               <span className="restore-text">
@@ -5635,6 +5640,29 @@ export function App(): React.JSX.Element {
             />
           )}
         </div>
+
+        {/*
+          The chat viewer: a sibling column beside the main one, never an
+          overlay (gotcha 14) — the docked browser paints over every pixel of
+          the page, and a chat being read should sit beside the terminal it
+          might be pasted into, not over it.
+        */}
+        {chatView && (
+          <>
+            <Resizer
+              value={chatViewWidth}
+              min={340}
+              max={960}
+              invert
+              label="Resize chat"
+              onChange={setChatViewWidth}
+              onCommit={setChatViewWidth}
+            />
+            <div style={{ width: chatViewWidth, display: 'flex', flexShrink: 0, minWidth: 0 }}>
+              <ChatViewer target={chatView} onClose={() => setChatView(null)} />
+            </div>
+          </>
+        )}
 
         {browserOpen && (
           <>

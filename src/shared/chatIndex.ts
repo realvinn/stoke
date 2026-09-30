@@ -24,8 +24,9 @@ import type { CodingCliId } from './codingClis.ts'
  * (164 of 172 on the machine this was written on) and is folded into its
  * origin only once the origin is in the store.
  *
- * Export files (a claude.ai or ChatGPT zip) are the next wave; their ids will
- * join this list, and the store already keys every chat by `(source, native)`.
+ * Export files (a claude.ai or ChatGPT zip) are NOT in this list: a pass never
+ * lists or prunes them. They are `CHAT_IMPORT_KINDS`, keyed in the same store
+ * by `(source, native)`.
  */
 export const CHAT_SOURCE_IDS = ['claude', 'codex', 'opencode', 'claude-cowork', 'zed', 'cline'] as const
 export type ChatSourceId = (typeof CHAT_SOURCE_IDS)[number]
@@ -108,6 +109,163 @@ export function isChatSourceId(v: unknown): v is ChatSourceId {
 
 export function chatSourceInfo(id: ChatSourceId): ChatSourceInfo {
   return CHAT_SOURCES.find((s) => s.id === id) ?? CHAT_SOURCES[0]
+}
+
+/* ------------------------------------------------------------------ imports */
+
+/**
+ * Chats that exist on no disk Stoke can read — claude.ai's and ChatGPT's live
+ * on their servers — and reach the index only as an account export the user
+ * hands over. Not in `CHAT_SOURCE_IDS`, on purpose: a pass lists, admits and
+ * prunes only those, and an imported chat has no file for a pass to find, so a
+ * pass must never prune one. It stays until the user removes the import,
+ * deletes the index, or a cap below lets it go.
+ *
+ * Gemini's Takeout ("My Activity › Gemini Apps") and Grok's account export are
+ * not here: neither format is documented by its vendor (the Takeout file is an
+ * activity log with the reply as HTML, and third-party descriptions of both
+ * disagree), so a parser would be a guess that breaks silently.
+ */
+export const CHAT_IMPORT_KINDS = ['export-claude', 'export-chatgpt'] as const
+export type ChatImportKind = (typeof CHAT_IMPORT_KINDS)[number]
+/** What a stored chat is: one of the tools a pass reads, or an import. */
+export type ChatOrigin = ChatSourceId | ChatImportKind
+
+export const CHAT_IMPORTS: Record<ChatImportKind, { label: string; badge: string; assistant: string; how: string }> = {
+  'export-claude': {
+    label: 'claude.ai export',
+    badge: 'claude.ai',
+    assistant: 'Claude',
+    how: 'claude.ai › Settings › Privacy › Export data'
+  },
+  'export-chatgpt': {
+    label: 'ChatGPT export',
+    badge: 'ChatGPT',
+    assistant: 'ChatGPT',
+    how: 'ChatGPT › Settings › Data controls › Export data'
+  }
+}
+
+export function isChatImportKind(v: unknown): v is ChatImportKind {
+  return typeof v === 'string' && (CHAT_IMPORT_KINDS as readonly string[]).includes(v)
+}
+
+export function isChatOrigin(v: unknown): v is ChatOrigin {
+  return isChatSourceId(v) || isChatImportKind(v)
+}
+
+/** The name on a hit's badge and the viewer's header. */
+export function chatOriginBadge(o: ChatOrigin): string {
+  return isChatImportKind(o) ? CHAT_IMPORTS[o].badge : chatSourceInfo(o).badge
+}
+
+export function chatOriginLabel(o: ChatOrigin): string {
+  return isChatImportKind(o) ? CHAT_IMPORTS[o].label : chatSourceInfo(o).label
+}
+
+/** Who the other side of the conversation is, as the viewer labels its turns. */
+export function chatAssistantName(o: ChatOrigin): string {
+  if (isChatImportKind(o)) return CHAT_IMPORTS[o].assistant
+  switch (o) {
+    case 'claude':
+    case 'claude-cowork':
+      return 'Claude'
+    case 'zed':
+      return 'Zed agent'
+    default:
+      return chatSourceInfo(o).label
+  }
+}
+
+/**
+ * What an export file may be before Stoke reads a byte of what it holds. Not
+ * settings: they guard the reader itself — a zip bomb, a lying header, an
+ * archive whose names point outside it — and are the same for everyone.
+ *
+ * A ChatGPT export can pass 100 MB (research, 2026-09-30) and carries every
+ * generated image beside the one file read, so the archive may be large; only
+ * `conversations.json` is ever inflated, and it is inflated whole into memory
+ * (the worker's heap is bounded; the bytes are a Buffer outside it, and a
+ * string past V8's ~512 MB cap could not be parsed at all — the reader splits
+ * the array element by element instead of one `JSON.parse`). Deflate tops out
+ * near 1032:1; chat JSON measures 5–25:1, so 200:1 on anything past a
+ * megabyte is a bomb, not a conversation.
+ */
+export const CHAT_EXPORT_LIMITS = {
+  /** The archive itself. Past this it is not opened. */
+  zipBytes: 4 * 1024 * 1024 * 1024,
+  /** One member, or a bare `conversations.json`, inflated: and all the members read, together. */
+  memberBytes: 1024 * 1024 * 1024,
+  /** Entries in the central directory. */
+  entries: 100_000,
+  /** The central directory's own size. */
+  directoryBytes: 64 * 1024 * 1024,
+  /** Inflated over compressed, for a member past `ratioFloorBytes`. */
+  ratio: 200,
+  ratioFloorBytes: 1024 * 1024
+} as const
+
+/**
+ * One export file handed to the index, and what became of it — every number
+ * the disclosure needs. `indexed` is counted from the store at read time, so a
+ * later import of the same conversations, a cap or the store's ceiling show up
+ * as a shortfall rather than a stale count.
+ */
+export interface ChatImportRecord {
+  id: number
+  kind: ChatImportKind
+  fileName: string
+  bytes: number
+  importedMs: number
+  /** Distinct conversations the file held. */
+  found: number
+  /** The newest of those that the caps let in. */
+  admitted: number
+  /** New to the index. */
+  added: number
+  /** Already in it from an earlier import, brought up to date in place (keyed by the conversation's own id). */
+  updated: number
+  /** Taken, but holding no text to search, so not stored. */
+  empty: number
+  /** Stored in part: over the per-chat text cap. */
+  truncated: number
+  /** The cap that left conversations out, if one did. */
+  cappedBy: 'perSource' | 'total' | null
+  /** In the index now, from this file. */
+  indexed: number
+}
+
+/** `warning`: it worked, with something worth saying (a file that ends early). */
+export type ChatImportResult = { ok: true; record: ChatImportRecord; warning: string | null } | { ok: false; error: string }
+
+/**
+ * The sentence Settings shows under an import — the per-import twin of
+ * `sourceDisclosure`, with the same rule: a cap that bound is said, with its
+ * number.
+ */
+export function importDisclosure(r: ChatImportRecord, caps: ChatIndexCaps): string {
+  const parts: string[] = []
+  if (r.found === 0) return 'The file held no conversations.'
+  if (r.admitted < r.found && r.cappedBy === 'perSource') {
+    parts.push(`Imported the newest ${formatCount(r.admitted)} of ${formatCount(r.found)} conversations (the limit is ${formatCount(caps.perSource)} per tool).`)
+  } else if (r.admitted < r.found && r.cappedBy === 'total') {
+    parts.push(`Imported the newest ${formatCount(r.admitted)} of ${formatCount(r.found)} conversations: the index holds at most ${formatCount(caps.total)} chats.`)
+  } else {
+    parts.push(`Imported ${r.found === 1 ? 'the one conversation' : `all ${formatCount(r.found)} conversations`}.`)
+  }
+  if (r.updated > 0) {
+    parts.push(`${formatCount(r.updated)} ${r.updated === 1 ? 'was' : 'were'} already here from an earlier import and ${r.updated === 1 ? 'was' : 'were'} updated in place.`)
+  }
+  if (r.empty > 0) parts.push(`${formatCount(r.empty)} held no text and ${r.empty === 1 ? 'was' : 'were'} left out.`)
+  if (r.truncated > 0) parts.push(`${formatCount(r.truncated)} ${r.truncated === 1 ? 'is' : 'are'} kept in part (over ${formatCount(caps.chatKb)} KB of text).`)
+  const stored = r.added + r.updated
+  if (r.indexed < stored) {
+    const gone = stored - r.indexed
+    parts.push(
+      `${formatCount(gone)} ${gone === 1 ? 'has' : 'have'} since left the index — a newer import of the same conversations, the per-tool or total limit, or the index’s size ceiling.`
+    )
+  }
+  return parts.join(' ')
 }
 
 /* ------------------------------------------------------------------ settings */
@@ -324,6 +482,8 @@ export interface ChatIndexStatus {
   /** Where the store is, for Settings. */
   storePath: string
   lastPass: ChatPassSummary | null
+  /** Export files imported, newest first — each with what it left in the index. */
+  imports: ChatImportRecord[]
   /** A store that could not be opened, in a sentence. */
   error: string | null
 }
@@ -350,6 +510,7 @@ export function emptyChatStatus(storePath: string, state: ChatIndexStatus['state
     storeBytes: 0,
     storePath,
     lastPass: null,
+    imports: [],
     error: null
   }
 }
@@ -450,7 +611,8 @@ export function offerFound(d: ChatDetection, enabled?: Record<ChatSourceId, bool
 /** A body hit, one per chat: the best-ranked message's snippet. */
 export interface ChatSearchHit {
   chatId: number
-  source: ChatSourceId
+  /** A tool a pass reads, or an import (`export-claude`, `export-chatgpt`). */
+  source: ChatOrigin
   /** The source's own id: a Claude session id, a Codex thread id, … */
   nativeId: string
   title: string | null
@@ -507,35 +669,105 @@ export function ftsQuery(query: string): string | null {
 /** The least a query must be before the store is asked: one short word matches half the index. */
 export const CHAT_SEARCH_MIN_CHARS = 3
 
+/*
+ * One "word" as FTS5's unicode61 tokenizer sees it: a run of letters, marks and
+ * digits. `_` is a separator there, so it is one here — a highlight that
+ * disagreed with the match would mark words the search never found.
+ */
+const WORD = /[\p{L}\p{M}\p{N}]+/gu
+
+function foldWord(w: string): string {
+  return w.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase()
+}
+
+/**
+ * Where a typed query's words occur in `text`, for the viewer's highlight: every
+ * word of the text that STARTS with one of the query's words, compared without
+ * case or accents — the rule `ftsQuery` gives the search (`"word"*`, unicode61
+ * with `remove_diacritics 2`), so what is marked is what matched. Ranges are
+ * UTF-16 offsets into `text` itself, sorted and apart, ready for `Highlight`.
+ */
+export function highlightRanges(text: string, query: string): [number, number][] {
+  const words = [...new Set((query.normalize('NFC').match(WORD) ?? []).map(foldWord).filter((w) => w.length > 0))].slice(0, 12)
+  if (words.length === 0 || !text) return []
+  const out: [number, number][] = []
+  for (const m of text.matchAll(WORD)) {
+    const at = m.index ?? 0
+    const folded = foldWord(m[0])
+    if (words.some((w) => folded.startsWith(w))) out.push([at, at + m[0].length])
+  }
+  return out
+}
+
 /* ------------------------------------------------------------------- opening */
 
 export type ChatOpenAction =
   | { kind: 'claude'; sessionId: string; cwd: string }
   | { kind: 'agent'; cli: CodingCliId; sessionId: string; cwd: string }
-  | { kind: 'notice'; message: string }
+  /** The read-only viewer, with the reason it is not a live session (null for an import, which never is). */
+  | { kind: 'view'; chatId: number; note: string | null }
 
 /**
  * What pressing a hit does. A Claude Code chat resumes through the path every
  * other resume takes (main's `resumeOrMint`, gotcha 81). Another agent's chat
  * reopens in that agent only when it is installed AND can be handed a session
- * id (`resumable`, from codingClis.ts `resumeArgs`); everything else says what
- * it is rather than opening something else. A Cowork chat is Claude Code's
+ * id (`resumable`, from codingClis.ts `resumeArgs`). Everything else opens in
+ * the read-only viewer, which says why it is not a live session rather than
+ * opening something the user did not pick. A Cowork chat is Claude Code's
  * format but lives in Claude desktop's own config folder, which `claude
- * --resume` does not read, so it gets the notice too.
+ * --resume` does not read, so it is viewed too — as is every import, which
+ * has no session anywhere to resume.
  */
 export function chatOpenAction(
-  hit: Pick<ChatSearchHit, 'source' | 'nativeId' | 'cwd' | 'subagent'>,
+  hit: Pick<ChatSearchHit, 'chatId' | 'source' | 'nativeId' | 'cwd' | 'subagent'>,
   ctx: { installed: ReadonlySet<CodingCliId>; resumable: ReadonlySet<CodingCliId> }
 ): ChatOpenAction {
+  const view = (note: string | null): ChatOpenAction => ({ kind: 'view', chatId: hit.chatId, note })
+  if (isChatImportKind(hit.source)) return view(null)
   const info = chatSourceInfo(hit.source)
-  const viewer = 'A read-only viewer for these is coming; for now search shows where the words are.'
-  if (hit.subagent) return { kind: 'notice', message: `This is a subagent’s transcript, which cannot be reopened on its own. ${viewer}` }
-  if (!hit.cwd) return { kind: 'notice', message: `This ${info.label} chat has no folder recorded, so it cannot be reopened. ${viewer}` }
+  if (hit.subagent) return view('A subagent’s transcript, which cannot be reopened on its own. This is its text, read from the file now.')
+  if (!hit.cwd) return view(`This ${info.label} chat has no folder recorded, so it cannot be reopened. This is its text, read from ${info.label}’s own copy now.`)
   if (hit.source === 'claude') return { kind: 'claude', sessionId: hit.nativeId, cwd: hit.cwd }
   const cli = info.cli
   if (cli && ctx.resumable.has(cli)) {
     if (ctx.installed.has(cli)) return { kind: 'agent', cli, sessionId: hit.nativeId, cwd: hit.cwd }
-    return { kind: 'notice', message: `${info.label} isn’t installed, so this chat cannot be reopened in it. ${viewer}` }
+    return view(`${info.label} isn’t installed, so this chat cannot be reopened in it. This is its text, read from ${info.label}’s own copy now.`)
   }
-  return { kind: 'notice', message: `${info.label} chats cannot be reopened from Stoke. ${viewer}` }
+  return view(`${info.label} chats cannot be reopened from Stoke. This is its text, read from ${info.label}’s own copy now.`)
 }
+
+/* -------------------------------------------------------------------- viewer */
+
+export interface ChatTranscriptMessage {
+  role: 'user' | 'assistant'
+  text: string
+  atMs: number | null
+}
+
+/** One chat as the viewer shows it: in order, who said it, when. */
+export interface ChatTranscript {
+  chatId: number
+  source: ChatOrigin
+  title: string | null
+  cwd: string | null
+  createdMs: number | null
+  updatedMs: number | null
+  messages: ChatTranscriptMessage[]
+  /**
+   * `source`: re-read from the tool's own file or database just now, read-only.
+   * `store`: the index's copy — always for an import, and for a local chat
+   * whose original is gone or could not be read (`fallback` says which).
+   */
+  from: 'source' | 'store'
+  fallback: string | null
+  /** Some of it is not shown: the middle of a very long chat, or a file past the read cap. */
+  partial: boolean
+}
+
+/**
+ * What the viewer shows of one chat at most: its opening and its newest
+ * messages, the middle left out and said so (`planTrim`'s split). Well past the
+ * index's per-chat cap — the viewer reads the source afresh and can show more —
+ * but bounded, because every message is a DOM node.
+ */
+export const CHAT_VIEW_MAX_BYTES = 4 * 1024 * 1024
