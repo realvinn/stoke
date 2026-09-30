@@ -210,6 +210,42 @@ const api: StokeApi = {
     cancelImport: () => ipcRenderer.invoke(CH.setupImportCancel)
   },
 
+  hub: {
+    view: () => ipcRenderer.invoke(CH.hubView),
+    onChange: (cb) => on<[Parameters<typeof cb>[0]]>(CH.hubChanged, cb),
+    setUrl: (url) => ipcRenderer.invoke(CH.hubSetUrl, url),
+    checkUrl: (url) => ipcRenderer.invoke(CH.hubCheckUrl, url),
+    signIn: (req) => ipcRenderer.invoke(CH.hubSignIn, req),
+    signOut: () => ipcRenderer.invoke(CH.hubSignOut),
+    createVault: () => ipcRenderer.invoke(CH.hubCreateVault),
+    kit: () => ipcRenderer.invoke(CH.hubKit),
+    confirmKit: (group) => ipcRenderer.invoke(CH.hubKitConfirm, group),
+    cancelKit: () => ipcRenderer.invoke(CH.hubKitCancel),
+    saveKit: () => ipcRenderer.invoke(CH.hubKitSave),
+    printKit: () => ipcRenderer.invoke(CH.hubKitPrint),
+    newKit: () => ipcRenderer.invoke(CH.hubNewKit),
+    joinStart: () => ipcRenderer.invoke(CH.hubJoinStart),
+    joinCancel: () => ipcRenderer.invoke(CH.hubJoinCancel),
+    joinConfirm: (match) => ipcRenderer.invoke(CH.hubJoinConfirm, match),
+    recover: (kit) => ipcRenderer.invoke(CH.hubRecover, kit),
+    approveStart: (pair) => ipcRenderer.invoke(CH.hubApproveStart, pair),
+    approveConfirm: (pair) => ipcRenderer.invoke(CH.hubApproveConfirm, pair),
+    refuse: (pair) => ipcRenderer.invoke(CH.hubRefuse, pair),
+    syncNow: () => ipcRenderer.invoke(CH.hubSyncNow),
+    setScope: (patch) => ipcRenderer.invoke(CH.hubSetScope, patch),
+    setAccountKeys: (on) => ipcRenderer.invoke(CH.hubSetAccountKeys, on),
+    rename: (deviceId, name) => ipcRenderer.invoke(CH.hubRename, deviceId, name),
+    revoke: (deviceId, how) => ipcRenderer.invoke(CH.hubRevoke, deviceId, how),
+    dismissNotes: () => ipcRenderer.invoke(CH.hubDismissNotes),
+    republish: () => ipcRenderer.invoke(CH.hubRepublish),
+    applyHeld: (group) => ipcRenderer.invoke(CH.hubApplyHeld, group),
+    keepHeld: (group) => ipcRenderer.invoke(CH.hubKeepHeld, group),
+    localKeys: () => ipcRenderer.invoke(CH.hubLocalKeys),
+    shareKey: (name) => ipcRenderer.invoke(CH.hubShareKey, name),
+    unshareKey: (keyId) => ipcRenderer.invoke(CH.hubUnshareKey, keyId),
+    installKey: (keyId) => ipcRenderer.invoke(CH.hubInstallKey, keyId)
+  },
+
   claudeConfig: {
     read: () => ipcRenderer.invoke(CH.claudeConfigRead),
     set: (key: string, value: boolean | string | number | undefined) =>

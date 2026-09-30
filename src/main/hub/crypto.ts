@@ -108,6 +108,11 @@ export function sha256B64u(data: Uint8Array | string): string {
   return b64uEncode(sha256(data))
 }
 
+/** HMAC-SHA256 of `text` under `key`, b64url: a digest only the key's holder can recompute or check a guess against. */
+export function hmacB64u(key: Uint8Array, text: string): string {
+  return b64uEncode(new Uint8Array(createHmac('sha256', key).update(utf8(text)).digest()))
+}
+
 function hkdf(ikm: Uint8Array, salt: Uint8Array, info: string, length: number): Uint8Array {
   return new Uint8Array(hkdfSync('sha256', ikm, salt, utf8(info), length))
 }

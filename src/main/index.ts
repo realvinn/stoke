@@ -11,6 +11,7 @@ import {
   nativeTheme,
   net,
   protocol,
+  safeStorage,
   screen,
   shell,
   systemPreferences
@@ -290,6 +291,12 @@ const claudeConfigReader = new ClaudeConfigReader()
 /** The owner-only MCP files Qwen, Copilot and Claude Code are pointed at; keyed on userData, so made on first use. */
 let mcpFiles: McpFileStore | null = null
 let remote: RemoteServer | null = null
+/**
+ * Stoke Hub's client (hub/service.ts), made on first use — a hub panel opened,
+ * or a boot with a hub configured — and loaded lazily, never by a static
+ * import (gotcha 40: it pulls in node:crypto work, the ssh helpers and `ws`).
+ */
+let hubClient: import('./hub/service.ts').HubService | null = null
 
 /* ------------------------------------------------------------ chat history */
 
@@ -3669,8 +3676,14 @@ function registerIpc(): void {
    * an imported setup file — and an import that skipped these would leave a
    * new theme unpainted and new bookmarks unshown until a restart.
    */
-  async function commitSettings(patch: Partial<Settings>): Promise<Settings> {
+  async function commitSettings(patch: Partial<Settings>, from: 'renderer' | 'hub' = 'renderer'): Promise<Settings> {
     const prev = getSettings()
+    /*
+     * `hub` has one writer, the hub service (gotcha 57): the renderer changes
+     * it through `window.stoke.hub`, and a patch that carries a stale copy —
+     * a panel spreading the settings it rendered — must not undo a sign-in.
+     */
+    if (from === 'renderer' && patch.hub) patch = { ...patch, hub: prev.hub }
     /*
      * The renderer may rename an account, recolour it or change its key —
      * never add one, remove one or move its home, which becomes an agent's
@@ -3904,6 +3917,113 @@ function registerIpc(): void {
   ipcMain.handle(CH.setupImportCancel, () => {
     pendingImport = null
   })
+
+  /* ------------------------------------------------------------ Stoke Hub */
+  /*
+   * Settings › Account & sync. Everything is main's hub service; these
+   * handlers only hand it the renderer's arguments (each re-checked there)
+   * and main's dialogs. The service claims each action before its first await
+   * and refuses a second press (gotcha 20).
+   */
+  let hubStarting: Promise<import('./hub/service.ts').HubService> | null = null
+  const hubService = (): Promise<import('./hub/service.ts').HubService> => {
+    if (hubClient) return Promise.resolve(hubClient)
+    hubStarting ??= (async () => {
+      const [{ HubService }, { safeStorageBackend }] = await Promise.all([import('./hub/service.ts'), import('./secrets.ts')])
+      const { hostname } = await import('node:os')
+      const svc = new HubService({
+        userData: app.getPath('userData'),
+        backend: safeStorageBackend(safeStorage, process.platform),
+        platform: process.platform,
+        hostname: hostname().replace(/\.local$/, ''),
+        appVersion: app.getVersion(),
+        getSettings,
+        commit: (patch) => commitSettings(patch, 'hub'),
+        hydrate: hydrateSettings,
+        onSettingsChanged,
+        emit: (view) => send(CH.hubChanged, view),
+        saveKit: async (name, text) => {
+          /*
+           * The `STOKE_TEST_SETUP_FILE` shape: an UNPACKAGED run may name the
+           * file the save dialog answers with, because a native panel cannot be
+           * driven over CDP. A packaged build never reads it.
+           */
+          const seam = app.isPackaged ? undefined : process.env.STOKE_TEST_KIT_FILE || undefined
+          const opts = { title: 'Save your Recovery Kit', defaultPath: join(app.getPath('documents'), name), filters: [{ name: 'Text', extensions: ['txt'] }] }
+          const res = seam ? { canceled: false, filePath: seam } : win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts)
+          if (res.canceled || !res.filePath) return { ok: false, canceled: true, message: '' }
+          try {
+            await writeFile(res.filePath, text, { encoding: 'utf8', mode: 0o600 })
+            return { ok: true, path: res.filePath }
+          } catch (err) {
+            return { ok: false, message: `The Recovery Kit could not be saved: ${err instanceof Error ? err.message : String(err)}` }
+          }
+        },
+        printKit: async (text) => {
+          // A window of our own holding only the Kit, printed through the system dialog, then gone.
+          const page = new BrowserWindow({ show: false, webPreferences: { javascript: false, sandbox: true } })
+          const escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+          await page.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(`<pre style="font:14px/1.5 monospace">${escaped}</pre>`)}`)
+          await new Promise<void>((resolve) => page.webContents.print({}, () => resolve()))
+          page.destroy()
+        },
+        log: (message, err) => (err ? console.error(`[stoke] ${message}`, err) : console.warn(`[stoke] ${message}`))
+      })
+      await svc.start()
+      hubClient = svc
+      return svc
+    })()
+    return hubStarting
+  }
+  /** Resume background sync after boot, only when a hub was set up (the window is up by then). */
+  setTimeout(() => {
+    if (getSettings().hub.url) void hubService().catch((err) => console.error('[stoke] hub client did not start', err))
+  }, 4000).unref()
+  const str = (v: unknown): string => (typeof v === 'string' ? v : '')
+  ipcMain.handle(CH.hubView, async () => (await hubService()).view())
+  ipcMain.handle(CH.hubSetUrl, async (_e, url: unknown) => (await hubService()).setUrl(str(url)))
+  ipcMain.handle(CH.hubCheckUrl, async (_e, url: unknown) => (await hubService()).checkUrl(str(url)))
+  ipcMain.handle(CH.hubSignIn, async (_e, req: Record<string, unknown> | null) =>
+    (await hubService()).signIn({
+      email: str(req?.email),
+      password: str(req?.password),
+      label: typeof req?.label === 'string' ? req.label : undefined,
+      invite: typeof req?.invite === 'string' ? req.invite : undefined
+    })
+  )
+  ipcMain.handle(CH.hubSignOut, async () => (await hubService()).signOut())
+  ipcMain.handle(CH.hubCreateVault, async () => (await hubService()).createVault())
+  ipcMain.handle(CH.hubKit, async () => (await hubService()).pendingKitText())
+  ipcMain.handle(CH.hubKitConfirm, async (_e, group: unknown) => (await hubService()).confirmKit(str(group)))
+  ipcMain.handle(CH.hubKitCancel, async () => (await hubService()).cancelKit())
+  ipcMain.handle(CH.hubKitSave, async () => (await hubService()).saveKit())
+  ipcMain.handle(CH.hubKitPrint, async () => (await hubService()).printKit())
+  ipcMain.handle(CH.hubNewKit, async () => (await hubService()).newKit())
+  ipcMain.handle(CH.hubJoinStart, async () => (await hubService()).joinStart())
+  ipcMain.handle(CH.hubJoinCancel, async () => (await hubService()).joinCancel())
+  ipcMain.handle(CH.hubJoinConfirm, async (_e, match: unknown) => (await hubService()).joinConfirm(match === true))
+  ipcMain.handle(CH.hubRecover, async (_e, kit: unknown) => (await hubService()).recover(str(kit)))
+  ipcMain.handle(CH.hubApproveStart, async (_e, pair: unknown) => (await hubService()).approveStart(str(pair)))
+  ipcMain.handle(CH.hubApproveConfirm, async (_e, pair: unknown) => (await hubService()).approveConfirm(str(pair)))
+  ipcMain.handle(CH.hubRefuse, async (_e, pair: unknown) => (await hubService()).refusePair(str(pair)))
+  ipcMain.handle(CH.hubSyncNow, async () => (await hubService()).syncNow())
+  ipcMain.handle(CH.hubSetScope, async (_e, patch: Record<string, unknown> | null) => {
+    const pick = (k: string): boolean | undefined => (typeof patch?.[k] === 'boolean' ? (patch[k] as boolean) : undefined)
+    return (await hubService()).setScope({ settings: pick('settings'), hosts: pick('hosts'), keys: pick('keys') })
+  })
+  ipcMain.handle(CH.hubSetAccountKeys, async (_e, on: unknown) => (await hubService()).setAccountKeys(on === true))
+  ipcMain.handle(CH.hubRename, async (_e, id: unknown, name: unknown) => (await hubService()).renameDevice(str(id), str(name)))
+  ipcMain.handle(CH.hubRevoke, async (_e, id: unknown, how: Record<string, unknown> | null) =>
+    (await hubService()).revokeDevice(str(id), how?.newKit === true ? { newKit: true } : { kit: str(how?.kit) })
+  )
+  ipcMain.handle(CH.hubDismissNotes, async () => (await hubService()).dismissNotes())
+  ipcMain.handle(CH.hubRepublish, async () => (await hubService()).republish())
+  ipcMain.handle(CH.hubApplyHeld, async (_e, group: unknown) => (await hubService()).applyHeld(str(group)))
+  ipcMain.handle(CH.hubKeepHeld, async (_e, group: unknown) => (await hubService()).keepHeld(str(group)))
+  ipcMain.handle(CH.hubLocalKeys, async () => (await hubService()).localKeys())
+  ipcMain.handle(CH.hubShareKey, async (_e, name: unknown) => (await hubService()).shareKey(str(name)))
+  ipcMain.handle(CH.hubUnshareKey, async (_e, keyId: unknown) => (await hubService()).unshareKey(str(keyId)))
+  ipcMain.handle(CH.hubInstallKey, async (_e, keyId: unknown) => (await hubService()).installKey(str(keyId)))
 
   /* -------------------------------------------------------------- profiles */
   /*
@@ -4533,5 +4653,6 @@ if (!app.requestSingleInstanceLock(launchRequest ? { stokeCli: launchRequest } :
     mcp?.stop()
     void remote?.stop()
     tunnel.stop()
+    hubClient?.stop()
   })
 }

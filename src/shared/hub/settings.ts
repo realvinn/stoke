@@ -14,7 +14,7 @@
 import type { Settings, SshHost } from '../types.ts'
 import { applySecrets, collectSecrets, scrubSecrets, secretSpecFor } from '../secrets.ts'
 import { PARTIAL_KEYS, portableSecrets, portableSettings } from '../setupFile.ts'
-import { isId, isRecord } from './codec.ts'
+import { isId, isRecord, stableJson } from './codec.ts'
 import type { HubGrant } from './relay.ts'
 import { T1_KEYS } from './items.ts'
 
@@ -149,6 +149,150 @@ export interface SyncApplyResult {
   skipped: { key: string; why: string }[]
   /** Local hosts that took an incoming sync id because they are the same machine (same alias and command). */
   adopted: { id: string; syncId: string }[]
+  /** Whole items not applied because they would change what runs here (`heldChangesFor`). */
+  held: HeldChange[]
+}
+
+/* ------------------------------------------------ what runs code */
+
+/**
+ * An incoming item that would change what runs on this computer: an MCP
+ * server's program, arguments or variables, an MCP server's URL, or what an
+ * SSH host runs. Held whole — the local value stays — until the owner applies
+ * it on THIS computer, as `bypassPermissions` is. Anyone who can seal an item
+ * could otherwise make every device run a command at its next session: a
+ * device before it was removed (removing it undoes nothing it wrote), or a
+ * hub that got a device into a vault of its own.
+ */
+export interface HeldChange {
+  /** The item path (`t1/settings/agents`, `t2/secret/…`, `t3/host/…`). */
+  path: string
+  /** One Apply per group: every MCP change is `agents`; a host is its own path. */
+  group: string
+  /** What it would run, spelled out. A variable is named, never its value (a secret). */
+  lines: string[]
+}
+
+/** An argv as a person would type it: plain words bare, anything else quoted. */
+export function argvText(command: string, args: readonly string[]): string {
+  return [command, ...args].map((a) => (a !== '' && /^[A-Za-z0-9_@%+=:,./~-]+$/.test(a) ? a : JSON.stringify(a))).join(' ')
+}
+
+/** A URL without its query or fragment, where hosted MCP servers take their key. */
+export function urlText(url: string): string {
+  try {
+    const u = new URL(url)
+    return `${u.origin}${u.pathname}${u.search ? ' (with a query)' : ''}`
+  } catch {
+    return url.split(/[?#]/)[0]
+  }
+}
+
+interface ServerShape {
+  transport: string
+  command: string
+  args: string[]
+  url: string
+  env: string[]
+}
+
+function serverShape(v: unknown): ServerShape | null {
+  if (!isRecord(v)) return null
+  return {
+    // As `hydrateServerSpec` reads it: anything but http is a program to run.
+    transport: v.transport === 'http' ? 'http' : 'stdio',
+    command: typeof v.command === 'string' ? v.command.trim() : '',
+    args: Array.isArray(v.args) ? v.args.filter((a): a is string => typeof a === 'string') : [],
+    url: typeof v.url === 'string' ? v.url.trim() : '',
+    env: isRecord(v.env) ? Object.keys(v.env).sort() : []
+  }
+}
+
+function extraOf(agents: unknown): Record<string, unknown> {
+  if (!isRecord(agents) || !isRecord(agents.mcp) || !isRecord(agents.mcp.extra)) return {}
+  return agents.mcp.extra
+}
+
+/** What an incoming `agents` block would change about the MCP servers Stoke starts. */
+function mcpLines(mine: Record<string, unknown>, theirs: Record<string, unknown>): string[] {
+  const lines: string[] = []
+  for (const [name, raw] of Object.entries(theirs)) {
+    const t = serverShape(raw)
+    if (!t) continue
+    const m = serverShape(mine[name])
+    const same = m !== null && m.transport === t.transport
+    if (t.transport === 'stdio') {
+      const vars = t.env.length ? ` (variables: ${t.env.join(', ')})` : ''
+      if (!same || m.command !== t.command || stableJson(m.args) !== stableJson(t.args)) {
+        lines.push(`${m ? 'Changes' : 'Adds'} MCP server “${name}” to run: ${argvText(t.command, t.args)}${vars}`)
+      } else {
+        const added = t.env.filter((n) => !m.env.includes(n))
+        if (added.length) lines.push(`Gives MCP server “${name}” new variables: ${added.join(', ')}`)
+      }
+    } else if (t.transport === 'http' && (!same || m.url !== t.url)) {
+      lines.push(`${m ? 'Points' : 'Adds'} MCP server “${name}” at ${urlText(t.url)}`)
+    }
+  }
+  return lines
+}
+
+const MCP_SECRET = /^agents\.mcp\.extra\.([^.]+)\.(env|headers|bearer)(?:\.(.+))?$/
+
+/**
+ * The incoming items that would change what runs here, judged against
+ * `current` (spec §5.3). Removing a server or a host's command runs nothing,
+ * and is never held; neither is a value that is already this computer's.
+ */
+export function heldChangesFor(current: Settings, incoming: SyncedIncoming): HeldChange[] {
+  const held: HeldChange[] = []
+  const mine = extraOf(current.agents)
+  let after = mine
+  const agents = incoming.settings?.agents
+  if (agents !== undefined) {
+    const theirs = extraOf(agents)
+    const lines = mcpLines(mine, theirs)
+    if (lines.length) held.push({ path: 't1/settings/agents', group: 'agents', lines })
+    else after = theirs
+  }
+  const localSecrets = collectSecrets(current)
+  for (const [path, value] of Object.entries(incoming.secrets ?? {})) {
+    const m = MCP_SECRET.exec(path)
+    if (!m || value === null || value === localSecrets[path]) continue
+    const server = serverShape(after[m[1]])
+    if (!server) {
+      held.push({ path: `t2/secret/${path}`, group: 'agents', lines: [`A ${m[2] === 'env' ? `variable (${m[3]})` : m[2] === 'headers' ? `header (${m[3]})` : 'token'} for MCP server “${m[1]}”, which is not on this computer yet`] })
+    } else if (server.transport === 'stdio' && m[2] === 'env') {
+      held.push({ path: `t2/secret/${path}`, group: 'agents', lines: [`Sets variable ${m[3]} of MCP server “${m[1]}” to a new value (${argvText(server.command, server.args)})`] })
+    }
+  }
+  const hosts = current.hosts as SyncableHost[]
+  for (const [syncId, payload] of Object.entries(incoming.hosts ?? {})) {
+    if (!isId('host', syncId) || !isRecord(payload) || !isRecord(payload.host) || typeof payload.host.alias !== 'string') continue
+    const cmd = typeof payload.host.command === 'string' ? payload.host.command.trim() : ''
+    if (!cmd) continue
+    const alias = payload.host.alias.trim()
+    const local =
+      hosts.find((h) => h.syncId === syncId) ??
+      hosts.find((h) => !h.syncId && h.alias.trim() === alias && (h.command ?? '').trim() === cmd)
+    if (local && (local.command ?? '').trim() === cmd) continue
+    const label = typeof payload.host.label === 'string' && payload.host.label.trim() ? payload.host.label.trim() : alias
+    held.push({ path: `t3/host/${syncId}`, group: `t3/host/${syncId}`, lines: [`${local ? 'Changes' : 'Adds'} SSH host “${label}” (${alias}) to run: ${cmd}`] })
+  }
+  return held
+}
+
+/** What synced here runs something, for the revoke report: a removed device could have set any of it. */
+export function runsCode(s: Settings): string[] {
+  const out: string[] = []
+  for (const [name, raw] of Object.entries(extraOf(s.agents))) {
+    const t = serverShape(raw)
+    if (t?.transport === 'stdio' && t.command) out.push(`MCP server “${name}” (${argvText(t.command, t.args)})`)
+    else if (t?.transport === 'http' && t.url) out.push(`MCP server “${name}” (${urlText(t.url)})`)
+  }
+  for (const h of s.hosts as SyncableHost[]) {
+    if (isId('host', h.syncId) && (h.command ?? '').trim()) out.push(`SSH host “${h.label || h.alias}” (${h.command.trim()})`)
+  }
+  return out
 }
 
 function cloneJson<T>(v: T): T {
@@ -175,13 +319,19 @@ function cloneJson<T>(v: T): T {
  * - Every local secret is overlaid back after T1, so a scrubbed incoming
  *   `providers`/`agents`/`voice` block never erases a key; then T2 overlays,
  *   portable paths only, a tombstone emptying the key.
+ * - An item that would change what runs here (`heldChangesFor`) is not
+ *   applied at all, and is returned in `held`, unless `allowHeld` — the owner
+ *   pressed Apply on this computer.
  */
-export function applySyncedSettings(current: Settings, incoming: SyncedIncoming): SyncApplyResult {
+export function applySyncedSettings(current: Settings, incoming: SyncedIncoming, opts: { allowHeld?: boolean } = {}): SyncApplyResult {
   const next = cloneJson(current) as unknown as Record<string, unknown>
   const skipped: SyncApplyResult['skipped'] = []
   const adopted: SyncApplyResult['adopted'] = []
+  const held = opts.allowHeld ? [] : heldChangesFor(current, incoming)
+  const isHeld = (path: string): boolean => held.some((h) => h.path === path)
 
   for (const [key, value] of Object.entries(incoming.settings ?? {})) {
+    if (isHeld(`t1/settings/${key}`)) continue
     if (!T1_KEYS.includes(key)) {
       skipped.push({ key, why: 'not a synced setting in this version of Stoke' })
       continue
@@ -212,7 +362,7 @@ export function applySyncedSettings(current: Settings, incoming: SyncedIncoming)
   if (incoming.hosts) {
     const hosts: SyncableHost[] = cloneJson(current.hosts as SyncableHost[])
     for (const [syncId, payload] of Object.entries(incoming.hosts)) {
-      if (!isId('host', syncId)) continue
+      if (!isId('host', syncId) || isHeld(`t3/host/${syncId}`)) continue
       let at = hosts.findIndex((h) => h.syncId === syncId)
       if (payload === null) {
         if (at >= 0) hosts.splice(at, 1)
@@ -238,6 +388,7 @@ export function applySyncedSettings(current: Settings, incoming: SyncedIncoming)
   let raw = applySecrets(scrubSecrets(next), collectSecrets(current))
   const t2: Record<string, string> = {}
   for (const [path, value] of Object.entries(incoming.secrets ?? {})) {
+    if (isHeld(`t2/secret/${path}`)) continue
     if (secretSpecFor(path)?.portable !== true) {
       skipped.push({ key: path, why: 'not a key that syncs' })
       continue
@@ -245,7 +396,7 @@ export function applySyncedSettings(current: Settings, incoming: SyncedIncoming)
     t2[path] = typeof value === 'string' ? value : ''
   }
   raw = applySecrets(raw, t2)
-  return { raw, skipped, adopted }
+  return { raw, skipped, adopted, held }
 }
 
 /* ------------------------------------------------ T4: SSH key files */
@@ -294,6 +445,11 @@ export interface SshKeyPayload {
   fingerprint: string
   /** Whether the private key is itself passphrase-protected. */
   passphrase: boolean
+  /**
+   * The device that shared it. The envelope's author is whoever sealed it
+   * LAST, and a revoke re-seals everything as the revoking device.
+   */
+  sharedBy?: string
 }
 
 export function sshKeyPayloadProblem(v: unknown): string | null {
@@ -303,5 +459,6 @@ export function sshKeyPayloadProblem(v: unknown): string | null {
   if (v.privateKey.length > 16 * 1024) return 'private key too large'
   if (typeof v.publicKey !== 'string' || /[\r\n]./.test(v.publicKey.trim())) return 'bad public key'
   if (typeof v.comment !== 'string' || typeof v.fingerprint !== 'string' || typeof v.passphrase !== 'boolean') return 'bad fields'
+  if (v.sharedBy !== undefined && !isId('device', v.sharedBy)) return 'bad sharing device'
   return null
 }
