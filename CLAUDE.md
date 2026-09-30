@@ -323,6 +323,8 @@ rule file named on the group line.
   write past ~1 KB — is filed as `<pasted_content>` the model will not act on. Newlines are `ESC CR`.
 - **87.** Pad the phone terminal's box, not xterm's parent, and let only `decideResize` resize the
   pty: Fit to phone only, on a width change only, never while the composer has focus.
+- **111.** Give the phone server anything it does not bind as a per-call `RemoteDeps` read
+  (`transcribe`), never `RemoteConfig`: that is a snapshot from `start()`, restarted only for bind keys.
 
 **Claude Code's own config** — `.claude/rules/claude-config.md`
 - **37.** Turn Claude Code's Remote Control off with `remoteControlAtStartup: false` in

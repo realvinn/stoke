@@ -211,3 +211,38 @@ height change.
 > registry pass to each attached socket not yet told the current size (`pushSizes`); the client
 > re-runs `relayout('observe')`, which still never sends a resize on its own. Measured: an open
 > 1440 view went from 30 to 25 rows when a second socket fitted the pty to 90x25.
+
+## 111. The phone server's config is a snapshot taken at start; a setting it does not bind must be a per-call dep
+
+**Found 2026-09-30, moving the speech server from Phone access to Settings → Voice.** `RemoteServer`
+copies `RemoteConfig` once, in `start()`, and the `settings:set` handler restarts it only when one of
+`REMOTE_BIND_KEYS` moves (`shouldRestartRemote`) — port, binds, Access, hostname, token — because a
+restart drops every attached phone. The speech-server address rode in that snapshot as
+`config.sttUrl` without being a bind key, so the phone's `/api/transcribe` kept posting to the
+address it STARTED with until Phone access was turned off and on, while the desktop's dictation
+(`CH.transcribe`, which reads `getSettings()` per call) followed a change at once. The field's own
+hint documented the asymmetry ("the phone picks it up the next time the remote server starts")
+rather than anything fixing it, and `/api/host`'s `stt` status, read per call through
+`RemoteDeps.sttStatus`, described a different address from the one the upload would use.
+
+The rule: **anything the phone server reads that is not something it binds or checks goes through
+a `RemoteDeps` function that reads settings on the call** — `transcribe`, `sttStatus`, `theme`,
+`defaults`, `agents` all do now — and `RemoteConfig` holds only what a restart is worth. Putting a
+new field in the config and adding it to `REMOTE_BIND_KEYS` instead would "work" and cost every
+connected phone its socket on each edit. Where a per-call result also decides the HTTP status (503
+"no server set" vs 502 "failed"), take it from the same read as the call (`SttResult.unset`), never
+from a second read beside it, or the two can describe different addresses.
+
+A settings key that moves between blocks keeps the old key as a WRITE-ONLY mirror for a release
+(`remote.sttUrl`): `hydrateSettings` migrates from it only when the new key is absent, then
+rewrites it from the new key on every read and write, so an older build reading the file keeps
+the address, and `RemoteSettings`' habit of spreading its whole `remote` copy into every patch —
+stale mirror included — can never move the setting back. `verify:settings` pins both directions,
+and fails with the mirror line deleted.
+
+Proving it over CDP had its own trap: **`el.blur()` is a silent no-op while the window lacks OS
+focus** (`document.hasFocus()` false — any sandbox instance behind the terminal), so a `useDraft`
+field never commits and the edit reads as "not saved" in working code. Dispatch
+`new FocusEvent('focusout', { bubbles: true })` on the input instead; React's `onBlur` listens for
+exactly that. Measured with fake sidecars on 17991/17992 and the phone server on loopback: the same
+running server answered `from A`, then `from B` after the Voice edit, with no restart between.
