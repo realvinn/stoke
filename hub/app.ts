@@ -1230,9 +1230,21 @@ class HubServer {
     this.push(p.account_id, { t: 'pair', pair: p.id, state: next })
   }
 
+  /**
+   * Whether this session opened pair `p`: the same device id AND the signing
+   * key the session signed in with (gotcha 140). By id alone, a password
+   * holder signed in under a real device's not-yet-listed id could read that
+   * device's pair, refuse it (a mismatched reveal refuses it too), expire it by
+   * opening one of its own, and run up the id's refusal count until the real
+   * device is locked out of pairing for the hour — again every hour.
+   */
+  private ownsPair(a: Authed, p: PairRow): boolean {
+    return p.device_id === a.device && p.device_sign === a.session.sign_pub
+  }
+
   /** An `add` for a device with a revealed pair approves that pair, if the keys are the revealed ones. */
   private approvePairsFor(account: string, device: DeviceRecord): void {
-    for (const p of this.store.openPairsFor(account, device.id)) {
+    for (const p of this.store.openPairsFor(account, device.id, device.sign)) {
       if (p.state !== 'revealed' || !p.reveal_json) continue
       const r = JSON.parse(p.reveal_json) as { device: DeviceRecord }
       if (r.device.sign === device.sign && r.device.box === device.box) this.movePair(p, 'approve')
@@ -1250,15 +1262,17 @@ class HubServer {
     if (typeof d.platform !== 'string' || !/^[a-z0-9]{1,24}$/.test(d.platform)) throw new HubError('bad-request', 'Unknown platform.')
     if (!a.chain?.verdict) throw new HubError('conflict', 'This account has no device that could approve one yet.')
     if (a.active) throw new HubError('conflict', 'This device has already joined.')
-    if (this.store.refusedPairsSince(account, a.device, now - 60 * 60_000) >= PAIR_ATTEMPTS_PER_HOUR) {
+    const sign = a.session.sign_pub
+    if (this.store.refusedPairsSince(account, a.device, sign, now - 60 * 60_000) >= PAIR_ATTEMPTS_PER_HOUR) {
       throw new HubError('rate-limited', 'Three pairing attempts from this device were refused this hour.', 60 * 60_000)
     }
-    for (const old of this.store.openPairsFor(account, a.device)) this.movePair(old, 'expire')
+    for (const old of this.store.openPairsFor(account, a.device, sign)) this.movePair(old, 'expire')
     if (this.store.openPairs(account).length >= OPEN_PAIRS_PER_ACCOUNT) throw new HubError('rate-limited', 'Too many pairing requests are open for this account.')
     const p: PairRow = {
       id: idFromBytes('pair', randomU8(10)),
       account_id: account,
       device_id: a.device,
+      device_sign: sign,
       device_label: d.label.trim(),
       device_platform: d.platform,
       state: 'waiting',
@@ -1290,10 +1304,10 @@ class HubServer {
     return { pairs }
   }
 
-  /** A pending device sees only its own pair; an active one, any of the account's. */
+  /** A pending device sees only the pair it opened (id AND key, `ownsPair`); an active one, any of the account's. */
   private visiblePair(a: Authed, id: string): PairRow {
     const p = this.loadPair(a.account.id, id)
-    if (!a.active && p.device_id !== a.device) throw new HubError('not-found', 'No such pairing request.')
+    if (!a.active && !this.ownsPair(a, p)) throw new HubError('not-found', 'No such pairing request.')
     return p
   }
 
@@ -1315,7 +1329,7 @@ class HubServer {
   private pairReveal(ctx: Ctx, body: Record<string, unknown>, id: string): unknown {
     const a = ctx.auth as Authed
     const p = this.visiblePair(a, id)
-    if (p.device_id !== a.device) throw new HubError('forbidden', 'Only the device asking to join reveals.')
+    if (!this.ownsPair(a, p)) throw new HubError('forbidden', 'Only the device asking to join reveals.')
     if (!pairTransition(p.state as PairState, 'reveal')) throw new HubError('conflict', `That pairing request is ${p.state}.`)
     const shape = deviceRecordProblem(body.device)
     if (shape) throw new HubError('bad-request', `The revealed device: ${shape}.`)

@@ -102,6 +102,7 @@ CREATE TABLE IF NOT EXISTS pairs (
   id TEXT PRIMARY KEY,
   account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
   device_id TEXT NOT NULL,
+  device_sign TEXT NOT NULL DEFAULT '',
   device_label TEXT NOT NULL,
   device_platform TEXT NOT NULL,
   state TEXT NOT NULL,
@@ -171,6 +172,13 @@ export interface PairRow {
   id: string
   account_id: string
   device_id: string
+  /**
+   * The signing key of the session that opened the pair. A pending device is
+   * its id AND this key (gotcha 140): anyone with the password may sign in
+   * under a not-yet-listed id, and by id alone could read, refuse or expire
+   * the real device's pair and run up its refusal count.
+   */
+  device_sign: string
   device_label: string
   device_platform: string
   state: string
@@ -214,6 +222,10 @@ export class HubStore {
     this.db = new DatabaseSync(this.file, { timeout: 5000 })
     this.db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA foreign_keys = ON;')
     this.db.exec(SCHEMA)
+    // A database made before pairs recorded their creator's key: add the column. Its old rows
+    // carry '' — no key matches — and are open at most ten minutes anyway.
+    const pairColumns = (this.db.prepare('PRAGMA table_info(pairs)').all() as { name: string }[]).map((c) => c.name)
+    if (!pairColumns.includes('device_sign')) this.db.exec("ALTER TABLE pairs ADD COLUMN device_sign TEXT NOT NULL DEFAULT ''")
     this.q('INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING').run('schema', SCHEMA_VERSION)
     this.lockDown()
   }
@@ -482,11 +494,12 @@ export class HubStore {
 
   insertPair(p: PairRow): void {
     this.q(
-      'INSERT INTO pairs(id, account_id, device_id, device_label, device_platform, state, commit_hash, approver_json, nonce_e, reveal_json, created_at, expires_at, ended_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO pairs(id, account_id, device_id, device_sign, device_label, device_platform, state, commit_hash, approver_json, nonce_e, reveal_json, created_at, expires_at, ended_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
     ).run(
       p.id,
       p.account_id,
       p.device_id,
+      p.device_sign,
       p.device_label,
       p.device_platform,
       p.state,
@@ -520,19 +533,23 @@ export class HubStore {
     return this.q("SELECT * FROM pairs WHERE account_id = ? AND state IN ('waiting', 'nonce', 'revealed') ORDER BY created_at").all(accountId) as unknown as PairRow[]
   }
 
-  openPairsFor(accountId: string, deviceId: string): PairRow[] {
-    return this.q("SELECT * FROM pairs WHERE account_id = ? AND device_id = ? AND state IN ('waiting', 'nonce', 'revealed')").all(
+  /** The open pairs one device opened: its id AND the key its session signed in with. */
+  openPairsFor(accountId: string, deviceId: string, sign: string): PairRow[] {
+    return this.q("SELECT * FROM pairs WHERE account_id = ? AND device_id = ? AND device_sign = ? AND state IN ('waiting', 'nonce', 'revealed')").all(
       accountId,
-      deviceId
+      deviceId,
+      sign
     ) as unknown as PairRow[]
   }
 
-  refusedPairsSince(accountId: string, deviceId: string, since: number): number {
+  /** Refusals counted per id AND key, so a squatter on an id cannot lock the real device out of pairing. */
+  refusedPairsSince(accountId: string, deviceId: string, sign: string, since: number): number {
     return Number(
       (
-        this.q("SELECT count(*) AS n FROM pairs WHERE account_id = ? AND device_id = ? AND state = 'refused' AND ended_at >= ?").get(
+        this.q("SELECT count(*) AS n FROM pairs WHERE account_id = ? AND device_id = ? AND device_sign = ? AND state = 'refused' AND ended_at >= ?").get(
           accountId,
           deviceId,
+          sign,
           since
         ) as { n: number }
       ).n

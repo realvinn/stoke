@@ -26,6 +26,7 @@ import { WebSocket } from 'ws'
 import { startHub, type HubHandle } from '../hub/app.ts'
 import { configFrom, parseListen, parseMount, readEdgeSecret } from '../hub/config.ts'
 import { HubLog } from '../hub/log.ts'
+import { HubStore } from '../hub/store.ts'
 import { forwardHttp } from '../worker/hub-edge.ts'
 import {
   generateDeviceKeys,
@@ -617,6 +618,20 @@ let liveItemId = ''
     check('a second nonce is out of order', [early.status, early.body?.error], [409, 'conflict'])
     const seen = await call('GET', `/v1/pair/${pairId}`, undefined, { dev: B })
     check('the new device sees the approver’s nonce and keys', [seen.body?.nonceE, seen.body?.approver?.sign], [nE, A.keys.signPub])
+    {
+      // Gotcha 140's squatter, at pairing: the password, signed in under B's id before B has joined.
+      const squatB: Dev = { ...newDevice('squatter'), id: B.id }
+      check('a password holder may sign in under the joining device’s id (not listed yet: pending)', (await login(squatB, OWNER_EMAIL, OWNER_PW)).body?.state, 'pending')
+      const peekB = await call('GET', `/v1/pair/${pairId}`, undefined, { dev: squatB })
+      check('but B’s pair does not exist for it: a pair is its id AND the key that opened it', [peekB.status, peekB.body?.error], [404, 'not-found'])
+      const revealB = await call('POST', `/v1/pair/${pairId}/reveal`, { device: recordOf(squatB), nonce: randomB64u(32) }, { dev: squatB })
+      const refuseB = await call('POST', `/v1/pair/${pairId}/refuse`, {}, { dev: squatB })
+      check('so it can neither reveal into B’s pair (which would refuse it) nor refuse it', [revealB.status, refuseB.status], [404, 404])
+      const own = await call('POST', '/v1/pair', { commit: randomB64u(32), device: { id: B.id, label: 'squatter', platform: 'darwin' } }, { dev: squatB })
+      const stillB = await call('GET', `/v1/pair/${pairId}`, undefined, { dev: B })
+      check('and opening one of its own under that id does not expire B’s', [own.status, stillB.status, stillB.body?.state], [200, 200, 'nonce'])
+      await call('POST', `/v1/pair/${own.body?.pair}/refuse`, {}, { dev: A })
+    }
     const revealed = await call('POST', `/v1/pair/${pairId}/reveal`, { device: recB, nonce: nN }, { dev: B })
     check('the reveal matches the commitment', [revealed.status, revealed.body?.state], [200, 'revealed'])
     const onA = await call('GET', `/v1/pair/${pairId}`, undefined, { dev: A })
@@ -681,6 +696,11 @@ let liveItemId = ''
     }
     const fourth = await call('POST', '/v1/pair', { commit: randomB64u(32), device: { id: X.id, label: X.name, platform: X.platform } }, { dev: X })
     check('three refused attempts in an hour and a fourth is refused', [fourth.status, fourth.body?.error], [429, 'rate-limited'])
+    const X2: Dev = { ...newDevice('Unknown laptop, other key', 'linux'), id: X.id }
+    await login(X2, OWNER_EMAIL, OWNER_PW)
+    const otherKey = await call('POST', '/v1/pair', { commit: randomB64u(32), device: { id: X2.id, label: X2.name, platform: X2.platform } }, { dev: X2 })
+    check('refusals count per id AND key: a squatter’s three do not lock the real device out of the id', otherKey.status, 200)
+    await call('POST', `/v1/pair/${otherKey.body?.pair}/refuse`, {}, { dev: A })
     const Y = newDevice('Y')
     await login(Y, OWNER_EMAIL, OWNER_PW)
     const q = await call('POST', '/v1/pair', { commit: randomB64u(32), device: { id: Y.id, label: Y.name, platform: Y.platform } }, { dev: Y })
@@ -1149,6 +1169,17 @@ let liveItemId = ''
   /* ------------------------------------------------ configuration */
   console.log('\nconfiguration')
   {
+    // A database made before pairs recorded their creator's key gains the column on open.
+    const oldDir = join(TMP, 'old-schema')
+    mkdirSync(oldDir, { recursive: true })
+    const before = new DatabaseSync(join(oldDir, 'hub.db'))
+    before.exec('CREATE TABLE pairs (id TEXT PRIMARY KEY, account_id TEXT NOT NULL, device_id TEXT NOT NULL, device_label TEXT NOT NULL, device_platform TEXT NOT NULL, state TEXT NOT NULL, commit_hash TEXT NOT NULL, approver_json TEXT, nonce_e TEXT, reveal_json TEXT, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, ended_at INTEGER)')
+    before.close()
+    HubStore.open(oldDir).close()
+    const after = new DatabaseSync(join(oldDir, 'hub.db'), { readOnly: true })
+    const cols = (after.prepare('PRAGMA table_info(pairs)').all() as { name: string }[]).map((c) => c.name)
+    after.close()
+    ok('an older database gains pairs.device_sign when the hub opens it', cols.includes('device_sign'), cols.join(','))
     check('a listen address', parseListen('127.0.0.1:8787', 'x'), { host: '127.0.0.1', port: 8787 })
     check('an IPv6 one', parseListen('[::1]:8788', 'x'), { host: '::1', port: 8788 })
     check('off is no listener', parseListen('off', 'x'), null)

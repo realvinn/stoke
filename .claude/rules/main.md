@@ -405,3 +405,16 @@ text-frame check was on a frame the relay had QUEUED before the host joined, whi
 different delivery path from a live one; and nothing ever logged a secret-named field, so the
 log's redaction was untested. A suite that passes first time has not yet shown it can fail.
 
+> **Checked against the code on 2026-10-01 (a review of the hub server)** — the rule had reached
+> only `authenticate`. The pairing routes still judged a PENDING device by id alone: `visiblePair`,
+> `pairReveal`, `pairRefuse` and `pairCreate`'s expiry loop compared the pair's `device_id` with the
+> session's, and refusals were counted per id. So a squatter signed in under a joining device's id
+> could read its pair, refuse it (its own mismatched reveal refused it too), expire it by opening
+> one of its own, and run the id's refusal count to three — the real device locked out of pairing
+> for the hour, and again the next hour. The SAS still kept a wrong key from joining: denial of
+> service, not compromise. A pair now stores the opening session's key (`device_sign`), `ownsPair`
+> compares id AND key, and refusals count per (id, key). `verify:hub-server` holds it: the squatter
+> gets 404 on B's pair and on its reveal and refuse, its own pair leaves B's open, and three
+> refusals under one key do not lock another. Mutated back to id alone, the squatter's reveal
+> refused B's pair and B's own pairing failed outright. Wraps got the same rule in the same review:
+> `chainAppend` takes them only from a device active before or after the entries, by id and key.
