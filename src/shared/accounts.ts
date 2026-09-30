@@ -30,7 +30,9 @@
  * are relative with `.ts` (gotcha 78). The parts that touch a disk — the home,
  * its links, the Keychain service name — are `src/main/accounts.ts`.
  */
+import { AGENT_DISTINCT_DISTANCE } from './agentColors.ts'
 import { cliFor, isCodingCliId, type CodingCliId } from './codingClis.ts'
+import { parseColor, perceptualDistance } from './color.ts'
 
 /** The account a launch uses when it names none and no default is chosen: no variable set. */
 export const DEFAULT_ACCOUNT_ID = 'default'
@@ -260,10 +262,20 @@ function isSwatchId(v: unknown): v is string {
  * The swatch a new account of `cli` gets: the first that is neither the
  * agent's own colour nor worn by another of its accounts, so two accounts of
  * one agent and the agent itself are three different colours while they can be.
+ *
+ * "The agent's own colour" is judged by eye, not by hex: any swatch within
+ * `AGENT_DISTINCT_DISTANCE` of it (the floor the common agents are held to).
+ * The exact-hex test worked while the swatches WERE the agent seeds; once the
+ * seeds became the vendors' colours no swatch matched one, and every agent's
+ * first account took Sky — for Kimi (#1fc0ff) 0.020 from its own colour.
  */
 export function nextSwatch(cli: CodingCliId, taken: readonly (string | undefined)[], agentSeed: string): string {
   const used = new Set(taken.filter(Boolean))
-  const free = ACCOUNT_SWATCHES.filter((s) => s.seed.toLowerCase() !== agentSeed.toLowerCase())
+  const own = parseColor(agentSeed)
+  const free = ACCOUNT_SWATCHES.filter((s) => {
+    const c = parseColor(s.seed)
+    return !own || !c || perceptualDistance(c, own) >= AGENT_DISTINCT_DISTANCE
+  })
   return (free.find((s) => !used.has(s.id)) ?? free[0] ?? ACCOUNT_SWATCHES[0]).id
 }
 
