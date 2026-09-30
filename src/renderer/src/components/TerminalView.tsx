@@ -5,10 +5,22 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes'
 import type { ClipboardPeek } from '@shared/api'
-import type { TerminalSettings, Theme } from '@shared/types'
+import type { TerminalSettings, Theme, VoiceSettings } from '@shared/types'
 import { dropText } from '@shared/drop'
+import { noSignalLine } from '@shared/micDevice'
 import { createRecorder, voiceSupported, type Recorder } from '@shared/voice'
-import { CLI_OWNS_SPACE, dictationKeyAction, microphoneError, spaceOwner } from '@shared/voiceRoute'
+import { createSignalWatch } from '@shared/voiceLevel'
+import {
+  CLI_OWNS_SPACE,
+  microphoneError,
+  SPACE_IDLE,
+  spaceHold,
+  spaceKey,
+  spaceOwner,
+  type SpaceHoldEvent,
+  type SpaceHoldState,
+  type SpaceHoldStep
+} from '@shared/voiceRoute'
 import { attachSink, noteInput } from '../lib/ptyBus'
 import { isButtonlessMotionReport } from '../lib/mouseReport'
 import { matchShortcut } from '../lib/shortcuts'
@@ -92,6 +104,8 @@ interface Props {
   accent: string | null
   /** Canvas opacity, below 1 only while a wallpaper is set. */
   alpha: number
+  /** Stoke's dictation: the hold threshold and the chosen microphone, read per press. */
+  voice: VoiceSettings
   /**
    * Clicking a link in the terminal opens it in the docked browser. Holding
    * Shift, or Cmd/Ctrl, sends it to the real browser instead — that path does
@@ -111,6 +125,7 @@ export function TerminalView({
   terminal: termOpts,
   accent,
   alpha,
+  voice,
   onOpenUrl,
   onRestart,
   onClose
@@ -154,8 +169,17 @@ export function TerminalView({
    * mode you are in without having said so.
    */
   const [voiceOn, setVoiceOn] = useState(false)
-  const [voiceStatus, setVoiceStatus] = useState<'idle' | 'recording' | 'working'>('idle')
+  /*
+   * `holding` is a Space that is down but not yet a hold: the strip says "Keep
+   * holding…" and no microphone is open, so a tap costs nothing and types a
+   * space (`spaceHold`, voiceRoute.ts).
+   */
+  const [voiceStatus, setVoiceStatus] = useState<'idle' | 'holding' | 'recording' | 'working'>('idle')
   const [voiceError, setVoiceError] = useState<string | null>(null)
+  /** The chosen microphone was not there, so this recording is on the default. */
+  const [voiceDeviceNote, setVoiceDeviceNote] = useState<string | null>(null)
+  /** The level line has lain flat for NO_SIGNAL_MS while recording. */
+  const [noSignal, setNoSignal] = useState(false)
   /**
    * A one-off sentence shown INSTEAD of switching dictation on — today only the
    * tab where Claude Code's own /voice owns Space. Separate from `voiceError`
@@ -173,11 +197,28 @@ export function TerminalView({
   const dragDepth = useRef(0)
   const recorderRef = useRef<Recorder | null>(null)
   /*
-   * getUserMedia is async and the first call waits on a permission prompt, so
-   * Space is routinely released before recording has begun. Tracking the key
-   * rather than the recorder's state is what lets that release still count.
+   * Where the held Space is: idle, pending (down, not yet a hold), starting
+   * (the microphone opening — getUserMedia can wait on a permission prompt, so
+   * Space is routinely released in this phase) or recording. A ref, not state:
+   * the key handlers step it synchronously, several times inside one frame.
    */
-  const spaceDownRef = useRef(false)
+  const holdRef = useRef<SpaceHoldState>(SPACE_IDLE)
+  const holdTimerRef = useRef<number | null>(null)
+  /** Read at each press and each start, so a Settings change reaches the next one. */
+  const voiceRef = useRef(voice)
+  voiceRef.current = voice
+  /*
+   * The level line's fill. Written straight from the recorder's animation
+   * frame (`style.transform`), never through React state: that would be sixty
+   * renders a second of the whole terminal pane.
+   */
+  const levelRef = useRef<HTMLSpanElement>(null)
+  const signalWatchRef = useRef<((level: number, now: number) => boolean) | null>(null)
+  const noSignalRef = useRef(false)
+  /** The label of the device recording now, for naming a virtual cable. */
+  const micLabelRef = useRef('')
+  /** Bumped by each recording, so an older one's transcript cannot reset a newer one's strip. */
+  const takeRef = useRef(0)
   // Kept in a ref so the resize observer can read it without re-subscribing.
   const openUrlRef = useRef(onOpenUrl)
   openUrlRef.current = onOpenUrl
@@ -958,42 +999,84 @@ export function TerminalView({
 
     const isMac = IS_MAC
 
-    const recorder = (recorderRef.current ??= createRecorder(async (wav) => {
-      // The renderer never reaches the speech server itself; main proxies it,
-      // because the sidecar has no authentication of its own.
-      const res = await window.stoke.audio.transcribe(wav)
-      if (!res.ok) throw new Error(res.error)
-      return res.text
-    }))
+    /*
+     * Only refs and state setters inside the options: the recorder outlives
+     * this effect (it is kept in a ref for the pane's life), so a closure over
+     * anything else would be the first render's copy.
+     */
+    const recorder = (recorderRef.current ??= createRecorder(
+      async (wav) => {
+        // The renderer never reaches the speech server itself; main proxies it,
+        // because the sidecar has no authentication of its own.
+        const res = await window.stoke.audio.transcribe(wav)
+        if (!res.ok) throw new Error(res.error)
+        return res.text
+      },
+      {
+        onLevel: (level) => {
+          const fill = levelRef.current
+          if (fill) fill.style.transform = `scaleX(${level.toFixed(3)})`
+          const watch = signalWatchRef.current
+          if (!watch) return
+          const flat = watch(level, performance.now())
+          if (flat !== noSignalRef.current) {
+            noSignalRef.current = flat
+            setNoSignal(flat)
+          }
+        },
+        device: () => ({ id: voiceRef.current.micDeviceId, label: voiceRef.current.micLabel })
+      }
+    ))
+
+    const stopWatch = (): void => {
+      signalWatchRef.current = null
+      if (noSignalRef.current) {
+        noSignalRef.current = false
+        setNoSignal(false)
+      }
+    }
 
     const fail = (err: unknown, fallback: string): void => {
       setVoiceStatus('idle')
       setVoiceError(err instanceof Error && err.message ? err.message : fallback)
     }
 
+    const clearHoldTimer = (): void => {
+      if (holdTimerRef.current === null) return
+      window.clearTimeout(holdTimerRef.current)
+      holdTimerRef.current = null
+    }
+
     const beginRecording = async (): Promise<void> => {
+      ++takeRef.current
       setVoiceError(null)
+      setVoiceDeviceNote(null)
       setVoiceStatus('recording')
+      micLabelRef.current = ''
+      signalWatchRef.current = createSignalWatch()
       try {
-        await recorder.start()
-        // Released while the permission prompt was up: throw the clip away
-        // rather than leaving a microphone open that nobody asked to keep on.
-        if (!spaceDownRef.current) {
-          recorder.cancel()
-          setVoiceStatus('idle')
-        }
+        const info = await recorder.start()
+        // Null: released (or Esc) while the microphone was still opening. The
+        // step that cancelled has already put the strip back.
+        if (!info) return
+        micLabelRef.current = info.label
+        if (info.notice) setVoiceDeviceNote(info.notice)
+        dispatch({ type: 'opened' })
       } catch (err) {
+        dispatch({ type: 'failed' })
+        stopWatch()
         setVoiceStatus('idle')
         setVoiceError(microphoneError(err, window.stoke.platform))
       }
     }
 
     const finishRecording = async (): Promise<void> => {
-      if (!recorder.recording()) return
+      stopWatch()
+      const take = takeRef.current
       setVoiceStatus('working')
       try {
         const text = await recorder.finish()
-        setVoiceStatus('idle')
+        if (takeRef.current === take) setVoiceStatus('idle')
         /*
          * paste() rather than a raw pty write, for the reason the clipboard
          * path already documents: it wraps the text in bracketed-paste markers
@@ -1004,6 +1087,52 @@ export function TerminalView({
       } catch (err) {
         fail(err, 'Transcription failed.')
       }
+    }
+
+    /*
+     * Every Space event, the hold timer and the recorder's answer go through
+     * the one reducer (`spaceHold`); this only carries out what it says.
+     */
+    const dispatch = (event: SpaceHoldEvent): SpaceHoldStep => {
+      const step = spaceHold(holdRef.current, event, performance.now(), voiceRef.current.holdMs)
+      holdRef.current = step.state
+      switch (step.output) {
+        case 'arm-timer':
+          clearHoldTimer()
+          holdTimerRef.current = window.setTimeout(() => {
+            holdTimerRef.current = null
+            dispatch({ type: 'timer' })
+          }, step.wait ?? voiceRef.current.holdMs)
+          setVoiceError(null)
+          setVoiceStatus('holding')
+          break
+        case 'start':
+          clearHoldTimer()
+          void beginRecording()
+          break
+        case 'type-space':
+          clearHoldTimer()
+          setVoiceStatus((s) => (s === 'holding' ? 'idle' : s))
+          /*
+           * term.input, not a pty write: it goes out through onData exactly as
+           * a typed space does, so the draft tracking (`noteInput`) and
+           * selection clearing see a keystroke. It runs before a non-Space key
+           * that interrupted the press lets that key through, so "a b" typed
+           * with the space still down comes out in order.
+           */
+          termRef.current?.input(' ', true)
+          break
+        case 'finish':
+          void finishRecording()
+          break
+        case 'cancel':
+          clearHoldTimer()
+          recorder.cancel()
+          stopWatch()
+          setVoiceStatus('idle')
+          break
+      }
+      return step
     }
 
     const onKeyDown = (e: KeyboardEvent): void => {
@@ -1031,24 +1160,24 @@ export function TerminalView({
        * have to be taken. The repeats used to be let through (`if (e.repeat)
        * return`, to avoid restarting the live recording) — which handed the
        * pty exactly the repeat stream Claude Code's /voice listens for, so one
-       * press started two recorders. Swallowed now, and only the first starts
-       * anything (voiceRoute.ts).
+       * press started two recorders (gotcha 79). `spaceHold` takes every
+       * repeat in every phase; the first press only arms the hold timer, so a
+       * tap never opens the microphone, and it types a space on release.
        */
-      const action = dictationKeyAction(e)
-      if (action === 'pass') return
-      e.preventDefault()
-      e.stopPropagation()
-      if (action === 'swallow') return
-      spaceDownRef.current = true
-      void beginRecording()
+      const step = dispatch(spaceKey(e, 'keydown'))
+      if (step.take) {
+        e.preventDefault()
+        e.stopPropagation()
+      }
     }
 
     const onKeyUp = (e: KeyboardEvent): void => {
-      if (!voiceOn || e.code !== 'Space') return
-      e.preventDefault()
-      e.stopPropagation()
-      spaceDownRef.current = false
-      void finishRecording()
+      if (!voiceOn) return
+      const step = dispatch(spaceKey(e, 'keyup'))
+      if (step.take) {
+        e.preventDefault()
+        e.stopPropagation()
+      }
     }
 
     host.addEventListener('keydown', onKeyDown, true)
@@ -1056,6 +1185,10 @@ export function TerminalView({
     return () => {
       host.removeEventListener('keydown', onKeyDown, true)
       host.removeEventListener('keyup', onKeyUp, true)
+      // A press still pending when the mode or the tab changes is dropped, not
+      // typed: nobody is watching this pane's strip any more.
+      clearHoldTimer()
+      holdRef.current = SPACE_IDLE
     }
   }, [active, voiceOn])
 
@@ -1068,7 +1201,10 @@ export function TerminalView({
   useEffect(() => {
     if (voiceOn && active) return
     recorderRef.current?.cancel()
-    spaceDownRef.current = false
+    holdRef.current = SPACE_IDLE
+    signalWatchRef.current = null
+    noSignalRef.current = false
+    setNoSignal(false)
     setVoiceStatus('idle')
   }, [voiceOn, active])
 
@@ -1358,16 +1494,38 @@ export function TerminalView({
         </div>
       )}
       {voiceOn && (
-        <div className="voice-strip" role="status" data-tone={voiceError ? 'error' : undefined}>
+        <div
+          className="voice-strip"
+          role="status"
+          data-tone={voiceError || (voiceStatus === 'recording' && noSignal) ? 'error' : undefined}
+        >
           <span className="voice-dot" data-state={voiceError ? 'error' : voiceStatus} />
           <span className="voice-text">
             {voiceError
               ? voiceError
-              : voiceStatus === 'recording'
-                ? 'Listening — release Space to transcribe'
-                : voiceStatus === 'working'
-                  ? 'Transcribing…'
-                  : 'Hold Space to speak · Esc to exit'}
+              : voiceStatus === 'holding'
+                ? 'Keep holding…'
+                : voiceStatus === 'recording'
+                  ? noSignal
+                    ? noSignalLine(micLabelRef.current)
+                    : (voiceDeviceNote ?? 'Listening — release Space to transcribe')
+                  : voiceStatus === 'working'
+                    ? 'Transcribing…'
+                    : 'Hold Space to speak · tap for a space · Esc to exit'}
+          </span>
+          {/*
+            The recording volume. Always mounted while the strip is, so the
+            recorder's frame callback has a node to write to from its first
+            frame; shown only while recording. Its scale is data, not
+            decoration, so reduced motion keeps it live and drops only the
+            easing (gotcha 72).
+          */}
+          <span
+            className="voice-level"
+            aria-hidden="true"
+            data-live={!voiceError && voiceStatus === 'recording' ? 'true' : undefined}
+          >
+            <span ref={levelRef} className="voice-level-fill" />
           </span>
         </div>
       )}

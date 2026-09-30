@@ -2190,6 +2190,12 @@ mark.hit {
   background: var(--accent-ink);
 }
 
+/* Space is down but not yet a hold: the recording colour, dimmed, and still. */
+.voice-dot[data-state='holding'] {
+  background: var(--danger);
+  opacity: 0.45;
+}
+
 .voice-dot[data-state='error'] {
   background: var(--danger);
 }
@@ -2200,9 +2206,58 @@ mark.hit {
   }
 }
 
+/*
+ * The recording volume: a 2px line along the strip's bottom edge, inside its
+ * padding. The fill is scaled from the left by the recorder's animation frame
+ * through a ref (TerminalView), so nothing here animates it — the transition
+ * only takes the edge off frame-to-frame steps. Shown only while recording.
+ */
+.voice-level {
+  position: absolute;
+  inset: auto var(--space-12) 3px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--border-subtle);
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.voice-level:not([data-live='true']) {
+  display: none;
+}
+
+.voice-level-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform 60ms linear;
+}
+
+/* Settings → Voice's Test: the same line, in the flow under the picker. */
+.mic-test {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.mic-test-level.voice-level {
+  position: relative;
+  inset: auto;
+  display: block;
+}
+
+/*
+ * The level is data, not decoration (gotcha 72): it keeps moving with the
+ * voice under reduced motion, and only the easing between readings goes.
+ */
 @media (prefers-reduced-motion: reduce) {
   .voice-dot[data-state='recording'] {
     animation: none;
+  }
+
+  .voice-level-fill {
+    transition: none;
   }
 }
 

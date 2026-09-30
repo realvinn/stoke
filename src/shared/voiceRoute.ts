@@ -104,19 +104,148 @@ export function spaceOwner(tab: DictationTab, claudeVoice: boolean): SpaceOwner 
   return tab.cliId === 'claude' && claudeVoice ? 'cli' : 'stoke'
 }
 
-/**
- * What Stoke's dictation does with one keydown while it is switched on.
+/*
+ * A held Space, once Stoke's dictation is armed: a tap types a space, and only
+ * a HOLD opens the microphone.
  *
- * `start` begins a recording, `swallow` takes the key so that nothing below —
- * xterm, the pty, the CLI — ever sees it, and `pass` leaves it alone. The case
- * that used to be `pass` and must never be again is a repeat of Space: that is
- * the stream Claude Code's `/voice` listens for.
+ * It used to be the first keydown that started a recording, with no duration
+ * test at all. So an armed tab could not type a space — every tap opened the
+ * microphone (the OS indicator lit), recorded a few milliseconds, and threw the
+ * clip away as under 1 KB — and a person dictating into a shell prompt had to
+ * disarm, type the space, and re-arm. Now the first keydown only arms a timer
+ * (`pending`); the strip says "Keep holding…", and the recorder starts when the
+ * timer fires or an auto-repeat arrives, whichever is first — a repeat is the
+ * OS saying the key is held. A release while still pending types the space.
+ *
+ * What must survive from gotcha 79: EVERY repeat of Space is taken, in every
+ * phase. A repeat that reaches xterm reaches the pty, and the repeat stream is
+ * exactly what Claude Code's own `/voice` listens for.
+ *
+ * Pure, and the caller owns the clock, the timer and the side effects. Both
+ * surfaces run it: the desktop terminal (`TerminalView`) and the phone's voice
+ * mode (`src/remote/session.ts`).
  */
-export type SpaceAction = 'start' | 'swallow' | 'pass'
 
-export function dictationKeyAction(e: { code: string; repeat: boolean }): SpaceAction {
-  if (e.code !== 'Space') return 'pass'
-  return e.repeat ? 'swallow' : 'start'
+/**
+ * `pending` is a Space that is down but not yet a hold; `starting` is a hold
+ * whose microphone is still opening (getUserMedia can wait on a permission
+ * prompt); `recording` is audio being captured.
+ */
+export type SpaceHoldState =
+  | { phase: 'idle' }
+  | { phase: 'pending'; since: number }
+  | { phase: 'starting' }
+  | { phase: 'recording' }
+
+export const SPACE_IDLE: SpaceHoldState = { phase: 'idle' }
+
+/**
+ * `composing` is an IME composition (`isComposing`, or keyCode 229): Space
+ * there is the IME's conversion key and is never taken. `timer` is the hold
+ * timer firing; `opened` is the recorder's start resolving with the microphone
+ * open; `failed` is it rejecting.
+ */
+export type SpaceHoldEvent =
+  | { type: 'keydown'; code: string; repeat: boolean; composing?: boolean }
+  | { type: 'keyup'; code: string; composing?: boolean }
+  | { type: 'timer' }
+  | { type: 'opened' }
+  | { type: 'failed' }
+
+/**
+ * What the caller does.
+ *
+ *  - `pass`       nothing; a key event goes on to xterm untouched.
+ *  - `swallow`    nothing, but the key is taken so nothing below sees it.
+ *  - `arm-timer`  (re)start the hold timer for `wait` ms.
+ *  - `start`      open the microphone and begin recording.
+ *  - `type-space` type the space the pending press stood for, as typing would.
+ *  - `finish`     stop, transcribe and insert.
+ *  - `cancel`     drop the recording — or the microphone still opening — unsent.
+ */
+export type SpaceHoldOutput = 'pass' | 'swallow' | 'arm-timer' | 'start' | 'type-space' | 'finish' | 'cancel'
+
+export interface SpaceHoldStep {
+  state: SpaceHoldState
+  output: SpaceHoldOutput
+  /**
+   * Whether to `preventDefault` + `stopPropagation` the key event that caused
+   * this step. Only a Space is ever taken; any other key always goes through,
+   * after the pending space when there is one, so "a b" typed with the space
+   * still down comes out in order.
+   */
+  take: boolean
+  /** For `arm-timer`: how long to wait. */
+  wait?: number
+}
+
+export function spaceHold(state: SpaceHoldState, event: SpaceHoldEvent, now: number, holdMs: number): SpaceHoldStep {
+  const step = (next: SpaceHoldState, output: SpaceHoldOutput, take = false, wait?: number): SpaceHoldStep =>
+    wait === undefined ? { state: next, output, take } : { state: next, output, take, wait }
+
+  switch (event.type) {
+    case 'timer':
+      if (state.phase !== 'pending') return step(state, 'pass')
+      // setTimeout never fires early, but a timer armed by an older press and
+      // not yet cleared could; re-arm for what is left rather than start short.
+      if (now - state.since < holdMs) return step(state, 'arm-timer', false, holdMs - (now - state.since))
+      return step({ phase: 'starting' }, 'start')
+    case 'opened':
+      if (state.phase === 'starting') return step({ phase: 'recording' }, 'pass')
+      // Opened after the hold already ended: release it at once.
+      return step(state, state.phase === 'recording' ? 'pass' : 'cancel')
+    case 'failed':
+      return step(SPACE_IDLE, 'pass')
+    case 'keydown':
+      if (event.code !== 'Space') {
+        // Another key while a space is pending: it was typing, not a hold.
+        // Type the space first, then let this key through behind it.
+        return state.phase === 'pending' ? step(SPACE_IDLE, 'type-space') : step(state, 'pass')
+      }
+      if (event.composing) return step(state, 'pass')
+      if (state.phase === 'idle') {
+        // A repeat with no press of ours before it (Space was already down
+        // when dictation was armed, or the recorder just failed under it):
+        // still taken, never started from and never passed on.
+        if (event.repeat) return step(state, 'swallow', true)
+        return step({ phase: 'pending', since: now }, 'arm-timer', true, holdMs)
+      }
+      // A repeat is the OS saying the key is held: that is a hold, whatever
+      // the timer says.
+      if (state.phase === 'pending' && event.repeat) return step({ phase: 'starting' }, 'start', true)
+      return step(state, 'swallow', true)
+    case 'keyup':
+      if (event.code !== 'Space' || event.composing) return step(state, 'pass')
+      switch (state.phase) {
+        case 'pending':
+          // Released before the hold threshold: a tap, which is a space. At or
+          // past it with the timer not yet run (a stalled loop), it was a hold
+          // that never got to record — type nothing rather than a stray space.
+          return now - state.since < holdMs
+            ? step(SPACE_IDLE, 'type-space', true)
+            : step(SPACE_IDLE, 'cancel', true)
+        case 'starting':
+          // Released while the microphone was still opening (a permission
+          // prompt, a slow device): nothing was recorded, and nothing may stay
+          // open that nobody asked to keep on.
+          return step(SPACE_IDLE, 'cancel', true)
+        case 'recording':
+          return step(SPACE_IDLE, 'finish', true)
+        default:
+          return step(state, 'swallow', true)
+      }
+  }
+}
+
+/** The key fields `spaceHold` reads, from a DOM KeyboardEvent. */
+export function spaceKey(
+  e: { code: string; repeat: boolean; isComposing: boolean; keyCode: number },
+  type: 'keydown' | 'keyup'
+): SpaceHoldEvent {
+  // keyCode 229 is the key an IME is consuming; `isComposing` can still be
+  // false on the keydown that starts a composition.
+  const composing = e.isComposing || e.keyCode === 229
+  return type === 'keydown' ? { type, code: e.code, repeat: e.repeat, composing } : { type, code: e.code, composing }
 }
 
 /** The sentence shown instead of starting Stoke's dictation on a tab whose CLI owns Space. */

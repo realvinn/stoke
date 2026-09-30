@@ -76,6 +76,7 @@ import {
   typedSinceSubmit
 } from './lib/ptyBus'
 import { TERMINAL_DEFAULTS, zoomStep } from '@shared/ui'
+import { VOICE_DEFAULTS } from '@shared/voiceSettings'
 import { welcomePlan, type WelcomeReason } from '@shared/welcome'
 import { matchShortcut, typeThroughKey } from './lib/shortcuts'
 import { newTab } from './lib/newTab'
@@ -4735,6 +4736,7 @@ export function App(): React.JSX.Element {
                   terminal={settings?.terminal ?? TERMINAL_DEFAULTS}
                   accent={activeProfile?.accent ?? null}
                   alpha={termAlpha}
+                  voice={settings?.voice ?? VOICE_DEFAULTS}
                   onOpenUrl={openUrl}
                   onRestart={restartTab}
                   onClose={requestCloseTab}

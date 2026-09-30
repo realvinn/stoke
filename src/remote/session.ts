@@ -37,6 +37,15 @@ import {
 } from '@shared/phoneUi'
 import type { PhoneSessionStatus } from '@shared/remotePhone'
 import { createRecorder, postTranscription, voiceSupported } from '@shared/voice'
+import {
+  SPACE_IDLE,
+  spaceHold,
+  spaceKey,
+  type SpaceHoldEvent,
+  type SpaceHoldState,
+  type SpaceHoldStep
+} from '@shared/voiceRoute'
+import { DEFAULT_HOLD_MS } from '@shared/voiceSettings'
 import { folderName, host, machineName, resumeSession, theme, THEME_EVENT, wsUrl, type SessionRow } from './api'
 import { confirmSheet, el, explain, icon, iconButton, openSheet, toast } from './dom'
 import { rowTitle, screenLines, sendAnswer } from './list'
@@ -829,25 +838,33 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
     mic.replaceChildren(icon('micOff', 20))
     mic.setAttribute('aria-label', `Dictation unavailable: ${block.title}`)
   }
-  const recorder = block ? null : createRecorder(postTranscription)
+  /*
+   * The recording volume, the desktop strip's line on the composer's top edge.
+   * Written straight from the recorder's animation frame; shown only while
+   * `composer[data-recording]`, and still live under reduced motion (it is
+   * data), with only its easing dropped.
+   */
+  const levelFill = el('span', { class: 'mic-level-fill' })
+  composer.append(el('span', { class: 'mic-level', 'aria-hidden': 'true' }, levelFill))
+  const recorder = block
+    ? null
+    : createRecorder(postTranscription, {
+        onLevel: (level) => {
+          levelFill.style.transform = `scaleX(${level.toFixed(3)})`
+        }
+      })
   const setMic = (state: 'idle' | 'recording' | 'working'): void => {
     mic.dataset.state = state
     mic.disabled = state === 'working'
+    composer.dataset.recording = state === 'recording' ? 'true' : ''
     input.placeholder = state === 'recording' ? 'Listening…' : state === 'working' ? 'Transcribing…' : 'Message…'
   }
-  const begin = async (e: Event): Promise<void> => {
-    e.preventDefault()
-    if (!recorder || recorder.recording()) return
-    try {
-      await recorder.start()
-      setMic('recording')
-    } catch {
-      setMic('idle')
-      toast('The microphone is blocked. Allow it for this site and try again.', 'error')
-    }
+  const blocked = (): void => {
+    setMic('idle')
+    toast('The microphone is blocked. Allow it for this site and try again.', 'error')
   }
-  const end = async (e: Event): Promise<void> => {
-    e.preventDefault()
+  /** Stop, transcribe, and add the words to the composer. Both gestures end here. */
+  const stopAndInsert = async (): Promise<void> => {
     if (!recorder?.recording()) return
     setMic('working')
     try {
@@ -865,6 +882,32 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
       toast(err instanceof Error && !/https?:\/\//.test(err.message) ? err.message : 'Transcription failed. Try again.', 'error')
     }
   }
+
+  /*
+   * The mic button is press-and-hold with no threshold: pressing a button
+   * labelled Dictate is the request. A release before the microphone has
+   * opened (a permission prompt) cancels it, rather than leaving it recording
+   * with nobody holding the button.
+   */
+  let pressed = false
+  const begin = async (e: Event): Promise<void> => {
+    e.preventDefault()
+    if (!recorder || recorder.recording()) return
+    pressed = true
+    try {
+      if (!(await recorder.start())) return
+      if (pressed) setMic('recording')
+      else recorder.cancel()
+    } catch {
+      blocked()
+    }
+  }
+  const end = async (e: Event): Promise<void> => {
+    e.preventDefault()
+    if (!pressed) return
+    pressed = false
+    if (recorder?.recording()) await stopAndInsert()
+  }
   if (block) {
     mic.addEventListener('click', () => explain(block.title, block.message), { signal })
   } else {
@@ -875,6 +918,7 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
       'pointercancel',
       (e) => {
         e.preventDefault()
+        pressed = false
         recorder?.cancel()
         setMic('idle')
       },
@@ -886,11 +930,81 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
   /*
    * Voice mode, matching the CLI's own gesture: hold space to speak, escape to
    * leave. Opt-in via /voice, and signposted while on.
+   *
+   * The same hold rule as the desktop terminal (`spaceHold`, voiceRoute.ts): a
+   * tap types a space into the composer and never opens the microphone; only
+   * a press held past DEFAULT_HOLD_MS, or one the keyboard starts repeating,
+   * records. Every repeat is taken (gotcha 79). The phone has no Settings of
+   * its own, so it keeps the default threshold.
    */
   let voiceOn = false
-  const voiceBanner = el('div', { class: 'voice-banner', role: 'status' }, 'Voice mode: hold space to speak · esc to leave')
+  const VOICE_HINT = 'Voice mode: hold space to speak · tap for a space · esc to leave'
+  const voiceBanner = el('div', { class: 'voice-banner', role: 'status' }, VOICE_HINT)
+  let hold: SpaceHoldState = SPACE_IDLE
+  let holdTimer = 0
+  const clearHold = (): void => {
+    window.clearTimeout(holdTimer)
+    holdTimer = 0
+  }
+  /** The space a tap stood for: at the caret while the composer has focus, else at its end. */
+  const typeSpace = (): void => {
+    if (document.activeElement === input) {
+      const at = input.selectionStart ?? input.value.length
+      input.setRangeText(' ', at, input.selectionEnd ?? at, 'end')
+    } else {
+      input.value += ' '
+    }
+    input.dispatchEvent(new Event('input'))
+  }
+  const startHeld = async (): Promise<void> => {
+    if (!recorder) return
+    voiceBanner.textContent = 'Listening — release space to transcribe'
+    try {
+      if (!(await recorder.start())) return
+      dispatch({ type: 'opened' })
+      if (hold.phase === 'recording') setMic('recording')
+    } catch {
+      dispatch({ type: 'failed' })
+      voiceBanner.textContent = VOICE_HINT
+      blocked()
+    }
+  }
+  const dispatch = (event: SpaceHoldEvent): SpaceHoldStep => {
+    const step = spaceHold(hold, event, performance.now(), DEFAULT_HOLD_MS)
+    hold = step.state
+    switch (step.output) {
+      case 'arm-timer':
+        clearHold()
+        holdTimer = window.setTimeout(() => dispatch({ type: 'timer' }), step.wait ?? DEFAULT_HOLD_MS)
+        voiceBanner.textContent = 'Keep holding…'
+        break
+      case 'start':
+        clearHold()
+        void startHeld()
+        break
+      case 'type-space':
+        clearHold()
+        voiceBanner.textContent = VOICE_HINT
+        typeSpace()
+        break
+      case 'finish':
+        voiceBanner.textContent = VOICE_HINT
+        void stopAndInsert()
+        break
+      case 'cancel':
+        clearHold()
+        voiceBanner.textContent = VOICE_HINT
+        recorder?.cancel()
+        setMic('idle')
+        break
+    }
+    return step
+  }
   const setVoice = (on: boolean): void => {
     voiceOn = on
+    clearHold()
+    hold = SPACE_IDLE
+    voiceBanner.textContent = VOICE_HINT
     if (on) {
       dock.prepend(voiceBanner)
       input.blur()
@@ -908,21 +1022,38 @@ export function mountSession(ptyId: string, opts: { wide: boolean; onBack: () =>
     }
     setVoice(!voiceOn)
   }
+  /*
+   * Capture phase, so a taken Space is stopped before the terminal's own
+   * textarea ever sees it, rather than cancelled after xterm has had its turn.
+   * The old handler here never took the repeats at all (`!e.repeat`), so with
+   * the terminal focused every repeat could reach the pty — the stream a CLI's
+   * own voice mode listens for (gotcha 79). Measured with the terminal
+   * focused: a tap and a held Space landed in the composer and the recorder,
+   * and the pty received nothing.
+   */
+  const take = (e: KeyboardEvent): void => {
+    e.preventDefault()
+    e.stopPropagation()
+  }
   document.addEventListener(
     'keydown',
     (e) => {
       if (!voiceOn) return
-      if (e.key === 'Escape') setVoice(false)
-      else if (e.code === 'Space' && !e.repeat) void begin(e)
+      if (e.key === 'Escape') {
+        setVoice(false)
+        return
+      }
+      if (dispatch(spaceKey(e, 'keydown')).take) take(e)
     },
-    { signal }
+    { signal, capture: true }
   )
   document.addEventListener(
     'keyup',
     (e) => {
-      if (voiceOn && e.code === 'Space') void end(e)
+      if (!voiceOn) return
+      if (dispatch(spaceKey(e, 'keyup')).take) take(e)
     },
-    { signal }
+    { signal, capture: true }
   )
   signal.addEventListener('abort', () => setVoice(false))
 

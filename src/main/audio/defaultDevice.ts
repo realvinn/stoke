@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import type { AudioDevice, MicrophoneCheck } from '@shared/api'
+import { isVirtualCapture } from '../../shared/micDevice.ts'
 
 const run = promisify(execFile)
 
@@ -18,9 +19,10 @@ const run = promisify(execFile)
  * own, and Windows Sound settings does it in seconds. Stoke's job is to notice
  * and say so, because nothing else does.
  *
- * The warning now covers Stoke's own dictation too, not only Claude Code's
- * /voice: the renderer records through getUserMedia with no device argument, so
- * it gets the same system default and a virtual cable silences it identically.
+ * The warning covers Stoke's own dictation too while it is left on "System
+ * default" in Settings → Voice: then the renderer's getUserMedia gets this same
+ * device, and a virtual cable silences it identically. A microphone picked
+ * there is Stoke's alone — Claude Code's /voice still records from this one.
  *
  * Read via PowerShell + Add-Type rather than navigator.mediaDevices, which is
  * the other way to learn the default: enumerateDevices() hides labels until a
@@ -80,28 +82,11 @@ const NAME_SCRIPT = [
   '}'
 ].join('\n')
 
-/**
- * Names that mean "this is not a microphone". Matched against the endpoint's
- * friendly name, which carries the driver's own branding.
- */
 /*
- * Deliberately NOT a bare "Virtual Audio Device": that matched
- * "Headset Microphone (Oculus Virtual Audio Device)", which is a real
- * microphone reached through a virtual driver, and telling a user their working
- * mic is broken is worse than staying quiet. Voicemod is named explicitly since
- * it was the only device that token covered on its own. OBS is word-anchored so
- * it cannot match inside an unrelated name.
+ * The virtual-cable rule (`isVirtualCapture`) lives in shared/micDevice.ts now,
+ * so a device PICKED for Stoke's dictation in Settings → Voice is judged by the
+ * same names as the Windows default read here.
  */
-const VIRTUAL =
-  /VB-?Audio|CABLE Output|Virtual (Audio )?Cable|VoiceMeeter|Voicemod|Line \d \(Virtual|NVIDIA Broadcast|Steam Streaming|Wave Link|\bOBS\b|Streamlabs/i
-
-/**
- * Exported so the matcher can be tested against real device names without
- * changing the machine's default recording device to produce the fault.
- */
-export function isVirtualCapture(name: string): boolean {
-  return VIRTUAL.test(name)
-}
 
 async function powershell(script: string): Promise<string> {
   const { stdout } = await run(
