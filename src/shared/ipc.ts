@@ -42,6 +42,16 @@ export const CH = {
   /** Which skills each agent's folders hold. Read-only; see shared/skills.ts. */
   skillsScan: 'skills:scan',
 
+  /*
+   * Agent accounts (shared/accounts.ts). Made and removed by main only: a
+   * login account's folder becomes an agent's config home, so the renderer
+   * names an agent and a label, never a path. `identify` reads each Claude
+   * account's signed-in email, read-only, from its own `.claude.json`.
+   */
+  accountsCreate: 'accounts:create',
+  accountsRemove: 'accounts:remove',
+  accountsIdentify: 'accounts:identify',
+
   // plan limits
   usageRead: 'usage:read',
 

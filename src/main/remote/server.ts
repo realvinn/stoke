@@ -23,6 +23,7 @@ import type { Transcript } from '../sessionFile.ts'
 import { MAX_AUDIO_BYTES, type SttResult } from '../stt.ts'
 import { realpathFolder } from '../folderCheck.ts'
 import { CODING_CLIS, type CodingCliId } from '../../shared/codingClis.ts'
+import { DEFAULT_ACCOUNT_ID, isAccountId } from '../../shared/accounts.ts'
 import {
   accessCertsUrl,
   accessPolicyOf,
@@ -1414,10 +1415,23 @@ export class RemoteServer {
         // Made only now, so a refused request leaves no folder behind.
         if (scratch) cwd = await this.deps.createScratch()
 
+        /*
+         * The account to start on (shared/accounts.ts), when the phone names
+         * one: only an id's SHAPE is checked here. Main resolves it against
+         * settings and refuses one that is gone or belongs to another agent
+         * (`resolveLaunchAccount`) by throwing, which this route answers like
+         * any other launch refusal: a bare 500, the sentence in the log. Absent
+         * is the agent's default account, as on the desktop. An SSH start
+         * carries none.
+         */
+        const accountId =
+          !host && (body?.accountId === DEFAULT_ACCOUNT_ID || isAccountId(body?.accountId)) ? (body?.accountId as string) : undefined
+
         const started = await this.deps.startSession({
           cwd,
           cli: cli as LaunchOptions['cli'],
           ...(host ? { host } : {}),
+          ...(accountId ? { accountId } : {}),
           // Resuming needs both flags: the id says which transcript, and
           // resume turns it into --resume rather than --session-id, which
           // would instead try to create a session that already exists.
@@ -1552,7 +1566,7 @@ export class RemoteServer {
     const registry = this.deps.registryStates()
     // An "Add key to …" tab is ssh-copy-id in the home folder, not a session:
     // listed, it would read as a Claude session named after that folder.
-    const rows = ptys.list().filter((s) => !s.enroll).map((s): RemoteSessionRow => {
+    const rows = ptys.list().filter((s) => !s.enroll && !s.accountLogin).map((s): RemoteSessionRow => {
       const host = this.deps.hostFor(s.sessionId)
       const reg = registry.find((r) => r.ptyId === s.ptyId) ?? null
       const context = watcher?.snapshot(s.sessionId) ?? null

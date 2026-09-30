@@ -52,6 +52,12 @@ export const SECRET_PATHS: readonly SecretPathSpec[] = [
   { pattern: 'providers.openrouterApiKey', label: 'OpenRouter API key', portable: true },
   { pattern: 'providers.customAuthToken', label: 'Custom gateway token', portable: true },
   { pattern: 'agents.endpoints.*.apiKey', label: 'endpoint key', portable: true },
+  /*
+   * An agent account's API key (shared/accounts.ts). Not portable: accounts
+   * are machine-local (setupFile.ts LOCAL_KEYS), and a key exported without
+   * the account it belongs to would have nowhere to land on import.
+   */
+  { pattern: 'accounts.*.apiKey', label: 'account key', portable: false },
   { pattern: 'remote.token', label: 'Phone access key', portable: false }
 ]
 

@@ -27,6 +27,7 @@ import type { SkillDirScan } from './skills'
 import type { MicAccess } from './voiceRoute'
 import type { CreateProfileInput, ProfilePlan } from './profiles'
 import type { CodingCliDetection, CodingCliId } from './codingClis'
+import type { AccountKind, AgentAccount } from './accounts'
 import type { StokeCliRequest } from './stokeArgs'
 import type { ClaudeLaunchDefaults } from './launch'
 import type { SecretStoreStatus } from './secrets'
@@ -103,6 +104,20 @@ export interface ClipboardPeek {
   hasImage: boolean
 }
 
+/** What Settings › Agents › Add account sends: an agent and a name, never a path. */
+export interface AccountCreateInput {
+  cli: CodingCliId
+  /** The user's name for it; blank picks `<Agent> 2`, `<Agent> 3`… */
+  name: string
+  kind: AccountKind
+  /** A key account's key, sealed at rest like every other (`accounts.*.apiKey`). */
+  apiKey?: string
+}
+
+export type AccountCreateResult =
+  | { ok: true; account: AgentAccount; created: boolean }
+  | { ok: false; message: string }
+
 export interface StartResult {
   ptyId: string
   sessionId: string
@@ -114,6 +129,14 @@ export interface StartResult {
    * whose model is the one the renderer chose and sent.
    */
   model?: string
+  /**
+   * The account the launch was resolved to (`resolveLaunchAccount`): an
+   * account id, or `'default'`. The tab stores THIS, not what it asked for,
+   * so a tab started on "the default account" comes back on the account it
+   * actually ran on even after the default changes. Absent from an install,
+   * an SSH tab and a key enrollment.
+   */
+  accountId?: string
 }
 
 /**
@@ -266,6 +289,8 @@ export interface RemoteSessionStarted {
    * older main's push still types.
    */
   hostId?: string | null
+  /** The account it runs on (`StartResult.accountId`); absent from an older main. */
+  accountId?: string
 }
 
 export interface SelfUpdateState {
@@ -431,6 +456,20 @@ export interface StokeApi {
     detect(opts?: { fresh?: boolean }): Promise<CodingCliDetection>
     /** What each skill folder the agents read holds. Never writes anything. */
     skills(): Promise<SkillDirScan[]>
+  }
+
+  /**
+   * Agent accounts (shared/accounts.ts). `create` makes the folder a login
+   * account signs in to — under ~/.stoke/accounts, realpath'd, with a Claude
+   * account's shared dirs linked — or stores a key account; the sign-in itself
+   * is a tab (`pty.start` with `accountLogin`). `remove` forgets an account
+   * and leaves its folder on disk. `identify` is each Claude login account's
+   * signed-in email, read-only, or null.
+   */
+  accounts: {
+    create(input: AccountCreateInput): Promise<AccountCreateResult>
+    remove(id: string): Promise<void>
+    identify(): Promise<Record<string, string | null>>
   }
 
   usage: {

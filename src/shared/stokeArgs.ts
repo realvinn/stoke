@@ -35,7 +35,8 @@
  * asks the disk (`src/main/index.ts`, `checkLaunchRequest`), and turns a
  * missing one into the `error` request built by `folderProblem` below.
  */
-import { CODING_CLIS, isCodingCliId, type CodingCliId } from './codingClis.ts'
+import { CODING_CLIS, cliFor, isCodingCliId, type CodingCliId } from './codingClis.ts'
+import { accountSlug, cleanAccountLabel, LOGIN_ACCOUNTS } from './accounts.ts'
 
 /** The argument that makes an argv a request. Nothing without it ever is. */
 export const STOKE_CLI_MARKER = '--stoke-cli'
@@ -62,6 +63,19 @@ export type StokeCliRequest =
   | { kind: 'open'; cwd: string }
   /** Settings → Updates, and a check. Never installs and never quits. */
   | { kind: 'update' }
+  /**
+   * `stoke account add AGENT NAME`: make that agent's account called NAME
+   * (or find the one already called that) and open its sign-in tab. Main
+   * makes the folder (`accounts:create`'s path) and turns this into
+   * `account-login` for the renderer; the name is a label, never a path.
+   */
+  | { kind: 'account-add'; cli: CodingCliId; name: string }
+  /**
+   * Open the sign-in tab for this account. Made by MAIN only, from a checked
+   * `account-add` — `requestFrom` refuses it from another process, so nothing
+   * outside Stoke can start a login tab by naming an id.
+   */
+  | { kind: 'account-login'; accountId: string }
   /** Something the user should be told, in the app's own error banner. */
   | { kind: 'error'; message: string }
 
@@ -181,7 +195,38 @@ function usableCwd(cwd: string, platform: string): boolean {
 /* -------------------------------------------------------------- grammar */
 
 /** The first positional word that is a command rather than a folder. */
-const COMMANDS = new Set(['update', 'install-cli', 'uninstall-cli'])
+const COMMANDS = new Set(['update', 'install-cli', 'uninstall-cli', 'account'])
+
+/**
+ * `stoke account …` as the app sees it. `list` and `env` are the shim's own —
+ * it answers them from ~/.stoke/accounts/index.json with no app at all — so
+ * one that reached here came from a launcher that does not (Linux's), and is
+ * told where the answer is rather than dropped.
+ */
+function accountRequest(words: readonly string[]): StokeCliRequest {
+  const [sub, cli, name, ...rest] = words
+  if (sub === 'list' || sub === 'env') {
+    return fail(
+      `\`stoke account ${sub}\` is answered by the stoke command itself, in a terminal on macOS and Windows. ` +
+        'Here, Settings → Agents lists every account and its folder.'
+    )
+  }
+  if (sub !== 'add') return fail(`\`stoke account\` takes list, add AGENT NAME, or env NAME. ${HELP_HINT}`)
+  if (cli === undefined || !isCodingCliId(cli)) {
+    return fail(`\`stoke account add\` needs an agent first: ${CODING_CLIS.map((c) => c.id).join(', ')}.`)
+  }
+  if (!LOGIN_ACCOUNTS.has(cli)) {
+    return fail(
+      `${cliFor(cli).label} keeps one sign-in for the whole machine, so Stoke cannot sign in a second one. ` +
+        'Where it takes an API key, Settings → Agents can hold one as an account.'
+    )
+  }
+  if (name === undefined || !cleanAccountLabel(name) || !accountSlug(name)) {
+    return fail('`stoke account add` needs a name with a letter or digit in it, like work.')
+  }
+  if (rest.length) return fail('`stoke account add` takes an agent and one name; quote a name with spaces in it.')
+  return { kind: 'account-add', cli, name: cleanAccountLabel(name) }
+}
 
 /**
  * Parse a launch argv — `process.argv`, or the argv a second instance
@@ -207,6 +252,7 @@ export function parseStokeArgs(argv: readonly string[], ctx: ArgContext): StokeC
   // A command is a first word, typed before any option or `--`.
   if (typed.length && COMMANDS.has(typed[0])) {
     const word = typed[0]
+    if (word === 'account') return accountRequest(typed.slice(1))
     if (typed.length > 1) return fail(`\`stoke ${word}\` takes nothing after it. ${HELP_HINT}`)
     if (word === 'update') return { kind: 'update' }
     return fail(
@@ -343,6 +389,13 @@ export function requestFrom(v: unknown, platform: string): StokeCliRequest | nul
       return typeof r.message === 'string' ? { kind: 'error', message: shown(r.message, 400) } : null
     case 'open':
       return folder(r.cwd) ? { kind: 'open', cwd: r.cwd } : null
+    case 'account-add': {
+      if (!isCodingCliId(r.cli) || !LOGIN_ACCOUNTS.has(r.cli) || typeof r.name !== 'string') return null
+      const name = cleanAccountLabel(r.name)
+      return name && accountSlug(name) ? { kind: 'account-add', cli: r.cli, name } : null
+    }
+    // `account-login` is never accepted from another process: main makes it,
+    // and only from an `account-add` it has checked and acted on.
     case 'session': {
       if (!folder(r.cwd)) return null
       // null is "the default agent" (a bare `stoke .`); an older build sends
@@ -445,6 +498,18 @@ export function stokeHelp(platform: string): string {
     '  stoke --continue [DIR]  pick up the last Claude Code conversation in DIR',
     '  stoke --open [DIR]      add DIR to the sidebar and select it; starts nothing',
     '  stoke update            open Settings, Updates and check for a new Stoke; installs nothing',
+    // The shim answers list and env itself, from ~/.stoke/accounts/index.json;
+    // Linux's launcher does not, so its help does not offer them.
+    ...(platform === 'darwin' || win
+      ? [
+          '  stoke account list      the agent accounts Stoke holds, and their folders',
+          '  stoke account add AGENT NAME',
+          '                          make an account of an agent and sign it in, in a Stoke tab',
+          win
+            ? '  stoke account env NAME  set lines that point this cmd window at that account'
+            : '  stoke account env NAME  export lines that point this shell at that account, for eval'
+        ]
+      : []),
     '  stoke --version         the installed version',
     '  stoke --help            this'
   ]

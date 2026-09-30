@@ -285,6 +285,8 @@ export const PARTIAL_KEYS = {
  * - `uiScale`, `sidebarWidth`: this display and this window.
  * - `activeProfile`: a view filter that follows the tab in front.
  * - `welcomeSeenVersion`: whether THIS install has shown the first-run splash.
+ * - `accounts`: each login account is a folder on this disk signed in on this
+ *   device (shared/accounts.ts), and its key accounts' keys are not portable.
  *
  * `verify:secrets` asserts PORTABLE_KEYS, PARTIAL_KEYS and LOCAL_KEYS
  * partition every key of DEFAULT_SETTINGS exactly, so a new setting fails the
@@ -302,7 +304,8 @@ export const LOCAL_KEYS = [
   'remote',
   'sidebarWidth',
   'activeProfile',
-  'welcomeSeenVersion'
+  'welcomeSeenVersion',
+  'accounts'
 ] as const satisfies readonly (keyof Settings)[]
 
 function cloneJson<T>(v: T): T {

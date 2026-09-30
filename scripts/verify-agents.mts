@@ -56,6 +56,7 @@ import {
   type LaunchPlanInput
 } from '../src/shared/agents.ts'
 import { CLI_CAPS, CODING_CLIS, type CodingCliId } from '../src/shared/codingClis.ts'
+import type { AgentAccount } from '../src/shared/accounts.ts'
 import {
   CLAUDE_PLUGIN_SKILLS,
   CLAUDE_SHARED_PLUGIN,
@@ -160,6 +161,7 @@ check('nothing stored is never asked', hydrateAgents(undefined), {
   shareSkillsToClaude: true,
   tag: { show: true, labels: {} },
   colors: {},
+  defaultAccount: {},
   format: AGENTS_FORMAT
 })
 check('junk is never asked, not "nothing chosen"', hydrateAgents({ chosen: 'codex' }).chosen, null)
@@ -1518,6 +1520,57 @@ console.log('\nskills Claude Code is lent at launch: the projection, on a fake h
   )
   const headless = readFileSync(new URL('../src/main/agent.ts', import.meta.url), 'utf8')
   ok('agent.ts (headless runs) never names --plugin-dir (gotcha 15)', !headless.includes('--plugin-dir'))
+}
+
+
+console.log('\nan account in the launch plan (shared/accounts.ts)')
+{
+  /*
+   * A login account adds its home variable, LAST, over whatever the endpoint
+   * set; a key account adds its key, and only on the agent's own sign-in —
+   * beside an endpoint that brings a key of its own it would send one
+   * vendor's key to another. An account of another agent is refused, never
+   * applied: the id reached this plan through a tab or the phone.
+   */
+  const codexWork: AgentAccount = { id: 'codex-work', cli: 'codex', label: 'Work', kind: 'login', home: '/h/.stoke/accounts/codex-work', apiKey: '' }
+  const grokTeam: AgentAccount = { id: 'grok-team', cli: 'grok', label: 'Team', kind: 'key', home: '', apiKey: 'xai-TEAM-secret' }
+  const geminiTwo: AgentAccount = { id: 'gemini-2', cli: 'gemini', label: 'Gemini 2', kind: 'login', home: '/h/.stoke/accounts/gemini-2', apiKey: '' }
+  const cursorKey: AgentAccount = { id: 'cursor-ci', cli: 'cursor', label: 'CI', kind: 'key', home: '', apiKey: 'cur-CI-secret' }
+
+  const codex = plan('codex', undefined, { account: codexWork })
+  check('a Codex login account sets CODEX_HOME and nothing else', planOk(codex).env, { CODEX_HOME: '/h/.stoke/accounts/codex-work' })
+  check('and adds no argument', planOk(codex).args, [])
+  const codexOr = plan('codex', or('gpt-6.1'), { account: codexWork })
+  check(
+    'on OpenRouter too: the endpoint keeps its key, the home travels beside it',
+    [planOk(codexOr).env.CODEX_HOME, planOk(codexOr).env.STOKE_OPENROUTER_API_KEY],
+    ['/h/.stoke/accounts/codex-work', KEY]
+  )
+  const grok = plan('grok', undefined, { account: grokTeam })
+  check('a Grok key account sets XAI_API_KEY', planOk(grok).env, { XAI_API_KEY: 'xai-TEAM-secret' })
+  ok('and its key never reaches argv', !planOk(grok).args.join(' ').includes('xai-TEAM-secret'))
+  const grokOr = plan('grok', or('x-ai/grok-5'), { account: grokTeam })
+  ok(
+    'a key account beside an OpenRouter endpoint is refused, with a sentence',
+    !grokOr.ok && /OpenRouter/.test(grokOr.message),
+    JSON.stringify(grokOr)
+  )
+  check(
+    'a Gemini login account keeps Gemini on its per-home file store',
+    planOk(plan('gemini', undefined, { account: geminiTwo })).env,
+    { GEMINI_CLI_HOME: '/h/.stoke/accounts/gemini-2', GEMINI_FORCE_ENCRYPTED_FILE_STORAGE: 'false' }
+  )
+  check(
+    'a Cursor key always travels with the in-memory store, or it would overwrite the machine\u2019s own sign-in',
+    planOk(plan('cursor', undefined, { account: cursorKey })).env,
+    { AGENT_CLI_CREDENTIAL_STORE: 'memory', CURSOR_API_KEY: 'cur-CI-secret' }
+  )
+  const mismatch = plan('grok', undefined, { account: codexWork })
+  ok('an account of another agent is refused', !mismatch.ok && /not a Grok/.test(mismatch.message), JSON.stringify(mismatch))
+  const empty = plan('grok', undefined, { account: { ...grokTeam, apiKey: '' } })
+  ok('a key account with no key yet is refused, not launched on the machine\u2019s own sign-in', !empty.ok, JSON.stringify(empty))
+  check('no account is the plan as it always was', planOk(plan('codex', undefined, { account: null })).env, {})
+  check('Claude Code\u2019s plan stays empty: its account travels in pty.ts, not here', planOk(plan('claude', undefined, { account: null })), { args: [], env: {}, model: '' })
 }
 
 console.log(failures ? `\n${failures} FAILED` : '\nall pass')

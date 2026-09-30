@@ -25,6 +25,15 @@ import {
 import type { EffortLevel, PermissionMode, Settings } from '@shared/types'
 import { CLAUDE_SHARED_PLUGIN, SHARED_SKILLS_DIR, skillReport, type SkillDirScan } from '@shared/skills'
 import { AGENT_SEEDS, agentSeed } from '@shared/agentColors'
+import {
+  ACCOUNT_KEY_ENV,
+  ACCOUNT_LABEL_MAX,
+  accountKindsFor,
+  accountsOf,
+  DEFAULT_ACCOUNT_ID,
+  type AccountKind,
+  type AgentAccount
+} from '@shared/accounts'
 import { Spinner } from './Spinner'
 import { ColorField } from './ColorField'
 import { FieldHint } from './FieldHint'
@@ -69,7 +78,8 @@ export function AgentsSettings({
   page,
   onPage,
   onOpenProviders,
-  onOpenClaudeConfig
+  onOpenClaudeConfig,
+  onSignIn
 }: {
   settings: Settings
   onPatch: (patch: Partial<Settings>) => void
@@ -85,6 +95,8 @@ export function AgentsSettings({
   onPage: (id: CodingCliId) => void
   onOpenProviders: () => void
   onOpenClaudeConfig: () => void
+  /** Open an account's sign-in tab (App's, like an install: it opens a tab and closes the sheet). */
+  onSignIn: (accountId: string) => void
 }): React.JSX.Element {
   const agents = settings.agents
   const platform = window.stoke.platform
@@ -340,6 +352,24 @@ export function AgentsSettings({
             openrouterKey={settings.providers.openrouterApiKey}
             installCommand={installSteps([current.id], platform)[0]?.command ?? null}
             onInstall={() => install(current.id)}
+            accounts={
+              <AgentAccounts
+                cli={current}
+                accounts={accountsOf(current.id, settings.accounts)}
+                defaultId={agents.defaultAccount[current.id]}
+                onDefault={(id) => {
+                  const defaultAccount = { ...agentsRef.current.defaultAccount }
+                  if (id === DEFAULT_ACCOUNT_ID) delete defaultAccount[current.id]
+                  else defaultAccount[current.id] = id
+                  patchAgents({ ...agentsRef.current, defaultAccount })
+                }}
+                onPatchAccount={(id, patch) => {
+                  const mine = settings.accounts[id]
+                  if (mine) onPatch({ accounts: { [id]: { ...mine, ...patch } } })
+                }}
+                onSignIn={onSignIn}
+              />
+            }
             claude={
               isClaudeCode(current.id) ? (
                 <ClaudePage
@@ -457,6 +487,7 @@ function AgentPage({
   onColor,
   tagLabel,
   onTagLabel,
+  accounts,
   claude
 }: {
   cli: CodingCli
@@ -484,6 +515,8 @@ function AgentPage({
   onTagLabel: (label: string) => void
   /** Claude Code's own section, drawn in place of an endpoint. */
   claude: React.ReactNode
+  /** Its accounts (`AgentAccounts`), under where it sends requests. */
+  accounts: React.ReactNode
 }): React.JSX.Element {
   const caps = capsFor(cli.id)
   return (
@@ -525,6 +558,8 @@ function AgentPage({
       </label>
 
       {claude ?? <AgentEndpointFields cli={cli} endpoint={endpoint} onEndpoint={onEndpoint} openrouterKey={openrouterKey} />}
+
+      {accounts}
 
       <AgentLook
         cli={cli}
@@ -950,6 +985,286 @@ function AgentLook({
             onKeyDown={(e) => e.key === 'Enter' && commit()}
           />
         </label>
+      </div>
+    </div>
+  )
+}
+
+/*
+ * An agent's accounts (shared/accounts.ts): its own sign-in (Default), then
+ * every account Stoke holds for it, which one new sessions start on, and how
+ * to add another. A login account is made by main — the renderer names an
+ * agent and a label, never a folder — and signed in by the agent's own login,
+ * in a tab (`onSignIn`). A key account's key is sealed like every other.
+ *
+ * Labels and keys commit on blur or Enter and are flushed on unmount through
+ * a ref (gotcha 63). The whole map is not needed on a commit: main applies a
+ * label, swatch or key to the one account named and ignores everything else
+ * (`accountsFromRenderer`).
+ */
+function AgentAccounts({
+  cli,
+  accounts,
+  defaultId,
+  onDefault,
+  onPatchAccount,
+  onSignIn
+}: {
+  cli: CodingCli
+  accounts: AgentAccount[]
+  /** The stored default account for this agent, or absent for its own sign-in. */
+  defaultId: string | undefined
+  onDefault: (id: string) => void
+  onPatchAccount: (id: string, patch: { label?: string; apiKey?: string }) => void
+  onSignIn: (id: string) => void
+}): React.JSX.Element | null {
+  const kinds = accountKindsFor(cli.id)
+  const [name, setName] = useState('')
+  const [key, setKey] = useState('')
+  const [busy, setBusy] = useState(false)
+  const busyRef = useRef(false)
+  const [message, setMessage] = useState<string | null>(null)
+  const [removing, setRemoving] = useState<string | null>(null)
+  const [emails, setEmails] = useState<Record<string, string | null>>({})
+  const homes = accounts.map((a) => `${a.id}:${a.home}`).join('|')
+  useEffect(() => {
+    if (cli.id !== 'claude') return
+    let live = true
+    void window.stoke.accounts.identify().then((e) => {
+      if (live) setEmails(e)
+    })
+    return () => {
+      live = false
+    }
+  }, [cli.id, homes])
+
+  if (kinds.length === 0) {
+    return (
+      <div className="field" data-testid="agent-accounts">
+        <span className="field-label">Accounts</span>
+        <span className="field-hint">
+          {cli.label} keeps one sign-in for the whole machine and takes no key from Stoke, so it
+          runs on its own sign-in only.
+        </span>
+      </div>
+    )
+  }
+
+  const current = defaultId && accounts.some((a) => a.id === defaultId) ? defaultId : DEFAULT_ACCOUNT_ID
+  // What a blank name becomes: main's rule, the first free `<cli>-<n>` from 2.
+  let nextNumber = 2
+  while (accounts.some((a) => a.id === `${cli.id}-${nextNumber}`)) nextNumber++
+  const add = async (kind: AccountKind): Promise<void> => {
+    // Claimed before the await (gotcha 20): a second press would make a second account.
+    if (busyRef.current) return
+    busyRef.current = true
+    setBusy(true)
+    setMessage(null)
+    try {
+      const res = await window.stoke.accounts.create({ cli: cli.id, name, kind, apiKey: kind === 'key' ? key : undefined })
+      if (!res.ok) {
+        setMessage(res.message)
+        return
+      }
+      setName('')
+      setKey('')
+      if (!res.created) setMessage(`${res.account.label} is already here.`)
+      // A login account is signed in at once, in a tab: that is what it is for.
+      if (kind === 'login') onSignIn(res.account.id)
+    } finally {
+      busyRef.current = false
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="field agent-accounts" data-testid="agent-accounts">
+      <span className="field-label">Accounts</span>
+      <span className="field-hint">
+        {kinds.includes('login')
+          ? `Another ${cli.label} sign-in, kept in its own folder under ~/.stoke/accounts and signed in by ${cli.label} itself.`
+          : `Another ${cli.label} API key, sealed like every key Stoke holds.`}
+        {cli.id === 'claude' &&
+          ' Every Claude Code account shares one history, so a conversation started on one resumes on another. The plan-limit chip shows the Default account only.'}
+      </span>
+      <div className="agent-account-list" role="radiogroup" aria-label={`Account new ${cli.label} sessions start on`}>
+        <label className="agent-account-row">
+          <input type="radio" name={`account-${cli.id}`} checked={current === DEFAULT_ACCOUNT_ID} onChange={() => onDefault(DEFAULT_ACCOUNT_ID)} />
+          <span className="agent-account-name">Default</span>
+          <span className="field-hint">its own sign-in, as {cli.label} is set up on this machine</span>
+        </label>
+        {accounts.map((a) => (
+          <AccountRow
+            key={a.id}
+            cli={cli}
+            account={a}
+            email={emails[a.id] ?? null}
+            checked={current === a.id}
+            onDefault={() => onDefault(a.id)}
+            onPatch={(patch) => onPatchAccount(a.id, patch)}
+            onSignIn={() => onSignIn(a.id)}
+            removing={removing === a.id}
+            onRemove={() => {
+              if (removing !== a.id) {
+                setRemoving(a.id)
+                return
+              }
+              setRemoving(null)
+              void window.stoke.accounts.remove(a.id)
+            }}
+            onKeepIt={() => setRemoving(null)}
+          />
+        ))}
+      </div>
+      <div className="agent-account-add">
+        <input
+          className="input"
+          value={name}
+          placeholder={`Name, e.g. work (blank: ${cli.label} ${nextNumber})`}
+          aria-label={`New ${cli.label} account name`}
+          maxLength={ACCOUNT_LABEL_MAX}
+          spellCheck={false}
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && kinds.includes('login')) void add('login')
+          }}
+        />
+        {kinds.includes('login') && (
+          <button className="btn" data-testid="add-account" disabled={busy} aria-busy={busy} onClick={() => void add('login')}>
+            {busy && <Spinner />}
+            Add account
+          </button>
+        )}
+      </div>
+      {kinds.includes('key') && (
+        <div className="agent-account-add">
+          <input
+            className="input mono"
+            type="password"
+            value={key}
+            placeholder={`${ACCOUNT_KEY_ENV[cli.id]?.key ?? 'API key'} for a key account`}
+            aria-label={`New ${cli.label} account API key`}
+            spellCheck={false}
+            autoComplete="off"
+            onChange={(e) => setKey(e.target.value)}
+          />
+          <button className="btn" disabled={busy || !key.trim()} onClick={() => void add('key')}>
+            Add key account
+          </button>
+        </div>
+      )}
+      {message && (
+        <span className="field-hint" data-tone="warning">
+          {message}
+        </span>
+      )}
+    </div>
+  )
+}
+
+/** One stored account: its colour, name, where it lives or its key, and what can be done with it. */
+function AccountRow({
+  cli,
+  account,
+  email,
+  checked,
+  onDefault,
+  onPatch,
+  onSignIn,
+  removing,
+  onRemove,
+  onKeepIt
+}: {
+  cli: CodingCli
+  account: AgentAccount
+  email: string | null
+  checked: boolean
+  onDefault: () => void
+  onPatch: (patch: { label?: string; apiKey?: string }) => void
+  onSignIn: () => void
+  removing: boolean
+  onRemove: () => void
+  onKeepIt: () => void
+}): React.JSX.Element {
+  const [label, setLabel] = useState(account.label)
+  const [key, setKey] = useState(account.apiKey)
+  const editing = useRef(false)
+  const latest = useRef({ label, key, account, onPatch })
+  latest.current = { label, key, account, onPatch }
+  useEffect(() => {
+    if (!editing.current) {
+      setLabel(account.label)
+      setKey(account.apiKey)
+    }
+  }, [account.label, account.apiKey])
+  const commit = (): void => {
+    editing.current = false
+    const { label: l, key: k, account: a, onPatch: set } = latest.current
+    const patch: { label?: string; apiKey?: string } = {}
+    if (l.trim() && l.trim() !== a.label) patch.label = l.trim()
+    if (a.kind === 'key' && k.trim() !== a.apiKey) patch.apiKey = k.trim()
+    if (Object.keys(patch).length) set(patch)
+  }
+  useEffect(() => () => commit(), [])
+  const edit = (f: () => void): void => {
+    editing.current = true
+    f()
+  }
+  return (
+    <div className="agent-account-row" data-account={account.id}>
+      <input type="radio" name={`account-${cli.id}`} checked={checked} onChange={onDefault} aria-label={`Start new ${cli.label} sessions on ${account.label}`} />
+      <span className="agent-tab-dot" {...agentMark(account.id)} aria-hidden="true" />
+      <div className="agent-account-body">
+        <input
+          className="input agent-account-label"
+          value={label}
+          maxLength={ACCOUNT_LABEL_MAX}
+          spellCheck={false}
+          aria-label={`${account.label} name`}
+          onChange={(e) => edit(() => setLabel(e.target.value))}
+          onBlur={commit}
+          onKeyDown={(e) => e.key === 'Enter' && commit()}
+        />
+        {account.kind === 'login' ? (
+          <span className="field-hint mono agent-account-home" title={account.home}>
+            {email && email !== account.label ? `${email} · ` : ''}
+            {account.home}
+          </span>
+        ) : (
+          <input
+            className="input mono"
+            type="password"
+            value={key}
+            placeholder={ACCOUNT_KEY_ENV[cli.id]?.key ?? 'API key'}
+            aria-label={`${account.label} API key`}
+            spellCheck={false}
+            autoComplete="off"
+            onChange={(e) => edit(() => setKey(e.target.value))}
+            onBlur={commit}
+            onKeyDown={(e) => e.key === 'Enter' && commit()}
+          />
+        )}
+      </div>
+      <div className="btn-row">
+        {account.kind === 'login' && (
+          <button className="btn" onClick={onSignIn} title={`Run ${cli.label}'s own sign-in for this account, in a tab`}>
+            Sign in
+          </button>
+        )}
+        {removing ? (
+          <>
+            <button className="btn" data-variant="danger" onClick={onRemove} title="Its folder stays on disk">
+              Remove
+            </button>
+            <button className="btn" data-variant="ghost" onClick={onKeepIt}>
+              Keep
+            </button>
+          </>
+        ) : (
+          <button className="btn" data-variant="ghost" onClick={onRemove}>
+            Remove…
+          </button>
+        )}
       </div>
     </div>
   )

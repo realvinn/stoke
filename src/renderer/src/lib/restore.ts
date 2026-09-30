@@ -24,7 +24,9 @@ export function toStored(
   // An install tab is not a session and cannot come back as one. Nor can an
   // "Add key to …" tab: restoring it would reopen an ssh-copy-id asking for a
   // password nobody is there to type, on a host that may have its key by now.
-  const kept = tabs.filter((t) => !t.installing?.length && !t.enrollHostId)
+  // An account's sign-in tab neither: a login reopened at the next start
+  // would ask nobody for a sign-in.
+  const kept = tabs.filter((t) => !t.installing?.length && !t.enrollHostId && !t.accountLogin)
   const stored: StoredTab[] = kept.map((t) => {
     const snap = t.sessionId ? contexts[t.sessionId] : undefined
     return {
@@ -42,6 +44,9 @@ export function toStored(
       effort: t.effort,
       ultracode: t.ultracode,
       hostId: t.hostId,
+      // Only when it was not the agent's own sign-in, so a Default tab's
+      // stored form is byte-for-byte what it always was.
+      ...(t.kind === 'session' && t.accountId && t.accountId !== 'default' ? { accountId: t.accountId } : {}),
       selectedPath: t.selectedPath,
       expandedPath: t.expandedPath,
       lastActiveAt: now,
@@ -93,6 +98,14 @@ export function fromStored(state: StoredTabs): { tabs: Tab[]; activeId: string |
     status: s.kind === 'session' ? 'paused' : 'running',
     exitCode: null,
     hostId: s.hostId,
+    /*
+     * The account it ran on. Absent in the file means the agent's own
+     * sign-in — every tab from before accounts, and every Default tab — and
+     * is restored as `'default'` explicitly, never as "whatever the default
+     * account is now": a conversation must not move to another account's plan
+     * because the default changed while Stoke was closed. An SSH tab has none.
+     */
+    ...(s.kind === 'session' && !s.hostId ? { accountId: s.accountId ?? 'default' } : {}),
     selectedPath: s.selectedPath,
     expandedPath: s.expandedPath
   }))

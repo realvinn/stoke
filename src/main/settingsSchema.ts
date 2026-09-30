@@ -9,6 +9,7 @@
 import type { ProfileConfig, ProjectMeta, Settings, SshHost, Theme, WorklogBoards } from '@shared/types'
 import { DEFAULT_PROVIDERS, hydrateProviders } from '../shared/providers.ts'
 import { DEFAULT_AGENTS, hydrateAgents } from '../shared/agents.ts'
+import { hydrateAccounts } from '../shared/accounts.ts'
 import { tidy } from './projectMeta.ts'
 import { DEFAULT_LIGHT_THEME_ID, DEFAULT_THEME_ID, validateTheme } from '../shared/themes.ts'
 import { DEFAULT_WORKLOG_BOARDS, WORKLOG_TARGETS } from '../shared/worklog.ts'
@@ -157,9 +158,14 @@ export const DEFAULT_SETTINGS: Settings = {
     shareSkillsToClaude: DEFAULT_AGENTS.shareSkillsToClaude,
     tag: { show: true, labels: {} },
     colors: {},
+    // Every agent on its own sign-in: the implicit Default account (accounts.ts).
+    defaultAccount: {},
     // Nothing stored to upgrade (agents.ts AGENTS_FORMAT).
     format: DEFAULT_AGENTS.format
   },
+  // No extra sign-ins. Made by main only (`accounts:create`), each in its own
+  // folder under ~/.stoke/accounts.
+  accounts: {},
   // Never seen. Every existing settings file also has no such key and therefore
   // reads as this, which is right: the first launch after an upgrade is exactly
   // one of the two moments the campfire is for.
@@ -419,6 +425,8 @@ export function hydrateSettings(raw: unknown): Settings {
     zoomTarget: clampZoomTarget(r.zoomTarget),
     fullScreenReveal: clampFullScreenReveal(r.fullScreenReveal),
     providers: hydrateProviders(r.providers),
-    agents: hydrateAgents(r.agents)
+    agents: hydrateAgents(r.agents),
+    // Rebuilt from named keys, junk and unsafe homes dropped (accounts.ts).
+    accounts: hydrateAccounts(r.accounts)
   }
 }

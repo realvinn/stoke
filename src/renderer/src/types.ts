@@ -50,6 +50,21 @@ export interface Tab {
    * treats `cwd` as an alias rather than a folder (gotcha 18) still does.
    */
   enrollHostId?: string
+  /**
+   * The account this tab's session runs on (shared/accounts.ts): an account
+   * id, or `'default'` for the agent's own sign-in. Main's answer
+   * (`StartResult.accountId`), never the renderer's guess, so a relaunch, a
+   * Resume and Start again ask for exactly the account the session was on —
+   * and a tab restored from before accounts reads `'default'`, which is what
+   * it ran on. Absent on a New tab, an install, an SSH tab and a key enrollment.
+   */
+  accountId?: string
+  /**
+   * Set on a sign-in tab: it runs the agent's own login for this account
+   * (`LaunchOptions.accountLogin`), and like an install it is never saved for
+   * restore — a restart must not reopen a login nobody is there to answer.
+   */
+  accountLogin?: string
   /** Empty string on a `new` tab, which has no process. */
   ptyId: string
   /** Claude Code session id — the key the context meter watches. Empty on `new`. */

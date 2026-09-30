@@ -7,8 +7,9 @@
 # line. Following that symlink back is how it finds the bundle it belongs to,
 # so it keeps working wherever Stoke.app lives and whichever copy is newest.
 #
-# It answers --help, --version, install-cli and uninstall-cli itself, without
-# starting anything. Everything else becomes
+# It answers --help, --version, install-cli, uninstall-cli, and `account list`
+# and `account env NAME`, itself, without starting anything. Everything else
+# becomes
 #
 #     open -n -a Stoke.app --args --stoke-cli --stoke-cwd=$PWD -- <your args>
 #
@@ -47,6 +48,10 @@ Usage: stoke [options] [DIR]
   stoke --continue [DIR]  pick up the last Claude Code conversation in DIR
   stoke --open [DIR]      add DIR to the sidebar and select it; starts nothing
   stoke update            open Settings, Updates and check for a new Stoke; installs nothing
+  stoke account list      the agent accounts Stoke holds, and their folders
+  stoke account add AGENT NAME
+                          make an account of an agent and sign it in, in a Stoke tab
+  stoke account env NAME  export lines that point this shell at that account, for eval
   stoke --version         the installed version
   stoke --help            this
 
@@ -70,6 +75,135 @@ case "${1:-}" in
   --help | -h)
     stoke_help
     exit 0
+    ;;
+esac
+
+# `stoke account list` and `stoke account env NAME` are answered here, from
+# the index Stoke writes at ~/.stoke/accounts/index.json (src/shared/
+# accounts.ts, accountIndexText), with no app at all -- so a byobu window or a
+# shell on a VPS session can do
+#
+#     eval "$(stoke account env work)"
+#
+# `stoke account add AGENT NAME` needs the app and goes to it below.
+#
+# The index is JSON written one account per line with its keys in a fixed
+# order and the free-text label last, so one ANCHORED pattern reads a line
+# exactly: id, name, cli, env and extra hold only [a-z0-9-] / [A-Z_] / fixed
+# table text, so nothing before `home` can hold a quote. A home JSON had to
+# escape (a backslash, a quote) does not match and is skipped out loud --
+# refuse, never unescape. Every value printed for eval is single-quoted.
+account_index() {
+  printf '%s' "${HOME:-}/.stoke/accounts/index.json"
+}
+
+# One account per line on stdout, fields split by the unit separator (0x1F):
+# id, name, cli, env, extra, home, label. Not a tab: IFS whitespace folds empty
+# fields (a key account has no env). 0x1F never reaches the index raw: JSON escapes it.
+account_rows() {
+  acc_idx=$(account_index)
+  [ -f "$acc_idx" ] || return 0
+  acc_t=$(printf '\037')
+  while IFS= read -r acc_line || [ -n "$acc_line" ]; do
+    case $acc_line in
+      *'{"id":"'*) : ;;
+      *) continue ;;
+    esac
+    acc_row=$(printf '%s\n' "$acc_line" | sed -n "s/^ *{\"id\":\"\([a-z0-9-]*\)\",\"name\":\"\([a-z0-9-]*\)\",\"cli\":\"\([a-z]*\)\",\"env\":\"\([A-Z_]*\)\",\"extra\":\"\([A-Za-z0-9_= ]*\)\",\"home\":\"\([^\"\\\\]*\)\",\"label\":\"\(.*\)\"},\{0,1\}\$/\1$acc_t\2$acc_t\3$acc_t\4$acc_t\5$acc_t\6$acc_t\7/p")
+    if [ -z "$acc_row" ]; then
+      acc_bad=$(printf '%s\n' "$acc_line" | sed -n 's/^ *{"id":"\([a-z0-9-]*\)".*/\1/p')
+      printf 'stoke: skipping %s: its folder has a character this command will not print for a shell.\n' "${acc_bad:-an account}" >&2
+      continue
+    fi
+    printf '%s\n' "$acc_row"
+  done <"$acc_idx"
+}
+
+# $1 single-quoted for a POSIX shell: ' becomes '\''.
+sh_quote() {
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
+account_list() {
+  acc_t=$(printf '\037')
+  acc_any=0
+  acc_rows=$(account_rows)
+  if [ -n "$acc_rows" ]; then
+    while IFS=$acc_t read -r a_id a_name a_cli a_env a_extra a_home a_label; do
+      acc_any=1
+      # Shown, never evaluated: JSON's \" and \\ read back as " and \.
+      a_label=$(printf '%s' "$a_label" | sed -e 's/\\"/"/g' -e 's/\\\\/\\/g')
+      if [ -n "$a_env" ]; then
+        printf '%-22s %-9s %s\n%24s%s\n' "$a_id" "$a_cli" "$a_label" '' "$a_home"
+      else
+        printf '%-22s %-9s %s\n%24s%s\n' "$a_id" "$a_cli" "$a_label" '' '(an API key, sealed in Stoke; env exports nothing for it)'
+      fi
+    done <<ROWS
+$acc_rows
+ROWS
+  fi
+  if [ "$acc_any" = 0 ]; then
+    say 'No accounts yet. Add one in Stoke, Settings, Agents, or: stoke account add AGENT NAME'
+    say 'Every agent always has its own sign-in too: stoke account env default puts a shell back on it.'
+  fi
+}
+
+account_env() {
+  acc_want=$1
+  case $acc_want in
+    '' | *[!a-z0-9-]*) die "an account name is letters, digits and -, like work or claude-work. stoke account list shows them." ;;
+  esac
+  if [ "$acc_want" = default ]; then
+    # Every variable an account can set, from the index; the table's own list
+    # when there is no index yet (accountEnvNames in src/shared/accounts.ts).
+    acc_unset=''
+    if [ -f "$(account_index)" ]; then
+      acc_unset=$(sed -n 's/^ *"unset": *\[\(.*\)\],*$/\1/p' "$(account_index)" | tr -d '" ' | tr ',' ' ')
+    fi
+    [ -n "$acc_unset" ] || acc_unset='CLAUDE_CONFIG_DIR CODEX_HOME GROK_HOME GEMINI_CLI_HOME QWEN_HOME KIMI_CODE_HOME COPILOT_HOME PI_CODING_AGENT_DIR CLINE_DIR VIBE_HOME FACTORY_HOME_OVERRIDE GEMINI_FORCE_ENCRYPTED_FILE_STORAGE'
+    case $acc_unset in
+      *[!A-Z_\ ]*) die "the account index at $(account_index) is not one Stoke wrote." ;;
+    esac
+    say "unset $acc_unset"
+    return 0
+  fi
+  acc_t=$(printf '\037')
+  acc_hit=0
+  acc_rows=$(account_rows)
+  if [ -n "$acc_rows" ]; then
+    while IFS=$acc_t read -r a_id a_name a_cli a_env a_extra a_home a_label; do
+      [ "$a_id" = "$acc_want" ] || [ "$a_name" = "$acc_want" ] || continue
+      acc_hit=1
+      if [ -z "$a_env" ] || [ -z "$a_home" ]; then
+        say "# $a_id is an API-key account: its key stays sealed in Stoke and is not exported."
+        continue
+      fi
+      say "export $a_env=$(sh_quote "$a_home")"
+      for acc_pair in $a_extra; do
+        say "export $acc_pair"
+      done
+    done <<ROWS
+$acc_rows
+ROWS
+  fi
+  [ "$acc_hit" = 1 ] || die "no account called $acc_want. stoke account list shows them."
+}
+
+case "${1:-}" in
+  account)
+    case "${2:-}" in
+      list)
+        [ $# -eq 2 ] || die 'stoke account list takes nothing after it.'
+        account_list
+        exit 0
+        ;;
+      env)
+        [ $# -eq 3 ] || die 'stoke account env takes one name: stoke account env work'
+        account_env "$3"
+        exit 0
+        ;;
+    esac
+    # `add`, and anything else, is the app's to read (stokeArgs.ts).
     ;;
 esac
 

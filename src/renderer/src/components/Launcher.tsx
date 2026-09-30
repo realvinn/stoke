@@ -102,6 +102,16 @@ interface Props {
   onStartCli: (id: CodingCliId) => void
   /** Make this agent the one Start starts, from the caret menu. */
   onMakeDefaultAgent: (id: CodingCliId) => void
+  /**
+   * The primary agent's accounts, its own sign-in first (shared/accounts.ts),
+   * and the one Start uses. The pill shows only when there is a choice — more
+   * than the agent's own sign-in — and picking one sets that agent's default
+   * account (`agents.defaultAccount`, one writer, gotcha 57): Start, `stoke .`
+   * and the phone all start there until it is changed again.
+   */
+  accounts?: { id: string; label: string; colorKey: string | null }[]
+  accountId?: string
+  onPickAccount?: (id: string) => void
   onAddAgents?: () => void
   onStart: () => void
   /** Continue this conversation, or — with null, while the list is still loading — the folder's latest. */
@@ -109,7 +119,7 @@ interface Props {
   onResume: (s: SessionMeta) => void
 }
 
-type Pop = 'switcher' | 'agents' | 'mode' | 'model' | 'effort' | 'ultracode' | null
+type Pop = 'switcher' | 'agents' | 'account' | 'mode' | 'model' | 'effort' | 'ultracode' | null
 
 export function Launcher(props: Props): React.JSX.Element {
   const {
@@ -531,6 +541,35 @@ export function Launcher(props: Props): React.JSX.Element {
               </div>
             )}
           </div>
+
+          {props.accounts && props.accounts.length > 1 && props.onPickAccount && (() => {
+            const current = props.accounts.find((a) => a.id === props.accountId) ?? props.accounts[0]
+            return (
+              <div className="launcher-account" {...agentMark(current.colorKey)} data-testid="launcher-account">
+                <Chip
+                  open={pop === 'account'}
+                  onOpen={(v) => setPop(v ? 'account' : null)}
+                  label={`Account · ${current.label}`}
+                  changed={false}
+                  title={`The ${primary.label} account new sessions start on`}
+                >
+                  <Options
+                    name={`${primary.label} account`}
+                    value={current.id}
+                    options={props.accounts.map((a) => ({ id: a.id, label: a.label }))}
+                    onPick={(id) => {
+                      setPop(null)
+                      props.onPickAccount?.(id)
+                    }}
+                  />
+                  <p className="popover-text">
+                    New {primary.label} sessions start on this account; a tab keeps the account it
+                    started on. Settings › Agents adds and signs in accounts.
+                  </p>
+                </Chip>
+              </div>
+            )
+          })()}
 
           {sessionsLoading && sessions.length === 0 ? (
             <span className="btn launcher-continue skeleton-btn" aria-hidden="true" />

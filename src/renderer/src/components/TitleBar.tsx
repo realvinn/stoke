@@ -77,7 +77,13 @@ interface Props {
    * agent a tab runs when it is not the default one (QA L16): `agent` always,
    * `agentTag` only while tags are shown. Omitted means the tab's own title.
    */
-  labelFor?: (tab: Tab) => { text: string; agentTag: string | null; agent: CodingCliId | null }
+  labelFor?: (tab: Tab) => {
+    text: string
+    agentTag: string | null
+    agent: CodingCliId | null
+    /** The account the tab runs on, when it is not the agent's own sign-in (`tabLabel`). */
+    account?: { key: string; text: string } | null
+  }
   /** Settings › Agents › Show agent tags on tabs, for the tab menu's toggle. */
   agentTagsShown?: boolean
   onToggleAgentTags?: () => void
@@ -228,8 +234,9 @@ export function TitleBar({
             const ctx = contexts[tab.sessionId]
             const act = tab.kind === 'session' ? activity[tab.id] : undefined
             const dot = act?.dot ?? null
-            const label = labelFor?.(tab) ?? { text: tab.title, agentTag: null, agent: null }
+            const label = labelFor?.(tab) ?? { text: tab.title, agentTag: null, agent: null, account: null }
             const agentName = label.agent ? cliFor(label.agent).label : null
+            const account = label.account ?? null
             return (
               <div
                 key={tab.id}
@@ -295,7 +302,9 @@ export function TitleBar({
                 title={
                   tab.kind === 'new'
                     ? `${label.text} — press Enter on the page to start, or pick another folder`
-                    : `${label.text}${agentName ? ` · running ${agentName}` : ''}\n${tab.cwd}`
+                    : `${label.text}${agentName ? ` · running ${agentName}` : ''}${
+                        account ? ` · on ${account.text}` : ''
+                      }\n${tab.cwd}`
                 }
               >
                 <TabIndicator
@@ -364,6 +373,17 @@ export function TitleBar({
                   ) : (
                     <span className="tab-agent-rule" {...agentMark(label.agent)} aria-hidden="true" />
                   ))}
+                {/*
+                  The account, when it is not the agent's own sign-in: which
+                  plan this session spends is not decoration, so it is drawn
+                  with tags off too, in the account's own colour (its id is its
+                  colour key, shared/accounts.ts).
+                */}
+                {account && (
+                  <span className="tab-account" {...agentMark(account.key)} title={`On the account ${account.text}`}>
+                    {account.text}
+                  </span>
+                )}
                 {/*
                   Where this session is. Working (and a turn whose workflow
                   runs on in the background) pulses grey; waiting for you pulses

@@ -383,7 +383,10 @@ export function paneOrder<T extends { id: string; kind: string }>(list: readonly
  */
 export type RestartPlan =
   | { kind: 'host'; hostId: string }
-  | { kind: 'local'; cwd: string; cli: CodingCliId }
+  /** `accountId` is the tab's own account, asked for again (absent: the agent's default one). */
+  | { kind: 'local'; cwd: string; cli: CodingCliId; accountId?: string }
+  /** An account's sign-in tab signs that account in again, never starts a session on it. */
+  | { kind: 'login'; accountId: string }
   /** An install tab runs its installs again, never the first agent in its list. */
   | { kind: 'install'; ids: CodingCliId[] }
   /** An "Add key to …" tab sets up key login again, never opens a session on the host. */
@@ -397,6 +400,8 @@ export function restartPlan(
     cliId?: CodingCliId
     installing?: CodingCliId[]
     enrollHostId?: string
+    accountId?: string
+    accountLogin?: string
   },
   hostIds: string[]
 ): RestartPlan {
@@ -406,6 +411,12 @@ export function restartPlan(
    * the install may just have failed to put on the machine.
    */
   if (tab.installing?.length) return { kind: 'install', ids: [...tab.installing] }
+  /*
+   * A sign-in tab also carries a `cliId` and its account: read as a session,
+   * "Start again" would start the agent ON the account whose sign-in may just
+   * have failed. Main refuses one whose account has since been removed.
+   */
+  if (tab.accountLogin) return { kind: 'login', accountId: tab.accountLogin }
   /*
    * Before the host branch, because an enrollment tab carries its host's
    * `hostId` too: read as a host tab, "Try again" would open a plain session on
@@ -429,7 +440,13 @@ export function restartPlan(
    * tab spawns `claude` in that folder — a different program, silently, in a
    * tab that still says Codex.
    */
-  return { kind: 'local', cwd: tab.cwd, cli: cliIdOf(tab.cliId) }
+  return {
+    kind: 'local',
+    cwd: tab.cwd,
+    cli: cliIdOf(tab.cliId),
+    // And its account, so Start again spends the plan the session was on.
+    ...(tab.accountId ? { accountId: tab.accountId } : {})
+  }
 }
 
 /**
@@ -905,6 +922,12 @@ export interface AgentTagOptions {
   labels: Partial<Record<CodingCliId, string>>
   /** The default agent (`resolveDefaultAgent`): its tabs are the unmarked ones. */
   primary: CodingCliId
+  /**
+   * Every stored account's label, by id (`settings.accounts`). A tab on one of
+   * them is tagged with it; a tab on the agent's own sign-in (`'default'`) or
+   * on an account that has since been removed is not.
+   */
+  accounts?: Readonly<Record<string, { label: string }>>
 }
 
 /** What the strip drew before the tag had settings: always on, bin names, Claude the default. */
@@ -925,23 +948,45 @@ const TAG_DEFAULTS: AgentTagOptions = { show: true, labels: {}, primary: DEFAULT
  * install tab runs a shell, not an agent, and is never marked.
  */
 export function tabLabel(
-  tab: { kind: string; title: string; customTitle?: string; cliId: CodingCliId; installing?: readonly string[] },
+  tab: {
+    kind: string
+    title: string
+    customTitle?: string
+    cliId: CodingCliId
+    installing?: readonly string[]
+    accountId?: string
+    accountLogin?: string
+  },
   newTarget: string | null,
   opts: AgentTagOptions = TAG_DEFAULTS
-): { text: string; agentTag: string | null; agent: CodingCliId | null } {
+): {
+  text: string
+  agentTag: string | null
+  agent: CodingCliId | null
+  /**
+   * The account the tab runs on, when it is not the agent's own sign-in: its
+   * colour key (the account id, `--agent-claude-work-ink`) and its label.
+   * Drawn whether or not agent tags are on — which account a session spends
+   * is not decoration — and on a sign-in tab too, which is FOR that account.
+   */
+  account: { key: string; text: string } | null
+} {
   // A name the user typed wins over the ai-title, on every kind of tab; cleared
   // to blank it falls through to what the label was before (`tabLabel` gets the
   // trimmed value, so whitespace-only never counts as a name).
   const custom = tab.customTitle?.trim()
   if (tab.kind === 'new') {
-    return { text: custom || (newTarget ? `New · ${newTarget}` : tab.title), agentTag: null, agent: null }
+    return { text: custom || (newTarget ? `New · ${newTarget}` : tab.title), agentTag: null, agent: null, account: null }
   }
   const id = cliIdOf(tab.cliId)
   const agent = tab.installing?.length || id === opts.primary ? null : id
+  const accountId = tab.installing?.length ? undefined : (tab.accountLogin ?? tab.accountId)
+  const stored = accountId && accountId !== 'default' ? opts.accounts?.[accountId] : undefined
   return {
     text: custom || tab.title,
     agentTag: agent && opts.show ? agentTagText(agent, opts.labels) : null,
-    agent
+    agent,
+    account: stored && accountId ? { key: accountId, text: stored.label } : null
   }
 }
 

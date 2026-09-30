@@ -81,6 +81,14 @@ export interface StartResult {
    * whose model is the one the renderer chose and sent.
    */
   model?: string
+  /**
+   * The account the launch was resolved to (`resolveLaunchAccount`): an
+   * account id, or `'default'`. The tab stores THIS, not what it asked for,
+   * so a tab started on "the default account" comes back on the account it
+   * actually ran on even after the default changes. Absent from an install,
+   * an SSH tab and a key enrollment.
+   */
+  accountId?: string
 }
 
 interface Session {
@@ -115,6 +123,15 @@ interface Session {
   instrumented: boolean
   /** An "Add key to …" tab running ssh-copy-id (`opts.enroll`), not a session. */
   enroll: boolean
+  /** A sign-in tab running an agent's own login for an account (`opts.accountLogin`), not a session. */
+  accountLogin: boolean
+  /**
+   * The account this process runs on (shared/accounts.ts): an account id, or
+   * `'default'`. Main resolves it before the spawn and passes it in
+   * `opts.accountId`; the plan-limit chip reads it (`accountIdFor`) so a
+   * second account's rate limits never merge into the Default account's.
+   */
+  accountId: string
   exited: boolean
   /**
    * When the process exited, or null while it is still running.
@@ -231,6 +248,10 @@ export interface SessionInfo {
    * session named after the home folder.
    */
   enroll: boolean
+  /** An account sign-in tab (`opts.accountLogin`): not a session either, and left out the same way. */
+  accountLogin: boolean
+  /** The account the process runs on, `'default'` for the agent's own sign-in. */
+  accountId: string
 }
 
 /**
@@ -391,7 +412,16 @@ export class PtyManager {
      * get no flag it may not know (gotcha 19), and another agent is another
      * binary. Headless runs (agent.ts) never come through here (gotcha 15).
      */
-    claudePluginDir: string | null = null
+    claudePluginDir: string | null = null,
+    /**
+     * A local Claude Code session's account environment (`accountEnv`,
+     * shared/accounts.ts): `CLAUDE_CONFIG_DIR` for a login account. Applied
+     * INSTEAD of Settings › Providers, which is the Default account's auth — a
+     * second Claude account is its own sign-in, and pointing it at an
+     * OpenRouter or Anthropic key would make it the Default account again.
+     * Other agents carry their account's environment in `agentPlan`.
+     */
+    accountEnv: Record<string, string> | null = null
   ): Promise<StartResult> {
     /*
      * A remote session is the same machinery with a different argv: ssh instead
@@ -440,7 +470,18 @@ export class PtyManager {
       throw new Error('Stoke has no install command for those agents on this platform. Their websites say how.')
     }
     const installing = script !== null
-    const instrumented = !remote && !installing && !enrolling && isClaudeCode(cliId)
+    /*
+     * An account sign-in tab runs the agent's own login — `claude auth login`,
+     * `codex login`, or the agent itself — with the account's home in its
+     * environment, in a terminal the user can answer (gotcha 109's rule for
+     * anything that asks a person for a secret). Main builds its argv and
+     * environment (`agentPlan`) from the account id `opts.accountLogin`
+     * carries, and nothing else of the request. Not a session: no statusLine
+     * files, no transcript, no `--session-id`.
+     */
+    const loggingIn = !remote && !installing && !enrolling && !!opts.accountLogin
+    if (loggingIn && !agentPlan) throw new Error('An account sign-in is started by main, from settings.')
+    const instrumented = !remote && !installing && !enrolling && !loggingIn && isClaudeCode(cliId)
 
     const exe = remote
       ? sshExecutable()
@@ -451,8 +492,9 @@ export class PtyManager {
           : await findCli(cliId, isClaudeCode(cliId) ? claudePathOverride : null)
     if (!exe) throw new Error(notFoundError(loginPathProbeFailed(), cliId))
     // An install has no project; it runs from home so a vendor script that
-    // writes relative to the cwd lands somewhere harmless. An enrollment too.
-    const cwd = installing || enrolling ? homedir() : opts.cwd
+    // writes relative to the cwd lands somewhere harmless. An enrollment and
+    // a sign-in too.
+    const cwd = installing || enrolling || loggingIn ? homedir() : opts.cwd
 
     /*
      * The folder has to exist, and node-pty will not tell us if it does not.
@@ -534,7 +576,9 @@ export class PtyManager {
         ? [...enrollCommand!.args]
         : installing
           ? installerArgs(script, installFile)
-          : instrumented
+          : loggingIn
+            ? [...agentPlan!.args]
+            : instrumented
             ? buildArgs({ ...opts, sessionId }, settingsFile)
             : [...(agentPlan?.args ?? [])]
 
@@ -603,7 +647,10 @@ export class PtyManager {
        * Codex session from starting, and a configured one putting
        * ANTHROPIC_BASE_URL into a process that has never heard of it.
        */
-      if (instrumented) {
+      if (instrumented && accountEnv) {
+        // Another Claude account: its own sign-in, never the Providers keys.
+        Object.assign(env, accountEnv)
+      } else if (instrumented) {
         const check = validateClaudeAuth(providers)
         if (!check.ok) throw new Error(check.message)
         applyProviderEnv(env, providers)
@@ -641,6 +688,8 @@ export class PtyManager {
       realCwd: cwd,
       instrumented,
       enroll: enrolling,
+      accountLogin: loggingIn,
+      accountId: !remote && !installing && !enrolling && opts.accountId ? opts.accountId : 'default',
       exited: false,
       endedAt: null,
       exitCode: null,
@@ -981,6 +1030,23 @@ export class PtyManager {
     return null
   }
 
+  /**
+   * The account the session behind a statusLine key runs on, `'default'` when
+   * it is the agent's own sign-in or no session holds the key. A live session
+   * first, for the same Map-order reason as `statusKeyFor`: a relaunch reuses
+   * the key, and the exited predecessor comes first.
+   */
+  accountIdForKey(statusKey: string): string {
+    if (!statusKey) return 'default'
+    let ended: string | null = null
+    for (const s of this.sessions.values()) {
+      if (s.statusKey !== statusKey) continue
+      if (!s.exited) return s.accountId
+      ended ??= s.accountId
+    }
+    return ended ?? 'default'
+  }
+
   /** The pty child's pid, or null when there is no such live session. */
   pidFor(ptyId: string): number | null {
     const s = this.sessions.get(ptyId)
@@ -1077,7 +1143,9 @@ export class PtyManager {
       rows: s.rows,
       cli: s.cli,
       instrumented: s.instrumented,
-      enroll: s.enroll
+      enroll: s.enroll,
+      accountLogin: s.accountLogin,
+      accountId: s.accountId
     }))
   }
 
