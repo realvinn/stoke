@@ -6,7 +6,7 @@ import { el, failure, humanError, icon, newButton, skeleton } from './dom'
 import { mountProjectHistory, mountRecent, mountTranscript, type Recent } from './history'
 import { mountSessionList, type SessionList } from './list'
 import { openNewSession } from './newSession'
-import { listenForNotificationTaps, notifyButton } from './notify'
+import { listenForNotificationTaps, notifyButton, resyncNotifications } from './notify'
 import { mountSession } from './session'
 import { store } from './store'
 
@@ -405,6 +405,9 @@ async function boot(): Promise<void> {
   } catch (err) {
     if (err instanceof AuthError) return showConnect()
   }
+  // A phone that turned notifications on tells the computer again, so a new
+  // phone key or a full list never leaves it silently unsubscribed.
+  void resyncNotifications().catch(() => {})
   store.start()
   window.addEventListener('hashchange', render)
   wideQuery.addEventListener('change', () => {

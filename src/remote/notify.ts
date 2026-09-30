@@ -14,7 +14,7 @@
  * failing at the first tap (`pushAvailability`).
  */
 import { base64UrlBytes, pushAvailability, sameServerKey, type PushAvailability } from '@shared/phoneUi'
-import { api, host, loadHost } from './api'
+import { api, host, loadHost, type ApiError } from './api'
 import { el, humanError, icon, iconButton, openSheet, toast } from './dom'
 
 /** The browser's own facts, gathered once per read. */
@@ -45,6 +45,58 @@ async function registration(): Promise<ServiceWorkerRegistration | null> {
 async function current(): Promise<PushSubscription | null> {
   const reg = await registration()
   return reg ? reg.pushManager.getSubscription() : null
+}
+
+/** What the computer said to this browser's subscription (`confirm`). */
+type Confirmed = { ok: true } | { ok: false; gone: boolean; text: string }
+
+/**
+ * Hand the computer the subscription this browser holds, again — an upsert,
+ * so repeating it changes nothing but its place in the list. The browser's
+ * own subscription is not the truth: the computer sends only to ones made
+ * under the phone key in force and keeps at most eight, so a replaced key
+ * (and a re-scan with the same phone), an eviction, or a drop after its push
+ * service answered 404/410 each left the sheet saying On while nothing came.
+ * Needs the current key like every /api call, so a phone locked out by a new
+ * key cannot enrol itself back. A 410 means the push service refused this
+ * very subscription for good: the browser's copy is dropped too, so the next
+ * Turn on makes a new one.
+ */
+async function confirm(sub: PushSubscription): Promise<Confirmed> {
+  try {
+    await api('/api/push/subscription', { method: 'POST', body: JSON.stringify(sub.toJSON()) })
+    return { ok: true }
+  } catch (err) {
+    const gone = (err as ApiError).status === 410
+    if (gone) await sub.unsubscribe().catch(() => {})
+    return { ok: false, gone, text: humanError(err) }
+  }
+}
+
+/**
+ * The subscription this browser holds, when it was made with the computer's
+ * current key and the page can take pushes at all — the only one worth
+ * confirming. Anything else is Off, and only Turn on changes it.
+ */
+async function heldForThisComputer(): Promise<{ verdict: PushAvailability; sub: PushSubscription | null }> {
+  // The key is read afresh: Phone access may have started (and minted it) since this page loaded.
+  if (!host?.push?.publicKey) await loadHost().catch(() => null)
+  const env = environment()
+  const verdict = pushAvailability(env)
+  if (!verdict.ok) return { verdict, sub: null }
+  const sub = await current().catch(() => null)
+  return { verdict, sub: sub && sameServerKey(sub.options.applicationServerKey, env.serverKey ?? '') ? sub : null }
+}
+
+/**
+ * At every start of the shell: re-send a held subscription (`confirm`), so a
+ * phone re-scanned after the key was replaced — or pushed out of the list —
+ * gets notifications again without opening the sheet. Silent: a phone that
+ * never turned them on sends nothing, and a failure is the sheet's to say.
+ */
+export async function resyncNotifications(): Promise<void> {
+  const { sub } = await heldForThisComputer().catch(() => ({ sub: null }))
+  if (sub) await confirm(sub)
 }
 
 /**
@@ -115,21 +167,21 @@ export function openNotifications(): void {
   }
 
   const paint = async (): Promise<void> => {
-    // The key is read afresh: Phone access may have started (and minted it) since this page loaded.
-    if (!host?.push?.publicKey) await loadHost().catch(() => null)
-    const env = environment()
-    const verdict: PushAvailability = pushAvailability(env)
-    const sub = verdict.ok ? await current().catch(() => null) : null
-    const on = verdict.ok && sub !== null && sameServerKey(sub.options.applicationServerKey, env.serverKey ?? '')
+    const { verdict, sub: held } = await heldForThisComputer()
+    // On only once the computer has taken it back (`confirm`), never on the browser's word alone.
+    const confirmed = held ? await confirm(held) : null
+    const sub = confirmed?.ok ? held : null
+    const on = sub !== null
     status.replaceChildren(icon(on ? 'bell' : 'bellOff', 18), el('span', {}, on ? 'On for this phone.' : 'Off for this phone.'))
     status.dataset.state = on ? 'on' : 'off'
-    why.textContent = verdict.ok ? '' : verdict.text
-    why.hidden = verdict.ok
+    const note = !verdict.ok ? verdict.text : confirmed && !confirmed.ok ? confirmed.text : ''
+    why.textContent = note
+    why.hidden = !note
     if (!verdict.ok) {
       actions.replaceChildren()
       return
     }
-    const key = env.serverKey as string
+    const key = host?.push?.publicKey as string
     if (on && sub) {
       actions.replaceChildren(
         button('Turn off', null, async () => {

@@ -194,22 +194,33 @@ export type { ConnectTarget, Reach } from './link.ts'
  *     subscription is made with, null until a start path minted the pair
  *     (never on this read, gotcha 53). `POST /api/push/subscription` takes a
  *     `PushSubscription.toJSON()` (`pushSubscriptionFrom`: a real push
- *     service's https endpoint only) and replies `{ok:true}`; `DELETE` the
+ *     service's https endpoint only) and replies `{ok:true}` — an upsert the
+ *     phone repeats at every start and every sheet open, so "On" is the
+ *     computer's answer — or 410 `{error, gone:true}` for a subscription its
+ *     push service already refused (`rememberGonePush`); `DELETE` the
  *     same path with `{endpoint}` forgets it, `{ok, removed}`; `POST
  *     /api/push/test {endpoint}` sends that one subscription a test
- *     notification, `{ok, outcome}`. Gated like every `/api` route. A session
+ *     notification, `{ok, outcome}`, or 410 `{error, gone:true}` when the
+ *     service refused it for good. Gated like every `/api` route. A session
  *     then pushes on `pushFor`'s edges only — into waiting, a new prompt, an
  *     exit on its own — with a content-free payload (`pushPayload`: project
  *     name, "Needs you"/"Finished", the session's route). A subscription made
  *     under an older phone key is never sent to.
  */
 
+/** What a phone is told when its push service refused its subscription for good (410; the phone drops its copy). */
+const PUSH_GONE_TEXT = 'This phone’s push service stopped taking its notifications. Turn them on again to make a new subscription.'
+
 /** Web Push, as the server needs it (main/remote/push.ts; phone contract point 14). Settings read per call. */
 export interface RemotePushDeps {
   /** The VAPID public key, or null while there is no whole pair. Never mints one. */
   publicKey: () => string | null
-  /** Remember one checked subscription under the phone key in force. */
-  subscribe: (sub: { endpoint: string; p256dh: string; auth: string }) => void
+  /**
+   * Remember one checked subscription under the phone key in force (an
+   * upsert: the phone re-sends it on every start). `gone` when its push
+   * service already refused this very subscription (`rememberGonePush`).
+   */
+  subscribe: (sub: { endpoint: string; p256dh: string; auth: string }) => 'ok' | 'gone'
   /** Forget one by endpoint; true when it was there. */
   unsubscribe: (endpoint: string) => boolean
   /** Send one payload to every live subscription, or to `only` among them. What became of each send. */
@@ -1610,7 +1621,9 @@ export class RemoteServer {
         }
         const checked = pushSubscriptionFrom(parsed, push.allowLoopback())
         if (!checked.ok) return this.json(res, { error: checked.error }, setCookie, 400)
-        push.subscribe(checked.sub)
+        if (push.subscribe(checked.sub) === 'gone') {
+          return this.json(res, { error: PUSH_GONE_TEXT, gone: true }, setCookie, 410)
+        }
         return this.json(res, { ok: true }, setCookie, 201)
       }
       if (url.pathname === '/api/push/test' && req.method === 'POST') {
@@ -1624,7 +1637,10 @@ export class RemoteServer {
         if (typeof endpoint !== 'string' || !endpoint) return this.json(res, { error: 'Name the subscription by its endpoint.' }, setCookie, 400)
         const [outcome] = await push.notify(pushPayload('test', 'Stoke', ''), { only: endpoint, urgency: 'normal' })
         if (!outcome) return this.json(res, { error: 'This phone is not subscribed.' }, setCookie, 404)
-        return this.json(res, { ok: outcome === 'sent', outcome }, setCookie, outcome === 'sent' ? 200 : 502)
+        if (outcome === 'sent') return this.json(res, { ok: true, outcome }, setCookie)
+        // Gone: the service refused this subscription for good, so the phone drops its copy (410).
+        if (outcome === 'gone') return this.json(res, { error: PUSH_GONE_TEXT, gone: true, outcome }, setCookie, 410)
+        return this.json(res, { error: 'The push service did not take it. Try again in a moment.', outcome }, setCookie, 502)
       }
 
       /*

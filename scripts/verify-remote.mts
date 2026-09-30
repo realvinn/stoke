@@ -45,6 +45,9 @@ import {
   pushPayload,
   pushStateOf,
   pushSubscriptionFrom,
+  pushSubscriptionKey,
+  rememberGonePush,
+  MAX_GONE_PUSH,
   withPushSubscription,
   type PushState,
   refusalStatusLine,
@@ -1877,6 +1880,31 @@ console.log('\nWeb Push: when, what, to where, and the bytes (phone contract poi
     livePushSubscriptions([sub(FCM), sub(`${FCM}2`, 'bbbbbbbbbbbbbbbb'), sub('http://127.0.0.1:9/x')], 'aaaaaaaaaaaaaaaa', false).map((s) => s.endpoint),
     [FCM]
   )
+  /*
+   * Review of the first cut: the phone's sheet said On from the browser's own
+   * subscription alone, so a replaced key, an eviction or a drop after 404/410
+   * left it On while nothing came. The phone now re-sends its subscription at
+   * every start and sheet open (an upsert), and one its push service already
+   * refused is answered 410 instead of taken back — named by endpoint AND key.
+   */
+  const gone1 = pushSubscriptionKey({ endpoint: FCM, p256dh: good.keys.p256dh })
+  const fresh = createECDH('prime256v1')
+  fresh.generateKeys()
+  check(
+    'a fresh subscription at a reused endpoint is not the gone one (its key is new)',
+    pushSubscriptionKey({ endpoint: FCM, p256dh: fresh.getPublicKey().toString('base64url') }) !== gone1,
+    true
+  )
+  check('re-sending the same one is an upsert, not a second record', withPushSubscription(list, { endpoint: FCM, p256dh: good.keys.p256dh, auth: good.keys.auth }, 'aaaaaaaaaaaaaaaa', 9).map((s) => [s.endpoint, s.addedAt]), [[FCM, 9]])
+  check(
+    'a phone re-scanned under a new key re-sends and is live again; every record under the old key goes',
+    livePushSubscriptions(withPushSubscription([sub(FCM), sub(`${FCM}2`)], { endpoint: FCM, p256dh: good.keys.p256dh, auth: good.keys.auth }, 'cccccccccccccccc', 9), 'cccccccccccccccc', false).map((s) => s.endpoint),
+    [FCM]
+  )
+  const goneList = Array.from({ length: MAX_GONE_PUSH + 5 }, (_, i) => `k${i}`).reduce((acc, k) => rememberGonePush(acc, [k]), [] as string[])
+  check('the gone memory keeps the newest, bounded', [goneList.length, goneList[0], goneList.at(-1)], [MAX_GONE_PUSH, 'k5', `k${MAX_GONE_PUSH + 4}`])
+  check('refused twice is remembered once, as the newest', rememberGonePush(['a', 'b', 'c'], ['a']), ['b', 'c', 'a'])
+
   const vapid = generateVapidKeys()
   const hydrated = hydrateRemotePush({
     vapidPublic: vapid.publicKey,

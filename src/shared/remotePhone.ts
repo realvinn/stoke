@@ -1039,6 +1039,30 @@ export function withPushSubscription(
   return [...kept, { ...sub, keyTag, addedAt: now }].slice(-MAX_PUSH_SUBSCRIPTIONS)
 }
 
+/**
+ * A phone re-sends its subscription every time the shell starts and whenever
+ * its Notifications sheet opens, so the sheet's "On" is the computer's answer,
+ * not just the browser's (a replaced phone key, an eviction by
+ * `MAX_PUSH_SUBSCRIPTIONS`, a drop after 404/410 all used to leave it saying
+ * On). A subscription its push service already called gone must not be taken
+ * back that way: it would be sent to, dropped and re-sent forever while the
+ * sheet said On. So main remembers the gone ones (in memory, the newest
+ * `MAX_GONE_PUSH`) by endpoint AND key — a fresh subscription always has a new
+ * key, so one that reuses an endpoint is never refused — and the route answers
+ * 410, which tells the phone to drop its copy and show Off.
+ */
+export const MAX_GONE_PUSH = 32
+
+/** One subscription as the gone memory names it: its endpoint and its key. */
+export function pushSubscriptionKey(sub: { endpoint: string; p256dh: string }): string {
+  return `${sub.p256dh} ${sub.endpoint}`
+}
+
+/** The gone memory after its push service refused `keys`: newest last, at most `MAX_GONE_PUSH`. */
+export function rememberGonePush(list: readonly string[], keys: readonly string[]): string[] {
+  return [...list.filter((k) => !keys.includes(k)), ...keys].slice(-MAX_GONE_PUSH)
+}
+
 /** Who is sent a push now: made under the key in force, and still a place Stoke may POST to. */
 export function livePushSubscriptions(
   list: readonly PushSubscriptionRecord[],

@@ -106,6 +106,8 @@ import { keepUsage } from '../shared/statusLine.ts'
 import {
   advertisedRemoteToken,
   livePushSubscriptions,
+  pushSubscriptionKey,
+  rememberGonePush,
   shouldRestartRemote,
   withPushSubscription
 } from '../shared/remotePhone.ts'
@@ -1485,9 +1487,17 @@ function writePushSubscriptions(edit: (list: Settings['remote']['push']['subscri
 }
 
 /**
+ * Subscriptions a push service answered 404/410 for since this Stoke started
+ * (`rememberGonePush`), so a phone re-sending one is told 410 rather than
+ * re-enrolled to be refused again.
+ */
+let pushGone: string[] = []
+
+/**
  * Web Push for the phone server (phone contract point 14), every read from
  * settings on the call (gotcha 111). A send's `gone` (the phone unsubscribed,
- * or its browser dropped it) forgets that subscription; a `failed` one is kept.
+ * or its browser dropped it) forgets that subscription and remembers it as
+ * gone; a `failed` one is kept.
  */
 function remotePushDeps(): RemotePushDeps {
   const pair = (): { publicKey: string; privateKey: string } | null => {
@@ -1498,8 +1508,10 @@ function remotePushDeps(): RemotePushDeps {
   return {
     publicKey: () => pair()?.publicKey ?? null,
     subscribe: (sub) => {
+      if (pushGone.includes(pushSubscriptionKey(sub))) return 'gone'
       const tag = pushKeyTag(getSettings().remote.token)
       writePushSubscriptions((list) => withPushSubscription(list, sub, tag, Date.now()))
+      return 'ok'
     },
     unsubscribe: (endpoint) => {
       const had = getSettings().remote.push.subscriptions.some((s) => s.endpoint === endpoint)
@@ -1514,8 +1526,12 @@ function remotePushDeps(): RemotePushDeps {
         (sub) => !opts.only || sub.endpoint === opts.only
       )
       const outcomes = await Promise.all(live.map((sub) => sendPush(sub, payload, keys, { urgency: opts.urgency })))
-      const gone = new Set(live.filter((_, i) => outcomes[i] === 'gone').map((sub) => sub.endpoint))
-      if (gone.size) writePushSubscriptions((list) => list.filter((sub) => !gone.has(sub.endpoint)))
+      const goneSubs = live.filter((_, i) => outcomes[i] === 'gone')
+      if (goneSubs.length) {
+        pushGone = rememberGonePush(pushGone, goneSubs.map(pushSubscriptionKey))
+        const gone = new Set(goneSubs.map((sub) => sub.endpoint))
+        writePushSubscriptions((list) => list.filter((sub) => !gone.has(sub.endpoint)))
+      }
       return outcomes
     },
     allowLoopback: pushLoopbackAllowed
